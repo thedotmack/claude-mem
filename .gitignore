@@ -1,0 +1,13 @@
+# Binaries (distributed via GitHub releases)
+*.exe
+*.app
+claude-mem
+claude-mem-*
+
+# Temporary files
+*.tmp
+*.log
+.DS_Store
+
+# Node modules (if any)
+node_modules/
