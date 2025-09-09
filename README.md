@@ -1,238 +1,86 @@
-# Claude Memory System (claude-mem)
+# 🧠 Claude Memory System (claude-mem)
 
-## 😵‍💫 Remember that one thing? Neither do we. But claude-mem remembers.
+## Remember that one thing? Neither do we… but `claude-mem` does! 😵‍💫
 
-Transform your Claude Code from a goldfish into an elephant. Every conversation, every breakthrough, every "aha!" moment - captured, compressed, and ready when you need it. 
+Stop repeating yourself. `claude-mem` remembers what you and Claude Code figure out, so every new chat starts smarter than the last.
 
-## 🗑️ Smart Trash™ - Never Truly Lose Anything
+## ⚡️ 10‑Second Setup
 
-We pioneered Smart Trash because we know that moment of panic when you realize you deleted something important. With claude-mem:
-- **Deleted files go to trash, not oblivion** - Everything lands safely in `~/.claude-mem/trash/`
-- **30-day safety net** - Accidentally removed memories? They're still there
-- **One command restore** - `claude-mem restore` brings back what you need
-- **Timestamped recovery** - See exactly when files were deleted
-- **Selective restoration** - Pick specific files or restore everything
-
-## 🚀 Why Your Context Matters
-
-### The Problem We Solve
-- **Lost Context**: Starting every Claude Code session from scratch
-- **Repeated Explanations**: Re-describing your codebase and architecture repeatedly  
-- **Fragmented Knowledge**: Valuable insights scattered across hundreds of conversations
-- **Context Switching**: Losing progress when switching between projects or devices
-- **Knowledge Decay**: Brilliant solutions forgotten and re-discovered multiple times
-
-### The Claude-Mem Difference
-Your context isn't just saved - it's **understood**. Every session builds on the last. Every problem solved becomes institutional knowledge. Every pattern recognized becomes a building block for the next breakthrough.
-
-## ✨ Key Features
-
-### 🧠 **Intelligent Memory Compression**
-- Automatically extracts key learnings from your Claude Code conversations
-- Identifies patterns, architectural decisions, and breakthrough moments
-- Compresses hours of conversation into searchable, actionable knowledge
-- Uses advanced AI analysis to understand context and significance
-
-### 🔄 **Seamless Integration**
-- **One-command setup**: `claude-mem install` and you're ready
-- **Zero friction**: Works invisibly in the background
-- **Automatic triggers**: Memory compression on `/compact` and `/clear`
-- **Instant context loading**: New sessions start with relevant memories
-
-### 🎯 **Context That Actually Loads**
-- Your new sessions start where the last one left off
-- Project-aware memory selection - the right context for the right project
-- Semantic search that actually understands what you're looking for
-- No more "As I explained in our last conversation..." - Claude already knows
-
-### 📚 **Comprehensive Knowledge Base**
-- Stores technical implementations, bug fixes, and solutions
-- Captures design patterns and architectural decisions
-- Remembers tool configurations and setup procedures
-- Archives complete conversation transcripts for detailed reference
-
-### 🔍 **Powerful Search & Retrieval**
-- Vector-based semantic search finds related concepts
-- Keyword search for specific terms and technologies
-- Project filtering to focus on relevant memories
-- Time-based filtering to find recent insights
-
-## 🛠 Installation & Setup
-
-### Prerequisites
-- Node.js 18+ 
-- Claude Code CLI installed
-- uv (Python package manager) - automatically installed if missing
-
-### Quick Install
 ```bash
-# Install globally
-npm install -g claude-mem
-
-# Set up Claude Code integration (installs uv if needed)
-claude-mem install
-
-# Restart Claude Code to activate
+npm install -g claude-mem && claude-mem install
 ```
 
-### Alternative Installation
+That’s it. Restart Claude Code and you’re good. No config. No tedious setup or dependencies.
+
+## ✨ What You Get
+
+- Remembers key insights from your chats with Claude Code
+- Starts new sessions with the right context
+- Works quietly in the background
+- One-command install and status check
+
+## 🗑️ Smart Trash™ (Your Panic Button)
+
+Delete something by accident? It’s not gone.
+- Everything goes to `~/.claude-mem/trash/`
+- Restore with a single command: `claude-mem restore`
+- Timestamped so you can see when things moved
+
+## 🎯 Why It’s Useful
+
+- No more re-explaining your project over and over
+- Pick up exactly where you left off
+- Find past solutions fast when you face a familiar bug
+- Your knowledge compounds the more you use it
+
+## 🧭 Minimal Commands You’ll Ever Need
+
 ```bash
-# Use without installing globally
-npx claude-mem install
+claude-mem install          # Set up/repair integration
+claude-mem status           # Check everything’s working
+claude-mem load-context     # Peek at what it remembers
+claude-mem logs             # If you’re curious
+claude-mem uninstall        # Remove hooks
+
+# Extras
+claude-mem trash-view       # See what’s in Smart Trash™
+claude-mem restore          # Restore deleted items
 ```
 
-The `claude-mem install` command will automatically install [uv](https://docs.astral.sh/uv/) if it's not already present on your system. uv is required for the Chroma MCP server that powers the memory system.
-
-### Verification
-```bash
-# Check installation status
-claude-mem status
-```
-
-## 💻 How It Works
-
-### The Memory Lifecycle
-
-1. **🎬 Session Start**: Claude-mem loads relevant context from your knowledge base
-2. **💬 Active Session**: You work normally in Claude Code - no changes needed
-3. **🗜️ Memory Compression**: Use `/compact` or `/clear` to trigger intelligent compression
-4. **🧠 Knowledge Extraction**: AI analysis extracts key learnings and patterns
-5. **💾 Persistent Storage**: Memories stored in searchable vector database
-6. **🔄 Context Ready**: Next session starts with relevant memories loaded
-
-### Technical Architecture
-
-- **Vector Database**: ChromaDB for semantic search and storage
-- **MCP Integration**: Model Context Protocol for Claude Code communication
-- **AI Analysis**: Advanced prompt engineering for knowledge extraction
-- **Local Storage**: All data stored locally in `~/.claude-mem/`
-
-## 📋 Commands Reference
-
-### Core Commands
-```bash
-claude-mem install          # Set up Claude Code integration
-claude-mem status           # Check system status and configuration
-claude-mem load-context     # View and search stored memories
-claude-mem logs             # View system logs and debug information
-claude-mem uninstall       # Remove Claude Code hooks
-```
-
-### Advanced Usage
-```bash
-claude-mem compress <file>  # Manually compress a transcript file
-claude-mem trash-view       # View what's in Smart Trash™
-claude-mem restore          # Recover deleted memories from Smart Trash™
-claude-mem restore <file>   # Restore specific file from trash
-```
-
-## 📁 Storage Structure
-
-Your claude-mem data is organized in `~/.claude-mem/`:
+## 📁 Where Stuff Lives (super simple)
 
 ```
 ~/.claude-mem/
-├── index/           # ChromaDB vector database
-├── archives/        # Original conversation transcripts  
-├── hooks/           # Claude Code integration scripts
-├── trash/           # Smart Trash (deleted files)
-└── logs/            # System logs and debug information
+├── index/      # memory index
+├── archives/   # transcripts
+├── hooks/      # integration bits
+├── trash/      # Smart Trash™
+└── logs/       # diagnostics
 ```
 
-## 🌟 Real-World Impact
+## ✅ Requirements
 
-### Your Context Becomes Your Superpower
-- **Instant Recall**: That bug you fixed 3 weeks ago? The solution loads automatically
-- **Compounding Knowledge**: Every session makes you more effective than the last
-- **Context Continuity**: Switch between 10 projects without losing your place in any of them
-- **Pattern Mastery**: Claude recognizes when you're facing a familiar problem and brings the solution forward
+- Node.js 18+
+- Claude Code
 
-### For Teams (Coming Soon)
-- **Shared Knowledge**: Team-wide memory accessible to all members
-- **Onboarding Acceleration**: New team members access collective knowledge
-- **Best Practices**: Capture and share proven solutions
-- **Institutional Memory**: Prevent knowledge loss when team members leave
+## 🆘 If Something’s Weird
 
-## 🚀 Coming Soon: Cloud Sync
-
-### Individual Plan ($9.95/month)
-- **Multi-device sync**: Access your memories on any device
-- **Cloud backup**: Never lose your knowledge base
-- **Enhanced search**: Advanced filtering and semantic search
-- **API access**: Integrate with your own tools and workflows
-
-### Team Plan ($29.95/month, 3+ seats)
-- **Shared memories**: Team-wide knowledge base
-- **Role-based access**: Control what memories are shared
-- **Admin dashboard**: Manage team members and usage
-- **Priority support**: Direct access to our engineering team
-
-[**Join the waitlist**](https://claude-mem.ai) for early access to cloud features.
-
-## 🛡️ Privacy & Security
-
-- **Local-first**: All data stored locally by default
-- **No tracking**: We don't collect or transmit your conversations
-- **Your data**: You own and control your knowledge base
-- **Open architecture**: ChromaDB and MCP are open standards
-
-## 🆘 Troubleshooting
-
-### Common Issues
-
-**Hook not triggering?**
 ```bash
-claude-mem status    # Check installation
-claude-mem install --force   # Reinstall hooks
+claude-mem status           # quick health check
+claude-mem install --force  # fixes most issues
 ```
-
-**Context not loading?**
-```bash
-claude-mem load-context   # Verify memories exist
-claude-mem logs           # Check for errors
-```
-
-**Performance issues?**
-```bash
-# ChromaDB maintenance (if needed)
-claude-mem status    # Check memory usage
-```
-
-## 🔧 Requirements
-
-- **Node.js**: 18.0 or higher
-- **Claude Code**: Latest version recommended
-- **Storage**: ~100MB for typical usage
-- **Memory**: 2GB RAM minimum for large knowledge bases
-
-## 📞 Support & Community
-
-- **Documentation**: Complete guides at [claude-mem.ai/docs](https://claude-mem.ai/docs)
-- **Issues**: Report bugs at [GitHub Issues](https://github.com/thedotmack/claude-mem/issues)
-- **Feature Requests**: [GitHub Discussions](https://github.com/thedotmack/claude-mem/discussions)
-- **Community**: Join our [Discord](https://discord.gg/claude-mem) for tips and discussions
 
 ## 📄 License
 
-This software is free to use but is NOT open source. See [LICENSE](LICENSE) file for complete terms.
+This software is free to use but is NOT open source. See `LICENSE`.
 
 ---
 
-## 🎯 Make Your Context Stand Out
+## Ready to remember more and repeat less?
 
 ```bash
 npm install -g claude-mem
 claude-mem install
 ```
 
-**Stop repeating yourself. Start building on what you've already taught Claude.**
-
-Your context is your competitive advantage. Every problem you've solved, every pattern you've discovered, every architectural decision you've made - it all compounds into a knowledge base that makes you exponentially more effective.
-
-With Smart Trash™, you'll never lose important context again. With intelligent compression, your conversations become searchable wisdom. With semantic loading, Claude starts every session already understanding your project.
-
-**This is context that stands out.** 🧠✨
-
----
-
-*Built for developers who know their context is too valuable to lose.*
+Your future self will thank you. 🧠✨
