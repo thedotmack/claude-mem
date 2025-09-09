@@ -50,12 +50,17 @@ Transform your Claude Code experience from forgetful to persistent, from isolate
 
 ## 🛠 Installation & Setup
 
+### Prerequisites
+- Node.js 18+ 
+- Claude Code CLI installed
+- uv (Python package manager) - automatically installed if missing
+
 ### Quick Install
 ```bash
 # Install globally
 npm install -g claude-mem
 
-# Set up Claude Code integration
+# Set up Claude Code integration (installs uv if needed)
 claude-mem install
 
 # Restart Claude Code to activate
@@ -66,6 +71,8 @@ claude-mem install
 # Use without installing globally
 npx claude-mem install
 ```
+
+The `claude-mem install` command will automatically install [uv](https://docs.astral.sh/uv/) if it's not already present on your system. uv is required for the Chroma MCP server that powers the memory system.
 
 ### Verification
 ```bash

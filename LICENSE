@@ -1,43 +1,31 @@
-# Claude Mem License
+CLAUDE-MEM SOFTWARE LICENSE
 
-Copyright (c) 2024 Alex Newman (@thedotmack)
-
-## Binary Distribution License
-
-The compiled binaries (claude-mem, claude-mem.exe, etc.) are provided free of charge for personal and commercial use under the following terms:
-
-1. **USE**: You may use the binaries for any purpose.
-2. **DISTRIBUTION**: You may redistribute the unmodified binaries.
-3. **NO REVERSE ENGINEERING**: You may not decompile, disassemble, or reverse engineer the binaries.
-4. **NO MODIFICATION**: You may not modify the binary files.
-5. **NO WARRANTY**: The software is provided "as is" without warranty of any kind.
-
-## Hook Files License (MIT)
-
-The hook files in the `/hooks` directory are licensed under the MIT License:
+Copyright (c) 2024 Alex Newman (@thedotmack). All rights reserved.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
-of these hook files and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+of this software in its compiled/distributed form via npm, to use the software
+for any purpose, subject to the following conditions:
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+1. USE RIGHTS: You may use the claude-mem CLI tool for personal or commercial
+   purposes without restriction.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+2. NO SOURCE CODE RIGHTS: This license does NOT grant access to source code,
+   modification rights, or redistribution rights. The software is provided
+   as-is in its compiled form only.
 
-## Contributions
+3. NO REVERSE ENGINEERING: You may not reverse engineer, decompile, or
+   disassemble the software.
 
-By submitting pull requests for hook files or documentation, you agree to license your contributions under the MIT License.
+4. NO REDISTRIBUTION: You may not redistribute, repackage, or resell this
+   software. Users must install it from the official npm registry.
 
-## Trademark
+5. NO WARRANTY: THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+   EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+   MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
 
-"Claude Mem" is a trademark of Alex Newman. You may use the name when referring to this software, but not in a way that implies endorsement or affiliation.
+6. LIMITATION OF LIABILITY: IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY
+   CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT
+   OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR
+   THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+For questions about this license, contact: thedotmack@gmail.com

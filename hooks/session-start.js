@@ -21,6 +21,10 @@ import {
 
 const cliCommand = loadCliCommand();
 
+// Set up stdin immediately before any async operations
+process.stdin.setEncoding('utf8');
+process.stdin.resume(); // Explicitly enter flowing mode to prevent data loss
+
 // Read input from stdin
 let input = '';
 process.stdin.on('data', chunk => {
@@ -47,14 +51,14 @@ process.stdin.on('end', async () => {
     // Skip load-context when source is "resume" to avoid duplicate context
     if (payload.source === 'resume') {
       debugLog('Skipping load-context for resume source');
-      // Output nothing at all for resume - no message, no context
+      // Output valid JSON response with suppressOutput for resume
+      const response = createHookResponse('SessionStart', true);
+      console.log(JSON.stringify(response));
       process.exit(0);
     }
 
-    // Extract project name from current working directory and sanitize
-    const rawProjectName = path.basename(process.cwd());
-    const projectName = rawProjectName.replace(/-/g, '_');
-    debugLog('Extracted project name', { rawProjectName, projectName });
+    // Extract project name from current working directory
+    const projectName = path.basename(process.cwd());
 
     // Load context using standardized CLI execution helper
     const contextResult = await executeCliCommand(cliCommand, [
@@ -152,7 +156,7 @@ function extractProjectName(transcriptPath) {
   
   // Look for project pattern: /path/to/PROJECT_NAME/.claude/
   // Need to get PROJECT_NAME, not the parent directory
-  const parts = transcriptPath.split('/');
+  const parts = transcriptPath.split(path.sep);
   const claudeIndex = parts.indexOf('.claude');
   
   if (claudeIndex > 0) {

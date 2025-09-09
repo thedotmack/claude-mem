@@ -5,16 +5,15 @@
  */
 
 import { loadCliCommand } from './shared/config-loader.js';
+import { getSettingsPath, getArchivesDir } from './shared/path-resolver.js';
 import { execSync } from 'child_process';
-import { join } from 'path';
-import { homedir } from 'os';
 import { existsSync, readFileSync } from 'fs';
 
 const cliCommand = loadCliCommand();
 
 // Check if save-on-clear is enabled
 function isSaveOnClearEnabled() {
-  const settingsPath = join(homedir(), '.claude-mem', 'settings.json');
+  const settingsPath = getSettingsPath();
   if (existsSync(settingsPath)) {
     try {
       const settings = JSON.parse(readFileSync(settingsPath, 'utf8'));
@@ -25,6 +24,10 @@ function isSaveOnClearEnabled() {
   }
   return false;
 }
+
+// Set up stdin immediately before any async operations
+process.stdin.setEncoding('utf8');
+process.stdin.resume(); // Explicitly enter flowing mode to prevent data loss
 
 // Read input
 let input = '';
@@ -41,7 +44,7 @@ process.stdin.on('end', async () => {
     
     try {
       // Use the CLI to compress current transcript
-      execSync(`${cliCommand} compress --output ${homedir()}/.claude-mem/archives`, {
+      execSync(`${cliCommand} compress --output ${getArchivesDir()}`, {
         stdio: 'inherit',
         env: { ...process.env, CLAUDE_MEM_SILENT: 'true' }
       });

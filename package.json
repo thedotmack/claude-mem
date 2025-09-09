@@ -1,0 +1,57 @@
+{
+  "name": "claude-mem",
+  "version": "3.5.4",
+  "description": "Memory compression system for Claude Code - persist context across sessions",
+  "keywords": [
+    "claude",
+    "claude-code",
+    "mcp",
+    "memory",
+    "compression",
+    "knowledge-graph",
+    "transcript",
+    "cli",
+    "typescript",
+    "bun"
+  ],
+  "author": "Alex Newman",
+  "license": "SEE LICENSE IN LICENSE",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/thedotmack/claude-mem.git"
+  },
+  "homepage": "https://github.com/thedotmack/claude-mem#readme",
+  "bugs": {
+    "url": "https://github.com/thedotmack/claude-mem/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "bin": {
+    "claude-mem": "./dist/claude-mem.min.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-code": "^1.0.88",
+    "@clack/prompts": "^0.11.0",
+    "@modelcontextprotocol/sdk": "^0.5.0",
+    "boxen": "^8.0.1",
+    "chalk": "^5.6.0",
+    "chromadb": "^3.0.14",
+    "commander": "^14.0.0",
+    "glob": "^11.0.3",
+    "gradient-string": "^3.0.0",
+    "handlebars": "^4.7.8",
+    "oh-my-logo": "^0.3.2"
+  },
+  "files": [
+    "dist",
+    "hooks",
+    "commands",
+    ".mcp.json"
+  ]
+}

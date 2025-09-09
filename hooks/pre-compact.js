@@ -9,6 +9,7 @@
  */
 
 import { loadCliCommand } from './shared/config-loader.js';
+import { getLogsDir } from './shared/path-resolver.js';
 import { 
   createHookResponse, 
   executeCliCommand, 
@@ -16,7 +17,9 @@ import {
   debugLog 
 } from './shared/hook-helpers.js';
 
-const cliCommand = loadCliCommand();
+// Set up stdin immediately before any async operations
+process.stdin.setEncoding('utf8');
+process.stdin.resume(); // Explicitly enter flowing mode to prevent data loss
 
 // Read input from stdin
 let input = '';
@@ -26,6 +29,9 @@ process.stdin.on('data', chunk => {
 
 process.stdin.on('end', async () => {
   try {
+    // Load CLI command inside try-catch to handle config errors properly
+    const cliCommand = loadCliCommand();
+    
     const payload = JSON.parse(input);
     debugLog('Pre-compact hook started', { payload });
 
@@ -33,17 +39,18 @@ process.stdin.on('end', async () => {
     const validation = validateHookPayload(payload, 'PreCompact');
     if (!validation.valid) {
       const response = createHookResponse('PreCompact', false, { reason: validation.error });
-      console.log(JSON.stringify(response));
+      debugLog('Validation failed', { response });
+      // Exit silently - validation failure is expected flow control
       process.exit(0);
     }
 
     // Check for environment-based blocking conditions
     if (payload.trigger === 'auto' && process.env.DISABLE_AUTO_COMPRESSION === 'true') {
-      debugLog('Auto-compression disabled by configuration');
       const response = createHookResponse('PreCompact', false, { 
         reason: 'Auto-compression disabled by configuration' 
       });
-      console.log(JSON.stringify(response));
+      debugLog('Auto-compression disabled', { response });
+      // Exit silently - disabled compression is expected flow control
       process.exit(0);
     }
 
@@ -56,26 +63,24 @@ process.stdin.on('end', async () => {
     const result = await executeCliCommand(cliCommand, ['compress', payload.transcript_path]);
     
     if (!result.success) {
-      debugLog('Compression command failed', { stderr: result.stderr });
       const response = createHookResponse('PreCompact', false, { 
         reason: `Compression failed: ${result.stderr || 'Unknown error'}` 
       });
-      console.log(JSON.stringify(response));
-      process.exit(0);
+      debugLog('Compression command failed', { stderr: result.stderr, response });
+      console.log(`claude-mem error: compression failed, see logs at ${getLogsDir()}`);
+      process.exit(1);  // Exit with error code for actual compression failure
     }
 
-    // Success - create standardized approval response using HookTemplates
+    // Success - exit silently (suppressOutput is true)
     debugLog('Compression completed successfully');
-    const response = createHookResponse('PreCompact', true);
-    console.log(JSON.stringify(response));
     process.exit(0);
 
   } catch (error) {
-    debugLog('Pre-compact hook error', { error: error.message });
     const response = createHookResponse('PreCompact', false, { 
       reason: `Hook execution error: ${error.message}` 
     });
-    console.log(JSON.stringify(response));
+    debugLog('Pre-compact hook error', { error: error.message, response });
+    console.log(`claude-mem error: hook failed, see logs at ${getLogsDir()}`);
     process.exit(1);
   }
 });

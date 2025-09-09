@@ -47,13 +47,10 @@ export function createHookResponse(hookType, success, options = {}) {
         }
       };
     } else if (success) {
+      // No context - just suppress output without any message
       return {
         continue: true,
-        suppressOutput: true,
-        hookSpecificOutput: {
-          hookEventName: 'SessionStart',
-          additionalContext: 'Starting fresh session - no previous context available'
-        }
+        suppressOutput: true
       };
     } else {
       return {
