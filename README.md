@@ -1,10 +1,19 @@
 # Claude Memory System (claude-mem)
 
-**Truth + Context = Clarity**
+**🎯 Context That Stands Out**
 
-A revolutionary memory system that transforms your Claude Code conversations into a persistent, intelligent knowledge base. Never lose valuable insights, code patterns, or debugging solutions again. Your AI assistant finally has a memory that spans across all your projects and sessions.
+Transform your Claude Code from a goldfish into an elephant. Every conversation, every breakthrough, every "aha!" moment - captured, compressed, and ready when you need it. 
 
-## 🚀 Why Claude-Mem?
+## 🗑️ Smart Trash™ - Never Truly Lose Anything
+
+We pioneered Smart Trash because we know that moment of panic when you realize you deleted something important. With claude-mem:
+- **Deleted files go to trash, not oblivion** - Everything lands safely in `~/.claude-mem/trash/`
+- **30-day safety net** - Accidentally removed memories? They're still there
+- **One command restore** - `claude-mem restore` brings back what you need
+- **Timestamped recovery** - See exactly when files were deleted
+- **Selective restoration** - Pick specific files or restore everything
+
+## 🚀 Why Your Context Matters
 
 ### The Problem We Solve
 - **Lost Context**: Starting every Claude Code session from scratch
@@ -13,8 +22,8 @@ A revolutionary memory system that transforms your Claude Code conversations int
 - **Context Switching**: Losing progress when switching between projects or devices
 - **Knowledge Decay**: Brilliant solutions forgotten and re-discovered multiple times
 
-### The Claude-Mem Solution
-Transform your Claude Code experience from forgetful to persistent, from isolated sessions to connected knowledge, from starting over to building upon previous insights.
+### The Claude-Mem Difference
+Your context isn't just saved - it's **understood**. Every session builds on the last. Every problem solved becomes institutional knowledge. Every pattern recognized becomes a building block for the next breakthrough.
 
 ## ✨ Key Features
 
@@ -30,11 +39,11 @@ Transform your Claude Code experience from forgetful to persistent, from isolate
 - **Automatic triggers**: Memory compression on `/compact` and `/clear`
 - **Instant context loading**: New sessions start with relevant memories
 
-### 🎯 **Smart Context Loading**
-- Loads relevant memories when starting new sessions
-- Project-aware context selection
-- Semantic search finds related knowledge across all sessions
-- Prevents re-explaining the same concepts repeatedly
+### 🎯 **Context That Actually Loads**
+- Your new sessions start where the last one left off
+- Project-aware memory selection - the right context for the right project
+- Semantic search that actually understands what you're looking for
+- No more "As I explained in our last conversation..." - Claude already knows
 
 ### 📚 **Comprehensive Knowledge Base**
 - Stores technical implementations, bug fixes, and solutions
@@ -112,8 +121,9 @@ claude-mem uninstall       # Remove Claude Code hooks
 ### Advanced Usage
 ```bash
 claude-mem compress <file>  # Manually compress a transcript file
-claude-mem restore          # Restore from backups
-claude-mem trash-view       # View deleted files (Smart Trash feature)
+claude-mem trash-view       # View what's in Smart Trash™
+claude-mem restore          # Recover deleted memories from Smart Trash™
+claude-mem restore <file>   # Restore specific file from trash
 ```
 
 ## 📁 Storage Structure
@@ -129,13 +139,13 @@ Your claude-mem data is organized in `~/.claude-mem/`:
 └── logs/            # System logs and debug information
 ```
 
-## 🌟 Real-World Benefits
+## 🌟 Real-World Impact
 
-### For Individual Developers
-- **Faster Problem Solving**: Find solutions you've used before instantly
-- **Knowledge Accumulation**: Build expertise that persists across projects
-- **Context Continuity**: Pick up where you left off, even weeks later
-- **Pattern Recognition**: See how you've solved similar problems before
+### Your Context Becomes Your Superpower
+- **Instant Recall**: That bug you fixed 3 weeks ago? The solution loads automatically
+- **Compounding Knowledge**: Every session makes you more effective than the last
+- **Context Continuity**: Switch between 10 projects without losing your place in any of them
+- **Pattern Mastery**: Claude recognizes when you're facing a familiar problem and brings the solution forward
 
 ### For Teams (Coming Soon)
 - **Shared Knowledge**: Team-wide memory accessible to all members
@@ -208,15 +218,21 @@ This software is free to use but is NOT open source. See [LICENSE](LICENSE) file
 
 ---
 
-## 🎯 Ready to Transform Your Claude Code Experience?
+## 🎯 Make Your Context Stand Out
 
 ```bash
 npm install -g claude-mem
 claude-mem install
 ```
 
-**Your AI assistant is about to get a lot smarter.** 🧠✨
+**Stop repeating yourself. Start building on what you've already taught Claude.**
+
+Your context is your competitive advantage. Every problem you've solved, every pattern you've discovered, every architectural decision you've made - it all compounds into a knowledge base that makes you exponentially more effective.
+
+With Smart Trash™, you'll never lose important context again. With intelligent compression, your conversations become searchable wisdom. With semantic loading, Claude starts every session already understanding your project.
+
+**This is context that stands out.** 🧠✨
 
 ---
 
-*Built with ❤️ for developers who believe AI assistants should remember and learn from every conversation.*
+*Built for developers who know their context is too valuable to lose.*
