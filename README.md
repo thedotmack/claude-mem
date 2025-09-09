@@ -1,6 +1,6 @@
 # Claude Memory System (claude-mem)
 
-**🎯 Context That Stands Out**
+## 😵‍💫 Remember that one thing? Neither do we. But claude-mem remembers.
 
 Transform your Claude Code from a goldfish into an elephant. Every conversation, every breakthrough, every "aha!" moment - captured, compressed, and ready when you need it. 
 
