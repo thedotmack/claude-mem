@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🍝 The Pasta Variable Hunt | Claude-Mem Memory Compression</title>
+    <meta name="description" content="Discover the delightful story of how memory compression meets Italian cuisine in claude-mem's pasta-themed variable hunt.">
+    <link rel="stylesheet" href="style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Dancing+Script:wght@400;600;700&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <!-- Animated pasta background -->
+    <div class="pasta-bg" id="pasta-bg"></div>
+    
+    <!-- Header -->
+    <header class="header">
+        <nav class="nav">
+            <div class="nav-brand">
+                <span class="brand-icon">🧠</span>
+                <span class="brand-text">claude-mem</span>
+            </div>
+            <div class="nav-links">
+                <a href="#story" class="nav-link">The Story</a>
+                <a href="#kitchen" class="nav-link">Memory Kitchen</a>
+                <a href="#recipes" class="nav-link">Recipes</a>
+                <a href="#hunt" class="nav-link">Start Hunt</a>
+            </div>
+            <div class="nav-toggle" id="nav-toggle">
+                <span></span>
+                <span></span>
+                <span></span>
+            </div>
+        </nav>
+    </header>
+
+    <!-- Hero Section -->
+    <section class="hero">
+        <div class="container">
+            <div class="hero-content">
+                <h1 class="hero-title">
+                    <span class="title-main">The Pasta Variable Hunt</span>
+                    <span class="title-sub">Where Memory Compression Meets Italian Cuisine</span>
+                </h1>
+                <p class="hero-description">
+                    Discover the delightful story of semantic spaghetti, vector lasagna, and parmesan indexing in claude-mem's revolutionary memory compression system.
+                </p>
+                <div class="hero-actions">
+                    <button class="btn btn-primary" id="start-hunt">
+                        🍝 Start the Hunt
+                    </button>
+                    <button class="btn btn-secondary" id="taste-memory">
+                        🧠 Taste Memory
+                    </button>
+                </div>
+            </div>
+            <div class="hero-visual">
+                <div class="memory-bowl" id="memory-bowl">
+                    <div class="pasta-strand" data-type="spaghetti"></div>
+                    <div class="pasta-strand" data-type="linguine"></div>
+                    <div class="pasta-strand" data-type="fettuccine"></div>
+                    <div class="memory-bytes" id="memory-bytes"></div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Story Section -->
+    <section id="story" class="story">
+        <div class="container">
+            <div class="section-header">
+                <h2 class="section-title">The Discovery</h2>
+                <p class="section-subtitle">A tale of variables, vectors, and very good pasta</p>
+            </div>
+            
+            <div class="story-content">
+                <div class="story-card">
+                    <div class="story-icon">🔍</div>
+                    <h3>The Search Begins</h3>
+                    <p>It was a Tuesday evening when our intrepid developer first noticed something peculiar in the claude-mem codebase...</p>
+                    <div class="code-snippet" id="discovery-code">
+                        <pre><code class="language-typescript">function compressAlDente(memoryChunk: MemoryBlock) {
+  const semanticSpaghetti = extractSemanticNodes(memoryChunk);
+  const vectorLasagna = layerVectorEmbeddings(semanticSpaghetti);
+  const parmesanIndex = createHashIndex(vectorLasagna);
+  
+  return {
+    data: vectorLasagna,
+    index: parmesanIndex,
+    compression: 'al-dente' // Perfect texture!
+  };
+}</code></pre>
+                    </div>
+                </div>
+
+                <div class="story-card">
+                    <div class="story-icon">🍝</div>
+                    <h3>Semantic Spaghetti</h3>
+                    <p>Memory chunks are processed like pasta strands - each piece of information becomes a semantic noodle, intertwined with related concepts.</p>
+                    <div class="pasta-visualization" id="spaghetti-viz">
+                        <div class="memory-strand"></div>
+                        <div class="memory-strand"></div>
+                        <div class="memory-strand"></div>
+                    </div>
+                </div>
+
+                <div class="story-card">
+                    <div class="story-icon">🧄</div>
+                    <h3>Vector Lasagna</h3>
+                    <p>Layer upon layer of vector embeddings, each building upon the last, creating a rich, multilayered representation of knowledge.</p>
+                    <div class="lasagna-layers" id="lasagna-viz">
+                        <div class="layer" data-layer="embedding-1">Contextual Layer</div>
+                        <div class="layer" data-layer="embedding-2">Semantic Layer</div>
+                        <div class="layer" data-layer="embedding-3">Reference Layer</div>
+                        <div class="layer" data-layer="embedding-4">Memory Layer</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Memory Kitchen Section -->
+    <section id="kitchen" class="kitchen">
+        <div class="container">
+            <div class="section-header">
+                <h2 class="section-title">The Memory Kitchen</h2>
+                <p class="section-subtitle">Where data becomes delicious</p>
+            </div>
+
+            <div class="kitchen-content">
+                <div class="recipe-tabs">
+                    <button class="tab-btn active" data-recipe="marinara">Marinara Compression</button>
+                    <button class="tab-btn" data-recipe="carbonara">Carbonara Retrieval</button>
+                    <button class="tab-btn" data-recipe="pesto">Pesto Indexing</button>
+                </div>
+
+                <div class="recipe-content">
+                    <div class="recipe active" id="recipe-marinara">
+                        <div class="recipe-visual">
+                            <div class="cooking-pot" id="marinara-pot">
+                                <div class="ingredient basil">🌿 Key Terms</div>
+                                <div class="ingredient tomato">🍅 Vector Content</div>
+                                <div class="ingredient garlic">🧄 Semantic Seasoning</div>
+                            </div>
+                        </div>
+                        <div class="recipe-steps">
+                            <h3>Slow-Simmered Context Compression</h3>
+                            <ol>
+                                <li>Extract key terms (fresh basil)</li>
+                                <li>Vectorize content (ripe tomatoes)</li>
+                                <li>Add semantic seasoning (garlic)</li>
+                                <li>Simmer until perfect compression</li>
+                            </ol>
+                        </div>
+                    </div>
+
+                    <div class="recipe" id="recipe-carbonara">
+                        <div class="recipe-visual">
+                            <div class="cooking-pot" id="carbonara-pot">
+                                <div class="ingredient pancetta">🥓 Relevant Memories</div>
+                                <div class="ingredient egg">🥚 Context History</div>
+                                <div class="ingredient cheese">🧀 Relevance Ranking</div>
+                            </div>
+                        </div>
+                        <div class="recipe-steps">
+                            <h3>Rich, Creamy Context Retrieval</h3>
+                            <ol>
+                                <li>Find relevant memories (crispy pancetta)</li>
+                                <li>Blend with context history (fresh eggs)</li>
+                                <li>Rank by relevance (aged pecorino)</li>
+                                <li>Serve immediately while hot</li>
+                            </ol>
+                        </div>
+                    </div>
+
+                    <div class="recipe" id="recipe-pesto">
+                        <div class="recipe-visual">
+                            <div class="cooking-pot" id="pesto-pot">
+                                <div class="ingredient basil">🌿 Hash Keys</div>
+                                <div class="ingredient pine-nuts">🌰 Index Nodes</div>
+                                <div class="ingredient olive-oil">🫒 Compression Oil</div>
+                            </div>
+                        </div>
+                        <div class="recipe-steps">
+                            <h3>Fresh Pesto Indexing</h3>
+                            <ol>
+                                <li>Crush hash keys (fresh basil)</li>
+                                <li>Add index nodes (toasted pine nuts)</li>
+                                <li>Drizzle compression oil (extra virgin)</li>
+                                <li>Blend until smooth and fast</li>
+                            </ol>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Interactive Hunt Section -->
+    <section id="hunt" class="hunt">
+        <div class="container">
+            <div class="section-header">
+                <h2 class="section-title">Hunt for Pasta Variables</h2>
+                <p class="section-subtitle">Can you find all the Italian variables hiding in the code?</p>
+            </div>
+
+            <div class="hunt-game">
+                <div class="game-stats">
+                    <div class="stat">
+                        <span class="stat-label">Found:</span>
+                        <span class="stat-value" id="found-count">0</span>
+                    </div>
+                    <div class="stat">
+                        <span class="stat-label">Total:</span>
+                        <span class="stat-value" id="total-count">12</span>
+                    </div>
+                    <div class="stat">
+                        <span class="stat-label">Score:</span>
+                        <span class="stat-value" id="score">0</span>
+                    </div>
+                </div>
+
+                <div class="code-hunt" id="code-hunt">
+                    <pre><code class="hunt-code">class MemoryKitchen {
+  private <span class="variable-hunt" data-pasta="ingredients">ingredients</span>: Map&lt;string, MemoryIngredient&gt;;
+  
+  <span class="variable-hunt" data-pasta="marinara">marinara</span>(context: string): Promise&lt;CompressedMemory&gt; {
+    const <span class="variable-hunt" data-pasta="basil">basil</span> = this.extractKeyTerms(context);
+    const <span class="variable-hunt" data-pasta="tomatoes">tomatoes</span> = this.vectorizeContent(basil);
+    const <span class="variable-hunt" data-pasta="garlic">garlic</span> = this.addSemanticSeasoning(tomatoes);
+    
+    return this.simmer(garlic, { time: 'until-perfect' });
+  }
+  
+  <span class="variable-hunt" data-pasta="carbonara">carbonara</span>(userInput: string, contextHistory: MemoryBlock[]): string {
+    const <span class="variable-hunt" data-pasta="pancetta">pancetta</span> = this.findRelevantMemories(userInput);
+    const <span class="variable-hunt" data-pasta="eggs">eggs</span> = this.blend(pancetta, contextHistory);
+    const <span class="variable-hunt" data-pasta="pecorino">pecorino</span> = this.rankByRelevance(eggs);
+    
+    return this.serve(pecorino);
+  }
+  
+  <span class="variable-hunt" data-pasta="pesto">pesto</span>(queries: string[]): IndexMap {
+    const <span class="variable-hunt" data-pasta="basil">basilKeys</span> = this.extractHashes(queries);
+    const <span class="variable-hunt" data-pasta="pineNuts">pineNuts</span> = this.createIndexNodes(basilKeys);
+    
+    return this.<span class="variable-hunt" data-pasta="blend">blend</span>(pineNuts);
+  }
+}</code></pre>
+                </div>
+
+                <div class="hunt-message" id="hunt-message">
+                    Click on the Italian food variables to find them all! 🍝
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-content">
+                <div class="footer-section">
+                    <h3>🧠 Claude-Mem</h3>
+                    <p>Memory compression system that remembers what you and Claude Code figure out.</p>
+                    <div class="social-links">
+                        <a href="https://github.com/thedotmack/claude-mem" target="_blank">GitHub</a>
+                        <a href="https://www.npmjs.com/package/claude-mem" target="_blank">NPM</a>
+                    </div>
+                </div>
+                <div class="footer-section">
+                    <h3>🍝 The Story</h3>
+                    <p>A whimsical exploration of memory compression through Italian cuisine.</p>
+                    <a href="../docs/weird/14-pasta-variable.md" class="footer-link">Read Full Story</a>
+                </div>
+                <div class="footer-section">
+                    <h3>⚡️ Quick Start</h3>
+                    <code class="install-command">npm install -g claude-mem && claude-mem install</code>
+                </div>
+            </div>
+            <div class="footer-bottom">
+                <p>&copy; 2024 Claude-Mem. Made with ❤️ and 🍝</p>
+            </div>
+        </div>
+    </footer>
+
+    <script src="script.js"></script>
+</body>
+</html>
