@@ -20,6 +20,29 @@ That’s it. Restart Claude Code and you’re good. No config. No tedious setup 
 - One-command install and status check
 - **🎭 Shakespeare's Memory Theatre**: Transform operations into theatrical magnificence!
 
+## 🎭 NEW: Shakespeare's Memory Theatre
+
+*"All the world's a stage, And all memory merely players"*
+
+Experience claude-mem operations as a dramatic performance! Choose from five theatrical acts:
+
+```bash
+claude-mem theatre                    # Full theatrical experience
+claude-mem theatre --act I           # Tragedy of Defensive Validation
+claude-mem theatre --act II          # Romeo and Chroma_Add  
+claude-mem compress-theatrical file   # Compress with Shakespearean flair
+claude-mem status-theatrical          # Check status dramatically
+```
+
+**Interactive Features:**
+- 🎪 Choose dialogue responses
+- 🍅 Throw tomatoes at bad code
+- 👏 Standing ovation meter
+- 📜 Soliloquy generator
+- 🎺 Trumpet fanfares
+
+[📖 Full Shakespeare Theatre Documentation](docs/shakespeare-theatre.md)
+
 ## 🗑️ Smart Trash™ (Your Panic Button)
 
 Delete something by accident? It’s not gone.
