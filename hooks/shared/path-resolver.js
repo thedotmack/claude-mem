@@ -41,6 +41,14 @@ export function getLogsDir() {
 }
 
 /**
+ * Gets the compact flag file path
+ * @returns {string} Compact flag file path
+ */
+export function getCompactFlagPath() {
+  return join(getDataDir(), '.compact-running');
+}
+
+/**
  * Gets all common paths used by hooks
  * @returns {Object} Object containing all common paths
  */
@@ -49,6 +57,7 @@ export function getPaths() {
     dataDir: getDataDir(),
     settingsPath: getSettingsPath(),
     archivesDir: getArchivesDir(),
-    logsDir: getLogsDir()
+    logsDir: getLogsDir(),
+    compactFlagPath: getCompactFlagPath()
   };
 }

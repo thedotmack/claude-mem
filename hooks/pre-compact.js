@@ -17,9 +17,11 @@ import {
   debugLog 
 } from './shared/hook-helpers.js';
 
-// Set up stdin immediately before any async operations
+
+// Set up stdin immediately
 process.stdin.setEncoding('utf8');
 process.stdin.resume(); // Explicitly enter flowing mode to prevent data loss
+
 
 // Read input from stdin
 let input = '';
@@ -28,6 +30,7 @@ process.stdin.on('data', chunk => {
 });
 
 process.stdin.on('end', async () => {
+  
   try {
     // Load CLI command inside try-catch to handle config errors properly
     const cliCommand = loadCliCommand();
