@@ -1,6 +1,6 @@
 {
   "name": "claude-mem",
-  "version": "3.6.2",
+  "version": "3.6.3",
   "description": "Memory compression system for Claude Code - persist context across sessions",
   "keywords": [
     "claude",
@@ -52,6 +52,7 @@
     "dist",
     "hooks",
     "commands",
+    "src",
     ".mcp.json",
     "CHANGELOG.md"
   ]
