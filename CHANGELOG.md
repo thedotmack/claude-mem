@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 
+## [3.6.4] - 2025-09-13
+
+### Changed
+- Update save documentation to include allowed-tools and description metadata fields
+
+### Removed
+- Remove deprecated markdown to JSONL migration script
+
+
 ## [3.6.3] - 2025-09-11
 
 ### Changed
