@@ -1,7 +1,7 @@
 import { OptionValues } from 'commander';
 import { readFileSync, writeFileSync, existsSync, chmodSync, mkdirSync, copyFileSync, statSync, readdirSync } from 'fs';
 import { join, resolve, dirname } from 'path';
-import { homedir } from 'os';
+import { homedir, platform } from 'os';
 import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import * as p from '@clack/prompts';
@@ -95,7 +95,8 @@ async function validatePrerequisites(): Promise<boolean> {
       name: 'Claude Code CLI',
       check: async () => {
         try {
-          execSync('which claude', { stdio: 'ignore' });
+          const command = platform() === 'win32' ? 'where claude' : 'which claude';
+          execSync(command, { stdio: 'ignore' });
           return { success: true, message: '' };
         } catch {
           return { success: false, message: 'Claude Code CLI not found. Please install: https://docs.anthropic.com/claude/docs/claude-code' };
@@ -184,7 +185,8 @@ async function validatePrerequisites(): Promise<boolean> {
 // <Block> Claude binary path detection
 function detectClaudePath(): string | null {
   try {
-    const path = execSync('which claude', { 
+    const command = platform() === 'win32' ? 'where claude' : 'which claude';
+    const path = execSync(command, { 
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'] 
     }).trim();

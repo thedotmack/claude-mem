@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 
+## [3.6.5] - 2025-09-14
+
+### Changed
+- Session groups now display in chronological order (most recent first)
+
+### Fixed
+- Improved CLI path detection for cross-platform compatibility
+
+
 ## [3.6.4] - 2025-09-13
 
 ### Changed

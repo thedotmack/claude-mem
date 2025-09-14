@@ -613,6 +613,14 @@ export function outputSessionStartContent(params: {
   // Overview section at bottom with session grouping
   if (overviews.length > 0) {
     const sessionGroups = groupOverviewsBySession(overviews);
+
+    // Sort groups by timestamp, newest first
+    sessionGroups.sort((a, b) => {
+      const timeA = a.earliestTimestamp?.getTime() || 0;
+      const timeB = b.earliestTimestamp?.getTime() || 0;
+      return timeB - timeA; // Descending order (newest first)
+    });
+
     console.log('');
 
     console.log(wrapText('🧠 Overviews', width));
