@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 
+## [3.6.6] - 2025-09-14
+
+### Fixed
+- Resolved compaction errors when processing large conversation histories by reducing chunk size limits to stay within Claude's context window
+
+
 ## [3.6.5] - 2025-09-14
 
 ### Changed

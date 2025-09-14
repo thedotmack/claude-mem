@@ -34,8 +34,8 @@ export interface ChunkedMessage {
 }
 
 export class ChunkManager {
-  private static readonly DEFAULT_MAX_TOKENS = 28000;
-  private static readonly DEFAULT_MAX_BYTES = 98000;
+  private static readonly DEFAULT_MAX_TOKENS = 22400;  // Reduced by 20% from 28000
+  private static readonly DEFAULT_MAX_BYTES = 78400;   // Reduced by 20% from 98000
   private static readonly DEFAULT_CONTEXT_OVERLAP = 2;
   private static readonly CHARS_PER_TOKEN_ESTIMATE = 3.5;
 
