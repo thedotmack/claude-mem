@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 
+## [3.6.8] - 2025-09-14
+
+### Fixed
+- Fixed publish command failing when no version-related memories exist for changelog generation
+
+
 ## [3.6.6] - 2025-09-14
 
 ### Fixed

@@ -393,8 +393,34 @@ Start searching now.` :
     }
 
     if (memories.length === 0) {
-      console.log('\n⚠️  No version-related memories found. Try compressing more sessions first.');
-      process.exit(1);
+      console.log('\n⚠️  No version-related memories found for this version.');
+      console.log('   This is normal for the first release or when no changes were tracked.');
+      console.log('   Creating a placeholder changelog entry...');
+
+      // Create a minimal placeholder entry
+      const placeholderEntry: ChangelogEntry = {
+        version: versionsToSearch[0], // Use the first (current) version
+        date: todayStr,
+        type: 'Changed',
+        description: 'Initial release or minor updates',
+        timestamp: new Date().toISOString(),
+        generatedAt: new Date().toISOString()
+      };
+
+      // Save the placeholder entry
+      if (!fs.existsSync(projectChangelogDir)) {
+        fs.mkdirSync(projectChangelogDir, { recursive: true });
+      }
+
+      const jsonlContent = JSON.stringify(placeholderEntry) + '\n';
+      fs.appendFileSync(changelogJsonlPath, jsonlContent);
+
+      console.log(`✅ Created placeholder changelog entry for v${versionsToSearch[0]}`);
+
+      // Generate the CHANGELOG.md with the placeholder
+      await updateChangelogFromJsonl(options);
+
+      return; // Exit successfully
     }
 
     console.log(`✅ Found ${memories.length} version-related memories\n`);
