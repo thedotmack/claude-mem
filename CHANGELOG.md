@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 
+## [3.6.9] - 2025-09-14
+
+### Added
+- Display current date and time at the top of session-start hook output for better temporal context
+
+### Changed
+- Enhanced session-start hook formatting with emoji icons and separator lines for improved readability
+
+
 ## [3.6.8] - 2025-09-14
 
 ### Fixed

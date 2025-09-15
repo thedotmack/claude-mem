@@ -559,6 +559,22 @@ export function outputSessionStartContent(params: {
   const { projectName, memoryCount, lastSessionTime, recentObjects } = params;
   const width = getWrapWidth();
 
+  // Start with current date and time at the top
+  const now = new Date();
+  const dateTimeFormatted = now.toLocaleString('en-US', {
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZoneName: 'short',
+  });
+
+  console.log('');
+  console.log(wrapText(`📅 ${dateTimeFormatted}`, width));
+  console.log(makeLine('─', width));
+
   // Extract overviews for user display - get more to show session grouping
   const overviews = extractOverviews(recentObjects, 10, projectName);
 
