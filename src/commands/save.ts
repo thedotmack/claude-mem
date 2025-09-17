@@ -28,6 +28,11 @@ function generateSessionId(message: string): string {
  * Save command - stores a message to both Chroma collection and JSONL index
  */
 export async function save(message: string, options: OptionValues = {}): Promise<void> {
+  // Debug: Log what we receive
+  appendFileSync('/Users/alexnewman/.claude-mem/save-debug.log',
+    `[${new Date().toISOString()}] Received message: "${message}" (type: ${typeof message}, length: ${message?.length})\n`,
+    'utf8');
+
   if (!message || message.trim() === '') {
     console.error('Error: Message is required');
     process.exit(1);

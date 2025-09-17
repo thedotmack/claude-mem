@@ -191,8 +191,8 @@ export class PromptOrchestrator {
       projectName = this.projectName,
     } = context;
 
-    // Extract project prefix from project name (convert to snake_case)
-    const projectPrefix = projectName.replace(/[-\s]/g, '_').toLowerCase();
+    // Use project name as-is for consistency with directory names
+    const projectPrefix = projectName;
 
     // Use the simple prompt with the transcript included
     return createAnalysisPrompt(

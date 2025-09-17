@@ -578,6 +578,10 @@ export function outputSessionStartContent(params: {
   // Extract overviews for user display - get more to show session grouping
   const overviews = extractOverviews(recentObjects, 10, projectName);
 
+  // Debug: Log what we're getting
+  console.error(`[DEBUG] recentObjects has ${recentObjects.length} items`);
+  console.error(`[DEBUG] overviews extracted: ${overviews.length}`);
+
   // Process memory entries for Claude context
   const memories = processMemoryEntries(recentObjects);
   // Helper to split and normalize keywords into a map (lowercased -> original)
@@ -630,11 +634,11 @@ export function outputSessionStartContent(params: {
   if (overviews.length > 0) {
     const sessionGroups = groupOverviewsBySession(overviews);
 
-    // Sort groups by timestamp, newest first
+    // Sort groups by timestamp, oldest first for chronological reading order
     sessionGroups.sort((a, b) => {
       const timeA = a.earliestTimestamp?.getTime() || 0;
       const timeB = b.earliestTimestamp?.getTime() || 0;
-      return timeB - timeA; // Descending order (newest first)
+      return timeA - timeB; // Ascending order (oldest first)
     });
 
     console.log('');

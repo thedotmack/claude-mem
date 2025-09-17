@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 
+## [3.6.10] - 2025-09-16
+
+### Added
+- Claude Code statusline integration for real-time memory status
+- MCP memory tools server providing compress, stats, search, and overview commands
+- Concept documentation explaining memory compression and context loading
+
+### Fixed
+- Corrected integration architecture to use hooks instead of MCP SDK
+
+
 ## [3.6.9] - 2025-09-14
 
 ### Added

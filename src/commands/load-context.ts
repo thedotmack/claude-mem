@@ -10,17 +10,19 @@ import {
   outputSessionStartContent
 } from '../prompts/templates/context/ContextTemplates.js';
 
-interface IndexEntry {
-  summary: string;
-  entity: string;
-  keywords: string[];
-}
-
 interface TrashStatus {
   folderCount: number;
   fileCount: number;
   totalSize: number;
   isEmpty: boolean;
+}
+
+function buildProjectMatcher(projectName: string): (value?: string) => boolean {
+  const aliases = new Set<string>();
+  aliases.add(projectName);
+  aliases.add(projectName.replace(/-/g, '_'));
+  aliases.add(projectName.replace(/_/g, '-'));
+  return (value?: string) => !!value && aliases.has(value);
 }
 
 function formatSize(bytes: number): string {
@@ -115,20 +117,25 @@ export async function loadContext(options: OptionValues = {}): Promise<void> {
     const sessions = jsonObjects.filter(obj => obj.type === 'session');
     
     // Filter each type by project if specified
+    // Handle both hyphen and underscore formats since index has mixed entries
     let filteredMemories = memories;
     let filteredOverviews = overviews;
+    let filteredSessions = sessions;
     if (options.project) {
-      filteredMemories = memories.filter(obj => obj.project === options.project);
-      filteredOverviews = overviews.filter(obj => obj.project === options.project);
+      const matchesProject = buildProjectMatcher(options.project);
+      filteredMemories = memories.filter(obj => matchesProject(obj.project));
+      filteredOverviews = overviews.filter(obj => matchesProject(obj.project));
+      filteredSessions = sessions.filter(obj => matchesProject(obj.project));
     }
 
     if (options.format === 'session-start') {
       // Get last 10 memories and last 5 overviews for session-start
       const recentMemories = filteredMemories.slice(-10);
       const recentOverviews = filteredOverviews.slice(-5);
+      const recentSessions = filteredSessions.slice(-5);
       
       // Combine them for the display
-      const recentObjects = [...recentMemories, ...recentOverviews];
+      const recentObjects = [...recentSessions, ...recentMemories, ...recentOverviews];
       
       // Find most recent timestamp for last session info
       let lastSessionTime = 'recently';
