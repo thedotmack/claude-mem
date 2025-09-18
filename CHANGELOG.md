@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 
+## [3.7.1] - 2025-09-17
+
+### Added
+- SQLite storage backend with session, memory, overview, and diagnostics management
+- Mintlify documentation site with searchable interface and comprehensive guides
+- Context7 MCP integration for documentation retrieval
+
+### Changed
+- Session-start overviews to display chronologically from oldest to newest
+
+### Fixed
+- Migration index parsing bug that prevented JSONL records from importing to SQLite
+
+
 ## [3.6.10] - 2025-09-16
 
 ### Added
