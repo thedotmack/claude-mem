@@ -6,6 +6,7 @@ import os from 'os';
 import chalk from 'chalk';
 import { TranscriptCompressor } from '../core/compression/TranscriptCompressor.js';
 import { TitleGenerator, TitleGenerationRequest } from '../core/titles/TitleGenerator.js';
+import { getStorageProvider, needsMigration } from '../shared/storage.js';
 
 interface ConversationMetadata {
   sessionId: string;
@@ -100,27 +101,21 @@ function extractFirstUserMessage(filePath: string): string {
 }
 
 async function loadImportedSessions(): Promise<Set<string>> {
-  const importedIds = new Set<string>();
-  const indexPath = path.join(os.homedir(), '.claude-mem', 'claude-mem-index.jsonl');
-  
-  if (!fs.existsSync(indexPath)) return importedIds;
-  
-  const content = fs.readFileSync(indexPath, 'utf-8');
-  const lines = content.trim().split('\n').filter(Boolean);
-  
-  for (const line of lines) {
-    try {
-      const entry = JSON.parse(line);
-      // Check both session_id (from index) and sessionId (legacy)
-      if (entry.session_id) {
-        importedIds.add(entry.session_id);
-      } else if (entry.sessionId) {
-        importedIds.add(entry.sessionId);
-      }
-    } catch {}
+  try {
+    // Check if migration is needed and warn the user
+    if (await needsMigration()) {
+      console.warn('⚠️  JSONL to SQLite migration recommended. Run: claude-mem migrate-index');
+    }
+
+    const storage = await getStorageProvider();
+    
+    // Use storage provider to get all session IDs efficiently
+    return await storage.getAllSessionIds();
+    
+  } catch (error) {
+    console.warn('Failed to load imported sessions, proceeding with empty set:', error);
+    return new Set<string>();
   }
-  
-  return importedIds;
 }
 
 async function scanConversations(): Promise<{ conversations: ConversationItem[]; skippedCount: number }> {

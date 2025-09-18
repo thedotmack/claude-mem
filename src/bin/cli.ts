@@ -201,6 +201,17 @@ program
   .option('-m, --multi', 'Enable multi-select mode (default is single-select)')
   .action(importHistory);
 
+// Migrate Index command
+program
+  .command('migrate-index')
+  .description('Migrate JSONL index to SQLite database')
+  .option('--force', 'Force migration even if SQLite database already has data')
+  .option('--keep-jsonl', 'Keep original JSONL file (archive it by default)')
+  .action(async (options) => {
+    const { migrateIndex } = await import('../commands/migrate-index.js');
+    await migrateIndex(options);
+  });
+
 // <Block> 1.11 ===================================  
 // Hook Commands
 // Internal commands called by hook scripts

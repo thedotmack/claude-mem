@@ -1,6 +1,7 @@
 import { OptionValues } from 'commander';
 import { appendFileSync } from 'fs';
 import { PathDiscovery } from '../services/path-discovery.js';
+import { getStorageProvider, needsMigration } from '../shared/storage.js';
 
 /**
  * Generates a descriptive session ID from the message content
@@ -25,7 +26,7 @@ function generateSessionId(message: string): string {
 }
 
 /**
- * Save command - stores a message to both Chroma collection and JSONL index
+ * Save command - stores a message using the configured storage provider
  */
 export async function save(message: string, options: OptionValues = {}): Promise<void> {
   // Debug: Log what we receive
@@ -38,38 +39,52 @@ export async function save(message: string, options: OptionValues = {}): Promise
     process.exit(1);
   }
 
-  const pathDiscovery = PathDiscovery.getInstance();
   const timestamp = new Date().toISOString();
   const projectName = PathDiscovery.getCurrentProjectName();
   const sessionId = generateSessionId(message);
   const documentId = `${projectName}_${sessionId}_overview`;
 
-  // 1. Save to Chroma collection (skip for now - MCP tools only available in Claude Code context)
-  // TODO: Add Chroma integration when called from Claude Code with MCP server running
+  try {
+    // Check if migration is needed
+    if (await needsMigration()) {
+      console.warn('⚠️  JSONL to SQLite migration recommended. Run: claude-mem migrate-index');
+    }
 
-  // 2. Append to JSONL index file
-  const indexPath = pathDiscovery.getIndexPath();
-  const indexEntry = {
-    type: "overview",
-    content: message,
-    session_id: sessionId,
-    project: projectName,
-    timestamp: timestamp
-  };
+    // Get storage provider (SQLite preferred, JSONL fallback)
+    const storage = await getStorageProvider();
 
-  // Ensure the directory exists
-  pathDiscovery.ensureDirectory(pathDiscovery.getDataDirectory());
-  
-  // Append to JSONL file
-  appendFileSync(indexPath, JSON.stringify(indexEntry) + '\n', 'utf8');
+    // Ensure session exists or create it
+    if (!await storage.hasSession(sessionId)) {
+      await storage.createSession({
+        session_id: sessionId,
+        project: projectName,
+        created_at: timestamp,
+        source: 'save'
+      });
+    }
 
-  // 3. Return JSON response for hook compatibility
-  console.log(JSON.stringify({
-    success: true,
-    document_id: documentId,
-    session_id: sessionId,
-    project: projectName,
-    timestamp: timestamp,
-    suppressOutput: true
-  }));
+    // Upsert the overview
+    await storage.upsertOverview({
+      session_id: sessionId,
+      content: message,
+      created_at: timestamp,
+      project: projectName,
+      origin: 'manual'
+    });
+
+    // Return JSON response for hook compatibility
+    console.log(JSON.stringify({
+      success: true,
+      document_id: documentId,
+      session_id: sessionId,
+      project: projectName,
+      timestamp: timestamp,
+      backend: storage.backend,
+      suppressOutput: true
+    }));
+    
+  } catch (error) {
+    console.error('Error saving message:', error);
+    process.exit(1);
+  }
 }

@@ -9,6 +9,8 @@ import {
   formatTimeAgo,
   outputSessionStartContent
 } from '../prompts/templates/context/ContextTemplates.js';
+import { getStorageProvider, needsMigration } from '../shared/storage.js';
+import { MemoryRow, OverviewRow, SessionRow } from '../services/sqlite/types.js';
 
 interface TrashStatus {
   folderCount: number;
@@ -66,82 +68,84 @@ function getTrashStatus(): TrashStatus {
 }
 
 export async function loadContext(options: OptionValues = {}): Promise<void> {
-  const pathDiscovery = PathDiscovery.getInstance();
-  const indexPath = pathDiscovery.getIndexPath();
-  
   try {
-    // Check if index file exists
-    if (!fs.existsSync(indexPath)) {
+    // Check if migration is needed and warn the user
+    if (await needsMigration()) {
+      console.warn('⚠️  JSONL to SQLite migration recommended. Run: claude-mem migrate-index');
+    }
+
+    const storage = await getStorageProvider();
+    
+    // If using JSONL fallback, use original implementation
+    if (storage.backend === 'jsonl') {
+      return await loadContextFromJSONL(options);
+    }
+
+    // SQLite implementation - fetch data using storage provider
+    let recentMemories: MemoryRow[] = [];
+    let recentOverviews: OverviewRow[] = [];
+    let recentSessions: SessionRow[] = [];
+
+    // Auto-detect current project for session-start format if no project specified
+    let projectToUse = options.project;
+    if (!projectToUse && options.format === 'session-start') {
+      projectToUse = PathDiscovery.getCurrentProjectName();
+    }
+
+    if (projectToUse) {
+      recentMemories = await storage.getRecentMemoriesForProject(projectToUse, 10);
+      recentOverviews = await storage.getRecentOverviewsForProject(projectToUse, options.format === 'session-start' ? 5 : 3);
+      recentSessions = await storage.getRecentSessionsForProject(projectToUse, 5);
+    } else {
+      recentMemories = await storage.getRecentMemories(10);
+      recentOverviews = await storage.getRecentOverviews(options.format === 'session-start' ? 5 : 3);
+      recentSessions = await storage.getRecentSessions(5);
+    }
+
+    // Convert SQLite rows to JSONL format for compatibility with existing output functions
+    const memoriesAsJSON = recentMemories.map(row => ({
+      type: 'memory',
+      text: row.text,
+      document_id: row.document_id,
+      keywords: row.keywords,
+      session_id: row.session_id,
+      project: row.project,
+      timestamp: row.created_at,
+      archive: row.archive_basename
+    }));
+
+    const overviewsAsJSON = recentOverviews.map(row => ({
+      type: 'overview',
+      content: row.content,
+      session_id: row.session_id,
+      project: row.project,
+      timestamp: row.created_at
+    }));
+
+    const sessionsAsJSON = recentSessions.map(row => ({
+      type: 'session',
+      session_id: row.session_id,
+      project: row.project,
+      timestamp: row.created_at
+    }));
+
+    // If no data found, show appropriate messages
+    if (memoriesAsJSON.length === 0 && overviewsAsJSON.length === 0 && sessionsAsJSON.length === 0) {
       if (options.format === 'session-start') {
-        console.log(createContextualError('NO_MEMORIES', options.project || 'this project'));
+        console.log(createContextualError('NO_MEMORIES', projectToUse || 'this project'));
       }
       return;
     }
 
-    const content = fs.readFileSync(indexPath, 'utf-8');
-    const lines = content.trim().split('\n').filter(line => line.trim());
-    
-    if (lines.length === 0) {
-      if (options.format === 'session-start') {
-        console.log(createContextualError('NO_MEMORIES', options.project || 'this project'));
-      }
-      return;
-    }
-    
-    // Parse JSONL format - each line is a JSON object
-    const jsonObjects: any[] = [];
-    for (const line of lines) {
-      try {
-        // Skip lines that don't look like JSON (could be legacy format)
-        if (!line.trim().startsWith('{')) {
-          continue;
-        }
-        const obj = JSON.parse(line);
-        jsonObjects.push(obj);
-      } catch (e) {
-        // Skip malformed JSON lines
-        continue;
-      }
-    }
-    
-    if (jsonObjects.length === 0) {
-      if (options.format === 'session-start') {
-        console.log(createContextualError('NO_MEMORIES', options.project || 'this project'));
-      }
-      return;
-    }
-    
-    // Separate memories, overviews, and other types
-    const memories = jsonObjects.filter(obj => obj.type === 'memory');
-    const overviews = jsonObjects.filter(obj => obj.type === 'overview');
-    const sessions = jsonObjects.filter(obj => obj.type === 'session');
-    
-    // Filter each type by project if specified
-    // Handle both hyphen and underscore formats since index has mixed entries
-    let filteredMemories = memories;
-    let filteredOverviews = overviews;
-    let filteredSessions = sessions;
-    if (options.project) {
-      const matchesProject = buildProjectMatcher(options.project);
-      filteredMemories = memories.filter(obj => matchesProject(obj.project));
-      filteredOverviews = overviews.filter(obj => matchesProject(obj.project));
-      filteredSessions = sessions.filter(obj => matchesProject(obj.project));
-    }
-
+    // Use the same output logic as the original implementation
     if (options.format === 'session-start') {
-      // Get last 10 memories and last 5 overviews for session-start
-      const recentMemories = filteredMemories.slice(-10);
-      const recentOverviews = filteredOverviews.slice(-5);
-      const recentSessions = filteredSessions.slice(-5);
-      
       // Combine them for the display
-      const recentObjects = [...recentSessions, ...recentMemories, ...recentOverviews];
+      const recentObjects = [...sessionsAsJSON, ...memoriesAsJSON, ...overviewsAsJSON];
       
       // Find most recent timestamp for last session info
       let lastSessionTime = 'recently';
       const timestamps = recentObjects
         .map(obj => {
-          // Get timestamp from JSON object
           return obj.timestamp ? new Date(obj.timestamp) : null;
         })
         .filter(date => date !== null)
@@ -153,33 +157,29 @@ export async function loadContext(options: OptionValues = {}): Promise<void> {
 
       // Use dual-stream output for session start formatting
       outputSessionStartContent({
-        projectName: options.project || 'your project',
-        memoryCount: recentMemories.length,
+        projectName: projectToUse || 'your project',
+        memoryCount: memoriesAsJSON.length,
         lastSessionTime,
         recentObjects
       });
       
     } else if (options.format === 'json') {
       // For JSON format, combine last 10 of each type
-      const recentMemories = filteredMemories.slice(-10);
-      const recentOverviews = filteredOverviews.slice(-3);
-      const recentObjects = [...recentMemories, ...recentOverviews];
+      const recentObjects = [...memoriesAsJSON, ...overviewsAsJSON];
       console.log(JSON.stringify(recentObjects));
     } else {
       // Default format - show last 10 memories and last 3 overviews
-      const recentMemories = filteredMemories.slice(-10);
-      const recentOverviews = filteredOverviews.slice(-3);
-      const totalCount = recentMemories.length + recentOverviews.length;
+      const totalCount = memoriesAsJSON.length + overviewsAsJSON.length;
       
       console.log(createCompletionMessage('Context loading', totalCount, 'recent entries found'));
       
       // Show memories first
-      recentMemories.forEach((obj) => {
+      memoriesAsJSON.forEach((obj) => {
         console.log(`${obj.text} | ${obj.document_id} | ${obj.keywords}`);
       });
       
       // Then show overviews
-      recentOverviews.forEach((obj) => {
+      overviewsAsJSON.forEach((obj) => {
         console.log(`**Overview:** ${obj.content}`);
       });
     }
@@ -201,5 +201,133 @@ export async function loadContext(options: OptionValues = {}): Promise<void> {
     } else {
       console.log(createUserFriendlyError('Context loading', errorMessage, 'Check file permissions and try again'));
     }
+  }
+}
+
+/**
+ * Original JSONL-based implementation for fallback compatibility
+ */
+async function loadContextFromJSONL(options: OptionValues = {}): Promise<void> {
+  const pathDiscovery = PathDiscovery.getInstance();
+  const indexPath = pathDiscovery.getIndexPath();
+  
+  // Auto-detect current project for session-start format if no project specified
+  let projectToUse = options.project;
+  if (!projectToUse && options.format === 'session-start') {
+    projectToUse = PathDiscovery.getCurrentProjectName();
+  }
+
+  // Check if index file exists
+  if (!fs.existsSync(indexPath)) {
+    if (options.format === 'session-start') {
+      console.log(createContextualError('NO_MEMORIES', projectToUse || 'this project'));
+    }
+    return;
+  }
+
+  const content = fs.readFileSync(indexPath, 'utf-8');
+  const lines = content.trim().split('\n').filter(line => line.trim());
+  
+  if (lines.length === 0) {
+    if (options.format === 'session-start') {
+      console.log(createContextualError('NO_MEMORIES', projectToUse || 'this project'));
+    }
+    return;
+  }
+  
+  // Parse JSONL format - each line is a JSON object
+  const jsonObjects: any[] = [];
+  for (const line of lines) {
+    try {
+      // Skip lines that don't look like JSON (could be legacy format)
+      if (!line.trim().startsWith('{')) {
+        continue;
+      }
+      const obj = JSON.parse(line);
+      jsonObjects.push(obj);
+    } catch (e) {
+      // Skip malformed JSON lines
+      continue;
+    }
+  }
+  
+  if (jsonObjects.length === 0) {
+    if (options.format === 'session-start') {
+      console.log(createContextualError('NO_MEMORIES', projectToUse || 'this project'));
+    }
+    return;
+  }
+  
+  // Separate memories, overviews, and other types
+  const memories = jsonObjects.filter(obj => obj.type === 'memory');
+  const overviews = jsonObjects.filter(obj => obj.type === 'overview');
+  const sessions = jsonObjects.filter(obj => obj.type === 'session');
+  
+  // Filter each type by project if specified
+  // Handle both hyphen and underscore formats since index has mixed entries
+  let filteredMemories = memories;
+  let filteredOverviews = overviews;
+  let filteredSessions = sessions;
+  if (projectToUse) {
+    const matchesProject = buildProjectMatcher(projectToUse);
+    filteredMemories = memories.filter(obj => matchesProject(obj.project));
+    filteredOverviews = overviews.filter(obj => matchesProject(obj.project));
+    filteredSessions = sessions.filter(obj => matchesProject(obj.project));
+  }
+
+  if (options.format === 'session-start') {
+    // Get last 10 memories and last 5 overviews for session-start
+    const recentMemories = filteredMemories.slice(-10);
+    const recentOverviews = filteredOverviews.slice(-5);
+    const recentSessions = filteredSessions.slice(-5);
+    
+    // Combine them for the display
+    const recentObjects = [...recentSessions, ...recentMemories, ...recentOverviews];
+    
+    // Find most recent timestamp for last session info
+    let lastSessionTime = 'recently';
+    const timestamps = recentObjects
+      .map(obj => {
+        // Get timestamp from JSON object
+        return obj.timestamp ? new Date(obj.timestamp) : null;
+      })
+      .filter(date => date !== null)
+      .sort((a, b) => b.getTime() - a.getTime());
+    
+    if (timestamps.length > 0) {
+      lastSessionTime = formatTimeAgo(timestamps[0]);
+    }
+
+    // Use dual-stream output for session start formatting
+    outputSessionStartContent({
+      projectName: projectToUse || 'your project',
+      memoryCount: recentMemories.length,
+      lastSessionTime,
+      recentObjects
+    });
+    
+  } else if (options.format === 'json') {
+    // For JSON format, combine last 10 of each type
+    const recentMemories = filteredMemories.slice(-10);
+    const recentOverviews = filteredOverviews.slice(-3);
+    const recentObjects = [...recentMemories, ...recentOverviews];
+    console.log(JSON.stringify(recentObjects));
+  } else {
+    // Default format - show last 10 memories and last 3 overviews
+    const recentMemories = filteredMemories.slice(-10);
+    const recentOverviews = filteredOverviews.slice(-3);
+    const totalCount = recentMemories.length + recentOverviews.length;
+    
+    console.log(createCompletionMessage('Context loading', totalCount, 'recent entries found'));
+    
+    // Show memories first
+    recentMemories.forEach((obj) => {
+      console.log(`${obj.text} | ${obj.document_id} | ${obj.keywords}`);
+    });
+    
+    // Then show overviews
+    recentOverviews.forEach((obj) => {
+      console.log(`**Overview:** ${obj.content}`);
+    });
   }
 }

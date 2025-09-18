@@ -10,6 +10,8 @@ import { log } from '../../shared/logger.js';
 import { CompressionError } from '../../shared/types.js';
 import { getClaudePath } from '../../shared/settings.js';
 import { ChunkManager, ChunkingOptions, ChunkMetadata } from './ChunkManager.js';
+import { getStorageProvider, needsMigration } from '../../shared/storage.js';
+import { SessionInput, MemoryInput, OverviewInput, DiagnosticInput } from '../../services/sqlite/types.js';
 
 /**
  * Interface for message objects in transcript
@@ -217,7 +219,7 @@ export class TranscriptCompressor {
       // Check if we need to use chunked processing
       const needsChunking = this.chunkManager.needsChunking(conversationText);
       
-      let summaries: string[] = [];
+      let summaries: any[] = [];
       let overview: string | null = null;
       
       if (needsChunking) {
@@ -277,6 +279,7 @@ export class TranscriptCompressor {
             'mcp__claude-mem__chroma_delete_documents',
           ],
           pathToClaudeCodeExecutable: getClaudePath(),
+          model: 'sonnet'
         },
       });
         this.debugLog('✅ Claude SDK response received');
@@ -302,7 +305,7 @@ export class TranscriptCompressor {
       this.debugLog(`📦 Archive created: ${archivePath}`);
       
       // Write to index - same method for both chunked and non-chunked
-      this.appendToIndex(summaries, overview, projectPrefix, finalSessionId, messages, archivePath, timestamp);
+      await this.appendToIndex(summaries, overview, projectPrefix, finalSessionId, messages, archivePath, timestamp);
       this.debugLog(`📥 Written ${summaries.length} summaries to index`);
 
       log.debug(`✅ SUCCESS`);
@@ -551,10 +554,10 @@ export class TranscriptCompressor {
    * Processes a transcript in chunks when it's too large for single processing
    */
   private async compressInChunks(
-    messages: TranscriptMessage[], 
+    messages: TranscriptMessage[],
     sessionId: string,
     projectPrefix: string
-  ): Promise<{ summaries: string[]; overview: string | null }> {
+  ): Promise<{ summaries: any[]; overview: string | null }> {
     this.debugLog('📦 Large transcript detected, processing in chunks...');
     
     // Create filtered output for chunking
@@ -571,9 +574,10 @@ export class TranscriptCompressor {
     this.debugLog(this.chunkManager.getChunkingStats(chunks));
     console.log(`\n📊 Processing ${chunks.length} chunks...`);
     
-    const allSummaries: string[] = [];
-    
-    // Process each chunk (no longer collecting overviews from chunks)
+    const allSummaries: any[] = [];
+    const chunkOverviews: string[] = [];
+
+    // Process each chunk and collect overviews
     for (let i = 0; i < chunks.length; i++) {
       const chunk = chunks[i];
       console.log(`\n🔄 Processing chunk ${i + 1}/${chunks.length}...`);
@@ -623,6 +627,7 @@ ${chunk.content}`;
             'mcp__claude-mem__chroma_delete_documents',
           ],
           pathToClaudeCodeExecutable: getClaudePath(),
+          model: 'sonnet'
         },
       });
       
@@ -685,6 +690,7 @@ Return ONLY the overview text, nothing else.`;
         options: {
           allowedTools: [], // No tools needed for overview generation
           pathToClaudeCodeExecutable: getClaudePath(),
+          model: 'sonnet'
         },
       });
       
@@ -1157,10 +1163,100 @@ Return ONLY the overview text, nothing else.`;
   // </Block> =======================================
 
   /**
-   * Appends summaries in JSONL format to the index file
-   * Each line is a JSON object with type field for easy parsing
+   * Stores summaries using the configured storage provider (SQLite or JSONL fallback)
+   * Each record is stored with proper type information for easy querying
    */
-  private appendToIndex(summaries: any[], overview: string | null, projectPrefix: string, sessionId: string, messages: TranscriptMessage[], archivePath: string, timestamp: string): void {
+  private async appendToIndex(summaries: any[], overview: string | null, projectPrefix: string, sessionId: string, messages: TranscriptMessage[], archivePath: string, timestamp: string): Promise<void> {
+    try {
+      // Check if migration is needed and log warning
+      if (await needsMigration()) {
+        this.debugLog('⚠️ JSONL to SQLite migration recommended. Run: claude-mem migrate-index');
+      }
+
+      const storage = await getStorageProvider();
+      this.debugLog(`💾 Using ${storage.backend} storage backend`);
+
+      // Create or ensure session exists
+      const sessionInput: SessionInput = {
+        session_id: sessionId,
+        project: projectPrefix,
+        created_at: timestamp,
+        source: 'compress',
+        archive_path: archivePath,
+        archive_bytes: fs.statSync(archivePath).size,
+        archived_at: new Date().toISOString()
+      };
+
+      // Check if session already exists (for duplicate prevention)
+      if (!await storage.hasSession(sessionId)) {
+        await storage.createSession(sessionInput);
+        this.debugLog(`📋 Created session record: ${sessionId}`);
+      } else {
+        this.debugLog(`📋 Session already exists: ${sessionId}`);
+      }
+
+      // Add overview if present
+      if (overview) {
+        const overviewInput: OverviewInput = {
+          session_id: sessionId,
+          content: overview,
+          created_at: timestamp,
+          project: projectPrefix,
+          origin: 'claude'
+        };
+        await storage.upsertOverview(overviewInput);
+        this.debugLog(`📝 Stored overview for session: ${sessionId}`);
+      }
+
+      // If no summaries from Claude, write diagnostic info
+      if (!summaries || summaries.length === 0) {
+        log.debug('📝 No summaries extracted from JSON response');
+        
+        const diagnosticInput: DiagnosticInput = {
+          session_id: sessionId,
+          message: "NO SUMMARIES EXTRACTED - Check logs for valid JSON response",
+          severity: 'warn',
+          created_at: timestamp,
+          project: projectPrefix,
+          origin: 'compressor'
+        };
+        
+        await storage.createDiagnostic(diagnosticInput);
+        this.debugLog(`⚠️ No summaries for session ${sessionId} - Check if Claude returned valid JSON in <JSONResponse> tags`);
+      } else {
+        // Prepare memory records for bulk insertion
+        const memoryInputs: MemoryInput[] = summaries.map((summary) => ({
+          session_id: sessionId,
+          text: summary.text || '',
+          document_id: summary.document_id,
+          keywords: summary.keywords,
+          created_at: summary.timestamp || timestamp,
+          project: projectPrefix,
+          archive_basename: path.basename(archivePath),
+          origin: 'transcript'
+        }));
+
+        // Store memories using bulk operation if available, otherwise one by one
+        await storage.createMemories(memoryInputs);
+
+        log.debug(`📝 Stored ${summaries.length} summaries using ${storage.backend}`);
+        this.debugLog(`💾 Stored ${summaries.length} memories for session: ${sessionId}`);
+      }
+      
+    } catch (error) {
+      // If storage fails, fall back to JSONL as emergency backup
+      this.debugLog(`❌ Storage failed, falling back to JSONL: ${error}`);
+      log.warn('Storage provider failed, falling back to JSONL', error);
+      
+      // Emergency JSONL fallback
+      this.appendToIndexJSONL(summaries, overview, projectPrefix, sessionId, messages, archivePath, timestamp);
+    }
+  }
+
+  /**
+   * Emergency fallback method using original JSONL approach
+   */
+  private appendToIndexJSONL(summaries: any[], overview: string | null, projectPrefix: string, sessionId: string, messages: TranscriptMessage[], archivePath: string, timestamp: string): void {
     // Use PathResolver's getIndexPath() for consistency
     const indexPath = this.paths.getIndexPath();
     const indexDir = this.paths.getConfigDir();
