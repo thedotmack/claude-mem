@@ -9,8 +9,6 @@ export function registerMigrations(): void {
   
   // Register migrations in order
   manager.registerMigration(migration001);
-  
-  console.log('📋 Registered all database migrations');
 }
 
 // Auto-register migrations when this module is imported
