@@ -37,6 +37,12 @@ export interface MemoryRow {
   project: string;
   archive_basename?: string;
   origin: string;
+  // Hierarchical memory fields (v2)
+  title?: string;
+  subtitle?: string;
+  facts?: string; // JSON array of fact strings
+  concepts?: string; // JSON array of concept strings
+  files_touched?: string; // JSON array of file paths
 }
 
 export interface DiagnosticRow {
@@ -48,6 +54,17 @@ export interface DiagnosticRow {
   created_at_epoch: number;
   project: string;
   origin: string;
+}
+
+export interface TranscriptEventRow {
+  id: number;
+  session_id: string;
+  project?: string;
+  event_index: number;
+  event_type?: string;
+  raw_json: string;
+  captured_at: string;
+  captured_at_epoch: number;
 }
 
 export interface ArchiveRow {
@@ -100,6 +117,12 @@ export interface MemoryInput {
   project: string;
   archive_basename?: string;
   origin?: string;
+  // Hierarchical memory fields (v2)
+  title?: string;
+  subtitle?: string;
+  facts?: string; // JSON array of fact strings
+  concepts?: string; // JSON array of concept strings
+  files_touched?: string; // JSON array of file paths
 }
 
 export interface DiagnosticInput {
@@ -109,6 +132,15 @@ export interface DiagnosticInput {
   created_at: string;
   project: string;
   origin?: string;
+}
+
+export interface TranscriptEventInput {
+  session_id: string;
+  project?: string;
+  event_index: number;
+  event_type?: string;
+  raw_json: string;
+  captured_at?: string | Date | number;
 }
 
 /**

@@ -2,7 +2,7 @@ import { OptionValues } from 'commander';
 import fs from 'fs';
 import { join } from 'path';
 import { PathDiscovery } from '../services/path-discovery.js';
-import { 
+import {
   createCompletionMessage,
   createContextualError,
   createUserFriendlyError,
@@ -10,13 +10,55 @@ import {
   outputSessionStartContent
 } from '../prompts/templates/context/ContextTemplates.js';
 import { getStorageProvider, needsMigration } from '../shared/storage.js';
-import { MemoryRow, OverviewRow, SessionRow } from '../services/sqlite/types.js';
+import { MemoryRow, OverviewRow } from '../services/sqlite/types.js';
+import { createStores } from '../services/sqlite/index.js';
+import { getRollingSettings } from '../shared/rolling-settings.js';
+import { rollingLog } from '../shared/rolling-log.js';
 
 interface TrashStatus {
   folderCount: number;
   fileCount: number;
   totalSize: number;
   isEmpty: boolean;
+}
+
+function formatDateHeader(date = new Date()): string {
+  return date.toLocaleString('en-US', {
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZoneName: 'short'
+  });
+}
+
+function wordWrap(text: string, maxWidth: number, prefix: string): string {
+  const words = text.split(' ');
+  const lines: string[] = [];
+  let currentLine = prefix;
+  const continuationPrefix = ' '.repeat(prefix.length);
+
+  for (const word of words) {
+    const needsSpace = currentLine !== prefix && currentLine !== continuationPrefix;
+    const testLine = currentLine + (needsSpace ? ' ' : '') + word;
+
+    if (testLine.length <= maxWidth) {
+      currentLine = testLine;
+    } else {
+      if (currentLine.trim()) {
+        lines.push(currentLine);
+      }
+      currentLine = continuationPrefix + word;
+    }
+  }
+
+  if (currentLine.trim()) {
+    lines.push(currentLine);
+  }
+
+  return lines.join('\n');
 }
 
 function buildProjectMatcher(projectName: string): (value?: string) => boolean {
@@ -67,6 +109,124 @@ function getTrashStatus(): TrashStatus {
   return { folderCount, fileCount, totalSize, isEmpty: false };
 }
 
+async function renderRollingSessionStart(projectOverride?: string): Promise<void> {
+  const settings = getRollingSettings();
+
+  if (!settings.sessionStartEnabled) {
+    console.log('Rolling session-start output disabled in settings.');
+    rollingLog('info', 'session-start output skipped (disabled)', {
+      project: projectOverride
+    });
+    return;
+  }
+
+  const stores = await createStores();
+  const projectName = projectOverride || PathDiscovery.getCurrentProjectName();
+
+  // Get all overviews for this project (oldest to newest)
+  const allOverviews = stores.overviews.getAllForProject(projectName);
+
+  // Limit to last 10 overviews
+  const recentOverviews = allOverviews.slice(-10);
+
+  // If no data at all, show friendly message
+  if (recentOverviews.length === 0) {
+    console.log('===============================================================================');
+    console.log(`What's new | ${formatDateHeader()}`);
+    console.log('===============================================================================');
+    console.log('No previous sessions found for this project.');
+    console.log('Start working and claude-mem will automatically capture context for future sessions.');
+    console.log('===============================================================================');
+    const trashStatus = getTrashStatus();
+    if (!trashStatus.isEmpty) {
+      const formattedSize = formatSize(trashStatus.totalSize);
+      console.log(
+        `🗑️ Trash – ${trashStatus.folderCount} folders | ${trashStatus.fileCount} files | ${formattedSize} – use \`claude-mem restore\``
+      );
+      console.log('===============================================================================');
+    }
+    return;
+  }
+
+  // Output header
+  console.log('===============================================================================');
+  console.log(`What's new | ${formatDateHeader()}`);
+  console.log('===============================================================================');
+
+  // Output each overview with timestamp, memory names, and files touched (oldest to newest)
+  recentOverviews.forEach((overview) => {
+    const date = new Date(overview.created_at);
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    const hours = date.getHours();
+    const minutes = String(date.getMinutes()).padStart(2, '0');
+    const ampm = hours >= 12 ? 'PM' : 'AM';
+    const displayHours = hours % 12 || 12;
+
+    console.log(`[${year}-${month}-${day} at ${displayHours}:${minutes} ${ampm}]`);
+
+    // Get memories for this session to show titles, subtitles, files, and keywords
+    const sessionMemories = stores.memories.getBySessionId(overview.session_id);
+
+    // Extract memory titles and subtitles
+    const memories = sessionMemories
+      .map(m => ({ title: m.title, subtitle: m.subtitle }))
+      .filter(m => m.title);
+
+    // Extract unique files touched across all memories
+    const allFilesTouched = new Set<string>();
+    const allKeywords = new Set<string>();
+
+    sessionMemories.forEach(m => {
+      if (m.files_touched) {
+        try {
+          const files = JSON.parse(m.files_touched);
+          if (Array.isArray(files)) {
+            files.forEach(f => allFilesTouched.add(f));
+          }
+        } catch (e) {
+          // Skip invalid JSON
+        }
+      }
+
+      if (m.keywords) {
+        // Keywords are comma-separated
+        m.keywords.split(',').forEach(k => allKeywords.add(k.trim()));
+      }
+    });
+
+    console.log('');
+
+    // Always show overview content
+    console.log(wordWrap(overview.content, 80, ''));
+
+    // Display files touched if any
+    if (allFilesTouched.size > 0) {
+      console.log('');
+      console.log(wordWrap(`- ${Array.from(allFilesTouched).join(', ')}`, 80, ''));
+    }
+
+    // Display keywords/tags if any
+    if (allKeywords.size > 0) {
+      console.log('');
+      console.log(wordWrap(`Tags: ${Array.from(allKeywords).join(', ')}`, 80, ''));
+    }
+
+    console.log('');
+  });
+
+  console.log('===============================================================================');
+  const trashStatus = getTrashStatus();
+  if (!trashStatus.isEmpty) {
+    const formattedSize = formatSize(trashStatus.totalSize);
+    console.log(
+      `🗑️ Trash – ${trashStatus.folderCount} folders | ${trashStatus.fileCount} files | ${formattedSize} – use \`claude-mem restore\``
+    );
+    console.log('===============================================================================');
+  }
+}
+
 export async function loadContext(options: OptionValues = {}): Promise<void> {
   try {
     // Check if migration is needed and warn the user
@@ -84,7 +244,6 @@ export async function loadContext(options: OptionValues = {}): Promise<void> {
     // SQLite implementation - fetch data using storage provider
     let recentMemories: MemoryRow[] = [];
     let recentOverviews: OverviewRow[] = [];
-    let recentSessions: SessionRow[] = [];
 
     // Auto-detect current project for session-start format if no project specified
     let projectToUse = options.project;
@@ -92,14 +251,19 @@ export async function loadContext(options: OptionValues = {}): Promise<void> {
       projectToUse = PathDiscovery.getCurrentProjectName();
     }
 
+    if (options.format === 'session-start') {
+      await renderRollingSessionStart(projectToUse);
+      return;
+    }
+
+    const overviewLimit = options.format === 'json' ? 5 : 3;
+
     if (projectToUse) {
       recentMemories = await storage.getRecentMemoriesForProject(projectToUse, 10);
-      recentOverviews = await storage.getRecentOverviewsForProject(projectToUse, options.format === 'session-start' ? 5 : 3);
-      recentSessions = await storage.getRecentSessionsForProject(projectToUse, 5);
+      recentOverviews = await storage.getRecentOverviewsForProject(projectToUse, overviewLimit);
     } else {
       recentMemories = await storage.getRecentMemories(10);
-      recentOverviews = await storage.getRecentOverviews(options.format === 'session-start' ? 5 : 3);
-      recentSessions = await storage.getRecentSessions(5);
+      recentOverviews = await storage.getRecentOverviews(overviewLimit);
     }
 
     // Convert SQLite rows to JSONL format for compatibility with existing output functions
@@ -122,48 +286,12 @@ export async function loadContext(options: OptionValues = {}): Promise<void> {
       timestamp: row.created_at
     }));
 
-    const sessionsAsJSON = recentSessions.map(row => ({
-      type: 'session',
-      session_id: row.session_id,
-      project: row.project,
-      timestamp: row.created_at
-    }));
-
     // If no data found, show appropriate messages
-    if (memoriesAsJSON.length === 0 && overviewsAsJSON.length === 0 && sessionsAsJSON.length === 0) {
-      if (options.format === 'session-start') {
-        console.log(createContextualError('NO_MEMORIES', projectToUse || 'this project'));
-      }
+    if (memoriesAsJSON.length === 0 && overviewsAsJSON.length === 0) {
       return;
     }
 
-    // Use the same output logic as the original implementation
-    if (options.format === 'session-start') {
-      // Combine them for the display
-      const recentObjects = [...sessionsAsJSON, ...memoriesAsJSON, ...overviewsAsJSON];
-      
-      // Find most recent timestamp for last session info
-      let lastSessionTime = 'recently';
-      const timestamps = recentObjects
-        .map(obj => {
-          return obj.timestamp ? new Date(obj.timestamp) : null;
-        })
-        .filter(date => date !== null)
-        .sort((a, b) => b.getTime() - a.getTime());
-      
-      if (timestamps.length > 0) {
-        lastSessionTime = formatTimeAgo(timestamps[0]);
-      }
-
-      // Use dual-stream output for session start formatting
-      outputSessionStartContent({
-        projectName: projectToUse || 'your project',
-        memoryCount: memoriesAsJSON.length,
-        lastSessionTime,
-        recentObjects
-      });
-      
-    } else if (options.format === 'json') {
+    if (options.format === 'json') {
       // For JSON format, combine last 10 of each type
       const recentObjects = [...memoriesAsJSON, ...overviewsAsJSON];
       console.log(JSON.stringify(recentObjects));
@@ -189,7 +317,7 @@ export async function loadContext(options: OptionValues = {}): Promise<void> {
       const trashStatus = getTrashStatus();
       if (!trashStatus.isEmpty) {
         const formattedSize = formatSize(trashStatus.totalSize);
-        console.log(`🗑️  Trash – ${trashStatus.folderCount} folders | ${trashStatus.fileCount} files | ${formattedSize} – use \`$ claude-mem restore\``);
+        console.log(`🗑️  Trash – ${trashStatus.folderCount} folders | ${trashStatus.fileCount} files | ${formattedSize} – use \`claude-mem restore\``);
         console.log('');
       }
     }
@@ -276,10 +404,10 @@ async function loadContextFromJSONL(options: OptionValues = {}): Promise<void> {
   }
 
   if (options.format === 'session-start') {
-    // Get last 10 memories and last 5 overviews for session-start
+    // Get last 10 memories and last 10 overviews for session-start
     const recentMemories = filteredMemories.slice(-10);
-    const recentOverviews = filteredOverviews.slice(-5);
-    const recentSessions = filteredSessions.slice(-5);
+    const recentOverviews = filteredOverviews.slice(-10);
+    const recentSessions = filteredSessions.slice(-10);
     
     // Combine them for the display
     const recentObjects = [...recentSessions, ...recentMemories, ...recentOverviews];

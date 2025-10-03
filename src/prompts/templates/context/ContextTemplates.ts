@@ -104,61 +104,6 @@ function makeLine(char: string = '─', width: number = getWrapWidth()): string 
 // =============================================================================
 
 /**
- * Creates a welcoming session start message explaining what memories were loaded
- */
-export function createSessionStartMessage(
-  projectName: string,
-  memoryCount: number,
-  lastSessionTime?: string
-): string {
-  const width = getWrapWidth();
-  const timeInfo = lastSessionTime ? ` (last worked: ${lastSessionTime})` : '';
-
-  if (memoryCount === 0) {
-    return wrapText(
-      `🧠 Loading memories from previous sessions for ${projectName}${timeInfo}
-
-No relevant memories found - this appears to be your first session or a new project area.
-
-💡 Getting Started:
-• Start working and memories will be automatically created
-• At the end of your session, ask to compress and store the conversation
-• Next time you return, relevant context will be loaded automatically`,
-      width
-    );
-  }
-
-  const memoryText =
-    memoryCount === 1 ? 'relevant memory' : 'relevant memories';
-  return wrapText(
-    `🧠 Loading memories from previous sessions for ${projectName}${timeInfo}
-
-Found ${memoryCount} ${memoryText} to help continue your work.`,
-    width
-  );
-}
-
-// =============================================================================
-// OPERATION MESSAGES
-// =============================================================================
-
-/**
- * Creates a loading message during context retrieval
- */
-export function createLoadingMessage(operation: string): string {
-  const operations: Record<string, string> = {
-    searching: '🔍 Searching previous memories...',
-    loading: '📚 Loading relevant context...',
-    formatting: '✨ Organizing memories for display...',
-    compressing: '🗜️ Compressing session transcript...',
-    archiving: '📦 Archiving conversation...',
-  };
-
-  const width = getWrapWidth();
-  return wrapText(operations[operation] || `⏳ ${operation}...`, width);
-}
-
-/**
  * Creates a completion message after context operations
  */
 export function createCompletionMessage(
@@ -263,28 +208,6 @@ export function formatTimeAgo(timestamp: string | Date): string {
   return date.toLocaleDateString();
 }
 
-/**
- * Creates summary text for memory operations
- */
-export function createOperationSummary(
-  operation: 'compress' | 'load' | 'search' | 'archive',
-  results: { count: number; duration?: number; details?: string }
-): string {
-  const { count, duration, details } = results;
-  const durationText = duration ? ` in ${duration}ms` : '';
-  const detailsText = details ? ` - ${details}` : '';
-
-  const templates = {
-    compress: `Compressed ${count} conversation turns${durationText}${detailsText}`,
-    load: `Loaded ${count} relevant memories${durationText}${detailsText}`,
-    search: `Found ${count} matching memories${durationText}${detailsText}`,
-    archive: `Archived ${count} conversation segments${durationText}${detailsText}`,
-  };
-
-  const width = getWrapWidth();
-  return wrapText(`📊 ${templates[operation]}`, width);
-}
-
 // =============================================================================
 // SESSION START TEMPLATE SYSTEM (data processing only)
 // =============================================================================
@@ -309,55 +232,6 @@ interface SessionGroup {
 }
 
 /**
- * Formats current date and time for session start
- */
-export function formatCurrentDateTime(): string {
-  const now = new Date();
-  const currentDateTime = now.toLocaleString('en-US', {
-    weekday: 'long',
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    timeZoneName: 'short',
-  });
-
-  return `Current Date / Time: ${currentDateTime}\n`;
-}
-
-/**
- * Extracts overview section from JSON objects
- * Looks for objects with type "overview" and matching project
- */
-export function extractOverview(
-  recentObjects: any[],
-  projectName?: string
-): string | null {
-  // Find overview objects
-  const overviewObjects = recentObjects.filter(
-    (obj) => obj.type === 'overview'
-  );
-
-  if (overviewObjects.length === 0) {
-    return null;
-  }
-
-  // If project is specified, find overview for that project
-  if (projectName) {
-    const projectOverview = overviewObjects.find(
-      (obj) => obj.project === projectName
-    );
-    if (projectOverview) {
-      return projectOverview.content;
-    }
-  }
-
-  // Return the most recent overview if no project match
-  return overviewObjects[overviewObjects.length - 1]?.content || null;
-}
-
-/**
  * Interface for overview with timestamp
  */
 interface OverviewEntry {
@@ -378,65 +252,10 @@ interface SessionOverviewGroup {
 }
 
 /**
- * Extracts multiple overviews with timestamps
- * Returns up to 'count' most recent overviews
- */
-export function extractOverviews(
-  recentObjects: any[],
-  count: number = 3,
-  projectName?: string
-): OverviewEntry[] {
-  // Find overview objects
-  const overviewObjects = recentObjects.filter(
-    (obj) => obj.type === 'overview'
-  );
-
-  if (overviewObjects.length === 0) {
-    return [];
-  }
-
-  // Filter by project if specified
-  let filteredOverviews = overviewObjects;
-  if (projectName) {
-    filteredOverviews = overviewObjects.filter(
-      (obj) => obj.project === projectName
-    );
-
-    // Fall back to all overviews if no project match
-    if (filteredOverviews.length === 0) {
-      filteredOverviews = overviewObjects;
-    }
-  }
-
-  // Take the last 'count' overviews
-  const recentOverviews = filteredOverviews.slice(-count);
-
-  // Process each overview with timestamp and session ID
-  return recentOverviews.map((obj) => {
-    const entry: OverviewEntry = {
-      content: obj.content || '',
-      sessionId: obj.sessionId || obj.session_id || 'unknown',
-    };
-
-    // Try to parse timestamp
-    const timestamp = parseTimestamp(obj);
-    if (timestamp) {
-      entry.timestamp = timestamp;
-      entry.timeAgo = formatRelativeTime(timestamp);
-    } else {
-      // Fallback if no timestamp
-      entry.timeAgo = 'Recently';
-    }
-
-    return entry;
-  }); // Show in original order (oldest to newest)
-}
-
-/**
  * Pure data processing function - converts JSON objects into structured memory entries
  * No formatting is done here, only data parsing and cleaning
  */
-export function processMemoryEntries(recentObjects: any[]): MemoryEntry[] {
+function processMemoryEntries(recentObjects: any[]): MemoryEntry[] {
   if (recentObjects.length === 0) {
     return [];
   }

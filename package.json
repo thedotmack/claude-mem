@@ -1,10 +1,10 @@
 {
   "name": "claude-mem",
-  "version": "3.7.2",
+  "version": "3.9.9",
   "description": "Memory compression system for Claude Code - persist context across sessions",
   "keywords": [
     "claude",
-    "claude-code",
+    "claude-agent-sdk",
     "mcp",
     "memory",
     "compression",
@@ -36,21 +36,18 @@
     "claude-mem": "./dist/claude-mem.min.js"
   },
   "dependencies": {
-    "@anthropic-ai/claude-code": "^1.0.88",
+    "@anthropic-ai/claude-agent-sdk": "^0.1.0",
     "@clack/prompts": "^0.11.0",
-    "@modelcontextprotocol/sdk": "^0.5.0",
     "boxen": "^8.0.1",
     "chalk": "^5.6.0",
-    "chromadb": "^3.0.14",
     "commander": "^14.0.0",
     "glob": "^11.0.3",
     "gradient-string": "^3.0.0",
-    "handlebars": "^4.7.8",
-    "oh-my-logo": "^0.3.2"
+    "handlebars": "^4.7.8"
   },
   "files": [
     "dist",
-    "hooks",
+    "hook-templates",
     "commands",
     "src",
     ".mcp.json",

@@ -68,12 +68,24 @@ export class OverviewStore {
    */
   getRecentForProject(project: string, limit = 5): OverviewRow[] {
     const stmt = this.db.prepare(`
-      SELECT * FROM overviews 
+      SELECT * FROM overviews
       WHERE project = ?
-      ORDER BY created_at_epoch DESC 
+      ORDER BY created_at_epoch DESC
       LIMIT ?
     `);
     return stmt.all(project, limit) as OverviewRow[];
+  }
+
+  /**
+   * Get all overviews for a project (oldest to newest)
+   */
+  getAllForProject(project: string): OverviewRow[] {
+    const stmt = this.db.prepare(`
+      SELECT * FROM overviews
+      WHERE project = ?
+      ORDER BY created_at_epoch ASC
+    `);
+    return stmt.all(project) as OverviewRow[];
   }
 
   /**
@@ -192,5 +204,38 @@ export class OverviewStore {
     const stmt = this.db.prepare('SELECT DISTINCT project FROM overviews ORDER BY project');
     const rows = stmt.all() as { project: string }[];
     return rows.map(row => row.project);
+  }
+
+  /**
+   * Get most recent overview for a specific project
+   */
+  getByProject(project: string): OverviewRow | null {
+    const stmt = this.db.prepare(`
+      SELECT * FROM overviews
+      WHERE project = ?
+      ORDER BY created_at_epoch DESC
+      LIMIT 1
+    `);
+    return stmt.get(project) as OverviewRow || null;
+  }
+
+  /**
+   * Create or update overview for a project (keeps only most recent)
+   */
+  upsertByProject(input: OverviewInput): OverviewRow {
+    const existing = this.getByProject(input.project);
+    if (existing) {
+      return this.update(existing.id, input);
+    }
+    return this.create(input);
+  }
+
+  /**
+   * Delete overview by project name
+   */
+  deleteByProject(project: string): boolean {
+    const stmt = this.db.prepare('DELETE FROM overviews WHERE project = ?');
+    const info = stmt.run(project);
+    return info.changes > 0;
   }
 }

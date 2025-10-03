@@ -3,6 +3,9 @@ import { join, resolve, dirname } from 'path';
 import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { PathDiscovery } from '../services/path-discovery.js';
+import { DatabaseManager } from '../services/sqlite/Database.js';
+import { SessionStore } from '../services/sqlite/SessionStore.js';
+import chalk from 'chalk';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -10,13 +13,14 @@ export async function status(): Promise<void> {
     console.log('🔍 Claude Memory System Status Check');
     console.log('=====================================\n');
     
-    console.log('📂 Installed Hook Scripts:');
+    console.log('📂 Runtime Hook Scripts (installed from hook-templates/):');
     const pathDiscovery = PathDiscovery.getInstance();
-    const claudeMemHooksDir = pathDiscovery.getHooksDirectory();
-    const preCompactScript = join(claudeMemHooksDir, 'pre-compact.js');
-    const sessionStartScript = join(claudeMemHooksDir, 'session-start.js');
-    const sessionEndScript = join(claudeMemHooksDir, 'session-end.js');
-    
+    const runtimeHooksDir = pathDiscovery.getHooksDirectory();
+    const sessionStartScript = join(runtimeHooksDir, 'session-start.js');
+    const stopScript = join(runtimeHooksDir, 'stop.js');
+    const userPromptScript = join(runtimeHooksDir, 'user-prompt-submit.js');
+    const postToolScript = join(runtimeHooksDir, 'post-tool-use.js');
+
     const checkScript = (path: string, name: string) => {
       if (existsSync(path)) {
         console.log(`  ✅ ${name}: Found at ${path}`);
@@ -24,10 +28,11 @@ export async function status(): Promise<void> {
         console.log(`  ❌ ${name}: Not found at ${path}`);
       }
     };
-    
-    checkScript(preCompactScript, 'pre-compact.js');
+
     checkScript(sessionStartScript, 'session-start.js');
-    checkScript(sessionEndScript, 'session-end.js');
+    checkScript(stopScript, 'stop.js');
+    checkScript(userPromptScript, 'user-prompt-submit.js');
+    checkScript(postToolScript, 'post-tool-use.js');
     
     console.log('');
     
@@ -43,28 +48,35 @@ export async function status(): Promise<void> {
       
       try {
         const settings = JSON.parse(readFileSync(path, 'utf8'));
-        
-        const hasPreCompact = settings.hooks?.PreCompact?.some((matcher: any) => 
-          matcher.hooks?.some((hook: any) => 
-            hook.command?.includes('pre-compact.js') || hook.command?.includes('claude-mem')
-          )
-        );
-        
+
         const hasSessionStart = settings.hooks?.SessionStart?.some((matcher: any) =>
-          matcher.hooks?.some((hook: any) => 
+          matcher.hooks?.some((hook: any) =>
             hook.command?.includes('session-start.js') || hook.command?.includes('claude-mem')
           )
         );
-        
-        const hasSessionEnd = settings.hooks?.SessionEnd?.some((matcher: any) =>
-          matcher.hooks?.some((hook: any) => 
-            hook.command?.includes('session-end.js') || hook.command?.includes('claude-mem')
+
+        const hasStop = settings.hooks?.Stop?.some((matcher: any) =>
+          matcher.hooks?.some((hook: any) =>
+            hook.command?.includes('stop.js') || hook.command?.includes('claude-mem')
           )
         );
-        
-        console.log(`     PreCompact: ${hasPreCompact ? '✅' : '❌'}`);
+
+        const hasUserPrompt = settings.hooks?.UserPromptSubmit?.some((matcher: any) =>
+          matcher.hooks?.some((hook: any) =>
+            hook.command?.includes('user-prompt-submit.js') || hook.command?.includes('claude-mem')
+          )
+        );
+
+        const hasPostTool = settings.hooks?.PostToolUse?.some((matcher: any) =>
+          matcher.hooks?.some((hook: any) =>
+            hook.command?.includes('post-tool-use.js') || hook.command?.includes('claude-mem')
+          )
+        );
+
         console.log(`     SessionStart: ${hasSessionStart ? '✅' : '❌'}`);
-        console.log(`     SessionEnd: ${hasSessionEnd ? '✅' : '❌'}`);
+        console.log(`     Stop: ${hasStop ? '✅' : '❌'}`);
+        console.log(`     UserPromptSubmit: ${hasUserPrompt ? '✅' : '❌'}`);
+        console.log(`     PostToolUse: ${hasPostTool ? '✅' : '❌'}`);
         
       } catch (error: any) {
         console.log(`     ⚠️  Could not parse settings`);
@@ -136,7 +148,32 @@ export async function status(): Promise<void> {
     console.log('  ✅ Storage backend: Chroma MCP');
     console.log(`  📍 Data location: ${pathDiscovery.getChromaDirectory()}`);
     console.log('  🔍 Features: Vector search, semantic similarity, document storage');
-    
+
+    console.log('');
+
+    console.log('🤖 Claude Agent SDK Sessions:');
+    try {
+      const dbManager = DatabaseManager.getInstance();
+      await dbManager.initialize();
+      const sessionStore = new SessionStore();
+      const sessions = sessionStore.getAll();
+
+      if (sessions.length === 0) {
+        console.log(chalk.gray('  No active sessions'));
+      } else {
+        const activeCount = sessions.filter(s => {
+          const daysSinceUse = (Date.now() - s.last_used_epoch) / (1000 * 60 * 60 * 24);
+          return daysSinceUse < 7;
+        }).length;
+
+        console.log(`  📊 Total sessions: ${sessions.length}`);
+        console.log(`  ✅ Active (< 7 days): ${activeCount}`);
+        console.log(chalk.dim(`  💡 View details: claude-mem sessions list`));
+      }
+    } catch (error) {
+      console.log(chalk.gray('  ⚠️  Could not load session info'));
+    }
+
     console.log('');
     
     console.log('📊 Summary:');
@@ -149,15 +186,15 @@ export async function status(): Promise<void> {
     try {
       if (existsSync(globalPath)) {
         const settings = JSON.parse(readFileSync(globalPath, 'utf8'));
-        if (settings.hooks?.PreCompact || settings.hooks?.SessionStart || settings.hooks?.SessionEnd) {
+        if (settings.hooks?.SessionStart || settings.hooks?.Stop || settings.hooks?.PostToolUse) {
           isInstalled = true;
           installLocation = 'Global';
         }
       }
-      
+
       if (existsSync(projectPath)) {
         const settings = JSON.parse(readFileSync(projectPath, 'utf8'));
-        if (settings.hooks?.PreCompact || settings.hooks?.SessionStart || settings.hooks?.SessionEnd) {
+        if (settings.hooks?.SessionStart || settings.hooks?.Stop || settings.hooks?.PostToolUse) {
           isInstalled = true;
           installLocation = installLocation === 'Global' ? 'Global + Project' : 'Project';
         }

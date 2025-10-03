@@ -1,5 +1,5 @@
 import { OptionValues } from 'commander';
-import { query } from '@anthropic-ai/claude-code';
+import { query } from '@anthropic-ai/claude-agent-sdk';
 import fs from 'fs';
 import path from 'path';
 import { getClaudePath } from '../shared/settings.js';

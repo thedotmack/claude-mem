@@ -17,12 +17,12 @@ export class MemoryStore {
    */
   create(input: MemoryInput): MemoryRow {
     const { isoString, epoch } = normalizeTimestamp(input.created_at);
-    
+
     const stmt = this.db.prepare(`
       INSERT INTO memories (
-        session_id, text, document_id, keywords, created_at, created_at_epoch, 
-        project, archive_basename, origin
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        session_id, text, document_id, keywords, created_at, created_at_epoch,
+        project, archive_basename, origin, title, subtitle, facts, concepts, files_touched
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const info = stmt.run(
@@ -34,7 +34,12 @@ export class MemoryStore {
       epoch,
       input.project,
       input.archive_basename || null,
-      input.origin || 'transcript'
+      input.origin || 'transcript',
+      input.title || null,
+      input.subtitle || null,
+      input.facts || null,
+      input.concepts || null,
+      input.files_touched || null
     );
 
     return this.getById(info.lastInsertRowid as number)!;
@@ -158,13 +163,42 @@ export class MemoryStore {
    * Get memories by origin type
    */
   getByOrigin(origin: string, limit?: number): MemoryRow[] {
-    const query = limit 
+    const query = limit
       ? 'SELECT * FROM memories WHERE origin = ? ORDER BY created_at_epoch DESC LIMIT ?'
       : 'SELECT * FROM memories WHERE origin = ? ORDER BY created_at_epoch DESC';
-    
+
     const stmt = this.db.prepare(query);
     const params = limit ? [origin, limit] : [origin];
     return stmt.all(...params) as MemoryRow[];
+  }
+
+  /**
+   * Get recent memories for a project filtered by origin
+   */
+  getRecentForProjectByOrigin(project: string, origin: string, limit = 10): MemoryRow[] {
+    const stmt = this.db.prepare(`
+      SELECT * FROM memories
+      WHERE project = ? AND origin = ?
+      ORDER BY created_at_epoch DESC
+      LIMIT ?
+    `);
+    return stmt.all(project, origin, limit) as MemoryRow[];
+  }
+
+  /**
+   * Get last N memories for a project, sorted oldest to newest
+   */
+  getLastNForProject(project: string, limit = 10): MemoryRow[] {
+    const stmt = this.db.prepare(`
+      SELECT * FROM (
+        SELECT * FROM memories
+        WHERE project = ?
+        ORDER BY created_at_epoch DESC
+        LIMIT ?
+      )
+      ORDER BY created_at_epoch ASC
+    `);
+    return stmt.all(project, limit) as MemoryRow[];
   }
 
   /**
@@ -195,11 +229,12 @@ export class MemoryStore {
     }
 
     const { isoString, epoch } = normalizeTimestamp(input.created_at || existing.created_at);
-    
+
     const stmt = this.db.prepare(`
       UPDATE memories SET
         text = ?, document_id = ?, keywords = ?, created_at = ?, created_at_epoch = ?,
-        project = ?, archive_basename = ?, origin = ?
+        project = ?, archive_basename = ?, origin = ?, title = ?, subtitle = ?, facts = ?,
+        concepts = ?, files_touched = ?
       WHERE id = ?
     `);
 
@@ -212,6 +247,11 @@ export class MemoryStore {
       input.project || existing.project,
       input.archive_basename !== undefined ? input.archive_basename : existing.archive_basename,
       input.origin || existing.origin,
+      input.title !== undefined ? input.title : existing.title,
+      input.subtitle !== undefined ? input.subtitle : existing.subtitle,
+      input.facts !== undefined ? input.facts : existing.facts,
+      input.concepts !== undefined ? input.concepts : existing.concepts,
+      input.files_touched !== undefined ? input.files_touched : existing.files_touched,
       id
     );
 

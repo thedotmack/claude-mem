@@ -211,11 +211,13 @@ function detectExistingInstallation(): {
     scope: undefined as InstallScope | undefined
   };
   
-  // Check for hooks
-  const hooksDir = PathDiscovery.getHooksDirectory();
-  result.hasHooks = existsSync(hooksDir) && 
-    existsSync(join(hooksDir, 'pre-compact.js')) &&
-    existsSync(join(hooksDir, 'session-start.js'));
+  // Check for runtime hooks (installed to user's hooks directory from hook-templates/)
+  const runtimeHooksDir = PathDiscovery.getHooksDirectory();
+  result.hasHooks = existsSync(runtimeHooksDir) &&
+    existsSync(join(runtimeHooksDir, 'session-start.js')) &&
+    existsSync(join(runtimeHooksDir, 'stop.js')) &&
+    existsSync(join(runtimeHooksDir, 'user-prompt-submit.js')) &&
+    existsSync(join(runtimeHooksDir, 'post-tool-use.js'));
   
   // Check for Chroma MCP server configuration
   const pathDiscovery = PathDiscovery.getInstance();
@@ -223,23 +225,19 @@ function detectExistingInstallation(): {
   const projectMcpPath = pathDiscovery.getProjectMcpConfigPath();
   
   if (existsSync(userMcpPath)) {
-    try {
-      const config = JSON.parse(readFileSync(userMcpPath, 'utf8'));
-      if (config.mcpServers?.['claude-mem']) {
-        result.hasChromaMcp = true;
-        result.scope = 'user';
-      }
-    } catch {}
+    const config = JSON.parse(readFileSync(userMcpPath, 'utf8'));
+    if (config.mcpServers?.['claude-mem']) {
+      result.hasChromaMcp = true;
+      result.scope = 'user';
+    }
   }
-  
+
   if (existsSync(projectMcpPath)) {
-    try {
-      const config = JSON.parse(readFileSync(projectMcpPath, 'utf8'));
-      if (config.mcpServers?.['claude-mem']) {
-        result.hasChromaMcp = true;
-        result.scope = 'project';
-      }
-    } catch {}
+    const config = JSON.parse(readFileSync(projectMcpPath, 'utf8'));
+    if (config.mcpServers?.['claude-mem']) {
+      result.hasChromaMcp = true;
+      result.scope = 'project';
+    }
   }
   
   // Check for settings
@@ -370,10 +368,10 @@ async function backupExistingConfig(): Promise<string | null> {
   try {
     mkdirSync(backupDir, { recursive: true });
     
-    // Backup hooks if they exist
-    const hooksDir = pathDiscovery.getHooksDirectory();
-    if (existsSync(hooksDir)) {
-      copyFileRecursively(hooksDir, join(backupDir, 'hooks'));
+    // Backup runtime hooks if they exist
+    const runtimeHooksDir = pathDiscovery.getHooksDirectory();
+    if (existsSync(runtimeHooksDir)) {
+      copyFileRecursively(runtimeHooksDir, join(backupDir, 'hooks'));
     }
     
     // Backup settings
@@ -432,28 +430,46 @@ function copyFileRecursively(src: string, dest: string): void {
   }
 }
 
-function writeHookFiles(timeout: number = 180000): void {
+/**
+ * Install hook files from package hook-templates/ to runtime hooks directory
+ *
+ * This copies hook template files from the installed package's hook-templates/ directory
+ * to the user's runtime hooks directory at ~/.claude-mem/hooks/
+ *
+ * Hook files installed:
+ * - session-start.js - SessionStart hook (no matcher field required)
+ * - stop.js - Stop hook (no matcher field required)
+ * - user-prompt-submit.js - UserPromptSubmit hook (no matcher field required)
+ * - post-tool-use.js - PostToolUse hook (matcher field REQUIRED in settings.json)
+ *
+ * Official docs: https://docs.claude.com/en/docs/claude-code/hooks
+ * Local docs: /Users/alexnewman/Scripts/claude-mem-source/docs/HOOK_PROMPTS.md
+ *
+ * @param timeout - Hook timeout in MILLISECONDS for config.json (converted to seconds in settings.json)
+ * @param force - Force overwrite of existing hook files
+ */
+function writeHookFiles(timeout: number = 180000, force: boolean = false): void {
   const pathDiscovery = PathDiscovery.getInstance();
-  const hooksDir = pathDiscovery.getHooksDirectory();
-  
-  // Find the installed package hooks directory
+  const runtimeHooksDir = pathDiscovery.getHooksDirectory();
+
+  // Find the installed package hook-templates directory
   const __filename = fileURLToPath(import.meta.url);
   const __dirname = dirname(__filename);
-  
-  // DYNAMIC DISCOVERY: Find hooks by walking up from current location
+
+  // DYNAMIC DISCOVERY: Find hook-templates by walking up from current location
   let currentDir = __dirname;
-  let packageHooksDir: string | null = null;
-  
-  // Walk up the tree to find the hooks directory
+  let packageHookTemplatesDir: string | null = null;
+
+  // Walk up the tree to find the hook-templates directory
   for (let i = 0; i < 10; i++) {
-    const hooksPath = join(currentDir, 'hooks');
-    
-    // Check if this directory has the hook files
-    if (existsSync(join(hooksPath, 'pre-compact.js'))) {
-      packageHooksDir = hooksPath;
+    const hookTemplatesPath = join(currentDir, 'hook-templates');
+
+    // Check if this directory has the hook template files
+    if (existsSync(join(hookTemplatesPath, 'session-start.js'))) {
+      packageHookTemplatesDir = hookTemplatesPath;
       break;
     }
-    
+
     // Move up one directory
     const parentDir = dirname(currentDir);
     if (parentDir === currentDir) {
@@ -462,47 +478,46 @@ function writeHookFiles(timeout: number = 180000): void {
     }
     currentDir = parentDir;
   }
-  
-  // If we still haven't found it, use PathDiscovery to find package hooks
-  if (!packageHooksDir) {
-    try {
-      packageHooksDir = pathDiscovery.findPackageHooksDirectory();
-    } catch (error) {
-      throw new Error('Cannot dynamically locate hooks directory. The package may be corrupted.');
+
+  // If we still haven't found it, use PathDiscovery to find package hook templates
+  if (!packageHookTemplatesDir) {
+    packageHookTemplatesDir = pathDiscovery.findPackageHookTemplatesDirectory();
+  }
+
+  // Copy hook template files from the package to runtime hooks directory
+  const hookFiles = ['session-start.js', 'stop.js', 'user-prompt-submit.js', 'post-tool-use.js'];
+
+  for (const hookFile of hookFiles) {
+    const runtimeHookPath = join(runtimeHooksDir, hookFile);
+    const sourceTemplatePath = join(packageHookTemplatesDir, hookFile);
+
+    copyFileSync(sourceTemplatePath, runtimeHookPath);
+    chmodSync(runtimeHookPath, 0o755);
+  }
+
+
+  // Copy shared directory if it exists in hook-templates
+  if (packageHookTemplatesDir) {
+    const sourceSharedTemplateDir = join(packageHookTemplatesDir, 'shared');
+    const runtimeSharedDir = join(runtimeHooksDir, 'shared');
+
+    if (existsSync(sourceSharedTemplateDir)) {
+      copyFileRecursively(sourceSharedTemplateDir, runtimeSharedDir);
     }
   }
-  
-  // Copy hook files from the package instead of creating wrappers
-  const hooks = ['pre-compact.js', 'session-start.js', 'session-end.js'];
-  
-  for (const hookName of hooks) {
-    const sourcePath = join(packageHooksDir, hookName);
-    const destPath = join(hooksDir, hookName);
-    
-    if (existsSync(sourcePath)) {
-      copyFileSync(sourcePath, destPath);
-      chmodSync(destPath, 0o755);
-    }
-  }
-  
-  
-  // Copy shared directory if it exists
-  const sourceSharedDir = join(packageHooksDir, 'shared');
-  const destSharedDir = join(hooksDir, 'shared');
-  
-  if (existsSync(sourceSharedDir)) {
-    copyFileRecursively(sourceSharedDir, destSharedDir);
-  }
-  
-  // Write configuration with custom timeout
-  const hookConfigPath = join(hooksDir, 'config.json');
+
+  // Write runtime hook configuration with custom timeout
+  // NOTE: This config.json uses MILLISECONDS for internal hook timeout tracking
+  // However, settings.json uses SECONDS per official Claude Code docs
+  // See configureHooks() function for the milliseconds → seconds conversion
+  const runtimeHookConfigPath = join(runtimeHooksDir, 'config.json');
   const hookConfig = {
     packageName: PACKAGE_NAME,
     cliCommand: PACKAGE_NAME,
     backend: 'chroma',
-    timeout
+    timeout  // Milliseconds (e.g., 180000ms = 3 minutes)
   };
-  writeFileSync(hookConfigPath, JSON.stringify(hookConfig, null, 2));
+  writeFileSync(runtimeHookConfigPath, JSON.stringify(hookConfig, null, 2));
 }
 
 
@@ -627,10 +642,12 @@ async function installChromaMcp(): Promise<boolean> {
 
 async function configureHooks(settingsPath: string, config: InstallConfig): Promise<void> {
   const pathDiscovery = PathDiscovery.getInstance();
-  const claudeMemHooksDir = pathDiscovery.getHooksDirectory();
-  const preCompactScript = join(claudeMemHooksDir, 'pre-compact.js');
-  const sessionStartScript = join(claudeMemHooksDir, 'session-start.js');
-  const sessionEndScript = join(claudeMemHooksDir, 'session-end.js');
+  const runtimeHooksDir = pathDiscovery.getHooksDirectory();
+  // Runtime hooks (copied from hook-templates/ during installation)
+  const sessionStartScript = join(runtimeHooksDir, 'session-start.js');
+  const stopScript = join(runtimeHooksDir, 'stop.js');
+  const userPromptScript = join(runtimeHooksDir, 'user-prompt-submit.js');
+  const postToolScript = join(runtimeHooksDir, 'post-tool-use.js');
   
   let settings: any = {};
   if (existsSync(settingsPath)) {
@@ -650,99 +667,125 @@ async function configureHooks(settingsPath: string, config: InstallConfig): Prom
   }
   
   // Remove existing claude-mem hooks to ensure clean installation/update
-  // Non-tool hooks: filter out configs where hooks contain our commands
-  if (settings.hooks.PreCompact) {
-    settings.hooks.PreCompact = settings.hooks.PreCompact.filter((cfg: any) =>
-      !cfg.hooks?.some((hook: any) => 
-        hook.command?.includes(PACKAGE_NAME) || hook.command?.includes('pre-compact.js')
-      )
-    );
-    if (!settings.hooks.PreCompact.length) delete settings.hooks.PreCompact;
-  }
-  
-  if (settings.hooks.SessionStart) {
-    settings.hooks.SessionStart = settings.hooks.SessionStart.filter((cfg: any) =>
-      !cfg.hooks?.some((hook: any) => 
-        hook.command?.includes(PACKAGE_NAME) || hook.command?.includes('session-start.js')
-      )
-    );
-    if (!settings.hooks.SessionStart.length) delete settings.hooks.SessionStart;
-  }
-  
-  if (settings.hooks.SessionEnd) {
-    settings.hooks.SessionEnd = settings.hooks.SessionEnd.filter((cfg: any) =>
-      !cfg.hooks?.some((hook: any) => 
-        hook.command?.includes(PACKAGE_NAME) || hook.command?.includes('session-end.js')
-      )
-    );
-    if (!settings.hooks.SessionEnd.length) delete settings.hooks.SessionEnd;
+  // Remove both old and SDK hooks for clean reinstall
+  const hookTypes = ['SessionStart', 'Stop', 'UserPromptSubmit', 'PostToolUse'];
+
+  for (const hookType of hookTypes) {
+    if (settings.hooks[hookType]) {
+      settings.hooks[hookType] = settings.hooks[hookType].filter((cfg: any) =>
+        !cfg.hooks?.some((hook: any) =>
+          hook.command?.includes(PACKAGE_NAME) ||
+          hook.command?.includes('session-start.js') ||
+          hook.command?.includes('stop.js') ||
+          hook.command?.includes('user-prompt-submit.js') ||
+          hook.command?.includes('post-tool-use.js')
+        )
+      );
+      if (!settings.hooks[hookType].length) delete settings.hooks[hookType];
+    }
   }
   
   /**
    * 🔒 LOCKED by @docs-agent | Change to 🔑 to allow @docs-agent edits
-   * 
-   * OFFICIAL DOCS: Claude Code Hooks Configuration v2025
-   * Last Verified: 2025-08-31
-   * 
-   * Hook Configuration Structure Requirements:
-   * - Tool-related hooks (PreToolUse, PostToolUse): Use 'matcher' field for tool patterns
-   * - Non-tool hooks (PreCompact, SessionStart, SessionEnd, etc.): NO matcher/pattern field
-   * 
-   * Correct Non-Tool Hook Structure:
-   * {
-   *   hooks: [{
-   *     type: "command",
-   *     command: "/path/to/script.js"
-   *   }]
-   * }
-   * 
-   * @see https://docs.anthropic.com/en/docs/claude-code/hooks
-   * @see docs/claude-code/hook-configuration.md for full documentation
+   *
+   * OFFICIAL DOCS: Claude Code Hooks Configuration
+   * Source: https://docs.claude.com/en/docs/claude-code/hooks
+   * Last Verified: 2025-10-02
+   *
+   * Hook Configuration Structure Requirements (from official docs):
+   *
+   * Tool Hooks (PreToolUse, PostToolUse):
+   * - MUST include 'matcher' field with tool name pattern (supports regex/wildcards)
+   * - Example: { matcher: "*", hooks: [{ type: "command", command: "...", timeout: 180 }] }
+   *
+   * Non-Tool Hooks (SessionStart, Stop, UserPromptSubmit, SessionEnd, etc.):
+   * - MUST NOT include 'matcher' or 'pattern' field
+   * - Example: { hooks: [{ type: "command", command: "...", timeout: 60 }] }
+   *
+   * All Hooks:
+   * - type: Must be "command" (only supported type)
+   * - timeout: Optional, in SECONDS (default: 60), not milliseconds
+   * - command: Absolute path to executable script
+   *
+   * @see https://docs.claude.com/en/docs/claude-code/hooks - Official hook documentation
+   * @see /Users/alexnewman/Scripts/claude-mem-source/docs/reference/AGENT_SDK.md - Lines 514-671 for SDK hook types
+   * @see /Users/alexnewman/Scripts/claude-mem-source/docs/HOOK_PROMPTS.md - Local hook implementation guide
    */
-  // Add PreCompact hook - Non-tool hook (no matcher field)
-  if (!settings.hooks.PreCompact) {
-    settings.hooks.PreCompact = [];
-  }
-  
-  // ✅ CORRECT: Non-tool hooks have no 'pattern' or 'matcher' field
-  settings.hooks.PreCompact.push({
-    hooks: [
-      {
-        type: "command",
-        command: preCompactScript,
-        timeout: 180
-      }
-    ]
-  });
-  
+
   // Add SessionStart hook - Non-tool hook (no matcher field)
+  // Official docs: https://docs.claude.com/en/docs/claude-code/hooks
+  // Hook type: SessionStart (non-tool event - no matcher required)
   if (!settings.hooks.SessionStart) {
     settings.hooks.SessionStart = [];
   }
-  
+
   // ✅ CORRECT: Non-tool hooks have no 'pattern' or 'matcher' field
+  // Timeout is 180 SECONDS (3 minutes) - sufficient for context loading
   settings.hooks.SessionStart.push({
     hooks: [
       {
-        type: "command",
-        command: sessionStartScript,
-        timeout: 180
+        type: "command",  // Required field - only "command" type supported
+        command: sessionStartScript,  // Absolute path to hook script
+        timeout: 180  // Seconds (not milliseconds) - per official docs
       }
     ]
   });
   
-  // Add SessionEnd hook (only if the file exists)
-  if (existsSync(sessionEndScript)) {
-    if (!settings.hooks.SessionEnd) {
-      settings.hooks.SessionEnd = [];
+  // Add Stop hook - Non-tool hook (no matcher field)
+  // Official docs: https://docs.claude.com/en/docs/claude-code/hooks
+  // Hook type: Stop (non-tool event - no matcher required)
+  if (existsSync(stopScript)) {
+    if (!settings.hooks.Stop) {
+      settings.hooks.Stop = [];
     }
-    
-    // ✅ CORRECT: Non-tool hooks have no 'pattern' or 'matcher' field
-    settings.hooks.SessionEnd.push({
+
+    // ✅ CORRECT: Non-tool hooks have no 'matcher' field
+    // Timeout is 60 SECONDS (1 minute) - sufficient for session overview generation
+    settings.hooks.Stop.push({
       hooks: [{
-        type: "command",
-        command: sessionEndScript,
-        timeout: 180
+        type: "command",  // Required field - only "command" type supported
+        command: stopScript,  // Absolute path to hook script
+        timeout: 60  // Seconds (not milliseconds) - per official docs
+      }]
+    });
+  }
+
+  // Add UserPromptSubmit hook - Non-tool hook (no matcher field)
+  // Official docs: https://docs.claude.com/en/docs/claude-code/hooks
+  // Hook type: UserPromptSubmit (non-tool event - no matcher required)
+  if (existsSync(userPromptScript)) {
+    if (!settings.hooks.UserPromptSubmit) {
+      settings.hooks.UserPromptSubmit = [];
+    }
+
+    // ✅ CORRECT: Non-tool hooks have no 'matcher' field
+    // Timeout is 60 SECONDS (1 minute) - sufficient for real-time prompt capture
+    settings.hooks.UserPromptSubmit.push({
+      hooks: [{
+        type: "command",  // Required field - only "command" type supported
+        command: userPromptScript,  // Absolute path to hook script
+        timeout: 60  // Seconds (not milliseconds) - per official docs
+      }]
+    });
+  }
+
+  // Add PostToolUse hook - TOOL HOOK (requires matcher field)
+  // Official docs: https://docs.claude.com/en/docs/claude-code/hooks
+  // Hook type: PostToolUse (tool-related event - matcher REQUIRED)
+  if (existsSync(postToolScript)) {
+    if (!settings.hooks.PostToolUse) {
+      settings.hooks.PostToolUse = [];
+    }
+
+    // ✅ CORRECT: Tool hooks MUST have 'matcher' field
+    // matcher: "*" matches all tools (supports regex/wildcards per official docs)
+    // Timeout is 180 SECONDS (3 minutes) - allows async compression via Agent SDK
+    settings.hooks.PostToolUse.push({
+      matcher: "*",  // REQUIRED for tool hooks - matches all tools
+      hooks: [{
+        type: "command",  // Required field - only "command" type supported
+        command: postToolScript,  // Absolute path to hook script
+        timeout: 180  // Seconds (not milliseconds) - per official docs
       }]
     });
   }
@@ -764,23 +807,19 @@ async function configureSmartTrashAlias(): Promise<void> {
   
   for (const configPath of shellConfigs) {
     if (!existsSync(configPath)) continue;
-    
-    try {
-      let content = readFileSync(configPath, 'utf8');
-      
-      // Check if alias already exists
-      if (content.includes(aliasLine)) {
-        continue; // Already configured
-      }
-      
-      // Add the alias
-      const aliasBlock = `\n${commentLine}\n${aliasLine}\n`;
-      content += aliasBlock;
-      
-      writeFileSync(configPath, content);
-    } catch (error) {
-      // Silent fail - not critical
+
+    let content = readFileSync(configPath, 'utf8');
+
+    // Check if alias already exists
+    if (content.includes(aliasLine)) {
+      continue; // Already configured
     }
+
+    // Add the alias
+    const aliasBlock = `\n${commentLine}\n${aliasLine}\n`;
+    content += aliasBlock;
+
+    writeFileSync(configPath, content);
   }
 }
 
@@ -886,17 +925,24 @@ function installClaudeCommands(force: boolean = false): void {
 async function verifyInstallation(): Promise<void> {
   const s = p.spinner();
   s.start('Verifying installation');
-  
+
   const issues: string[] = [];
-  
-  // Check hooks
+
+  // Check runtime hooks (installed from hook-templates/)
   const pathDiscovery = PathDiscovery.getInstance();
-  const hooksDir = pathDiscovery.getHooksDirectory();
-  if (!existsSync(join(hooksDir, 'pre-compact.js'))) {
-    issues.push('Pre-compact hook not found');
-  }
-  if (!existsSync(join(hooksDir, 'session-start.js'))) {
-    issues.push('Session-start hook not found');
+  const runtimeHooksDir = pathDiscovery.getHooksDirectory();
+
+  const requiredRuntimeHooks = [
+    'session-start.js',
+    'stop.js',
+    'user-prompt-submit.js',
+    'post-tool-use.js'
+  ];
+
+  for (const runtimeHook of requiredRuntimeHooks) {
+    if (!existsSync(join(runtimeHooksDir, runtimeHook))) {
+      issues.push(`${runtimeHook} not found`);
+    }
   }
   
   if (issues.length > 0) {
@@ -1005,7 +1051,7 @@ export async function install(options: OptionValues = {}): Promise<void> {
       name: 'Installing memory hooks',
       action: async () => {
         await sleep(400);
-        writeHookFiles(config.hookTimeout);
+        writeHookFiles(config.hookTimeout, config.forceReinstall);
         await sleep(200);
       }
     },
@@ -1030,11 +1076,9 @@ export async function install(options: OptionValues = {}): Promise<void> {
         const pathDiscovery = PathDiscovery.getInstance();
         const userSettingsPath = pathDiscovery.getUserSettingsPath();
         let userSettings: Settings = {};
-        
+
         if (existsSync(userSettingsPath)) {
-          try {
-            userSettings = JSON.parse(readFileSync(userSettingsPath, 'utf8'));
-          } catch {}
+          userSettings = JSON.parse(readFileSync(userSettingsPath, 'utf8'));
         }
         
         userSettings.backend = 'chroma';

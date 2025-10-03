@@ -7,20 +7,26 @@ import { Command } from 'commander';
 import { PACKAGE_NAME, PACKAGE_VERSION, PACKAGE_DESCRIPTION } from '../shared/config.js';
 
 // Import command handlers
-import { compress } from '../commands/compress.js';
 import { install } from '../commands/install.js';
 import { uninstall } from '../commands/uninstall.js';
 import { status } from '../commands/status.js';
 import { logs } from '../commands/logs.js';
 import { loadContext } from '../commands/load-context.js';
 import { trash } from '../commands/trash.js';
+import { viewTrash } from '../commands/trash-view.js';
+import { emptyTrash } from '../commands/trash-empty.js';
 import { restore } from '../commands/restore.js';
-import { save } from '../commands/save.js';
 import { changelog } from '../commands/changelog.js';
-// Cloud functionality disabled - incomplete setup
-// import { cloudCommand } from '../commands/cloud.js';
-import { importHistory } from '../commands/import-history.js';
-import { TranscriptCompressor } from '../core/compression/TranscriptCompressor.js';
+import { doctor } from '../commands/doctor.js';
+import { storeMemory } from '../commands/store-memory.js';
+import { storeOverview } from '../commands/store-overview.js';
+import { updateSessionMetadata } from '../commands/update-session-metadata.js';
+import { generateTitle } from '../commands/generate-title.js';
+import {
+  executeChromaMCPTool,
+  loadChromaMCPTools,
+  generateCommandOptions
+} from '../commands/chroma-mcp.js';
 
 const program = new Command();
 // </Block> =======================================
@@ -35,19 +41,6 @@ program
 // </Block> =======================================
 
 // <Block> 1.3 ====================================
-// Compress Command Definition
-// Natural pattern: Define command with its options and handler
-// Compress command
-program
-  .command('compress [transcript]')
-  .description('Compress a Claude Code transcript into memory')
-  .option('--output <path>', 'Output directory for compressed files')
-  .option('--dry-run', 'Show what would be compressed without doing it')
-  .option('-v, --verbose', 'Show detailed output')
-  .action(compress);
-// </Block> =======================================
-
-// <Block> 1.4 ====================================
 // Install Command Definition
 // Natural pattern: Define command with its options and handler
 // Install command
@@ -86,6 +79,20 @@ program
   .command('status')
   .description('Check installation status of Claude Memory System')
   .action(status);
+
+// Doctor command
+program
+  .command('doctor')
+  .description('Run environment and pipeline diagnostics for rolling memory')
+  .option('--json', 'Output JSON instead of text')
+  .action(async (options: any) => {
+    try {
+      await doctor(options);
+    } catch (error: any) {
+      console.error(`doctor failed: ${error.message || error}`);
+      process.exitCode = 1;
+    }
+  });
 // </Block> =======================================
 
 // <Block> 1.7 ====================================
@@ -148,20 +155,14 @@ const trashCmd = program
 trashCmd
   .command('view')
   .description('View contents of trash bin')
-  .action(async () => {
-    const { viewTrash } = await import('../commands/trash-view.js');
-    await viewTrash();
-  });
+  .action(viewTrash);
 
 // Trash empty subcommand
 trashCmd
   .command('empty')
   .description('Permanently delete all files in trash')
   .option('-f, --force', 'Skip confirmation prompt')
-  .action(async (options: any) => {
-    const { emptyTrash } = await import('../commands/trash-empty.js');
-    await emptyTrash(options);
-  });
+  .action(emptyTrash);
 
 // Restore command
 program
@@ -170,15 +171,39 @@ program
   .action(restore);
 // </Block> =======================================
 
-// Cloud command
-// Cloud functionality disabled - incomplete setup
-// program.addCommand(cloudCommand);
-
-// Save command
+// Store memory command (for SDK streaming)
 program
-  .command('save <message>')
-  .description('Save a message to the memory system')
-  .action(save);
+  .command('store-memory')
+  .description('Store a memory to all storage layers (used by SDK)')
+  .requiredOption('--id <id>', 'Memory ID')
+  .requiredOption('--project <project>', 'Project name')
+  .requiredOption('--session <session>', 'Session ID')
+  .requiredOption('--date <date>', 'Date (YYYY-MM-DD)')
+  .requiredOption('--title <title>', 'Memory title (3-8 words)')
+  .requiredOption('--subtitle <subtitle>', 'Memory subtitle (max 24 words)')
+  .requiredOption('--facts <json>', 'Atomic facts as JSON array')
+  .option('--concepts <json>', 'Concept tags as JSON array')
+  .option('--files <json>', 'Files touched as JSON array')
+  .action(storeMemory);
+
+// Store overview command (for SDK streaming)
+program
+  .command('store-overview')
+  .description('Store a session overview (used by SDK)')
+  .requiredOption('--project <project>', 'Project name')
+  .requiredOption('--session <session>', 'Session ID')
+  .requiredOption('--content <content>', 'Overview content')
+  .action(storeOverview);
+
+// Update session metadata command (for SDK streaming)
+program
+  .command('update-session-metadata')
+  .description('Update session title and subtitle (used by SDK)')
+  .requiredOption('--project <project>', 'Project name')
+  .requiredOption('--session <session>', 'Session ID')
+  .requiredOption('--title <title>', 'Session title (3-6 words)')
+  .option('--subtitle <subtitle>', 'Session subtitle (max 20 words)')
+  .action(updateSessionMetadata);
 
 // Changelog command
 program
@@ -193,63 +218,49 @@ program
   .option('-v, --verbose', 'Show detailed output')
   .action(changelog);
 
-// Import History command
+// Generate title command
 program
-  .command('import-history')
-  .description('Import historical Claude Code conversations into memory')
-  .option('-v, --verbose', 'Show detailed output')
-  .option('-m, --multi', 'Enable multi-select mode (default is single-select)')
-  .action(importHistory);
-
-// Migrate Index command
-program
-  .command('migrate-index')
-  .description('Migrate JSONL index to SQLite database')
-  .option('--force', 'Force migration even if SQLite database already has data')
-  .option('--keep-jsonl', 'Keep original JSONL file (archive it by default)')
-  .action(async (options) => {
-    const { migrateIndex } = await import('../commands/migrate-index.js');
-    await migrateIndex(options);
-  });
-
-// <Block> 1.11 ===================================  
-// Hook Commands
-// Internal commands called by hook scripts
-program
-  .command('hook:pre-compact', { hidden: true })
-  .description('Internal pre-compact hook handler')
-  .action(async () => {
-    const { preCompactHook } = await import('../commands/hooks.js');
-    await preCompactHook();
-  });
-
-program
-  .command('hook:session-start', { hidden: true })
-  .description('Internal session-start hook handler')
-  .action(async () => {
-    const { sessionStartHook } = await import('../commands/hooks.js');
-    await sessionStartHook();
-  });
-
-program
-  .command('hook:session-end', { hidden: true })
-  .description('Internal session-end hook handler')
-  .action(async () => {
-    const { sessionEndHook } = await import('../commands/hooks.js');
-    await sessionEndHook();
-  });
+  .command('generate-title <prompt>')
+  .description('Generate a session title and subtitle from a prompt')
+  .option('--json', 'Output as JSON')
+  .option('--oneline', 'Output as single line (title - subtitle)')
+  .option('--save', 'Save title and subtitle to session metadata')
+  .option('--project <name>', 'Project name (required with --save)')
+  .option('--session <id>', 'Session ID (required with --save)')
+  .action(generateTitle);
 
 // </Block> =======================================
 
-// Debug command to show filtered output
-program
-  .command('debug-filter')
-  .description('Show filtered transcript output (first 5 messages)')
-  .argument('<transcript-path>', 'Path to transcript file')
-  .action((transcriptPath) => {
-    const compressor = new TranscriptCompressor();
-    compressor.showFilteredOutput(transcriptPath);
-  });
+// <Block> 1.12 ===================================
+// Dynamic Chroma MCP Commands
+// Natural pattern: Register all Chroma MCP tools as CLI commands
+try {
+  const chromaTools = loadChromaMCPTools();
+
+  for (const tool of chromaTools) {
+    const cmd = program
+      .command(tool.name)
+      .description(tool.description || `Execute ${tool.name} MCP tool`);
+
+    // Add options from tool schema
+    const options = generateCommandOptions(tool.inputSchema);
+    for (const opt of options) {
+      if (opt.required) {
+        cmd.requiredOption(opt.flag, opt.description);
+      } else {
+        cmd.option(opt.flag, opt.description);
+      }
+    }
+
+    // Set action handler
+    cmd.action(async (options: OptionValues) => {
+      await executeChromaMCPTool(tool.name, options);
+    });
+  }
+} catch (error) {
+  console.warn('Warning: Could not load Chroma MCP tools:', error);
+}
+// </Block> =======================================
 
 // <Block> 1.11 ===================================
 // CLI Execution

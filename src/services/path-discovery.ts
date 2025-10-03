@@ -181,7 +181,9 @@ export class PathDiscovery {
       const packageJsonPath = require.resolve('claude-mem/package.json');
       this._packageRoot = dirname(packageJsonPath);
       return this._packageRoot;
-    } catch {}
+    } catch {
+      // Continue to next method
+    }
 
     // Method 2: Walk up from current module location
     const currentFile = fileURLToPath(import.meta.url);
@@ -190,15 +192,13 @@ export class PathDiscovery {
     for (let i = 0; i < 10; i++) {
       const packageJsonPath = join(currentDir, 'package.json');
       if (existsSync(packageJsonPath)) {
-        try {
-          const packageJson = require(packageJsonPath);
-          if (packageJson.name === 'claude-mem') {
-            this._packageRoot = currentDir;
-            return this._packageRoot;
-          }
-        } catch {}
+        const packageJson = require(packageJsonPath);
+        if (packageJson.name === 'claude-mem') {
+          this._packageRoot = currentDir;
+          return this._packageRoot;
+        }
       }
-      
+
       const parentDir = dirname(currentDir);
       if (parentDir === currentDir) break;
       currentDir = parentDir;
@@ -206,36 +206,46 @@ export class PathDiscovery {
 
     // Method 3: Try npm list command
     try {
-      const npmOutput = execSync('npm list -g claude-mem --json 2>/dev/null || npm list claude-mem --json 2>/dev/null', { 
-        encoding: 'utf8' 
+      const npmOutput = execSync('npm list -g claude-mem --json 2>/dev/null || npm list claude-mem --json 2>/dev/null', {
+        encoding: 'utf8'
       });
       const npmData = JSON.parse(npmOutput);
-      
+
       if (npmData.dependencies?.['claude-mem']?.resolved) {
         this._packageRoot = dirname(npmData.dependencies['claude-mem'].resolved);
         return this._packageRoot;
       }
-    } catch {}
+    } catch {
+      // Continue to error
+    }
 
     throw new Error('Cannot locate claude-mem package root. Ensure claude-mem is properly installed.');
   }
 
   /**
-   * Find hooks directory in the installed package
+   * Find hook templates directory in the installed package
+   *
+   * This returns the SOURCE templates directory that gets copied during installation
+   * to the runtime hooks directory (~/.claude-mem/hooks/)
    */
-  findPackageHooksDirectory(): string {
+  findPackageHookTemplatesDirectory(): string {
     const packageRoot = this.getPackageRoot();
-    const hooksDir = join(packageRoot, 'hooks');
-    
-    // Verify it contains expected hook files
-    const requiredHooks = ['pre-compact.js', 'session-start.js'];
-    for (const hookFile of requiredHooks) {
-      if (!existsSync(join(hooksDir, hookFile))) {
-        throw new Error(`Package hooks directory missing required file: ${hookFile}`);
+    const hookTemplatesDir = join(packageRoot, 'hook-templates');
+
+    // Verify it contains expected hook template files
+    const requiredHookTemplates = [
+      'session-start.js',
+      'stop.js',
+      'user-prompt-submit.js',
+      'post-tool-use.js'
+    ];
+    for (const hookTemplateFile of requiredHookTemplates) {
+      if (!existsSync(join(hookTemplatesDir, hookTemplateFile))) {
+        throw new Error(`Package hook-templates directory missing required template file: ${hookTemplateFile}`);
       }
     }
-    
-    return hooksDir;
+
+    return hookTemplatesDir;
   }
 
   /**
@@ -325,9 +335,19 @@ export class PathDiscovery {
 
   /**
    * Get current project directory name
+   * Uses git repository root's basename if in a git repo, otherwise falls back to cwd basename
    */
   static getCurrentProjectName(): string {
-    return require('path').basename(process.cwd());
+    try {
+      const gitRoot = execSync('git rev-parse --show-toplevel', {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+        stdio: ['pipe', 'pipe', 'ignore']
+      }).trim();
+      return require('path').basename(gitRoot);
+    } catch {
+      return require('path').basename(process.cwd());
+    }
   }
 
   /**
@@ -347,68 +367,7 @@ export class PathDiscovery {
    * Check if a path exists and is accessible
    */
   static isPathAccessible(path: string): boolean {
-    try {
-      return existsSync(path) && statSync(path).isDirectory();
-    } catch {
-      return false;
-    }
+    return existsSync(path) && statSync(path).isDirectory();
   }
 
-  // =============================================================================
-  // STATIC CONVENIENCE METHODS
-  // =============================================================================
-
-  /**
-   * Quick access to singleton instance methods
-   */
-  static getDataDirectory(): string {
-    return PathDiscovery.getInstance().getDataDirectory();
-  }
-
-  static getArchivesDirectory(): string {
-    return PathDiscovery.getInstance().getArchivesDirectory();
-  }
-
-  static getHooksDirectory(): string {
-    return PathDiscovery.getInstance().getHooksDirectory();
-  }
-
-  static getLogsDirectory(): string {
-    return PathDiscovery.getInstance().getLogsDirectory();
-  }
-
-  static getClaudeSettingsPath(): string {
-    return PathDiscovery.getInstance().getClaudeSettingsPath();
-  }
-
-  static getClaudeMdPath(): string {
-    return PathDiscovery.getInstance().getClaudeMdPath();
-  }
-
-  static findPackageHooksDirectory(): string {
-    return PathDiscovery.getInstance().findPackageHooksDirectory();
-  }
-
-  static findPackageCommandsDirectory(): string {
-    return PathDiscovery.getInstance().findPackageCommandsDirectory();
-  }
 }
-
-// Export singleton instance for immediate use
-export const pathDiscovery = PathDiscovery.getInstance();
-
-// Export static methods for convenience
-export const {
-  getDataDirectory,
-  getArchivesDirectory, 
-  getHooksDirectory,
-  getLogsDirectory,
-  getClaudeSettingsPath,
-  getClaudeMdPath,
-  findPackageHooksDirectory,
-  findPackageCommandsDirectory,
-  extractProjectName,
-  getCurrentProjectName,
-  createBackupFilename,
-  isPathAccessible
-} = PathDiscovery;
