@@ -2,7 +2,7 @@
 
 /**
  * Hook Helper Functions
- * 
+ *
  * This module provides JavaScript wrappers around the TypeScript PromptOrchestrator
  * and HookTemplates system, making them accessible to the JavaScript hook scripts.
  */
@@ -10,6 +10,9 @@
 import { spawn } from 'child_process';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import Database from 'better-sqlite3';
+import os from 'os';
+import fs from 'fs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -234,4 +237,194 @@ export function debugLog(message, data = {}) {
     const timestamp = new Date().toISOString();
     console.error(`[${timestamp}] HOOK DEBUG: ${message}`, data);
   }
+}
+
+// =============================================================================
+// DATABASE HELPERS (inline SQL to avoid 'claude-mem' import issues)
+// =============================================================================
+
+/**
+ * Get the claude-mem data directory path
+ */
+function getDataDirectory() {
+  return join(os.homedir(), '.claude-mem');
+}
+
+/**
+ * Get or create the database connection
+ */
+function getDatabase() {
+  const dataDir = getDataDirectory();
+  const dbPath = join(dataDir, 'claude-mem.db');
+
+  // Ensure directory exists
+  if (!fs.existsSync(dataDir)) {
+    fs.mkdirSync(dataDir, { recursive: true });
+  }
+
+  const db = new Database(dbPath);
+
+  // Apply optimized SQLite settings
+  db.pragma('journal_mode = WAL');
+  db.pragma('synchronous = NORMAL');
+  db.pragma('foreign_keys = ON');
+  db.pragma('temp_store = memory');
+
+  return db;
+}
+
+/**
+ * Ensure the streaming_sessions table exists
+ */
+function ensureStreamingSessionsTable(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS streaming_sessions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      claude_session_id TEXT UNIQUE NOT NULL,
+      sdk_session_id TEXT,
+      project TEXT NOT NULL,
+      title TEXT,
+      subtitle TEXT,
+      user_prompt TEXT,
+      started_at TEXT NOT NULL,
+      started_at_epoch INTEGER NOT NULL,
+      updated_at TEXT,
+      updated_at_epoch INTEGER,
+      completed_at TEXT,
+      completed_at_epoch INTEGER,
+      status TEXT NOT NULL CHECK(status IN ('active', 'completed', 'failed'))
+    )
+  `);
+
+  // Create indices if they don't exist
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_streaming_sessions_claude_id
+    ON streaming_sessions(claude_session_id)
+  `);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_streaming_sessions_sdk_id
+    ON streaming_sessions(sdk_session_id)
+  `);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_streaming_sessions_project_status
+    ON streaming_sessions(project, status)
+  `);
+}
+
+/**
+ * Create a new streaming session record
+ */
+export function createStreamingSession(db, { claude_session_id, project, user_prompt, started_at }) {
+  ensureStreamingSessionsTable(db);
+
+  const timestamp = started_at || new Date().toISOString();
+  const epoch = new Date(timestamp).getTime();
+
+  const stmt = db.prepare(`
+    INSERT INTO streaming_sessions (
+      claude_session_id, project, user_prompt, started_at, started_at_epoch, status
+    ) VALUES (?, ?, ?, ?, ?, 'active')
+  `);
+
+  const info = stmt.run(claude_session_id, project, user_prompt || null, timestamp, epoch);
+
+  return db.prepare('SELECT * FROM streaming_sessions WHERE id = ?').get(info.lastInsertRowid);
+}
+
+/**
+ * Update a streaming session by internal ID
+ */
+export function updateStreamingSession(db, id, updates) {
+  const timestamp = new Date().toISOString();
+  const epoch = Date.now();
+
+  const parts = [];
+  const values = [];
+
+  if (updates.sdk_session_id !== undefined) {
+    parts.push('sdk_session_id = ?');
+    values.push(updates.sdk_session_id);
+  }
+  if (updates.title !== undefined) {
+    parts.push('title = ?');
+    values.push(updates.title);
+  }
+  if (updates.subtitle !== undefined) {
+    parts.push('subtitle = ?');
+    values.push(updates.subtitle);
+  }
+  if (updates.status !== undefined) {
+    parts.push('status = ?');
+    values.push(updates.status);
+  }
+  if (updates.completed_at !== undefined) {
+    const completedTimestamp = typeof updates.completed_at === 'string'
+      ? updates.completed_at
+      : new Date(updates.completed_at).toISOString();
+    const completedEpoch = new Date(completedTimestamp).getTime();
+    parts.push('completed_at = ?', 'completed_at_epoch = ?');
+    values.push(completedTimestamp, completedEpoch);
+  }
+
+  // Always update the updated_at timestamp
+  parts.push('updated_at = ?', 'updated_at_epoch = ?');
+  values.push(timestamp, epoch);
+
+  values.push(id);
+
+  const stmt = db.prepare(`
+    UPDATE streaming_sessions
+    SET ${parts.join(', ')}
+    WHERE id = ?
+  `);
+
+  stmt.run(...values);
+
+  return db.prepare('SELECT * FROM streaming_sessions WHERE id = ?').get(id);
+}
+
+/**
+ * Get active streaming sessions for a project
+ */
+export function getActiveStreamingSessionsForProject(db, project) {
+  ensureStreamingSessionsTable(db);
+
+  const stmt = db.prepare(`
+    SELECT * FROM streaming_sessions
+    WHERE project = ? AND status = 'active'
+    ORDER BY started_at_epoch DESC
+  `);
+
+  return stmt.all(project);
+}
+
+/**
+ * Mark a session as completed
+ */
+export function markStreamingSessionCompleted(db, id) {
+  const timestamp = new Date().toISOString();
+  const epoch = Date.now();
+
+  const stmt = db.prepare(`
+    UPDATE streaming_sessions
+    SET status = ?,
+        completed_at = ?,
+        completed_at_epoch = ?,
+        updated_at = ?,
+        updated_at_epoch = ?
+    WHERE id = ?
+  `);
+
+  stmt.run('completed', timestamp, epoch, timestamp, epoch, id);
+
+  return db.prepare('SELECT * FROM streaming_sessions WHERE id = ?').get(id);
+}
+
+/**
+ * Initialize database with migrations and return connection
+ */
+export function initializeDatabase() {
+  const db = getDatabase();
+  ensureStreamingSessionsTable(db);
+  return db;
 }

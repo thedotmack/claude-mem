@@ -12,8 +12,8 @@ import fs from 'fs';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { renderEndMessage, HOOK_CONFIG } from './shared/hook-prompt-renderer.js';
 import { getProjectName } from './shared/path-resolver.js';
+import { initializeDatabase, getActiveStreamingSessionsForProject, markStreamingSessionCompleted } from './shared/hook-helpers.js';
 
-const SESSION_DIR = path.join(process.env.HOME || '', '.claude-mem', 'sessions');
 const HOOKS_LOG = path.join(process.env.HOME || '', '.claude-mem', 'logs', 'hooks.log');
 
 function debugLog(message, data = {}) {
@@ -50,20 +50,31 @@ process.stdin.on('end', async () => {
   const { cwd } = payload;
   const project = cwd ? getProjectName(cwd) : 'unknown';
 
+  // Immediately clear activity flag for UI indicator
+  const activityFlagPath = path.join(process.env.HOME || '', '.claude-mem', 'activity.flag');
+  try {
+    fs.writeFileSync(activityFlagPath, JSON.stringify({ active: false, timestamp: Date.now() }));
+  } catch (error) {
+    // Silent fail - non-critical
+  }
+
   // Return immediately with async mode
   console.log(JSON.stringify({ async: true, asyncTimeout: 180000 }));
 
   try {
-    // Load SDK session info
-    const sessionFile = path.join(SESSION_DIR, `${project}_streaming.json`);
-    if (!fs.existsSync(sessionFile)) {
+    // Load SDK session info from database
+    const db = initializeDatabase();
+
+    const sessions = getActiveStreamingSessionsForProject(db, project);
+    if (!sessions || sessions.length === 0) {
       debugLog('Stop: No streaming session found', { project });
+      db.close();
       process.exit(0);
     }
 
-    const sessionData = JSON.parse(fs.readFileSync(sessionFile, 'utf8'));
-    const sdkSessionId = sessionData.sdkSessionId;
-    const claudeSessionId = sessionData.claudeSessionId;
+    const sessionData = sessions[0];
+    const sdkSessionId = sessionData.sdk_session_id;
+    const claudeSessionId = sessionData.claude_session_id;
 
     debugLog('Stop: Ending SDK session', { sdkSessionId, claudeSessionId });
 
@@ -108,10 +119,12 @@ process.stdin.on('end', async () => {
       debugLog('Stop: Cleaned up memories transcript', { memoriesTranscriptPath });
     }
 
-    // Clean up session file
-    fs.unlinkSync(sessionFile);
-    debugLog('Stop: Session ended and cleaned up', { project });
+    // Mark session as completed in database
+    markStreamingSessionCompleted(db, sessionData.id);
+    debugLog('Stop: Session ended and marked complete', { project, sessionId: sessionData.id });
 
+    // Close database connection
+    db.close();
   } catch (error) {
     debugLog('Stop: Error ending session', { error: error.message });
   }

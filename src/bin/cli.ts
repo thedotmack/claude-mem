@@ -224,9 +224,8 @@ program
   .description('Generate a session title and subtitle from a prompt')
   .option('--json', 'Output as JSON')
   .option('--oneline', 'Output as single line (title - subtitle)')
-  .option('--save', 'Save title and subtitle to session metadata')
-  .option('--project <name>', 'Project name (required with --save)')
-  .option('--session <id>', 'Session ID (required with --save)')
+  .option('--session-id <id>', 'Claude session ID to update')
+  .option('--save', 'Save the generated title to the database (requires --session-id)')
   .action(generateTitle);
 
 // </Block> =======================================
@@ -267,4 +266,10 @@ try {
 // Natural pattern: After defining all commands, parse and execute
 // Parse arguments and execute
 program.parse();
+// </Block> =======================================
+
+// <Block> 1.12 ===================================
+// Module Exports for Programmatic Use
+// Export database and utility classes for hooks and external consumers
+export { DatabaseManager, StreamingSessionStore, migrations, initializeDatabase, getDatabase } from '../services/sqlite/index.js';
 // </Block> =======================================

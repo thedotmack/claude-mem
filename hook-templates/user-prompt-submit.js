@@ -13,11 +13,11 @@ import { fileURLToPath } from 'url';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { renderSystemPrompt, HOOK_CONFIG } from './shared/hook-prompt-renderer.js';
 import { getProjectName } from './shared/path-resolver.js';
+import { initializeDatabase, createStreamingSession, updateStreamingSession } from './shared/hook-helpers.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const SESSION_DIR = path.join(process.env.HOME || '', '.claude-mem', 'sessions');
 const HOOKS_LOG = path.join(process.env.HOME || '', '.claude-mem', 'logs', 'hooks.log');
 
 function debugLog(message, data = {}) {
@@ -60,6 +60,14 @@ process.stdin.on('end', async () => {
 
   debugLog('UserPromptSubmit: Starting streaming session', { project, session_id });
 
+  // Immediately signal activity start for UI indicator
+  const activityFlagPath = path.join(process.env.HOME || '', '.claude-mem', 'activity.flag');
+  try {
+    fs.writeFileSync(activityFlagPath, JSON.stringify({ active: true, project, timestamp: Date.now() }));
+  } catch (error) {
+    // Silent fail - non-critical
+  }
+
   // Generate title and subtitle non-blocking
   if (prompt && session_id && project) {
     import('child_process').then(({ spawn }) => {
@@ -80,6 +88,22 @@ process.stdin.on('end', async () => {
   }
 
   try {
+    // Initialize database and create session record FIRST
+    const db = initializeDatabase();
+
+    // Create session record immediately - this gives us a tracking ID
+    const sessionRecord = createStreamingSession(db, {
+      claude_session_id: session_id,
+      project,
+      user_prompt: prompt,
+      started_at: timestamp
+    });
+
+    debugLog('UserPromptSubmit: Created session record', {
+      internalId: sessionRecord.id,
+      claudeSessionId: session_id
+    });
+
     // Build system prompt using centralized config
     const systemPrompt = renderSystemPrompt({
       project,
@@ -110,19 +134,19 @@ process.stdin.on('end', async () => {
     }
 
     if (sdkSessionId) {
-      // Save session info for other hooks
-      fs.mkdirSync(SESSION_DIR, { recursive: true });
-      const sessionFile = path.join(SESSION_DIR, `${project}_streaming.json`);
-      fs.writeFileSync(sessionFile, JSON.stringify({
-        sdkSessionId,
-        claudeSessionId: session_id,
-        project,
-        startedAt: timestamp,
-        date
-      }, null, 2));
+      // Update session record with SDK session ID
+      updateStreamingSession(db, sessionRecord.id, {
+        sdk_session_id: sdkSessionId
+      });
 
-      debugLog('UserPromptSubmit: SDK session started', { sdkSessionId, sessionFile });
+      debugLog('UserPromptSubmit: SDK session started', {
+        internalId: sessionRecord.id,
+        sdkSessionId
+      });
     }
+
+    // Close database connection
+    db.close();
   } catch (error) {
     debugLog('UserPromptSubmit: Error starting SDK session', { error: error.message });
   }

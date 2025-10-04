@@ -1,14 +1,17 @@
 import { OptionValues } from 'commander';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { getClaudePath } from '../shared/settings.js';
-import path from 'path';
-import fs from 'fs';
-
-const SESSION_DIR = path.join(process.env.HOME || '', '.claude-mem', 'sessions');
+import { DatabaseManager } from '../services/sqlite/Database.js';
+import { StreamingSessionStore } from '../services/sqlite/StreamingSessionStore.js';
+import { migrations } from '../services/sqlite/migrations.js';
 
 /**
  * Generate a session title and subtitle from a user prompt
  * CLI command that uses Agent SDK (like changelog.ts)
+ *
+ * Can be called in two modes:
+ * 1. Standalone: generate-title "user prompt" --json
+ * 2. With session: generate-title "user prompt" --session-id <id> --save
  */
 export async function generateTitle(prompt: string, options: OptionValues): Promise<void> {
   if (!prompt || prompt.trim().length === 0) {
@@ -17,6 +20,36 @@ export async function generateTitle(prompt: string, options: OptionValues): Prom
       error: 'Prompt is required'
     }));
     process.exit(1);
+  }
+
+  // If --session-id provided, validate that session exists
+  let streamingStore: StreamingSessionStore | null = null;
+  let sessionRecord = null;
+
+  if (options.sessionId) {
+    try {
+      const dbManager = DatabaseManager.getInstance();
+      for (const migration of migrations) {
+        dbManager.registerMigration(migration);
+      }
+      const db = await dbManager.initialize();
+      streamingStore = new StreamingSessionStore(db);
+
+      sessionRecord = streamingStore.getByClaudeSessionId(options.sessionId);
+      if (!sessionRecord) {
+        console.error(JSON.stringify({
+          success: false,
+          error: `Session not found: ${options.sessionId}`
+        }));
+        process.exit(1);
+      }
+    } catch (error: any) {
+      console.error(JSON.stringify({
+        success: false,
+        error: `Database error: ${error.message}`
+      }));
+      process.exit(1);
+    }
   }
 
   const systemPrompt = `You are a title and subtitle generator for claude-mem session metadata.
@@ -107,49 +140,17 @@ Now generate the title and subtitle (two lines exactly):`;
     const title = lines[0].trim();
     const subtitle = lines[1].trim();
 
-    // Save to session metadata if --save flag is provided
-    if (options.save) {
-      if (!options.project || !options.session) {
-        console.error(JSON.stringify({
-          success: false,
-          error: '--project and --session are required when using --save'
-        }));
-        process.exit(1);
-      }
-
+    // If --save and we have a session, update the database
+    if (options.save && streamingStore && sessionRecord) {
       try {
-        const sessionFile = path.join(SESSION_DIR, `${options.project}_streaming.json`);
-
-        if (!fs.existsSync(sessionFile)) {
-          console.error(JSON.stringify({
-            success: false,
-            error: `Session file not found: ${sessionFile}`
-          }));
-          process.exit(1);
-        }
-
-        let sessionData: any = {};
-        try {
-          sessionData = JSON.parse(fs.readFileSync(sessionFile, 'utf8'));
-        } catch (e) {
-          console.error(JSON.stringify({
-            success: false,
-            error: 'Failed to parse session file'
-          }));
-          process.exit(1);
-        }
-
-        // Update metadata
-        sessionData.promptTitle = title;
-        sessionData.promptSubtitle = subtitle;
-        sessionData.updatedAt = new Date().toISOString();
-
-        // Write back to file
-        fs.writeFileSync(sessionFile, JSON.stringify(sessionData, null, 2));
+        streamingStore.update(sessionRecord.id, {
+          title,
+          subtitle
+        });
       } catch (error: any) {
         console.error(JSON.stringify({
           success: false,
-          error: `Failed to save metadata: ${error.message}`
+          error: `Failed to save title: ${error.message}`
         }));
         process.exit(1);
       }
@@ -160,7 +161,8 @@ Now generate the title and subtitle (two lines exactly):`;
       console.log(JSON.stringify({
         success: true,
         title,
-        subtitle
+        subtitle,
+        sessionId: sessionRecord?.claude_session_id
       }, null, 2));
     } else if (options.oneline) {
       console.log(`${title} - ${subtitle}`);

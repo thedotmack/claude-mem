@@ -13,11 +13,11 @@ import { fileURLToPath } from 'url';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { renderToolMessage, HOOK_CONFIG } from './shared/hook-prompt-renderer.js';
 import { getProjectName } from './shared/path-resolver.js';
+import { initializeDatabase, getActiveStreamingSessionsForProject } from './shared/hook-helpers.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const SESSION_DIR = path.join(process.env.HOME || '', '.claude-mem', 'sessions');
 const HOOKS_LOG = path.join(process.env.HOME || '', '.claude-mem', 'logs', 'hooks.log');
 
 function debugLog(message, data = {}) {
@@ -61,15 +61,18 @@ process.stdin.on('end', async () => {
   console.log(JSON.stringify({ async: true, asyncTimeout: 180000 }));
 
   try {
-    // Load SDK session info
-    const sessionFile = path.join(SESSION_DIR, `${project}_streaming.json`);
-    if (!fs.existsSync(sessionFile)) {
+    // Load SDK session info from database
+    const db = initializeDatabase();
+
+    const sessions = getActiveStreamingSessionsForProject(db, project);
+    if (!sessions || sessions.length === 0) {
       debugLog('PostToolUse: No streaming session found', { project });
+      db.close();
       process.exit(0);
     }
 
-    const sessionData = JSON.parse(fs.readFileSync(sessionFile, 'utf8'));
-    const sdkSessionId = sessionData.sdkSessionId;
+    const sessionData = sessions[0];
+    const sdkSessionId = sessionData.sdk_session_id;
 
     // Convert tool response to string
     const toolResponseStr = typeof tool_response === 'string'
@@ -135,6 +138,9 @@ process.stdin.on('end', async () => {
     }
 
     debugLog('PostToolUse: SDK finished processing', { tool_name, sdkSessionId });
+
+    // Close database connection
+    db.close();
   } catch (error) {
     debugLog('PostToolUse: Error sending to SDK', { error: error.message });
   }

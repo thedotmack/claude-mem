@@ -161,9 +161,52 @@ export const migration002: Migration = {
 };
 
 /**
+ * Migration 003 - Add streaming_sessions table for real-time session tracking
+ */
+export const migration003: Migration = {
+  version: 3,
+  up: (db: Database.Database) => {
+    // Streaming sessions table - tracks active SDK compression sessions
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS streaming_sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        claude_session_id TEXT UNIQUE NOT NULL,
+        sdk_session_id TEXT,
+        project TEXT NOT NULL,
+        title TEXT,
+        subtitle TEXT,
+        user_prompt TEXT,
+        started_at TEXT NOT NULL,
+        started_at_epoch INTEGER NOT NULL,
+        updated_at TEXT,
+        updated_at_epoch INTEGER,
+        completed_at TEXT,
+        completed_at_epoch INTEGER,
+        status TEXT NOT NULL DEFAULT 'active'
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_streaming_sessions_claude_id ON streaming_sessions(claude_session_id);
+      CREATE INDEX IF NOT EXISTS idx_streaming_sessions_sdk_id ON streaming_sessions(sdk_session_id);
+      CREATE INDEX IF NOT EXISTS idx_streaming_sessions_project ON streaming_sessions(project);
+      CREATE INDEX IF NOT EXISTS idx_streaming_sessions_status ON streaming_sessions(status);
+      CREATE INDEX IF NOT EXISTS idx_streaming_sessions_started ON streaming_sessions(started_at_epoch DESC);
+    `);
+
+    console.log('✅ Created streaming_sessions table for real-time session tracking');
+  },
+
+  down: (db: Database.Database) => {
+    db.exec(`
+      DROP TABLE IF EXISTS streaming_sessions;
+    `);
+  }
+};
+
+/**
  * All migrations in order
  */
 export const migrations: Migration[] = [
   migration001,
-  migration002
+  migration002,
+  migration003
 ];
