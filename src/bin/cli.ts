@@ -22,11 +22,6 @@ import { storeMemory } from '../commands/store-memory.js';
 import { storeOverview } from '../commands/store-overview.js';
 import { updateSessionMetadata } from '../commands/update-session-metadata.js';
 import { generateTitle } from '../commands/generate-title.js';
-import {
-  executeChromaMCPTool,
-  loadChromaMCPTools,
-  generateCommandOptions
-} from '../commands/chroma-mcp.js';
 
 const program = new Command();
 // </Block> =======================================
@@ -228,37 +223,6 @@ program
   .option('--save', 'Save the generated title to the database (requires --session-id)')
   .action(generateTitle);
 
-// </Block> =======================================
-
-// <Block> 1.12 ===================================
-// Dynamic Chroma MCP Commands
-// Natural pattern: Register all Chroma MCP tools as CLI commands
-try {
-  const chromaTools = loadChromaMCPTools();
-
-  for (const tool of chromaTools) {
-    const cmd = program
-      .command(tool.name)
-      .description(tool.description || `Execute ${tool.name} MCP tool`);
-
-    // Add options from tool schema
-    const options = generateCommandOptions(tool.inputSchema);
-    for (const opt of options) {
-      if (opt.required) {
-        cmd.requiredOption(opt.flag, opt.description);
-      } else {
-        cmd.option(opt.flag, opt.description);
-      }
-    }
-
-    // Set action handler
-    cmd.action(async (options: OptionValues) => {
-      await executeChromaMCPTool(tool.name, options);
-    });
-  }
-} catch (error) {
-  console.warn('Warning: Could not load Chroma MCP tools:', error);
-}
 // </Block> =======================================
 
 // <Block> 1.11 ===================================
