@@ -267,6 +267,7 @@ function writeHookFiles(timeout: number = 180000): void {
     name: "claude-mem-hooks",
     type: "module",
     dependencies: {
+      "@anthropic-ai/claude-agent-sdk": "^0.1.0",
       "better-sqlite3": "^11.8.0"
     }
   };
@@ -278,8 +279,10 @@ function writeHookFiles(timeout: number = 180000): void {
       cwd: runtimeHooksDir,
       stdio: 'pipe'
     });
-  } catch (error) {
-    // Silent fail - hooks might still work if better-sqlite3 is globally available
+  } catch (error: any) {
+    // Log error but continue - user might have dependencies globally available
+    console.error(chalk.yellow('⚠ Warning: Failed to install hook dependencies. Hooks may not work properly.'));
+    console.error(chalk.gray(`  Run manually: cd ${runtimeHooksDir} && npm install`));
   }
 }
 
