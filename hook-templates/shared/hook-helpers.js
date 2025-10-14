@@ -426,5 +426,78 @@ export function markStreamingSessionCompleted(db, id) {
 export function initializeDatabase() {
   const db = getDatabase();
   ensureStreamingSessionsTable(db);
+  ensureSessionLocksTable(db);
   return db;
+}
+
+// =============================================================================
+// SESSION LOCKING (prevents concurrent SDK resume)
+// =============================================================================
+
+/**
+ * Ensure the session_locks table exists
+ */
+function ensureSessionLocksTable(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS session_locks (
+      sdk_session_id TEXT PRIMARY KEY,
+      locked_by TEXT NOT NULL,
+      locked_at TEXT NOT NULL,
+      locked_at_epoch INTEGER NOT NULL
+    )
+  `);
+}
+
+/**
+ * Attempt to acquire a lock on an SDK session
+ * @returns {boolean} true if lock acquired, false if already locked
+ */
+export function acquireSessionLock(db, sdkSessionId, lockOwner) {
+  ensureSessionLocksTable(db);
+
+  try {
+    const timestamp = new Date().toISOString();
+    const epoch = Date.now();
+
+    const stmt = db.prepare(`
+      INSERT INTO session_locks (sdk_session_id, locked_by, locked_at, locked_at_epoch)
+      VALUES (?, ?, ?, ?)
+    `);
+
+    stmt.run(sdkSessionId, lockOwner, timestamp, epoch);
+    return true;
+  } catch (error) {
+    // UNIQUE constraint violation = already locked
+    return false;
+  }
+}
+
+/**
+ * Release a lock on an SDK session
+ */
+export function releaseSessionLock(db, sdkSessionId) {
+  ensureSessionLocksTable(db);
+
+  const stmt = db.prepare(`
+    DELETE FROM session_locks
+    WHERE sdk_session_id = ?
+  `);
+
+  stmt.run(sdkSessionId);
+}
+
+/**
+ * Clean up stale locks (older than 5 minutes)
+ */
+export function cleanupStaleLocks(db) {
+  ensureSessionLocksTable(db);
+
+  const fiveMinutesAgo = Date.now() - (5 * 60 * 1000);
+
+  const stmt = db.prepare(`
+    DELETE FROM session_locks
+    WHERE locked_at_epoch < ?
+  `);
+
+  stmt.run(fiveMinutesAgo);
 }

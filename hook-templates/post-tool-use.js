@@ -13,7 +13,7 @@ import { fileURLToPath } from 'url';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { renderToolMessage, HOOK_CONFIG } from './shared/hook-prompt-renderer.js';
 import { getProjectName } from './shared/path-resolver.js';
-import { initializeDatabase, getActiveStreamingSessionsForProject } from './shared/hook-helpers.js';
+import { initializeDatabase, getActiveStreamingSessionsForProject, acquireSessionLock, releaseSessionLock, cleanupStaleLocks } from './shared/hook-helpers.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -40,6 +40,44 @@ function debugLog(message, data = {}) {
 // MAIN
 // =============================================================================
 
+// =============================================================================
+// GRACEFUL SHUTDOWN HANDLERS
+// =============================================================================
+
+let db;
+let lockAcquired = false;
+let sdkSessionId = null;
+
+function cleanup() {
+  if (lockAcquired && sdkSessionId && db) {
+    try {
+      releaseSessionLock(db, sdkSessionId);
+      debugLog('PostToolUse: Released session lock on shutdown', { sdkSessionId });
+    } catch (err) {
+      // Silent fail on cleanup
+    }
+  }
+  if (db) {
+    try {
+      db.close();
+    } catch (err) {
+      // Silent fail on cleanup
+    }
+  }
+}
+
+process.on('SIGTERM', () => {
+  debugLog('PostToolUse: Received SIGTERM, cleaning up');
+  cleanup();
+  process.exit(0);
+});
+
+process.on('SIGINT', () => {
+  debugLog('PostToolUse: Received SIGINT, cleaning up');
+  cleanup();
+  process.exit(0);
+});
+
 let input = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', (chunk) => { input += chunk; });
@@ -62,7 +100,10 @@ process.stdin.on('end', async () => {
 
   try {
     // Load SDK session info from database
-    const db = initializeDatabase();
+    db = initializeDatabase();
+
+    // Clean up any stale locks first
+    cleanupStaleLocks(db);
 
     const sessions = getActiveStreamingSessionsForProject(db, project);
     if (!sessions || sessions.length === 0) {
@@ -72,7 +113,22 @@ process.stdin.on('end', async () => {
     }
 
     const sessionData = sessions[0];
-    const sdkSessionId = sessionData.sdk_session_id;
+    sdkSessionId = sessionData.sdk_session_id;
+
+    // Validate SDK session ID exists
+    if (!sdkSessionId) {
+      debugLog('PostToolUse: SDK session ID not yet available', { project });
+      db.close();
+      process.exit(0);
+    }
+
+    // Try to acquire lock - if another hook has it, skip this tool
+    lockAcquired = acquireSessionLock(db, sdkSessionId, 'PostToolUse');
+    if (!lockAcquired) {
+      debugLog('PostToolUse: Session locked by another hook, skipping', { sdkSessionId });
+      db.close();
+      process.exit(0);
+    }
 
     // Convert tool response to string
     const toolResponseStr = typeof tool_response === 'string'
@@ -139,10 +195,26 @@ process.stdin.on('end', async () => {
 
     debugLog('PostToolUse: SDK finished processing', { tool_name, sdkSessionId });
 
-    // Close database connection
-    db.close();
   } catch (error) {
-    debugLog('PostToolUse: Error sending to SDK', { error: error.message });
+    debugLog('PostToolUse: Error sending to SDK', { error: error.message, stack: error.stack });
+  } finally {
+    // Always release lock and close database
+    if (lockAcquired && sdkSessionId && db) {
+      try {
+        releaseSessionLock(db, sdkSessionId);
+        debugLog('PostToolUse: Released session lock', { sdkSessionId });
+      } catch (err) {
+        debugLog('PostToolUse: Error releasing lock', { error: err.message });
+      }
+    }
+
+    if (db) {
+      try {
+        db.close();
+      } catch (err) {
+        debugLog('PostToolUse: Error closing database', { error: err.message });
+      }
+    }
   }
 
   // Exit cleanly after async processing completes

@@ -12,7 +12,7 @@ import fs from 'fs';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { renderEndMessage, HOOK_CONFIG } from './shared/hook-prompt-renderer.js';
 import { getProjectName } from './shared/path-resolver.js';
-import { initializeDatabase, getActiveStreamingSessionsForProject, markStreamingSessionCompleted } from './shared/hook-helpers.js';
+import { initializeDatabase, getActiveStreamingSessionsForProject, markStreamingSessionCompleted, acquireSessionLock, releaseSessionLock, cleanupStaleLocks } from './shared/hook-helpers.js';
 
 const HOOKS_LOG = path.join(process.env.HOME || '', '.claude-mem', 'logs', 'hooks.log');
 
@@ -28,6 +28,45 @@ function debugLog(message, data = {}) {
     }
   }
 }
+
+// =============================================================================
+// GRACEFUL SHUTDOWN HANDLERS
+// =============================================================================
+
+let db;
+let lockAcquired = false;
+let sdkSessionId = null;
+let sessionData = null;
+
+function cleanup() {
+  if (lockAcquired && sdkSessionId && db) {
+    try {
+      releaseSessionLock(db, sdkSessionId);
+      debugLog('Stop: Released session lock on shutdown', { sdkSessionId });
+    } catch (err) {
+      // Silent fail on cleanup
+    }
+  }
+  if (db) {
+    try {
+      db.close();
+    } catch (err) {
+      // Silent fail on cleanup
+    }
+  }
+}
+
+process.on('SIGTERM', () => {
+  debugLog('Stop: Received SIGTERM, cleaning up');
+  cleanup();
+  process.exit(0);
+});
+
+process.on('SIGINT', () => {
+  debugLog('Stop: Received SIGINT, cleaning up');
+  cleanup();
+  process.exit(0);
+});
 
 // =============================================================================
 // MAIN
@@ -50,20 +89,23 @@ process.stdin.on('end', async () => {
   const { cwd } = payload;
   const project = cwd ? getProjectName(cwd) : 'unknown';
 
-  // Immediately clear activity flag for UI indicator
-  const activityFlagPath = path.join(process.env.HOME || '', '.claude-mem', 'activity.flag');
-  try {
-    fs.writeFileSync(activityFlagPath, JSON.stringify({ active: false, timestamp: Date.now() }));
-  } catch (error) {
-    // Silent fail - non-critical
-  }
-
   // Return immediately with async mode
   console.log(JSON.stringify({ async: true, asyncTimeout: 180000 }));
 
   try {
+    // Clear activity flag FIRST - even if hook fails, UI should update
+    const activityFlagPath = path.join(process.env.HOME || '', '.claude-mem', 'activity.flag');
+    try {
+      fs.writeFileSync(activityFlagPath, JSON.stringify({ active: false, timestamp: Date.now() }));
+    } catch (error) {
+      debugLog('Stop: Error clearing activity flag', { error: error.message });
+    }
+
     // Load SDK session info from database
-    const db = initializeDatabase();
+    db = initializeDatabase();
+
+    // Clean up any stale locks first
+    cleanupStaleLocks(db);
 
     const sessions = getActiveStreamingSessionsForProject(db, project);
     if (!sessions || sessions.length === 0) {
@@ -72,9 +114,33 @@ process.stdin.on('end', async () => {
       process.exit(0);
     }
 
-    const sessionData = sessions[0];
-    const sdkSessionId = sessionData.sdk_session_id;
+    sessionData = sessions[0];
+    sdkSessionId = sessionData.sdk_session_id;
     const claudeSessionId = sessionData.claude_session_id;
+
+    // Validate SDK session ID exists
+    if (!sdkSessionId) {
+      debugLog('Stop: SDK session ID not yet available', { project });
+      db.close();
+      process.exit(0);
+    }
+
+    // Try to acquire lock - wait up to 10 seconds for PostToolUse to finish
+    let attempts = 0;
+    while (attempts < 20) {
+      lockAcquired = acquireSessionLock(db, sdkSessionId, 'Stop');
+      if (lockAcquired) break;
+
+      debugLog('Stop: Waiting for session lock', { attempt: attempts + 1, sdkSessionId });
+      await new Promise(resolve => setTimeout(resolve, 500));
+      attempts++;
+    }
+
+    if (!lockAcquired) {
+      debugLog('Stop: Could not acquire session lock after 10 seconds', { sdkSessionId });
+      db.close();
+      process.exit(1);
+    }
 
     debugLog('Stop: Ending SDK session', { sdkSessionId, claudeSessionId });
 
@@ -120,13 +186,31 @@ process.stdin.on('end', async () => {
     }
 
     // Mark session as completed in database
-    markStreamingSessionCompleted(db, sessionData.id);
-    debugLog('Stop: Session ended and marked complete', { project, sessionId: sessionData.id });
+    if (sessionData) {
+      markStreamingSessionCompleted(db, sessionData.id);
+      debugLog('Stop: Session ended and marked complete', { project, sessionId: sessionData.id });
+    }
 
-    // Close database connection
-    db.close();
   } catch (error) {
-    debugLog('Stop: Error ending session', { error: error.message });
+    debugLog('Stop: Error ending session', { error: error.message, stack: error.stack });
+  } finally {
+    // Always release lock and close database
+    if (lockAcquired && sdkSessionId && db) {
+      try {
+        releaseSessionLock(db, sdkSessionId);
+        debugLog('Stop: Released session lock', { sdkSessionId });
+      } catch (err) {
+        debugLog('Stop: Error releasing lock', { error: err.message });
+      }
+    }
+
+    if (db) {
+      try {
+        db.close();
+      } catch (err) {
+        debugLog('Stop: Error closing database', { error: err.message });
+      }
+    }
   }
 
   // Exit cleanly after async processing completes

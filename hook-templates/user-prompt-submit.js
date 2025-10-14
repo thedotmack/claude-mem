@@ -37,6 +37,34 @@ function debugLog(message, data = {}) {
 // Now using centralized config from hook-prompt-renderer.js
 
 // =============================================================================
+// GRACEFUL SHUTDOWN HANDLERS
+// =============================================================================
+
+let db;
+
+function cleanup() {
+  if (db) {
+    try {
+      db.close();
+    } catch (err) {
+      // Silent fail on cleanup
+    }
+  }
+}
+
+process.on('SIGTERM', () => {
+  debugLog('UserPromptSubmit: Received SIGTERM, cleaning up');
+  cleanup();
+  process.exit(0);
+});
+
+process.on('SIGINT', () => {
+  debugLog('UserPromptSubmit: Received SIGINT, cleaning up');
+  cleanup();
+  process.exit(0);
+});
+
+// =============================================================================
 // MAIN
 // =============================================================================
 
@@ -89,7 +117,7 @@ process.stdin.on('end', async () => {
 
   try {
     // Initialize database and create session record FIRST
-    const db = initializeDatabase();
+    db = initializeDatabase();
 
     // Create session record immediately - this gives us a tracking ID
     const sessionRecord = createStreamingSession(db, {
@@ -145,10 +173,17 @@ process.stdin.on('end', async () => {
       });
     }
 
-    // Close database connection
-    db.close();
   } catch (error) {
-    debugLog('UserPromptSubmit: Error starting SDK session', { error: error.message });
+    debugLog('UserPromptSubmit: Error starting SDK session', { error: error.message, stack: error.stack });
+  } finally {
+    // Always close database connection
+    if (db) {
+      try {
+        db.close();
+      } catch (err) {
+        debugLog('UserPromptSubmit: Error closing database', { error: err.message });
+      }
+    }
   }
 
   // Return success to Claude Code
