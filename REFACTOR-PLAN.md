@@ -50,15 +50,73 @@ Create a lightweight, hook-driven memory system that captures important context 
 **Streaming Input Mode (what we need):**
 - Persistent session with AsyncGenerator
 - Can queue multiple messages
-- Supports interruption
+- Supports interruption via `interrupt()` method
 - Natural multi-turn conversations
 - The SDK maintains conversation state
 
 **Critical insight:** We use "Streaming Input Mode" which creates ONE long-running SDK session per Claude Code session, not multiple short sessions.
 
+**Session ID Management:**
+- Session IDs change with each turn of the conversation
+- Must capture session ID from the initial system message
+- SDK worker needs to track session ID updates continuously, not just capture once
+- The first message in the response stream is a system init message with the session_id
+
 ---
 
 ## Architecture
+
+### Visual Overview
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     CLAUDE CODE SESSION                          │
+│  (Main session - user interacting with Claude Code)             │
+│                                                                   │
+│  User → Claude → Tools (Read, Edit, Write, Bash, etc.)          │
+│                    │                                              │
+│                    │ PostToolUse Hook                             │
+│                    ↓                                              │
+│              claude-mem save                                      │
+│              (queues observation)                                 │
+└─────────────────────────────────────────────────────────────────┘
+                         │
+                         │ SQLite observation_queue
+                         ↓
+┌─────────────────────────────────────────────────────────────────┐
+│                  SDK WORKER PROCESS                              │
+│  (Background process - detached from main session)              │
+│                                                                   │
+│  ┌─────────────────────────────────────────────┐                │
+│  │  Message Generator (AsyncIterable)          │                │
+│  │  - Yields initial prompt                    │                │
+│  │  - Polls observation_queue                  │                │
+│  │  - Yields observation prompts               │                │
+│  └─────────────────────────────────────────────┘                │
+│                         ↓                                         │
+│  ┌─────────────────────────────────────────────┐                │
+│  │  SDK query() → Claude API                   │                │
+│  │  Model: claude-sonnet-4-5                   │                │
+│  │  No tools needed (text-only synthesis)      │                │
+│  └─────────────────────────────────────────────┘                │
+│                         ↓                                         │
+│  ┌─────────────────────────────────────────────┐                │
+│  │  Response Handler                           │                │
+│  │  - Parses XML <observation> blocks          │                │
+│  │  - Parses XML <summary> blocks              │                │
+│  │  - Writes to SQLite tables                  │                │
+│  └─────────────────────────────────────────────┘                │
+└─────────────────────────────────────────────────────────────────┘
+                         │
+                         │ SQLite: observations, session_summaries
+                         ↓
+┌─────────────────────────────────────────────────────────────────┐
+│                NEXT CLAUDE CODE SESSION                          │
+│                                                                   │
+│  SessionStart Hook → claude-mem context                          │
+│  (Reads from SQLite and injects context)                         │
+└─────────────────────────────────────────────────────────────────┘
+```
 
 ### What is the SDK agent's job?
 
@@ -75,6 +133,32 @@ It should NOT:
 - Try to capture everything
 - Make decisions about what Claude Code should do
 - Block or slow down the main session
+
+### Session Management Strategy
+
+**Built-in SDK Session Resumption:**
+
+The Agent SDK provides native session resumption capabilities. Instead of manually tracking and rebuilding session state, we can leverage the SDK's built-in features:
+
+```typescript
+// Resume a previous SDK session
+const resumedResponse = query({
+  prompt: "Continue where we left off",
+  options: {
+    resume: sdkSessionId  // Use the session ID captured from init message
+  }
+});
+```
+
+**When to use session resumption:**
+- User interrupts Claude Code and resumes later
+- SDK worker crashes and needs to restart
+- Long-running observations that span multiple Claude Code sessions
+
+**Session state tracking:**
+- Store SDK session ID in database when captured from init message
+- Mark sessions as 'active', 'completed', 'interrupted', or 'failed'
+- Use session status to determine whether to resume or start fresh
 
 ### How hooks run in parallel
 
@@ -155,11 +239,27 @@ CREATE INDEX idx_summaries_created ON session_summaries(created_at_epoch DESC);
 
 ## Hook Implementation
 
+**IMPORTANT DISTINCTION:**
+
+There are TWO separate hook systems at play here:
+
+1. **Claude Code Hooks** - External command hooks configured in `~/.config/claude-code/settings.json`
+   - These hooks observe the MAIN Claude Code session
+   - They run as external commands (like `claude-mem save`)
+   - This is what we use to capture observations from the user's session
+
+2. **SDK Hooks** - Programmatic hooks configured in TypeScript code via `HookMatcher`
+   - These hooks would observe the MEMORY SDK agent's own tool usage
+   - They run as TypeScript callbacks within the SDK worker process
+   - We're NOT using these (yet) - they're a future enhancement
+
+**Our architecture:** Use Claude Code hooks (external commands) to observe the main session, and run a separate SDK worker process that doesn't need its own hooks.
+
 ### 1. SessionStart Hook
 
 **Purpose:** Show user what happened in recent sessions
 
-**Hook config:**
+**Claude Code Hook Config (in settings.json):**
 ```json
 {
   "hooks": {
@@ -236,29 +336,33 @@ child.unref();
 The SDK worker:
 ```typescript
 // claude-mem sdk-worker <session_id>
+import { query } from '@anthropic-ai/agent-sdk';
+import type { Query, UserMessage } from '@anthropic-ai/agent-sdk';
+
 async function runSDKWorker(sessionId: string) {
   const session = await loadSessionFromDB(sessionId);
 
-  async function* messageGenerator() {
+  // Track the SDK session ID from the init message
+  let sdkSessionId: string | undefined;
+  const abortController = new AbortController();
+
+  // Message generator yields UserMessage objects (role + content)
+  // This matches the SDK's expected format for streaming input mode
+  async function* messageGenerator(): AsyncIterable<UserMessage> {
+    // Initial prompt
     yield {
-      type: "user",
-      message: {
-        role: "user",
-        content: buildInitPrompt(session)
-      }
+      role: "user",
+      content: buildInitPrompt(session)
     };
 
     // Then listen for queued observations
-    while (session.status === 'active') {
+    while (session.status === 'active' && !abortController.signal.aborted) {
       const observations = await pollObservationQueue(session.sdk_session_id);
 
       for (const obs of observations) {
         yield {
-          type: "user",
-          message: {
-            role: "user",
-            content: buildObservationPrompt(obs)
-          }
+          role: "user",
+          content: buildObservationPrompt(obs)
         };
         markObservationProcessed(obs.id);
       }
@@ -267,29 +371,54 @@ async function runSDKWorker(sessionId: string) {
     }
   }
 
-  // Run SDK session
-  const response = query({
-    prompt: messageGenerator(),
+  // Run SDK session with proper streaming interface
+  // The query function signature: query({ prompt, options }): Query
+  const response: Query = query({
+    prompt: messageGenerator(), // AsyncIterable<UserMessage>
     options: {
-      model: 'claude-haiku-4-5-20251001', // 3x faster than Sonnet 4.5, quality of Sonnet 4.0-4.1
-      allowedTools: [], // No tools needed - agent outputs XML that we parse
+      model: 'claude-sonnet-4-5', // Use documented model name
+      disallowedTools: ['Glob', 'Grep', 'ListMcpResourcesTool', 'WebSearch'], // More efficient than filtering in hooks
       maxTurns: 1000,
-      cwd: session.cwd
+      cwd: session.cwd,
+      abortController: abortController
     }
   });
 
-  // Consume responses and parse XML for observations/summaries
-  for await (const msg of response) {
-    if (msg.type === 'text') {
-      // Use an XML parser library (e.g., fast-xml-parser or similar) to parse observations and summaries
-      // Parse <observation> blocks and call storeObservation(session_id, project, type, text)
-      // Parse <summary> blocks, extract all 8 fields, format and call storeSummary(session_id, project, text)
+  try {
+    // Consume responses from the Query AsyncGenerator
+    for await (const msg of response) {
+      // Capture session ID from system init message
+      if (msg.type === 'system' && msg.subtype === 'init') {
+        sdkSessionId = msg.session_id;
+        console.log(`SDK session started with ID: ${sdkSessionId}`);
+        // Store SDK session ID in database for potential resumption
+        await updateSDKSessionId(session.id, sdkSessionId);
+      }
 
-      parseAndStoreObservations(msg.content, session);
-      parseAndStoreSummary(msg.content, session);
+      if (msg.type === 'text') {
+        // Use an XML parser library (e.g., fast-xml-parser or similar) to parse observations and summaries
+        // Parse <observation> blocks and call storeObservation(session_id, project, type, text)
+        // Parse <summary> blocks, extract all 8 fields, format and call storeSummary(session_id, project, text)
+
+        parseAndStoreObservations(msg.content, session);
+        parseAndStoreSummary(msg.content, session);
+      }
     }
+  } catch (error) {
+    if (abortController.signal.aborted) {
+      console.log('SDK worker interrupted gracefully');
+    } else {
+      console.error('SDK worker error:', error);
+      await markSessionFailed(session.id, error);
+    }
+  } finally {
+    await cleanupSession(session.id);
   }
 }
+
+// Note: Query and UserMessage types are imported from '@anthropic-ai/agent-sdk'
+// Query extends AsyncGenerator and provides interrupt() and setPermissionMode() methods
+// UserMessage has the shape: { role: "user", content: string }
 ```
 
 ### 3. PostToolUse Hook
@@ -327,15 +456,20 @@ Flow:
 
 **Observation Filtering:**
 
-Not every tool is worth observing. Filter in the hook:
-```typescript
-const BORING_TOOLS = new Set(['Glob', 'Grep', 'ListMcpResourcesTool']);
+Tool filtering is now handled at the SDK level (see SDK Worker section) using `disallowedTools` option. The hook no longer needs to filter tools manually - all tool observations that reach the hook are already relevant.
 
-if (BORING_TOOLS.has(tool_name)) {
+However, you may still want to skip certain tools for performance reasons:
+```typescript
+// Optional: Skip very frequent or low-value tools
+const SKIP_TOOLS = new Set(['TodoWrite', 'ListMcpResourcesTool']);
+
+if (SKIP_TOOLS.has(tool_name)) {
   console.log('{"continue": true, "suppressOutput": true}');
   process.exit(0);
 }
 ```
+
+**Note:** The SDK worker uses `disallowedTools: ['Glob', 'Grep', 'ListMcpResourcesTool', 'WebSearch']` which is more efficient than hook-level filtering because it prevents the SDK agent from using these tools entirely.
 
 ### 4. Stop Hook
 
@@ -607,6 +741,75 @@ Benefits:
 
 ---
 
+## Advanced SDK Features
+
+### Permission Integration (Future Enhancement)
+
+The SDK provides a permission system that could be integrated with memory for context-aware decisions:
+
+```typescript
+canUseTool: async (toolName, input) => {
+  // Check memory for previous decisions about this tool/context
+  const previousDecisions = await queryMemoryForTool(toolName, input);
+
+  if (previousDecisions.shouldAllow) {
+    return {
+      behavior: "allow",
+      updatedInput: input
+    };
+  }
+
+  return {
+    behavior: "ask_user",
+    message: `This tool was previously flagged. Allow anyway?`
+  };
+}
+```
+
+This could enable:
+- Learning from previous tool use patterns
+- Automatically allowing/denying based on historical context
+- Providing smart defaults based on project-specific patterns
+
+**Implementation priority:** Low (add after core functionality is stable)
+
+### SDK Hook Configuration (Alternative to Claude Code Hooks)
+
+Instead of using external command hooks via Claude Code settings.json, the SDK supports native hook configuration:
+
+```typescript
+import { HookMatcher } from '@anthropic-ai/agent-sdk';
+
+const response = query({
+  prompt: messageGenerator(),
+  options: {
+    hooks: {
+      'PreToolUse': [
+        HookMatcher(matcher='Bash', hooks=[validateBashCommand]),
+        HookMatcher(hooks=[logToolUse])  // Applies to all tools
+      ],
+      'PostToolUse': [
+        HookMatcher(hooks=[captureObservation])
+      ]
+    }
+  }
+});
+
+type HookCallback = (
+  input: HookInput,
+  toolUseID: string | undefined,
+  options: { signal: AbortSignal }
+) => Promise<HookJSONOutput>;
+```
+
+**When to use SDK hooks vs Claude Code hooks:**
+- **Claude Code hooks**: For integrating with the main Claude Code session (our current approach)
+- **SDK hooks**: For controlling the memory agent's own tool usage (future enhancement)
+
+**Implementation priority:** Medium (could simplify architecture, but adds complexity to migration)
+
+---
+
 ## Error Handling
 
 **SDK worker failures:**
@@ -614,16 +817,38 @@ Benefits:
 - Failed observations stay in queue
 - Next worker run retries
 - After 3 failures, mark observation as skipped
+- Use AbortController for graceful cancellation
+
+**Abort signal handling:**
+```typescript
+try {
+  for await (const msg of response) {
+    if (abortController.signal.aborted) {
+      throw new Error('Aborted');
+    }
+    // Process message
+  }
+} catch (error) {
+  if (abortController.signal.aborted) {
+    // Clean shutdown
+    await response.interrupt();
+  } else {
+    // Actual error
+    throw error;
+  }
+}
+```
 
 **Database corruption:**
 - SQLite with WAL mode (write-ahead logging)
 - Regular backups to ~/.claude-mem/backups/
 - Automatic recovery from backups
 
-**ChromaDB connection failures:**
-- Graceful degradation (log error, continue)
+**SDK API failures:**
 - Retry with exponential backoff
 - Don't block main Claude Code session
+- Log errors for debugging
+- Mark session as 'failed' after max retries
 
 ---
 
@@ -638,3 +863,78 @@ Benefits:
 Start simple. Get one hook working before moving to the next. Don't try to build everything at once.
 
 **Note:** MCP is only used for retrieval (when Claude Code needs to access stored memories), not for storage. The SDK agent stores data by outputting specially formatted text that the SDK worker parses and writes to SQLite.
+
+### SDK Import Verification
+
+Before implementing, verify the SDK exports match your usage:
+
+```typescript
+// Required imports from @anthropic-ai/agent-sdk
+import { query } from '@anthropic-ai/agent-sdk';
+import type { Query, UserMessage, Options } from '@anthropic-ai/agent-sdk';
+
+// Verify the query function signature:
+// function query(options: { prompt: string | AsyncIterable<UserMessage>; options?: Options }): Query
+
+// Verify Query type:
+// interface Query extends AsyncGenerator<SDKMessage, void> {
+//   interrupt(): Promise<void>;
+//   setPermissionMode(mode: PermissionMode): Promise<void>;
+// }
+
+// Verify UserMessage type:
+// type UserMessage = { role: "user"; content: string }
+```
+
+If the SDK exports differ from this structure, adjust the implementation accordingly. The SDK documentation should be the source of truth.
+
+---
+
+## Key Corrections from Agent SDK Documentation
+
+This refactor plan has been updated to align with the official Agent SDK documentation. Key corrections include:
+
+### 1. Session ID Management
+- **Before:** Captured session ID once in UserPromptSubmit hook
+- **After:** Capture from system init message and track updates continuously
+- **Why:** Session IDs change with each conversation turn
+
+### 2. Hook Configuration
+- **Before:** Mixed up SDK hook format with Claude Code hook format
+- **After:** Clarified that Claude Code uses settings.json format (external commands); SDK uses TypeScript HookMatcher (programmatic callbacks)
+- **Why:** Two separate hook systems with different purposes and configuration methods
+- **Our approach:** Use Claude Code hooks to observe the main session; SDK hooks are future enhancement
+
+### 3. Message Generator and Query Interface
+- **Before:** Custom SDKMessage type with nested message structure
+- **After:** Simple UserMessage type `{ role: "user", content: string }` yielded from AsyncIterable
+- **Why:** SDK expects AsyncIterable<UserMessage>, not a custom wrapper format
+- **Query type:** Properly typed as `Query` which extends AsyncGenerator with interrupt() and setPermissionMode()
+
+### 4. Tool Filtering
+- **Before:** Filter "boring tools" in PostToolUse hook
+- **After:** Use SDK's `disallowedTools` option in query configuration
+- **Why:** More efficient to prevent SDK from using tools entirely
+
+### 5. Model Identifier
+- **Before:** Used `claude-haiku-4-5-20251001` (undocumented)
+- **After:** Use `claude-sonnet-4-5` (documented model name)
+- **Why:** Stick to documented model identifiers for stability
+
+### 6. Error Handling
+- **Before:** Custom error handling without SDK features
+- **After:** Use AbortController and response.interrupt() for graceful cancellation
+- **Why:** SDK provides built-in cancellation mechanisms
+
+### 7. Session Resumption
+- **Before:** Manual session state reconstruction
+- **After:** Leverage SDK's built-in `resume: sessionId` option
+- **Why:** SDK already handles session resumption
+
+### Future Enhancements to Consider
+
+1. **Permission integration** - Use canUseTool callback to make memory-aware decisions
+2. **SDK native hooks** - Replace external command hooks with SDK HookMatcher
+3. **Better session recovery** - Use SDK resumption for interrupted sessions
+
+These corrections ensure our implementation follows Agent SDK best practices and avoids reinventing functionality the SDK already provides.
