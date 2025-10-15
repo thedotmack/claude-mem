@@ -10,7 +10,7 @@
 import { spawn } from 'child_process';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import Database from 'better-sqlite3';
+import { Database } from 'bun:sqlite';
 import os from 'os';
 import fs from 'fs';
 
@@ -320,7 +320,7 @@ export function createStreamingSession(db, { claude_session_id, project, user_pr
   const timestamp = started_at || new Date().toISOString();
   const epoch = new Date(timestamp).getTime();
 
-  const stmt = db.prepare(`
+  const stmt = db.query(`
     INSERT INTO streaming_sessions (
       claude_session_id, project, user_prompt, started_at, started_at_epoch, status
     ) VALUES (?, ?, ?, ?, ?, 'active')
@@ -328,7 +328,7 @@ export function createStreamingSession(db, { claude_session_id, project, user_pr
 
   const info = stmt.run(claude_session_id, project, user_prompt || null, timestamp, epoch);
 
-  return db.prepare('SELECT * FROM streaming_sessions WHERE id = ?').get(info.lastInsertRowid);
+  return db.query('SELECT * FROM streaming_sessions WHERE id = ?').get(info.lastInsertRowid);
 }
 
 /**
@@ -372,7 +372,7 @@ export function updateStreamingSession(db, id, updates) {
 
   values.push(id);
 
-  const stmt = db.prepare(`
+  const stmt = db.query(`
     UPDATE streaming_sessions
     SET ${parts.join(', ')}
     WHERE id = ?
@@ -380,7 +380,7 @@ export function updateStreamingSession(db, id, updates) {
 
   stmt.run(...values);
 
-  return db.prepare('SELECT * FROM streaming_sessions WHERE id = ?').get(id);
+  return db.query('SELECT * FROM streaming_sessions WHERE id = ?').get(id);
 }
 
 /**
@@ -389,7 +389,7 @@ export function updateStreamingSession(db, id, updates) {
 export function getActiveStreamingSessionsForProject(db, project) {
   ensureStreamingSessionsTable(db);
 
-  const stmt = db.prepare(`
+  const stmt = db.query(`
     SELECT * FROM streaming_sessions
     WHERE project = ? AND status = 'active'
     ORDER BY started_at_epoch DESC
@@ -405,7 +405,7 @@ export function markStreamingSessionCompleted(db, id) {
   const timestamp = new Date().toISOString();
   const epoch = Date.now();
 
-  const stmt = db.prepare(`
+  const stmt = db.query(`
     UPDATE streaming_sessions
     SET status = ?,
         completed_at = ?,
@@ -417,7 +417,7 @@ export function markStreamingSessionCompleted(db, id) {
 
   stmt.run('completed', timestamp, epoch, timestamp, epoch, id);
 
-  return db.prepare('SELECT * FROM streaming_sessions WHERE id = ?').get(id);
+  return db.query('SELECT * FROM streaming_sessions WHERE id = ?').get(id);
 }
 
 /**
@@ -459,7 +459,7 @@ export function acquireSessionLock(db, sdkSessionId, lockOwner) {
     const timestamp = new Date().toISOString();
     const epoch = Date.now();
 
-    const stmt = db.prepare(`
+    const stmt = db.query(`
       INSERT INTO session_locks (sdk_session_id, locked_by, locked_at, locked_at_epoch)
       VALUES (?, ?, ?, ?)
     `);
@@ -478,7 +478,7 @@ export function acquireSessionLock(db, sdkSessionId, lockOwner) {
 export function releaseSessionLock(db, sdkSessionId) {
   ensureSessionLocksTable(db);
 
-  const stmt = db.prepare(`
+  const stmt = db.query(`
     DELETE FROM session_locks
     WHERE sdk_session_id = ?
   `);
@@ -494,7 +494,7 @@ export function cleanupStaleLocks(db) {
 
   const fiveMinutesAgo = Date.now() - (5 * 60 * 1000);
 
-  const stmt = db.prepare(`
+  const stmt = db.query(`
     DELETE FROM session_locks
     WHERE locked_at_epoch < ?
   `);

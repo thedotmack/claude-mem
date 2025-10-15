@@ -1,4 +1,4 @@
-import { Database } from 'better-sqlite3';
+import { Database } from 'bun:sqlite';
 import { Migration } from './Database.js';
 
 /**
@@ -6,9 +6,9 @@ import { Migration } from './Database.js';
  */
 export const migration001: Migration = {
   version: 1,
-  up: (db: Database.Database) => {
+  up: (db: Database) => {
     // Sessions table - core session tracking
-    db.exec(`
+    db.run(`
       CREATE TABLE IF NOT EXISTS sessions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         session_id TEXT UNIQUE NOT NULL,
@@ -29,7 +29,7 @@ export const migration001: Migration = {
     `);
 
     // Memories table - compressed memory chunks
-    db.exec(`
+    db.run(`
       CREATE TABLE IF NOT EXISTS memories (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         session_id TEXT NOT NULL,
@@ -53,7 +53,7 @@ export const migration001: Migration = {
     `);
 
     // Overviews table - session summaries (one per project)
-    db.exec(`
+    db.run(`
       CREATE TABLE IF NOT EXISTS overviews (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         session_id TEXT NOT NULL,
@@ -73,7 +73,7 @@ export const migration001: Migration = {
     `);
 
     // Diagnostics table - system health and debug info
-    db.exec(`
+    db.run(`
       CREATE TABLE IF NOT EXISTS diagnostics (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         session_id TEXT,
@@ -93,7 +93,7 @@ export const migration001: Migration = {
     `);
 
     // Transcript events table - raw conversation events
-    db.exec(`
+    db.run(`
       CREATE TABLE IF NOT EXISTS transcript_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         session_id TEXT NOT NULL,
@@ -116,8 +116,8 @@ export const migration001: Migration = {
     console.log('✅ Created all database tables successfully');
   },
 
-  down: (db: Database.Database) => {
-    db.exec(`
+  down: (db: Database) => {
+    db.run(`
       DROP TABLE IF EXISTS transcript_events;
       DROP TABLE IF EXISTS diagnostics;
       DROP TABLE IF EXISTS overviews;
@@ -132,9 +132,9 @@ export const migration001: Migration = {
  */
 export const migration002: Migration = {
   version: 2,
-  up: (db: Database.Database) => {
+  up: (db: Database) => {
     // Add new columns for hierarchical memory structure
-    db.exec(`
+    db.run(`
       ALTER TABLE memories ADD COLUMN title TEXT;
       ALTER TABLE memories ADD COLUMN subtitle TEXT;
       ALTER TABLE memories ADD COLUMN facts TEXT;
@@ -143,7 +143,7 @@ export const migration002: Migration = {
     `);
 
     // Create indexes for the new fields to improve search performance
-    db.exec(`
+    db.run(`
       CREATE INDEX IF NOT EXISTS idx_memories_title ON memories(title);
       CREATE INDEX IF NOT EXISTS idx_memories_concepts ON memories(concepts);
     `);
@@ -151,7 +151,7 @@ export const migration002: Migration = {
     console.log('✅ Added hierarchical memory fields to memories table');
   },
 
-  down: (db: Database.Database) => {
+  down: (db: Database) => {
     // Note: SQLite doesn't support DROP COLUMN in all versions
     // In production, we'd need to recreate the table without these columns
     // For now, we'll just log a warning
@@ -165,9 +165,9 @@ export const migration002: Migration = {
  */
 export const migration003: Migration = {
   version: 3,
-  up: (db: Database.Database) => {
+  up: (db: Database) => {
     // Streaming sessions table - tracks active SDK compression sessions
-    db.exec(`
+    db.run(`
       CREATE TABLE IF NOT EXISTS streaming_sessions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         claude_session_id TEXT UNIQUE NOT NULL,
@@ -195,8 +195,8 @@ export const migration003: Migration = {
     console.log('✅ Created streaming_sessions table for real-time session tracking');
   },
 
-  down: (db: Database.Database) => {
-    db.exec(`
+  down: (db: Database) => {
+    db.run(`
       DROP TABLE IF EXISTS streaming_sessions;
     `);
   }

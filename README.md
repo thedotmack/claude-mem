@@ -136,12 +136,11 @@ Perfect for developers who want their AI assistant to remember project context, 
 <!-- Prerequisites -->
 ### :bangbang: Prerequisites
 
-This project requires Node.js and works best with Claude Code
+This project requires Bun runtime and works best with Claude Code
 
-- Node.js >= 18.0.0
+- Bun >= 1.0.0 (required for SQLite support)
 - Claude Code with MCP support
 - macOS/Linux (POSIX-compliant system)
-- Bun >= 1.0.0 (optional, for development)
 
 <!-- Installation -->
 ### :gear: Installation

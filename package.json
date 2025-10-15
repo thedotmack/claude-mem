@@ -30,7 +30,7 @@
   },
   "type": "module",
   "engines": {
-    "node": ">=18.0.0"
+    "bun": ">=1.0.0"
   },
   "bin": {
     "claude-mem": "./dist/claude-mem.min.js"
@@ -44,7 +44,6 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.1.0",
     "@clack/prompts": "^0.11.0",
-    "better-sqlite3": "^11.8.1",
     "boxen": "^8.0.1",
     "chalk": "^5.6.0",
     "commander": "^14.0.0",

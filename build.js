@@ -43,10 +43,11 @@ async function build() {
     const buildCommand = [
       'bun build',
       'src/bin/cli.ts',
-      '--target=node',
+      '--target=bun',
       '--outfile=dist/claude-mem.min.js',
       '--minify',
       '--external @anthropic-ai/claude-agent-sdk',
+      '--external bun:sqlite',
       `--define __DEFAULT_PACKAGE_VERSION__='"${version}"'`
     ].join(' ');
 
@@ -58,10 +59,13 @@ async function build() {
     // Add shebang to output
     console.log('\n📝 Adding shebang...');
     const distFile = 'dist/claude-mem.min.js';
-    const content = fs.readFileSync(distFile, 'utf-8');
-    if (!content.startsWith('#!/usr/bin/env node')) {
-      fs.writeFileSync(distFile, `#!/usr/bin/env node\n${content}`);
-    }
+    let content = fs.readFileSync(distFile, 'utf-8');
+
+    // Remove any existing shebangs
+    content = content.replace(/^#!.*\n/gm, '');
+
+    // Add the bun shebang
+    fs.writeFileSync(distFile, `#!/usr/bin/env bun\n${content}`);
     console.log('✓ Shebang added');
 
     // Make executable

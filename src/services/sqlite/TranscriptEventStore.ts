@@ -1,4 +1,4 @@
-import { Database } from 'better-sqlite3';
+import { Database } from 'bun:sqlite';
 import { getDatabase } from './Database.js';
 import {
   TranscriptEventInput,
@@ -22,7 +22,7 @@ export class TranscriptEventStore {
   upsert(event: TranscriptEventInput): TranscriptEventRow {
     const { isoString, epoch } = normalizeTimestamp(event.captured_at);
 
-    const stmt = this.db.prepare(`
+    const stmt = this.db.query(`
       INSERT INTO transcript_events (
         session_id,
         project,
@@ -72,7 +72,7 @@ export class TranscriptEventStore {
    * Get event by session and index
    */
   getBySessionAndIndex(sessionId: string, eventIndex: number): TranscriptEventRow | null {
-    const stmt = this.db.prepare(`
+    const stmt = this.db.query(`
       SELECT * FROM transcript_events
       WHERE session_id = ? AND event_index = ?
     `);
@@ -83,7 +83,7 @@ export class TranscriptEventStore {
    * Get highest event_index stored for a session
    */
   getMaxEventIndex(sessionId: string): number {
-    const stmt = this.db.prepare(`
+    const stmt = this.db.query(`
       SELECT MAX(event_index) as max_event_index
       FROM transcript_events
       WHERE session_id = ?
@@ -96,7 +96,7 @@ export class TranscriptEventStore {
    * List recent events for a session
    */
   listBySession(sessionId: string, limit = 200, offset = 0): TranscriptEventRow[] {
-    const stmt = this.db.prepare(`
+    const stmt = this.db.query(`
       SELECT * FROM transcript_events
       WHERE session_id = ?
       ORDER BY event_index ASC

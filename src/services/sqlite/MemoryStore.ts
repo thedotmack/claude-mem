@@ -1,4 +1,4 @@
-import { Database } from 'better-sqlite3';
+import { Database } from 'bun:sqlite';
 import { getDatabase } from './Database.js';
 import { MemoryRow, MemoryInput, normalizeTimestamp } from './types.js';
 
@@ -18,7 +18,7 @@ export class MemoryStore {
   create(input: MemoryInput): MemoryRow {
     const { isoString, epoch } = normalizeTimestamp(input.created_at);
 
-    const stmt = this.db.prepare(`
+    const stmt = this.db.query(`
       INSERT INTO memories (
         session_id, text, document_id, keywords, created_at, created_at_epoch,
         project, archive_basename, origin, title, subtitle, facts, concepts, files_touched
@@ -64,7 +64,7 @@ export class MemoryStore {
    * Get memory by primary key
    */
   getById(id: number): MemoryRow | null {
-    const stmt = this.db.prepare('SELECT * FROM memories WHERE id = ?');
+    const stmt = this.db.query('SELECT * FROM memories WHERE id = ?');
     return stmt.get(id) as MemoryRow || null;
   }
 
@@ -72,7 +72,7 @@ export class MemoryStore {
    * Get memory by document_id
    */
   getByDocumentId(documentId: string): MemoryRow | null {
-    const stmt = this.db.prepare('SELECT * FROM memories WHERE document_id = ?');
+    const stmt = this.db.query('SELECT * FROM memories WHERE document_id = ?');
     return stmt.get(documentId) as MemoryRow || null;
   }
 
@@ -80,7 +80,7 @@ export class MemoryStore {
    * Check if a document_id already exists
    */
   hasDocumentId(documentId: string): boolean {
-    const stmt = this.db.prepare('SELECT 1 FROM memories WHERE document_id = ? LIMIT 1');
+    const stmt = this.db.query('SELECT 1 FROM memories WHERE document_id = ? LIMIT 1');
     return Boolean(stmt.get(documentId));
   }
 
@@ -88,7 +88,7 @@ export class MemoryStore {
    * Get memories for a specific session
    */
   getBySessionId(sessionId: string): MemoryRow[] {
-    const stmt = this.db.prepare(`
+    const stmt = this.db.query(`
       SELECT * FROM memories 
       WHERE session_id = ? 
       ORDER BY created_at_epoch DESC
@@ -100,7 +100,7 @@ export class MemoryStore {
    * Get recent memories for a project
    */
   getRecentForProject(project: string, limit = 10): MemoryRow[] {
-    const stmt = this.db.prepare(`
+    const stmt = this.db.query(`
       SELECT * FROM memories 
       WHERE project = ?
       ORDER BY created_at_epoch DESC 
@@ -113,7 +113,7 @@ export class MemoryStore {
    * Get recent memories across all projects
    */
   getRecent(limit = 10): MemoryRow[] {
-    const stmt = this.db.prepare(`
+    const stmt = this.db.query(`
       SELECT * FROM memories 
       ORDER BY created_at_epoch DESC 
       LIMIT ?
@@ -136,7 +136,7 @@ export class MemoryStore {
     sql += ' ORDER BY created_at_epoch DESC LIMIT ?';
     params.push(limit);
     
-    const stmt = this.db.prepare(sql);
+    const stmt = this.db.query(sql);
     return stmt.all(...params) as MemoryRow[];
   }
 
@@ -155,7 +155,7 @@ export class MemoryStore {
     sql += ' ORDER BY created_at_epoch DESC LIMIT ?';
     params.push(limit);
     
-    const stmt = this.db.prepare(sql);
+    const stmt = this.db.query(sql);
     return stmt.all(...params) as MemoryRow[];
   }
 
@@ -167,7 +167,7 @@ export class MemoryStore {
       ? 'SELECT * FROM memories WHERE origin = ? ORDER BY created_at_epoch DESC LIMIT ?'
       : 'SELECT * FROM memories WHERE origin = ? ORDER BY created_at_epoch DESC';
 
-    const stmt = this.db.prepare(query);
+    const stmt = this.db.query(query);
     const params = limit ? [origin, limit] : [origin];
     return stmt.all(...params) as MemoryRow[];
   }
@@ -176,7 +176,7 @@ export class MemoryStore {
    * Get recent memories for a project filtered by origin
    */
   getRecentForProjectByOrigin(project: string, origin: string, limit = 10): MemoryRow[] {
-    const stmt = this.db.prepare(`
+    const stmt = this.db.query(`
       SELECT * FROM memories
       WHERE project = ? AND origin = ?
       ORDER BY created_at_epoch DESC
@@ -189,7 +189,7 @@ export class MemoryStore {
    * Get last N memories for a project, sorted oldest to newest
    */
   getLastNForProject(project: string, limit = 10): MemoryRow[] {
-    const stmt = this.db.prepare(`
+    const stmt = this.db.query(`
       SELECT * FROM (
         SELECT * FROM memories
         WHERE project = ?
@@ -205,7 +205,7 @@ export class MemoryStore {
    * Count total memories
    */
   count(): number {
-    const stmt = this.db.prepare('SELECT COUNT(*) as count FROM memories');
+    const stmt = this.db.query('SELECT COUNT(*) as count FROM memories');
     const result = stmt.get() as { count: number };
     return result.count;
   }
@@ -214,7 +214,7 @@ export class MemoryStore {
    * Count memories by project
    */
   countByProject(project: string): number {
-    const stmt = this.db.prepare('SELECT COUNT(*) as count FROM memories WHERE project = ?');
+    const stmt = this.db.query('SELECT COUNT(*) as count FROM memories WHERE project = ?');
     const result = stmt.get(project) as { count: number };
     return result.count;
   }
@@ -230,7 +230,7 @@ export class MemoryStore {
 
     const { isoString, epoch } = normalizeTimestamp(input.created_at || existing.created_at);
 
-    const stmt = this.db.prepare(`
+    const stmt = this.db.query(`
       UPDATE memories SET
         text = ?, document_id = ?, keywords = ?, created_at = ?, created_at_epoch = ?,
         project = ?, archive_basename = ?, origin = ?, title = ?, subtitle = ?, facts = ?,
@@ -262,7 +262,7 @@ export class MemoryStore {
    * Delete a memory by ID
    */
   deleteById(id: number): boolean {
-    const stmt = this.db.prepare('DELETE FROM memories WHERE id = ?');
+    const stmt = this.db.query('DELETE FROM memories WHERE id = ?');
     const info = stmt.run(id);
     return info.changes > 0;
   }
@@ -271,7 +271,7 @@ export class MemoryStore {
    * Delete memories by session_id
    */
   deleteBySessionId(sessionId: string): number {
-    const stmt = this.db.prepare('DELETE FROM memories WHERE session_id = ?');
+    const stmt = this.db.query('DELETE FROM memories WHERE session_id = ?');
     const info = stmt.run(sessionId);
     return info.changes;
   }
@@ -280,7 +280,7 @@ export class MemoryStore {
    * Get unique projects from memories
    */
   getUniqueProjects(): string[] {
-    const stmt = this.db.prepare('SELECT DISTINCT project FROM memories ORDER BY project');
+    const stmt = this.db.query('SELECT DISTINCT project FROM memories ORDER BY project');
     const rows = stmt.all() as { project: string }[];
     return rows.map(row => row.project);
   }

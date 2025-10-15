@@ -1,4 +1,4 @@
-import { Database } from 'better-sqlite3';
+import { Database } from 'bun:sqlite';
 import { getDatabase } from './Database.js';
 import { normalizeTimestamp } from './types.js';
 
@@ -61,7 +61,7 @@ export class StreamingSessionStore {
   create(input: StreamingSessionInput): StreamingSessionRow {
     const { isoString, epoch } = normalizeTimestamp(input.started_at);
 
-    const stmt = this.db.prepare(`
+    const stmt = this.db.query(`
       INSERT INTO streaming_sessions (
         claude_session_id, project, user_prompt, started_at, started_at_epoch, status
       ) VALUES (?, ?, ?, ?, ?, 'active')
@@ -121,7 +121,7 @@ export class StreamingSessionStore {
 
     values.push(id);
 
-    const stmt = this.db.prepare(`
+    const stmt = this.db.query(`
       UPDATE streaming_sessions
       SET ${parts.join(', ')}
       WHERE id = ?
@@ -148,7 +148,7 @@ export class StreamingSessionStore {
    * Get streaming session by internal ID
    */
   getById(id: number): StreamingSessionRow | null {
-    const stmt = this.db.prepare('SELECT * FROM streaming_sessions WHERE id = ?');
+    const stmt = this.db.query('SELECT * FROM streaming_sessions WHERE id = ?');
     return stmt.get(id) as StreamingSessionRow || null;
   }
 
@@ -156,7 +156,7 @@ export class StreamingSessionStore {
    * Get streaming session by Claude session ID
    */
   getByClaudeSessionId(claudeSessionId: string): StreamingSessionRow | null {
-    const stmt = this.db.prepare('SELECT * FROM streaming_sessions WHERE claude_session_id = ?');
+    const stmt = this.db.query('SELECT * FROM streaming_sessions WHERE claude_session_id = ?');
     return stmt.get(claudeSessionId) as StreamingSessionRow || null;
   }
 
@@ -164,7 +164,7 @@ export class StreamingSessionStore {
    * Get streaming session by SDK session ID
    */
   getBySdkSessionId(sdkSessionId: string): StreamingSessionRow | null {
-    const stmt = this.db.prepare('SELECT * FROM streaming_sessions WHERE sdk_session_id = ?');
+    const stmt = this.db.query('SELECT * FROM streaming_sessions WHERE sdk_session_id = ?');
     return stmt.get(sdkSessionId) as StreamingSessionRow || null;
   }
 
@@ -172,7 +172,7 @@ export class StreamingSessionStore {
    * Check if a streaming session exists by Claude session ID
    */
   has(claudeSessionId: string): boolean {
-    const stmt = this.db.prepare('SELECT 1 FROM streaming_sessions WHERE claude_session_id = ? LIMIT 1');
+    const stmt = this.db.query('SELECT 1 FROM streaming_sessions WHERE claude_session_id = ? LIMIT 1');
     return Boolean(stmt.get(claudeSessionId));
   }
 
@@ -180,7 +180,7 @@ export class StreamingSessionStore {
    * Get active streaming sessions for a project
    */
   getActiveForProject(project: string): StreamingSessionRow[] {
-    const stmt = this.db.prepare(`
+    const stmt = this.db.query(`
       SELECT * FROM streaming_sessions
       WHERE project = ? AND status = 'active'
       ORDER BY started_at_epoch DESC
@@ -192,7 +192,7 @@ export class StreamingSessionStore {
    * Get all active streaming sessions
    */
   getAllActive(): StreamingSessionRow[] {
-    const stmt = this.db.prepare(`
+    const stmt = this.db.query(`
       SELECT * FROM streaming_sessions
       WHERE status = 'active'
       ORDER BY started_at_epoch DESC
@@ -204,7 +204,7 @@ export class StreamingSessionStore {
    * Get recent streaming sessions (completed or failed)
    */
   getRecent(limit = 10): StreamingSessionRow[] {
-    const stmt = this.db.prepare(`
+    const stmt = this.db.query(`
       SELECT * FROM streaming_sessions
       ORDER BY started_at_epoch DESC
       LIMIT ?
@@ -236,7 +236,7 @@ export class StreamingSessionStore {
    * Delete a streaming session by ID
    */
   deleteById(id: number): boolean {
-    const stmt = this.db.prepare('DELETE FROM streaming_sessions WHERE id = ?');
+    const stmt = this.db.query('DELETE FROM streaming_sessions WHERE id = ?');
     const info = stmt.run(id);
     return info.changes > 0;
   }
@@ -245,7 +245,7 @@ export class StreamingSessionStore {
    * Delete a streaming session by Claude session ID
    */
   deleteByClaudeSessionId(claudeSessionId: string): boolean {
-    const stmt = this.db.prepare('DELETE FROM streaming_sessions WHERE claude_session_id = ?');
+    const stmt = this.db.query('DELETE FROM streaming_sessions WHERE claude_session_id = ?');
     const info = stmt.run(claudeSessionId);
     return info.changes > 0;
   }
@@ -255,7 +255,7 @@ export class StreamingSessionStore {
    */
   cleanupOldSessions(daysOld = 30): number {
     const cutoffEpoch = Date.now() - (daysOld * 24 * 60 * 60 * 1000);
-    const stmt = this.db.prepare(`
+    const stmt = this.db.query(`
       DELETE FROM streaming_sessions
       WHERE status IN ('completed', 'failed')
         AND completed_at_epoch < ?

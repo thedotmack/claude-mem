@@ -1,4 +1,4 @@
-import { Database } from 'better-sqlite3';
+import { Database } from 'bun:sqlite';
 import { getDatabase } from './Database.js';
 import { OverviewRow, OverviewInput, normalizeTimestamp } from './types.js';
 
@@ -18,7 +18,7 @@ export class OverviewStore {
   create(input: OverviewInput): OverviewRow {
     const { isoString, epoch } = normalizeTimestamp(input.created_at);
     
-    const stmt = this.db.prepare(`
+    const stmt = this.db.query(`
       INSERT INTO overviews (
         session_id, content, created_at, created_at_epoch, project, origin
       ) VALUES (?, ?, ?, ?, ?, ?)
@@ -51,7 +51,7 @@ export class OverviewStore {
    * Get overview by primary key
    */
   getById(id: number): OverviewRow | null {
-    const stmt = this.db.prepare('SELECT * FROM overviews WHERE id = ?');
+    const stmt = this.db.query('SELECT * FROM overviews WHERE id = ?');
     return stmt.get(id) as OverviewRow || null;
   }
 
@@ -59,7 +59,7 @@ export class OverviewStore {
    * Get overview by session_id
    */
   getBySessionId(sessionId: string): OverviewRow | null {
-    const stmt = this.db.prepare('SELECT * FROM overviews WHERE session_id = ?');
+    const stmt = this.db.query('SELECT * FROM overviews WHERE session_id = ?');
     return stmt.get(sessionId) as OverviewRow || null;
   }
 
@@ -67,7 +67,7 @@ export class OverviewStore {
    * Get recent overviews for a project
    */
   getRecentForProject(project: string, limit = 5): OverviewRow[] {
-    const stmt = this.db.prepare(`
+    const stmt = this.db.query(`
       SELECT * FROM overviews
       WHERE project = ?
       ORDER BY created_at_epoch DESC
@@ -80,7 +80,7 @@ export class OverviewStore {
    * Get all overviews for a project (oldest to newest)
    */
   getAllForProject(project: string): OverviewRow[] {
-    const stmt = this.db.prepare(`
+    const stmt = this.db.query(`
       SELECT * FROM overviews
       WHERE project = ?
       ORDER BY created_at_epoch ASC
@@ -92,7 +92,7 @@ export class OverviewStore {
    * Get recent overviews across all projects
    */
   getRecent(limit = 5): OverviewRow[] {
-    const stmt = this.db.prepare(`
+    const stmt = this.db.query(`
       SELECT * FROM overviews 
       ORDER BY created_at_epoch DESC 
       LIMIT ?
@@ -115,7 +115,7 @@ export class OverviewStore {
     sql += ' ORDER BY created_at_epoch DESC LIMIT ?';
     params.push(limit);
     
-    const stmt = this.db.prepare(sql);
+    const stmt = this.db.query(sql);
     return stmt.all(...params) as OverviewRow[];
   }
 
@@ -127,7 +127,7 @@ export class OverviewStore {
       ? 'SELECT * FROM overviews WHERE origin = ? ORDER BY created_at_epoch DESC LIMIT ?'
       : 'SELECT * FROM overviews WHERE origin = ? ORDER BY created_at_epoch DESC';
     
-    const stmt = this.db.prepare(query);
+    const stmt = this.db.query(query);
     const params = limit ? [origin, limit] : [origin];
     return stmt.all(...params) as OverviewRow[];
   }
@@ -136,7 +136,7 @@ export class OverviewStore {
    * Count total overviews
    */
   count(): number {
-    const stmt = this.db.prepare('SELECT COUNT(*) as count FROM overviews');
+    const stmt = this.db.query('SELECT COUNT(*) as count FROM overviews');
     const result = stmt.get() as { count: number };
     return result.count;
   }
@@ -145,7 +145,7 @@ export class OverviewStore {
    * Count overviews by project
    */
   countByProject(project: string): number {
-    const stmt = this.db.prepare('SELECT COUNT(*) as count FROM overviews WHERE project = ?');
+    const stmt = this.db.query('SELECT COUNT(*) as count FROM overviews WHERE project = ?');
     const result = stmt.get(project) as { count: number };
     return result.count;
   }
@@ -161,7 +161,7 @@ export class OverviewStore {
 
     const { isoString, epoch } = normalizeTimestamp(input.created_at || existing.created_at);
     
-    const stmt = this.db.prepare(`
+    const stmt = this.db.query(`
       UPDATE overviews SET
         content = ?, created_at = ?, created_at_epoch = ?, project = ?, origin = ?
       WHERE id = ?
@@ -183,7 +183,7 @@ export class OverviewStore {
    * Delete an overview by ID
    */
   deleteById(id: number): boolean {
-    const stmt = this.db.prepare('DELETE FROM overviews WHERE id = ?');
+    const stmt = this.db.query('DELETE FROM overviews WHERE id = ?');
     const info = stmt.run(id);
     return info.changes > 0;
   }
@@ -192,7 +192,7 @@ export class OverviewStore {
    * Delete overview by session_id
    */
   deleteBySessionId(sessionId: string): boolean {
-    const stmt = this.db.prepare('DELETE FROM overviews WHERE session_id = ?');
+    const stmt = this.db.query('DELETE FROM overviews WHERE session_id = ?');
     const info = stmt.run(sessionId);
     return info.changes > 0;
   }
@@ -201,7 +201,7 @@ export class OverviewStore {
    * Get unique projects from overviews
    */
   getUniqueProjects(): string[] {
-    const stmt = this.db.prepare('SELECT DISTINCT project FROM overviews ORDER BY project');
+    const stmt = this.db.query('SELECT DISTINCT project FROM overviews ORDER BY project');
     const rows = stmt.all() as { project: string }[];
     return rows.map(row => row.project);
   }
@@ -210,7 +210,7 @@ export class OverviewStore {
    * Get most recent overview for a specific project
    */
   getByProject(project: string): OverviewRow | null {
-    const stmt = this.db.prepare(`
+    const stmt = this.db.query(`
       SELECT * FROM overviews
       WHERE project = ?
       ORDER BY created_at_epoch DESC
@@ -234,7 +234,7 @@ export class OverviewStore {
    * Delete overview by project name
    */
   deleteByProject(project: string): boolean {
-    const stmt = this.db.prepare('DELETE FROM overviews WHERE project = ?');
+    const stmt = this.db.query('DELETE FROM overviews WHERE project = ?');
     const info = stmt.run(project);
     return info.changes > 0;
   }

@@ -262,25 +262,12 @@ function writeHookFiles(timeout: number = 180000): void {
   };
   writeFileSync(join(runtimeHooksDir, 'config.json'), JSON.stringify(hookConfig, null, 2));
 
-  // Create package.json and install dependencies in hooks directory
+  // Create package.json in hooks directory (no dependencies needed with bun:sqlite)
   const hookPackageJson = {
     name: "claude-mem-hooks",
-    type: "module",
-    dependencies: {
-      "better-sqlite3": "^11.8.0"
-    }
+    type: "module"
   };
   writeFileSync(join(runtimeHooksDir, 'package.json'), JSON.stringify(hookPackageJson, null, 2));
-
-  // Install dependencies
-  try {
-    execSync('npm install --silent', {
-      cwd: runtimeHooksDir,
-      stdio: 'pipe'
-    });
-  } catch (error) {
-    // Silent fail - hooks might still work if better-sqlite3 is globally available
-  }
 }
 
 

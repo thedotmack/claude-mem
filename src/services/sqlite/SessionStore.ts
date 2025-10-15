@@ -1,4 +1,4 @@
-import { Database } from 'better-sqlite3';
+import { Database } from 'bun:sqlite';
 import { getDatabase } from './Database.js';
 import { SessionRow, SessionInput, normalizeTimestamp } from './types.js';
 
@@ -18,7 +18,7 @@ export class SessionStore {
   create(input: SessionInput): SessionRow {
     const { isoString, epoch } = normalizeTimestamp(input.created_at);
     
-    const stmt = this.db.prepare(`
+    const stmt = this.db.query(`
       INSERT INTO sessions (
         session_id, project, created_at, created_at_epoch, source,
         archive_path, archive_bytes, archive_checksum, archived_at, metadata_json
@@ -63,7 +63,7 @@ export class SessionStore {
 
     const { isoString, epoch } = normalizeTimestamp(input.created_at || existing.created_at);
     
-    const stmt = this.db.prepare(`
+    const stmt = this.db.query(`
       UPDATE sessions SET
         project = ?, created_at = ?, created_at_epoch = ?, source = ?,
         archive_path = ?, archive_bytes = ?, archive_checksum = ?, archived_at = ?, metadata_json = ?
@@ -90,7 +90,7 @@ export class SessionStore {
    * Get session by primary key
    */
   getById(id: number): SessionRow | null {
-    const stmt = this.db.prepare('SELECT * FROM sessions WHERE id = ?');
+    const stmt = this.db.query('SELECT * FROM sessions WHERE id = ?');
     return stmt.get(id) as SessionRow || null;
   }
 
@@ -98,7 +98,7 @@ export class SessionStore {
    * Get session by session_id
    */
   getBySessionId(sessionId: string): SessionRow | null {
-    const stmt = this.db.prepare('SELECT * FROM sessions WHERE session_id = ?');
+    const stmt = this.db.query('SELECT * FROM sessions WHERE session_id = ?');
     return stmt.get(sessionId) as SessionRow || null;
   }
 
@@ -106,7 +106,7 @@ export class SessionStore {
    * Check if a session exists by session_id
    */
   has(sessionId: string): boolean {
-    const stmt = this.db.prepare('SELECT 1 FROM sessions WHERE session_id = ? LIMIT 1');
+    const stmt = this.db.query('SELECT 1 FROM sessions WHERE session_id = ? LIMIT 1');
     return Boolean(stmt.get(sessionId));
   }
 
@@ -114,7 +114,7 @@ export class SessionStore {
    * Get all session_ids as a Set (useful for import-history)
    */
   getAllSessionIds(): Set<string> {
-    const stmt = this.db.prepare('SELECT session_id FROM sessions');
+    const stmt = this.db.query('SELECT session_id FROM sessions');
     const rows = stmt.all() as { session_id: string }[];
     return new Set(rows.map(row => row.session_id));
   }
@@ -123,7 +123,7 @@ export class SessionStore {
    * Get recent sessions for a project
    */
   getRecentForProject(project: string, limit = 5): SessionRow[] {
-    const stmt = this.db.prepare(`
+    const stmt = this.db.query(`
       SELECT * FROM sessions 
       WHERE project = ?
       ORDER BY created_at_epoch DESC 
@@ -136,7 +136,7 @@ export class SessionStore {
    * Get recent sessions across all projects
    */
   getRecent(limit = 5): SessionRow[] {
-    const stmt = this.db.prepare(`
+    const stmt = this.db.query(`
       SELECT * FROM sessions 
       ORDER BY created_at_epoch DESC 
       LIMIT ?
@@ -152,7 +152,7 @@ export class SessionStore {
       ? 'SELECT * FROM sessions WHERE source = ? ORDER BY created_at_epoch DESC LIMIT ?'
       : 'SELECT * FROM sessions WHERE source = ? ORDER BY created_at_epoch DESC';
     
-    const stmt = this.db.prepare(query);
+    const stmt = this.db.query(query);
     const params = limit ? [source, limit] : [source];
     return stmt.all(...params) as SessionRow[];
   }
@@ -161,7 +161,7 @@ export class SessionStore {
    * Count total sessions
    */
   count(): number {
-    const stmt = this.db.prepare('SELECT COUNT(*) as count FROM sessions');
+    const stmt = this.db.query('SELECT COUNT(*) as count FROM sessions');
     const result = stmt.get() as { count: number };
     return result.count;
   }
@@ -170,7 +170,7 @@ export class SessionStore {
    * Count sessions by project
    */
   countByProject(project: string): number {
-    const stmt = this.db.prepare('SELECT COUNT(*) as count FROM sessions WHERE project = ?');
+    const stmt = this.db.query('SELECT COUNT(*) as count FROM sessions WHERE project = ?');
     const result = stmt.get(project) as { count: number };
     return result.count;
   }
@@ -179,7 +179,7 @@ export class SessionStore {
    * Delete a session by ID (cascades to related records)
    */
   deleteById(id: number): boolean {
-    const stmt = this.db.prepare('DELETE FROM sessions WHERE id = ?');
+    const stmt = this.db.query('DELETE FROM sessions WHERE id = ?');
     const info = stmt.run(id);
     return info.changes > 0;
   }
@@ -188,7 +188,7 @@ export class SessionStore {
    * Delete a session by session_id (cascades to related records)
    */
   deleteBySessionId(sessionId: string): boolean {
-    const stmt = this.db.prepare('DELETE FROM sessions WHERE session_id = ?');
+    const stmt = this.db.query('DELETE FROM sessions WHERE session_id = ?');
     const info = stmt.run(sessionId);
     return info.changes > 0;
   }

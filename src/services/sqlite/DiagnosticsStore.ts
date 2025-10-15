@@ -1,4 +1,4 @@
-import { Database } from 'better-sqlite3';
+import { Database } from 'bun:sqlite';
 import { getDatabase } from './Database.js';
 import { DiagnosticRow, DiagnosticInput, normalizeTimestamp } from './types.js';
 
@@ -18,7 +18,7 @@ export class DiagnosticsStore {
   create(input: DiagnosticInput): DiagnosticRow {
     const { isoString, epoch } = normalizeTimestamp(input.created_at);
     
-    const stmt = this.db.prepare(`
+    const stmt = this.db.query(`
       INSERT INTO diagnostics (
         session_id, message, severity, created_at, created_at_epoch, project, origin
       ) VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -41,7 +41,7 @@ export class DiagnosticsStore {
    * Get diagnostic by primary key
    */
   getById(id: number): DiagnosticRow | null {
-    const stmt = this.db.prepare('SELECT * FROM diagnostics WHERE id = ?');
+    const stmt = this.db.query('SELECT * FROM diagnostics WHERE id = ?');
     return stmt.get(id) as DiagnosticRow || null;
   }
 
@@ -49,7 +49,7 @@ export class DiagnosticsStore {
    * Get diagnostics for a specific session
    */
   getBySessionId(sessionId: string): DiagnosticRow[] {
-    const stmt = this.db.prepare(`
+    const stmt = this.db.query(`
       SELECT * FROM diagnostics 
       WHERE session_id = ? 
       ORDER BY created_at_epoch DESC
@@ -61,7 +61,7 @@ export class DiagnosticsStore {
    * Get recent diagnostics for a project
    */
   getRecentForProject(project: string, limit = 10): DiagnosticRow[] {
-    const stmt = this.db.prepare(`
+    const stmt = this.db.query(`
       SELECT * FROM diagnostics 
       WHERE project = ?
       ORDER BY created_at_epoch DESC 
@@ -74,7 +74,7 @@ export class DiagnosticsStore {
    * Get recent diagnostics across all projects
    */
   getRecent(limit = 10): DiagnosticRow[] {
-    const stmt = this.db.prepare(`
+    const stmt = this.db.query(`
       SELECT * FROM diagnostics 
       ORDER BY created_at_epoch DESC 
       LIMIT ?
@@ -90,7 +90,7 @@ export class DiagnosticsStore {
       ? 'SELECT * FROM diagnostics WHERE severity = ? ORDER BY created_at_epoch DESC LIMIT ?'
       : 'SELECT * FROM diagnostics WHERE severity = ? ORDER BY created_at_epoch DESC';
     
-    const stmt = this.db.prepare(query);
+    const stmt = this.db.query(query);
     const params = limit ? [severity, limit] : [severity];
     return stmt.all(...params) as DiagnosticRow[];
   }
@@ -103,7 +103,7 @@ export class DiagnosticsStore {
       ? 'SELECT * FROM diagnostics WHERE origin = ? ORDER BY created_at_epoch DESC LIMIT ?'
       : 'SELECT * FROM diagnostics WHERE origin = ? ORDER BY created_at_epoch DESC';
     
-    const stmt = this.db.prepare(query);
+    const stmt = this.db.query(query);
     const params = limit ? [origin, limit] : [origin];
     return stmt.all(...params) as DiagnosticRow[];
   }
@@ -123,7 +123,7 @@ export class DiagnosticsStore {
     sql += ' ORDER BY created_at_epoch DESC LIMIT ?';
     params.push(limit);
     
-    const stmt = this.db.prepare(sql);
+    const stmt = this.db.query(sql);
     return stmt.all(...params) as DiagnosticRow[];
   }
 
@@ -131,7 +131,7 @@ export class DiagnosticsStore {
    * Count total diagnostics
    */
   count(): number {
-    const stmt = this.db.prepare('SELECT COUNT(*) as count FROM diagnostics');
+    const stmt = this.db.query('SELECT COUNT(*) as count FROM diagnostics');
     const result = stmt.get() as { count: number };
     return result.count;
   }
@@ -140,7 +140,7 @@ export class DiagnosticsStore {
    * Count diagnostics by project
    */
   countByProject(project: string): number {
-    const stmt = this.db.prepare('SELECT COUNT(*) as count FROM diagnostics WHERE project = ?');
+    const stmt = this.db.query('SELECT COUNT(*) as count FROM diagnostics WHERE project = ?');
     const result = stmt.get(project) as { count: number };
     return result.count;
   }
@@ -149,7 +149,7 @@ export class DiagnosticsStore {
    * Count diagnostics by severity
    */
   countBySeverity(severity: 'info' | 'warn' | 'error'): number {
-    const stmt = this.db.prepare('SELECT COUNT(*) as count FROM diagnostics WHERE severity = ?');
+    const stmt = this.db.query('SELECT COUNT(*) as count FROM diagnostics WHERE severity = ?');
     const result = stmt.get(severity) as { count: number };
     return result.count;
   }
@@ -165,7 +165,7 @@ export class DiagnosticsStore {
 
     const { isoString, epoch } = normalizeTimestamp(input.created_at || existing.created_at);
     
-    const stmt = this.db.prepare(`
+    const stmt = this.db.query(`
       UPDATE diagnostics SET
         message = ?, severity = ?, created_at = ?, created_at_epoch = ?, project = ?, origin = ?
       WHERE id = ?
@@ -188,7 +188,7 @@ export class DiagnosticsStore {
    * Delete a diagnostic by ID
    */
   deleteById(id: number): boolean {
-    const stmt = this.db.prepare('DELETE FROM diagnostics WHERE id = ?');
+    const stmt = this.db.query('DELETE FROM diagnostics WHERE id = ?');
     const info = stmt.run(id);
     return info.changes > 0;
   }
@@ -197,7 +197,7 @@ export class DiagnosticsStore {
    * Delete diagnostics by session_id
    */
   deleteBySessionId(sessionId: string): number {
-    const stmt = this.db.prepare('DELETE FROM diagnostics WHERE session_id = ?');
+    const stmt = this.db.query('DELETE FROM diagnostics WHERE session_id = ?');
     const info = stmt.run(sessionId);
     return info.changes;
   }
@@ -206,7 +206,7 @@ export class DiagnosticsStore {
    * Get unique projects from diagnostics
    */
   getUniqueProjects(): string[] {
-    const stmt = this.db.prepare('SELECT DISTINCT project FROM diagnostics ORDER BY project');
+    const stmt = this.db.query('SELECT DISTINCT project FROM diagnostics ORDER BY project');
     const rows = stmt.all() as { project: string }[];
     return rows.map(row => row.project);
   }
@@ -215,7 +215,7 @@ export class DiagnosticsStore {
    * Get diagnostic summary stats
    */
   getStats(): { total: number; info: number; warn: number; error: number } {
-    const stmt = this.db.prepare(`
+    const stmt = this.db.query(`
       SELECT 
         COUNT(*) as total,
         COUNT(CASE WHEN severity = 'info' THEN 1 END) as info,
