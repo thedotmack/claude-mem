@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 
 /**
  * Session Start Hook (SDK Version)
@@ -36,14 +36,12 @@ process.stdin.on('end', async () => {
     const result = await executeCliCommand('claude-mem', ['load-context', '--format', 'session-start']);
 
     if (result.success && result.stdout) {
-      // Use the CLI output directly as context (it's already formatted)
-      const response = createHookResponse('SessionStart', true, {
-        context: result.stdout
-      });
-      console.log(JSON.stringify(response));
+      // Per Claude Code docs: for SessionStart, stdout with exit code 0 is added to context
+      // Use plain stdout instead of JSON to ensure it appears in Claude's context
+      console.log(result.stdout);
       process.exit(0);
     } else {
-      // Return without context
+      // Return without context - use JSON with suppressOutput to avoid empty context
       const response = createHookResponse('SessionStart', true);
       console.log(JSON.stringify(response));
       process.exit(0);

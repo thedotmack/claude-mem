@@ -56,8 +56,6 @@ function animatedRainbow(text: string, speed: number = 100): Promise<void> {
   });
 }
 
-// Sleep utility for smooth animations
-const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 // Fast rainbow gradient preset with tighter color transitions
 const fastRainbow = gradient(['#ff0000', '#ff4500', '#ffa500', '#ffff00', '#00ff00', '#00ffff', '#0000ff', '#8b00ff']);
@@ -488,8 +486,6 @@ export async function install(options: OptionValues = {}): Promise<void> {
     textAlignment: 'center'
   }));
 
-  await sleep(500);
-
   installUv();
 
   const isNonInteractive = options.user || options.project || options.local || options.force;
@@ -540,7 +536,6 @@ export async function install(options: OptionValues = {}): Promise<void> {
     step.fn();
     loader.stop(`${chalk.gray(progress)} ${step.name} ${vibrantRainbow('completed! ✨')}`);
 
-    await sleep(150);
   }
   
   
