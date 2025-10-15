@@ -1,6 +1,7 @@
 import { HooksDatabase } from '../services/sqlite/HooksDatabase.js';
 import path from 'path';
 import { spawn } from 'child_process';
+import fs from 'fs';
 
 export interface UserPromptSubmitInput {
   session_id: string;
@@ -35,17 +36,30 @@ export function newHook(input: UserPromptSubmitInput): void {
     const sessionId = db.createSDKSession(session_id, project, prompt);
     db.close();
 
-    // Start SDK worker in background
-    // The SDK worker will be implemented in a separate file
-    // For now, we just create the session record
+    // Start SDK worker in background as detached process
+    // Try source first (development), then fall back to dist (production)
+    const srcWorkerPath = path.join(__dirname, '..', 'sdk', 'worker.ts');
+    const distWorkerPath = path.join(__dirname, '..', 'sdk', 'worker.js');
 
-    // TODO: Spawn SDK worker as detached process
-    // const workerPath = path.join(__dirname, '..', 'sdk', 'worker.js');
-    // const child = spawn('bun', [workerPath, sessionId.toString()], {
-    //   detached: true,
-    //   stdio: 'ignore'
-    // });
-    // child.unref();
+    let workerPath: string;
+    if (fs.existsSync(srcWorkerPath)) {
+      workerPath = srcWorkerPath;
+    } else if (fs.existsSync(distWorkerPath)) {
+      workerPath = distWorkerPath;
+    } else {
+      // Fallback: assume we're in the bundled CLI
+      // In this case, we can't spawn the worker since it's bundled
+      // This is a limitation we'll need to address
+      console.error('[claude-mem] Worker not found, skipping background processing');
+      console.log('{"continue": true, "suppressOutput": true}');
+      process.exit(0);
+    }
+
+    const child = spawn('bun', [workerPath, sessionId.toString()], {
+      detached: true,
+      stdio: 'ignore'
+    });
+    child.unref();
 
     // Output hook response
     console.log('{"continue": true, "suppressOutput": true}');
