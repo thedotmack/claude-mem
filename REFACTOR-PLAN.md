@@ -1,1346 +1,592 @@
-# Claude-Mem v4.0 Architecture Specification
+# Claude-Mem Architecture Refactor Plan
 
-## Vision
+## Core Purpose
 
-A clean, hook-driven memory system where Claude Code hooks call CLI commands directly. All business logic lives in TypeScript, no separate hook files needed.
+Create a lightweight, hook-driven memory system that captures important context during Claude Code sessions and makes it available in future sessions.
+
+**Principles:**
+- Hooks should be fast and non-blocking
+- SDK agent synthesizes observations, not just stores raw data
+- Storage should be simple and queryable
+- Users should never notice the memory system working
 
 ---
 
-## System Overview
+## Understanding the Foundation
 
-```
-┌─────────────────┐
-│  Claude Code    │
-│     Hooks       │
-└────────┬────────┘
-         │ JSON via stdin
-         ▼
-┌─────────────────┐
-│  CLI Commands   │
-│  (TypeScript)   │
-└────────┬────────┘
-         │
-         ├──► SQLite Database
-         │    • streaming_sessions table
-         │    • session_locks table
-         │
-         └──► Claude SDK
-              • Streaming memory agent
-              • Real-time processing
-```
+### What Claude Code Hooks Actually Do
 
-**Core Principles:**
-- ✅ CLI commands are the only interface
-- ✅ All state stored in SQLite
-- ✅ SDK agent processes in-memory, writes to SQLite
-- ✅ No command-to-command calls (no CLI calling CLI)
-- ✅ No hook files to distribute
+**SessionStart Hook:**
+- Runs when Claude Code starts or resumes
+- Can inject context via stdout (plain text) OR JSON `additionalContext`
+- This is how we show "What's new" to Claude
+
+**UserPromptSubmit Hook:**
+- Runs BEFORE Claude processes the user's message
+- Can inject context via stdout OR JSON `additionalContext`
+- This is where we initialize per-session tracking
+
+**PostToolUse Hook:**
+- Runs AFTER each tool completes successfully
+- Gets both tool input and output
+- Runs in PARALLEL with other matching hooks
+- This is where we observe what Claude is doing
+
+**Stop Hook:**
+- Runs when main agent finishes (NOT on user interrupt)
+- This is where we finalize the session
+- Summary should be structured responses that answer the following:
+  - What did user request?
+  - What did you investigate?
+  - What did you learn?
+  - What did you do?
+  - What's next?
+  - Files read
+  - Files edited
+  - Notes
+
+### How SDK Streaming Actually Works
+
+**Streaming Input Mode (what we need):**
+- Persistent session with AsyncGenerator
+- Can queue multiple messages
+- Supports interruption
+- Natural multi-turn conversations
+- The SDK maintains conversation state
+
+**Critical insight:** We use "Streaming Input Mode" which creates ONE long-running SDK session per Claude Code session, not multiple short sessions.
+
+---
+
+## Architecture
+
+### What is the SDK agent's job?
+
+The SDK agent is a **synthesis engine**, not a data collector.
+
+It should:
+- Receive tool observations as they happen
+- Extract meaningful patterns and insights
+- Store atomic, searchable observations in SQLite
+- Synthesize a human-readable summary at the end
+
+It should NOT:
+- Store raw tool outputs
+- Try to capture everything
+- Make decisions about what Claude Code should do
+- Block or slow down the main session
+
+### How hooks run in parallel
+
+PostToolUse hooks run in parallel. Handle this by:
+- Make SDK agent calls async and fire-and-forget
+- Use a message queue (in-memory) to serialize SDK prompts
+- SDK session can handle streaming prompts naturally
+
+### What if the user interrupts Claude Code?
+
+Stop hook doesn't run on interrupts. So:
+- Observations stay in queue
+- Next session continues where left off
+- Mark session as 'interrupted' after 24h of inactivity
 
 ---
 
 ## Database Schema
 
-### Table: `streaming_sessions`
-
-Tracks all memory sessions with their metadata and final summaries.
-
 ```sql
-CREATE TABLE streaming_sessions (
+-- Tracks SDK streaming sessions
+CREATE TABLE sdk_sessions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  claude_session_id TEXT UNIQUE NOT NULL,      -- From Claude Code
-  sdk_session_id TEXT,                          -- From SDK init
-  project TEXT NOT NULL,                        -- Project name
-  title TEXT,                                   -- Generated title
-  subtitle TEXT,                                -- Generated subtitle
-  user_prompt TEXT,                             -- Initial prompt
-  started_at TEXT NOT NULL,                     -- ISO timestamp
-  started_at_epoch INTEGER NOT NULL,            -- Unix ms
-  updated_at TEXT,                              -- Last update
-  updated_at_epoch INTEGER,
-  completed_at TEXT,                            -- Session end
+  claude_session_id TEXT UNIQUE NOT NULL,
+  sdk_session_id TEXT UNIQUE NOT NULL,
+  project TEXT NOT NULL,
+  user_prompt TEXT,
+  started_at TEXT NOT NULL,
+  started_at_epoch INTEGER NOT NULL,
+  completed_at TEXT,
   completed_at_epoch INTEGER,
-  status TEXT NOT NULL CHECK(status IN ('active', 'completed', 'failed'))
+  status TEXT CHECK(status IN ('active', 'completed', 'failed'))
 );
 
-CREATE INDEX idx_sessions_claude_id ON streaming_sessions(claude_session_id);
-CREATE INDEX idx_sessions_sdk_id ON streaming_sessions(sdk_session_id);
-CREATE INDEX idx_sessions_project_status ON streaming_sessions(project, status);
-```
-
-### Table: `session_locks`
-
-Prevents concurrent SDK session access.
-
-```sql
-CREATE TABLE session_locks (
-  sdk_session_id TEXT PRIMARY KEY,
-  locked_by TEXT NOT NULL,                      -- Command name: 'save' or 'summary'
-  locked_at TEXT NOT NULL,                      -- ISO timestamp
-  locked_at_epoch INTEGER NOT NULL              -- Unix ms
+-- Tracks pending observations (message queue)
+CREATE TABLE observation_queue (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  sdk_session_id TEXT NOT NULL,
+  tool_name TEXT NOT NULL,
+  tool_input TEXT NOT NULL,  -- JSON
+  tool_output TEXT NOT NULL, -- JSON
+  created_at_epoch INTEGER NOT NULL,
+  processed_at_epoch INTEGER,
+  FOREIGN KEY(sdk_session_id) REFERENCES sdk_sessions(sdk_session_id)
 );
-```
 
-**Lock lifecycle:**
-- Acquired before resuming SDK session
-- Released after SDK stream completes
-- Auto-cleaned if older than 5 minutes (stale lock)
-
----
-
-## The Four Commands
-
-All commands accept JSON from stdin and output hook-appropriate responses to stdout.
-
-### 1. `claude-mem context`
-
-**Purpose:** Load recent session history for context injection
-
-**Hook:** SessionStart (matcher: "startup")
-
-**Input:**
-```json
-{
-  "hook_event_name": "SessionStart",
-  "session_id": "abc123",
-  "transcript_path": "/path/to/transcript.jsonl",
-  "cwd": "/path/to/project",
-  "source": "startup"
-}
-```
-
-**Flow:**
-1. Check `source` field → only process if "startup" or "clear"
-2. Extract project name from `cwd` (e.g., `/Users/alex/myapp` → `myapp`)
-3. Open SQLite database at `~/.claude-mem/claude-mem.db`
-4. Query recent completed sessions:
-   ```sql
-   SELECT title, subtitle, user_prompt, started_at
-   FROM streaming_sessions
-   WHERE project = ? AND status = 'completed'
-   ORDER BY started_at_epoch DESC
-   LIMIT 10
-   ```
-5. Format as human-readable text
-6. Output to stdout (plain text, NOT JSON)
-
-**Output:**
-```
-===============================================================================
-What's new | Wednesday, October 15, 2025 at 03:18 PM EDT
-===============================================================================
-Recent sessions for myapp:
-
-• 2025-10-15 14:30: User Authentication Implementation
-  Added JWT tokens and refresh logic
-
-• 2025-10-14 10:15: Database Schema Refactor
-  Migrated to normalized structure
-
-• 2025-10-13 16:45: API Documentation
-  Created OpenAPI specs for all endpoints
-
-===============================================================================
-```
-
-**Exit code:** 0
-
-**Special behavior:** Claude Code injects stdout into conversation context automatically for SessionStart hooks.
-
----
-
-### 2. `claude-mem new`
-
-**Purpose:** Start new streaming memory session
-
-**Hook:** UserPromptSubmit
-
-**Input:**
-```json
-{
-  "hook_event_name": "UserPromptSubmit",
-  "session_id": "abc123",
-  "transcript_path": "/path/to/transcript.jsonl",
-  "cwd": "/path/to/project",
-  "prompt": "User's question or task",
-  "timestamp": "2025-10-15T19:30:00Z"
-}
-```
-
-**Flow:**
-
-1. **Cleanup orphaned sessions**
-   ```sql
-   UPDATE streaming_sessions
-   SET status = 'failed'
-   WHERE project = ? AND status = 'active'
-   ```
-
-2. **Create session record**
-   ```sql
-   INSERT INTO streaming_sessions (
-     claude_session_id, project, user_prompt,
-     started_at, started_at_epoch, status
-   ) VALUES (?, ?, ?, ?, ?, 'active')
-   ```
-
-3. **Build SDK system prompt**
-   ```typescript
-   const systemPrompt = `
-   You are a memory assistant for project "${project}".
-   Session: ${session_id}
-   Date: ${date}
-
-   The user said: "${user_prompt}"
-
-   Your job: Analyze the work being done and remember important details.
-   You will receive tool outputs. Extract what matters:
-   - Key decisions made
-   - Patterns discovered
-   - Problems solved
-   - Technical insights
-
-   Store memories directly to SQLite using your available functions.
-   `;
-   ```
-
-4. **Start SDK session**
-   ```typescript
-   const response = query({
-     prompt: systemPrompt,
-     options: {
-       model: 'claude-sonnet-4-5-20250929',
-       allowedTools: ['Bash'],  // SDK can write directly to SQLite
-       maxTokens: 4096,
-       cwd: payload.cwd
-     }
-   });
-   ```
-
-5. **Wait for SDK init and extract session ID**
-   ```typescript
-   for await (const msg of response) {
-     if (msg.type === 'system' && msg.subtype === 'init') {
-       sdkSessionId = msg.session_id;
-       break;
-     }
-   }
-   ```
-
-6. **Update database with SDK session ID**
-   ```sql
-   UPDATE streaming_sessions
-   SET sdk_session_id = ?, updated_at = ?, updated_at_epoch = ?
-   WHERE id = ?
-   ```
-
-7. **Set activity flag** (for UI indicators)
-   ```typescript
-   fs.writeFileSync(
-     '~/.claude-mem/activity.flag',
-     JSON.stringify({ active: true, project, timestamp: Date.now() })
-   );
-   ```
-
-8. **Generate title asynchronously** (non-blocking background task)
-   ```typescript
-   // Use Claude SDK to generate a short title and subtitle
-   // Store results back to streaming_sessions table
-   // Runs detached, doesn't block the hook
-   generateTitleInBackground(session_id, user_prompt, project);
-   ```
-
-9. **Output success response**
-
-**Output:**
-```json
-{"continue": true, "suppressOutput": true}
-```
-
-**Exit code:** 0
-
----
-
-### 3. `claude-mem save`
-
-**Purpose:** Feed tool results to streaming memory agent
-
-**Hook:** PostToolUse (matcher: "*")
-
-**Input:**
-```json
-{
-  "hook_event_name": "PostToolUse",
-  "session_id": "abc123",
-  "transcript_path": "/path/to/transcript.jsonl",
-  "cwd": "/path/to/project",
-  "tool_name": "Read",
-  "tool_input": {"file_path": "/path/to/file.ts"},
-  "tool_response": {"content": "file contents..."},
-  "timestamp": "2025-10-15T19:30:05Z"
-}
-```
-
-**Flow:**
-
-**CRITICAL:** This is an async operation to avoid blocking the main Claude Code session.
-
-1. **Immediately return async response**
-   ```typescript
-   console.log(JSON.stringify({ async: true, asyncTimeout: 180000 }));
-   ```
-
-2. **Then process in background:**
-
-   a. **Find active session**
-      ```sql
-      SELECT id, sdk_session_id, claude_session_id
-      FROM streaming_sessions
-      WHERE project = ? AND status = 'active'
-      ORDER BY started_at_epoch DESC
-      LIMIT 1
-      ```
-
-   b. **Validate SDK session exists**
-      - If no `sdk_session_id` yet, skip (session still initializing)
-
-   c. **Clean stale locks**
-      ```sql
-      DELETE FROM session_locks
-      WHERE locked_at_epoch < ?  -- 5 minutes ago
-      ```
-
-   d. **Attempt to acquire lock**
-      ```sql
-      INSERT INTO session_locks (sdk_session_id, locked_by, locked_at, locked_at_epoch)
-      VALUES (?, 'save', ?, ?)
-      ```
-      - If insert fails (UNIQUE constraint), skip this tool
-      - Lock prevents concurrent SDK access
-
-   e. **Build tool observation message**
-      ```typescript
-      const message = `
-      TOOL OBSERVATION
-      ===============
-      Tool: ${tool_name}
-      Input: ${JSON.stringify(tool_input, null, 2)}
-      Output: ${JSON.stringify(tool_response, null, 2)}
-
-      Analyze this result. If it contains important information, update the session record.
-      You have access to Bash to run SQL commands against ~/.claude-mem/claude-mem.db
-      `;
-      ```
-
-   f. **Resume SDK session**
-      ```typescript
-      const response = query({
-        prompt: message,
-        options: {
-          model: 'claude-sonnet-4-5-20250929',
-          resume: sdkSessionId,  // Continue existing session
-          allowedTools: ['Bash'],
-          maxTokens: 2048,
-          cwd: payload.cwd
-        }
-      });
-      ```
-
-   g. **Consume SDK stream**
-      ```typescript
-      for await (const msg of response) {
-        // SDK processes the tool result
-        // May run Bash commands to update SQLite
-        // E.g., INSERT INTO session_notes (session_id, note, timestamp) VALUES (...)
-      }
-      ```
-
-   h. **Release lock**
-      ```sql
-      DELETE FROM session_locks
-      WHERE sdk_session_id = ?
-      ```
-
-**Output:**
-```json
-{"async": true, "asyncTimeout": 180000}
-```
-
-**Exit code:** 0
-
-**Notes:**
-- Non-critical: If locked or session not ready, just skip
-- Next tool will catch up
-- SDK decides what's worth remembering
-
----
-
-### 4. `claude-mem summary`
-
-**Purpose:** Generate and store final session overview
-
-**Hook:** Stop
-
-**Input:**
-```json
-{
-  "hook_event_name": "Stop",
-  "session_id": "abc123",
-  "transcript_path": "/path/to/transcript.jsonl",
-  "cwd": "/path/to/project"
-}
-```
-
-**Flow:**
-
-**CRITICAL:** This is an async operation but MUST complete successfully.
-
-1. **Immediately return async response**
-   ```typescript
-   console.log(JSON.stringify({ async: true, asyncTimeout: 180000 }));
-   ```
-
-2. **Clear activity flag**
-   ```typescript
-   fs.writeFileSync(
-     '~/.claude-mem/activity.flag',
-     JSON.stringify({ active: false, timestamp: Date.now() })
-   );
-   ```
-
-3. **Then process in background:**
-
-   a. **Find active session**
-      ```sql
-      SELECT id, sdk_session_id, claude_session_id, title, subtitle
-      FROM streaming_sessions
-      WHERE project = ? AND status = 'active'
-      ORDER BY started_at_epoch DESC
-      LIMIT 1
-      ```
-
-   b. **Validate SDK session exists**
-      - If no `sdk_session_id`, exit (session never fully initialized)
-
-   c. **Clean stale locks**
-      ```sql
-      DELETE FROM session_locks
-      WHERE locked_at_epoch < ?  -- 5 minutes ago
-      ```
-
-   d. **Acquire lock (with retry)**
-      ```typescript
-      // Wait up to 10 seconds for 'save' to finish
-      for (let i = 0; i < 20; i++) {
-        try {
-          // INSERT INTO session_locks ...
-          lockAcquired = true;
-          break;
-        } catch {
-          await sleep(500);
-        }
-      }
-      if (!lockAcquired) throw new Error('Could not acquire lock');
-      ```
-
-   e. **Build finalization message**
-      ```typescript
-      const message = `
-      SESSION ENDING
-      =============
-      Project: ${project}
-      Session: ${claude_session_id}
-      Title: ${title || 'Untitled'}
-      Subtitle: ${subtitle || ''}
-
-      Generate a comprehensive overview of this session.
-
-      Required format:
-      - One-line title (if not already set)
-      - One-line subtitle (if not already set)
-      - Key accomplishments
-      - Technical decisions
-      - Problems solved
-
-      Store the overview by updating the streaming_sessions record in SQLite.
-      Use Bash to run the SQL UPDATE command.
-      `;
-      ```
-
-   f. **Resume SDK session**
-      ```typescript
-      const response = query({
-        prompt: message,
-        options: {
-          model: 'claude-sonnet-4-5-20250929',
-          resume: sdkSessionId,
-          allowedTools: ['Bash'],
-          maxTokens: 4096,
-          cwd: payload.cwd
-        }
-      });
-      ```
-
-   g. **Consume SDK stream**
-      ```typescript
-      for await (const msg of response) {
-        // SDK generates overview and updates database
-        // Runs SQL like:
-        // UPDATE streaming_sessions
-        // SET title = ?, subtitle = ?
-        // WHERE id = ?
-      }
-      ```
-
-   h. **Mark session complete**
-      ```sql
-      UPDATE streaming_sessions
-      SET status = 'completed',
-          completed_at = ?,
-          completed_at_epoch = ?
-      WHERE id = ?
-      ```
-
-   i. **Delete SDK transcript** (keep UI clean)
-      ```typescript
-      const transcriptPath = `~/.claude/projects/${sanitizedCwd}/${sdkSessionId}.jsonl`;
-      if (fs.existsSync(transcriptPath)) {
-        fs.unlinkSync(transcriptPath);
-      }
-      ```
-
-   j. **Release lock**
-      ```sql
-      DELETE FROM session_locks
-      WHERE sdk_session_id = ?
-      ```
-
-**Output:**
-```json
-{"async": true, "asyncTimeout": 180000}
-```
-
-**Exit code:** 0
-
-**Notes:**
-- MUST acquire lock (waits up to 10s)
-- MUST complete successfully
-- Cleanup is important for user experience
-
----
-
-## TypeScript Module Structure
-
-### `src/lib/stdin-reader.ts`
-
-```typescript
-export async function readStdinJson(): Promise<any> {
-  const chunks: string[] = [];
-  for await (const chunk of process.stdin) {
-    chunks.push(chunk.toString());
-  }
-  const input = chunks.join('');
-  return input.trim() ? JSON.parse(input) : {};
-}
-```
-
-### `src/lib/database.ts`
-
-```typescript
-import { Database } from 'bun:sqlite';
-import path from 'path';
-import os from 'os';
-import fs from 'fs';
-
-export interface StreamingSession {
-  id: number;
-  claude_session_id: string;
-  sdk_session_id: string | null;
-  project: string;
-  title: string | null;
-  subtitle: string | null;
-  user_prompt: string | null;
-  started_at: string;
-  started_at_epoch: number;
-  updated_at: string | null;
-  updated_at_epoch: number | null;
-  completed_at: string | null;
-  completed_at_epoch: number | null;
-  status: 'active' | 'completed' | 'failed';
-}
-
-function getDataDirectory(): string {
-  return path.join(os.homedir(), '.claude-mem');
-}
-
-export function initializeDatabase(): Database {
-  const dataDir = getDataDirectory();
-  const dbPath = path.join(dataDir, 'claude-mem.db');
-
-  if (!fs.existsSync(dataDir)) {
-    fs.mkdirSync(dataDir, { recursive: true });
-  }
-
-  const db = new Database(dbPath);
-
-  // Optimize SQLite settings
-  db.pragma('journal_mode = WAL');
-  db.pragma('synchronous = NORMAL');
-  db.pragma('foreign_keys = ON');
-  db.pragma('temp_store = memory');
-
-  ensureTables(db);
-
-  return db;
-}
-
-function ensureTables(db: Database): void {
-  // Create streaming_sessions table
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS streaming_sessions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      claude_session_id TEXT UNIQUE NOT NULL,
-      sdk_session_id TEXT,
-      project TEXT NOT NULL,
-      title TEXT,
-      subtitle TEXT,
-      user_prompt TEXT,
-      started_at TEXT NOT NULL,
-      started_at_epoch INTEGER NOT NULL,
-      updated_at TEXT,
-      updated_at_epoch INTEGER,
-      completed_at TEXT,
-      completed_at_epoch INTEGER,
-      status TEXT NOT NULL CHECK(status IN ('active', 'completed', 'failed'))
-    )
-  `);
-
-  // Create indices
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_sessions_claude_id ON streaming_sessions(claude_session_id)`);
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_sessions_sdk_id ON streaming_sessions(sdk_session_id)`);
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_sessions_project_status ON streaming_sessions(project, status)`);
-
-  // Create session_locks table
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS session_locks (
-      sdk_session_id TEXT PRIMARY KEY,
-      locked_by TEXT NOT NULL,
-      locked_at TEXT NOT NULL,
-      locked_at_epoch INTEGER NOT NULL
-    )
-  `);
-}
-
-export function createStreamingSession(
-  db: Database,
-  data: {
-    claude_session_id: string;
-    project: string;
-    user_prompt: string | null;
-    started_at: string;
-  }
-): StreamingSession {
-  const epoch = new Date(data.started_at).getTime();
-
-  const stmt = db.prepare(`
-    INSERT INTO streaming_sessions (
-      claude_session_id, project, user_prompt, started_at, started_at_epoch, status
-    ) VALUES (?, ?, ?, ?, ?, 'active')
-  `);
-
-  const result = stmt.run(
-    data.claude_session_id,
-    data.project,
-    data.user_prompt,
-    data.started_at,
-    epoch
-  );
-
-  return db.prepare('SELECT * FROM streaming_sessions WHERE id = ?')
-    .get(result.lastInsertRowid) as StreamingSession;
-}
-
-export function updateStreamingSession(
-  db: Database,
-  id: number,
-  updates: Partial<StreamingSession>
-): void {
-  const timestamp = new Date().toISOString();
-  const epoch = Date.now();
-
-  const fields: string[] = [];
-  const values: any[] = [];
-
-  if (updates.sdk_session_id !== undefined) {
-    fields.push('sdk_session_id = ?');
-    values.push(updates.sdk_session_id);
-  }
-  if (updates.title !== undefined) {
-    fields.push('title = ?');
-    values.push(updates.title);
-  }
-  if (updates.subtitle !== undefined) {
-    fields.push('subtitle = ?');
-    values.push(updates.subtitle);
-  }
-  if (updates.status !== undefined) {
-    fields.push('status = ?');
-    values.push(updates.status);
-  }
-
-  fields.push('updated_at = ?', 'updated_at_epoch = ?');
-  values.push(timestamp, epoch);
-
-  values.push(id);
-
-  const stmt = db.prepare(`
-    UPDATE streaming_sessions
-    SET ${fields.join(', ')}
-    WHERE id = ?
-  `);
-
-  stmt.run(...values);
-}
-
-export function getActiveStreamingSessionsForProject(
-  db: Database,
-  project: string
-): StreamingSession[] {
-  const stmt = db.prepare(`
-    SELECT * FROM streaming_sessions
-    WHERE project = ? AND status = 'active'
-    ORDER BY started_at_epoch DESC
-  `);
-
-  return stmt.all(project) as StreamingSession[];
-}
-
-export function getRecentCompletedSessions(
-  db: Database,
-  project: string,
-  limit: number = 10
-): StreamingSession[] {
-  const stmt = db.prepare(`
-    SELECT * FROM streaming_sessions
-    WHERE project = ? AND status = 'completed'
-    ORDER BY started_at_epoch DESC
-    LIMIT ?
-  `);
-
-  return stmt.all(project, limit) as StreamingSession[];
-}
-
-export function markStreamingSessionCompleted(
-  db: Database,
-  id: number
-): void {
-  const timestamp = new Date().toISOString();
-  const epoch = Date.now();
-
-  const stmt = db.prepare(`
-    UPDATE streaming_sessions
-    SET status = 'completed',
-        completed_at = ?,
-        completed_at_epoch = ?,
-        updated_at = ?,
-        updated_at_epoch = ?
-    WHERE id = ?
-  `);
-
-  stmt.run(timestamp, epoch, timestamp, epoch, id);
-}
-
-export function markOrphanedSessionsFailed(
-  db: Database,
-  project: string
-): void {
-  const stmt = db.prepare(`
-    UPDATE streaming_sessions
-    SET status = 'failed'
-    WHERE project = ? AND status = 'active'
-  `);
-
-  stmt.run(project);
-}
-
-export function acquireSessionLock(
-  db: Database,
-  sdkSessionId: string,
-  lockOwner: string
-): boolean {
-  try {
-    const timestamp = new Date().toISOString();
-    const epoch = Date.now();
-
-    const stmt = db.prepare(`
-      INSERT INTO session_locks (sdk_session_id, locked_by, locked_at, locked_at_epoch)
-      VALUES (?, ?, ?, ?)
-    `);
-
-    stmt.run(sdkSessionId, lockOwner, timestamp, epoch);
-    return true;
-  } catch {
-    return false; // UNIQUE constraint violation = already locked
-  }
-}
-
-export function releaseSessionLock(
-  db: Database,
-  sdkSessionId: string
-): void {
-  const stmt = db.prepare(`
-    DELETE FROM session_locks
-    WHERE sdk_session_id = ?
-  `);
-
-  stmt.run(sdkSessionId);
-}
-
-export function cleanupStaleLocks(db: Database): void {
-  const fiveMinutesAgo = Date.now() - (5 * 60 * 1000);
-
-  const stmt = db.prepare(`
-    DELETE FROM session_locks
-    WHERE locked_at_epoch < ?
-  `);
-
-  stmt.run(fiveMinutesAgo);
-}
-```
-
-### `src/lib/path-resolver.ts`
-
-```typescript
-import path from 'path';
-
-export function getProjectName(cwd: string): string {
-  return path.basename(cwd);
-}
-```
-
-### `src/lib/prompt-builder.ts`
-
-```typescript
-export function buildSystemPrompt(params: {
-  project: string;
-  sessionId: string;
-  date: string;
-  userPrompt: string;
-}): string {
-  return `You are a memory assistant for project "${params.project}".
-
-Session ID: ${params.sessionId}
-Date: ${params.date}
-
-The user said: "${params.userPrompt}"
-
-Your job is to analyze the work being done and remember important details.
-You will receive tool outputs as the session progresses.
-
-Extract what matters:
-- Key decisions made
-- Patterns discovered
-- Problems solved
-- Technical insights
-
-You have access to Bash to write directly to the SQLite database at ~/.claude-mem/claude-mem.db
-Store important observations as you see them.`;
-}
-
-export function buildToolMessage(params: {
-  toolName: string;
-  toolInput: any;
-  toolResponse: any;
-  timestamp: string;
-}): string {
-  return `TOOL OBSERVATION
-===============
-Time: ${params.timestamp}
-Tool: ${params.toolName}
-
-Input:
-${JSON.stringify(params.toolInput, null, 2)}
-
-Output:
-${JSON.stringify(params.toolResponse, null, 2)}
-
-Analyze this result. If it contains important information worth remembering, use Bash to update the database.`;
-}
-
-export function buildEndMessage(params: {
-  project: string;
-  sessionId: string;
-  title: string | null;
-  subtitle: string | null;
-}): string {
-  return `SESSION ENDING
-=============
-Project: ${params.project}
-Session: ${params.sessionId}
-Current Title: ${params.title || 'Not set'}
-Current Subtitle: ${params.subtitle || 'Not set'}
-
-Generate a comprehensive overview of this session.
-
-Required:
-1. A concise title (if not already set)
-2. A brief subtitle (if not already set)
-3. Key accomplishments
-4. Technical decisions made
-5. Problems solved
-
-Use Bash to UPDATE the streaming_sessions record with the title and subtitle if they're not already set.`;
-}
-```
-
-### `src/commands/hook-handlers.ts`
-
-```typescript
-import { query } from '@anthropic-ai/claude-agent-sdk';
-import { initializeDatabase, Database } from '../lib/database';
-import * as db from '../lib/database';
-import { getProjectName } from '../lib/path-resolver';
-import { buildSystemPrompt, buildToolMessage, buildEndMessage } from '../lib/prompt-builder';
-import fs from 'fs';
-import path from 'path';
-import os from 'os';
-
-export async function handleContext(payload: any): Promise<void> {
-  // Only process startup/clear
-  if (payload.source !== 'startup' && payload.source !== 'clear') {
-    return;
-  }
-
-  const project = getProjectName(payload.cwd);
-  const database = initializeDatabase();
-
-  const sessions = db.getRecentCompletedSessions(database, project, 10);
-
-  if (sessions.length === 0) {
-    console.log(`===============================================================================
-What's new | ${new Date().toLocaleString('en-US', {
-  weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
-  hour: 'numeric', minute: '2-digit', timeZoneName: 'short'
-})}
-===============================================================================
-No previous sessions found for this project.
-Start working and claude-mem will automatically capture context for future sessions.
-===============================================================================`);
-    database.close();
-    return;
-  }
-
-  console.log(`===============================================================================
-What's new | ${new Date().toLocaleString('en-US', {
-  weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
-  hour: 'numeric', minute: '2-digit', timeZoneName: 'short'
-})}
-===============================================================================
-Recent sessions for ${project}:
-`);
-
-  for (const session of sessions) {
-    const date = new Date(session.started_at).toISOString().split('T')[0];
-    const title = session.title || 'Untitled';
-    const subtitle = session.subtitle || '';
-    console.log(`• ${date}: ${title}`);
-    if (subtitle) {
-      console.log(`  ${subtitle}`);
-    }
-    console.log();
-  }
-
-  console.log(`===============================================================================`);
-  database.close();
-}
-
-export async function handleNew(payload: any): Promise<void> {
-  const project = getProjectName(payload.cwd);
-  const database = initializeDatabase();
-
-  // Mark any orphaned sessions as failed
-  db.markOrphanedSessionsFailed(database, project);
-
-  // Create new session
-  const session = db.createStreamingSession(database, {
-    claude_session_id: payload.session_id,
-    project,
-    user_prompt: payload.prompt || null,
-    started_at: payload.timestamp || new Date().toISOString()
-  });
-
-  // Build system prompt
-  const date = new Date().toISOString().split('T')[0];
-  const systemPrompt = buildSystemPrompt({
-    project,
-    sessionId: payload.session_id,
-    date,
-    userPrompt: payload.prompt || ''
-  });
-
-  // Start SDK session
-  const response = query({
-    prompt: systemPrompt,
-    options: {
-      model: 'claude-sonnet-4-5-20250929',
-      allowedTools: ['Bash'],
-      maxTokens: 4096,
-      cwd: payload.cwd
-    }
-  });
-
-  // Extract SDK session ID
-  let sdkSessionId: string | null = null;
-  for await (const msg of response) {
-    if (msg.type === 'system' && msg.subtype === 'init') {
-      sdkSessionId = msg.session_id;
-      break;
-    }
-  }
-
-  // Update with SDK session ID
-  if (sdkSessionId) {
-    db.updateStreamingSession(database, session.id, { sdk_session_id: sdkSessionId });
-  }
-
-  // Set activity flag
-  const activityFlagPath = path.join(os.homedir(), '.claude-mem', 'activity.flag');
-  fs.writeFileSync(activityFlagPath, JSON.stringify({
-    active: true,
-    project,
-    timestamp: Date.now()
-  }));
-
-  database.close();
-
-  // Output hook response
-  console.log(JSON.stringify({ continue: true, suppressOutput: true }));
-}
-
-export async function handleSave(payload: any): Promise<void> {
-  // Return immediately
-  console.log(JSON.stringify({ async: true, asyncTimeout: 180000 }));
-
-  // Process async
-  const project = getProjectName(payload.cwd);
-  const database = initializeDatabase();
-
-  try {
-    db.cleanupStaleLocks(database);
-
-    const sessions = db.getActiveStreamingSessionsForProject(database, project);
-    if (sessions.length === 0) {
-      database.close();
-      return;
-    }
-
-    const session = sessions[0];
-    if (!session.sdk_session_id) {
-      database.close();
-      return;
-    }
-
-    // Try to acquire lock
-    const lockAcquired = db.acquireSessionLock(database, session.sdk_session_id, 'save');
-    if (!lockAcquired) {
-      database.close();
-      return;
-    }
-
-    // Build tool message
-    const message = buildToolMessage({
-      toolName: payload.tool_name,
-      toolInput: payload.tool_input,
-      toolResponse: payload.tool_response,
-      timestamp: payload.timestamp || new Date().toISOString()
-    });
-
-    // Resume SDK session
-    const response = query({
-      prompt: message,
-      options: {
-        model: 'claude-sonnet-4-5-20250929',
-        resume: session.sdk_session_id,
-        allowedTools: ['Bash'],
-        maxTokens: 2048,
-        cwd: payload.cwd
-      }
-    });
-
-    // Consume stream
-    for await (const msg of response) {
-      // SDK processes
-    }
-
-    db.releaseSessionLock(database, session.sdk_session_id);
-  } catch (error) {
-    console.error('Error in save:', error);
-  } finally {
-    database.close();
-  }
-}
-
-export async function handleSummary(payload: any): Promise<void> {
-  // Return immediately
-  console.log(JSON.stringify({ async: true, asyncTimeout: 180000 }));
-
-  // Clear activity flag
-  const activityFlagPath = path.join(os.homedir(), '.claude-mem', 'activity.flag');
-  fs.writeFileSync(activityFlagPath, JSON.stringify({
-    active: false,
-    timestamp: Date.now()
-  }));
-
-  const project = getProjectName(payload.cwd);
-  const database = initializeDatabase();
-
-  try {
-    db.cleanupStaleLocks(database);
-
-    const sessions = db.getActiveStreamingSessionsForProject(database, project);
-    if (sessions.length === 0) {
-      database.close();
-      return;
-    }
-
-    const session = sessions[0];
-    if (!session.sdk_session_id) {
-      database.close();
-      return;
-    }
-
-    // Acquire lock with retry
-    let lockAcquired = false;
-    for (let i = 0; i < 20; i++) {
-      lockAcquired = db.acquireSessionLock(database, session.sdk_session_id, 'summary');
-      if (lockAcquired) break;
-      await new Promise(resolve => setTimeout(resolve, 500));
-    }
-
-    if (!lockAcquired) {
-      throw new Error('Could not acquire session lock');
-    }
-
-    // Build end message
-    const message = buildEndMessage({
-      project,
-      sessionId: session.claude_session_id,
-      title: session.title,
-      subtitle: session.subtitle
-    });
-
-    // Resume SDK session
-    const response = query({
-      prompt: message,
-      options: {
-        model: 'claude-sonnet-4-5-20250929',
-        resume: session.sdk_session_id,
-        allowedTools: ['Bash'],
-        maxTokens: 4096,
-        cwd: payload.cwd
-      }
-    });
-
-    // Consume stream
-    for await (const msg of response) {
-      // SDK generates and stores overview
-    }
-
-    // Mark completed
-    db.markStreamingSessionCompleted(database, session.id);
-
-    // Delete SDK transcript
-    const sanitizedCwd = payload.cwd.replace(/\//g, '-');
-    const transcriptPath = path.join(
-      os.homedir(),
-      '.claude',
-      'projects',
-      sanitizedCwd,
-      `${session.sdk_session_id}.jsonl`
-    );
-
-    if (fs.existsSync(transcriptPath)) {
-      fs.unlinkSync(transcriptPath);
-    }
-
-    db.releaseSessionLock(database, session.sdk_session_id);
-  } catch (error) {
-    console.error('Error in summary:', error);
-  } finally {
-    database.close();
-  }
-}
-```
-
-### `src/cli.ts`
-
-```typescript
-import { Command } from 'commander';
-import { readStdinJson } from './lib/stdin-reader';
-import { handleContext, handleNew, handleSave, handleSummary } from './commands/hook-handlers';
-
-const program = new Command();
-
-program
-  .name('claude-mem')
-  .description('Memory management for Claude Code')
-  .version('4.0.0');
-
-program
-  .command('context')
-  .description('Load context from previous sessions')
-  .action(async () => {
-    const payload = await readStdinJson();
-    await handleContext(payload);
-  });
-
-program
-  .command('new')
-  .description('Start new memory session')
-  .action(async () => {
-    const payload = await readStdinJson();
-    await handleNew(payload);
-  });
-
-program
-  .command('save')
-  .description('Save tool observation to memory')
-  .action(async () => {
-    const payload = await readStdinJson();
-    await handleSave(payload);
-  });
-
-program
-  .command('summary')
-  .description('Generate and store session summary')
-  .action(async () => {
-    const payload = await readStdinJson();
-    await handleSummary(payload);
-  });
-
-program.parse();
+-- Stores extracted observations (what SDK decides is important)
+CREATE TABLE observations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  sdk_session_id TEXT NOT NULL,
+  project TEXT NOT NULL,
+  text TEXT NOT NULL,
+  type TEXT NOT NULL, -- 'decision' | 'bugfix' | 'feature' | 'refactor' | 'discovery'
+  created_at TEXT NOT NULL,
+  created_at_epoch INTEGER NOT NULL,
+  FOREIGN KEY(sdk_session_id) REFERENCES sdk_sessions(sdk_session_id)
+);
+
+CREATE INDEX idx_observations_project ON observations(project);
+CREATE INDEX idx_observations_created ON observations(created_at_epoch DESC);
+
+-- Stores session summaries
+CREATE TABLE session_summaries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  sdk_session_id TEXT UNIQUE NOT NULL,
+  project TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  created_at_epoch INTEGER NOT NULL,
+  FOREIGN KEY(sdk_session_id) REFERENCES sdk_sessions(sdk_session_id)
+);
+
+CREATE INDEX idx_summaries_project ON session_summaries(project);
+CREATE INDEX idx_summaries_created ON session_summaries(created_at_epoch DESC);
 ```
 
 ---
 
-## Installation & Configuration
+## Hook Implementation
 
-### User Installation
+### 1. SessionStart Hook
 
-```bash
-npm install -g claude-mem
-```
+**Purpose:** Show user what happened in recent sessions
 
-### Claude Code Configuration
-
-Add to `.claude/settings.json`:
-
+**Hook config:**
 ```json
 {
   "hooks": {
-    "SessionStart": [
-      {
-        "matcher": "startup",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "claude-mem context"
-          }
-        ]
-      }
-    ],
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "claude-mem new"
-          }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "claude-mem save"
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "claude-mem summary"
-          }
-        ]
-      }
-    ]
+    "SessionStart": [{
+      "matcher": "startup",
+      "hooks": [{
+        "type": "command",
+        "command": "claude-mem context"
+      }]
+    }]
   }
 }
 ```
 
-That's it! No hook files needed.
+**Command: `claude-mem context`**
 
----
+Flow:
+1. Read stdin JSON (session_id, cwd, source, etc.)
+2. If source !== "startup", exit immediately
+3. Extract project from cwd basename
+4. Query SQLite for recent summaries:
+   ```sql
+   SELECT summary, created_at
+   FROM session_summaries
+   WHERE project = ?
+   ORDER BY created_at_epoch DESC
+   LIMIT 10
+   ```
+5. Format results as human-readable text
+6. Output to stdout (Claude Code automatically injects this)
+7. Exit with code 0
 
-## Testing Strategy
+### 2. UserPromptSubmit Hook
 
-### Unit Tests
+**Purpose:** Initialize SDK memory session in background
 
-Test each command independently:
-
-```bash
-# Test context
-echo '{"hook_event_name":"SessionStart","source":"startup","cwd":"'$(pwd)'"}' | claude-mem context
-
-# Test new
-echo '{"hook_event_name":"UserPromptSubmit","session_id":"test","prompt":"hello","cwd":"'$(pwd)'","timestamp":"'$(date -Iseconds)'"}' | claude-mem new
-
-# Test save
-echo '{"hook_event_name":"PostToolUse","session_id":"test","tool_name":"Read","tool_input":{},"tool_response":{"content":"test"},"cwd":"'$(pwd)'"}' | claude-mem save
-
-# Test summary
-echo '{"hook_event_name":"Stop","session_id":"test","cwd":"'$(pwd)'"}' | claude-mem summary
+**Hook config:**
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [{
+      "hooks": [{
+        "type": "command",
+        "command": "claude-mem new"
+      }]
+    }]
+  }
+}
 ```
 
-### Integration Tests
+**Command: `claude-mem new`**
 
-Full lifecycle test:
-1. Create session
-2. Feed several tools
-3. Generate summary
-4. Verify database state
+Flow:
+1. Read stdin JSON (session_id, prompt, cwd, etc.)
+2. Extract project from cwd
+3. Create SDK session record in database
+4. Start SDK session with initialization prompt in background process
+5. Save SDK session ID to database
+6. Output: `{"continue": true, "suppressOutput": true}`
+7. Exit immediately (SDK runs in background daemon/process)
 
-### Database Verification
+**The Background SDK Process:**
 
-```bash
-sqlite3 ~/.claude-mem/claude-mem.db "SELECT * FROM streaming_sessions;"
+The SDK session should run as a detached background process:
+```typescript
+// In claude-mem new
+const child = spawn('claude-mem', ['sdk-worker', session_id], {
+  detached: true,
+  stdio: 'ignore'
+});
+child.unref();
+```
+
+The SDK worker:
+```typescript
+// claude-mem sdk-worker <session_id>
+async function runSDKWorker(sessionId: string) {
+  const session = await loadSessionFromDB(sessionId);
+
+  async function* messageGenerator() {
+    yield {
+      type: "user",
+      message: {
+        role: "user",
+        content: buildInitPrompt(session)
+      }
+    };
+
+    // Then listen for queued observations
+    while (session.status === 'active') {
+      const observations = await pollObservationQueue(session.sdk_session_id);
+
+      for (const obs of observations) {
+        yield {
+          type: "user",
+          message: {
+            role: "user",
+            content: buildObservationPrompt(obs)
+          }
+        };
+        markObservationProcessed(obs.id);
+      }
+
+      await sleep(1000); // Poll every second
+    }
+  }
+
+  // Run SDK session
+  const response = query({
+    prompt: messageGenerator(),
+    options: {
+      model: 'claude-sonnet-4-5-20250929',
+      allowedTools: ['mcp__claude-mem__*'], // ChromaDB tools
+      maxTurns: 1000,
+      cwd: session.cwd
+    }
+  });
+
+  // Consume responses
+  for await (const msg of response) {
+    // SDK is storing observations to ChromaDB
+    // We just need to keep the stream alive
+  }
+}
+```
+
+### 3. PostToolUse Hook
+
+**Purpose:** Queue tool observations for SDK processing
+
+**Hook config:**
+```json
+{
+  "hooks": {
+    "PostToolUse": [{
+      "matcher": "*",
+      "hooks": [{
+        "type": "command",
+        "command": "claude-mem save"
+      }]
+    }]
+  }
+}
+```
+
+**Command: `claude-mem save`**
+
+Flow:
+1. Read stdin JSON (tool_name, tool_input, tool_output, etc.)
+2. Find active SDK session for this project
+3. Insert observation into queue:
+   ```sql
+   INSERT INTO observation_queue
+   (sdk_session_id, tool_name, tool_input, tool_output, created_at_epoch)
+   VALUES (?, ?, ?, ?, ?)
+   ```
+4. Output: `{"continue": true, "suppressOutput": true}`
+5. Exit immediately
+
+**Observation Filtering:**
+
+Not every tool is worth observing. Filter in the hook:
+```typescript
+const BORING_TOOLS = new Set(['Glob', 'Grep', 'ListMcpResourcesTool']);
+
+if (BORING_TOOLS.has(tool_name)) {
+  console.log('{"continue": true, "suppressOutput": true}');
+  process.exit(0);
+}
+```
+
+### 4. Stop Hook
+
+**Purpose:** Signal SDK to finalize and generate summary
+
+**Hook config:**
+```json
+{
+  "hooks": {
+    "Stop": [{
+      "hooks": [{
+        "type": "command",
+        "command": "claude-mem summary"
+      }]
+    }]
+  }
+}
+```
+
+**Command: `claude-mem summary`**
+
+Flow:
+1. Read stdin JSON (session_id, cwd, etc.)
+2. Find active SDK session
+3. Insert special "FINALIZE" message into observation queue:
+   ```sql
+   INSERT INTO observation_queue
+   (sdk_session_id, tool_name, tool_input, tool_output, created_at_epoch)
+   VALUES (?, 'FINALIZE', '{}', '{}', ?)
+   ```
+4. Output: `{"continue": true, "suppressOutput": true}`
+5. Exit immediately
+
+**SDK Worker Handling:**
+
+When SDK worker sees FINALIZE message:
+```typescript
+if (obs.tool_name === 'FINALIZE') {
+  yield {
+    type: "user",
+    message: {
+      role: "user",
+      content: buildFinalizePrompt(session)
+    }
+  };
+
+  // Wait for SDK to finish processing
+  await waitForSDKCompletion();
+
+  // Update session status
+  await markSessionCompleted(session.id);
+
+  // Exit worker
+  break;
+}
 ```
 
 ---
 
-## Success Criteria
+## SDK Agent Prompts
 
-✅ All four commands work with stdin JSON
-✅ All database operations are type-safe
-✅ No hook files to distribute
-✅ No CLI-to-CLI calls
-✅ Clean separation of concerns
-✅ Comprehensive test coverage
-✅ Simple installation process
+### Initialization Prompt
+
+```typescript
+function buildInitPrompt(project: string, sessionId: string, userPrompt: string): string {
+  return `You are a memory assistant for the "${project}" project.
+
+SESSION CONTEXT
+---------------
+Session ID: ${sessionId}
+User's Goal: ${userPrompt}
+Date: ${new Date().toISOString().split('T')[0]}
+
+YOUR ROLE
+---------
+You will observe tool executions during this Claude Code session. Your job is to:
+
+1. Extract meaningful insights (not just raw data)
+2. Store atomic observations in ChromaDB
+3. Focus on: key decisions, patterns discovered, problems solved, technical insights
+
+WHAT TO CAPTURE
+----------------
+✓ Architecture decisions (e.g., "chose PostgreSQL over MongoDB for ACID guarantees")
+✓ Bug fixes (e.g., "fixed race condition in auth middleware by adding mutex")
+✓ New features (e.g., "implemented JWT refresh token flow")
+✓ Refactorings (e.g., "extracted validation logic into separate service")
+✓ Discoveries (e.g., "found that API rate limit is 100 req/min")
+
+✗ NOT routine operations (reading files, listing directories)
+✗ NOT work-in-progress (only completed work)
+✗ NOT obvious facts (e.g., "TypeScript file has types")
+
+TOOLS AVAILABLE
+---------------
+The claude-mem process has direct access to the SQLite database using bun:sqlite.
+
+To store observations, the SDK will call internal functions that execute:
+\`\`\`typescript
+db.run(\`
+  INSERT INTO observations (sdk_session_id, project, text, type, created_at, created_at_epoch)
+  VALUES (?, ?, ?, ?, datetime('now'), unixepoch())
+\`, [sessionId, project, observationText, type]);
+\`\`\`
+
+Types: decision, bugfix, feature, refactor, discovery
+
+Example observations:
+- feature: "Implemented JWT token refresh flow with 7-day expiry"
+- bugfix: "Fixed race condition in session middleware by adding mutex"
+- decision: "Chose PostgreSQL over MongoDB for ACID guarantees"
+
+You don't need to write SQL directly - the system provides these observations automatically.
+
+EXAMPLE
+-------
+Bad: "Read src/auth.ts file"
+Good: "Implemented JWT token refresh flow with 7-day expiry"
+
+Wait for tool observations. Acknowledge this message briefly.`;
+}
+```
+
+### Observation Prompt
+
+```typescript
+function buildObservationPrompt(obs: Observation): string {
+  return `TOOL OBSERVATION
+================
+Tool: ${obs.tool_name}
+Time: ${new Date(obs.created_at_epoch).toISOString()}
+
+Input:
+${JSON.stringify(JSON.parse(obs.tool_input), null, 2)}
+
+Output:
+${JSON.stringify(JSON.parse(obs.tool_output), null, 2)}
+
+ANALYSIS TASK
+-------------
+1. Does this observation contain something worth remembering?
+2. If YES: Store it as a clear, concise observation in ChromaDB
+3. If NO: Just acknowledge and wait for next observation
+
+Remember: Quality over quantity. Only store meaningful insights.`;
+}
+```
+
+### Finalization Prompt
+
+```typescript
+function buildFinalizePrompt(session: SDKSession): string {
+  return `SESSION ENDING
+==============
+The Claude Code session is finishing.
+
+FINAL TASK
+----------
+1. Review the observations you've stored this session
+2. Generate a structured summary that answers these questions:
+   - What did user request?
+   - What did you investigate?
+   - What did you learn?
+   - What did you do?
+   - What's next?
+   - Files read
+   - Files edited
+   - Notes
+
+3. The system will automatically store your summary using bun:sqlite when you provide it.
+
+Just generate the structured summary text - the claude-mem process will handle storage using:
+\`\`\`typescript
+db.run(\`
+  INSERT INTO session_summaries (sdk_session_id, project, summary, created_at, created_at_epoch)
+  VALUES (?, ?, ?, datetime('now'), unixepoch())
+\`, [sessionId, project, summaryText]);
+\`\`\`
+
+The summary should be suitable for showing the user in future sessions.
+
+FORMAT EXAMPLE:
+**Request:** Implement JWT authentication system
+**Investigated:** Existing auth middleware, session management, token storage patterns
+**Learned:** Current system uses session cookies; no JWT support; race condition in middleware
+**Completed:** Implemented JWT token + refresh flow with 7-day expiry; fixed race condition with mutex; added token validation middleware
+**Next Steps:** Add token revocation API endpoint; write integration tests
+**Files Read:** src/auth.ts, src/middleware/session.ts, src/types/user.ts
+**Files Edited:** src/auth.ts, src/middleware/auth.ts, src/routes/auth.ts
+**Notes:** Token secret stored in .env; refresh tokens use rotation strategy
+
+Generate and store the structured summary now.`;
+}
+```
 
 ---
 
-## Timeline
+## Hook Commands Architecture
 
-- **Database layer**: 2-3 hours
-- **Command handlers**: 4-6 hours
-- **CLI integration**: 1-2 hours
-- **Testing**: 2-3 hours
-- **Documentation**: 1-2 hours
+All four hook commands (`claude-mem context`, `claude-mem new`, `claude-mem save`, `claude-mem summary`) are implemented as standalone TypeScript functions that:
 
-**Total: 10-16 hours of focused development**
+1. **Use bun:sqlite directly** - No spawning child processes or CLI subcommands
+2. **Are self-contained** - Each hook has all the logic it needs
+3. **Share a common database layer** - Import from shared `db.ts` module
+4. **Never call other claude-mem commands** - All functionality via direct library calls
+
+```typescript
+// Example structure
+import { Database } from 'bun:sqlite';
+
+export function contextHook(stdin: HookInput) {
+  const db = new Database('~/.claude-mem/db.sqlite');
+  // Query and return context directly
+  const summaries = db.query('SELECT ...').all();
+  console.log(formatContext(summaries));
+  db.close();
+}
+
+export function saveHook(stdin: HookInput) {
+  const db = new Database('~/.claude-mem/db.sqlite');
+  // Insert observation directly
+  db.run('INSERT INTO observation_queue ...', params);
+  db.close();
+  console.log('{"continue": true, "suppressOutput": true}');
+}
+```
+
+**Key principle:** Hooks are fast, synchronous database operations. The SDK worker process is where async/complex logic happens.
+
+---
+
+## Background Process Management
+
+The `claude-mem save` hook just queues observations - processing happens in the background SDK worker process that polls the queue continuously.
+
+This way:
+- No background daemons needed
+- Works on all platforms
+- Self-healing (if worker crashes, next tool restarts it)
+- Simple state management
+
+---
+
+## Error Handling
+
+**SDK worker failures:**
+- Each observation processing is atomic
+- Failed observations stay in queue
+- Next worker run retries
+- After 3 failures, mark observation as skipped
+
+**Database corruption:**
+- SQLite with WAL mode (write-ahead logging)
+- Regular backups to ~/.claude-mem/backups/
+- Automatic recovery from backups
+
+**ChromaDB connection failures:**
+- Graceful degradation (log error, continue)
+- Retry with exponential backoff
+- Don't block main Claude Code session
