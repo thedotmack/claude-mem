@@ -232,40 +232,16 @@ function copyFileRecursively(src: string, dest: string): void {
   }
 }
 
-function writeHookFiles(timeout: number = 180000): void {
+// No longer needed - hooks are now CLI commands
+// Kept for backwards compatibility only
+function ensureHooksDirectory(): void {
   const pathDiscovery = PathDiscovery.getInstance();
   const runtimeHooksDir = pathDiscovery.getHooksDirectory();
-  const packageHookTemplatesDir = pathDiscovery.findPackageHookTemplatesDirectory();
 
-  const hookFiles = ['session-start.js', 'stop.js', 'user-prompt-submit.js', 'post-tool-use.js'];
-
-  for (const hookFile of hookFiles) {
-    const sourceTemplatePath = join(packageHookTemplatesDir, hookFile);
-    const runtimeHookPath = join(runtimeHooksDir, hookFile);
-    copyFileSync(sourceTemplatePath, runtimeHookPath);
-    Platform.makeExecutable(runtimeHookPath);
+  // Just ensure the directory exists for any legacy references
+  if (!existsSync(runtimeHooksDir)) {
+    mkdirSync(runtimeHooksDir, { recursive: true });
   }
-
-  const sourceSharedTemplateDir = join(packageHookTemplatesDir, 'shared');
-  const runtimeSharedDir = join(runtimeHooksDir, 'shared');
-  if (existsSync(sourceSharedTemplateDir)) {
-    copyFileRecursively(sourceSharedTemplateDir, runtimeSharedDir);
-  }
-
-  const hookConfig = {
-    packageName: PACKAGE_NAME,
-    cliCommand: PACKAGE_NAME,
-    backend: 'chroma',
-    timeout
-  };
-  writeFileSync(join(runtimeHooksDir, 'config.json'), JSON.stringify(hookConfig, null, 2));
-
-  // Create package.json in hooks directory (no dependencies needed with bun:sqlite)
-  const hookPackageJson = {
-    name: "claude-mem-hooks",
-    type: "module"
-  };
-  writeFileSync(join(runtimeHooksDir, 'package.json'), JSON.stringify(hookPackageJson, null, 2));
 }
 
 
@@ -363,18 +339,15 @@ function installChromaMcp(forceReinstall: boolean = false): void {
   execSync(chromaMcpCommand, { stdio: 'inherit' });
 }
 
-function createHookConfig(scriptPath: string, timeout: number, matcher?: string) {
+function createHookConfig(command: string, timeout: number, matcher?: string) {
   const config: any = {
-    hooks: [{ type: "command", command: scriptPath, timeout }]
+    hooks: [{ type: "command", command, timeout }]
   };
   if (matcher) config.matcher = matcher;
   return config;
 }
 
 function configureHooks(settingsPath: string): void {
-  const pathDiscovery = PathDiscovery.getInstance();
-  const hooksDir = pathDiscovery.getHooksDirectory();
-
   let settings: any = existsSync(settingsPath)
     ? JSON.parse(readFileSync(settingsPath, 'utf8'))
     : { hooks: {} };
@@ -383,6 +356,7 @@ function configureHooks(settingsPath: string): void {
 
   if (!settings.hooks) settings.hooks = {};
 
+  // Remove any existing claude-mem hooks
   const hookTypes = ['SessionStart', 'Stop', 'UserPromptSubmit', 'PostToolUse'];
   hookTypes.forEach(type => {
     if (settings.hooks[type]) {
@@ -392,10 +366,13 @@ function configureHooks(settingsPath: string): void {
     }
   });
 
-  settings.hooks.SessionStart = [createHookConfig(join(hooksDir, 'session-start.js'), 180)];
-  settings.hooks.Stop = [createHookConfig(join(hooksDir, 'stop.js'), 60)];
-  settings.hooks.UserPromptSubmit = [createHookConfig(join(hooksDir, 'user-prompt-submit.js'), 60)];
-  settings.hooks.PostToolUse = [createHookConfig(join(hooksDir, 'post-tool-use.js'), 180, "*")];
+  // Configure hooks to use CLI commands directly (new architecture)
+  const cliPath = detectClaudePath() || PACKAGE_NAME;
+
+  settings.hooks.SessionStart = [createHookConfig(`${cliPath} context`, 180)];
+  settings.hooks.Stop = [createHookConfig(`${cliPath} summary`, 60)];
+  settings.hooks.UserPromptSubmit = [createHookConfig(`${cliPath} new`, 60)];
+  settings.hooks.PostToolUse = [createHookConfig(`${cliPath} save`, 180, "*")];
 
   writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
 }
@@ -517,7 +494,7 @@ export async function install(options: OptionValues = {}): Promise<void> {
     { name: 'Installing Chroma MCP server', fn: () => installChromaMcp(config.forceReinstall) },
     { name: 'Adding CLAUDE.md instructions', fn: () => ensureClaudeMdInstructions() },
     { name: 'Installing Claude commands', fn: () => installClaudeCommands() },
-    { name: 'Installing memory hooks', fn: () => writeHookFiles(config.hookTimeout) },
+    { name: 'Configuring CLI hook integration', fn: () => ensureHooksDirectory() },
     { name: 'Configuring Claude settings', fn: () => configureHooks(getSettingsPath(config)) },
     { name: 'Configuring user settings', fn: () => configureUserSettings(config) }
   ];
