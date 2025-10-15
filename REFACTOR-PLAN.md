@@ -80,8 +80,8 @@ It should NOT:
 
 PostToolUse hooks run in parallel. Handle this by:
 - Make SDK agent calls async and fire-and-forget
-- Use a message queue (in-memory) to serialize SDK prompts
-- SDK session can handle streaming prompts naturally
+- Use the observation_queue SQLite table to serialize observations
+- SDK worker polls this queue and processes observations sequentially
 
 ### What if the user interrupts Claude Code?
 
@@ -271,17 +271,23 @@ async function runSDKWorker(sessionId: string) {
   const response = query({
     prompt: messageGenerator(),
     options: {
-      model: 'claude-sonnet-4-5-20250929',
-      allowedTools: ['mcp__claude-mem__*'], // ChromaDB tools
+      model: 'claude-haiku-4-5-20251001', // 3x faster than Sonnet 4.5, quality of Sonnet 4.0-4.1
+      allowedTools: [], // No tools needed - agent outputs XML that we parse
       maxTurns: 1000,
       cwd: session.cwd
     }
   });
 
-  // Consume responses
+  // Consume responses and parse XML for observations/summaries
   for await (const msg of response) {
-    // SDK is storing observations to ChromaDB
-    // We just need to keep the stream alive
+    if (msg.type === 'text') {
+      // Use an XML parser library (e.g., fast-xml-parser or similar) to parse observations and summaries
+      // Parse <observation> blocks and call storeObservation(session_id, project, type, text)
+      // Parse <summary> blocks, extract all 8 fields, format and call storeSummary(session_id, project, text)
+
+      parseAndStoreObservations(msg.content, session);
+      parseAndStoreSummary(msg.content, session);
+    }
   }
 }
 ```
@@ -408,7 +414,7 @@ YOUR ROLE
 You will observe tool executions during this Claude Code session. Your job is to:
 
 1. Extract meaningful insights (not just raw data)
-2. Store atomic observations in ChromaDB
+2. Store atomic observations in SQLite
 3. Focus on: key decisions, patterns discovered, problems solved, technical insights
 
 WHAT TO CAPTURE
@@ -423,26 +429,28 @@ WHAT TO CAPTURE
 ✗ NOT work-in-progress (only completed work)
 ✗ NOT obvious facts (e.g., "TypeScript file has types")
 
-TOOLS AVAILABLE
----------------
-The claude-mem process has direct access to the SQLite database using bun:sqlite.
+HOW TO STORE OBSERVATIONS
+--------------------------
+When you identify something worth remembering, output your observation in this EXACT XML format:
 
-To store observations, the SDK will call internal functions that execute:
-\`\`\`typescript
-db.run(\`
-  INSERT INTO observations (sdk_session_id, project, text, type, created_at, created_at_epoch)
-  VALUES (?, ?, ?, ?, datetime('now'), unixepoch())
-\`, [sessionId, project, observationText, type]);
+\`\`\`xml
+<observation>
+  <type>feature</type>
+  <text>Implemented JWT token refresh flow with 7-day expiry</text>
+</observation>
 \`\`\`
 
-Types: decision, bugfix, feature, refactor, discovery
+Valid types: decision, bugfix, feature, refactor, discovery
 
-Example observations:
-- feature: "Implemented JWT token refresh flow with 7-day expiry"
-- bugfix: "Fixed race condition in session middleware by adding mutex"
-- decision: "Chose PostgreSQL over MongoDB for ACID guarantees"
+Structure requirements:
+- <observation> is the root element
+- <type> must be one of the 5 valid types (single word)
+- <text> contains your concise observation (one sentence preferred)
+- No additional fields or nesting
 
-You don't need to write SQL directly - the system provides these observations automatically.
+The SDK worker will parse all <observation> blocks from your response using regex and store them in SQLite.
+
+You can include your reasoning before or after the observation block, or just output the observation by itself.
 
 EXAMPLE
 -------
@@ -471,7 +479,21 @@ ${JSON.stringify(JSON.parse(obs.tool_output), null, 2)}
 ANALYSIS TASK
 -------------
 1. Does this observation contain something worth remembering?
-2. If YES: Store it as a clear, concise observation in ChromaDB
+2. If YES: Output the observation in this EXACT XML format:
+
+   \`\`\`xml
+   <observation>
+     <type>feature</type>
+     <text>Your concise observation here</text>
+   </observation>
+   \`\`\`
+
+   Requirements:
+   - Use one of these types: decision, bugfix, feature, refactor, discovery
+   - Keep text concise (one sentence preferred)
+   - No markdown formatting inside <text>
+   - No additional XML fields
+
 3. If NO: Just acknowledge and wait for next observation
 
 Remember: Quality over quantity. Only store meaningful insights.`;
@@ -499,29 +521,40 @@ FINAL TASK
    - Files edited
    - Notes
 
-3. The system will automatically store your summary using bun:sqlite when you provide it.
+3. Generate the structured summary and output it in this EXACT XML format:
 
-Just generate the structured summary text - the claude-mem process will handle storage using:
-\`\`\`typescript
-db.run(\`
-  INSERT INTO session_summaries (sdk_session_id, project, summary, created_at, created_at_epoch)
-  VALUES (?, ?, ?, datetime('now'), unixepoch())
-\`, [sessionId, project, summaryText]);
+\`\`\`xml
+<summary>
+  <request>Implement JWT authentication system</request>
+  <investigated>Existing auth middleware, session management, token storage patterns</investigated>
+  <learned>Current system uses session cookies; no JWT support; race condition in middleware</learned>
+  <completed>Implemented JWT token + refresh flow with 7-day expiry; fixed race condition with mutex; added token validation middleware</completed>
+  <next_steps>Add token revocation API endpoint; write integration tests</next_steps>
+  <files_read>
+    <file>src/auth.ts</file>
+    <file>src/middleware/session.ts</file>
+    <file>src/types/user.ts</file>
+  </files_read>
+  <files_edited>
+    <file>src/auth.ts</file>
+    <file>src/middleware/auth.ts</file>
+    <file>src/routes/auth.ts</file>
+  </files_edited>
+  <notes>Token secret stored in .env; refresh tokens use rotation strategy</notes>
+</summary>
 \`\`\`
 
-The summary should be suitable for showing the user in future sessions.
+Structure requirements:
+- <summary> is the root element
+- All 8 child elements are REQUIRED: request, investigated, learned, completed, next_steps, files_read, files_edited, notes
+- <files_read> and <files_edited> must contain <file> child elements (one per file)
+- If no files were read/edited, use empty tags: <files_read></files_read>
+- Text fields can be multiple sentences but avoid markdown formatting
+- Use underscores in element names: next_steps, files_read, files_edited
 
-FORMAT EXAMPLE:
-**Request:** Implement JWT authentication system
-**Investigated:** Existing auth middleware, session management, token storage patterns
-**Learned:** Current system uses session cookies; no JWT support; race condition in middleware
-**Completed:** Implemented JWT token + refresh flow with 7-day expiry; fixed race condition with mutex; added token validation middleware
-**Next Steps:** Add token revocation API endpoint; write integration tests
-**Files Read:** src/auth.ts, src/middleware/session.ts, src/types/user.ts
-**Files Edited:** src/auth.ts, src/middleware/auth.ts, src/routes/auth.ts
-**Notes:** Token secret stored in .env; refresh tokens use rotation strategy
+The SDK worker will parse the <summary> block and extract all fields to store in SQLite.
 
-Generate and store the structured summary now.`;
+Generate the summary now in the required XML format.`;
 }
 ```
 
@@ -565,11 +598,12 @@ export function saveHook(stdin: HookInput) {
 
 The `claude-mem save` hook just queues observations - processing happens in the background SDK worker process that polls the queue continuously.
 
-This way:
-- No background daemons needed
-- Works on all platforms
-- Self-healing (if worker crashes, next tool restarts it)
-- Simple state management
+The SDK worker is spawned by `claude-mem new` as a detached process and runs for the duration of the Claude Code session.
+
+Benefits:
+- Works on all platforms (no systemd/launchd needed)
+- Self-contained (spawned and managed by claude-mem itself)
+- Simple state management (all state in SQLite)
 
 ---
 
@@ -590,3 +624,17 @@ This way:
 - Graceful degradation (log error, continue)
 - Retry with exponential backoff
 - Don't block main Claude Code session
+
+---
+
+## Implementation Order
+
+1. **Database setup** - Create tables and migration scripts
+2. **Hook commands** - Implement the 4 hook commands (context, new, save, summary)
+3. **SDK worker** - Implement the background worker process with response parsing
+4. **SDK prompts** - Wire up the prompts and message generator
+5. **Test end-to-end** - Run a real Claude Code session and verify it works
+
+Start simple. Get one hook working before moving to the next. Don't try to build everything at once.
+
+**Note:** MCP is only used for retrieval (when Claude Code needs to access stored memories), not for storage. The SDK agent stores data by outputting specially formatted text that the SDK worker parses and writes to SQLite.
