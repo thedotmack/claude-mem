@@ -223,6 +223,56 @@ program
   .option('--save', 'Save the generated title to the database (requires --session-id)')
   .action(generateTitle);
 
+// Hook commands (for Claude Code hook integration)
+program
+  .command('context')
+  .description('SessionStart hook - show recent session context')
+  .action(async () => {
+    const { contextHook } = await import('../hooks/index.js');
+    const input = await readStdin();
+    contextHook(JSON.parse(input));
+  });
+
+program
+  .command('new')
+  .description('UserPromptSubmit hook - initialize SDK session')
+  .action(async () => {
+    const { newHook } = await import('../hooks/index.js');
+    const input = await readStdin();
+    newHook(JSON.parse(input));
+  });
+
+program
+  .command('save')
+  .description('PostToolUse hook - queue observation')
+  .action(async () => {
+    const { saveHook } = await import('../hooks/index.js');
+    const input = await readStdin();
+    saveHook(JSON.parse(input));
+  });
+
+program
+  .command('summary')
+  .description('Stop hook - finalize session')
+  .action(async () => {
+    const { summaryHook } = await import('../hooks/index.js');
+    const input = await readStdin();
+    summaryHook(JSON.parse(input));
+  });
+
+// Helper function to read stdin
+async function readStdin(): Promise<string> {
+  return new Promise((resolve) => {
+    let data = '';
+    process.stdin.on('data', chunk => {
+      data += chunk;
+    });
+    process.stdin.on('end', () => {
+      resolve(data);
+    });
+  });
+}
+
 // </Block> =======================================
 
 // <Block> 1.11 ===================================

@@ -9,6 +9,9 @@ export { DiagnosticsStore } from './DiagnosticsStore.js';
 export { TranscriptEventStore } from './TranscriptEventStore.js';
 export { StreamingSessionStore } from './StreamingSessionStore.js';
 
+// Export hooks database
+export { HooksDatabase } from './HooksDatabase.js';
+
 // Export types
 export * from './types.js';
 
