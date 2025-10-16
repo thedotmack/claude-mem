@@ -4,13 +4,14 @@
   "description": "Memory compression system for Claude Code - persist context across sessions",
   "keywords": [
     "claude",
+    "claude-code",
     "claude-agent-sdk",
     "mcp",
+    "plugin",
     "memory",
     "compression",
     "knowledge-graph",
     "transcript",
-    "cli",
     "typescript",
     "bun"
   ],
@@ -32,15 +33,10 @@
   "engines": {
     "bun": ">=1.0.0"
   },
-  "bin": {
-    "claude-mem": "./dist/claude-mem.min.js"
-  },
   "scripts": {
-    "build": "node scripts/build.js && node scripts/build-hooks.js",
-    "build:cli": "node scripts/build.js",
+    "build": "node scripts/build-hooks.js",
     "build:hooks": "node scripts/build-hooks.js",
     "publish:npm": "node scripts/publish.js",
-    "dev": "bun run src/bin/cli.ts",
     "prepublishOnly": "npm run build",
     "test": "bun test tests/",
     "test:context": "echo '{\"session_id\":\"test-'$(date +%s)'\",\"cwd\":\"'$(pwd)'\",\"source\":\"startup\"}' | bun scripts/hooks/context-hook.js 2>/dev/null",
@@ -48,17 +44,10 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.1.0",
-    "@clack/prompts": "^0.11.0",
-    "boxen": "^8.0.1",
-    "chalk": "^5.6.0",
-    "commander": "^14.0.0",
     "glob": "^11.0.3",
-    "gradient-string": "^3.0.0",
     "handlebars": "^4.7.8"
   },
   "files": [
-    "dist",
-    "commands",
     "hooks",
     "scripts",
     ".claude-plugin",

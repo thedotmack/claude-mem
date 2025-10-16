@@ -48,24 +48,18 @@ export function newHook(input?: UserPromptSubmitInput): void {
     db.close();
 
     // Start SDK worker in background as detached process
-    // In plugin mode, use bundled worker; otherwise use global CLI
     const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT;
-    let child;
 
-    if (pluginRoot) {
-      // Plugin mode: use bundled worker
-      const workerPath = path.join(pluginRoot, 'scripts', 'hooks', 'worker.js');
-      child = spawn('bun', [workerPath, sessionId.toString()], {
-        detached: true,
-        stdio: 'ignore'
-      });
-    } else {
-      // Traditional mode: use global CLI
-      child = spawn('claude-mem', ['worker', sessionId.toString()], {
-        detached: true,
-        stdio: 'ignore'
-      });
+    if (!pluginRoot) {
+      throw new Error('CLAUDE_PLUGIN_ROOT not set - claude-mem must be installed as a Claude Code plugin');
     }
+
+    // Use bundled worker
+    const workerPath = path.join(pluginRoot, 'scripts', 'hooks', 'worker.js');
+    const child = spawn('bun', [workerPath, sessionId.toString()], {
+      detached: true,
+      stdio: 'ignore'
+    });
 
     child.unref();
 
