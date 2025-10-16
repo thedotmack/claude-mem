@@ -54,7 +54,6 @@
   },
   "files": [
     "dist",
-    "hook-templates",
     "commands",
     "src",
     "docs",

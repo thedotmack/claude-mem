@@ -125,4 +125,4 @@ claude-mem/
 - The build process embeds the version from `package.json` at build time
 - `prepublishOnly` script ensures build runs before npm publish
 - Dependencies are bundled except for external packages
-- The published package includes: `dist/`, `hook-templates/`, `commands/`, `src/`, `docs/`
+- The published package includes: `dist/`, `commands/`, `src/`, `docs/`

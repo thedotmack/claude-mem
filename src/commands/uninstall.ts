@@ -86,12 +86,6 @@ export async function uninstall(options: OptionValues = {}): Promise<void> {
     });
   }
   
-  const pathDiscovery = PathDiscovery.getInstance();
-  const runtimeHooksDir = pathDiscovery.getHooksDirectory();
-  const preCompactScript = join(runtimeHooksDir, 'pre-compact.js');
-  const sessionStartScript = join(runtimeHooksDir, 'session-start.js');
-  const sessionEndScript = join(runtimeHooksDir, 'session-end.js');
-  
   let removedCount = 0;
   
   for (const location of locations) {
@@ -110,57 +104,27 @@ export async function uninstall(options: OptionValues = {}): Promise<void> {
 
     let modified = false;
 
-    if (settings.hooks.PreCompact) {
-      const filteredPreCompact = settings.hooks.PreCompact.filter((matcher: any) =>
-        !matcher.hooks?.some((hook: any) =>
-          hook.command === preCompactScript ||
-          hook.command?.includes('pre-compact.js') ||
-          hook.command?.includes('claude-mem')
-        )
-      );
+    // Remove claude-mem hooks (CLI commands)
+    const hookTypes = ['SessionStart', 'Stop', 'UserPromptSubmit', 'PostToolUse'];
 
-      if (filteredPreCompact.length !== settings.hooks.PreCompact.length) {
-        settings.hooks.PreCompact = filteredPreCompact.length ? filteredPreCompact : undefined;
-        modified = true;
-        console.log(`✅ Removed PreCompact hook from ${location.name} settings`);
+    for (const hookType of hookTypes) {
+      if (settings.hooks[hookType]) {
+        const filteredHooks = settings.hooks[hookType].filter((matcher: any) =>
+          !matcher.hooks?.some((hook: any) => hook.command?.includes('claude-mem'))
+        );
+
+        if (filteredHooks.length !== settings.hooks[hookType].length) {
+          settings.hooks[hookType] = filteredHooks.length ? filteredHooks : undefined;
+          modified = true;
+          console.log(`✅ Removed ${hookType} hook from ${location.name} settings`);
+        }
       }
     }
 
-    if (settings.hooks.SessionStart) {
-      const filteredSessionStart = settings.hooks.SessionStart.filter((matcher: any) =>
-        !matcher.hooks?.some((hook: any) =>
-          hook.command === sessionStartScript ||
-          hook.command?.includes('session-start.js') ||
-          hook.command?.includes('claude-mem')
-        )
-      );
-
-      if (filteredSessionStart.length !== settings.hooks.SessionStart.length) {
-        settings.hooks.SessionStart = filteredSessionStart.length ? filteredSessionStart : undefined;
-        modified = true;
-        console.log(`✅ Removed SessionStart hook from ${location.name} settings`);
-      }
-    }
-
-    if (settings.hooks.SessionEnd) {
-      const filteredSessionEnd = settings.hooks.SessionEnd.filter((matcher: any) =>
-        !matcher.hooks?.some((hook: any) =>
-          hook.command === sessionEndScript ||
-          hook.command?.includes('session-end.js') ||
-          hook.command?.includes('claude-mem')
-        )
-      );
-
-      if (filteredSessionEnd.length !== settings.hooks.SessionEnd.length) {
-        settings.hooks.SessionEnd = filteredSessionEnd.length ? filteredSessionEnd : undefined;
-        modified = true;
-        console.log(`✅ Removed SessionEnd hook from ${location.name} settings`);
-      }
-    }
-
-    if (settings.hooks.PreCompact === undefined) delete settings.hooks.PreCompact;
-    if (settings.hooks.SessionStart === undefined) delete settings.hooks.SessionStart;
-    if (settings.hooks.SessionEnd === undefined) delete settings.hooks.SessionEnd;
+    // Clean up undefined hooks
+    hookTypes.forEach(hookType => {
+      if (settings.hooks[hookType] === undefined) delete settings.hooks[hookType];
+    });
     if (!Object.keys(settings.hooks).length) delete settings.hooks;
 
     if (modified) {

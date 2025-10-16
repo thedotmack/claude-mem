@@ -86,7 +86,16 @@ function detectClaudePath(): string {
 
 function hasExistingInstallation(): boolean {
   const pathDiscovery = PathDiscovery.getInstance();
-  return existsSync(pathDiscovery.getHooksDirectory());
+  const settingsPath = pathDiscovery.getClaudeSettingsPath();
+
+  if (!existsSync(settingsPath)) return false;
+
+  try {
+    const settings = JSON.parse(readFileSync(settingsPath, 'utf8'));
+    return !!(settings.hooks?.SessionStart || settings.hooks?.Stop || settings.hooks?.PostToolUse);
+  } catch {
+    return false;
+  }
 }
 
 async function runInstallationWizard(existingInstall: boolean): Promise<InstallConfig | null> {
@@ -232,17 +241,6 @@ function copyFileRecursively(src: string, dest: string): void {
   }
 }
 
-// No longer needed - hooks are now CLI commands
-// Kept for backwards compatibility only
-function ensureHooksDirectory(): void {
-  const pathDiscovery = PathDiscovery.getInstance();
-  const runtimeHooksDir = pathDiscovery.getHooksDirectory();
-
-  // Just ensure the directory exists for any legacy references
-  if (!existsSync(runtimeHooksDir)) {
-    mkdirSync(runtimeHooksDir, { recursive: true });
-  }
-}
 
 
 function ensureClaudeMdInstructions(): void {
@@ -366,7 +364,7 @@ function configureHooks(settingsPath: string): void {
     }
   });
 
-  // Configure hooks to use CLI commands directly (new architecture)
+  // Configure hooks to use CLI commands directly
   const cliPath = detectClaudePath() || PACKAGE_NAME;
 
   settings.hooks.SessionStart = [createHookConfig(`${cliPath} context`, 180)];
@@ -494,7 +492,6 @@ export async function install(options: OptionValues = {}): Promise<void> {
     { name: 'Installing Chroma MCP server', fn: () => installChromaMcp(config.forceReinstall) },
     { name: 'Adding CLAUDE.md instructions', fn: () => ensureClaudeMdInstructions() },
     { name: 'Installing Claude commands', fn: () => installClaudeCommands() },
-    { name: 'Configuring CLI hook integration', fn: () => ensureHooksDirectory() },
     { name: 'Configuring Claude settings', fn: () => configureHooks(getSettingsPath(config)) },
     { name: 'Configuring user settings', fn: () => configureUserSettings(config) }
   ];

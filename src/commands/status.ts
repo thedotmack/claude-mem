@@ -12,30 +12,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 export async function status(): Promise<void> {
     console.log('🔍 Claude Memory System Status Check');
     console.log('=====================================\n');
-    
-    console.log('📂 Runtime Hook Scripts (installed from hook-templates/):');
+
     const pathDiscovery = PathDiscovery.getInstance();
-    const runtimeHooksDir = pathDiscovery.getHooksDirectory();
-    const sessionStartScript = join(runtimeHooksDir, 'session-start.js');
-    const stopScript = join(runtimeHooksDir, 'stop.js');
-    const userPromptScript = join(runtimeHooksDir, 'user-prompt-submit.js');
-    const postToolScript = join(runtimeHooksDir, 'post-tool-use.js');
 
-    const checkScript = (path: string, name: string) => {
-      if (existsSync(path)) {
-        console.log(`  ✅ ${name}: Found at ${path}`);
-      } else {
-        console.log(`  ❌ ${name}: Not found at ${path}`);
-      }
-    };
-
-    checkScript(sessionStartScript, 'session-start.js');
-    checkScript(stopScript, 'stop.js');
-    checkScript(userPromptScript, 'user-prompt-submit.js');
-    checkScript(postToolScript, 'post-tool-use.js');
-    
-    console.log('');
-    
     console.log('⚙️  Settings Configuration:');
     
     const checkSettings = (name: string, path: string) => {
@@ -50,34 +29,26 @@ export async function status(): Promise<void> {
         const settings = JSON.parse(readFileSync(path, 'utf8'));
 
         const hasSessionStart = settings.hooks?.SessionStart?.some((matcher: any) =>
-          matcher.hooks?.some((hook: any) =>
-            hook.command?.includes('session-start.js') || hook.command?.includes('claude-mem')
-          )
+          matcher.hooks?.some((hook: any) => hook.command?.includes('claude-mem'))
         );
 
         const hasStop = settings.hooks?.Stop?.some((matcher: any) =>
-          matcher.hooks?.some((hook: any) =>
-            hook.command?.includes('stop.js') || hook.command?.includes('claude-mem')
-          )
+          matcher.hooks?.some((hook: any) => hook.command?.includes('claude-mem'))
         );
 
         const hasUserPrompt = settings.hooks?.UserPromptSubmit?.some((matcher: any) =>
-          matcher.hooks?.some((hook: any) =>
-            hook.command?.includes('user-prompt-submit.js') || hook.command?.includes('claude-mem')
-          )
+          matcher.hooks?.some((hook: any) => hook.command?.includes('claude-mem'))
         );
 
         const hasPostTool = settings.hooks?.PostToolUse?.some((matcher: any) =>
-          matcher.hooks?.some((hook: any) =>
-            hook.command?.includes('post-tool-use.js') || hook.command?.includes('claude-mem')
-          )
+          matcher.hooks?.some((hook: any) => hook.command?.includes('claude-mem'))
         );
 
-        console.log(`     SessionStart: ${hasSessionStart ? '✅' : '❌'}`);
-        console.log(`     Stop: ${hasStop ? '✅' : '❌'}`);
-        console.log(`     UserPromptSubmit: ${hasUserPrompt ? '✅' : '❌'}`);
-        console.log(`     PostToolUse: ${hasPostTool ? '✅' : '❌'}`);
-        
+        console.log(`     SessionStart (claude-mem context): ${hasSessionStart ? '✅' : '❌'}`);
+        console.log(`     Stop (claude-mem summary): ${hasStop ? '✅' : '❌'}`);
+        console.log(`     UserPromptSubmit (claude-mem new): ${hasUserPrompt ? '✅' : '❌'}`);
+        console.log(`     PostToolUse (claude-mem save): ${hasPostTool ? '✅' : '❌'}`);
+
       } catch (error: any) {
         console.log(`     ⚠️  Could not parse settings`);
       }

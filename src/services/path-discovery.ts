@@ -53,12 +53,6 @@ export class PathDiscovery {
     return join(this.getDataDirectory(), 'archives');
   }
 
-  /**
-   * Hooks directory where claude-mem hooks are installed
-   */
-  getHooksDirectory(): string {
-    return join(this.getDataDirectory(), 'hooks');
-  }
 
   /**
    * Logs directory for claude-mem operation logs
@@ -222,31 +216,6 @@ export class PathDiscovery {
     throw new Error('Cannot locate claude-mem package root. Ensure claude-mem is properly installed.');
   }
 
-  /**
-   * Find hook templates directory in the installed package
-   *
-   * This returns the SOURCE templates directory that gets copied during installation
-   * to the runtime hooks directory (~/.claude-mem/hooks/)
-   */
-  findPackageHookTemplatesDirectory(): string {
-    const packageRoot = this.getPackageRoot();
-    const hookTemplatesDir = join(packageRoot, 'hook-templates');
-
-    // Verify it contains expected hook template files
-    const requiredHookTemplates = [
-      'session-start.js',
-      'stop.js',
-      'user-prompt-submit.js',
-      'post-tool-use.js'
-    ];
-    for (const hookTemplateFile of requiredHookTemplates) {
-      if (!existsSync(join(hookTemplatesDir, hookTemplateFile))) {
-        throw new Error(`Package hook-templates directory missing required template file: ${hookTemplateFile}`);
-      }
-    }
-
-    return hookTemplatesDir;
-  }
 
   /**
    * Find commands directory in the installed package
@@ -292,8 +261,7 @@ export class PathDiscovery {
   ensureAllDataDirectories(): void {
     this.ensureDirectories([
       this.getDataDirectory(),
-      this.getArchivesDirectory(), 
-      this.getHooksDirectory(),
+      this.getArchivesDirectory(),
       this.getLogsDirectory(),
       this.getTrashDirectory(),
       this.getBackupsDirectory(),
