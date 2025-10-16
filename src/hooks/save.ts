@@ -21,8 +21,22 @@ const SKIP_TOOLS = new Set([
  * Save Hook - PostToolUse
  * Sends tool observations to worker via Unix socket
  */
-export function saveHook(input: PostToolUseInput): void {
+export function saveHook(input?: PostToolUseInput): void {
   try {
+    // Handle standalone execution (no input provided)
+    if (!input) {
+      console.log('No input provided - this script is designed to run as a Claude Code PostToolUse hook');
+      console.log('\nExpected input format:');
+      console.log(JSON.stringify({
+        session_id: "string",
+        cwd: "string",
+        tool_name: "string",
+        tool_input: {},
+        tool_output: {}
+      }, null, 2));
+      process.exit(0);
+    }
+
     const { session_id, tool_name, tool_input, tool_output } = input;
 
     // Skip certain tools

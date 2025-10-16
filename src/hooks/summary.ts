@@ -12,8 +12,19 @@ export interface StopInput {
  * Summary Hook - Stop
  * Sends FINALIZE message to worker via Unix socket
  */
-export function summaryHook(input: StopInput): void {
+export function summaryHook(input?: StopInput): void {
   try {
+    // Handle standalone execution (no input provided)
+    if (!input) {
+      console.log('No input provided - this script is designed to run as a Claude Code Stop hook');
+      console.log('\nExpected input format:');
+      console.log(JSON.stringify({
+        session_id: "string",
+        cwd: "string"
+      }, null, 2));
+      process.exit(0);
+    }
+
     const { session_id } = input;
 
     // Find active SDK session

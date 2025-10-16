@@ -13,8 +13,20 @@ export interface UserPromptSubmitInput {
  * New Hook - UserPromptSubmit
  * Initializes SDK memory session in background
  */
-export function newHook(input: UserPromptSubmitInput): void {
+export function newHook(input?: UserPromptSubmitInput): void {
   try {
+    // Handle standalone execution (no input provided)
+    if (!input) {
+      console.log('No input provided - this script is designed to run as a Claude Code UserPromptSubmit hook');
+      console.log('\nExpected input format:');
+      console.log(JSON.stringify({
+        session_id: "string",
+        cwd: "string",
+        prompt: "string"
+      }, null, 2));
+      process.exit(0);
+    }
+
     const { session_id, cwd, prompt } = input;
 
     // Extract project from cwd
