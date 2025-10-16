@@ -14,6 +14,8 @@ import { trash } from '../commands/trash.js';
 import { viewTrash } from '../commands/trash-view.js';
 import { emptyTrash } from '../commands/trash-empty.js';
 import { restore } from '../commands/restore.js';
+import { doctor } from '../commands/doctor.js';
+import { status } from '../commands/status.js';
 
 const program = new Command();
 // </Block> =======================================
@@ -117,6 +119,19 @@ program
   .command('restore')
   .description('Restore files from trash interactively')
   .action(restore);
+
+// Doctor command
+program
+  .command('doctor')
+  .description('Run health checks on claude-mem installation')
+  .option('--json', 'Output results as JSON')
+  .action(doctor);
+
+// Status command
+program
+  .command('status')
+  .description('Show claude-mem system status')
+  .action(status);
 // </Block> =======================================
 
 // <Block> 1.9 ====================================

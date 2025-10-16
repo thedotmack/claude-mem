@@ -2,7 +2,7 @@ import { OptionValues } from 'commander';
 import fs from 'fs';
 import path from 'path';
 import { PathDiscovery } from '../services/path-discovery.js';
-import { createStores } from '../services/sqlite/index.js';
+import { HooksDatabase } from '../services/sqlite/index.js';
 
 type CheckStatus = 'pass' | 'fail' | 'warn';
 
@@ -51,14 +51,12 @@ export async function doctor(options: OptionValues = {}): Promise<void> {
   }
 
   // SQLite connectivity
-  let stores; // reuse for queue check
   try {
-    stores = await createStores();
-    const sessionCount = stores.sessions.count();
+    const db = new HooksDatabase();
     checks.push({
       name: 'SQLite database',
       status: 'pass',
-      details: `${sessionCount} session${sessionCount === 1 ? '' : 's'} present`
+      details: 'connected'
     });
   } catch (error: any) {
     checks.push({

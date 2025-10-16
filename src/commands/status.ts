@@ -3,8 +3,7 @@ import { join, resolve, dirname } from 'path';
 import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { PathDiscovery } from '../services/path-discovery.js';
-import { DatabaseManager } from '../services/sqlite/Database.js';
-import { SessionStore } from '../services/sqlite/SessionStore.js';
+import { HooksDatabase } from '../services/sqlite/index.js';
 import chalk from 'chalk';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -119,31 +118,6 @@ export async function status(): Promise<void> {
     console.log('  ✅ Storage backend: Chroma MCP');
     console.log(`  📍 Data location: ${pathDiscovery.getChromaDirectory()}`);
     console.log('  🔍 Features: Vector search, semantic similarity, document storage');
-
-    console.log('');
-
-    console.log('🤖 Claude Agent SDK Sessions:');
-    try {
-      const dbManager = DatabaseManager.getInstance();
-      await dbManager.initialize();
-      const sessionStore = new SessionStore();
-      const sessions = sessionStore.getAll();
-
-      if (sessions.length === 0) {
-        console.log(chalk.gray('  No active sessions'));
-      } else {
-        const activeCount = sessions.filter(s => {
-          const daysSinceUse = (Date.now() - s.last_used_epoch) / (1000 * 60 * 60 * 24);
-          return daysSinceUse < 7;
-        }).length;
-
-        console.log(`  📊 Total sessions: ${sessions.length}`);
-        console.log(`  ✅ Active (< 7 days): ${activeCount}`);
-        console.log(chalk.dim(`  💡 View details: claude-mem sessions list`));
-      }
-    } catch (error) {
-      console.log(chalk.gray('  ⚠️  Could not load session info'));
-    }
 
     console.log('');
     
