@@ -3,8 +3,9 @@ import path from 'path';
 
 export interface SessionStartInput {
   session_id: string;
-  cwd: string;
-  source?: string;
+  transcript_path: string;
+  hook_event_name: string;
+  source: "startup" | "resume" | "clear" | "compact";
   [key: string]: any;
 }
 
@@ -14,37 +15,59 @@ export interface SessionStartInput {
  */
 export function contextHook(input?: SessionStartInput): void {
   try {
+    // Log hook invocation
+    console.error('[claude-mem context] Hook fired with input:', JSON.stringify({
+      session_id: input?.session_id,
+      transcript_path: input?.transcript_path,
+      hook_event_name: input?.hook_event_name,
+      source: input?.source,
+      has_input: !!input
+    }));
+
     // Handle standalone execution (no input provided)
     if (!input) {
+      console.error('[claude-mem context] No input provided - exiting (standalone mode)');
       console.log('No input provided - this script is designed to run as a Claude Code SessionStart hook');
       process.exit(0);
     }
 
-    // Only run on startup (not on resume)
-    if (input.source && input.source !== 'startup') {
-      console.log(''); // Output nothing, just exit
-      process.exit(0);
-    }
-
-    // Extract project from cwd
-    const project = path.basename(input.cwd);
+    // Extract project from transcript_path
+    // Path format: ~/.claude/projects/{project-name}/{session-id}.jsonl
+    const transcriptDir = path.dirname(input.transcript_path);
+    const project = path.basename(transcriptDir);
+    console.error('[claude-mem context] Extracted project name:', project, 'from transcript_path:', input.transcript_path);
 
     // Get recent summaries
+    console.error('[claude-mem context] Querying database for recent summaries...');
     const db = new HooksDatabase();
     const summaries = db.getRecentSummaries(project, 5);
     db.close();
 
+    console.error('[claude-mem context] Database query complete - found', summaries.length, 'summaries');
+
+    // Log preview of each summary found
+    if (summaries.length > 0) {
+      console.error('[claude-mem context] Summary previews:');
+      summaries.forEach((summary, idx) => {
+        const preview = summary.request?.substring(0, 100) || summary.completed?.substring(0, 100) || '(no content)';
+        console.error(`  [${idx + 1}]`, preview + (preview.length >= 100 ? '...' : ''));
+      });
+    }
+
     // If no summaries, provide helpful message
     if (summaries.length === 0) {
+      console.error('[claude-mem context] No summaries found - outputting empty context message');
       console.log('# Recent Session Context\n\nNo previous sessions found for this project yet.');
       process.exit(0);
     }
 
     // Format output for Claude
+    console.error('[claude-mem context] Building markdown context from summaries...');
     const output: string[] = [];
     output.push('# Recent Session Context');
     output.push('');
-    output.push(`Here's what happened in recent ${project} sessions:`);
+    const sessionWord = summaries.length === 1 ? 'session' : 'sessions';
+    output.push(`Showing last ${summaries.length} ${sessionWord} for **${project}**:`);
     output.push('');
 
     for (const summary of summaries) {
@@ -67,6 +90,22 @@ export function contextHook(input?: SessionStartInput): void {
         output.push(`**Next Steps:** ${summary.next_steps}`);
       }
 
+      // Show files that were read during the session
+      if (summary.files_read) {
+        try {
+          const files = JSON.parse(summary.files_read);
+          if (Array.isArray(files) && files.length > 0) {
+            output.push(`**Files Read:** ${files.join(', ')}`);
+          }
+        } catch {
+          // Backwards compatibility: if not valid JSON, show as text
+          if (summary.files_read.trim()) {
+            output.push(`**Files Read:** ${summary.files_read}`);
+          }
+        }
+      }
+
+      // Show files that were edited/written during the session
       if (summary.files_edited) {
         try {
           const files = JSON.parse(summary.files_edited);
@@ -85,13 +124,25 @@ export function contextHook(input?: SessionStartInput): void {
       output.push('');
     }
 
+    // Log details about the markdown output
+    const markdownOutput = output.join('\n');
+    console.error('[claude-mem context] Markdown built successfully');
+    console.error('[claude-mem context] Output length:', markdownOutput.length, 'characters,', output.length, 'lines');
+    console.error('[claude-mem context] Output preview (first 200 chars):', markdownOutput.substring(0, 200) + '...');
+    console.error('[claude-mem context] Outputting context to stdout for Claude Code injection');
+
     // Output to stdout for Claude Code to inject
-    console.log(output.join('\n'));
+    console.log(markdownOutput);
+
+    console.error('[claude-mem context] Context hook completed successfully');
     process.exit(0);
 
   } catch (error: any) {
     // On error, exit silently - don't block Claude Code
-    console.error(`[claude-mem context error: ${error.message}]`);
+    console.error('[claude-mem context] ERROR occurred during context hook execution');
+    console.error('[claude-mem context] Error message:', error.message);
+    console.error('[claude-mem context] Error stack:', error.stack);
+    console.error('[claude-mem context] Exiting gracefully to avoid blocking Claude Code');
     process.exit(0);
   }
 }

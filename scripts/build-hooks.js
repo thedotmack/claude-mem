@@ -17,6 +17,7 @@ const HOOKS = [
   { name: 'new-hook', source: 'src/bin/hooks/new-hook.ts' },
   { name: 'save-hook', source: 'src/bin/hooks/save-hook.ts' },
   { name: 'summary-hook', source: 'src/bin/hooks/summary-hook.ts' },
+  { name: 'cleanup-hook', source: 'src/bin/hooks/cleanup-hook.ts' },
   { name: 'worker', source: 'src/bin/hooks/worker.ts' }
 ];
 

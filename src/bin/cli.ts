@@ -142,36 +142,60 @@ program
   .command('context')
   .description('SessionStart hook - show recent session context')
   .action(async () => {
-    const { contextHook } = await import('../hooks/index.js');
-    const input = await readStdin();
-    contextHook(JSON.parse(input));
+    try {
+      const { contextHook } = await import('../hooks/index.js');
+      const input = await readStdin();
+      const data = input.trim() ? JSON.parse(input) : undefined;
+      contextHook(data);
+    } catch (error: any) {
+      console.error(`[claude-mem context] Error: ${error.message}`);
+      process.exit(0); // Exit gracefully to avoid blocking Claude Code
+    }
   });
 
 program
   .command('new')
   .description('UserPromptSubmit hook - initialize SDK session')
   .action(async () => {
-    const { newHook } = await import('../hooks/index.js');
-    const input = await readStdin();
-    newHook(JSON.parse(input));
+    try {
+      const { newHook } = await import('../hooks/index.js');
+      const input = await readStdin();
+      const data = input.trim() ? JSON.parse(input) : undefined;
+      newHook(data);
+    } catch (error: any) {
+      console.error(`[claude-mem new] Error: ${error.message}`);
+      process.exit(0); // Exit gracefully to avoid blocking Claude Code
+    }
   });
 
 program
   .command('save')
   .description('PostToolUse hook - queue observation')
   .action(async () => {
-    const { saveHook } = await import('../hooks/index.js');
-    const input = await readStdin();
-    saveHook(JSON.parse(input));
+    try {
+      const { saveHook } = await import('../hooks/index.js');
+      const input = await readStdin();
+      const data = input.trim() ? JSON.parse(input) : undefined;
+      saveHook(data);
+    } catch (error: any) {
+      console.error(`[claude-mem save] Error: ${error.message}`);
+      process.exit(0); // Exit gracefully to avoid blocking Claude Code
+    }
   });
 
 program
   .command('summary')
   .description('Stop hook - finalize session')
   .action(async () => {
-    const { summaryHook } = await import('../hooks/index.js');
-    const input = await readStdin();
-    summaryHook(JSON.parse(input));
+    try {
+      const { summaryHook } = await import('../hooks/index.js');
+      const input = await readStdin();
+      const data = input.trim() ? JSON.parse(input) : undefined;
+      summaryHook(data);
+    } catch (error: any) {
+      console.error(`[claude-mem summary] Error: ${error.message}`);
+      process.exit(0); // Exit gracefully to avoid blocking Claude Code
+    }
   });
 
 program
@@ -190,8 +214,13 @@ program
     }
   });
 
-// Helper function to read stdin
+// Helper function to read stdin (Bun-compatible)
 async function readStdin(): Promise<string> {
+  // Use Bun's native stdin.text() if available, otherwise use Node.js streams
+  if (typeof Bun !== 'undefined' && Bun.stdin) {
+    return await Bun.stdin.text();
+  }
+
   return new Promise((resolve) => {
     let data = '';
     process.stdin.on('data', chunk => {
