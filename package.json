@@ -55,6 +55,8 @@
   "files": [
     "dist",
     "commands",
+    "hooks",
+    ".claude-plugin",
     "src",
     "docs",
     ".mcp.json",
