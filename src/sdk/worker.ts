@@ -33,7 +33,9 @@ type WorkerMessage = ObservationMessage | FinalizeMessage;
  * Main worker process entry point
  */
 export async function main() {
+  console.error('[SDK Worker DEBUG] main() called');
   const sessionDbId = parseInt(process.argv[2], 10);
+  console.error(`[SDK Worker DEBUG] Session DB ID: ${sessionDbId}`);
 
   if (!sessionDbId) {
     console.error('[SDK Worker] Missing session ID argument');
@@ -41,6 +43,7 @@ export async function main() {
   }
 
   const worker = new SDKWorker(sessionDbId);
+  console.error('[SDK Worker DEBUG] SDKWorker instance created');
   await worker.run();
 }
 
@@ -106,12 +109,17 @@ class SDKWorker {
    * Start Unix socket server to receive messages from hooks
    */
   private async startSocketServer(): Promise<void> {
+    console.error(`[SDK Worker DEBUG] Starting socket server...`);
+    console.error(`[SDK Worker DEBUG] Socket path: ${this.socketPath}`);
+
     // Clean up old socket if it exists
     if (existsSync(this.socketPath)) {
+      console.error(`[SDK Worker DEBUG] Removing existing socket`);
       unlinkSync(this.socketPath);
     }
 
     return new Promise((resolve, reject) => {
+      console.error(`[SDK Worker DEBUG] Creating net server...`);
       this.server = net.createServer((socket) => {
         let buffer = '';
 
@@ -147,6 +155,8 @@ class SDKWorker {
       });
 
       this.server.listen(this.socketPath, () => {
+        console.error(`[SDK Worker DEBUG] listen() callback fired`);
+        console.error(`[SDK Worker DEBUG] Checking if socket exists: ${existsSync(this.socketPath)}`);
         resolve();
       });
     });
@@ -183,21 +193,28 @@ class SDKWorker {
    * Run SDK agent with streaming input mode
    */
   private async runSDKAgent(): Promise<void> {
+    // Find Claude Code executable
+    const claudePath = process.env.CLAUDE_CODE_PATH || '/Users/alexnewman/.nvm/versions/node/v24.5.0/bin/claude';
+    console.error(`[SDK Worker DEBUG] About to call query with claudePath: ${claudePath}`);
+
     await query({
-      model: MODEL,
-      messages: () => this.createMessageGenerator(),
-      disallowedTools: DISALLOWED_TOOLS,
-      signal: this.abortController.signal,
-      onSystemInitMessage: (msg) => {
-        // Capture SDK session ID from init message
-        if (msg.session_id) {
-          this.sdkSessionId = msg.session_id;
-          this.db.updateSDKSessionId(this.sessionDbId, msg.session_id);
+      prompt: this.createMessageGenerator(),
+      options: {
+        model: MODEL,
+        disallowedTools: DISALLOWED_TOOLS,
+        abortController: this.abortController,
+        pathToClaudeCodeExecutable: claudePath,
+        onSystemInitMessage: (msg) => {
+          // Capture SDK session ID from init message
+          if (msg.session_id) {
+            this.sdkSessionId = msg.session_id;
+            this.db.updateSDKSessionId(this.sessionDbId, msg.session_id);
+          }
+        },
+        onAgentMessage: (msg) => {
+          // Parse and store observations from agent response
+          this.handleAgentMessage(msg.content);
         }
-      },
-      onAgentMessage: (msg) => {
-        // Parse and store observations from agent response
-        this.handleAgentMessage(msg.content);
       }
     });
   }
@@ -206,11 +223,17 @@ class SDKWorker {
    * Create async message generator for SDK streaming input
    * Now pulls from socket messages instead of polling database
    */
-  private async* createMessageGenerator(): AsyncIterable<{ role: 'user'; content: string }> {
+  private async* createMessageGenerator(): AsyncIterable<{ type: 'user'; message: { role: 'user'; content: string } }> {
     // Yield initial prompt
     const claudeSessionId = `session-${this.sessionDbId}`;
     const initPrompt = buildInitPrompt(this.project, claudeSessionId, this.userPrompt);
-    yield { role: 'user', content: initPrompt };
+    yield {
+      type: 'user',
+      message: {
+        role: 'user',
+        content: initPrompt
+      }
+    };
 
     // Process messages as they arrive via socket
     while (!this.isFinalized) {
@@ -229,7 +252,13 @@ class SDKWorker {
           const session = await this.loadSession();
           if (session) {
             const finalizePrompt = buildFinalizePrompt(session);
-            yield { role: 'user', content: finalizePrompt };
+            yield {
+              type: 'user',
+              message: {
+                role: 'user',
+                content: finalizePrompt
+              }
+            };
           }
           break;
         }
@@ -241,7 +270,13 @@ class SDKWorker {
             tool_input: message.tool_input,
             tool_output: message.tool_output
           });
-          yield { role: 'user', content: observationPrompt };
+          yield {
+            type: 'user',
+            message: {
+              role: 'user',
+              content: observationPrompt
+            }
+          };
         }
       }
     }
