@@ -5,11 +5,11 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
-import { buildInitPrompt, buildObservationPrompt, buildFinalizePrompt } from './src/sdk/prompts.js';
-import { parseObservations, parseSummary } from './src/sdk/parser.js';
-import { HooksDatabase } from './src/services/sqlite/HooksDatabase.js';
-import { DatabaseManager } from './src/services/sqlite/Database.js';
-import { migrations } from './src/services/sqlite/migrations.js';
+import { buildInitPrompt, buildObservationPrompt, buildFinalizePrompt } from '../src/sdk/prompts.js';
+import { parseObservations, parseSummary } from '../src/sdk/parser.js';
+import { HooksDatabase } from '../src/services/sqlite/HooksDatabase.js';
+import { DatabaseManager } from '../src/services/sqlite/Database.js';
+import { migrations } from '../src/services/sqlite/migrations.js';
 import fs from 'fs';
 import path from 'path';
 

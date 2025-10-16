@@ -14,7 +14,7 @@ Build the project to create a bundled, minified executable:
 ```bash
 npm run build
 # or
-node build.js
+node scripts/build.js
 ```
 
 This will:
@@ -38,7 +38,7 @@ To publish a new version to npm:
 ```bash
 npm run publish:npm
 # or
-node publish.js
+node scripts/publish.js
 ```
 
 The publish script will:
@@ -99,12 +99,24 @@ claude-mem/
 ├── src/                    # TypeScript source
 │   ├── bin/cli.ts         # CLI entry point
 │   ├── commands/          # Command implementations
-│   ├── services/          # Core services
-│   └── shared/            # Shared utilities
+│   ├── hooks/             # Hook implementations
+│   ├── sdk/               # Agent SDK worker
+│   ├── services/          # SQLite and path services
+│   ├── shared/            # Configuration and types
+│   └── utils/             # Platform utilities
 ├── dist/                  # Build output
 │   └── claude-mem.min.js  # Bundled executable
-├── build.js               # Build script
-├── publish.js             # Publish script
+├── tests/                 # Test files
+│   ├── database-schema.test.ts
+│   ├── sdk-prompts-parser.test.ts
+│   ├── hooks-database-integration.test.ts
+│   └── session-lifecycle.test.ts
+├── docs/                  # Documentation
+│   ├── BUILD.md          # This file
+│   └── CHANGELOG.md      # Release notes
+├── scripts/               # Build automation
+│   ├── build.js          # Build script
+│   └── publish.js        # Publish script
 └── package.json           # Package configuration
 ```
 
@@ -113,4 +125,4 @@ claude-mem/
 - The build process embeds the version from `package.json` at build time
 - `prepublishOnly` script ensures build runs before npm publish
 - Dependencies are bundled except for external packages
-- The published package includes: `dist/`, `hook-templates/`, `commands/`, `src/`
+- The published package includes: `dist/`, `hook-templates/`, `commands/`, `src/`, `docs/`

@@ -353,22 +353,24 @@ claude-mem changelog --historical 5
 
 ### Memory System
 
-**Rolling Memory** - Real-time conversation turn capture via hooks with immediate ChromaDB storage
+**Hook Layer** - Real-time event capture via Claude Code streaming hooks with sub-50ms overhead
 
-**TranscriptCompressor** - Intelligent chunking and compression of large conversations
+**SDK Worker** - Agent SDK subprocess for async observation processing and session summarization
+
+**Observation Queue** - SQLite-based queue for buffering tool observations between hooks and SDK
+
+**Session Storage** - SQLite tables for tracking SDK sessions, observations, and summaries
 
 **MCP Server** - 15+ ChromaDB tools for memory operations and semantic search
-
-**SQLite Backend** - Session tracking, metadata management, and diagnostics storage
 
 ### Hook Integration
 
 Hooks communicate via JSON stdin/stdout and run with minimal overhead:
 
-1. **user-prompt-submit** - Stores user prompt immediately in ChromaDB
-2. **post-tool-use** - Spawns Agent SDK subprocess for async compression
-3. **stop-streaming** - Generates session overview, deletes SDK transcript
-4. **session-start** - Loads project-specific context invisibly
+1. **new** (user-prompt-submit) - Creates SDK session and initializes Agent SDK worker for async processing
+2. **save** (post-tool-use) - Queues tool observations for async SDK processing
+3. **summary** (stop-streaming) - Triggers finalization, generates session overview, and cleanup
+4. **context** (session-start) - Loads project-specific session summaries automatically
 
 ### Project Structure
 
@@ -376,14 +378,16 @@ Hooks communicate via JSON stdin/stdout and run with minimal overhead:
 src/
 ├── bin/           # CLI entry point
 ├── commands/      # Command implementations
-├── core/          # Core compression logic
-├── services/      # SQLite, ChromaDB, path discovery
-├── shared/        # Configuration and utilities
-└── mcp-server.ts  # MCP server implementation
+├── hooks/         # Hook implementations (new, save, summary, context)
+├── sdk/           # Agent SDK worker, prompts, and parser
+├── services/      # SQLite database and path discovery
+├── shared/        # Configuration, paths, settings, and types
+└── utils/         # Platform utilities
 
-hook-templates/    # Hook source files
 dist/              # Minified production bundle
-test/              # Unit and integration tests
+tests/             # Database, SDK, and integration tests
+docs/              # Documentation (BUILD.md, CHANGELOG.md)
+scripts/           # Build and publish automation
 ```
 
 ## :wrench: Configuration

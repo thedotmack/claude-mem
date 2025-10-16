@@ -4,8 +4,8 @@
  * Tests database schema and hook functions
  */
 
-import { DatabaseManager, migrations } from './src/services/sqlite/index.js';
-import { HooksDatabase } from './src/services/sqlite/HooksDatabase.js';
+import { DatabaseManager, migrations } from '../src/services/sqlite/index.js';
+import { HooksDatabase } from '../src/services/sqlite/HooksDatabase.js';
 import path from 'path';
 import fs from 'fs';
 
