@@ -58,9 +58,6 @@ function installUv(): void {
   process.env.PATH = `${homedir()}/.cargo/bin:${process.env.PATH}`;
 }
 
-function detectClaudePath(): string {
-  return Platform.findExecutable('claude');
-}
 
 function hasExistingInstallation(): boolean {
   const pathDiscovery = PathDiscovery.getInstance();
@@ -343,12 +340,11 @@ function configureHooks(settingsPath: string): void {
   });
 
   // Configure hooks to use CLI commands directly
-  const cliPath = detectClaudePath() || PACKAGE_NAME;
-
-  settings.hooks.SessionStart = [createHookConfig(`${cliPath} context`, 180)];
-  settings.hooks.Stop = [createHookConfig(`${cliPath} summary`, 60)];
-  settings.hooks.UserPromptSubmit = [createHookConfig(`${cliPath} new`, 60)];
-  settings.hooks.PostToolUse = [createHookConfig(`${cliPath} save`, 180, "*")];
+  // claude-mem should be in PATH after npm installation
+  settings.hooks.SessionStart = [createHookConfig(`${PACKAGE_NAME} context`, 180)];
+  settings.hooks.Stop = [createHookConfig(`${PACKAGE_NAME} summary`, 60)];
+  settings.hooks.UserPromptSubmit = [createHookConfig(`${PACKAGE_NAME} new`, 60)];
+  settings.hooks.PostToolUse = [createHookConfig(`${PACKAGE_NAME} save`, 180, "*")];
 
   writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
 }
@@ -375,7 +371,6 @@ function configureUserSettings(config: InstallConfig): void {
   userSettings.installed = true;
   userSettings.embedded = true;
   userSettings.saveMemoriesOnClear = config.saveMemoriesOnClear || false;
-  userSettings.claudePath = detectClaudePath();
 
   writeFileSync(userSettingsPath, JSON.stringify(userSettings, null, 2));
 }
@@ -383,9 +378,7 @@ function configureUserSettings(config: InstallConfig): void {
 function configureSmartTrashAlias(): void {
   const shellConfigs = Platform.getShellConfigPaths();
   const aliasDefinition = Platform.getAliasDefinition('rm', 'claude-mem trash');
-  const commentLine = Platform.isWindows()
-    ? '# claude-mem smart trash alias'
-    : '# claude-mem smart trash alias';
+  const commentLine = '# claude-mem smart trash alias';
 
   for (const configPath of shellConfigs) {
     if (!existsSync(configPath)) {

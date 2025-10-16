@@ -19,7 +19,6 @@ export interface Settings {
   backend?: string;
   embedded?: boolean;
   saveMemoriesOnClear?: boolean;
-  claudePath?: string;
   rollingCaptureEnabled?: boolean;
   rollingSummaryEnabled?: boolean;
   rollingSessionStartEnabled?: boolean;

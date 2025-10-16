@@ -10,19 +10,6 @@ const isWindows = platform() === 'win32';
  */
 export const Platform = {
   /**
-   * Finds the path to an executable command
-   * @param name - Name of the executable to find
-   * @returns Full path to the executable
-   */
-  findExecutable: (name: string): string => {
-    const cmd = isWindows ? `where ${name}` : `which ${name}`;
-    return execSync(cmd, {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore']
-    }).trim();
-  },
-
-  /**
    * Installs uv package manager using platform-specific method
    */
   installUv: (): void => {

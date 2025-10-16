@@ -182,7 +182,7 @@ export class PathDiscovery {
     // Method 2: Walk up from current module location
     const currentFile = fileURLToPath(import.meta.url);
     let currentDir = dirname(currentFile);
-    
+
     for (let i = 0; i < 10; i++) {
       const packageJsonPath = join(currentDir, 'package.json');
       if (existsSync(packageJsonPath)) {
@@ -196,21 +196,6 @@ export class PathDiscovery {
       const parentDir = dirname(currentDir);
       if (parentDir === currentDir) break;
       currentDir = parentDir;
-    }
-
-    // Method 3: Try npm list command
-    try {
-      const npmOutput = execSync('npm list -g claude-mem --json 2>/dev/null || npm list claude-mem --json 2>/dev/null', {
-        encoding: 'utf8'
-      });
-      const npmData = JSON.parse(npmOutput);
-
-      if (npmData.dependencies?.['claude-mem']?.resolved) {
-        this._packageRoot = dirname(npmData.dependencies['claude-mem'].resolved);
-        return this._packageRoot;
-      }
-    } catch {
-      // Continue to error
     }
 
     throw new Error('Cannot locate claude-mem package root. Ensure claude-mem is properly installed.');

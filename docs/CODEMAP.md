@@ -749,7 +749,7 @@ export type { ParsedObservation, ParsedSummary } from './parser.js';
 - `getProjectMcpConfigPath()`: `./.mcp.json`
 
 **Package Discovery**:
-- `getPackageRoot()`: Find claude-mem package root (3 fallback methods)
+- `getPackageRoot()`: Find claude-mem package root (2 fallback methods)
 - `findPackageCommandsDirectory()`: Find commands directory in package
 
 **Utility Methods**:
@@ -1108,7 +1108,6 @@ export interface Settings {
   backend?: string;                     // 'chroma'
   embedded?: boolean;
   saveMemoriesOnClear?: boolean;
-  claudePath?: string;
   rollingCaptureEnabled?: boolean;
   rollingSummaryEnabled?: boolean;
   rollingSessionStartEnabled?: boolean;
@@ -1180,10 +1179,6 @@ export async function getStorageProvider(): Promise<IStorageProvider>
 **Purpose**: Platform-specific utilities for cross-platform compatibility
 
 **Key Functions**:
-
-- **`Platform.findExecutable(name)`**: Find path to executable
-  - Windows: `where {name}`
-  - Unix: `which {name}`
 
 - **`Platform.installUv()`**: Install uv package manager
   - Windows: PowerShell script
