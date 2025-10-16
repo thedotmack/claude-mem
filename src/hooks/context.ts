@@ -12,8 +12,14 @@ export interface SessionStartInput {
  * Context Hook - SessionStart
  * Shows user what happened in recent sessions
  */
-export function contextHook(input: SessionStartInput): void {
+export function contextHook(input?: SessionStartInput): void {
   try {
+    // Handle standalone execution (no input provided)
+    if (!input) {
+      console.log('No input provided - this script is designed to run as a Claude Code SessionStart hook');
+      process.exit(0);
+    }
+
     // Only run on startup (not on resume)
     if (input.source && input.source !== 'startup') {
       console.log(''); // Output nothing, just exit
@@ -28,9 +34,9 @@ export function contextHook(input: SessionStartInput): void {
     const summaries = db.getRecentSummaries(project, 5);
     db.close();
 
-    // If no summaries, exit silently
+    // If no summaries, provide helpful message
     if (summaries.length === 0) {
-      console.log(''); // Output nothing
+      console.log('# Recent Session Context\n\nNo previous sessions found for this project yet.');
       process.exit(0);
     }
 
