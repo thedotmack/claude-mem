@@ -11,53 +11,91 @@ The claude-mem plugin includes:
 
 ## Installation Methods
 
-### Option 1: Plugin Installation (Recommended)
+### Option 1: From Git Repository (Recommended)
 
-1. **Add the claude-mem marketplace** (if creating a marketplace):
+If the plugin is published to GitHub:
+
+1. **Add the marketplace from GitHub**:
    ```
    /plugin marketplace add thedotmack/claude-mem-marketplace
    ```
 
 2. **Install the plugin**:
    ```
-   /plugin install claude-mem
+   /plugin install claude-mem@marketplace-name
    ```
 
-3. **Enable the plugin**:
-   ```
-   /plugin enable claude-mem
-   ```
-
-That's it! The plugin will automatically:
+The plugin will automatically:
 - Configure all hooks in your Claude settings
-- Install the Chroma MCP server
 - Set up slash commands
-- Add instructions to ~/.claude/CLAUDE.md
+- Register plugin components
 
-### Option 2: Local Plugin Installation
+**Note**: You still need to install the CLI globally for hooks to work:
+```bash
+npm install -g claude-mem
+```
 
-If you've cloned the repository locally, you can install it as a local plugin:
+### Option 2: Local Development Installation
 
-1. **Navigate to your Claude plugins directory**:
+If you're testing locally during development:
+
+1. **Create a development marketplace structure**:
    ```bash
-   cd ~/.claude/plugins
+   mkdir dev-marketplace
+   cd dev-marketplace
+   mkdir .claude-plugin
    ```
 
-2. **Clone or symlink the claude-mem repository**:
+2. **Create marketplace manifest** (`.claude-plugin/marketplace.json`):
+   ```json
+   {
+     "name": "dev-marketplace",
+     "owner": {
+       "name": "Developer"
+     },
+     "plugins": [
+       {
+         "name": "claude-mem",
+         "source": "./claude-mem-plugin",
+         "description": "Persistent memory system for Claude Code"
+       }
+     ]
+   }
+   ```
+
+3. **Create or symlink your plugin directory**:
    ```bash
-   # Via symlink (recommended for development)
-   ln -s /path/to/claude-mem ./claude-mem
+   # Symlink to your working directory (recommended)
+   ln -s /path/to/claude-mem ./claude-mem-plugin
 
-   # Or via git clone
-   git clone https://github.com/thedotmack/claude-mem.git
+   # Or copy the directory
+   cp -r /path/to/claude-mem ./claude-mem-plugin
    ```
 
-3. **Install the plugin in Claude Code**:
+4. **Start Claude Code and add your development marketplace**:
    ```
-   /plugin install claude-mem --local
+   /plugin marketplace add /absolute/path/to/dev-marketplace
    ```
 
-### Option 3: Traditional CLI Installation
+5. **Install your plugin**:
+   ```
+   /plugin install claude-mem@dev-marketplace
+   ```
+
+### Option 3: Interactive Installation
+
+You can also use the interactive plugin interface:
+
+1. **Open plugin management**:
+   ```
+   /plugin
+   ```
+
+2. **Select "Browse Plugins"** to see available plugins with descriptions and installation options
+
+3. **Follow the prompts** to install and configure
+
+### Option 4: Traditional CLI Installation
 
 You can still use the traditional CLI-based installation:
 
@@ -66,7 +104,32 @@ npm install -g claude-mem
 claude-mem install
 ```
 
-This method uses an interactive wizard to guide you through setup.
+This method uses an interactive wizard to guide you through setup and works independently of the plugin system.
+
+## Verify Installation
+
+After installing the plugin, verify it's working correctly:
+
+1. **Check available commands**:
+   ```
+   /help
+   ```
+   You should see `/claude-mem`, `/save`, and `/remember` commands listed.
+
+2. **Test plugin features**:
+   ```
+   /claude-mem help
+   ```
+   This should show all memory system commands and features.
+
+3. **Review plugin details**:
+   ```
+   /plugin
+   ```
+   Select "Manage Plugins" to see what the plugin provides and its current status.
+
+4. **Check hooks are registered**:
+   View your `~/.claude/settings.json` to confirm hooks are configured.
 
 ## Managing the Plugin
 
@@ -89,6 +152,26 @@ This method uses an interactive wizard to guide you through setup.
 ```
 /plugin uninstall claude-mem
 ```
+
+## Development Iteration
+
+When making changes to your plugin during development:
+
+1. **Uninstall current version**:
+   ```
+   /plugin uninstall claude-mem@dev-marketplace
+   ```
+
+2. **Make your changes** to the plugin code
+
+3. **Reinstall to test changes**:
+   ```
+   /plugin install claude-mem@dev-marketplace
+   ```
+
+4. **Restart Claude Code** if hooks or commands don't update immediately
+
+**Tip**: When using a symlink in your dev marketplace, changes to commands may be reflected without reinstalling, but hook changes typically require a reinstall.
 
 ## Plugin Components
 
@@ -142,12 +225,13 @@ To distribute claude-mem via a custom marketplace:
 1. **Create a marketplace repository** with this structure:
    ```
    my-marketplace/
-   ├── marketplace.json
+   ├── .claude-plugin/
+   │   └── marketplace.json
    └── plugins/
        └── claude-mem/  (symlink or submodule to claude-mem)
    ```
 
-2. **Define marketplace.json**:
+2. **Define `.claude-plugin/marketplace.json`**:
    ```json
    {
      "name": "thedotmack",
@@ -167,6 +251,11 @@ To distribute claude-mem via a custom marketplace:
 3. **Publish to GitHub** and users can add it with:
    ```
    /plugin marketplace add username/repo-name
+   ```
+
+4. **Users install the plugin**:
+   ```
+   /plugin install claude-mem@marketplace-name
    ```
 
 ## Benefits of Plugin Installation

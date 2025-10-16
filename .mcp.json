@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "claude-mem": {
+      "command": "uvx",
+      "args": ["chroma-mcp", "--client-type", "persistent", "--data-dir", "~/.claude-mem/chroma"]
+    }
+  }
+}
