@@ -3,7 +3,6 @@ import fs from 'fs';
 import path from 'path';
 import { PathDiscovery } from '../services/path-discovery.js';
 import { createStores } from '../services/sqlite/index.js';
-import { rollingLog } from '../shared/rolling-log.js';
 
 type CheckStatus = 'pass' | 'fail' | 'warn';
 
@@ -93,8 +92,4 @@ export async function doctor(options: OptionValues = {}): Promise<void> {
     console.log('=================');
     checks.forEach(printCheck);
   }
-
-  rollingLog('info', 'doctor run completed', {
-    status: checks.map((c) => c.status)
-  });
 }

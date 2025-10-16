@@ -70,15 +70,4 @@ export async function logs(options: OptionValues = {}): Promise<void> {
     console.log('❌ Could not read logs directory: ~/.claude-mem/logs/');
     console.log('   Run a compression first to generate logs');
   }
-  
-  // <Block> 2.5 ====================================
-  if (options.follow) {
-    console.log('Following logs... (Press Ctrl+C to stop)');
-    // Basic follow implementation - would need more sophisticated watching in real usage
-    setInterval(() => {
-      // This would need proper file watching implementation
-    }, 1000);
-  }
-  // </Block> =======================================
-// </Block> =======================================
 }

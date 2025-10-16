@@ -35,28 +35,6 @@ function createLoadingAnimation(message: string) {
   };
 }
 
-// Create animated rainbow text with adjustable speed
-function animatedRainbow(text: string, speed: number = 100): Promise<void> {
-  return new Promise((resolve) => {
-    let offset = 0;
-    const maxFrames = 10;
-    
-    const interval = setInterval(() => {
-      // Create a shifted gradient by rotating through different presets
-      const gradients = [fastRainbow, vibrantRainbow, gradient.rainbow, gradient.pastel];
-      const shifted = gradients[offset % gradients.length](text);
-      process.stdout.write('\r' + shifted);
-      offset++;
-      
-      if (offset >= maxFrames) {
-        clearInterval(interval);
-        resolve();
-      }
-    }, speed);
-  });
-}
-
-
 // Fast rainbow gradient preset with tighter color transitions
 const fastRainbow = gradient(['#ff0000', '#ff4500', '#ffa500', '#ffff00', '#00ff00', '#00ffff', '#0000ff', '#8b00ff']);
 const vibrantRainbow = gradient(['#ff006e', '#fb5607', '#ffbe0b', '#8338ec', '#3a86ff']);
