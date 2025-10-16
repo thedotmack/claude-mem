@@ -1,4 +1,7 @@
+import net from 'net';
+import { join } from 'path';
 import { HooksDatabase } from '../services/sqlite/HooksDatabase.js';
+import { PathDiscovery } from '../services/path-discovery.js';
 
 export interface StopInput {
   session_id: string;
@@ -8,7 +11,7 @@ export interface StopInput {
 
 /**
  * Summary Hook - Stop
- * Signals SDK to finalize and generate summary
+ * Sends FINALIZE message to worker via Unix socket
  */
 export function summaryHook(input: StopInput): void {
   try {
@@ -17,29 +20,38 @@ export function summaryHook(input: StopInput): void {
     // Find active SDK session
     const db = new HooksDatabase();
     const session = db.findActiveSDKSession(session_id);
+    db.close();
 
     if (!session) {
       // No active session - nothing to finalize
-      db.close();
       console.log('{"continue": true, "suppressOutput": true}');
       process.exit(0);
     }
 
-    // Insert special FINALIZE message into observation queue
-    const sdkSessionId = session.sdk_session_id || `pending-${session.id}`;
+    // Get socket path
+    const dataDir = PathDiscovery.getInstance().getDataDirectory();
+    const socketPath = join(dataDir, `worker-${session.id}.sock`);
 
-    db.queueObservation(
-      sdkSessionId,
-      'FINALIZE',
-      '{}',
-      '{}'
-    );
+    // Send FINALIZE message via Unix socket
+    const message = {
+      type: 'finalize'
+    };
 
-    db.close();
+    const client = net.connect(socketPath, () => {
+      client.write(JSON.stringify(message) + '\n');
+      client.end();
+    });
 
-    // Output hook response
-    console.log('{"continue": true, "suppressOutput": true}');
-    process.exit(0);
+    client.on('error', (err) => {
+      // Socket not available - worker may have already finished or crashed
+      console.error(`[claude-mem summary] Socket error: ${err.message}`);
+      // Continue anyway, don't block Claude
+    });
+
+    client.on('close', () => {
+      console.log('{"continue": true, "suppressOutput": true}');
+      process.exit(0);
+    });
 
   } catch (error: any) {
     // On error, don't block Claude Code

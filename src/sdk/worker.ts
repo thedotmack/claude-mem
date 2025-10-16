@@ -1,23 +1,39 @@
 #!/usr/bin/env bun
 /**
  * SDK Worker Process
- * Background agent that processes tool observations and generates session summaries
+ * Background server that processes tool observations via Unix socket
  */
 
+import net from 'net';
+import { unlinkSync, existsSync } from 'fs';
+import { join } from 'path';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { HooksDatabase } from '../services/sqlite/HooksDatabase.js';
+import { PathDiscovery } from '../services/path-discovery.js';
 import { buildInitPrompt, buildObservationPrompt, buildFinalizePrompt } from './prompts.js';
 import { parseObservations, parseSummary } from './parser.js';
-import type { Observation, SDKSession } from './prompts.js';
+import type { SDKSession } from './prompts.js';
 
-const POLL_INTERVAL_MS = 1000; // 1 second
 const MODEL = 'claude-sonnet-4-5';
 const DISALLOWED_TOOLS = ['Glob', 'Grep', 'ListMcpResourcesTool', 'WebSearch'];
+
+interface ObservationMessage {
+  type: 'observation';
+  tool_name: string;
+  tool_input: string;
+  tool_output: string;
+}
+
+interface FinalizeMessage {
+  type: 'finalize';
+}
+
+type WorkerMessage = ObservationMessage | FinalizeMessage;
 
 /**
  * Main worker process entry point
  */
-async function main() {
+export async function main() {
   const sessionDbId = parseInt(process.argv[2], 10);
 
   if (!sessionDbId) {
@@ -30,21 +46,28 @@ async function main() {
 }
 
 /**
- * SDK Worker class - handles the full lifecycle of observation processing
+ * SDK Worker - Unix socket server that processes observations
  */
 class SDKWorker {
   private sessionDbId: number;
   private db: HooksDatabase;
+  private socketPath: string;
+  private server: net.Server | null = null;
   private sdkSessionId: string | null = null;
   private project: string = '';
   private userPrompt: string = '';
   private abortController: AbortController;
   private isFinalized = false;
+  private pendingMessages: WorkerMessage[] = [];
 
   constructor(sessionDbId: number) {
     this.sessionDbId = sessionDbId;
     this.db = new HooksDatabase();
     this.abortController = new AbortController();
+
+    // Socket path: ~/.claude-mem/worker-{sessionId}.sock
+    const dataDir = PathDiscovery.getInstance().getDataDirectory();
+    this.socketPath = join(dataDir, `worker-${sessionDbId}.sock`);
   }
 
   /**
@@ -62,18 +85,85 @@ class SDKWorker {
       this.project = session.project;
       this.userPrompt = session.user_prompt;
 
+      // Start Unix socket server
+      await this.startSocketServer();
+      console.error(`[SDK Worker] Socket server listening: ${this.socketPath}`);
+
       // Run SDK agent with streaming input
       await this.runSDKAgent();
 
       // Mark session as completed
       this.db.markSessionCompleted(this.sessionDbId);
       this.db.close();
+      this.cleanup();
 
     } catch (error: any) {
       console.error('[SDK Worker] Error:', error.message);
       this.db.markSessionFailed(this.sessionDbId);
       this.db.close();
+      this.cleanup();
       process.exit(1);
+    }
+  }
+
+  /**
+   * Start Unix socket server to receive messages from hooks
+   */
+  private async startSocketServer(): Promise<void> {
+    // Clean up old socket if it exists
+    if (existsSync(this.socketPath)) {
+      unlinkSync(this.socketPath);
+    }
+
+    return new Promise((resolve, reject) => {
+      this.server = net.createServer((socket) => {
+        let buffer = '';
+
+        socket.on('data', (chunk) => {
+          buffer += chunk.toString();
+
+          // Try to parse complete JSON messages (separated by newlines)
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || ''; // Keep incomplete line in buffer
+
+          for (const line of lines) {
+            if (line.trim()) {
+              try {
+                const message: WorkerMessage = JSON.parse(line);
+                this.handleMessage(message);
+              } catch (err) {
+                console.error('[SDK Worker] Invalid message:', line);
+              }
+            }
+          }
+        });
+
+        socket.on('error', (err) => {
+          console.error('[SDK Worker] Socket connection error:', err.message);
+        });
+      });
+
+      this.server.on('error', (err: any) => {
+        if (err.code === 'EADDRINUSE') {
+          console.error(`[SDK Worker] Socket already in use: ${this.socketPath}`);
+        }
+        reject(err);
+      });
+
+      this.server.listen(this.socketPath, () => {
+        resolve();
+      });
+    });
+  }
+
+  /**
+   * Handle incoming message from hook
+   */
+  private handleMessage(message: WorkerMessage): void {
+    this.pendingMessages.push(message);
+
+    if (message.type === 'finalize') {
+      this.isFinalized = true;
     }
   }
 
@@ -81,7 +171,6 @@ class SDKWorker {
    * Load session from database
    */
   private async loadSession(): Promise<SDKSession | null> {
-    // Query session by ID
     const db = this.db as any;
     const query = db.db.query(`
       SELECT id, sdk_session_id, project, user_prompt
@@ -98,11 +187,9 @@ class SDKWorker {
    * Run SDK agent with streaming input mode
    */
   private async runSDKAgent(): Promise<void> {
-    const messageGenerator = this.createMessageGenerator();
-
     await query({
       model: MODEL,
-      messages: messageGenerator,
+      messages: () => this.createMessageGenerator(),
       disallowedTools: DISALLOWED_TOOLS,
       signal: this.abortController.signal,
       onSystemInitMessage: (msg) => {
@@ -121,6 +208,7 @@ class SDKWorker {
 
   /**
    * Create async message generator for SDK streaming input
+   * Now pulls from socket messages instead of polling database
    */
   private async* createMessageGenerator(): AsyncIterable<{ role: 'user'; content: string }> {
     // Yield initial prompt
@@ -128,36 +216,37 @@ class SDKWorker {
     const initPrompt = buildInitPrompt(this.project, claudeSessionId, this.userPrompt);
     yield { role: 'user', content: initPrompt };
 
-    // Poll observation queue
+    // Process messages as they arrive via socket
     while (!this.isFinalized) {
-      await this.sleep(POLL_INTERVAL_MS);
-
-      if (!this.sdkSessionId) {
-        continue; // Wait for SDK session ID to be captured
+      // Wait for messages to arrive
+      if (this.pendingMessages.length === 0) {
+        await this.sleep(100); // Short sleep, just to yield control
+        continue;
       }
 
-      // Get pending observations
-      const observations = this.db.getPendingObservations(this.sdkSessionId, 10);
+      // Process all pending messages
+      while (this.pendingMessages.length > 0) {
+        const message = this.pendingMessages.shift()!;
 
-      for (const obs of observations) {
-        // Check for FINALIZE message
-        if (this.isFinalizationMessage(obs)) {
+        if (message.type === 'finalize') {
           this.isFinalized = true;
           const session = await this.loadSession();
           if (session) {
             const finalizePrompt = buildFinalizePrompt(session);
             yield { role: 'user', content: finalizePrompt };
           }
-          this.db.markObservationProcessed(obs.id);
           break;
         }
 
-        // Send observation to SDK
-        const observationPrompt = buildObservationPrompt(obs);
-        yield { role: 'user', content: observationPrompt };
-
-        // Mark as processed
-        this.db.markObservationProcessed(obs.id);
+        if (message.type === 'observation') {
+          // Build observation prompt
+          const observationPrompt = buildObservationPrompt({
+            tool_name: message.tool_name,
+            tool_input: message.tool_input,
+            tool_output: message.tool_output
+          });
+          yield { role: 'user', content: observationPrompt };
+        }
       }
     }
   }
@@ -194,10 +283,15 @@ class SDKWorker {
   }
 
   /**
-   * Check if observation is a FINALIZE message
+   * Cleanup socket server and socket file
    */
-  private isFinalizationMessage(obs: Observation): boolean {
-    return obs.tool_name === 'FINALIZE';
+  private cleanup(): void {
+    if (this.server) {
+      this.server.close();
+    }
+    if (existsSync(this.socketPath)) {
+      unlinkSync(this.socketPath);
+    }
   }
 
   /**

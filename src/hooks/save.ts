@@ -1,5 +1,7 @@
+import net from 'net';
+import { join } from 'path';
 import { HooksDatabase } from '../services/sqlite/HooksDatabase.js';
-import path from 'path';
+import { PathDiscovery } from '../services/path-discovery.js';
 
 export interface PostToolUseInput {
   session_id: string;
@@ -18,11 +20,11 @@ const SKIP_TOOLS = new Set([
 
 /**
  * Save Hook - PostToolUse
- * Queues tool observations for SDK processing
+ * Sends tool observations to worker via Unix socket
  */
 export function saveHook(input: PostToolUseInput): void {
   try {
-    const { session_id, cwd, tool_name, tool_input, tool_output } = input;
+    const { session_id, tool_name, tool_input, tool_output } = input;
 
     // Skip certain tools
     if (SKIP_TOOLS.has(tool_name)) {
@@ -30,38 +32,45 @@ export function saveHook(input: PostToolUseInput): void {
       process.exit(0);
     }
 
-    // Extract project from cwd
-    const project = path.basename(cwd);
-
     // Find active SDK session
     const db = new HooksDatabase();
     const session = db.findActiveSDKSession(session_id);
+    db.close();
 
     if (!session) {
       // No active session yet - this can happen if UserPromptSubmit hasn't run
       // Just exit silently
-      db.close();
       console.log('{"continue": true, "suppressOutput": true}');
       process.exit(0);
     }
 
-    // Queue the observation
-    // SDK session ID might be null if init message hasn't arrived yet
-    // Use the internal ID as a fallback
-    const sdkSessionId = session.sdk_session_id || `pending-${session.id}`;
+    // Get socket path
+    const dataDir = PathDiscovery.getInstance().getDataDirectory();
+    const socketPath = join(dataDir, `worker-${session.id}.sock`);
 
-    db.queueObservation(
-      sdkSessionId,
+    // Send observation via Unix socket
+    const message = {
+      type: 'observation',
       tool_name,
-      JSON.stringify(tool_input),
-      JSON.stringify(tool_output)
-    );
+      tool_input: JSON.stringify(tool_input),
+      tool_output: JSON.stringify(tool_output)
+    };
 
-    db.close();
+    const client = net.connect(socketPath, () => {
+      client.write(JSON.stringify(message) + '\n');
+      client.end();
+    });
 
-    // Output hook response
-    console.log('{"continue": true, "suppressOutput": true}');
-    process.exit(0);
+    client.on('error', (err) => {
+      // Socket not available - worker may have crashed or not started
+      console.error(`[claude-mem save] Socket error: ${err.message}`);
+      // Continue anyway, don't block Claude
+    });
+
+    client.on('close', () => {
+      console.log('{"continue": true, "suppressOutput": true}');
+      process.exit(0);
+    });
 
   } catch (error: any) {
     // On error, don't block Claude Code

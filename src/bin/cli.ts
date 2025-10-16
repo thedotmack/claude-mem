@@ -174,6 +174,22 @@ program
     summaryHook(JSON.parse(input));
   });
 
+program
+  .command('worker <sessionId>')
+  .description('Run SDK worker process (internal use)')
+  .action(async (sessionId: string) => {
+    try {
+      // Import and run the worker main function
+      const { main } = await import('../sdk/worker.js');
+      // Set process.argv so worker can parse sessionId
+      process.argv[2] = sessionId;
+      await main();
+    } catch (error: any) {
+      console.error(`[SDK Worker] Fatal error: ${error.message}`);
+      process.exit(1);
+    }
+  });
+
 // Helper function to read stdin
 async function readStdin(): Promise<string> {
   return new Promise((resolve) => {

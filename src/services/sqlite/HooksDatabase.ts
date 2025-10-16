@@ -104,62 +104,6 @@ export class HooksDatabase {
   }
 
   /**
-   * Queue an observation for SDK processing
-   */
-  queueObservation(
-    sdkSessionId: string,
-    toolName: string,
-    toolInput: string,
-    toolOutput: string
-  ): void {
-    const nowEpoch = Date.now();
-
-    const query = this.db.query(`
-      INSERT INTO observation_queue
-      (sdk_session_id, tool_name, tool_input, tool_output, created_at_epoch)
-      VALUES (?, ?, ?, ?, ?)
-    `);
-
-    query.run(sdkSessionId, toolName, toolInput, toolOutput, nowEpoch);
-  }
-
-  /**
-   * Get pending observations for SDK processing
-   */
-  getPendingObservations(sdkSessionId: string, limit: number = 10): Array<{
-    id: number;
-    tool_name: string;
-    tool_input: string;
-    tool_output: string;
-    created_at_epoch: number;
-  }> {
-    const query = this.db.query(`
-      SELECT id, tool_name, tool_input, tool_output, created_at_epoch
-      FROM observation_queue
-      WHERE sdk_session_id = ? AND processed_at_epoch IS NULL
-      ORDER BY created_at_epoch ASC
-      LIMIT ?
-    `);
-
-    return query.all(sdkSessionId, limit) as any[];
-  }
-
-  /**
-   * Mark observation as processed
-   */
-  markObservationProcessed(id: number): void {
-    const nowEpoch = Date.now();
-
-    const query = this.db.query(`
-      UPDATE observation_queue
-      SET processed_at_epoch = ?
-      WHERE id = ?
-    `);
-
-    query.run(nowEpoch, id);
-  }
-
-  /**
    * Store an observation (from SDK parsing)
    */
   storeObservation(

@@ -306,11 +306,69 @@ export const migration004: Migration = {
 };
 
 /**
+ * Migration 005 - Remove orphaned tables
+ * Drops streaming_sessions (superseded by sdk_sessions)
+ * Drops observation_queue (superseded by Unix socket communication)
+ */
+export const migration005: Migration = {
+  version: 5,
+  up: (db: Database) => {
+    // Drop streaming_sessions - superseded by sdk_sessions in migration004
+    // This table was from v2 architecture and is no longer used
+    db.run(`DROP TABLE IF EXISTS streaming_sessions`);
+
+    // Drop observation_queue - superseded by Unix socket communication
+    // Worker now uses sockets instead of database polling for observations
+    db.run(`DROP TABLE IF EXISTS observation_queue`);
+
+    console.log('✅ Dropped orphaned tables: streaming_sessions, observation_queue');
+  },
+
+  down: (db: Database) => {
+    // Recreate tables if needed (though they should never be used)
+    db.run(`
+      CREATE TABLE IF NOT EXISTS streaming_sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        claude_session_id TEXT UNIQUE NOT NULL,
+        sdk_session_id TEXT,
+        project TEXT NOT NULL,
+        title TEXT,
+        subtitle TEXT,
+        user_prompt TEXT,
+        started_at TEXT NOT NULL,
+        started_at_epoch INTEGER NOT NULL,
+        updated_at TEXT,
+        updated_at_epoch INTEGER,
+        completed_at TEXT,
+        completed_at_epoch INTEGER,
+        status TEXT NOT NULL DEFAULT 'active'
+      )
+    `);
+
+    db.run(`
+      CREATE TABLE IF NOT EXISTS observation_queue (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sdk_session_id TEXT NOT NULL,
+        tool_name TEXT NOT NULL,
+        tool_input TEXT NOT NULL,
+        tool_output TEXT NOT NULL,
+        created_at_epoch INTEGER NOT NULL,
+        processed_at_epoch INTEGER,
+        FOREIGN KEY(sdk_session_id) REFERENCES sdk_sessions(sdk_session_id) ON DELETE CASCADE
+      )
+    `);
+
+    console.log('⚠️  Recreated streaming_sessions and observation_queue (for rollback only)');
+  }
+};
+
+/**
  * All migrations in order
  */
 export const migrations: Migration[] = [
   migration001,
   migration002,
   migration003,
-  migration004
+  migration004,
+  migration005
 ];
