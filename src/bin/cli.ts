@@ -9,19 +9,11 @@ import { PACKAGE_NAME, PACKAGE_VERSION, PACKAGE_DESCRIPTION } from '../shared/co
 // Import command handlers
 import { install } from '../commands/install.js';
 import { uninstall } from '../commands/uninstall.js';
-import { status } from '../commands/status.js';
 import { logs } from '../commands/logs.js';
-import { loadContext } from '../commands/load-context.js';
 import { trash } from '../commands/trash.js';
 import { viewTrash } from '../commands/trash-view.js';
 import { emptyTrash } from '../commands/trash-empty.js';
 import { restore } from '../commands/restore.js';
-import { changelog } from '../commands/changelog.js';
-import { doctor } from '../commands/doctor.js';
-import { storeMemory } from '../commands/store-memory.js';
-import { storeOverview } from '../commands/store-overview.js';
-import { updateSessionMetadata } from '../commands/update-session-metadata.js';
-import { generateTitle } from '../commands/generate-title.js';
 
 const program = new Command();
 // </Block> =======================================
@@ -65,32 +57,7 @@ program
   .action(uninstall);
 // </Block> =======================================
 
-
 // <Block> 1.6 ====================================
-// Status Command Definition
-// Natural pattern: Define command with its handler
-// Status command
-program
-  .command('status')
-  .description('Check installation status of Claude Memory System')
-  .action(status);
-
-// Doctor command
-program
-  .command('doctor')
-  .description('Run environment and pipeline diagnostics for rolling memory')
-  .option('--json', 'Output JSON instead of text')
-  .action(async (options: any) => {
-    try {
-      await doctor(options);
-    } catch (error: any) {
-      console.error(`doctor failed: ${error.message || error}`);
-      process.exitCode = 1;
-    }
-  });
-// </Block> =======================================
-
-// <Block> 1.7 ====================================
 // Logs Command Definition
 // Natural pattern: Define command with its options and handler
 // Logs command
@@ -105,20 +72,6 @@ program
 // </Block> =======================================
 
 // <Block> 1.8 ====================================
-// Load-Context Command Definition
-// Natural pattern: Define command with its options and handler
-// Load-context command
-program
-  .command('load-context')
-  .description('Load compressed memories for current session')
-  .option('--project <name>', 'Filter by project name')
-  .option('--count <n>', 'Number of memories to load', '10')
-  .option('--raw', 'Output raw JSON instead of formatted text')
-  .option('--format <type>', 'Output format: json, session-start, or default')
-  .action(loadContext);
-// </Block> =======================================
-
-// <Block> 1.9 ====================================
 // Trash and Restore Commands Definition
 // Natural pattern: Define commands for safe file operations
 
@@ -166,63 +119,9 @@ program
   .action(restore);
 // </Block> =======================================
 
-// Store memory command (for SDK streaming)
-program
-  .command('store-memory')
-  .description('Store a memory to all storage layers (used by SDK)')
-  .requiredOption('--id <id>', 'Memory ID')
-  .requiredOption('--project <project>', 'Project name')
-  .requiredOption('--session <session>', 'Session ID')
-  .requiredOption('--date <date>', 'Date (YYYY-MM-DD)')
-  .requiredOption('--title <title>', 'Memory title (3-8 words)')
-  .requiredOption('--subtitle <subtitle>', 'Memory subtitle (max 24 words)')
-  .requiredOption('--facts <json>', 'Atomic facts as JSON array')
-  .option('--concepts <json>', 'Concept tags as JSON array')
-  .option('--files <json>', 'Files touched as JSON array')
-  .action(storeMemory);
-
-// Store overview command (for SDK streaming)
-program
-  .command('store-overview')
-  .description('Store a session overview (used by SDK)')
-  .requiredOption('--project <project>', 'Project name')
-  .requiredOption('--session <session>', 'Session ID')
-  .requiredOption('--content <content>', 'Overview content')
-  .action(storeOverview);
-
-// Update session metadata command (for SDK streaming)
-program
-  .command('update-session-metadata')
-  .description('Update session title and subtitle (used by SDK)')
-  .requiredOption('--project <project>', 'Project name')
-  .requiredOption('--session <session>', 'Session ID')
-  .requiredOption('--title <title>', 'Session title (3-6 words)')
-  .option('--subtitle <subtitle>', 'Session subtitle (max 20 words)')
-  .action(updateSessionMetadata);
-
-// Changelog command
-program
-  .command('changelog')
-  .description('Generate CHANGELOG.md from claude-mem memories')
-  .option('--historical <n>', 'Number of versions to search (default: current version only)')
-  .option('--generate <version>', 'Generate changelog for a specific version')
-  .option('--start <time>', 'Start time for memory search (ISO format)')
-  .option('--end <time>', 'End time for memory search (ISO format)')
-  .option('--update', 'Update CHANGELOG.md from JSONL entries')
-  .option('--preview', 'Preview the generated changelog')
-  .option('-v, --verbose', 'Show detailed output')
-  .action(changelog);
-
-// Generate title command
-program
-  .command('generate-title <prompt>')
-  .description('Generate a session title and subtitle from a prompt')
-  .option('--json', 'Output as JSON')
-  .option('--oneline', 'Output as single line (title - subtitle)')
-  .option('--session-id <id>', 'Claude session ID to update')
-  .option('--save', 'Save the generated title to the database (requires --session-id)')
-  .action(generateTitle);
-
+// <Block> 1.9 ====================================
+// Hook Commands Definition
+// Natural pattern: Define hook commands for Claude Code integration
 // Hook commands (for Claude Code hook integration)
 program
   .command('context')
@@ -282,8 +181,8 @@ async function readStdin(): Promise<string> {
 program.parse();
 // </Block> =======================================
 
-// <Block> 1.12 ===================================
+// <Block> 1.11 ===================================
 // Module Exports for Programmatic Use
 // Export database and utility classes for hooks and external consumers
-export { DatabaseManager, StreamingSessionStore, migrations, initializeDatabase, getDatabase } from '../services/sqlite/index.js';
+export { DatabaseManager, migrations, initializeDatabase, getDatabase } from '../services/sqlite/index.js';
 // </Block> =======================================
