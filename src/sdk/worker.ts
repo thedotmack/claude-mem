@@ -6,10 +6,9 @@
 
 import net from 'net';
 import { unlinkSync, existsSync } from 'fs';
-import { join } from 'path';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { HooksDatabase } from '../services/sqlite/HooksDatabase.js';
-import { PathDiscovery } from '../services/path-discovery.js';
+import { getWorkerSocketPath } from '../shared/paths.js';
 import { buildInitPrompt, buildObservationPrompt, buildFinalizePrompt } from './prompts.js';
 import { parseObservations, parseSummary } from './parser.js';
 import type { SDKSession } from './prompts.js';
@@ -64,10 +63,7 @@ class SDKWorker {
     this.sessionDbId = sessionDbId;
     this.db = new HooksDatabase();
     this.abortController = new AbortController();
-
-    // Socket path: ~/.claude-mem/worker-{sessionId}.sock
-    const dataDir = PathDiscovery.getInstance().getDataDirectory();
-    this.socketPath = join(dataDir, `worker-${sessionDbId}.sock`);
+    this.socketPath = getWorkerSocketPath(sessionDbId);
   }
 
   /**

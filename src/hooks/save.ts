@@ -1,7 +1,6 @@
 import net from 'net';
-import { join } from 'path';
 import { HooksDatabase } from '../services/sqlite/HooksDatabase.js';
-import { PathDiscovery } from '../services/path-discovery.js';
+import { getWorkerSocketPath } from '../shared/paths.js';
 
 export interface PostToolUseInput {
   session_id: string;
@@ -45,8 +44,7 @@ export function saveHook(input: PostToolUseInput): void {
     }
 
     // Get socket path
-    const dataDir = PathDiscovery.getInstance().getDataDirectory();
-    const socketPath = join(dataDir, `worker-${session.id}.sock`);
+    const socketPath = getWorkerSocketPath(session.id);
 
     // Send observation via Unix socket
     const message = {

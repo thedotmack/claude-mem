@@ -1,7 +1,7 @@
 import { renameSync, existsSync, mkdirSync, statSync } from 'fs';
 import { join, basename } from 'path';
 import { glob } from 'glob';
-import { PathDiscovery } from '../services/path-discovery.js';
+import * as paths from '../shared/paths.js';
 
 interface TrashOptions {
   force?: boolean;
@@ -9,7 +9,7 @@ interface TrashOptions {
 }
 
 export async function trash(filePaths: string | string[], options: TrashOptions = {}): Promise<void> {
-  const trashDir = PathDiscovery.getInstance().getTrashDirectory();
+  const trashDir = paths.TRASH_DIR;
   if (!existsSync(trashDir)) mkdirSync(trashDir, { recursive: true });
   
   // Handle single string or array of paths

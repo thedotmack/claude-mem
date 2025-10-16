@@ -2,7 +2,7 @@ import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
 import { join, resolve, dirname } from 'path';
 import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
-import { PathDiscovery } from '../services/path-discovery.js';
+import * as paths from '../shared/paths.js';
 import { HooksDatabase } from '../services/sqlite/index.js';
 import chalk from 'chalk';
 
@@ -12,7 +12,7 @@ export async function status(): Promise<void> {
     console.log('🔍 Claude Memory System Status Check');
     console.log('=====================================\n');
 
-    const pathDiscovery = PathDiscovery.getInstance();
+    // paths imported
 
     console.log('⚙️  Settings Configuration:');
     
@@ -53,13 +53,13 @@ export async function status(): Promise<void> {
       }
     };
     
-    checkSettings('Global', pathDiscovery.getClaudeSettingsPath());
+    checkSettings('Global', paths.ClaudeSettingsPath());
     checkSettings('Project', join(process.cwd(), '.claude', 'settings.json'));
     
     console.log('');
     
     console.log('📦 Compressed Transcripts:');
-    const claudeProjectsDir = join(pathDiscovery.getClaudeConfigDirectory(), 'projects');
+    const claudeProjectsDir = join(paths.ClaudeConfigDirectory(), 'projects');
     
     if (existsSync(claudeProjectsDir)) {
       try {
@@ -116,13 +116,13 @@ export async function status(): Promise<void> {
     
     console.log('🧠 Chroma Storage Status:');
     console.log('  ✅ Storage backend: Chroma MCP');
-    console.log(`  📍 Data location: ${pathDiscovery.getChromaDirectory()}`);
+    console.log(`  📍 Data location: ${paths.ChromaDirectory()}`);
     console.log('  🔍 Features: Vector search, semantic similarity, document storage');
 
     console.log('');
     
     console.log('📊 Summary:');
-    const globalPath = pathDiscovery.getClaudeSettingsPath();
+    const globalPath = paths.ClaudeSettingsPath();
     const projectPath = join(process.cwd(), '.claude', 'settings.json');
     
     let isInstalled = false;

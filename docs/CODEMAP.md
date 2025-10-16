@@ -105,7 +105,6 @@ src/
 │   ├── prompts.ts         # Prompt builders for SDK
 │   └── parser.ts          # XML response parser
 ├── services/              # Core services
-│   ├── path-discovery.ts  # Cross-platform path resolution
 │   └── sqlite/            # Database layer
 │       ├── index.ts       # Database exports
 │       ├── Database.ts    # SQLite manager with migrations
@@ -114,6 +113,7 @@ src/
 │       └── types.ts       # TypeScript interfaces
 ├── shared/                # Shared configuration
 │   ├── config.ts          # Package metadata
+│   ├── paths.ts           # Path configuration constants
 │   ├── storage.ts         # Storage provider interface
 │   └── types.ts           # Core type definitions
 └── utils/                 # Utility functions
@@ -714,59 +714,42 @@ export type { ParsedObservation, ParsedSummary } from './parser.js';
 
 ## Services
 
-### `src/services/path-discovery.ts`
+### `src/shared/paths.ts`
 
-**Purpose**: Central path resolution service for cross-platform compatibility
+**Purpose**: Simple path configuration with standard constants
 
-**Key Class**: `PathDiscovery` (Singleton)
+**Key Exports**:
 
-**Key Responsibilities**:
-- Discover paths across different installation scenarios (global npm, local, development)
-- Handle cross-platform differences (Windows, macOS, Linux)
-- Support environment variable overrides
-- Find package resources (hooks, commands)
+**Data Directory Constants**:
+- `DATA_DIR`: `~/.claude-mem` (or CLAUDE_MEM_DATA_DIR env var)
+- `ARCHIVES_DIR`: `~/.claude-mem/archives`
+- `LOGS_DIR`: `~/.claude-mem/logs`
+- `TRASH_DIR`: `~/.claude-mem/trash`
+- `BACKUPS_DIR`: `~/.claude-mem/backups`
+- `CHROMA_DIR`: `~/.claude-mem/chroma`
+- `USER_SETTINGS_PATH`: `~/.claude-mem/settings.json`
+- `DB_PATH`: `~/.claude-mem/claude-mem.db`
 
-**Key Methods**:
+**Claude Integration Constants**:
+- `CLAUDE_CONFIG_DIR`: `~/.claude` (or CLAUDE_CONFIG_DIR env var)
+- `CLAUDE_SETTINGS_PATH`: `~/.claude/settings.json`
+- `CLAUDE_COMMANDS_DIR`: `~/.claude/commands`
+- `CLAUDE_MD_PATH`: `~/.claude/CLAUDE.md`
 
-**Data Directories**:
-- `getDataDirectory()`: `~/.claude-mem` (or CLAUDE_MEM_DATA_DIR)
-- `getArchivesDirectory()`: `~/.claude-mem/archives`
-- `getLogsDirectory()`: `~/.claude-mem/logs`
-- `getIndexDirectory()`: `~/.claude-mem`
-- `getIndexPath()`: `~/.claude-mem/claude-mem-index.jsonl`
-- `getTrashDirectory()`: `~/.claude-mem/trash`
-- `getBackupsDirectory()`: `~/.claude-mem/backups`
-- `getChromaDirectory()`: `~/.claude-mem/chroma`
-- `getProjectArchiveDirectory(projectName)`: `~/.claude-mem/archives/{project}`
-- `getUserSettingsPath()`: `~/.claude-mem/settings.json`
-
-**Claude Integration Paths**:
-- `getClaudeConfigDirectory()`: `~/.claude` (or CLAUDE_CONFIG_DIR)
-- `getClaudeSettingsPath()`: `~/.claude/settings.json`
-- `getClaudeCommandsDirectory()`: `~/.claude/commands`
-- `getClaudeMdPath()`: `~/.claude/CLAUDE.md`
-- `getMcpConfigPath()`: `~/.claude.json`
-- `getProjectMcpConfigPath()`: `./.mcp.json`
-
-**Package Discovery**:
+**Helper Functions**:
+- `getProjectArchiveDir(projectName)`: Get project-specific archive directory
+- `getWorkerSocketPath(sessionId)`: Get Unix socket path for worker process
+- `ensureDir(dirPath)`: Create directory with `{recursive: true}`
+- `ensureAllDataDirs()`: Create all data directories
+- `ensureAllClaudeDirs()`: Create all Claude integration directories
+- `getCurrentProjectName()`: Get project name from git root or cwd
 - `getPackageRoot()`: Find claude-mem package root (2 fallback methods)
-- `findPackageCommandsDirectory()`: Find commands directory in package
+- `getPackageCommandsDir()`: Find commands directory in package
+- `createBackupFilename(originalPath)`: Generate timestamped backup filename
 
-**Utility Methods**:
-- `ensureDirectory(dirPath)`: Create directory if missing
-- `ensureDirectories(dirPaths)`: Create multiple directories
-- `ensureAllDataDirectories()`: Create all claude-mem data dirs
-- `ensureAllClaudeDirectories()`: Create all Claude integration dirs
-
-**Static Helpers**:
-- `PathDiscovery.extractProjectName(filePath)`: Extract project from path
-- `PathDiscovery.getCurrentProjectName()`: Get current project (git root or cwd)
-- `PathDiscovery.createBackupFilename(originalPath)`: Generate timestamped backup
-- `PathDiscovery.isPathAccessible(path)`: Check path existence and access
-
-**Environment Overrides**:
-- `CLAUDE_MEM_DATA_DIR`: Override data directory
-- `CLAUDE_CONFIG_DIR`: Override Claude config directory
+**Environment Variable Overrides**:
+- `CLAUDE_MEM_DATA_DIR`: Override data directory location
+- `CLAUDE_CONFIG_DIR`: Override Claude config directory location
 
 ---
 
@@ -1500,13 +1483,13 @@ Show:
 - `src/sdk/parser.ts:26-132` - XML parser
 
 ### Services
-- `src/services/path-discovery.ts:16-341` - Path resolution
 - `src/services/sqlite/Database.ts:20-177` - Database manager
 - `src/services/sqlite/HooksDatabase.ts:11-207` - Hooks database
 - `src/services/sqlite/migrations.ts:7-374` - Schema migrations
 
 ### Shared
 - `src/shared/config.ts:1-51` - Package metadata
+- `src/shared/paths.ts:1-146` - Path configuration
 - `src/shared/types.ts:15-30` - Core types
 - `src/shared/storage.ts:26-188` - Storage abstraction
 

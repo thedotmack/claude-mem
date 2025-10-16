@@ -1,7 +1,7 @@
 import { OptionValues } from 'commander';
 import fs from 'fs';
 import path from 'path';
-import { PathDiscovery } from '../services/path-discovery.js';
+import * as paths from '../shared/paths.js';
 import { HooksDatabase } from '../services/sqlite/index.js';
 
 type CheckStatus = 'pass' | 'fail' | 'warn';
@@ -20,24 +20,22 @@ function printCheck(result: CheckResult): void {
 }
 
 export async function doctor(options: OptionValues = {}): Promise<void> {
-  const discovery = PathDiscovery.getInstance();
   const checks: CheckResult[] = [];
 
   // Data directory
   try {
-    const dataDir = discovery.getDataDirectory();
-    if (!fs.existsSync(dataDir)) {
-      fs.mkdirSync(dataDir, { recursive: true });
-      checks.push({ name: `Data directory created at ${dataDir}`, status: 'warn' });
+    if (!fs.existsSync(paths.DATA_DIR)) {
+      fs.mkdirSync(paths.DATA_DIR, { recursive: true });
+      checks.push({ name: `Data directory created at ${paths.DATA_DIR}`, status: 'warn' });
     } else {
-      const stats = fs.statSync(dataDir);
+      const stats = fs.statSync(paths.DATA_DIR);
       let writable = false;
       try {
-        fs.accessSync(dataDir, fs.constants.W_OK);
+        fs.accessSync(paths.DATA_DIR, fs.constants.W_OK);
         writable = true;
       } catch {}
       checks.push({
-        name: `Data directory ${dataDir}`,
+        name: `Data directory ${paths.DATA_DIR}`,
         status: stats.isDirectory() && writable ? 'pass' : 'fail',
         details: stats.isDirectory() && writable ? 'accessible' : 'not writable'
       });
@@ -68,12 +66,11 @@ export async function doctor(options: OptionValues = {}): Promise<void> {
 
   // Chroma connectivity
   try {
-    const chromaDir = discovery.getChromaDirectory();
-    const chromaExists = fs.existsSync(chromaDir);
+    const chromaExists = fs.existsSync(paths.CHROMA_DIR);
     checks.push({
       name: 'Chroma vector store',
       status: chromaExists ? 'pass' : 'warn',
-      details: chromaExists ? `data dir ${path.resolve(chromaDir)}` : 'Not yet initialized'
+      details: chromaExists ? `data dir ${path.resolve(paths.CHROMA_DIR)}` : 'Not yet initialized'
     });
   } catch (error: any) {
     checks.push({

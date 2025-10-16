@@ -1,10 +1,10 @@
 import { readdirSync, renameSync } from 'fs';
 import { join } from 'path';
 import * as p from '@clack/prompts';
-import { PathDiscovery } from '../services/path-discovery.js';
+import * as paths from '../shared/paths.js';
 
 export async function restore(): Promise<void> {
-  const trashDir = PathDiscovery.getInstance().getTrashDirectory();
+  const trashDir = paths.TRASH_DIR;
   const files = readdirSync(trashDir);
   
   if (files.length === 0) {

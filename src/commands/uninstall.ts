@@ -2,7 +2,7 @@ import { OptionValues } from 'commander';
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
-import { PathDiscovery } from '../services/path-discovery.js';
+import * as paths from '../shared/paths.js';
 
 async function removeSmartTrashAlias(): Promise<boolean> {
   const homeDir = homedir();
@@ -71,7 +71,7 @@ export async function uninstall(options: OptionValues = {}): Promise<void> {
   if (options.all) {
     locations.push({
       name: 'User',
-      path: PathDiscovery.getInstance().getClaudeSettingsPath()
+      path: paths.CLAUDE_SETTINGS_PATH
     });
     locations.push({
       name: 'Project',
@@ -79,10 +79,9 @@ export async function uninstall(options: OptionValues = {}): Promise<void> {
     });
   } else {
     const isProject = options.project;
-    const pathDiscovery = PathDiscovery.getInstance();
     locations.push({
       name: isProject ? 'Project' : 'User',
-      path: isProject ? join(process.cwd(), '.claude', 'settings.json') : pathDiscovery.getClaudeSettingsPath()
+      path: isProject ? join(process.cwd(), '.claude', 'settings.json') : paths.CLAUDE_SETTINGS_PATH
     });
   }
   

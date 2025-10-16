@@ -1,7 +1,7 @@
 import { readdirSync, statSync } from 'fs';
 import { join, basename } from 'path';
 import * as p from '@clack/prompts';
-import { PathDiscovery } from '../services/path-discovery.js';
+import * as paths from '../shared/paths.js';
 
 interface TrashItem {
   originalName: string;
@@ -51,7 +51,7 @@ function getDirectorySize(dirPath: string): number {
 }
 
 export async function viewTrash(): Promise<void> {
-  const trashDir = PathDiscovery.getInstance().getTrashDirectory();
+  const trashDir = paths.TRASH_DIR;
   
   try {
     const files = readdirSync(trashDir);

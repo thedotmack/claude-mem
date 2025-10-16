@@ -1,7 +1,5 @@
 import { Database } from 'bun:sqlite';
-import path from 'path';
-import fs from 'fs';
-import { PathDiscovery } from '../path-discovery.js';
+import { DATA_DIR, DB_PATH, ensureDir } from '../../shared/paths.js';
 
 /**
  * Lightweight database interface for hooks
@@ -12,11 +10,8 @@ export class HooksDatabase {
   private db: Database;
 
   constructor() {
-    const dataDir = PathDiscovery.getInstance().getDataDirectory();
-    fs.mkdirSync(dataDir, { recursive: true });
-
-    const dbPath = path.join(dataDir, 'claude-mem.db');
-    this.db = new Database(dbPath, { create: true, readwrite: true });
+    ensureDir(DATA_DIR);
+    this.db = new Database(DB_PATH, { create: true, readwrite: true });
 
     // Ensure optimized settings
     this.db.run('PRAGMA journal_mode = WAL');

@@ -1,7 +1,6 @@
 import net from 'net';
-import { join } from 'path';
 import { HooksDatabase } from '../services/sqlite/HooksDatabase.js';
-import { PathDiscovery } from '../services/path-discovery.js';
+import { getWorkerSocketPath } from '../shared/paths.js';
 
 export interface StopInput {
   session_id: string;
@@ -29,8 +28,7 @@ export function summaryHook(input: StopInput): void {
     }
 
     // Get socket path
-    const dataDir = PathDiscovery.getInstance().getDataDirectory();
-    const socketPath = join(dataDir, `worker-${session.id}.sock`);
+    const socketPath = getWorkerSocketPath(session.id);
 
     // Send FINALIZE message via Unix socket
     const message = {

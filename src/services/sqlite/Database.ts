@@ -1,7 +1,5 @@
 import { Database as BunDatabase } from 'bun:sqlite';
-import path from 'path';
-import fs from 'fs';
-import { PathDiscovery } from '../path-discovery.js';
+import { DATA_DIR, DB_PATH, ensureDir } from '../../shared/paths.js';
 
 // Type alias for better-sqlite3 compatibility
 type Database = BunDatabase;
@@ -47,11 +45,9 @@ export class DatabaseManager {
     }
 
     // Ensure the data directory exists
-    const dataDir = PathDiscovery.getInstance().getDataDirectory();
-    fs.mkdirSync(dataDir, { recursive: true });
+    ensureDir(DATA_DIR);
 
-    const dbPath = path.join(dataDir, 'claude-mem.db');
-    this.db = new BunDatabase(dbPath, { create: true, readwrite: true });
+    this.db = new BunDatabase(DB_PATH, { create: true, readwrite: true });
 
     // Apply optimized SQLite settings
     this.db.run('PRAGMA journal_mode = WAL');

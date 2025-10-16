@@ -1,5 +1,4 @@
 import { HooksDatabase } from '../services/sqlite/HooksDatabase.js';
-import { PathDiscovery } from '../services/path-discovery.js';
 import path from 'path';
 
 export interface SessionStartInput {
@@ -69,7 +68,7 @@ export function contextHook(input: SessionStartInput): void {
             output.push(`**Files Edited:** ${files.join(', ')}`);
           }
         } catch {
-          // If not valid JSON, show as text
+          // Backwards compatibility: if not valid JSON, show as text
           if (summary.files_edited.trim()) {
             output.push(`**Files Edited:** ${summary.files_edited}`);
           }

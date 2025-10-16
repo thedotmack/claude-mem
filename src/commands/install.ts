@@ -10,8 +10,8 @@ import chalk from 'chalk';
 import boxen from 'boxen';
 import { PACKAGE_NAME } from '../shared/config.js';
 import type { Settings } from '../shared/types.js';
-import { PathDiscovery } from '../services/path-discovery.js';
 import { Platform } from '../utils/platform.js';
+import * as paths from '../shared/paths.js';
 
 
 // Enhanced animation utilities
@@ -60,8 +60,7 @@ function installUv(): void {
 
 
 function hasExistingInstallation(): boolean {
-  const pathDiscovery = PathDiscovery.getInstance();
-  const settingsPath = pathDiscovery.getClaudeSettingsPath();
+  const settingsPath = paths.CLAUDE_SETTINGS_PATH;
 
   if (!existsSync(settingsPath)) return false;
 
@@ -181,16 +180,14 @@ async function runInstallationWizard(existingInstall: boolean): Promise<InstallC
 
 // <Block> Directory structure creation - natural setup flow
 function ensureDirectoryStructure(): void {
-  const pathDiscovery = PathDiscovery.getInstance();
-  
   // Create all data directories
-  pathDiscovery.ensureAllDataDirectories();
-  
+  paths.ensureAllDataDirs();
+
   // Create all Claude integration directories
-  pathDiscovery.ensureAllClaudeDirectories();
-  
+  paths.ensureAllClaudeDirs();
+
   // Create package.json in .claude-mem to fix ESM module issues
-  const packageJsonPath = join(pathDiscovery.getDataDirectory(), 'package.json');
+  const packageJsonPath = join(paths.DATA_DIR, 'package.json');
   if (!existsSync(packageJsonPath)) {
     const packageJson = {
       name: "claude-mem-data",
@@ -204,9 +201,7 @@ function ensureDirectoryStructure(): void {
 function copyFileRecursively(src: string, dest: string): void {
   const stat = statSync(src);
   if (stat.isDirectory()) {
-    if (!existsSync(dest)) {
-      mkdirSync(dest, { recursive: true });
-    }
+    mkdirSync(dest, { recursive: true });
     const files = readdirSync(src);
     files.forEach((file: string) => {
       copyFileRecursively(join(src, file), join(dest, file));
@@ -219,14 +214,11 @@ function copyFileRecursively(src: string, dest: string): void {
 
 
 function ensureClaudeMdInstructions(): void {
-  const pathDiscovery = PathDiscovery.getInstance();
-  const claudeMdPath = pathDiscovery.getClaudeMdPath();
+  const claudeMdPath = paths.CLAUDE_MD_PATH;
   const claudeMdDir = dirname(claudeMdPath);
-  
+
   // Ensure .claude directory exists
-  if (!existsSync(claudeMdDir)) {
-    mkdirSync(claudeMdDir, { recursive: true });
-  }
+  mkdirSync(claudeMdDir, { recursive: true });
   
   const instructions = `
 <!-- CLAUDE-MEM QUICK REFERENCE -->
@@ -308,7 +300,7 @@ function installChromaMcp(forceReinstall: boolean = false): void {
     }
   }
 
-  const chromaMcpCommand = `claude mcp add claude-mem -- uvx chroma-mcp --client-type persistent --data-dir ${PathDiscovery.getInstance().getChromaDirectory()}`;
+  const chromaMcpCommand = `claude mcp add claude-mem -- uvx chroma-mcp --client-type persistent --data-dir ${paths.CHROMA_DIR}`;
   execSync(chromaMcpCommand, { stdio: 'inherit' });
 }
 
@@ -355,13 +347,12 @@ function getSettingsPath(config: InstallConfig): string {
   } else if (config.scope === 'project') {
     return join(process.cwd(), '.claude', 'settings.json');
   } else {
-    return PathDiscovery.getInstance().getClaudeSettingsPath();
+    return paths.CLAUDE_SETTINGS_PATH;
   }
 }
 
 function configureUserSettings(config: InstallConfig): void {
-  const pathDiscovery = PathDiscovery.getInstance();
-  const userSettingsPath = pathDiscovery.getUserSettingsPath();
+  const userSettingsPath = paths.USER_SETTINGS_PATH;
 
   let userSettings: Settings = existsSync(userSettingsPath)
     ? JSON.parse(readFileSync(userSettingsPath, 'utf8'))
@@ -384,9 +375,7 @@ function configureSmartTrashAlias(): void {
     if (!existsSync(configPath)) {
       // Create the file if it doesn't exist (especially for PowerShell profiles)
       const dir = dirname(configPath);
-      if (!existsSync(dir)) {
-        mkdirSync(dir, { recursive: true });
-      }
+      mkdirSync(dir, { recursive: true });
       writeFileSync(configPath, '');
     }
 
@@ -401,9 +390,8 @@ function configureSmartTrashAlias(): void {
 
 
 function installClaudeCommands(): void {
-  const pathDiscovery = PathDiscovery.getInstance();
-  const claudeCommandsDir = pathDiscovery.getClaudeCommandsDirectory();
-  const packageCommandsDir = pathDiscovery.findPackageCommandsDirectory();
+  const claudeCommandsDir = paths.CLAUDE_COMMANDS_DIR;
+  const packageCommandsDir = paths.getPackageCommandsDir();
 
   mkdirSync(claudeCommandsDir, { recursive: true });
 

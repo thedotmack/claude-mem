@@ -1,7 +1,7 @@
 import { OptionValues } from 'commander';
 import { readFileSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
-import { PathDiscovery } from '../services/path-discovery.js';
+import * as paths from '../shared/paths.js';
 
 // <Block> 1.1 ====================================
 async function showLog(logPath: string, logType: string, tail: number): Promise<void> {
@@ -39,7 +39,7 @@ async function showLog(logPath: string, logType: string, tail: number): Promise<
 // <Block> 2.1 ====================================
 export async function logs(options: OptionValues = {}): Promise<void> {
   // <Block> 2.2 ====================================
-  const logsDir = PathDiscovery.getLogsDirectory();
+  const logsDir = paths.LOGS_DIR;
   const tail = parseInt(options.tail) || 20;
   // </Block> =======================================
   

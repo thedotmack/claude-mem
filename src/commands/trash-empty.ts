@@ -1,10 +1,10 @@
 import { rmSync, readdirSync, existsSync, statSync } from 'fs';
 import { join } from 'path';
 import * as p from '@clack/prompts';
-import { PathDiscovery } from '../services/path-discovery.js';
+import * as paths from '../shared/paths.js';
 
 export async function emptyTrash(options: { force?: boolean } = {}): Promise<void> {
-  const trashDir = PathDiscovery.getInstance().getTrashDirectory();
+  const trashDir = paths.TRASH_DIR;
   
   // Check if trash directory exists
   if (!existsSync(trashDir)) {
