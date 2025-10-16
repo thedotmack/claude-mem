@@ -1,0 +1,13 @@
+{
+  "name": "thedotmack",
+  "owner": {
+    "name": "Alex Newman"
+  },
+  "plugins": [
+    {
+      "name": "claude-mem",
+      "source": "./claude-mem",
+      "description": "Persistent memory system for Claude Code"
+    }
+  ]
+}

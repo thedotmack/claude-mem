@@ -1,11 +1,12 @@
 {
+  "description": "Claude-mem memory system hooks",
   "hooks": {
     "SessionStart": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "claude-mem context",
+            "command": "bun ${CLAUDE_PLUGIN_ROOT}/scripts/hooks/context-hook.js",
             "timeout": 180000
           }
         ]
@@ -16,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "claude-mem new",
+            "command": "bun ${CLAUDE_PLUGIN_ROOT}/scripts/hooks/new-hook.js",
             "timeout": 60000
           }
         ]
@@ -28,7 +29,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "claude-mem save",
+            "command": "bun ${CLAUDE_PLUGIN_ROOT}/scripts/hooks/save-hook.js",
             "timeout": 180000
           }
         ]
@@ -39,7 +40,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "claude-mem summary",
+            "command": "bun ${CLAUDE_PLUGIN_ROOT}/scripts/hooks/summary-hook.js",
             "timeout": 60000
           }
         ]

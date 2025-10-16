@@ -36,7 +36,9 @@
     "claude-mem": "./dist/claude-mem.min.js"
   },
   "scripts": {
-    "build": "node scripts/build.js",
+    "build": "node scripts/build.js && node scripts/build-hooks.js",
+    "build:cli": "node scripts/build.js",
+    "build:hooks": "node scripts/build-hooks.js",
     "publish:npm": "node scripts/publish.js",
     "dev": "bun run src/bin/cli.ts",
     "prepublishOnly": "npm run build",
@@ -56,6 +58,7 @@
     "dist",
     "commands",
     "hooks",
+    "scripts",
     ".claude-plugin",
     "src",
     "docs",
