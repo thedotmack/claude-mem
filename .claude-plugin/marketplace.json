@@ -6,7 +6,7 @@
   "plugins": [
     {
       "name": "claude-mem",
-      "source": "./claude-mem",
+      "source": "./plugin",
       "description": "Persistent memory system for Claude Code"
     }
   ]

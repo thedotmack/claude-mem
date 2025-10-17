@@ -18,7 +18,6 @@ export const ARCHIVES_DIR = join(DATA_DIR, 'archives');
 export const LOGS_DIR = join(DATA_DIR, 'logs');
 export const TRASH_DIR = join(DATA_DIR, 'trash');
 export const BACKUPS_DIR = join(DATA_DIR, 'backups');
-export const CHROMA_DIR = join(DATA_DIR, 'chroma');
 export const USER_SETTINGS_PATH = join(DATA_DIR, 'settings.json');
 export const DB_PATH = join(DATA_DIR, 'claude-mem.db');
 
@@ -57,7 +56,6 @@ export function ensureAllDataDirs(): void {
   ensureDir(LOGS_DIR);
   ensureDir(TRASH_DIR);
   ensureDir(BACKUPS_DIR);
-  ensureDir(CHROMA_DIR);
 }
 
 /**

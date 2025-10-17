@@ -1,4 +1,3 @@
-#!/usr/bin/env bun
 
 /**
  * Context Hook Entry Point - SessionStart
@@ -6,14 +5,18 @@
  */
 
 import { contextHook } from '../../hooks/context.js';
+import { stdin } from 'process';
 
 try {
-  if (process.stdin.isTTY) {
+  if (stdin.isTTY) {
     contextHook();
   } else {
-    const input = await Bun.stdin.text();
-    const parsed = input.trim() ? JSON.parse(input) : undefined;
-    contextHook(parsed);
+    let input = '';
+    stdin.on('data', (chunk) => input += chunk);
+    stdin.on('end', () => {
+      const parsed = input.trim() ? JSON.parse(input) : undefined;
+      contextHook(parsed);
+    });
   }
 } catch (error: any) {
   console.error(`[claude-mem context-hook error: ${error.message}]`);

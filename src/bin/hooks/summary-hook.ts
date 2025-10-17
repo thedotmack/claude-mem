@@ -1,4 +1,3 @@
-#!/usr/bin/env bun
 
 /**
  * Summary Hook Entry Point - Stop
@@ -6,15 +5,18 @@
  */
 
 import { summaryHook } from '../../hooks/summary.js';
+import { stdin } from 'process';
 
 // Read input from stdin
-const input = await Bun.stdin.text();
-
-try {
-  const parsed = input.trim() ? JSON.parse(input) : undefined;
-  summaryHook(parsed);
-} catch (error: any) {
-  console.error(`[claude-mem summary-hook error: ${error.message}]`);
-  console.log('{"continue": true, "suppressOutput": true}');
-  process.exit(0);
-}
+let input = '';
+stdin.on('data', (chunk) => input += chunk);
+stdin.on('end', async () => {
+  try {
+    const parsed = input.trim() ? JSON.parse(input) : undefined;
+    await summaryHook(parsed);
+  } catch (error: any) {
+    console.error(`[claude-mem summary-hook error: ${error.message}]`);
+    console.log('{"continue": true, "suppressOutput": true}');
+    process.exit(0);
+  }
+});

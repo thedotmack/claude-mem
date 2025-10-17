@@ -1,6 +1,4 @@
-import net from 'net';
 import { HooksDatabase } from '../services/sqlite/HooksDatabase.js';
-import { getWorkerSocketPath } from '../shared/paths.js';
 import { createHookResponse } from './hook-response.js';
 
 export interface StopInput {
@@ -11,9 +9,9 @@ export interface StopInput {
 
 /**
  * Summary Hook - Stop
- * Sends FINALIZE message to worker via Unix socket
+ * Sends FINALIZE message to worker via HTTP POST
  */
-export function summaryHook(input?: StopInput): void {
+export async function summaryHook(input?: StopInput): Promise<void> {
   if (!input) {
     throw new Error('summaryHook requires input');
   }
@@ -28,25 +26,25 @@ export function summaryHook(input?: StopInput): void {
     return;
   }
 
-  const socketPath = getWorkerSocketPath(session.id);
-  const message = {
-    type: 'finalize'
-  };
-
-  const client = net.connect(socketPath, () => {
-    client.write(JSON.stringify(message) + '\n');
-    client.end();
-  });
-
-  let responded = false;
-  const respond = () => {
-    if (responded) {
-      return;
-    }
-    responded = true;
+  if (!session.worker_port) {
+    console.error('[summary-hook] No worker port for session', session.id);
     console.log(createHookResponse('Stop', true));
-  };
+    return;
+  }
 
-  client.on('close', respond);
-  client.on('error', respond);
+  try {
+    const response = await fetch(`http://127.0.0.1:${session.worker_port}/sessions/${session.id}/finalize`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: AbortSignal.timeout(2000)
+    });
+
+    if (!response.ok) {
+      console.error('[summary-hook] Failed to finalize:', await response.text());
+    }
+  } catch (error: any) {
+    console.error('[summary-hook] Error:', error.message);
+  } finally {
+    console.log(createHookResponse('Stop', true));
+  }
 }

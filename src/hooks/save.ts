@@ -1,6 +1,4 @@
-import net from 'net';
 import { HooksDatabase } from '../services/sqlite/HooksDatabase.js';
-import { getWorkerSocketPath } from '../shared/paths.js';
 import { createHookResponse } from './hook-response.js';
 
 export interface PostToolUseInput {
@@ -20,9 +18,9 @@ const SKIP_TOOLS = new Set([
 
 /**
  * Save Hook - PostToolUse
- * Sends tool observations to worker via Unix socket
+ * Sends tool observations to worker via HTTP POST
  */
-export function saveHook(input?: PostToolUseInput): void {
+export async function saveHook(input?: PostToolUseInput): Promise<void> {
   if (!input) {
     throw new Error('saveHook requires input');
   }
@@ -43,28 +41,30 @@ export function saveHook(input?: PostToolUseInput): void {
     return;
   }
 
-  const socketPath = getWorkerSocketPath(session.id);
-  const message = {
-    type: 'observation',
-    tool_name,
-    tool_input: JSON.stringify(tool_input),
-    tool_output: JSON.stringify(tool_output)
-  };
-
-  const client = net.connect(socketPath, () => {
-    client.write(JSON.stringify(message) + '\n');
-    client.end();
-  });
-
-  let responded = false;
-  const respond = () => {
-    if (responded) {
-      return;
-    }
-    responded = true;
+  if (!session.worker_port) {
+    console.error('[save-hook] No worker port for session', session.id);
     console.log(createHookResponse('PostToolUse', true));
-  };
+    return;
+  }
 
-  client.on('close', respond);
-  client.on('error', respond);
+  try {
+    const response = await fetch(`http://127.0.0.1:${session.worker_port}/sessions/${session.id}/observations`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tool_name,
+        tool_input: JSON.stringify(tool_input),
+        tool_output: JSON.stringify(tool_output)
+      }),
+      signal: AbortSignal.timeout(2000)
+    });
+
+    if (!response.ok) {
+      console.error('[save-hook] Failed to send observation:', await response.text());
+    }
+  } catch (error: any) {
+    console.error('[save-hook] Error:', error.message);
+  } finally {
+    console.log(createHookResponse('PostToolUse', true));
+  }
 }

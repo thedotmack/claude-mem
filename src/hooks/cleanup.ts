@@ -1,6 +1,4 @@
-import { existsSync, unlinkSync } from 'fs';
 import { HooksDatabase } from '../services/sqlite/HooksDatabase.js';
-import { getWorkerSocketPath } from '../shared/paths.js';
 
 export interface SessionEndInput {
   session_id: string;
@@ -12,15 +10,14 @@ export interface SessionEndInput {
 
 /**
  * Cleanup Hook - SessionEnd
- * Cleans up worker process and marks session as terminated
+ * Cleans up worker session via HTTP DELETE
  *
  * This hook runs when a Claude Code session ends. It:
  * 1. Finds active SDK session for this Claude session
- * 2. Terminates worker process if still running
- * 3. Removes stale socket file
- * 4. Marks session as failed (since no Stop hook completed it)
+ * 2. Sends DELETE request to worker service
+ * 3. Marks session as failed if not already completed
  */
-export function cleanupHook(input?: SessionEndInput): void {
+export async function cleanupHook(input?: SessionEndInput): Promise<void> {
   try {
     // Log hook entry point
     console.error('[claude-mem cleanup] Hook fired', {
@@ -63,57 +60,36 @@ export function cleanupHook(input?: SessionEndInput): void {
     console.error('[claude-mem cleanup] Active SDK session found', {
       session_id: session.id,
       sdk_session_id: session.sdk_session_id,
-      project: session.project
+      project: session.project,
+      worker_port: session.worker_port
     });
 
-    // Get worker PID and socket path
-    const socketPath = getWorkerSocketPath(session.id);
+    // 1. Delete session via HTTP
+    if (session.worker_port) {
+      try {
+        const response = await fetch(`http://127.0.0.1:${session.worker_port}/sessions/${session.id}`, {
+          method: 'DELETE',
+          signal: AbortSignal.timeout(5000)
+        });
 
-    // 1. Kill worker process if it exists
-    try {
-      // Try to read PID from socket file existence
-      if (existsSync(socketPath)) {
-        console.error('[claude-mem cleanup] Socket file exists, attempting cleanup', { socketPath });
-
-        // Remove socket file
-        try {
-          unlinkSync(socketPath);
-          console.error('[claude-mem cleanup] Socket file removed successfully', { socketPath });
-        } catch (unlinkErr: any) {
-          console.error('[claude-mem cleanup] Failed to remove socket file', {
-            error: unlinkErr.message,
-            socketPath
-          });
+        if (response.ok) {
+          console.error('[claude-mem cleanup] Session deleted successfully via HTTP');
+        } else {
+          console.error('[claude-mem cleanup] Failed to delete session:', await response.text());
         }
-      } else {
-        console.error('[claude-mem cleanup] Socket file does not exist', { socketPath });
+      } catch (error: any) {
+        console.error('[claude-mem cleanup] HTTP DELETE error:', error.message);
       }
-
-      // Note: We don't kill the worker process here because:
-      // 1. Workers have a 2-hour watchdog timer that will kill them automatically
-      // 2. Killing by PID is fragile (PID might be reused)
-      // 3. The worker will exit on its own when it can't reach the socket
-      // We just clean up the socket file to prevent stale socket issues
-
-    } catch (cleanupErr: any) {
-      console.error('[claude-mem cleanup] Error during cleanup', {
-        error: cleanupErr.message,
-        stack: cleanupErr.stack
-      });
+    } else {
+      console.error('[claude-mem cleanup] No worker port, cannot send DELETE request');
     }
 
-    // 2. Mark session as failed (since Stop hook didn't complete it)
+    // 2. Mark session as failed in DB (if not already completed)
     try {
       db.markSessionFailed(session.id);
-      console.error('[claude-mem cleanup] Session marked as failed', {
-        session_id: session.id,
-        reason: 'SessionEnd hook - session terminated without completion'
-      });
+      console.error('[claude-mem cleanup] Session marked as failed in database');
     } catch (markErr: any) {
-      console.error('[claude-mem cleanup] Failed to mark session as failed', {
-        error: markErr.message,
-        session_id: session.id
-      });
+      console.error('[claude-mem cleanup] Failed to mark session as failed:', markErr);
     }
 
     db.close();

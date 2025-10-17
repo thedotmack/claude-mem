@@ -1,4 +1,3 @@
-#!/usr/bin/env bun
 
 /**
  * Save Hook Entry Point - PostToolUse
@@ -6,15 +5,18 @@
  */
 
 import { saveHook } from '../../hooks/save.js';
+import { stdin } from 'process';
 
 // Read input from stdin
-const input = await Bun.stdin.text();
-
-try {
-  const parsed = input.trim() ? JSON.parse(input) : undefined;
-  saveHook(parsed);
-} catch (error: any) {
-  console.error(`[claude-mem save-hook error: ${error.message}]`);
-  console.log('{"continue": true, "suppressOutput": true}');
-  process.exit(0);
-}
+let input = '';
+stdin.on('data', (chunk) => input += chunk);
+stdin.on('end', async () => {
+  try {
+    const parsed = input.trim() ? JSON.parse(input) : undefined;
+    await saveHook(parsed);
+  } catch (error: any) {
+    console.error(`[claude-mem save-hook error: ${error.message}]`);
+    console.log('{"continue": true, "suppressOutput": true}');
+    process.exit(0);
+  }
+});

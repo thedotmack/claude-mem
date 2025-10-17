@@ -24,8 +24,9 @@ export function contextHook(input?: SessionStartInput): void {
 
   try {
     const summaries = db.getRecentSummaries(project, 5);
+    const observations = db.getRecentObservations(project, 20);
 
-    if (summaries.length === 0) {
+    if (summaries.length === 0 && observations.length === 0) {
       // Output directly to stdout for injection into context
       console.log('# Recent Session Context\n\nNo previous sessions found for this project yet.');
       return;
@@ -33,6 +34,39 @@ export function contextHook(input?: SessionStartInput): void {
 
     const output: string[] = [];
     output.push('# Recent Session Context');
+    output.push('');
+
+    // Show observations first
+    if (observations.length > 0) {
+      output.push(`## Recent Observations (${observations.length})`);
+      output.push('');
+
+      // Group observations by type
+      const byType: Record<string, Array<{text: string; created_at: string}>> = {};
+      for (const obs of observations) {
+        if (!byType[obs.type]) byType[obs.type] = [];
+        byType[obs.type].push({ text: obs.text, created_at: obs.created_at });
+      }
+
+      // Display each type
+      const typeOrder = ['feature', 'bugfix', 'refactor', 'discovery', 'decision'];
+      for (const type of typeOrder) {
+        if (byType[type] && byType[type].length > 0) {
+          output.push(`### ${type.charAt(0).toUpperCase() + type.slice(1)}s`);
+          for (const obs of byType[type]) {
+            output.push(`- ${obs.text}`);
+          }
+          output.push('');
+        }
+      }
+    }
+
+    if (summaries.length === 0) {
+      console.log(output.join('\n'));
+      return;
+    }
+
+    output.push('## Recent Sessions');
     output.push('');
     const sessionWord = summaries.length === 1 ? 'session' : 'sessions';
     output.push(`Showing last ${summaries.length} ${sessionWord} for **${project}**:`);

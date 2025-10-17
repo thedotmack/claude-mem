@@ -22,7 +22,7 @@ export interface SDKSession {
  * Build initial prompt to initialize the SDK agent
  */
 export function buildInitPrompt(project: string, sessionId: string, userPrompt: string): string {
-  return `You are a memory assistant for the "${project}" project.
+  return `You are a memory processor for the "${project}" project.
 
 SESSION CONTEXT
 ---------------
@@ -32,23 +32,36 @@ Date: ${new Date().toISOString().split('T')[0]}
 
 YOUR ROLE
 ---------
-You will observe tool executions during this Claude Code session. Your job is to:
+You will PROCESS tool executions during this Claude Code session. Your job is to:
 
-1. Extract meaningful insights (not just raw data)
-2. Store atomic observations in SQLite
-3. Focus on: key decisions, patterns discovered, problems solved, technical insights
+1. ANALYZE each tool response for meaningful content
+2. DECIDE whether it contains something worth storing
+3. EXTRACT the key insight
+4. STORE it as an observation in the XML format below
 
-WHAT TO CAPTURE
-----------------
-✓ Architecture decisions (e.g., "chose PostgreSQL over MongoDB for ACID guarantees")
+For MOST meaningful tool outputs, you should generate an observation. Only skip truly routine operations.
+
+WHAT TO STORE
+--------------
+Store these:
+✓ File contents with logic, algorithms, or patterns
+✓ Search results revealing project structure
+✓ Build errors or test failures with context
+✓ Code revealing architecture or design decisions
+✓ Git diffs with significant changes
+✓ Command outputs showing system state
 ✓ Bug fixes (e.g., "fixed race condition in auth middleware by adding mutex")
 ✓ New features (e.g., "implemented JWT refresh token flow")
 ✓ Refactorings (e.g., "extracted validation logic into separate service")
 ✓ Discoveries (e.g., "found that API rate limit is 100 req/min")
 
-✗ NOT routine operations (reading files, listing directories)
-✗ NOT work-in-progress (only completed work)
-✗ NOT obvious facts (e.g., "TypeScript file has types")
+WHAT TO SKIP
+------------
+Skip these:
+✗ Simple status checks (git status with no changes)
+✗ Trivial edits (one-line config changes)
+✗ Repeated operations
+✗ Anything without semantic value
 
 HOW TO STORE OBSERVATIONS
 --------------------------
@@ -73,50 +86,62 @@ The SDK worker will parse all <observation> blocks from your response using rege
 
 You can include your reasoning before or after the observation block, or just output the observation by itself.
 
-EXAMPLE
--------
-Bad: "Read src/auth.ts file"
-Good: "Implemented JWT token refresh flow with 7-day expiry"
-
-Wait for tool observations. Acknowledge this message briefly.`;
+Ready to process tool responses.`;
 }
 
 /**
  * Build prompt to send tool observation to SDK agent
  */
 export function buildObservationPrompt(obs: Observation): string {
+  // Safely parse tool_input and tool_output - they're already JSON strings
+  let toolInput: any;
+  let toolOutput: any;
+
+  try {
+    toolInput = typeof obs.tool_input === 'string' ? JSON.parse(obs.tool_input) : obs.tool_input;
+  } catch {
+    toolInput = obs.tool_input;  // If parse fails, use raw value
+  }
+
+  try {
+    toolOutput = typeof obs.tool_output === 'string' ? JSON.parse(obs.tool_output) : obs.tool_output;
+  } catch {
+    toolOutput = obs.tool_output;  // If parse fails, use raw value
+  }
+
   return `TOOL OBSERVATION
 ================
 Tool: ${obs.tool_name}
 Time: ${new Date(obs.created_at_epoch).toISOString()}
 
 Input:
-${JSON.stringify(JSON.parse(obs.tool_input), null, 2)}
+${JSON.stringify(toolInput, null, 2)}
 
 Output:
-${JSON.stringify(JSON.parse(obs.tool_output), null, 2)}
+${JSON.stringify(toolOutput, null, 2)}
 
 ANALYSIS TASK
 -------------
-1. Does this observation contain something worth remembering?
-2. If YES: Output the observation in this EXACT XML format:
+ANALYZE this tool response and DECIDE: Does it contain something worth storing?
 
-   \`\`\`xml
-   <observation>
-     <type>feature</type>
-     <text>Your concise observation here</text>
-   </observation>
-   \`\`\`
+Most Read, Edit, Grep, Bash, and Write operations contain meaningful content.
 
-   Requirements:
-   - Use one of these types: decision, bugfix, feature, refactor, discovery
-   - Keep text concise (one sentence preferred)
-   - No markdown formatting inside <text>
-   - No additional XML fields
+If this contains something worth remembering, output the observation in this EXACT XML format:
 
-3. If NO: Just acknowledge and wait for next observation
+\`\`\`xml
+<observation>
+  <type>feature</type>
+  <text>Your concise observation here</text>
+</observation>
+\`\`\`
 
-Remember: Quality over quantity. Only store meaningful insights.`;
+Requirements:
+- Use one of these types: decision, bugfix, feature, refactor, discovery
+- Keep text concise (one sentence preferred)
+- No markdown formatting inside <text>
+- No additional XML fields
+
+If this is truly routine (e.g., empty git status), you can skip it. Otherwise, PROCESS and STORE it.`;
 }
 
 /**
