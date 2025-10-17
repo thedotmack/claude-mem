@@ -1,6 +1,7 @@
 import net from 'net';
 import { HooksDatabase } from '../services/sqlite/HooksDatabase.js';
 import { getWorkerSocketPath } from '../shared/paths.js';
+import { createHookResponse } from './hook-response.js';
 
 export interface StopInput {
   session_id: string;
@@ -23,7 +24,7 @@ export function summaryHook(input?: StopInput): void {
   db.close();
 
   if (!session) {
-    console.log('{"continue": true, "suppressOutput": true}');
+    console.log(createHookResponse('Stop', true));
     return;
   }
 
@@ -37,7 +38,15 @@ export function summaryHook(input?: StopInput): void {
     client.end();
   });
 
-  client.on('close', () => {
-    console.log('{"continue": true, "suppressOutput": true}');
-  });
+  let responded = false;
+  const respond = () => {
+    if (responded) {
+      return;
+    }
+    responded = true;
+    console.log(createHookResponse('Stop', true));
+  };
+
+  client.on('close', respond);
+  client.on('error', respond);
 }

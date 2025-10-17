@@ -1,6 +1,7 @@
 import net from 'net';
 import { HooksDatabase } from '../services/sqlite/HooksDatabase.js';
 import { getWorkerSocketPath } from '../shared/paths.js';
+import { createHookResponse } from './hook-response.js';
 
 export interface PostToolUseInput {
   session_id: string;
@@ -29,7 +30,7 @@ export function saveHook(input?: PostToolUseInput): void {
   const { session_id, tool_name, tool_input, tool_output } = input;
 
   if (SKIP_TOOLS.has(tool_name)) {
-    console.log('{"continue": true, "suppressOutput": true}');
+    console.log(createHookResponse('PostToolUse', true));
     return;
   }
 
@@ -38,7 +39,7 @@ export function saveHook(input?: PostToolUseInput): void {
   db.close();
 
   if (!session) {
-    console.log('{"continue": true, "suppressOutput": true}');
+    console.log(createHookResponse('PostToolUse', true));
     return;
   }
 
@@ -55,7 +56,15 @@ export function saveHook(input?: PostToolUseInput): void {
     client.end();
   });
 
-  client.on('close', () => {
-    console.log('{"continue": true, "suppressOutput": true}');
-  });
+  let responded = false;
+  const respond = () => {
+    if (responded) {
+      return;
+    }
+    responded = true;
+    console.log(createHookResponse('PostToolUse', true));
+  };
+
+  client.on('close', respond);
+  client.on('error', respond);
 }

@@ -1,12 +1,13 @@
-import { HooksDatabase } from '../services/sqlite/HooksDatabase.js';
 import path from 'path';
+import { HooksDatabase } from '../services/sqlite/HooksDatabase.js';
+import { createHookResponse } from './hook-response.js';
 
 export interface SessionStartInput {
-  session_id: string;
-  transcript_path: string;
-  cwd: string;
-  hook_event_name: string;
-  source: "startup" | "resume" | "clear" | "compact";
+  session_id?: string;
+  transcript_path?: string;
+  cwd?: string;
+  hook_event_name?: string;
+  source?: "startup" | "resume" | "clear" | "compact";
   [key: string]: any;
 }
 
@@ -15,18 +16,19 @@ export interface SessionStartInput {
  * Shows user what happened in recent sessions
  */
 export function contextHook(input?: SessionStartInput): void {
-  if (!input) {
-    throw new Error('contextHook requires input');
-  }
+  const cwd = input?.cwd ?? process.cwd();
+  const project = cwd ? path.basename(cwd) : 'unknown-project';
 
-  const project = input.cwd ? path.basename(input.cwd) : path.basename(path.dirname(input.transcript_path));
   const db = new HooksDatabase();
 
   try {
     const summaries = db.getRecentSummaries(project, 5);
 
     if (summaries.length === 0) {
-      console.log('# Recent Session Context\n\nNo previous sessions found for this project yet.');
+      const response = createHookResponse('SessionStart', true, {
+        context: '# Recent Session Context\n\nNo previous sessions found for this project yet.'
+      });
+      console.log(response);
       return;
     }
 
@@ -87,7 +89,10 @@ export function contextHook(input?: SessionStartInput): void {
       output.push('');
     }
 
-    console.log(output.join('\n'));
+    const response = createHookResponse('SessionStart', true, {
+      context: output.join('\n')
+    });
+    console.log(response);
   } finally {
     db.close();
   }

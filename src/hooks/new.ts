@@ -1,6 +1,7 @@
-import { HooksDatabase } from '../services/sqlite/HooksDatabase.js';
-import path from 'path';
 import { spawn } from 'child_process';
+import path from 'path';
+import { HooksDatabase } from '../services/sqlite/HooksDatabase.js';
+import { createHookResponse } from './hook-response.js';
 
 export interface UserPromptSubmitInput {
   session_id: string;
@@ -26,7 +27,7 @@ export function newHook(input?: UserPromptSubmitInput): void {
     const existing = db.findActiveSDKSession(session_id);
 
     if (existing) {
-      console.log('{"continue": true, "suppressOutput": true}');
+      console.log(createHookResponse('UserPromptSubmit', true));
       return;
     }
 
@@ -46,7 +47,7 @@ export function newHook(input?: UserPromptSubmitInput): void {
 
     child.unref();
 
-    console.log('{"continue": true, "suppressOutput": true}');
+    console.log(createHookResponse('UserPromptSubmit', true));
   } finally {
     db.close();
   }
