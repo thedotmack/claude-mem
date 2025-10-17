@@ -20,13 +20,15 @@ interface ObservationMessage {
   tool_name: string;
   tool_input: string;
   tool_output: string;
+  prompt_number: number;
 }
 
-interface FinalizeMessage {
-  type: 'finalize';
+interface SummarizeMessage {
+  type: 'summarize';
+  prompt_number: number;
 }
 
-type WorkerMessage = ObservationMessage | FinalizeMessage;
+type WorkerMessage = ObservationMessage | SummarizeMessage;
 
 /**
  * Active session state
@@ -36,10 +38,10 @@ interface ActiveSession {
   sdkSessionId: string | null;
   project: string;
   userPrompt: string;
-  isFinalized: boolean;
   pendingMessages: WorkerMessage[];
   abortController: AbortController;
   generatorPromise: Promise<void> | null;
+  lastPromptNumber: number; // Track which prompt_number we last sent to SDK
 }
 
 class WorkerService {
@@ -57,7 +59,7 @@ class WorkerService {
     // Session endpoints
     this.app.post('/sessions/:sessionDbId/init', this.handleInit.bind(this));
     this.app.post('/sessions/:sessionDbId/observations', this.handleObservation.bind(this));
-    this.app.post('/sessions/:sessionDbId/finalize', this.handleFinalize.bind(this));
+    this.app.post('/sessions/:sessionDbId/summarize', this.handleSummarize.bind(this));
     this.app.get('/sessions/:sessionDbId/status', this.handleStatus.bind(this));
     this.app.delete('/sessions/:sessionDbId', this.handleDelete.bind(this));
   }
@@ -133,10 +135,10 @@ class WorkerService {
       sdkSessionId: null,
       project,
       userPrompt,
-      isFinalized: false,
       pendingMessages: [],
       abortController: new AbortController(),
-      generatorPromise: null
+      generatorPromise: null,
+      lastPromptNumber: 0
     };
 
     this.sessions.set(sessionDbId, session);
@@ -164,20 +166,15 @@ class WorkerService {
 
   /**
    * POST /sessions/:sessionDbId/observations
-   * Body: { tool_name, tool_input, tool_output }
+   * Body: { tool_name, tool_input, tool_output, prompt_number }
    */
   private handleObservation(req: Request, res: Response): void {
     const sessionDbId = parseInt(req.params.sessionDbId, 10);
-    const { tool_name, tool_input, tool_output } = req.body;
+    const { tool_name, tool_input, tool_output, prompt_number } = req.body;
 
     const session = this.sessions.get(sessionDbId);
     if (!session) {
       res.status(404).json({ error: 'Session not found' });
-      return;
-    }
-
-    if (session.isFinalized) {
-      res.status(400).json({ error: 'Session already finalized' });
       return;
     }
 
@@ -187,17 +184,20 @@ class WorkerService {
       type: 'observation',
       tool_name,
       tool_input,
-      tool_output
+      tool_output,
+      prompt_number
     });
 
     res.json({ status: 'queued', queueLength: session.pendingMessages.length });
   }
 
   /**
-   * POST /sessions/:sessionDbId/finalize
+   * POST /sessions/:sessionDbId/summarize
+   * Body: { prompt_number }
    */
-  private handleFinalize(req: Request, res: Response): void {
+  private handleSummarize(req: Request, res: Response): void {
     const sessionDbId = parseInt(req.params.sessionDbId, 10);
+    const { prompt_number } = req.body;
 
     const session = this.sessions.get(sessionDbId);
     if (!session) {
@@ -205,16 +205,14 @@ class WorkerService {
       return;
     }
 
-    if (session.isFinalized) {
-      res.status(400).json({ error: 'Session already finalized' });
-      return;
-    }
+    console.error(`[WorkerService] Requesting summary for session ${sessionDbId}, prompt #${prompt_number}`);
 
-    console.error(`[WorkerService] Finalizing session ${sessionDbId}`);
+    session.pendingMessages.push({
+      type: 'summarize',
+      prompt_number
+    });
 
-    session.pendingMessages.push({ type: 'finalize' });
-
-    res.json({ status: 'finalizing' });
+    res.json({ status: 'queued', queueLength: session.pendingMessages.length });
   }
 
   /**
@@ -233,7 +231,6 @@ class WorkerService {
       sessionDbId,
       sdkSessionId: session.sdkSessionId,
       project: session.project,
-      isFinalized: session.isFinalized,
       pendingMessages: session.pendingMessages.length
     });
   }
@@ -263,12 +260,10 @@ class WorkerService {
       ]);
     }
 
-    // Mark as failed if not completed
-    if (!session.isFinalized) {
-      const db = new HooksDatabase();
-      db.markSessionFailed(sessionDbId);
-      db.close();
-    }
+    // Mark as failed since we're aborting
+    const db = new HooksDatabase();
+    db.markSessionFailed(sessionDbId);
+    db.close();
 
     this.sessions.delete(sessionDbId);
 
@@ -315,10 +310,10 @@ class WorkerService {
             ? content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n')
             : typeof content === 'string' ? content : '';
 
-          console.error(`[WorkerService] SDK response (${textContent.length} chars)`);
+          console.error(`[WorkerService] SDK response (${textContent.length} chars) for prompt #${session.lastPromptNumber}`);
 
-          // Parse and store
-          this.handleAgentMessage(session, textContent);
+          // Parse and store with prompt number
+          this.handleAgentMessage(session, textContent, session.lastPromptNumber);
         }
       }
 
@@ -342,6 +337,7 @@ class WorkerService {
 
   /**
    * Create async message generator for SDK streaming
+   * Keeps running continuously - no finalize, agent stays alive for entire Claude Code session
    */
   private async* createMessageGenerator(session: ActiveSession): AsyncIterable<SDKUserMessage> {
     const claudeSessionId = `session-${session.sessionDbId}`;
@@ -359,8 +355,12 @@ class WorkerService {
       }
     };
 
-    // Process messages as they arrive
-    while (!session.isFinalized) {
+    // Process messages continuously until session is deleted
+    while (true) {
+      if (session.abortController.signal.aborted) {
+        break;
+      }
+
       if (session.pendingMessages.length === 0) {
         await new Promise(resolve => setTimeout(resolve, 100));
         continue;
@@ -369,9 +369,9 @@ class WorkerService {
       while (session.pendingMessages.length > 0) {
         const message = session.pendingMessages.shift()!;
 
-        if (message.type === 'finalize') {
-          console.error(`[WorkerService] Processing FINALIZE for session ${session.sessionDbId}`);
-          session.isFinalized = true;
+        if (message.type === 'summarize') {
+          console.error(`[WorkerService] Processing SUMMARIZE for session ${session.sessionDbId}, prompt #${message.prompt_number}`);
+          session.lastPromptNumber = message.prompt_number;
 
           const db = new HooksDatabase();
           const dbSession = db.db.prepare(`
@@ -382,8 +382,24 @@ class WorkerService {
           db.close();
 
           if (dbSession) {
-            const finalizePrompt = buildFinalizePrompt(dbSession);
-            console.error(`[WorkerService] Yielding finalize prompt (${finalizePrompt.length} chars)`);
+            const summarizePrompt = `You have been processing tool observations for this session. Please generate a summary of what you've learned from prompt #${message.prompt_number}.
+
+Use this XML format:
+
+<session_summary>
+  <request>What was the user trying to accomplish in this prompt?</request>
+  <investigated>What code/systems did you explore?</investigated>
+  <learned>What did you learn about the codebase?</learned>
+  <completed>What was done or determined?</completed>
+  <next_steps>What should happen next?</next_steps>
+  <files_read>["file1.ts", "file2.ts"]</files_read>
+  <files_edited>["file3.ts"]</files_edited>
+  <notes>Any additional context or insights</notes>
+</session_summary>
+
+Respond ONLY with the XML block. Be concise and specific.`;
+
+            console.error(`[WorkerService] Yielding summarize prompt`);
 
             yield {
               type: 'user',
@@ -391,14 +407,13 @@ class WorkerService {
               parent_tool_use_id: null,
               message: {
                 role: 'user',
-                content: finalizePrompt
+                content: summarizePrompt
               }
             };
           }
-          break;
-        }
+        } else if (message.type === 'observation') {
+          session.lastPromptNumber = message.prompt_number;
 
-        if (message.type === 'observation') {
           const observationPrompt = buildObservationPrompt({
             id: 0,
             tool_name: message.tool_name,
@@ -407,7 +422,7 @@ class WorkerService {
             created_at_epoch: Date.now()
           });
 
-          console.error(`[WorkerService] Yielding observation: ${message.tool_name}`);
+          console.error(`[WorkerService] Yielding observation: ${message.tool_name} (prompt #${message.prompt_number})`);
 
           yield {
             type: 'user',
@@ -425,23 +440,24 @@ class WorkerService {
 
   /**
    * Handle agent message - parse and store observations/summaries
+   * Gets prompt_number from the message that triggered this response
    */
-  private handleAgentMessage(session: ActiveSession, content: string): void {
+  private handleAgentMessage(session: ActiveSession, content: string, promptNumber: number): void {
     // Parse observations
     const observations = parseObservations(content);
-    console.error(`[WorkerService] Parsed ${observations.length} observations`);
+    console.error(`[WorkerService] Parsed ${observations.length} observations for prompt #${promptNumber}`);
 
     const db = new HooksDatabase();
     for (const obs of observations) {
       if (session.sdkSessionId) {
-        db.storeObservation(session.sdkSessionId, session.project, obs.type, obs.text);
+        db.storeObservation(session.sdkSessionId, session.project, obs.type, obs.text, promptNumber);
       }
     }
 
     // Parse summary
     const summary = parseSummary(content);
     if (summary && session.sdkSessionId) {
-      console.error(`[WorkerService] Parsed summary for session ${session.sessionDbId}`);
+      console.error(`[WorkerService] Parsed summary for session ${session.sessionDbId}, prompt #${promptNumber}`);
 
       const summaryWithArrays = {
         request: summary.request,
@@ -454,7 +470,7 @@ class WorkerService {
         notes: summary.notes
       };
 
-      db.storeSummary(session.sdkSessionId, session.project, summaryWithArrays);
+      db.storeSummary(session.sdkSessionId, session.project, summaryWithArrays, promptNumber);
     }
 
     db.close();

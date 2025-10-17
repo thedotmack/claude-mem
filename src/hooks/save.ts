@@ -34,18 +34,23 @@ export async function saveHook(input?: PostToolUseInput): Promise<void> {
 
   const db = new HooksDatabase();
   const session = db.findActiveSDKSession(session_id);
-  db.close();
 
   if (!session) {
+    db.close();
     console.log(createHookResponse('PostToolUse', true));
     return;
   }
 
   if (!session.worker_port) {
+    db.close();
     console.error('[save-hook] No worker port for session', session.id);
     console.log(createHookResponse('PostToolUse', true));
     return;
   }
+
+  // Get current prompt number for this session
+  const promptNumber = db.getPromptCounter(session.id);
+  db.close();
 
   try {
     const response = await fetch(`http://127.0.0.1:${session.worker_port}/sessions/${session.id}/observations`, {
@@ -54,7 +59,8 @@ export async function saveHook(input?: PostToolUseInput): Promise<void> {
       body: JSON.stringify({
         tool_name,
         tool_input: JSON.stringify(tool_input),
-        tool_output: JSON.stringify(tool_output)
+        tool_output: JSON.stringify(tool_output),
+        prompt_number: promptNumber
       }),
       signal: AbortSignal.timeout(2000)
     });

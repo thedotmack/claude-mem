@@ -42,10 +42,10 @@ export function contextHook(input?: SessionStartInput): void {
       output.push('');
 
       // Group observations by type
-      const byType: Record<string, Array<{text: string; created_at: string}>> = {};
+      const byType: Record<string, Array<{text: string; prompt_number: number | null; created_at: string}>> = {};
       for (const obs of observations) {
         if (!byType[obs.type]) byType[obs.type] = [];
-        byType[obs.type].push({ text: obs.text, created_at: obs.created_at });
+        byType[obs.type].push({ text: obs.text, prompt_number: obs.prompt_number, created_at: obs.created_at });
       }
 
       // Display each type
@@ -54,7 +54,8 @@ export function contextHook(input?: SessionStartInput): void {
         if (byType[type] && byType[type].length > 0) {
           output.push(`### ${type.charAt(0).toUpperCase() + type.slice(1)}s`);
           for (const obs of byType[type]) {
-            output.push(`- ${obs.text}`);
+            const promptLabel = obs.prompt_number ? ` (prompt #${obs.prompt_number})` : '';
+            output.push(`- ${obs.text}${promptLabel}`);
           }
           output.push('');
         }
@@ -74,6 +75,10 @@ export function contextHook(input?: SessionStartInput): void {
 
     for (const summary of summaries) {
       output.push('---');
+      output.push('');
+
+      const promptLabel = summary.prompt_number ? ` (Prompt #${summary.prompt_number})` : '';
+      output.push(`**Summary${promptLabel}**`);
       output.push('');
 
       if (summary.request) {

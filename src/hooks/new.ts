@@ -48,26 +48,31 @@ export async function newHook(input?: UserPromptSubmitInput): Promise<void> {
     // Check for any existing session (active, failed, or completed)
     let existing = db.findActiveSDKSession(session_id);
     let sessionDbId: number;
+    let isNewSession = false;
 
     if (existing) {
-      // Session already active, just continue
+      // Session already active, increment prompt counter
       sessionDbId = existing.id;
-      console.log(createHookResponse('UserPromptSubmit', true));
-      return;
-    }
-
-    // Check for inactive sessions we can reuse
-    const inactive = db.findAnySDKSession(session_id);
-
-    if (inactive) {
-      // Reactivate the existing session
-      sessionDbId = inactive.id;
-      db.reactivateSession(sessionDbId, prompt);
-      console.error(`[new-hook] Reactivated session ${sessionDbId} for Claude session ${session_id}`);
+      const promptNumber = db.incrementPromptCounter(sessionDbId);
+      console.error(`[new-hook] Continuing session ${sessionDbId}, prompt #${promptNumber}`);
     } else {
-      // Create new session
-      sessionDbId = db.createSDKSession(session_id, project, prompt);
-      console.error(`[new-hook] Created new session ${sessionDbId} for Claude session ${session_id}`);
+      // Check for inactive sessions we can reuse
+      const inactive = db.findAnySDKSession(session_id);
+
+      if (inactive) {
+        // Reactivate the existing session
+        sessionDbId = inactive.id;
+        db.reactivateSession(sessionDbId, prompt);
+        const promptNumber = db.incrementPromptCounter(sessionDbId);
+        isNewSession = true;
+        console.error(`[new-hook] Reactivated session ${sessionDbId}, prompt #${promptNumber}`);
+      } else {
+        // Create new session
+        sessionDbId = db.createSDKSession(session_id, project, prompt);
+        const promptNumber = db.incrementPromptCounter(sessionDbId);
+        isNewSession = true;
+        console.error(`[new-hook] Created new session ${sessionDbId}, prompt #${promptNumber}`);
+      }
     }
 
     // Find worker service port
@@ -78,16 +83,19 @@ export async function newHook(input?: UserPromptSubmitInput): Promise<void> {
       return;
     }
 
-    // Initialize session via HTTP
-    const response = await fetch(`http://127.0.0.1:${port}/sessions/${sessionDbId}/init`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ project, userPrompt: prompt }),
-      signal: AbortSignal.timeout(5000)
-    });
+    // Only initialize worker on new sessions
+    if (isNewSession) {
+      // Initialize session via HTTP
+      const response = await fetch(`http://127.0.0.1:${port}/sessions/${sessionDbId}/init`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project, userPrompt: prompt }),
+        signal: AbortSignal.timeout(5000)
+      });
 
-    if (!response.ok) {
-      console.error('[new-hook] Failed to init session:', await response.text());
+      if (!response.ok) {
+        console.error('[new-hook] Failed to init session:', await response.text());
+      }
     }
 
     console.log(createHookResponse('UserPromptSubmit', true));
