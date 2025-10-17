@@ -380,22 +380,7 @@ class WorkerService {
           db.close();
 
           if (dbSession) {
-            const summarizePrompt = `You have been processing tool observations for this session. Please generate a summary of what you've learned from prompt #${message.prompt_number}.
-
-Use this XML format:
-
-<session_summary>
-  <request>What was the user trying to accomplish in this prompt?</request>
-  <investigated>What code/systems did you explore?</investigated>
-  <learned>What did you learn about the codebase?</learned>
-  <completed>What was done or determined?</completed>
-  <next_steps>What should happen next?</next_steps>
-  <files_read>["file1.ts", "file2.ts"]</files_read>
-  <files_edited>["file3.ts"]</files_edited>
-  <notes>Any additional context or insights</notes>
-</session_summary>
-
-Respond ONLY with the XML block. Be concise and specific.`;
+            const summarizePrompt = buildFinalizePrompt(dbSession);
 
             console.log(`[WorkerService] Yielding summarize prompt:\n${summarizePrompt}`);
 
