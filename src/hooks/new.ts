@@ -14,47 +14,30 @@ export interface UserPromptSubmitInput {
  * Initializes SDK memory session in background
  */
 export function newHook(input?: UserPromptSubmitInput): void {
+  if (!input) {
+    throw new Error('newHook requires input');
+  }
+
+  const { session_id, cwd, prompt } = input;
+  const project = path.basename(cwd);
+  const db = new HooksDatabase();
+
   try {
-    // Handle standalone execution (no input provided)
-    if (!input) {
-      console.log('No input provided - this script is designed to run as a Claude Code UserPromptSubmit hook');
-      console.log('\nExpected input format:');
-      console.log(JSON.stringify({
-        session_id: "string",
-        cwd: "string",
-        prompt: "string"
-      }, null, 2));
-      process.exit(0);
-    }
-
-    const { session_id, cwd, prompt } = input;
-
-    // Extract project from cwd
-    const project = path.basename(cwd);
-
-    // Check if session already exists
-    const db = new HooksDatabase();
     const existing = db.findActiveSDKSession(session_id);
 
     if (existing) {
-      // Session already initialized, just continue
-      db.close();
       console.log('{"continue": true, "suppressOutput": true}');
-      process.exit(0);
+      return;
     }
 
-    // Create SDK session record
     const sessionId = db.createSDKSession(session_id, project, prompt);
-    db.close();
 
-    // Start SDK worker in background as detached process
     const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT;
 
     if (!pluginRoot) {
-      throw new Error('CLAUDE_PLUGIN_ROOT not set - claude-mem must be installed as a Claude Code plugin');
+      throw new Error('CLAUDE_PLUGIN_ROOT not set');
     }
 
-    // Use bundled worker
     const workerPath = path.join(pluginRoot, 'scripts', 'hooks', 'worker.js');
     const child = spawn('bun', [workerPath, sessionId.toString()], {
       detached: true,
@@ -63,14 +46,8 @@ export function newHook(input?: UserPromptSubmitInput): void {
 
     child.unref();
 
-    // Output hook response
     console.log('{"continue": true, "suppressOutput": true}');
-    process.exit(0);
-
-  } catch (error: any) {
-    // On error, don't block Claude Code
-    console.error(`[claude-mem new error: ${error.message}]`);
-    console.log('{"continue": true, "suppressOutput": true}');
-    process.exit(0);
+  } finally {
+    db.close();
   }
 }

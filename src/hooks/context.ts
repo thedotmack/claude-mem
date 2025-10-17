@@ -15,54 +15,21 @@ export interface SessionStartInput {
  * Shows user what happened in recent sessions
  */
 export function contextHook(input?: SessionStartInput): void {
+  if (!input) {
+    throw new Error('contextHook requires input');
+  }
+
+  const project = input.cwd ? path.basename(input.cwd) : path.basename(path.dirname(input.transcript_path));
+  const db = new HooksDatabase();
+
   try {
-    // Log hook invocation
-    console.error('[claude-mem context] Hook fired with input:', JSON.stringify({
-      session_id: input?.session_id,
-      transcript_path: input?.transcript_path,
-      hook_event_name: input?.hook_event_name,
-      source: input?.source,
-      has_input: !!input
-    }));
-
-    // Handle standalone execution (no input provided)
-    if (!input) {
-      console.error('[claude-mem context] No input provided - exiting (standalone mode)');
-      console.log('No input provided - this script is designed to run as a Claude Code SessionStart hook');
-      process.exit(0);
-    }
-
-    // Extract project from cwd (same as new-hook to ensure consistency)
-    // If cwd is not available, fall back to extracting from transcript_path
-    const project = input.cwd ? path.basename(input.cwd) : path.basename(path.dirname(input.transcript_path));
-    console.error('[claude-mem context] Extracted project name:', project, 'from', input.cwd ? 'cwd' : 'transcript_path');
-
-    // Get recent summaries
-    console.error('[claude-mem context] Querying database for recent summaries...');
-    const db = new HooksDatabase();
     const summaries = db.getRecentSummaries(project, 5);
-    db.close();
 
-    console.error('[claude-mem context] Database query complete - found', summaries.length, 'summaries');
-
-    // Log preview of each summary found
-    if (summaries.length > 0) {
-      console.error('[claude-mem context] Summary previews:');
-      summaries.forEach((summary, idx) => {
-        const preview = summary.request?.substring(0, 100) || summary.completed?.substring(0, 100) || '(no content)';
-        console.error(`  [${idx + 1}]`, preview + (preview.length >= 100 ? '...' : ''));
-      });
-    }
-
-    // If no summaries, provide helpful message
     if (summaries.length === 0) {
-      console.error('[claude-mem context] No summaries found - outputting empty context message');
       console.log('# Recent Session Context\n\nNo previous sessions found for this project yet.');
-      process.exit(0);
+      return;
     }
 
-    // Format output for Claude
-    console.error('[claude-mem context] Building markdown context from summaries...');
     const output: string[] = [];
     output.push('# Recent Session Context');
     output.push('');
@@ -90,7 +57,6 @@ export function contextHook(input?: SessionStartInput): void {
         output.push(`**Next Steps:** ${summary.next_steps}`);
       }
 
-      // Show files that were read during the session
       if (summary.files_read) {
         try {
           const files = JSON.parse(summary.files_read);
@@ -98,14 +64,12 @@ export function contextHook(input?: SessionStartInput): void {
             output.push(`**Files Read:** ${files.join(', ')}`);
           }
         } catch {
-          // Backwards compatibility: if not valid JSON, show as text
           if (summary.files_read.trim()) {
             output.push(`**Files Read:** ${summary.files_read}`);
           }
         }
       }
 
-      // Show files that were edited/written during the session
       if (summary.files_edited) {
         try {
           const files = JSON.parse(summary.files_edited);
@@ -113,7 +77,6 @@ export function contextHook(input?: SessionStartInput): void {
             output.push(`**Files Edited:** ${files.join(', ')}`);
           }
         } catch {
-          // Backwards compatibility: if not valid JSON, show as text
           if (summary.files_edited.trim()) {
             output.push(`**Files Edited:** ${summary.files_edited}`);
           }
@@ -124,25 +87,8 @@ export function contextHook(input?: SessionStartInput): void {
       output.push('');
     }
 
-    // Log details about the markdown output
-    const markdownOutput = output.join('\n');
-    console.error('[claude-mem context] Markdown built successfully');
-    console.error('[claude-mem context] Output length:', markdownOutput.length, 'characters,', output.length, 'lines');
-    console.error('[claude-mem context] Output preview (first 200 chars):', markdownOutput.substring(0, 200) + '...');
-    console.error('[claude-mem context] Outputting context to stdout for Claude Code injection');
-
-    // Output to stdout for Claude Code to inject
-    console.log(markdownOutput);
-
-    console.error('[claude-mem context] Context hook completed successfully');
-    process.exit(0);
-
-  } catch (error: any) {
-    // On error, exit silently - don't block Claude Code
-    console.error('[claude-mem context] ERROR occurred during context hook execution');
-    console.error('[claude-mem context] Error message:', error.message);
-    console.error('[claude-mem context] Error stack:', error.stack);
-    console.error('[claude-mem context] Exiting gracefully to avoid blocking Claude Code');
-    process.exit(0);
+    console.log(output.join('\n'));
+  } finally {
+    db.close();
   }
 }
