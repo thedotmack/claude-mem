@@ -4,6 +4,7 @@ import path from 'path';
 export interface SessionStartInput {
   session_id: string;
   transcript_path: string;
+  cwd: string;
   hook_event_name: string;
   source: "startup" | "resume" | "clear" | "compact";
   [key: string]: any;
@@ -31,11 +32,10 @@ export function contextHook(input?: SessionStartInput): void {
       process.exit(0);
     }
 
-    // Extract project from transcript_path
-    // Path format: ~/.claude/projects/{project-name}/{session-id}.jsonl
-    const transcriptDir = path.dirname(input.transcript_path);
-    const project = path.basename(transcriptDir);
-    console.error('[claude-mem context] Extracted project name:', project, 'from transcript_path:', input.transcript_path);
+    // Extract project from cwd (same as new-hook to ensure consistency)
+    // If cwd is not available, fall back to extracting from transcript_path
+    const project = input.cwd ? path.basename(input.cwd) : path.basename(path.dirname(input.transcript_path));
+    console.error('[claude-mem context] Extracted project name:', project, 'from', input.cwd ? 'cwd' : 'transcript_path');
 
     // Get recent summaries
     console.error('[claude-mem context] Querying database for recent summaries...');

@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // @bun
-import{Database as b}from"bun:sqlite";import{join as W,dirname as T,basename as P}from"path";import{homedir as G}from"os";import{existsSync as k,mkdirSync as x}from"fs";var V=process.env.CLAUDE_MEM_DATA_DIR||W(G(),".claude-mem"),q=process.env.CLAUDE_CONFIG_DIR||W(G(),".claude"),S=W(V,"archives"),l=W(V,"logs"),h=W(V,"trash"),R=W(V,"backups"),A=W(V,"chroma"),j=W(V,"settings.json"),L=W(V,"claude-mem.db"),_=W(q,"settings.json"),I=W(q,"commands"),y=W(q,"CLAUDE.md");function N(z){x(z,{recursive:!0})}class v{db;constructor(){N(V),this.db=new b(L,{create:!0,readwrite:!0}),this.db.run("PRAGMA journal_mode = WAL"),this.db.run("PRAGMA synchronous = NORMAL"),this.db.run("PRAGMA foreign_keys = ON")}getRecentSummaries(z,Y=10){return this.db.query(`
+import{Database as x}from"bun:sqlite";import{join as K,dirname as E,basename as T}from"path";import{homedir as G}from"os";import{existsSync as w,mkdirSync as O}from"fs";var B=process.env.CLAUDE_MEM_DATA_DIR||K(G(),".claude-mem"),M=process.env.CLAUDE_CONFIG_DIR||K(G(),".claude"),k=K(B,"archives"),S=K(B,"logs"),l=K(B,"trash"),h=K(B,"backups"),R=K(B,"chroma"),A=K(B,"settings.json"),L=K(B,"claude-mem.db"),j=K(M,"settings.json"),_=K(M,"commands"),I=K(M,"CLAUDE.md");function N(z){O(z,{recursive:!0})}class q{db;constructor(){N(B),this.db=new x(L,{create:!0,readwrite:!0}),this.db.run("PRAGMA journal_mode = WAL"),this.db.run("PRAGMA synchronous = NORMAL"),this.db.run("PRAGMA foreign_keys = ON")}getRecentSummaries(z,X=10){return this.db.query(`
       SELECT
         request, investigated, learned, completed, next_steps,
         files_read, files_edited, notes, created_at
@@ -8,37 +8,37 @@ import{Database as b}from"bun:sqlite";import{join as W,dirname as T,basename as 
       WHERE project = ?
       ORDER BY created_at_epoch DESC
       LIMIT ?
-    `).all(z,Y)}findActiveSDKSession(z){return this.db.query(`
+    `).all(z,X)}findActiveSDKSession(z){return this.db.query(`
       SELECT id, sdk_session_id, project
       FROM sdk_sessions
       WHERE claude_session_id = ? AND status = 'active'
       LIMIT 1
-    `).get(z)||null}createSDKSession(z,Y,Q){let K=new Date,$=K.getTime();return this.db.query(`
+    `).get(z)||null}createSDKSession(z,X,Y){let $=new Date,Q=$.getTime();return this.db.query(`
       INSERT INTO sdk_sessions
       (claude_session_id, project, user_prompt, started_at, started_at_epoch, status)
       VALUES (?, ?, ?, ?, ?, 'active')
-    `).run(z,Y,Q,K.toISOString(),$),this.db.query("SELECT last_insert_rowid() as id").get().id}updateSDKSessionId(z,Y){this.db.query(`
+    `).run(z,X,Y,$.toISOString(),Q),this.db.query("SELECT last_insert_rowid() as id").get().id}updateSDKSessionId(z,X){this.db.query(`
       UPDATE sdk_sessions
       SET sdk_session_id = ?
       WHERE id = ?
-    `).run(Y,z)}storeObservation(z,Y,Q,K){let $=new Date,X=$.getTime();this.db.query(`
+    `).run(X,z)}storeObservation(z,X,Y,$){let Q=new Date,V=Q.getTime();this.db.query(`
       INSERT INTO observations
       (sdk_session_id, project, text, type, created_at, created_at_epoch)
       VALUES (?, ?, ?, ?, ?, ?)
-    `).run(z,Y,K,Q,$.toISOString(),X)}storeSummary(z,Y,Q){let K=new Date,$=K.getTime();this.db.query(`
+    `).run(z,X,$,Y,Q.toISOString(),V)}storeSummary(z,X,Y){let $=new Date,Q=$.getTime();this.db.query(`
       INSERT INTO session_summaries
       (sdk_session_id, project, request, investigated, learned, completed,
        next_steps, files_read, files_edited, notes, created_at, created_at_epoch)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(z,Y,Q.request||null,Q.investigated||null,Q.learned||null,Q.completed||null,Q.next_steps||null,Q.files_read||null,Q.files_edited||null,Q.notes||null,K.toISOString(),$)}markSessionCompleted(z){let Y=new Date,Q=Y.getTime();this.db.query(`
+    `).run(z,X,Y.request||null,Y.investigated||null,Y.learned||null,Y.completed||null,Y.next_steps||null,Y.files_read||null,Y.files_edited||null,Y.notes||null,$.toISOString(),Q)}markSessionCompleted(z){let X=new Date,Y=X.getTime();this.db.query(`
       UPDATE sdk_sessions
       SET status = 'completed', completed_at = ?, completed_at_epoch = ?
       WHERE id = ?
-    `).run(Y.toISOString(),Q,z)}markSessionFailed(z){let Y=new Date,Q=Y.getTime();this.db.query(`
+    `).run(X.toISOString(),Y,z)}markSessionFailed(z){let X=new Date,Y=X.getTime();this.db.query(`
       UPDATE sdk_sessions
       SET status = 'failed', completed_at = ?, completed_at_epoch = ?
       WHERE id = ?
-    `).run(Y.toISOString(),Q,z)}close(){this.db.close()}}import U from"path";function H(z){try{if(console.error("[claude-mem context] Hook fired with input:",JSON.stringify({session_id:z?.session_id,transcript_path:z?.transcript_path,hook_event_name:z?.hook_event_name,source:z?.source,has_input:!!z})),!z)console.error("[claude-mem context] No input provided - exiting (standalone mode)"),console.log("No input provided - this script is designed to run as a Claude Code SessionStart hook"),process.exit(0);let Y=U.dirname(z.transcript_path),Q=U.basename(Y);console.error("[claude-mem context] Extracted project name:",Q,"from transcript_path:",z.transcript_path),console.error("[claude-mem context] Querying database for recent summaries...");let K=new v,$=K.getRecentSummaries(Q,5);if(K.close(),console.error("[claude-mem context] Database query complete - found",$.length,"summaries"),$.length>0)console.error("[claude-mem context] Summary previews:"),$.forEach((Z,B)=>{let F=Z.request?.substring(0,100)||Z.completed?.substring(0,100)||"(no content)";console.error(`  [${B+1}]`,F+(F.length>=100?"...":""))});if($.length===0)console.error("[claude-mem context] No summaries found - outputting empty context message"),console.log(`# Recent Session Context
+    `).run(X.toISOString(),Y,z)}close(){this.db.close()}}import v from"path";function U(z){try{if(console.error("[claude-mem context] Hook fired with input:",JSON.stringify({session_id:z?.session_id,transcript_path:z?.transcript_path,hook_event_name:z?.hook_event_name,source:z?.source,has_input:!!z})),!z)console.error("[claude-mem context] No input provided - exiting (standalone mode)"),console.log("No input provided - this script is designed to run as a Claude Code SessionStart hook"),process.exit(0);let X=z.cwd?v.basename(z.cwd):v.basename(v.dirname(z.transcript_path));console.error("[claude-mem context] Extracted project name:",X,"from",z.cwd?"cwd":"transcript_path"),console.error("[claude-mem context] Querying database for recent summaries...");let Y=new q,$=Y.getRecentSummaries(X,5);if(Y.close(),console.error("[claude-mem context] Database query complete - found",$.length,"summaries"),$.length>0)console.error("[claude-mem context] Summary previews:"),$.forEach((Z,W)=>{let F=Z.request?.substring(0,100)||Z.completed?.substring(0,100)||"(no content)";console.error(`  [${W+1}]`,F+(F.length>=100?"...":""))});if($.length===0)console.error("[claude-mem context] No summaries found - outputting empty context message"),console.log(`# Recent Session Context
 
-No previous sessions found for this project yet.`),process.exit(0);console.error("[claude-mem context] Building markdown context from summaries...");let X=[];X.push("# Recent Session Context"),X.push("");let M=$.length===1?"session":"sessions";X.push(`Showing last ${$.length} ${M} for **${Q}**:`),X.push("");for(let Z of $){if(X.push("---"),X.push(""),Z.request)X.push(`**Request:** ${Z.request}`);if(Z.completed)X.push(`**Completed:** ${Z.completed}`);if(Z.learned)X.push(`**Learned:** ${Z.learned}`);if(Z.next_steps)X.push(`**Next Steps:** ${Z.next_steps}`);if(Z.files_read)try{let B=JSON.parse(Z.files_read);if(Array.isArray(B)&&B.length>0)X.push(`**Files Read:** ${B.join(", ")}`)}catch{if(Z.files_read.trim())X.push(`**Files Read:** ${Z.files_read}`)}if(Z.files_edited)try{let B=JSON.parse(Z.files_edited);if(Array.isArray(B)&&B.length>0)X.push(`**Files Edited:** ${B.join(", ")}`)}catch{if(Z.files_edited.trim())X.push(`**Files Edited:** ${Z.files_edited}`)}X.push(`**Date:** ${Z.created_at.split("T")[0]}`),X.push("")}let J=X.join(`
-`);console.error("[claude-mem context] Markdown built successfully"),console.error("[claude-mem context] Output length:",J.length,"characters,",X.length,"lines"),console.error("[claude-mem context] Output preview (first 200 chars):",J.substring(0,200)+"..."),console.error("[claude-mem context] Outputting context to stdout for Claude Code injection"),console.log(J),console.error("[claude-mem context] Context hook completed successfully"),process.exit(0)}catch(Y){console.error("[claude-mem context] ERROR occurred during context hook execution"),console.error("[claude-mem context] Error message:",Y.message),console.error("[claude-mem context] Error stack:",Y.stack),console.error("[claude-mem context] Exiting gracefully to avoid blocking Claude Code"),process.exit(0)}}var O=await Bun.stdin.text();try{let z=O.trim()?JSON.parse(O):void 0;H(z)}catch(z){console.error(`[claude-mem context-hook error: ${z.message}]`),process.exit(0)}
+No previous sessions found for this project yet.`),process.exit(0);console.error("[claude-mem context] Building markdown context from summaries...");let Q=[];Q.push("# Recent Session Context"),Q.push("");let V=$.length===1?"session":"sessions";Q.push(`Showing last ${$.length} ${V} for **${X}**:`),Q.push("");for(let Z of $){if(Q.push("---"),Q.push(""),Z.request)Q.push(`**Request:** ${Z.request}`);if(Z.completed)Q.push(`**Completed:** ${Z.completed}`);if(Z.learned)Q.push(`**Learned:** ${Z.learned}`);if(Z.next_steps)Q.push(`**Next Steps:** ${Z.next_steps}`);if(Z.files_read)try{let W=JSON.parse(Z.files_read);if(Array.isArray(W)&&W.length>0)Q.push(`**Files Read:** ${W.join(", ")}`)}catch{if(Z.files_read.trim())Q.push(`**Files Read:** ${Z.files_read}`)}if(Z.files_edited)try{let W=JSON.parse(Z.files_edited);if(Array.isArray(W)&&W.length>0)Q.push(`**Files Edited:** ${W.join(", ")}`)}catch{if(Z.files_edited.trim())Q.push(`**Files Edited:** ${Z.files_edited}`)}Q.push(`**Date:** ${Z.created_at.split("T")[0]}`),Q.push("")}let J=Q.join(`
+`);console.error("[claude-mem context] Markdown built successfully"),console.error("[claude-mem context] Output length:",J.length,"characters,",Q.length,"lines"),console.error("[claude-mem context] Output preview (first 200 chars):",J.substring(0,200)+"..."),console.error("[claude-mem context] Outputting context to stdout for Claude Code injection"),console.log(J),console.error("[claude-mem context] Context hook completed successfully"),process.exit(0)}catch(X){console.error("[claude-mem context] ERROR occurred during context hook execution"),console.error("[claude-mem context] Error message:",X.message),console.error("[claude-mem context] Error stack:",X.stack),console.error("[claude-mem context] Exiting gracefully to avoid blocking Claude Code"),process.exit(0)}}var H=await Bun.stdin.text();try{let z=H.trim()?JSON.parse(H):void 0;U(z)}catch(z){console.error(`[claude-mem context-hook error: ${z.message}]`),process.exit(0)}
