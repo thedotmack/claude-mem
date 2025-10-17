@@ -79,14 +79,14 @@ class WorkerService {
     db.close();
 
     if (cleanedCount > 0) {
-      console.error(`[WorkerService] Cleaned up ${cleanedCount} orphaned sessions`);
+      console.log(`[WorkerService] Cleaned up ${cleanedCount} orphaned sessions`);
     }
 
     return new Promise((resolve, reject) => {
       this.app.listen(port, '127.0.0.1', () => {
-        console.error(`[WorkerService] Started on http://127.0.0.1:${port}`);
-        console.error(`[WorkerService] PID: ${process.pid}`);
-        console.error(`[WorkerService] Active sessions: ${this.sessions.size}`);
+        console.log(`[WorkerService] Started on http://127.0.0.1:${port}`);
+        console.log(`[WorkerService] PID: ${process.pid}`);
+        console.log(`[WorkerService] Active sessions: ${this.sessions.size}`);
 
         // Write port to file for hooks to discover
         const { writeFileSync } = require('fs');
@@ -122,7 +122,7 @@ class WorkerService {
     const sessionDbId = parseInt(req.params.sessionDbId, 10);
     const { project, userPrompt } = req.body;
 
-    console.error(`[WorkerService] Initializing session ${sessionDbId}`, { project });
+    console.log(`[WorkerService] Initializing session ${sessionDbId}`, { project });
 
     if (this.sessions.has(sessionDbId)) {
       res.status(409).json({ error: 'Session already exists' });
@@ -178,7 +178,7 @@ class WorkerService {
       return;
     }
 
-    console.error(`[WorkerService] Queueing observation for session ${sessionDbId}:`, tool_name);
+    console.log(`[WorkerService] Queueing observation for session ${sessionDbId}:`, tool_name);
 
     session.pendingMessages.push({
       type: 'observation',
@@ -205,7 +205,7 @@ class WorkerService {
       return;
     }
 
-    console.error(`[WorkerService] Requesting summary for session ${sessionDbId}, prompt #${prompt_number}`);
+    console.log(`[WorkerService] Requesting summary for session ${sessionDbId}, prompt #${prompt_number}`);
 
     session.pendingMessages.push({
       type: 'summarize',

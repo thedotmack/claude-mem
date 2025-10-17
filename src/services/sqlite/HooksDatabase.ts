@@ -305,8 +305,9 @@ export class HooksDatabase {
   /**
    * Update SDK session ID (captured from init message)
    * Only updates if current sdk_session_id is NULL to avoid breaking foreign keys
+   * Returns true if update succeeded, false if skipped
    */
-  updateSDKSessionId(id: number, sdkSessionId: string): void {
+  updateSDKSessionId(id: number, sdkSessionId: string): boolean {
     const stmt = this.db.prepare(`
       UPDATE sdk_sessions
       SET sdk_session_id = ?
@@ -317,7 +318,10 @@ export class HooksDatabase {
 
     if (result.changes === 0) {
       console.error(`[HooksDatabase] Skipped updating sdk_session_id for session ${id} - already set (prevents FOREIGN KEY constraint violation)`);
+      return false;
     }
+
+    return true;
   }
 
   /**
