@@ -41,7 +41,7 @@ async function buildHooks() {
 
     // Create scripts directory
     console.log('\n📦 Preparing scripts directory...');
-    const scriptsDir = 'scripts/hooks';
+    const scriptsDir = 'claude-mem/scripts';
     if (!fs.existsSync(scriptsDir)) {
       fs.mkdirSync(scriptsDir, { recursive: true });
     }

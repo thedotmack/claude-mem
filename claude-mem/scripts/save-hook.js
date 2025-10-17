@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // @bun
-import b from"net";import{Database as O}from"bun:sqlite";import{join as Y,dirname as w,basename as C}from"path";import{homedir as F}from"os";import{existsSync as S,mkdirSync as H}from"fs";var $=process.env.CLAUDE_MEM_DATA_DIR||Y(F(),".claude-mem"),J=process.env.CLAUDE_CONFIG_DIR||Y(F(),".claude"),h=Y($,"archives"),l=Y($,"logs"),R=Y($,"trash"),j=Y($,"backups"),A=Y($,"chroma"),I=Y($,"settings.json"),G=Y($,"claude-mem.db"),_=Y(J,"settings.json"),p=Y(J,"commands"),d=Y(J,"CLAUDE.md");function v(z){return Y($,`worker-${z}.sock`)}function x(z){H(z,{recursive:!0})}class M{db;constructor(){x($),this.db=new O(G,{create:!0,readwrite:!0}),this.db.run("PRAGMA journal_mode = WAL"),this.db.run("PRAGMA synchronous = NORMAL"),this.db.run("PRAGMA foreign_keys = ON")}getRecentSummaries(z,X=10){return this.db.query(`
+import w from"net";import{Database as H}from"bun:sqlite";import{join as $,dirname as T,basename as l}from"path";import{homedir as x}from"os";import{existsSync as y,mkdirSync as E}from"fs";var z=process.env.CLAUDE_MEM_DATA_DIR||$(x(),".claude-mem"),M=process.env.CLAUDE_CONFIG_DIR||$(x(),".claude"),I=$(z,"archives"),k=$(z,"logs"),_=$(z,"trash"),h=$(z,"backups"),D=$(z,"chroma"),d=$(z,"settings.json"),N=$(z,"claude-mem.db"),m=$(M,"settings.json"),u=$(M,"commands"),c=$(M,"CLAUDE.md");function L(Q){return $(z,`worker-${Q}.sock`)}function U(Q){E(Q,{recursive:!0})}class q{db;constructor(){U(z),this.db=new H(N,{create:!0,readwrite:!0}),this.db.run("PRAGMA journal_mode = WAL"),this.db.run("PRAGMA synchronous = NORMAL"),this.db.run("PRAGMA foreign_keys = ON")}getRecentSummaries(Q,Y=10){return this.db.query(`
       SELECT
         request, investigated, learned, completed, next_steps,
         files_read, files_edited, notes, created_at
@@ -8,36 +8,35 @@ import b from"net";import{Database as O}from"bun:sqlite";import{join as Y,dirnam
       WHERE project = ?
       ORDER BY created_at_epoch DESC
       LIMIT ?
-    `).all(z,X)}findActiveSDKSession(z){return this.db.query(`
+    `).all(Q,Y)}findActiveSDKSession(Q){return this.db.query(`
       SELECT id, sdk_session_id, project
       FROM sdk_sessions
       WHERE claude_session_id = ? AND status = 'active'
       LIMIT 1
-    `).get(z)||null}createSDKSession(z,X,Q){let Z=new Date,W=Z.getTime();return this.db.query(`
+    `).get(Q)||null}createSDKSession(Q,Y,X){let Z=new Date,W=Z.getTime();return this.db.query(`
       INSERT INTO sdk_sessions
       (claude_session_id, project, user_prompt, started_at, started_at_epoch, status)
       VALUES (?, ?, ?, ?, ?, 'active')
-    `).run(z,X,Q,Z.toISOString(),W),this.db.query("SELECT last_insert_rowid() as id").get().id}updateSDKSessionId(z,X){this.db.query(`
+    `).run(Q,Y,X,Z.toISOString(),W),this.db.query("SELECT last_insert_rowid() as id").get().id}updateSDKSessionId(Q,Y){this.db.query(`
       UPDATE sdk_sessions
       SET sdk_session_id = ?
       WHERE id = ?
-    `).run(X,z)}storeObservation(z,X,Q,Z){let W=new Date,B=W.getTime();this.db.query(`
+    `).run(Y,Q)}storeObservation(Q,Y,X,Z){let W=new Date,B=W.getTime();this.db.query(`
       INSERT INTO observations
       (sdk_session_id, project, text, type, created_at, created_at_epoch)
       VALUES (?, ?, ?, ?, ?, ?)
-    `).run(z,X,Z,Q,W.toISOString(),B)}storeSummary(z,X,Q){let Z=new Date,W=Z.getTime();this.db.query(`
+    `).run(Q,Y,Z,X,W.toISOString(),B)}storeSummary(Q,Y,X){let Z=new Date,W=Z.getTime();this.db.query(`
       INSERT INTO session_summaries
       (sdk_session_id, project, request, investigated, learned, completed,
        next_steps, files_read, files_edited, notes, created_at, created_at_epoch)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(z,X,Q.request||null,Q.investigated||null,Q.learned||null,Q.completed||null,Q.next_steps||null,Q.files_read||null,Q.files_edited||null,Q.notes||null,Z.toISOString(),W)}markSessionCompleted(z){let X=new Date,Q=X.getTime();this.db.query(`
+    `).run(Q,Y,X.request||null,X.investigated||null,X.learned||null,X.completed||null,X.next_steps||null,X.files_read||null,X.files_edited||null,X.notes||null,Z.toISOString(),W)}markSessionCompleted(Q){let Y=new Date,X=Y.getTime();this.db.query(`
       UPDATE sdk_sessions
       SET status = 'completed', completed_at = ?, completed_at_epoch = ?
       WHERE id = ?
-    `).run(X.toISOString(),Q,z)}markSessionFailed(z){let X=new Date,Q=X.getTime();this.db.query(`
+    `).run(Y.toISOString(),X,Q)}markSessionFailed(Q){let Y=new Date,X=Y.getTime();this.db.query(`
       UPDATE sdk_sessions
       SET status = 'failed', completed_at = ?, completed_at_epoch = ?
       WHERE id = ?
-    `).run(X.toISOString(),Q,z)}close(){this.db.close()}}var E=new Set(["TodoWrite","ListMcpResourcesTool"]);function N(z){try{if(!z)console.log("No input provided - this script is designed to run as a Claude Code PostToolUse hook"),console.log(`
-Expected input format:`),console.log(JSON.stringify({session_id:"string",cwd:"string",tool_name:"string",tool_input:{},tool_output:{}},null,2)),process.exit(0);let{session_id:X,tool_name:Q,tool_input:Z,tool_output:W}=z;if(E.has(Q))console.log('{"continue": true, "suppressOutput": true}'),process.exit(0);let B=new M,K=B.findActiveSDKSession(X);if(B.close(),!K)console.log('{"continue": true, "suppressOutput": true}'),process.exit(0);let q=v(K.id),U={type:"observation",tool_name:Q,tool_input:JSON.stringify(Z),tool_output:JSON.stringify(W)},V=b.connect(q,()=>{V.write(JSON.stringify(U)+`
-`),V.end()});V.on("error",(f)=>{console.error(`[claude-mem save] Socket error: ${f.message}`)}),V.on("close",()=>{console.log('{"continue": true, "suppressOutput": true}'),process.exit(0)})}catch(X){console.error(`[claude-mem save error: ${X.message}]`),console.log('{"continue": true, "suppressOutput": true}'),process.exit(0)}}var L=await Bun.stdin.text();try{let z=L.trim()?JSON.parse(L):void 0;N(z)}catch(z){console.error(`[claude-mem save-hook error: ${z.message}]`),console.log('{"continue": true, "suppressOutput": true}'),process.exit(0)}
+    `).run(Y.toISOString(),X,Q)}close(){this.db.close()}}function g(Q,Y,X){if(Q==="PreCompact"){if(Y)return{continue:!0,suppressOutput:!0};return{continue:!1,stopReason:X.reason||"Pre-compact operation failed",suppressOutput:!0}}if(Q==="SessionStart"){if(Y&&X.context)return{continue:!0,suppressOutput:!0,hookSpecificOutput:{hookEventName:"SessionStart",additionalContext:X.context}};return{continue:!0,suppressOutput:!0}}if(Q==="UserPromptSubmit"||Q==="PostToolUse")return{continue:!0,suppressOutput:!0};if(Q==="Stop")return{continue:!0,suppressOutput:!0};return{continue:Y,suppressOutput:!0,...X.reason&&!Y?{stopReason:X.reason}:{}}}function J(Q,Y,X={}){let Z=g(Q,Y,X);return JSON.stringify(Z)}var C=new Set(["TodoWrite","ListMcpResourcesTool"]);function f(Q){if(!Q)throw new Error("saveHook requires input");let{session_id:Y,tool_name:X,tool_input:Z,tool_output:W}=Q;if(C.has(X)){console.log(J("PostToolUse",!0));return}let B=new q,K=B.findActiveSDKSession(Y);if(B.close(),!K){console.log(J("PostToolUse",!0));return}let F=L(K.id),b={type:"observation",tool_name:X,tool_input:JSON.stringify(Z),tool_output:JSON.stringify(W)},V=w.connect(F,()=>{V.write(JSON.stringify(b)+`
+`),V.end()}),G=!1,v=()=>{if(G)return;G=!0,console.log(J("PostToolUse",!0))};V.on("close",v),V.on("error",v)}var O=await Bun.stdin.text();try{let Q=O.trim()?JSON.parse(O):void 0;f(Q)}catch(Q){console.error(`[claude-mem save-hook error: ${Q.message}]`),console.log('{"continue": true, "suppressOutput": true}'),process.exit(0)}

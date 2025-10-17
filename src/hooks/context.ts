@@ -1,6 +1,5 @@
 import path from 'path';
 import { HooksDatabase } from '../services/sqlite/HooksDatabase.js';
-import { createHookResponse } from './hook-response.js';
 
 export interface SessionStartInput {
   session_id?: string;
@@ -14,6 +13,8 @@ export interface SessionStartInput {
 /**
  * Context Hook - SessionStart
  * Shows user what happened in recent sessions
+ *
+ * Output: stdout is injected as context to Claude (exit code 0)
  */
 export function contextHook(input?: SessionStartInput): void {
   const cwd = input?.cwd ?? process.cwd();
@@ -25,10 +26,8 @@ export function contextHook(input?: SessionStartInput): void {
     const summaries = db.getRecentSummaries(project, 5);
 
     if (summaries.length === 0) {
-      const response = createHookResponse('SessionStart', true, {
-        context: '# Recent Session Context\n\nNo previous sessions found for this project yet.'
-      });
-      console.log(response);
+      // Output directly to stdout for injection into context
+      console.log('# Recent Session Context\n\nNo previous sessions found for this project yet.');
       return;
     }
 
@@ -89,10 +88,8 @@ export function contextHook(input?: SessionStartInput): void {
       output.push('');
     }
 
-    const response = createHookResponse('SessionStart', true, {
-      context: output.join('\n')
-    });
-    console.log(response);
+    // Output directly to stdout for injection into context
+    console.log(output.join('\n'));
   } finally {
     db.close();
   }
