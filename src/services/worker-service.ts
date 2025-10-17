@@ -274,7 +274,7 @@ class WorkerService {
    * Run SDK agent for a session
    */
   private async runSDKAgent(session: ActiveSession): Promise<void> {
-    console.error(`[WorkerService] Starting SDK agent for session ${session.sessionDbId}`);
+    console.log(`[WorkerService] Starting SDK agent for session ${session.sessionDbId}`);
 
     const claudePath = process.env.CLAUDE_CODE_PATH || '/Users/alexnewman/.nvm/versions/node/v24.5.0/bin/claude';
 
@@ -294,13 +294,15 @@ class WorkerService {
         if (message.type === 'system' && message.subtype === 'init') {
           const systemMsg = message as SDKSystemMessage;
           if (systemMsg.session_id) {
-            console.error(`[WorkerService] SDK session initialized:`, systemMsg.session_id);
-            session.sdkSessionId = systemMsg.session_id;
-
-            // Update in database
+            // Update in database first, check if it succeeded
             const db = new HooksDatabase();
-            db.updateSDKSessionId(session.sessionDbId, systemMsg.session_id);
+            const updated = db.updateSDKSessionId(session.sessionDbId, systemMsg.session_id);
             db.close();
+
+            if (updated) {
+              console.log(`[WorkerService] SDK session initialized:`, systemMsg.session_id);
+              session.sdkSessionId = systemMsg.session_id;
+            }
           }
         }
         // Handle assistant messages
@@ -310,7 +312,7 @@ class WorkerService {
             ? content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n')
             : typeof content === 'string' ? content : '';
 
-          console.error(`[WorkerService] SDK response (${textContent.length} chars) for prompt #${session.lastPromptNumber}`);
+          console.log(`[WorkerService] SDK response for prompt #${session.lastPromptNumber}:\n${textContent}`);
 
           // Parse and store with prompt number
           this.handleAgentMessage(session, textContent, session.lastPromptNumber);
@@ -318,7 +320,7 @@ class WorkerService {
       }
 
       // Mark completed
-      console.error(`[WorkerService] SDK agent completed for session ${session.sessionDbId}`);
+      console.log(`[WorkerService] SDK agent completed for session ${session.sessionDbId}`);
       const db = new HooksDatabase();
       db.markSessionCompleted(session.sessionDbId);
       db.close();
@@ -343,7 +345,7 @@ class WorkerService {
     const claudeSessionId = `session-${session.sessionDbId}`;
     const initPrompt = buildInitPrompt(session.project, claudeSessionId, session.userPrompt);
 
-    console.error(`[WorkerService] Yielding init prompt (${initPrompt.length} chars)`);
+    console.log(`[WorkerService] Yielding init prompt:\n${initPrompt}`);
 
     yield {
       type: 'user',
@@ -370,15 +372,11 @@ class WorkerService {
         const message = session.pendingMessages.shift()!;
 
         if (message.type === 'summarize') {
-          console.error(`[WorkerService] Processing SUMMARIZE for session ${session.sessionDbId}, prompt #${message.prompt_number}`);
+          console.log(`[WorkerService] Processing SUMMARIZE for session ${session.sessionDbId}, prompt #${message.prompt_number}`);
           session.lastPromptNumber = message.prompt_number;
 
           const db = new HooksDatabase();
-          const dbSession = db.db.prepare(`
-            SELECT id, sdk_session_id, project, user_prompt
-            FROM sdk_sessions
-            WHERE id = ?
-          `).get(session.sessionDbId) as SDKSession | undefined;
+          const dbSession = db.getSessionById(session.sessionDbId) as SDKSession | undefined;
           db.close();
 
           if (dbSession) {
@@ -399,7 +397,7 @@ Use this XML format:
 
 Respond ONLY with the XML block. Be concise and specific.`;
 
-            console.error(`[WorkerService] Yielding summarize prompt`);
+            console.log(`[WorkerService] Yielding summarize prompt:\n${summarizePrompt}`);
 
             yield {
               type: 'user',
@@ -422,7 +420,7 @@ Respond ONLY with the XML block. Be concise and specific.`;
             created_at_epoch: Date.now()
           });
 
-          console.error(`[WorkerService] Yielding observation: ${message.tool_name} (prompt #${message.prompt_number})`);
+          console.log(`[WorkerService] Yielding observation (prompt #${message.prompt_number}):\n${observationPrompt}`);
 
           yield {
             type: 'user',
@@ -445,7 +443,7 @@ Respond ONLY with the XML block. Be concise and specific.`;
   private handleAgentMessage(session: ActiveSession, content: string, promptNumber: number): void {
     // Parse observations
     const observations = parseObservations(content);
-    console.error(`[WorkerService] Parsed ${observations.length} observations for prompt #${promptNumber}`);
+    console.log(`[WorkerService] Parsed ${observations.length} observations for prompt #${promptNumber}`);
 
     const db = new HooksDatabase();
     for (const obs of observations) {
@@ -457,7 +455,7 @@ Respond ONLY with the XML block. Be concise and specific.`;
     // Parse summary
     const summary = parseSummary(content);
     if (summary && session.sdkSessionId) {
-      console.error(`[WorkerService] Parsed summary for session ${session.sessionDbId}, prompt #${promptNumber}`);
+      console.log(`[WorkerService] Parsed summary for session ${session.sessionDbId}, prompt #${promptNumber}`);
 
       const summaryWithArrays = {
         request: summary.request,

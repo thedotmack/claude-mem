@@ -210,6 +210,25 @@ export class HooksDatabase {
   }
 
   /**
+   * Get session by ID
+   */
+  getSessionById(id: number): {
+    id: number;
+    sdk_session_id: string | null;
+    project: string;
+    user_prompt: string;
+  } | null {
+    const stmt = this.db.prepare(`
+      SELECT id, sdk_session_id, project, user_prompt
+      FROM sdk_sessions
+      WHERE id = ?
+      LIMIT 1
+    `);
+
+    return stmt.get(id) as any || null;
+  }
+
+  /**
    * Find active SDK session for a Claude session
    */
   findActiveSDKSession(claudeSessionId: string): {

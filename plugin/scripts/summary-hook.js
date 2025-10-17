@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import f from"better-sqlite3";import{join as i,dirname as N,basename as O}from"path";import{homedir as E}from"os";import{existsSync as L,mkdirSync as h}from"fs";var a=process.env.CLAUDE_MEM_DATA_DIR||i(E(),".claude-mem"),l=process.env.CLAUDE_CONFIG_DIR||i(E(),".claude"),y=i(a,"archives"),w=i(a,"logs"),P=i(a,"trash"),H=i(a,"backups"),U=i(a,"settings.json"),g=i(a,"claude-mem.db"),M=i(l,"settings.json"),W=i(l,"commands"),j=i(l,"CLAUDE.md");function b(r){h(r,{recursive:!0})}var c=class{db;constructor(){b(a),this.db=new f(g),this.db.pragma("journal_mode = WAL"),this.db.pragma("synchronous = NORMAL"),this.db.pragma("foreign_keys = ON"),this.ensureWorkerPortColumn(),this.ensurePromptTrackingColumns(),this.removeSessionSummariesUniqueConstraint()}ensureWorkerPortColumn(){try{this.db.pragma("table_info(sdk_sessions)").some(t=>t.name==="worker_port")||(this.db.exec("ALTER TABLE sdk_sessions ADD COLUMN worker_port INTEGER"),console.error("[HooksDatabase] Added worker_port column to sdk_sessions table"))}catch(e){console.error("[HooksDatabase] Migration error:",e.message)}}ensurePromptTrackingColumns(){try{this.db.pragma("table_info(sdk_sessions)").some(u=>u.name==="prompt_counter")||(this.db.exec("ALTER TABLE sdk_sessions ADD COLUMN prompt_counter INTEGER DEFAULT 0"),console.error("[HooksDatabase] Added prompt_counter column to sdk_sessions table")),this.db.pragma("table_info(observations)").some(u=>u.name==="prompt_number")||(this.db.exec("ALTER TABLE observations ADD COLUMN prompt_number INTEGER"),console.error("[HooksDatabase] Added prompt_number column to observations table")),this.db.pragma("table_info(session_summaries)").some(u=>u.name==="prompt_number")||(this.db.exec("ALTER TABLE session_summaries ADD COLUMN prompt_number INTEGER"),console.error("[HooksDatabase] Added prompt_number column to session_summaries table"));let S=this.db.pragma("index_list(session_summaries)").some(u=>u.unique===1)}catch(e){console.error("[HooksDatabase] Prompt tracking migration error:",e.message)}}removeSessionSummariesUniqueConstraint(){try{if(!this.db.pragma("index_list(session_summaries)").some(t=>t.unique===1))return;console.error("[HooksDatabase] Removing UNIQUE constraint from session_summaries.sdk_session_id..."),this.db.exec("BEGIN TRANSACTION");try{this.db.exec(`
+import f from"better-sqlite3";import{join as i,dirname as O,basename as N}from"path";import{homedir as E}from"os";import{existsSync as v,mkdirSync as h}from"fs";var a=process.env.CLAUDE_MEM_DATA_DIR||i(E(),".claude-mem"),l=process.env.CLAUDE_CONFIG_DIR||i(E(),".claude"),y=i(a,"archives"),w=i(a,"logs"),P=i(a,"trash"),H=i(a,"backups"),U=i(a,"settings.json"),g=i(a,"claude-mem.db"),M=i(l,"settings.json"),W=i(l,"commands"),j=i(l,"CLAUDE.md");function b(r){h(r,{recursive:!0})}var c=class{db;constructor(){b(a),this.db=new f(g),this.db.pragma("journal_mode = WAL"),this.db.pragma("synchronous = NORMAL"),this.db.pragma("foreign_keys = ON"),this.ensureWorkerPortColumn(),this.ensurePromptTrackingColumns(),this.removeSessionSummariesUniqueConstraint()}ensureWorkerPortColumn(){try{this.db.pragma("table_info(sdk_sessions)").some(t=>t.name==="worker_port")||(this.db.exec("ALTER TABLE sdk_sessions ADD COLUMN worker_port INTEGER"),console.error("[HooksDatabase] Added worker_port column to sdk_sessions table"))}catch(e){console.error("[HooksDatabase] Migration error:",e.message)}}ensurePromptTrackingColumns(){try{this.db.pragma("table_info(sdk_sessions)").some(u=>u.name==="prompt_counter")||(this.db.exec("ALTER TABLE sdk_sessions ADD COLUMN prompt_counter INTEGER DEFAULT 0"),console.error("[HooksDatabase] Added prompt_counter column to sdk_sessions table")),this.db.pragma("table_info(observations)").some(u=>u.name==="prompt_number")||(this.db.exec("ALTER TABLE observations ADD COLUMN prompt_number INTEGER"),console.error("[HooksDatabase] Added prompt_number column to observations table")),this.db.pragma("table_info(session_summaries)").some(u=>u.name==="prompt_number")||(this.db.exec("ALTER TABLE session_summaries ADD COLUMN prompt_number INTEGER"),console.error("[HooksDatabase] Added prompt_number column to session_summaries table"));let S=this.db.pragma("index_list(session_summaries)").some(u=>u.unique===1)}catch(e){console.error("[HooksDatabase] Prompt tracking migration error:",e.message)}}removeSessionSummariesUniqueConstraint(){try{if(!this.db.pragma("index_list(session_summaries)").some(t=>t.unique===1))return;console.error("[HooksDatabase] Removing UNIQUE constraint from session_summaries.sdk_session_id..."),this.db.exec("BEGIN TRANSACTION");try{this.db.exec(`
           CREATE TABLE session_summaries_new (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             sdk_session_id TEXT NOT NULL,
@@ -41,7 +41,12 @@ import f from"better-sqlite3";import{join as i,dirname as N,basename as O}from"p
       WHERE project = ?
       ORDER BY created_at_epoch DESC
       LIMIT ?
-    `).all(e,s)}findActiveSDKSession(e){return this.db.prepare(`
+    `).all(e,s)}getSessionById(e){return this.db.prepare(`
+      SELECT id, sdk_session_id, project, user_prompt
+      FROM sdk_sessions
+      WHERE id = ?
+      LIMIT 1
+    `).get(e)||null}findActiveSDKSession(e){return this.db.prepare(`
       SELECT id, sdk_session_id, project, worker_port
       FROM sdk_sessions
       WHERE claude_session_id = ? AND status = 'active'
@@ -67,11 +72,11 @@ import f from"better-sqlite3";import{join as i,dirname as N,basename as O}from"p
       INSERT INTO sdk_sessions
       (claude_session_id, project, user_prompt, started_at, started_at_epoch, status)
       VALUES (?, ?, ?, ?, ?, 'active')
-    `).run(e,s,t,o.toISOString(),n).lastInsertRowid}updateSDKSessionId(e,s){this.db.prepare(`
+    `).run(e,s,t,o.toISOString(),n).lastInsertRowid}updateSDKSessionId(e,s){return this.db.prepare(`
       UPDATE sdk_sessions
       SET sdk_session_id = ?
       WHERE id = ? AND sdk_session_id IS NULL
-    `).run(s,e).changes===0&&console.error(`[HooksDatabase] Skipped updating sdk_session_id for session ${e} - already set (prevents FOREIGN KEY constraint violation)`)}setWorkerPort(e,s){this.db.prepare(`
+    `).run(s,e).changes===0?(console.error(`[HooksDatabase] Skipped updating sdk_session_id for session ${e} - already set (prevents FOREIGN KEY constraint violation)`),!1):!0}setWorkerPort(e,s){this.db.prepare(`
       UPDATE sdk_sessions
       SET worker_port = ?
       WHERE id = ?
