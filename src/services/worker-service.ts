@@ -11,6 +11,7 @@ import { buildInitPrompt, buildObservationPrompt, buildFinalizePrompt } from '..
 import { parseObservations, parseSummary } from '../sdk/parser.js';
 import type { SDKSession } from '../sdk/prompts.js';
 import { findAvailablePort } from '../utils/port-allocator.js';
+import { logger } from '../utils/logger.js';
 
 const MODEL = 'claude-sonnet-4-5';
 const DISALLOWED_TOOLS = ['Glob', 'Grep', 'ListMcpResourcesTool', 'WebSearch'];
@@ -42,6 +43,8 @@ interface ActiveSession {
   abortController: AbortController;
   generatorPromise: Promise<void> | null;
   lastPromptNumber: number; // Track which prompt_number we last sent to SDK
+  observationCounter: number; // Counter for correlation IDs
+  startTime: number; // Session start timestamp
 }
 
 class WorkerService {
@@ -79,14 +82,12 @@ class WorkerService {
     db.close();
 
     if (cleanedCount > 0) {
-      console.log(`[WorkerService] Cleaned up ${cleanedCount} orphaned sessions`);
+      logger.info('SYSTEM', `Cleaned up ${cleanedCount} orphaned sessions`);
     }
 
     return new Promise((resolve, reject) => {
       this.app.listen(port, '127.0.0.1', () => {
-        console.log(`[WorkerService] Started on http://127.0.0.1:${port}`);
-        console.log(`[WorkerService] PID: ${process.pid}`);
-        console.log(`[WorkerService] Active sessions: ${this.sessions.size}`);
+        logger.info('SYSTEM', `Worker started`, { port, pid: process.pid, activeSessions: this.sessions.size });
 
         // Write port to file for hooks to discover
         const { writeFileSync } = require('fs');
@@ -122,7 +123,8 @@ class WorkerService {
     const sessionDbId = parseInt(req.params.sessionDbId, 10);
     const { project, userPrompt } = req.body;
 
-    console.log(`[WorkerService] Initializing session ${sessionDbId}`, { project });
+    const correlationId = logger.sessionId(sessionDbId);
+    logger.info('WORKER', 'Session init', { correlationId, project });
 
     if (this.sessions.has(sessionDbId)) {
       res.status(409).json({ error: 'Session already exists' });
@@ -138,7 +140,9 @@ class WorkerService {
       pendingMessages: [],
       abortController: new AbortController(),
       generatorPromise: null,
-      lastPromptNumber: 0
+      lastPromptNumber: 0,
+      observationCounter: 0,
+      startTime: Date.now()
     };
 
     this.sessions.set(sessionDbId, session);
@@ -150,13 +154,14 @@ class WorkerService {
 
     // Start SDK agent in background
     session.generatorPromise = this.runSDKAgent(session).catch(err => {
-      console.error(`[WorkerService] SDK agent error for session ${sessionDbId}:`, err);
+      logger.failure('WORKER', 'SDK agent error', { sessionId: sessionDbId }, err);
       const db = new HooksDatabase();
       db.markSessionFailed(sessionDbId);
       db.close();
       this.sessions.delete(sessionDbId);
     });
 
+    logger.success('WORKER', 'Session initialized', { sessionId: sessionDbId, port: this.port });
     res.json({
       status: 'initialized',
       sessionDbId,
@@ -178,7 +183,15 @@ class WorkerService {
       return;
     }
 
-    console.log(`[WorkerService] Queueing observation for session ${sessionDbId}:`, tool_name);
+    // Create correlation ID for tracking this observation
+    session.observationCounter++;
+    const correlationId = logger.correlationId(sessionDbId, session.observationCounter);
+    const toolStr = logger.formatTool(tool_name, tool_input);
+
+    logger.dataIn('WORKER', `Observation queued: ${toolStr}`, {
+      correlationId,
+      queue: session.pendingMessages.length + 1
+    });
 
     session.pendingMessages.push({
       type: 'observation',
@@ -205,7 +218,11 @@ class WorkerService {
       return;
     }
 
-    console.log(`[WorkerService] Requesting summary for session ${sessionDbId}, prompt #${prompt_number}`);
+    logger.dataIn('WORKER', 'Summary requested', {
+      sessionId: sessionDbId,
+      promptNumber: prompt_number,
+      queue: session.pendingMessages.length + 1
+    });
 
     session.pendingMessages.push({
       type: 'summarize',
@@ -247,7 +264,7 @@ class WorkerService {
       return;
     }
 
-    console.error(`[WorkerService] Deleting session ${sessionDbId}`);
+    logger.warn('WORKER', 'Session delete requested', { sessionId: sessionDbId });
 
     // Abort SDK agent
     session.abortController.abort();
@@ -267,6 +284,7 @@ class WorkerService {
 
     this.sessions.delete(sessionDbId);
 
+    logger.info('WORKER', 'Session deleted', { sessionId: sessionDbId });
     res.json({ status: 'deleted' });
   }
 
@@ -274,7 +292,7 @@ class WorkerService {
    * Run SDK agent for a session
    */
   private async runSDKAgent(session: ActiveSession): Promise<void> {
-    console.log(`[WorkerService] Starting SDK agent for session ${session.sessionDbId}`);
+    logger.info('SDK', 'Agent starting', { sessionId: session.sessionDbId });
 
     const claudePath = process.env.CLAUDE_CODE_PATH || '/Users/alexnewman/.nvm/versions/node/v24.5.0/bin/claude';
 
@@ -300,7 +318,10 @@ class WorkerService {
             db.close();
 
             if (updated) {
-              console.log(`[WorkerService] SDK session initialized:`, systemMsg.session_id);
+              logger.success('SDK', 'Session initialized', {
+                sessionId: session.sessionDbId,
+                sdkSessionId: systemMsg.session_id
+              });
               session.sdkSessionId = systemMsg.session_id;
             }
           }
@@ -312,7 +333,14 @@ class WorkerService {
             ? content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n')
             : typeof content === 'string' ? content : '';
 
-          console.log(`[WorkerService] SDK response for prompt #${session.lastPromptNumber}:\n${textContent}`);
+          const responseSize = textContent.length;
+          logger.dataOut('SDK', `Response received (${responseSize} chars)`, {
+            sessionId: session.sessionDbId,
+            promptNumber: session.lastPromptNumber
+          });
+
+          // In debug mode, log the full response
+          logger.debug('SDK', 'Full response', { sessionId: session.sessionDbId }, textContent);
 
           // Parse and store with prompt number
           this.handleAgentMessage(session, textContent, session.lastPromptNumber);
@@ -320,7 +348,12 @@ class WorkerService {
       }
 
       // Mark completed
-      console.log(`[WorkerService] SDK agent completed for session ${session.sessionDbId}`);
+      const sessionDuration = Date.now() - session.startTime;
+      logger.success('SDK', 'Agent completed', {
+        sessionId: session.sessionDbId,
+        duration: `${(sessionDuration / 1000).toFixed(1)}s`
+      });
+
       const db = new HooksDatabase();
       db.markSessionCompleted(session.sessionDbId);
       db.close();
@@ -329,9 +362,9 @@ class WorkerService {
 
     } catch (error: any) {
       if (error.name === 'AbortError') {
-        console.error(`[WorkerService] SDK agent aborted for session ${session.sessionDbId}`);
+        logger.warn('SDK', 'Agent aborted', { sessionId: session.sessionDbId });
       } else {
-        console.error(`[WorkerService] SDK agent error for session ${session.sessionDbId}:`, error);
+        logger.failure('SDK', 'Agent error', { sessionId: session.sessionDbId }, error);
       }
       throw error;
     }
@@ -345,7 +378,11 @@ class WorkerService {
     const claudeSessionId = `session-${session.sessionDbId}`;
     const initPrompt = buildInitPrompt(session.project, claudeSessionId, session.userPrompt);
 
-    console.log(`[WorkerService] Yielding init prompt:\n${initPrompt}`);
+    logger.dataIn('SDK', `Init prompt sent (${initPrompt.length} chars)`, {
+      sessionId: session.sessionDbId,
+      project: session.project
+    });
+    logger.debug('SDK', 'Full init prompt', { sessionId: session.sessionDbId }, initPrompt);
 
     yield {
       type: 'user',
@@ -372,7 +409,6 @@ class WorkerService {
         const message = session.pendingMessages.shift()!;
 
         if (message.type === 'summarize') {
-          console.log(`[WorkerService] Processing SUMMARIZE for session ${session.sessionDbId}, prompt #${message.prompt_number}`);
           session.lastPromptNumber = message.prompt_number;
 
           const db = new HooksDatabase();
@@ -382,7 +418,11 @@ class WorkerService {
           if (dbSession) {
             const summarizePrompt = buildFinalizePrompt(dbSession);
 
-            console.log(`[WorkerService] Yielding summarize prompt:\n${summarizePrompt}`);
+            logger.dataIn('SDK', `Summary prompt sent (${summarizePrompt.length} chars)`, {
+              sessionId: session.sessionDbId,
+              promptNumber: message.prompt_number
+            });
+            logger.debug('SDK', 'Full summary prompt', { sessionId: session.sessionDbId }, summarizePrompt);
 
             yield {
               type: 'user',
@@ -405,7 +445,15 @@ class WorkerService {
             created_at_epoch: Date.now()
           });
 
-          console.log(`[WorkerService] Yielding observation (prompt #${message.prompt_number}):\n${observationPrompt}`);
+          const toolStr = logger.formatTool(message.tool_name, message.tool_input);
+          const correlationId = logger.correlationId(session.sessionDbId, session.observationCounter);
+
+          logger.dataIn('SDK', `Observation prompt: ${toolStr}`, {
+            correlationId,
+            promptNumber: message.prompt_number,
+            size: `${observationPrompt.length} chars`
+          });
+          logger.debug('SDK', 'Full observation prompt', { correlationId }, observationPrompt);
 
           yield {
             type: 'user',
@@ -426,23 +474,41 @@ class WorkerService {
    * Gets prompt_number from the message that triggered this response
    */
   private handleAgentMessage(session: ActiveSession, content: string, promptNumber: number): void {
+    const correlationId = logger.correlationId(session.sessionDbId, session.observationCounter);
+
     // Parse observations
-    const observations = parseObservations(content);
-    console.log(`[WorkerService] Parsed ${observations.length} observations for prompt #${promptNumber}`);
+    const observations = parseObservations(content, correlationId);
+
+    if (observations.length > 0) {
+      logger.info('PARSER', `Parsed ${observations.length} observation(s)`, {
+        correlationId,
+        promptNumber,
+        types: observations.map(o => o.type).join(', ')
+      });
+    }
 
     const db = new HooksDatabase();
     for (const obs of observations) {
       if (session.sdkSessionId) {
         db.storeObservation(session.sdkSessionId, session.project, obs, promptNumber);
+        logger.success('DB', 'Observation stored', {
+          correlationId,
+          type: obs.type,
+          title: obs.title
+        });
       }
     }
 
     // Parse summary
-    const summary = parseSummary(content);
+    const summary = parseSummary(content, session.sessionDbId);
     if (summary && session.sdkSessionId) {
-      console.log(`[WorkerService] Parsed summary for session ${session.sessionDbId}, prompt #${promptNumber}`);
+      logger.info('PARSER', 'Summary parsed', {
+        sessionId: session.sessionDbId,
+        promptNumber
+      });
 
       db.storeSummary(session.sdkSessionId, session.project, summary, promptNumber);
+      logger.success('DB', 'Summary stored', { sessionId: session.sessionDbId });
     }
 
     db.close();
@@ -456,19 +522,19 @@ async function main() {
 
   // Graceful shutdown
   process.on('SIGINT', () => {
-    console.error('[WorkerService] Shutting down gracefully...');
+    logger.warn('SYSTEM', 'Shutting down (SIGINT)');
     process.exit(0);
   });
 
   process.on('SIGTERM', () => {
-    console.error('[WorkerService] Shutting down gracefully...');
+    logger.warn('SYSTEM', 'Shutting down (SIGTERM)');
     process.exit(0);
   });
 }
 
 // Auto-start when run directly (not when imported)
 main().catch(err => {
-  console.error('[WorkerService] Fatal error:', err);
+  logger.failure('SYSTEM', 'Fatal startup error', {}, err);
   process.exit(1);
 });
 

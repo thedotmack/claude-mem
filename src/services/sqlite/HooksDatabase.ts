@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3';
 import { DATA_DIR, DB_PATH, ensureDir } from '../../shared/paths.js';
+import { logger } from '../../utils/logger.js';
 
 /**
  * Lightweight database interface for hooks
@@ -23,6 +24,7 @@ export class HooksDatabase {
     this.ensurePromptTrackingColumns();
     this.removeSessionSummariesUniqueConstraint();
     this.addObservationHierarchicalFields();
+    this.makeObservationsTextNullable();
   }
 
   /**
@@ -192,6 +194,86 @@ export class HooksDatabase {
       console.error('[HooksDatabase] Successfully added hierarchical fields to observations table');
     } catch (error: any) {
       console.error('[HooksDatabase] Migration error (add hierarchical fields):', error.message);
+    }
+  }
+
+  /**
+   * Make observations.text nullable (migration 009)
+   * The text field is deprecated in favor of structured fields (title, subtitle, narrative, etc.)
+   */
+  private makeObservationsTextNullable(): void {
+    try {
+      // Check if text column is already nullable
+      const tableInfo = this.db.pragma('table_info(observations)');
+      const textColumn = (tableInfo as any[]).find((col: any) => col.name === 'text');
+
+      if (!textColumn || textColumn.notnull === 0) {
+        // Already migrated or text column doesn't exist
+        return;
+      }
+
+      console.error('[HooksDatabase] Making observations.text nullable...');
+
+      // Begin transaction
+      this.db.exec('BEGIN TRANSACTION');
+
+      try {
+        // Create new table with text as nullable
+        this.db.exec(`
+          CREATE TABLE observations_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sdk_session_id TEXT NOT NULL,
+            project TEXT NOT NULL,
+            text TEXT,
+            type TEXT NOT NULL CHECK(type IN ('decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change')),
+            title TEXT,
+            subtitle TEXT,
+            facts TEXT,
+            narrative TEXT,
+            concepts TEXT,
+            files_read TEXT,
+            files_modified TEXT,
+            prompt_number INTEGER,
+            created_at TEXT NOT NULL,
+            created_at_epoch INTEGER NOT NULL,
+            FOREIGN KEY(sdk_session_id) REFERENCES sdk_sessions(sdk_session_id) ON DELETE CASCADE
+          )
+        `);
+
+        // Copy data from old table (all existing columns)
+        this.db.exec(`
+          INSERT INTO observations_new
+          SELECT id, sdk_session_id, project, text, type, title, subtitle, facts,
+                 narrative, concepts, files_read, files_modified, prompt_number,
+                 created_at, created_at_epoch
+          FROM observations
+        `);
+
+        // Drop old table
+        this.db.exec('DROP TABLE observations');
+
+        // Rename new table
+        this.db.exec('ALTER TABLE observations_new RENAME TO observations');
+
+        // Recreate indexes
+        this.db.exec(`
+          CREATE INDEX idx_observations_sdk_session ON observations(sdk_session_id);
+          CREATE INDEX idx_observations_project ON observations(project);
+          CREATE INDEX idx_observations_type ON observations(type);
+          CREATE INDEX idx_observations_created ON observations(created_at_epoch DESC);
+        `);
+
+        // Commit transaction
+        this.db.exec('COMMIT');
+
+        console.error('[HooksDatabase] Successfully made observations.text nullable');
+      } catch (error: any) {
+        // Rollback on error
+        this.db.exec('ROLLBACK');
+        throw error;
+      }
+    } catch (error: any) {
+      console.error('[HooksDatabase] Migration error (make text nullable):', error.message);
     }
   }
 
@@ -370,7 +452,12 @@ export class HooksDatabase {
     const result = stmt.run(sdkSessionId, id);
 
     if (result.changes === 0) {
-      console.error(`[HooksDatabase] Skipped updating sdk_session_id for session ${id} - already set (prevents FOREIGN KEY constraint violation)`);
+      // This is expected behavior - sdk_session_id is already set
+      // Only log at debug level to avoid noise
+      logger.debug('DB', 'sdk_session_id already set, skipping update', {
+        sessionId: id,
+        sdkSessionId
+      });
       return false;
     }
 

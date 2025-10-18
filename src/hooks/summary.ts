@@ -1,5 +1,6 @@
 import { HooksDatabase } from '../services/sqlite/HooksDatabase.js';
 import { createHookResponse } from './hook-response.js';
+import { logger } from '../utils/logger.js';
 
 export interface StopInput {
   session_id: string;
@@ -28,7 +29,7 @@ export async function summaryHook(input?: StopInput): Promise<void> {
 
   if (!session.worker_port) {
     db.close();
-    console.error('[summary-hook] No worker port for session', session.id);
+    logger.error('HOOK', 'No worker port for session', { sessionId: session.id });
     console.log(createHookResponse('Stop', true));
     return;
   }
@@ -38,6 +39,12 @@ export async function summaryHook(input?: StopInput): Promise<void> {
   db.close();
 
   try {
+    logger.dataIn('HOOK', 'Stop: Requesting summary', {
+      sessionId: session.id,
+      workerPort: session.worker_port,
+      promptNumber
+    });
+
     const response = await fetch(`http://127.0.0.1:${session.worker_port}/sessions/${session.id}/summarize`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -46,10 +53,16 @@ export async function summaryHook(input?: StopInput): Promise<void> {
     });
 
     if (!response.ok) {
-      console.error('[summary-hook] Failed to generate summary:', await response.text());
+      const errorText = await response.text();
+      logger.failure('HOOK', 'Failed to generate summary', {
+        sessionId: session.id,
+        status: response.status
+      }, errorText);
+    } else {
+      logger.debug('HOOK', 'Summary request sent successfully', { sessionId: session.id });
     }
   } catch (error: any) {
-    console.error('[summary-hook] Error:', error.message);
+    logger.failure('HOOK', 'Error requesting summary', { sessionId: session.id }, error);
   } finally {
     console.log(createHookResponse('Stop', true));
   }

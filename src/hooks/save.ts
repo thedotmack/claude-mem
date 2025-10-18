@@ -1,5 +1,6 @@
 import { HooksDatabase } from '../services/sqlite/HooksDatabase.js';
 import { createHookResponse } from './hook-response.js';
+import { logger } from '../utils/logger.js';
 
 export interface PostToolUseInput {
   session_id: string;
@@ -42,7 +43,7 @@ export async function saveHook(input?: PostToolUseInput): Promise<void> {
 
   if (!session.worker_port) {
     db.close();
-    console.error('[save-hook] No worker port for session', session.id);
+    logger.error('HOOK', 'No worker port for session', { sessionId: session.id });
     console.log(createHookResponse('PostToolUse', true));
     return;
   }
@@ -51,24 +52,37 @@ export async function saveHook(input?: PostToolUseInput): Promise<void> {
   const promptNumber = db.getPromptCounter(session.id);
   db.close();
 
+  const toolStr = logger.formatTool(tool_name, tool_input);
+
   try {
+    logger.dataIn('HOOK', `PostToolUse: ${toolStr}`, {
+      sessionId: session.id,
+      workerPort: session.worker_port
+    });
+
     const response = await fetch(`http://127.0.0.1:${session.worker_port}/sessions/${session.id}/observations`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         tool_name,
-        tool_input: JSON.stringify(tool_input),
-        tool_output: JSON.stringify(tool_output),
+        tool_input: tool_input !== undefined ? JSON.stringify(tool_input) : '{}',
+        tool_output: tool_output !== undefined ? JSON.stringify(tool_output) : '{}',
         prompt_number: promptNumber
       }),
       signal: AbortSignal.timeout(2000)
     });
 
     if (!response.ok) {
-      console.error('[save-hook] Failed to send observation:', await response.text());
+      const errorText = await response.text();
+      logger.failure('HOOK', 'Failed to send observation', {
+        sessionId: session.id,
+        status: response.status
+      }, errorText);
+    } else {
+      logger.debug('HOOK', 'Observation sent successfully', { sessionId: session.id, toolName: tool_name });
     }
   } catch (error: any) {
-    console.error('[save-hook] Error:', error.message);
+    logger.failure('HOOK', 'Error sending observation', { sessionId: session.id }, error);
   } finally {
     console.log(createHookResponse('PostToolUse', true));
   }

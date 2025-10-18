@@ -1,5 +1,7 @@
 #!/usr/bin/env node
-import S from"path";import k from"better-sqlite3";import{join as m,dirname as N,basename as y}from"path";import{homedir as T}from"os";import{existsSync as C,mkdirSync as D}from"fs";var d=process.env.CLAUDE_MEM_DATA_DIR||m(T(),".claude-mem"),E=process.env.CLAUDE_CONFIG_DIR||m(T(),".claude"),w=m(d,"archives"),U=m(d,"logs"),H=m(d,"trash"),P=m(d,"backups"),M=m(d,"settings.json"),h=m(d,"claude-mem.db"),j=m(E,"settings.json"),F=m(E,"commands"),W=m(E,"CLAUDE.md");function f(p){D(p,{recursive:!0})}var l=class{db;constructor(){f(d),this.db=new k(h),this.db.pragma("journal_mode = WAL"),this.db.pragma("synchronous = NORMAL"),this.db.pragma("foreign_keys = ON"),this.ensureWorkerPortColumn(),this.ensurePromptTrackingColumns(),this.removeSessionSummariesUniqueConstraint(),this.addObservationHierarchicalFields()}ensureWorkerPortColumn(){try{this.db.pragma("table_info(sdk_sessions)").some(s=>s.name==="worker_port")||(this.db.exec("ALTER TABLE sdk_sessions ADD COLUMN worker_port INTEGER"),console.error("[HooksDatabase] Added worker_port column to sdk_sessions table"))}catch(e){console.error("[HooksDatabase] Migration error:",e.message)}}ensurePromptTrackingColumns(){try{this.db.pragma("table_info(sdk_sessions)").some(c=>c.name==="prompt_counter")||(this.db.exec("ALTER TABLE sdk_sessions ADD COLUMN prompt_counter INTEGER DEFAULT 0"),console.error("[HooksDatabase] Added prompt_counter column to sdk_sessions table")),this.db.pragma("table_info(observations)").some(c=>c.name==="prompt_number")||(this.db.exec("ALTER TABLE observations ADD COLUMN prompt_number INTEGER"),console.error("[HooksDatabase] Added prompt_number column to observations table")),this.db.pragma("table_info(session_summaries)").some(c=>c.name==="prompt_number")||(this.db.exec("ALTER TABLE session_summaries ADD COLUMN prompt_number INTEGER"),console.error("[HooksDatabase] Added prompt_number column to session_summaries table"));let o=this.db.pragma("index_list(session_summaries)").some(c=>c.unique===1)}catch(e){console.error("[HooksDatabase] Prompt tracking migration error:",e.message)}}removeSessionSummariesUniqueConstraint(){try{if(!this.db.pragma("index_list(session_summaries)").some(s=>s.unique===1))return;console.error("[HooksDatabase] Removing UNIQUE constraint from session_summaries.sdk_session_id..."),this.db.exec("BEGIN TRANSACTION");try{this.db.exec(`
+import C from"path";import I from"better-sqlite3";import{join as d,dirname as H,basename as P}from"path";import{homedir as A}from"os";import{existsSync as F,mkdirSync as v}from"fs";var m=process.env.CLAUDE_MEM_DATA_DIR||d(A(),".claude-mem"),g=process.env.CLAUDE_CONFIG_DIR||d(A(),".claude"),W=d(m,"archives"),G=d(m,"logs"),q=d(m,"trash"),K=d(m,"backups"),J=d(m,"settings.json"),D=d(m,"claude-mem.db"),Y=d(g,"settings.json"),V=d(g,"commands"),Q=d(g,"CLAUDE.md");function S(p){v(p,{recursive:!0})}var b=(o=>(o[o.DEBUG=0]="DEBUG",o[o.INFO=1]="INFO",o[o.WARN=2]="WARN",o[o.ERROR=3]="ERROR",o[o.SILENT=4]="SILENT",o))(b||{}),f=class{level;useColor;constructor(){let e=process.env.CLAUDE_MEM_LOG_LEVEL?.toUpperCase()||"INFO";this.level=b[e]??1,this.useColor=process.stdout.isTTY??!1}static correlationId(e,t){return`obs-${e}-${t}`}static sessionId(e){return`session-${e}`}formatData(e){if(e==null)return"";if(typeof e=="string")return e;if(typeof e=="number"||typeof e=="boolean")return e.toString();if(typeof e=="object"){if(e instanceof Error)return this.level===0?`${e.message}
+${e.stack}`:e.message;if(Array.isArray(e))return`[${e.length} items]`;let t=Object.keys(e);return t.length===0?"{}":t.length<=3?JSON.stringify(e):`{${t.length} keys: ${t.slice(0,3).join(", ")}...}`}return String(e)}formatTool(e,t){if(!t)return e;try{let s=typeof t=="string"?JSON.parse(t):t;if(e==="Bash"&&s.command){let r=s.command.length>50?s.command.substring(0,50)+"...":s.command;return`${e}(${r})`}if(e==="Read"&&s.file_path){let r=s.file_path.split("/").pop()||s.file_path;return`${e}(${r})`}if(e==="Edit"&&s.file_path){let r=s.file_path.split("/").pop()||s.file_path;return`${e}(${r})`}if(e==="Write"&&s.file_path){let r=s.file_path.split("/").pop()||s.file_path;return`${e}(${r})`}return e}catch{return e}}log(e,t,s,r,o){if(e<this.level)return;let n=new Date().toISOString().replace("T"," ").substring(0,23),u=b[e].padEnd(5),i=t.padEnd(6),c="";r?.correlationId?c=`[${r.correlationId}] `:r?.sessionId&&(c=`[session-${r.sessionId}] `);let a="";o!=null&&(this.level===0&&typeof o=="object"?a=`
+`+JSON.stringify(o,null,2):a=" "+this.formatData(o));let l="";if(r){let{sessionId:N,sdkSessionId:O,correlationId:x,...R}=r;Object.keys(R).length>0&&(l=` {${Object.entries(R).map(([k,y])=>`${k}=${y}`).join(", ")}}`)}let _=`[${n}] [${u}] [${i}] ${c}${s}${l}${a}`;e===3?console.error(_):console.log(_)}debug(e,t,s,r){this.log(0,e,t,s,r)}info(e,t,s,r){this.log(1,e,t,s,r)}warn(e,t,s,r){this.log(2,e,t,s,r)}error(e,t,s,r){this.log(3,e,t,s,r)}dataIn(e,t,s,r){this.info(e,`\u2192 ${t}`,s,r)}dataOut(e,t,s,r){this.info(e,`\u2190 ${t}`,s,r)}success(e,t,s,r){this.info(e,`\u2713 ${t}`,s,r)}failure(e,t,s,r){this.error(e,`\u2717 ${t}`,s,r)}timing(e,t,s,r){this.info(e,`\u23F1 ${t}`,r,{duration:`${s}ms`})}},L=new f;var E=class{db;constructor(){S(m),this.db=new I(D),this.db.pragma("journal_mode = WAL"),this.db.pragma("synchronous = NORMAL"),this.db.pragma("foreign_keys = ON"),this.ensureWorkerPortColumn(),this.ensurePromptTrackingColumns(),this.removeSessionSummariesUniqueConstraint(),this.addObservationHierarchicalFields(),this.makeObservationsTextNullable()}ensureWorkerPortColumn(){try{this.db.pragma("table_info(sdk_sessions)").some(s=>s.name==="worker_port")||(this.db.exec("ALTER TABLE sdk_sessions ADD COLUMN worker_port INTEGER"),console.error("[HooksDatabase] Added worker_port column to sdk_sessions table"))}catch(e){console.error("[HooksDatabase] Migration error:",e.message)}}ensurePromptTrackingColumns(){try{this.db.pragma("table_info(sdk_sessions)").some(c=>c.name==="prompt_counter")||(this.db.exec("ALTER TABLE sdk_sessions ADD COLUMN prompt_counter INTEGER DEFAULT 0"),console.error("[HooksDatabase] Added prompt_counter column to sdk_sessions table")),this.db.pragma("table_info(observations)").some(c=>c.name==="prompt_number")||(this.db.exec("ALTER TABLE observations ADD COLUMN prompt_number INTEGER"),console.error("[HooksDatabase] Added prompt_number column to observations table")),this.db.pragma("table_info(session_summaries)").some(c=>c.name==="prompt_number")||(this.db.exec("ALTER TABLE session_summaries ADD COLUMN prompt_number INTEGER"),console.error("[HooksDatabase] Added prompt_number column to session_summaries table"));let i=this.db.pragma("index_list(session_summaries)").some(c=>c.unique===1)}catch(e){console.error("[HooksDatabase] Prompt tracking migration error:",e.message)}}removeSessionSummariesUniqueConstraint(){try{if(!this.db.pragma("index_list(session_summaries)").some(s=>s.unique===1))return;console.error("[HooksDatabase] Removing UNIQUE constraint from session_summaries.sdk_session_id..."),this.db.exec("BEGIN TRANSACTION");try{this.db.exec(`
           CREATE TABLE session_summaries_new (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             sdk_session_id TEXT NOT NULL,
@@ -35,7 +37,37 @@ import S from"path";import k from"better-sqlite3";import{join as m,dirname as N,
         ALTER TABLE observations ADD COLUMN concepts TEXT;
         ALTER TABLE observations ADD COLUMN files_read TEXT;
         ALTER TABLE observations ADD COLUMN files_modified TEXT;
-      `),console.error("[HooksDatabase] Successfully added hierarchical fields to observations table")}catch(e){console.error("[HooksDatabase] Migration error (add hierarchical fields):",e.message)}}getRecentSummaries(e,t=10){return this.db.prepare(`
+      `),console.error("[HooksDatabase] Successfully added hierarchical fields to observations table")}catch(e){console.error("[HooksDatabase] Migration error (add hierarchical fields):",e.message)}}makeObservationsTextNullable(){try{let t=this.db.pragma("table_info(observations)").find(s=>s.name==="text");if(!t||t.notnull===0)return;console.error("[HooksDatabase] Making observations.text nullable..."),this.db.exec("BEGIN TRANSACTION");try{this.db.exec(`
+          CREATE TABLE observations_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sdk_session_id TEXT NOT NULL,
+            project TEXT NOT NULL,
+            text TEXT,
+            type TEXT NOT NULL CHECK(type IN ('decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change')),
+            title TEXT,
+            subtitle TEXT,
+            facts TEXT,
+            narrative TEXT,
+            concepts TEXT,
+            files_read TEXT,
+            files_modified TEXT,
+            prompt_number INTEGER,
+            created_at TEXT NOT NULL,
+            created_at_epoch INTEGER NOT NULL,
+            FOREIGN KEY(sdk_session_id) REFERENCES sdk_sessions(sdk_session_id) ON DELETE CASCADE
+          )
+        `),this.db.exec(`
+          INSERT INTO observations_new
+          SELECT id, sdk_session_id, project, text, type, title, subtitle, facts,
+                 narrative, concepts, files_read, files_modified, prompt_number,
+                 created_at, created_at_epoch
+          FROM observations
+        `),this.db.exec("DROP TABLE observations"),this.db.exec("ALTER TABLE observations_new RENAME TO observations"),this.db.exec(`
+          CREATE INDEX idx_observations_sdk_session ON observations(sdk_session_id);
+          CREATE INDEX idx_observations_project ON observations(project);
+          CREATE INDEX idx_observations_type ON observations(type);
+          CREATE INDEX idx_observations_created ON observations(created_at_epoch DESC);
+        `),this.db.exec("COMMIT"),console.error("[HooksDatabase] Successfully made observations.text nullable")}catch(s){throw this.db.exec("ROLLBACK"),s}}catch(e){console.error("[HooksDatabase] Migration error (make text nullable):",e.message)}}getRecentSummaries(e,t=10){return this.db.prepare(`
       SELECT
         request, investigated, learned, completed, next_steps,
         files_read, files_edited, notes, prompt_number, created_at
@@ -76,15 +108,15 @@ import S from"path";import k from"better-sqlite3";import{join as m,dirname as N,
       SELECT prompt_counter FROM sdk_sessions WHERE id = ?
     `).get(e)?.prompt_counter||1}getPromptCounter(e){return this.db.prepare(`
       SELECT prompt_counter FROM sdk_sessions WHERE id = ?
-    `).get(e)?.prompt_counter||0}createSDKSession(e,t,s){let i=new Date,a=i.getTime();return this.db.prepare(`
+    `).get(e)?.prompt_counter||0}createSDKSession(e,t,s){let r=new Date,o=r.getTime();return this.db.prepare(`
       INSERT INTO sdk_sessions
       (claude_session_id, project, user_prompt, started_at, started_at_epoch, status)
       VALUES (?, ?, ?, ?, ?, 'active')
-    `).run(e,t,s,i.toISOString(),a).lastInsertRowid}updateSDKSessionId(e,t){return this.db.prepare(`
+    `).run(e,t,s,r.toISOString(),o).lastInsertRowid}updateSDKSessionId(e,t){return this.db.prepare(`
       UPDATE sdk_sessions
       SET sdk_session_id = ?
       WHERE id = ? AND sdk_session_id IS NULL
-    `).run(t,e).changes===0?(console.error(`[HooksDatabase] Skipped updating sdk_session_id for session ${e} - already set (prevents FOREIGN KEY constraint violation)`),!1):!0}setWorkerPort(e,t){this.db.prepare(`
+    `).run(t,e).changes===0?(L.debug("DB","sdk_session_id already set, skipping update",{sessionId:e,sdkSessionId:t}),!1):!0}setWorkerPort(e,t){this.db.prepare(`
       UPDATE sdk_sessions
       SET worker_port = ?
       WHERE id = ?
@@ -93,17 +125,17 @@ import S from"path";import k from"better-sqlite3";import{join as m,dirname as N,
       FROM sdk_sessions
       WHERE id = ?
       LIMIT 1
-    `).get(e)?.worker_port||null}storeObservation(e,t,s,i){let a=new Date,r=a.getTime();this.db.prepare(`
+    `).get(e)?.worker_port||null}storeObservation(e,t,s,r){let o=new Date,n=o.getTime();this.db.prepare(`
       INSERT INTO observations
       (sdk_session_id, project, type, title, subtitle, facts, narrative, concepts,
        files_read, files_modified, prompt_number, created_at, created_at_epoch)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(e,t,s.type,s.title,s.subtitle,JSON.stringify(s.facts),s.narrative,JSON.stringify(s.concepts),JSON.stringify(s.files_read),JSON.stringify(s.files_modified),i||null,a.toISOString(),r)}storeSummary(e,t,s,i){let a=new Date,r=a.getTime();this.db.prepare(`
+    `).run(e,t,s.type,s.title,s.subtitle,JSON.stringify(s.facts),s.narrative,JSON.stringify(s.concepts),JSON.stringify(s.files_read),JSON.stringify(s.files_modified),r||null,o.toISOString(),n)}storeSummary(e,t,s,r){let o=new Date,n=o.getTime();this.db.prepare(`
       INSERT INTO session_summaries
       (sdk_session_id, project, request, investigated, learned, completed,
        next_steps, notes, prompt_number, created_at, created_at_epoch)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(e,t,s.request,s.investigated,s.learned,s.completed,s.next_steps,s.notes,i||null,a.toISOString(),r)}markSessionCompleted(e){let t=new Date,s=t.getTime();this.db.prepare(`
+    `).run(e,t,s.request,s.investigated,s.learned,s.completed,s.next_steps,s.notes,r||null,o.toISOString(),n)}markSessionCompleted(e){let t=new Date,s=t.getTime();this.db.prepare(`
       UPDATE sdk_sessions
       SET status = 'completed', completed_at = ?, completed_at_epoch = ?
       WHERE id = ?
@@ -115,8 +147,8 @@ import S from"path";import k from"better-sqlite3";import{join as m,dirname as N,
       UPDATE sdk_sessions
       SET status = 'failed', completed_at = ?, completed_at_epoch = ?
       WHERE status = 'active'
-    `).run(e.toISOString(),t).changes}close(){this.db.close()}};function b(p){let e=p?.cwd??process.cwd(),t=e?S.basename(e):"unknown-project",s=new l;try{let i=s.getRecentSummaries(t,5),a=s.getRecentObservations(t,20);if(i.length===0&&a.length===0){console.log(`# Recent Session Context
+    `).run(e.toISOString(),t).changes}close(){this.db.close()}};function T(p){let e=p?.cwd??process.cwd(),t=e?C.basename(e):"unknown-project",s=new E;try{let r=s.getRecentSummaries(t,5),o=s.getRecentObservations(t,20);if(r.length===0&&o.length===0){console.log(`# Recent Session Context
 
-No previous sessions found for this project yet.`);return}let r=[];if(r.push("# Recent Session Context"),r.push(""),a.length>0){r.push(`## Recent Observations (${a.length})`),r.push("");let o={};for(let n of a)o[n.type]||(o[n.type]=[]),o[n.type].push({text:n.text,prompt_number:n.prompt_number,created_at:n.created_at});let c=["feature","bugfix","refactor","discovery","decision"];for(let n of c)if(o[n]&&o[n].length>0){r.push(`### ${n.charAt(0).toUpperCase()+n.slice(1)}s`);for(let _ of o[n]){let A=_.prompt_number?` (prompt #${_.prompt_number})`:"";r.push(`- ${_.text}${A}`)}r.push("")}}if(i.length===0){console.log(r.join(`
-`));return}r.push("## Recent Sessions"),r.push("");let u=i.length===1?"session":"sessions";r.push(`Showing last ${i.length} ${u} for **${t}**:`),r.push("");for(let o of i){r.push("---"),r.push("");let c=o.prompt_number?` (Prompt #${o.prompt_number})`:"";if(r.push(`**Summary${c}**`),r.push(""),o.request&&r.push(`**Request:** ${o.request}`),o.completed&&r.push(`**Completed:** ${o.completed}`),o.learned&&r.push(`**Learned:** ${o.learned}`),o.next_steps&&r.push(`**Next Steps:** ${o.next_steps}`),o.files_read)try{let n=JSON.parse(o.files_read);Array.isArray(n)&&n.length>0&&r.push(`**Files Read:** ${n.join(", ")}`)}catch{o.files_read.trim()&&r.push(`**Files Read:** ${o.files_read}`)}if(o.files_edited)try{let n=JSON.parse(o.files_edited);Array.isArray(n)&&n.length>0&&r.push(`**Files Edited:** ${n.join(", ")}`)}catch{o.files_edited.trim()&&r.push(`**Files Edited:** ${o.files_edited}`)}r.push(`**Date:** ${o.created_at.split("T")[0]}`),r.push("")}console.log(r.join(`
-`))}finally{s.close()}}import{stdin as g}from"process";try{if(g.isTTY)b();else{let p="";g.on("data",e=>p+=e),g.on("end",()=>{let e=p.trim()?JSON.parse(p):void 0;b(e),process.exit(0)})}}catch(p){console.error(`[claude-mem context-hook error: ${p.message}]`),process.exit(0)}
+No previous sessions found for this project yet.`);return}let n=[];if(n.push("# Recent Session Context"),n.push(""),o.length>0){n.push(`## Recent Observations (${o.length})`),n.push("");let i={};for(let a of o)i[a.type]||(i[a.type]=[]),i[a.type].push({text:a.text,prompt_number:a.prompt_number,created_at:a.created_at});let c=["feature","bugfix","refactor","discovery","decision"];for(let a of c)if(i[a]&&i[a].length>0){n.push(`### ${a.charAt(0).toUpperCase()+a.slice(1)}s`);for(let l of i[a]){let _=l.prompt_number?` (prompt #${l.prompt_number})`:"";n.push(`- ${l.text}${_}`)}n.push("")}}if(r.length===0){console.log(n.join(`
+`));return}n.push("## Recent Sessions"),n.push("");let u=r.length===1?"session":"sessions";n.push(`Showing last ${r.length} ${u} for **${t}**:`),n.push("");for(let i of r){n.push("---"),n.push("");let c=i.prompt_number?` (Prompt #${i.prompt_number})`:"";if(n.push(`**Summary${c}**`),n.push(""),i.request&&n.push(`**Request:** ${i.request}`),i.completed&&n.push(`**Completed:** ${i.completed}`),i.learned&&n.push(`**Learned:** ${i.learned}`),i.next_steps&&n.push(`**Next Steps:** ${i.next_steps}`),i.files_read)try{let a=JSON.parse(i.files_read);Array.isArray(a)&&a.length>0&&n.push(`**Files Read:** ${a.join(", ")}`)}catch{i.files_read.trim()&&n.push(`**Files Read:** ${i.files_read}`)}if(i.files_edited)try{let a=JSON.parse(i.files_edited);Array.isArray(a)&&a.length>0&&n.push(`**Files Edited:** ${a.join(", ")}`)}catch{i.files_edited.trim()&&n.push(`**Files Edited:** ${i.files_edited}`)}n.push(`**Date:** ${i.created_at.split("T")[0]}`),n.push("")}console.log(n.join(`
+`))}finally{s.close()}}import{stdin as h}from"process";try{if(h.isTTY)T();else{let p="";h.on("data",e=>p+=e),h.on("end",()=>{let e=p.trim()?JSON.parse(p):void 0;T(e),process.exit(0)})}}catch(p){console.error(`[claude-mem context-hook error: ${p.message}]`),process.exit(0)}

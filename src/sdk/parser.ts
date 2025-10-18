@@ -3,6 +3,8 @@
  * Parses observation and summary XML blocks from SDK responses
  */
 
+import { logger } from '../utils/logger.js';
+
 export interface ParsedObservation {
   type: string;
   title: string;
@@ -27,7 +29,7 @@ export interface ParsedSummary {
  * Parse observation XML blocks from SDK response
  * Returns all observations found in the response
  */
-export function parseObservations(text: string): ParsedObservation[] {
+export function parseObservations(text: string, correlationId?: string): ParsedObservation[] {
   const observations: ParsedObservation[] = [];
 
   // Match <observation>...</observation> blocks (non-greedy)
@@ -49,14 +51,20 @@ export function parseObservations(text: string): ParsedObservation[] {
 
     // Validate required fields
     if (!type || !title || !subtitle || !narrative) {
-      console.warn('[SDK Parser] Observation missing required fields, skipping');
+      logger.warn('PARSER', 'Observation missing required fields, skipping', {
+        correlationId,
+        hasType: !!type,
+        hasTitle: !!title,
+        hasSubtitle: !!subtitle,
+        hasNarrative: !!narrative
+      });
       continue;
     }
 
     // Validate type
     const validTypes = ['change', 'discovery', 'decision'];
     if (!validTypes.includes(type.trim())) {
-      console.warn(`[SDK Parser] Invalid observation type: ${type}, skipping`);
+      logger.warn('PARSER', `Invalid observation type: ${type}, skipping`, { correlationId });
       continue;
     }
 
@@ -79,7 +87,7 @@ export function parseObservations(text: string): ParsedObservation[] {
  * Parse summary XML block from SDK response
  * Returns null if no valid summary found
  */
-export function parseSummary(text: string): ParsedSummary | null {
+export function parseSummary(text: string, sessionId?: number): ParsedSummary | null {
   // Match <summary>...</summary> block (non-greedy)
   const summaryRegex = /<summary>([\s\S]*?)<\/summary>/;
   const summaryMatch = summaryRegex.exec(text);
@@ -100,7 +108,14 @@ export function parseSummary(text: string): ParsedSummary | null {
 
   // Validate required fields are present (notes is optional)
   if (!request || !investigated || !learned || !completed || !next_steps) {
-    console.warn('[SDK Parser] Summary missing required fields');
+    logger.warn('PARSER', 'Summary missing required fields', {
+      sessionId,
+      hasRequest: !!request,
+      hasInvestigated: !!investigated,
+      hasLearned: !!learned,
+      hasCompleted: !!completed,
+      hasNextSteps: !!next_steps
+    });
     return null;
   }
 
