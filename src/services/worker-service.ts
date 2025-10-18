@@ -433,7 +433,7 @@ class WorkerService {
     const db = new HooksDatabase();
     for (const obs of observations) {
       if (session.sdkSessionId) {
-        db.storeObservation(session.sdkSessionId, session.project, obs.type, obs.text, promptNumber);
+        db.storeObservation(session.sdkSessionId, session.project, obs, promptNumber);
       }
     }
 
@@ -442,18 +442,7 @@ class WorkerService {
     if (summary && session.sdkSessionId) {
       console.log(`[WorkerService] Parsed summary for session ${session.sessionDbId}, prompt #${promptNumber}`);
 
-      const summaryWithArrays = {
-        request: summary.request,
-        investigated: summary.investigated,
-        learned: summary.learned,
-        completed: summary.completed,
-        next_steps: summary.next_steps,
-        files_read: JSON.stringify(summary.files_read),
-        files_edited: JSON.stringify(summary.files_edited),
-        notes: summary.notes
-      };
-
-      db.storeSummary(session.sdkSessionId, session.project, summaryWithArrays, promptNumber);
+      db.storeSummary(session.sdkSessionId, session.project, summary, promptNumber);
     }
 
     db.close();

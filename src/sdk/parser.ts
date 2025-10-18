@@ -5,7 +5,13 @@
 
 export interface ParsedObservation {
   type: string;
-  text: string;
+  title: string;
+  subtitle: string;
+  facts: string[];
+  narrative: string;
+  concepts: string[];
+  files_read: string[];
+  files_modified: string[];
 }
 
 export interface ParsedSummary {
@@ -14,9 +20,7 @@ export interface ParsedSummary {
   learned: string;
   completed: string;
   next_steps: string;
-  files_read: string[];
-  files_edited: string[];
-  notes: string;
+  notes: string | null;
 }
 
 /**
@@ -27,23 +31,44 @@ export function parseObservations(text: string): ParsedObservation[] {
   const observations: ParsedObservation[] = [];
 
   // Match <observation>...</observation> blocks (non-greedy)
-  const observationRegex = /<observation>\s*<type>([^<]+)<\/type>\s*<text>([^<]+)<\/text>\s*<\/observation>/g;
+  const observationRegex = /<observation>([\s\S]*?)<\/observation>/g;
 
   let match;
   while ((match = observationRegex.exec(text)) !== null) {
-    const type = match[1].trim();
-    const observationText = match[2].trim();
+    const obsContent = match[1];
+
+    // Extract all fields
+    const type = extractField(obsContent, 'type');
+    const title = extractField(obsContent, 'title');
+    const subtitle = extractField(obsContent, 'subtitle');
+    const narrative = extractField(obsContent, 'narrative');
+    const facts = extractArrayElements(obsContent, 'facts', 'fact');
+    const concepts = extractArrayElements(obsContent, 'concepts', 'concept');
+    const files_read = extractArrayElements(obsContent, 'files_read', 'file');
+    const files_modified = extractArrayElements(obsContent, 'files_modified', 'file');
+
+    // Validate required fields
+    if (!type || !title || !subtitle || !narrative) {
+      console.warn('[SDK Parser] Observation missing required fields, skipping');
+      continue;
+    }
 
     // Validate type
-    const validTypes = ['decision', 'bugfix', 'feature', 'refactor', 'discovery'];
-    if (!validTypes.includes(type)) {
+    const validTypes = ['change', 'discovery', 'decision'];
+    if (!validTypes.includes(type.trim())) {
       console.warn(`[SDK Parser] Invalid observation type: ${type}, skipping`);
       continue;
     }
 
     observations.push({
-      type,
-      text: observationText
+      type: type.trim(),
+      title,
+      subtitle,
+      facts,
+      narrative,
+      concepts,
+      files_read,
+      files_modified
     });
   }
 
@@ -65,20 +90,16 @@ export function parseSummary(text: string): ParsedSummary | null {
 
   const summaryContent = summaryMatch[1];
 
-  // Extract required fields
+  // Extract fields
   const request = extractField(summaryContent, 'request');
   const investigated = extractField(summaryContent, 'investigated');
   const learned = extractField(summaryContent, 'learned');
   const completed = extractField(summaryContent, 'completed');
   const next_steps = extractField(summaryContent, 'next_steps');
-  const notes = extractField(summaryContent, 'notes');
+  const notes = extractField(summaryContent, 'notes'); // Optional
 
-  // Extract file arrays
-  const files_read = extractFileArray(summaryContent, 'files_read');
-  const files_edited = extractFileArray(summaryContent, 'files_edited');
-
-  // Validate all required fields are present
-  if (!request || !investigated || !learned || !completed || !next_steps || !notes) {
+  // Validate required fields are present (notes is optional)
+  if (!request || !investigated || !learned || !completed || !next_steps) {
     console.warn('[SDK Parser] Summary missing required fields');
     return null;
   }
@@ -89,8 +110,6 @@ export function parseSummary(text: string): ParsedSummary | null {
     learned,
     completed,
     next_steps,
-    files_read,
-    files_edited,
     notes
   };
 }
@@ -129,4 +148,31 @@ function extractFileArray(content: string, arrayName: string): string[] {
   }
 
   return files;
+}
+
+/**
+ * Extract array of elements from XML content
+ * Generic version of extractFileArray that works with any element name
+ */
+function extractArrayElements(content: string, arrayName: string, elementName: string): string[] {
+  const elements: string[] = [];
+
+  // Match the array block
+  const arrayRegex = new RegExp(`<${arrayName}>(.*?)</${arrayName}>`, 's');
+  const arrayMatch = arrayRegex.exec(content);
+
+  if (!arrayMatch) {
+    return elements;
+  }
+
+  const arrayContent = arrayMatch[1];
+
+  // Extract individual elements
+  const elementRegex = new RegExp(`<${elementName}>([^<]+)</${elementName}>`, 'g');
+  let elementMatch;
+  while ((elementMatch = elementRegex.exec(arrayContent)) !== null) {
+    elements.push(elementMatch[1].trim());
+  }
+
+  return elements;
 }

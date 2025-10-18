@@ -22,6 +22,7 @@ export class HooksDatabase {
     this.ensureWorkerPortColumn();
     this.ensurePromptTrackingColumns();
     this.removeSessionSummariesUniqueConstraint();
+    this.addObservationHierarchicalFields();
   }
 
   /**
@@ -158,6 +159,39 @@ export class HooksDatabase {
       }
     } catch (error: any) {
       console.error('[HooksDatabase] Migration error (remove UNIQUE constraint):', error.message);
+    }
+  }
+
+  /**
+   * Add hierarchical fields to observations table (migration 008)
+   */
+  private addObservationHierarchicalFields(): void {
+    try {
+      // Check if new fields already exist
+      const tableInfo = this.db.pragma('table_info(observations)');
+      const hasTitle = (tableInfo as any[]).some((col: any) => col.name === 'title');
+
+      if (hasTitle) {
+        // Already migrated
+        return;
+      }
+
+      console.error('[HooksDatabase] Adding hierarchical fields to observations table...');
+
+      // Add new columns
+      this.db.exec(`
+        ALTER TABLE observations ADD COLUMN title TEXT;
+        ALTER TABLE observations ADD COLUMN subtitle TEXT;
+        ALTER TABLE observations ADD COLUMN facts TEXT;
+        ALTER TABLE observations ADD COLUMN narrative TEXT;
+        ALTER TABLE observations ADD COLUMN concepts TEXT;
+        ALTER TABLE observations ADD COLUMN files_read TEXT;
+        ALTER TABLE observations ADD COLUMN files_modified TEXT;
+      `);
+
+      console.error('[HooksDatabase] Successfully added hierarchical fields to observations table');
+    } catch (error: any) {
+      console.error('[HooksDatabase] Migration error (add hierarchical fields):', error.message);
     }
   }
 
@@ -377,8 +411,16 @@ export class HooksDatabase {
   storeObservation(
     sdkSessionId: string,
     project: string,
-    type: string,
-    text: string,
+    observation: {
+      type: string;
+      title: string;
+      subtitle: string;
+      facts: string[];
+      narrative: string;
+      concepts: string[];
+      files_read: string[];
+      files_modified: string[];
+    },
     promptNumber?: number
   ): void {
     const now = new Date();
@@ -386,11 +428,26 @@ export class HooksDatabase {
 
     const stmt = this.db.prepare(`
       INSERT INTO observations
-      (sdk_session_id, project, text, type, prompt_number, created_at, created_at_epoch)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      (sdk_session_id, project, type, title, subtitle, facts, narrative, concepts,
+       files_read, files_modified, prompt_number, created_at, created_at_epoch)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
-    stmt.run(sdkSessionId, project, text, type, promptNumber || null, now.toISOString(), nowEpoch);
+    stmt.run(
+      sdkSessionId,
+      project,
+      observation.type,
+      observation.title,
+      observation.subtitle,
+      JSON.stringify(observation.facts),
+      observation.narrative,
+      JSON.stringify(observation.concepts),
+      JSON.stringify(observation.files_read),
+      JSON.stringify(observation.files_modified),
+      promptNumber || null,
+      now.toISOString(),
+      nowEpoch
+    );
   }
 
   /**
@@ -400,14 +457,12 @@ export class HooksDatabase {
     sdkSessionId: string,
     project: string,
     summary: {
-      request?: string;
-      investigated?: string;
-      learned?: string;
-      completed?: string;
-      next_steps?: string;
-      files_read?: string;
-      files_edited?: string;
-      notes?: string;
+      request: string;
+      investigated: string;
+      learned: string;
+      completed: string;
+      next_steps: string;
+      notes: string | null;
     },
     promptNumber?: number
   ): void {
@@ -417,21 +472,19 @@ export class HooksDatabase {
     const stmt = this.db.prepare(`
       INSERT INTO session_summaries
       (sdk_session_id, project, request, investigated, learned, completed,
-       next_steps, files_read, files_edited, notes, prompt_number, created_at, created_at_epoch)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       next_steps, notes, prompt_number, created_at, created_at_epoch)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     stmt.run(
       sdkSessionId,
       project,
-      summary.request || null,
-      summary.investigated || null,
-      summary.learned || null,
-      summary.completed || null,
-      summary.next_steps || null,
-      summary.files_read || null,
-      summary.files_edited || null,
-      summary.notes || null,
+      summary.request,
+      summary.investigated,
+      summary.learned,
+      summary.completed,
+      summary.next_steps,
+      summary.notes,
       promptNumber || null,
       now.toISOString(),
       nowEpoch

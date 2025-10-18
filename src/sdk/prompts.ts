@@ -22,21 +22,16 @@ export interface SDKSession {
  * Build initial prompt to initialize the SDK agent
  */
 export function buildInitPrompt(project: string, sessionId: string, userPrompt: string): string {
-  return `You are a memory processor for the "${project}" project.
+  return `You are a memory processor for a Claude Code session. Your job is to analyze tool executions and create structured observations for information worth remembering.
 
-SESSION CONTEXT
----------------
-Session ID: ${sessionId}
+You are processing tool executions from a Claude Code session with the following context:
+
 User's Goal: ${userPrompt}
 Date: ${new Date().toISOString().split('T')[0]}
 
-YOUR ROLE
----------
-Process tool executions from this Claude Code session and store observations that contain information worth remembering.
-
 WHEN TO STORE
 -------------
-Store an observation when the tool output contains information worth remembering about:
+Store observations when the tool output contains information worth remembering about:
 - How things work
 - Why things exist or were chosen
 - What changed
@@ -51,64 +46,65 @@ Skip routine operations:
 - Simple file listings
 - Repetitive operations you've already documented
 
-OBSERVATION FORMAT
-------------------
+OUTPUT FORMAT
+-------------
 Output observations using this XML structure:
 
 \`\`\`xml
 <observation>
-  <type>change</type>
-  <title>[Short title]</title>
-  <subtitle>[One sentence explanation (max 24 words)]</subtitle>
+  <type>[ change | discovery | decision ]</type>
+  <!--
+    **type**: One of:
+      - change: modifications to code, config, or documentation
+      - discovery: learning about existing system
+      - decision: choosing an approach and why it was chosen
+  -->
+  <title>[**title**: Short title capturing the core action or topic]</title>
+  <subtitle>[**subtitle**: One sentence explanation (max 24 words)]</subtitle>
   <facts>
     <fact>[Concise, self-contained statement]</fact>
     <fact>[Concise, self-contained statement]</fact>
     <fact>[Concise, self-contained statement]</fact>
   </facts>
-  <narrative>[Full context: what, how, and why]</narrative>
+  <!--
+    **facts**: Concise, self-contained statements
+      Each fact is ONE piece of information
+      No pronouns - each fact must stand alone
+      Include specific details: filenames, functions, values
+  -->
+  <narrative>[**narrative**: Full context: What was done, how it works, why it matters]</narrative>
   <concepts>
     <concept>[knowledge-type-category]</concept>
     <concept>[knowledge-type-category]</concept>
   </concepts>
-  <files>
+  <!--
+    **concepts**: 2-5 knowledge-type categories:
+      - how-it-works: understanding mechanisms
+      - why-it-exists: purpose or rationale
+      - what-changed: modifications made
+      - problem-solution: issues and their fixes
+      - gotcha: traps or edge cases
+      - pattern: reusable approach
+      - trade-off: pros/cons of a decision
+  -->
+  <files_read>
     <file>[path/to/file]</file>
     <file>[path/to/file]</file>
-  </files>
+  </files_read>
+  <files_modified>
+    <file>[path/to/file]</file>
+    <file>[path/to/file]</file>
+  </files_modified>
+  <!--
+    **files**: All files touched (full paths from project root)
+  -->
 </observation>
 \`\`\`
 
-FIELD REQUIREMENTS
-------------------
+Process the following tool executions.
 
-**type**: One of:
-  - change: modifications to code, config, or documentation
-  - discovery: learning about existing system
-  - decision: choosing an approach and why it was chosen
-
-**title**: Short title capturing the core action or topic
-
-**subtitle**: One sentence explanation (max 24 words)
-
-**facts**: Concise, self-contained statements
-  Each fact is ONE piece of information
-  No pronouns - each fact must stand alone
-  Include specific details: filenames, functions, values
-
-**narrative**: Full context: what, how, and why
-  What was done, how it works, why it matters
-
-**concepts**: 2-5 knowledge-type categories:
-  - how-it-works: understanding mechanisms
-  - why-it-exists: purpose or rationale
-  - what-changed: modifications made
-  - problem-solution: issues and their fixes
-  - gotcha: traps or edge cases
-  - pattern: reusable approach
-  - trade-off: pros/cons of a decision
-
-**files**: All files touched (full paths from project root)
-
-Ready to process tool executions.`;
+MEMORY PROCESSING SESSION START
+===============================`;
 }
 
 /**
@@ -131,56 +127,33 @@ export function buildObservationPrompt(obs: Observation): string {
     toolOutput = obs.tool_output;  // If parse fails, use raw value
   }
 
-  return `TOOL OBSERVATION
-================
-Tool: ${obs.tool_name}
-Time: ${new Date(obs.created_at_epoch).toISOString()}
-
-Input:
-${JSON.stringify(toolInput, null, 2)}
-
-Output:
-${JSON.stringify(toolOutput, null, 2)}
-
-Analyze this tool output. If it contains information worth remembering, generate an observation using the XML format.`;
+  return `<tool_used>
+  <tool_name>${obs.tool_name}</tool_name>
+  <tool_time>${new Date(obs.created_at_epoch).toISOString()}</tool_time>
+  <tool_input>${JSON.stringify(toolInput, null, 2)}</tool_input>
+  <tool_output>${JSON.stringify(toolOutput, null, 2)}</tool_output>
+</tool_used>`;
 }
 
 /**
  * Build finalization prompt to generate session summary
  */
 export function buildFinalizePrompt(session: SDKSession): string {
-  return `SESSION ENDING
-==============
-This Claude Code session is completing.
-
-TASK
-----
-Review the observations you generated and create a session summary.
+  return `MEMORY PROCESSING SESSION COMPLETED
+===================================
+This session has completed. Review the observations you generated and create a session summary.
 
 Output this XML:
-
-\`\`\`xml
 <summary>
   <request>[What did the user request?]</request>
   <investigated>[What code and systems did you explore?]</investigated>
   <learned>[What did you learn about the codebase?]</learned>
   <completed>[What was accomplished in this session?]</completed>
   <next_steps>[What should be done next?]</next_steps>
-  <files_read>
-    <file>[path/to/file]</file>
-  </files_read>
-  <files_edited>
-    <file>[path/to/file]</file>
-  </files_edited>
   <notes>[Additional insights or context]</notes>
 </summary>
-\`\`\`
 
-REQUIREMENTS
-------------
-All 8 fields are required: request, investigated, learned, completed, next_steps, files_read, files_edited, notes
+**Required fields**: request, investigated, learned, completed, next_steps
 
-Files must be wrapped in <file> tags
-
-If no files were read/edited, use empty tags: <files_read></files_read>`;
+**Optional fields**: notes`;
 }
