@@ -32,61 +32,83 @@ Date: ${new Date().toISOString().split('T')[0]}
 
 YOUR ROLE
 ---------
-You will PROCESS tool executions during this Claude Code session. Your job is to:
+Process tool executions from this Claude Code session and store observations that contain information worth remembering.
 
-1. ANALYZE each tool response for meaningful content
-2. DECIDE whether it contains something worth storing
-3. EXTRACT the key insight
-4. STORE it as an observation in the XML format below
+WHEN TO STORE
+-------------
+Store an observation when the tool output contains information worth remembering about:
+- How things work
+- Why things exist or were chosen
+- What changed
+- Problems and their solutions
+- Important patterns or gotchas
 
-For MOST meaningful tool outputs, you should generate an observation. Only skip truly routine operations.
-
-WHAT TO STORE
---------------
-Store these:
-✓ File contents with logic, algorithms, or patterns
-✓ Search results revealing project structure
-✓ Build errors or test failures with context
-✓ Code revealing architecture or design decisions
-✓ Git diffs with significant changes
-✓ Command outputs showing system state
-✓ Bug fixes (e.g., "fixed race condition in auth middleware by adding mutex")
-✓ New features (e.g., "implemented JWT refresh token flow")
-✓ Refactorings (e.g., "extracted validation logic into separate service")
-✓ Discoveries (e.g., "found that API rate limit is 100 req/min")
-
-WHAT TO SKIP
+WHEN TO SKIP
 ------------
-Skip these:
-✗ Simple status checks (git status with no changes)
-✗ Trivial edits (one-line config changes)
-✗ Repeated operations
-✗ Anything without semantic value
+Skip routine operations:
+- Empty status checks
+- Package installations with no errors
+- Simple file listings
+- Repetitive operations you've already documented
 
-HOW TO STORE OBSERVATIONS
---------------------------
-When you identify something worth remembering, output your observation in this EXACT XML format:
+OBSERVATION FORMAT
+------------------
+Output observations using this XML structure:
 
 \`\`\`xml
 <observation>
-  <type>feature</type>
-  <text>Implemented JWT token refresh flow with 7-day expiry</text>
+  <type>change</type>
+  <title>[Short title]</title>
+  <subtitle>[One sentence explanation (max 24 words)]</subtitle>
+  <facts>
+    <fact>[Concise, self-contained statement]</fact>
+    <fact>[Concise, self-contained statement]</fact>
+    <fact>[Concise, self-contained statement]</fact>
+  </facts>
+  <narrative>[Full context: what, how, and why]</narrative>
+  <concepts>
+    <concept>[knowledge-type-category]</concept>
+    <concept>[knowledge-type-category]</concept>
+  </concepts>
+  <files>
+    <file>[path/to/file]</file>
+    <file>[path/to/file]</file>
+  </files>
 </observation>
 \`\`\`
 
-Valid types: decision, bugfix, feature, refactor, discovery
+FIELD REQUIREMENTS
+------------------
 
-Structure requirements:
-- <observation> is the root element
-- <type> must be one of the 5 valid types (single word)
-- <text> contains your concise observation (one sentence preferred)
-- No additional fields or nesting
+**type**: One of:
+  - change: modifications to code, config, or documentation
+  - discovery: learning about existing system
+  - decision: choosing an approach and why it was chosen
 
-The SDK worker will parse all <observation> blocks from your response using regex and store them in SQLite.
+**title**: Short title capturing the core action or topic
 
-You can include your reasoning before or after the observation block, or just output the observation by itself.
+**subtitle**: One sentence explanation (max 24 words)
 
-Ready to process tool responses.`;
+**facts**: Concise, self-contained statements
+  Each fact is ONE piece of information
+  No pronouns - each fact must stand alone
+  Include specific details: filenames, functions, values
+
+**narrative**: Full context: what, how, and why
+  What was done, how it works, why it matters
+
+**concepts**: 2-5 knowledge-type categories:
+  - how-it-works: understanding mechanisms
+  - why-it-exists: purpose or rationale
+  - what-changed: modifications made
+  - problem-solution: issues and their fixes
+  - gotcha: traps or edge cases
+  - pattern: reusable approach
+  - trade-off: pros/cons of a decision
+
+**files**: All files touched (full paths from project root)
+
+Ready to process tool executions.`;
 }
 
 /**
@@ -120,28 +142,7 @@ ${JSON.stringify(toolInput, null, 2)}
 Output:
 ${JSON.stringify(toolOutput, null, 2)}
 
-ANALYSIS TASK
--------------
-ANALYZE this tool response and DECIDE: Does it contain something worth storing?
-
-Most Read, Edit, Grep, Bash, and Write operations contain meaningful content.
-
-If this contains something worth remembering, output the observation in this EXACT XML format:
-
-\`\`\`xml
-<observation>
-  <type>feature</type>
-  <text>Your concise observation here</text>
-</observation>
-\`\`\`
-
-Requirements:
-- Use one of these types: decision, bugfix, feature, refactor, discovery
-- Keep text concise (one sentence preferred)
-- No markdown formatting inside <text>
-- No additional XML fields
-
-If this is truly routine (e.g., empty git status), you can skip it. Otherwise, PROCESS and STORE it.`;
+Analyze this tool output. If it contains information worth remembering, generate an observation using the XML format.`;
 }
 
 /**
@@ -150,53 +151,36 @@ If this is truly routine (e.g., empty git status), you can skip it. Otherwise, P
 export function buildFinalizePrompt(session: SDKSession): string {
   return `SESSION ENDING
 ==============
-The Claude Code session is finishing.
+This Claude Code session is completing.
 
-FINAL TASK
-----------
-1. Review the observations you've stored this session
-2. Generate a structured summary that answers these questions:
-   - What did user request?
-   - What did you investigate?
-   - What did you learn?
-   - What did you do?
-   - What's next?
-   - Files read
-   - Files edited
-   - Notes
+TASK
+----
+Review the observations you generated and create a session summary.
 
-3. Generate the structured summary and output it in this EXACT XML format:
+Output this XML:
 
 \`\`\`xml
 <summary>
-  <request>Implement JWT authentication system</request>
-  <investigated>Existing auth middleware, session management, token storage patterns</investigated>
-  <learned>Current system uses session cookies; no JWT support; race condition in middleware</learned>
-  <completed>Implemented JWT token + refresh flow with 7-day expiry; fixed race condition with mutex; added token validation middleware</completed>
-  <next_steps>Add token revocation API endpoint; write integration tests</next_steps>
+  <request>[What did the user request?]</request>
+  <investigated>[What code and systems did you explore?]</investigated>
+  <learned>[What did you learn about the codebase?]</learned>
+  <completed>[What was accomplished in this session?]</completed>
+  <next_steps>[What should be done next?]</next_steps>
   <files_read>
-    <file>src/auth.ts</file>
-    <file>src/middleware/session.ts</file>
-    <file>src/types/user.ts</file>
+    <file>[path/to/file]</file>
   </files_read>
   <files_edited>
-    <file>src/auth.ts</file>
-    <file>src/middleware/auth.ts</file>
-    <file>src/routes/auth.ts</file>
+    <file>[path/to/file]</file>
   </files_edited>
-  <notes>Token secret stored in .env; refresh tokens use rotation strategy</notes>
+  <notes>[Additional insights or context]</notes>
 </summary>
 \`\`\`
 
-Structure requirements:
-- <summary> is the root element
-- All 8 child elements are REQUIRED: request, investigated, learned, completed, next_steps, files_read, files_edited, notes
-- <files_read> and <files_edited> must contain <file> child elements (one per file)
-- If no files were read/edited, use empty tags: <files_read></files_read>
-- Text fields can be multiple sentences but avoid markdown formatting
-- Use underscores in element names: next_steps, files_read, files_edited
+REQUIREMENTS
+------------
+All 8 fields are required: request, investigated, learned, completed, next_steps, files_read, files_edited, notes
 
-The SDK worker will parse the <summary> block and extract all fields to store in SQLite.
+Files must be wrapped in <file> tags
 
-Generate the summary now in the required XML format.`;
+If no files were read/edited, use empty tags: <files_read></files_read>`;
 }
