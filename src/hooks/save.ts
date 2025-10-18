@@ -12,7 +12,6 @@ export interface PostToolUseInput {
 
 // Tools to skip (low value or too frequent)
 const SKIP_TOOLS = new Set([
-  'TodoWrite',
   'ListMcpResourcesTool'
 ]);
 

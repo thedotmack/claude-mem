@@ -14,6 +14,7 @@ stdin.on('end', async () => {
   try {
     const parsed = input.trim() ? JSON.parse(input) : undefined;
     await newHook(parsed);
+    process.exit(0);
   } catch (error: any) {
     console.error(`[claude-mem new-hook error: ${error.message}]`);
     console.log('{"continue": true, "suppressOutput": true}');

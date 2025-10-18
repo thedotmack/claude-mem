@@ -16,6 +16,7 @@ try {
     stdin.on('end', () => {
       const parsed = input.trim() ? JSON.parse(input) : undefined;
       contextHook(parsed);
+      process.exit(0);
     });
   }
 } catch (error: any) {
