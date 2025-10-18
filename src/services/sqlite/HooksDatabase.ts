@@ -336,18 +336,22 @@ export class HooksDatabase {
     has_summary: boolean;
   }> {
     const stmt = this.db.prepare(`
-      SELECT
-        s.sdk_session_id,
-        s.status,
-        s.started_at,
-        s.user_prompt,
-        CASE WHEN sum.sdk_session_id IS NOT NULL THEN 1 ELSE 0 END as has_summary
-      FROM sdk_sessions s
-      LEFT JOIN session_summaries sum ON s.sdk_session_id = sum.sdk_session_id
-      WHERE s.project = ? AND s.sdk_session_id IS NOT NULL
-      GROUP BY s.sdk_session_id
-      ORDER BY s.started_at_epoch DESC
-      LIMIT ?
+      SELECT * FROM (
+        SELECT
+          s.sdk_session_id,
+          s.status,
+          s.started_at,
+          s.started_at_epoch,
+          s.user_prompt,
+          CASE WHEN sum.sdk_session_id IS NOT NULL THEN 1 ELSE 0 END as has_summary
+        FROM sdk_sessions s
+        LEFT JOIN session_summaries sum ON s.sdk_session_id = sum.sdk_session_id
+        WHERE s.project = ? AND s.sdk_session_id IS NOT NULL
+        GROUP BY s.sdk_session_id
+        ORDER BY s.started_at_epoch DESC
+        LIMIT ?
+      )
+      ORDER BY started_at_epoch ASC
     `);
 
     return stmt.all(project, limit) as any[];
