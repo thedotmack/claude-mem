@@ -23,10 +23,9 @@ export function contextHook(input?: SessionStartInput): void {
   const db = new HooksDatabase();
 
   try {
-    const summaries = db.getRecentSummaries(project, 5);
-    const observations = db.getRecentObservations(project, 20);
+    const sessions = db.getRecentSessionsWithStatus(project, 3);
 
-    if (summaries.length === 0 && observations.length === 0) {
+    if (sessions.length === 0) {
       // Output directly to stdout for injection into context
       console.log('# Recent Session Context\n\nNo previous sessions found for this project yet.');
       return;
@@ -35,95 +34,107 @@ export function contextHook(input?: SessionStartInput): void {
     const output: string[] = [];
     output.push('# Recent Session Context');
     output.push('');
-
-    // Show observations first
-    if (observations.length > 0) {
-      output.push(`## Recent Observations (${observations.length})`);
-      output.push('');
-
-      // Group observations by type
-      const byType: Record<string, Array<{text: string; prompt_number: number | null; created_at: string}>> = {};
-      for (const obs of observations) {
-        if (!byType[obs.type]) byType[obs.type] = [];
-        byType[obs.type].push({ text: obs.text, prompt_number: obs.prompt_number, created_at: obs.created_at });
-      }
-
-      // Display each type
-      const typeOrder = ['feature', 'bugfix', 'refactor', 'discovery', 'decision'];
-      for (const type of typeOrder) {
-        if (byType[type] && byType[type].length > 0) {
-          output.push(`### ${type.charAt(0).toUpperCase() + type.slice(1)}s`);
-          for (const obs of byType[type]) {
-            const promptLabel = obs.prompt_number ? ` (prompt #${obs.prompt_number})` : '';
-            output.push(`- ${obs.text}${promptLabel}`);
-          }
-          output.push('');
-        }
-      }
-    }
-
-    if (summaries.length === 0) {
-      console.log(output.join('\n'));
-      return;
-    }
-
-    output.push('## Recent Sessions');
-    output.push('');
-    const sessionWord = summaries.length === 1 ? 'session' : 'sessions';
-    output.push(`Showing last ${summaries.length} ${sessionWord} for **${project}**:`);
+    output.push(`Showing last ${sessions.length} session(s) for **${project}**:`);
     output.push('');
 
-    for (const summary of summaries) {
+    for (const session of sessions) {
+      if (!session.sdk_session_id) continue;
+
       output.push('---');
       output.push('');
 
-      const promptLabel = summary.prompt_number ? ` (Prompt #${summary.prompt_number})` : '';
-      output.push(`**Summary${promptLabel}**`);
-      output.push('');
+      // Check if session has a summary
+      if (session.has_summary) {
+        const summary = db.getSummaryForSession(session.sdk_session_id);
 
-      if (summary.request) {
-        output.push(`**Request:** ${summary.request}`);
-      }
+        if (summary) {
+          const promptLabel = summary.prompt_number ? ` (Prompt #${summary.prompt_number})` : '';
+          output.push(`**Summary${promptLabel}**`);
+          output.push('');
 
-      if (summary.completed) {
-        output.push(`**Completed:** ${summary.completed}`);
-      }
-
-      if (summary.learned) {
-        output.push(`**Learned:** ${summary.learned}`);
-      }
-
-      if (summary.next_steps) {
-        output.push(`**Next Steps:** ${summary.next_steps}`);
-      }
-
-      if (summary.files_read) {
-        try {
-          const files = JSON.parse(summary.files_read);
-          if (Array.isArray(files) && files.length > 0) {
-            output.push(`**Files Read:** ${files.join(', ')}`);
+          if (summary.request) {
+            output.push(`**Request:** ${summary.request}`);
           }
-        } catch {
-          if (summary.files_read.trim()) {
-            output.push(`**Files Read:** ${summary.files_read}`);
+
+          if (summary.completed) {
+            output.push(`**Completed:** ${summary.completed}`);
           }
+
+          if (summary.learned) {
+            output.push(`**Learned:** ${summary.learned}`);
+          }
+
+          if (summary.next_steps) {
+            output.push(`**Next Steps:** ${summary.next_steps}`);
+          }
+
+          if (summary.files_read) {
+            try {
+              const files = JSON.parse(summary.files_read);
+              if (Array.isArray(files) && files.length > 0) {
+                output.push(`**Files Read:** ${files.join(', ')}`);
+              }
+            } catch {
+              if (summary.files_read.trim()) {
+                output.push(`**Files Read:** ${summary.files_read}`);
+              }
+            }
+          }
+
+          if (summary.files_edited) {
+            try {
+              const files = JSON.parse(summary.files_edited);
+              if (Array.isArray(files) && files.length > 0) {
+                output.push(`**Files Edited:** ${files.join(', ')}`);
+              }
+            } catch {
+              if (summary.files_edited.trim()) {
+                output.push(`**Files Edited:** ${summary.files_edited}`);
+              }
+            }
+          }
+
+          output.push(`**Date:** ${summary.created_at.split('T')[0]}`);
         }
-      }
+      } else if (session.status === 'active') {
+        // Active session without summary - show observation titles
+        output.push(`**In Progress**`);
+        output.push('');
 
-      if (summary.files_edited) {
-        try {
-          const files = JSON.parse(summary.files_edited);
-          if (Array.isArray(files) && files.length > 0) {
-            output.push(`**Files Edited:** ${files.join(', ')}`);
-          }
-        } catch {
-          if (summary.files_edited.trim()) {
-            output.push(`**Files Edited:** ${summary.files_edited}`);
-          }
+        if (session.user_prompt) {
+          output.push(`**Request:** ${session.user_prompt}`);
         }
+
+        const observations = db.getObservationsForSession(session.sdk_session_id);
+
+        if (observations.length > 0) {
+          output.push('');
+          output.push(`**Observations (${observations.length}):**`);
+          for (const obs of observations) {
+            output.push(`- ${obs.title}`);
+          }
+        } else {
+          output.push('');
+          output.push('*No observations yet*');
+        }
+
+        output.push('');
+        output.push(`**Status:** Active - summary pending`);
+        output.push(`**Date:** ${session.started_at.split('T')[0]}`);
+      } else {
+        // Failed or completed session without summary
+        output.push(`**${session.status.charAt(0).toUpperCase() + session.status.slice(1)}**`);
+        output.push('');
+
+        if (session.user_prompt) {
+          output.push(`**Request:** ${session.user_prompt}`);
+        }
+
+        output.push('');
+        output.push(`**Status:** ${session.status} - no summary available`);
+        output.push(`**Date:** ${session.started_at.split('T')[0]}`);
       }
 
-      output.push(`**Date:** ${summary.created_at.split('T')[0]}`);
       output.push('');
     }
 

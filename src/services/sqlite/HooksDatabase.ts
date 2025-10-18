@@ -326,6 +326,81 @@ export class HooksDatabase {
   }
 
   /**
+   * Get recent sessions with their status and summary info
+   */
+  getRecentSessionsWithStatus(project: string, limit: number = 3): Array<{
+    sdk_session_id: string | null;
+    status: string;
+    started_at: string;
+    user_prompt: string | null;
+    has_summary: boolean;
+  }> {
+    const stmt = this.db.prepare(`
+      SELECT
+        s.sdk_session_id,
+        s.status,
+        s.started_at,
+        s.user_prompt,
+        CASE WHEN sum.sdk_session_id IS NOT NULL THEN 1 ELSE 0 END as has_summary
+      FROM sdk_sessions s
+      LEFT JOIN session_summaries sum ON s.sdk_session_id = sum.sdk_session_id
+      WHERE s.project = ? AND s.sdk_session_id IS NOT NULL
+      GROUP BY s.sdk_session_id
+      ORDER BY s.started_at_epoch DESC
+      LIMIT ?
+    `);
+
+    return stmt.all(project, limit) as any[];
+  }
+
+  /**
+   * Get observations for a specific session
+   */
+  getObservationsForSession(sdkSessionId: string): Array<{
+    title: string;
+    subtitle: string;
+    type: string;
+    prompt_number: number | null;
+  }> {
+    const stmt = this.db.prepare(`
+      SELECT title, subtitle, type, prompt_number
+      FROM observations
+      WHERE sdk_session_id = ?
+      ORDER BY created_at_epoch ASC
+    `);
+
+    return stmt.all(sdkSessionId) as any[];
+  }
+
+  /**
+   * Get summary for a specific session
+   */
+  getSummaryForSession(sdkSessionId: string): {
+    request: string | null;
+    investigated: string | null;
+    learned: string | null;
+    completed: string | null;
+    next_steps: string | null;
+    files_read: string | null;
+    files_edited: string | null;
+    notes: string | null;
+    prompt_number: number | null;
+    created_at: string;
+  } | null {
+    const stmt = this.db.prepare(`
+      SELECT
+        request, investigated, learned, completed, next_steps,
+        files_read, files_edited, notes, prompt_number, created_at
+      FROM session_summaries
+      WHERE sdk_session_id = ?
+      ORDER BY created_at_epoch DESC
+      LIMIT 1
+    `);
+
+    return stmt.get(sdkSessionId) as any || null;
+  }
+
+  /**
    * Get session by ID
    */
   getSessionById(id: number): {

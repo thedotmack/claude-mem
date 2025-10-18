@@ -36,14 +36,14 @@ class Logger {
   /**
    * Create correlation ID for tracking an observation through the pipeline
    */
-  static correlationId(sessionId: number, observationNum: number): string {
+  correlationId(sessionId: number, observationNum: number): string {
     return `obs-${sessionId}-${observationNum}`;
   }
 
   /**
    * Create session correlation ID
    */
-  static sessionId(sessionId: number): string {
+  sessionId(sessionId: number): string {
     return `session-${sessionId}`;
   }
 
