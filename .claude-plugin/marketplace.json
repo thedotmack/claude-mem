@@ -3,11 +3,19 @@
   "owner": {
     "name": "Alex Newman"
   },
+  "metadata": {
+    "description": "Alex Newman's Claude Code plugins",
+    "version": "1.0.0"
+  },
   "plugins": [
     {
       "name": "claude-mem",
       "source": "./plugin",
-      "description": "Persistent memory system for Claude Code"
+      "description": "Persistent memory system for Claude Code - seamlessly preserve context across sessions",
+      "version": "4.0.2",
+      "author": {
+        "name": "Alex Newman"
+      }
     }
   ]
 }
