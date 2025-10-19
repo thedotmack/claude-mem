@@ -16,6 +16,7 @@ Claude-Mem seamlessly preserves context across sessions by automatically capturi
 - [How It Works](#how-it-works)
 - [Installation](#installation)
 - [Usage](#usage)
+  - [MCP Search Tools](#mcp-search-tools)
 - [Architecture](#architecture)
 - [Configuration](#configuration)
 - [Development](#development)
@@ -39,6 +40,7 @@ Claude-Mem is a **Claude Code plugin** that provides persistent memory across se
 
 - **Session Continuity**: Knowledge persists across Claude Code sessions
 - **Automatic Context Injection**: Recent session summaries appear when Claude starts
+- **MCP Search Server**: Search and retrieve observations and sessions via 6 specialized tools
 - **Structured Observations**: XML-formatted extraction of learnings
 - **Smart Filtering**: Skips low-value tool observations
 - **Multi-Prompt Sessions**: Tracks multiple prompts within a single session
@@ -129,14 +131,32 @@ Uses Claude Agent SDK (`@anthropic-ai/claude-agent-sdk`) to:
 - Accumulate learnings about modifications, discoveries, decisions
 - Generate final summaries with lessons learned and next steps
 
-#### 4. Database Layer
+#### 4. MCP Search Server
+
+Claude-Mem includes a Model Context Protocol (MCP) server that exposes 6 specialized search tools for querying stored observations and sessions:
+
+**Search Tools:**
+- `search_observations` - Full-text search across observation titles, narratives, facts, and concepts
+- `search_sessions` - Full-text search across session summaries, requests, and learnings
+- `find_by_concept` - Find observations tagged with specific concepts
+- `find_by_file` - Find observations and sessions that reference specific file paths
+- `find_by_type` - Find observations by type (decision, bugfix, feature, refactor, discovery, change)
+- `advanced_search` - Combined search with filters across observations and sessions
+
+All search results are returned in `search_result` format with **citations enabled**, allowing Claude to reference specific observations and sessions from your project history using the `claude-mem://` URI scheme.
+
+**Configuration:** The MCP server is automatically registered via `plugin/.mcp.json` and runs when Claude Code starts.
+
+#### 5. Database Layer
 
 SQLite database (`~/.claude-mem/claude-mem.db`) with tables:
 
 - **sdk_sessions**: Active/completed session tracking
-- **observations**: Individual tool executions
-- **session_summaries**: Processed semantic summaries
+- **observations**: Individual tool executions with FTS5 full-text search
+- **session_summaries**: Processed semantic summaries with FTS5 full-text search
 - **sessions**, **memories**, **overviews**: Legacy tables
+
+**Full-Text Search:** The database includes FTS5 (Full-Text Search) virtual tables for fast searching across observations and summaries, powering the MCP search tools.
 
 ---
 
@@ -220,6 +240,32 @@ Claude-Mem works automatically once installed. No manual intervention required!
 2. **Work normally** - Every tool execution is captured
 3. **Stop Claude** - Summary is generated and saved
 4. **Next session** - Previous work appears in context
+
+### MCP Search Tools
+
+Once claude-mem is installed as a plugin, six search tools become available in your Claude Code sessions:
+
+**Example Queries:**
+
+```
+"Use search_observations to find all decisions about the build system"
+→ Searches for observations with type="decision" and content matching "build system"
+
+"Use find_by_file to show me everything related to worker-service.ts"
+→ Returns all observations and sessions that read/modified worker-service.ts
+
+"Use search_sessions to find what we learned about hooks"
+→ Searches session summaries for mentions of "hooks" in learnings
+
+"Use find_by_concept to show observations tagged with 'architecture'"
+→ Returns observations tagged with the concept "architecture"
+```
+
+All results include:
+- **Citations**: Results use `claude-mem://observation/{id}` or `claude-mem://session/{id}` URIs
+- **Metadata**: Type, concepts, files, facts, and dates
+- **Rich Context**: Full observation narratives and session summaries
+- **Filtering**: Project, date ranges, types, concepts, files
 
 ### Manual Commands
 
@@ -321,6 +367,9 @@ claude-mem/
 │   │   ├── summary.ts
 │   │   └── cleanup.ts
 │   │
+│   ├── servers/                # MCP servers
+│   │   └── search-server.ts    # MCP search tools server
+│   │
 │   ├── sdk/                    # Claude Agent SDK integration
 │   │   ├── prompts.ts          # XML prompt builders
 │   │   ├── parser.ts           # XML response parser
@@ -331,6 +380,7 @@ claude-mem/
 │   │   └── sqlite/             # Database layer
 │   │       ├── Database.ts
 │   │       ├── HooksDatabase.ts
+│   │       ├── SessionSearch.ts # FTS5 search service
 │   │       ├── migrations.ts
 │   │       └── types.ts
 │   │
@@ -347,9 +397,16 @@ claude-mem/
 ├── plugin/                     # Plugin distribution
 │   ├── .claude-plugin/
 │   │   └── plugin.json
+│   ├── .mcp.json               # MCP server configuration
 │   ├── hooks/
 │   │   └── hooks.json
-│   └── scripts/                # Built hook executables
+│   └── scripts/                # Built executables
+│       ├── context-hook.js
+│       ├── new-hook.js
+│       ├── save-hook.js
+│       ├── summary-hook.js
+│       ├── cleanup-hook.js
+│       └── search-server.js    # MCP search server
 │
 ├── dist/                       # Built output
 │   └── worker-service.cjs
@@ -361,6 +418,7 @@ claude-mem/
 
 ### Data Flow
 
+#### Memory Pipeline
 ```
 Hook (stdin) → Database → Worker Service → SDK Processor → Database → Next Session Hook
 ```
@@ -370,6 +428,17 @@ Hook (stdin) → Database → Worker Service → SDK Processor → Database → 
 3. **Processing**: Worker service reads observations, processes via SDK
 4. **Output**: Processed summaries written back to database
 5. **Retrieval**: Next session's context hook reads summaries from database
+
+#### Search Pipeline
+```
+Claude Request → MCP Server → SessionSearch Service → FTS5 Database → Search Results → Claude
+```
+
+1. **Query**: Claude uses MCP search tools (e.g., `search_observations`)
+2. **Search**: MCP server calls SessionSearch service with query parameters
+3. **FTS5**: Full-text search executes against FTS5 virtual tables
+4. **Format**: Results formatted as `search_result` blocks with citations
+5. **Return**: Claude receives citable search results for analysis
 
 ---
 
@@ -396,6 +465,8 @@ Hook (stdin) → Database → Worker Service → SDK Processor → Database → 
 ```
 
 ### Plugin Configuration
+
+#### Hooks Configuration
 
 Hooks are configured in `plugin/hooks/hooks.json`:
 
@@ -424,6 +495,23 @@ Hooks are configured in `plugin/hooks/hooks.json`:
 }
 ```
 
+#### MCP Server Configuration
+
+The MCP search server is configured in `plugin/.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "claude-mem-search": {
+      "type": "stdio",
+      "command": "${CLAUDE_PLUGIN_ROOT}/scripts/search-server.js"
+    }
+  }
+}
+```
+
+This registers the `claude-mem-search` server with Claude Code, making the 6 search tools available in all sessions. The server is automatically started when Claude Code launches and communicates via stdio transport.
+
 ---
 
 ## Development
@@ -445,7 +533,8 @@ npm run build
 The build process:
 1. Compiles TypeScript to JavaScript using esbuild
 2. Creates standalone executables for each hook in `plugin/scripts/`
-3. Bundles worker service to `dist/worker-service.cjs`
+3. Bundles MCP search server to `plugin/scripts/search-server.js`
+4. Bundles worker service to `dist/worker-service.cjs`
 
 ### Running Tests
 
@@ -633,6 +722,9 @@ For more information about AGPL-3.0, see: https://www.gnu.org/licenses/agpl-3.0.
 
 ### v3.9.17 (Current)
 
+- **NEW**: MCP Search Server with 6 specialized search tools
+- **NEW**: FTS5 full-text search across observations and session summaries
+- **FIX**: Context hook now uses proper `hookSpecificOutput` JSON format
 - Refactored summary and context handling in hooks
 - Implemented structured logging across the application
 - Fixed race condition in summary generation
