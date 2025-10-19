@@ -14,9 +14,9 @@ export interface SessionStartInput {
  * Context Hook - SessionStart
  * Shows user what happened in recent sessions
  *
- * Output: stdout is injected as context to Claude (exit code 0)
+ * Output: Returns formatted context string to be wrapped in hookSpecificOutput
  */
-export function contextHook(input?: SessionStartInput): void {
+export function contextHook(input?: SessionStartInput): string {
   const cwd = input?.cwd ?? process.cwd();
   const project = cwd ? path.basename(cwd) : 'unknown-project';
 
@@ -26,9 +26,7 @@ export function contextHook(input?: SessionStartInput): void {
     const sessions = db.getRecentSessionsWithStatus(project, 3);
 
     if (sessions.length === 0) {
-      // Output directly to stdout for injection into context
-      console.log('# Recent Session Context\n\nNo previous sessions found for this project yet.');
-      return;
+      return '# Recent Session Context\n\nNo previous sessions found for this project yet.';
     }
 
     const output: string[] = [];
@@ -138,8 +136,7 @@ export function contextHook(input?: SessionStartInput): void {
       output.push('');
     }
 
-    // Output directly to stdout for injection into context
-    console.log(output.join('\n'));
+    return output.join('\n');
   } finally {
     db.close();
   }
