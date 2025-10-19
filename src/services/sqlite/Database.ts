@@ -1,22 +1,23 @@
-import Database from 'better-sqlite3';
-import path from 'path';
-import fs from 'fs';
-import { PathDiscovery } from '../path-discovery.js';
+import { Database as BunDatabase } from 'bun:sqlite';
+import { DATA_DIR, DB_PATH, ensureDir } from '../../shared/paths.js';
+
+// Type alias for better-sqlite3 compatibility
+type Database = BunDatabase;
 
 export interface Migration {
   version: number;
-  up: (db: Database.Database) => void;
-  down?: (db: Database.Database) => void;
+  up: (db: Database) => void;
+  down?: (db: Database) => void;
 }
 
-let dbInstance: Database.Database | null = null;
+let dbInstance: Database | null = null;
 
 /**
  * SQLite Database singleton with migration support and optimized settings
  */
 export class DatabaseManager {
   private static instance: DatabaseManager;
-  private db: Database.Database | null = null;
+  private db: Database | null = null;
   private migrations: Migration[] = [];
 
   static getInstance(): DatabaseManager {
@@ -38,25 +39,23 @@ export class DatabaseManager {
   /**
    * Initialize database connection with optimized settings
    */
-  async initialize(): Promise<Database.Database> {
+  async initialize(): Promise<Database> {
     if (this.db) {
       return this.db;
     }
 
     // Ensure the data directory exists
-    const dataDir = PathDiscovery.getInstance().getDataDirectory();
-    fs.mkdirSync(dataDir, { recursive: true });
+    ensureDir(DATA_DIR);
 
-    const dbPath = path.join(dataDir, 'claude-mem.db');
-    this.db = new Database(dbPath);
-    
+    this.db = new BunDatabase(DB_PATH, { create: true, readwrite: true });
+
     // Apply optimized SQLite settings
-    this.db.pragma('journal_mode = WAL');
-    this.db.pragma('synchronous = NORMAL');
-    this.db.pragma('foreign_keys = ON');
-    this.db.pragma('temp_store = memory');
-    this.db.pragma('mmap_size = 268435456'); // 256MB
-    this.db.pragma('cache_size = 10000');
+    this.db.run('PRAGMA journal_mode = WAL');
+    this.db.run('PRAGMA synchronous = NORMAL');
+    this.db.run('PRAGMA foreign_keys = ON');
+    this.db.run('PRAGMA temp_store = memory');
+    this.db.run('PRAGMA mmap_size = 268435456'); // 256MB
+    this.db.run('PRAGMA cache_size = 10000');
 
     // Initialize schema_versions table
     this.initializeSchemaVersions();
@@ -71,7 +70,7 @@ export class DatabaseManager {
   /**
    * Get the current database connection
    */
-  getConnection(): Database.Database {
+  getConnection(): Database {
     if (!this.db) {
       throw new Error('Database not initialized. Call initialize() first.');
     }
@@ -81,7 +80,7 @@ export class DatabaseManager {
   /**
    * Execute a function within a transaction
    */
-  withTransaction<T>(fn: (db: Database.Database) => T): T {
+  withTransaction<T>(fn: (db: Database) => T): T {
     const db = this.getConnection();
     const transaction = db.transaction(fn);
     return transaction(db);
@@ -104,7 +103,7 @@ export class DatabaseManager {
   private initializeSchemaVersions(): void {
     if (!this.db) return;
 
-    this.db.exec(`
+    this.db.run(`
       CREATE TABLE IF NOT EXISTS schema_versions (
         id INTEGER PRIMARY KEY,
         version INTEGER UNIQUE NOT NULL,
@@ -119,23 +118,20 @@ export class DatabaseManager {
   private async runMigrations(): Promise<void> {
     if (!this.db) return;
 
-    const appliedVersions = this.db
-      .prepare('SELECT version FROM schema_versions ORDER BY version')
-      .all()
-      .map((row: any) => row.version);
+    const query = this.db.query('SELECT version FROM schema_versions ORDER BY version');
+    const appliedVersions = query.all().map((row: any) => row.version);
 
     const maxApplied = appliedVersions.length > 0 ? Math.max(...appliedVersions) : 0;
 
     for (const migration of this.migrations) {
       if (migration.version > maxApplied) {
         console.log(`Applying migration ${migration.version}...`);
-        
+
         const transaction = this.db.transaction(() => {
           migration.up(this.db!);
-          
-          this.db!
-            .prepare('INSERT INTO schema_versions (version, applied_at) VALUES (?, ?)')
-            .run(migration.version, new Date().toISOString());
+
+          const insertQuery = this.db!.query('INSERT INTO schema_versions (version, applied_at) VALUES (?, ?)');
+          insertQuery.run(migration.version, new Date().toISOString());
         });
 
         transaction();
@@ -150,9 +146,8 @@ export class DatabaseManager {
   getCurrentVersion(): number {
     if (!this.db) return 0;
 
-    const result = this.db
-      .prepare('SELECT MAX(version) as version FROM schema_versions')
-      .get() as { version: number } | undefined;
+    const query = this.db.query('SELECT MAX(version) as version FROM schema_versions');
+    const result = query.get() as { version: number } | undefined;
 
     return result?.version || 0;
   }
@@ -161,7 +156,7 @@ export class DatabaseManager {
 /**
  * Get the global database instance (for compatibility)
  */
-export function getDatabase(): Database.Database {
+export function getDatabase(): Database {
   if (!dbInstance) {
     throw new Error('Database not initialized. Call DatabaseManager.getInstance().initialize() first.');
   }
@@ -171,9 +166,9 @@ export function getDatabase(): Database.Database {
 /**
  * Initialize and get database manager
  */
-export async function initializeDatabase(): Promise<Database.Database> {
+export async function initializeDatabase(): Promise<Database> {
   const manager = DatabaseManager.getInstance();
   return await manager.initialize();
 }
 
-export { Database };
+export { BunDatabase as Database };

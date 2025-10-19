@@ -6,24 +6,6 @@
  */
 
 // =============================================================================
-// ERROR CLASSES
-// =============================================================================
-
-/**
- * Custom error class for compression failures
- */
-export class CompressionError extends Error {
-  constructor(
-    message: string,
-    public transcriptPath: string,
-    public stage: 'reading' | 'analyzing' | 'compressing' | 'writing'
-  ) {
-    super(message);
-    this.name = 'CompressionError';
-  }
-}
-
-// =============================================================================
 // CONFIGURATION TYPES
 // =============================================================================
 
@@ -37,7 +19,6 @@ export interface Settings {
   backend?: string;
   embedded?: boolean;
   saveMemoriesOnClear?: boolean;
-  claudePath?: string;
   rollingCaptureEnabled?: boolean;
   rollingSummaryEnabled?: boolean;
   rollingSessionStartEnabled?: boolean;

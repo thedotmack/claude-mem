@@ -5,3 +5,5 @@ node_modules/
 .env.local
 *.tmp
 *.temp
+.claude/
+plugin/data/

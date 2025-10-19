@@ -45,7 +45,4 @@ try {
 export const PACKAGE_NAME = packageName;
 export const PACKAGE_VERSION = packageVersion;
 export const PACKAGE_DESCRIPTION = packageDescription;
-
-// Export commonly used names
-export const CLI_NAME = PACKAGE_NAME;  // The CLI command name
 // </Block> =======================================

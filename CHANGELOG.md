@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 
+## [4.0.0] - 2025-10-18
+
+### BREAKING CHANGES
+- **Data directory moved to plugin location**: Database and worker files now stored in `${CLAUDE_PLUGIN_ROOT}/data/` instead of `~/.claude-mem/`
+- **Fresh start required**: No automatic migration from v3.x databases. Users must start fresh with v4.0.0
+- **Worker auto-starts**: Worker service now starts automatically on SessionStart hook, no manual PM2 commands needed
+
+### Added
+- **MCP Search Server**: 6 specialized search tools with FTS5 full-text search capabilities
+  - `search_observations` - Full-text search across observation titles, narratives, facts, and concepts
+  - `search_sessions` - Full-text search across session summaries, requests, and learnings
+  - `find_by_concept` - Find observations tagged with specific concepts
+  - `find_by_file` - Find observations and sessions that reference specific file paths
+  - `find_by_type` - Find observations by type (decision, bugfix, feature, refactor, discovery, change)
+  - `advanced_search` - Combined search with filters across observations and sessions
+- **Citation support**: All search results include `claude-mem://` URI citations for referencing specific observations and sessions
+- **Automatic worker startup**: Worker service now starts automatically in SessionStart hook
+- **Plugin data directory**: Full integration with Claude Code plugin system using `CLAUDE_PLUGIN_ROOT`
+
+### Changed
+- **Worker service architecture**: HTTP REST API with PM2 management for long-running background service
+- **Data directory priority**: `CLAUDE_PLUGIN_ROOT/data` > `CLAUDE_MEM_DATA_DIR` > `~/.claude-mem` (fallback for dev)
+- **Port file location**: Worker port file now stored in plugin data directory
+- **Session continuity**: Automatic context injection from last 3 sessions on startup
+- **Package structure**: Reorganized to properly distribute plugin/, dist/, and src/ directories
+
+### Fixed
+- Context hook now uses proper `hookSpecificOutput` JSON format for SessionStart
+- Added missing process.exit(0) calls in all hook entry points
+- Worker service now ensures data directory exists before writing port file
+- Improved error handling and graceful degradation across all components
+
+
 ## [3.7.1] - 2025-09-17
 
 ### Added
@@ -116,4 +149,3 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 - Standardized GitHub release naming to lowercase 'claude-mem vX.X.X' format for consistent branding
-

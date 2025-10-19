@@ -1,91 +1,163 @@
-import { sep, basename } from 'path';
-import { PathDiscovery } from '../services/path-discovery.js';
+import { join, dirname, basename, sep } from 'path';
+import { homedir } from 'os';
+import { existsSync, mkdirSync } from 'fs';
+import { execSync } from 'child_process';
+import { fileURLToPath } from 'url';
 
 /**
- * PathResolver utility for managing claude-mem file system paths
- * Now delegates to PathDiscovery service for centralized path management
+ * Simple path configuration for claude-mem
+ * Standard paths based on Claude Code conventions
+ *
+ * v4.0.0: Data directory now uses CLAUDE_PLUGIN_ROOT when available
  */
-export class PathResolver {
-  private pathDiscovery: PathDiscovery;
 
-  // <Block> 1.1 ====================================
-  constructor() {
-    this.pathDiscovery = PathDiscovery.getInstance();
+// Base directories
+// Priority: CLAUDE_PLUGIN_ROOT/data > CLAUDE_MEM_DATA_DIR > ~/.claude-mem
+const getDataDir = (): string => {
+  if (process.env.CLAUDE_PLUGIN_ROOT) {
+    return join(process.env.CLAUDE_PLUGIN_ROOT, 'data');
   }
-  // </Block> =======================================
+  if (process.env.CLAUDE_MEM_DATA_DIR) {
+    return process.env.CLAUDE_MEM_DATA_DIR;
+  }
+  return join(homedir(), '.claude-mem');
+};
 
-  // <Block> 1.2 ====================================
-  getConfigDir(): string {
-    return this.pathDiscovery.getDataDirectory();
-  }
-  // </Block> =======================================
+export const DATA_DIR = getDataDir();
+export const CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
 
-  // <Block> 1.3 ====================================
-  getIndexDir(): string {
-    return this.pathDiscovery.getIndexDirectory();
-  }
-  // </Block> =======================================
+// Data subdirectories
+export const ARCHIVES_DIR = join(DATA_DIR, 'archives');
+export const LOGS_DIR = join(DATA_DIR, 'logs');
+export const TRASH_DIR = join(DATA_DIR, 'trash');
+export const BACKUPS_DIR = join(DATA_DIR, 'backups');
+export const USER_SETTINGS_PATH = join(DATA_DIR, 'settings.json');
+export const DB_PATH = join(DATA_DIR, 'claude-mem.db');
 
-  // <Block> 1.4 ====================================
-  getIndexPath(): string {
-    return this.pathDiscovery.getIndexPath();
-  }
-  // </Block> =======================================
+// Claude integration paths
+export const CLAUDE_SETTINGS_PATH = join(CLAUDE_CONFIG_DIR, 'settings.json');
+export const CLAUDE_COMMANDS_DIR = join(CLAUDE_CONFIG_DIR, 'commands');
+export const CLAUDE_MD_PATH = join(CLAUDE_CONFIG_DIR, 'CLAUDE.md');
 
-  // <Block> 1.5 ====================================
-  getArchiveDir(): string {
-    return this.pathDiscovery.getArchivesDirectory();
-  }
-  // </Block> =======================================
+/**
+ * Get project-specific archive directory
+ */
+export function getProjectArchiveDir(projectName: string): string {
+  return join(ARCHIVES_DIR, projectName);
+}
 
-  // <Block> 1.6 ====================================
-  getProjectArchiveDir(projectName: string): string {
-    return this.pathDiscovery.getProjectArchiveDirectory(projectName);
-  }
-  // </Block> =======================================
+/**
+ * Get worker socket path for a session
+ */
+export function getWorkerSocketPath(sessionId: number): string {
+  return join(DATA_DIR, `worker-${sessionId}.sock`);
+}
 
-  // <Block> 1.7 ====================================
-  getLogsDir(): string {
-    return this.pathDiscovery.getLogsDirectory();
-  }
-  // </Block> =======================================
+/**
+ * Get worker port file path
+ */
+export function getWorkerPortFilePath(): string {
+  return join(DATA_DIR, 'worker.port');
+}
 
-  // <Block> 1.8 ====================================
-  static ensureDirectory(dirPath: string): void {
-    PathDiscovery.getInstance().ensureDirectory(dirPath);
-  }
-  // </Block> =======================================
+/**
+ * Ensure a directory exists
+ */
+export function ensureDir(dirPath: string): void {
+  mkdirSync(dirPath, { recursive: true });
+}
 
-  // <Block> 1.9 ====================================
-  static ensureDirectories(dirPaths: string[]): void {
-    PathDiscovery.getInstance().ensureDirectories(dirPaths);
-  }
-  // </Block> =======================================
+/**
+ * Ensure all data directories exist
+ */
+export function ensureAllDataDirs(): void {
+  ensureDir(DATA_DIR);
+  ensureDir(ARCHIVES_DIR);
+  ensureDir(LOGS_DIR);
+  ensureDir(TRASH_DIR);
+  ensureDir(BACKUPS_DIR);
+}
 
-  // <Block> 1.10 ===================================
-  static extractProjectName(transcriptPath: string): string {
-    return PathDiscovery.extractProjectName(transcriptPath);
-  }
-  
-  // <Block> 1.11 ===================================
-  /**
-   * DRY utility function: Canonical source for getting the current project prefix
-   * Replaces all instances of path.basename(process.cwd()) across the codebase
-   * @returns The current project directory name, sanitized for use as a prefix
-   */
-  static getCurrentProjectPrefix(): string {
-    return PathDiscovery.getCurrentProjectName();
-  }
-  // </Block> =======================================
+/**
+ * Ensure all Claude integration directories exist
+ */
+export function ensureAllClaudeDirs(): void {
+  ensureDir(CLAUDE_CONFIG_DIR);
+  ensureDir(CLAUDE_COMMANDS_DIR);
+}
 
-  // <Block> 1.12 ===================================
-  /**
-   * DRY utility function: Gets raw project name without sanitization
-   * For use in contexts where original directory name is needed (e.g., display)
-   * @returns The current project directory name as-is
-   */
-  static getCurrentProjectName(): string {
-    return PathDiscovery.getCurrentProjectName();
+/**
+ * Get current project name from git root or cwd
+ */
+export function getCurrentProjectName(): string {
+  try {
+    const gitRoot = execSync('git rev-parse --show-toplevel', {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'ignore']
+    }).trim();
+    return basename(gitRoot);
+  } catch {
+    return basename(process.cwd());
   }
-  // </Block> =======================================
+}
+
+/**
+ * Find package root directory (for install command)
+ */
+export function getPackageRoot(): string {
+  // Method 1: Try require.resolve for package.json
+  try {
+    const packageJsonPath = require.resolve('claude-mem/package.json');
+    return dirname(packageJsonPath);
+  } catch {
+    // Continue to next method
+  }
+
+  // Method 2: Walk up from current module location
+  const currentFile = fileURLToPath(import.meta.url);
+  let currentDir = dirname(currentFile);
+
+  for (let i = 0; i < 10; i++) {
+    const packageJsonPath = join(currentDir, 'package.json');
+    if (existsSync(packageJsonPath)) {
+      const packageJson = require(packageJsonPath);
+      if (packageJson.name === 'claude-mem') {
+        return currentDir;
+      }
+    }
+
+    const parentDir = dirname(currentDir);
+    if (parentDir === currentDir) break;
+    currentDir = parentDir;
+  }
+
+  throw new Error('Cannot locate claude-mem package root. Ensure claude-mem is properly installed.');
+}
+
+/**
+ * Find commands directory in the installed package
+ */
+export function getPackageCommandsDir(): string {
+  const packageRoot = getPackageRoot();
+  const commandsDir = join(packageRoot, 'commands');
+
+  if (!existsSync(join(commandsDir, 'save.md'))) {
+    throw new Error('Package commands directory missing required files');
+  }
+
+  return commandsDir;
+}
+
+/**
+ * Create a timestamped backup filename
+ */
+export function createBackupFilename(originalPath: string): string {
+  const timestamp = new Date()
+    .toISOString()
+    .replace(/[:.]/g, '-')
+    .replace('T', '_')
+    .slice(0, 19);
+
+  return `${originalPath}.backup.${timestamp}`;
 }
