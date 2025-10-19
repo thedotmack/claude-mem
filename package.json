@@ -43,25 +43,25 @@
     "test:context:verbose": "echo '{\"session_id\":\"test-'$(date +%s)'\",\"cwd\":\"'$(pwd)'\",\"source\":\"startup\"}' | node plugin/scripts/context-hook.js",
     "import:xml": "tsx src/bin/import-xml-observations.ts",
     "cleanup:duplicates": "tsx src/bin/cleanup-duplicates.ts",
-    "worker:start": "pm2 start ecosystem.config.cjs",
-    "worker:stop": "pm2 stop claude-mem-worker",
-    "worker:restart": "pm2 restart claude-mem-worker",
-    "worker:logs": "pm2 logs claude-mem-worker",
-    "worker:status": "pm2 status claude-mem-worker"
+    "worker:start": "npx pm2 start ecosystem.config.cjs",
+    "worker:stop": "npx pm2 stop claude-mem-worker",
+    "worker:restart": "npx pm2 restart claude-mem-worker",
+    "worker:logs": "npx pm2 logs claude-mem-worker",
+    "worker:status": "npx pm2 status claude-mem-worker"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.1.0",
     "better-sqlite3": "^11.0.0",
     "express": "^4.18.2",
     "glob": "^11.0.3",
-    "handlebars": "^4.7.8"
+    "handlebars": "^4.7.8",
+    "pm2": "^5.3.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.8",
     "@types/express": "^4.17.21",
     "@types/node": "^20.0.0",
     "esbuild": "^0.20.0",
-    "pm2": "^5.3.0",
     "typescript": "^5.3.0"
   },
   "files": [

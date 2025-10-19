@@ -67,7 +67,7 @@ Claude-Mem is a **Claude Code plugin** that provides persistent memory across se
 
 - **Node.js**: 18.0.0 or higher
 - **Claude Code**: Latest version with plugin support
-- **PM2**: Process manager (installed as dev dependency)
+- **PM2**: Process manager (bundled with plugin - no global install required)
 - **SQLite 3**: For persistent storage (bundled)
 
 ---

@@ -44,35 +44,39 @@ export async function ensureWorkerRunning(): Promise<boolean> {
       return false;
     }
 
-    // Try to start with PM2 first (preferred for production)
+    // Start worker with PM2 (bundled dependency)
     const ecosystemPath = path.join(packageRoot, 'ecosystem.config.cjs');
-    if (existsSync(ecosystemPath)) {
-      try {
-        spawn('pm2', ['start', ecosystemPath], {
-          detached: true,
-          stdio: 'ignore',
-          cwd: packageRoot
-        }).unref();
-        console.error('[claude-mem] Worker started with PM2');
-      } catch (pm2Error) {
-        console.error('[claude-mem] PM2 not available, using direct spawn');
-        // Fallback: spawn worker directly
-        spawn('node', [workerPath], {
-          detached: true,
-          stdio: 'ignore',
-          env: { ...process.env, NODE_ENV: 'production', CLAUDE_MEM_WORKER_PORT: FIXED_PORT.toString() }
-        }).unref();
-        console.error('[claude-mem] Worker started in background');
-      }
-    } else {
-      // No PM2 config, spawn directly
-      spawn('node', [workerPath], {
-        detached: true,
-        stdio: 'ignore',
-        env: { ...process.env, NODE_ENV: 'production', CLAUDE_MEM_WORKER_PORT: FIXED_PORT.toString() }
-      }).unref();
-      console.error('[claude-mem] Worker started in background');
+    const pm2Path = path.join(packageRoot, 'node_modules', '.bin', 'pm2');
+
+    // Fail loudly if bundled pm2 is missing
+    if (!existsSync(pm2Path)) {
+      throw new Error(
+        `PM2 binary not found at ${pm2Path}. ` +
+        `This is a bundled dependency - try running: npm install`
+      );
     }
+
+    if (!existsSync(ecosystemPath)) {
+      throw new Error(
+        `PM2 ecosystem config not found at ${ecosystemPath}. ` +
+        `Plugin installation may be corrupted.`
+      );
+    }
+
+    // Spawn worker with PM2
+    const proc = spawn(pm2Path, ['start', ecosystemPath], {
+      detached: true,
+      stdio: 'ignore',
+      cwd: packageRoot
+    });
+
+    // Fail loudly on spawn errors
+    proc.on('error', (err) => {
+      throw new Error(`Failed to spawn PM2: ${err.message}`);
+    });
+
+    proc.unref();
+    console.error('[claude-mem] Worker started with PM2');
 
     // Wait for worker to become healthy (retry 3 times with 500ms delay)
     for (let i = 0; i < 3; i++) {
