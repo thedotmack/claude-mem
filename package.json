@@ -1,6 +1,6 @@
 {
   "name": "claude-mem",
-  "version": "3.9.17",
+  "version": "4.0.0",
   "description": "Memory compression system for Claude Code - persist context across sessions",
   "keywords": [
     "claude",
@@ -65,12 +65,13 @@
     "typescript": "^5.3.0"
   },
   "files": [
-    "hooks",
-    "scripts",
-    ".claude-plugin",
+    "plugin",
+    "dist",
     "src",
+    "scripts",
     "docs",
-    ".mcp.json",
-    "README_WINDOWS.md"
+    "ecosystem.config.cjs",
+    "LICENSE",
+    "README.md"
   ]
 }

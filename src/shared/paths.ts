@@ -7,10 +7,23 @@ import { fileURLToPath } from 'url';
 /**
  * Simple path configuration for claude-mem
  * Standard paths based on Claude Code conventions
+ *
+ * v4.0.0: Data directory now uses CLAUDE_PLUGIN_ROOT when available
  */
 
 // Base directories
-export const DATA_DIR = process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem');
+// Priority: CLAUDE_PLUGIN_ROOT/data > CLAUDE_MEM_DATA_DIR > ~/.claude-mem
+const getDataDir = (): string => {
+  if (process.env.CLAUDE_PLUGIN_ROOT) {
+    return join(process.env.CLAUDE_PLUGIN_ROOT, 'data');
+  }
+  if (process.env.CLAUDE_MEM_DATA_DIR) {
+    return process.env.CLAUDE_MEM_DATA_DIR;
+  }
+  return join(homedir(), '.claude-mem');
+};
+
+export const DATA_DIR = getDataDir();
 export const CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
 
 // Data subdirectories
@@ -38,6 +51,13 @@ export function getProjectArchiveDir(projectName: string): string {
  */
 export function getWorkerSocketPath(sessionId: number): string {
   return join(DATA_DIR, `worker-${sessionId}.sock`);
+}
+
+/**
+ * Get worker port file path
+ */
+export function getWorkerPortFilePath(): string {
+  return join(DATA_DIR, 'worker.port');
 }
 
 /**

@@ -1,6 +1,7 @@
 import path from 'path';
 import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { createHookResponse } from './hook-response.js';
+import { getWorkerPortFilePath } from '../shared/paths.js';
 
 export interface UserPromptSubmitInput {
   session_id: string;
@@ -14,10 +15,8 @@ export interface UserPromptSubmitInput {
  */
 async function getWorkerPort(): Promise<number | null> {
   const { readFileSync, existsSync } = await import('fs');
-  const { join } = await import('path');
-  const { homedir } = await import('os');
 
-  const portFile = join(homedir(), '.claude-mem', 'worker.port');
+  const portFile = getWorkerPortFilePath();
 
   if (!existsSync(portFile)) {
     return null;

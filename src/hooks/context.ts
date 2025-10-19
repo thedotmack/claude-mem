@@ -1,5 +1,8 @@
 import path from 'path';
+import { existsSync } from 'fs';
+import { spawn } from 'child_process';
 import { SessionStore } from '../services/sqlite/SessionStore.js';
+import { getWorkerPortFilePath, getPackageRoot } from '../shared/paths.js';
 
 export interface SessionStartInput {
   session_id?: string;
@@ -11,12 +14,69 @@ export interface SessionStartInput {
 }
 
 /**
+ * Ensure worker service is running
+ * Auto-starts worker if not running (v4.0.0 feature)
+ */
+function ensureWorkerRunning(): void {
+  try {
+    const portFile = getWorkerPortFilePath();
+
+    // Check if worker is already running
+    if (existsSync(portFile)) {
+      // Worker appears to be running (port file exists)
+      return;
+    }
+
+    console.error('[claude-mem] Worker not running, starting...');
+
+    // Find worker service path
+    const packageRoot = getPackageRoot();
+    const workerPath = path.join(packageRoot, 'dist', 'worker-service.cjs');
+
+    if (!existsSync(workerPath)) {
+      console.error(`[claude-mem] Worker service not found at ${workerPath}`);
+      return;
+    }
+
+    // Try to start with PM2 first (preferred for production)
+    const ecosystemPath = path.join(packageRoot, 'ecosystem.config.cjs');
+    if (existsSync(ecosystemPath)) {
+      try {
+        spawn('pm2', ['start', ecosystemPath], {
+          detached: true,
+          stdio: 'ignore',
+          cwd: packageRoot
+        }).unref();
+        console.error('[claude-mem] Worker started with PM2');
+        return;
+      } catch (pm2Error) {
+        console.error('[claude-mem] PM2 not available, using direct spawn');
+      }
+    }
+
+    // Fallback: spawn worker directly
+    spawn('node', [workerPath], {
+      detached: true,
+      stdio: 'ignore',
+      env: { ...process.env, NODE_ENV: 'production' }
+    }).unref();
+    console.error('[claude-mem] Worker started in background');
+
+  } catch (error: any) {
+    // Don't fail the hook if worker start fails
+    console.error(`[claude-mem] Failed to start worker: ${error.message}`);
+  }
+}
+
+/**
  * Context Hook - SessionStart
  * Shows user what happened in recent sessions
  *
  * Output: Returns formatted context string to be wrapped in hookSpecificOutput
  */
 export function contextHook(input?: SessionStartInput): string {
+  // v4.0.0: Ensure worker is running before loading context
+  ensureWorkerRunning();
   const cwd = input?.cwd ?? process.cwd();
   const project = cwd ? path.basename(cwd) : 'unknown-project';
 

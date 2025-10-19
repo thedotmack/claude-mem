@@ -12,6 +12,7 @@ import { parseObservations, parseSummary } from '../sdk/parser.js';
 import type { SDKSession } from '../sdk/prompts.js';
 import { findAvailablePort } from '../utils/port-allocator.js';
 import { logger } from '../utils/logger.js';
+import { getWorkerPortFilePath, ensureAllDataDirs } from '../shared/paths.js';
 
 const MODEL = 'claude-sonnet-4-5';
 const DISALLOWED_TOOLS = ['Glob', 'Grep', 'ListMcpResourcesTool', 'WebSearch'];
@@ -91,10 +92,10 @@ class WorkerService {
 
         // Write port to file for hooks to discover
         const { writeFileSync } = require('fs');
-        const { join } = require('path');
-        const { homedir } = require('os');
-        const portFile = join(homedir(), '.claude-mem', 'worker.port');
+        ensureAllDataDirs(); // Ensure data directory exists
+        const portFile = getWorkerPortFilePath();
         writeFileSync(portFile, port.toString(), 'utf8');
+        logger.info('SYSTEM', `Port file written to ${portFile}`);
 
         resolve();
       }).on('error', reject);

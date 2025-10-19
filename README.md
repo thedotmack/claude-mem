@@ -5,8 +5,22 @@
 Claude-Mem seamlessly preserves context across sessions by automatically capturing tool usage observations, generating semantic summaries, and making them available to future sessions. This enables Claude to maintain continuity of knowledge about projects even after sessions end or reconnect.
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL%203.0-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-3.9.17-green.svg)](package.json)
+[![Version](https://img.shields.io/badge/version-4.0.0-green.svg)](package.json)
 [![Node](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg)](package.json)
+
+---
+
+## What's New in v4.0.0
+
+**BREAKING CHANGES - Please Read:**
+
+- **Data Location Changed**: Database moved from `~/.claude-mem/` to `${CLAUDE_PLUGIN_ROOT}/data/` (inside plugin directory)
+- **Fresh Start Required**: No automatic migration from v3.x. Users must start with a clean database
+- **Worker Auto-Starts**: Worker service now starts automatically - no manual `npm run worker:start` needed
+- **MCP Search Server**: 6 new search tools with full-text search and citations
+- **Enhanced Architecture**: Improved plugin integration and data organization
+
+See [CHANGELOG.md](CHANGELOG.md) for complete details.
 
 ---
 
@@ -40,6 +54,7 @@ Claude-Mem is a **Claude Code plugin** that provides persistent memory across se
 
 - **Session Continuity**: Knowledge persists across Claude Code sessions
 - **Automatic Context Injection**: Recent session summaries appear when Claude starts
+- **Auto-Starting Worker**: Worker service starts automatically on first session (v4.0+)
 - **MCP Search Server**: Search and retrieve observations and sessions via 6 specialized tools
 - **Structured Observations**: XML-formatted extraction of learnings
 - **Smart Filtering**: Skips low-value tool observations
@@ -149,7 +164,7 @@ All search results are returned in `search_result` format with **citations enabl
 
 #### 5. Database Layer
 
-SQLite database (`~/.claude-mem/claude-mem.db`) with tables:
+SQLite database (`${CLAUDE_PLUGIN_ROOT}/data/claude-mem.db`) with tables:
 
 - **sdk_sessions**: Active/completed session tracking
 - **observations**: Individual tool executions with FTS5 full-text search
@@ -182,7 +197,8 @@ npm install
 # Build hooks and worker service
 npm run build
 
-# Start the worker service
+# Worker service will auto-start on first Claude Code session
+# Or manually start with:
 npm run worker:start
 
 # Verify worker is running
@@ -207,14 +223,17 @@ npm install -g claude-mem
    cat plugin/hooks/hooks.json
    ```
 
-2. **Set Environment Variable (Optional)**
+2. **Data Directory Location**
 
-   To customize data directory:
+   v4.0.0+ stores data in `${CLAUDE_PLUGIN_ROOT}/data/`:
+   - Database: `${CLAUDE_PLUGIN_ROOT}/data/claude-mem.db`
+   - Worker port file: `${CLAUDE_PLUGIN_ROOT}/data/worker.port`
+   - Logs: `${CLAUDE_PLUGIN_ROOT}/data/logs/`
+
+   For development/testing, you can override:
    ```bash
    export CLAUDE_MEM_DATA_DIR=/custom/path
    ```
-
-   Default: `~/.claude-mem/`
 
 3. **Check Worker Logs**
 
@@ -271,8 +290,10 @@ All results include:
 
 #### Worker Management
 
+**Note**: v4.0+ auto-starts the worker on first session. Manual commands below are optional.
+
 ```bash
-# Start worker service
+# Start worker service (optional - auto-starts automatically)
 npm run worker:start
 
 # Stop worker service
@@ -316,10 +337,15 @@ npm run publish:npm
 
 ### Viewing Stored Context
 
-Context is stored in SQLite database at `~/.claude-mem/claude-mem.db`. You can query it directly:
+Context is stored in SQLite database. Location varies by version:
+- v4.0+: `${CLAUDE_PLUGIN_ROOT}/data/claude-mem.db` (inside plugin)
+- v3.x: `~/.claude-mem/claude-mem.db` (legacy)
+
+Query the database directly:
 
 ```bash
-sqlite3 ~/.claude-mem/claude-mem.db
+# v4.0+ - find your plugin directory first
+sqlite3 path/to/plugin/data/claude-mem.db
 
 # View recent sessions
 SELECT session_id, project, created_at, status FROM sdk_sessions ORDER BY created_at DESC LIMIT 10;
@@ -446,22 +472,31 @@ Claude Request → MCP Server → SessionSearch Service → FTS5 Database → Se
 
 ### Environment Variables
 
-| Variable                | Default              | Description                           |
-|-------------------------|----------------------|---------------------------------------|
-| `CLAUDE_MEM_DATA_DIR`   | `~/.claude-mem/`     | Data directory for DB and logs        |
-| `CLAUDE_MEM_WORKER_PORT`| `0` (dynamic)        | Worker service port (37000-37999)     |
-| `NODE_ENV`              | `production`         | Environment mode                      |
-| `FORCE_COLOR`           | `1`                  | Enable colored logs                   |
+| Variable                | Default                         | Description                           |
+|-------------------------|---------------------------------|---------------------------------------|
+| `CLAUDE_PLUGIN_ROOT`    | Set by Claude Code              | Plugin installation directory         |
+| `CLAUDE_MEM_DATA_DIR`   | `${CLAUDE_PLUGIN_ROOT}/data/`   | Data directory override (dev only)    |
+| `CLAUDE_MEM_WORKER_PORT`| `0` (dynamic)                   | Worker service port (37000-37999)     |
+| `NODE_ENV`              | `production`                    | Environment mode                      |
+| `FORCE_COLOR`           | `1`                             | Enable colored logs                   |
 
 ### Files and Directories
 
+**v4.0.0+ Structure:**
+
 ```
-~/.claude-mem/
+${CLAUDE_PLUGIN_ROOT}/data/
 ├── claude-mem.db           # SQLite database
 ├── worker.port             # Current worker port file
 └── logs/
     ├── worker-out.log      # Worker stdout logs
     └── worker-error.log    # Worker stderr logs
+```
+
+**Legacy (v3.x):**
+
+```
+~/.claude-mem/              # Old location (no longer used)
 ```
 
 ### Plugin Configuration
@@ -600,8 +635,8 @@ npm run worker:start
 **Problem**: Port allocation failed
 
 ```bash
-# Check if port file exists
-cat ~/.claude-mem/worker.port
+# Check if port file exists (v4.0+)
+cat ${CLAUDE_PLUGIN_ROOT}/data/worker.port
 
 # Manually specify port
 CLAUDE_MEM_WORKER_PORT=37500 npm run worker:start
@@ -625,14 +660,14 @@ cat plugin/hooks/hooks.json | jq .
 **Problem**: Context not appearing
 
 ```bash
-# Check if summaries exist
-sqlite3 ~/.claude-mem/claude-mem.db "SELECT COUNT(*) FROM session_summaries;"
+# Check if summaries exist (adjust path for v4.0+)
+sqlite3 path/to/plugin/data/claude-mem.db "SELECT COUNT(*) FROM session_summaries;"
 
 # View recent sessions
 npm run test:context:verbose
 
 # Check database integrity
-sqlite3 ~/.claude-mem/claude-mem.db "PRAGMA integrity_check;"
+sqlite3 path/to/plugin/data/claude-mem.db "PRAGMA integrity_check;"
 ```
 
 ### Database Issues
@@ -643,12 +678,12 @@ sqlite3 ~/.claude-mem/claude-mem.db "PRAGMA integrity_check;"
 # Close all connections
 pm2 stop claude-mem-worker
 
-# Check for stale locks
-lsof ~/.claude-mem/claude-mem.db
+# Check for stale locks (v4.0+ path)
+lsof path/to/plugin/data/claude-mem.db
 
-# Backup and recreate (nuclear option)
-cp ~/.claude-mem/claude-mem.db ~/.claude-mem/claude-mem.db.backup
-rm ~/.claude-mem/claude-mem.db
+# Backup and recreate (nuclear option) - adjust paths for v4.0+
+cp path/to/plugin/data/claude-mem.db path/to/plugin/data/claude-mem.db.backup
+rm path/to/plugin/data/claude-mem.db
 npm run worker:start  # Will recreate schema
 ```
 
@@ -667,7 +702,7 @@ npm run worker:logs
 Check correlation IDs to trace observations through the pipeline:
 
 ```bash
-sqlite3 ~/.claude-mem/claude-mem.db "SELECT correlation_id, tool_name, created_at FROM observations WHERE session_id = 'YOUR_SESSION_ID' ORDER BY created_at;"
+sqlite3 path/to/plugin/data/claude-mem.db "SELECT correlation_id, tool_name, created_at FROM observations WHERE session_id = 'YOUR_SESSION_ID' ORDER BY created_at;"
 ```
 
 ---
@@ -720,11 +755,22 @@ For more information about AGPL-3.0, see: https://www.gnu.org/licenses/agpl-3.0.
 
 ## Changelog
 
-### v3.9.17 (Current)
+### v4.0.0 (Current)
 
 - **NEW**: MCP Search Server with 6 specialized search tools
 - **NEW**: FTS5 full-text search across observations and session summaries
+- **BREAKING**: Data directory moved to `${CLAUDE_PLUGIN_ROOT}/data/`
+- **NEW**: Auto-starting worker service
+- **NEW**: Session continuity with automatic context injection
+- Refactored summary and context handling in hooks
+- Implemented structured logging across the application
+- Improved error handling and graceful degradation
+
+### v3.9.17
+
 - **FIX**: Context hook now uses proper `hookSpecificOutput` JSON format
+- MCP Search Server with 6 specialized search tools
+- FTS5 full-text search across observations and session summaries
 - Refactored summary and context handling in hooks
 - Implemented structured logging across the application
 - Fixed race condition in summary generation
