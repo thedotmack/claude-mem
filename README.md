@@ -5,7 +5,7 @@
 Claude-Mem seamlessly preserves context across sessions by automatically capturing tool usage observations, generating semantic summaries, and making them available to future sessions. This enables Claude to maintain continuity of knowledge about projects even after sessions end or reconnect.
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL%203.0-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-4.0.0-green.svg)](package.json)
+[![Version](https://img.shields.io/badge/version-4.0.4-green.svg)](package.json)
 [![Node](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg)](package.json)
 
 ---
@@ -184,13 +184,17 @@ SQLite database (`${CLAUDE_PLUGIN_ROOT}/data/claude-mem.db`) with tables:
 node --version  # Should be >= 18.0.0
 ```
 
-### Method 1: Claude Code Marketplace (Recommended)
+### Method 1: Local Marketplace Installation (Recommended)
 
-Install directly from Claude Code using the plugin marketplace:
+Install using the local marketplace file:
 
 ```bash
-# Add the marketplace
-/plugin marketplace add thedotmack/claude-mem
+# Clone or download the repository
+git clone https://github.com/thedotmack/claude-mem.git
+cd claude-mem
+
+# Add the local marketplace to Claude Code
+/plugin marketplace add .claude-plugin/marketplace.json
 
 # Install the plugin
 /plugin install claude-mem
