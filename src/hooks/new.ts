@@ -1,5 +1,5 @@
 import path from 'path';
-import { HooksDatabase } from '../services/sqlite/HooksDatabase.js';
+import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { createHookResponse } from './hook-response.js';
 
 export interface UserPromptSubmitInput {
@@ -42,7 +42,7 @@ export async function newHook(input?: UserPromptSubmitInput): Promise<void> {
 
   const { session_id, cwd, prompt } = input;
   const project = path.basename(cwd);
-  const db = new HooksDatabase();
+  const db = new SessionStore();
 
   try {
     // Check for any existing session (active, failed, or completed)

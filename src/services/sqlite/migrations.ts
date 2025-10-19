@@ -363,6 +363,115 @@ export const migration005: Migration = {
 };
 
 /**
+ * Migration 006 - Add FTS5 full-text search tables
+ * Creates virtual tables for fast text search on observations and session_summaries
+ */
+export const migration006: Migration = {
+  version: 6,
+  up: (db: Database) => {
+    // FTS5 virtual table for observations
+    // Note: This assumes the hierarchical fields (title, subtitle, etc.) already exist
+    // from the inline migrations in SessionStore constructor
+    db.run(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS observations_fts USING fts5(
+        title,
+        subtitle,
+        narrative,
+        text,
+        facts,
+        concepts,
+        content='observations',
+        content_rowid='id'
+      );
+    `);
+
+    // Populate FTS table with existing data
+    db.run(`
+      INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
+      SELECT id, title, subtitle, narrative, text, facts, concepts
+      FROM observations;
+    `);
+
+    // Triggers to keep observations_fts in sync
+    db.run(`
+      CREATE TRIGGER IF NOT EXISTS observations_ai AFTER INSERT ON observations BEGIN
+        INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
+        VALUES (new.id, new.title, new.subtitle, new.narrative, new.text, new.facts, new.concepts);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS observations_ad AFTER DELETE ON observations BEGIN
+        INSERT INTO observations_fts(observations_fts, rowid, title, subtitle, narrative, text, facts, concepts)
+        VALUES('delete', old.id, old.title, old.subtitle, old.narrative, old.text, old.facts, old.concepts);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS observations_au AFTER UPDATE ON observations BEGIN
+        INSERT INTO observations_fts(observations_fts, rowid, title, subtitle, narrative, text, facts, concepts)
+        VALUES('delete', old.id, old.title, old.subtitle, old.narrative, old.text, old.facts, old.concepts);
+        INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
+        VALUES (new.id, new.title, new.subtitle, new.narrative, new.text, new.facts, new.concepts);
+      END;
+    `);
+
+    // FTS5 virtual table for session_summaries
+    db.run(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS session_summaries_fts USING fts5(
+        request,
+        investigated,
+        learned,
+        completed,
+        next_steps,
+        notes,
+        content='session_summaries',
+        content_rowid='id'
+      );
+    `);
+
+    // Populate FTS table with existing data
+    db.run(`
+      INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
+      SELECT id, request, investigated, learned, completed, next_steps, notes
+      FROM session_summaries;
+    `);
+
+    // Triggers to keep session_summaries_fts in sync
+    db.run(`
+      CREATE TRIGGER IF NOT EXISTS session_summaries_ai AFTER INSERT ON session_summaries BEGIN
+        INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
+        VALUES (new.id, new.request, new.investigated, new.learned, new.completed, new.next_steps, new.notes);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS session_summaries_ad AFTER DELETE ON session_summaries BEGIN
+        INSERT INTO session_summaries_fts(session_summaries_fts, rowid, request, investigated, learned, completed, next_steps, notes)
+        VALUES('delete', old.id, old.request, old.investigated, old.learned, old.completed, old.next_steps, old.notes);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS session_summaries_au AFTER UPDATE ON session_summaries BEGIN
+        INSERT INTO session_summaries_fts(session_summaries_fts, rowid, request, investigated, learned, completed, next_steps, notes)
+        VALUES('delete', old.id, old.request, old.investigated, old.learned, old.completed, old.next_steps, old.notes);
+        INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
+        VALUES (new.id, new.request, new.investigated, new.learned, new.completed, new.next_steps, new.notes);
+      END;
+    `);
+
+    console.log('✅ Created FTS5 virtual tables and triggers for full-text search');
+  },
+
+  down: (db: Database) => {
+    db.run(`
+      DROP TRIGGER IF EXISTS observations_au;
+      DROP TRIGGER IF EXISTS observations_ad;
+      DROP TRIGGER IF EXISTS observations_ai;
+      DROP TABLE IF EXISTS observations_fts;
+
+      DROP TRIGGER IF EXISTS session_summaries_au;
+      DROP TRIGGER IF EXISTS session_summaries_ad;
+      DROP TRIGGER IF EXISTS session_summaries_ai;
+      DROP TABLE IF EXISTS session_summaries_fts;
+    `);
+  }
+};
+
+/**
  * All migrations in order
  */
 export const migrations: Migration[] = [
@@ -370,5 +479,6 @@ export const migrations: Migration[] = [
   migration002,
   migration003,
   migration004,
-  migration005
+  migration005,
+  migration006
 ];

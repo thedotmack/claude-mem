@@ -1,4 +1,4 @@
-import { HooksDatabase } from '../services/sqlite/HooksDatabase.js';
+import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { createHookResponse } from './hook-response.js';
 import { logger } from '../utils/logger.js';
 
@@ -32,7 +32,7 @@ export async function saveHook(input?: PostToolUseInput): Promise<void> {
     return;
   }
 
-  const db = new HooksDatabase();
+  const db = new SessionStore();
   const session = db.findActiveSDKSession(session_id);
 
   if (!session) {

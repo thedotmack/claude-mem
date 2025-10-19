@@ -182,3 +182,88 @@ export function normalizeTimestamp(timestamp: string | Date | number | undefined
     epoch: date.getTime()
   };
 }
+
+/**
+ * SDK Hooks Database Types
+ */
+export interface SDKSessionRow {
+  id: number;
+  claude_session_id: string;
+  sdk_session_id: string | null;
+  project: string;
+  user_prompt: string | null;
+  started_at: string;
+  started_at_epoch: number;
+  completed_at: string | null;
+  completed_at_epoch: number | null;
+  status: 'active' | 'completed' | 'failed';
+  worker_port?: number;
+  prompt_counter?: number;
+}
+
+export interface ObservationRow {
+  id: number;
+  sdk_session_id: string;
+  project: string;
+  text: string | null;
+  type: 'decision' | 'bugfix' | 'feature' | 'refactor' | 'discovery' | 'change';
+  title: string | null;
+  subtitle: string | null;
+  facts: string | null; // JSON array
+  narrative: string | null;
+  concepts: string | null; // JSON array
+  files_read: string | null; // JSON array
+  files_modified: string | null; // JSON array
+  prompt_number: number | null;
+  created_at: string;
+  created_at_epoch: number;
+}
+
+export interface SessionSummaryRow {
+  id: number;
+  sdk_session_id: string;
+  project: string;
+  request: string | null;
+  investigated: string | null;
+  learned: string | null;
+  completed: string | null;
+  next_steps: string | null;
+  files_read: string | null; // JSON array
+  files_edited: string | null; // JSON array
+  notes: string | null;
+  prompt_number: number | null;
+  created_at: string;
+  created_at_epoch: number;
+}
+
+/**
+ * Search and Filter Types
+ */
+export interface DateRange {
+  start?: string | number; // ISO string or epoch
+  end?: string | number;   // ISO string or epoch
+}
+
+export interface SearchFilters {
+  project?: string;
+  type?: ObservationRow['type'] | ObservationRow['type'][];
+  concepts?: string | string[];
+  files?: string | string[];
+  dateRange?: DateRange;
+}
+
+export interface SearchOptions extends SearchFilters {
+  limit?: number;
+  offset?: number;
+  orderBy?: 'relevance' | 'date_desc' | 'date_asc';
+}
+
+export interface ObservationSearchResult extends ObservationRow {
+  rank?: number; // FTS5 relevance score (lower is better)
+  score?: number; // Normalized score (higher is better, 0-1)
+}
+
+export interface SessionSummarySearchResult extends SessionSummaryRow {
+  rank?: number; // FTS5 relevance score (lower is better)
+  score?: number; // Normalized score (higher is better, 0-1)
+}

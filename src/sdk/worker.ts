@@ -15,7 +15,7 @@ import net from 'net';
 import { unlinkSync, existsSync } from 'fs';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { SDKUserMessage, SDKSystemMessage } from '@anthropic-ai/claude-agent-sdk';
-import { HooksDatabase } from '../services/sqlite/HooksDatabase.js';
+import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { getWorkerSocketPath } from '../shared/paths.js';
 import { buildInitPrompt, buildObservationPrompt, buildFinalizePrompt } from './prompts.js';
 import { parseObservations, parseSummary } from './parser.js';
@@ -60,7 +60,7 @@ export async function main() {
  */
 class SDKWorker {
   private sessionDbId: number;
-  private db: HooksDatabase;
+  private db: SessionStore;
   private socketPath: string;
   private server: net.Server | null = null;
   private sdkSessionId: string | null = null;
@@ -72,7 +72,7 @@ class SDKWorker {
 
   constructor(sessionDbId: number) {
     this.sessionDbId = sessionDbId;
-    this.db = new HooksDatabase();
+    this.db = new SessionStore();
     this.abortController = new AbortController();
     this.socketPath = getWorkerSocketPath(sessionDbId);
     console.error('[claude-mem worker] Worker instance created', {

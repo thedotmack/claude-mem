@@ -6,7 +6,7 @@
 import express, { Request, Response } from 'express';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { SDKUserMessage, SDKSystemMessage } from '@anthropic-ai/claude-agent-sdk';
-import { HooksDatabase } from './sqlite/HooksDatabase.js';
+import { SessionStore } from './sqlite/SessionStore.js';
 import { buildInitPrompt, buildObservationPrompt, buildFinalizePrompt } from '../sdk/prompts.js';
 import { parseObservations, parseSummary } from '../sdk/parser.js';
 import type { SDKSession } from '../sdk/prompts.js';
@@ -77,7 +77,7 @@ class WorkerService {
     this.port = port;
 
     // Clean up orphaned sessions from previous worker instances
-    const db = new HooksDatabase();
+    const db = new SessionStore();
     const cleanedCount = db.cleanupOrphanedSessions();
     db.close();
 
@@ -148,14 +148,14 @@ class WorkerService {
     this.sessions.set(sessionDbId, session);
 
     // Update port in database
-    const db = new HooksDatabase();
+    const db = new SessionStore();
     db.setWorkerPort(sessionDbId, this.port!);
     db.close();
 
     // Start SDK agent in background
     session.generatorPromise = this.runSDKAgent(session).catch(err => {
       logger.failure('WORKER', 'SDK agent error', { sessionId: sessionDbId }, err);
-      const db = new HooksDatabase();
+      const db = new SessionStore();
       db.markSessionFailed(sessionDbId);
       db.close();
       this.sessions.delete(sessionDbId);
@@ -278,7 +278,7 @@ class WorkerService {
     }
 
     // Mark as failed since we're aborting
-    const db = new HooksDatabase();
+    const db = new SessionStore();
     db.markSessionFailed(sessionDbId);
     db.close();
 
@@ -313,7 +313,7 @@ class WorkerService {
           const systemMsg = message as SDKSystemMessage;
           if (systemMsg.session_id) {
             // Update in database first, check if it succeeded
-            const db = new HooksDatabase();
+            const db = new SessionStore();
             const updated = db.updateSDKSessionId(session.sessionDbId, systemMsg.session_id);
             db.close();
 
@@ -354,7 +354,7 @@ class WorkerService {
         duration: `${(sessionDuration / 1000).toFixed(1)}s`
       });
 
-      const db = new HooksDatabase();
+      const db = new SessionStore();
       db.markSessionCompleted(session.sessionDbId);
       db.close();
 
@@ -411,7 +411,7 @@ class WorkerService {
         if (message.type === 'summarize') {
           session.lastPromptNumber = message.prompt_number;
 
-          const db = new HooksDatabase();
+          const db = new SessionStore();
           const dbSession = db.getSessionById(session.sessionDbId) as SDKSession | undefined;
           db.close();
 
@@ -487,7 +487,7 @@ class WorkerService {
       });
     }
 
-    const db = new HooksDatabase();
+    const db = new SessionStore();
     for (const obs of observations) {
       if (session.sdkSessionId) {
         db.storeObservation(session.sdkSessionId, session.project, obs, promptNumber);

@@ -3,11 +3,10 @@ import { DATA_DIR, DB_PATH, ensureDir } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 
 /**
- * Lightweight database interface for hooks
- * Provides simple, synchronous operations for hook commands
- * No complex logic - just basic CRUD operations
+ * Session data store for SDK sessions, observations, and summaries
+ * Provides simple, synchronous CRUD operations for session-based memory
  */
-export class HooksDatabase {
+export class SessionStore {
   private db: Database;
 
   constructor() {
@@ -38,10 +37,10 @@ export class HooksDatabase {
 
       if (!hasWorkerPort) {
         this.db.exec('ALTER TABLE sdk_sessions ADD COLUMN worker_port INTEGER');
-        console.error('[HooksDatabase] Added worker_port column to sdk_sessions table');
+        console.error('[SessionStore] Added worker_port column to sdk_sessions table');
       }
     } catch (error: any) {
-      console.error('[HooksDatabase] Migration error:', error.message);
+      console.error('[SessionStore] Migration error:', error.message);
     }
   }
 
@@ -56,7 +55,7 @@ export class HooksDatabase {
 
       if (!hasPromptCounter) {
         this.db.exec('ALTER TABLE sdk_sessions ADD COLUMN prompt_counter INTEGER DEFAULT 0');
-        console.error('[HooksDatabase] Added prompt_counter column to sdk_sessions table');
+        console.error('[SessionStore] Added prompt_counter column to sdk_sessions table');
       }
 
       // Check observations for prompt_number
@@ -65,7 +64,7 @@ export class HooksDatabase {
 
       if (!obsHasPromptNumber) {
         this.db.exec('ALTER TABLE observations ADD COLUMN prompt_number INTEGER');
-        console.error('[HooksDatabase] Added prompt_number column to observations table');
+        console.error('[SessionStore] Added prompt_number column to observations table');
       }
 
       // Check session_summaries for prompt_number
@@ -74,7 +73,7 @@ export class HooksDatabase {
 
       if (!sumHasPromptNumber) {
         this.db.exec('ALTER TABLE session_summaries ADD COLUMN prompt_number INTEGER');
-        console.error('[HooksDatabase] Added prompt_number column to session_summaries table');
+        console.error('[SessionStore] Added prompt_number column to session_summaries table');
       }
 
       // Remove UNIQUE constraint on session_summaries.sdk_session_id
@@ -83,7 +82,7 @@ export class HooksDatabase {
       const hasUniqueConstraint = (summariesIndexes as any[]).some((idx: any) => idx.unique === 1);
 
     } catch (error: any) {
-      console.error('[HooksDatabase] Prompt tracking migration error:', error.message);
+      console.error('[SessionStore] Prompt tracking migration error:', error.message);
     }
   }
 
@@ -101,7 +100,7 @@ export class HooksDatabase {
         return;
       }
 
-      console.error('[HooksDatabase] Removing UNIQUE constraint from session_summaries.sdk_session_id...');
+      console.error('[SessionStore] Removing UNIQUE constraint from session_summaries.sdk_session_id...');
 
       // Begin transaction
       this.db.exec('BEGIN TRANSACTION');
@@ -153,14 +152,14 @@ export class HooksDatabase {
         // Commit transaction
         this.db.exec('COMMIT');
 
-        console.error('[HooksDatabase] Successfully removed UNIQUE constraint from session_summaries.sdk_session_id');
+        console.error('[SessionStore] Successfully removed UNIQUE constraint from session_summaries.sdk_session_id');
       } catch (error: any) {
         // Rollback on error
         this.db.exec('ROLLBACK');
         throw error;
       }
     } catch (error: any) {
-      console.error('[HooksDatabase] Migration error (remove UNIQUE constraint):', error.message);
+      console.error('[SessionStore] Migration error (remove UNIQUE constraint):', error.message);
     }
   }
 
@@ -178,7 +177,7 @@ export class HooksDatabase {
         return;
       }
 
-      console.error('[HooksDatabase] Adding hierarchical fields to observations table...');
+      console.error('[SessionStore] Adding hierarchical fields to observations table...');
 
       // Add new columns
       this.db.exec(`
@@ -191,9 +190,9 @@ export class HooksDatabase {
         ALTER TABLE observations ADD COLUMN files_modified TEXT;
       `);
 
-      console.error('[HooksDatabase] Successfully added hierarchical fields to observations table');
+      console.error('[SessionStore] Successfully added hierarchical fields to observations table');
     } catch (error: any) {
-      console.error('[HooksDatabase] Migration error (add hierarchical fields):', error.message);
+      console.error('[SessionStore] Migration error (add hierarchical fields):', error.message);
     }
   }
 
@@ -212,7 +211,7 @@ export class HooksDatabase {
         return;
       }
 
-      console.error('[HooksDatabase] Making observations.text nullable...');
+      console.error('[SessionStore] Making observations.text nullable...');
 
       // Begin transaction
       this.db.exec('BEGIN TRANSACTION');
@@ -266,14 +265,14 @@ export class HooksDatabase {
         // Commit transaction
         this.db.exec('COMMIT');
 
-        console.error('[HooksDatabase] Successfully made observations.text nullable');
+        console.error('[SessionStore] Successfully made observations.text nullable');
       } catch (error: any) {
         // Rollback on error
         this.db.exec('ROLLBACK');
         throw error;
       }
     } catch (error: any) {
-      console.error('[HooksDatabase] Migration error (make text nullable):', error.message);
+      console.error('[SessionStore] Migration error (make text nullable):', error.message);
     }
   }
 

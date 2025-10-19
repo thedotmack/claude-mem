@@ -1,5 +1,5 @@
 import path from 'path';
-import { HooksDatabase } from '../services/sqlite/HooksDatabase.js';
+import { SessionStore } from '../services/sqlite/SessionStore.js';
 
 export interface SessionStartInput {
   session_id?: string;
@@ -20,7 +20,7 @@ export function contextHook(input?: SessionStartInput): void {
   const cwd = input?.cwd ?? process.cwd();
   const project = cwd ? path.basename(cwd) : 'unknown-project';
 
-  const db = new HooksDatabase();
+  const db = new SessionStore();
 
   try {
     const sessions = db.getRecentSessionsWithStatus(project, 3);

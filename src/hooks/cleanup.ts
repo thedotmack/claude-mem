@@ -1,4 +1,4 @@
-import { HooksDatabase } from '../services/sqlite/HooksDatabase.js';
+import { SessionStore } from '../services/sqlite/SessionStore.js';
 
 export interface SessionEndInput {
   session_id: string;
@@ -46,7 +46,7 @@ export async function cleanupHook(input?: SessionEndInput): Promise<void> {
     console.error('[claude-mem cleanup] Searching for active SDK session', { session_id, reason });
 
     // Find active SDK session
-    const db = new HooksDatabase();
+    const db = new SessionStore();
     const session = db.findActiveSDKSession(session_id);
 
     if (!session) {
