@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 
+## [4.0.2] - 2025-10-19
+
+### Changed
+- **PM2 bundled as dependency**: Moved pm2 from devDependencies to dependencies for out-of-the-box functionality
+- **Worker scripts use local PM2**: All npm worker scripts now use `npx pm2` to ensure local binary is used
+- **Worker startup uses local PM2**: Worker auto-start now uses `node_modules/.bin/pm2` instead of global pm2
+
+### Fixed
+- **Fail loudly on missing dependencies**: Worker startup now throws explicit errors when bundled pm2 is missing instead of silently falling back
+- **Better error messages**: Clear actionable error messages guide users to run `npm install` when dependencies are missing
+- **Removed silent fallback**: Eliminated silent degradation that masked "works on my machine" installation failures
+
+### Documentation
+- Updated README system requirements to reflect pm2 is bundled with plugin (no global install required)
+
+
 ## [4.0.0] - 2025-10-18
 
 ### BREAKING CHANGES
