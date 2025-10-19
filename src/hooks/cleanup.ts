@@ -1,4 +1,5 @@
 import { SessionStore } from '../services/sqlite/SessionStore.js';
+import { ensureWorkerRunning } from '../shared/worker-utils.js';
 
 export interface SessionEndInput {
   session_id: string;
@@ -67,15 +68,22 @@ export async function cleanupHook(input?: SessionEndInput): Promise<void> {
     // 1. Delete session via HTTP
     if (session.worker_port) {
       try {
-        const response = await fetch(`http://127.0.0.1:${session.worker_port}/sessions/${session.id}`, {
-          method: 'DELETE',
-          signal: AbortSignal.timeout(5000)
-        });
-
-        if (response.ok) {
-          console.error('[claude-mem cleanup] Session deleted successfully via HTTP');
+        // Ensure worker is running before sending cleanup request
+        const workerReady = await ensureWorkerRunning();
+        if (!workerReady) {
+          console.error('[claude-mem cleanup] Worker not available - skipping HTTP cleanup');
+          // Continue with local cleanup below
         } else {
-          console.error('[claude-mem cleanup] Failed to delete session:', await response.text());
+          const response = await fetch(`http://127.0.0.1:${session.worker_port}/sessions/${session.id}`, {
+            method: 'DELETE',
+            signal: AbortSignal.timeout(5000)
+          });
+
+          if (response.ok) {
+            console.error('[claude-mem cleanup] Session deleted successfully via HTTP');
+          } else {
+            console.error('[claude-mem cleanup] Failed to delete session:', await response.text());
+          }
         }
       } catch (error: any) {
         console.error('[claude-mem cleanup] HTTP DELETE error:', error.message);

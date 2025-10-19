@@ -37,7 +37,7 @@ export async function ensureWorkerRunning(): Promise<boolean> {
 
     // Find worker service path
     const packageRoot = getPackageRoot();
-    const workerPath = path.join(packageRoot, 'dist', 'worker-service.cjs');
+    const workerPath = path.join(packageRoot, 'plugin', 'scripts', 'worker-service.cjs');
 
     if (!existsSync(workerPath)) {
       console.error(`[claude-mem] Worker service not found at ${workerPath}`);

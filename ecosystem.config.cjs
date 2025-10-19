@@ -18,7 +18,7 @@ const logDir = path.join(os.homedir(), '.claude-mem', 'logs');
 module.exports = {
   apps: [{
     name: 'claude-mem-worker',
-    script: './dist/worker-service.cjs',
+    script: './plugin/scripts/worker-service.cjs',
     interpreter: 'node',
     instances: 1,
     exec_mode: 'fork',

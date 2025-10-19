@@ -452,10 +452,8 @@ claude-mem/
 │       ├── save-hook.js
 │       ├── summary-hook.js
 │       ├── cleanup-hook.js
+│       ├── worker-service.cjs  # Background worker
 │       └── search-server.js    # MCP search server
-│
-├── dist/                       # Built output
-│   └── worker-service.cjs
 │
 ├── tests/                      # Test suite
 ├── context/                    # Architecture docs
@@ -589,7 +587,7 @@ The build process:
 1. Compiles TypeScript to JavaScript using esbuild
 2. Creates standalone executables for each hook in `plugin/scripts/`
 3. Bundles MCP search server to `plugin/scripts/search-server.js`
-4. Bundles worker service to `dist/worker-service.cjs`
+4. Bundles worker service to `plugin/scripts/worker-service.cjs`
 
 ### Running Tests
 

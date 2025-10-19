@@ -1,6 +1,7 @@
 import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { createHookResponse } from './hook-response.js';
 import { logger } from '../utils/logger.js';
+import { ensureWorkerRunning } from '../shared/worker-utils.js';
 
 export interface StopInput {
   session_id: string;
@@ -36,6 +37,12 @@ export async function summaryHook(input?: StopInput): Promise<void> {
   // Get current prompt number
   const promptNumber = db.getPromptCounter(session.id);
   db.close();
+
+  // Ensure worker is running before requesting summary
+  const workerReady = await ensureWorkerRunning();
+  if (!workerReady) {
+    throw new Error('Worker service failed to start or become healthy');
+  }
 
   logger.dataIn('HOOK', 'Stop: Requesting summary', {
     sessionId: session.id,

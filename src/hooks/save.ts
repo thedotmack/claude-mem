@@ -1,6 +1,7 @@
 import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { createHookResponse } from './hook-response.js';
 import { logger } from '../utils/logger.js';
+import { ensureWorkerRunning } from '../shared/worker-utils.js';
 
 export interface PostToolUseInput {
   session_id: string;
@@ -50,6 +51,12 @@ export async function saveHook(input?: PostToolUseInput): Promise<void> {
   // Get current prompt number for this session
   const promptNumber = db.getPromptCounter(session.id);
   db.close();
+
+  // Ensure worker is running before sending observation
+  const workerReady = await ensureWorkerRunning();
+  if (!workerReady) {
+    throw new Error('Worker service failed to start or become healthy');
+  }
 
   const toolStr = logger.formatTool(tool_name, tool_input);
 

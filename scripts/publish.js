@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 /**
- * Publish script for claude-mem
- * Handles version bumping, building, and publishing to npm
+ * Release script for claude-mem
+ * Handles version bumping, building, and creating marketplace releases
  */
 
 import { exec } from 'child_process';
@@ -21,7 +21,7 @@ const question = (query) => new Promise((resolve) => rl.question(query, resolve)
 
 async function publish() {
   try {
-    console.log('📦 Claude-mem Publishing Tool\n');
+    console.log('📦 Claude-mem Marketplace Release Tool\n');
 
     // Check git status
     console.log('🔍 Checking git status...');
@@ -82,15 +82,19 @@ async function publish() {
       process.exit(0);
     }
 
-    // Update package.json version
-    console.log('\n📝 Updating package.json...');
+    // Update package.json and marketplace.json versions
+    console.log('\n📝 Updating package.json and marketplace.json...');
     packageJson.version = newVersion;
     fs.writeFileSync('package.json', JSON.stringify(packageJson, null, 2) + '\n');
-    console.log('✓ Version updated');
+
+    const marketplaceJson = JSON.parse(fs.readFileSync('.claude-plugin/marketplace.json', 'utf-8'));
+    marketplaceJson.plugins[0].version = newVersion;
+    fs.writeFileSync('.claude-plugin/marketplace.json', JSON.stringify(marketplaceJson, null, 2) + '\n');
+    console.log('✓ Versions updated in both files');
 
     // Run build
-    console.log('\n🔨 Building...');
-    await execAsync('node build.js');
+    console.log('\n🔨 Building hooks...');
+    await execAsync('npm run build');
     console.log('✓ Build complete');
 
     // Run tests if they exist
@@ -112,18 +116,13 @@ async function publish() {
 
     // Git commit and tag
     console.log('\n📌 Creating git commit and tag...');
-    await execAsync('git add package.json dist/');
-    await execAsync(`git commit -m "Release v${newVersion}
+    await execAsync('git add package.json .claude-plugin/marketplace.json plugin/');
+    await execAsync(`git commit -m "chore: Release v${newVersion}
 
-Published from npm package build
-Source: https://github.com/thedotmack/claude-mem"`);
+Marketplace release for Claude Code plugin
+https://github.com/thedotmack/claude-mem"`);
     await execAsync(`git tag v${newVersion}`);
     console.log(`✓ Created commit and tag v${newVersion}`);
-
-    // Publish to npm
-    console.log('\n🚀 Publishing to npm...');
-    await execAsync('npm publish');
-    console.log('✓ Published to npm');
 
     // Push to git
     console.log('\n⬆️  Pushing to git...');
@@ -131,12 +130,12 @@ Source: https://github.com/thedotmack/claude-mem"`);
     await execAsync('git push --tags');
     console.log('✓ Pushed to git');
 
-    console.log(`\n✅ Successfully published v${newVersion}! 🎉`);
-    console.log(`\n📦 Package: https://www.npmjs.com/package/claude-mem`);
-    console.log(`🏷️  Tag: https://github.com/thedotmack/claude-mem/releases/tag/v${newVersion}`);
+    console.log(`\n✅ Successfully released v${newVersion}! 🎉`);
+    console.log(`\n🏷️  Tag: https://github.com/thedotmack/claude-mem/releases/tag/v${newVersion}`);
+    console.log(`📦 Marketplace will sync from this tag automatically`);
 
   } catch (error) {
-    console.error('\n❌ Publish failed:', error.message);
+    console.error('\n❌ Release failed:', error.message);
     if (error.stderr) {
       console.error('\nError details:', error.stderr);
     }

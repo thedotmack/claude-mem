@@ -39,18 +39,14 @@ async function buildHooks() {
     const version = packageJson.version;
     console.log(`📌 Version: ${version}`);
 
-    // Create output directories
-    console.log('\n📦 Preparing output directories...');
+    // Create output directory
+    console.log('\n📦 Preparing output directory...');
     const hooksDir = 'plugin/scripts';
-    const distDir = 'dist';
 
     if (!fs.existsSync(hooksDir)) {
       fs.mkdirSync(hooksDir, { recursive: true });
     }
-    if (!fs.existsSync(distDir)) {
-      fs.mkdirSync(distDir, { recursive: true });
-    }
-    console.log('✓ Output directories ready');
+    console.log('✓ Output directory ready');
 
     // Build worker service
     console.log(`\n🔧 Building worker service...`);
@@ -60,7 +56,7 @@ async function buildHooks() {
       platform: 'node',
       target: 'node18',
       format: 'cjs',
-      outfile: `${distDir}/${WORKER_SERVICE.name}.cjs`,
+      outfile: `${hooksDir}/${WORKER_SERVICE.name}.cjs`,
       minify: true,
       external: ['better-sqlite3'],
       define: {
@@ -72,8 +68,8 @@ async function buildHooks() {
     });
 
     // Make worker service executable
-    fs.chmodSync(`${distDir}/${WORKER_SERVICE.name}.cjs`, 0o755);
-    const workerStats = fs.statSync(`${distDir}/${WORKER_SERVICE.name}.cjs`);
+    fs.chmodSync(`${hooksDir}/${WORKER_SERVICE.name}.cjs`, 0o755);
+    const workerStats = fs.statSync(`${hooksDir}/${WORKER_SERVICE.name}.cjs`);
     console.log(`✓ worker-service built (${(workerStats.size / 1024).toFixed(2)} KB)`);
 
     // Build each hook
@@ -133,9 +129,10 @@ async function buildHooks() {
     console.log(`✓ search-server built (${(searchStats.size / 1024).toFixed(2)} KB)`);
 
     console.log('\n✅ All hooks, worker service, and search server built successfully!');
-    console.log(`   Hooks: ${hooksDir}/`);
-    console.log(`   Worker: ${distDir}/worker-service.cjs`);
-    console.log(`   Search: ${hooksDir}/search-server.js`);
+    console.log(`   Output: ${hooksDir}/`);
+    console.log(`   - Hooks: *-hook.js`);
+    console.log(`   - Worker: worker-service.cjs`);
+    console.log(`   - Search: search-server.js`);
 
   } catch (error) {
     console.error('\n❌ Build failed:', error.message);
