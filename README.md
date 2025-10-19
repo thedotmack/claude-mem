@@ -344,8 +344,8 @@ Context is stored in SQLite database. Location varies by version:
 Query the database directly:
 
 ```bash
-# v4.0+ - find your plugin directory first
-sqlite3 path/to/plugin/data/claude-mem.db
+# v4.0+ uses ~/.claude-mem directory
+sqlite3 ~/.claude-mem/claude-mem.db
 
 # View recent sessions
 SELECT session_id, project, created_at, status FROM sdk_sessions ORDER BY created_at DESC LIMIT 10;
@@ -660,14 +660,14 @@ cat plugin/hooks/hooks.json | jq .
 **Problem**: Context not appearing
 
 ```bash
-# Check if summaries exist (adjust path for v4.0+)
-sqlite3 path/to/plugin/data/claude-mem.db "SELECT COUNT(*) FROM session_summaries;"
+# Check if summaries exist
+sqlite3 ~/.claude-mem/claude-mem.db "SELECT COUNT(*) FROM session_summaries;"
 
 # View recent sessions
 npm run test:context:verbose
 
 # Check database integrity
-sqlite3 path/to/plugin/data/claude-mem.db "PRAGMA integrity_check;"
+sqlite3 ~/.claude-mem/claude-mem.db "PRAGMA integrity_check;"
 ```
 
 ### Database Issues
@@ -678,12 +678,12 @@ sqlite3 path/to/plugin/data/claude-mem.db "PRAGMA integrity_check;"
 # Close all connections
 pm2 stop claude-mem-worker
 
-# Check for stale locks (v4.0+ path)
-lsof path/to/plugin/data/claude-mem.db
+# Check for stale locks
+lsof ~/.claude-mem/claude-mem.db
 
-# Backup and recreate (nuclear option) - adjust paths for v4.0+
-cp path/to/plugin/data/claude-mem.db path/to/plugin/data/claude-mem.db.backup
-rm path/to/plugin/data/claude-mem.db
+# Backup and recreate (nuclear option)
+cp ~/.claude-mem/claude-mem.db ~/.claude-mem/claude-mem.db.backup
+rm ~/.claude-mem/claude-mem.db
 npm run worker:start  # Will recreate schema
 ```
 
@@ -702,7 +702,7 @@ npm run worker:logs
 Check correlation IDs to trace observations through the pipeline:
 
 ```bash
-sqlite3 path/to/plugin/data/claude-mem.db "SELECT correlation_id, tool_name, created_at FROM observations WHERE session_id = 'YOUR_SESSION_ID' ORDER BY created_at;"
+sqlite3 ~/.claude-mem/claude-mem.db "SELECT correlation_id, tool_name, created_at FROM observations WHERE session_id = 'YOUR_SESSION_ID' ORDER BY created_at;"
 ```
 
 ---

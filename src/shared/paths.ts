@@ -4,26 +4,25 @@ import { existsSync, mkdirSync } from 'fs';
 import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 
+// Get __dirname that works in both ESM (hooks) and CJS (worker) contexts
+function getDirname(): string {
+  // CJS context - __dirname exists
+  if (typeof __dirname !== 'undefined') {
+    return __dirname;
+  }
+  // ESM context - use import.meta.url
+  return dirname(fileURLToPath(import.meta.url));
+}
+
+const _dirname = getDirname();
+
 /**
  * Simple path configuration for claude-mem
  * Standard paths based on Claude Code conventions
- *
- * v4.0.0: Data directory now uses CLAUDE_PLUGIN_ROOT when available
  */
 
 // Base directories
-// Priority: CLAUDE_PLUGIN_ROOT/data > CLAUDE_MEM_DATA_DIR > ~/.claude-mem
-const getDataDir = (): string => {
-  if (process.env.CLAUDE_PLUGIN_ROOT) {
-    return join(process.env.CLAUDE_PLUGIN_ROOT, 'data');
-  }
-  if (process.env.CLAUDE_MEM_DATA_DIR) {
-    return process.env.CLAUDE_MEM_DATA_DIR;
-  }
-  return join(homedir(), '.claude-mem');
-};
-
-export const DATA_DIR = getDataDir();
+export const DATA_DIR = process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem');
 export const CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
 
 // Data subdirectories
@@ -51,13 +50,6 @@ export function getProjectArchiveDir(projectName: string): string {
  */
 export function getWorkerSocketPath(sessionId: number): string {
   return join(DATA_DIR, `worker-${sessionId}.sock`);
-}
-
-/**
- * Get worker port file path
- */
-export function getWorkerPortFilePath(): string {
-  return join(DATA_DIR, 'worker.port');
 }
 
 /**
@@ -103,36 +95,13 @@ export function getCurrentProjectName(): string {
 }
 
 /**
- * Find package root directory (for install command)
+ * Find package root directory
+ *
+ * Works because bundled hooks are in plugin/scripts/,
+ * so package root is always two levels up
  */
 export function getPackageRoot(): string {
-  // Method 1: Try require.resolve for package.json
-  try {
-    const packageJsonPath = require.resolve('claude-mem/package.json');
-    return dirname(packageJsonPath);
-  } catch {
-    // Continue to next method
-  }
-
-  // Method 2: Walk up from current module location
-  const currentFile = fileURLToPath(import.meta.url);
-  let currentDir = dirname(currentFile);
-
-  for (let i = 0; i < 10; i++) {
-    const packageJsonPath = join(currentDir, 'package.json');
-    if (existsSync(packageJsonPath)) {
-      const packageJson = require(packageJsonPath);
-      if (packageJson.name === 'claude-mem') {
-        return currentDir;
-      }
-    }
-
-    const parentDir = dirname(currentDir);
-    if (parentDir === currentDir) break;
-    currentDir = parentDir;
-  }
-
-  throw new Error('Cannot locate claude-mem package root. Ensure claude-mem is properly installed.');
+  return join(_dirname, '..', '..');
 }
 
 /**

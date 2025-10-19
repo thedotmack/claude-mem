@@ -7,3 +7,4 @@ node_modules/
 *.temp
 .claude/
 plugin/data/
+plugin/data.backup/

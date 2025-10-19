@@ -1,33 +1,13 @@
 import path from 'path';
 import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { createHookResponse } from './hook-response.js';
-import { getWorkerPortFilePath } from '../shared/paths.js';
+import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
 
 export interface UserPromptSubmitInput {
   session_id: string;
   cwd: string;
   prompt: string;
   [key: string]: any;
-}
-
-/**
- * Get worker service port from file
- */
-async function getWorkerPort(): Promise<number | null> {
-  const { readFileSync, existsSync } = await import('fs');
-
-  const portFile = getWorkerPortFilePath();
-
-  if (!existsSync(portFile)) {
-    return null;
-  }
-
-  try {
-    const portStr = readFileSync(portFile, 'utf8').trim();
-    return parseInt(portStr, 10);
-  } catch {
-    return null;
-  }
 }
 
 /**
@@ -74,13 +54,14 @@ export async function newHook(input?: UserPromptSubmitInput): Promise<void> {
       }
     }
 
-    // Find worker service port
-    const port = await getWorkerPort();
-    if (!port) {
-      console.error('[new-hook] Worker service not running. Start with: npm run worker:start');
-      console.log(createHookResponse('UserPromptSubmit', true)); // Don't block Claude
-      return;
+    // Ensure worker service is running (v4.0.0 auto-start)
+    const workerReady = await ensureWorkerRunning();
+    if (!workerReady) {
+      throw new Error('Worker service failed to start or become healthy');
     }
+
+    // Get fixed port
+    const port = getWorkerPort();
 
     // Only initialize worker on new sessions
     if (isNewSession) {
@@ -93,16 +74,12 @@ export async function newHook(input?: UserPromptSubmitInput): Promise<void> {
       });
 
       if (!response.ok) {
-        console.error('[new-hook] Failed to init session:', await response.text());
+        const errorText = await response.text();
+        throw new Error(`Failed to initialize session: ${response.status} ${errorText}`);
       }
     }
 
     console.log(createHookResponse('UserPromptSubmit', true));
-  } catch (error: any) {
-    console.error('[new-hook] FATAL ERROR:', error.message);
-    console.error('[new-hook] Stack:', error.stack);
-    console.error('[new-hook] Full error:', JSON.stringify(error, Object.getOwnPropertyNames(error)));
-    console.log(createHookResponse('UserPromptSubmit', true)); // Don't block Claude
   } finally {
     db.close();
   }

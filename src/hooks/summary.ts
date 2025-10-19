@@ -30,40 +30,35 @@ export async function summaryHook(input?: StopInput): Promise<void> {
   if (!session.worker_port) {
     db.close();
     logger.error('HOOK', 'No worker port for session', { sessionId: session.id });
-    console.log(createHookResponse('Stop', true));
-    return;
+    throw new Error('No worker port for session - session may not be properly initialized');
   }
 
   // Get current prompt number
   const promptNumber = db.getPromptCounter(session.id);
   db.close();
 
-  try {
-    logger.dataIn('HOOK', 'Stop: Requesting summary', {
+  logger.dataIn('HOOK', 'Stop: Requesting summary', {
+    sessionId: session.id,
+    workerPort: session.worker_port,
+    promptNumber
+  });
+
+  const response = await fetch(`http://127.0.0.1:${session.worker_port}/sessions/${session.id}/summarize`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prompt_number: promptNumber }),
+    signal: AbortSignal.timeout(2000)
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    logger.failure('HOOK', 'Failed to generate summary', {
       sessionId: session.id,
-      workerPort: session.worker_port,
-      promptNumber
-    });
-
-    const response = await fetch(`http://127.0.0.1:${session.worker_port}/sessions/${session.id}/summarize`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt_number: promptNumber }),
-      signal: AbortSignal.timeout(2000)
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      logger.failure('HOOK', 'Failed to generate summary', {
-        sessionId: session.id,
-        status: response.status
-      }, errorText);
-    } else {
-      logger.debug('HOOK', 'Summary request sent successfully', { sessionId: session.id });
-    }
-  } catch (error: any) {
-    logger.failure('HOOK', 'Error requesting summary', { sessionId: session.id }, error);
-  } finally {
-    console.log(createHookResponse('Stop', true));
+      status: response.status
+    }, errorText);
+    throw new Error(`Failed to request summary from worker: ${response.status} ${errorText}`);
   }
+
+  logger.debug('HOOK', 'Summary request sent successfully', { sessionId: session.id });
+  console.log(createHookResponse('Stop', true));
 }

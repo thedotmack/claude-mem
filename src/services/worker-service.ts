@@ -10,12 +10,12 @@ import { SessionStore } from './sqlite/SessionStore.js';
 import { buildInitPrompt, buildObservationPrompt, buildFinalizePrompt } from '../sdk/prompts.js';
 import { parseObservations, parseSummary } from '../sdk/parser.js';
 import type { SDKSession } from '../sdk/prompts.js';
-import { findAvailablePort } from '../utils/port-allocator.js';
 import { logger } from '../utils/logger.js';
-import { getWorkerPortFilePath, ensureAllDataDirs } from '../shared/paths.js';
+import { ensureAllDataDirs } from '../shared/paths.js';
 
 const MODEL = 'claude-sonnet-4-5';
 const DISALLOWED_TOOLS = ['Glob', 'Grep', 'ListMcpResourcesTool', 'WebSearch'];
+const FIXED_PORT = parseInt(process.env.CLAUDE_MEM_WORKER_PORT || '37777', 10);
 
 interface ObservationMessage {
   type: 'observation';
@@ -69,13 +69,7 @@ class WorkerService {
   }
 
   async start(): Promise<void> {
-    // Find available port
-    const port = await findAvailablePort();
-    if (!port) {
-      throw new Error('No available ports in range 37000-37999');
-    }
-
-    this.port = port;
+    this.port = FIXED_PORT;
 
     // Clean up orphaned sessions from previous worker instances
     const db = new SessionStore();
@@ -87,18 +81,15 @@ class WorkerService {
     }
 
     return new Promise((resolve, reject) => {
-      this.app.listen(port, '127.0.0.1', () => {
-        logger.info('SYSTEM', `Worker started`, { port, pid: process.pid, activeSessions: this.sessions.size });
-
-        // Write port to file for hooks to discover
-        const { writeFileSync } = require('fs');
-        ensureAllDataDirs(); // Ensure data directory exists
-        const portFile = getWorkerPortFilePath();
-        writeFileSync(portFile, port.toString(), 'utf8');
-        logger.info('SYSTEM', `Port file written to ${portFile}`);
-
+      this.app.listen(FIXED_PORT, '127.0.0.1', () => {
+        logger.info('SYSTEM', `Worker started`, { port: FIXED_PORT, pid: process.pid, activeSessions: this.sessions.size });
         resolve();
-      }).on('error', reject);
+      }).on('error', (err: any) => {
+        if (err.code === 'EADDRINUSE') {
+          logger.error('SYSTEM', `Port ${FIXED_PORT} already in use - worker may already be running`);
+        }
+        reject(err);
+      });
     });
   }
 
