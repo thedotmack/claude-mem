@@ -92,7 +92,8 @@ export function contextHook(input?: SessionStartInput): string {
             }
           }
 
-          output.push(`**Date:** ${summary.created_at.split('T')[0]}`);
+          const dateTime = new Date(summary.created_at).toLocaleString();
+          output.push(`**Date:** ${dateTime}`);
         }
       } else if (session.status === 'active') {
         // Active session without summary - show observation titles
@@ -118,10 +119,12 @@ export function contextHook(input?: SessionStartInput): string {
 
         output.push('');
         output.push(`**Status:** Active - summary pending`);
-        output.push(`**Date:** ${session.started_at.split('T')[0]}`);
+        const activeDateTime = new Date(session.started_at).toLocaleString();
+        output.push(`**Date:** ${activeDateTime}`);
       } else {
         // Failed or completed session without summary
-        output.push(`**${session.status.charAt(0).toUpperCase() + session.status.slice(1)}**`);
+        const displayStatus = session.status === 'failed' ? 'stopped' : session.status;
+        output.push(`**${displayStatus.charAt(0).toUpperCase() + displayStatus.slice(1)}**`);
         output.push('');
 
         if (session.user_prompt) {
@@ -129,8 +132,9 @@ export function contextHook(input?: SessionStartInput): string {
         }
 
         output.push('');
-        output.push(`**Status:** ${session.status} - no summary available`);
-        output.push(`**Date:** ${session.started_at.split('T')[0]}`);
+        output.push(`**Status:** ${displayStatus} - no summary available`);
+        const failedDateTime = new Date(session.started_at).toLocaleString();
+        output.push(`**Date:** ${failedDateTime}`);
       }
 
       output.push('');
