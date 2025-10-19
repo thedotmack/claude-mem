@@ -184,7 +184,27 @@ SQLite database (`${CLAUDE_PLUGIN_ROOT}/data/claude-mem.db`) with tables:
 node --version  # Should be >= 18.0.0
 ```
 
-### Method 1: Clone and Build (Recommended for Development)
+### Method 1: Claude Code Marketplace (Recommended)
+
+Install directly from Claude Code using the plugin marketplace:
+
+```bash
+# Add the marketplace
+/plugin marketplace add thedotmack/claude-mem
+
+# Install the plugin
+/plugin install claude-mem
+```
+
+The plugin will:
+- Automatically install all dependencies (including PM2)
+- Configure hooks for session lifecycle management
+- Set up the MCP search server
+- Auto-start the worker service on first session
+
+**That's it!** The plugin is ready to use. Start a new Claude Code session and you'll see context from previous sessions automatically loaded.
+
+### Method 2: Clone and Build (For Development)
 
 ```bash
 # Clone the repository
@@ -205,7 +225,7 @@ npm run worker:start
 npm run worker:status
 ```
 
-### Method 2: NPM Package (Coming Soon)
+### Method 3: NPM Package (Coming Soon)
 
 ```bash
 # Install from NPM (when published)
