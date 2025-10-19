@@ -19,6 +19,13 @@ export async function summaryHook(input?: StopInput): Promise<void> {
   }
 
   const { session_id } = input;
+
+  // Ensure worker is running first (runs cleanup if restarting)
+  const workerReady = await ensureWorkerRunning();
+  if (!workerReady) {
+    throw new Error('Worker service failed to start or become healthy');
+  }
+
   const db = new SessionStore();
   const session = db.findActiveSDKSession(session_id);
 
@@ -37,12 +44,6 @@ export async function summaryHook(input?: StopInput): Promise<void> {
   // Get current prompt number
   const promptNumber = db.getPromptCounter(session.id);
   db.close();
-
-  // Ensure worker is running before requesting summary
-  const workerReady = await ensureWorkerRunning();
-  if (!workerReady) {
-    throw new Error('Worker service failed to start or become healthy');
-  }
 
   logger.dataIn('HOOK', 'Stop: Requesting summary', {
     sessionId: session.id,

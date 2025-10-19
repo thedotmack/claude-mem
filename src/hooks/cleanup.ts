@@ -46,6 +46,12 @@ export async function cleanupHook(input?: SessionEndInput): Promise<void> {
     const { session_id, reason } = input;
     console.error('[claude-mem cleanup] Searching for active SDK session', { session_id, reason });
 
+    // Ensure worker is running first (runs cleanup if restarting)
+    const workerReady = await ensureWorkerRunning();
+    if (!workerReady) {
+      console.error('[claude-mem cleanup] Worker not available - skipping HTTP cleanup');
+    }
+
     // Find active SDK session
     const db = new SessionStore();
     const session = db.findActiveSDKSession(session_id);
@@ -66,30 +72,23 @@ export async function cleanupHook(input?: SessionEndInput): Promise<void> {
     });
 
     // 1. Delete session via HTTP
-    if (session.worker_port) {
+    if (session.worker_port && workerReady) {
       try {
-        // Ensure worker is running before sending cleanup request
-        const workerReady = await ensureWorkerRunning();
-        if (!workerReady) {
-          console.error('[claude-mem cleanup] Worker not available - skipping HTTP cleanup');
-          // Continue with local cleanup below
-        } else {
-          const response = await fetch(`http://127.0.0.1:${session.worker_port}/sessions/${session.id}`, {
-            method: 'DELETE',
-            signal: AbortSignal.timeout(5000)
-          });
+        const response = await fetch(`http://127.0.0.1:${session.worker_port}/sessions/${session.id}`, {
+          method: 'DELETE',
+          signal: AbortSignal.timeout(5000)
+        });
 
-          if (response.ok) {
-            console.error('[claude-mem cleanup] Session deleted successfully via HTTP');
-          } else {
-            console.error('[claude-mem cleanup] Failed to delete session:', await response.text());
-          }
+        if (response.ok) {
+          console.error('[claude-mem cleanup] Session deleted successfully via HTTP');
+        } else {
+          console.error('[claude-mem cleanup] Failed to delete session:', await response.text());
         }
       } catch (error: any) {
         console.error('[claude-mem cleanup] HTTP DELETE error:', error.message);
       }
     } else {
-      console.error('[claude-mem cleanup] No worker port, cannot send DELETE request');
+      console.error('[claude-mem cleanup] No worker available or no worker port, skipping HTTP cleanup');
     }
 
     // 2. Mark session as failed in DB (if not already completed)

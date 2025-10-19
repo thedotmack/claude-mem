@@ -21,9 +21,17 @@ export async function newHook(input?: UserPromptSubmitInput): Promise<void> {
 
   const { session_id, cwd, prompt } = input;
   const project = path.basename(cwd);
+
+  // Ensure worker is running first (runs cleanup if restarting)
+  const workerReady = await ensureWorkerRunning();
+  if (!workerReady) {
+    throw new Error('Worker service failed to start or become healthy');
+  }
+
   const db = new SessionStore();
 
   try {
+
     // Check for any existing session (active, failed, or completed)
     let existing = db.findActiveSDKSession(session_id);
     let sessionDbId: number;
@@ -52,12 +60,6 @@ export async function newHook(input?: UserPromptSubmitInput): Promise<void> {
         isNewSession = true;
         console.error(`[new-hook] Created new session ${sessionDbId}, prompt #${promptNumber}`);
       }
-    }
-
-    // Ensure worker service is running (v4.0.0 auto-start)
-    const workerReady = await ensureWorkerRunning();
-    if (!workerReady) {
-      throw new Error('Worker service failed to start or become healthy');
     }
 
     // Get fixed port
