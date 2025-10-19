@@ -25,8 +25,13 @@ const WORKER_SERVICE = {
   source: 'src/services/worker-service.ts'
 };
 
+const SEARCH_SERVER = {
+  name: 'search-server',
+  source: 'src/servers/search-server.ts'
+};
+
 async function buildHooks() {
-  console.log('🔨 Building claude-mem hooks and worker service...\n');
+  console.log('🔨 Building claude-mem hooks, worker service, and search server...\n');
 
   try {
     // Read version from package.json
@@ -103,9 +108,34 @@ async function buildHooks() {
       console.log(`✓ ${hook.name} built (${sizeInKB} KB)`);
     }
 
-    console.log('\n✅ All hooks and worker service built successfully!');
+    // Build search server
+    console.log(`\n🔧 Building search server...`);
+    await build({
+      entryPoints: [SEARCH_SERVER.source],
+      bundle: true,
+      platform: 'node',
+      target: 'node18',
+      format: 'esm',
+      outfile: `${hooksDir}/${SEARCH_SERVER.name}.js`,
+      minify: true,
+      external: ['better-sqlite3'],
+      define: {
+        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
+      },
+      banner: {
+        js: '#!/usr/bin/env node'
+      }
+    });
+
+    // Make search server executable
+    fs.chmodSync(`${hooksDir}/${SEARCH_SERVER.name}.js`, 0o755);
+    const searchStats = fs.statSync(`${hooksDir}/${SEARCH_SERVER.name}.js`);
+    console.log(`✓ search-server built (${(searchStats.size / 1024).toFixed(2)} KB)`);
+
+    console.log('\n✅ All hooks, worker service, and search server built successfully!');
     console.log(`   Hooks: ${hooksDir}/`);
     console.log(`   Worker: ${distDir}/worker-service.cjs`);
+    console.log(`   Search: ${hooksDir}/search-server.js`);
 
   } catch (error) {
     console.error('\n❌ Build failed:', error.message);

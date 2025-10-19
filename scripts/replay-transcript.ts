@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 /**
  * Transcript Replay Tool
  *
@@ -197,7 +197,7 @@ async function replayTranscript(transcriptPath: string, projectName: string = 'c
 
   // Spawn worker exactly as production hooks do
   const workerPath = join(process.cwd(), 'scripts/hooks/worker.js');
-  const worker = spawn('bun', [workerPath, String(sessionId)], {
+  const worker = spawn('node', [workerPath, String(sessionId)], {
     detached: false, // Keep attached to see errors
     stdio: ['ignore', 'pipe', 'pipe'] // Pipe output to see what's happening
   });

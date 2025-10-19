@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 /**
  * SDK Worker Process
  * Background server that processes tool observations via Unix socket
