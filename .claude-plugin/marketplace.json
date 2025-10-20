@@ -11,7 +11,7 @@
     {
       "name": "claude-mem",
       "version": "4.0.5",
-      "source": "https://github.com/thedotmack/claude-mem",
+      "source": "./plugin",
       "description": "Persistent memory system for Claude Code - context compression across sessions"
     }
   ]
