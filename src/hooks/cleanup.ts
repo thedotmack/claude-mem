@@ -46,6 +46,13 @@ export async function cleanupHook(input?: SessionEndInput): Promise<void> {
     const { session_id, reason } = input;
     console.error('[claude-mem cleanup] Searching for active SDK session', { session_id, reason });
 
+    // Don't delete session on /clear - session continues, just conversation cleared
+    if (reason === 'clear') {
+      console.error('[claude-mem cleanup] Reason is "clear" - skipping cleanup, session will continue');
+      console.log('{"continue": true, "suppressOutput": true}');
+      process.exit(0);
+    }
+
     // Ensure worker is running first (runs cleanup if restarting)
     const workerReady = await ensureWorkerRunning();
     if (!workerReady) {
