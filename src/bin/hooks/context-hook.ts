@@ -6,10 +6,13 @@
 
 // Bootstrap: Ensure dependencies are installed before importing modules
 import { ensureDependencies } from '../../shared/bootstrap.js';
+import { stdin } from 'process';
+
+// Run bootstrap synchronously BEFORE any dynamic imports
 ensureDependencies();
 
-import { contextHook } from '../../hooks/context.js';
-import { stdin } from 'process';
+// Dynamic import AFTER bootstrap ensures dependencies are installed
+const { contextHook } = await import('../../hooks/context.js');
 
 try {
   if (stdin.isTTY) {
