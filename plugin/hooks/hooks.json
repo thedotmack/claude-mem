@@ -22,12 +22,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ ! -d \"${CLAUDE_PLUGIN_ROOT}/scripts/node_modules\" ] && cd \"${CLAUDE_PLUGIN_ROOT}/scripts\" && npm install || true",
-            "timeout": 60000
-          },
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/new-hook.js",
+            "command": "[ ! -d \"${CLAUDE_PLUGIN_ROOT}/scripts/node_modules\" ] && echo \"Installing better-sqlite3\" && cd \"${CLAUDE_PLUGIN_ROOT}/scripts\" && npm install || node ${CLAUDE_PLUGIN_ROOT}/scripts/new-hook.js",
             "timeout": 60000
           }
         ]
