@@ -4,6 +4,10 @@
  * Standalone executable for plugin hooks
  */
 
+// Bootstrap: Ensure dependencies are installed before importing modules
+import { ensureDependencies } from '../../shared/bootstrap.js';
+ensureDependencies();
+
 import { cleanupHook } from '../../hooks/cleanup.js';
 import { stdin } from 'process';
 

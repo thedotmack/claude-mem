@@ -4,6 +4,10 @@
  * Standalone executable for plugin hooks
  */
 
+// Bootstrap: Ensure dependencies are installed before importing modules
+import { ensureDependencies } from '../../shared/bootstrap.js';
+ensureDependencies();
+
 import { contextHook } from '../../hooks/context.js';
 import { stdin } from 'process';
 

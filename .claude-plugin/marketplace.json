@@ -3,11 +3,16 @@
   "owner": {
     "name": "Alex Newman"
   },
+  "metadata": {
+    "description": "Plugins by Alex Newman (thedotmack)",
+    "homepage": "https://github.com/thedotmack/claude-mem"
+  },
   "plugins": [
     {
       "name": "claude-mem",
-      "source": "./plugin",
-      "description": "Persistent memory system for Claude Code"
+      "version": "4.0.5",
+      "source": "https://github.com/thedotmack/claude-mem",
+      "description": "Persistent memory system for Claude Code - context compression across sessions"
     }
   ]
 }

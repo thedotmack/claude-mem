@@ -133,6 +133,7 @@ async function buildHooks() {
     console.log(`   - Hooks: *-hook.js`);
     console.log(`   - Worker: worker-service.cjs`);
     console.log(`   - Search: search-server.js`);
+    console.log('\n💡 Note: Dependencies will be auto-installed on first hook execution');
 
   } catch (error) {
     console.error('\n❌ Build failed:', error.message);

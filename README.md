@@ -5,7 +5,7 @@
 Claude-Mem seamlessly preserves context across sessions by automatically capturing tool usage observations, generating semantic summaries, and making them available to future sessions. This enables Claude to maintain continuity of knowledge about projects even after sessions end or reconnect.
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL%203.0-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-4.0.4-green.svg)](package.json)
+[![Version](https://img.shields.io/badge/version-4.0.5-green.svg)](package.json)
 [![Node](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg)](package.json)
 
 ---
@@ -184,12 +184,33 @@ SQLite database (`${CLAUDE_PLUGIN_ROOT}/data/claude-mem.db`) with tables:
 node --version  # Should be >= 18.0.0
 ```
 
-### Method 1: Local Marketplace Installation (Recommended)
+### Method 1: GitHub Marketplace (Recommended)
 
-Install using the local marketplace file:
+Install directly from GitHub:
 
 ```bash
-# Clone or download the repository
+# Add the marketplace
+/plugin marketplace add https://github.com/thedotmack/claude-mem
+
+# Install the plugin
+/plugin install claude-mem
+```
+
+The plugin will:
+- Automatically download prebuilt binaries (no compilation needed)
+- Install all dependencies (including PM2 and SQLite binaries)
+- Configure hooks for session lifecycle management
+- Set up the MCP search server
+- Auto-start the worker service on first session
+
+**That's it!** The plugin is ready to use. Start a new Claude Code session and you'll see context from previous sessions automatically loaded.
+
+### Method 2: Local Marketplace Installation
+
+Install using the local marketplace file (useful for development or testing):
+
+```bash
+# Clone the repository
 git clone https://github.com/thedotmack/claude-mem.git
 cd claude-mem
 
@@ -200,15 +221,7 @@ cd claude-mem
 /plugin install claude-mem
 ```
 
-The plugin will:
-- Automatically install all dependencies (including PM2)
-- Configure hooks for session lifecycle management
-- Set up the MCP search server
-- Auto-start the worker service on first session
-
-**That's it!** The plugin is ready to use. Start a new Claude Code session and you'll see context from previous sessions automatically loaded.
-
-### Method 2: Clone and Build (For Development)
+### Method 3: Clone and Build (For Development)
 
 ```bash
 # Clone the repository
@@ -229,7 +242,7 @@ npm run worker:start
 npm run worker:status
 ```
 
-### Method 3: NPM Package (Coming Soon)
+### Method 4: NPM Package (Coming Soon)
 
 ```bash
 # Install from NPM (when published)

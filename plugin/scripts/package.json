@@ -1,0 +1,10 @@
+{
+  "name": "claude-mem-scripts",
+  "version": "4.0.5",
+  "type": "module",
+  "private": true,
+  "description": "Bundled hooks and dependencies for claude-mem plugin",
+  "dependencies": {
+    "better-sqlite3": "^11.0.0"
+  }
+}
