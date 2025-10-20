@@ -431,8 +431,7 @@ claude-mem/
 │   │
 │   ├── sdk/                    # Claude Agent SDK integration
 │   │   ├── prompts.ts          # XML prompt builders
-│   │   ├── parser.ts           # XML response parser
-│   │   └── worker.ts           # Main SDK agent loop
+│   │   └── parser.ts           # XML response parser
 │   │
 │   ├── services/
 │   │   ├── worker-service.ts   # Express HTTP service
