@@ -6,8 +6,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/context-hook.js",
-            "timeout": 180000
+            "command": "[ ! -d \"${CLAUDE_PLUGIN_ROOT}/scripts/node_modules\" ] && cd \"${CLAUDE_PLUGIN_ROOT}/scripts\" && npm install || node ${CLAUDE_PLUGIN_ROOT}/scripts/context-hook.js",
+            "timeout": 120
           }
         ]
       }
@@ -17,8 +17,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ ! -d \"${CLAUDE_PLUGIN_ROOT}/scripts/node_modules\" ] && echo \"Installing better-sqlite3\" && cd \"${CLAUDE_PLUGIN_ROOT}/scripts\" && npm install || node ${CLAUDE_PLUGIN_ROOT}/scripts/new-hook.js",
-            "timeout": 60000
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/new-hook.js",
+            "timeout": 120
           }
         ]
       }
@@ -30,7 +30,7 @@
           {
             "type": "command",
             "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/save-hook.js",
-            "timeout": 180000
+            "timeout": 120
           }
         ]
       }
@@ -41,7 +41,7 @@
           {
             "type": "command",
             "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/summary-hook.js",
-            "timeout": 60000
+            "timeout": 120
           }
         ]
       }
@@ -52,7 +52,7 @@
           {
             "type": "command",
             "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/cleanup-hook.js",
-            "timeout": 60000
+            "timeout": 120
           }
         ]
       }
