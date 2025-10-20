@@ -4,15 +4,8 @@
  * Standalone executable for plugin hooks
  */
 
-// Bootstrap: Ensure dependencies are installed before importing modules
-import { ensureDependencies } from '../../shared/bootstrap.js';
+import { contextHook } from '../../hooks/context.js';
 import { stdin } from 'process';
-
-// Run bootstrap synchronously BEFORE any dynamic imports
-ensureDependencies();
-
-// Dynamic import AFTER bootstrap ensures dependencies are installed
-const { contextHook } = await import('../../hooks/context.js');
 
 try {
   if (stdin.isTTY) {

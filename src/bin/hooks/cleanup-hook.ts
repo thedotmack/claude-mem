@@ -4,15 +4,8 @@
  * Standalone executable for plugin hooks
  */
 
-// Bootstrap: Ensure dependencies are installed before importing modules
-import { ensureDependencies } from '../../shared/bootstrap.js';
+import { cleanupHook } from '../../hooks/cleanup.js';
 import { stdin } from 'process';
-
-// Run bootstrap synchronously BEFORE any dynamic imports
-ensureDependencies();
-
-// Dynamic import AFTER bootstrap ensures dependencies are installed
-const { cleanupHook } = await import('../../hooks/cleanup.js');
 
 // Read input from stdin
 let input = '';

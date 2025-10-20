@@ -4,15 +4,8 @@
  * Standalone executable for plugin hooks
  */
 
-// Bootstrap: Ensure dependencies are installed before importing modules
-import { ensureDependencies } from '../../shared/bootstrap.js';
+import { summaryHook } from '../../hooks/summary.js';
 import { stdin } from 'process';
-
-// Run bootstrap synchronously BEFORE any dynamic imports
-ensureDependencies();
-
-// Dynamic import AFTER bootstrap ensures dependencies are installed
-const { summaryHook } = await import('../../hooks/summary.js');
 
 // Read input from stdin
 let input = '';
