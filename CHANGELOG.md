@@ -5,6 +5,76 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 
+## [4.0.7] - 2025-10-20
+
+### Fixed
+- **Critical path fix**: Corrected SessionStart hook dependency check to use correct `${CLAUDE_PLUGIN_ROOT}/../node_modules` path instead of incorrect `${CLAUDE_PLUGIN_ROOT}/scripts/node_modules`
+- **Dependency checking now works**: This fixes the broken memory saving that occurred in v4.0.6
+
+### Changed
+- **Removed redundant package.json**: Cleaned up `plugin/scripts/package.json` as dependencies are now managed at root level
+- **Simplified hook commands**: Removed redundant npm install commands from UserPromptSubmit and other hooks - only SessionStart handles dependency installation
+
+
+## [4.0.6] - 2025-10-20
+
+### Changed
+- **Bash-based dependency checking**: Replaced TypeScript bootstrap system with simpler bash conditional checks in hooks.json
+- **Architecture simplification**: Net reduction of 157 lines of code by removing `src/shared/bootstrap.ts` and dynamic import logic
+- **Performance improvement**: Reduced timeout values from milliseconds to seconds for more appropriate hook execution limits
+
+### Fixed
+- **Removed dynamic imports**: Reverted all hooks to use static imports for better performance and simpler code
+- **Timeout standardization**: Standardized all hook timeouts to 120 seconds
+
+### Note
+- This release had a critical bug in the dependency path check that was fixed in v4.0.7
+
+
+## [4.0.5] - 2025-10-20
+
+### Added
+- **Self-bootstrapping hooks**: Implemented `src/shared/bootstrap.ts` with `ensureDependencies()` function that auto-installs dependencies on first run
+- **Zero-configuration installation**: Hooks now automatically install better-sqlite3 and other dependencies without user intervention
+- **GitHub Marketplace distribution**: Updated marketplace.json to support direct GitHub installation
+
+### Changed
+- **Installation method**: GitHub Marketplace is now the recommended installation method
+- **Build process**: Removed node_modules copying from build script, reducing distribution size
+- **Package structure**: Created `plugin/scripts/package.json` to manage hook-specific dependencies
+
+### Fixed
+- **better-sqlite3 distribution**: Eliminated need for users to have native compilation tools or manually install dependencies
+- **Cross-platform support**: npm automatically downloads prebuilt binaries for user's platform
+
+### Benefits
+- No git bloat (repo stays small without 25MB binaries)
+- No compilation needed (npm downloads prebuilt binaries)
+- Works on all platforms automatically
+- Zero manual installation steps
+
+
+## [4.0.4] - 2025-10-20
+
+### Changed
+- **Reverted to local marketplace**: Temporarily reverted from GitHub-hosted marketplace to local marketplace file installation
+- **Simplified marketplace.json**: Removed metadata and version fields for cleaner configuration
+
+### Documentation
+- Updated README to reflect local installation method during better-sqlite3 resolution phase
+- Installation temporarily requires: `/plugin marketplace add .claude-plugin/marketplace.json`
+
+### Note
+- This was a temporary measure to resolve native module build issues before v4.0.5's bootstrap solution
+
+
+## [4.0.3] - 2025-10-18
+
+### Added
+- **Initial marketplace release**: First release targeting Claude Code plugin marketplace
+- Published to GitHub repository for plugin distribution
+
+
 ## [4.0.2] - 2025-10-19
 
 ### Changed
@@ -24,7 +94,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [4.0.0] - 2025-10-18
 
 ### BREAKING CHANGES
-- **Data directory moved to plugin location**: Database and worker files now stored in `${CLAUDE_PLUGIN_ROOT}/data/` instead of `~/.claude-mem/`
+- **Data directory standardized**: Database and worker files stored in `~/.claude-mem/`
 - **Fresh start required**: No automatic migration from v3.x databases. Users must start fresh with v4.0.0
 - **Worker auto-starts**: Worker service now starts automatically on SessionStart hook, no manual PM2 commands needed
 
@@ -42,8 +112,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 - **Worker service architecture**: HTTP REST API with PM2 management for long-running background service
-- **Data directory priority**: `CLAUDE_PLUGIN_ROOT/data` > `CLAUDE_MEM_DATA_DIR` > `~/.claude-mem` (fallback for dev)
-- **Port file location**: Worker port file now stored in plugin data directory
+- **Data directory**: Uses `~/.claude-mem` by default, overridable via `CLAUDE_MEM_DATA_DIR`
+- **Fixed worker port**: Worker uses fixed port 37777 (configurable via `CLAUDE_MEM_WORKER_PORT`)
 - **Session continuity**: Automatic context injection from last 3 sessions on startup
 - **Package structure**: Reorganized to properly distribute plugin/, dist/, and src/ directories
 

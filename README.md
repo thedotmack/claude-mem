@@ -5,7 +5,7 @@
 Claude-Mem seamlessly preserves context across sessions by automatically capturing tool usage observations, generating semantic summaries, and making them available to future sessions. This enables Claude to maintain continuity of knowledge about projects even after sessions end or reconnect.
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL%203.0-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-4.0.5-green.svg)](package.json)
+[![Version](https://img.shields.io/badge/version-4.0.7-green.svg)](package.json)
 [![Node](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg)](package.json)
 
 ---
@@ -122,7 +122,7 @@ Claude-Mem is a **Claude Code plugin** that provides persistent memory across se
 
 Long-running HTTP service (managed by PM2) that:
 
-- Listens on dynamic port 37000-37999
+- Listens on port 37777 (configurable via `CLAUDE_MEM_WORKER_PORT`)
 - Provides REST API for hook communication
 - Maintains active session state in memory
 - Routes observations to Claude Agent SDK
@@ -164,7 +164,7 @@ All search results are returned in `search_result` format with **citations enabl
 
 #### 5. Database Layer
 
-SQLite database (`${CLAUDE_PLUGIN_ROOT}/data/claude-mem.db`) with tables:
+SQLite database (`~/.claude-mem/claude-mem.db`) with tables:
 
 - **sdk_sessions**: Active/completed session tracking
 - **observations**: Individual tool executions with FTS5 full-text search
@@ -262,10 +262,9 @@ npm install -g claude-mem
 
 2. **Data Directory Location**
 
-   v4.0.0+ stores data in `${CLAUDE_PLUGIN_ROOT}/data/`:
-   - Database: `${CLAUDE_PLUGIN_ROOT}/data/claude-mem.db`
-   - Worker port file: `${CLAUDE_PLUGIN_ROOT}/data/worker.port`
-   - Logs: `${CLAUDE_PLUGIN_ROOT}/data/logs/`
+   v4.0.0+ stores data in `~/.claude-mem/`:
+   - Database: `~/.claude-mem/claude-mem.db`
+   - Logs: `~/.claude-mem/logs/`
 
    For development/testing, you can override:
    ```bash
@@ -374,14 +373,11 @@ npm run publish:npm
 
 ### Viewing Stored Context
 
-Context is stored in SQLite database. Location varies by version:
-- v4.0+: `${CLAUDE_PLUGIN_ROOT}/data/claude-mem.db` (inside plugin)
-- v3.x: `~/.claude-mem/claude-mem.db` (legacy)
+Context is stored in SQLite database at `~/.claude-mem/claude-mem.db`
 
 Query the database directly:
 
 ```bash
-# v4.0+ uses ~/.claude-mem directory
 sqlite3 ~/.claude-mem/claude-mem.db
 
 # View recent sessions
@@ -510,28 +506,22 @@ Claude Request → MCP Server → SessionSearch Service → FTS5 Database → Se
 | Variable                | Default                         | Description                           |
 |-------------------------|---------------------------------|---------------------------------------|
 | `CLAUDE_PLUGIN_ROOT`    | Set by Claude Code              | Plugin installation directory         |
-| `CLAUDE_MEM_DATA_DIR`   | `${CLAUDE_PLUGIN_ROOT}/data/`   | Data directory override (dev only)    |
-| `CLAUDE_MEM_WORKER_PORT`| `0` (dynamic)                   | Worker service port (37000-37999)     |
+| `CLAUDE_MEM_DATA_DIR`   | `~/.claude-mem`                 | Data directory override (dev only)    |
+| `CLAUDE_MEM_WORKER_PORT`| `37777`                         | Worker service fixed port             |
 | `NODE_ENV`              | `production`                    | Environment mode                      |
 | `FORCE_COLOR`           | `1`                             | Enable colored logs                   |
 
 ### Files and Directories
 
-**v4.0.0+ Structure:**
+**Data Directory Structure:**
 
 ```
-${CLAUDE_PLUGIN_ROOT}/data/
+~/.claude-mem/
 ├── claude-mem.db           # SQLite database
-├── worker.port             # Current worker port file
-└── logs/
-    ├── worker-out.log      # Worker stdout logs
-    └── worker-error.log    # Worker stderr logs
-```
-
-**Legacy (v3.x):**
-
-```
-~/.claude-mem/              # Old location (no longer used)
+├── logs/                   # Log files
+├── archives/               # Archived sessions
+├── trash/                  # Deleted items
+└── backups/                # Database backups
 ```
 
 ### Plugin Configuration
@@ -667,14 +657,14 @@ pm2 delete claude-mem-worker
 npm run worker:start
 ```
 
-**Problem**: Port allocation failed
+**Problem**: Port conflict (something else using 37777)
 
 ```bash
-# Check if port file exists (v4.0+)
-cat ${CLAUDE_PLUGIN_ROOT}/data/worker.port
+# Check what's using the port
+lsof -i :37777
 
-# Manually specify port
-CLAUDE_MEM_WORKER_PORT=37500 npm run worker:start
+# Use a different port
+CLAUDE_MEM_WORKER_PORT=37778 npm run worker:start
 ```
 
 ### Hook Issues
