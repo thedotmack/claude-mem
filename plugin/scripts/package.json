@@ -5,6 +5,7 @@
   "private": true,
   "description": "Bundled hooks and dependencies for claude-mem plugin",
   "dependencies": {
-    "better-sqlite3": "^11.0.0"
+    "better-sqlite3": "^11.0.0",
+    "pm2": "^5.3.0"
   }
 }
