@@ -1,44 +1,57 @@
-#!/usr/bin/env node
-
 /**
  * Claude-mem MCP Search Server
  * Exposes SessionSearch capabilities as MCP tools with search_result formatting
  */
 
-import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
+import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import {
+  CallToolRequestSchema,
+  ListToolsRequestSchema,
+} from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
+import { zodToJsonSchema } from 'zod-to-json-schema';
+import { basename } from 'path';
 import { SessionSearch } from '../services/sqlite/SessionSearch.js';
+import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { ObservationSearchResult, SessionSummarySearchResult } from '../services/sqlite/types.js';
 
 // Initialize search instance
 let search: SessionSearch;
+let store: SessionStore;
 try {
   search = new SessionSearch();
+  store = new SessionStore();
 } catch (error: any) {
   console.error('[search-server] Failed to initialize search:', error.message);
   process.exit(1);
 }
 
 /**
- * Format observation as search_result with citations
+ * Format observation as text content with metadata
  */
-function formatObservationResult(obs: ObservationSearchResult, index: number) {
-  const source = `claude-mem://observation/${obs.id}`;
+function formatObservationResult(obs: ObservationSearchResult, index: number): string {
   const title = obs.title || `Observation #${obs.id}`;
 
   // Build content from available fields
   const contentParts: string[] = [];
+  contentParts.push(`## ${title}`);
+  contentParts.push(`*Source: claude-mem://observation/${obs.id}*`);
+  contentParts.push('');
 
   if (obs.subtitle) {
     contentParts.push(`**${obs.subtitle}**`);
+    contentParts.push('');
   }
 
   if (obs.narrative) {
     contentParts.push(obs.narrative);
+    contentParts.push('');
   }
 
   if (obs.text) {
     contentParts.push(obs.text);
+    contentParts.push('');
   }
 
   // Add metadata
@@ -81,51 +94,48 @@ function formatObservationResult(obs: ObservationSearchResult, index: number) {
   }
 
   if (metadata.length > 0) {
-    contentParts.push(`\n---\n${metadata.join(' | ')}`);
+    contentParts.push('---');
+    contentParts.push(metadata.join(' | '));
   }
 
-  const content = contentParts.join('\n\n');
-
-  return {
-    type: 'search_result' as const,
-    source,
-    title,
-    content: [{
-      type: 'text' as const,
-      text: content || 'No content available'
-    }],
-    citations: { enabled: true }
-  };
+  return contentParts.join('\n');
 }
 
 /**
- * Format session summary as search_result with citations
+ * Format session summary as text content with metadata
  */
-function formatSessionResult(session: SessionSummarySearchResult, index: number) {
-  const source = `claude-mem://session/${session.sdk_session_id}`;
+function formatSessionResult(session: SessionSummarySearchResult, index: number): string {
   const title = session.request || `Session ${session.sdk_session_id.substring(0, 8)}`;
 
   // Build content from available fields
   const contentParts: string[] = [];
+  contentParts.push(`## ${title}`);
+  contentParts.push(`*Source: claude-mem://session/${session.sdk_session_id}*`);
+  contentParts.push('');
 
   if (session.completed) {
     contentParts.push(`**Completed:** ${session.completed}`);
+    contentParts.push('');
   }
 
   if (session.learned) {
     contentParts.push(`**Learned:** ${session.learned}`);
+    contentParts.push('');
   }
 
   if (session.investigated) {
     contentParts.push(`**Investigated:** ${session.investigated}`);
+    contentParts.push('');
   }
 
   if (session.next_steps) {
     contentParts.push(`**Next Steps:** ${session.next_steps}`);
+    contentParts.push('');
   }
 
   if (session.notes) {
     contentParts.push(`**Notes:** ${session.notes}`);
+    contentParts.push('');
   }
 
   // Add metadata
@@ -152,21 +162,11 @@ function formatSessionResult(session: SessionSummarySearchResult, index: number)
   metadata.push(`Date: ${date}`);
 
   if (metadata.length > 0) {
-    contentParts.push(`\n---\n${metadata.join(' | ')}`);
+    contentParts.push('---');
+    contentParts.push(metadata.join(' | '));
   }
 
-  const content = contentParts.join('\n\n');
-
-  return {
-    type: 'search_result' as const,
-    source,
-    title,
-    content: [{
-      type: 'text' as const,
-      text: content || 'No content available'
-    }],
-    citations: { enabled: true }
-  };
+  return contentParts.join('\n');
 }
 
 /**
@@ -189,277 +189,511 @@ const filterSchema = z.object({
   orderBy: z.enum(['relevance', 'date_desc', 'date_asc']).default('relevance').describe('Sort order')
 });
 
+// Define tool schemas
+const tools = [
+  {
+    name: 'search_observations',
+    description: 'Search observations using full-text search across titles, narratives, facts, and concepts',
+    inputSchema: z.object({
+      query: z.string().describe('Search query for FTS5 full-text search'),
+      ...filterSchema.shape
+    }),
+    handler: async (args: any) => {
+      try {
+        const { query, ...options } = args;
+        const results = search.searchObservations(query, options);
+
+        if (results.length === 0) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: `No observations found matching "${query}"`
+            }]
+          };
+        }
+
+        // Combine all results into a single text response
+        const formattedResults = results.map((obs, i) => formatObservationResult(obs, i));
+        const combinedText = formattedResults.join('\n\n---\n\n');
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: combinedText
+          }]
+        };
+      } catch (error: any) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `Search failed: ${error.message}`
+          }],
+          isError: true
+        };
+      }
+    }
+  },
+  {
+    name: 'search_sessions',
+    description: 'Search session summaries using full-text search across requests, completions, learnings, and notes',
+    inputSchema: z.object({
+      query: z.string().describe('Search query for FTS5 full-text search'),
+      project: z.string().optional().describe('Filter by project name'),
+      dateRange: z.object({
+        start: z.union([z.string(), z.number()]).optional(),
+        end: z.union([z.string(), z.number()]).optional()
+      }).optional().describe('Filter by date range'),
+      limit: z.number().min(1).max(100).default(20).describe('Maximum number of results'),
+      offset: z.number().min(0).default(0).describe('Number of results to skip'),
+      orderBy: z.enum(['relevance', 'date_desc', 'date_asc']).default('relevance').describe('Sort order')
+    }),
+    handler: async (args: any) => {
+      try {
+        const { query, ...options } = args;
+        const results = search.searchSessions(query, options);
+
+        if (results.length === 0) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: `No sessions found matching "${query}"`
+            }]
+          };
+        }
+
+        // Combine all results into a single text response
+        const formattedResults = results.map((session, i) => formatSessionResult(session, i));
+        const combinedText = formattedResults.join('\n\n---\n\n');
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: combinedText
+          }]
+        };
+      } catch (error: any) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `Search failed: ${error.message}`
+          }],
+          isError: true
+        };
+      }
+    }
+  },
+  {
+    name: 'find_by_concept',
+    description: 'Find observations tagged with a specific concept',
+    inputSchema: z.object({
+      concept: z.string().describe('Concept tag to search for'),
+      project: z.string().optional().describe('Filter by project name'),
+      dateRange: z.object({
+        start: z.union([z.string(), z.number()]).optional(),
+        end: z.union([z.string(), z.number()]).optional()
+      }).optional().describe('Filter by date range'),
+      limit: z.number().min(1).max(100).default(20).describe('Maximum number of results'),
+      offset: z.number().min(0).default(0).describe('Number of results to skip'),
+      orderBy: z.enum(['relevance', 'date_desc', 'date_asc']).default('date_desc').describe('Sort order')
+    }),
+    handler: async (args: any) => {
+      try {
+        const { concept, ...filters } = args;
+        const results = search.findByConcept(concept, filters);
+
+        if (results.length === 0) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: `No observations found with concept "${concept}"`
+            }]
+          };
+        }
+
+        // Combine all results into a single text response
+        const formattedResults = results.map((obs, i) => formatObservationResult(obs, i));
+        const combinedText = formattedResults.join('\n\n---\n\n');
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: combinedText
+          }]
+        };
+      } catch (error: any) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `Search failed: ${error.message}`
+          }],
+          isError: true
+        };
+      }
+    }
+  },
+  {
+    name: 'find_by_file',
+    description: 'Find observations and sessions that reference a specific file path',
+    inputSchema: z.object({
+      filePath: z.string().describe('File path to search for (supports partial matching)'),
+      project: z.string().optional().describe('Filter by project name'),
+      dateRange: z.object({
+        start: z.union([z.string(), z.number()]).optional(),
+        end: z.union([z.string(), z.number()]).optional()
+      }).optional().describe('Filter by date range'),
+      limit: z.number().min(1).max(100).default(20).describe('Maximum number of results'),
+      offset: z.number().min(0).default(0).describe('Number of results to skip'),
+      orderBy: z.enum(['relevance', 'date_desc', 'date_asc']).default('date_desc').describe('Sort order')
+    }),
+    handler: async (args: any) => {
+      try {
+        const { filePath, ...filters } = args;
+        const results = search.findByFile(filePath, filters);
+
+        const totalResults = results.observations.length + results.sessions.length;
+
+        if (totalResults === 0) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: `No results found for file "${filePath}"`
+            }]
+          };
+        }
+
+        const formattedResults: string[] = [];
+
+        // Add observations
+        results.observations.forEach((obs, i) => {
+          formattedResults.push(formatObservationResult(obs, i));
+        });
+
+        // Add sessions
+        results.sessions.forEach((session, i) => {
+          formattedResults.push(formatSessionResult(session, i + results.observations.length));
+        });
+
+        const combinedText = formattedResults.join('\n\n---\n\n');
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: combinedText
+          }]
+        };
+      } catch (error: any) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `Search failed: ${error.message}`
+          }],
+          isError: true
+        };
+      }
+    }
+  },
+  {
+    name: 'find_by_type',
+    description: 'Find observations of a specific type (decision, bugfix, feature, refactor, discovery, change)',
+    inputSchema: z.object({
+      type: z.union([
+        z.enum(['decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change']),
+        z.array(z.enum(['decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change']))
+      ]).describe('Observation type(s) to filter by'),
+      project: z.string().optional().describe('Filter by project name'),
+      dateRange: z.object({
+        start: z.union([z.string(), z.number()]).optional(),
+        end: z.union([z.string(), z.number()]).optional()
+      }).optional().describe('Filter by date range'),
+      limit: z.number().min(1).max(100).default(20).describe('Maximum number of results'),
+      offset: z.number().min(0).default(0).describe('Number of results to skip'),
+      orderBy: z.enum(['relevance', 'date_desc', 'date_asc']).default('date_desc').describe('Sort order')
+    }),
+    handler: async (args: any) => {
+      try {
+        const { type, ...filters } = args;
+        const results = search.findByType(type, filters);
+
+        if (results.length === 0) {
+          const typeStr = Array.isArray(type) ? type.join(', ') : type;
+          return {
+            content: [{
+              type: 'text' as const,
+              text: `No observations found with type "${typeStr}"`
+            }]
+          };
+        }
+
+        // Combine all results into a single text response
+        const formattedResults = results.map((obs, i) => formatObservationResult(obs, i));
+        const combinedText = formattedResults.join('\n\n---\n\n');
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: combinedText
+          }]
+        };
+      } catch (error: any) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `Search failed: ${error.message}`
+          }],
+          isError: true
+        };
+      }
+    }
+  },
+  {
+    name: 'get_recent_context',
+    description: 'Get recent session context including summaries and observations for a project',
+    inputSchema: z.object({
+      project: z.string().optional().describe('Project name (defaults to current working directory basename)'),
+      limit: z.number().min(1).max(10).default(3).describe('Number of recent sessions to retrieve')
+    }),
+    handler: async (args: any) => {
+      try {
+        const project = args.project || basename(process.cwd());
+        const limit = args.limit || 3;
+
+        const sessions = store.getRecentSessionsWithStatus(project, limit);
+
+        if (sessions.length === 0) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: `# Recent Session Context\n\nNo previous sessions found for project "${project}".`
+            }]
+          };
+        }
+
+        const lines: string[] = [];
+        lines.push('# Recent Session Context');
+        lines.push('');
+        lines.push(`Showing last ${sessions.length} session(s) for **${project}**:`);
+        lines.push('');
+
+        for (const session of sessions) {
+          if (!session.sdk_session_id) continue;
+
+          lines.push('---');
+          lines.push('');
+
+          if (session.has_summary) {
+            const summary = store.getSummaryForSession(session.sdk_session_id);
+            if (summary) {
+              const promptLabel = summary.prompt_number ? ` (Prompt #${summary.prompt_number})` : '';
+              lines.push(`**Summary${promptLabel}**`);
+              lines.push('');
+
+              if (summary.request) lines.push(`**Request:** ${summary.request}`);
+              if (summary.completed) lines.push(`**Completed:** ${summary.completed}`);
+              if (summary.learned) lines.push(`**Learned:** ${summary.learned}`);
+              if (summary.next_steps) lines.push(`**Next Steps:** ${summary.next_steps}`);
+
+              // Handle files_read
+              if (summary.files_read) {
+                try {
+                  const filesRead = JSON.parse(summary.files_read);
+                  if (Array.isArray(filesRead) && filesRead.length > 0) {
+                    lines.push(`**Files Read:** ${filesRead.join(', ')}`);
+                  }
+                } catch {
+                  if (summary.files_read.trim()) {
+                    lines.push(`**Files Read:** ${summary.files_read}`);
+                  }
+                }
+              }
+
+              // Handle files_edited
+              if (summary.files_edited) {
+                try {
+                  const filesEdited = JSON.parse(summary.files_edited);
+                  if (Array.isArray(filesEdited) && filesEdited.length > 0) {
+                    lines.push(`**Files Edited:** ${filesEdited.join(', ')}`);
+                  }
+                } catch {
+                  if (summary.files_edited.trim()) {
+                    lines.push(`**Files Edited:** ${summary.files_edited}`);
+                  }
+                }
+              }
+
+              const date = new Date(summary.created_at).toLocaleString();
+              lines.push(`**Date:** ${date}`);
+            }
+          } else if (session.status === 'active') {
+            lines.push('**In Progress**');
+            lines.push('');
+
+            if (session.user_prompt) {
+              lines.push(`**Request:** ${session.user_prompt}`);
+            }
+
+            const observations = store.getObservationsForSession(session.sdk_session_id);
+            if (observations.length > 0) {
+              lines.push('');
+              lines.push(`**Observations (${observations.length}):**`);
+              for (const obs of observations) {
+                lines.push(`- ${obs.title}`);
+              }
+            } else {
+              lines.push('');
+              lines.push('*No observations yet*');
+            }
+
+            lines.push('');
+            lines.push('**Status:** Active - summary pending');
+
+            const date = new Date(session.started_at).toLocaleString();
+            lines.push(`**Date:** ${date}`);
+          } else {
+            lines.push(`**${session.status.charAt(0).toUpperCase() + session.status.slice(1)}**`);
+            lines.push('');
+
+            if (session.user_prompt) {
+              lines.push(`**Request:** ${session.user_prompt}`);
+            }
+
+            lines.push('');
+            lines.push(`**Status:** ${session.status} - no summary available`);
+
+            const date = new Date(session.started_at).toLocaleString();
+            lines.push(`**Date:** ${date}`);
+          }
+
+          lines.push('');
+        }
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: lines.join('\n')
+          }]
+        };
+      } catch (error: any) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `Failed to get recent context: ${error.message}`
+          }],
+          isError: true
+        };
+      }
+    }
+  },
+  {
+    name: 'advanced_search',
+    description: 'Advanced search combining full-text search with structured filters across both observations and sessions',
+    inputSchema: z.object({
+      textQuery: z.string().optional().describe('Optional text query for FTS5 search'),
+      searchSessions: z.boolean().default(true).describe('Include session summaries in results'),
+      ...filterSchema.shape
+    }),
+    handler: async (args: any) => {
+      try {
+        const results = search.advancedSearch(args);
+
+        const totalResults = results.observations.length + results.sessions.length;
+
+        if (totalResults === 0) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: 'No results found matching the search criteria'
+            }]
+          };
+        }
+
+        const formattedResults: string[] = [];
+
+        // Add observations
+        results.observations.forEach((obs, i) => {
+          formattedResults.push(formatObservationResult(obs, i));
+        });
+
+        // Add sessions
+        results.sessions.forEach((session, i) => {
+          formattedResults.push(formatSessionResult(session, i + results.observations.length));
+        });
+
+        const combinedText = formattedResults.join('\n\n---\n\n');
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: combinedText
+          }]
+        };
+      } catch (error: any) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `Search failed: ${error.message}`
+          }],
+          isError: true
+        };
+      }
+    }
+  }
+];
+
 /**
  * Create and start the MCP server
  */
-const server = createSdkMcpServer({
-  name: 'claude-mem-search',
-  version: '1.0.0',
-  tools: [
-    // Tool 1: Search observations
-    tool(
-      'search_observations',
-      'Search observations using full-text search across titles, narratives, facts, and concepts',
-      {
-        query: z.string().describe('Search query for FTS5 full-text search'),
-        ...filterSchema.shape
-      },
-      async (args) => {
-        try {
-          const { query, ...options } = args;
-          const results = search.searchObservations(query, options);
+const server = new Server(
+  {
+    name: 'claude-mem-search',
+    version: '1.0.0',
+  },
+  {
+    capabilities: {
+      tools: {},
+    },
+  }
+);
 
-          if (results.length === 0) {
-            return {
-              content: [{
-                type: 'text' as const,
-                text: `No observations found matching "${query}"`
-              }]
-            };
-          }
+// Register tools/list handler
+server.setRequestHandler(ListToolsRequestSchema, async () => {
+  return {
+    tools: tools.map(tool => ({
+      name: tool.name,
+      description: tool.description,
+      inputSchema: zodToJsonSchema(tool.inputSchema) as any
+    }))
+  };
+});
 
-          return {
-            content: results.map((obs, i) => formatObservationResult(obs, i))
-          };
-        } catch (error: any) {
-          return {
-            content: [{
-              type: 'text' as const,
-              text: `Search failed: ${error.message}`
-            }]
-          };
-        }
-      }
-    ),
+// Register tools/call handler
+server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  const tool = tools.find(t => t.name === request.params.name);
 
-    // Tool 2: Search sessions
-    tool(
-      'search_sessions',
-      'Search session summaries using full-text search across requests, completions, learnings, and notes',
-      {
-        query: z.string().describe('Search query for FTS5 full-text search'),
-        project: z.string().optional().describe('Filter by project name'),
-        dateRange: z.object({
-          start: z.union([z.string(), z.number()]).optional(),
-          end: z.union([z.string(), z.number()]).optional()
-        }).optional().describe('Filter by date range'),
-        limit: z.number().min(1).max(100).default(20).describe('Maximum number of results'),
-        offset: z.number().min(0).default(0).describe('Number of results to skip'),
-        orderBy: z.enum(['relevance', 'date_desc', 'date_asc']).default('relevance').describe('Sort order')
-      },
-      async (args) => {
-        try {
-          const { query, ...options } = args;
-          const results = search.searchSessions(query, options);
+  if (!tool) {
+    throw new Error(`Unknown tool: ${request.params.name}`);
+  }
 
-          if (results.length === 0) {
-            return {
-              content: [{
-                type: 'text' as const,
-                text: `No sessions found matching "${query}"`
-              }]
-            };
-          }
-
-          return {
-            content: results.map((session, i) => formatSessionResult(session, i))
-          };
-        } catch (error: any) {
-          return {
-            content: [{
-              type: 'text' as const,
-              text: `Search failed: ${error.message}`
-            }]
-          };
-        }
-      }
-    ),
-
-    // Tool 3: Find by concept
-    tool(
-      'find_by_concept',
-      'Find observations tagged with a specific concept',
-      {
-        concept: z.string().describe('Concept tag to search for'),
-        project: z.string().optional().describe('Filter by project name'),
-        dateRange: z.object({
-          start: z.union([z.string(), z.number()]).optional(),
-          end: z.union([z.string(), z.number()]).optional()
-        }).optional().describe('Filter by date range')
-      },
-      async (args) => {
-        try {
-          const { concept, ...filters } = args;
-          const results = search.findByConcept(concept, filters);
-
-          if (results.length === 0) {
-            return {
-              content: [{
-                type: 'text' as const,
-                text: `No observations found with concept "${concept}"`
-              }]
-            };
-          }
-
-          return {
-            content: results.map((obs, i) => formatObservationResult(obs, i))
-          };
-        } catch (error: any) {
-          return {
-            content: [{
-              type: 'text' as const,
-              text: `Search failed: ${error.message}`
-            }]
-          };
-        }
-      }
-    ),
-
-    // Tool 4: Find by file
-    tool(
-      'find_by_file',
-      'Find observations and sessions that reference a specific file path',
-      {
-        filePath: z.string().describe('File path to search for (supports partial matching)'),
-        project: z.string().optional().describe('Filter by project name'),
-        dateRange: z.object({
-          start: z.union([z.string(), z.number()]).optional(),
-          end: z.union([z.string(), z.number()]).optional()
-        }).optional().describe('Filter by date range')
-      },
-      async (args) => {
-        try {
-          const { filePath, ...filters } = args;
-          const results = search.findByFile(filePath, filters);
-
-          const totalResults = results.observations.length + results.sessions.length;
-
-          if (totalResults === 0) {
-            return {
-              content: [{
-                type: 'text' as const,
-                text: `No results found for file "${filePath}"`
-              }]
-            };
-          }
-
-          const content: any[] = [];
-
-          // Add observations
-          results.observations.forEach((obs, i) => {
-            content.push(formatObservationResult(obs, i));
-          });
-
-          // Add sessions
-          results.sessions.forEach((session, i) => {
-            content.push(formatSessionResult(session, i + results.observations.length));
-          });
-
-          return { content };
-        } catch (error: any) {
-          return {
-            content: [{
-              type: 'text' as const,
-              text: `Search failed: ${error.message}`
-            }]
-          };
-        }
-      }
-    ),
-
-    // Tool 5: Find by type
-    tool(
-      'find_by_type',
-      'Find observations of a specific type (decision, bugfix, feature, refactor, discovery, change)',
-      {
-        type: z.union([
-          z.enum(['decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change']),
-          z.array(z.enum(['decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change']))
-        ]).describe('Observation type(s) to filter by'),
-        project: z.string().optional().describe('Filter by project name'),
-        dateRange: z.object({
-          start: z.union([z.string(), z.number()]).optional(),
-          end: z.union([z.string(), z.number()]).optional()
-        }).optional().describe('Filter by date range')
-      },
-      async (args) => {
-        try {
-          const { type, ...filters } = args;
-          const results = search.findByType(type, filters);
-
-          if (results.length === 0) {
-            const typeStr = Array.isArray(type) ? type.join(', ') : type;
-            return {
-              content: [{
-                type: 'text' as const,
-                text: `No observations found with type "${typeStr}"`
-              }]
-            };
-          }
-
-          return {
-            content: results.map((obs, i) => formatObservationResult(obs, i))
-          };
-        } catch (error: any) {
-          return {
-            content: [{
-              type: 'text' as const,
-              text: `Search failed: ${error.message}`
-            }]
-          };
-        }
-      }
-    ),
-
-    // Tool 6: Advanced search
-    tool(
-      'advanced_search',
-      'Advanced search combining full-text search with structured filters across both observations and sessions',
-      {
-        textQuery: z.string().optional().describe('Optional text query for FTS5 search'),
-        searchSessions: z.boolean().default(true).describe('Include session summaries in results'),
-        ...filterSchema.shape
-      },
-      async (args) => {
-        try {
-          const results = search.advancedSearch(args);
-
-          const totalResults = results.observations.length + results.sessions.length;
-
-          if (totalResults === 0) {
-            return {
-              content: [{
-                type: 'text' as const,
-                text: 'No results found matching the search criteria'
-              }]
-            };
-          }
-
-          const content: any[] = [];
-
-          // Add observations
-          results.observations.forEach((obs, i) => {
-            content.push(formatObservationResult(obs, i));
-          });
-
-          // Add sessions
-          results.sessions.forEach((session, i) => {
-            content.push(formatSessionResult(session, i + results.observations.length));
-          });
-
-          return { content };
-        } catch (error: any) {
-          return {
-            content: [{
-              type: 'text' as const,
-              text: `Search failed: ${error.message}`
-            }]
-          };
-        }
-      }
-    )
-  ]
+  try {
+    return await tool.handler(request.params.arguments || {});
+  } catch (error: any) {
+    return {
+      content: [{
+        type: 'text' as const,
+        text: `Tool execution failed: ${error.message}`
+      }],
+      isError: true
+    };
+  }
 });
 
 // Start the server
-console.error('[search-server] Starting claude-mem search server...');
+async function main() {
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  console.error('[search-server] Claude-mem search server started');
+}
+
+main().catch((error) => {
+  console.error('[search-server] Fatal error:', error);
+  process.exit(1);
+});
