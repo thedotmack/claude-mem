@@ -131,7 +131,6 @@ export function contextHook(input?: SessionStartInput, useColors: boolean = fals
           if (sessionFiles.filesRead.length > 0) {
             if (useColors) {
               output.push(`${colors.dim}Files Read: ${sessionFiles.filesRead.join(', ')}${colors.reset}`);
-              output.push('');
             } else {
               output.push(`**Files Read:** ${sessionFiles.filesRead.join(', ')}`);
             }
@@ -140,7 +139,6 @@ export function contextHook(input?: SessionStartInput, useColors: boolean = fals
           if (sessionFiles.filesModified.length > 0) {
             if (useColors) {
               output.push(`${colors.dim}Files Modified: ${sessionFiles.filesModified.join(', ')}${colors.reset}`);
-              output.push('');
             } else {
               output.push(`**Files Modified:** ${sessionFiles.filesModified.join(', ')}`);
             }
@@ -241,10 +239,13 @@ export function contextHook(input?: SessionStartInput, useColors: boolean = fals
         }
       }
 
-      output.push('');
+      if (!useColors) {
+        output.push('');
+      }
     }
 
     if (useColors) {
+      output.push('');
       output.push(`${colors.gray}${'─'.repeat(60)}${colors.reset}`);
       output.push('');
     }
