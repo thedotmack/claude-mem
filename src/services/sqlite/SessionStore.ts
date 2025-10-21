@@ -434,6 +434,31 @@ export class SessionStore {
   }
 
   /**
+   * Get recent summaries with session info for context display
+   */
+  getRecentSummariesWithSessionInfo(project: string, limit: number = 3): Array<{
+    sdk_session_id: string;
+    request: string | null;
+    learned: string | null;
+    completed: string | null;
+    next_steps: string | null;
+    prompt_number: number | null;
+    created_at: string;
+  }> {
+    const stmt = this.db.prepare(`
+      SELECT
+        sdk_session_id, request, learned, completed, next_steps,
+        prompt_number, created_at
+      FROM session_summaries
+      WHERE project = ?
+      ORDER BY created_at_epoch DESC
+      LIMIT ?
+    `);
+
+    return stmt.all(project, limit) as any[];
+  }
+
+  /**
    * Get recent observations for a project
    */
   getRecentObservations(project: string, limit: number = 20): Array<{
