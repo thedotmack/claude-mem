@@ -17,7 +17,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { SDKUserMessage, SDKSystemMessage } from '@anthropic-ai/claude-agent-sdk';
 import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { getWorkerSocketPath } from '../shared/paths.js';
-import { buildInitPrompt, buildObservationPrompt, buildFinalizePrompt } from './prompts.js';
+import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt } from './prompts.js';
 import { parseObservations, parseSummary } from './parser.js';
 import type { SDKSession } from './prompts.js';
 
@@ -374,7 +374,7 @@ class SDKWorker {
           this.isFinalized = true;
           const session = await this.loadSession();
           if (session) {
-            const finalizePrompt = buildFinalizePrompt(session);
+            const finalizePrompt = buildSummaryPrompt(session);
             console.error('[claude-mem worker] Yielding finalize prompt to SDK agent', {
               sessionDbId: this.sessionDbId,
               sdkSessionId: this.sdkSessionId,

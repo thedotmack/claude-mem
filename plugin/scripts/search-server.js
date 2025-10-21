@@ -265,6 +265,14 @@ ${e.stack}`:e.message;if(Array.isArray(e))return`[${e.length} items]`;let t=Obje
       WHERE project = ?
       ORDER BY created_at_epoch DESC
       LIMIT ?
+    `).all(e,t)}getRecentSummariesWithSessionInfo(e,t=3){return this.db.prepare(`
+      SELECT
+        sdk_session_id, request, learned, completed, next_steps,
+        prompt_number, created_at
+      FROM session_summaries
+      WHERE project = ?
+      ORDER BY created_at_epoch DESC
+      LIMIT ?
     `).all(e,t)}getRecentObservations(e,t=20){return this.db.prepare(`
       SELECT type, text, prompt_number, created_at
       FROM observations

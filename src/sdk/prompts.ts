@@ -137,19 +137,21 @@ export function buildObservationPrompt(obs: Observation): string {
 }
 
 /**
- * Build finalization prompt to generate session summary
+ * Build prompt to generate request summary
  */
-export function buildFinalizePrompt(session: SDKSession): string {
-  return `MEMORY PROCESSING SESSION COMPLETED
-===================================
-This session has completed. Review the observations you generated and create a session summary.
+export function buildSummaryPrompt(session: SDKSession): string {
+  return `REQUEST SUMMARY
+===============
+Review the observations you generated for THIS REQUEST and create a summary.
+
+IMPORTANT: Summarize only THIS REQUEST, not the entire session.
 
 Output this XML:
 <summary>
   <request>[What did the user request?]</request>
   <investigated>[What code and systems did you explore?]</investigated>
   <learned>[What did you learn about the codebase?]</learned>
-  <completed>[What was accomplished in this session?]</completed>
+  <completed>[What was accomplished in this request?]</completed>
   <next_steps>[What should be done next?]</next_steps>
   <notes>[Additional insights or context]</notes>
 </summary>

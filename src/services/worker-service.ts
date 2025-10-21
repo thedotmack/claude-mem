@@ -7,7 +7,7 @@ import express, { Request, Response } from 'express';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { SDKUserMessage, SDKSystemMessage } from '@anthropic-ai/claude-agent-sdk';
 import { SessionStore } from './sqlite/SessionStore.js';
-import { buildInitPrompt, buildObservationPrompt, buildFinalizePrompt } from '../sdk/prompts.js';
+import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt } from '../sdk/prompts.js';
 import { parseObservations, parseSummary } from '../sdk/parser.js';
 import type { SDKSession } from '../sdk/prompts.js';
 import { logger } from '../utils/logger.js';
@@ -408,7 +408,7 @@ class WorkerService {
           db.close();
 
           if (dbSession) {
-            const summarizePrompt = buildFinalizePrompt(dbSession);
+            const summarizePrompt = buildSummaryPrompt(dbSession);
 
             logger.dataIn('SDK', `Summary prompt sent (${summarizePrompt.length} chars)`, {
               sessionId: session.sessionDbId,
