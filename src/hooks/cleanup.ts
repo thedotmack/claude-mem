@@ -11,12 +11,12 @@ export interface SessionEndInput {
 
 /**
  * Cleanup Hook - SessionEnd
- * Cleans up worker session via HTTP DELETE
+ * Marks session as completed when Claude Code session ends
  *
  * This hook runs when a Claude Code session ends. It:
  * 1. Finds active SDK session for this Claude session
- * 2. Sends DELETE request to worker service
- * 3. Marks session as failed if not already completed
+ * 2. Marks session as completed in database
+ * 3. Allows worker to finish pending operations naturally
  */
 export async function cleanupHook(input?: SessionEndInput): Promise<void> {
   try {
