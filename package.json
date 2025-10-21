@@ -43,11 +43,11 @@
     "test:context:verbose": "echo '{\"session_id\":\"test-'$(date +%s)'\",\"cwd\":\"'$(pwd)'\",\"source\":\"startup\"}' | node plugin/scripts/context-hook.js",
     "import:xml": "tsx src/bin/import-xml-observations.ts",
     "cleanup:duplicates": "tsx src/bin/cleanup-duplicates.ts",
-    "worker:start": "npx pm2 start ecosystem.config.cjs",
-    "worker:stop": "npx pm2 stop claude-mem-worker",
-    "worker:restart": "npx pm2 restart claude-mem-worker",
-    "worker:logs": "npx pm2 logs claude-mem-worker",
-    "worker:status": "npx pm2 status claude-mem-worker"
+    "worker:start": "pm2 start ecosystem.config.cjs",
+    "worker:stop": "pm2 stop claude-mem-worker",
+    "worker:restart": "pm2 restart claude-mem-worker",
+    "worker:logs": "pm2 logs claude-mem-worker",
+    "worker:status": "pm2 status claude-mem-worker"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.1.23",
