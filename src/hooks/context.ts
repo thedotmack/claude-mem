@@ -126,8 +126,7 @@ export function contextHook(input?: SessionStartInput): string {
         output.push(`**Date:** ${activeDateTime}`);
       } else {
         // Failed or completed session without summary
-        const displayStatus = session.status === 'failed' ? 'stopped' : session.status;
-        output.push(`**${displayStatus.charAt(0).toUpperCase() + displayStatus.slice(1)}**`);
+        output.push(`**${session.status.charAt(0).toUpperCase() + session.status.slice(1)}**`);
         output.push('');
 
         if (session.user_prompt) {
@@ -135,7 +134,7 @@ export function contextHook(input?: SessionStartInput): string {
         }
 
         output.push('');
-        output.push(`**Status:** ${displayStatus} - no summary available`);
+        output.push(`**Status:** ${session.status} - no summary available`);
         const failedDateTime = new Date(session.started_at).toLocaleString();
         output.push(`**Date:** ${failedDateTime}`);
       }

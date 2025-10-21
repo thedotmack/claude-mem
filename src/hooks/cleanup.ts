@@ -98,12 +98,12 @@ export async function cleanupHook(input?: SessionEndInput): Promise<void> {
       console.error('[claude-mem cleanup] No worker available or no worker port, skipping HTTP cleanup');
     }
 
-    // 2. Mark session as failed in DB (if not already completed)
+    // 2. Mark session as completed in DB
     try {
-      db.markSessionFailed(session.id);
-      console.error('[claude-mem cleanup] Session marked as failed in database');
+      db.markSessionCompleted(session.id);
+      console.error('[claude-mem cleanup] Session marked as completed in database');
     } catch (markErr: any) {
-      console.error('[claude-mem cleanup] Failed to mark session as failed:', markErr);
+      console.error('[claude-mem cleanup] Failed to mark session as completed:', markErr);
     }
 
     db.close();

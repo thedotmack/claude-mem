@@ -269,9 +269,9 @@ class WorkerService {
       ]);
     }
 
-    // Mark as failed since we're aborting
+    // Mark as completed (intentional session end)
     const db = new SessionStore();
-    db.markSessionFailed(sessionDbId);
+    db.markSessionCompleted(sessionDbId);
     db.close();
 
     this.sessions.delete(sessionDbId);
