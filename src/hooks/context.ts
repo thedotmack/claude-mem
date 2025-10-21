@@ -98,21 +98,21 @@ export function contextHook(input?: SessionStartInput, useColors: boolean = fals
             }
           }
 
-          if (summary.completed) {
-            if (useColors) {
-              output.push(`${colors.bright}${colors.green}Completed:${colors.reset} ${summary.completed}`);
-              output.push('');
-            } else {
-              output.push(`**Completed:** ${summary.completed}`);
-            }
-          }
-
           if (summary.learned) {
             if (useColors) {
               output.push(`${colors.bright}${colors.blue}Learned:${colors.reset} ${summary.learned}`);
               output.push('');
             } else {
               output.push(`**Learned:** ${summary.learned}`);
+            }
+          }
+
+          if (summary.completed) {
+            if (useColors) {
+              output.push(`${colors.bright}${colors.green}Completed:${colors.reset} ${summary.completed}`);
+              output.push('');
+            } else {
+              output.push(`**Completed:** ${summary.completed}`);
             }
           }
 
