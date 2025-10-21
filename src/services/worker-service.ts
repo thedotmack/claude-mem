@@ -13,7 +13,7 @@ import type { SDKSession } from '../sdk/prompts.js';
 import { logger } from '../utils/logger.js';
 import { ensureAllDataDirs } from '../shared/paths.js';
 
-const MODEL = 'claude-sonnet-4-5';
+const MODEL = process.env.CLAUDE_MEM_MODEL || 'claude-sonnet-4-5';
 const DISALLOWED_TOOLS = ['Glob', 'Grep', 'ListMcpResourcesTool', 'WebSearch'];
 const FIXED_PORT = parseInt(process.env.CLAUDE_MEM_WORKER_PORT || '37777', 10);
 

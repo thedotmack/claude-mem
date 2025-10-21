@@ -16,7 +16,7 @@
     "nodejs"
   ],
   "author": "Alex Newman",
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "AGPL-3.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/thedotmack/claude-mem.git"

@@ -6,7 +6,7 @@
     "name": "Alex Newman"
   },
   "repository": "https://github.com/thedotmack/claude-mem",
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "AGPL-3.0",
   "keywords": [
     "memory",
     "context",
