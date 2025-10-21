@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 
+## [4.1.1] - 2025-10-21
+
+### Removed
+- **advanced_search tool**: Removed redundant MCP tool that provided no functionality beyond calling search_observations + search_sessions
+
+### Fixed
+- **MCP search limit bug**: Fixed findByConcept, findByType, and findByFile methods to properly respect limit/offset parameters
+- **Type contamination in concepts**: Added parser validation to prevent observation types from being added to concepts array
+- **Token limit warnings**: Added guidance in tool descriptions to start with 3-5 results to avoid MCP token limits
+
+### Changed
+- **Simplified MCP API**: Reduced from 7 to 6 search tools by removing the redundant advanced_search
+- **Improved search prompts**: Enhanced type and concept constraint language in SDK prompts to prevent AI contamination
+
+
 ## [4.1.0] - 2025-10-21
 
 ### Changed
