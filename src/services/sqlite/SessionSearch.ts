@@ -474,67 +474,6 @@ export class SessionSearch {
   }
 
   /**
-   * Advanced search combining FTS5 and structured filters
-   */
-  advancedSearch(options: {
-    textQuery?: string;
-    searchSessions?: boolean;
-  } & SearchOptions): {
-    observations: ObservationSearchResult[];
-    sessions: SessionSummarySearchResult[];
-  } {
-    const { textQuery, searchSessions = true, ...searchOptions } = options;
-
-    let observations: ObservationSearchResult[] = [];
-    let sessions: SessionSummarySearchResult[] = [];
-
-    if (textQuery) {
-      // Use FTS5 search
-      observations = this.searchObservations(textQuery, searchOptions);
-      if (searchSessions) {
-        sessions = this.searchSessions(textQuery, searchOptions);
-      }
-    } else {
-      // Pure structured query (no FTS)
-      const params: any[] = [];
-      const filterClause = this.buildFilterClause(searchOptions, params, 'o');
-
-      if (filterClause) {
-        const obsSql = `
-          SELECT o.*
-          FROM observations o
-          WHERE ${filterClause}
-          ${this.buildOrderClause(searchOptions.orderBy, false)}
-          LIMIT ? OFFSET ?
-        `;
-        params.push(searchOptions.limit || 50, searchOptions.offset || 0);
-        observations = this.db.prepare(obsSql).all(...params) as ObservationSearchResult[];
-      }
-
-      if (searchSessions) {
-        const sessionParams: any[] = [];
-        const sessionFilters = { ...searchOptions };
-        delete sessionFilters.type;
-        const sessionFilterClause = this.buildFilterClause(sessionFilters, sessionParams, 's');
-
-        if (sessionFilterClause) {
-          const sessSql = `
-            SELECT s.*
-            FROM session_summaries s
-            WHERE ${sessionFilterClause}
-            ORDER BY s.created_at_epoch DESC
-            LIMIT ? OFFSET ?
-          `;
-          sessionParams.push(searchOptions.limit || 50, searchOptions.offset || 0);
-          sessions = this.db.prepare(sessSql).all(...sessionParams) as SessionSummarySearchResult[];
-        }
-      }
-    }
-
-    return { observations, sessions };
-  }
-
-  /**
    * Close the database connection
    */
   close(): void {
