@@ -533,6 +533,59 @@ export class SessionStore {
   }
 
   /**
+   * Get aggregated files from all observations for a session
+   */
+  getFilesForSession(sdkSessionId: string): {
+    filesRead: string[];
+    filesModified: string[];
+  } {
+    const stmt = this.db.prepare(`
+      SELECT files_read, files_modified
+      FROM observations
+      WHERE sdk_session_id = ?
+    `);
+
+    const rows = stmt.all(sdkSessionId) as Array<{
+      files_read: string | null;
+      files_modified: string | null;
+    }>;
+
+    const filesReadSet = new Set<string>();
+    const filesModifiedSet = new Set<string>();
+
+    for (const row of rows) {
+      // Parse files_read
+      if (row.files_read) {
+        try {
+          const files = JSON.parse(row.files_read);
+          if (Array.isArray(files)) {
+            files.forEach(f => filesReadSet.add(f));
+          }
+        } catch {
+          // Skip invalid JSON
+        }
+      }
+
+      // Parse files_modified
+      if (row.files_modified) {
+        try {
+          const files = JSON.parse(row.files_modified);
+          if (Array.isArray(files)) {
+            files.forEach(f => filesModifiedSet.add(f));
+          }
+        } catch {
+          // Skip invalid JSON
+        }
+      }
+    }
+
+    return {
+      filesRead: Array.from(filesReadSet),
+      filesModified: Array.from(filesModifiedSet)
+    };
+  }
+
+  /**
    * Get session by ID
    */
   getSessionById(id: number): {

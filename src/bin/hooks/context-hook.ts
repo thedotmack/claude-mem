@@ -9,21 +9,17 @@ import { stdin } from 'process';
 
 try {
   if (stdin.isTTY) {
-    const contextOutput = contextHook();
-    const result = {
-      hookSpecificOutput: {
-        hookEventName: "SessionStart",
-        additionalContext: contextOutput
-      }
-    };
-    console.log(JSON.stringify(result));
+    // Running manually from terminal - print formatted output with colors
+    const contextOutput = contextHook(undefined, true);
+    console.log(contextOutput);
     process.exit(0);
   } else {
+    // Running from hook - wrap in JSON format without colors
     let input = '';
     stdin.on('data', (chunk) => input += chunk);
     stdin.on('end', () => {
       const parsed = input.trim() ? JSON.parse(input) : undefined;
-      const contextOutput = contextHook(parsed);
+      const contextOutput = contextHook(parsed, false);
       const result = {
         hookSpecificOutput: {
           hookEventName: "SessionStart",
