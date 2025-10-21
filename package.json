@@ -1,6 +1,6 @@
 {
   "name": "claude-mem",
-  "version": "4.0.6",
+  "version": "4.1.0",
   "description": "Memory compression system for Claude Code - persist context across sessions",
   "keywords": [
     "claude",
@@ -50,12 +50,14 @@
     "worker:status": "npx pm2 status claude-mem-worker"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.1.0",
+    "@anthropic-ai/claude-agent-sdk": "^0.1.23",
+    "@modelcontextprotocol/sdk": "^1.20.1",
     "better-sqlite3": "^11.0.0",
     "express": "^4.18.2",
     "glob": "^11.0.3",
     "handlebars": "^4.7.8",
-    "pm2": "^5.3.0"
+    "pm2": "^5.3.0",
+    "zod-to-json-schema": "^3.24.6"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.8",

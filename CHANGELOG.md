@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 
+## [4.1.0] - 2025-10-21
+
+### Changed
+- **Graceful session cleanup**: Cleanup hook now marks sessions as completed instead of sending DELETE requests to worker
+- **Natural worker shutdown**: Workers now finish pending operations (like summary generation) before terminating
+- **Restored MCP search server**: Re-enabled full-text search capabilities from backup
+
+### Fixed
+- Session summaries no longer interrupted by aggressive cleanup during session end
+- Workers can now complete final operations before shutdown
+
+
 ## [4.0.2] - 2025-10-19
 
 ### Changed
