@@ -28,6 +28,44 @@ try {
 }
 
 /**
+ * Format search tips footer
+ */
+function formatSearchTips(): string {
+  return `\n---
+💡 Search Tips:
+• To see full details: Add format: "full" to your search
+• To narrow results: Use filters like type, dateRange, concepts, or files
+• To search by concept: Use find_by_concept tool
+• To browse by type: Use find_by_type with ["decision", "feature", etc.]
+• To sort by date: Use orderBy: "date_desc" or "date_asc"`;
+}
+
+/**
+ * Format observation as index entry (title, date, ID only)
+ */
+function formatObservationIndex(obs: ObservationSearchResult, index: number): string {
+  const title = obs.title || `Observation #${obs.id}`;
+  const date = new Date(obs.created_at_epoch).toLocaleString();
+  const type = obs.type ? `[${obs.type}]` : '';
+
+  return `${index + 1}. ${type} ${title}
+   Date: ${date}
+   Source: claude-mem://observation/${obs.id}`;
+}
+
+/**
+ * Format session summary as index entry (title, date, ID only)
+ */
+function formatSessionIndex(session: SessionSummarySearchResult, index: number): string {
+  const title = session.request || `Session ${session.sdk_session_id.substring(0, 8)}`;
+  const date = new Date(session.created_at_epoch).toLocaleString();
+
+  return `${index + 1}. ${title}
+   Date: ${date}
+   Source: claude-mem://session/${session.sdk_session_id}`;
+}
+
+/**
  * Format observation as text content with metadata
  */
 function formatObservationResult(obs: ObservationSearchResult, index: number): string {
@@ -97,6 +135,12 @@ function formatObservationResult(obs: ObservationSearchResult, index: number): s
     contentParts.push('---');
     contentParts.push(metadata.join(' | '));
   }
+
+  // Add date
+  const date = new Date(obs.created_at_epoch).toLocaleString();
+  contentParts.push('');
+  contentParts.push(`---`);
+  contentParts.push(`Date: ${date}`);
 
   return contentParts.join('\n');
 }
@@ -196,11 +240,12 @@ const tools = [
     description: 'Search observations using full-text search across titles, narratives, facts, and concepts',
     inputSchema: z.object({
       query: z.string().describe('Search query for FTS5 full-text search'),
+      format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default), "full" for complete details'),
       ...filterSchema.shape
     }),
     handler: async (args: any) => {
       try {
-        const { query, ...options } = args;
+        const { query, format = 'index', ...options } = args;
         const results = search.searchObservations(query, options);
 
         if (results.length === 0) {
@@ -212,9 +257,16 @@ const tools = [
           };
         }
 
-        // Combine all results into a single text response
-        const formattedResults = results.map((obs, i) => formatObservationResult(obs, i));
-        const combinedText = formattedResults.join('\n\n---\n\n');
+        // Format based on requested format
+        let combinedText: string;
+        if (format === 'index') {
+          const header = `Found ${results.length} observation(s) matching "${query}":\n\n`;
+          const formattedResults = results.map((obs, i) => formatObservationIndex(obs, i));
+          combinedText = header + formattedResults.join('\n\n') + formatSearchTips();
+        } else {
+          const formattedResults = results.map((obs, i) => formatObservationResult(obs, i));
+          combinedText = formattedResults.join('\n\n---\n\n');
+        }
 
         return {
           content: [{
@@ -238,6 +290,7 @@ const tools = [
     description: 'Search session summaries using full-text search across requests, completions, learnings, and notes',
     inputSchema: z.object({
       query: z.string().describe('Search query for FTS5 full-text search'),
+      format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default), "full" for complete details'),
       project: z.string().optional().describe('Filter by project name'),
       dateRange: z.object({
         start: z.union([z.string(), z.number()]).optional(),
@@ -249,7 +302,7 @@ const tools = [
     }),
     handler: async (args: any) => {
       try {
-        const { query, ...options } = args;
+        const { query, format = 'index', ...options } = args;
         const results = search.searchSessions(query, options);
 
         if (results.length === 0) {
@@ -261,9 +314,16 @@ const tools = [
           };
         }
 
-        // Combine all results into a single text response
-        const formattedResults = results.map((session, i) => formatSessionResult(session, i));
-        const combinedText = formattedResults.join('\n\n---\n\n');
+        // Format based on requested format
+        let combinedText: string;
+        if (format === 'index') {
+          const header = `Found ${results.length} session(s) matching "${query}":\n\n`;
+          const formattedResults = results.map((session, i) => formatSessionIndex(session, i));
+          combinedText = header + formattedResults.join('\n\n') + formatSearchTips();
+        } else {
+          const formattedResults = results.map((session, i) => formatSessionResult(session, i));
+          combinedText = formattedResults.join('\n\n---\n\n');
+        }
 
         return {
           content: [{
@@ -287,6 +347,7 @@ const tools = [
     description: 'Find observations tagged with a specific concept',
     inputSchema: z.object({
       concept: z.string().describe('Concept tag to search for'),
+      format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default), "full" for complete details'),
       project: z.string().optional().describe('Filter by project name'),
       dateRange: z.object({
         start: z.union([z.string(), z.number()]).optional(),
@@ -298,7 +359,7 @@ const tools = [
     }),
     handler: async (args: any) => {
       try {
-        const { concept, ...filters } = args;
+        const { concept, format = 'index', ...filters } = args;
         const results = search.findByConcept(concept, filters);
 
         if (results.length === 0) {
@@ -310,9 +371,16 @@ const tools = [
           };
         }
 
-        // Combine all results into a single text response
-        const formattedResults = results.map((obs, i) => formatObservationResult(obs, i));
-        const combinedText = formattedResults.join('\n\n---\n\n');
+        // Format based on requested format
+        let combinedText: string;
+        if (format === 'index') {
+          const header = `Found ${results.length} observation(s) with concept "${concept}":\n\n`;
+          const formattedResults = results.map((obs, i) => formatObservationIndex(obs, i));
+          combinedText = header + formattedResults.join('\n\n') + formatSearchTips();
+        } else {
+          const formattedResults = results.map((obs, i) => formatObservationResult(obs, i));
+          combinedText = formattedResults.join('\n\n---\n\n');
+        }
 
         return {
           content: [{
@@ -336,6 +404,7 @@ const tools = [
     description: 'Find observations and sessions that reference a specific file path',
     inputSchema: z.object({
       filePath: z.string().describe('File path to search for (supports partial matching)'),
+      format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default), "full" for complete details'),
       project: z.string().optional().describe('Filter by project name'),
       dateRange: z.object({
         start: z.union([z.string(), z.number()]).optional(),
@@ -347,7 +416,7 @@ const tools = [
     }),
     handler: async (args: any) => {
       try {
-        const { filePath, ...filters } = args;
+        const { filePath, format = 'index', ...filters } = args;
         const results = search.findByFile(filePath, filters);
 
         const totalResults = results.observations.length + results.sessions.length;
@@ -361,19 +430,37 @@ const tools = [
           };
         }
 
-        const formattedResults: string[] = [];
+        let combinedText: string;
+        if (format === 'index') {
+          const header = `Found ${totalResults} result(s) for file "${filePath}":\n\n`;
+          const formattedResults: string[] = [];
 
-        // Add observations
-        results.observations.forEach((obs, i) => {
-          formattedResults.push(formatObservationResult(obs, i));
-        });
+          // Add observations
+          results.observations.forEach((obs, i) => {
+            formattedResults.push(formatObservationIndex(obs, i));
+          });
 
-        // Add sessions
-        results.sessions.forEach((session, i) => {
-          formattedResults.push(formatSessionResult(session, i + results.observations.length));
-        });
+          // Add sessions
+          results.sessions.forEach((session, i) => {
+            formattedResults.push(formatSessionIndex(session, i + results.observations.length));
+          });
 
-        const combinedText = formattedResults.join('\n\n---\n\n');
+          combinedText = header + formattedResults.join('\n\n') + formatSearchTips();
+        } else {
+          const formattedResults: string[] = [];
+
+          // Add observations
+          results.observations.forEach((obs, i) => {
+            formattedResults.push(formatObservationResult(obs, i));
+          });
+
+          // Add sessions
+          results.sessions.forEach((session, i) => {
+            formattedResults.push(formatSessionResult(session, i + results.observations.length));
+          });
+
+          combinedText = formattedResults.join('\n\n---\n\n');
+        }
 
         return {
           content: [{
@@ -400,6 +487,7 @@ const tools = [
         z.enum(['decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change']),
         z.array(z.enum(['decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change']))
       ]).describe('Observation type(s) to filter by'),
+      format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default), "full" for complete details'),
       project: z.string().optional().describe('Filter by project name'),
       dateRange: z.object({
         start: z.union([z.string(), z.number()]).optional(),
@@ -411,7 +499,7 @@ const tools = [
     }),
     handler: async (args: any) => {
       try {
-        const { type, ...filters } = args;
+        const { type, format = 'index', ...filters } = args;
         const results = search.findByType(type, filters);
 
         if (results.length === 0) {
@@ -424,9 +512,17 @@ const tools = [
           };
         }
 
-        // Combine all results into a single text response
-        const formattedResults = results.map((obs, i) => formatObservationResult(obs, i));
-        const combinedText = formattedResults.join('\n\n---\n\n');
+        // Format based on requested format
+        const typeStr = Array.isArray(type) ? type.join(', ') : type;
+        let combinedText: string;
+        if (format === 'index') {
+          const header = `Found ${results.length} observation(s) with type "${typeStr}":\n\n`;
+          const formattedResults = results.map((obs, i) => formatObservationIndex(obs, i));
+          combinedText = header + formattedResults.join('\n\n') + formatSearchTips();
+        } else {
+          const formattedResults = results.map((obs, i) => formatObservationResult(obs, i));
+          combinedText = formattedResults.join('\n\n---\n\n');
+        }
 
         return {
           content: [{
@@ -588,12 +684,14 @@ const tools = [
     description: 'Advanced search combining full-text search with structured filters across both observations and sessions',
     inputSchema: z.object({
       textQuery: z.string().optional().describe('Optional text query for FTS5 search'),
+      format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default), "full" for complete details'),
       searchSessions: z.boolean().default(true).describe('Include session summaries in results'),
       ...filterSchema.shape
     }),
     handler: async (args: any) => {
       try {
-        const results = search.advancedSearch(args);
+        const { format = 'index', ...searchArgs } = args;
+        const results = search.advancedSearch(searchArgs);
 
         const totalResults = results.observations.length + results.sessions.length;
 
@@ -606,19 +704,37 @@ const tools = [
           };
         }
 
-        const formattedResults: string[] = [];
+        let combinedText: string;
+        if (format === 'index') {
+          const header = `Found ${totalResults} result(s) matching search criteria:\n\n`;
+          const formattedResults: string[] = [];
 
-        // Add observations
-        results.observations.forEach((obs, i) => {
-          formattedResults.push(formatObservationResult(obs, i));
-        });
+          // Add observations
+          results.observations.forEach((obs, i) => {
+            formattedResults.push(formatObservationIndex(obs, i));
+          });
 
-        // Add sessions
-        results.sessions.forEach((session, i) => {
-          formattedResults.push(formatSessionResult(session, i + results.observations.length));
-        });
+          // Add sessions
+          results.sessions.forEach((session, i) => {
+            formattedResults.push(formatSessionIndex(session, i + results.observations.length));
+          });
 
-        const combinedText = formattedResults.join('\n\n---\n\n');
+          combinedText = header + formattedResults.join('\n\n') + formatSearchTips();
+        } else {
+          const formattedResults: string[] = [];
+
+          // Add observations
+          results.observations.forEach((obs, i) => {
+            formattedResults.push(formatObservationResult(obs, i));
+          });
+
+          // Add sessions
+          results.sessions.forEach((session, i) => {
+            formattedResults.push(formatSessionResult(session, i + results.observations.length));
+          });
+
+          combinedText = formattedResults.join('\n\n---\n\n');
+        }
 
         return {
           content: [{
