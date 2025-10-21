@@ -32,9 +32,17 @@ try {
  */
 function formatSearchTips(): string {
   return `\n---
-💡 Search Tips:
-• To see full details: Add format: "full" to your search
-• To narrow results: Use filters like type, dateRange, concepts, or files
+💡 Search Strategy:
+ALWAYS search with index format FIRST to get an overview and identify relevant results.
+This is critical for token efficiency - index format uses ~10x fewer tokens than full format.
+
+Search workflow:
+1. Initial search: Use default (index) format to see titles, dates, and sources
+2. Review results: Identify which items are most relevant to your needs
+3. Deep dive: Only then use format: "full" on specific items of interest
+4. Narrow down: Use filters (type, dateRange, concepts, files) to refine results
+
+Other tips:
 • To search by concept: Use find_by_concept tool
 • To browse by type: Use find_by_type with ["decision", "feature", etc.]
 • To sort by date: Use orderBy: "date_desc" or "date_asc"`;
@@ -237,10 +245,10 @@ const filterSchema = z.object({
 const tools = [
   {
     name: 'search_observations',
-    description: 'Search observations using full-text search across titles, narratives, facts, and concepts',
+    description: 'Search observations using full-text search across titles, narratives, facts, and concepts. IMPORTANT: Always use index format first (default) to get an overview with minimal token usage, then use format: "full" only for specific items of interest.',
     inputSchema: z.object({
       query: z.string().describe('Search query for FTS5 full-text search'),
-      format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default), "full" for complete details'),
+      format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default, RECOMMENDED for initial search), "full" for complete details (use only after reviewing index results)'),
       ...filterSchema.shape
     }),
     handler: async (args: any) => {
@@ -287,10 +295,10 @@ const tools = [
   },
   {
     name: 'search_sessions',
-    description: 'Search session summaries using full-text search across requests, completions, learnings, and notes',
+    description: 'Search session summaries using full-text search across requests, completions, learnings, and notes. IMPORTANT: Always use index format first (default) to get an overview with minimal token usage, then use format: "full" only for specific items of interest.',
     inputSchema: z.object({
       query: z.string().describe('Search query for FTS5 full-text search'),
-      format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default), "full" for complete details'),
+      format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default, RECOMMENDED for initial search), "full" for complete details (use only after reviewing index results)'),
       project: z.string().optional().describe('Filter by project name'),
       dateRange: z.object({
         start: z.union([z.string(), z.number()]).optional(),
@@ -344,10 +352,10 @@ const tools = [
   },
   {
     name: 'find_by_concept',
-    description: 'Find observations tagged with a specific concept',
+    description: 'Find observations tagged with a specific concept. IMPORTANT: Always use index format first (default) to get an overview with minimal token usage, then use format: "full" only for specific items of interest.',
     inputSchema: z.object({
       concept: z.string().describe('Concept tag to search for'),
-      format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default), "full" for complete details'),
+      format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default, RECOMMENDED for initial search), "full" for complete details (use only after reviewing index results)'),
       project: z.string().optional().describe('Filter by project name'),
       dateRange: z.object({
         start: z.union([z.string(), z.number()]).optional(),
@@ -401,10 +409,10 @@ const tools = [
   },
   {
     name: 'find_by_file',
-    description: 'Find observations and sessions that reference a specific file path',
+    description: 'Find observations and sessions that reference a specific file path. IMPORTANT: Always use index format first (default) to get an overview with minimal token usage, then use format: "full" only for specific items of interest.',
     inputSchema: z.object({
       filePath: z.string().describe('File path to search for (supports partial matching)'),
-      format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default), "full" for complete details'),
+      format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default, RECOMMENDED for initial search), "full" for complete details (use only after reviewing index results)'),
       project: z.string().optional().describe('Filter by project name'),
       dateRange: z.object({
         start: z.union([z.string(), z.number()]).optional(),
@@ -481,13 +489,13 @@ const tools = [
   },
   {
     name: 'find_by_type',
-    description: 'Find observations of a specific type (decision, bugfix, feature, refactor, discovery, change)',
+    description: 'Find observations of a specific type (decision, bugfix, feature, refactor, discovery, change). IMPORTANT: Always use index format first (default) to get an overview with minimal token usage, then use format: "full" only for specific items of interest.',
     inputSchema: z.object({
       type: z.union([
         z.enum(['decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change']),
         z.array(z.enum(['decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change']))
       ]).describe('Observation type(s) to filter by'),
-      format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default), "full" for complete details'),
+      format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default, RECOMMENDED for initial search), "full" for complete details (use only after reviewing index results)'),
       project: z.string().optional().describe('Filter by project name'),
       dateRange: z.object({
         start: z.union([z.string(), z.number()]).optional(),
@@ -681,10 +689,10 @@ const tools = [
   },
   {
     name: 'advanced_search',
-    description: 'Advanced search combining full-text search with structured filters across both observations and sessions',
+    description: 'Advanced search combining full-text search with structured filters across both observations and sessions. IMPORTANT: Always use index format first (default) to get an overview with minimal token usage, then use format: "full" only for specific items of interest.',
     inputSchema: z.object({
       textQuery: z.string().optional().describe('Optional text query for FTS5 search'),
-      format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default), "full" for complete details'),
+      format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default, RECOMMENDED for initial search), "full" for complete details (use only after reviewing index results)'),
       searchSessions: z.boolean().default(true).describe('Include session summaries in results'),
       ...filterSchema.shape
     }),
