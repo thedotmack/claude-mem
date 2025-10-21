@@ -55,7 +55,7 @@ Output observations using this XML structure:
 <observation>
   <type>[ change | discovery | decision ]</type>
   <!--
-    **type**: One of:
+    **type**: MUST be EXACTLY one of these 3 options (no other values allowed):
       - change: modifications to code, config, or documentation
       - discovery: learning about existing system
       - decision: choosing an approach and why it was chosen
@@ -79,7 +79,7 @@ Output observations using this XML structure:
     <concept>[knowledge-type-category]</concept>
   </concepts>
   <!--
-    **concepts**: 2-5 knowledge-type categories:
+    **concepts**: 2-5 knowledge-type categories. MUST use ONLY these exact keywords:
       - how-it-works: understanding mechanisms
       - why-it-exists: purpose or rationale
       - what-changed: modifications made
@@ -87,6 +87,9 @@ Output observations using this XML structure:
       - gotcha: traps or edge cases
       - pattern: reusable approach
       - trade-off: pros/cons of a decision
+
+    IMPORTANT: Do NOT include the observation type (change/discovery/decision) as a concept.
+    Types and concepts are separate dimensions.
   -->
   <files_read>
     <file>[path/to/file]</file>

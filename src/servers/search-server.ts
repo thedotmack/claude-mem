@@ -361,7 +361,7 @@ const tools = [
         start: z.union([z.string(), z.number()]).optional(),
         end: z.union([z.string(), z.number()]).optional()
       }).optional().describe('Filter by date range'),
-      limit: z.number().min(1).max(100).default(20).describe('Maximum number of results'),
+      limit: z.number().min(1).max(100).default(20).describe('Maximum results. IMPORTANT: Start with 3-5 to avoid exceeding MCP token limits, even in index mode.'),
       offset: z.number().min(0).default(0).describe('Number of results to skip'),
       orderBy: z.enum(['relevance', 'date_desc', 'date_asc']).default('date_desc').describe('Sort order')
     }),
@@ -418,7 +418,7 @@ const tools = [
         start: z.union([z.string(), z.number()]).optional(),
         end: z.union([z.string(), z.number()]).optional()
       }).optional().describe('Filter by date range'),
-      limit: z.number().min(1).max(100).default(20).describe('Maximum number of results'),
+      limit: z.number().min(1).max(100).default(20).describe('Maximum results. IMPORTANT: Start with 3-5 to avoid exceeding MCP token limits, even in index mode.'),
       offset: z.number().min(0).default(0).describe('Number of results to skip'),
       orderBy: z.enum(['relevance', 'date_desc', 'date_asc']).default('date_desc').describe('Sort order')
     }),
@@ -501,7 +501,7 @@ const tools = [
         start: z.union([z.string(), z.number()]).optional(),
         end: z.union([z.string(), z.number()]).optional()
       }).optional().describe('Filter by date range'),
-      limit: z.number().min(1).max(100).default(20).describe('Maximum number of results'),
+      limit: z.number().min(1).max(100).default(20).describe('Maximum results. IMPORTANT: Start with 3-5 to avoid exceeding MCP token limits, even in index mode.'),
       offset: z.number().min(0).default(0).describe('Number of results to skip'),
       orderBy: z.enum(['relevance', 'date_desc', 'date_asc']).default('date_desc').describe('Sort order')
     }),

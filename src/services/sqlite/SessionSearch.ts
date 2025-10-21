@@ -349,19 +349,24 @@ export class SessionSearch {
   /**
    * Find observations by concept tag
    */
-  findByConcept(concept: string, filters: SearchFilters = {}): ObservationSearchResult[] {
+  findByConcept(concept: string, options: SearchOptions = {}): ObservationSearchResult[] {
     const params: any[] = [];
+    const { limit = 50, offset = 0, orderBy = 'date_desc', ...filters } = options;
 
     // Add concept to filters
     const conceptFilters = { ...filters, concepts: concept };
     const filterClause = this.buildFilterClause(conceptFilters, params, 'o');
+    const orderClause = this.buildOrderClause(orderBy, false);
 
     const sql = `
       SELECT o.*
       FROM observations o
       WHERE ${filterClause}
-      ORDER BY o.created_at_epoch DESC
+      ${orderClause}
+      LIMIT ? OFFSET ?
     `;
+
+    params.push(limit, offset);
 
     return this.db.prepare(sql).all(...params) as ObservationSearchResult[];
   }
@@ -369,22 +374,27 @@ export class SessionSearch {
   /**
    * Find observations and summaries by file path
    */
-  findByFile(filePath: string, filters: SearchFilters = {}): {
+  findByFile(filePath: string, options: SearchOptions = {}): {
     observations: ObservationSearchResult[];
     sessions: SessionSummarySearchResult[];
   } {
     const params: any[] = [];
+    const { limit = 50, offset = 0, orderBy = 'date_desc', ...filters } = options;
 
     // Add file to filters
     const fileFilters = { ...filters, files: filePath };
     const filterClause = this.buildFilterClause(fileFilters, params, 'o');
+    const orderClause = this.buildOrderClause(orderBy, false);
 
     const observationsSql = `
       SELECT o.*
       FROM observations o
       WHERE ${filterClause}
-      ORDER BY o.created_at_epoch DESC
+      ${orderClause}
+      LIMIT ? OFFSET ?
     `;
+
+    params.push(limit, offset);
 
     const observations = this.db.prepare(observationsSql).all(...params) as ObservationSearchResult[];
 
@@ -425,7 +435,10 @@ export class SessionSearch {
       FROM session_summaries s
       WHERE ${baseConditions.join(' AND ')}
       ORDER BY s.created_at_epoch DESC
+      LIMIT ? OFFSET ?
     `;
+
+    sessionParams.push(limit, offset);
 
     const sessions = this.db.prepare(sessionsSql).all(...sessionParams) as SessionSummarySearchResult[];
 
@@ -437,20 +450,25 @@ export class SessionSearch {
    */
   findByType(
     type: ObservationRow['type'] | ObservationRow['type'][],
-    filters: SearchFilters = {}
+    options: SearchOptions = {}
   ): ObservationSearchResult[] {
     const params: any[] = [];
+    const { limit = 50, offset = 0, orderBy = 'date_desc', ...filters } = options;
 
     // Add type to filters
     const typeFilters = { ...filters, type };
     const filterClause = this.buildFilterClause(typeFilters, params, 'o');
+    const orderClause = this.buildOrderClause(orderBy, false);
 
     const sql = `
       SELECT o.*
       FROM observations o
       WHERE ${filterClause}
-      ORDER BY o.created_at_epoch DESC
+      ${orderClause}
+      LIMIT ? OFFSET ?
     `;
+
+    params.push(limit, offset);
 
     return this.db.prepare(sql).all(...params) as ObservationSearchResult[];
   }

@@ -68,13 +68,25 @@ export function parseObservations(text: string, correlationId?: string): ParsedO
       continue;
     }
 
+    // Filter out type from concepts array (types and concepts are separate dimensions)
+    const cleanedConcepts = concepts.filter(c => c !== type.trim());
+
+    if (cleanedConcepts.length !== concepts.length) {
+      logger.warn('PARSER', 'Removed observation type from concepts array', {
+        correlationId,
+        type: type.trim(),
+        originalConcepts: concepts,
+        cleanedConcepts
+      });
+    }
+
     observations.push({
       type: type.trim(),
       title,
       subtitle,
       facts,
       narrative,
-      concepts,
+      concepts: cleanedConcepts,
       files_read,
       files_modified
     });
