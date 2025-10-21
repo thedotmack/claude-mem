@@ -71,32 +71,12 @@ export async function cleanupHook(input?: SessionEndInput): Promise<void> {
       worker_port: session.worker_port
     });
 
-    // 1. Delete session via HTTP
-    if (session.worker_port && workerReady) {
-      try {
-        const response = await fetch(`http://127.0.0.1:${session.worker_port}/sessions/${session.id}`, {
-          method: 'DELETE',
-          signal: AbortSignal.timeout(5000)
-        });
-
-        if (response.ok) {
-          console.error('[claude-mem cleanup] Session deleted successfully via HTTP');
-        } else {
-          console.error('[claude-mem cleanup] Failed to delete session:', await response.text());
-        }
-      } catch (error: any) {
-        console.error('[claude-mem cleanup] HTTP DELETE error:', error.message);
-      }
-    } else {
-      console.error('[claude-mem cleanup] No worker available or no worker port, skipping HTTP cleanup');
-    }
-
-    // 2. Mark session as failed in DB (if not already completed)
+    // 1. Mark session as completed in DB (if not already completed)
     try {
-      db.markSessionFailed(session.id);
-      console.error('[claude-mem cleanup] Session marked as failed in database');
+      db.markSessionCompleted(session.id);
+      console.error('[claude-mem cleanup] Session marked as completed in database');
     } catch (markErr: any) {
-      console.error('[claude-mem cleanup] Failed to mark session as failed:', markErr);
+      console.error('[claude-mem cleanup] Failed to mark session as completed:', markErr);
     }
 
     db.close();
