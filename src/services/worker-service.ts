@@ -135,7 +135,7 @@ class WorkerService {
     const session: ActiveSession = {
       sessionDbId,
       claudeSessionId,
-      sdkSessionId: null,
+      sdkSessionId: dbSession.sdk_session_id || null, // Set from database since we set both fields now
       project,
       userPrompt,
       pendingMessages: [],
