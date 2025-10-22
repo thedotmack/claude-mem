@@ -37,6 +37,7 @@ type WorkerMessage = ObservationMessage | SummarizeMessage;
  */
 interface ActiveSession {
   sessionDbId: number;
+  claudeSessionId: string; // Real Claude Code session ID
   sdkSessionId: string | null;
   project: string;
   userPrompt: string;
@@ -118,9 +119,22 @@ class WorkerService {
     const correlationId = logger.sessionId(sessionDbId);
     logger.info('WORKER', 'Session init', { correlationId, project });
 
+    // Fetch real Claude Code session ID from database
+    const db = new SessionStore();
+    const dbSession = db.getSessionById(sessionDbId);
+    if (!dbSession) {
+      db.close();
+      res.status(404).json({ error: 'Session not found in database' });
+      return;
+    }
+
+    // Get the real claude_session_id (which is the same as sdk_session_id now)
+    const claudeSessionId = dbSession.sdk_session_id || `session-${sessionDbId}`;
+
     // Create session state
     const session: ActiveSession = {
       sessionDbId,
+      claudeSessionId,
       sdkSessionId: null,
       project,
       userPrompt,
@@ -135,7 +149,6 @@ class WorkerService {
     this.sessions.set(sessionDbId, session);
 
     // Update port in database
-    const db = new SessionStore();
     db.setWorkerPort(sessionDbId, this.port!);
     db.close();
 
@@ -167,11 +180,19 @@ class WorkerService {
     let session = this.sessions.get(sessionDbId);
     if (!session) {
       // Auto-create session if it doesn't exist (e.g., worker restarted)
+      // Fetch real session ID from database
+      const db = new SessionStore();
+      const dbSession = db.getSessionById(sessionDbId);
+      db.close();
+
+      const claudeSessionId = dbSession?.sdk_session_id || `session-${sessionDbId}`;
+
       session = {
         sessionDbId,
+        claudeSessionId,
         sdkSessionId: null,
-        project: '',
-        userPrompt: '',
+        project: dbSession?.project || '',
+        userPrompt: dbSession?.user_prompt || '',
         pendingMessages: [],
         abortController: new AbortController(),
         generatorPromise: null,
@@ -223,11 +244,19 @@ class WorkerService {
     let session = this.sessions.get(sessionDbId);
     if (!session) {
       // Auto-create session if it doesn't exist (e.g., worker restarted)
+      // Fetch real session ID from database
+      const db = new SessionStore();
+      const dbSession = db.getSessionById(sessionDbId);
+      db.close();
+
+      const claudeSessionId = dbSession?.sdk_session_id || `session-${sessionDbId}`;
+
       session = {
         sessionDbId,
+        claudeSessionId,
         sdkSessionId: null,
-        project: '',
-        userPrompt: '',
+        project: dbSession?.project || '',
+        userPrompt: dbSession?.user_prompt || '',
         pendingMessages: [],
         abortController: new AbortController(),
         generatorPromise: null,
@@ -404,18 +433,19 @@ class WorkerService {
    * Keeps running continuously - no finalize, agent stays alive for entire Claude Code session
    */
   private async* createMessageGenerator(session: ActiveSession): AsyncIterable<SDKUserMessage> {
-    const claudeSessionId = `session-${session.sessionDbId}`;
-    const initPrompt = buildInitPrompt(session.project, claudeSessionId, session.userPrompt);
+    // Use real Claude Code session ID instead of fake session-{dbId}
+    const initPrompt = buildInitPrompt(session.project, session.claudeSessionId, session.userPrompt);
 
     logger.dataIn('SDK', `Init prompt sent (${initPrompt.length} chars)`, {
       sessionId: session.sessionDbId,
+      claudeSessionId: session.claudeSessionId,
       project: session.project
     });
     logger.debug('SDK', 'Full init prompt', { sessionId: session.sessionDbId }, initPrompt);
 
     yield {
       type: 'user',
-      session_id: session.sdkSessionId || claudeSessionId,
+      session_id: session.claudeSessionId, // Use real session ID from the start
       parent_tool_use_id: null,
       message: {
         role: 'user',
@@ -455,7 +485,7 @@ class WorkerService {
 
             yield {
               type: 'user',
-              session_id: session.sdkSessionId || claudeSessionId,
+              session_id: session.claudeSessionId, // Use real session ID
               parent_tool_use_id: null,
               message: {
                 role: 'user',
@@ -486,7 +516,7 @@ class WorkerService {
 
           yield {
             type: 'user',
-            session_id: session.sdkSessionId || claudeSessionId,
+            session_id: session.claudeSessionId, // Use real session ID
             parent_tool_use_id: null,
             message: {
               role: 'user',
