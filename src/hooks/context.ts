@@ -36,13 +36,16 @@ export function contextHook(input?: SessionStartInput, useColors: boolean = fals
   const db = new SessionStore();
 
   try {
-    // Query session_summaries directly
+    // Get the most recent summaries, then display them chronologically (oldest to newest, like a chat)
     const summaries = db.db.prepare(`
-      SELECT sdk_session_id, request, learned, completed, next_steps, created_at
-      FROM session_summaries
-      WHERE project = ?
-      ORDER BY created_at_epoch DESC
-      LIMIT 3
+      SELECT * FROM (
+        SELECT sdk_session_id, request, learned, completed, next_steps, created_at
+        FROM session_summaries
+        WHERE project = ?
+        ORDER BY created_at_epoch DESC
+        LIMIT 10
+      )
+      ORDER BY created_at_epoch ASC
     `).all(project) as Array<{
       sdk_session_id: string;
       request: string | null;
@@ -79,11 +82,11 @@ export function contextHook(input?: SessionStartInput, useColors: boolean = fals
       if (isNewSession) {
         if (useColors) {
           output.push('');
-          output.push(`${colors.dim}${'─'.repeat(23)} New Session ${'─'.repeat(24)}${colors.reset}`);
+          output.push(`${colors.dim}${'─'.repeat(23)} New Summary ${'─'.repeat(24)}${colors.reset}`);
           output.push('');
         } else {
           output.push('');
-          output.push('--- New Session ---');
+          output.push('---');
           output.push('');
         }
       } else if (!isFirstSummary) {

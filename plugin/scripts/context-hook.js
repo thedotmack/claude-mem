@@ -307,11 +307,14 @@ ${e.stack}`:e.message;if(Array.isArray(e))return`[${e.length} items]`;let s=Obje
       SET status = 'failed', completed_at = ?, completed_at_epoch = ?
       WHERE status = 'active'
     `).run(e.toISOString(),s).changes}close(){this.db.close()}};import L from"path";import{existsSync as A}from"fs";import{spawn as H}from"child_process";var B=parseInt(process.env.CLAUDE_MEM_WORKER_PORT||"37777",10),Y=`http://127.0.0.1:${B}/health`;async function w(){try{return(await fetch(Y,{signal:AbortSignal.timeout(500)})).ok}catch{return!1}}async function $(){try{if(await w())return!0;console.error("[claude-mem] Worker not responding, starting...");let p=k(),e=L.join(p,"plugin","scripts","worker-service.cjs");if(!A(e))return console.error(`[claude-mem] Worker service not found at ${e}`),!1;let s=L.join(p,"ecosystem.config.cjs"),t=L.join(p,"node_modules",".bin","pm2");if(!A(t))throw new Error(`PM2 binary not found at ${t}. This is a bundled dependency - try running: npm install`);if(!A(s))throw new Error(`PM2 ecosystem config not found at ${s}. Plugin installation may be corrupted.`);let r=H(t,["start",s],{detached:!0,stdio:"ignore",cwd:p});r.on("error",i=>{throw new Error(`Failed to spawn PM2: ${i.message}`)}),r.unref(),console.error("[claude-mem] Worker started with PM2");for(let i=0;i<3;i++)if(await new Promise(d=>setTimeout(d,500)),await w())return console.error("[claude-mem] Worker is healthy"),!0;return console.error("[claude-mem] Worker failed to become healthy after startup"),!1}catch(p){return console.error(`[claude-mem] Failed to start worker: ${p.message}`),!1}}var o={reset:"\x1B[0m",bright:"\x1B[1m",dim:"\x1B[2m",cyan:"\x1B[36m",green:"\x1B[32m",yellow:"\x1B[33m",blue:"\x1B[34m",magenta:"\x1B[35m",gray:"\x1B[90m"};function v(p,e=!1,s=!1){$();let t=p?.cwd??process.cwd(),r=t?K.basename(t):"unknown-project",i=new h;try{let d=i.db.prepare(`
-      SELECT sdk_session_id, request, learned, completed, next_steps, created_at
-      FROM session_summaries
-      WHERE project = ?
-      ORDER BY created_at_epoch DESC
-      LIMIT 3
+      SELECT * FROM (
+        SELECT sdk_session_id, request, learned, completed, next_steps, created_at
+        FROM session_summaries
+        WHERE project = ?
+        ORDER BY created_at_epoch DESC
+        LIMIT 10
+      )
+      ORDER BY created_at_epoch ASC
     `).all(r);if(d.length===0)return e?`
 ${o.bright}${o.cyan}\u{1F4DD} [${r}] recent context${o.reset}
 ${o.gray}${"\u2500".repeat(60)}${o.reset}
@@ -319,7 +322,7 @@ ${o.gray}${"\u2500".repeat(60)}${o.reset}
 ${o.dim}No previous summaries found for this project yet.${o.reset}
 `:`# [${r}] recent context
 
-No previous summaries found for this project yet.`;let n=[];e?(n.push(""),n.push(`${o.bright}${o.cyan}\u{1F4DD} [${r}] recent context${o.reset}`),n.push(`${o.gray}${"\u2500".repeat(60)}${o.reset}`)):(n.push(`# [${r}] recent context`),n.push(""));let c=null,E=!0;for(let a of d){c!==null&&a.sdk_session_id!==c?e?(n.push(""),n.push(`${o.dim}${"\u2500".repeat(23)} New Session ${"\u2500".repeat(24)}${o.reset}`),n.push("")):(n.push(""),n.push("--- New Session ---"),n.push("")):E?e&&n.push(""):e?(n.push(`${o.gray}${"\u2500".repeat(60)}${o.reset}`),n.push("")):(n.push("---"),n.push("")),E=!1,a.request&&(e?(n.push(`${o.bright}${o.yellow}Request:${o.reset} ${a.request}`),n.push("")):(n.push(`**Request:** ${a.request}`),n.push(""))),a.learned&&(e?(n.push(`${o.bright}${o.blue}Learned:${o.reset} ${a.learned}`),n.push("")):(n.push(`**Learned:** ${a.learned}`),n.push(""))),a.completed&&(e?(n.push(`${o.bright}${o.green}Completed:${o.reset} ${a.completed}`),n.push("")):(n.push(`**Completed:** ${a.completed}`),n.push(""))),a.next_steps&&(e?(n.push(`${o.bright}${o.magenta}Next Steps:${o.reset} ${a.next_steps}`),n.push("")):(n.push(`**Next Steps:** ${a.next_steps}`),n.push("")));let S=i.db.prepare(`
+No previous summaries found for this project yet.`;let n=[];e?(n.push(""),n.push(`${o.bright}${o.cyan}\u{1F4DD} [${r}] recent context${o.reset}`),n.push(`${o.gray}${"\u2500".repeat(60)}${o.reset}`)):(n.push(`# [${r}] recent context`),n.push(""));let c=null,E=!0;for(let a of d){c!==null&&a.sdk_session_id!==c?e?(n.push(""),n.push(`${o.dim}${"\u2500".repeat(23)} New Summary ${"\u2500".repeat(24)}${o.reset}`),n.push("")):(n.push(""),n.push("---"),n.push("")):E?e&&n.push(""):e?(n.push(`${o.gray}${"\u2500".repeat(60)}${o.reset}`),n.push("")):(n.push("---"),n.push("")),E=!1,a.request&&(e?(n.push(`${o.bright}${o.yellow}Request:${o.reset} ${a.request}`),n.push("")):(n.push(`**Request:** ${a.request}`),n.push(""))),a.learned&&(e?(n.push(`${o.bright}${o.blue}Learned:${o.reset} ${a.learned}`),n.push("")):(n.push(`**Learned:** ${a.learned}`),n.push(""))),a.completed&&(e?(n.push(`${o.bright}${o.green}Completed:${o.reset} ${a.completed}`),n.push("")):(n.push(`**Completed:** ${a.completed}`),n.push(""))),a.next_steps&&(e?(n.push(`${o.bright}${o.magenta}Next Steps:${o.reset} ${a.next_steps}`),n.push("")):(n.push(`**Next Steps:** ${a.next_steps}`),n.push("")));let S=i.db.prepare(`
         SELECT files_read, files_modified
         FROM observations
         WHERE sdk_session_id = ?
