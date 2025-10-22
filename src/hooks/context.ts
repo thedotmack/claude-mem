@@ -26,7 +26,7 @@ const colors = {
 
 /**
  * Context Hook - SessionStart
- * Shows recent summaries for the project
+ * Shows user what happened in recent sessions
  */
 export function contextHook(input?: SessionStartInput, useColors: boolean = false, useIndexView: boolean = false): string {
   ensureWorkerRunning();
@@ -36,7 +36,7 @@ export function contextHook(input?: SessionStartInput, useColors: boolean = fals
   const db = new SessionStore();
 
   try {
-    // Query session_summaries directly - no need for sdk_sessions table
+    // Query session_summaries directly
     const summaries = db.db.prepare(`
       SELECT sdk_session_id, request, learned, completed, next_steps, created_at
       FROM session_summaries
@@ -53,30 +53,96 @@ export function contextHook(input?: SessionStartInput, useColors: boolean = fals
     }>;
 
     if (summaries.length === 0) {
+      if (useColors) {
+        return `\n${colors.bright}${colors.cyan}📝 [${project}] recent context${colors.reset}\n${colors.gray}${'─'.repeat(60)}${colors.reset}\n\n${colors.dim}No previous summaries found for this project yet.${colors.reset}\n`;
+      }
       return `# [${project}] recent context\n\nNo previous summaries found for this project yet.`;
     }
 
     const output: string[] = [];
-    output.push(`# [${project}] recent context`);
-    output.push('');
+
+    if (useColors) {
+      output.push('');
+      output.push(`${colors.bright}${colors.cyan}📝 [${project}] recent context${colors.reset}`);
+      output.push(`${colors.gray}${'─'.repeat(60)}${colors.reset}`);
+    } else {
+      output.push(`# [${project}] recent context`);
+      output.push('');
+    }
 
     let previousSessionId: string | null = null;
+    let isFirstSummary = true;
 
     for (const summary of summaries) {
       const isNewSession = previousSessionId !== null && summary.sdk_session_id !== previousSessionId;
 
       if (isNewSession) {
-        output.push('');
-        output.push('--- New Session ---');
-        output.push('');
+        if (useColors) {
+          output.push('');
+          output.push(`${colors.dim}${'─'.repeat(23)} New Session ${'─'.repeat(24)}${colors.reset}`);
+          output.push('');
+        } else {
+          output.push('');
+          output.push('--- New Session ---');
+          output.push('');
+        }
+      } else if (!isFirstSummary) {
+        if (useColors) {
+          output.push(`${colors.gray}${'─'.repeat(60)}${colors.reset}`);
+          output.push('');
+        } else {
+          output.push('---');
+          output.push('');
+        }
+      } else {
+        if (useColors) {
+          output.push('');
+        }
       }
 
-      if (summary.request) output.push(`**Request:** ${summary.request}`);
-      if (summary.learned) output.push(`**Learned:** ${summary.learned}`);
-      if (summary.completed) output.push(`**Completed:** ${summary.completed}`);
-      if (summary.next_steps) output.push(`**Next Steps:** ${summary.next_steps}`);
+      isFirstSummary = false;
 
-      // Get files from observations by sdk_session_id
+      if (summary.request) {
+        if (useColors) {
+          output.push(`${colors.bright}${colors.yellow}Request:${colors.reset} ${summary.request}`);
+          output.push('');
+        } else {
+          output.push(`**Request:** ${summary.request}`);
+          output.push('');
+        }
+      }
+
+      if (summary.learned) {
+        if (useColors) {
+          output.push(`${colors.bright}${colors.blue}Learned:${colors.reset} ${summary.learned}`);
+          output.push('');
+        } else {
+          output.push(`**Learned:** ${summary.learned}`);
+          output.push('');
+        }
+      }
+
+      if (summary.completed) {
+        if (useColors) {
+          output.push(`${colors.bright}${colors.green}Completed:${colors.reset} ${summary.completed}`);
+          output.push('');
+        } else {
+          output.push(`**Completed:** ${summary.completed}`);
+          output.push('');
+        }
+      }
+
+      if (summary.next_steps) {
+        if (useColors) {
+          output.push(`${colors.bright}${colors.magenta}Next Steps:${colors.reset} ${summary.next_steps}`);
+          output.push('');
+        } else {
+          output.push(`**Next Steps:** ${summary.next_steps}`);
+          output.push('');
+        }
+      }
+
+      // Get files from observations directly
       const observations = db.db.prepare(`
         SELECT files_read, files_modified
         FROM observations
@@ -93,29 +159,59 @@ export function contextHook(input?: SessionStartInput, useColors: boolean = fals
         if (obs.files_read) {
           try {
             const files = JSON.parse(obs.files_read);
-            if (Array.isArray(files)) files.forEach(f => filesReadSet.add(f));
-          } catch {}
+            if (Array.isArray(files)) {
+              files.forEach(f => filesReadSet.add(f));
+            }
+          } catch {
+            // Skip invalid JSON
+          }
         }
+
         if (obs.files_modified) {
           try {
             const files = JSON.parse(obs.files_modified);
-            if (Array.isArray(files)) files.forEach(f => filesModifiedSet.add(f));
-          } catch {}
+            if (Array.isArray(files)) {
+              files.forEach(f => filesModifiedSet.add(f));
+            }
+          } catch {
+            // Skip invalid JSON
+          }
         }
       }
 
       if (filesReadSet.size > 0) {
-        output.push(`**Files Read:** ${Array.from(filesReadSet).join(', ')}`);
+        if (useColors) {
+          output.push(`${colors.dim}Files Read: ${Array.from(filesReadSet).join(', ')}${colors.reset}`);
+        } else {
+          output.push(`**Files Read:** ${Array.from(filesReadSet).join(', ')}`);
+        }
       }
+
       if (filesModifiedSet.size > 0) {
-        output.push(`**Files Modified:** ${Array.from(filesModifiedSet).join(', ')}`);
+        if (useColors) {
+          output.push(`${colors.dim}Files Modified: ${Array.from(filesModifiedSet).join(', ')}${colors.reset}`);
+        } else {
+          output.push(`**Files Modified:** ${Array.from(filesModifiedSet).join(', ')}`);
+        }
       }
 
       const dateTime = new Date(summary.created_at).toLocaleString();
-      output.push(`**Date:** ${dateTime}`);
-      output.push('');
+      if (useColors) {
+        output.push(`${colors.dim}Date: ${dateTime}${colors.reset}`);
+      } else {
+        output.push(`**Date:** ${dateTime}`);
+      }
+
+      if (!useColors) {
+        output.push('');
+      }
 
       previousSessionId = summary.sdk_session_id;
+    }
+
+    if (useColors) {
+      output.push('');
+      output.push(`${colors.gray}${'─'.repeat(60)}${colors.reset}`);
     }
 
     return output.join('\n');
