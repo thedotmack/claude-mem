@@ -73,23 +73,11 @@ export function contextHook(input?: SessionStartInput, useColors: boolean = fals
       output.push('');
     }
 
-    let previousSessionId: string | null = null;
     let isFirstSummary = true;
 
     for (const summary of summaries) {
-      const isNewSession = previousSessionId !== null && summary.sdk_session_id !== previousSessionId;
-
-      if (isNewSession) {
-        if (useColors) {
-          output.push('');
-          output.push(`${colors.dim}${'─'.repeat(23)} New Summary ${'─'.repeat(24)}${colors.reset}`);
-          output.push('');
-        } else {
-          output.push('');
-          output.push('---');
-          output.push('');
-        }
-      } else if (!isFirstSummary) {
+      // Add separator between summaries (but not before the first one)
+      if (!isFirstSummary) {
         if (useColors) {
           output.push(`${colors.gray}${'─'.repeat(60)}${colors.reset}`);
           output.push('');
@@ -208,8 +196,6 @@ export function contextHook(input?: SessionStartInput, useColors: boolean = fals
       if (!useColors) {
         output.push('');
       }
-
-      previousSessionId = summary.sdk_session_id;
     }
 
     if (useColors) {
