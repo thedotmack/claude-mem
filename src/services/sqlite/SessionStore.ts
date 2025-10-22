@@ -894,6 +894,7 @@ export class SessionStore {
 
   /**
    * Store an observation (from SDK parsing)
+   * Auto-creates session record if it doesn't exist in the index
    */
   storeObservation(
     sdkSessionId: string,
@@ -912,6 +913,29 @@ export class SessionStore {
   ): void {
     const now = new Date();
     const nowEpoch = now.getTime();
+
+    // Ensure session record exists in the index (auto-create if missing)
+    const checkStmt = this.db.prepare(`
+      SELECT id FROM sdk_sessions WHERE sdk_session_id = ?
+    `);
+    const existingSession = checkStmt.get(sdkSessionId) as { id: number } | undefined;
+
+    if (!existingSession) {
+      // Auto-create session record if it doesn't exist
+      const insertSession = this.db.prepare(`
+        INSERT INTO sdk_sessions
+        (claude_session_id, sdk_session_id, project, started_at, started_at_epoch, status)
+        VALUES (?, ?, ?, ?, ?, 'active')
+      `);
+      insertSession.run(
+        sdkSessionId, // claude_session_id and sdk_session_id are the same
+        sdkSessionId,
+        project,
+        now.toISOString(),
+        nowEpoch
+      );
+      console.error(`[SessionStore] Auto-created session record for session_id: ${sdkSessionId}`);
+    }
 
     const stmt = this.db.prepare(`
       INSERT INTO observations
@@ -939,6 +963,7 @@ export class SessionStore {
 
   /**
    * Store a session summary (from SDK parsing)
+   * Auto-creates session record if it doesn't exist in the index
    */
   storeSummary(
     sdkSessionId: string,
@@ -955,6 +980,29 @@ export class SessionStore {
   ): void {
     const now = new Date();
     const nowEpoch = now.getTime();
+
+    // Ensure session record exists in the index (auto-create if missing)
+    const checkStmt = this.db.prepare(`
+      SELECT id FROM sdk_sessions WHERE sdk_session_id = ?
+    `);
+    const existingSession = checkStmt.get(sdkSessionId) as { id: number } | undefined;
+
+    if (!existingSession) {
+      // Auto-create session record if it doesn't exist
+      const insertSession = this.db.prepare(`
+        INSERT INTO sdk_sessions
+        (claude_session_id, sdk_session_id, project, started_at, started_at_epoch, status)
+        VALUES (?, ?, ?, ?, ?, 'active')
+      `);
+      insertSession.run(
+        sdkSessionId, // claude_session_id and sdk_session_id are the same
+        sdkSessionId,
+        project,
+        now.toISOString(),
+        nowEpoch
+      );
+      console.error(`[SessionStore] Auto-created session record for session_id: ${sdkSessionId}`);
+    }
 
     const stmt = this.db.prepare(`
       INSERT INTO session_summaries

@@ -4,7 +4,7 @@
 
 Claude-mem is a persistent memory compression system that preserves context across Claude Code sessions. It automatically captures tool usage observations, processes them through the Claude Agent SDK, and makes summaries available to future sessions.
 
-**Current Version**: 4.1.0
+**Current Version**: 4.2.0
 **License**: AGPL-3.0
 **Author**: Alex Newman (@thedotmack)
 
@@ -34,6 +34,7 @@ Claude-mem integrates with Claude Code through 5 lifecycle hooks:
 2. **UserPromptSubmit Hook** (`new-hook`)
    - Creates new session records
    - Initializes session tracking
+   - Saves raw user prompts for full-text search (as of v4.2.0)
 
 3. **PostToolUse Hook** (`save-hook`)
    - Captures tool execution observations
@@ -73,6 +74,7 @@ The worker service runs as a PM2-managed background process that handles AI proc
 - `sdk_sessions` - Session tracking with prompt counters
 - `session_summaries` - AI-generated session summaries (multiple per session)
 - `observations` - Captured tool usage with structured fields
+- `user_prompts` - Raw user prompts with FTS5 search (as of v4.2.0)
 
 **Schema Features**:
 - FTS5 (Full-Text Search) virtual tables for fast searching
@@ -82,23 +84,24 @@ The worker service runs as a PM2-managed background process that handles AI proc
 - Observation types: decision, bugfix, feature, refactor, discovery, change
 
 **Database Classes**:
-- `SessionStore` - CRUD operations for sessions, observations, summaries
-- `SessionSearch` - FTS5 full-text search with 7 search methods
+- `SessionStore` - CRUD operations for sessions, observations, summaries, user prompts
+- `SessionSearch` - FTS5 full-text search with 8 search methods
 
 ### MCP Search Server
 
 **Location**: `src/servers/search-server.ts`
 **Configuration**: `plugin/.mcp.json`
 
-Exposes 7 specialized search tools to Claude:
+Exposes 8 specialized search tools to Claude:
 
 1. **search_observations** - Full-text search across observations
 2. **search_sessions** - Full-text search across session summaries
-3. **find_by_concept** - Find observations tagged with specific concepts
-4. **find_by_file** - Find observations referencing specific file paths
-5. **find_by_type** - Find observations by type (decision/bugfix/feature/etc.)
-6. **get_recent_context** - Get recent session context including summaries and observations for a project
-7. **advanced_search** - Combine multiple filters with full-text search
+3. **search_user_prompts** - Full-text search across raw user prompts (as of v4.2.0)
+4. **find_by_concept** - Find observations tagged with specific concepts
+5. **find_by_file** - Find observations referencing specific file paths
+6. **find_by_type** - Find observations by type (decision/bugfix/feature/etc.)
+7. **get_recent_context** - Get recent session context including summaries and observations for a project
+8. **advanced_search** - Combine multiple filters with full-text search
 
 **Search Pipeline**:
 ```
@@ -201,7 +204,27 @@ npm run build && git commit -a -m "Build and update" && git push && cd ~/.claude
 
 ## Version History
 
-### v4.1.0 (Current)
+### v4.2.0 (Current)
+**Breaking Changes**: None (minor version)
+
+**Features**:
+- User prompt storage with FTS5 full-text search
+- New `user_prompts` table stores raw user input for every prompt
+- New `search_user_prompts` MCP tool enables searching actual user requests
+- Automatic FTS5 indexing of all user prompts for fast retrieval
+
+**Benefits**:
+- Full context reconstruction from user intent → Claude actions → outcomes
+- Pattern detection for repeated requests (identify when Claude isn't listening)
+- Improved debugging by tracing from original user words to final implementation
+- Historical search: "How many times did user ask for X feature?"
+
+**Implementation**:
+- Migration 10: Creates user_prompts table with FTS5 virtual table and sync triggers
+- UserPromptSubmit hook now saves prompts using claude_session_id (available immediately)
+- Citations use `claude-mem://user-prompt/{id}` URI scheme
+
+### v4.1.0
 **Breaking Changes**: None (minor version)
 
 **Features**:
@@ -220,8 +243,8 @@ npm run build && git commit -a -m "Build and update" && git push && cd ~/.claude
 - Worker auto-starts in SessionStart hook
 
 **Features**:
-- MCP Search Server with 7 specialized search tools
-- FTS5 full-text search across observations and sessions
+- MCP Search Server with 8 specialized search tools
+- FTS5 full-text search across observations, sessions, and user prompts
 - Citation support with `claude-mem://` URIs
 - HTTP REST API architecture with PM2 management
 - Plugin data directory integration
