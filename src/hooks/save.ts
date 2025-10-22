@@ -40,32 +40,23 @@ export async function saveHook(input?: PostToolUseInput): Promise<void> {
   }
 
   const db = new SessionStore();
-  const session = db.findActiveSDKSession(session_id);
 
-  if (!session) {
-    db.close();
-    console.log(createHookResponse('PostToolUse', true));
-    return;
-  }
-
-  if (!session.worker_port) {
-    db.close();
-    logger.error('HOOK', 'No worker port for session', { sessionId: session.id });
-    throw new Error('No worker port for session - session may not be properly initialized');
-  }
-
-  // Get current prompt number for this session
-  const promptNumber = db.getPromptCounter(session.id);
+  // Get or create session - no validation, just use the session_id from hook
+  const sessionDbId = db.createSDKSession(session_id, '', ''); // project and prompt not needed for observations
+  const promptNumber = db.getPromptCounter(sessionDbId);
   db.close();
 
   const toolStr = logger.formatTool(tool_name, tool_input);
 
+  // Use fixed worker port - no session.worker_port validation needed
+  const FIXED_PORT = parseInt(process.env.CLAUDE_MEM_WORKER_PORT || '37777', 10);
+
   logger.dataIn('HOOK', `PostToolUse: ${toolStr}`, {
-    sessionId: session.id,
-    workerPort: session.worker_port
+    sessionId: sessionDbId,
+    workerPort: FIXED_PORT
   });
 
-  const response = await fetch(`http://127.0.0.1:${session.worker_port}/sessions/${session.id}/observations`, {
+  const response = await fetch(`http://127.0.0.1:${FIXED_PORT}/sessions/${sessionDbId}/observations`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -80,12 +71,12 @@ export async function saveHook(input?: PostToolUseInput): Promise<void> {
   if (!response.ok) {
     const errorText = await response.text();
     logger.failure('HOOK', 'Failed to send observation', {
-      sessionId: session.id,
+      sessionId: sessionDbId,
       status: response.status
     }, errorText);
     throw new Error(`Failed to send observation to worker: ${response.status} ${errorText}`);
   }
 
-  logger.debug('HOOK', 'Observation sent successfully', { sessionId: session.id, toolName: tool_name });
+  logger.debug('HOOK', 'Observation sent successfully', { sessionId: sessionDbId, toolName: tool_name });
   console.log(createHookResponse('PostToolUse', true));
 }

@@ -27,31 +27,22 @@ export async function summaryHook(input?: StopInput): Promise<void> {
   }
 
   const db = new SessionStore();
-  const session = db.findActiveSDKSession(session_id);
 
-  if (!session) {
-    db.close();
-    console.log(createHookResponse('Stop', true));
-    return;
-  }
-
-  if (!session.worker_port) {
-    db.close();
-    logger.error('HOOK', 'No worker port for session', { sessionId: session.id });
-    throw new Error('No worker port for session - session may not be properly initialized');
-  }
-
-  // Get current prompt number
-  const promptNumber = db.getPromptCounter(session.id);
+  // Get or create session - no validation, just use the session_id from hook
+  const sessionDbId = db.createSDKSession(session_id, '', '');
+  const promptNumber = db.getPromptCounter(sessionDbId);
   db.close();
 
+  // Use fixed worker port - no session.worker_port validation needed
+  const FIXED_PORT = parseInt(process.env.CLAUDE_MEM_WORKER_PORT || '37777', 10);
+
   logger.dataIn('HOOK', 'Stop: Requesting summary', {
-    sessionId: session.id,
-    workerPort: session.worker_port,
+    sessionId: sessionDbId,
+    workerPort: FIXED_PORT,
     promptNumber
   });
 
-  const response = await fetch(`http://127.0.0.1:${session.worker_port}/sessions/${session.id}/summarize`, {
+  const response = await fetch(`http://127.0.0.1:${FIXED_PORT}/sessions/${sessionDbId}/summarize`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ prompt_number: promptNumber }),
@@ -61,12 +52,12 @@ export async function summaryHook(input?: StopInput): Promise<void> {
   if (!response.ok) {
     const errorText = await response.text();
     logger.failure('HOOK', 'Failed to generate summary', {
-      sessionId: session.id,
+      sessionId: sessionDbId,
       status: response.status
     }, errorText);
     throw new Error(`Failed to request summary from worker: ${response.status} ${errorText}`);
   }
 
-  logger.debug('HOOK', 'Summary request sent successfully', { sessionId: session.id });
+  logger.debug('HOOK', 'Summary request sent successfully', { sessionId: sessionDbId });
   console.log(createHookResponse('Stop', true));
 }

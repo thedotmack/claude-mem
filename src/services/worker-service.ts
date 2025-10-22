@@ -118,11 +118,6 @@ class WorkerService {
     const correlationId = logger.sessionId(sessionDbId);
     logger.info('WORKER', 'Session init', { correlationId, project });
 
-    if (this.sessions.has(sessionDbId)) {
-      res.status(409).json({ error: 'Session already exists' });
-      return;
-    }
-
     // Create session state
     const session: ActiveSession = {
       sessionDbId,
