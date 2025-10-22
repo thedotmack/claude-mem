@@ -43,7 +43,7 @@ export function contextHook(input?: SessionStartInput, useColors: boolean = fals
         FROM session_summaries
         WHERE project = ?
         ORDER BY created_at_epoch DESC
-        LIMIT 10
+        LIMIT 30
       )
       ORDER BY created_at_epoch ASC
     `).all(project) as Array<{
@@ -75,7 +75,16 @@ export function contextHook(input?: SessionStartInput, useColors: boolean = fals
 
     let isFirstSummary = true;
 
-    for (const summary of summaries) {
+    for (let i = 0; i < summaries.length; i++) {
+      const summary = summaries[i];
+
+      // Determine verbosity tier based on position
+      // Most recent summary is at the end (highest index) since we display chronologically
+      const positionFromEnd = summaries.length - 1 - i;
+      const isTier1 = positionFromEnd === 0; // Most recent (full verbosity)
+      const isTier3 = positionFromEnd > 4; // Older (compact verbosity)
+      // Tier 2 (positions 1-4): Medium verbosity - implicit (not Tier1, not Tier3)
+
       // Add separator between summaries (but not before the first one)
       if (!isFirstSummary) {
         if (useColors) {
@@ -93,6 +102,24 @@ export function contextHook(input?: SessionStartInput, useColors: boolean = fals
 
       isFirstSummary = false;
 
+      // TIER 3: Compact (just Learned + citation)
+      if (isTier3) {
+        if (summary.learned) {
+          if (useColors) {
+            output.push(`${colors.bright}${colors.blue}Learned:${colors.reset} ${summary.learned}`);
+            output.push('');
+            output.push(`${colors.dim}[Details: claude-mem://session/${summary.sdk_session_id}]${colors.reset}`);
+          } else {
+            output.push(`**Learned:** ${summary.learned}`);
+            output.push('');
+            output.push(`[Details: claude-mem://session/${summary.sdk_session_id}]`);
+            output.push('');
+          }
+        }
+        continue; // Skip the rest for Tier 3
+      }
+
+      // TIER 1 & 2: Show Request
       if (summary.request) {
         if (useColors) {
           output.push(`${colors.bright}${colors.yellow}Request:${colors.reset} ${summary.request}`);
@@ -103,6 +130,7 @@ export function contextHook(input?: SessionStartInput, useColors: boolean = fals
         }
       }
 
+      // TIER 1 & 2: Show Learned
       if (summary.learned) {
         if (useColors) {
           output.push(`${colors.bright}${colors.blue}Learned:${colors.reset} ${summary.learned}`);
@@ -113,6 +141,7 @@ export function contextHook(input?: SessionStartInput, useColors: boolean = fals
         }
       }
 
+      // TIER 1 & 2: Show Completed
       if (summary.completed) {
         if (useColors) {
           output.push(`${colors.bright}${colors.green}Completed:${colors.reset} ${summary.completed}`);
@@ -123,6 +152,7 @@ export function contextHook(input?: SessionStartInput, useColors: boolean = fals
         }
       }
 
+      // TIER 1 & 2: Show Next Steps
       if (summary.next_steps) {
         if (useColors) {
           output.push(`${colors.bright}${colors.magenta}Next Steps:${colors.reset} ${summary.next_steps}`);
@@ -133,7 +163,7 @@ export function contextHook(input?: SessionStartInput, useColors: boolean = fals
         }
       }
 
-      // Get files from observations directly
+      // Get files from observations (for both Tier 1 and Tier 2)
       const observations = db.db.prepare(`
         SELECT files_read, files_modified
         FROM observations
@@ -170,7 +200,8 @@ export function contextHook(input?: SessionStartInput, useColors: boolean = fals
         }
       }
 
-      if (filesReadSet.size > 0) {
+      // TIER 1 ONLY: Show Files Read
+      if (isTier1 && filesReadSet.size > 0) {
         if (useColors) {
           output.push(`${colors.dim}Files Read: ${Array.from(filesReadSet).join(', ')}${colors.reset}`);
         } else {
@@ -178,6 +209,7 @@ export function contextHook(input?: SessionStartInput, useColors: boolean = fals
         }
       }
 
+      // TIER 1 & 2: Show Files Modified
       if (filesModifiedSet.size > 0) {
         if (useColors) {
           output.push(`${colors.dim}Files Modified: ${Array.from(filesModifiedSet).join(', ')}${colors.reset}`);
@@ -186,6 +218,7 @@ export function contextHook(input?: SessionStartInput, useColors: boolean = fals
         }
       }
 
+      // TIER 1 & 2: Show Date
       const dateTime = new Date(summary.created_at).toLocaleString();
       if (useColors) {
         output.push(`${colors.dim}Date: ${dateTime}${colors.reset}`);
