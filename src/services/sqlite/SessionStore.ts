@@ -7,7 +7,7 @@ import { logger } from '../../utils/logger.js';
  * Provides simple, synchronous CRUD operations for session-based memory
  */
 export class SessionStore {
-  private db: Database.Database;
+  public db: Database.Database;
 
   constructor() {
     ensureDir(DATA_DIR);
