@@ -134,8 +134,8 @@ export function contextHook(input?: SessionStartInput, useColors: boolean = fals
         }
       }
 
-      // TIER 1 & 2: Show Learned
-      if (summary.learned) {
+      // TIER 1 ONLY: Show Learned
+      if (isTier1 && summary.learned) {
         if (useColors) {
           output.push(`${colors.bright}${colors.blue}Learned:${colors.reset} ${summary.learned}`);
           output.push('');
