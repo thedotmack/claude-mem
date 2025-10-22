@@ -39,13 +39,13 @@ export function contextHook(input?: SessionStartInput, useColors: boolean = fals
     // Get the most recent summaries, then display them chronologically (oldest to newest, like a chat)
     const summaries = db.db.prepare(`
       SELECT * FROM (
-        SELECT sdk_session_id, request, learned, completed, next_steps, created_at
+        SELECT sdk_session_id, request, learned, completed, next_steps, created_at, created_at_epoch
         FROM session_summaries
         WHERE project = ?
-        ORDER BY created_at DESC
+        ORDER BY created_at_epoch DESC
         LIMIT 10
       )
-      ORDER BY created_at ASC
+      ORDER BY created_at_epoch ASC
     `).all(project) as Array<{
       sdk_session_id: string;
       request: string | null;
