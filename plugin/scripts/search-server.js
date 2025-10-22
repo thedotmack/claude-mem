@@ -393,9 +393,9 @@ ${e.stack}`:e.message;if(Array.isArray(e))return`[${e.length} items]`;let t=Obje
       SELECT prompt_counter FROM sdk_sessions WHERE id = ?
     `).get(e)?.prompt_counter||0}createSDKSession(e,t,s){let r=new Date,n=r.getTime(),o=this.db.prepare(`
       INSERT OR IGNORE INTO sdk_sessions
-      (claude_session_id, project, user_prompt, started_at, started_at_epoch, status)
-      VALUES (?, ?, ?, ?, ?, 'active')
-    `).run(e,t,s,r.toISOString(),n);return o.lastInsertRowid===0||o.changes===0?this.db.prepare(`
+      (claude_session_id, sdk_session_id, project, user_prompt, started_at, started_at_epoch, status)
+      VALUES (?, ?, ?, ?, ?, ?, 'active')
+    `).run(e,e,t,s,r.toISOString(),n);return o.lastInsertRowid===0||o.changes===0?this.db.prepare(`
         SELECT id FROM sdk_sessions WHERE claude_session_id = ? LIMIT 1
       `).get(e).id:o.lastInsertRowid}updateSDKSessionId(e,t){return this.db.prepare(`
       UPDATE sdk_sessions

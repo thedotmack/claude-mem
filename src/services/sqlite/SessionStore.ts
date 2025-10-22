@@ -794,19 +794,21 @@ export class SessionStore {
 
   /**
    * Create a new SDK session (idempotent - returns existing session ID if already exists)
+   * Sets both claude_session_id and sdk_session_id to the same value
    */
   createSDKSession(claudeSessionId: string, project: string, userPrompt: string): number {
     const now = new Date();
     const nowEpoch = now.getTime();
 
     // Try to insert - will be ignored if session already exists
+    // claude_session_id and sdk_session_id are the same value
     const stmt = this.db.prepare(`
       INSERT OR IGNORE INTO sdk_sessions
-      (claude_session_id, project, user_prompt, started_at, started_at_epoch, status)
-      VALUES (?, ?, ?, ?, ?, 'active')
+      (claude_session_id, sdk_session_id, project, user_prompt, started_at, started_at_epoch, status)
+      VALUES (?, ?, ?, ?, ?, ?, 'active')
     `);
 
-    const result = stmt.run(claudeSessionId, project, userPrompt, now.toISOString(), nowEpoch);
+    const result = stmt.run(claudeSessionId, claudeSessionId, project, userPrompt, now.toISOString(), nowEpoch);
 
     // If lastInsertRowid is 0, insert was ignored (session exists), so fetch existing ID
     if (result.lastInsertRowid === 0 || result.changes === 0) {
