@@ -22,21 +22,31 @@ export interface SDKSession {
  * Build initial prompt to initialize the SDK agent
  */
 export function buildInitPrompt(project: string, sessionId: string, userPrompt: string): string {
-  return `You are a memory processor for a Claude Code session. Your job is to analyze tool executions and create structured observations for information worth remembering.
+  return `You are observing a development session to create searchable memory FOR FUTURE SESSIONS.
 
-You are processing tool executions from a Claude Code session with the following context:
+CRITICAL: Record what was BUILT/FIXED/DEPLOYED/CONFIGURED, not what you (the observer) are doing.
 
 User's Goal: ${userPrompt}
 Date: ${new Date().toISOString().split('T')[0]}
 
-WHEN TO STORE
--------------
-Store observations when the tool output contains information worth remembering about:
-- How things work
-- Why things exist or were chosen
-- What changed
-- Problems and their solutions
-- Important patterns or gotchas
+WHAT TO RECORD
+--------------
+Focus on deliverables and capabilities:
+- What the system NOW DOES differently (new capabilities)
+- What shipped to users/production (features, fixes, configs, docs)
+- Changes in technical domains (auth, data, UI, infra, DevOps, docs)
+
+Use verbs like: implemented, fixed, deployed, configured, migrated, optimized, added, refactored
+
+✅ GOOD EXAMPLES (describes what was built):
+- "Authentication now supports OAuth2 with PKCE flow"
+- "Deployment pipeline runs canary releases with auto-rollback"
+- "Database indexes optimized for common query patterns"
+
+❌ BAD EXAMPLES (describes observation process - DO NOT DO THIS):
+- "Analyzed authentication implementation and stored findings"
+- "Tracked deployment steps and logged outcomes"
+- "Monitored database performance and recorded metrics"
 
 WHEN TO SKIP
 ------------
@@ -145,21 +155,32 @@ export function buildObservationPrompt(obs: Observation): string {
 export function buildSummaryPrompt(session: SDKSession): string {
   return `REQUEST SUMMARY
 ===============
-Review the observations you generated for THIS REQUEST and create a summary.
+Review the observations and create a summary of what was BUILT/SHIPPED.
 
-IMPORTANT: Summarize only THIS REQUEST, not the entire session.
+CRITICAL: Describe what was delivered to the project, NOT what the memory system did.
+
+User's Original Request: ${session.user_prompt}
+
+✅ GOOD - Describes deliverables:
+<request>Fix authentication timeout bug</request>
+<request>Add three-tier verbosity system to session summaries</request>
+<request>Deploy Kubernetes cluster with auto-scaling</request>
+
+❌ BAD - Describes meta-operations (DO NOT DO THIS):
+<request>Process tool executions and store observations</request>
+<request>Analyze session data and generate summaries</request>
+<request>Track file modifications across sessions</request>
 
 Output this XML:
 <summary>
-  <request>[What did the user request?]</request>
-  <investigated>[What code and systems did you explore?]</investigated>
-  <learned>[What did you learn about the codebase?]</learned>
-  <completed>[What was accomplished in this request?]</completed>
-  <next_steps>[What should be done next?]</next_steps>
-  <notes>[Additional insights or context]</notes>
+  <request>[What did the user want to build/fix/deploy? Use their original words from: ${session.user_prompt}]</request>
+  <investigated>[What code/systems were explored?]</investigated>
+  <learned>[What was discovered about how things work?]</learned>
+  <completed>[What shipped? What does the system now do?]</completed>
+  <next_steps>[What remains to build/fix/deploy?]</next_steps>
+  <notes>[Additional insights]</notes>
 </summary>
 
 **Required fields**: request, investigated, learned, completed, next_steps
-
 **Optional fields**: notes`;
 }
