@@ -181,12 +181,25 @@ export function contextHook(input?: SessionStartInput, useColors: boolean = fals
         const filesReadSet = new Set<string>();
         const filesModifiedSet = new Set<string>();
 
+        // Helper function to convert absolute paths to relative paths
+        const toRelativePath = (filePath: string): string => {
+          try {
+            // Only convert if it's an absolute path
+            if (path.isAbsolute(filePath)) {
+              return path.relative(cwd, filePath);
+            }
+            return filePath;
+          } catch {
+            return filePath;
+          }
+        };
+
         for (const obs of observations) {
           if (obs.files_read) {
             try {
               const files = JSON.parse(obs.files_read);
               if (Array.isArray(files)) {
-                files.forEach(f => filesReadSet.add(f));
+                files.forEach(f => filesReadSet.add(toRelativePath(f)));
               }
             } catch {
               // Skip invalid JSON
@@ -197,13 +210,16 @@ export function contextHook(input?: SessionStartInput, useColors: boolean = fals
             try {
               const files = JSON.parse(obs.files_modified);
               if (Array.isArray(files)) {
-                files.forEach(f => filesModifiedSet.add(f));
+                files.forEach(f => filesModifiedSet.add(toRelativePath(f)));
               }
             } catch {
               // Skip invalid JSON
             }
           }
         }
+
+        // Remove files from filesReadSet if they're already in filesModifiedSet (avoid redundancy)
+        filesModifiedSet.forEach(file => filesReadSet.delete(file));
 
         if (filesReadSet.size > 0) {
           if (useColors) {
