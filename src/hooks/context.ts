@@ -42,10 +42,10 @@ export function contextHook(input?: SessionStartInput, useColors: boolean = fals
         SELECT sdk_session_id, request, learned, completed, next_steps, created_at
         FROM session_summaries
         WHERE project = ?
-        ORDER BY created_at_epoch DESC
+        ORDER BY created_at DESC
         LIMIT 10
       )
-      ORDER BY created_at_epoch ASC
+      ORDER BY created_at ASC
     `).all(project) as Array<{
       sdk_session_id: string;
       request: string | null;
