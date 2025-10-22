@@ -28,7 +28,7 @@ Claude-mem integrates with Claude Code through 5 lifecycle hooks:
 1. **SessionStart Hook** (`context-hook`)
    - Injects context from previous sessions
    - Auto-starts PM2 worker service
-   - Retrieves last 3 session summaries
+   - Retrieves last 10 session summaries with three-tier verbosity (v4.2.0)
    - Fixed in v4.1.0 to use proper JSON hookSpecificOutput format
 
 2. **UserPromptSubmit Hook** (`new-hook`)

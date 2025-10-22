@@ -406,12 +406,15 @@ Output observations using this XML structure:
 
 \`\`\`xml
 <observation>
-  <type>[ change | discovery | decision ]</type>
+  <type>[ bugfix | feature | refactor | change | discovery | decision ]</type>
   <!--
-    **type**: MUST be EXACTLY one of these 3 options (no other values allowed):
-      - change: modifications to code, config, or documentation
+    **type**: MUST be EXACTLY one of these 6 options (no other values allowed):
+      - bugfix: something was broken, now fixed
+      - feature: new capability or functionality added
+      - refactor: code restructured, behavior unchanged
+      - change: generic modification (docs, config, misc)
       - discovery: learning about existing system
-      - decision: choosing an approach and why it was chosen
+      - decision: architectural/design choice with rationale
   -->
   <title>[**title**: Short title capturing the core action or topic]</title>
   <subtitle>[**subtitle**: One sentence explanation (max 24 words)]</subtitle>
