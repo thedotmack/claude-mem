@@ -164,6 +164,17 @@ CRITICAL: Describe what was delivered to the project, NOT what the memory system
 
 User's Original Request: ${session.user_prompt}
 
+WHEN NOT TO SUMMARIZE
+----------------------
+Do NOT create a summary if:
+- **Already summarized**: This work was covered in a previous prompt's summary (check if it's just continuation)
+- **Conversational banter**: User is chatting, joking, or making casual comments with no deliverables
+- **Trivial requests**: Simple questions, status checks, or explanations that don't result in shipped work
+- **No meaningful observations**: All observations were skipped or there's nothing substantial to document
+- **Meta-discussions about memory**: Talking about the memory system itself without shipping changes to it
+
+If any of these apply, **output only**: <skip_summary reason="[brief reason]" />
+
 ✅ GOOD - Describes deliverables:
 <request>Fix authentication timeout bug</request>
 <request>Add three-tier verbosity system to session summaries</request>

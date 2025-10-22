@@ -62,7 +62,7 @@ export function parseObservations(text: string, correlationId?: string): ParsedO
     }
 
     // Validate type
-    const validTypes = ['change', 'discovery', 'decision'];
+    const validTypes = ['bugfix', 'feature', 'refactor', 'change', 'discovery', 'decision'];
     if (!validTypes.includes(type.trim())) {
       logger.warn('PARSER', `Invalid observation type: ${type}, skipping`, { correlationId });
       continue;
@@ -97,9 +97,21 @@ export function parseObservations(text: string, correlationId?: string): ParsedO
 
 /**
  * Parse summary XML block from SDK response
- * Returns null if no valid summary found
+ * Returns null if no valid summary found or if summary was skipped
  */
 export function parseSummary(text: string, sessionId?: number): ParsedSummary | null {
+  // Check for skip_summary first
+  const skipRegex = /<skip_summary\s+reason="([^"]+)"\s*\/>/;
+  const skipMatch = skipRegex.exec(text);
+
+  if (skipMatch) {
+    logger.info('PARSER', 'Summary skipped', {
+      sessionId,
+      reason: skipMatch[1]
+    });
+    return null;
+  }
+
   // Match <summary>...</summary> block (non-greedy)
   const summaryRegex = /<summary>([\s\S]*?)<\/summary>/;
   const summaryMatch = summaryRegex.exec(text);
