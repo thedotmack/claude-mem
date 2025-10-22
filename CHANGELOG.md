@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 
+## [4.2.1] - 2025-10-22
+
+### Added
+- **Summary skip logic**: Summaries now skip when work is already covered, banter/trivial requests, or no meaningful observations
+  - New "WHEN NOT TO SUMMARIZE" section in buildSummaryPrompt guides SDK to avoid duplicate/trivial summaries
+  - Parser detects `<skip_summary reason="..."/>` format and logs reason
+  - Prevents duplicate summaries like the three "restore 6 types" summaries observed in session d9137878
+
+### Fixed
+- **Observation type validation**: Parser now validates all 6 observation types (bugfix, feature, refactor, change, discovery, decision) instead of only 3
+
+### Changed
+- **Chronological summary guidance**: Summaries now explicitly instructed to capture "what happened in THIS prompt" rather than re-summarizing previous work
+
+
 ## [4.1.1] - 2025-10-21
 
 ### Removed
