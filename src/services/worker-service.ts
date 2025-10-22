@@ -164,10 +164,31 @@ class WorkerService {
     const sessionDbId = parseInt(req.params.sessionDbId, 10);
     const { tool_name, tool_input, tool_output, prompt_number } = req.body;
 
-    const session = this.sessions.get(sessionDbId);
+    let session = this.sessions.get(sessionDbId);
     if (!session) {
-      res.status(404).json({ error: 'Session not found' });
-      return;
+      // Auto-create session if it doesn't exist (e.g., worker restarted)
+      session = {
+        sessionDbId,
+        sdkSessionId: null,
+        project: '',
+        userPrompt: '',
+        pendingMessages: [],
+        abortController: new AbortController(),
+        generatorPromise: null,
+        lastPromptNumber: 0,
+        observationCounter: 0,
+        startTime: Date.now()
+      };
+      this.sessions.set(sessionDbId, session);
+
+      // Start SDK agent in background
+      session.generatorPromise = this.runSDKAgent(session).catch(err => {
+        logger.failure('WORKER', 'SDK agent error', { sessionId: sessionDbId }, err);
+        const db = new SessionStore();
+        db.markSessionFailed(sessionDbId);
+        db.close();
+        this.sessions.delete(sessionDbId);
+      });
     }
 
     // Create correlation ID for tracking this observation
@@ -199,10 +220,31 @@ class WorkerService {
     const sessionDbId = parseInt(req.params.sessionDbId, 10);
     const { prompt_number } = req.body;
 
-    const session = this.sessions.get(sessionDbId);
+    let session = this.sessions.get(sessionDbId);
     if (!session) {
-      res.status(404).json({ error: 'Session not found' });
-      return;
+      // Auto-create session if it doesn't exist (e.g., worker restarted)
+      session = {
+        sessionDbId,
+        sdkSessionId: null,
+        project: '',
+        userPrompt: '',
+        pendingMessages: [],
+        abortController: new AbortController(),
+        generatorPromise: null,
+        lastPromptNumber: 0,
+        observationCounter: 0,
+        startTime: Date.now()
+      };
+      this.sessions.set(sessionDbId, session);
+
+      // Start SDK agent in background
+      session.generatorPromise = this.runSDKAgent(session).catch(err => {
+        logger.failure('WORKER', 'SDK agent error', { sessionId: sessionDbId }, err);
+        const db = new SessionStore();
+        db.markSessionFailed(sessionDbId);
+        db.close();
+        this.sessions.delete(sessionDbId);
+      });
     }
 
     logger.dataIn('WORKER', 'Summary requested', {
