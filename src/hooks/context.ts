@@ -43,7 +43,7 @@ export function contextHook(input?: SessionStartInput, useColors: boolean = fals
         FROM session_summaries
         WHERE project = ?
         ORDER BY created_at_epoch DESC
-        LIMIT 30
+        LIMIT 10
       )
       ORDER BY created_at_epoch ASC
     `).all(project) as Array<{
@@ -82,8 +82,8 @@ export function contextHook(input?: SessionStartInput, useColors: boolean = fals
       // Most recent summary is at the end (highest index) since we display chronologically
       const positionFromEnd = summaries.length - 1 - i;
       const isTier1 = positionFromEnd === 0; // Most recent (full verbosity)
-      const isTier3 = positionFromEnd > 4; // Older (compact verbosity)
-      // Tier 2 (positions 1-4): Medium verbosity - implicit (not Tier1, not Tier3)
+      const isTier2 = positionFromEnd >= 1 && positionFromEnd <= 3; // Middle 3 (request + what was done)
+      const isTier3 = positionFromEnd > 3; // Oldest 6 (request only)
 
       // Add separator between summaries (but not before the first one)
       if (!isFirstSummary) {
@@ -102,19 +102,23 @@ export function contextHook(input?: SessionStartInput, useColors: boolean = fals
 
       isFirstSummary = false;
 
-      // TIER 3: Compact (just Learned + citation)
+      // TIER 3: Minimal (just Request + Date)
       if (isTier3) {
-        if (summary.learned) {
+        if (summary.request) {
           if (useColors) {
-            output.push(`${colors.bright}${colors.blue}Learned:${colors.reset} ${summary.learned}`);
+            output.push(`${colors.bright}${colors.yellow}Request:${colors.reset} ${summary.request}`);
             output.push('');
-            output.push(`${colors.dim}[Details: claude-mem://session/${summary.sdk_session_id}]${colors.reset}`);
           } else {
-            output.push(`**Learned:** ${summary.learned}`);
-            output.push('');
-            output.push(`[Details: claude-mem://session/${summary.sdk_session_id}]`);
+            output.push(`**Request:** ${summary.request}`);
             output.push('');
           }
+        }
+        const dateTime = new Date(summary.created_at).toLocaleString();
+        if (useColors) {
+          output.push(`${colors.dim}Date: ${dateTime}${colors.reset}`);
+        } else {
+          output.push(`**Date:** ${dateTime}`);
+          output.push('');
         }
         continue; // Skip the rest for Tier 3
       }
@@ -152,8 +156,8 @@ export function contextHook(input?: SessionStartInput, useColors: boolean = fals
         }
       }
 
-      // TIER 1 & 2: Show Next Steps
-      if (summary.next_steps) {
+      // TIER 1 ONLY: Show Next Steps
+      if (isTier1 && summary.next_steps) {
         if (useColors) {
           output.push(`${colors.bright}${colors.magenta}Next Steps:${colors.reset} ${summary.next_steps}`);
           output.push('');
@@ -163,58 +167,58 @@ export function contextHook(input?: SessionStartInput, useColors: boolean = fals
         }
       }
 
-      // Get files from observations (for both Tier 1 and Tier 2)
-      const observations = db.db.prepare(`
-        SELECT files_read, files_modified
-        FROM observations
-        WHERE sdk_session_id = ?
-      `).all(summary.sdk_session_id) as Array<{
-        files_read: string | null;
-        files_modified: string | null;
-      }>;
+      // TIER 1 ONLY: Get and show files
+      if (isTier1) {
+        const observations = db.db.prepare(`
+          SELECT files_read, files_modified
+          FROM observations
+          WHERE sdk_session_id = ?
+        `).all(summary.sdk_session_id) as Array<{
+          files_read: string | null;
+          files_modified: string | null;
+        }>;
 
-      const filesReadSet = new Set<string>();
-      const filesModifiedSet = new Set<string>();
+        const filesReadSet = new Set<string>();
+        const filesModifiedSet = new Set<string>();
 
-      for (const obs of observations) {
-        if (obs.files_read) {
-          try {
-            const files = JSON.parse(obs.files_read);
-            if (Array.isArray(files)) {
-              files.forEach(f => filesReadSet.add(f));
+        for (const obs of observations) {
+          if (obs.files_read) {
+            try {
+              const files = JSON.parse(obs.files_read);
+              if (Array.isArray(files)) {
+                files.forEach(f => filesReadSet.add(f));
+              }
+            } catch {
+              // Skip invalid JSON
             }
-          } catch {
-            // Skip invalid JSON
+          }
+
+          if (obs.files_modified) {
+            try {
+              const files = JSON.parse(obs.files_modified);
+              if (Array.isArray(files)) {
+                files.forEach(f => filesModifiedSet.add(f));
+              }
+            } catch {
+              // Skip invalid JSON
+            }
           }
         }
 
-        if (obs.files_modified) {
-          try {
-            const files = JSON.parse(obs.files_modified);
-            if (Array.isArray(files)) {
-              files.forEach(f => filesModifiedSet.add(f));
-            }
-          } catch {
-            // Skip invalid JSON
+        if (filesReadSet.size > 0) {
+          if (useColors) {
+            output.push(`${colors.dim}Files Read: ${Array.from(filesReadSet).join(', ')}${colors.reset}`);
+          } else {
+            output.push(`**Files Read:** ${Array.from(filesReadSet).join(', ')}`);
           }
         }
-      }
 
-      // TIER 1 ONLY: Show Files Read
-      if (isTier1 && filesReadSet.size > 0) {
-        if (useColors) {
-          output.push(`${colors.dim}Files Read: ${Array.from(filesReadSet).join(', ')}${colors.reset}`);
-        } else {
-          output.push(`**Files Read:** ${Array.from(filesReadSet).join(', ')}`);
-        }
-      }
-
-      // TIER 1 & 2: Show Files Modified
-      if (filesModifiedSet.size > 0) {
-        if (useColors) {
-          output.push(`${colors.dim}Files Modified: ${Array.from(filesModifiedSet).join(', ')}${colors.reset}`);
-        } else {
-          output.push(`**Files Modified:** ${Array.from(filesModifiedSet).join(', ')}`);
+        if (filesModifiedSet.size > 0) {
+          if (useColors) {
+            output.push(`${colors.dim}Files Modified: ${Array.from(filesModifiedSet).join(', ')}${colors.reset}`);
+          } else {
+            output.push(`**Files Modified:** ${Array.from(filesModifiedSet).join(', ')}`);
+          }
         }
       }
 
