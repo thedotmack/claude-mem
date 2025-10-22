@@ -236,6 +236,15 @@ export interface SessionSummaryRow {
   created_at_epoch: number;
 }
 
+export interface UserPromptRow {
+  id: number;
+  claude_session_id: string;
+  prompt_number: number;
+  prompt_text: string;
+  created_at: string;
+  created_at_epoch: number;
+}
+
 /**
  * Search and Filter Types
  */
@@ -264,6 +273,11 @@ export interface ObservationSearchResult extends ObservationRow {
 }
 
 export interface SessionSummarySearchResult extends SessionSummaryRow {
+  rank?: number; // FTS5 relevance score (lower is better)
+  score?: number; // Normalized score (higher is better, 0-1)
+}
+
+export interface UserPromptSearchResult extends UserPromptRow {
   rank?: number; // FTS5 relevance score (lower is better)
   score?: number; // Normalized score (higher is better, 0-1)
 }

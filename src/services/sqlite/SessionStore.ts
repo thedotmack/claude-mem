@@ -27,6 +27,7 @@ export class SessionStore {
     this.removeSessionSummariesUniqueConstraint();
     this.addObservationHierarchicalFields();
     this.makeObservationsTextNullable();
+    this.createUserPromptsTable();
   }
 
   /**
@@ -402,6 +403,92 @@ export class SessionStore {
       }
     } catch (error: any) {
       console.error('[SessionStore] Migration error (make text nullable):', error.message);
+    }
+  }
+
+  /**
+   * Create user_prompts table with FTS5 support (migration 10)
+   */
+  private createUserPromptsTable(): void {
+    try {
+      // Check if migration already applied
+      const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(10) as {version: number} | undefined;
+      if (applied) return;
+
+      // Check if table already exists
+      const tableInfo = this.db.pragma('table_info(user_prompts)');
+      if ((tableInfo as any[]).length > 0) {
+        // Already migrated
+        this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(10, new Date().toISOString());
+        return;
+      }
+
+      console.error('[SessionStore] Creating user_prompts table with FTS5 support...');
+
+      // Begin transaction
+      this.db.exec('BEGIN TRANSACTION');
+
+      try {
+        // Create main table (using claude_session_id since sdk_session_id is set asynchronously by worker)
+        this.db.exec(`
+          CREATE TABLE user_prompts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            claude_session_id TEXT NOT NULL,
+            prompt_number INTEGER NOT NULL,
+            prompt_text TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            created_at_epoch INTEGER NOT NULL,
+            FOREIGN KEY(claude_session_id) REFERENCES sdk_sessions(claude_session_id) ON DELETE CASCADE
+          );
+
+          CREATE INDEX idx_user_prompts_claude_session ON user_prompts(claude_session_id);
+          CREATE INDEX idx_user_prompts_created ON user_prompts(created_at_epoch DESC);
+          CREATE INDEX idx_user_prompts_prompt_number ON user_prompts(prompt_number);
+        `);
+
+        // Create FTS5 virtual table
+        this.db.exec(`
+          CREATE VIRTUAL TABLE user_prompts_fts USING fts5(
+            prompt_text,
+            content='user_prompts',
+            content_rowid='id'
+          );
+        `);
+
+        // Create triggers to sync FTS5
+        this.db.exec(`
+          CREATE TRIGGER user_prompts_ai AFTER INSERT ON user_prompts BEGIN
+            INSERT INTO user_prompts_fts(rowid, prompt_text)
+            VALUES (new.id, new.prompt_text);
+          END;
+
+          CREATE TRIGGER user_prompts_ad AFTER DELETE ON user_prompts BEGIN
+            INSERT INTO user_prompts_fts(user_prompts_fts, rowid, prompt_text)
+            VALUES('delete', old.id, old.prompt_text);
+          END;
+
+          CREATE TRIGGER user_prompts_au AFTER UPDATE ON user_prompts BEGIN
+            INSERT INTO user_prompts_fts(user_prompts_fts, rowid, prompt_text)
+            VALUES('delete', old.id, old.prompt_text);
+            INSERT INTO user_prompts_fts(rowid, prompt_text)
+            VALUES (new.id, new.prompt_text);
+          END;
+        `);
+
+        // Commit transaction
+        this.db.exec('COMMIT');
+
+        // Record migration
+        this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(10, new Date().toISOString());
+
+        console.error('[SessionStore] Successfully created user_prompts table with FTS5 support');
+      } catch (error: any) {
+        // Rollback on error
+        this.db.exec('ROLLBACK');
+        throw error;
+      }
+    } catch (error: any) {
+      console.error('[SessionStore] Migration error (create user_prompts table):', error.message);
     }
   }
 
@@ -786,6 +873,23 @@ export class SessionStore {
 
     const result = stmt.get(id) as { worker_port: number | null } | undefined;
     return result?.worker_port || null;
+  }
+
+  /**
+   * Save a user prompt
+   */
+  saveUserPrompt(claudeSessionId: string, promptNumber: number, promptText: string): number {
+    const now = new Date();
+    const nowEpoch = now.getTime();
+
+    const stmt = this.db.prepare(`
+      INSERT INTO user_prompts
+      (claude_session_id, prompt_number, prompt_text, created_at, created_at_epoch)
+      VALUES (?, ?, ?, ?, ?)
+    `);
+
+    const result = stmt.run(claudeSessionId, promptNumber, promptText, now.toISOString(), nowEpoch);
+    return result.lastInsertRowid as number;
   }
 
   /**

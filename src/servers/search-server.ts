@@ -14,7 +14,7 @@ import { zodToJsonSchema } from 'zod-to-json-schema';
 import { basename } from 'path';
 import { SessionSearch } from '../services/sqlite/SessionSearch.js';
 import { SessionStore } from '../services/sqlite/SessionStore.js';
-import { ObservationSearchResult, SessionSummarySearchResult } from '../services/sqlite/types.js';
+import { ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../services/sqlite/types.js';
 
 // Initialize search instance
 let search: SessionSearch;
@@ -217,6 +217,38 @@ function formatSessionResult(session: SessionSummarySearchResult, index: number)
     contentParts.push('---');
     contentParts.push(metadata.join(' | '));
   }
+
+  return contentParts.join('\n');
+}
+
+/**
+ * Format user prompt as index entry (truncated text, date, ID only)
+ */
+function formatUserPromptIndex(prompt: UserPromptSearchResult, index: number): string {
+  const truncated = prompt.prompt_text.length > 100
+    ? prompt.prompt_text.substring(0, 100) + '...'
+    : prompt.prompt_text;
+  const date = new Date(prompt.created_at_epoch).toLocaleString();
+
+  return `${index + 1}. "${truncated}"
+   Date: ${date} | Prompt #${prompt.prompt_number}
+   Source: claude-mem://user-prompt/${prompt.id}`;
+}
+
+/**
+ * Format user prompt as text content with metadata
+ */
+function formatUserPromptResult(prompt: UserPromptSearchResult, index: number): string {
+  const contentParts: string[] = [];
+  contentParts.push(`## User Prompt #${prompt.prompt_number}`);
+  contentParts.push(`*Source: claude-mem://user-prompt/${prompt.id}*`);
+  contentParts.push('');
+  contentParts.push(prompt.prompt_text);
+  contentParts.push('');
+  contentParts.push('---');
+
+  const date = new Date(prompt.created_at_epoch).toLocaleString();
+  contentParts.push(`Date: ${date}`);
 
   return contentParts.join('\n');
 }
@@ -681,6 +713,63 @@ const tools = [
           content: [{
             type: 'text' as const,
             text: `Failed to get recent context: ${error.message}`
+          }],
+          isError: true
+        };
+      }
+    }
+  },
+  {
+    name: 'search_user_prompts',
+    description: 'Search raw user prompts with full-text search. Use this to find what the user actually said/requested across all sessions. IMPORTANT: Always use index format first (default) to get an overview with minimal token usage, then use format: "full" only for specific items of interest.',
+    inputSchema: z.object({
+      query: z.string().describe('Search query for FTS5 full-text search'),
+      format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for truncated prompts/dates (default, RECOMMENDED for initial search), "full" for complete prompt text (use only after reviewing index results)'),
+      project: z.string().optional().describe('Filter by project name'),
+      dateRange: z.object({
+        start: z.union([z.string(), z.number()]).optional(),
+        end: z.union([z.string(), z.number()]).optional()
+      }).optional().describe('Filter by date range'),
+      limit: z.number().min(1).max(100).default(20).describe('Maximum number of results'),
+      offset: z.number().min(0).default(0).describe('Number of results to skip'),
+      orderBy: z.enum(['relevance', 'date_desc', 'date_asc']).default('relevance').describe('Sort order')
+    }),
+    handler: async (args: any) => {
+      try {
+        const { query, format = 'index', ...options } = args;
+        const results = search.searchUserPrompts(query, options);
+
+        if (results.length === 0) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: `No user prompts found matching "${query}"`
+            }]
+          };
+        }
+
+        // Format based on requested format
+        let combinedText: string;
+        if (format === 'index') {
+          const header = `Found ${results.length} user prompt(s) matching "${query}":\n\n`;
+          const formattedResults = results.map((prompt, i) => formatUserPromptIndex(prompt, i));
+          combinedText = header + formattedResults.join('\n\n') + formatSearchTips();
+        } else {
+          const formattedResults = results.map((prompt, i) => formatUserPromptResult(prompt, i));
+          combinedText = formattedResults.join('\n\n---\n\n');
+        }
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: combinedText
+          }]
+        };
+      } catch (error: any) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `Search failed: ${error.message}`
           }],
           isError: true
         };

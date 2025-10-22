@@ -3,10 +3,12 @@ import { DATA_DIR, DB_PATH, ensureDir } from '../../shared/paths.js';
 import {
   ObservationSearchResult,
   SessionSummarySearchResult,
+  UserPromptSearchResult,
   SearchOptions,
   SearchFilters,
   DateRange,
-  ObservationRow
+  ObservationRow,
+  UserPromptRow
 } from './types.js';
 
 /**
@@ -471,6 +473,101 @@ export class SessionSearch {
     params.push(limit, offset);
 
     return this.db.prepare(sql).all(...params) as ObservationSearchResult[];
+  }
+
+  /**
+   * Search user prompts with full-text search
+   */
+  searchUserPrompts(query: string, options: SearchOptions = {}): UserPromptSearchResult[] {
+    const params: any[] = [];
+    const { limit = 20, offset = 0, orderBy = 'relevance', ...filters } = options;
+
+    // Build FTS5 match query
+    const ftsQuery = this.escapeFTS5(query);
+    params.push(ftsQuery);
+
+    // Build filter conditions (join with sdk_sessions for project filtering)
+    const baseConditions: string[] = [];
+    if (filters.project) {
+      baseConditions.push('s.project = ?');
+      params.push(filters.project);
+    }
+
+    if (filters.dateRange) {
+      const { start, end } = filters.dateRange;
+      if (start) {
+        const startEpoch = typeof start === 'number' ? start : new Date(start).getTime();
+        baseConditions.push('up.created_at_epoch >= ?');
+        params.push(startEpoch);
+      }
+      if (end) {
+        const endEpoch = typeof end === 'number' ? end : new Date(end).getTime();
+        baseConditions.push('up.created_at_epoch <= ?');
+        params.push(endEpoch);
+      }
+    }
+
+    const whereClause = baseConditions.length > 0 ? `AND ${baseConditions.join(' AND ')}` : '';
+
+    // Build ORDER BY
+    const orderClause = orderBy === 'relevance'
+      ? 'ORDER BY user_prompts_fts.rank ASC'
+      : orderBy === 'date_asc'
+      ? 'ORDER BY up.created_at_epoch ASC'
+      : 'ORDER BY up.created_at_epoch DESC';
+
+    // Main query with FTS5 (join sdk_sessions for project filtering)
+    const sql = `
+      SELECT
+        up.*,
+        user_prompts_fts.rank as rank
+      FROM user_prompts up
+      JOIN user_prompts_fts ON up.id = user_prompts_fts.rowid
+      JOIN sdk_sessions s ON up.claude_session_id = s.claude_session_id
+      WHERE user_prompts_fts MATCH ?
+      ${whereClause}
+      ${orderClause}
+      LIMIT ? OFFSET ?
+    `;
+
+    params.push(limit, offset);
+
+    const results = this.db.prepare(sql).all(...params) as UserPromptSearchResult[];
+
+    // Normalize rank to score
+    if (results.length > 0) {
+      const minRank = Math.min(...results.map(r => r.rank || 0));
+      const maxRank = Math.max(...results.map(r => r.rank || 0));
+      const range = maxRank - minRank || 1;
+
+      results.forEach(r => {
+        if (r.rank !== undefined) {
+          r.score = 1 - ((r.rank - minRank) / range);
+        }
+      });
+    }
+
+    return results;
+  }
+
+  /**
+   * Get all prompts for a session by claude_session_id
+   */
+  getUserPromptsBySession(claudeSessionId: string): UserPromptRow[] {
+    const stmt = this.db.prepare(`
+      SELECT
+        id,
+        claude_session_id,
+        prompt_number,
+        prompt_text,
+        created_at,
+        created_at_epoch
+      FROM user_prompts
+      WHERE claude_session_id = ?
+      ORDER BY prompt_number ASC
+    `);
+
+    return stmt.all(claudeSessionId) as UserPromptRow[];
   }
 
   /**

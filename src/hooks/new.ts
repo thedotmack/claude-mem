@@ -34,6 +34,10 @@ export async function newHook(input?: UserPromptSubmitInput): Promise<void> {
     // Just save session_id for indexing - no validation, no state management
     const sessionDbId = db.createSDKSession(session_id, project, prompt);
     const promptNumber = db.incrementPromptCounter(sessionDbId);
+
+    // Save raw user prompt for full-text search
+    db.saveUserPrompt(session_id, promptNumber, prompt);
+
     console.error(`[new-hook] Session ${sessionDbId}, prompt #${promptNumber}`);
 
     // Get fixed port
