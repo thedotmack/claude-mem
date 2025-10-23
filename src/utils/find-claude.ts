@@ -14,12 +14,10 @@ import { homedir } from 'os';
  * Priority order:
  * 1. CLAUDE_CODE_PATH environment variable (user override)
  * 2. 'claude' in system PATH
- * 3. Local installation (~/.claude/local/claude - migrate-installer)
- * 4. Native installer location (~/.local/bin/claude)
- * 5. Global npm installation
- * 6. /usr/local/bin/claude
- * 7. /usr/bin/claude
- * 8. MacOS app bundle
+ * 3. Native installer location (~/.local/bin/claude)
+ * 4. Global npm installation
+ * 5. /usr/local/bin/claude
+ * 6. /usr/bin/claude
  * 
  * @returns Path to Claude executable, or null if not found
  */
@@ -47,10 +45,8 @@ export function findClaudeExecutable(): string | null {
     // 'which' command failed or not available, continue
   }
 
-  // Priority 3-8: Check common installation paths
+  // Priority 3-6: Check common installation paths
   const commonPaths = [
-    // Local installation (migrate-installer)
-    join(homedir(), '.claude', 'local', 'claude'),
     // Native installer location
     join(homedir(), '.local', 'bin', 'claude'),
     // Global npm installation
@@ -68,8 +64,6 @@ export function findClaudeExecutable(): string | null {
     // Standard Unix paths
     '/usr/local/bin/claude',
     '/usr/bin/claude',
-    // MacOS app bundle
-    '/Applications/Claude.app/Contents/MacOS/claude',
   ];
 
   for (const path of commonPaths) {
@@ -94,7 +88,6 @@ export function getClaudeExecutable(): string {
     throw new Error(
       'Claude Code executable not found. Please install Claude Code or set CLAUDE_CODE_PATH environment variable.\n' +
       'Common installation paths:\n' +
-      '  - ~/.claude/local/claude (local installation via /migrate-installer)\n' +
       '  - ~/.local/bin/claude (native installer)\n' +
       '  - /usr/local/bin/claude (global installation)\n' +
       '  - System PATH (npm global install)\n\n' +
