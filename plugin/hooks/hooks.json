@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ ! -d \"${CLAUDE_PLUGIN_ROOT}/../node_modules\" ] && cd \"${CLAUDE_PLUGIN_ROOT}/..\" && npm install && node ${CLAUDE_PLUGIN_ROOT}/scripts/context-hook.js || node ${CLAUDE_PLUGIN_ROOT}/scripts/context-hook.js",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/ensure-dependencies.js && node ${CLAUDE_PLUGIN_ROOT}/scripts/context-hook.js",
             "timeout": 120
           }
         ]
