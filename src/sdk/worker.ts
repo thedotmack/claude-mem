@@ -20,7 +20,6 @@ import { getWorkerSocketPath } from '../shared/paths.js';
 import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt } from './prompts.js';
 import { parseObservations, parseSummary } from './parser.js';
 import type { SDKSession } from './prompts.js';
-import { getClaudeExecutable } from '../utils/find-claude.js';
 
 const MODEL = 'claude-sonnet-4-5';
 const DISALLOWED_TOOLS = ['Glob', 'Grep', 'ListMcpResourcesTool', 'WebSearch'];
@@ -283,17 +282,15 @@ class SDKWorker {
    * Run SDK agent with streaming input mode
    */
   private async runSDKAgent(): Promise<void> {
-    // Find Claude Code executable
-    const claudePath = getClaudeExecutable();
-    console.error(`[SDK Worker DEBUG] Using Claude executable: ${claudePath}`);
-
     const queryResult = query({
       prompt: this.createMessageGenerator(),
       options: {
         model: MODEL,
         disallowedTools: DISALLOWED_TOOLS,
         abortController: this.abortController,
-        pathToClaudeCodeExecutable: claudePath
+        // pathToClaudeCodeExecutable: SDK auto-detects (v0.1.23+)
+        // Users can set CLAUDE_CODE_PATH if needed for SDK to respect
+        ...(process.env.CLAUDE_CODE_PATH && { pathToClaudeCodeExecutable: process.env.CLAUDE_CODE_PATH })
       }
     });
 

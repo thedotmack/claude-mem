@@ -12,7 +12,6 @@ import { parseObservations, parseSummary } from '../sdk/parser.js';
 import type { SDKSession } from '../sdk/prompts.js';
 import { logger } from '../utils/logger.js';
 import { ensureAllDataDirs } from '../shared/paths.js';
-import { getClaudeExecutable } from '../utils/find-claude.js';
 
 const MODEL = process.env.CLAUDE_MEM_MODEL || 'claude-sonnet-4-5';
 const DISALLOWED_TOOLS = ['Glob', 'Grep', 'ListMcpResourcesTool', 'WebSearch'];
@@ -353,9 +352,6 @@ class WorkerService {
   private async runSDKAgent(session: ActiveSession): Promise<void> {
     logger.info('SDK', 'Agent starting', { sessionId: session.sessionDbId });
 
-    const claudePath = getClaudeExecutable();
-    logger.debug('SDK', 'Using Claude executable', { sessionId: session.sessionDbId, claudePath });
-
     try {
       const queryResult = query({
         prompt: this.createMessageGenerator(session),
@@ -363,7 +359,9 @@ class WorkerService {
           model: MODEL,
           disallowedTools: DISALLOWED_TOOLS,
           abortController: session.abortController,
-          pathToClaudeCodeExecutable: claudePath
+          // pathToClaudeCodeExecutable: SDK auto-detects (v0.1.23+)
+          // Users can set CLAUDE_CODE_PATH if needed for SDK to respect
+          ...(process.env.CLAUDE_CODE_PATH && { pathToClaudeCodeExecutable: process.env.CLAUDE_CODE_PATH })
         }
       });
 

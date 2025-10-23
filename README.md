@@ -512,7 +512,7 @@ Claude Request → MCP Server → SessionSearch Service → FTS5 Database → Se
 | `CLAUDE_PLUGIN_ROOT`    | Set by Claude Code              | Plugin installation directory         |
 | `CLAUDE_MEM_DATA_DIR`   | `${CLAUDE_PLUGIN_ROOT}/data/`   | Data directory override (dev only)    |
 | `CLAUDE_MEM_WORKER_PORT`| `37777`                         | Worker service port (fixed)           |
-| `CLAUDE_CODE_PATH`      | (auto-detected)                 | Path to Claude Code executable        |
+| `CLAUDE_CODE_PATH`      | (auto-detected by SDK)          | Override path to Claude Code executable (optional) |
 | `NODE_ENV`              | `production`                    | Environment mode                      |
 | `FORCE_COLOR`           | `1`                             | Enable colored logs                   |
 
@@ -727,17 +727,11 @@ npm run worker:start  # Will recreate schema
 
 **Problem**: Worker can't find Claude Code executable
 
-Claude-Mem automatically searches for the Claude Code executable in common locations. If you have a non-standard installation, you may need to specify the path.
+The Claude Agent SDK (v0.1.23+) automatically detects the Claude Code executable. In most cases, no configuration is needed.
 
-**Auto-detection order:**
-1. `CLAUDE_CODE_PATH` environment variable (if set)
-2. `claude` in system PATH
-3. `~/.local/bin/claude` (native installer location)
-4. Global npm installation
-5. `/usr/local/bin/claude`
-6. `/usr/bin/claude`
+**Manual override:**
 
-**Set custom path:**
+If you have a non-standard installation or the auto-detection doesn't work, you can set the `CLAUDE_CODE_PATH` environment variable.
 
 Edit `ecosystem.config.cjs` and add to the `env` section:
 
@@ -745,7 +739,7 @@ Edit `ecosystem.config.cjs` and add to the `env` section:
 env: {
   NODE_ENV: 'production',
   CLAUDE_MEM_WORKER_PORT: 37777,
-  CLAUDE_CODE_PATH: '/path/to/your/claude',  // Add this line
+  CLAUDE_CODE_PATH: '/path/to/your/claude',  // Add this line if needed
   FORCE_COLOR: '1'
 }
 ```
