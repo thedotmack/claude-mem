@@ -733,10 +733,11 @@ Claude-Mem automatically searches for the Claude Code executable in common locat
 1. `CLAUDE_CODE_PATH` environment variable (if set)
 2. `claude` in system PATH
 3. `~/.claude/local/claude` (local installation after running Claude Code's `/migrate-installer` command)
-4. Global npm installation
-5. `/usr/local/bin/claude`
-6. `/usr/bin/claude`
-7. MacOS app bundle
+4. `~/.local/bin/claude` (native installer location)
+5. Global npm installation
+6. `/usr/local/bin/claude`
+7. `/usr/bin/claude`
+8. MacOS app bundle
 
 **Set custom path:**
 
