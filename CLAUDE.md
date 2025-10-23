@@ -26,6 +26,7 @@ This creates a continuous memory system where Claude can learn from past session
 Claude-mem integrates with Claude Code through 5 lifecycle hooks:
 
 1. **SessionStart Hook** (`context-hook`)
+   - Auto-installs dependencies on first run (cross-platform Node.js installer)
    - Injects context from previous sessions
    - Auto-starts PM2 worker service
    - Retrieves last 10 session summaries with three-tier verbosity (v4.2.0)
@@ -199,12 +200,36 @@ claude-mem/
 npm run build && git commit -a -m "Build and update" && git push && cd ~/.claude/plugins/marketplaces/thedotmack/ && git pull && pm2 flush claude-mem-worker && pm2 restart claude-mem-worker && pm2 logs claude-mem-worker --nostream
 ```
 
-1) Compiles TypeScript and outputs hook executables to `plugin/scripts/`
-2) Does all the things needed to update and test since plugin-based installs are out of the .claude/ folder
+1. Compiles TypeScript and outputs hook executables to `plugin/scripts/`
+2. Generates `ensure-dependencies.js` - cross-platform installer script
+3. Creates `package.json` in `plugin/scripts/` with runtime dependencies
+4. Does all the things needed to update and test since plugin-based installs are out of the .claude/ folder
+
+**Build Outputs**:
+- Hook executables: `*-hook.js` (ESM format)
+- Worker service: `worker-service.cjs` (CJS format)
+- Search server: `search-server.js` (ESM format)
+- Dependency installer: `ensure-dependencies.js` (ESM format)
+- Runtime manifest: `package.json` (includes `better-sqlite3` dependency)
 
 ## Version History
 
-### v4.2.0 (Current)
+### v4.2.2 (Upcoming)
+**Breaking Changes**: None (patch version)
+
+**Fixes**:
+- Fixed Windows PowerShell compatibility issue with SessionStart hook
+- Replaced bash-specific installation command with cross-platform Node.js installer
+- Added `ensure-dependencies.js` script for automatic dependency installation
+- Build process now generates `package.json` with runtime dependencies in `plugin/scripts/`
+
+**Technical Details**:
+- Created `src/bin/ensure-dependencies.ts` for cross-platform dependency management
+- Updated `plugin/hooks/hooks.json` to use Node.js command chain instead of shell syntax
+- Dependencies (`better-sqlite3`) are now installed automatically on first run across all platforms
+- Added `.gitignore` rule for `plugin/scripts/package-lock.json`
+
+### v4.2.0
 **Breaking Changes**: None (minor version)
 
 **Features**:

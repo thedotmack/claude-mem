@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 
+## [Unreleased]
+
+### Fixed
+- **Windows PowerShell compatibility**: Fixed SessionStart hook error on Windows systems
+  - Replaced bash-specific command (`[`, `&&`, `||`) with cross-platform Node.js installer
+  - Created `ensure-dependencies.js` script for automatic dependency installation
+  - Dependencies (`better-sqlite3`) now install correctly on Windows, macOS, and Linux
+
+### Added
+- **Cross-platform dependency installer**: New `ensure-dependencies.js` script handles runtime dependency installation
+- **Automatic package.json generation**: Build process now creates `package.json` in `plugin/scripts/` directory
+- **Enhanced build output**: Build script now generates installer alongside hooks and services
+
+### Changed
+- **SessionStart hook command**: Now uses `node ensure-dependencies.js && node context-hook.js` instead of bash syntax
+- **Build process**: Added installer script bundling and package.json generation steps
+- **.gitignore**: Added `plugin/scripts/package-lock.json` to prevent version control conflicts
+
+
 ## [4.2.1] - 2025-10-22
 
 ### Added

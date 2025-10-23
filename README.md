@@ -253,14 +253,18 @@ npm install -g claude-mem
 
 ### Post-Installation
 
-1. **Verify Plugin Installation**
+1. **Automatic Dependency Installation**
+
+   The plugin automatically installs required dependencies (`better-sqlite3`) on first run. This happens when you first start Claude Code after installation. The process is cross-platform and works on Windows, macOS, and Linux.
+
+2. **Verify Plugin Installation**
 
    Check that hooks are configured in Claude Code:
    ```bash
    cat plugin/hooks/hooks.json
    ```
 
-2. **Data Directory Location**
+3. **Data Directory Location**
 
    v4.0.0+ stores data in `${CLAUDE_PLUGIN_ROOT}/data/`:
    - Database: `${CLAUDE_PLUGIN_ROOT}/data/claude-mem.db`
@@ -272,13 +276,13 @@ npm install -g claude-mem
    export CLAUDE_MEM_DATA_DIR=/custom/path
    ```
 
-3. **Check Worker Logs**
+4. **Check Worker Logs**
 
    ```bash
    npm run worker:logs
    ```
 
-4. **Test Context Retrieval**
+5. **Test Context Retrieval**
 
    ```bash
    npm run test:context
