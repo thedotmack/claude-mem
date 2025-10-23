@@ -11,9 +11,57 @@
 
 const os = require('os');
 const path = require('path');
+const fs = require('fs');
+const { execSync } = require('child_process');
 
 // Determine log directory
 const logDir = path.join(os.homedir(), '.claude-mem', 'logs');
+
+// Find Claude Code binary with smart fallback chain
+function findClaudeCodeBinary() {
+  // 1. Check environment variable first
+  if (process.env.CLAUDE_CODE_PATH) {
+    return process.env.CLAUDE_CODE_PATH;
+  }
+
+  // 2. Try to find in PATH
+  try {
+    const whichClaude = execSync('which claude 2>/dev/null', { encoding: 'utf8' }).trim();
+    if (whichClaude && fs.existsSync(whichClaude)) {
+      return whichClaude;
+    }
+  } catch (e) {
+    // which command failed, continue to fallback paths
+  }
+
+  // 3. Common installation paths to check
+  const homedir = os.homedir();
+  const possiblePaths = [
+    // nvm installations (try current node version first)
+    path.join(homedir, '.nvm/versions/node', process.version, 'bin/claude'),
+    // Common nvm versions
+    path.join(homedir, '.nvm/versions/node/v20.19.5/bin/claude'),
+    path.join(homedir, '.nvm/versions/node/v22.0.0/bin/claude'),
+    path.join(homedir, '.nvm/versions/node/v24.5.0/bin/claude'),
+    // Local bin
+    path.join(homedir, '.local/bin/claude'),
+    // System-wide
+    '/usr/local/bin/claude',
+    '/usr/bin/claude',
+    // Homebrew (macOS)
+    '/opt/homebrew/bin/claude',
+    '/usr/local/opt/claude/bin/claude',
+  ];
+
+  for (const candidatePath of possiblePaths) {
+    if (fs.existsSync(candidatePath)) {
+      return candidatePath;
+    }
+  }
+
+  // 4. Fallback to author's original path as last resort
+  return '/Users/alexnewman/.nvm/versions/node/v24.5.0/bin/claude';
+}
 
 module.exports = {
   apps: [{
@@ -32,7 +80,8 @@ module.exports = {
     env: {
       NODE_ENV: 'production',
       CLAUDE_MEM_WORKER_PORT: 37777, // Fixed port for reliability
-      FORCE_COLOR: '1'
+      FORCE_COLOR: '1',
+      CLAUDE_CODE_PATH: findClaudeCodeBinary()
     },
 
     // Logging
