@@ -511,7 +511,8 @@ Claude Request → MCP Server → SessionSearch Service → FTS5 Database → Se
 |-------------------------|---------------------------------|---------------------------------------|
 | `CLAUDE_PLUGIN_ROOT`    | Set by Claude Code              | Plugin installation directory         |
 | `CLAUDE_MEM_DATA_DIR`   | `${CLAUDE_PLUGIN_ROOT}/data/`   | Data directory override (dev only)    |
-| `CLAUDE_MEM_WORKER_PORT`| `0` (dynamic)                   | Worker service port (37000-37999)     |
+| `CLAUDE_MEM_WORKER_PORT`| `37777`                         | Worker service port (fixed)           |
+| `CLAUDE_CODE_PATH`      | (auto-detected)                 | Path to Claude Code executable        |
 | `NODE_ENV`              | `production`                    | Environment mode                      |
 | `FORCE_COLOR`           | `1`                             | Enable colored logs                   |
 
@@ -721,6 +722,43 @@ cp ~/.claude-mem/claude-mem.db ~/.claude-mem/claude-mem.db.backup
 rm ~/.claude-mem/claude-mem.db
 npm run worker:start  # Will recreate schema
 ```
+
+### Claude Executable Detection
+
+**Problem**: Worker can't find Claude Code executable
+
+Claude-Mem automatically searches for the Claude Code executable in common locations. If you have a non-standard installation, you may need to specify the path.
+
+**Auto-detection order:**
+1. `CLAUDE_CODE_PATH` environment variable (if set)
+2. `claude` in system PATH
+3. `~/.claude/local/claude` (local installation via `/migrate-installer`)
+4. Global npm installation
+5. `/usr/local/bin/claude`
+6. `/usr/bin/claude`
+7. MacOS app bundle
+
+**Set custom path:**
+
+Edit `ecosystem.config.cjs` and add to the `env` section:
+
+```javascript
+env: {
+  NODE_ENV: 'production',
+  CLAUDE_MEM_WORKER_PORT: 37777,
+  CLAUDE_CODE_PATH: '/path/to/your/claude',  // Add this line
+  FORCE_COLOR: '1'
+}
+```
+
+Then restart the worker:
+
+```bash
+npm run worker:stop
+npm run worker:start
+```
+
+**Note**: `npm run worker:restart` does not reload environment variables; you must stop and start.
 
 ### Debugging
 
