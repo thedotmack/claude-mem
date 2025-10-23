@@ -732,7 +732,7 @@ Claude-Mem automatically searches for the Claude Code executable in common locat
 **Auto-detection order:**
 1. `CLAUDE_CODE_PATH` environment variable (if set)
 2. `claude` in system PATH
-3. `~/.claude/local/claude` (local installation via `/migrate-installer`)
+3. `~/.claude/local/claude` (local installation after running Claude Code's `/migrate-installer` command)
 4. Global npm installation
 5. `/usr/local/bin/claude`
 6. `/usr/bin/claude`
