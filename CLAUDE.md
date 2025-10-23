@@ -200,10 +200,10 @@ claude-mem/
 npm run build && git commit -a -m "Build and update" && git push && cd ~/.claude/plugins/marketplaces/thedotmack/ && git pull && pm2 flush claude-mem-worker && pm2 restart claude-mem-worker && pm2 logs claude-mem-worker --nostream
 ```
 
-1. Compiles TypeScript and outputs hook executables to `plugin/scripts/`
-2. Generates `ensure-dependencies.js` - cross-platform installer script
-3. Creates `package.json` in `plugin/scripts/` with runtime dependencies
-4. Does all the things needed to update and test since plugin-based installs are out of the .claude/ folder
+1) Compiles TypeScript and outputs hook executables to `plugin/scripts/`
+2) Generates `ensure-dependencies.js` - cross-platform installer script
+3) Creates `package.json` in `plugin/scripts/` with runtime dependencies
+4) Does all the things needed to update and test since plugin-based installs are out of the .claude/ folder
 
 **Build Outputs**:
 - Hook executables: `*-hook.js` (ESM format)
