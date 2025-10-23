@@ -20,6 +20,7 @@ import { getWorkerSocketPath } from '../shared/paths.js';
 import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt } from './prompts.js';
 import { parseObservations, parseSummary } from './parser.js';
 import type { SDKSession } from './prompts.js';
+import { getClaudeExecutable } from '../utils/find-claude.js';
 
 const MODEL = 'claude-sonnet-4-5';
 const DISALLOWED_TOOLS = ['Glob', 'Grep', 'ListMcpResourcesTool', 'WebSearch'];
@@ -283,8 +284,8 @@ class SDKWorker {
    */
   private async runSDKAgent(): Promise<void> {
     // Find Claude Code executable
-    const claudePath = process.env.CLAUDE_CODE_PATH || '/Users/alexnewman/.nvm/versions/node/v24.5.0/bin/claude';
-    console.error(`[SDK Worker DEBUG] About to call query with claudePath: ${claudePath}`);
+    const claudePath = getClaudeExecutable();
+    console.error(`[SDK Worker DEBUG] Using Claude executable: ${claudePath}`);
 
     const queryResult = query({
       prompt: this.createMessageGenerator(),

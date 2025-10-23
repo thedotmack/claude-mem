@@ -12,6 +12,7 @@ import { parseObservations, parseSummary } from '../sdk/parser.js';
 import type { SDKSession } from '../sdk/prompts.js';
 import { logger } from '../utils/logger.js';
 import { ensureAllDataDirs } from '../shared/paths.js';
+import { getClaudeExecutable } from '../utils/find-claude.js';
 
 const MODEL = process.env.CLAUDE_MEM_MODEL || 'claude-sonnet-4-5';
 const DISALLOWED_TOOLS = ['Glob', 'Grep', 'ListMcpResourcesTool', 'WebSearch'];
@@ -352,7 +353,8 @@ class WorkerService {
   private async runSDKAgent(session: ActiveSession): Promise<void> {
     logger.info('SDK', 'Agent starting', { sessionId: session.sessionDbId });
 
-    const claudePath = process.env.CLAUDE_CODE_PATH || '/Users/alexnewman/.nvm/versions/node/v24.5.0/bin/claude';
+    const claudePath = getClaudeExecutable();
+    logger.debug('SDK', 'Using Claude executable', { sessionId: session.sessionDbId, claudePath });
 
     try {
       const queryResult = query({
