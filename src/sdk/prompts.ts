@@ -158,7 +158,7 @@ export function buildObservationPrompt(obs: Observation): string {
 export function buildSummaryPrompt(session: SDKSession): string {
   return `THIS REQUEST'S SUMMARY
 ===============
-Think about the observations you just wrote for this request, and write a summary of what was built/fixed/deployed/configured, what was learned, and what's next.
+Think about the observations you just wrote for this request, and write a summary of what was done, what was learned, and what's next.
 
 IMPORTANT! DO NOT summarize the observation process itself - you are summarizing a DIFFERENT claude code session, not this one.
 
@@ -166,7 +166,7 @@ User's Original Request: ${session.user_prompt}
 
 WHEN NOT TO SUMMARIZE
 ----------------------
-Do not summarize if the request is conversational and unrelated to the work being done.
+Do not summarize if the request is conversational and unrelated to the work that was just completed.
 
 If skipping, **output only**: <skip_summary reason="[brief reason]" />
 
@@ -182,11 +182,11 @@ If skipping, **output only**: <skip_summary reason="[brief reason]" />
 
 Output this XML:
 <summary>
-  <request>[What did the user want to build/fix/deploy? Use their original words from: ${session.user_prompt}]</request>
-  <investigated>[What code/systems were explored?]</investigated>
+  <request>[What did the user request? Use their original sentiment from: ${session.user_prompt}]</request>
+  <investigated>[What was explored?]</investigated>
   <learned>[What was discovered about how things work?]</learned>
   <completed>[What shipped? What does the system now do?]</completed>
-  <next_steps>[What remains to build/fix/deploy?]</next_steps>
+  <next_steps>[What are the next steps?]</next_steps>
   <notes>[Additional insights]</notes>
 </summary>
 
