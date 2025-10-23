@@ -358,10 +358,8 @@ class WorkerService {
         options: {
           model: MODEL,
           disallowedTools: DISALLOWED_TOOLS,
-          abortController: session.abortController,
+          abortController: session.abortController
           // pathToClaudeCodeExecutable: SDK auto-detects (v0.1.23+)
-          // Users can set CLAUDE_CODE_PATH if needed for SDK to respect
-          ...(process.env.CLAUDE_CODE_PATH && { pathToClaudeCodeExecutable: process.env.CLAUDE_CODE_PATH })
         }
       });
 

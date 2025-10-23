@@ -512,7 +512,6 @@ Claude Request → MCP Server → SessionSearch Service → FTS5 Database → Se
 | `CLAUDE_PLUGIN_ROOT`    | Set by Claude Code              | Plugin installation directory         |
 | `CLAUDE_MEM_DATA_DIR`   | `${CLAUDE_PLUGIN_ROOT}/data/`   | Data directory override (dev only)    |
 | `CLAUDE_MEM_WORKER_PORT`| `37777`                         | Worker service port (fixed)           |
-| `CLAUDE_CODE_PATH`      | (auto-detected by SDK)          | Override path to Claude Code executable (optional) |
 | `NODE_ENV`              | `production`                    | Environment mode                      |
 | `FORCE_COLOR`           | `1`                             | Enable colored logs                   |
 
@@ -725,33 +724,14 @@ npm run worker:start  # Will recreate schema
 
 ### Claude Executable Detection
 
-**Problem**: Worker can't find Claude Code executable
+The Claude Agent SDK (v0.1.23+) automatically detects the Claude Code executable in all standard installation locations. No configuration is needed.
 
-The Claude Agent SDK (v0.1.23+) automatically detects the Claude Code executable. In most cases, no configuration is needed.
+The SDK handles detection for:
+- Native installations via `curl -fsSL https://claude.ai/install.sh | bash`
+- npm global installations (`npm install -g @anthropic-ai/claude-code`)
+- All standard system paths
 
-**Manual override:**
-
-If you have a non-standard installation or the auto-detection doesn't work, you can set the `CLAUDE_CODE_PATH` environment variable.
-
-Edit `ecosystem.config.cjs` and add to the `env` section:
-
-```javascript
-env: {
-  NODE_ENV: 'production',
-  CLAUDE_MEM_WORKER_PORT: 37777,
-  CLAUDE_CODE_PATH: '/path/to/your/claude',  // Add this line if needed
-  FORCE_COLOR: '1'
-}
-```
-
-Then restart the worker:
-
-```bash
-npm run worker:stop
-npm run worker:start
-```
-
-**Note**: `npm run worker:restart` does not reload environment variables; you must stop and start.
+If the SDK cannot find Claude Code, ensure it's properly installed and available in your system PATH.
 
 ### Debugging
 
