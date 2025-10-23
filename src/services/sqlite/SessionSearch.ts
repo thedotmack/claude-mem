@@ -136,12 +136,19 @@ export class SessionSearch {
 
   /**
    * Escape FTS5 special characters in user input
+   * 
+   * FTS5 uses double quotes for phrase searches and treats certain characters
+   * as operators (*, AND, OR, NOT, parentheses, etc.). To prevent injection,
+   * we wrap user input in double quotes and escape internal quotes by doubling them.
+   * This converts any user input into a safe phrase search.
+   * 
+   * @param text - User input to escape for FTS5 MATCH queries
+   * @returns Safely escaped FTS5 query string
    */
   private escapeFTS5(text: string): string {
-    // FTS5 special characters: " * ( ) AND OR NOT
-    // For safety, we'll wrap the entire query in quotes for phrase search
-    // or let advanced users pass boolean operators directly
-    return text;
+    // Escape internal double quotes by doubling them (FTS5 standard)
+    // Then wrap the entire string in double quotes for phrase search
+    return `"${text.replace(/"/g, '""')}"`;
   }
 
   /**

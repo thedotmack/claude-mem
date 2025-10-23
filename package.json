@@ -64,6 +64,7 @@
     "@types/express": "^4.17.21",
     "@types/node": "^20.0.0",
     "esbuild": "^0.20.0",
+    "tsx": "^4.20.6",
     "typescript": "^5.3.0"
   },
   "files": [
