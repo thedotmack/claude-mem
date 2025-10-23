@@ -9,19 +9,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 - **Windows PowerShell compatibility**: Fixed SessionStart hook error on Windows systems
-  - Replaced bash-specific command (`[`, `&&`, `||`) with cross-platform Node.js installer
-  - Created `ensure-dependencies.js` script for automatic dependency installation
-  - Dependencies (`better-sqlite3`) now install correctly on Windows, macOS, and Linux
-
-### Added
-- **Cross-platform dependency installer**: New `ensure-dependencies.js` script handles runtime dependency installation
-- **Automatic package.json generation**: Build process now creates `package.json` in `plugin/scripts/` directory
-- **Enhanced build output**: Build script now generates installer alongside hooks and services
+  - Replaced bash-specific test command `[` with standard cross-platform npm install
+  - Simplified hook command to use idempotent npm install (fast when dependencies exist)
+  - Dependencies install from root package.json in marketplace folder
 
 ### Changed
-- **SessionStart hook command**: Now uses `node ensure-dependencies.js && node context-hook.js` instead of bash syntax
-- **Build process**: Added installer script bundling and package.json generation steps
-- **.gitignore**: Added `plugin/scripts/package-lock.json` to prevent version control conflicts
+- **SessionStart hook command**: Now uses `cd ... && npm install --prefer-offline --no-audit --no-fund --loglevel=error && node context-hook.js`
+  - Removed bash-specific conditional check
+  - npm install is fast (~500ms) and idempotent when dependencies already exist
+  - Works cross-platform on Windows, macOS, and Linux
 
 
 ## [4.2.1] - 2025-10-22

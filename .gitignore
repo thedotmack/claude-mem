@@ -8,4 +8,3 @@ node_modules/
 .claude/settings.local.json
 plugin/data/
 plugin/data.backup/
-plugin/scripts/package-lock.json

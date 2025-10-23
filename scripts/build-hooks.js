@@ -30,11 +30,6 @@ const SEARCH_SERVER = {
   source: 'src/servers/search-server.ts'
 };
 
-const INSTALLER = {
-  name: 'ensure-dependencies',
-  source: 'src/bin/ensure-dependencies.ts'
-};
-
 async function buildHooks() {
   console.log('🔨 Building claude-mem hooks, worker service, and search server...\n');
 
@@ -133,52 +128,11 @@ async function buildHooks() {
     const searchStats = fs.statSync(`${hooksDir}/${SEARCH_SERVER.name}.js`);
     console.log(`✓ search-server built (${(searchStats.size / 1024).toFixed(2)} KB)`);
 
-    // Build dependency installer
-    console.log(`\n🔧 Building dependency installer...`);
-    await build({
-      entryPoints: [INSTALLER.source],
-      bundle: true,
-      platform: 'node',
-      target: 'node18',
-      format: 'esm',
-      outfile: `${hooksDir}/${INSTALLER.name}.js`,
-      minify: false, // Keep readable for debugging
-      banner: {
-        js: '#!/usr/bin/env node'
-      }
-    });
-
-    // Make installer executable
-    fs.chmodSync(`${hooksDir}/${INSTALLER.name}.js`, 0o755);
-    const installerStats = fs.statSync(`${hooksDir}/${INSTALLER.name}.js`);
-    console.log(`✓ installer built (${(installerStats.size / 1024).toFixed(2)} KB)`);
-
-    // Create package.json for plugin/scripts
-    console.log('\n📦 Creating package.json...');
-    const scriptsPackageJson = {
-      name: 'claude-mem-scripts',
-      version: version,
-      description: 'Runtime dependencies for claude-mem plugin hooks',
-      private: true,
-      type: 'module',
-      dependencies: {
-        'better-sqlite3': '^11.0.0'
-      }
-    };
-    
-    fs.writeFileSync(
-      `${hooksDir}/package.json`,
-      JSON.stringify(scriptsPackageJson, null, 2)
-    );
-    console.log('✓ package.json created');
-
     console.log('\n✅ All hooks, worker service, and search server built successfully!');
     console.log(`   Output: ${hooksDir}/`);
     console.log(`   - Hooks: *-hook.js`);
     console.log(`   - Worker: worker-service.cjs`);
     console.log(`   - Search: search-server.js`);
-    console.log(`   - Installer: ensure-dependencies.js`);
-    console.log(`   - Dependencies: package.json`);
     console.log('\n💡 Note: Dependencies will be auto-installed on first hook execution');
 
   } catch (error) {

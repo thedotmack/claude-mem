@@ -255,7 +255,7 @@ npm install -g claude-mem
 
 1. **Automatic Dependency Installation**
 
-   The plugin automatically installs required dependencies (`better-sqlite3`) on first run. This happens when you first start Claude Code after installation. The process is cross-platform and works on Windows, macOS, and Linux.
+   Dependencies are installed automatically during plugin installation. The SessionStart hook also ensures dependencies are up-to-date on each session start (this is fast and idempotent). Works cross-platform on Windows, macOS, and Linux.
 
 2. **Verify Plugin Installation**
 
