@@ -723,10 +723,9 @@ export class SessionStore {
     id: number;
     sdk_session_id: string | null;
     project: string;
-    worker_port: number | null;
   } | null {
     const stmt = this.db.prepare(`
-      SELECT id, sdk_session_id, project, worker_port
+      SELECT id, sdk_session_id, project
       FROM sdk_sessions
       WHERE claude_session_id = ? AND status = 'active'
       LIMIT 1
@@ -849,33 +848,7 @@ export class SessionStore {
     return true;
   }
 
-  /**
-   * Set worker port for a session
-   */
-  setWorkerPort(id: number, port: number): void {
-    const stmt = this.db.prepare(`
-      UPDATE sdk_sessions
-      SET worker_port = ?
-      WHERE id = ?
-    `);
 
-    stmt.run(port, id);
-  }
-
-  /**
-   * Get worker port for a session
-   */
-  getWorkerPort(id: number): number | null {
-    const stmt = this.db.prepare(`
-      SELECT worker_port
-      FROM sdk_sessions
-      WHERE id = ?
-      LIMIT 1
-    `);
-
-    const result = stmt.get(id) as { worker_port: number | null } | undefined;
-    return result?.worker_port || null;
-  }
 
   /**
    * Save a user prompt

@@ -67,8 +67,7 @@ export async function cleanupHook(input?: SessionEndInput): Promise<void> {
     console.error('[claude-mem cleanup] Active SDK session found', {
       session_id: session.id,
       sdk_session_id: session.sdk_session_id,
-      project: session.project,
-      worker_port: session.worker_port
+      project: session.project
     });
 
     // 1. Mark session as completed in DB (if not already completed)

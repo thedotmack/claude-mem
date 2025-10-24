@@ -370,7 +370,7 @@ ${e.stack}`:e.message;if(Array.isArray(e))return`[${e.length} items]`;let t=Obje
       WHERE id = ?
       LIMIT 1
     `).get(e)||null}findActiveSDKSession(e){return this.db.prepare(`
-      SELECT id, sdk_session_id, project, worker_port
+      SELECT id, sdk_session_id, project
       FROM sdk_sessions
       WHERE claude_session_id = ? AND status = 'active'
       LIMIT 1
@@ -401,16 +401,7 @@ ${e.stack}`:e.message;if(Array.isArray(e))return`[${e.length} items]`;let t=Obje
       UPDATE sdk_sessions
       SET sdk_session_id = ?
       WHERE id = ? AND sdk_session_id IS NULL
-    `).run(t,e).changes===0?(Yo.debug("DB","sdk_session_id already set, skipping update",{sessionId:e,sdkSessionId:t}),!1):!0}setWorkerPort(e,t){this.db.prepare(`
-      UPDATE sdk_sessions
-      SET worker_port = ?
-      WHERE id = ?
-    `).run(t,e)}getWorkerPort(e){return this.db.prepare(`
-      SELECT worker_port
-      FROM sdk_sessions
-      WHERE id = ?
-      LIMIT 1
-    `).get(e)?.worker_port||null}saveUserPrompt(e,t,s){let r=new Date,n=r.getTime();return this.db.prepare(`
+    `).run(t,e).changes===0?(Yo.debug("DB","sdk_session_id already set, skipping update",{sessionId:e,sdkSessionId:t}),!1):!0}saveUserPrompt(e,t,s){let r=new Date,n=r.getTime();return this.db.prepare(`
       INSERT INTO user_prompts
       (claude_session_id, prompt_number, prompt_text, created_at, created_at_epoch)
       VALUES (?, ?, ?, ?, ?)

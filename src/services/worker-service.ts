@@ -147,9 +147,6 @@ class WorkerService {
     };
 
     this.sessions.set(sessionDbId, session);
-
-    // Update port in database
-    db.setWorkerPort(sessionDbId, this.port!);
     db.close();
 
     // Start SDK agent in background

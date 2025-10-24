@@ -197,7 +197,6 @@ export interface SDKSessionRow {
   completed_at: string | null;
   completed_at_epoch: number | null;
   status: 'active' | 'completed' | 'failed';
-  worker_port?: number;
   prompt_counter?: number;
 }
 
