@@ -1,10 +1,12 @@
 {
   "$schema": "https://mintlify.com/schema.json",
   "name": "Claude-Mem",
+  "description": "Persistent memory compression system that preserves context across Claude Code sessions",
   "theme": "mint",
   "logo": {
+    "light": "/logo/light.svg",
     "dark": "/logo/dark.svg",
-    "light": "/logo/light.svg"
+    "href": "https://github.com/thedotmack/claude-mem"
   },
   "favicon": "/favicon.svg",
   "colors": {
@@ -12,46 +14,102 @@
     "light": "#EFF6FF",
     "dark": "#1E40AF"
   },
-  "topbarLinks": [
-    {
-      "name": "GitHub",
-      "url": "https://github.com/thedotmack/claude-mem"
+  "navbar": {
+    "links": [
+      {
+        "label": "GitHub",
+        "href": "https://github.com/thedotmack/claude-mem"
+      }
+    ],
+    "primary": {
+      "type": "button",
+      "label": "Install",
+      "href": "https://github.com/thedotmack/claude-mem#quick-start"
     }
-  ],
-  "topbarCtaButton": {
-    "name": "Install",
-    "url": "https://github.com/thedotmack/claude-mem#quick-start"
   },
-  "navigation": [
-    {
-      "group": "Get Started",
-      "pages": [
-        "introduction",
-        "installation",
-        "usage/getting-started",
-        "usage/search-tools"
-      ]
+  "navigation": {
+    "groups": [
+      {
+        "group": "Get Started",
+        "icon": "rocket",
+        "pages": [
+          "introduction",
+          "installation",
+          "usage/getting-started",
+          "usage/search-tools"
+        ]
+      },
+      {
+        "group": "Configuration & Development",
+        "icon": "gear",
+        "pages": [
+          "configuration",
+          "development",
+          "troubleshooting"
+        ]
+      },
+      {
+        "group": "Architecture",
+        "icon": "diagram-project",
+        "pages": [
+          "architecture/overview",
+          "architecture/hooks",
+          "architecture/worker-service",
+          "architecture/database",
+          "architecture/mcp-search"
+        ]
+      }
+    ]
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/thedotmack/claude-mem"
     },
-    {
-      "group": "Configuration & Development",
-      "pages": [
-        "configuration",
-        "development",
-        "troubleshooting"
-      ]
-    },
-    {
-      "group": "Architecture",
-      "pages": [
-        "architecture/overview",
-        "architecture/hooks",
-        "architecture/worker-service",
-        "architecture/database",
-        "architecture/mcp-search"
-      ]
+    "links": [
+      {
+        "header": "Resources",
+        "items": [
+          {
+            "label": "Documentation",
+            "href": "https://github.com/thedotmack/claude-mem"
+          },
+          {
+            "label": "Issues",
+            "href": "https://github.com/thedotmack/claude-mem/issues"
+          }
+        ]
+      },
+      {
+        "header": "Legal",
+        "items": [
+          {
+            "label": "License (AGPL-3.0)",
+            "href": "https://github.com/thedotmack/claude-mem/blob/main/LICENSE"
+          }
+        ]
+      }
+    ]
+  },
+  "seo": {
+    "indexing": "all",
+    "metatags": {
+      "og:type": "website",
+      "og:site_name": "Claude-Mem Documentation",
+      "og:description": "Persistent memory compression system that preserves context across Claude Code sessions"
     }
-  ],
-  "footerSocials": {
-    "github": "https://github.com/thedotmack/claude-mem"
+  },
+  "contextual": {
+    "options": [
+      "copy",
+      "view",
+      "chatgpt",
+      "claude",
+      "cursor"
+    ]
+  },
+  "integrations": {
+    "telemetry": {
+      "enabled": false
+    }
   }
 }
