@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 
+## [Unreleased]
+
+### Fixed
+- **Windows PowerShell compatibility**: Fixed SessionStart hook error on Windows systems
+  - Replaced bash-specific test command `[` with standard cross-platform npm install
+  - Simplified hook command to use idempotent npm install (fast when dependencies exist)
+  - Dependencies install from root package.json in marketplace folder
+
+### Changed
+- **SessionStart hook command**: Now uses `cd ... && npm install --prefer-offline --no-audit --no-fund --loglevel=error && node context-hook.js`
+  - Removed bash-specific conditional check
+  - npm install is fast (~500ms) and idempotent when dependencies already exist
+  - Works cross-platform on Windows, macOS, and Linux
+
+
 ## [4.2.1] - 2025-10-22
 
 ### Added

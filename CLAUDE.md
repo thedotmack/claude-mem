@@ -26,6 +26,7 @@ This creates a continuous memory system where Claude can learn from past session
 Claude-mem integrates with Claude Code through 5 lifecycle hooks:
 
 1. **SessionStart Hook** (`context-hook`)
+   - Ensures dependencies are installed (runs fast idempotent npm install)
    - Injects context from previous sessions
    - Auto-starts PM2 worker service
    - Retrieves last 10 session summaries with three-tier verbosity (v4.2.0)
@@ -202,9 +203,28 @@ npm run build && git commit -a -m "Build and update" && git push && cd ~/.claude
 1) Compiles TypeScript and outputs hook executables to `plugin/scripts/`
 2) Does all the things needed to update and test since plugin-based installs are out of the .claude/ folder
 
+**Build Outputs**:
+- Hook executables: `*-hook.js` (ESM format)
+- Worker service: `worker-service.cjs` (CJS format)
+- Search server: `search-server.js` (ESM format)
+
 ## Version History
 
-### v4.2.0 (Current)
+### v4.2.2 (Upcoming)
+**Breaking Changes**: None (patch version)
+
+**Fixes**:
+- Fixed Windows PowerShell compatibility issue with SessionStart hook
+- Replaced bash-specific test command `[` with cross-platform npm install command
+- Hook now runs `npm install` with quiet flags (fast and idempotent when dependencies exist)
+
+**Technical Details**:
+- Updated `plugin/hooks/hooks.json` SessionStart command to use standard shell syntax
+- Changed from: `[ ! -d ... ] && cd ... && npm install && node ... || node ...`
+- Changed to: `cd ... && npm install --prefer-offline --no-audit --no-fund --loglevel=error && node ...`
+- Dependencies are installed in marketplace folder (parent of CLAUDE_PLUGIN_ROOT) where root package.json exists
+
+### v4.2.0
 **Breaking Changes**: None (minor version)
 
 **Features**:
