@@ -10,11 +10,7 @@
   "colors": {
     "primary": "#3B82F6",
     "light": "#EFF6FF",
-    "dark": "#1E40AF",
-    "background": {
-      "dark": "#0F172A",
-      "light": "#FFFFFF"
-    }
+    "dark": "#1E40AF"
   },
   "topbarLinks": [
     {
@@ -26,16 +22,6 @@
     "name": "Install",
     "url": "https://github.com/thedotmack/claude-mem#quick-start"
   },
-  "tabs": [
-    {
-      "name": "Documentation",
-      "url": "/"
-    },
-    {
-      "name": "Architecture",
-      "url": "/architecture"
-    }
-  ],
   "navigation": [
     {
       "group": "Get Started",
