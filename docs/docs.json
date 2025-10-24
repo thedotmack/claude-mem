@@ -4,8 +4,8 @@
   "description": "Persistent memory compression system that preserves context across Claude Code sessions",
   "theme": "mint",
   "logo": {
-    "light": "/claude-mem-logo.webp",
-    "dark": "/claude-mem-logo.webp",
+    "light": "/claude-mem-logo-for-light-mode.webp",
+    "dark": "/claude-mem-logo-for-dark-mode.webp",
     "href": "https://github.com/thedotmack/claude-mem"
   },
   "colors": {
