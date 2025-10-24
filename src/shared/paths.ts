@@ -4,9 +4,14 @@ import { existsSync, mkdirSync } from 'fs';
 import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 
-// Get __dirname that works in CJS context
+// Get __dirname that works in both ESM (hooks) and CJS (worker) contexts
 function getDirname(): string {
-  return __dirname;
+  // CJS context - __dirname exists
+  if (typeof __dirname !== 'undefined') {
+    return __dirname;
+  }
+  // ESM context - use import.meta.url
+  return dirname(fileURLToPath(import.meta.url));
 }
 
 const _dirname = getDirname();
