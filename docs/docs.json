@@ -3,6 +3,7 @@
   "name": "Claude-Mem",
   "description": "Persistent memory compression system that preserves context across Claude Code sessions",
   "theme": "mint",
+  "favicon": "/claude-mem-logomark.webp",
   "logo": {
     "light": "/claude-mem-logo-for-light-mode.webp",
     "dark": "/claude-mem-logo-for-dark-mode.webp",
