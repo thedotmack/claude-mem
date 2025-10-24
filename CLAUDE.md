@@ -4,7 +4,7 @@
 
 Claude-mem is a persistent memory compression system that preserves context across Claude Code sessions. It automatically captures tool usage observations, processes them through the Claude Agent SDK, and makes summaries available to future sessions.
 
-**Current Version**: 4.2.0
+**Current Version**: 4.2.3
 **License**: AGPL-3.0
 **Author**: Alex Newman (@thedotmack)
 
@@ -210,19 +210,31 @@ npm run build && git commit -a -m "Build and update" && git push && cd ~/.claude
 
 ## Version History
 
-### v4.2.2 (Upcoming)
+### v4.2.3 (Current)
 **Breaking Changes**: None (patch version)
 
+**Security**:
+- Fixed FTS5 injection vulnerability in search functions
+  - Implemented proper double-quote escaping for FTS5 queries
+  - Added comprehensive test suite with 332 injection attack tests
+  - Affects: `search_observations`, `search_sessions`, `search_user_prompts` MCP tools
+
 **Fixes**:
+- Fixed ESM/CJS compatibility for getDirname function in src/shared/paths.ts
+  - Detects context using `typeof __dirname !== 'undefined'`
+  - Falls back to `fileURLToPath(import.meta.url)` for ESM modules
+  - Resolves path resolution issues across hook (ESM) and worker (CJS) contexts
 - Fixed Windows PowerShell compatibility issue with SessionStart hook
-- Replaced bash-specific test command `[` with cross-platform npm install command
-- Hook now runs `npm install` with quiet flags (fast and idempotent when dependencies exist)
+  - Replaced bash-specific test command `[` with cross-platform npm install command
+  - Hook now runs `npm install` with quiet flags (fast and idempotent when dependencies exist)
 
 **Technical Details**:
+- SessionSearch.ts now escapes double quotes in FTS5 queries: `query.replace(/"/g, '""')`
 - Updated `plugin/hooks/hooks.json` SessionStart command to use standard shell syntax
 - Changed from: `[ ! -d ... ] && cd ... && npm install && node ... || node ...`
 - Changed to: `cd ... && npm install --prefer-offline --no-audit --no-fund --loglevel=error && node ...`
 - Dependencies are installed in marketplace folder (parent of CLAUDE_PLUGIN_ROOT) where root package.json exists
+- getDirname function now properly handles both CommonJS (__dirname) and ES modules (import.meta.url)
 
 ### v4.2.0
 **Breaking Changes**: None (minor version)

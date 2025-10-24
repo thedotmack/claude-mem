@@ -7,7 +7,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+
+## [4.2.3] - 2025-10-23
+
+### Security
+- **FTS5 injection vulnerability fix**: Added proper escaping to prevent SQL injection attacks in search functions
+  - Implemented double-quote escaping for FTS5 full-text search queries
+  - Added comprehensive test suite with 332 new tests covering injection scenarios
+  - Affects: `search_observations`, `search_sessions`, `search_user_prompts` MCP tools
+
 ### Fixed
+- **ESM/CJS compatibility**: Fixed getDirname function to work in both ESM (hooks) and CJS (worker) contexts
+  - Detects context using `typeof __dirname !== 'undefined'`
+  - Falls back to `fileURLToPath(import.meta.url)` for ESM modules
+  - Resolves path resolution issues across different module systems
 - **Windows PowerShell compatibility**: Fixed SessionStart hook error on Windows systems
   - Replaced bash-specific test command `[` with standard cross-platform npm install
   - Simplified hook command to use idempotent npm install (fast when dependencies exist)

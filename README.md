@@ -5,8 +5,28 @@
 Claude-Mem seamlessly preserves context across sessions by automatically capturing tool usage observations, generating semantic summaries, and making them available to future sessions. This enables Claude to maintain continuity of knowledge about projects even after sessions end or reconnect.
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL%203.0-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-4.0.5-green.svg)](package.json)
+[![Version](https://img.shields.io/badge/version-4.2.3-green.svg)](package.json)
 [![Node](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg)](package.json)
+
+---
+
+## Installation
+
+Install Claude-Mem directly from the plugin marketplace:
+
+```bash
+/plugin marketplace add thedotmack/claude-mem
+/plugin install claude-mem
+```
+
+That's it! The plugin will automatically:
+- Download prebuilt binaries (no compilation needed)
+- Install all dependencies (including PM2 and SQLite binaries)
+- Configure hooks for session lifecycle management
+- Set up the MCP search server
+- Auto-start the worker service on first session
+
+Start a new Claude Code session and you'll see context from previous sessions automatically loaded.
 
 ---
 
@@ -26,12 +46,13 @@ See [CHANGELOG.md](CHANGELOG.md) for complete details.
 
 ## Table of Contents
 
+- [Installation](#installation)
 - [Overview](#overview)
 - [How It Works](#how-it-works)
-- [Installation](#installation)
 - [Usage](#usage)
   - [MCP Search Tools](#mcp-search-tools)
 - [Architecture](#architecture)
+- [Advanced Installation](#advanced-installation)
 - [Configuration](#configuration)
 - [Development](#development)
 - [Troubleshooting](#troubleshooting)
@@ -175,53 +196,9 @@ SQLite database (`${CLAUDE_PLUGIN_ROOT}/data/claude-mem.db`) with tables:
 
 ---
 
-## Installation
+## Advanced Installation
 
-### Prerequisites
-
-```bash
-# Ensure Node.js 18+ is installed
-node --version  # Should be >= 18.0.0
-```
-
-### Method 1: GitHub Marketplace (Recommended)
-
-Install directly from GitHub:
-
-```bash
-# Add the marketplace
-/plugin marketplace add https://github.com/thedotmack/claude-mem
-
-# Install the plugin
-/plugin install claude-mem
-```
-
-The plugin will:
-- Automatically download prebuilt binaries (no compilation needed)
-- Install all dependencies (including PM2 and SQLite binaries)
-- Configure hooks for session lifecycle management
-- Set up the MCP search server
-- Auto-start the worker service on first session
-
-**That's it!** The plugin is ready to use. Start a new Claude Code session and you'll see context from previous sessions automatically loaded.
-
-### Method 2: Local Marketplace Installation
-
-Install using the local marketplace file (useful for development or testing):
-
-```bash
-# Clone the repository
-git clone https://github.com/thedotmack/claude-mem.git
-cd claude-mem
-
-# Add the local marketplace to Claude Code
-/plugin marketplace add .claude-plugin/marketplace.json
-
-# Install the plugin
-/plugin install claude-mem
-```
-
-### Method 3: Clone and Build (For Development)
+For development or testing, you can clone and build from source:
 
 ```bash
 # Clone the repository
@@ -242,16 +219,7 @@ npm run worker:start
 npm run worker:status
 ```
 
-### Method 4: NPM Package (Coming Soon)
-
-```bash
-# Install from NPM (when published)
-npm install -g claude-mem
-
-# Worker service auto-starts on first hook execution
-```
-
-### Post-Installation
+### Post-Installation Notes
 
 1. **Automatic Dependency Installation**
 
@@ -794,7 +762,33 @@ For more information about AGPL-3.0, see: https://www.gnu.org/licenses/agpl-3.0.
 
 ## Changelog
 
-### v4.0.0 (Current)
+### v4.2.3 (Current)
+
+- **SECURITY**: Fixed FTS5 injection vulnerability with proper escaping
+- **FIX**: ESM/CJS compatibility for getDirname function
+- **FIX**: Windows PowerShell compatibility in SessionStart hook
+- Added comprehensive test suite with 332 injection attack tests
+- Cross-platform dependency installation now works on Windows, macOS, and Linux
+
+### v4.2.1
+
+- **NEW**: Summary skip logic to prevent duplicate summaries
+- **FIX**: Observation type validation for all 6 types
+- Enhanced chronological summary guidance
+
+### v4.1.1
+
+- **REMOVED**: Redundant advanced_search MCP tool
+- **FIX**: MCP search limit bugs and type contamination
+- Improved search prompts and token limit guidance
+
+### v4.1.0
+
+- **NEW**: Graceful session cleanup
+- **RESTORED**: MCP search server from backup
+- Natural worker shutdown for pending operations
+
+### v4.0.0
 
 - **NEW**: MCP Search Server with 6 specialized search tools
 - **NEW**: FTS5 full-text search across observations and session summaries
@@ -803,17 +797,6 @@ For more information about AGPL-3.0, see: https://www.gnu.org/licenses/agpl-3.0.
 - **NEW**: Session continuity with automatic context injection
 - Refactored summary and context handling in hooks
 - Implemented structured logging across the application
-- Improved error handling and graceful degradation
-
-### v3.9.17
-
-- **FIX**: Context hook now uses proper `hookSpecificOutput` JSON format
-- MCP Search Server with 6 specialized search tools
-- FTS5 full-text search across observations and session summaries
-- Refactored summary and context handling in hooks
-- Implemented structured logging across the application
-- Fixed race condition in summary generation
-- Added missing process.exit(0) calls in hook entry points
 - Improved error handling and graceful degradation
 
 ---
