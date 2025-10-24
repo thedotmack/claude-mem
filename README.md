@@ -33,22 +33,30 @@ Restart Claude Code. Context from previous sessions will automatically appear in
 
 ## Documentation
 
+📚 **[View Full Documentation](docs/)** - Browse markdown docs on GitHub
+
+💻 **Local Preview**: Run Mintlify docs locally:
+```bash
+cd docs
+npx mintlify dev
+```
+
 ### Getting Started
-- **[Installation Guide](docs/installation.md)** - Quick start & advanced installation
-- **[Usage Guide](docs/usage/getting-started.md)** - How Claude-Mem works automatically
-- **[MCP Search Tools](docs/usage/search-tools.md)** - Query your project history
+- **[Installation Guide](docs/installation.mdx)** - Quick start & advanced installation
+- **[Usage Guide](docs/usage/getting-started.mdx)** - How Claude-Mem works automatically
+- **[MCP Search Tools](docs/usage/search-tools.mdx)** - Query your project history
 
 ### Architecture
-- **[Overview](docs/architecture/overview.md)** - System components & data flow
-- **[Hooks](docs/architecture/hooks.md)** - 5 lifecycle hooks explained
-- **[Worker Service](docs/architecture/worker-service.md)** - HTTP API & PM2 management
-- **[Database](docs/architecture/database.md)** - SQLite schema & FTS5 search
-- **[MCP Search](docs/architecture/mcp-search.md)** - 7 search tools & examples
+- **[Overview](docs/architecture/overview.mdx)** - System components & data flow
+- **[Hooks](docs/architecture/hooks.mdx)** - 5 lifecycle hooks explained
+- **[Worker Service](docs/architecture/worker-service.mdx)** - HTTP API & PM2 management
+- **[Database](docs/architecture/database.mdx)** - SQLite schema & FTS5 search
+- **[MCP Search](docs/architecture/mcp-search.mdx)** - 7 search tools & examples
 
 ### Configuration & Development
-- **[Configuration](docs/configuration.md)** - Environment variables & settings
-- **[Development](docs/development.md)** - Building, testing, contributing
-- **[Troubleshooting](docs/troubleshooting.md)** - Common issues & solutions
+- **[Configuration](docs/configuration.mdx)** - Environment variables & settings
+- **[Development](docs/development.mdx)** - Building, testing, contributing
+- **[Troubleshooting](docs/troubleshooting.mdx)** - Common issues & solutions
 
 ---
 
@@ -82,7 +90,7 @@ Restart Claude Code. Context from previous sessions will automatically appear in
 3. **SQLite Database** - Stores sessions, observations, summaries with FTS5 search
 4. **7 MCP Search Tools** - Query historical context with citations
 
-See [Architecture Overview](docs/architecture/overview.md) for details.
+See [Architecture Overview](docs/architecture/overview.mdx) for details.
 
 ---
 
@@ -106,7 +114,7 @@ search_user_prompts with query="add dark mode"
 get_recent_context with limit=5
 ```
 
-See [MCP Search Tools Guide](docs/usage/search-tools.md) for detailed examples.
+See [MCP Search Tools Guide](docs/usage/search-tools.mdx) for detailed examples.
 
 ---
 
@@ -170,7 +178,7 @@ See [CHANGELOG.md](CHANGELOG.md) for complete version history.
 - `CLAUDE_MEM_WORKER_PORT` - Worker port (default: 37777)
 - `CLAUDE_MEM_DATA_DIR` - Data directory override (dev only)
 
-See [Configuration Guide](docs/configuration.md) for details.
+See [Configuration Guide](docs/configuration.mdx) for details.
 
 ---
 
@@ -193,7 +201,7 @@ npm run worker:start
 npm run worker:logs
 ```
 
-See [Development Guide](docs/development.md) for detailed instructions.
+See [Development Guide](docs/development.mdx) for detailed instructions.
 
 ---
 
@@ -205,7 +213,7 @@ See [Development Guide](docs/development.md) for detailed instructions.
 - Database issues → `sqlite3 ~/.claude-mem/claude-mem.db "PRAGMA integrity_check;"`
 - Search not working → Check FTS5 tables exist
 
-See [Troubleshooting Guide](docs/troubleshooting.md) for complete solutions.
+See [Troubleshooting Guide](docs/troubleshooting.mdx) for complete solutions.
 
 ---
 
@@ -219,7 +227,7 @@ Contributions are welcome! Please:
 4. Update documentation
 5. Submit a Pull Request
 
-See [Development Guide](docs/development.md) for contribution workflow.
+See [Development Guide](docs/development.mdx) for contribution workflow.
 
 ---
 

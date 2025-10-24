@@ -1,0 +1,96 @@
+---
+title: "Introduction"
+description: "Persistent memory compression system for Claude Code"
+---
+
+# Claude-Mem
+
+**Persistent memory compression system for Claude Code**
+
+Claude-Mem seamlessly preserves context across sessions by automatically capturing tool usage observations, generating semantic summaries, and making them available to future sessions. This enables Claude to maintain continuity of knowledge about projects even after sessions end or reconnect.
+
+## Quick Start
+
+Start a new Claude Code session in the terminal and enter the following commands:
+
+```bash
+/plugin marketplace add thedotmack/claude-mem
+/plugin install claude-mem
+```
+
+Restart Claude Code. Context from previous sessions will automatically appear in new sessions.
+
+## Key Features
+
+- 🧠 **Persistent Memory** - Context survives across sessions
+- 🔍 **7 Search Tools** - Query your project history via MCP
+- 🤖 **Automatic Operation** - No manual intervention required
+- 📊 **FTS5 Search** - Fast full-text search across observations
+- 🔗 **Citations** - Reference past decisions with `claude-mem://` URIs
+
+## How It Works
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ Session Start → Inject context from last 10 sessions       │
+└─────────────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────┐
+│ User Prompts → Create session, save user prompts           │
+└─────────────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────┐
+│ Tool Executions → Capture observations (Read, Write, etc.)  │
+└─────────────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────┐
+│ Worker Processes → Extract learnings via Claude Agent SDK   │
+└─────────────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────┐
+│ Session Ends → Generate summary, ready for next session     │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Core Components:**
+1. **5 Lifecycle Hooks** - SessionStart, UserPromptSubmit, PostToolUse, Stop, SessionEnd
+2. **Worker Service** - HTTP API on port 37777 managed by PM2
+3. **SQLite Database** - Stores sessions, observations, summaries with FTS5 search
+4. **7 MCP Search Tools** - Query historical context with citations
+
+See [Architecture Overview](architecture/overview) for details.
+
+## System Requirements
+
+- **Node.js**: 18.0.0 or higher
+- **Claude Code**: Latest version with plugin support
+- **PM2**: Process manager (bundled - no global install required)
+- **SQLite 3**: For persistent storage (bundled)
+
+## What's New in v4.2.3
+
+**Security:**
+- Fixed FTS5 injection vulnerability in search functions
+- Added comprehensive test suite with 332 injection attack tests
+
+**Fixes:**
+- Fixed ESM/CJS compatibility for getDirname function
+- Fixed Windows PowerShell compatibility in SessionStart hook
+- Cross-platform dependency installation now works on Windows, macOS, and Linux
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/installation">
+    Quick start & advanced installation
+  </Card>
+  <Card title="Getting Started" icon="rocket" href="/usage/getting-started">
+    Learn how Claude-Mem works automatically
+  </Card>
+  <Card title="Architecture" icon="sitemap" href="/architecture/overview">
+    System components & data flow
+  </Card>
+  <Card title="Search Tools" icon="magnifying-glass" href="/usage/search-tools">
+    Query your project history
+  </Card>
+</CardGroup>

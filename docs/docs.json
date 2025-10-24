@@ -1,0 +1,70 @@
+{
+  "$schema": "https://mintlify.com/schema.json",
+  "name": "Claude-Mem",
+  "logo": {
+    "dark": "/logo/dark.svg",
+    "light": "/logo/light.svg"
+  },
+  "favicon": "/favicon.svg",
+  "colors": {
+    "primary": "#3B82F6",
+    "light": "#EFF6FF",
+    "dark": "#1E40AF",
+    "background": {
+      "dark": "#0F172A",
+      "light": "#FFFFFF"
+    }
+  },
+  "topbarLinks": [
+    {
+      "name": "GitHub",
+      "url": "https://github.com/thedotmack/claude-mem"
+    }
+  ],
+  "topbarCtaButton": {
+    "name": "Install",
+    "url": "https://github.com/thedotmack/claude-mem#quick-start"
+  },
+  "tabs": [
+    {
+      "name": "Documentation",
+      "url": "/"
+    },
+    {
+      "name": "Architecture",
+      "url": "/architecture"
+    }
+  ],
+  "navigation": [
+    {
+      "group": "Get Started",
+      "pages": [
+        "introduction",
+        "installation",
+        "usage/getting-started",
+        "usage/search-tools"
+      ]
+    },
+    {
+      "group": "Configuration & Development",
+      "pages": [
+        "configuration",
+        "development",
+        "troubleshooting"
+      ]
+    },
+    {
+      "group": "Architecture",
+      "pages": [
+        "architecture/overview",
+        "architecture/hooks",
+        "architecture/worker-service",
+        "architecture/database",
+        "architecture/mcp-search"
+      ]
+    }
+  ],
+  "footerSocials": {
+    "github": "https://github.com/thedotmack/claude-mem"
+  }
+}
