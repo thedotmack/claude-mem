@@ -4,7 +4,7 @@
 
 Claude-mem is a persistent memory compression system that preserves context across Claude Code sessions. It automatically captures tool usage observations, processes them through the Claude Agent SDK, and makes summaries available to future sessions.
 
-**Current Version**: 4.2.6
+**Current Version**: 4.2.7
 **License**: AGPL-3.0
 **Author**: Alex Newman (@thedotmack)
 
@@ -210,7 +210,36 @@ npm run build && git commit -a -m "Build and update" && git push && cd ~/.claude
 
 ## Version History
 
-### v4.2.6 (Current)
+### v4.2.7 (Current)
+**Breaking Changes**: None (patch version)
+
+**Improvements**:
+- Enhanced data quality with consistent null handling
+  - `extractField()` now returns null for empty/whitespace-only strings
+  - Ensures database stores clean null values instead of empty strings
+  - Improves query efficiency and data consistency
+
+**Testing**:
+- Added comprehensive regression test suite (49 tests)
+  - Tests v4.2.5 summary validation fixes (partial summaries preserved)
+  - Tests v4.2.6 observation validation fixes (partial observations preserved)
+  - Tests edge cases: missing fields, empty fields, whitespace, invalid types
+  - Tests data integrity: concept filtering, type validation, field preservation
+- New test script: `npm run test:parser`
+- All 49 tests passing with 100% coverage of critical parser edge cases
+
+**Code Quality**:
+- Removed unused `extractFileArray()` function (replaced by `extractArrayElements()`)
+- Improved function documentation with clearer descriptions
+- TypeScript diagnostics clean
+
+**Technical Details**:
+- Updated `src/sdk/parser.ts:163-169` extractField function
+- Created `src/sdk/parser.test.ts` with comprehensive regression tests
+- Added `test:parser` script to package.json
+- All changes backward compatible with existing database schema
+
+### v4.2.6
 **Breaking Changes**: None (patch version)
 
 **Critical Bugfix**:

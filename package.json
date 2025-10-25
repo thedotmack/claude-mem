@@ -1,6 +1,6 @@
 {
   "name": "claude-mem",
-  "version": "4.2.6",
+  "version": "4.2.7",
   "description": "Memory compression system for Claude Code - persist context across sessions",
   "keywords": [
     "claude",
@@ -32,6 +32,7 @@
   "scripts": {
     "build": "node scripts/build-hooks.js",
     "test": "node --test tests/",
+    "test:parser": "npx tsx src/sdk/parser.test.ts",
     "test:context": "echo '{\"session_id\":\"test-'$(date +%s)'\",\"cwd\":\"'$(pwd)'\",\"source\":\"startup\"}' | node plugin/scripts/context-hook.js 2>/dev/null",
     "test:context:verbose": "echo '{\"session_id\":\"test-'$(date +%s)'\",\"cwd\":\"'$(pwd)'\",\"source\":\"startup\"}' | node plugin/scripts/context-hook.js",
     "worker:start": "pm2 start ecosystem.config.cjs",

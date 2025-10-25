@@ -158,43 +158,19 @@ export function parseSummary(text: string, sessionId?: number): ParsedSummary | 
 
 /**
  * Extract a simple field value from XML content
+ * Returns null for missing or empty/whitespace-only fields
  */
 function extractField(content: string, fieldName: string): string | null {
   const regex = new RegExp(`<${fieldName}>([^<]*)</${fieldName}>`);
   const match = regex.exec(content);
-  return match ? match[1].trim() : null;
-}
+  if (!match) return null;
 
-/**
- * Extract file array from XML content
- * Handles both <file> children and empty tags
- */
-function extractFileArray(content: string, arrayName: string): string[] {
-  const files: string[] = [];
-
-  // Match the array block
-  const arrayRegex = new RegExp(`<${arrayName}>(.*?)</${arrayName}>`, 's');
-  const arrayMatch = arrayRegex.exec(content);
-
-  if (!arrayMatch) {
-    return files;
-  }
-
-  const arrayContent = arrayMatch[1];
-
-  // Extract individual <file> elements
-  const fileRegex = /<file>([^<]+)<\/file>/g;
-  let fileMatch;
-  while ((fileMatch = fileRegex.exec(arrayContent)) !== null) {
-    files.push(fileMatch[1].trim());
-  }
-
-  return files;
+  const trimmed = match[1].trim();
+  return trimmed === '' ? null : trimmed;
 }
 
 /**
  * Extract array of elements from XML content
- * Generic version of extractFileArray that works with any element name
  */
 function extractArrayElements(content: string, arrayName: string, elementName: string): string[] {
   const elements: string[] = [];
