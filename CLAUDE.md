@@ -4,7 +4,7 @@
 
 Claude-mem is a persistent memory compression system that preserves context across Claude Code sessions. It automatically captures tool usage observations, processes them through the Claude Agent SDK, and makes summaries available to future sessions.
 
-**Current Version**: 4.2.4
+**Current Version**: 4.2.5
 **License**: AGPL-3.0
 **Author**: Alex Newman (@thedotmack)
 
@@ -210,7 +210,27 @@ npm run build && git commit -a -m "Build and update" && git push && cd ~/.claude
 
 ## Version History
 
-### v4.2.4 (Current)
+### v4.2.5 (Current)
+**Breaking Changes**: None (patch version)
+
+**Critical Bugfix**:
+- Fixed overly defensive summary validation that was blocking summaries from being saved
+  - Removed validation check that returned null when any required fields were missing
+  - Summaries are now always saved when `<summary>` tags are present, even if fields are incomplete
+  - Prevents critical data loss - partial summaries are better than no summaries
+  - Database schema already supports null/empty values for all fields
+
+**Impact**:
+- Before: Missing a single field (e.g., `next_steps`) would cause entire summary to be discarded
+- After: All summaries are preserved, maintaining session context even when incomplete
+- This fix ensures continuity of the memory compression system
+
+**Technical Details**:
+- Updated `src/sdk/parser.ts:137-147` to remove blocking validation
+- Parser now returns ParsedSummary with whatever fields are available
+- Affects `parseSummary()` function used by worker service
+
+### v4.2.4
 **Breaking Changes**: None (patch version)
 
 **Improvements**:
