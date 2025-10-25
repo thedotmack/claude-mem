@@ -224,6 +224,21 @@ export function contextHook(input?: SessionStartInput, useColors: boolean = fals
         output.push('');
       }
 
+      // Progressive Disclosure Usage Instructions
+      if (useColors) {
+        output.push(`${colors.dim}💡 Progressive Disclosure: This index shows WHAT exists (titles) and retrieval COST (token counts).${colors.reset}`);
+        output.push(`${colors.dim}   → Use MCP search tools to fetch full observation details on-demand (Layer 2)${colors.reset}`);
+        output.push(`${colors.dim}   → Prefer searching observations over re-reading code for past decisions and learnings${colors.reset}`);
+        output.push(`${colors.dim}   → Critical types (🔴 gotcha, 🟤 decision, ⚖️ trade-off) often worth fetching immediately${colors.reset}`);
+        output.push('');
+      } else {
+        output.push(`💡 **Progressive Disclosure:** This index shows WHAT exists (titles) and retrieval COST (token counts).`);
+        output.push(`- Use MCP search tools to fetch full observation details on-demand (Layer 2)`);
+        output.push(`- Prefer searching observations over re-reading code for past decisions and learnings`);
+        output.push(`- Critical types (🔴 gotcha, 🟤 decision, ⚖️ trade-off) often worth fetching immediately`);
+        output.push('');
+      }
+
       // Create unified timeline with both observations and summaries
       const mostRecentSummaryId = recentSummaries[0]?.id;
 
