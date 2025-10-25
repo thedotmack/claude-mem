@@ -22,7 +22,134 @@ const colors = {
   blue: '\x1b[34m',
   magenta: '\x1b[35m',
   gray: '\x1b[90m',
+  red: '\x1b[31m',
 };
+
+interface Observation {
+  id: number;
+  sdk_session_id: string;
+  type: string;
+  title: string | null;
+  subtitle: string | null;
+  narrative: string | null;
+  facts: string | null;
+  concepts: string | null;
+  files_read: string | null;
+  files_modified: string | null;
+  created_at: string;
+  created_at_epoch: number;
+}
+
+
+/**
+ * Helper: Parse JSON array safely
+ */
+function parseJsonArray(json: string | null): string[] {
+  if (!json) return [];
+  try {
+    const parsed = JSON.parse(json);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Helper: Format date with time
+ */
+function formatDateTime(dateStr: string): string {
+  const date = new Date(dateStr);
+  return date.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true
+  });
+}
+
+/**
+ * Helper: Format just time (no date)
+ */
+function formatTime(dateStr: string): string {
+  const date = new Date(dateStr);
+  return date.toLocaleString('en-US', {
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true
+  });
+}
+
+/**
+ * Helper: Format just date
+ */
+function formatDate(dateStr: string): string {
+  const date = new Date(dateStr);
+  return date.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric'
+  });
+}
+
+/**
+ * Helper: Estimate token count for text
+ */
+function estimateTokens(text: string | null): number {
+  if (!text) return 0;
+  // Rough estimate: ~4 characters per token
+  return Math.ceil(text.length / 4);
+}
+
+/**
+ * Helper: Convert absolute paths to relative paths
+ */
+function toRelativePath(filePath: string, cwd: string): string {
+  try {
+    if (path.isAbsolute(filePath)) {
+      return path.relative(cwd, filePath);
+    }
+    return filePath;
+  } catch {
+    return filePath;
+  }
+}
+
+/**
+ * Helper: Get recent session IDs for a project
+ */
+function getRecentSessionIds(db: SessionStore, project: string, limit: number = 3): string[] {
+  const sessions = db.db.prepare(`
+    SELECT sdk_session_id
+    FROM sdk_sessions
+    WHERE project = ? AND sdk_session_id IS NOT NULL
+    ORDER BY started_at_epoch DESC
+    LIMIT ?
+  `).all(project, limit) as Array<{ sdk_session_id: string }>;
+
+  return sessions.map(s => s.sdk_session_id);
+}
+
+/**
+ * Helper: Get all observations for given sessions
+ */
+function getObservations(db: SessionStore, sessionIds: string[]): Observation[] {
+  if (sessionIds.length === 0) return [];
+
+  const placeholders = sessionIds.map(() => '?').join(',');
+  const observations = db.db.prepare(`
+    SELECT
+      id, sdk_session_id, type, title, subtitle, narrative,
+      facts, concepts, files_read, files_modified,
+      created_at, created_at_epoch
+    FROM observations
+    WHERE sdk_session_id IN (${placeholders})
+    ORDER BY created_at_epoch DESC
+  `).all(...sessionIds) as Observation[];
+
+  return observations;
+}
+
 
 /**
  * Context Hook - SessionStart
@@ -36,224 +163,283 @@ export function contextHook(input?: SessionStartInput, useColors: boolean = fals
   const db = new SessionStore();
 
   try {
-    // Get the most recent summaries, then display them chronologically (oldest to newest, like a chat)
-    const summaries = db.db.prepare(`
-      SELECT * FROM (
-        SELECT sdk_session_id, request, learned, completed, next_steps, created_at, created_at_epoch
-        FROM session_summaries
-        WHERE project = ?
-        ORDER BY created_at_epoch DESC
-        LIMIT 10
-      )
-      ORDER BY created_at_epoch ASC
-    `).all(project) as Array<{
-      sdk_session_id: string;
-      request: string | null;
-      learned: string | null;
-      completed: string | null;
-      next_steps: string | null;
-      created_at: string;
-    }>;
+    // Get last 4 summaries (use 4th for offset calculation)
+    const recentSummaries = db.db.prepare(`
+      SELECT id, sdk_session_id, request, completed, next_steps, created_at, created_at_epoch
+      FROM session_summaries
+      WHERE project = ?
+      ORDER BY created_at_epoch DESC
+      LIMIT 4
+    `).all(project) as Array<{ id: number; sdk_session_id: string; request: string | null; completed: string | null; next_steps: string | null; created_at: string; created_at_epoch: number }>;
 
-    if (summaries.length === 0) {
+    if (recentSummaries.length === 0) {
       if (useColors) {
-        return `\n${colors.bright}${colors.cyan}📝 [${project}] recent context${colors.reset}\n${colors.gray}${'─'.repeat(60)}${colors.reset}\n\n${colors.dim}No previous summaries found for this project yet.${colors.reset}\n`;
+        return `\n${colors.bright}${colors.cyan}📝 [${project}] recent context${colors.reset}\n${colors.gray}${'─'.repeat(60)}${colors.reset}\n\n${colors.dim}No previous sessions found for this project yet.${colors.reset}\n`;
       }
-      return `# [${project}] recent context\n\nNo previous summaries found for this project yet.`;
+      return `# [${project}] recent context\n\nNo previous sessions found for this project yet.`;
     }
 
+    // Extract unique session IDs from first 3 summaries
+    const displaySummaries = recentSummaries.slice(0, 3);
+    const sessionIds = [...new Set(displaySummaries.map(s => s.sdk_session_id))];
+
+    // Get all observations from these sessions
+    const observations = getObservations(db, sessionIds);
+
+    // Filter observations by key concepts for timeline
+    const timelineObs = observations.filter(obs => {
+      const concepts = parseJsonArray(obs.concepts);
+      return concepts.includes('what-changed') ||
+             concepts.includes('how-it-works') ||
+             concepts.includes('problem-solution') ||
+             concepts.includes('gotcha') ||
+             concepts.includes('discovery') ||
+             concepts.includes('why-it-exists') ||
+             concepts.includes('decision') ||
+             concepts.includes('trade-off');
+    });
+
+    // Build output
     const output: string[] = [];
 
+    // Header
     if (useColors) {
       output.push('');
       output.push(`${colors.bright}${colors.cyan}📝 [${project}] recent context${colors.reset}`);
       output.push(`${colors.gray}${'─'.repeat(60)}${colors.reset}`);
+      output.push('');
     } else {
       output.push(`# [${project}] recent context`);
       output.push('');
     }
 
-    let isFirstSummary = true;
-
-    for (let i = 0; i < summaries.length; i++) {
-      const summary = summaries[i];
-
-      // Determine verbosity tier based on position
-      // Most recent summary is at the end (highest index) since we display chronologically
-      const positionFromEnd = summaries.length - 1 - i;
-      const isTier1 = positionFromEnd === 0; // Most recent (full verbosity)
-      const isTier2 = positionFromEnd >= 1 && positionFromEnd <= 3; // Middle 3 (request + what was done)
-      const isTier3 = positionFromEnd > 3; // Oldest 6 (request only)
-
-      // Add separator between summaries (but not before the first one)
-      if (!isFirstSummary) {
-        if (useColors) {
-          output.push(`${colors.gray}${'─'.repeat(60)}${colors.reset}`);
-          output.push('');
-        } else {
-          output.push('---');
-          output.push('');
-        }
-      } else {
-        if (useColors) {
-          output.push('');
-        }
-      }
-
-      isFirstSummary = false;
-
-      // TIER 3: Minimal (just Request + Date)
-      if (isTier3) {
-        if (summary.request) {
-          if (useColors) {
-            output.push(`${colors.bright}${colors.yellow}Request:${colors.reset} ${summary.request}`);
-            output.push('');
-          } else {
-            output.push(`**Request:** ${summary.request}`);
-            output.push('');
-          }
-        }
-        const dateTime = new Date(summary.created_at).toLocaleString();
-        if (useColors) {
-          output.push(`${colors.dim}Date: ${dateTime}${colors.reset}`);
-        } else {
-          output.push(`**Date:** ${dateTime}`);
-          output.push('');
-        }
-        continue; // Skip the rest for Tier 3
-      }
-
-      // TIER 1 & 2: Show Request
-      if (summary.request) {
-        if (useColors) {
-          output.push(`${colors.bright}${colors.yellow}Request:${colors.reset} ${summary.request}`);
-          output.push('');
-        } else {
-          output.push(`**Request:** ${summary.request}`);
-          output.push('');
-        }
-      }
-
-      // TIER 1 ONLY: Show Learned
-      if (isTier1 && summary.learned) {
-        if (useColors) {
-          output.push(`${colors.bright}${colors.blue}Learned:${colors.reset} ${summary.learned}`);
-          output.push('');
-        } else {
-          output.push(`**Learned:** ${summary.learned}`);
-          output.push('');
-        }
-      }
-
-      // TIER 1 & 2: Show Completed
-      if (summary.completed) {
-        if (useColors) {
-          output.push(`${colors.bright}${colors.green}Completed:${colors.reset} ${summary.completed}`);
-          output.push('');
-        } else {
-          output.push(`**Completed:** ${summary.completed}`);
-          output.push('');
-        }
-      }
-
-      // TIER 1 ONLY: Show Next Steps
-      if (isTier1 && summary.next_steps) {
-        if (useColors) {
-          output.push(`${colors.bright}${colors.magenta}Next Steps:${colors.reset} ${summary.next_steps}`);
-          output.push('');
-        } else {
-          output.push(`**Next Steps:** ${summary.next_steps}`);
-          output.push('');
-        }
-      }
-
-      // TIER 1 ONLY: Get and show files
-      if (isTier1) {
-        const observations = db.db.prepare(`
-          SELECT files_read, files_modified
-          FROM observations
-          WHERE sdk_session_id = ?
-        `).all(summary.sdk_session_id) as Array<{
-          files_read: string | null;
-          files_modified: string | null;
-        }>;
-
-        const filesReadSet = new Set<string>();
-        const filesModifiedSet = new Set<string>();
-
-        // Helper function to convert absolute paths to relative paths
-        const toRelativePath = (filePath: string): string => {
-          try {
-            // Only convert if it's an absolute path
-            if (path.isAbsolute(filePath)) {
-              return path.relative(cwd, filePath);
-            }
-            return filePath;
-          } catch {
-            return filePath;
-          }
-        };
-
-        for (const obs of observations) {
-          if (obs.files_read) {
-            try {
-              const files = JSON.parse(obs.files_read);
-              if (Array.isArray(files)) {
-                files.forEach(f => filesReadSet.add(toRelativePath(f)));
-              }
-            } catch {
-              // Skip invalid JSON
-            }
-          }
-
-          if (obs.files_modified) {
-            try {
-              const files = JSON.parse(obs.files_modified);
-              if (Array.isArray(files)) {
-                files.forEach(f => filesModifiedSet.add(toRelativePath(f)));
-              }
-            } catch {
-              // Skip invalid JSON
-            }
-          }
-        }
-
-        // Remove files from filesReadSet if they're already in filesModifiedSet (avoid redundancy)
-        filesModifiedSet.forEach(file => filesReadSet.delete(file));
-
-        if (filesReadSet.size > 0) {
-          if (useColors) {
-            output.push(`${colors.dim}Files Read: ${Array.from(filesReadSet).join(', ')}${colors.reset}`);
-          } else {
-            output.push(`**Files Read:** ${Array.from(filesReadSet).join(', ')}`);
-          }
-        }
-
-        if (filesModifiedSet.size > 0) {
-          if (useColors) {
-            output.push(`${colors.dim}Files Modified: ${Array.from(filesModifiedSet).join(', ')}${colors.reset}`);
-          } else {
-            output.push(`**Files Modified:** ${Array.from(filesModifiedSet).join(', ')}`);
-          }
-        }
-      }
-
-      // TIER 1 & 2: Show Date
-      const dateTime = new Date(summary.created_at).toLocaleString();
+    // Chronological Timeline
+    if (timelineObs.length > 0) {
+      // Legend/Key
       if (useColors) {
-        output.push(`${colors.dim}Date: ${dateTime}${colors.reset}`);
+        output.push(`${colors.dim}Legend: 🎯 session-request | 🔴 gotcha | 🟡 problem-solution | 🔵 how-it-works | 🟢 what-changed | 🟣 discovery | 🟠 why-it-exists | 🟤 decision | ⚖️ trade-off${colors.reset}`);
+        output.push('');
       } else {
-        output.push(`**Date:** ${dateTime}`);
-      }
-
-      if (!useColors) {
+        output.push(`**Legend:** 🎯 session-request | 🔴 gotcha | 🟡 problem-solution | 🔵 how-it-works | 🟢 what-changed | 🟣 discovery | 🟠 why-it-exists | 🟤 decision | ⚖️ trade-off`);
         output.push('');
       }
+
+      // Progressive Disclosure Usage Instructions
+      if (useColors) {
+        output.push(`${colors.dim}💡 Progressive Disclosure: This index shows WHAT exists (titles) and retrieval COST (token counts).${colors.reset}`);
+        output.push(`${colors.dim}   → Use MCP search tools to fetch full observation details on-demand (Layer 2)${colors.reset}`);
+        output.push(`${colors.dim}   → Prefer searching observations over re-reading code for past decisions and learnings${colors.reset}`);
+        output.push(`${colors.dim}   → Critical types (🔴 gotcha, 🟤 decision, ⚖️ trade-off) often worth fetching immediately${colors.reset}`);
+        output.push('');
+      } else {
+        output.push(`💡 **Progressive Disclosure:** This index shows WHAT exists (titles) and retrieval COST (token counts).`);
+        output.push(`- Use MCP search tools to fetch full observation details on-demand (Layer 2)`);
+        output.push(`- Prefer searching observations over re-reading code for past decisions and learnings`);
+        output.push(`- Critical types (🔴 gotcha, 🟤 decision, ⚖️ trade-off) often worth fetching immediately`);
+        output.push('');
+      }
+
+      // Create unified timeline with both observations and summaries
+      const mostRecentSummaryId = recentSummaries[0]?.id;
+
+      // Create offset summaries (displaySummaries already defined at top)
+      const summariesWithOffset = displaySummaries.map((summary, i) => {
+        // Most recent keeps its own time, others offset to next summary's time
+        const nextSummary = i === 0 ? null : recentSummaries[i + 1];
+        return {
+          ...summary,
+          displayEpoch: nextSummary ? nextSummary.created_at_epoch : summary.created_at_epoch,
+          displayTime: nextSummary ? nextSummary.created_at : summary.created_at,
+          isMostRecent: summary.id === mostRecentSummaryId
+        };
+      });
+
+      type TimelineItem =
+        | { type: 'observation'; data: Observation }
+        | { type: 'summary'; data: typeof summariesWithOffset[0] };
+
+      const timeline: TimelineItem[] = [
+        ...timelineObs.map(obs => ({ type: 'observation' as const, data: obs })),
+        ...summariesWithOffset.map(summary => ({ type: 'summary' as const, data: summary }))
+      ];
+
+      // Sort chronologically
+      timeline.sort((a, b) => {
+        const aEpoch = a.type === 'observation' ? a.data.created_at_epoch : a.data.displayEpoch;
+        const bEpoch = b.type === 'observation' ? b.data.created_at_epoch : b.data.displayEpoch;
+        return aEpoch - bEpoch;
+      });
+
+      // Group by day for rendering
+      const dayTimelines = new Map<string, typeof timeline>();
+      for (const item of timeline) {
+        const itemDate = item.type === 'observation' ? item.data.created_at : item.data.displayTime;
+        const day = formatDate(itemDate);
+        if (!dayTimelines.has(day)) {
+          dayTimelines.set(day, []);
+        }
+        dayTimelines.get(day)!.push(item);
+      }
+
+      // Sort days chronologically
+      const sortedDays = Array.from(dayTimelines.entries()).sort((a, b) => {
+        const aDate = new Date(a[0]).getTime();
+        const bDate = new Date(b[0]).getTime();
+        return aDate - bDate;
+      });
+
+      // Render each day's timeline
+      for (const [day, dayItems] of sortedDays) {
+        // Day header
+        if (useColors) {
+          output.push(`${colors.bright}${colors.cyan}${day}${colors.reset}`);
+          output.push('');
+        } else {
+          output.push(`### ${day}`);
+          output.push('');
+        }
+
+        // Render items chronologically with visual file grouping
+        let currentFile: string | null = null;
+        let lastTime = '';
+        let tableOpen = false;
+
+        for (const item of dayItems) {
+          if (item.type === 'summary') {
+            // Close any open table
+            if (tableOpen) {
+              output.push('');
+              tableOpen = false;
+              currentFile = null;
+              lastTime = '';
+            }
+
+            // Render summary
+            const summary = item.data;
+            const summaryTitle = `${summary.request || 'Session started'} (${formatDateTime(summary.displayTime)})`;
+            const link = summary.isMostRecent ? '' : `claude-mem://session-summary/${summary.id}`;
+
+            if (useColors) {
+              const linkPart = link ? `${colors.dim}[${link}]${colors.reset}` : '';
+              output.push(`🎯 ${colors.yellow}#S${summary.id}${colors.reset} ${summaryTitle} ${linkPart}`);
+            } else {
+              const linkPart = link ? ` [→](${link})` : '';
+              output.push(`**🎯 #S${summary.id}** ${summaryTitle}${linkPart}`);
+            }
+            output.push('');
+          } else {
+            // Render observation
+            const obs = item.data;
+            const files = parseJsonArray(obs.files_modified);
+            const file = files.length > 0 ? toRelativePath(files[0], cwd) : 'General';
+
+            // Check if we need a new file section
+            if (file !== currentFile) {
+              // Close previous table
+              if (tableOpen) {
+                output.push('');
+              }
+
+              // File header
+              if (useColors) {
+                output.push(`${colors.dim}${file}${colors.reset}`);
+              } else {
+                output.push(`**${file}**`);
+              }
+
+              // Table header (markdown only)
+              if (!useColors) {
+                output.push(`| ID | Time | T | Title | Tokens |`);
+                output.push(`|----|------|---|-------|--------|`);
+              }
+
+              currentFile = file;
+              tableOpen = true;
+              lastTime = '';
+            }
+
+            // Render observation row
+            const concepts = parseJsonArray(obs.concepts);
+            let icon = '•';
+
+            // Priority order: gotcha > decision > trade-off > problem-solution > discovery > why-it-exists > how-it-works > what-changed
+            if (concepts.includes('gotcha')) {
+              icon = '🔴';
+            } else if (concepts.includes('decision')) {
+              icon = '🟤';
+            } else if (concepts.includes('trade-off')) {
+              icon = '⚖️';
+            } else if (concepts.includes('problem-solution')) {
+              icon = '🟡';
+            } else if (concepts.includes('discovery')) {
+              icon = '🟣';
+            } else if (concepts.includes('why-it-exists')) {
+              icon = '🟠';
+            } else if (concepts.includes('how-it-works')) {
+              icon = '🔵';
+            } else if (concepts.includes('what-changed')) {
+              icon = '🟢';
+            }
+
+            const time = formatTime(obs.created_at);
+            const title = obs.title || 'Untitled';
+            const tokens = estimateTokens(obs.narrative);
+
+            const showTime = time !== lastTime;
+            const timeDisplay = showTime ? time : '';
+            lastTime = time;
+
+            if (useColors) {
+              const timePart = showTime ? `${colors.dim}${time}${colors.reset}` : ' '.repeat(time.length);
+              const tokensPart = tokens > 0 ? `${colors.dim}(~${tokens}t)${colors.reset}` : '';
+              output.push(`  ${colors.dim}#${obs.id}${colors.reset}  ${timePart}  ${icon}  ${title} ${tokensPart}`);
+            } else {
+              output.push(`| #${obs.id} | ${timeDisplay || '″'} | ${icon} | ${title} | ~${tokens} |`);
+            }
+          }
+        }
+
+        // Close final table if open
+        if (tableOpen) {
+          output.push('');
+        }
+      }
+
+      // Add full summary details for most recent session
+      const mostRecentSummary = recentSummaries[0];
+      if (mostRecentSummary && (mostRecentSummary.completed || mostRecentSummary.next_steps)) {
+        if (mostRecentSummary.completed) {
+          if (useColors) {
+            output.push(`${colors.green}Completed:${colors.reset} ${mostRecentSummary.completed}`);
+          } else {
+            output.push(`**Completed**: ${mostRecentSummary.completed}`);
+          }
+          output.push('');
+        }
+
+        if (mostRecentSummary.next_steps) {
+          if (useColors) {
+            output.push(`${colors.magenta}Next Steps:${colors.reset} ${mostRecentSummary.next_steps}`);
+          } else {
+            output.push(`**Next Steps**: ${mostRecentSummary.next_steps}`);
+          }
+          output.push('');
+        }
+      }
+
+      // Footer with MCP search instructions
+      if (useColors) {
+        output.push(`${colors.dim}Use claude-mem MCP search to access records with the given ID${colors.reset}`);
+      } else {
+        output.push(`*Use claude-mem MCP search to access records with the given ID*`);
+      }
+      output.push('');
     }
 
+    // Footer
     if (useColors) {
-      output.push('');
       output.push(`${colors.gray}${'─'.repeat(60)}${colors.reset}`);
+      output.push('');
     }
 
     return output.join('\n');
