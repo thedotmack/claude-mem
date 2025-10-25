@@ -130,18 +130,21 @@ export function parseSummary(text: string, sessionId?: number): ParsedSummary | 
   const next_steps = extractField(summaryContent, 'next_steps');
   const notes = extractField(summaryContent, 'notes'); // Optional
 
+  // NOTE FROM THEDOTMACK: 100% of the time we must SAVE the summary, even if fields are missing. 10/24/2025 
+  // NEVER DO THIS NONSENSE AGAIN.
+
   // Validate required fields are present (notes is optional)
-  if (!request || !investigated || !learned || !completed || !next_steps) {
-    logger.warn('PARSER', 'Summary missing required fields', {
-      sessionId,
-      hasRequest: !!request,
-      hasInvestigated: !!investigated,
-      hasLearned: !!learned,
-      hasCompleted: !!completed,
-      hasNextSteps: !!next_steps
-    });
-    return null;
-  }
+  // if (!request || !investigated || !learned || !completed || !next_steps) {
+  //   logger.warn('PARSER', 'Summary missing required fields', {
+  //     sessionId,
+  //     hasRequest: !!request,
+  //     hasInvestigated: !!investigated,
+  //     hasLearned: !!learned,
+  //     hasCompleted: !!completed,
+  //     hasNextSteps: !!next_steps
+  //   });
+  //   return null;
+  // }
 
   return {
     request,
