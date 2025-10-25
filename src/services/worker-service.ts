@@ -11,7 +11,6 @@ import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt } from '../
 import { parseObservations, parseSummary } from '../sdk/parser.js';
 import type { SDKSession } from '../sdk/prompts.js';
 import { logger } from '../utils/logger.js';
-import { ensureAllDataDirs } from '../shared/paths.js';
 
 const MODEL = process.env.CLAUDE_MEM_MODEL || 'claude-sonnet-4-5';
 const DISALLOWED_TOOLS = ['Glob', 'Grep', 'ListMcpResourcesTool', 'WebSearch'];
