@@ -172,8 +172,8 @@ export function contextHook(input?: SessionStartInput, useColors: boolean = fals
   const db = new SessionStore();
 
   try {
-    // Read contextDepth from settings with safe default
-    const depth = Math.max(1, Number(settings.contextDepth) || 5);
+    // Read contextDepth from settings (already validated)
+    const depth = settings.contextDepth;
 
     // Get last N+1 summaries (use N+1th for offset calculation)
     const recentSummaries = db.db.prepare(`
