@@ -4,8 +4,13 @@ import { spawn } from 'child_process';
 import { getPackageRoot } from './paths.js';
 import { getSettings } from '../services/settings-service.js';
 
+let cachedWorkerPort: number | undefined;
+
 function getHealthCheckUrl(): string {
-  const port = getSettings().get().workerPort;
+  if (cachedWorkerPort === undefined) {
+    cachedWorkerPort = getSettings().get().workerPort;
+  }
+  const port = cachedWorkerPort;
   return `http://127.0.0.1:${port}/health`;
 }
 
