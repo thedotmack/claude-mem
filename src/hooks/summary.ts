@@ -47,7 +47,7 @@ export async function summaryHook(input?: StopInput): Promise<void> {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ prompt_number: promptNumber }),
-    signal: AbortSignal.timeout(2000)
+    signal: AbortSignal.timeout(5000)
   });
 
   if (!response.ok) {

@@ -575,9 +575,9 @@ Trace observations through the pipeline:
 
 ```bash
 sqlite3 ~/.claude-mem/claude-mem.db "
-  SELECT correlation_id, tool_name, created_at
+  SELECT sdk_session_id, type, title, created_at
   FROM observations
-  WHERE session_id = 'YOUR_SESSION_ID'
+  WHERE sdk_session_id = 'YOUR_SESSION_ID'
   ORDER BY created_at;
 "
 ```
@@ -591,11 +591,12 @@ pm2 status
 # View logs
 pm2 logs claude-mem-worker
 
-# Check port file
-cat ~/.claude-mem/worker.port
+# Get current worker port from settings
+PORT=$(node ~/.claude/plugins/marketplaces/thedotmack/claude-mem/plugin/scripts/settings-cli.js --get workerPort)
+echo "Worker port: $PORT"
 
 # Test worker health
-curl http://localhost:37777/health
+curl "http://127.0.0.1:${PORT}/health"
 ```
 
 ### Database Inspection

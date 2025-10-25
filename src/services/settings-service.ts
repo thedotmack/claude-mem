@@ -6,7 +6,7 @@
  * 2. Default values (lowest priority)
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
 
@@ -100,17 +100,26 @@ export class SettingsService {
         const content = readFileSync(this.settingsPath, 'utf-8');
         fileSettings = JSON.parse(content);
       } catch (error: any) {
-        console.error(`[claude-mem] Failed to parse settings file: ${error.message}`);
+        // Back up invalid settings file before falling back to defaults
+        const backupPath = this.settingsPath + '.bak';
+        try {
+          renameSync(this.settingsPath, backupPath);
+          console.error(`[claude-mem] Failed to parse settings file: ${error.message}`);
+          console.error(`[claude-mem] Backed up invalid settings to: ${backupPath}`);
+        } catch (backupError: any) {
+          console.error(`[claude-mem] Failed to parse settings file: ${error.message}`);
+          console.error(`[claude-mem] Could not backup invalid file: ${backupError.message}`);
+        }
       }
     }
 
     // Merge: defaults < file
     const settings: Settings = {
-      model: (fileSettings.model as ModelOption) || DEFAULT_SETTINGS.model,
-      workerPort: fileSettings.workerPort || DEFAULT_SETTINGS.workerPort,
+      model: (fileSettings.model as ModelOption) ?? DEFAULT_SETTINGS.model,
+      workerPort: fileSettings.workerPort ?? DEFAULT_SETTINGS.workerPort,
       enableMemoryStorage: fileSettings.enableMemoryStorage ?? DEFAULT_SETTINGS.enableMemoryStorage,
       enableContextInjection: fileSettings.enableContextInjection ?? DEFAULT_SETTINGS.enableContextInjection,
-      contextDepth: fileSettings.contextDepth || DEFAULT_SETTINGS.contextDepth,
+      contextDepth: fileSettings.contextDepth ?? DEFAULT_SETTINGS.contextDepth,
     };
 
     // Validate
@@ -198,9 +207,12 @@ export class SettingsService {
       mkdirSync(dir, { recursive: true });
     }
 
-    // Write to file
+    // Write to file atomically
     try {
-      writeFileSync(this.settingsPath, JSON.stringify(updated, null, 2), 'utf-8');
+      const tempPath = this.settingsPath + '.tmp';
+      writeFileSync(tempPath, JSON.stringify(updated, null, 2), 'utf-8');
+      // Atomic rename on POSIX systems
+      renameSync(tempPath, this.settingsPath);
       this.cachedSettings = updated;
     } catch (error: any) {
       throw new Error(`Failed to save settings: ${error.message}`);

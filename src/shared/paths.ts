@@ -33,10 +33,7 @@ export const BACKUPS_DIR = join(DATA_DIR, 'backups');
 export const USER_SETTINGS_PATH = join(DATA_DIR, 'settings.json');
 export const DB_PATH = join(DATA_DIR, 'claude-mem.db');
 
-// Claude integration paths
-export const CLAUDE_SETTINGS_PATH = join(CLAUDE_CONFIG_DIR, 'settings.json');
-export const CLAUDE_COMMANDS_DIR = join(CLAUDE_CONFIG_DIR, 'commands');
-export const CLAUDE_MD_PATH = join(CLAUDE_CONFIG_DIR, 'CLAUDE.md');
+// Claude integration paths (removed unused exports)
 
 /**
  * Get project-specific archive directory
@@ -75,7 +72,6 @@ export function ensureAllDataDirs(): void {
  */
 export function ensureAllClaudeDirs(): void {
   ensureDir(CLAUDE_CONFIG_DIR);
-  ensureDir(CLAUDE_COMMANDS_DIR);
 }
 
 /**
