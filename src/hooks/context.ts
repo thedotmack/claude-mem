@@ -163,17 +163,27 @@ export function contextHook(input?: SessionStartInput, useColors: boolean = fals
   const db = new SessionStore();
 
   try {
-    // Get recent session IDs
-    const sessionIds = getRecentSessionIds(db, project, 3);
+    // Get last 4 summaries (use 4th for offset calculation)
+    const recentSummaries = db.db.prepare(`
+      SELECT id, sdk_session_id, request, completed, next_steps, created_at, created_at_epoch
+      FROM session_summaries
+      WHERE project = ?
+      ORDER BY created_at_epoch DESC
+      LIMIT 4
+    `).all(project) as Array<{ id: number; sdk_session_id: string; request: string | null; completed: string | null; next_steps: string | null; created_at: string; created_at_epoch: number }>;
 
-    if (sessionIds.length === 0) {
+    if (recentSummaries.length === 0) {
       if (useColors) {
         return `\n${colors.bright}${colors.cyan}📝 [${project}] recent context${colors.reset}\n${colors.gray}${'─'.repeat(60)}${colors.reset}\n\n${colors.dim}No previous sessions found for this project yet.${colors.reset}\n`;
       }
       return `# [${project}] recent context\n\nNo previous sessions found for this project yet.`;
     }
 
-    // Get all observations from recent sessions
+    // Extract unique session IDs from first 3 summaries
+    const displaySummaries = recentSummaries.slice(0, 3);
+    const sessionIds = [...new Set(displaySummaries.map(s => s.sdk_session_id))];
+
+    // Get all observations from these sessions
     const observations = getObservations(db, sessionIds);
 
     // Filter observations by key concepts for timeline
@@ -189,24 +199,6 @@ export function contextHook(input?: SessionStartInput, useColors: boolean = fals
              concepts.includes('trade-off');
     });
 
-    // Get most recent summary
-    const recentSummary = db.db.prepare(`
-      SELECT request, completed, next_steps, created_at
-      FROM session_summaries
-      WHERE project = ?
-      ORDER BY created_at_epoch DESC
-      LIMIT 1
-    `).get(project) as { request: string | null; completed: string | null; next_steps: string | null; created_at: string } | undefined;
-
-    // Get last 3 summaries with IDs for timeline integration
-    const recentSummaries = db.db.prepare(`
-      SELECT id, request, created_at, created_at_epoch
-      FROM session_summaries
-      WHERE project = ?
-      ORDER BY created_at_epoch DESC
-      LIMIT 3
-    `).all(project) as Array<{ id: number; request: string | null; created_at: string; created_at_epoch: number }>;
-
     // Build output
     const output: string[] = [];
 
@@ -221,16 +213,8 @@ export function contextHook(input?: SessionStartInput, useColors: boolean = fals
       output.push('');
     }
 
-    // SECTION 1: Chronological Timeline (grouped by file)
+    // Chronological Timeline
     if (timelineObs.length > 0) {
-      if (useColors) {
-        output.push(`${colors.bright}${colors.blue}📋 RECENT ACTIVITY TIMELINE${colors.reset}`);
-        output.push('');
-      } else {
-        output.push(`## Recent Activity Timeline`);
-        output.push('');
-      }
-
       // Legend/Key
       if (useColors) {
         output.push(`${colors.dim}Legend: 🎯 session-request | 🔴 gotcha | 🟡 problem-solution | 🔵 how-it-works | 🟢 what-changed | 🟣 discovery | 🟠 why-it-exists | 🟤 decision | ⚖️ trade-off${colors.reset}`);
@@ -240,33 +224,57 @@ export function contextHook(input?: SessionStartInput, useColors: boolean = fals
         output.push('');
       }
 
-      // Group observations by day, then by file
-      const dayGroups = new Map<string, Map<string, typeof timelineObs>>();
-      for (const obs of timelineObs) {
-        const day = formatDate(obs.created_at);
-        const files = parseJsonArray(obs.files_modified);
-        const file = files.length > 0 ? toRelativePath(files[0], cwd) : 'General';
+      // Create unified timeline with both observations and summaries
+      const mostRecentSummaryId = recentSummaries[0]?.id;
 
-        if (!dayGroups.has(day)) {
-          dayGroups.set(day, new Map());
-        }
+      // Create offset summaries (displaySummaries already defined at top)
+      const summariesWithOffset = displaySummaries.map((summary, i) => {
+        // Most recent keeps its own time, others offset to next summary's time
+        const nextSummary = i === 0 ? null : recentSummaries[i + 1];
+        return {
+          ...summary,
+          displayEpoch: nextSummary ? nextSummary.created_at_epoch : summary.created_at_epoch,
+          displayTime: nextSummary ? nextSummary.created_at : summary.created_at,
+          isMostRecent: summary.id === mostRecentSummaryId
+        };
+      });
 
-        const fileGroups = dayGroups.get(day)!;
-        if (!fileGroups.has(file)) {
-          fileGroups.set(file, []);
+      type TimelineItem =
+        | { type: 'observation'; data: Observation }
+        | { type: 'summary'; data: typeof summariesWithOffset[0] };
+
+      const timeline: TimelineItem[] = [
+        ...timelineObs.map(obs => ({ type: 'observation' as const, data: obs })),
+        ...summariesWithOffset.map(summary => ({ type: 'summary' as const, data: summary }))
+      ];
+
+      // Sort chronologically
+      timeline.sort((a, b) => {
+        const aEpoch = a.type === 'observation' ? a.data.created_at_epoch : a.data.displayEpoch;
+        const bEpoch = b.type === 'observation' ? b.data.created_at_epoch : b.data.displayEpoch;
+        return aEpoch - bEpoch;
+      });
+
+      // Group by day for rendering
+      const dayTimelines = new Map<string, typeof timeline>();
+      for (const item of timeline) {
+        const itemDate = item.type === 'observation' ? item.data.created_at : item.data.displayTime;
+        const day = formatDate(itemDate);
+        if (!dayTimelines.has(day)) {
+          dayTimelines.set(day, []);
         }
-        fileGroups.get(file)!.push(obs);
+        dayTimelines.get(day)!.push(item);
       }
 
       // Sort days chronologically
-      const sortedDays = Array.from(dayGroups.entries()).sort((a, b) => {
+      const sortedDays = Array.from(dayTimelines.entries()).sort((a, b) => {
         const aDate = new Date(a[0]).getTime();
         const bDate = new Date(b[0]).getTime();
         return aDate - bDate;
       });
 
-      // Display each day's timeline
-      for (const [day, fileGroups] of sortedDays) {
+      // Render each day's timeline
+      for (const [day, dayItems] of sortedDays) {
         // Day header
         if (useColors) {
           output.push(`${colors.bright}${colors.cyan}${day}${colors.reset}`);
@@ -276,70 +284,66 @@ export function contextHook(input?: SessionStartInput, useColors: boolean = fals
           output.push('');
         }
 
-        // Check if any summaries belong to this day
-        const daySummaries = recentSummaries.filter(s => formatDate(s.created_at) === day);
-        if (daySummaries.length > 0) {
-          // Show session requests for this day
-          if (useColors) {
-            output.push(`${colors.dim}Session Requests${colors.reset}`);
-          } else {
-            output.push(`**Session Requests**`);
-          }
+        // Render items chronologically with visual file grouping
+        let currentFile: string | null = null;
+        let lastTime = '';
+        let tableOpen = false;
 
-          if (!useColors) {
-            output.push(`| ID | Time | Title | Link |`);
-            output.push(`|----|------|-------|------|`);
-          }
+        for (const item of dayItems) {
+          if (item.type === 'summary') {
+            // Close any open table
+            if (tableOpen) {
+              output.push('');
+              tableOpen = false;
+              currentFile = null;
+              lastTime = '';
+            }
 
-          // Reverse to show oldest first (chronological)
-          const mostRecentId = recentSummaries[0]?.id;
-          for (const summary of daySummaries.slice().reverse()) {
-            const time = formatTime(summary.created_at);
-            const title = summary.request || 'Session started';
-            const isMostRecent = summary.id === mostRecentId;
-            const link = isMostRecent ? '' : `claude-mem://session-summary/${summary.id}`;
+            // Render summary
+            const summary = item.data;
+            const summaryTitle = `${summary.request || 'Session started'} (${formatDateTime(summary.displayTime)})`;
+            const link = summary.isMostRecent ? '' : `claude-mem://session-summary/${summary.id}`;
 
             if (useColors) {
               const linkPart = link ? `${colors.dim}[${link}]${colors.reset}` : '';
-              output.push(`  ${colors.dim}#S${summary.id}${colors.reset}  ${colors.dim}${time}${colors.reset}  🎯  ${title} ${linkPart}`);
+              output.push(`🎯 ${colors.yellow}#S${summary.id}${colors.reset} ${summaryTitle} ${linkPart}`);
             } else {
-              const linkCol = link ? `[→](${link})` : '-';
-              output.push(`| #S${summary.id} | ${time} | 🎯 ${title} | ${linkCol} |`);
+              const linkPart = link ? ` [→](${link})` : '';
+              output.push(`**🎯 #S${summary.id}** ${summaryTitle}${linkPart}`);
             }
-          }
-
-          output.push('');
-        }
-
-        // Sort files within day
-        const sortedFiles = Array.from(fileGroups.entries()).sort((a, b) => {
-          const aOldest = Math.min(...a[1].map(obs => obs.created_at_epoch));
-          const bOldest = Math.min(...b[1].map(obs => obs.created_at_epoch));
-          return aOldest - bOldest;
-        });
-
-        // Display each file within this day
-        let filesShown = 0;
-        for (const [file, obsGroup] of sortedFiles) {
-          if (filesShown >= 10) break;
-
-          // File header
-          if (useColors) {
-            output.push(`${colors.dim}${file}${colors.reset}`);
+            output.push('');
           } else {
-            output.push(`**${file}**`);
-          }
+            // Render observation
+            const obs = item.data;
+            const files = parseJsonArray(obs.files_modified);
+            const file = files.length > 0 ? toRelativePath(files[0], cwd) : 'General';
 
-          // Table header
-          if (!useColors) {
-            output.push(`| ID | Time | T | Title | Tokens |`);
-            output.push(`|----|------|---|-------|--------|`);
-          }
+            // Check if we need a new file section
+            if (file !== currentFile) {
+              // Close previous table
+              if (tableOpen) {
+                output.push('');
+              }
 
-          // Table rows
-          let lastTime = '';
-          const sortedObs = obsGroup.slice(0, 5).reverse();
-          for (const obs of sortedObs) {
+              // File header
+              if (useColors) {
+                output.push(`${colors.dim}${file}${colors.reset}`);
+              } else {
+                output.push(`**${file}**`);
+              }
+
+              // Table header (markdown only)
+              if (!useColors) {
+                output.push(`| ID | Time | T | Title | Tokens |`);
+                output.push(`|----|------|---|-------|--------|`);
+              }
+
+              currentFile = file;
+              tableOpen = true;
+              lastTime = '';
+            }
+
+            // Render observation row
             const concepts = parseJsonArray(obs.concepts);
             let icon = '•';
 
@@ -378,9 +382,33 @@ export function contextHook(input?: SessionStartInput, useColors: boolean = fals
               output.push(`| #${obs.id} | ${timeDisplay || '″'} | ${icon} | ${title} | ~${tokens} |`);
             }
           }
+        }
 
+        // Close final table if open
+        if (tableOpen) {
           output.push('');
-          filesShown++;
+        }
+      }
+
+      // Add full summary details for most recent session
+      const mostRecentSummary = recentSummaries[0];
+      if (mostRecentSummary && (mostRecentSummary.completed || mostRecentSummary.next_steps)) {
+        if (mostRecentSummary.completed) {
+          if (useColors) {
+            output.push(`${colors.green}Completed:${colors.reset} ${mostRecentSummary.completed}`);
+          } else {
+            output.push(`**Completed**: ${mostRecentSummary.completed}`);
+          }
+          output.push('');
+        }
+
+        if (mostRecentSummary.next_steps) {
+          if (useColors) {
+            output.push(`${colors.magenta}Next Steps:${colors.reset} ${mostRecentSummary.next_steps}`);
+          } else {
+            output.push(`**Next Steps**: ${mostRecentSummary.next_steps}`);
+          }
+          output.push('');
         }
       }
 
@@ -391,44 +419,6 @@ export function contextHook(input?: SessionStartInput, useColors: boolean = fals
         output.push(`*Use claude-mem MCP search to access records with the given ID*`);
       }
       output.push('');
-    }
-
-    // SECTION 2: Recent Summary
-    if (recentSummary) {
-      if (useColors) {
-        output.push(`${colors.bright}${colors.cyan}📋 RECENT SESSION SUMMARY${colors.reset} ${colors.dim}(${formatDateTime(recentSummary.created_at)})${colors.reset}`);
-        output.push('');
-      } else {
-        output.push(`## Recent Session Summary *(${formatDateTime(recentSummary.created_at)})*`);
-        output.push('');
-      }
-
-      if (recentSummary.request) {
-        if (useColors) {
-          output.push(`${colors.yellow}Request:${colors.reset} ${recentSummary.request}`);
-        } else {
-          output.push(`**Request**: ${recentSummary.request}`);
-        }
-        output.push('');
-      }
-
-      if (recentSummary.completed) {
-        if (useColors) {
-          output.push(`${colors.green}Completed:${colors.reset} ${recentSummary.completed}`);
-        } else {
-          output.push(`**Completed**: ${recentSummary.completed}`);
-        }
-        output.push('');
-      }
-
-      if (recentSummary.next_steps) {
-        if (useColors) {
-          output.push(`${colors.magenta}Next Steps:${colors.reset} ${recentSummary.next_steps}`);
-        } else {
-          output.push(`**Next Steps**: ${recentSummary.next_steps}`);
-        }
-        output.push('');
-      }
     }
 
     // Footer
