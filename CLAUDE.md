@@ -53,9 +53,9 @@ Claude-mem integrates with Claude Code through 5 lifecycle hooks:
 ### Worker Service Architecture
 
 - **Technology**: HTTP REST API built with Express.js, managed by PM2
-- **Port**: Fixed port 37777 (configurable via CLAUDE_MEM_WORKER_PORT)
+- **Port**: Fixed port 37777 (configurable via settings)
 - **Location**: `src/services/worker-service.ts`
-- **Configurable Model**: Uses `CLAUDE_MEM_MODEL` environment variable (default: claude-sonnet-4-5)
+- **Configurable Model**: Configured via settings file (default: claude-sonnet-4-5)
 
 **REST API Endpoints** (6 total):
 - Session management endpoints
@@ -135,23 +135,105 @@ cd claude-mem
 
 ## Configuration
 
-### Model Selection
+Claude-mem uses a centralized settings system with three access methods:
 
-Configure which AI model processes your observations:
+1. **Agent Skill** (recommended) - Natural language settings management within Claude Code
+2. **CLI Tool** - Cross-platform command-line interface
+3. **Direct Edit** - Manually edit `~/.claude-mem/settings.json`
 
-**Using the interactive script**:
-```bash
-./claude-mem-settings.sh
-```
+### Settings File
 
-**Available models**:
+**Location**: `~/.claude-mem/settings.json`
+
+**Priority Order**:
+1. Settings file (highest priority)
+2. Default values (lowest priority)
+
+### Available Settings
+
+#### model
+AI model used for processing observations and generating summaries.
+
+**Options**:
 - `claude-haiku-4-5` - Fast, cost-efficient
 - `claude-sonnet-4-5` - Balanced (default)
 - `claude-opus-4` - Most capable
 - `claude-3-7-sonnet` - Alternative version
 
-The script manages `CLAUDE_MEM_MODEL` in `~/.claude/settings.json`.
-TODO: also have script create and manage `CLAUDE_MEM_MODEL` in `~/.claude/plugins/marketplaces/thedotmack/.env` so our worker script has access to the value (we may not even need it in our settings but only in our plugin folder since hooks shouldn't be calling queries, not sure).
+#### workerPort
+Port for the background worker service HTTP API.
+
+**Range**: 1-65535
+**Default**: 37777
+
+#### enableMemoryStorage
+Enable/disable saving tool observations to the database.
+
+**Options**: true (default), false
+**Use case**: Temporarily disable observation storage without uninstalling the plugin
+
+#### enableContextInjection
+Enable/disable context injection at session start.
+
+**Options**: true (default), false
+**Use case**: Disable context loading while keeping observation storage active
+
+#### contextDepth
+Number of recent sessions to load when injecting context.
+
+**Range**: 1-50
+**Default**: 5
+**Note**: Higher values = more historical context but more tokens used
+
+### Using the Agent Skill
+
+Ask Claude to manage settings using natural language:
+
+```
+"Show me my claude-mem settings"
+"Change my model to haiku"
+"Disable memory storage"
+"Set context depth to 10"
+"Turn off context injection"
+```
+
+The skill is located at `plugin/skills/claude-mem-settings/SKILL.md` and automatically available when the plugin is installed.
+
+### Using the CLI Tool
+
+**Location**: `plugin/scripts/settings-cli.js`
+
+**Commands**:
+```bash
+# View current settings (formatted)
+node plugin/scripts/settings-cli.js
+
+# View as JSON
+node plugin/scripts/settings-cli.js --json
+
+# Get specific setting
+node plugin/scripts/settings-cli.js --get model
+
+# Set a value
+node plugin/scripts/settings-cli.js --set model=claude-haiku-4-5
+node plugin/scripts/settings-cli.js --set contextDepth=10
+node plugin/scripts/settings-cli.js --set enableMemoryStorage=false
+
+# Reset to defaults
+node plugin/scripts/settings-cli.js --reset
+
+# Show help
+node plugin/scripts/settings-cli.js --help
+```
+
+### Applying Changes
+
+- **Model or Port Changes**: Restart the worker service
+  ```bash
+  pm2 restart claude-mem-worker
+  ```
+
+- **Toggle Changes** (enableMemoryStorage, enableContextInjection, contextDepth): Take effect immediately on next hook execution
 
 ## Data Flow
 
@@ -172,15 +254,19 @@ Search Query → MCP Server → SessionSearch → FTS5 Query → Results with Ci
 claude-mem/
 ├── src/
 │   ├── bin/hooks/          # Hook entry points
+│   ├── bin/settings-cli.ts # Settings CLI tool
 │   ├── hooks/              # Hook implementations
 │   ├── services/           # Worker service
 │   ├── services/sqlite/    # Database layer
+│   ├── services/settings-service.ts  # Settings management
 │   ├── servers/            # MCP search server
 │   ├── sdk/                # Claude Agent SDK integration
 │   ├── shared/             # Shared utilities
 │   └── utils/              # General utilities
 ├── plugin/                 # Built plugin files
-│   ├── scripts/            # Built hook executables
+│   ├── scripts/            # Built hook executables + settings-cli.js
+│   ├── skills/             # Agent skills
+│   │   └── claude-mem-settings/  # Settings management skill
 │   └── .mcp.json          # MCP server configuration
 └── .claude-plugin/        # Plugin metadata
     └── marketplace.json   # Marketplace definition
@@ -266,10 +352,12 @@ Tracks `prompt_counter` and `prompt_number` across sessions and observations, en
 - Hooks output to Claude Code's hook execution log
 - Check `plugin/scripts/` for built executables
 
-### Model Configuration Issues
-- Use `./claude-mem-settings.sh` to manage model settings
-- Settings stored in `~/.claude/settings.json`
-- Default fallback: `claude-sonnet-4-5`
+### Settings Configuration Issues
+- View current settings: `node plugin/scripts/settings-cli.js`
+- Settings file location: `~/.claude-mem/settings.json`
+- Use Agent Skill: Ask Claude "show me my claude-mem settings"
+- Reset to defaults: `node plugin/scripts/settings-cli.js --reset`
+- All settings have built-in validation with helpful error messages
 
 ## Citations & References
 

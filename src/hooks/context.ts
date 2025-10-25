@@ -1,6 +1,7 @@
 import path from 'path';
 import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { ensureWorkerRunning } from '../shared/worker-utils.js';
+import { getSettings } from '../services/settings-service.js';
 
 export interface SessionStartInput {
   session_id?: string;
@@ -118,14 +119,15 @@ function toRelativePath(filePath: string, cwd: string): string {
 /**
  * Helper: Get recent session IDs for a project
  */
-function getRecentSessionIds(db: SessionStore, project: string, limit: number = 3): string[] {
+function getRecentSessionIds(db: SessionStore, project: string, limit?: number): string[] {
+  const actualLimit = limit ?? getSettings().get().contextDepth;
   const sessions = db.db.prepare(`
     SELECT sdk_session_id
     FROM sdk_sessions
     WHERE project = ? AND sdk_session_id IS NOT NULL
     ORDER BY started_at_epoch DESC
     LIMIT ?
-  `).all(project, limit) as Array<{ sdk_session_id: string }>;
+  `).all(project, actualLimit) as Array<{ sdk_session_id: string }>;
 
   return sessions.map(s => s.sdk_session_id);
 }
@@ -157,6 +159,13 @@ function getObservations(db: SessionStore, sessionIds: string[]): Observation[] 
  */
 export function contextHook(input?: SessionStartInput, useColors: boolean = false, useIndexView: boolean = false): string {
   ensureWorkerRunning();
+
+  // Check if context injection is enabled
+  const settings = getSettings().get();
+  if (!settings.enableContextInjection) {
+    return ''; // Return empty string if context injection is disabled
+  }
+
   const cwd = input?.cwd ?? process.cwd();
   const project = cwd ? path.basename(cwd) : 'unknown-project';
 

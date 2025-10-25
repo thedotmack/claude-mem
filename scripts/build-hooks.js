@@ -30,6 +30,11 @@ const SEARCH_SERVER = {
   source: 'src/servers/search-server.ts'
 };
 
+const SETTINGS_CLI = {
+  name: 'settings-cli',
+  source: 'src/bin/settings-cli.ts'
+};
+
 async function buildHooks() {
   console.log('🔨 Building claude-mem hooks, worker service, and search server...\n');
 
@@ -128,11 +133,36 @@ async function buildHooks() {
     const searchStats = fs.statSync(`${hooksDir}/${SEARCH_SERVER.name}.js`);
     console.log(`✓ search-server built (${(searchStats.size / 1024).toFixed(2)} KB)`);
 
-    console.log('\n✅ All hooks, worker service, and search server built successfully!');
+    // Build settings CLI
+    console.log(`\n🔧 Building settings CLI...`);
+    await build({
+      entryPoints: [SETTINGS_CLI.source],
+      bundle: true,
+      platform: 'node',
+      target: 'node18',
+      format: 'esm',
+      outfile: `${hooksDir}/${SETTINGS_CLI.name}.js`,
+      minify: true,
+      external: ['better-sqlite3'],
+      define: {
+        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
+      },
+      banner: {
+        js: '#!/usr/bin/env node'
+      }
+    });
+
+    // Make settings CLI executable
+    fs.chmodSync(`${hooksDir}/${SETTINGS_CLI.name}.js`, 0o755);
+    const cliStats = fs.statSync(`${hooksDir}/${SETTINGS_CLI.name}.js`);
+    console.log(`✓ settings-cli built (${(cliStats.size / 1024).toFixed(2)} KB)`);
+
+    console.log('\n✅ All components built successfully!');
     console.log(`   Output: ${hooksDir}/`);
     console.log(`   - Hooks: *-hook.js`);
     console.log(`   - Worker: worker-service.cjs`);
     console.log(`   - Search: search-server.js`);
+    console.log(`   - CLI: settings-cli.js`);
     console.log('\n💡 Note: Dependencies will be auto-installed on first hook execution');
 
   } catch (error) {

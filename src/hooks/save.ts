@@ -2,6 +2,7 @@ import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { createHookResponse } from './hook-response.js';
 import { logger } from '../utils/logger.js';
 import { ensureWorkerRunning } from '../shared/worker-utils.js';
+import { getSettings } from '../services/settings-service.js';
 
 export interface PostToolUseInput {
   session_id: string;
@@ -26,6 +27,13 @@ export async function saveHook(input?: PostToolUseInput): Promise<void> {
     throw new Error('saveHook requires input');
   }
 
+  // Check if memory storage is enabled
+  const settings = getSettings().get();
+  if (!settings.enableMemoryStorage) {
+    console.log(createHookResponse('PostToolUse', true));
+    return; // Skip saving if memory storage is disabled
+  }
+
   const { session_id, tool_name, tool_input, tool_output } = input;
 
   if (SKIP_TOOLS.has(tool_name)) {
@@ -47,16 +55,14 @@ export async function saveHook(input?: PostToolUseInput): Promise<void> {
   db.close();
 
   const toolStr = logger.formatTool(tool_name, tool_input);
-
-  // Use fixed worker port - no session.worker_port validation needed
-  const FIXED_PORT = parseInt(process.env.CLAUDE_MEM_WORKER_PORT || '37777', 10);
+  const workerPort = settings.workerPort;
 
   logger.dataIn('HOOK', `PostToolUse: ${toolStr}`, {
     sessionId: sessionDbId,
-    workerPort: FIXED_PORT
+    workerPort: workerPort
   });
 
-  const response = await fetch(`http://127.0.0.1:${FIXED_PORT}/sessions/${sessionDbId}/observations`, {
+  const response = await fetch(`http://127.0.0.1:${workerPort}/sessions/${sessionDbId}/observations`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({

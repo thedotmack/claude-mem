@@ -2,16 +2,19 @@ import path from 'path';
 import { existsSync } from 'fs';
 import { spawn } from 'child_process';
 import { getPackageRoot } from './paths.js';
+import { getSettings } from '../services/settings-service.js';
 
-const FIXED_PORT = parseInt(process.env.CLAUDE_MEM_WORKER_PORT || '37777', 10);
-const HEALTH_CHECK_URL = `http://127.0.0.1:${FIXED_PORT}/health`;
+function getHealthCheckUrl(): string {
+  const port = getSettings().get().workerPort;
+  return `http://127.0.0.1:${port}/health`;
+}
 
 /**
  * Check if worker is responding by hitting health endpoint
  */
 async function checkWorkerHealth(): Promise<boolean> {
   try {
-    const response = await fetch(HEALTH_CHECK_URL, {
+    const response = await fetch(getHealthCheckUrl(), {
       signal: AbortSignal.timeout(500)
     });
     return response.ok;
@@ -104,8 +107,8 @@ export async function isWorkerRunning(): Promise<boolean> {
 }
 
 /**
- * Get the worker port number (fixed port)
+ * Get the worker port number
  */
 export function getWorkerPort(): number {
-  return FIXED_PORT;
+  return getSettings().get().workerPort;
 }

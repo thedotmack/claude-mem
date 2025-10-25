@@ -13,10 +13,9 @@ import type { SDKSession } from '../sdk/prompts.js';
 import { logger } from '../utils/logger.js';
 import { ensureAllDataDirs } from '../shared/paths.js';
 import { execSync } from 'child_process';
+import { getSettings } from './settings-service.js';
 
-const MODEL = process.env.CLAUDE_MEM_MODEL || 'claude-sonnet-4-5';
 const DISALLOWED_TOOLS = ['Glob', 'Grep', 'ListMcpResourcesTool', 'WebSearch'];
-const FIXED_PORT = parseInt(process.env.CLAUDE_MEM_WORKER_PORT || '37777', 10);
 
 /**
  * Find Claude Code executable path using which (Unix/Mac) or where (Windows)
@@ -100,7 +99,8 @@ class WorkerService {
   }
 
   async start(): Promise<void> {
-    this.port = FIXED_PORT;
+    const settings = getSettings().get();
+    this.port = settings.workerPort;
 
     // Clean up orphaned sessions from previous worker instances
     const db = new SessionStore();
@@ -112,12 +112,22 @@ class WorkerService {
     }
 
     return new Promise((resolve, reject) => {
-      this.app.listen(FIXED_PORT, '127.0.0.1', () => {
-        logger.info('SYSTEM', `Worker started`, { port: FIXED_PORT, pid: process.pid, activeSessions: this.sessions.size });
+      this.app.listen(settings.workerPort, '127.0.0.1', () => {
+        logger.info('SYSTEM', `Worker started`, { port: settings.workerPort, pid: process.pid, activeSessions: this.sessions.size });
+
+        // Log active settings
+        logger.info('SYSTEM', `Active settings`, {
+          model: settings.model,
+          workerPort: settings.workerPort,
+          enableMemoryStorage: settings.enableMemoryStorage,
+          enableContextInjection: settings.enableContextInjection,
+          contextDepth: settings.contextDepth
+        });
+
         resolve();
       }).on('error', (err: any) => {
         if (err.code === 'EADDRINUSE') {
-          logger.error('SYSTEM', `Port ${FIXED_PORT} already in use - worker may already be running`);
+          logger.error('SYSTEM', `Port ${settings.workerPort} already in use - worker may already be running`);
         }
         reject(err);
       });
@@ -375,6 +385,7 @@ class WorkerService {
   private async runSDKAgent(session: ActiveSession): Promise<void> {
     logger.info('SDK', 'Agent starting', { sessionId: session.sessionDbId });
 
+    const settings = getSettings().get();
     const claudePath = findClaudePath();
     logger.info('SDK', `Using Claude executable: ${claudePath}`, { sessionId: session.sessionDbId });
 
@@ -382,7 +393,7 @@ class WorkerService {
       const queryResult = query({
         prompt: this.createMessageGenerator(session),
         options: {
-          model: MODEL,
+          model: settings.model,
           disallowedTools: DISALLOWED_TOOLS,
           abortController: session.abortController,
           pathToClaudeCodeExecutable: claudePath
