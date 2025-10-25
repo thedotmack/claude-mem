@@ -13,6 +13,7 @@ declare global {
 
 import net from 'net';
 import { unlinkSync, existsSync } from 'fs';
+import { execSync } from 'child_process';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { SDKUserMessage, SDKSystemMessage } from '@anthropic-ai/claude-agent-sdk';
 import { SessionStore } from '../services/sqlite/SessionStore.js';
@@ -23,6 +24,35 @@ import type { SDKSession } from './prompts.js';
 
 const MODEL = 'claude-sonnet-4-5';
 const DISALLOWED_TOOLS = ['Glob', 'Grep', 'ListMcpResourcesTool', 'WebSearch'];
+
+/**
+ * Find Claude Code executable path using which (Unix/Mac) or where (Windows)
+ */
+function findClaudePath(): string {
+  try {
+    // Try environment variable first
+    if (process.env.CLAUDE_CODE_PATH) {
+      return process.env.CLAUDE_CODE_PATH;
+    }
+
+    // Use which on Unix/Mac, where on Windows
+    const command = process.platform === 'win32' ? 'where claude' : 'which claude';
+    const result = execSync(command, { encoding: 'utf8' }).trim();
+
+    // On Windows, 'where' returns multiple lines if there are multiple matches, take the first
+    const path = result.split('\n')[0].trim();
+
+    if (!path) {
+      throw new Error('Claude executable not found in PATH');
+    }
+
+    console.error(`[SDK Worker] Found Claude executable: ${path}`);
+    return path;
+  } catch (error: any) {
+    console.error('[SDK Worker] Failed to find Claude executable:', error.message);
+    throw new Error('Claude Code executable not found. Please ensure claude is in your PATH or set CLAUDE_CODE_PATH environment variable.');
+  }
+}
 
 interface ObservationMessage {
   type: 'observation';
@@ -282,14 +312,16 @@ class SDKWorker {
    * Run SDK agent with streaming input mode
    */
   private async runSDKAgent(): Promise<void> {
-    console.error(`[SDK Worker DEBUG] Starting SDK agent with auto-detected Claude path`);
+    const claudePath = findClaudePath();
+    console.error(`[SDK Worker DEBUG] Using Claude executable: ${claudePath}`);
 
     const queryResult = query({
       prompt: this.createMessageGenerator(),
       options: {
         model: MODEL,
         disallowedTools: DISALLOWED_TOOLS,
-        abortController: this.abortController
+        abortController: this.abortController,
+        pathToClaudeCodeExecutable: claudePath
       }
     });
 
