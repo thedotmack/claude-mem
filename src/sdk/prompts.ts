@@ -164,12 +164,6 @@ IMPORTANT! DO NOT summarize the observation process itself - you are summarizing
 
 User's Original Request: ${session.user_prompt}
 
-WHEN NOT TO SUMMARIZE
-----------------------
-Do not summarize if the request is conversational and unrelated to the work that was just completed.
-
-If skipping, **output only**: <skip_summary reason="[brief reason]" />
-
 ✅ GOOD - Describes deliverables:
 <request>Fix authentication timeout bug</request>
 <request>Add three-tier verbosity system to session summaries</request>
@@ -182,14 +176,17 @@ If skipping, **output only**: <skip_summary reason="[brief reason]" />
 
 Output this XML:
 <summary>
-  <request>[What did the user request? Use their original sentiment from: ${session.user_prompt}]</request>
+  <request>[What did the user request? Form a title that reflects the actual request: ${session.user_prompt}]</request>
   <investigated>[What was explored?]</investigated>
-  <learned>[What was discovered about how things work?]</learned>
+  <learned>[What was learned about how things work?]</learned>
   <completed>[What shipped? What does the system now do?]</completed>
   <next_steps>[What are the next steps?]</next_steps>
   <notes>[Additional insights]</notes>
 </summary>
 
 **Required fields**: request, investigated, learned, completed, next_steps
-**Optional fields**: notes`;
+**Optional fields**: notes
+
+IMPORTANT: This is not the end of the session. You will receive more requests to process, and more tool usages to observe and record. The summary helps keep track of progress.
+`; 
 }

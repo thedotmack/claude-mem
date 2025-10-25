@@ -4,7 +4,7 @@
 
 Claude-mem is a persistent memory compression system that preserves context across Claude Code sessions. It automatically captures tool usage observations, processes them through the Claude Agent SDK, and makes summaries available to future sessions.
 
-**Current Version**: 4.2.3
+**Current Version**: 4.2.4
 **License**: AGPL-3.0
 **Author**: Alex Newman (@thedotmack)
 
@@ -210,7 +210,23 @@ npm run build && git commit -a -m "Build and update" && git push && cd ~/.claude
 
 ## Version History
 
-### v4.2.3 (Current)
+### v4.2.4 (Current)
+**Breaking Changes**: None (patch version)
+
+**Improvements**:
+- Enhanced summary prompt clarity and reliability
+  - Removed optional skip_summary functionality (summaries now always generated)
+  - Clarified that summaries are mid-session checkpoints, not session endings
+  - Improved request field instructions to better form descriptive titles
+  - Changed wording from "discovered" to "learned" for consistency
+
+**Technical Details**:
+- Updated `src/sdk/prompts.ts` to remove `WHEN NOT TO SUMMARIZE` section
+- Added footer text clarifying summaries track progress within ongoing sessions
+- Changed request field prompt from "Use their original sentiment" to "Form a title that reflects the actual request"
+- Affects both observation and summary prompt generation
+
+### v4.2.3
 **Breaking Changes**: None (patch version)
 
 **Security**:
