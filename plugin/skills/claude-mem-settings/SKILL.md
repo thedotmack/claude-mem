@@ -152,7 +152,11 @@ When the user asks to view or modify claude-mem settings:
 4. **After making changes:**
    - Confirm the change was successful
    - Explain what the setting does if the user seems unsure
-   - Mention if a worker restart might be needed (model or port changes)
+   - **IMPORTANT:** If the setting changed was `model` or `workerPort`, automatically restart the worker service:
+     ```bash
+     pm2 restart claude-mem-worker
+     ```
+   - For `enableMemoryStorage`, `enableContextInjection`, or `contextDepth` changes, no restart is needed (changes take effect immediately)
 
 5. **For reset requests:**
    ```bash
@@ -162,7 +166,8 @@ When the user asks to view or modify claude-mem settings:
 ## Important Notes
 
 - **Settings file location:** `~/.claude-mem/settings.json`
-- **Worker restart:** Changes to `model` or `workerPort` may require restarting the worker service: `pm2 restart claude-mem-worker`
+- **Worker restart:** Changes to `model` or `workerPort` REQUIRE restarting the worker service. Claude should automatically run `pm2 restart claude-mem-worker` after changing these settings.
+- **No restart needed:** Changes to `enableMemoryStorage`, `enableContextInjection`, or `contextDepth` take effect immediately on the next hook execution.
 
 ## Example Interactions
 
@@ -182,9 +187,10 @@ Then explain the current configuration to the user in plain language.
 **Claude response:**
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/settings-cli.js" --set model=claude-haiku-4-5
+pm2 restart claude-mem-worker
 ```
 
-Confirm: "I've changed your model to claude-haiku-4-5 (Haiku). This is the most cost-efficient option and will process your observations faster. You may want to restart the worker service for this to take effect: `pm2 restart claude-mem-worker`"
+Confirm: "I've changed your model to claude-haiku-4-5 (Haiku). This is the most cost-efficient option and will process your observations faster. I've also restarted the worker service so the change takes effect immediately."
 
 ### Example 3: Disable Memory (Using Slash Command)
 **User:** "Turn off claude-mem for now, I don't want it saving anything"
