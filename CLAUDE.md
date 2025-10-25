@@ -4,7 +4,7 @@
 
 Claude-mem is a persistent memory compression system that preserves context across Claude Code sessions. It automatically captures tool usage observations, processes them through the Claude Agent SDK, and makes summaries available to future sessions.
 
-**Current Version**: 4.2.10
+**Current Version**: 4.2.11
 **License**: AGPL-3.0
 **Author**: Alex Newman (@thedotmack)
 
@@ -210,25 +210,47 @@ npm run build && git commit -a -m "Build and update" && git push && cd ~/.claude
 
 ## Version History
 
-### v4.2.10 (Current)
+### v4.2.11 (Current)
 **Breaking Changes**: None (patch version)
 
 **Critical Bugfix**:
-- Fixed Windows compatibility issue caused by hardcoded macOS-specific Claude executable path
-  - Removed hardcoded path: `/Users/alexnewman/.nvm/versions/node/v24.5.0/bin/claude`
-  - Removed `pathToClaudeCodeExecutable` parameter from SDK query() calls
-  - SDK now automatically detects Claude Code executable path on all platforms
-  - Improves cross-platform compatibility (Windows, macOS, Linux)
+- Fixed SDK auto-detection failure by implementing explicit `which`/`where` command execution
+  - SDK's automatic Claude path detection was not working (returned undefined)
+  - Implemented cross-platform executable finder using `child_process.execSync`
+  - Unix/macOS: Uses `which claude` command
+  - Windows: Uses `where claude` command (works in both CMD and PowerShell)
+  - Fallback to `CLAUDE_CODE_PATH` environment variable if set
+  - Handles Windows multiple results (takes first match)
 
 **Impact**:
-- Before: Worker service failed on Windows due to hardcoded macOS path
-- After: Worker service works correctly on all platforms
+- Before: Worker service failed with "path argument must be of type string. Received undefined"
+- After: Worker service correctly finds Claude executable on all platforms
 
 **Technical Details**:
-- Updated `src/sdk/worker.ts` to remove hardcoded Claude path and `pathToClaudeCodeExecutable` parameter
-- Updated `src/services/worker-service.ts` to remove hardcoded Claude path and parameter
-- Built `plugin/scripts/worker-service.cjs` reflects changes
-- Affects all SDK agent initialization in worker service
+- Added `findClaudePath()` helper function to both worker files
+- Uses `process.platform === 'win32'` to detect Windows and choose appropriate command
+- Logs the discovered path for debugging: "Found Claude executable: /path/to/claude"
+- Updated `src/sdk/worker.ts` with explicit path detection
+- Updated `src/services/worker-service.ts` with explicit path detection
+- Both files now pass `pathToClaudeCodeExecutable: claudePath` to SDK
+
+**Files Changed**:
+- `src/sdk/worker.ts`
+- `src/services/worker-service.ts`
+- `plugin/scripts/worker-service.cjs` (rebuilt)
+
+### v4.2.10
+**Breaking Changes**: None (patch version)
+
+**Critical Bugfix**:
+- Attempted to fix Windows compatibility by removing hardcoded macOS path
+  - Removed hardcoded path: `/Users/alexnewman/.nvm/versions/node/v24.5.0/bin/claude`
+  - Removed `pathToClaudeCodeExecutable` parameter to rely on SDK auto-detection
+  - **Note**: This approach failed; SDK auto-detection did not work (fixed in v4.2.11)
+
+**Impact**:
+- Partial fix: Removed hardcoded macOS path
+- Issue: SDK auto-detection returned undefined, causing worker failures
 
 **Files Changed**:
 - `src/sdk/worker.ts`
