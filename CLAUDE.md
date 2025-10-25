@@ -4,7 +4,7 @@
 
 Claude-mem is a persistent memory compression system that preserves context across Claude Code sessions. It automatically captures tool usage observations, processes them through the Claude Agent SDK, and makes summaries available to future sessions.
 
-**Current Version**: 4.2.9
+**Current Version**: 4.2.10
 **License**: AGPL-3.0
 **Author**: Alex Newman (@thedotmack)
 
@@ -210,7 +210,32 @@ npm run build && git commit -a -m "Build and update" && git push && cd ~/.claude
 
 ## Version History
 
-### v4.2.9 (Current)
+### v4.2.10 (Current)
+**Breaking Changes**: None (patch version)
+
+**Critical Bugfix**:
+- Fixed Windows compatibility issue caused by hardcoded macOS-specific Claude executable path
+  - Removed hardcoded path: `/Users/alexnewman/.nvm/versions/node/v24.5.0/bin/claude`
+  - Removed `pathToClaudeCodeExecutable` parameter from SDK query() calls
+  - SDK now automatically detects Claude Code executable path on all platforms
+  - Improves cross-platform compatibility (Windows, macOS, Linux)
+
+**Impact**:
+- Before: Worker service failed on Windows due to hardcoded macOS path
+- After: Worker service works correctly on all platforms
+
+**Technical Details**:
+- Updated `src/sdk/worker.ts` to remove hardcoded Claude path and `pathToClaudeCodeExecutable` parameter
+- Updated `src/services/worker-service.ts` to remove hardcoded Claude path and parameter
+- Built `plugin/scripts/worker-service.cjs` reflects changes
+- Affects all SDK agent initialization in worker service
+
+**Files Changed**:
+- `src/sdk/worker.ts`
+- `src/services/worker-service.ts`
+- `plugin/scripts/worker-service.cjs` (rebuilt)
+
+### v4.2.9
 **Breaking Changes**: None (patch version)
 
 **Documentation**:

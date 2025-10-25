@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 
+## [4.2.10] - 2025-10-25
+
+### Fixed
+- **Windows compatibility**: Removed hardcoded macOS-specific Claude executable path that prevented worker service from running on Windows
+  - Removed hardcoded path: `/Users/alexnewman/.nvm/versions/node/v24.5.0/bin/claude`
+  - Removed `pathToClaudeCodeExecutable` parameter from SDK query() calls
+  - SDK now automatically detects Claude Code executable path on all platforms
+  - Affects: `src/sdk/worker.ts`, `src/services/worker-service.ts`, `plugin/scripts/worker-service.cjs`
+
+
 ## [4.2.3] - 2025-10-23
 
 ### Security
