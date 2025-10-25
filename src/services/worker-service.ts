@@ -128,14 +128,13 @@ class WorkerService {
       return;
     }
 
-    // Get the real claude_session_id (which is the same as sdk_session_id now)
-    const claudeSessionId = dbSession.sdk_session_id || `session-${sessionDbId}`;
+    const claudeSessionId = dbSession.claude_session_id;
 
     // Create session state
     const session: ActiveSession = {
       sessionDbId,
       claudeSessionId,
-      sdkSessionId: dbSession.sdk_session_id || null, // Set from database since we set both fields now
+      sdkSessionId: null,
       project,
       userPrompt,
       pendingMessages: [],
@@ -180,19 +179,16 @@ class WorkerService {
     let session = this.sessions.get(sessionDbId);
     if (!session) {
       // Auto-create session if it doesn't exist (e.g., worker restarted)
-      // Fetch real session ID from database
       const db = new SessionStore();
       const dbSession = db.getSessionById(sessionDbId);
       db.close();
 
-      const claudeSessionId = dbSession?.sdk_session_id || `session-${sessionDbId}`;
-
       session = {
         sessionDbId,
-        claudeSessionId,
+        claudeSessionId: dbSession!.claude_session_id,
         sdkSessionId: null,
-        project: dbSession?.project || '',
-        userPrompt: dbSession?.user_prompt || '',
+        project: dbSession!.project,
+        userPrompt: dbSession!.user_prompt,
         pendingMessages: [],
         abortController: new AbortController(),
         generatorPromise: null,
@@ -244,19 +240,16 @@ class WorkerService {
     let session = this.sessions.get(sessionDbId);
     if (!session) {
       // Auto-create session if it doesn't exist (e.g., worker restarted)
-      // Fetch real session ID from database
       const db = new SessionStore();
       const dbSession = db.getSessionById(sessionDbId);
       db.close();
 
-      const claudeSessionId = dbSession?.sdk_session_id || `session-${sessionDbId}`;
-
       session = {
         sessionDbId,
-        claudeSessionId,
+        claudeSessionId: dbSession!.claude_session_id,
         sdkSessionId: null,
-        project: dbSession?.project || '',
-        userPrompt: dbSession?.user_prompt || '',
+        project: dbSession!.project,
+        userPrompt: dbSession!.user_prompt,
         pendingMessages: [],
         abortController: new AbortController(),
         generatorPromise: null,
@@ -366,26 +359,8 @@ class WorkerService {
       });
 
       for await (const message of queryResult) {
-        // Handle system init message
-        if (message.type === 'system' && message.subtype === 'init') {
-          const systemMsg = message as SDKSystemMessage;
-          if (systemMsg.session_id) {
-            // Update in database first, check if it succeeded
-            const db = new SessionStore();
-            const updated = db.updateSDKSessionId(session.sessionDbId, systemMsg.session_id);
-            db.close();
-
-            if (updated) {
-              logger.success('SDK', 'Session initialized', {
-                sessionId: session.sessionDbId,
-                sdkSessionId: systemMsg.session_id
-              });
-              session.sdkSessionId = systemMsg.session_id;
-            }
-          }
-        }
         // Handle assistant messages
-        else if (message.type === 'assistant') {
+        if (message.type === 'assistant') {
           const content = message.message.content;
           const textContent = Array.isArray(content)
             ? content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n')
@@ -471,28 +446,26 @@ class WorkerService {
           session.lastPromptNumber = message.prompt_number;
 
           const db = new SessionStore();
-          const dbSession = db.getSessionById(session.sessionDbId) as SDKSession | undefined;
+          const dbSession = db.getSessionById(session.sessionDbId) as SDKSession;
           db.close();
 
-          if (dbSession) {
-            const summarizePrompt = buildSummaryPrompt(dbSession);
+          const summarizePrompt = buildSummaryPrompt(dbSession);
 
-            logger.dataIn('SDK', `Summary prompt sent (${summarizePrompt.length} chars)`, {
-              sessionId: session.sessionDbId,
-              promptNumber: message.prompt_number
-            });
-            logger.debug('SDK', 'Full summary prompt', { sessionId: session.sessionDbId }, summarizePrompt);
+          logger.dataIn('SDK', `Summary prompt sent (${summarizePrompt.length} chars)`, {
+            sessionId: session.sessionDbId,
+            promptNumber: message.prompt_number
+          });
+          logger.debug('SDK', 'Full summary prompt', { sessionId: session.sessionDbId }, summarizePrompt);
 
-            yield {
-              type: 'user',
-              session_id: session.claudeSessionId, // Use real session ID
-              parent_tool_use_id: null,
-              message: {
-                role: 'user',
-                content: summarizePrompt
-              }
-            };
-          }
+          yield {
+            type: 'user',
+            session_id: session.claudeSessionId,
+            parent_tool_use_id: null,
+            message: {
+              role: 'user',
+              content: summarizePrompt
+            }
+          };
         } else if (message.type === 'observation') {
           session.lastPromptNumber = message.prompt_number;
 
