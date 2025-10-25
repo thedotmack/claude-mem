@@ -282,17 +282,12 @@ class SDKWorker {
    * Run SDK agent with streaming input mode
    */
   private async runSDKAgent(): Promise<void> {
-    // Find Claude Code executable
-    const claudePath = process.env.CLAUDE_CODE_PATH || '/Users/alexnewman/.nvm/versions/node/v24.5.0/bin/claude';
-    console.error(`[SDK Worker DEBUG] About to call query with claudePath: ${claudePath}`);
-
     const queryResult = query({
       prompt: this.createMessageGenerator(),
       options: {
         model: MODEL,
         disallowedTools: DISALLOWED_TOOLS,
-        abortController: this.abortController,
-        pathToClaudeCodeExecutable: claudePath
+        abortController: this.abortController
       }
     });
 
