@@ -292,7 +292,7 @@ class SDKWorker {
         model: MODEL,
         disallowedTools: DISALLOWED_TOOLS,
         abortController: this.abortController,
-        pathToClaudeCodeExecutable: claudePath
+        pathToClaudeCodeExecutable: ''
       }
     });
 
