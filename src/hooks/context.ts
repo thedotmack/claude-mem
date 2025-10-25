@@ -119,8 +119,8 @@ function toRelativePath(filePath: string, cwd: string): string {
 /**
  * Helper: Get recent session IDs for a project
  */
-function getRecentSessionIds(db: SessionStore, project: string, limit?: number): string[] {
-  const actualLimit = limit ?? getSettings().get().contextDepth;
+function getRecentSessionIds(db: SessionStore, project: string, contextDepth: number, limit?: number): string[] {
+  const actualLimit = limit ?? contextDepth;
   const sessions = db.db.prepare(`
     SELECT sdk_session_id
     FROM sdk_sessions
