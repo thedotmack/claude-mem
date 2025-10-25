@@ -17,7 +17,7 @@
     <img src="https://img.shields.io/badge/License-AGPL%203.0-blue.svg" alt="License">
   </a>
   <a href="package.json">
-    <img src="https://img.shields.io/badge/version-4.2.10-green.svg" alt="Version">
+    <img src="https://img.shields.io/badge/version-4.3.0-green.svg" alt="Version">
   </a>
   <a href="package.json">
     <img src="https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg" alt="Node">
@@ -43,90 +43,6 @@
 
 ---
 
-## 🧪 Experimental Feature: Progressive Disclosure Context
-
-> **We'd love your feedback!** Test the new context injection system in `feature/context-with-observations`
-
-### What is Progressive Disclosure?
-
-Progressive disclosure is a layered approach to memory retrieval that mirrors how humans remember information:
-
-**Layer 1: Index** (Frontloaded at session start)
-- **WHAT** exists: Observation titles and session summaries
-- **COST** of retrieval: Token counts for each observation
-- **TYPE** indicators: Critical (🔴 gotcha, 🟤 decision) vs informational (🔵 how-it-works)
-
-**Layer 2: Details** (Retrieved on-demand via MCP search)
-- Full observation narratives when Claude needs deeper context
-- Search by concept, file, type, or keyword
-
-**Layer 3: Perfect Recall** (Code/transcripts)
-- Source code when implementation details are needed
-- Original transcripts for exact quotes
-
-### The Problem It Solves
-
-**Current version** (v4.2.x): Shows only session-level summaries at startup
-- ✅ Minimal tokens (~800)
-- ❌ Claude doesn't know what detailed observations exist
-- ❌ Often re-reads code to understand past decisions
-
-**Experimental version**: Shows observation index + session summaries
-- ✅ Claude sees WHAT learnings exist without loading full content
-- ✅ Token counts help Claude decide: "fetch details" vs "read code"
-- ✅ Progressive disclosure instructions teach Claude how to use the system
-- ⚠️ Higher token cost (~2,500) but potentially more efficient overall
-
-### How It's Different
-
-The experimental context hook displays observations in a **table format**:
-
-```markdown
-**src/hooks/context.ts**
-| ID | Time | T | Title | Tokens |
-|----|------|---|-------|--------|
-| #2332 | 1:07 AM | 🔴 | Critical Bugfix: Session ID NULL Constraint | ~201 |
-| #2340 | 1:10 AM | 🟠 | Remove Redundant Summary Section | ~280 |
-```
-
-Now Claude knows:
-- A critical bugfix exists about session IDs (~201 tokens to fetch)
-- A design decision exists about summary sections (~280 tokens)
-- Whether to use MCP search or just read the current code
-
-### Try It Out
-
-```bash
-# Clone and checkout the experimental branch
-git clone https://github.com/thedotmack/claude-mem.git
-cd claude-mem
-git checkout feature/context-with-observations
-
-# Build the experimental version
-npm install
-npm run build
-
-# Test the new context hook (from YOUR project directory)
-cd /path/to/your/project
-node /path/to/claude-mem/plugin/scripts/context-hook.js
-
-# Example:
-# cd ~/my-app
-# node ~/claude-mem/plugin/scripts/context-hook.js
-```
-
-**Important:** Run the context hook from your project's root directory to see context specific to that project.
-
-**We want to know:**
-- Does Claude use MCP search more effectively?
-- Do token counts influence retrieval decisions?
-- Is the progressive disclosure guidance helpful or noisy?
-- Does it reduce redundant code reading?
-
-**📣 Share Your Feedback:** [Open a GitHub Issue](https://github.com/thedotmack/claude-mem/issues/new) with your experience! Tag it with `feedback: progressive-disclosure`
-
----
-
 ## Quick Start
 
 Start a new Claude Code session in the terminal and enter the following commands:
@@ -141,9 +57,9 @@ Restart Claude Code. Context from previous sessions will automatically appear in
 
 **Key Features:**
 - 🧠 **Persistent Memory** - Context survives across sessions
+- 📊 **Progressive Disclosure** - Layered memory retrieval with token cost visibility
 - 🔍 **7 Search Tools** - Query your project history via MCP
 - 🤖 **Automatic Operation** - No manual intervention required
-- 📊 **FTS5 Search** - Fast full-text search across observations
 - 🔗 **Citations** - Reference past decisions with `claude-mem://` URIs
 
 ---
@@ -235,16 +151,18 @@ See [MCP Search Tools Guide](docs/usage/search-tools.mdx) for detailed examples.
 
 ---
 
-## What's New in v4.2.3
+## What's New in v4.3.0
 
-**Security:**
-- Fixed FTS5 injection vulnerability in search functions
-- Added comprehensive test suite with 332 injection attack tests
+**Progressive Disclosure Context:**
+- Enhanced context hook displays observation timeline with token cost visibility
+- Table format shows ID, timestamp, type indicators (🔴 critical, 🟤 decision, 🔵 informational), title, and token counts
+- Progressive disclosure instructions guide Claude on when to fetch full observation details vs. reading code
+- Layered memory retrieval: Index → Details → Perfect Recall (code/transcripts)
 
-**Fixes:**
-- Fixed ESM/CJS compatibility for getDirname function
-- Fixed Windows PowerShell compatibility in SessionStart hook
-- Cross-platform dependency installation now works on Windows, macOS, and Linux
+**Improvements:**
+- Added Agent Skills documentation and version bump management skill
+- Removed hardcoded paths for project and Claude Code executable (fixes #23)
+- Enhanced session summary handling and timeline rendering
 
 See [CHANGELOG.md](CHANGELOG.md) for complete version history.
 
@@ -260,6 +178,14 @@ See [CHANGELOG.md](CHANGELOG.md) for complete version history.
 ---
 
 ## Key Benefits
+
+### Progressive Disclosure Context
+- **Layered memory retrieval** mirrors human memory patterns
+- **Layer 1 (Index)**: See what observations exist with token costs at session start
+- **Layer 2 (Details)**: Fetch full narratives on-demand via MCP search
+- **Layer 3 (Perfect Recall)**: Access source code and original transcripts
+- **Smart decision-making**: Token counts help Claude choose between fetching details or reading code
+- **Type indicators**: Visual cues (🔴 critical, 🟤 decision, 🔵 informational) highlight observation importance
 
 ### Automatic Memory
 - Context automatically injected when Claude starts

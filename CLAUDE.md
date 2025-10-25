@@ -4,7 +4,7 @@
 
 Claude-mem is a persistent memory compression system that preserves context across Claude Code sessions. It automatically captures tool usage observations, processes them through the Claude Agent SDK, and makes summaries available to future sessions.
 
-**Current Version**: 4.2.11
+**Current Version**: 4.3.0
 **License**: AGPL-3.0
 **Author**: Alex Newman (@thedotmack)
 
@@ -212,9 +212,16 @@ npm run build && git commit -a -m "Build and update" && git push && cd ~/.claude
 
 For detailed version history and changelog, see [CHANGELOG.md](CHANGELOG.md).
 
-**Current Version**: 4.2.11
+**Current Version**: 4.3.0
 
 ### Recent Highlights
+
+#### v4.3.0 (2025-10-25)
+- Progressive Disclosure Context: Enhanced context hook with observation timeline and token cost visibility
+- Session observations now display in table format showing ID, timestamp, type indicators, title, and token counts
+- Added progressive disclosure usage instructions to guide Claude on when to fetch full observation details vs. reading code
+- Added Agent Skills documentation and version bump management skill
+- Cross-platform path improvements: Removed hardcoded paths for project and Claude Code executable (fixes #23)
 
 #### v4.2.11 (2025-10-25)
 - Fixed cross-platform Claude executable path detection using `which`/`where` commands

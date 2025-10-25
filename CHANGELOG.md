@@ -8,6 +8,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 
+## [4.3.0] - 2025-10-25
+
+### Added
+- **Progressive Disclosure Context**: Enhanced context hook with layered memory retrieval system
+  - Layer 1 (Index): Observation titles, token costs, and type indicators at session start
+  - Layer 2 (Details): Full narratives retrieved on-demand via MCP search
+  - Layer 3 (Perfect Recall): Source code and original transcripts
+  - Context hook now displays observations in table format with ID, timestamp, type indicator, title, and token count
+  - Type indicators: 🔴 (critical/gotcha), 🟤 (decision), 🔵 (informational/how-it-works)
+  - Progressive disclosure instructions guide Claude on when to fetch full observation details vs. reading code
+  - Token counts (~200-500 per observation) help Claude make informed retrieval decisions
+- **Agent Skills documentation**: Added comprehensive documentation on creating and using Claude Code agent skills
+- **Version bump skill**: Added automated version bump management skill for streamlined releases
+- **Memory toggle feature planning**: Added design document for future pause/resume recording capability
+
+### Changed
+- **Enhanced session summary handling**: Improved timeline rendering and summary organization
+- **Improved context hook output**: Added structured timeline with session grouping and observation details
+- **Context token cost**: Increased from ~800 tokens to ~2,500 tokens for richer observation index
+
+### Fixed
+- **Cross-platform path detection**: Removed hardcoded macOS-specific paths for project and Claude Code executable (fixes #23)
+  - Removed hardcoded paths in context hook, worker service, and SDK integration
+  - Now uses dynamic path resolution for cross-platform compatibility
+  - Affects: `src/hooks/context.ts`, `src/services/worker-service.ts`, `src/sdk/worker.ts`
+
+
 ## [4.2.11] - 2025-10-25
 
 ### Fixed
