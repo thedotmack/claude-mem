@@ -135,11 +135,12 @@ cd claude-mem
 
 ## Configuration
 
-Claude-mem uses a centralized settings system with three access methods:
+Claude-mem uses a centralized settings system with four access methods:
 
 1. **Agent Skill** (recommended) - Natural language settings management within Claude Code
-2. **CLI Tool** - Cross-platform command-line interface
-3. **Direct Edit** - Manually edit `~/.claude-mem/settings.json`
+2. **Slash Commands** - Quick toggle commands for common operations
+3. **CLI Tool** - Cross-platform command-line interface
+4. **Direct Edit** - Manually edit `~/.claude-mem/settings.json`
 
 ### Settings File
 
@@ -198,6 +199,19 @@ Ask Claude to manage settings using natural language:
 ```
 
 The skill is located at `plugin/skills/claude-mem-settings/SKILL.md` and automatically available when the plugin is installed.
+
+### Using Slash Commands
+
+For quick toggle operations, use these slash commands:
+
+```
+/claude-mem:context-on    # Enable context injection
+/claude-mem:context-off   # Disable context injection
+/claude-mem:memory-on     # Enable memory storage
+/claude-mem:memory-off    # Disable memory storage
+```
+
+The plugin prefix `/claude-mem:` is optional unless there are name collisions. These commands provide instant on/off control for the most commonly toggled settings.
 
 ### Using the CLI Tool
 

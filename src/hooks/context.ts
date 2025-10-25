@@ -172,14 +172,17 @@ export function contextHook(input?: SessionStartInput, useColors: boolean = fals
   const db = new SessionStore();
 
   try {
-    // Get last 4 summaries (use 4th for offset calculation)
+    // Read contextDepth from settings with safe default
+    const depth = Math.max(1, Number(settings.contextDepth) || 5);
+
+    // Get last N+1 summaries (use N+1th for offset calculation)
     const recentSummaries = db.db.prepare(`
       SELECT id, sdk_session_id, request, completed, next_steps, created_at, created_at_epoch
       FROM session_summaries
       WHERE project = ?
       ORDER BY created_at_epoch DESC
-      LIMIT 4
-    `).all(project) as Array<{ id: number; sdk_session_id: string; request: string | null; completed: string | null; next_steps: string | null; created_at: string; created_at_epoch: number }>;
+      LIMIT ?
+    `).all(project, depth + 1) as Array<{ id: number; sdk_session_id: string; request: string | null; completed: string | null; next_steps: string | null; created_at: string; created_at_epoch: number }>;
 
     if (recentSummaries.length === 0) {
       if (useColors) {
@@ -188,8 +191,8 @@ export function contextHook(input?: SessionStartInput, useColors: boolean = fals
       return `# [${project}] recent context\n\nNo previous sessions found for this project yet.`;
     }
 
-    // Extract unique session IDs from first 3 summaries
-    const displaySummaries = recentSummaries.slice(0, 3);
+    // Extract unique session IDs from first N summaries
+    const displaySummaries = recentSummaries.slice(0, depth);
     const sessionIds = [...new Set(displaySummaries.map(s => s.sdk_session_id))];
 
     // Get all observations from these sessions

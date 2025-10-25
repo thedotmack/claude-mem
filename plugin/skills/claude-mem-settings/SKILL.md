@@ -75,6 +75,17 @@ Number of recent sessions to load when injecting context.
 - "load last 3 sessions"
 - "increase context depth to 20"
 
+## Quick Slash Commands
+
+For common toggle operations, users can use these slash commands:
+
+- `/claude-mem:context-on` - Enable context injection
+- `/claude-mem:context-off` - Disable context injection
+- `/claude-mem:memory-on` - Enable memory storage
+- `/claude-mem:memory-off` - Disable memory storage
+
+The plugin prefix `/claude-mem:` is optional unless there are name collisions.
+
 ## How to Use Settings CLI
 
 The settings CLI is located at: `plugin/scripts/settings-cli.js`
@@ -109,6 +120,11 @@ When the user asks to view or modify claude-mem settings:
    - Identify which setting(s) they want to view or modify
    - Extract the desired value if they're making a change
    - Map natural language to exact setting keys
+
+**Quick command recommendation:**
+- For simple toggles (enable/disable context or memory), recommend the slash commands
+- For viewing settings, changing model, port, or depth, use the CLI
+- If the user prefers CLI, always honor that preference
 
 2. **For viewing settings:**
    ```bash
@@ -168,15 +184,21 @@ node plugin/scripts/settings-cli.js --set model=claude-haiku-4-5
 
 Confirm: "I've changed your model to claude-haiku-4-5 (Haiku). This is the most cost-efficient option and will process your observations faster. You may want to restart the worker service for this to take effect: `pm2 restart claude-mem-worker`"
 
-### Example 3: Disable Memory
+### Example 3: Disable Memory (Using Slash Command)
 **User:** "Turn off claude-mem for now, I don't want it saving anything"
 
 **Claude response:**
+You can use the quick slash command:
+```
+/claude-mem:memory-off
+```
+
+Or if you prefer the CLI:
 ```bash
 node plugin/scripts/settings-cli.js --set enableMemoryStorage=false
 ```
 
-Confirm: "I've disabled memory storage. Claude-mem will no longer save tool observations to the database. Context injection is still active, so you'll still see previous session summaries. To re-enable: ask me to 'turn on memory storage'."
+Confirm: "Memory storage has been disabled. Claude-mem will no longer save tool observations to the database. Context injection is still active, so you'll still see previous session summaries. To re-enable, use `/claude-mem:memory-on`."
 
 ### Example 4: Increase Context Depth
 **User:** "I want to see more history, set context depth to 10"
