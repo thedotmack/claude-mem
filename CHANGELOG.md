@@ -8,6 +8,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 
+## [4.2.11] - 2025-10-25
+
+### Fixed
+- **Cross-platform Claude path detection**: Fixed SDK auto-detection failure by implementing explicit `which`/`where` command execution
+  - SDK's automatic Claude path detection was returning undefined
+  - Unix/macOS: Uses `which claude` command to find executable
+  - Windows: Uses `where claude` command (works in both CMD and PowerShell)
+  - Fallback to `CLAUDE_CODE_PATH` environment variable if set
+  - Handles Windows multiple results by taking first match
+  - Worker now logs discovered path for debugging: "Found Claude executable: /path/to/claude"
+
+### Technical Details
+- Added `findClaudePath()` helper function using `child_process.execSync`
+- Platform detection via `process.platform === 'win32'` to choose appropriate command
+- Updated `src/sdk/worker.ts` and `src/services/worker-service.ts` with explicit path detection
+- Both files now pass `pathToClaudeCodeExecutable: claudePath` to SDK query
+
+
 ## [4.2.10] - 2025-10-25
 
 ### Fixed

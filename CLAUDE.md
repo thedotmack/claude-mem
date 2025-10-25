@@ -210,99 +210,27 @@ npm run build && git commit -a -m "Build and update" && git push && cd ~/.claude
 
 ## Version History
 
-### v4.2.11 (Current)
-**Breaking Changes**: None (patch version)
+For detailed version history and changelog, see [CHANGELOG.md](CHANGELOG.md).
 
-**Critical Bugfix**:
-- Fixed SDK auto-detection failure by implementing explicit `which`/`where` command execution
-  - SDK's automatic Claude path detection was not working (returned undefined)
-  - Implemented cross-platform executable finder using `child_process.execSync`
-  - Unix/macOS: Uses `which claude` command
-  - Windows: Uses `where claude` command (works in both CMD and PowerShell)
-  - Fallback to `CLAUDE_CODE_PATH` environment variable if set
-  - Handles Windows multiple results (takes first match)
+**Current Version**: 4.2.11
 
-**Impact**:
-- Before: Worker service failed with "path argument must be of type string. Received undefined"
-- After: Worker service correctly finds Claude executable on all platforms
+### Recent Highlights
 
-**Technical Details**:
-- Added `findClaudePath()` helper function to both worker files
-- Uses `process.platform === 'win32'` to detect Windows and choose appropriate command
-- Logs the discovered path for debugging: "Found Claude executable: /path/to/claude"
-- Updated `src/sdk/worker.ts` with explicit path detection
-- Updated `src/services/worker-service.ts` with explicit path detection
-- Both files now pass `pathToClaudeCodeExecutable: claudePath` to SDK
+#### v4.2.11 (2025-10-25)
+- Fixed cross-platform Claude executable path detection using `which`/`where` commands
+- Full Windows, macOS, and Linux compatibility
 
-**Files Changed**:
-- `src/sdk/worker.ts`
-- `src/services/worker-service.ts`
-- `plugin/scripts/worker-service.cjs` (rebuilt)
+#### v4.2.8 (2025-10-25)
+- Fixed NOT NULL constraint violation for claude_session_id
 
-### v4.2.10
-**Breaking Changes**: None (patch version)
+#### v4.2.3 (2025-10-23)
+- Fixed FTS5 injection vulnerability
+- Fixed Windows PowerShell compatibility
 
-**Critical Bugfix**:
-- Attempted to fix Windows compatibility by removing hardcoded macOS path
-  - Removed hardcoded path: `/Users/alexnewman/.nvm/versions/node/v24.5.0/bin/claude`
-  - Removed `pathToClaudeCodeExecutable` parameter to rely on SDK auto-detection
-  - **Note**: This approach failed; SDK auto-detection did not work (fixed in v4.2.11)
-
-**Impact**:
-- Partial fix: Removed hardcoded macOS path
-- Issue: SDK auto-detection returned undefined, causing worker failures
-
-**Files Changed**:
-- `src/sdk/worker.ts`
-- `src/services/worker-service.ts`
-- `plugin/scripts/worker-service.cjs` (rebuilt)
-
-### v4.2.9
-**Breaking Changes**: None (patch version)
-
-**Documentation**:
-- Added experimental progressive disclosure context system documentation
-  - New README section explaining the 3-layer memory retrieval approach
-  - Created `EXPERIMENTAL_RELEASE_NOTES.md` with comprehensive testing guide
-  - Created `GITHUB_RELEASE_TEMPLATE.md` for release announcements
-  - Invites users to test `feature/context-with-observations` branch
-- Progressive disclosure concept: Index (what exists + token costs) → Details (on-demand via MCP) → Perfect recall (source code)
-- Seeks user feedback on observation-level context injection vs current summary-only approach
-
-**Purpose**:
-- Gather real-world feedback before merging experimental context improvements
-- Test whether showing observation index improves Claude's retrieval decisions
-- Validate token cost metadata influences Claude's search behavior
-
-**Files Changed**:
-- `README.md` - Added experimental feature section
-- `EXPERIMENTAL_RELEASE_NOTES.md` - Full testing guide and feedback template
-- `GITHUB_RELEASE_TEMPLATE.md` - Release announcement template
-- Updated all version references to 4.2.9
-
-### v4.2.8
-**Breaking Changes**: None (patch version)
-
-**Critical Bugfix**:
-- Fixed NOT NULL constraint violation that prevented observations and summaries from being stored
-  - Root cause: `SessionStore.getSessionById()` was not selecting `claude_session_id` from database
-  - Worker service received `undefined` for `claude_session_id` when initializing sessions
-  - Result: Database inserts failed with "NOT NULL constraint failed: sdk_sessions.claude_session_id"
-  - Fix: Added `claude_session_id` to SELECT query and return type in `getSessionById()`
-  - Impact: Session ID from hooks now flows correctly: hook → database → worker → SDK agent
-  - Affects: All observation and summary storage operations
-
-**Technical Details**:
-- Updated `src/services/sqlite/SessionStore.ts:711` to include `claude_session_id` in SELECT
-- Updated return type signature to include `claude_session_id: string` field
-- Worker service now correctly receives and uses `claude_session_id` from database
-- System maintains consistency throughout entire session lifecycle
-
-**Files Changed**:
-- `src/services/sqlite/SessionStore.ts` (getSessionById method)
-
-### v4.2.7
-**Breaking Changes**: None (patch version)
+#### v4.0.0 (2025-10-18)
+- MCP Search Server with FTS5 full-text search
+- Plugin data directory integration
+- HTTP REST API architecture with PM2
 
 **Improvements**:
 - Enhanced data quality with consistent null handling
