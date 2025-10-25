@@ -535,6 +535,13 @@ class WorkerService {
   private handleAgentMessage(session: ActiveSession, content: string, promptNumber: number): void {
     const correlationId = logger.correlationId(session.sessionDbId, session.observationCounter);
 
+    // Always log what we received for debugging
+    logger.info('PARSER', `Processing response (${content.length} chars)`, {
+      sessionId: session.sessionDbId,
+      promptNumber,
+      preview: content.substring(0, 200)
+    });
+
     // Parse observations
     const observations = parseObservations(content, correlationId);
 
@@ -557,11 +564,26 @@ class WorkerService {
     }
 
     // Parse summary and ALWAYS store it
+    logger.info('PARSER', 'Looking for summary tags...', { sessionId: session.sessionDbId });
     const summary = parseSummary(content, session.sessionDbId);
     if (summary) {
-      logger.info('PARSER', 'Summary parsed', { sessionId: session.sessionDbId, promptNumber });
+      logger.success('PARSER', 'Summary parsed successfully!', {
+        sessionId: session.sessionDbId,
+        promptNumber,
+        hasRequest: !!summary.request,
+        hasInvestigated: !!summary.investigated,
+        hasLearned: !!summary.learned,
+        hasCompleted: !!summary.completed,
+        hasNextSteps: !!summary.next_steps
+      });
       db.storeSummary(session.claudeSessionId, session.project, summary, promptNumber);
-      logger.success('DB', 'Summary stored', { sessionId: session.sessionDbId });
+      logger.success('DB', '📝 SUMMARY STORED IN DATABASE', { sessionId: session.sessionDbId, promptNumber });
+    } else {
+      logger.warn('PARSER', 'NO SUMMARY TAGS FOUND in response', {
+        sessionId: session.sessionDbId,
+        promptNumber,
+        contentSample: content.substring(0, 500)
+      });
     }
 
     db.close();
