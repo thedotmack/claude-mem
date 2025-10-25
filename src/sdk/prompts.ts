@@ -158,35 +158,21 @@ export function buildObservationPrompt(obs: Observation): string {
 export function buildSummaryPrompt(session: SDKSession): string {
   return `THIS REQUEST'S SUMMARY
 ===============
-Think about the observations you just wrote for this request, and write a summary of what was done, what was learned, and what's next.
+Think about the last request, and write a summary of what was done, what was learned, and what's next.
 
 IMPORTANT! DO NOT summarize the observation process itself - you are summarizing a DIFFERENT claude code session, not this one.
 
 User's Original Request: ${session.user_prompt}
 
-✅ GOOD - Describes deliverables:
-<request>Fix authentication timeout bug</request>
-<request>Add three-tier verbosity system to session summaries</request>
-<request>Deploy Kubernetes cluster with auto-scaling</request>
-
-❌ BAD - Describes meta-operations (DO NOT DO THIS):
-<request>Process tool executions and store observations</request>
-<request>Analyze session data and generate summaries</request>
-<request>Track file modifications across sessions</request>
-
-Output this XML:
+Respond in this XML format:
 <summary>
   <request>[What did the user request? Form a title that reflects the actual request: ${session.user_prompt}]</request>
-  <investigated>[What was explored?]</investigated>
-  <learned>[What was learned about how things work?]</learned>
-  <completed>[What shipped? What does the system now do?]</completed>
+  <investigated>[Was anything explored? What was it?]</investigated>
+  <learned>[Did you learn anything? What was learned about how things work?]</learned>
+  <completed>[Did you do any work? What shipped? What does the system now do?]</completed>
   <next_steps>[What are the next steps?]</next_steps>
   <notes>[Additional insights]</notes>
 </summary>
 
-**Required fields**: request, investigated, learned, completed, next_steps
-**Optional fields**: notes
-
-IMPORTANT: This is not the end of the session. You will receive more requests to process, and more tool usages to observe and record. The summary helps keep track of progress.
-`; 
+IMPORTANT: This is not the end of the session. You will receive more requests to process, and more tool usages to observe and record. The summary helps keep track of progress. Always write at least a minimal summary explaining where we are at currently, even if you didn't learn anything new or complete any work.`; 
 }
