@@ -282,7 +282,7 @@ ${e.stack}`:e.message;if(Array.isArray(e))return`[${e.length} items]`;let r=Obje
       FROM observations
       WHERE sdk_session_id = ?
     `).all(e),i=new Set,s=new Set;for(let n of t){if(n.files_read)try{let o=JSON.parse(n.files_read);Array.isArray(o)&&o.forEach(p=>i.add(p))}catch{}if(n.files_modified)try{let o=JSON.parse(n.files_modified);Array.isArray(o)&&o.forEach(p=>s.add(p))}catch{}}return{filesRead:Array.from(i),filesModified:Array.from(s)}}getSessionById(e){return this.db.prepare(`
-      SELECT id, sdk_session_id, project, user_prompt
+      SELECT id, claude_session_id, sdk_session_id, project, user_prompt
       FROM sdk_sessions
       WHERE id = ?
       LIMIT 1

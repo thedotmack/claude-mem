@@ -702,12 +702,13 @@ export class SessionStore {
    */
   getSessionById(id: number): {
     id: number;
+    claude_session_id: string;
     sdk_session_id: string | null;
     project: string;
     user_prompt: string;
   } | null {
     const stmt = this.db.prepare(`
-      SELECT id, sdk_session_id, project, user_prompt
+      SELECT id, claude_session_id, sdk_session_id, project, user_prompt
       FROM sdk_sessions
       WHERE id = ?
       LIMIT 1
