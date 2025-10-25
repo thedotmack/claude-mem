@@ -88,28 +88,30 @@ The plugin prefix `/claude-mem:` is optional unless there are name collisions.
 
 ## How to Use Settings CLI
 
-The settings CLI is located at: `plugin/scripts/settings-cli.js`
+The settings CLI is located at: `${CLAUDE_PLUGIN_ROOT}/scripts/settings-cli.js`
+
+**IMPORTANT:** Always use the `${CLAUDE_PLUGIN_ROOT}` environment variable to reference the plugin path. This environment variable is automatically provided by Claude Code and points to the plugin's installation directory. Always wrap it in double quotes to handle spaces in paths.
 
 ### Commands
 
 ```bash
 # View current settings (formatted with descriptions)
-node plugin/scripts/settings-cli.js
+node "${CLAUDE_PLUGIN_ROOT}/scripts/settings-cli.js"
 
 # View current settings (JSON format)
-node plugin/scripts/settings-cli.js --json
+node "${CLAUDE_PLUGIN_ROOT}/scripts/settings-cli.js" --json
 
 # Get specific setting value
-node plugin/scripts/settings-cli.js --get <key>
+node "${CLAUDE_PLUGIN_ROOT}/scripts/settings-cli.js" --get <key>
 
 # Set specific setting
-node plugin/scripts/settings-cli.js --set <key>=<value>
+node "${CLAUDE_PLUGIN_ROOT}/scripts/settings-cli.js" --set <key>=<value>
 
 # Reset to defaults
-node plugin/scripts/settings-cli.js --reset
+node "${CLAUDE_PLUGIN_ROOT}/scripts/settings-cli.js" --reset
 
 # Show help
-node plugin/scripts/settings-cli.js --help
+node "${CLAUDE_PLUGIN_ROOT}/scripts/settings-cli.js" --help
 ```
 
 ## Instructions for Claude
@@ -129,16 +131,16 @@ When the user asks to view or modify claude-mem settings:
 2. **For viewing settings:**
    ```bash
    # Show all settings
-   node plugin/scripts/settings-cli.js
+   node "${CLAUDE_PLUGIN_ROOT}/scripts/settings-cli.js"
 
    # Show specific setting (JSON output)
-   node plugin/scripts/settings-cli.js --get <key>
+   node "${CLAUDE_PLUGIN_ROOT}/scripts/settings-cli.js" --get <key>
    ```
 
 3. **For changing settings:**
    ```bash
    # Set a specific value
-   node plugin/scripts/settings-cli.js --set <key>=<value>
+   node "${CLAUDE_PLUGIN_ROOT}/scripts/settings-cli.js" --set <key>=<value>
    ```
 
    **Mapping examples:**
@@ -154,7 +156,7 @@ When the user asks to view or modify claude-mem settings:
 
 5. **For reset requests:**
    ```bash
-   node plugin/scripts/settings-cli.js --reset
+   node "${CLAUDE_PLUGIN_ROOT}/scripts/settings-cli.js" --reset
    ```
 
 ## Important Notes
@@ -169,7 +171,7 @@ When the user asks to view or modify claude-mem settings:
 
 **Claude response:**
 ```bash
-node plugin/scripts/settings-cli.js
+node "${CLAUDE_PLUGIN_ROOT}/scripts/settings-cli.js"
 ```
 
 Then explain the current configuration to the user in plain language.
@@ -179,7 +181,7 @@ Then explain the current configuration to the user in plain language.
 
 **Claude response:**
 ```bash
-node plugin/scripts/settings-cli.js --set model=claude-haiku-4-5
+node "${CLAUDE_PLUGIN_ROOT}/scripts/settings-cli.js" --set model=claude-haiku-4-5
 ```
 
 Confirm: "I've changed your model to claude-haiku-4-5 (Haiku). This is the most cost-efficient option and will process your observations faster. You may want to restart the worker service for this to take effect: `pm2 restart claude-mem-worker`"
@@ -195,7 +197,7 @@ You can use the quick slash command:
 
 Or if you prefer the CLI:
 ```bash
-node plugin/scripts/settings-cli.js --set enableMemoryStorage=false
+node "${CLAUDE_PLUGIN_ROOT}/scripts/settings-cli.js" --set enableMemoryStorage=false
 ```
 
 Confirm: "Memory storage has been disabled. Claude-mem will no longer save tool observations to the database. Context injection is still active, so you'll still see previous session summaries. To re-enable, use `/claude-mem:memory-on`."
@@ -205,7 +207,7 @@ Confirm: "Memory storage has been disabled. Claude-mem will no longer save tool 
 
 **Claude response:**
 ```bash
-node plugin/scripts/settings-cli.js --set contextDepth=10
+node "${CLAUDE_PLUGIN_ROOT}/scripts/settings-cli.js" --set contextDepth=10
 ```
 
 Confirm: "I've increased your context depth to 10 sessions. You'll now see observations from the last 10 sessions at session start. Note that this will use more tokens in your context window."
@@ -215,8 +217,8 @@ Confirm: "I've increased your context depth to 10 sessions. You'll now see obser
 
 **Claude response:**
 ```bash
-node plugin/scripts/settings-cli.js --set model=claude-haiku-4-5
-node plugin/scripts/settings-cli.js --set contextDepth=8
+node "${CLAUDE_PLUGIN_ROOT}/scripts/settings-cli.js" --set model=claude-haiku-4-5
+node "${CLAUDE_PLUGIN_ROOT}/scripts/settings-cli.js" --set contextDepth=8
 ```
 
 Confirm both changes and their implications.
@@ -233,7 +235,7 @@ If the CLI returns an error:
 
 Direct users to run:
 ```bash
-node plugin/scripts/settings-cli.js --help
+node "${CLAUDE_PLUGIN_ROOT}/scripts/settings-cli.js" --help
 ```
 
 This shows comprehensive help with all options and examples.
