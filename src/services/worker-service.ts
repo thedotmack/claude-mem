@@ -345,7 +345,7 @@ class WorkerService {
   private async runSDKAgent(session: ActiveSession): Promise<void> {
     logger.info('SDK', 'Agent starting', { sessionId: session.sessionDbId });
 
-    const claudePath = process.env.CLAUDE_CODE_PATH || '/usr/local/bin/claude';
+    // const claudePath = process.env.CLAUDE_CODE_PATH || '/usr/local/bin/claude';
 
     try {
       const queryResult = query({
@@ -353,8 +353,7 @@ class WorkerService {
         options: {
           model: MODEL,
           disallowedTools: DISALLOWED_TOOLS,
-          abortController: session.abortController,
-          pathToClaudeCodeExecutable: claudePath
+          abortController: session.abortController
         }
       });
 
