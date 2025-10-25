@@ -4,7 +4,7 @@
 
 Claude-mem is a persistent memory compression system that preserves context across Claude Code sessions. It automatically captures tool usage observations, processes them through the Claude Agent SDK, and makes summaries available to future sessions.
 
-**Current Version**: 4.2.7
+**Current Version**: 4.2.8
 **License**: AGPL-3.0
 **Author**: Alex Newman (@thedotmack)
 
@@ -210,7 +210,28 @@ npm run build && git commit -a -m "Build and update" && git push && cd ~/.claude
 
 ## Version History
 
-### v4.2.7 (Current)
+### v4.2.8 (Current)
+**Breaking Changes**: None (patch version)
+
+**Critical Bugfix**:
+- Fixed NOT NULL constraint violation that prevented observations and summaries from being stored
+  - Root cause: `SessionStore.getSessionById()` was not selecting `claude_session_id` from database
+  - Worker service received `undefined` for `claude_session_id` when initializing sessions
+  - Result: Database inserts failed with "NOT NULL constraint failed: sdk_sessions.claude_session_id"
+  - Fix: Added `claude_session_id` to SELECT query and return type in `getSessionById()`
+  - Impact: Session ID from hooks now flows correctly: hook → database → worker → SDK agent
+  - Affects: All observation and summary storage operations
+
+**Technical Details**:
+- Updated `src/services/sqlite/SessionStore.ts:711` to include `claude_session_id` in SELECT
+- Updated return type signature to include `claude_session_id: string` field
+- Worker service now correctly receives and uses `claude_session_id` from database
+- System maintains consistency throughout entire session lifecycle
+
+**Files Changed**:
+- `src/services/sqlite/SessionStore.ts` (getSessionById method)
+
+### v4.2.7
 **Breaking Changes**: None (patch version)
 
 **Improvements**:
