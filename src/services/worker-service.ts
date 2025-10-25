@@ -353,8 +353,8 @@ class WorkerService {
         options: {
           model: MODEL,
           disallowedTools: DISALLOWED_TOOLS,
-          abortController: session.abortController
-          // pathToClaudeCodeExecutable: claudePath
+          abortController: session.abortController,
+          pathToClaudeCodeExecutable: ''
         }
       });
 
