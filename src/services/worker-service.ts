@@ -548,25 +548,19 @@ class WorkerService {
 
     const db = new SessionStore();
     for (const obs of observations) {
-      if (session.sdkSessionId) {
-        db.storeObservation(session.sdkSessionId, session.project, obs, promptNumber);
-        logger.success('DB', 'Observation stored', {
-          correlationId,
-          type: obs.type,
-          title: obs.title
-        });
-      }
+      db.storeObservation(session.claudeSessionId, session.project, obs, promptNumber);
+      logger.success('DB', 'Observation stored', {
+        correlationId,
+        type: obs.type,
+        title: obs.title
+      });
     }
 
-    // Parse summary
+    // Parse summary and ALWAYS store it
     const summary = parseSummary(content, session.sessionDbId);
-    if (summary && session.sdkSessionId) {
-      logger.info('PARSER', 'Summary parsed', {
-        sessionId: session.sessionDbId,
-        promptNumber
-      });
-
-      db.storeSummary(session.sdkSessionId, session.project, summary, promptNumber);
+    if (summary) {
+      logger.info('PARSER', 'Summary parsed', { sessionId: session.sessionDbId, promptNumber });
+      db.storeSummary(session.claudeSessionId, session.project, summary, promptNumber);
       logger.success('DB', 'Summary stored', { sessionId: session.sessionDbId });
     }
 
