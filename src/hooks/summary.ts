@@ -2,6 +2,7 @@ import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { createHookResponse } from './hook-response.js';
 import { logger } from '../utils/logger.js';
 import { ensureWorkerRunning } from '../shared/worker-utils.js';
+import { getSettings } from '../services/settings-service.js';
 
 export interface StopInput {
   session_id: string;
@@ -33,8 +34,8 @@ export async function summaryHook(input?: StopInput): Promise<void> {
   const promptNumber = db.getPromptCounter(sessionDbId);
   db.close();
 
-  // Use fixed worker port - no session.worker_port validation needed
-  const FIXED_PORT = parseInt(process.env.CLAUDE_MEM_WORKER_PORT || '37777', 10);
+  // Get worker port from settings
+  const FIXED_PORT = getSettings().get().workerPort;
 
   logger.dataIn('HOOK', 'Stop: Requesting summary', {
     sessionId: sessionDbId,

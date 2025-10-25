@@ -58,13 +58,13 @@ description: "Common issues and solutions for Claude-Mem"
 
 3. Or use a different port:
    ```bash
-   export CLAUDE_MEM_WORKER_PORT=38000
+   node plugin/scripts/settings-cli.js --set workerPort=38000
    npm run worker:restart
    ```
 
 4. Verify new port:
    ```bash
-   cat ~/.claude-mem/worker.port
+   node plugin/scripts/settings-cli.js --get workerPort
    ```
 
 ### Worker Keeps Crashing

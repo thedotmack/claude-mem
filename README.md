@@ -211,15 +211,19 @@ See [CHANGELOG.md](CHANGELOG.md) for complete version history.
 
 ## Configuration
 
-**Model Selection:**
-```bash
-./claude-mem-settings.sh
-```
+Claude-mem uses a centralized settings system. Configure using:
 
-**Environment Variables:**
-- `CLAUDE_MEM_MODEL` - AI model for processing (default: claude-sonnet-4-5)
-- `CLAUDE_MEM_WORKER_PORT` - Worker port (default: 37777)
-- `CLAUDE_MEM_DATA_DIR` - Data directory override (dev only)
+1. **Agent Skill** (recommended) - Ask Claude "show me my claude-mem settings"
+2. **Slash Commands** - `/claude-mem:context-on`, `/claude-mem:memory-off`, etc.
+3. **CLI Tool** - `node plugin/scripts/settings-cli.js`
+4. **Direct Edit** - Edit `~/.claude-mem/settings.json`
+
+**Available Settings:**
+- `model` - AI model (default: claude-sonnet-4-5)
+- `workerPort` - Worker port (default: 37777)
+- `enableMemoryStorage` - Store observations (default: true)
+- `enableContextInjection` - Inject context at session start (default: true)
+- `contextDepth` - Number of sessions to load (default: 5)
 
 See [Configuration Guide](docs/configuration.mdx) for details.
 

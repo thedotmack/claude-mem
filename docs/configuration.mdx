@@ -1,49 +1,137 @@
 ---
 title: "Configuration"
-description: "Environment variables and settings for Claude-Mem"
+description: "Settings and configuration options for Claude-Mem"
 ---
 
 # Configuration
 
-## Environment Variables
+Claude-mem uses a centralized settings system with four access methods:
 
-| Variable                | Default                         | Description                           |
-|-------------------------|---------------------------------|---------------------------------------|
-| `CLAUDE_PLUGIN_ROOT`    | Set by Claude Code              | Plugin installation directory         |
-| `CLAUDE_MEM_DATA_DIR`   | `~/.claude-mem/`                | Data directory (dev override)         |
-| `CLAUDE_MEM_WORKER_PORT`| `37777`                         | Worker service port                   |
-| `CLAUDE_MEM_MODEL`      | `claude-sonnet-4-5`             | AI model for processing observations  |
-| `NODE_ENV`              | `production`                    | Environment mode                      |
-| `FORCE_COLOR`           | `1`                             | Enable colored logs                   |
+1. **Agent Skill** (recommended) - Natural language settings management within Claude Code
+2. **Slash Commands** - Quick toggle commands for common operations
+3. **CLI Tool** - Cross-platform command-line interface
+4. **Direct Edit** - Manually edit `~/.claude-mem/settings.json`
 
-## Model Configuration
+## Settings File
 
-Configure which AI model processes your observations.
+**Location**: `~/.claude-mem/settings.json`
 
-### Available Models
+**Priority Order**:
+1. Settings file (highest priority)
+2. Default values (lowest priority)
 
+## Available Settings
+
+### model
+AI model used for processing observations and generating summaries.
+
+**Options**:
 - `claude-haiku-4-5` - Fast, cost-efficient
 - `claude-sonnet-4-5` - Balanced (default)
 - `claude-opus-4` - Most capable
 - `claude-3-7-sonnet` - Alternative version
 
-### Using the Interactive Script
+### workerPort
+Port for the background worker service HTTP API.
 
-```bash
-./claude-mem-settings.sh
+**Range**: 1-65535
+**Default**: 37777
+
+### enableMemoryStorage
+Enable/disable saving tool observations to the database.
+
+**Options**: true (default), false
+**Use case**: Temporarily disable observation storage without uninstalling the plugin
+
+### enableContextInjection
+Enable/disable context injection at session start.
+
+**Options**: true (default), false
+**Use case**: Disable context loading while keeping observation storage active
+
+### contextDepth
+Number of recent sessions to load when injecting context.
+
+**Range**: 1-50
+**Default**: 5
+**Note**: Higher values = more historical context but more tokens used
+
+## Using the Agent Skill
+
+Ask Claude to manage settings using natural language:
+
+```
+"Show me my claude-mem settings"
+"Change my model to haiku"
+"Disable memory storage"
+"Set context depth to 10"
+"Turn off context injection"
 ```
 
-This script manages `CLAUDE_MEM_MODEL` in `~/.claude/settings.json`.
+The skill is located at `plugin/skills/claude-mem-settings/SKILL.md` and automatically available when the plugin is installed.
 
-### Manual Configuration
+## Using Slash Commands
 
-Edit `~/.claude/settings.json`:
+For quick toggle operations, use these slash commands:
+
+```
+/claude-mem:context-on    # Enable context injection
+/claude-mem:context-off   # Disable context injection
+/claude-mem:memory-on     # Enable memory storage
+/claude-mem:memory-off    # Disable memory storage
+```
+
+The plugin prefix `/claude-mem:` is optional unless there are name collisions. These commands provide instant on/off control for the most commonly toggled settings.
+
+## Using the CLI Tool
+
+**Location**: `plugin/scripts/settings-cli.js`
+
+**Commands**:
+```bash
+# View current settings (formatted)
+node plugin/scripts/settings-cli.js
+
+# View as JSON
+node plugin/scripts/settings-cli.js --json
+
+# Get specific setting
+node plugin/scripts/settings-cli.js --get model
+
+# Set a value
+node plugin/scripts/settings-cli.js --set model=claude-haiku-4-5
+node plugin/scripts/settings-cli.js --set contextDepth=10
+node plugin/scripts/settings-cli.js --set enableMemoryStorage=false
+
+# Reset to defaults
+node plugin/scripts/settings-cli.js --reset
+
+# Show help
+node plugin/scripts/settings-cli.js --help
+```
+
+## Direct Edit
+
+You can manually edit the settings file at `~/.claude-mem/settings.json`:
 
 ```json
 {
-  "CLAUDE_MEM_MODEL": "claude-sonnet-4-5"
+  "model": "claude-sonnet-4-5",
+  "workerPort": 37777,
+  "enableMemoryStorage": true,
+  "enableContextInjection": true,
+  "contextDepth": 5
 }
 ```
+
+## Applying Changes
+
+- **Model or Port Changes**: Restart the worker service
+  ```bash
+  pm2 restart claude-mem-worker
+  ```
+
+- **Toggle Changes** (enableMemoryStorage, enableContextInjection, contextDepth): Take effect immediately on next hook execution
 
 ## Files and Directories
 
@@ -52,7 +140,7 @@ Edit `~/.claude/settings.json`:
 ```
 ~/.claude-mem/
 ├── claude-mem.db           # SQLite database
-├── worker.port             # Current worker port file
+├── settings.json           # Configuration settings
 └── logs/
     ├── worker-out.log      # Worker stdout logs
     └── worker-error.log    # Worker stderr logs
@@ -67,6 +155,8 @@ ${CLAUDE_PLUGIN_ROOT}/
 ├── .mcp.json               # MCP server configuration
 ├── hooks/
 │   └── hooks.json          # Hook configuration
+├── skills/
+│   └── claude-mem-settings/  # Settings management skill
 └── scripts/                # Built executables
     ├── context-hook.js
     ├── new-hook.js
@@ -74,7 +164,8 @@ ${CLAUDE_PLUGIN_ROOT}/
     ├── summary-hook.js
     ├── cleanup-hook.js
     ├── worker-service.cjs
-    └── search-server.js
+    ├── search-server.js
+    └── settings-cli.js
 ```
 
 ## Plugin Configuration
@@ -142,7 +233,7 @@ The MCP search server is configured in `plugin/.mcp.json`:
 }
 ```
 
-This registers the `claude-mem-search` server with Claude Code, making the 7 search tools available in all sessions.
+This registers the `claude-mem-search` server with Claude Code, making the search tools available in all sessions.
 
 ## PM2 Configuration
 
@@ -156,7 +247,7 @@ module.exports = {
     instances: 1,
     autorestart: true,
     watch: false,
-    max_memory_restart: '1G',
+    max_memory_restart: '500M',
     env: {
       NODE_ENV: 'production',
       FORCE_COLOR: '1'
@@ -170,35 +261,7 @@ module.exports = {
 - **instances**: 1 (single instance)
 - **autorestart**: true (auto-restart on crash)
 - **watch**: false (no file watching)
-- **max_memory_restart**: 1G (restart if memory exceeds 1GB)
-
-## Customization
-
-### Custom Data Directory
-
-For development or testing, override the data directory:
-
-```bash
-export CLAUDE_MEM_DATA_DIR=/custom/path
-```
-
-### Custom Worker Port
-
-If port 37777 is in use:
-
-```bash
-export CLAUDE_MEM_WORKER_PORT=38000
-npm run worker:restart
-```
-
-### Custom Model
-
-Use a different AI model:
-
-```bash
-export CLAUDE_MEM_MODEL=claude-opus-4
-npm run worker:restart
-```
+- **max_memory_restart**: 500M (restart if memory exceeds 500MB)
 
 ## Advanced Configuration
 
@@ -225,18 +288,8 @@ Modify PM2 memory limit in `ecosystem.config.cjs`:
 
 ```javascript
 {
-  max_memory_restart: '2G'  // Increase if needed
+  max_memory_restart: '1G'  // Increase if needed
 }
-```
-
-### Logging Verbosity
-
-Enable debug logging:
-
-```bash
-export DEBUG=claude-mem:*
-npm run worker:restart
-npm run worker:logs
 ```
 
 ## Configuration Best Practices
@@ -251,31 +304,24 @@ npm run worker:logs
 
 ### Configuration Not Applied
 
-1. Restart worker after changes:
+1. Restart worker after model or port changes:
    ```bash
-   npm run worker:restart
+   pm2 restart claude-mem-worker
    ```
 
-2. Verify environment variables:
+2. Verify settings:
    ```bash
-   echo $CLAUDE_MEM_MODEL
-   echo $CLAUDE_MEM_WORKER_PORT
+   node plugin/scripts/settings-cli.js
    ```
 
 3. Check worker logs:
    ```bash
-   npm run worker:logs
+   pm2 logs claude-mem-worker
    ```
 
-### Invalid Model Name
+### Invalid Settings
 
-If you specify an invalid model name, the worker will fall back to `claude-sonnet-4-5` and log a warning.
-
-Valid models:
-- claude-haiku-4-5
-- claude-sonnet-4-5
-- claude-opus-4
-- claude-3-7-sonnet
+All settings have built-in validation with helpful error messages. If you specify an invalid value, you'll see a clear error message explaining the valid options.
 
 ### Port Already in Use
 
@@ -283,17 +329,12 @@ If port 37777 is already in use:
 
 1. Set custom port:
    ```bash
-   export CLAUDE_MEM_WORKER_PORT=38000
+   node plugin/scripts/settings-cli.js --set workerPort=38000
    ```
 
 2. Restart worker:
    ```bash
-   npm run worker:restart
-   ```
-
-3. Verify new port:
-   ```bash
-   cat ~/.claude-mem/worker.port
+   pm2 restart claude-mem-worker
    ```
 
 ## Next Steps

@@ -11,10 +11,10 @@ The worker service is a long-running HTTP API built with Express.js and managed 
 
 - **Technology**: Express.js HTTP server
 - **Process Manager**: PM2
-- **Port**: Fixed port 37777 (configurable via `CLAUDE_MEM_WORKER_PORT`)
+- **Port**: Fixed port 37777 (configurable via settings.json `workerPort`)
 - **Location**: `src/services/worker-service.ts`
 - **Built Output**: `plugin/scripts/worker-service.cjs`
-- **Model**: Configurable via `CLAUDE_MEM_MODEL` environment variable (default: claude-sonnet-4-5)
+- **Model**: Configurable via settings.json `model` setting (default: claude-sonnet-4-5)
 
 ## REST API Endpoints
 
@@ -192,10 +192,11 @@ The worker service routes observations to the Claude Agent SDK for AI-powered pr
 
 ### Model Configuration
 
-Set the AI model used for processing via environment variable:
+Set the AI model used for processing via settings:
 
 ```bash
-export CLAUDE_MEM_MODEL=claude-sonnet-4-5
+node plugin/scripts/settings-cli.js --set model=claude-sonnet-4-5
+pm2 restart claude-mem-worker
 ```
 
 Available models:
@@ -209,10 +210,10 @@ Available models:
 The worker uses a fixed port (37777 by default) for consistent communication:
 
 - **Default**: Port 37777
-- **Override**: Set `CLAUDE_MEM_WORKER_PORT` environment variable
-- **Port File**: `${CLAUDE_PLUGIN_ROOT}/data/worker.port` tracks current port
+- **Override**: Set `workerPort` in settings.json
+- **Configuration**: `node plugin/scripts/settings-cli.js --set workerPort=38000`
 
-If port 37777 is in use, the worker will fail to start. Set a custom port via environment variable.
+If port 37777 is in use, the worker will fail to start. Set a custom port via settings and restart the worker.
 
 ## Data Storage
 

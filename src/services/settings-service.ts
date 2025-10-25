@@ -6,8 +6,8 @@
  * 2. Default values (lowest priority)
  */
 
-import { readFileSync, writeFileSync, existsSync } from 'fs';
-import { join } from 'path';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { join, dirname } from 'path';
 import { homedir } from 'os';
 
 export type ModelOption = 'claude-haiku-4-5' | 'claude-sonnet-4-5' | 'claude-opus-4' | 'claude-3-7-sonnet';
@@ -191,6 +191,12 @@ export class SettingsService {
 
     // Validate before saving
     this.validateSettings(updated);
+
+    // Ensure parent directory exists
+    const dir = dirname(this.settingsPath);
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true });
+    }
 
     // Write to file
     try {

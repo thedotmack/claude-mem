@@ -31,7 +31,6 @@ module.exports = {
 
     env: {
       NODE_ENV: 'production',
-      CLAUDE_MEM_WORKER_PORT: 37777, // Fixed port for reliability
       FORCE_COLOR: '1'
     },
 
