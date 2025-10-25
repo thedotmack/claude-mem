@@ -12,10 +12,40 @@ import { parseObservations, parseSummary } from '../sdk/parser.js';
 import type { SDKSession } from '../sdk/prompts.js';
 import { logger } from '../utils/logger.js';
 import { ensureAllDataDirs } from '../shared/paths.js';
+import { execSync } from 'child_process';
 
 const MODEL = process.env.CLAUDE_MEM_MODEL || 'claude-sonnet-4-5';
 const DISALLOWED_TOOLS = ['Glob', 'Grep', 'ListMcpResourcesTool', 'WebSearch'];
 const FIXED_PORT = parseInt(process.env.CLAUDE_MEM_WORKER_PORT || '37777', 10);
+
+/**
+ * Find Claude Code executable path using which (Unix/Mac) or where (Windows)
+ */
+function findClaudePath(): string {
+  try {
+    // Try environment variable first
+    if (process.env.CLAUDE_CODE_PATH) {
+      return process.env.CLAUDE_CODE_PATH;
+    }
+
+    // Use which on Unix/Mac, where on Windows
+    const command = process.platform === 'win32' ? 'where claude' : 'which claude';
+    const result = execSync(command, { encoding: 'utf8' }).trim();
+
+    // On Windows, 'where' returns multiple lines if there are multiple matches, take the first
+    const path = result.split('\n')[0].trim();
+
+    if (!path) {
+      throw new Error('Claude executable not found in PATH');
+    }
+
+    logger.info('SYSTEM', `Found Claude executable: ${path}`);
+    return path;
+  } catch (error: any) {
+    logger.failure('SYSTEM', 'Failed to find Claude executable', {}, error);
+    throw new Error('Claude Code executable not found. Please ensure claude is in your PATH or set CLAUDE_CODE_PATH environment variable.');
+  }
+}
 
 interface ObservationMessage {
   type: 'observation';
@@ -345,13 +375,17 @@ class WorkerService {
   private async runSDKAgent(session: ActiveSession): Promise<void> {
     logger.info('SDK', 'Agent starting', { sessionId: session.sessionDbId });
 
+    const claudePath = findClaudePath();
+    logger.info('SDK', `Using Claude executable: ${claudePath}`, { sessionId: session.sessionDbId });
+
     try {
       const queryResult = query({
         prompt: this.createMessageGenerator(session),
         options: {
           model: MODEL,
           disallowedTools: DISALLOWED_TOOLS,
-          abortController: session.abortController
+          abortController: session.abortController,
+          pathToClaudeCodeExecutable: claudePath
         }
       });
 
