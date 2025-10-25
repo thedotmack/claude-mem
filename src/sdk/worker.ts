@@ -283,7 +283,7 @@ class SDKWorker {
    */
   private async runSDKAgent(): Promise<void> {
     // Find Claude Code executable
-    const claudePath = process.env.CLAUDE_CODE_PATH || '/Users/alexnewman/.nvm/versions/node/v24.5.0/bin/claude';
+    const claudePath = process.env.CLAUDE_CODE_PATH || '/usr/local/bin/claude';
     console.error(`[SDK Worker DEBUG] About to call query with claudePath: ${claudePath}`);
 
     const queryResult = query({
