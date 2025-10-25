@@ -1098,7 +1098,6 @@ Skip routine operations:
 |----------|---------|---------|----------------|
 | `CLAUDE_MEM_MODEL` | `claude-sonnet-4-5` | AI model for processing | Invalid = SDK fails |
 | `CLAUDE_MEM_WORKER_PORT` | `37777` | HTTP server port | Invalid = Worker won't start |
-| `CLAUDE_CODE_PATH` | `/Users/alexnewman/.nvm/versions/node/v24.5.0/bin/claude` | Path to Claude Code | Invalid = SDK fails |
 
 ### Constants
 

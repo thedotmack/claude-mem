@@ -61,7 +61,7 @@ function buildTimestampMap(): TimestampMapping {
         const data = JSON.parse(line);
         const timestamp = data.timestamp;
         const sessionId = data.sessionId;
-        const project = data.cwd || '/Users/alexnewman/Scripts/claude-mem';
+        const project = data.cwd;
 
         if (timestamp && sessionId) {
           // Round timestamp to second for matching with XML timestamps
