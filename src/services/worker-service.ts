@@ -11,6 +11,7 @@ import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt } from '../
 import { parseObservations, parseSummary } from '../sdk/parser.js';
 import type { SDKSession } from '../sdk/prompts.js';
 import { logger } from '../utils/logger.js';
+import { ensureAllDataDirs } from '../shared/paths.js';
 
 const MODEL = process.env.CLAUDE_MEM_MODEL || 'claude-sonnet-4-5';
 const DISALLOWED_TOOLS = ['Glob', 'Grep', 'ListMcpResourcesTool', 'WebSearch'];
@@ -344,13 +345,16 @@ class WorkerService {
   private async runSDKAgent(session: ActiveSession): Promise<void> {
     logger.info('SDK', 'Agent starting', { sessionId: session.sessionDbId });
 
+    const claudePath = process.env.CLAUDE_CODE_PATH || '/Users/alexnewman/.nvm/versions/node/v24.5.0/bin/claude';
+
     try {
       const queryResult = query({
         prompt: this.createMessageGenerator(session),
         options: {
           model: MODEL,
           disallowedTools: DISALLOWED_TOOLS,
-          abortController: session.abortController
+          abortController: session.abortController,
+          pathToClaudeCodeExecutable: claudePath
         }
       });
 
