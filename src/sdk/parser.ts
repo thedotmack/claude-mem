@@ -7,10 +7,10 @@ import { logger } from '../utils/logger.js';
 
 export interface ParsedObservation {
   type: string;
-  title: string;
-  subtitle: string;
+  title: string | null;
+  subtitle: string | null;
   facts: string[];
-  narrative: string;
+  narrative: string | null;
   concepts: string[];
   files_read: string[];
   files_modified: string[];
@@ -49,39 +49,39 @@ export function parseObservations(text: string, correlationId?: string): ParsedO
     const files_read = extractArrayElements(obsContent, 'files_read', 'file');
     const files_modified = extractArrayElements(obsContent, 'files_modified', 'file');
 
-    // Validate required fields
-    if (!type || !title || !subtitle || !narrative) {
-      logger.warn('PARSER', 'Observation missing required fields, skipping', {
-        correlationId,
-        hasType: !!type,
-        hasTitle: !!title,
-        hasSubtitle: !!subtitle,
-        hasNarrative: !!narrative
-      });
-      continue;
+    // NOTE FROM THEDOTMACK: ALWAYS save observations - never skip. 10/24/2025
+    // All fields except type are nullable in schema
+    // If type is missing or invalid, use "change" as catch-all fallback
+
+    // Determine final type
+    let finalType = 'change'; // Default catch-all
+    if (type) {
+      const validTypes = ['bugfix', 'feature', 'refactor', 'change', 'discovery', 'decision'];
+      if (validTypes.includes(type.trim())) {
+        finalType = type.trim();
+      } else {
+        logger.warn('PARSER', `Invalid observation type: ${type}, using "change"`, { correlationId });
+      }
+    } else {
+      logger.warn('PARSER', 'Observation missing type field, using "change"', { correlationId });
     }
 
-    // Validate type
-    const validTypes = ['bugfix', 'feature', 'refactor', 'change', 'discovery', 'decision'];
-    if (!validTypes.includes(type.trim())) {
-      logger.warn('PARSER', `Invalid observation type: ${type}, skipping`, { correlationId });
-      continue;
-    }
+    // All other fields are optional - save whatever we have
 
     // Filter out type from concepts array (types and concepts are separate dimensions)
-    const cleanedConcepts = concepts.filter(c => c !== type.trim());
+    const cleanedConcepts = concepts.filter(c => c !== finalType);
 
     if (cleanedConcepts.length !== concepts.length) {
       logger.warn('PARSER', 'Removed observation type from concepts array', {
         correlationId,
-        type: type.trim(),
+        type: finalType,
         originalConcepts: concepts,
         cleanedConcepts
       });
     }
 
     observations.push({
-      type: type.trim(),
+      type: finalType,
       title,
       subtitle,
       facts,

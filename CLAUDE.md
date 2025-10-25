@@ -4,7 +4,7 @@
 
 Claude-mem is a persistent memory compression system that preserves context across Claude Code sessions. It automatically captures tool usage observations, processes them through the Claude Agent SDK, and makes summaries available to future sessions.
 
-**Current Version**: 4.2.5
+**Current Version**: 4.2.6
 **License**: AGPL-3.0
 **Author**: Alex Newman (@thedotmack)
 
@@ -210,7 +210,32 @@ npm run build && git commit -a -m "Build and update" && git push && cd ~/.claude
 
 ## Version History
 
-### v4.2.5 (Current)
+### v4.2.6 (Current)
+**Breaking Changes**: None (patch version)
+
+**Critical Bugfix**:
+- Fixed overly defensive observation validation that was blocking observations from being saved
+  - Removed validation requiring title, subtitle, and narrative fields
+  - Parser now NEVER skips observations - always saves them
+  - Invalid or missing type defaults to "change" (generic catch-all type)
+  - Prevents critical data loss - partial observations are better than no observations
+
+**Impact**:
+- Before: Missing title, subtitle, OR narrative caused entire observation to be discarded
+- After: ALL observations preserved regardless of field completeness
+- Even partial observations contain valuable data: concepts, files_read, files_modified, facts
+- LLMs make mistakes - system must be resilient and save everything
+- Consistent with v4.2.5 summary fix - partial data is always better than no data
+
+**Technical Details**:
+- Updated `src/sdk/parser.ts:52-67` to never skip observations
+- Uses "change" as fallback type for invalid/missing types (no schema change needed)
+- Updated ParsedObservation interface to allow null for title, subtitle, narrative
+- Database schema already supports nullable fields
+- Parser now matches database schema constraints exactly
+- Affects `parseObservations()` function used by worker service
+
+### v4.2.5
 **Breaking Changes**: None (patch version)
 
 **Critical Bugfix**:

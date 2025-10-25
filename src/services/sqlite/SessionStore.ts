@@ -903,10 +903,10 @@ export class SessionStore {
     project: string,
     observation: {
       type: string;
-      title: string;
-      subtitle: string;
+      title: string | null;
+      subtitle: string | null;
       facts: string[];
-      narrative: string;
+      narrative: string | null;
       concepts: string[];
       files_read: string[];
       files_modified: string[];
