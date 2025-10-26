@@ -17,19 +17,14 @@ try {
     console.log(contextOutput);
     process.exit(0);
   } else {
-    // Running from hook - wrap in JSON format without colors
+    // Running from hook - output plain text to stdout (for SessionStart hooks)
     let input = '';
     stdin.on('data', (chunk) => input += chunk);
     stdin.on('end', () => {
       const parsed = input.trim() ? JSON.parse(input) : undefined;
       const contextOutput = contextHook(parsed, false, useIndexView);
-      const result = {
-        hookSpecificOutput: {
-          hookEventName: "SessionStart",
-          additionalContext: contextOutput
-        }
-      };
-      console.log(JSON.stringify(result));
+      // SessionStart hooks add stdout directly to context
+      console.log(contextOutput);
       process.exit(0);
     });
   }
