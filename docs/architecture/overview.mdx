@@ -90,19 +90,12 @@ Claude Request → MCP Server → SessionSearch Service → FTS5 Database → Se
 ```
 claude-mem/
 ├── src/
-│   ├── bin/hooks/              # Entry point scripts for 5 hooks
+│   ├── hooks/                  # Hook implementations (v4.3.1+ consolidated)
 │   │   ├── context-hook.ts     # SessionStart
 │   │   ├── new-hook.ts         # UserPromptSubmit
 │   │   ├── save-hook.ts        # PostToolUse
 │   │   ├── summary-hook.ts     # Stop
 │   │   └── cleanup-hook.ts     # SessionEnd
-│   │
-│   ├── hooks/                  # Hook implementation logic
-│   │   ├── context.ts
-│   │   ├── new.ts
-│   │   ├── save.ts
-│   │   ├── summary.ts
-│   │   └── cleanup.ts
 │   │
 │   ├── servers/                # MCP servers
 │   │   └── search-server.ts    # MCP search tools server

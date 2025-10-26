@@ -28,7 +28,7 @@ Hooks are configured in `plugin/hooks/hooks.json`:
     "SessionStart": [{
       "hooks": [{
         "type": "command",
-        "command": "cd \"${CLAUDE_PLUGIN_ROOT}/..\" && npm install --prefer-offline --no-audit --no-fund --loglevel=error && node ${CLAUDE_PLUGIN_ROOT}/scripts/context-hook.js",
+        "command": "cd \"${CLAUDE_PLUGIN_ROOT}/..\" && npm install --prefer-offline --no-audit --no-fund --loglevel=silent && node ${CLAUDE_PLUGIN_ROOT}/scripts/context-hook.js",
         "timeout": 120
       }]
     }],
@@ -91,7 +91,9 @@ Hooks are configured in `plugin/hooks/hooks.json`:
 }
 ```
 
-**Implementation**: `src/hooks/context.ts` and `src/bin/hooks/context-hook.ts`
+**Implementation**: `src/hooks/context-hook.ts`
+
+**v4.3.1 Fix**: Changed npm install to use `--loglevel=silent` instead of `--loglevel=error` to prevent output pollution that was breaking JSON context injection.
 
 ## 2. UserPromptSubmit Hook (`new-hook.js`)
 
@@ -112,7 +114,7 @@ Hooks are configured in `plugin/hooks/hooks.json`:
 }
 ```
 
-**Implementation**: `src/hooks/new.ts` and `src/bin/hooks/new-hook.ts`
+**Implementation**: `src/hooks/new-hook.ts`
 
 ## 3. PostToolUse Hook (`save-hook.js`)
 
@@ -136,7 +138,7 @@ Hooks are configured in `plugin/hooks/hooks.json`:
 }
 ```
 
-**Implementation**: `src/hooks/save.ts` and `src/bin/hooks/save-hook.ts`
+**Implementation**: `src/hooks/save-hook.ts`
 
 ## 4. Stop Hook (`summary-hook.js`)
 
@@ -156,7 +158,7 @@ Hooks are configured in `plugin/hooks/hooks.json`:
 }
 ```
 
-**Implementation**: `src/hooks/summary.ts` and `src/bin/hooks/summary-hook.ts`
+**Implementation**: `src/hooks/summary-hook.ts`
 
 ## 5. SessionEnd Hook (`cleanup-hook.js`)
 
@@ -177,16 +179,15 @@ Hooks are configured in `plugin/hooks/hooks.json`:
 }
 ```
 
-**Implementation**: `src/hooks/cleanup.ts` and `src/bin/hooks/cleanup-hook.ts`
+**Implementation**: `src/hooks/cleanup-hook.ts`
 
 ## Hook Development
 
 ### Adding a New Hook
 
 1. Create hook implementation in `src/hooks/your-hook.ts`
-2. Create entry point in `src/bin/hooks/your-hook.ts`
-3. Add to `plugin/hooks/hooks.json`
-4. Rebuild with `npm run build`
+2. Add to `plugin/hooks/hooks.json`
+3. Rebuild with `npm run build`
 
 ### Hook Best Practices
 

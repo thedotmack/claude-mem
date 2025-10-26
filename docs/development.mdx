@@ -61,8 +61,7 @@ Edit TypeScript source files in `src/`:
 
 ```
 src/
-├── bin/hooks/       # Hook entry points
-├── hooks/           # Hook implementations
+├── hooks/           # Hook implementations (entry points + logic)
 ├── services/        # Worker service and database
 ├── servers/         # MCP search server
 ├── sdk/             # Claude Agent SDK integration
@@ -119,33 +118,26 @@ Repeat steps 1-4 until your changes work as expected.
 1. Create hook implementation in `src/hooks/your-hook.ts`:
 
 ```typescript
-import { HookInput } from './types';
-
-export async function yourHook(input: HookInput) {
-  // Hook implementation
-  return {
-    hookSpecificOutput: 'Optional output'
-  };
-}
-```
-
-2. Create entry point in `src/bin/hooks/your-hook.ts`:
-
-```typescript
 #!/usr/bin/env node
-import { readStdin } from '../../shared/stdin';
-import { yourHook } from '../../hooks/your-hook';
+import { readStdin } from '../shared/stdin';
 
 async function main() {
   const input = await readStdin();
-  const result = await yourHook(input);
+
+  // Hook implementation
+  const result = {
+    hookSpecificOutput: 'Optional output'
+  };
+
   console.log(JSON.stringify(result));
 }
 
 main().catch(console.error);
 ```
 
-3. Add to `plugin/hooks/hooks.json`:
+**Note**: As of v4.3.1, hooks are self-contained files. The shebang will be added automatically by esbuild during the build process.
+
+2. Add to `plugin/hooks/hooks.json`:
 
 ```json
 {
@@ -424,18 +416,22 @@ The `release` script:
 6. Publish to NPM
 
 ```bash
-# Update version
-npm version 4.2.4
+# Use the version bump skill (recommended as of v4.3.0)
+# In Claude Code, run: /skill version-bump
+# This updates package.json, marketplace.json, and CLAUDE.md
+
+# Or manually:
+npm version 4.3.2
 
 # Update changelog
 # Edit CHANGELOG.md manually
 
 # Commit
 git add .
-git commit -m "chore: Release v4.2.4"
+git commit -m "chore: Release v4.3.2"
 
 # Tag
-git tag v4.2.4
+git tag v4.3.2
 
 # Push
 git push origin main --tags

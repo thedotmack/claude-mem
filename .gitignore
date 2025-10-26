@@ -9,3 +9,4 @@ node_modules/
 plugin/data/
 plugin/data.backup/
 package-lock.json
+private/
