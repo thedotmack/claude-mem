@@ -8,6 +8,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 
+## [4.3.1] - 2025-10-26
+
+### Fixed
+- **SessionStart hook context injection**: Fixed context not being injected into new sessions due to npm output pollution
+  - Changed npm loglevel from `--loglevel=error` to `--loglevel=silent` in `plugin/hooks/hooks.json`
+  - npm install stdout/stderr was polluting hook JSON output, preventing proper context injection
+  - Hook now produces clean JSON output for reliable context injection
+- **Hooks architecture consolidation**: Removed wrapper layer to simplify codebase
+  - Removed `src/bin/hooks/*` wrapper files
+  - Consolidated hook logic directly into `src/hooks/*-hook.ts` files
+  - Fixed double shebang issues (esbuild now adds shebang during build)
+
+### Technical Details
+- Modified: `plugin/hooks/hooks.json` (line 25: npm install verbosity)
+- Removed: All files in `src/bin/hooks/` directory
+- Root cause: npm stderr/stdout interfering with hook's JSON hookSpecificOutput format
+
+
 ## [4.3.0] - 2025-10-25
 
 ### Added

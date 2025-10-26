@@ -17,7 +17,7 @@
     <img src="https://img.shields.io/badge/License-AGPL%203.0-blue.svg" alt="License">
   </a>
   <a href="package.json">
-    <img src="https://img.shields.io/badge/version-4.3.0-green.svg" alt="Version">
+    <img src="https://img.shields.io/badge/version-4.3.1-green.svg" alt="Version">
   </a>
   <a href="package.json">
     <img src="https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg" alt="Node">
@@ -151,18 +151,18 @@ See [MCP Search Tools Guide](docs/usage/search-tools.mdx) for detailed examples.
 
 ---
 
-## What's New in v4.3.0
+## What's New in v4.3.1
 
-**Progressive Disclosure Context:**
-- Enhanced context hook displays observation timeline with token cost visibility
-- Table format shows ID, timestamp, type indicators (🔴 critical, 🟤 decision, 🔵 informational), title, and token counts
-- Progressive disclosure instructions guide Claude on when to fetch full observation details vs. reading code
-- Layered memory retrieval: Index → Details → Perfect Recall (code/transcripts)
+**Critical Fix:**
+- **SessionStart hook context injection**: Fixed context not being injected into new sessions
+  - npm install output was polluting hook JSON responses
+  - Changed npm loglevel to `--loglevel=silent` for clean output
+  - Context injection now works reliably across all sessions
 
-**Improvements:**
-- Added Agent Skills documentation and version bump management skill
-- Removed hardcoded paths for project and Claude Code executable (fixes #23)
-- Enhanced session summary handling and timeline rendering
+**Code Quality:**
+- Consolidated hooks architecture by removing wrapper layer
+- Fixed double shebang issues in hook executables
+- Simplified codebase maintenance
 
 See [CHANGELOG.md](CHANGELOG.md) for complete version history.
 
