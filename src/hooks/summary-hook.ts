@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 /**
  * Summary Hook - Stop
  * Consolidated entry point + logic

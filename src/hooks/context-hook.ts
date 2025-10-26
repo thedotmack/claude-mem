@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 /**
  * Context Hook - SessionStart
  * Consolidated entry point + logic (no try-catch bullshit)

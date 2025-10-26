@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 /**
  * Save Hook - PostToolUse
  * Consolidated entry point + logic

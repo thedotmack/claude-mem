@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 /**
  * New Hook - UserPromptSubmit
  * Consolidated entry point + logic

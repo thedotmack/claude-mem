@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 /**
  * Cleanup Hook - SessionEnd
  * Consolidated entry point + logic
