@@ -4,7 +4,7 @@
 
 Claude-mem is a persistent memory compression system that preserves context across Claude Code sessions. It automatically captures tool usage observations, processes them through the Claude Agent SDK, and makes summaries available to future sessions.
 
-**Current Version**: 4.3.0
+**Current Version**: 4.3.1
 **License**: AGPL-3.0
 **Author**: Alex Newman (@thedotmack)
 
@@ -212,9 +212,24 @@ npm run build && git commit -a -m "Build and update" && git push && cd ~/.claude
 
 For detailed version history and changelog, see [CHANGELOG.md](CHANGELOG.md).
 
-**Current Version**: 4.3.0
+**Current Version**: 4.3.1
 
 ### Recent Highlights
+
+#### v4.3.1 (2025-10-26)
+**Breaking Changes**: None (patch version)
+
+**Fixes**:
+- Fixed SessionStart hook context injection by silencing npm install output (plugin/hooks/hooks.json:25)
+- Changed npm loglevel from `--loglevel=error` to `--loglevel=silent` to ensure clean JSON output
+- Consolidated hooks architecture by removing bin/hooks wrapper layer (src/hooks/*-hook.ts)
+- Fixed double shebang issues in hook executables (esbuild now adds shebang during build)
+
+**Technical Details**:
+- Modified: plugin/hooks/hooks.json (npm install verbosity)
+- Removed: src/bin/hooks/* (wrapper layer no longer needed)
+- Consolidated: Hook logic moved directly into src/hooks/*-hook.ts files
+- Root cause: npm install stderr/stdout was polluting hook JSON output, preventing context injection
 
 #### v4.3.0 (2025-10-25)
 - Progressive Disclosure Context: Enhanced context hook with observation timeline and token cost visibility
