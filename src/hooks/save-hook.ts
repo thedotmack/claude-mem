@@ -1,3 +1,10 @@
+#!/usr/bin/env node
+/**
+ * Save Hook - PostToolUse
+ * Consolidated entry point + logic
+ */
+
+import { stdin } from 'process';
 import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { createHookResponse } from './hook-response.js';
 import { logger } from '../utils/logger.js';
@@ -18,10 +25,9 @@ const SKIP_TOOLS = new Set([
 ]);
 
 /**
- * Save Hook - PostToolUse
- * Sends tool observations to worker via HTTP POST
+ * Save Hook Main Logic
  */
-export async function saveHook(input?: PostToolUseInput): Promise<void> {
+async function saveHook(input?: PostToolUseInput): Promise<void> {
   if (!input) {
     throw new Error('saveHook requires input');
   }
@@ -33,7 +39,7 @@ export async function saveHook(input?: PostToolUseInput): Promise<void> {
     return;
   }
 
-  // Ensure worker is running first (runs cleanup if restarting)
+  // Ensure worker is running first
   const workerReady = await ensureWorkerRunning();
   if (!workerReady) {
     throw new Error('Worker service failed to start or become healthy');
@@ -41,14 +47,14 @@ export async function saveHook(input?: PostToolUseInput): Promise<void> {
 
   const db = new SessionStore();
 
-  // Get or create session - no validation, just use the session_id from hook
-  const sessionDbId = db.createSDKSession(session_id, '', ''); // project and prompt not needed for observations
+  // Get or create session
+  const sessionDbId = db.createSDKSession(session_id, '', '');
   const promptNumber = db.getPromptCounter(sessionDbId);
   db.close();
 
   const toolStr = logger.formatTool(tool_name, tool_input);
 
-  // Use fixed worker port - no session.worker_port validation needed
+  // Use fixed worker port
   const FIXED_PORT = parseInt(process.env.CLAUDE_MEM_WORKER_PORT || '37777', 10);
 
   logger.dataIn('HOOK', `PostToolUse: ${toolStr}`, {
@@ -80,3 +86,11 @@ export async function saveHook(input?: PostToolUseInput): Promise<void> {
   logger.debug('HOOK', 'Observation sent successfully', { sessionId: sessionDbId, toolName: tool_name });
   console.log(createHookResponse('PostToolUse', true));
 }
+
+// Entry Point
+let input = '';
+stdin.on('data', (chunk) => input += chunk);
+stdin.on('end', async () => {
+  const parsed = input ? JSON.parse(input) : undefined;
+  await saveHook(parsed);
+});
