@@ -22,21 +22,30 @@ if (stdin.isTTY) {
     process.exit(1);
   }
 } else {
-  // Running from hook - output plain text to stdout (for SessionStart hooks)
+  // Running from hook - wrap in hookSpecificOutput JSON format
   let input = '';
   stdin.on('data', (chunk) => input += chunk);
   stdin.on('end', () => {
     try {
       const parsed = input.trim() ? JSON.parse(input) : undefined;
       const contextOutput = contextHook(parsed, false, useIndexView);
-      // SessionStart hooks add stdout directly to context
-      console.log(contextOutput);
+      const result = {
+        hookSpecificOutput: {
+          hookEventName: "SessionStart",
+          additionalContext: contextOutput
+        }
+      };
+      console.log(JSON.stringify(result));
       process.exit(0);
     } catch (error: any) {
-      // Output error to stdout so Claude sees it
-      console.log(`[claude-mem context-hook ERROR: ${error.message}]`);
-      console.log(`Input received: ${input.substring(0, 200)}...`);
-      console.log(error.stack);
+      // Output error in JSON format so hook doesn't fail
+      const errorResult = {
+        hookSpecificOutput: {
+          hookEventName: "SessionStart",
+          additionalContext: `[claude-mem ERROR: ${error.message}]\nInput: ${input.substring(0, 200)}...\n${error.stack}`
+        }
+      };
+      console.log(JSON.stringify(errorResult));
       process.exit(1);
     }
   });
