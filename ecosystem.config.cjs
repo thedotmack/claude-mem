@@ -27,7 +27,7 @@ module.exports = {
     max_memory_restart: '500M',
     min_uptime: '10s',
     max_restarts: 10,
-    restart_delay: 4000,
+    restart_delay: 0,
 
     env: {
       NODE_ENV: 'production',
@@ -45,8 +45,8 @@ module.exports = {
     log_type: 'json',
 
     // Process management
-    kill_timeout: 5000,
-    listen_timeout: 10000,
+    kill_timeout: 1000,
+    listen_timeout: 3000,
     shutdown_with_message: true,
 
     // PM2 Plus (optional monitoring)
