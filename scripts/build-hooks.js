@@ -17,7 +17,8 @@ const HOOKS = [
   { name: 'new-hook', source: 'src/hooks/new-hook.ts' },
   { name: 'save-hook', source: 'src/hooks/save-hook.ts' },
   { name: 'summary-hook', source: 'src/hooks/summary-hook.ts' },
-  { name: 'cleanup-hook', source: 'src/hooks/cleanup-hook.ts' }
+  { name: 'cleanup-hook', source: 'src/hooks/cleanup-hook.ts' },
+  { name: 'stderr-test-hook', source: 'src/hooks/stderr-test-hook.ts' }
 ];
 
 const WORKER_SERVICE = {

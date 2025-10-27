@@ -40,6 +40,14 @@
         ]
       },
       {
+        "group": "Best Practices",
+        "icon": "lightbulb",
+        "pages": [
+          "context-engineering",
+          "progressive-disclosure"
+        ]
+      },
+      {
         "group": "Configuration & Development",
         "icon": "gear",
         "pages": [
@@ -53,6 +61,8 @@
         "icon": "diagram-project",
         "pages": [
           "architecture/overview",
+          "architecture-evolution",
+          "hooks-architecture",
           "architecture/hooks",
           "architecture/worker-service",
           "architecture/database",
