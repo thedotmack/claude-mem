@@ -11,7 +11,7 @@
           },
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/stderr-test-hook.js",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/user-message-hook.js",
             "timeout": 10
           }
         ]

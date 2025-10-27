@@ -7,9 +7,13 @@
  * since it's currently the only way to display messages in Claude Code UI.
  */
 import { execSync } from "child_process";
+import { join } from "path";
+import { homedir } from "os";
 
 try {
-  const output = execSync("node ~/.claude/plugins/marketplaces/thedotmack/plugin/scripts/context-hook.js --colors", {
+  // Cross-platform path to context-hook.js in the installed plugin
+  const contextHookPath = join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack', 'plugin', 'scripts', 'context-hook.js');
+  const output = execSync(`node "${contextHookPath}" --colors`, {
     encoding: 'utf8'
   });
 
