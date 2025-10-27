@@ -1,12 +1,15 @@
 /**
  * Context Hook - SessionStart
- * Consolidated entry point + logic (no try-catch bullshit)
+ * Consolidated entry point + logic
  */
 
 import path from 'path';
 import { stdin } from 'process';
 import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { ensureWorkerRunning } from '../shared/worker-utils.js';
+
+// Configuration: Number of sessions to display in context
+const DISPLAY_SESSION_COUNT = 8;
 
 export interface SessionStartInput {
   session_id?: string;
@@ -128,14 +131,14 @@ function contextHook(input?: SessionStartInput, useColors: boolean = false, useI
 
   const db = new SessionStore();
 
-  // Get last 4 summaries (use 4th for offset calculation)
+  // Get last N summaries (use N+1 for offset calculation)
   const recentSummaries = db.db.prepare(`
     SELECT id, sdk_session_id, request, completed, next_steps, created_at, created_at_epoch
     FROM session_summaries
     WHERE project = ?
     ORDER BY created_at_epoch DESC
-    LIMIT 4
-  `).all(project) as Array<{ id: number; sdk_session_id: string; request: string | null; completed: string | null; next_steps: string | null; created_at: string; created_at_epoch: number }>;
+    LIMIT ?
+  `).all(project, DISPLAY_SESSION_COUNT + 1) as Array<{ id: number; sdk_session_id: string; request: string | null; completed: string | null; next_steps: string | null; created_at: string; created_at_epoch: number }>;
 
   if (recentSummaries.length === 0) {
     db.close();
@@ -145,8 +148,8 @@ function contextHook(input?: SessionStartInput, useColors: boolean = false, useI
     return `# [${project}] recent context\n\nNo previous sessions found for this project yet.`;
   }
 
-  // Extract unique session IDs from first 3 summaries
-  const displaySummaries = recentSummaries.slice(0, 3);
+  // Extract unique session IDs from first N summaries
+  const displaySummaries = recentSummaries.slice(0, DISPLAY_SESSION_COUNT);
   const sessionIds = [...new Set(displaySummaries.map(s => s.sdk_session_id))];
 
   // Get all observations from these sessions

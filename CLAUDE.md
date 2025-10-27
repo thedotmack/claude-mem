@@ -4,7 +4,7 @@
 
 Claude-mem is a persistent memory compression system that preserves context across Claude Code sessions. It automatically captures tool usage observations, processes them through the Claude Agent SDK, and makes summaries available to future sessions.
 
-**Current Version**: 4.3.1
+**Current Version**: 4.3.3
 **License**: AGPL-3.0
 **Author**: Alex Newman (@thedotmack)
 
@@ -212,9 +212,27 @@ npm run build && git commit -a -m "Build and update" && git push && cd ~/.claude
 
 For detailed version history and changelog, see [CHANGELOG.md](CHANGELOG.md).
 
-**Current Version**: 4.3.2
+**Current Version**: 4.3.3
 
 ### Recent Highlights
+
+#### v4.3.3 (2025-10-27)
+**Breaking Changes**: None (patch version)
+
+**Improvements**:
+- Made session display count configurable via constant (DISPLAY_SESSION_COUNT = 8) in src/hooks/context-hook.ts:11
+- Added first-time setup detection with helpful user messaging in src/hooks/user-message-hook.ts:12-39
+- Improved user experience: First install message clarifies why it appears under "Plugin Hook Error"
+
+**Fixes**:
+- Cleaned up profanity in code comments (src/hooks/context-hook.ts:3)
+- Fixed first-time setup UX by detecting missing node_modules and showing informative message
+
+**Technical Details**:
+- Modified: src/hooks/context-hook.ts:11 (configurable DISPLAY_SESSION_COUNT constant)
+- Modified: src/hooks/user-message-hook.ts:12-39 (first-time setup detection and messaging)
+- Modified: plugin/scripts/context-hook.js (rebuilt)
+- Modified: plugin/scripts/user-message-hook.js (rebuilt)
 
 #### v4.3.2 (2025-10-27)
 **Breaking Changes**: None (patch version)
