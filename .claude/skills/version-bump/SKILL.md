@@ -128,6 +128,18 @@ git tag vX.Y.Z -m "Release vX.Y.Z: [Brief description]"
 git push && git push --tags
 ```
 
+### 9. Create GitHub Release
+```bash
+# Create GitHub release from the tag
+# Extract release notes from CLAUDE.md for the current version
+gh release create vX.Y.Z --title "vX.Y.Z" --notes "[Paste relevant section from CLAUDE.md]"
+
+# Or generate notes automatically from commits
+gh release create vX.Y.Z --title "vX.Y.Z" --generate-notes
+```
+
+**IMPORTANT**: Always create the GitHub release immediately after pushing the tag. This makes the release discoverable to users and triggers any automated workflows.
+
 ## CLAUDE.md Templates
 
 ### PATCH Version Template
@@ -191,7 +203,10 @@ User: "Fixed the memory leak in the search function"
 You: Determine → PATCH
      Calculate → 4.2.8 → 4.2.9
      Update all four files
+     Build and commit
      Create git tag v4.2.9
+     Push commit and tags
+     Create GitHub release v4.2.9
      CLAUDE.md: Focus on the fix and impact
 ```
 
@@ -201,7 +216,10 @@ User: "Added web search MCP integration"
 You: Determine → MINOR (new feature)
      Calculate → 4.2.8 → 4.3.0
      Update all four files
+     Build and commit
      Create git tag v4.3.0
+     Push commit and tags
+     Create GitHub release v4.3.0
      CLAUDE.md: Describe feature and usage
 ```
 
@@ -211,7 +229,10 @@ User: "Rewrote storage layer, old data needs migration"
 You: Determine → MAJOR (breaking change)
      Calculate → 4.2.8 → 5.0.0
      Update all four files
+     Build and commit
      Create git tag v5.0.0
+     Push commit and tags
+     Create GitHub release v5.0.0
      CLAUDE.md: Include migration steps
 ```
 
@@ -220,6 +241,7 @@ You: Determine → MAJOR (breaking change)
 **ALWAYS verify:**
 - [ ] All FOUR files have matching version numbers (package.json, marketplace.json, plugin.json, CLAUDE.md)
 - [ ] Git tag created with format vX.Y.Z
+- [ ] GitHub release created from the tag
 - [ ] CLAUDE.md entry matches version type (patch/minor/major)
 - [ ] Breaking changes are clearly marked with ⚠️
 - [ ] File references use format: `path/to/file.ts:line_number`
@@ -230,6 +252,7 @@ You: Determine → MAJOR (breaking change)
 - Update only one, two, or three files - ALL FOUR must be updated
 - Skip the verification step
 - Forget to create git tag
+- Forget to create GitHub release
 - Forget to ask user if version type is unclear
 - Use vague descriptions in CLAUDE.md
 
