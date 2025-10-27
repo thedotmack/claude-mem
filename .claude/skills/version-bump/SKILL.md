@@ -60,7 +60,9 @@ Reason: Fixed database query bug
 Files to update:
 - package.json: "version": "4.2.9"
 - marketplace.json: "version": "4.2.9"
+- plugin.json: "version": "4.2.9"
 - CLAUDE.md: Add v4.2.9 entry
+- Git tag: v4.2.9
 
 Proceed? (yes/no)
 ```
@@ -85,14 +87,23 @@ Proceed? (yes/no)
 }
 ```
 
+**Update plugin/.claude-plugin/plugin.json:**
+```json
+{
+  "name": "claude-mem",
+  "version": "4.2.9",
+  ...
+}
+```
+
 **Update CLAUDE.md:**
 Add entry at top of Version History section following the template below.
 
 ### 6. Verify Consistency
 ```bash
 # Check all versions match
-grep -n '"version"' package.json .claude-plugin/marketplace.json
-# Should show same version in both files
+grep -n '"version"' package.json .claude-plugin/marketplace.json plugin/.claude-plugin/plugin.json
+# Should show same version in all three files
 ```
 
 ### 7. Test
@@ -100,6 +111,21 @@ grep -n '"version"' package.json .claude-plugin/marketplace.json
 # Verify the plugin loads correctly
 npm run build
 # Or whatever build command is appropriate
+```
+
+### 8. Commit and Tag
+```bash
+# Stage all version files
+git add package.json .claude-plugin/marketplace.json plugin/.claude-plugin/plugin.json CLAUDE.md plugin/scripts/
+
+# Commit with descriptive message
+git commit -m "Release vX.Y.Z: [Brief description]"
+
+# Create annotated git tag
+git tag vX.Y.Z -m "Release vX.Y.Z: [Brief description]"
+
+# Push commit and tags
+git push && git push --tags
 ```
 
 ## CLAUDE.md Templates
@@ -164,7 +190,8 @@ npm run build
 User: "Fixed the memory leak in the search function"
 You: Determine → PATCH
      Calculate → 4.2.8 → 4.2.9
-     Update all three files
+     Update all four files
+     Create git tag v4.2.9
      CLAUDE.md: Focus on the fix and impact
 ```
 
@@ -173,7 +200,8 @@ You: Determine → PATCH
 User: "Added web search MCP integration"
 You: Determine → MINOR (new feature)
      Calculate → 4.2.8 → 4.3.0
-     Update all three files
+     Update all four files
+     Create git tag v4.3.0
      CLAUDE.md: Describe feature and usage
 ```
 
@@ -182,22 +210,26 @@ You: Determine → MINOR (new feature)
 User: "Rewrote storage layer, old data needs migration"
 You: Determine → MAJOR (breaking change)
      Calculate → 4.2.8 → 5.0.0
-     Update all three files
+     Update all four files
+     Create git tag v5.0.0
      CLAUDE.md: Include migration steps
 ```
 
 ## Error Prevention
 
 **ALWAYS verify:**
-- [ ] All three files have matching version numbers
+- [ ] All FOUR files have matching version numbers (package.json, marketplace.json, plugin.json, CLAUDE.md)
+- [ ] Git tag created with format vX.Y.Z
 - [ ] CLAUDE.md entry matches version type (patch/minor/major)
 - [ ] Breaking changes are clearly marked with ⚠️
 - [ ] File references use format: `path/to/file.ts:line_number`
 - [ ] CLAUDE.md entry is added at TOP of version history
+- [ ] Commit and tags pushed to remote
 
 **NEVER:**
-- Update only one or two files
+- Update only one, two, or three files - ALL FOUR must be updated
 - Skip the verification step
+- Forget to create git tag
 - Forget to ask user if version type is unclear
 - Use vague descriptions in CLAUDE.md
 
@@ -218,6 +250,9 @@ cat package.json | grep version
 # Check version history
 head -50 CLAUDE.md | grep "^###"
 
-# Verify consistency
-diff <(jq -r .version package.json) <(jq -r .version .claude-plugin/marketplace.json)
+# Verify consistency across all version files
+grep '"version"' package.json .claude-plugin/marketplace.json plugin/.claude-plugin/plugin.json
+
+# View git tags
+git tag -l -n1
 ```
