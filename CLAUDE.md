@@ -212,9 +212,32 @@ npm run build && git commit -a -m "Build and update" && git push && cd ~/.claude
 
 For detailed version history and changelog, see [CHANGELOG.md](CHANGELOG.md).
 
-**Current Version**: 4.3.1
+**Current Version**: 4.3.2
 
 ### Recent Highlights
+
+#### v4.3.2 (2025-10-27)
+**Breaking Changes**: None (patch version)
+
+**Improvements**:
+- Added user-message-hook for displaying context to users via stderr mechanism (src/hooks/user-message-hook.ts)
+- Enhanced context visibility: Hook fires simultaneously with context injection, sending duplicate message as "error" so Claude Code displays it to users
+- Added comprehensive documentation (4 new MDX files covering architecture evolution, context engineering, hooks architecture, and progressive disclosure)
+- Improved cross-platform path handling in context-hook (src/hooks/context-hook.ts:14)
+
+**Technical Details**:
+- New files:
+  - src/hooks/user-message-hook.ts (stderr-based user-facing context display)
+  - plugin/scripts/user-message-hook.js (built hook executable)
+  - docs/architecture-evolution.mdx (801 lines)
+  - docs/context-engineering.mdx (222 lines)
+  - docs/hooks-architecture.mdx (784 lines)
+  - docs/progressive-disclosure.mdx (655 lines)
+- Modified:
+  - plugin/hooks/hooks.json:5 (added user-message-hook configuration)
+  - src/hooks/context-hook.ts:14 (improved path handling)
+  - scripts/build-hooks.js:3 (build support for new hook)
+- Design rationale: Error messages don't get added to context, so we intentionally duplicate context output via stderr for user visibility. This is a temporary workaround until Claude Code potentially adds ability to share messages with both user and context simultaneously.
 
 #### v4.3.1 (2025-10-26)
 **Breaking Changes**: None (patch version)
