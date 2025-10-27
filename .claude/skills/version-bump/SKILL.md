@@ -1,18 +1,19 @@
 ---
 name: version-bump
-description: Manage semantic version updates for claude-mem project. Handles patch, minor, and major version increments following semantic versioning. Updates package.json, marketplace.json, and CLAUDE.md consistently.
+description: Manage semantic version updates for claude-mem project. Handles patch, minor, and major version increments following semantic versioning. Updates package.json, marketplace.json, plugin.json, and CLAUDE.md consistently. Creates git tags.
 ---
 
 # Version Bump Skill
 
-IMPORTANT: This skill manages semantic versioning across the claude-mem project. YOU MUST update all three version-tracked files consistently.
+IMPORTANT: This skill manages semantic versioning across the claude-mem project. YOU MUST update all FOUR version-tracked files consistently and create a git tag.
 
 ## Quick Reference
 
 **Files requiring updates:**
 1. `package.json` (line 3)
 2. `.claude-plugin/marketplace.json` (line 13)
-3. `CLAUDE.md` (version history section)
+3. `plugin/.claude-plugin/plugin.json` (line 3)
+4. `CLAUDE.md` (version history section)
 
 **Semantic versioning:**
 - PATCH (x.y.Z): Bugfixes only
