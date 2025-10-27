@@ -1,5 +1,3 @@
-#!/usr/bin/env node
-
 /**
  * Test hook to verify if stderr messages appear in Claude Code UI
  * This hook simply outputs a message via console.error()
