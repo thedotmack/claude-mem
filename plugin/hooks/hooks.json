@@ -8,6 +8,11 @@
             "type": "command",
             "command": "cd \"${CLAUDE_PLUGIN_ROOT}/..\" && npm install --prefer-offline --no-audit --no-fund --loglevel=silent && node ${CLAUDE_PLUGIN_ROOT}/scripts/context-hook.js",
             "timeout": 300
+          },
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/user-message-hook.js",
+            "timeout": 10
           }
         ]
       }

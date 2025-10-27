@@ -1,0 +1,30 @@
+/**
+ * User Message Hook - SessionStart
+ * Displays context information to the user via stderr
+ *
+ * This hook runs in parallel with context-hook to show users what context
+ * has been loaded into their session. Uses stderr as the communication channel
+ * since it's currently the only way to display messages in Claude Code UI.
+ */
+import { execSync } from "child_process";
+import { join } from "path";
+import { homedir } from "os";
+
+try {
+  // Cross-platform path to context-hook.js in the installed plugin
+  const contextHookPath = join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack', 'plugin', 'scripts', 'context-hook.js');
+  const output = execSync(`node "${contextHookPath}" --colors`, {
+    encoding: 'utf8'
+  });
+
+  console.error(
+    "\n\n📝 Claude-Mem Context Loaded\n" +
+    "   ℹ️  Note: This appears as stderr but is informational only\n\n" +
+    output
+  );
+
+} catch (error) {
+  console.error(`❌ Failed to load context display: ${error}`);
+}
+
+process.exit(3);

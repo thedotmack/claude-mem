@@ -399,23 +399,17 @@ function contextHook(input?: SessionStartInput, useColors: boolean = false, useI
     } else {
       output.push(`*Use claude-mem MCP search to access records with the given ID*`);
     }
-    output.push('');
-  }
-
-  // Footer
-  if (useColors) {
-    output.push(`${colors.gray}${'─'.repeat(60)}${colors.reset}`);
-    output.push('');
   }
 
   db.close();
-  return output.join('\n');
+  return output.join('\n').trimEnd();
 }
 
 // Entry Point - handle stdin/stdout
 const useIndexView = process.argv.includes('--index');
+const forceColors = process.argv.includes('--colors');  // Add this line
 
-if (stdin.isTTY) {
+if (stdin.isTTY || forceColors) {  // Modify this line to include forceColors
   // Running manually from terminal - print formatted output with colors
   const contextOutput = contextHook(undefined, true, useIndexView);
   console.log(contextOutput);

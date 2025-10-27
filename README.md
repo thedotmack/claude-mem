@@ -79,9 +79,15 @@ npx mintlify dev
 - **[Usage Guide](docs/usage/getting-started.mdx)** - How Claude-Mem works automatically
 - **[MCP Search Tools](docs/usage/search-tools.mdx)** - Query your project history
 
+### Best Practices
+- **[Context Engineering](docs/context-engineering.mdx)** - AI agent context optimization principles
+- **[Progressive Disclosure](docs/progressive-disclosure.mdx)** - Philosophy behind Claude-Mem's context priming strategy
+
 ### Architecture
 - **[Overview](docs/architecture/overview.mdx)** - System components & data flow
-- **[Hooks](docs/architecture/hooks.mdx)** - 5 lifecycle hooks explained
+- **[Architecture Evolution](docs/architecture-evolution.mdx)** - The journey from v3 to v4
+- **[Hooks Architecture](docs/hooks-architecture.mdx)** - How Claude-Mem uses lifecycle hooks
+- **[Hooks Reference](docs/architecture/hooks.mdx)** - 5 lifecycle hooks explained
 - **[Worker Service](docs/architecture/worker-service.mdx)** - HTTP API & PM2 management
 - **[Database](docs/architecture/database.mdx)** - SQLite schema & FTS5 search
 - **[MCP Search](docs/architecture/mcp-search.mdx)** - 7 search tools & examples
