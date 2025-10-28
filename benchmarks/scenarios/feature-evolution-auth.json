@@ -1,0 +1,283 @@
+{
+  "id": "feature-evolution-auth",
+  "name": "Authentication System Evolution",
+  "tier": 3,
+  "difficulty": "medium",
+  "estimatedTime": 45,
+  "sessions": [
+    {
+      "sessionNumber": 1,
+      "title": "Implement Basic Authentication",
+      "prompt": "Implement a basic authentication system for a web application. The system should:\n1. Support user registration with email and password\n2. Hash passwords using bcrypt\n3. Implement login endpoint that validates credentials\n4. Return user object on successful login\n\nCreate the following files in TypeScript:\n- src/auth.ts (main authentication logic)\n- src/types.ts (type definitions)\n- src/auth.test.ts (unit tests using vitest)\n\nRequirements:\n- Use async/await for async operations\n- Proper error handling\n- Type safety throughout\n- Unit test coverage for all functions",
+      "contextDependencies": [],
+      "initialFiles": [
+        {
+          "path": "package.json",
+          "content": "{\n  \"name\": \"auth-system\",\n  \"version\": \"1.0.0\",\n  \"type\": \"module\",\n  \"scripts\": {\n    \"test\": \"vitest run\",\n    \"test:watch\": \"vitest\"\n  },\n  \"dependencies\": {\n    \"bcrypt\": \"^5.1.0\"\n  },\n  \"devDependencies\": {\n    \"@types/bcrypt\": \"^5.0.0\",\n    \"@types/node\": \"^20.0.0\",\n    \"typescript\": \"^5.3.0\",\n    \"vitest\": \"^1.0.0\",\n    \"@vitest/coverage-v8\": \"^1.0.0\"\n  }\n}",
+          "description": "Project package.json with dependencies"
+        },
+        {
+          "path": "tsconfig.json",
+          "content": "{\n  \"compilerOptions\": {\n    \"target\": \"ES2022\",\n    \"module\": \"ESNext\",\n    \"moduleResolution\": \"bundler\",\n    \"esModuleInterop\": true,\n    \"strict\": true,\n    \"skipLibCheck\": true,\n    \"resolveJsonModule\": true\n  },\n  \"include\": [\"src/**/*\"],\n  \"exclude\": [\"node_modules\"]\n}",
+          "description": "TypeScript configuration"
+        }
+      ],
+      "expectedOutputs": [
+        {
+          "type": "file",
+          "description": "Authentication module created",
+          "validation": "test -f src/auth.ts"
+        },
+        {
+          "type": "file",
+          "description": "Type definitions created",
+          "validation": "test -f src/types.ts"
+        },
+        {
+          "type": "file",
+          "description": "Tests created",
+          "validation": "test -f src/auth.test.ts"
+        },
+        {
+          "type": "test_pass",
+          "description": "All authentication tests pass",
+          "validation": "npm test"
+        }
+      ],
+      "validationQuestions": []
+    },
+    {
+      "sessionNumber": 2,
+      "title": "Add JWT Token Support",
+      "prompt": "Extend the authentication system to use JWT tokens:\n1. Install jsonwebtoken package if not present\n2. Generate JWT token on successful login (include user id and email in payload)\n3. Add token verification function\n4. Implement token refresh mechanism\n5. Update all tests to include JWT functionality\n\nIMPORTANT: Work with the existing authentication code from the previous session. Do not rewrite the entire system - extend what's already there.\n\nAdd these new functions to src/auth.ts:\n- generateToken(user)\n- verifyToken(token)\n- refreshToken(oldToken)",
+      "contextDependencies": [
+        {
+          "type": "implementation",
+          "description": "User registration and login functions from Session 1",
+          "fromSession": 1,
+          "critical": true
+        },
+        {
+          "type": "pattern",
+          "description": "Password hashing approach using bcrypt",
+          "fromSession": 1,
+          "critical": false
+        },
+        {
+          "type": "file_knowledge",
+          "description": "Location and structure of auth.ts, types.ts, and auth.test.ts",
+          "fromSession": 1,
+          "critical": true
+        }
+      ],
+      "initialFiles": [],
+      "expectedOutputs": [
+        {
+          "type": "behavior",
+          "description": "JWT tokens are generated on login",
+          "validation": "grep -r 'jwt\\|jsonwebtoken' src/auth.ts"
+        },
+        {
+          "type": "behavior",
+          "description": "Token verification implemented",
+          "validation": "grep -r 'verifyToken\\|verify' src/auth.ts"
+        },
+        {
+          "type": "test_pass",
+          "description": "All tests including JWT tests pass",
+          "validation": "npm test"
+        }
+      ],
+      "validationQuestions": [
+        {
+          "question": "What hashing algorithm is used for passwords in the authentication system?",
+          "correctAnswer": "bcrypt",
+          "contextSource": 1,
+          "answerType": "exact",
+          "points": 10
+        },
+        {
+          "question": "What function handles user login in the existing code?",
+          "correctAnswer": "login",
+          "contextSource": 1,
+          "answerType": "semantic",
+          "points": 15
+        },
+        {
+          "question": "In which file is the main authentication logic located?",
+          "correctAnswer": "src/auth.ts",
+          "contextSource": 1,
+          "answerType": "exact",
+          "points": 10
+        }
+      ]
+    },
+    {
+      "sessionNumber": 3,
+      "title": "Fix Security Vulnerability",
+      "prompt": "A security audit revealed that the JWT tokens don't have proper expiration. Fix this vulnerability:\n1. Add token expiration (1 hour for access tokens)\n2. Implement proper token refresh with longer expiration (7 days for refresh tokens)\n3. Add tests specifically for token expiration behavior\n4. Add error handling for expired tokens\n\nWork with the existing authentication and JWT code. Update the generateToken and verifyToken functions.",
+      "contextDependencies": [
+        {
+          "type": "implementation",
+          "description": "JWT token generation from Session 2",
+          "fromSession": 2,
+          "critical": true
+        },
+        {
+          "type": "implementation",
+          "description": "Login and authentication flow from Session 1",
+          "fromSession": 1,
+          "critical": true
+        },
+        {
+          "type": "decision",
+          "description": "Token structure and claims used",
+          "fromSession": 2,
+          "critical": false
+        }
+      ],
+      "initialFiles": [],
+      "expectedOutputs": [
+        {
+          "type": "behavior",
+          "description": "JWT tokens have expiration set",
+          "validation": "grep -r 'expiresIn' src/auth.ts"
+        },
+        {
+          "type": "behavior",
+          "description": "Token expiration is tested",
+          "validation": "grep -r 'expir' src/auth.test.ts"
+        },
+        {
+          "type": "test_pass",
+          "description": "All tests pass including expiration tests",
+          "validation": "npm test"
+        }
+      ],
+      "validationQuestions": [
+        {
+          "question": "Where in the codebase is the JWT token generated?",
+          "correctAnswer": "generateToken function in src/auth.ts",
+          "contextSource": 2,
+          "answerType": "semantic",
+          "points": 10
+        },
+        {
+          "question": "What library is used for password hashing?",
+          "correctAnswer": "bcrypt",
+          "contextSource": 1,
+          "answerType": "exact",
+          "points": 5
+        },
+        {
+          "question": "What function verifies JWT tokens?",
+          "correctAnswer": "verifyToken",
+          "contextSource": 2,
+          "answerType": "semantic",
+          "points": 10
+        }
+      ]
+    },
+    {
+      "sessionNumber": 4,
+      "title": "Add Rate Limiting",
+      "prompt": "Add rate limiting to prevent brute force attacks:\n1. Create a new file src/rateLimit.ts for rate limiting logic\n2. Implement rate limiting for login attempts (5 attempts per 15 minutes per email)\n3. Implement rate limiting for registration (3 registrations per hour per IP)\n4. Add tests for rate limiting behavior\n5. Integrate rate limiting with existing login and registration functions\n\nUse an in-memory store for rate limiting (Map or similar). Add proper error messages when rate limits are exceeded.\n\nWork with all existing authentication code. Do not modify the core authentication logic - add rate limiting as a wrapper/middleware layer.",
+      "contextDependencies": [
+        {
+          "type": "implementation",
+          "description": "Login and registration functions from Session 1",
+          "fromSession": 1,
+          "critical": true
+        },
+        {
+          "type": "implementation",
+          "description": "JWT token generation from Session 2",
+          "fromSession": 2,
+          "critical": false
+        },
+        {
+          "type": "file_knowledge",
+          "description": "Complete authentication system structure across all files",
+          "fromSession": 1,
+          "critical": true
+        }
+      ],
+      "initialFiles": [],
+      "expectedOutputs": [
+        {
+          "type": "file",
+          "description": "Rate limiting module created",
+          "validation": "test -f src/rateLimit.ts"
+        },
+        {
+          "type": "behavior",
+          "description": "Rate limiting logic exists",
+          "validation": "grep -r 'rateLimit\\|RateLimit' src/"
+        },
+        {
+          "type": "test_pass",
+          "description": "All tests pass including rate limiting",
+          "validation": "npm test"
+        }
+      ],
+      "validationQuestions": [
+        {
+          "question": "What is the complete authentication flow from registration to accessing protected resources?",
+          "correctAnswer": "Registration with email/password -> Password hashing with bcrypt -> Login with credentials -> JWT generation with 1hr expiration -> Token verification -> Access granted",
+          "contextSource": 0,
+          "answerType": "semantic",
+          "points": 25
+        },
+        {
+          "question": "What are all the files in the authentication system?",
+          "correctAnswer": "src/auth.ts, src/types.ts, src/auth.test.ts, src/rateLimit.ts",
+          "contextSource": 0,
+          "answerType": "semantic",
+          "points": 15
+        }
+      ]
+    }
+  ],
+  "validation": {
+    "testSuite": "npm test",
+    "successCriteria": [
+      "All unit tests pass",
+      "Rate limiting functions correctly",
+      "JWT tokens expire as configured (1 hour for access, 7 days for refresh)",
+      "Password hashing uses bcrypt",
+      "No security vulnerabilities in code",
+      "Type safety maintained throughout",
+      "Proper error handling in all functions"
+    ],
+    "qualityChecks": [
+      {
+        "type": "test_coverage",
+        "command": "npx vitest run --coverage",
+        "threshold": 75
+      },
+      {
+        "type": "lint",
+        "command": "npx tsc --noEmit",
+        "threshold": 0
+      }
+    ]
+  },
+  "metrics": {
+    "primary": [
+      "context_accuracy",
+      "resolved"
+    ],
+    "secondary": [
+      "time",
+      "redundancy",
+      "consistency"
+    ],
+    "custom": [
+      {
+        "name": "architectural_consistency",
+        "description": "How consistently architectural patterns are applied across sessions",
+        "calculation": "Manual review: Do all modules follow similar structure? Are naming conventions consistent? Are error handling patterns uniform?"
+      }
+    ]
+  }
+}

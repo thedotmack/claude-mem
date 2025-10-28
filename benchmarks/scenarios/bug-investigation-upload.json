@@ -1,0 +1,210 @@
+{
+  "id": "bug-investigation-upload",
+  "name": "File Upload Bug Investigation",
+  "tier": 3,
+  "difficulty": "medium",
+  "estimatedTime": 30,
+  "sessions": [
+    {
+      "sessionNumber": 1,
+      "title": "Reproduce the Bug",
+      "prompt": "Users are reporting that file uploads fail for files larger than 1MB. Your task:\n\n1. Review the existing upload code in src/upload.ts\n2. Write a test that reproduces the bug\n3. Document your findings:\n   - What is the actual behavior?\n   - What should the expected behavior be?\n   - Any error messages or logs?\n\nDo NOT fix the bug yet - just reproduce it and document it.\n\nCreate:\n- src/upload.test.ts with a test that reproduces the issue\n- INVESTIGATION.md documenting your findings",
+      "contextDependencies": [],
+      "initialFiles": [
+        {
+          "path": "package.json",
+          "content": "{\n  \"name\": \"file-upload-system\",\n  \"version\": \"1.0.0\",\n  \"type\": \"module\",\n  \"scripts\": {\n    \"test\": \"vitest run\",\n    \"test:watch\": \"vitest\"\n  },\n  \"dependencies\": {\n    \"express\": \"^4.18.2\",\n    \"multer\": \"^1.4.5-lts.1\"\n  },\n  \"devDependencies\": {\n    \"@types/express\": \"^4.17.21\",\n    \"@types/multer\": \"^1.4.11\",\n    \"@types/node\": \"^20.0.0\",\n    \"typescript\": \"^5.3.0\",\n    \"vitest\": \"^1.0.0\"\n  }\n}",
+          "description": "Project package.json"
+        },
+        {
+          "path": "src/upload.ts",
+          "content": "import multer from 'multer';\nimport { Request, Response } from 'express';\n\n// Configure multer for file uploads\nconst upload = multer({\n  limits: {\n    fileSize: 1024 * 1024 // 1MB limit\n  },\n  storage: multer.memoryStorage()\n});\n\nexport interface UploadResult {\n  success: boolean;\n  filename?: string;\n  size?: number;\n  error?: string;\n}\n\nexport async function handleUpload(file: Express.Multer.File | undefined): Promise<UploadResult> {\n  if (!file) {\n    return {\n      success: false,\n      error: 'No file provided'\n    };\n  }\n\n  // Bug: This check happens AFTER multer already rejected the file\n  if (file.size > 1024 * 1024) {\n    return {\n      success: false,\n      error: 'File too large'\n    };\n  }\n\n  return {\n    success: true,\n    filename: file.originalname,\n    size: file.size\n  };\n}\n\nexport const uploadMiddleware = upload.single('file');\n",
+          "description": "Buggy upload implementation"
+        },
+        {
+          "path": "tsconfig.json",
+          "content": "{\n  \"compilerOptions\": {\n    \"target\": \"ES2022\",\n    \"module\": \"ESNext\",\n    \"moduleResolution\": \"bundler\",\n    \"esModuleInterop\": true,\n    \"strict\": true,\n    \"skipLibCheck\": true,\n    \"resolveJsonModule\": true\n  },\n  \"include\": [\"src/**/*\"],\n  \"exclude\": [\"node_modules\"]\n}",
+          "description": "TypeScript configuration"
+        }
+      ],
+      "expectedOutputs": [
+        {
+          "type": "file",
+          "description": "Test file created that reproduces the bug",
+          "validation": "test -f src/upload.test.ts"
+        },
+        {
+          "type": "file",
+          "description": "Investigation document created",
+          "validation": "test -f INVESTIGATION.md"
+        },
+        {
+          "type": "behavior",
+          "description": "Test demonstrates the bug (should fail)",
+          "validation": "npm test 2>&1 | grep -i 'fail\\|error' || echo 'Test should fail'"
+        }
+      ],
+      "validationQuestions": []
+    },
+    {
+      "sessionNumber": 2,
+      "title": "Identify Root Cause",
+      "prompt": "Based on your investigation from the previous session, identify the root cause of the file upload bug.\n\n1. Analyze the code in src/upload.ts\n2. Review your investigation notes in INVESTIGATION.md\n3. Update INVESTIGATION.md with:\n   - Root cause analysis\n   - Why the bug occurs\n   - Proposed solution (do NOT implement yet)\n\nDo NOT fix the bug in this session - only identify and document the root cause.",
+      "contextDependencies": [
+        {
+          "type": "file_knowledge",
+          "description": "Understanding of the upload.ts implementation",
+          "fromSession": 1,
+          "critical": true
+        },
+        {
+          "type": "discovery",
+          "description": "Bug reproduction findings from Session 1",
+          "fromSession": 1,
+          "critical": true
+        }
+      ],
+      "initialFiles": [],
+      "expectedOutputs": [
+        {
+          "type": "file",
+          "description": "INVESTIGATION.md updated with root cause",
+          "validation": "grep -i 'root cause' INVESTIGATION.md"
+        },
+        {
+          "type": "behavior",
+          "description": "Solution proposed in documentation",
+          "validation": "grep -i 'solution\\|fix\\|proposed' INVESTIGATION.md"
+        }
+      ],
+      "validationQuestions": [
+        {
+          "question": "What is the file size limit currently configured in the upload system?",
+          "correctAnswer": "1MB or 1024 * 1024 bytes",
+          "contextSource": 1,
+          "answerType": "semantic",
+          "points": 10
+        },
+        {
+          "question": "What library is being used for file upload handling?",
+          "correctAnswer": "multer",
+          "contextSource": 1,
+          "answerType": "exact",
+          "points": 10
+        },
+        {
+          "question": "What did the test you wrote in Session 1 demonstrate?",
+          "correctAnswer": "That files larger than 1MB fail to upload",
+          "contextSource": 1,
+          "answerType": "semantic",
+          "points": 15
+        }
+      ]
+    },
+    {
+      "sessionNumber": 3,
+      "title": "Implement Fix and Regression Tests",
+      "prompt": "Now implement the fix based on your root cause analysis:\n\n1. Review your proposed solution in INVESTIGATION.md\n2. Implement the fix in src/upload.ts\n3. Update or add tests to verify the fix works\n4. Add regression tests to prevent this bug from happening again\n5. Update INVESTIGATION.md with verification that the fix works\n\nThe fix should:\n- Allow files up to 5MB (update the limit)\n- Properly handle errors from multer\n- Provide clear error messages to users",
+      "contextDependencies": [
+        {
+          "type": "implementation",
+          "description": "Original upload.ts code",
+          "fromSession": 1,
+          "critical": true
+        },
+        {
+          "type": "decision",
+          "description": "Root cause analysis and proposed solution",
+          "fromSession": 2,
+          "critical": true
+        },
+        {
+          "type": "file_knowledge",
+          "description": "Test file structure and bug reproduction test",
+          "fromSession": 1,
+          "critical": true
+        }
+      ],
+      "initialFiles": [],
+      "expectedOutputs": [
+        {
+          "type": "behavior",
+          "description": "File size limit increased",
+          "validation": "grep '5.*1024.*1024\\|5242880' src/upload.ts"
+        },
+        {
+          "type": "test_pass",
+          "description": "All tests pass after fix",
+          "validation": "npm test"
+        },
+        {
+          "type": "behavior",
+          "description": "Error handling improved",
+          "validation": "grep -i 'error' src/upload.ts"
+        }
+      ],
+      "validationQuestions": [
+        {
+          "question": "What was the root cause of the upload bug?",
+          "correctAnswer": "The file size check happened after multer already rejected the file due to its limits configuration",
+          "contextSource": 2,
+          "answerType": "semantic",
+          "points": 20
+        },
+        {
+          "question": "What file size limit was originally set, and what is it now?",
+          "correctAnswer": "Originally 1MB, now 5MB",
+          "contextSource": 0,
+          "answerType": "semantic",
+          "points": 15
+        },
+        {
+          "question": "Which file contains the upload handling logic?",
+          "correctAnswer": "src/upload.ts",
+          "contextSource": 1,
+          "answerType": "exact",
+          "points": 5
+        }
+      ]
+    }
+  ],
+  "validation": {
+    "testSuite": "npm test",
+    "successCriteria": [
+      "All tests pass",
+      "Files up to 5MB can be uploaded successfully",
+      "Clear error messages for oversized files",
+      "Regression tests prevent future bugs",
+      "INVESTIGATION.md documents entire process"
+    ],
+    "qualityChecks": [
+      {
+        "type": "test_coverage",
+        "command": "npx vitest run --coverage",
+        "threshold": 80
+      },
+      {
+        "type": "lint",
+        "command": "npx tsc --noEmit",
+        "threshold": 0
+      }
+    ]
+  },
+  "metrics": {
+    "primary": [
+      "context_accuracy",
+      "resolved"
+    ],
+    "secondary": [
+      "time",
+      "redundancy"
+    ],
+    "custom": [
+      {
+        "name": "investigation_quality",
+        "description": "Quality of investigation documentation and thoroughness of root cause analysis",
+        "calculation": "Manual review: Does INVESTIGATION.md clearly document the bug, root cause, and solution? Are the steps logical and reproducible?"
+      }
+    ]
+  }
+}
