@@ -1,10 +1,9 @@
 /**
  * User Message Hook - SessionStart
- * Displays context information to the user via stderr
+ * Builds and injects the context report, displays instructions via system message
  *
- * This hook runs in parallel with context-hook to show users what context
- * has been loaded into their session. Uses stderr as the communication channel
- * since it's currently the only way to display messages in Claude Code UI.
+ * This hook runs the context-hook to build the full report and injects it into
+ * the context window. Users can view it anytime via /mem-status.
  */
 import { execSync } from "child_process";
 import { join } from "path";
@@ -15,45 +14,31 @@ import { existsSync } from "fs";
 const pluginDir = join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
 const nodeModulesPath = join(pluginDir, 'node_modules');
 
-if (!existsSync(nodeModulesPath)) {
-  // First-time installation - dependencies not yet installed
-  console.error(`
----
-🎉  Note: This appears under Plugin Hook Error, but it's not an error. That's the only option for 
-   user messages in Claude Code UI until a better method is provided.
----
-
-⚠️  Claude-Mem: First-Time Setup
-
-Dependencies have been installed in the background. This only happens once.
-
-💡 TIPS:
-   • Memories will start generating while you work
-   • Use /init to write or update your CLAUDE.md for better project context
-   • Try /clear after one session to see what context looks like
-
-Thank you for installing Claude-Mem!
-
-This message was not added to your startup context, so you can continue working as normal.
-`);
-  process.exit(3);
-}
-
 try {
   // Cross-platform path to context-hook.js in the installed plugin
   const contextHookPath = join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack', 'plugin', 'scripts', 'context-hook.js');
-  const output = execSync(`node "${contextHookPath}" --colors`, {
-    encoding: 'utf8'
+
+  const contextReport = execSync(`node "${contextHookPath}" --colors`, {
+    encoding: 'utf8',
+    stdio: ['pipe', 'pipe', 'pipe']
   });
 
-  console.error(
-    "\n\n📝 Claude-Mem Context Loaded\n" +
-    "   ℹ️  Note: This appears as stderr but is informational only\n\n" +
-    output
-  );
+  // Output as hookSpecificOutput to add to context + system message
+  console.log(JSON.stringify({
+    continue: true,
+    systemMessage: "💾 Use /mem-status to view your Claude-Mem context report.",
+    hookSpecificOutput: {
+      hookEventName: "SessionStart",
+      additionalContext: `# Claude-Mem Context Report\n\n${contextReport}`
+    }
+  }));
 
 } catch (error) {
-  console.error(`❌ Failed to load context display: ${error}`);
+  // On error, just continue without failing
+  console.log(JSON.stringify({
+    continue: true,
+    systemMessage: "💾 Use /mem-status to view your Claude-Mem context (report building in background)."
+  }));
 }
 
-process.exit(3);
+process.exit(0);

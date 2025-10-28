@@ -18,7 +18,8 @@ const HOOKS = [
   { name: 'save-hook', source: 'src/hooks/save-hook.ts' },
   { name: 'summary-hook', source: 'src/hooks/summary-hook.ts' },
   { name: 'cleanup-hook', source: 'src/hooks/cleanup-hook.ts' },
-  { name: 'user-message-hook', source: 'src/hooks/user-message-hook.ts' }
+  { name: 'user-message-hook', source: 'src/hooks/user-message-hook.ts' },
+  { name: 'memory-dump-hook', source: 'src/hooks/memory-dump-hook.ts' }
 ];
 
 const WORKER_SERVICE = {
@@ -78,6 +79,8 @@ async function buildHooks() {
       console.log(`\n🔧 Building ${hook.name}...`);
 
       const outfile = `${hooksDir}/${hook.name}.js`;
+      // Don't minify memory-dump-hook for readability
+      const shouldMinify = hook.name !== 'memory-dump-hook';
 
       await build({
         entryPoints: [hook.source],
@@ -86,7 +89,7 @@ async function buildHooks() {
         target: 'node18',
         format: 'esm',
         outfile,
-        minify: true,
+        minify: shouldMinify,
         external: ['better-sqlite3'],
         define: {
           '__DEFAULT_PACKAGE_VERSION__': `"${version}"`

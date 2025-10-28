@@ -11,8 +11,8 @@
           },
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/user-message-hook.js",
-            "timeout": 10
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/memory-dump-hook.js",
+            "timeout": 60
           }
         ]
       }
