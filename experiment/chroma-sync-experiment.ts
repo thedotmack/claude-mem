@@ -52,7 +52,7 @@ async function main() {
 
   // Initialize SessionStore to read SQLite data
   const dbPath = path.join(os.homedir(), '.claude-mem', 'claude-mem.db');
-  const store = new SessionStore(dbPath);
+  const store = new SessionStore();
 
   // Get project name (for collection naming)
   const project = 'claude-mem';
@@ -72,22 +72,31 @@ async function main() {
   console.log('✅ Collection ready:', createResult.content[0]);
   console.log();
 
-  // Fetch observations from SQLite
+  // Fetch observations from SQLite using raw query
   console.log('📖 Reading observations from SQLite...');
-  const observations = store.getAllObservations(project);
+  const observations = store.db.prepare(`
+    SELECT * FROM observations WHERE project = ? ORDER BY created_at_epoch DESC
+  `).all(project) as any[];
   console.log(`Found ${observations.length} observations\n`);
 
   // Prepare documents for Chroma
   const documents: ChromaDocument[] = observations.map(obs => {
+    // Parse JSON fields
+    const facts = obs.facts ? JSON.parse(obs.facts) : [];
+    const concepts = obs.concepts ? JSON.parse(obs.concepts) : [];
+    const files_read = obs.files_read ? JSON.parse(obs.files_read) : [];
+    const files_modified = obs.files_modified ? JSON.parse(obs.files_modified) : [];
+
     // Create rich text representation
     const docText = [
-      `Title: ${obs.title}`,
+      `Title: ${obs.title || 'Untitled'}`,
       obs.subtitle ? `Subtitle: ${obs.subtitle}` : '',
       obs.narrative ? `Narrative: ${obs.narrative}` : '',
-      obs.facts?.length ? `Facts:\n${obs.facts.join('\n')}` : '',
-      obs.concepts?.length ? `Concepts: ${obs.concepts.join(', ')}` : '',
-      obs.files_read?.length ? `Files Read: ${obs.files_read.join(', ')}` : '',
-      obs.files_modified?.length ? `Files Modified: ${obs.files_modified.join(', ')}` : ''
+      obs.text ? `Text: ${obs.text}` : '',
+      facts.length ? `Facts:\n${facts.join('\n')}` : '',
+      concepts.length ? `Concepts: ${concepts.join(', ')}` : '',
+      files_read.length ? `Files Read: ${files_read.join(', ')}` : '',
+      files_modified.length ? `Files Modified: ${files_modified.join(', ')}` : ''
     ].filter(Boolean).join('\n\n');
 
     return {
@@ -100,9 +109,9 @@ async function main() {
         project: obs.project,
         created_at_epoch: obs.created_at_epoch,
         type: obs.type || 'discovery',
-        ...(obs.concepts?.length && { concepts: obs.concepts.join(',') }),
-        ...(obs.files_read?.length && { files_read: obs.files_read.join(',') }),
-        ...(obs.files_modified?.length && { files_modified: obs.files_modified.join(',') })
+        ...(concepts.length && { concepts: concepts.join(',') }),
+        ...(files_read.length && { files_read: files_read.join(',') }),
+        ...(files_modified.length && { files_modified: files_modified.join(',') })
       }
     };
   });
@@ -131,29 +140,32 @@ async function main() {
 
   // Fetch session summaries
   console.log('📖 Reading session summaries from SQLite...');
-  const sessions = store.getRecentSessions(project, 100); // Get recent 100
-  console.log(`Found ${sessions.length} sessions\n`);
+  const summaries = store.db.prepare(`
+    SELECT * FROM session_summaries WHERE project = ? ORDER BY created_at_epoch DESC LIMIT 100
+  `).all(project) as any[];
+  console.log(`Found ${summaries.length} session summaries\n`);
 
   // Prepare session documents
-  const sessionDocs: ChromaDocument[] = sessions.map(session => {
-    const summaries = store.getSessionSummaries(session.id);
-    const summaryText = summaries.map(s => s.text).join('\n\n---\n\n');
-
+  const sessionDocs: ChromaDocument[] = summaries.map(summary => {
     const docText = [
-      `Request: ${session.request || 'Unknown'}`,
-      summaryText
-    ].join('\n\n');
+      `Request: ${summary.request || 'Unknown'}`,
+      summary.investigated ? `Investigated: ${summary.investigated}` : '',
+      summary.learned ? `Learned: ${summary.learned}` : '',
+      summary.completed ? `Completed: ${summary.completed}` : '',
+      summary.next_steps ? `Next Steps: ${summary.next_steps}` : '',
+      summary.notes ? `Notes: ${summary.notes}` : ''
+    ].filter(Boolean).join('\n\n');
 
     return {
-      id: `session_${session.id}`,
+      id: `summary_${summary.id}`,
       document: docText,
       metadata: {
-        sqlite_id: session.id,
-        doc_type: 'session',
-        sdk_session_id: session.id,
-        project: session.project,
-        created_at_epoch: session.created_at_epoch,
-        completed: session.completed ? 1 : 0
+        sqlite_id: summary.id,
+        doc_type: 'session_summary',
+        sdk_session_id: summary.sdk_session_id,
+        project: summary.project,
+        created_at_epoch: summary.created_at_epoch,
+        prompt_number: summary.prompt_number || 0
       }
     };
   });
