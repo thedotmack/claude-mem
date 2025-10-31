@@ -8,6 +8,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 
+## [4.3.4] - 2025-10-31
+
+### Security
+- **Dependency updates**: Fixed npm audit vulnerabilities in build and runtime dependencies
+  - Updated `esbuild` from ^0.20.0 to ^0.25.11 (fixes GHSA-67mh-4wv8-2f99 - moderate severity)
+    - Vulnerability: Development server request vulnerability that allowed any website to send requests
+  - Updated `pm2` from ^5.3.0 to ^6.0.13 (fixes GHSA-x5gf-qvw8-r2rm - low severity)
+    - Vulnerability: Regular Expression Denial of Service (ReDoS)
+  - All npm audit vulnerabilities resolved (0 vulnerabilities)
+
+### Changed
+- **Build system**: Rebuilt all hooks, worker service, and search server with updated esbuild
+- **Development**: Removed `package-lock.json` from `.gitignore` for better security and reproducible builds
+
+### Technical Details
+- Modified: `package.json` (updated dependency versions)
+- Modified: `.gitignore` (removed package-lock.json entry)
+- Verified: Build process continues to work correctly with esbuild 0.25.11
+- Verified: PM2 worker service functions correctly with pm2 6.0.13
+
+
 ## [4.3.1] - 2025-10-26
 
 ### Fixed
