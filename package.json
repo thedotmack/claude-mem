@@ -38,7 +38,9 @@
     "worker:start": "pm2 start ecosystem.config.cjs",
     "worker:stop": "pm2 stop claude-mem-worker",
     "worker:restart": "pm2 restart claude-mem-worker",
-    "worker:logs": "pm2 logs claude-mem-worker"
+    "worker:logs": "pm2 logs claude-mem-worker",
+    "experiment:sync": "npx tsx experiment/chroma-sync-experiment.ts",
+    "experiment:search": "npx tsx experiment/chroma-search-test.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.1.27",
