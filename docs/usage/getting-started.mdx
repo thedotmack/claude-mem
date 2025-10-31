@@ -171,11 +171,11 @@ Claude-Mem supports sessions that span multiple user prompts:
 
 When you use `/clear`, the session doesn't end - it continues with a new prompt number. This means:
 
+- ✅ **Context is re-injected** from recent sessions (SessionStart hook fires with `source: "clear"`)
 - ✅ **Observations are still being captured** and added to the current session
 - ✅ **A summary will be generated** when Claude finishes responding (Stop hook fires)
-- ❌ **New context won't be injected** until you start a completely new session (exit and restart Claude Code)
 
-To get fresh context from previous sessions, you need to **exit Claude Code completely** (Ctrl+C Ctrl+C or close the terminal) and start a new session. The `/clear` command only clears the conversation context visible to Claude, but the underlying session continues.
+The `/clear` command clears the conversation context visible to Claude AND re-injects fresh context from recent sessions, while the underlying session continues tracking observations.
 
 ## Next Steps
 
