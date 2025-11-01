@@ -995,6 +995,8 @@ async function main() {
     console.error('[search-server] Claude-mem search server started');
   } catch (error: any) {
     console.error('[search-server] Failed to initialize:', error.message);
+    console.error('[search-server] Error stack:', error.stack);
+    console.error('[search-server] Full error:', JSON.stringify(error, null, 2));
     process.exit(1);
   }
 }
