@@ -5,6 +5,8 @@
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -15,16 +17,109 @@ import { basename } from 'path';
 import { SessionSearch } from '../services/sqlite/SessionSearch.js';
 import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../services/sqlite/types.js';
+import { VECTOR_DB_DIR } from '../shared/paths.js';
 
-// Initialize search instance
+// Initialize search instances
 let search: SessionSearch;
 let store: SessionStore;
+let chromaClient: Client | null = null;
+const COLLECTION_NAME = 'cm__claude-mem';
+
 try {
   search = new SessionSearch();
   store = new SessionStore();
 } catch (error: any) {
   console.error('[search-server] Failed to initialize search:', error.message);
   process.exit(1);
+}
+
+/**
+ * Query Chroma vector database via MCP
+ * Parses Python dict-like responses from Chroma MCP server
+ */
+async function queryChroma(
+  query: string,
+  limit: number,
+  whereFilter?: Record<string, any>
+): Promise<{ ids: number[]; distances: number[]; metadatas: any[] }> {
+  if (!chromaClient) {
+    throw new Error('Chroma client not initialized');
+  }
+
+  const result = await chromaClient.callTool({
+    name: 'chroma_query_documents',
+    arguments: {
+      collection_name: COLLECTION_NAME,
+      query_texts: [query],
+      n_results: limit,
+      include: ['documents', 'metadatas', 'distances'],
+      where: whereFilter
+    }
+  });
+
+  const resultText = result.content[0]?.text || '';
+
+  // Parse Python dict-like output using regex
+  // Format: {'ids': [[...]], 'distances': [[...]], 'metadatas': [[...]]}
+
+  // Extract IDs (nested array format)
+  const idsMatch = resultText.match(/'ids':\s*\[\[(.*?)\]\]/s);
+  const ids: number[] = [];
+  if (idsMatch) {
+    const idsContent = idsMatch[1];
+    // Match quoted strings (Chroma doc IDs like 'obs_123_title')
+    const idMatches = idsContent.match(/'([^']*(?:\\'[^']*)*)'/g) || [];
+    for (const idMatch of idMatches) {
+      const docId = idMatch.slice(1, -1);
+      // Extract sqlite_id from document ID (format: obs_{id}_title)
+      const sqliteIdMatch = docId.match(/obs_(\d+)_/);
+      if (sqliteIdMatch) {
+        const sqliteId = parseInt(sqliteIdMatch[1], 10);
+        if (!ids.includes(sqliteId)) {
+          ids.push(sqliteId);
+        }
+      }
+    }
+  }
+
+  // Extract distances (nested array format)
+  const distancesMatch = resultText.match(/'distances':\s*\[\[([\d.,\s]+)\]\]/s);
+  const distances: number[] = [];
+  if (distancesMatch) {
+    const distancesContent = distancesMatch[1];
+    const distanceValues = distancesContent.split(',').map(d => parseFloat(d.trim())).filter(d => !isNaN(d));
+    distances.push(...distanceValues);
+  }
+
+  // Extract metadatas (nested array format)
+  const metasMatch = resultText.match(/'metadatas':\s*\[\[(.*?)\]\]/s);
+  const metadatas: any[] = [];
+  if (metasMatch) {
+    const metasContent = metasMatch[1];
+    // Parse each metadata dict
+    const metaObjMatches = metasContent.match(/\{[^}]+\}/g) || [];
+    for (const metaStr of metaObjMatches) {
+      const meta: any = {};
+      // Extract sqlite_id
+      const sqliteIdMatch = metaStr.match(/'sqlite_id':\s*(\d+)/);
+      if (sqliteIdMatch) {
+        meta.sqlite_id = parseInt(sqliteIdMatch[1], 10);
+      }
+      // Extract type
+      const typeMatch = metaStr.match(/'type':\s*'([^']+)'/);
+      if (typeMatch) {
+        meta.type = typeMatch[1];
+      }
+      // Extract created_at_epoch
+      const epochMatch = metaStr.match(/'created_at_epoch':\s*(\d+)/);
+      if (epochMatch) {
+        meta.created_at_epoch = parseInt(epochMatch[1], 10);
+      }
+      metadatas.push(meta);
+    }
+  }
+
+  return { ids, distances, metadatas };
 }
 
 /**
@@ -286,7 +381,45 @@ const tools = [
     handler: async (args: any) => {
       try {
         const { query, format = 'index', ...options } = args;
-        const results = search.searchObservations(query, options);
+        let results: ObservationSearchResult[] = [];
+
+        // Hybrid search: Try Chroma semantic search first, fall back to FTS5
+        if (chromaClient) {
+          try {
+            console.error('[search-server] Using hybrid semantic search (Chroma + SQLite)');
+
+            // Step 1: Chroma semantic search (top 100)
+            const chromaResults = await queryChroma(query, 100);
+            console.error(`[search-server] Chroma returned ${chromaResults.ids.length} semantic matches`);
+
+            if (chromaResults.ids.length > 0) {
+              // Step 2: Filter by recency (90 days)
+              const ninetyDaysAgo = Math.floor(Date.now() / 1000) - (90 * 24 * 60 * 60);
+              const recentIds = chromaResults.ids.filter((id, idx) => {
+                const meta = chromaResults.metadatas[idx];
+                return meta && meta.created_at_epoch > ninetyDaysAgo;
+              });
+
+              console.error(`[search-server] ${recentIds.length} results within 90-day window`);
+
+              // Step 3: Hydrate from SQLite in temporal order
+              if (recentIds.length > 0) {
+                const limit = options.limit || 20;
+                results = store.getObservationsByIds(recentIds, { orderBy: 'date_desc', limit });
+                console.error(`[search-server] Hydrated ${results.length} observations from SQLite`);
+              }
+            }
+          } catch (chromaError: any) {
+            console.error('[search-server] Chroma query failed, falling back to FTS5:', chromaError.message);
+            // Fall through to FTS5 fallback
+          }
+        }
+
+        // Fall back to FTS5 if Chroma unavailable or returned no results
+        if (results.length === 0) {
+          console.error('[search-server] Using FTS5 keyword search');
+          results = search.searchObservations(query, options);
+        }
 
         if (results.length === 0) {
           return {
@@ -400,7 +533,50 @@ const tools = [
     handler: async (args: any) => {
       try {
         const { concept, format = 'index', ...filters } = args;
-        const results = search.findByConcept(concept, filters);
+        let results: ObservationSearchResult[] = [];
+
+        // Metadata-first, semantic-enhanced search
+        if (chromaClient) {
+          try {
+            console.error('[search-server] Using metadata-first + semantic ranking for concept search');
+
+            // Step 1: SQLite metadata filter (get all IDs with this concept)
+            const metadataResults = search.findByConcept(concept, filters);
+            console.error(`[search-server] Found ${metadataResults.length} observations with concept "${concept}"`);
+
+            if (metadataResults.length > 0) {
+              // Step 2: Chroma semantic ranking (rank by relevance to concept)
+              const ids = metadataResults.map(obs => obs.id);
+              const chromaResults = await queryChroma(concept, Math.min(ids.length, 100));
+
+              // Intersect: Keep only IDs that passed metadata filter, in semantic rank order
+              const rankedIds: number[] = [];
+              for (const chromaId of chromaResults.ids) {
+                if (ids.includes(chromaId) && !rankedIds.includes(chromaId)) {
+                  rankedIds.push(chromaId);
+                }
+              }
+
+              console.error(`[search-server] Chroma ranked ${rankedIds.length} results by semantic relevance`);
+
+              // Step 3: Hydrate in semantic rank order
+              if (rankedIds.length > 0) {
+                results = store.getObservationsByIds(rankedIds, { limit: filters.limit || 20 });
+                // Restore semantic ranking order
+                results.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
+              }
+            }
+          } catch (chromaError: any) {
+            console.error('[search-server] Chroma ranking failed, using SQLite order:', chromaError.message);
+            // Fall through to SQLite fallback
+          }
+        }
+
+        // Fall back to SQLite-only if Chroma unavailable or failed
+        if (results.length === 0) {
+          console.error('[search-server] Using SQLite-only concept search');
+          results = search.findByConcept(concept, filters);
+        }
 
         if (results.length === 0) {
           return {
@@ -457,9 +633,59 @@ const tools = [
     handler: async (args: any) => {
       try {
         const { filePath, format = 'index', ...filters } = args;
-        const results = search.findByFile(filePath, filters);
+        let observations: ObservationSearchResult[] = [];
+        let sessions: SessionSummarySearchResult[] = [];
 
-        const totalResults = results.observations.length + results.sessions.length;
+        // Metadata-first, semantic-enhanced search for observations
+        if (chromaClient) {
+          try {
+            console.error('[search-server] Using metadata-first + semantic ranking for file search');
+
+            // Step 1: SQLite metadata filter (get all results with this file)
+            const metadataResults = search.findByFile(filePath, filters);
+            console.error(`[search-server] Found ${metadataResults.observations.length} observations, ${metadataResults.sessions.length} sessions for file "${filePath}"`);
+
+            // Sessions: Keep as-is (already summarized, no semantic ranking needed)
+            sessions = metadataResults.sessions;
+
+            // Observations: Apply semantic ranking
+            if (metadataResults.observations.length > 0) {
+              // Step 2: Chroma semantic ranking (rank by relevance to file path)
+              const ids = metadataResults.observations.map(obs => obs.id);
+              const chromaResults = await queryChroma(filePath, Math.min(ids.length, 100));
+
+              // Intersect: Keep only IDs that passed metadata filter, in semantic rank order
+              const rankedIds: number[] = [];
+              for (const chromaId of chromaResults.ids) {
+                if (ids.includes(chromaId) && !rankedIds.includes(chromaId)) {
+                  rankedIds.push(chromaId);
+                }
+              }
+
+              console.error(`[search-server] Chroma ranked ${rankedIds.length} observations by semantic relevance`);
+
+              // Step 3: Hydrate in semantic rank order
+              if (rankedIds.length > 0) {
+                observations = store.getObservationsByIds(rankedIds, { limit: filters.limit || 20 });
+                // Restore semantic ranking order
+                observations.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
+              }
+            }
+          } catch (chromaError: any) {
+            console.error('[search-server] Chroma ranking failed, using SQLite order:', chromaError.message);
+            // Fall through to SQLite fallback
+          }
+        }
+
+        // Fall back to SQLite-only if Chroma unavailable or failed
+        if (observations.length === 0 && sessions.length === 0) {
+          console.error('[search-server] Using SQLite-only file search');
+          const results = search.findByFile(filePath, filters);
+          observations = results.observations;
+          sessions = results.sessions;
+        }
+
+        const totalResults = observations.length + sessions.length;
 
         if (totalResults === 0) {
           return {
@@ -476,13 +702,13 @@ const tools = [
           const formattedResults: string[] = [];
 
           // Add observations
-          results.observations.forEach((obs, i) => {
+          observations.forEach((obs, i) => {
             formattedResults.push(formatObservationIndex(obs, i));
           });
 
           // Add sessions
-          results.sessions.forEach((session, i) => {
-            formattedResults.push(formatSessionIndex(session, i + results.observations.length));
+          sessions.forEach((session, i) => {
+            formattedResults.push(formatSessionIndex(session, i + observations.length));
           });
 
           combinedText = header + formattedResults.join('\n\n') + formatSearchTips();
@@ -490,13 +716,13 @@ const tools = [
           const formattedResults: string[] = [];
 
           // Add observations
-          results.observations.forEach((obs, i) => {
+          observations.forEach((obs, i) => {
             formattedResults.push(formatObservationResult(obs, i));
           });
 
           // Add sessions
-          results.sessions.forEach((session, i) => {
-            formattedResults.push(formatSessionResult(session, i + results.observations.length));
+          sessions.forEach((session, i) => {
+            formattedResults.push(formatSessionResult(session, i + observations.length));
           });
 
           combinedText = formattedResults.join('\n\n---\n\n');
@@ -540,10 +766,53 @@ const tools = [
     handler: async (args: any) => {
       try {
         const { type, format = 'index', ...filters } = args;
-        const results = search.findByType(type, filters);
+        const typeStr = Array.isArray(type) ? type.join(', ') : type;
+        let results: ObservationSearchResult[] = [];
+
+        // Metadata-first, semantic-enhanced search
+        if (chromaClient) {
+          try {
+            console.error('[search-server] Using metadata-first + semantic ranking for type search');
+
+            // Step 1: SQLite metadata filter (get all IDs with this type)
+            const metadataResults = search.findByType(type, filters);
+            console.error(`[search-server] Found ${metadataResults.length} observations with type "${typeStr}"`);
+
+            if (metadataResults.length > 0) {
+              // Step 2: Chroma semantic ranking (rank by relevance to type)
+              const ids = metadataResults.map(obs => obs.id);
+              const chromaResults = await queryChroma(typeStr, Math.min(ids.length, 100));
+
+              // Intersect: Keep only IDs that passed metadata filter, in semantic rank order
+              const rankedIds: number[] = [];
+              for (const chromaId of chromaResults.ids) {
+                if (ids.includes(chromaId) && !rankedIds.includes(chromaId)) {
+                  rankedIds.push(chromaId);
+                }
+              }
+
+              console.error(`[search-server] Chroma ranked ${rankedIds.length} results by semantic relevance`);
+
+              // Step 3: Hydrate in semantic rank order
+              if (rankedIds.length > 0) {
+                results = store.getObservationsByIds(rankedIds, { limit: filters.limit || 20 });
+                // Restore semantic ranking order
+                results.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
+              }
+            }
+          } catch (chromaError: any) {
+            console.error('[search-server] Chroma ranking failed, using SQLite order:', chromaError.message);
+            // Fall through to SQLite fallback
+          }
+        }
+
+        // Fall back to SQLite-only if Chroma unavailable or failed
+        if (results.length === 0) {
+          console.error('[search-server] Using SQLite-only type search');
+          results = search.findByType(type, filters);
+        }
 
         if (results.length === 0) {
-          const typeStr = Array.isArray(type) ? type.join(', ') : type;
           return {
             content: [{
               type: 'text' as const,
@@ -553,7 +822,6 @@ const tools = [
         }
 
         // Format based on requested format
-        const typeStr = Array.isArray(type) ? type.join(', ') : type;
         let combinedText: string;
         if (format === 'index') {
           const header = `Found ${results.length} observation(s) with type "${typeStr}":\n\n`;
@@ -827,6 +1095,29 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
 // Start the server
 async function main() {
+  // Initialize Chroma client
+  try {
+    console.error('[search-server] Initializing Chroma client...');
+    const chromaTransport = new StdioClientTransport({
+      command: 'uvx',
+      args: ['chroma-mcp', '--client-type', 'persistent', '--data-dir', VECTOR_DB_DIR]
+    });
+
+    chromaClient = new Client({
+      name: 'claude-mem-search-chroma-client',
+      version: '1.0.0'
+    }, {
+      capabilities: {}
+    });
+
+    await chromaClient.connect(chromaTransport);
+    console.error('[search-server] Chroma client connected successfully');
+  } catch (error: any) {
+    console.error('[search-server] Failed to initialize Chroma client:', error.message);
+    console.error('[search-server] Falling back to FTS5-only search');
+    chromaClient = null;
+  }
+
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error('[search-server] Claude-mem search server started');

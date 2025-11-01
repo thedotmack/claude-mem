@@ -617,6 +617,33 @@ export class SessionStore {
   }
 
   /**
+   * Get observations by array of IDs with ordering and limit
+   */
+  getObservationsByIds(
+    ids: number[],
+    options: { orderBy?: 'date_desc' | 'date_asc'; limit?: number } = {}
+  ): any[] {
+    if (ids.length === 0) return [];
+
+    const { orderBy = 'date_desc', limit } = options;
+    const orderClause = orderBy === 'date_asc' ? 'ASC' : 'DESC';
+    const limitClause = limit ? `LIMIT ${limit}` : '';
+
+    // Build placeholders for IN clause
+    const placeholders = ids.map(() => '?').join(',');
+
+    const stmt = this.db.prepare(`
+      SELECT *
+      FROM observations
+      WHERE id IN (${placeholders})
+      ORDER BY created_at_epoch ${orderClause}
+      ${limitClause}
+    `);
+
+    return stmt.all(...ids) as any[];
+  }
+
+  /**
    * Get summary for a specific session
    */
   getSummaryForSession(sdkSessionId: string): {
