@@ -110,23 +110,19 @@ async function buildHooks() {
     await build({
       entryPoints: [SEARCH_SERVER.source],
       bundle: true,
-      platform: 'node',
-      target: 'node18',
       format: 'esm',
-      outfile: `${hooksDir}/${SEARCH_SERVER.name}.js`,
+      platform: 'node',
+      outfile: `${hooksDir}/${SEARCH_SERVER.name}.mjs`,
       minify: true,
-      external: ['better-sqlite3'],
-      define: {
-        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
-      },
+      packages: 'external',
       banner: {
         js: '#!/usr/bin/env node'
       }
     });
 
     // Make search server executable
-    fs.chmodSync(`${hooksDir}/${SEARCH_SERVER.name}.js`, 0o755);
-    const searchStats = fs.statSync(`${hooksDir}/${SEARCH_SERVER.name}.js`);
+    fs.chmodSync(`${hooksDir}/${SEARCH_SERVER.name}.mjs`, 0o755);
+    const searchStats = fs.statSync(`${hooksDir}/${SEARCH_SERVER.name}.mjs`);
     console.log(`✓ search-server built (${(searchStats.size / 1024).toFixed(2)} KB)`);
 
     console.log('\n✅ All hooks, worker service, and search server built successfully!');

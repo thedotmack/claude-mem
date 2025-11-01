@@ -35,7 +35,6 @@ try {
 
 /**
  * Query Chroma vector database via MCP
- * Parses Python dict-like responses from Chroma MCP server
  */
 async function queryChroma(
   query: string,
@@ -59,65 +58,31 @@ async function queryChroma(
 
   const resultText = result.content[0]?.text || '';
 
-  // Parse Python dict-like output using regex
-  // Format: {'ids': [[...]], 'distances': [[...]], 'metadatas': [[...]]}
+  // Parse JSON response
+  let parsed: any;
+  try {
+    parsed = JSON.parse(resultText);
+  } catch (error) {
+    console.error('[search-server] Failed to parse Chroma response as JSON:', error);
+    return { ids: [], distances: [], metadatas: [] };
+  }
 
-  // Extract IDs (nested array format)
-  const idsMatch = resultText.match(/'ids':\s*\[\[(.*?)\]\]/s);
+  // Extract unique observation IDs from document IDs
   const ids: number[] = [];
-  if (idsMatch) {
-    const idsContent = idsMatch[1];
-    // Match quoted strings (Chroma doc IDs like 'obs_123_title')
-    const idMatches = idsContent.match(/'([^']*(?:\\'[^']*)*)'/g) || [];
-    for (const idMatch of idMatches) {
-      const docId = idMatch.slice(1, -1);
-      // Extract sqlite_id from document ID (format: obs_{id}_title)
-      const sqliteIdMatch = docId.match(/obs_(\d+)_/);
-      if (sqliteIdMatch) {
-        const sqliteId = parseInt(sqliteIdMatch[1], 10);
-        if (!ids.includes(sqliteId)) {
-          ids.push(sqliteId);
-        }
+  const docIds = parsed.ids?.[0] || [];
+  for (const docId of docIds) {
+    // Extract sqlite_id from document ID (format: obs_{id}_narrative, obs_{id}_fact_0, etc)
+    const match = docId.match(/obs_(\d+)_/);
+    if (match) {
+      const sqliteId = parseInt(match[1], 10);
+      if (!ids.includes(sqliteId)) {
+        ids.push(sqliteId);
       }
     }
   }
 
-  // Extract distances (nested array format)
-  const distancesMatch = resultText.match(/'distances':\s*\[\[([\d.,\s]+)\]\]/s);
-  const distances: number[] = [];
-  if (distancesMatch) {
-    const distancesContent = distancesMatch[1];
-    const distanceValues = distancesContent.split(',').map(d => parseFloat(d.trim())).filter(d => !isNaN(d));
-    distances.push(...distanceValues);
-  }
-
-  // Extract metadatas (nested array format)
-  const metasMatch = resultText.match(/'metadatas':\s*\[\[(.*?)\]\]/s);
-  const metadatas: any[] = [];
-  if (metasMatch) {
-    const metasContent = metasMatch[1];
-    // Parse each metadata dict
-    const metaObjMatches = metasContent.match(/\{[^}]+\}/g) || [];
-    for (const metaStr of metaObjMatches) {
-      const meta: any = {};
-      // Extract sqlite_id
-      const sqliteIdMatch = metaStr.match(/'sqlite_id':\s*(\d+)/);
-      if (sqliteIdMatch) {
-        meta.sqlite_id = parseInt(sqliteIdMatch[1], 10);
-      }
-      // Extract type
-      const typeMatch = metaStr.match(/'type':\s*'([^']+)'/);
-      if (typeMatch) {
-        meta.type = typeMatch[1];
-      }
-      // Extract created_at_epoch
-      const epochMatch = metaStr.match(/'created_at_epoch':\s*(\d+)/);
-      if (epochMatch) {
-        meta.created_at_epoch = parseInt(epochMatch[1], 10);
-      }
-      metadatas.push(meta);
-    }
-  }
+  const distances = parsed.distances?.[0] || [];
+  const metadatas = parsed.metadatas?.[0] || [];
 
   return { ids, distances, metadatas };
 }
@@ -1095,32 +1060,36 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
 // Start the server
 async function main() {
-  // Initialize Chroma client
-  try {
-    console.error('[search-server] Initializing Chroma client...');
-    const chromaTransport = new StdioClientTransport({
-      command: 'uvx',
-      args: ['chroma-mcp', '--client-type', 'persistent', '--data-dir', VECTOR_DB_DIR]
-    });
-
-    chromaClient = new Client({
-      name: 'claude-mem-search-chroma-client',
-      version: '1.0.0'
-    }, {
-      capabilities: {}
-    });
-
-    await chromaClient.connect(chromaTransport);
-    console.error('[search-server] Chroma client connected successfully');
-  } catch (error: any) {
-    console.error('[search-server] Failed to initialize Chroma client:', error.message);
-    console.error('[search-server] Falling back to FTS5-only search');
-    chromaClient = null;
-  }
-
+  // Start the MCP server FIRST (critical - must start before blocking operations)
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error('[search-server] Claude-mem search server started');
+
+  // Initialize Chroma client in background (non-blocking)
+  setTimeout(async () => {
+    try {
+      console.error('[search-server] Initializing Chroma client...');
+      const chromaTransport = new StdioClientTransport({
+        command: 'uvx',
+        args: ['chroma-mcp', '--client-type', 'persistent', '--data-dir', VECTOR_DB_DIR]
+      });
+
+      const client = new Client({
+        name: 'claude-mem-search-chroma-client',
+        version: '1.0.0'
+      }, {
+        capabilities: {}
+      });
+
+      await client.connect(chromaTransport);
+      chromaClient = client;
+      console.error('[search-server] Chroma client connected successfully');
+    } catch (error: any) {
+      console.error('[search-server] Failed to initialize Chroma client:', error.message);
+      console.error('[search-server] Falling back to FTS5-only search');
+      chromaClient = null;
+    }
+  }, 0);
 }
 
 main().catch((error) => {

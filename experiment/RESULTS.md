@@ -1,6 +1,6 @@
 # Chroma MCP Search Experiment Results
 
-**Date**: 2025-11-01T00:18:36.490Z
+**Date**: 2025-11-01T03:14:23.093Z
 **Project**: claude-mem
 **Collection**: cm__claude-mem
 
@@ -43,9 +43,15 @@ Chroma's vector embeddings successfully handled conceptual queries that FTS5 com
 
 #### 🟡 Keyword Search (FTS5)
 
-**Status**: ✅ Found 1 results
+**Status**: ✅ Found 2 results
 
-**Result 1: Semantic search (Chroma) superior to keyword search (FTS5) for memory queries** (discovery)
+**Result 1: Search Type Categories Tested: Mechanism, Problem-Solution, and Pattern Queries** (discovery)
+
+```
+The session systematically tested both search systems against diverse query types to understand search quality and relevance capabilities. Three primary categories emerged: (1) mechanism/how-to questions seeking explanations of system behavior, (2) problem-solution queries focused on troubleshooting and bug fixes, and (3) pattern/best-practice questions for architectural guidance. Additional testing included specific technical domain queries (context injection, PM2, FTS5) and operational queries (versioning, configuration, error handling). This taxonomy of query types provides a framework for evaluating and comparing search system quality across different information-seeking needs.
+```
+
+**Result 2: Semantic search (Chroma) superior to keyword search (FTS5) for memory queries** (discovery)
 
 ```
 Testing revealed that semantic search via Chroma vastly outperforms traditional full-text search (FTS5) for the memory system use case. Across 8 diverse test queries, Chroma found relevant results in every case while FTS5 succeeded only 38% of the time. The gap is most pronounced for conceptual queries: FTS5 has no mechanism to understand queries like "problems with database synchronization" or "patterns for background workers" without exact keyword matches. Chroma, using vector embeddings, correctly interpreted semantic intent and returned highly relevant results even when exact phrases didn't appear in the database. For exact-match queries, both performed well, but Chroma ranked results by semantic relevance rather than just text occurrence. This data demonstrates semantic search should be the primary interface for memory retrieval.
