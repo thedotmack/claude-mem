@@ -15,17 +15,12 @@ import { basename } from 'path';
 import { SessionSearch } from '../services/sqlite/SessionSearch.js';
 import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../services/sqlite/types.js';
+import { ChromaOrchestrator } from '../services/chroma/ChromaOrchestrator.js';
 
-// Initialize search instance
+// Initialize search instances
 let search: SessionSearch;
 let store: SessionStore;
-try {
-  search = new SessionSearch();
-  store = new SessionStore();
-} catch (error: any) {
-  console.error('[search-server] Failed to initialize search:', error.message);
-  process.exit(1);
-}
+let chroma: ChromaOrchestrator;
 
 /**
  * Format search tips footer
@@ -286,9 +281,12 @@ const tools = [
     handler: async (args: any) => {
       try {
         const { query, format = 'index', ...options } = args;
-        const results = search.searchObservations(query, options);
 
-        if (results.length === 0) {
+        // WORKFLOW 2: Semantic-First, Temporally-Bounded
+        // Step 1: Semantic search via Chroma (top 100)
+        const chromaResult = await chroma.queryDocuments(query, 100);
+
+        if (chromaResult.ids[0].length === 0) {
           return {
             content: [{
               type: 'text' as const,
@@ -297,10 +295,36 @@ const tools = [
           };
         }
 
+        // Step 2: Filter by recency (last 90 days)
+        const ninetyDaysAgo = Date.now() - (90 * 24 * 60 * 60 * 1000);
+        const recentIds = chroma.extractSqliteIds(chromaResult).filter(id => {
+          const meta = chromaResult.metadatas[0].find(m => m.sqlite_id === id);
+          return meta && meta.created_at_epoch > ninetyDaysAgo;
+        });
+
+        if (recentIds.length === 0) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: `No recent observations found matching "${query}" (searched last 90 days)`
+            }]
+          };
+        }
+
+        // Step 3: Hydrate from SQLite in temporal order
+        const limit = options.limit || 20;
+        const placeholders = recentIds.map(() => '?').join(',');
+        const results = store.db.prepare(`
+          SELECT * FROM observations
+          WHERE id IN (${placeholders})
+          ORDER BY created_at_epoch DESC
+          LIMIT ?
+        `).all(...recentIds, limit) as ObservationSearchResult[];
+
         // Format based on requested format
         let combinedText: string;
         if (format === 'index') {
-          const header = `Found ${results.length} observation(s) matching "${query}":\n\n`;
+          const header = `Found ${results.length} observation(s) matching "${query}" (semantic search, last 90 days):\n\n`;
           const formattedResults = results.map((obs, i) => formatObservationIndex(obs, i));
           combinedText = header + formattedResults.join('\n\n') + formatSearchTips();
         } else {
@@ -400,9 +424,17 @@ const tools = [
     handler: async (args: any) => {
       try {
         const { concept, format = 'index', ...filters } = args;
-        const results = search.findByConcept(concept, filters);
+        const project = filters.project || basename(process.cwd());
 
-        if (results.length === 0) {
+        // WORKFLOW 3: Metadata-First, Semantic-Enhanced
+        // Step 1: Filter by concept in SQLite
+        const conceptResults = store.db.prepare(`
+          SELECT id FROM observations
+          WHERE json_extract(concepts, '$') LIKE ?
+          AND project = ?
+        `).all(`%"${concept}"%`, project) as any[];
+
+        if (conceptResults.length === 0) {
           return {
             content: [{
               type: 'text' as const,
@@ -411,10 +443,40 @@ const tools = [
           };
         }
 
+        // Step 2: Rank by semantic relevance via Chroma
+        const conceptIds = conceptResults.map(r => r.id);
+        const chromaResult = await chroma.queryDocuments(
+          concept,
+          conceptIds.length,
+          { sqlite_id: { $in: conceptIds } }
+        );
+
+        // Step 3: Get ranked IDs
+        const limit = filters.limit || 20;
+        const rankedIds = chroma.extractSqliteIds(chromaResult).slice(0, limit);
+
+        if (rankedIds.length === 0) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: `No observations found with concept "${concept}"`
+            }]
+          };
+        }
+
+        // Step 4: Hydrate full records in semantic rank order
+        const placeholders = rankedIds.map(() => '?').join(',');
+        const caseWhen = rankedIds.map((id, i) => `WHEN ${id} THEN ${i}`).join(' ');
+        const results = store.db.prepare(`
+          SELECT * FROM observations
+          WHERE id IN (${placeholders})
+          ORDER BY CASE id ${caseWhen} END
+        `).all(...rankedIds) as ObservationSearchResult[];
+
         // Format based on requested format
         let combinedText: string;
         if (format === 'index') {
-          const header = `Found ${results.length} observation(s) with concept "${concept}":\n\n`;
+          const header = `Found ${results.length} observation(s) with concept "${concept}" (semantic ranking):\n\n`;
           const formattedResults = results.map((obs, i) => formatObservationIndex(obs, i));
           combinedText = header + formattedResults.join('\n\n') + formatSearchTips();
         } else {
@@ -457,9 +519,58 @@ const tools = [
     handler: async (args: any) => {
       try {
         const { filePath, format = 'index', ...filters } = args;
-        const results = search.findByFile(filePath, filters);
+        const project = filters.project || basename(process.cwd());
 
-        const totalResults = results.observations.length + results.sessions.length;
+        // WORKFLOW 3: Metadata-First, Semantic-Enhanced (for observations)
+        // Step 1: Filter observations by file path in SQLite
+        const fileResults = store.db.prepare(`
+          SELECT id FROM observations
+          WHERE (
+            json_extract(files_read, '$') LIKE ?
+            OR json_extract(files_modified, '$') LIKE ?
+          )
+          AND project = ?
+        `).all(`%"${filePath}"%`, `%"${filePath}"%`, project) as any[];
+
+        let rankedObservations: ObservationSearchResult[] = [];
+        if (fileResults.length > 0) {
+          // Step 2: Rank by semantic relevance via Chroma
+          const fileIds = fileResults.map(r => r.id);
+          const chromaResult = await chroma.queryDocuments(
+            filePath,
+            fileIds.length,
+            { sqlite_id: { $in: fileIds } }
+          );
+
+          // Step 3: Get ranked IDs
+          const limit = filters.limit || 20;
+          const rankedIds = chroma.extractSqliteIds(chromaResult).slice(0, limit);
+
+          if (rankedIds.length > 0) {
+            // Step 4: Hydrate full records in semantic rank order
+            const placeholders = rankedIds.map(() => '?').join(',');
+            const caseWhen = rankedIds.map((id, i) => `WHEN ${id} THEN ${i}`).join(' ');
+            rankedObservations = store.db.prepare(`
+              SELECT * FROM observations
+              WHERE id IN (${placeholders})
+              ORDER BY CASE id ${caseWhen} END
+            `).all(...rankedIds) as ObservationSearchResult[];
+          }
+        }
+
+        // Get sessions (temporal order, no semantic ranking needed)
+        const sessions = store.db.prepare(`
+          SELECT * FROM session_summaries
+          WHERE (
+            json_extract(files_read, '$') LIKE ?
+            OR json_extract(files_edited, '$') LIKE ?
+          )
+          AND project = ?
+          ORDER BY created_at DESC
+          LIMIT ?
+        `).all(`%"${filePath}"%`, `%"${filePath}"%`, project, 10) as SessionSummarySearchResult[];
+
+        const totalResults = rankedObservations.length + sessions.length;
 
         if (totalResults === 0) {
           return {
@@ -472,17 +583,17 @@ const tools = [
 
         let combinedText: string;
         if (format === 'index') {
-          const header = `Found ${totalResults} result(s) for file "${filePath}":\n\n`;
+          const header = `Found ${totalResults} result(s) for file "${filePath}" (semantic ranking):\n\n`;
           const formattedResults: string[] = [];
 
           // Add observations
-          results.observations.forEach((obs, i) => {
+          rankedObservations.forEach((obs, i) => {
             formattedResults.push(formatObservationIndex(obs, i));
           });
 
           // Add sessions
-          results.sessions.forEach((session, i) => {
-            formattedResults.push(formatSessionIndex(session, i + results.observations.length));
+          sessions.forEach((session, i) => {
+            formattedResults.push(formatSessionIndex(session, i + rankedObservations.length));
           });
 
           combinedText = header + formattedResults.join('\n\n') + formatSearchTips();
@@ -490,13 +601,13 @@ const tools = [
           const formattedResults: string[] = [];
 
           // Add observations
-          results.observations.forEach((obs, i) => {
+          rankedObservations.forEach((obs, i) => {
             formattedResults.push(formatObservationResult(obs, i));
           });
 
           // Add sessions
-          results.sessions.forEach((session, i) => {
-            formattedResults.push(formatSessionResult(session, i + results.observations.length));
+          sessions.forEach((session, i) => {
+            formattedResults.push(formatSessionResult(session, i + rankedObservations.length));
           });
 
           combinedText = formattedResults.join('\n\n---\n\n');
@@ -540,9 +651,18 @@ const tools = [
     handler: async (args: any) => {
       try {
         const { type, format = 'index', ...filters } = args;
-        const results = search.findByType(type, filters);
+        const project = filters.project || basename(process.cwd());
 
-        if (results.length === 0) {
+        // WORKFLOW 3: Metadata-First, Semantic-Enhanced
+        // Step 1: Filter by type in SQLite
+        const typeFilter = Array.isArray(type) ? type : [type];
+        const typeResults = store.db.prepare(`
+          SELECT id FROM observations
+          WHERE type IN (${typeFilter.map(() => '?').join(',')})
+          AND project = ?
+        `).all(...typeFilter, project) as any[];
+
+        if (typeResults.length === 0) {
           const typeStr = Array.isArray(type) ? type.join(', ') : type;
           return {
             content: [{
@@ -552,11 +672,42 @@ const tools = [
           };
         }
 
+        // Step 2: Rank by semantic relevance via Chroma
+        const typeIds = typeResults.map(r => r.id);
+        const chromaResult = await chroma.queryDocuments(
+          project,
+          typeIds.length,
+          { sqlite_id: { $in: typeIds } }
+        );
+
+        // Step 3: Get ranked IDs
+        const limit = filters.limit || 20;
+        const rankedIds = chroma.extractSqliteIds(chromaResult).slice(0, limit);
+
+        if (rankedIds.length === 0) {
+          const typeStr = Array.isArray(type) ? type.join(', ') : type;
+          return {
+            content: [{
+              type: 'text' as const,
+              text: `No observations found with type "${typeStr}"`
+            }]
+          };
+        }
+
+        // Step 4: Hydrate full records in semantic rank order
+        const placeholders = rankedIds.map(() => '?').join(',');
+        const caseWhen = rankedIds.map((id, i) => `WHEN ${id} THEN ${i}`).join(' ');
+        const results = store.db.prepare(`
+          SELECT * FROM observations
+          WHERE id IN (${placeholders})
+          ORDER BY CASE id ${caseWhen} END
+        `).all(...rankedIds) as ObservationSearchResult[];
+
         // Format based on requested format
         const typeStr = Array.isArray(type) ? type.join(', ') : type;
         let combinedText: string;
         if (format === 'index') {
-          const header = `Found ${results.length} observation(s) with type "${typeStr}":\n\n`;
+          const header = `Found ${results.length} observation(s) with type "${typeStr}" (semantic ranking):\n\n`;
           const formattedResults = results.map((obs, i) => formatObservationIndex(obs, i));
           combinedText = header + formattedResults.join('\n\n') + formatSearchTips();
         } else {
@@ -827,9 +978,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
 // Start the server
 async function main() {
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  console.error('[search-server] Claude-mem search server started');
+  try {
+    // Initialize SQLite services
+    search = new SessionSearch();
+    store = new SessionStore();
+    console.error('[search-server] SQLite services initialized');
+
+    // Initialize Chroma MCP client
+    chroma = new ChromaOrchestrator();
+    await chroma.connect();
+    console.error('[search-server] Chroma MCP client connected');
+
+    // Start MCP server
+    const transport = new StdioServerTransport();
+    await server.connect(transport);
+    console.error('[search-server] Claude-mem search server started');
+  } catch (error: any) {
+    console.error('[search-server] Failed to initialize:', error.message);
+    process.exit(1);
+  }
 }
 
 main().catch((error) => {
