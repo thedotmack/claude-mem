@@ -8,8 +8,10 @@ import { stdin } from 'process';
 import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { ensureWorkerRunning } from '../shared/worker-utils.js';
 
-// Configuration: Number of sessions to display in context
-const DISPLAY_SESSION_COUNT = 8;
+// Configuration: Read from environment or use defaults
+const DISPLAY_OBSERVATION_COUNT = parseInt(process.env.CLAUDE_MEM_CONTEXT_OBSERVATIONS || '50', 10);
+// Summaries are supplementary - show last 10 for context but not configurable
+const DISPLAY_SESSION_COUNT = 10;
 
 export interface SessionStartInput {
   session_id?: string;
@@ -131,7 +133,21 @@ function contextHook(input?: SessionStartInput, useColors: boolean = false, useI
 
   const db = new SessionStore();
 
-  // Get last N summaries (use N+1 for offset calculation)
+  // Get ALL recent observations for this project (not filtered by summaries)
+  // This ensures we show observations even when summaries haven't been generated
+  // Configurable via CLAUDE_MEM_CONTEXT_OBSERVATIONS env var (default: 50)
+  const allObservations = db.db.prepare(`
+    SELECT
+      id, sdk_session_id, type, title, subtitle, narrative,
+      facts, concepts, files_read, files_modified,
+      created_at, created_at_epoch
+    FROM observations
+    WHERE project = ?
+    ORDER BY created_at_epoch DESC
+    LIMIT ?
+  `).all(project, DISPLAY_OBSERVATION_COUNT) as Observation[];
+
+  // Get recent summaries (optional - may not exist for recent sessions)
   const recentSummaries = db.db.prepare(`
     SELECT id, sdk_session_id, request, completed, next_steps, created_at, created_at_epoch
     FROM session_summaries
@@ -140,7 +156,8 @@ function contextHook(input?: SessionStartInput, useColors: boolean = false, useI
     LIMIT ?
   `).all(project, DISPLAY_SESSION_COUNT + 1) as Array<{ id: number; sdk_session_id: string; request: string | null; completed: string | null; next_steps: string | null; created_at: string; created_at_epoch: number }>;
 
-  if (recentSummaries.length === 0) {
+  // If we have neither observations nor summaries, show empty state
+  if (allObservations.length === 0 && recentSummaries.length === 0) {
     db.close();
     if (useColors) {
       return `\n${colors.bright}${colors.cyan}📝 [${project}] recent context${colors.reset}\n${colors.gray}${'─'.repeat(60)}${colors.reset}\n\n${colors.dim}No previous sessions found for this project yet.${colors.reset}\n`;
@@ -148,12 +165,9 @@ function contextHook(input?: SessionStartInput, useColors: boolean = false, useI
     return `# [${project}] recent context\n\nNo previous sessions found for this project yet.`;
   }
 
-  // Extract unique session IDs from first N summaries
+  // Use observations for display (summaries are supplementary)
+  const observations = allObservations;
   const displaySummaries = recentSummaries.slice(0, DISPLAY_SESSION_COUNT);
-  const sessionIds = [...new Set(displaySummaries.map(s => s.sdk_session_id))];
-
-  // Get all observations from these sessions
-  const observations = getObservations(db, sessionIds);
 
   // Filter observations by key concepts for timeline
   const timelineObs = observations.filter(obs => {

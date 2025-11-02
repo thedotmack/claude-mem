@@ -940,7 +940,7 @@ export class SessionStore {
       files_modified: string[];
     },
     promptNumber?: number
-  ): void {
+  ): { id: number; createdAtEpoch: number } {
     const now = new Date();
     const nowEpoch = now.getTime();
 
@@ -974,7 +974,7 @@ export class SessionStore {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
-    stmt.run(
+    const result = stmt.run(
       sdkSessionId,
       project,
       observation.type,
@@ -989,6 +989,11 @@ export class SessionStore {
       now.toISOString(),
       nowEpoch
     );
+
+    return {
+      id: Number(result.lastInsertRowid),
+      createdAtEpoch: nowEpoch
+    };
   }
 
   /**
@@ -1007,7 +1012,7 @@ export class SessionStore {
       notes: string | null;
     },
     promptNumber?: number
-  ): void {
+  ): { id: number; createdAtEpoch: number } {
     const now = new Date();
     const nowEpoch = now.getTime();
 
@@ -1041,7 +1046,7 @@ export class SessionStore {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
-    stmt.run(
+    const result = stmt.run(
       sdkSessionId,
       project,
       summary.request,
@@ -1054,6 +1059,11 @@ export class SessionStore {
       now.toISOString(),
       nowEpoch
     );
+
+    return {
+      id: Number(result.lastInsertRowid),
+      createdAtEpoch: nowEpoch
+    };
   }
 
   /**

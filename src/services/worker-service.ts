@@ -7,6 +7,7 @@ import express, { Request, Response } from 'express';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { SDKUserMessage, SDKSystemMessage } from '@anthropic-ai/claude-agent-sdk';
 import { SessionStore } from './sqlite/SessionStore.js';
+import { ChromaSync } from './sync/ChromaSync.js';
 import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt } from '../sdk/prompts.js';
 import { parseObservations, parseSummary } from '../sdk/parser.js';
 import type { SDKSession } from '../sdk/prompts.js';
@@ -83,10 +84,15 @@ class WorkerService {
   private app: express.Application;
   private port: number | null = null;
   private sessions: Map<number, ActiveSession> = new Map();
+  private chromaSync: ChromaSync;
 
   constructor() {
     this.app = express();
     this.app.use(express.json({ limit: '50mb' }));
+
+    // Initialize ChromaSync (fail fast if Chroma unavailable)
+    this.chromaSync = new ChromaSync('claude-mem');
+    logger.info('SYSTEM', 'ChromaSync initialized');
 
     // Health check
     this.app.get('/health', this.handleHealth.bind(this));
@@ -109,6 +115,16 @@ class WorkerService {
 
     if (cleanedCount > 0) {
       logger.info('SYSTEM', `Cleaned up ${cleanedCount} orphaned sessions`);
+    }
+
+    // Backfill Chroma with any missing observations/summaries (blocking)
+    logger.info('SYSTEM', 'Starting Chroma backfill...');
+    try {
+      await this.chromaSync.ensureBackfilled();
+      logger.info('SYSTEM', 'Chroma backfill complete');
+    } catch (error) {
+      logger.error('SYSTEM', 'Chroma backfill failed - worker cannot start', {}, error as Error);
+      throw error;
     }
 
     return new Promise((resolve, reject) => {
@@ -406,7 +422,7 @@ class WorkerService {
           // In debug mode, log the full response
           logger.debug('SDK', 'Full response', { sessionId: session.sessionDbId }, textContent);
 
-          // Parse and store with prompt number
+          // Parse and store with prompt number (non-blocking Chroma sync)
           this.handleAgentMessage(session, textContent, session.lastPromptNumber);
         }
       }
@@ -558,12 +574,36 @@ class WorkerService {
     }
 
     const db = new SessionStore();
+
+    // Store observations and sync to Chroma (non-blocking, fail-fast)
     for (const obs of observations) {
-      db.storeObservation(session.claudeSessionId, session.project, obs, promptNumber);
+      const { id, createdAtEpoch } = db.storeObservation(session.claudeSessionId, session.project, obs, promptNumber);
       logger.success('DB', 'Observation stored', {
         correlationId,
         type: obs.type,
-        title: obs.title
+        title: obs.title,
+        id
+      });
+
+      // Sync to Chroma (non-blocking fire-and-forget, but crash on failure)
+      this.chromaSync.syncObservation(
+        id,
+        session.claudeSessionId,
+        session.project,
+        obs,
+        promptNumber,
+        createdAtEpoch
+      ).then(() => {
+        logger.success('CHROMA', 'Observation synced', {
+          correlationId,
+          observationId: id
+        });
+      }).catch((error: Error) => {
+        logger.error('CHROMA', 'Observation sync failed - crashing worker', {
+          correlationId,
+          observationId: id
+        }, error);
+        process.exit(1); // Fail fast - no fallbacks
       });
     }
 
@@ -580,8 +620,30 @@ class WorkerService {
         hasCompleted: !!summary.completed,
         hasNextSteps: !!summary.next_steps
       });
-      db.storeSummary(session.claudeSessionId, session.project, summary, promptNumber);
-      logger.success('DB', '📝 SUMMARY STORED IN DATABASE', { sessionId: session.sessionDbId, promptNumber });
+
+      const { id, createdAtEpoch } = db.storeSummary(session.claudeSessionId, session.project, summary, promptNumber);
+      logger.success('DB', '📝 SUMMARY STORED IN DATABASE', { sessionId: session.sessionDbId, promptNumber, id });
+
+      // Sync to Chroma (non-blocking fire-and-forget, but crash on failure)
+      this.chromaSync.syncSummary(
+        id,
+        session.claudeSessionId,
+        session.project,
+        summary,
+        promptNumber,
+        createdAtEpoch
+      ).then(() => {
+        logger.success('CHROMA', 'Summary synced', {
+          sessionId: session.sessionDbId,
+          summaryId: id
+        });
+      }).catch((error: Error) => {
+        logger.error('CHROMA', 'Summary sync failed - crashing worker', {
+          sessionId: session.sessionDbId,
+          summaryId: id
+        }, error);
+        process.exit(1); // Fail fast - no fallbacks
+      });
     } else {
       logger.warn('PARSER', 'NO SUMMARY TAGS FOUND in response', {
         sessionId: session.sessionDbId,

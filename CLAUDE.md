@@ -153,6 +153,30 @@ Configure which AI model processes your observations:
 The script manages `CLAUDE_MEM_MODEL` in `~/.claude/settings.json`.
 TODO: also have script create and manage `CLAUDE_MEM_MODEL` in `~/.claude/plugins/marketplaces/thedotmack/.env` so our worker script has access to the value (we may not even need it in our settings but only in our plugin folder since hooks shouldn't be calling queries, not sure).
 
+### Context Display Settings
+
+Configure how much historical context is displayed at session start via `~/.claude/settings.json`:
+
+**Environment variable** (in the `env` section):
+- `CLAUDE_MEM_CONTEXT_OBSERVATIONS` - Number of recent observations to display (default: 50, ~1.2K tokens typical)
+
+**Example settings.json**:
+```json
+{
+  "env": {
+    "CLAUDE_MEM_MODEL": "claude-haiku-4-5",
+    "CLAUDE_MEM_CONTEXT_OBSERVATIONS": "100"
+  }
+}
+```
+
+**Notes**:
+- Higher observation counts = more context but more tokens consumed at startup
+- 50 observations ≈ 4-8 hours of work ≈ 1.2K tokens
+- 100 observations ≈ 1-2 days of work ≈ 2.4K tokens
+- 200 observations ≈ 2-3 days of work ≈ 4.8K tokens
+- Session summaries are shown when available but are not the primary timeline
+
 ## Data Flow
 
 ### Memory Pipeline
