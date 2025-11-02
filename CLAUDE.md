@@ -4,7 +4,7 @@
 
 Claude-mem is a persistent memory compression system that preserves context across Claude Code sessions. It automatically captures tool usage observations, processes them through the Claude Agent SDK, and makes summaries available to future sessions.
 
-**Current Version**: 4.3.3
+**Current Version**: 4.3.4
 **License**: AGPL-3.0
 **Author**: Alex Newman (@thedotmack)
 
@@ -212,9 +212,21 @@ npm run build && git commit -a -m "Build and update" && git push && cd ~/.claude
 
 For detailed version history and changelog, see [CHANGELOG.md](CHANGELOG.md).
 
-**Current Version**: 4.3.3
+**Current Version**: 4.3.4
 
 ### Recent Highlights
+
+#### v4.3.4 (2025-11-01)
+**Breaking Changes**: None (patch version)
+
+**Fixes**:
+- Fixed SessionStart hooks running on session resume (plugin/hooks/hooks.json:4)
+- Added matcher configuration to only run SessionStart hooks on startup, clear, or compact events
+- Prevents unnecessary hook execution and improves performance on session resume
+
+**Technical Details**:
+- Modified: plugin/hooks/hooks.json:4 (added `"matcher": "startup|clear|compact"`)
+- Impact: Hooks now skip execution when resuming existing sessions
 
 #### v4.3.3 (2025-10-27)
 **Breaking Changes**: None (patch version)
