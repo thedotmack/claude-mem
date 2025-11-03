@@ -169,18 +169,8 @@ function contextHook(input?: SessionStartInput, useColors: boolean = false, useI
   const observations = allObservations;
   const displaySummaries = recentSummaries.slice(0, DISPLAY_SESSION_COUNT);
 
-  // Filter observations by key concepts for timeline
-  const timelineObs = observations.filter(obs => {
-    const concepts = parseJsonArray(obs.concepts);
-    return concepts.includes('what-changed') ||
-           concepts.includes('how-it-works') ||
-           concepts.includes('problem-solution') ||
-           concepts.includes('gotcha') ||
-           concepts.includes('discovery') ||
-           concepts.includes('why-it-exists') ||
-           concepts.includes('decision') ||
-           concepts.includes('trade-off');
-  });
+  // All observations are shown in timeline (filtered by type, not concepts)
+  const timelineObs = observations;
 
   // Build output
   const output: string[] = [];
@@ -200,10 +190,10 @@ function contextHook(input?: SessionStartInput, useColors: boolean = false, useI
   if (timelineObs.length > 0) {
     // Legend/Key
     if (useColors) {
-      output.push(`${colors.dim}Legend: 🎯 session-request | 🔴 gotcha | 🟡 problem-solution | 🔵 how-it-works | 🟢 what-changed | 🟣 discovery | 🟠 why-it-exists | 🟤 decision | ⚖️ trade-off${colors.reset}`);
+      output.push(`${colors.dim}Legend: 🎯 session-request | 🔴 bugfix | 🟢 feature | 🔵 refactor | ⚪ change | 🟡 discovery | 🟤 decision${colors.reset}`);
       output.push('');
     } else {
-      output.push(`**Legend:** 🎯 session-request | 🔴 gotcha | 🟡 problem-solution | 🔵 how-it-works | 🟢 what-changed | 🟣 discovery | 🟠 why-it-exists | 🟤 decision | ⚖️ trade-off`);
+      output.push(`**Legend:** 🎯 session-request | 🔴 bugfix | 🟢 feature | 🔵 refactor | ⚪ change | 🟡 discovery | 🟤 decision`);
       output.push('');
     }
 
@@ -212,13 +202,13 @@ function contextHook(input?: SessionStartInput, useColors: boolean = false, useI
       output.push(`${colors.dim}💡 Progressive Disclosure: This index shows WHAT exists (titles) and retrieval COST (token counts).${colors.reset}`);
       output.push(`${colors.dim}   → Use MCP search tools to fetch full observation details on-demand (Layer 2)${colors.reset}`);
       output.push(`${colors.dim}   → Prefer searching observations over re-reading code for past decisions and learnings${colors.reset}`);
-      output.push(`${colors.dim}   → Critical types (🔴 gotcha, 🟤 decision, ⚖️ trade-off) often worth fetching immediately${colors.reset}`);
+      output.push(`${colors.dim}   → Critical types (🔴 bugfix, 🟤 decision) often worth fetching immediately${colors.reset}`);
       output.push('');
     } else {
       output.push(`💡 **Progressive Disclosure:** This index shows WHAT exists (titles) and retrieval COST (token counts).`);
       output.push(`- Use MCP search tools to fetch full observation details on-demand (Layer 2)`);
       output.push(`- Prefer searching observations over re-reading code for past decisions and learnings`);
-      output.push(`- Critical types (🔴 gotcha, 🟤 decision, ⚖️ trade-off) often worth fetching immediately`);
+      output.push(`- Critical types (🔴 bugfix, 🟤 decision) often worth fetching immediately`);
       output.push('');
     }
 
@@ -342,26 +332,30 @@ function contextHook(input?: SessionStartInput, useColors: boolean = false, useI
           }
 
           // Render observation row
-          const concepts = parseJsonArray(obs.concepts);
           let icon = '•';
 
-          // Priority order: gotcha > decision > trade-off > problem-solution > discovery > why-it-exists > how-it-works > what-changed
-          if (concepts.includes('gotcha')) {
-            icon = '🔴';
-          } else if (concepts.includes('decision')) {
-            icon = '🟤';
-          } else if (concepts.includes('trade-off')) {
-            icon = '⚖️';
-          } else if (concepts.includes('problem-solution')) {
-            icon = '🟡';
-          } else if (concepts.includes('discovery')) {
-            icon = '🟣';
-          } else if (concepts.includes('why-it-exists')) {
-            icon = '🟠';
-          } else if (concepts.includes('how-it-works')) {
-            icon = '🔵';
-          } else if (concepts.includes('what-changed')) {
-            icon = '🟢';
+          // Map observation type to emoji
+          switch (obs.type) {
+            case 'bugfix':
+              icon = '🔴';
+              break;
+            case 'feature':
+              icon = '🟢';
+              break;
+            case 'refactor':
+              icon = '🔵';
+              break;
+            case 'change':
+              icon = '⚪';
+              break;
+            case 'discovery':
+              icon = '🟡';
+              break;
+            case 'decision':
+              icon = '🟤';
+              break;
+            default:
+              icon = '•';
           }
 
           const time = formatTime(obs.created_at);
