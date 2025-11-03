@@ -1756,7 +1756,8 @@ async function main() {
       console.error('[search-server] Initializing Chroma client...');
       const chromaTransport = new StdioClientTransport({
         command: 'uvx',
-        args: ['chroma-mcp', '--client-type', 'persistent', '--data-dir', VECTOR_DB_DIR]
+        args: ['chroma-mcp', '--client-type', 'persistent', '--data-dir', VECTOR_DB_DIR],
+        stderr: 'ignore'
       });
 
       const client = new Client({

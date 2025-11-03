@@ -98,7 +98,8 @@ export class ChromaSync {
           'chroma-mcp',
           '--client-type', 'persistent',
           '--data-dir', this.VECTOR_DB_DIR
-        ]
+        ],
+        stderr: 'ignore'
       });
 
       this.client = new Client({
