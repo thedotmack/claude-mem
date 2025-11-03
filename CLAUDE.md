@@ -226,12 +226,34 @@ claude-mem/
 - **Schema Validation**: zod-to-json-schema (v3.24.6)
 
 ### Build Process
+
+**Build and compile**:
 ```bash
-npm run build && git commit -a -m "Build and update" && git push && cd ~/.claude/plugins/marketplaces/thedotmack/ && git pull && pm2 flush claude-mem-worker && pm2 restart claude-mem-worker && pm2 logs claude-mem-worker --nostream
+npm run build
 ```
 
-1) Compiles TypeScript and outputs hook executables to `plugin/scripts/`
-2) Does all the things needed to update and test since plugin-based installs are out of the .claude/ folder
+This compiles TypeScript and outputs hook executables to `plugin/scripts/`.
+
+**Local testing workflow**:
+```bash
+# 1. Build the project
+npm run build
+
+# 2. Copy built files to marketplace plugin folder for testing
+cp plugin/scripts/worker-service.cjs ~/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs
+
+# 3. Restart worker to pick up changes
+pm2 restart claude-mem-worker
+
+# 4. Check logs
+pm2 logs claude-mem-worker --nostream
+```
+
+**Git workflow**:
+- Create feature branches for all changes
+- Commit to feature branch
+- Create pull request for review
+- Do NOT push directly to main (branch protection rules in place)
 
 **Build Outputs**:
 - Hook executables: `*-hook.js` (ESM format)
