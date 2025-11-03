@@ -13,6 +13,7 @@ import type { SDKSession } from '../sdk/prompts.js';
 import { logger } from '../utils/logger.js';
 import { ensureAllDataDirs } from '../shared/paths.js';
 import { execSync } from 'child_process';
+import { UsageLogger } from '../utils/usage-logger.js';
 
 const MODEL = process.env.CLAUDE_MEM_MODEL || 'claude-sonnet-4-5';
 const DISALLOWED_TOOLS = ['Glob', 'Grep', 'ListMcpResourcesTool', 'WebSearch'];
@@ -83,10 +84,12 @@ class WorkerService {
   private app: express.Application;
   private port: number | null = null;
   private sessions: Map<number, ActiveSession> = new Map();
+  private usageLogger: UsageLogger;
 
   constructor() {
     this.app = express();
     this.app.use(express.json({ limit: '50mb' }));
+    this.usageLogger = new UsageLogger();
 
     // Health check
     this.app.get('/health', this.handleHealth.bind(this));
@@ -408,6 +411,41 @@ class WorkerService {
 
           // Parse and store with prompt number
           this.handleAgentMessage(session, textContent, session.lastPromptNumber);
+        }
+
+        // Capture usage data from result messages
+        if (message.type === 'result' && message.subtype === 'success') {
+          const usageData = {
+            timestamp: new Date().toISOString(),
+            sessionDbId: session.sessionDbId,
+            claudeSessionId: session.claudeSessionId,
+            project: session.project,
+            promptNumber: session.lastPromptNumber,
+            model: MODEL,
+            sessionId: message.session_id,
+            uuid: message.uuid,
+            durationMs: message.duration_ms,
+            durationApiMs: message.duration_api_ms,
+            numTurns: message.num_turns,
+            totalCostUsd: message.total_cost_usd,
+            usage: {
+              inputTokens: message.usage.input_tokens,
+              outputTokens: message.usage.output_tokens,
+              cacheCreationInputTokens: message.usage.cache_creation_input_tokens,
+              cacheReadInputTokens: message.usage.cache_read_input_tokens
+            }
+          };
+
+          this.usageLogger.logUsage(usageData);
+
+          logger.info('SDK', 'Usage data logged', {
+            sessionId: session.sessionDbId,
+            inputTokens: message.usage.input_tokens,
+            outputTokens: message.usage.output_tokens,
+            cacheCreation: message.usage.cache_creation_input_tokens,
+            cacheRead: message.usage.cache_read_input_tokens,
+            totalCostUsd: message.total_cost_usd
+          });
         }
       }
 

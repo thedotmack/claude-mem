@@ -38,7 +38,9 @@
     "worker:start": "pm2 start ecosystem.config.cjs",
     "worker:stop": "pm2 stop claude-mem-worker",
     "worker:restart": "pm2 restart claude-mem-worker",
-    "worker:logs": "pm2 logs claude-mem-worker"
+    "worker:logs": "pm2 logs claude-mem-worker",
+    "usage:analyze": "node scripts/analyze-usage.js",
+    "usage:today": "node scripts/analyze-usage.js $(date +%Y-%m-%d)"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.1.27",
