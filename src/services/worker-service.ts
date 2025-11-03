@@ -195,7 +195,36 @@ class WorkerService {
 
     // Update port in database
     db.setWorkerPort(sessionDbId, this.port!);
+
+    // Get the latest user_prompt for this session to sync to Chroma
+    const latestPrompt = db.db.prepare(`
+      SELECT
+        up.*,
+        s.sdk_session_id,
+        s.project
+      FROM user_prompts up
+      JOIN sdk_sessions s ON up.claude_session_id = s.claude_session_id
+      WHERE up.claude_session_id = ?
+      ORDER BY up.created_at_epoch DESC
+      LIMIT 1
+    `).get(claudeSessionId) as any;
+
     db.close();
+
+    // Sync user prompt to Chroma (fire-and-forget, but crash on failure)
+    if (latestPrompt) {
+      this.chromaSync.syncUserPrompt(
+        latestPrompt.id,
+        latestPrompt.sdk_session_id,
+        latestPrompt.project,
+        latestPrompt.prompt_text,
+        latestPrompt.prompt_number,
+        latestPrompt.created_at_epoch
+      ).catch(err => {
+        logger.failure('WORKER', 'Failed to sync user_prompt to Chroma', { promptId: latestPrompt.id }, err);
+        process.exit(1); // Fail fast - Chroma sync is critical
+      });
+    }
 
     // Start SDK agent in background
     session.generatorPromise = this.runSDKAgent(session).catch(err => {

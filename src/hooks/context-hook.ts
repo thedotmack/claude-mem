@@ -190,10 +190,10 @@ function contextHook(input?: SessionStartInput, useColors: boolean = false, useI
   if (timelineObs.length > 0) {
     // Legend/Key
     if (useColors) {
-      output.push(`${colors.dim}Legend: 🎯 session-request | 🔴 bugfix | 🟢 feature | 🔵 refactor | ⚪ change | 🟡 discovery | 🟤 decision${colors.reset}`);
+      output.push(`${colors.dim}Legend: 🎯 session-request | 🔴 bugfix | 🟣 feature | 🔄 refactor | ✅ change | 🔵 discovery | 🧠 decision${colors.reset}`);
       output.push('');
     } else {
-      output.push(`**Legend:** 🎯 session-request | 🔴 bugfix | 🟢 feature | 🔵 refactor | ⚪ change | 🟡 discovery | 🟤 decision`);
+      output.push(`**Legend:** 🎯 session-request | 🔴 bugfix | 🟣 feature | 🔄 refactor | ✅ change | 🔵 discovery | 🧠 decision`);
       output.push('');
     }
 
@@ -202,13 +202,13 @@ function contextHook(input?: SessionStartInput, useColors: boolean = false, useI
       output.push(`${colors.dim}💡 Progressive Disclosure: This index shows WHAT exists (titles) and retrieval COST (token counts).${colors.reset}`);
       output.push(`${colors.dim}   → Use MCP search tools to fetch full observation details on-demand (Layer 2)${colors.reset}`);
       output.push(`${colors.dim}   → Prefer searching observations over re-reading code for past decisions and learnings${colors.reset}`);
-      output.push(`${colors.dim}   → Critical types (🔴 bugfix, 🟤 decision) often worth fetching immediately${colors.reset}`);
+      output.push(`${colors.dim}   → Critical types (🔴 bugfix, 🧠 decision) often worth fetching immediately${colors.reset}`);
       output.push('');
     } else {
       output.push(`💡 **Progressive Disclosure:** This index shows WHAT exists (titles) and retrieval COST (token counts).`);
       output.push(`- Use MCP search tools to fetch full observation details on-demand (Layer 2)`);
       output.push(`- Prefer searching observations over re-reading code for past decisions and learnings`);
-      output.push(`- Critical types (🔴 bugfix, 🟤 decision) often worth fetching immediately`);
+      output.push(`- Critical types (🔴 bugfix, 🧠 decision) often worth fetching immediately`);
       output.push('');
     }
 
@@ -340,19 +340,19 @@ function contextHook(input?: SessionStartInput, useColors: boolean = false, useI
               icon = '🔴';
               break;
             case 'feature':
-              icon = '🟢';
+              icon = '🟣';
               break;
             case 'refactor':
-              icon = '🔵';
+              icon = '🔄';
               break;
             case 'change':
-              icon = '⚪';
+              icon = '✅';
               break;
             case 'discovery':
-              icon = '🟡';
+              icon = '🔵';
               break;
             case 'decision':
-              icon = '🟤';
+              icon = '🧠';
               break;
             default:
               icon = '•';

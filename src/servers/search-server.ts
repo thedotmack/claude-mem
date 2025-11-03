@@ -67,17 +67,29 @@ async function queryChroma(
     return { ids: [], distances: [], metadatas: [] };
   }
 
-  // Extract unique observation IDs from document IDs
+  // Extract unique IDs from document IDs
   const ids: number[] = [];
   const docIds = parsed.ids?.[0] || [];
   for (const docId of docIds) {
-    // Extract sqlite_id from document ID (format: obs_{id}_narrative, obs_{id}_fact_0, etc)
-    const match = docId.match(/obs_(\d+)_/);
-    if (match) {
-      const sqliteId = parseInt(match[1], 10);
-      if (!ids.includes(sqliteId)) {
-        ids.push(sqliteId);
-      }
+    // Extract sqlite_id from document ID (supports three formats):
+    // - obs_{id}_narrative, obs_{id}_fact_0, etc (observations)
+    // - summary_{id}_request, summary_{id}_learned, etc (session summaries)
+    // - prompt_{id} (user prompts)
+    const obsMatch = docId.match(/obs_(\d+)_/);
+    const summaryMatch = docId.match(/summary_(\d+)_/);
+    const promptMatch = docId.match(/prompt_(\d+)/);
+
+    let sqliteId: number | null = null;
+    if (obsMatch) {
+      sqliteId = parseInt(obsMatch[1], 10);
+    } else if (summaryMatch) {
+      sqliteId = parseInt(summaryMatch[1], 10);
+    } else if (promptMatch) {
+      sqliteId = parseInt(promptMatch[1], 10);
+    }
+
+    if (sqliteId !== null && !ids.includes(sqliteId)) {
+      ids.push(sqliteId);
     }
   }
 
@@ -285,9 +297,9 @@ function formatSessionResult(session: SessionSummarySearchResult, index: number)
  * Format user prompt as index entry (truncated text, date, ID only)
  */
 function formatUserPromptIndex(prompt: UserPromptSearchResult, index: number): string {
-  const truncated = prompt.prompt_text.length > 100
-    ? prompt.prompt_text.substring(0, 100) + '...'
-    : prompt.prompt_text;
+  const truncated = prompt.prompt.length > 100
+    ? prompt.prompt.substring(0, 100) + '...'
+    : prompt.prompt;
   const date = new Date(prompt.created_at_epoch).toLocaleString();
 
   return `${index + 1}. "${truncated}"
@@ -303,7 +315,7 @@ function formatUserPromptResult(prompt: UserPromptSearchResult, index: number): 
   contentParts.push(`## User Prompt #${prompt.prompt_number}`);
   contentParts.push(`*Source: claude-mem://user-prompt/${prompt.id}*`);
   contentParts.push('');
-  contentParts.push(prompt.prompt_text);
+  contentParts.push(prompt.prompt);
   contentParts.push('');
   contentParts.push('---');
 
@@ -441,7 +453,44 @@ const tools = [
     handler: async (args: any) => {
       try {
         const { query, format = 'index', ...options } = args;
-        const results = search.searchSessions(query, options);
+        let results: SessionSummarySearchResult[] = [];
+
+        // Hybrid search: Try Chroma semantic search first, fall back to FTS5
+        if (chromaClient) {
+          try {
+            console.error('[search-server] Using hybrid semantic search for sessions');
+
+            // Step 1: Chroma semantic search (top 100)
+            const chromaResults = await queryChroma(query, 100, { doc_type: 'session_summary' });
+            console.error(`[search-server] Chroma returned ${chromaResults.ids.length} semantic matches`);
+
+            if (chromaResults.ids.length > 0) {
+              // Step 2: Filter by recency (90 days)
+              const ninetyDaysAgo = Math.floor(Date.now() / 1000) - (90 * 24 * 60 * 60);
+              const recentIds = chromaResults.ids.filter((id, idx) => {
+                const meta = chromaResults.metadatas[idx];
+                return meta && meta.created_at_epoch > ninetyDaysAgo;
+              });
+
+              console.error(`[search-server] ${recentIds.length} results within 90-day window`);
+
+              // Step 3: Hydrate from SQLite in temporal order
+              if (recentIds.length > 0) {
+                const limit = options.limit || 20;
+                results = store.getSessionSummariesByIds(recentIds, { orderBy: 'date_desc', limit });
+                console.error(`[search-server] Hydrated ${results.length} sessions from SQLite`);
+              }
+            }
+          } catch (chromaError: any) {
+            console.error('[search-server] Chroma query failed, falling back to FTS5:', chromaError.message);
+          }
+        }
+
+        // Fall back to FTS5 if Chroma unavailable or returned no results
+        if (results.length === 0) {
+          console.error('[search-server] Using FTS5 keyword search');
+          results = search.searchSessions(query, options);
+        }
 
         if (results.length === 0) {
           return {
@@ -970,7 +1019,44 @@ const tools = [
     handler: async (args: any) => {
       try {
         const { query, format = 'index', ...options } = args;
-        const results = search.searchUserPrompts(query, options);
+        let results: UserPromptSearchResult[] = [];
+
+        // Hybrid search: Try Chroma semantic search first, fall back to FTS5
+        if (chromaClient) {
+          try {
+            console.error('[search-server] Using hybrid semantic search for user prompts');
+
+            // Step 1: Chroma semantic search (top 100)
+            const chromaResults = await queryChroma(query, 100, { doc_type: 'user_prompt' });
+            console.error(`[search-server] Chroma returned ${chromaResults.ids.length} semantic matches`);
+
+            if (chromaResults.ids.length > 0) {
+              // Step 2: Filter by recency (90 days)
+              const ninetyDaysAgo = Math.floor(Date.now() / 1000) - (90 * 24 * 60 * 60);
+              const recentIds = chromaResults.ids.filter((id, idx) => {
+                const meta = chromaResults.metadatas[idx];
+                return meta && meta.created_at_epoch > ninetyDaysAgo;
+              });
+
+              console.error(`[search-server] ${recentIds.length} results within 90-day window`);
+
+              // Step 3: Hydrate from SQLite in temporal order
+              if (recentIds.length > 0) {
+                const limit = options.limit || 20;
+                results = store.getUserPromptsByIds(recentIds, { orderBy: 'date_desc', limit });
+                console.error(`[search-server] Hydrated ${results.length} user prompts from SQLite`);
+              }
+            }
+          } catch (chromaError: any) {
+            console.error('[search-server] Chroma query failed, falling back to FTS5:', chromaError.message);
+          }
+        }
+
+        // Fall back to FTS5 if Chroma unavailable or returned no results
+        if (results.length === 0) {
+          console.error('[search-server] Using FTS5 keyword search');
+          results = search.searchUserPrompts(query, options);
+        }
 
         if (results.length === 0) {
           return {
@@ -1003,6 +1089,289 @@ const tools = [
           content: [{
             type: 'text' as const,
             text: `Search failed: ${error.message}`
+          }],
+          isError: true
+        };
+      }
+    }
+  },
+  {
+    name: 'get_context_timeline',
+    description: 'Get a unified timeline of context (observations, sessions, and prompts) around a specific point in time. All record types are interleaved chronologically. Useful for understanding "what was happening when X occurred". Returns depth_before records before anchor + anchor + depth_after records after (total: depth_before + 1 + depth_after mixed records).',
+    inputSchema: z.object({
+      anchor: z.union([
+        z.number().describe('Observation ID to center timeline around'),
+        z.string().describe('Session ID (format: S123) or ISO timestamp to center timeline around')
+      ]).describe('Anchor point: observation ID, session ID (e.g., "S123"), or ISO timestamp'),
+      depth_before: z.number().min(0).max(50).default(10).describe('Number of records to retrieve before anchor, not including anchor (default: 10)'),
+      depth_after: z.number().min(0).max(50).default(10).describe('Number of records to retrieve after anchor, not including anchor (default: 10)'),
+      project: z.string().optional().describe('Filter by project name')
+    }),
+    handler: async (args: any) => {
+      try {
+        const { anchor, depth_before = 10, depth_after = 10, project } = args;
+        let anchorEpoch: number;
+        let anchorId: string | number = anchor;
+
+        // Resolve anchor and get timeline data
+        let timeline;
+        if (typeof anchor === 'number') {
+          // Observation ID - use ID-based boundary detection
+          const obs = store.getObservationById(anchor);
+          if (!obs) {
+            return {
+              content: [{
+                type: 'text' as const,
+                text: `Observation #${anchor} not found`
+              }],
+              isError: true
+            };
+          }
+          anchorEpoch = obs.created_at_epoch;
+          timeline = store.getTimelineAroundObservation(anchor, anchorEpoch, depth_before, depth_after, project);
+        } else if (typeof anchor === 'string') {
+          // Session ID or ISO timestamp
+          if (anchor.startsWith('S') || anchor.startsWith('#S')) {
+            const sessionId = anchor.replace(/^#?S/, '');
+            const sessionNum = parseInt(sessionId, 10);
+            const sessions = store.getSessionSummariesByIds([sessionNum]);
+            if (sessions.length === 0) {
+              return {
+                content: [{
+                  type: 'text' as const,
+                  text: `Session #${sessionNum} not found`
+                }],
+                isError: true
+              };
+            }
+            anchorEpoch = sessions[0].created_at_epoch;
+            anchorId = `S${sessionNum}`;
+            timeline = store.getTimelineAroundTimestamp(anchorEpoch, depth_before, depth_after, project);
+          } else {
+            // ISO timestamp
+            const date = new Date(anchor);
+            if (isNaN(date.getTime())) {
+              return {
+                content: [{
+                  type: 'text' as const,
+                  text: `Invalid timestamp: ${anchor}`
+                }],
+                isError: true
+              };
+            }
+            anchorEpoch = date.getTime(); // Keep as milliseconds
+            timeline = store.getTimelineAroundTimestamp(anchorEpoch, depth_before, depth_after, project);
+          }
+        } else {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: 'Invalid anchor: must be observation ID (number), session ID (e.g., "S123"), or ISO timestamp'
+            }],
+            isError: true
+          };
+        }
+
+        // Combine and sort all items chronologically
+        interface TimelineItem {
+          type: 'observation' | 'session' | 'prompt';
+          data: any;
+          epoch: number;
+        }
+
+        const items: TimelineItem[] = [
+          ...timeline.observations.map(obs => ({ type: 'observation' as const, data: obs, epoch: obs.created_at_epoch })),
+          ...timeline.sessions.map(sess => ({ type: 'session' as const, data: sess, epoch: sess.created_at_epoch })),
+          ...timeline.prompts.map(prompt => ({ type: 'prompt' as const, data: prompt, epoch: prompt.created_at_epoch }))
+        ];
+
+        items.sort((a, b) => a.epoch - b.epoch);
+
+        if (items.length === 0) {
+          const anchorDate = new Date(anchorEpoch).toLocaleString();
+          return {
+            content: [{
+              type: 'text' as const,
+              text: `No context found around ${anchorDate} (${depth_before} records before, ${depth_after} records after)`
+            }]
+          };
+        }
+
+        // Helper functions matching context-hook.ts
+        function formatDate(epochMs: number): string {
+          const date = new Date(epochMs);
+          return date.toLocaleString('en-US', {
+            month: 'short',
+            day: 'numeric',
+            year: 'numeric'
+          });
+        }
+
+        function formatTime(epochMs: number): string {
+          const date = new Date(epochMs);
+          return date.toLocaleString('en-US', {
+            hour: 'numeric',
+            minute: '2-digit',
+            hour12: true
+          });
+        }
+
+        function formatDateTime(epochMs: number): string {
+          const date = new Date(epochMs);
+          return date.toLocaleString('en-US', {
+            month: 'short',
+            day: 'numeric',
+            hour: 'numeric',
+            minute: '2-digit',
+            hour12: true
+          });
+        }
+
+        function estimateTokens(text: string | null): number {
+          if (!text) return 0;
+          return Math.ceil(text.length / 4);
+        }
+
+        // Format results matching context-hook.ts exactly
+        const lines: string[] = [];
+
+        // Header
+        lines.push(`# Timeline around anchor: ${anchorId}`);
+        lines.push(`**Window:** ${depth_before} records before → ${depth_after} records after | **Items:** ${items.length} (${timeline.observations.length} obs, ${timeline.sessions.length} sessions, ${timeline.prompts.length} prompts)`);
+        lines.push('');
+
+        // Legend
+        lines.push(`**Legend:** 🎯 session-request | 🔴 bugfix | 🟣 feature | 🔄 refactor | ✅ change | 🔵 discovery | 🧠 decision`);
+        lines.push('');
+
+        // Group by day
+        const dayMap = new Map<string, TimelineItem[]>();
+        for (const item of items) {
+          const day = formatDate(item.epoch);
+          if (!dayMap.has(day)) {
+            dayMap.set(day, []);
+          }
+          dayMap.get(day)!.push(item);
+        }
+
+        // Sort days chronologically
+        const sortedDays = Array.from(dayMap.entries()).sort((a, b) => {
+          const aDate = new Date(a[0]).getTime();
+          const bDate = new Date(b[0]).getTime();
+          return aDate - bDate;
+        });
+
+        // Render each day
+        for (const [day, dayItems] of sortedDays) {
+          lines.push(`### ${day}`);
+          lines.push('');
+
+          let currentFile: string | null = null;
+          let lastTime = '';
+          let tableOpen = false;
+
+          for (const item of dayItems) {
+            const isAnchor = (
+              (typeof anchorId === 'number' && item.type === 'observation' && item.data.id === anchorId) ||
+              (typeof anchorId === 'string' && anchorId.startsWith('S') && item.type === 'session' && `S${item.data.id}` === anchorId)
+            );
+
+            if (item.type === 'session') {
+              // Close any open table
+              if (tableOpen) {
+                lines.push('');
+                tableOpen = false;
+                currentFile = null;
+                lastTime = '';
+              }
+
+              // Render session
+              const sess = item.data;
+              const title = sess.request || 'Session summary';
+              const link = `claude-mem://session-summary/${sess.id}`;
+              const marker = isAnchor ? ' ← **ANCHOR**' : '';
+
+              lines.push(`**🎯 #S${sess.id}** ${title} (${formatDateTime(item.epoch)}) [→](${link})${marker}`);
+              lines.push('');
+            } else if (item.type === 'prompt') {
+              // Close any open table
+              if (tableOpen) {
+                lines.push('');
+                tableOpen = false;
+                currentFile = null;
+                lastTime = '';
+              }
+
+              // Render prompt
+              const prompt = item.data;
+              const truncated = prompt.prompt.length > 100 ? prompt.prompt.substring(0, 100) + '...' : prompt.prompt;
+
+              lines.push(`**💬 User Prompt #${prompt.prompt_number}** (${formatDateTime(item.epoch)})`);
+              lines.push(`> ${truncated}`);
+              lines.push('');
+            } else if (item.type === 'observation') {
+              // Render observation in table
+              const obs = item.data;
+              const file = 'General'; // Simplified for timeline view
+
+              // Check if we need a new file section
+              if (file !== currentFile) {
+                // Close previous table
+                if (tableOpen) {
+                  lines.push('');
+                }
+
+                // File header
+                lines.push(`**${file}**`);
+                lines.push(`| ID | Time | T | Title | Tokens |`);
+                lines.push(`|----|------|---|-------|--------|`);
+
+                currentFile = file;
+                tableOpen = true;
+                lastTime = '';
+              }
+
+              // Map observation type to emoji
+              let icon = '•';
+              switch (obs.type) {
+                case 'bugfix': icon = '🔴'; break;
+                case 'feature': icon = '🟣'; break;
+                case 'refactor': icon = '🔄'; break;
+                case 'change': icon = '✅'; break;
+                case 'discovery': icon = '🔵'; break;
+                case 'decision': icon = '🧠'; break;
+              }
+
+              const time = formatTime(item.epoch);
+              const title = obs.title || 'Untitled';
+              const tokens = estimateTokens(obs.narrative);
+
+              const showTime = time !== lastTime;
+              const timeDisplay = showTime ? time : '″';
+              lastTime = time;
+
+              const anchorMarker = isAnchor ? ' ← **ANCHOR**' : '';
+              lines.push(`| #${obs.id} | ${timeDisplay} | ${icon} | ${title}${anchorMarker} | ~${tokens} |`);
+            }
+          }
+
+          // Close final table if open
+          if (tableOpen) {
+            lines.push('');
+          }
+        }
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: lines.join('\n')
+          }]
+        };
+      } catch (error: any) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `Timeline query failed: ${error.message}`
           }],
           isError: true
         };

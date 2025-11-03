@@ -617,6 +617,19 @@ export class SessionStore {
   }
 
   /**
+   * Get a single observation by ID
+   */
+  getObservationById(id: number): any | null {
+    const stmt = this.db.prepare(`
+      SELECT *
+      FROM observations
+      WHERE id = ?
+    `);
+
+    return stmt.get(id) as any || null;
+  }
+
+  /**
    * Get observations by array of IDs with ordering and limit
    */
   getObservationsByIds(
@@ -1113,6 +1126,224 @@ export class SessionStore {
 
     const result = stmt.run(now.toISOString(), nowEpoch);
     return result.changes;
+  }
+
+  /**
+   * Get session summaries by IDs (for hybrid Chroma search)
+   * Returns summaries in specified temporal order
+   */
+  getSessionSummariesByIds(
+    ids: number[],
+    options: { orderBy?: 'date_desc' | 'date_asc'; limit?: number } = {}
+  ): any[] {
+    if (ids.length === 0) return [];
+
+    const { orderBy = 'date_desc', limit } = options;
+    const orderClause = orderBy === 'date_asc' ? 'ASC' : 'DESC';
+    const limitClause = limit ? `LIMIT ${limit}` : '';
+    const placeholders = ids.map(() => '?').join(',');
+
+    const stmt = this.db.prepare(`
+      SELECT * FROM session_summaries
+      WHERE id IN (${placeholders})
+      ORDER BY created_at_epoch ${orderClause}
+      ${limitClause}
+    `);
+
+    return stmt.all(...ids) as any[];
+  }
+
+  /**
+   * Get user prompts by IDs (for hybrid Chroma search)
+   * Returns prompts in specified temporal order
+   */
+  getUserPromptsByIds(
+    ids: number[],
+    options: { orderBy?: 'date_desc' | 'date_asc'; limit?: number } = {}
+  ): any[] {
+    if (ids.length === 0) return [];
+
+    const { orderBy = 'date_desc', limit } = options;
+    const orderClause = orderBy === 'date_asc' ? 'ASC' : 'DESC';
+    const limitClause = limit ? `LIMIT ${limit}` : '';
+    const placeholders = ids.map(() => '?').join(',');
+
+    const stmt = this.db.prepare(`
+      SELECT
+        up.*,
+        s.project,
+        s.sdk_session_id
+      FROM user_prompts up
+      JOIN sdk_sessions s ON up.claude_session_id = s.claude_session_id
+      WHERE up.id IN (${placeholders})
+      ORDER BY up.created_at_epoch ${orderClause}
+      ${limitClause}
+    `);
+
+    return stmt.all(...ids) as any[];
+  }
+
+  /**
+   * Get a unified timeline of all records (observations, sessions, prompts) around an anchor point
+   * @param anchorEpoch The anchor timestamp (epoch milliseconds)
+   * @param depthBefore Number of records to retrieve before anchor (any type)
+   * @param depthAfter Number of records to retrieve after anchor (any type)
+   * @param project Optional project filter
+   * @returns Object containing observations, sessions, and prompts for the specified window
+   */
+  getTimelineAroundTimestamp(
+    anchorEpoch: number,
+    depthBefore: number = 10,
+    depthAfter: number = 10,
+    project?: string
+  ): {
+    observations: any[];
+    sessions: any[];
+    prompts: any[];
+  } {
+    return this.getTimelineAroundObservation(null, anchorEpoch, depthBefore, depthAfter, project);
+  }
+
+  /**
+   * Get timeline around a specific observation ID
+   * Uses observation ID offsets to determine time boundaries, then fetches all record types in that window
+   */
+  getTimelineAroundObservation(
+    anchorObservationId: number | null,
+    anchorEpoch: number,
+    depthBefore: number = 10,
+    depthAfter: number = 10,
+    project?: string
+  ): {
+    observations: any[];
+    sessions: any[];
+    prompts: any[];
+  } {
+    const projectFilter = project ? 'AND project = ?' : '';
+    const projectParams = project ? [project] : [];
+
+    let startEpoch: number;
+    let endEpoch: number;
+
+    if (anchorObservationId !== null) {
+      // Get boundary observations by ID offset
+      const beforeQuery = `
+        SELECT id, created_at_epoch
+        FROM observations
+        WHERE id <= ? ${projectFilter}
+        ORDER BY id DESC
+        LIMIT ?
+      `;
+      const afterQuery = `
+        SELECT id, created_at_epoch
+        FROM observations
+        WHERE id >= ? ${projectFilter}
+        ORDER BY id ASC
+        LIMIT ?
+      `;
+
+      try {
+        const beforeRecords = this.db.prepare(beforeQuery).all(anchorObservationId, ...projectParams, depthBefore + 1) as any[];
+        const afterRecords = this.db.prepare(afterQuery).all(anchorObservationId, ...projectParams, depthAfter + 1) as any[];
+
+        // Get the earliest and latest timestamps from boundary observations
+        if (beforeRecords.length === 0 && afterRecords.length === 0) {
+          return { observations: [], sessions: [], prompts: [] };
+        }
+
+        startEpoch = beforeRecords.length > 0 ? beforeRecords[beforeRecords.length - 1].created_at_epoch : anchorEpoch;
+        endEpoch = afterRecords.length > 0 ? afterRecords[afterRecords.length - 1].created_at_epoch : anchorEpoch;
+      } catch (err: any) {
+        console.error('[SessionStore] Error getting boundary observations:', err.message);
+        return { observations: [], sessions: [], prompts: [] };
+      }
+    } else {
+      // For timestamp-based anchors, use time-based boundaries
+      // Get observations to find the time window
+      const beforeQuery = `
+        SELECT created_at_epoch
+        FROM observations
+        WHERE created_at_epoch <= ? ${projectFilter}
+        ORDER BY created_at_epoch DESC
+        LIMIT ?
+      `;
+      const afterQuery = `
+        SELECT created_at_epoch
+        FROM observations
+        WHERE created_at_epoch >= ? ${projectFilter}
+        ORDER BY created_at_epoch ASC
+        LIMIT ?
+      `;
+
+      try {
+        const beforeRecords = this.db.prepare(beforeQuery).all(anchorEpoch, ...projectParams, depthBefore) as any[];
+        const afterRecords = this.db.prepare(afterQuery).all(anchorEpoch, ...projectParams, depthAfter + 1) as any[];
+
+        if (beforeRecords.length === 0 && afterRecords.length === 0) {
+          return { observations: [], sessions: [], prompts: [] };
+        }
+
+        startEpoch = beforeRecords.length > 0 ? beforeRecords[beforeRecords.length - 1].created_at_epoch : anchorEpoch;
+        endEpoch = afterRecords.length > 0 ? afterRecords[afterRecords.length - 1].created_at_epoch : anchorEpoch;
+      } catch (err: any) {
+        console.error('[SessionStore] Error getting boundary timestamps:', err.message);
+        return { observations: [], sessions: [], prompts: [] };
+      }
+    }
+
+    // Now query ALL record types within the time window
+    const obsQuery = `
+      SELECT *
+      FROM observations
+      WHERE created_at_epoch >= ? AND created_at_epoch <= ? ${projectFilter}
+      ORDER BY created_at_epoch ASC
+    `;
+
+    const sessQuery = `
+      SELECT *
+      FROM session_summaries
+      WHERE created_at_epoch >= ? AND created_at_epoch <= ? ${projectFilter}
+      ORDER BY created_at_epoch ASC
+    `;
+
+    const promptQuery = `
+      SELECT up.*, s.project, s.sdk_session_id
+      FROM user_prompts up
+      JOIN sdk_sessions s ON up.claude_session_id = s.claude_session_id
+      WHERE up.created_at_epoch >= ? AND up.created_at_epoch <= ? ${projectFilter.replace('project', 's.project')}
+      ORDER BY up.created_at_epoch ASC
+    `;
+
+    try {
+      const observations = this.db.prepare(obsQuery).all(startEpoch, endEpoch, ...projectParams) as any[];
+      const sessions = this.db.prepare(sessQuery).all(startEpoch, endEpoch, ...projectParams) as any[];
+      const prompts = this.db.prepare(promptQuery).all(startEpoch, endEpoch, ...projectParams) as any[];
+
+      return {
+        observations,
+        sessions: sessions.map(s => ({
+          id: s.id,
+          sdk_session_id: s.sdk_session_id,
+          project: s.project,
+          request: s.request,
+          completed: s.completed,
+          next_steps: s.next_steps,
+          created_at: s.created_at,
+          created_at_epoch: s.created_at_epoch
+        })),
+        prompts: prompts.map(p => ({
+          id: p.id,
+          claude_session_id: p.claude_session_id,
+          project: p.project,
+          prompt: p.prompt_text,
+          created_at: p.created_at,
+          created_at_epoch: p.created_at_epoch
+        }))
+      };
+    } catch (err: any) {
+      console.error('[SessionStore] Error querying timeline records:', err.message);
+      return { observations: [], sessions: [], prompts: [] };
+    }
   }
 
   /**

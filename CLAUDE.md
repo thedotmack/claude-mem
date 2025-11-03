@@ -220,17 +220,62 @@ claude-mem/
 - **Schema Validation**: zod-to-json-schema (v3.24.6)
 
 ### Build Process
+
+**Build and sync to marketplace plugin**:
 ```bash
-npm run build && git commit -a -m "Build and update" && git push && cd ~/.claude/plugins/marketplaces/thedotmack/ && git pull && pm2 flush claude-mem-worker && pm2 restart claude-mem-worker && pm2 logs claude-mem-worker --nostream
+npm run build
+npm run sync-marketplace
 ```
 
-1) Compiles TypeScript and outputs hook executables to `plugin/scripts/`
-2) Does all the things needed to update and test since plugin-based installs are out of the .claude/ folder
+**If you changed the worker service** (`src/services/worker-service.ts`):
+```bash
+npm run worker:restart
+```
+
+**What happens**:
+1. `npm run build` - Compiles TypeScript and outputs hook executables to `plugin/scripts/`
+2. `npm run sync-marketplace` - Syncs built files to `~/.claude/plugins/marketplaces/thedotmack/`
+3. `npm run worker:restart` - (Optional) Only needed if you modified the worker service code
 
 **Build Outputs**:
 - Hook executables: `*-hook.js` (ESM format)
 - Worker service: `worker-service.cjs` (CJS format)
 - Search server: `search-server.js` (ESM format)
+
+**Note**: Hook changes take effect immediately on next session. Worker changes require restart.
+
+### Investigation Best Practices
+
+**When investigations are failing persistently**, use Task agents for comprehensive file analysis instead of grep/search:
+
+**❌ Don't:** Repeatedly grep and search for patterns when failing to find the issue
+```bash
+# Multiple failed attempts with grep, Glob, etc.
+```
+
+**✅ Do:** Deploy a Task agent to read files in full and answer specific questions
+```
+"Read these files in full and answer: [specific questions about the implementation]"
+- Reduces token usage by delegating to a specialized agent
+- Provides comprehensive analysis in one pass
+- Finds issues that grep might miss due to poor query formulation
+- More efficient than multiple rounds of searching
+```
+
+**Example usage:**
+```
+Deploy a general-purpose Task agent to:
+1. Read src/hooks/context-hook.ts in full
+2. Read src/servers/search-server.ts in full
+3. Answer: How do these files work together? What's the current implementation state?
+4. Find any bugs or inconsistencies between them
+```
+
+This approach is especially valuable when:
+- You're investigating how multiple files interact
+- Search queries aren't finding what you expect
+- You need to understand complete implementation context
+- The issue might be a subtle inconsistency between files
 
 ## Version History
 

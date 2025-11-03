@@ -55,6 +55,17 @@ interface StoredSummary {
   created_at_epoch: number;
 }
 
+interface StoredUserPrompt {
+  id: number;
+  claude_session_id: string;
+  prompt_number: number;
+  prompt_text: string;
+  created_at: string;
+  created_at_epoch: number;
+  sdk_session_id: string;
+  project: string;
+}
+
 export class ChromaSync {
   private client: Client | null = null;
   private connected: boolean = false;
@@ -405,26 +416,181 @@ export class ChromaSync {
   }
 
   /**
+   * Format user prompt into Chroma document
+   * Each prompt becomes a single document (unlike observations/summaries which split by field)
+   */
+  private formatUserPromptDoc(prompt: StoredUserPrompt): ChromaDocument {
+    return {
+      id: `prompt_${prompt.id}`,
+      document: prompt.prompt_text,
+      metadata: {
+        sqlite_id: prompt.id,
+        doc_type: 'user_prompt',
+        sdk_session_id: prompt.sdk_session_id,
+        project: prompt.project,
+        created_at_epoch: prompt.created_at_epoch,
+        prompt_number: prompt.prompt_number
+      }
+    };
+  }
+
+  /**
+   * Sync a single user prompt to Chroma
+   * Blocks until sync completes, throws on error
+   */
+  async syncUserPrompt(
+    promptId: number,
+    sdkSessionId: string,
+    project: string,
+    promptText: string,
+    promptNumber: number,
+    createdAtEpoch: number
+  ): Promise<void> {
+    // Create StoredUserPrompt format
+    const stored: StoredUserPrompt = {
+      id: promptId,
+      claude_session_id: '', // Not needed for Chroma sync
+      prompt_number: promptNumber,
+      prompt_text: promptText,
+      created_at: new Date(createdAtEpoch * 1000).toISOString(),
+      created_at_epoch: createdAtEpoch,
+      sdk_session_id: sdkSessionId,
+      project: project
+    };
+
+    const document = this.formatUserPromptDoc(stored);
+
+    logger.info('CHROMA_SYNC', 'Syncing user prompt', {
+      promptId,
+      project
+    });
+
+    await this.addDocuments([document]);
+  }
+
+  /**
+   * Fetch all existing document IDs from Chroma collection
+   * Returns Sets of SQLite IDs for observations, summaries, and prompts
+   */
+  private async getExistingChromaIds(): Promise<{
+    observations: Set<number>;
+    summaries: Set<number>;
+    prompts: Set<number>;
+  }> {
+    await this.ensureConnection();
+
+    if (!this.client) {
+      throw new Error('Chroma client not initialized');
+    }
+
+    const observationIds = new Set<number>();
+    const summaryIds = new Set<number>();
+    const promptIds = new Set<number>();
+
+    let offset = 0;
+    const limit = 1000; // Large batches, metadata only = fast
+
+    logger.info('CHROMA_SYNC', 'Fetching existing Chroma document IDs...', { project: this.project });
+
+    while (true) {
+      try {
+        const result = await this.client.callTool({
+          name: 'chroma_get_documents',
+          arguments: {
+            collection_name: this.collectionName,
+            limit,
+            offset,
+            where: { project: this.project }, // Filter by project
+            include: ['metadatas']
+          }
+        });
+
+        const data = result.content[0];
+        if (data.type !== 'text') {
+          throw new Error('Unexpected response type from chroma_get_documents');
+        }
+
+        const parsed = JSON.parse(data.text);
+        const metadatas = parsed.metadatas || [];
+
+        if (metadatas.length === 0) {
+          break; // No more documents
+        }
+
+        // Extract SQLite IDs from metadata
+        for (const meta of metadatas) {
+          if (meta.sqlite_id) {
+            if (meta.doc_type === 'observation') {
+              observationIds.add(meta.sqlite_id);
+            } else if (meta.doc_type === 'summary') {
+              summaryIds.add(meta.sqlite_id);
+            } else if (meta.doc_type === 'prompt') {
+              promptIds.add(meta.sqlite_id);
+            }
+          }
+        }
+
+        offset += limit;
+
+        logger.debug('CHROMA_SYNC', 'Fetched batch of existing IDs', {
+          project: this.project,
+          offset,
+          batchSize: metadatas.length
+        });
+      } catch (error) {
+        logger.error('CHROMA_SYNC', 'Failed to fetch existing IDs', { project: this.project }, error as Error);
+        throw error;
+      }
+    }
+
+    logger.info('CHROMA_SYNC', 'Existing IDs fetched', {
+      project: this.project,
+      observations: observationIds.size,
+      summaries: summaryIds.size,
+      prompts: promptIds.size
+    });
+
+    return { observations: observationIds, summaries: summaryIds, prompts: promptIds };
+  }
+
+  /**
    * Backfill: Sync all observations missing from Chroma
    * Reads from SQLite and syncs in batches
    * Throws error if backfill fails
    */
   async ensureBackfilled(): Promise<void> {
-    logger.info('CHROMA_SYNC', 'Starting backfill', { project: this.project });
+    logger.info('CHROMA_SYNC', 'Starting smart backfill', { project: this.project });
 
     await this.ensureCollection();
+
+    // Fetch existing IDs from Chroma (fast, metadata only)
+    const existing = await this.getExistingChromaIds();
 
     const db = new SessionStore();
 
     try {
-      // Get all observations for this project
+      // Build exclusion list for observations
+      const existingObsIds = Array.from(existing.observations);
+      const obsExclusionClause = existingObsIds.length > 0
+        ? `AND id NOT IN (${existingObsIds.join(',')})`
+        : '';
+
+      // Get only observations missing from Chroma
       const observations = db.db.prepare(`
-        SELECT * FROM observations WHERE project = ? ORDER BY id ASC
+        SELECT * FROM observations
+        WHERE project = ? ${obsExclusionClause}
+        ORDER BY id ASC
       `).all(this.project) as StoredObservation[];
+
+      const totalObsCount = db.db.prepare(`
+        SELECT COUNT(*) as count FROM observations WHERE project = ?
+      `).get(this.project) as { count: number };
 
       logger.info('CHROMA_SYNC', 'Backfilling observations', {
         project: this.project,
-        count: observations.length
+        missing: observations.length,
+        existing: existing.observations.size,
+        total: totalObsCount.count
       });
 
       // Format all observation documents
@@ -444,14 +610,28 @@ export class ChromaSync {
         });
       }
 
-      // Get all summaries for this project
+      // Build exclusion list for summaries
+      const existingSummaryIds = Array.from(existing.summaries);
+      const summaryExclusionClause = existingSummaryIds.length > 0
+        ? `AND id NOT IN (${existingSummaryIds.join(',')})`
+        : '';
+
+      // Get only summaries missing from Chroma
       const summaries = db.db.prepare(`
-        SELECT * FROM session_summaries WHERE project = ? ORDER BY id ASC
+        SELECT * FROM session_summaries
+        WHERE project = ? ${summaryExclusionClause}
+        ORDER BY id ASC
       `).all(this.project) as StoredSummary[];
+
+      const totalSummaryCount = db.db.prepare(`
+        SELECT COUNT(*) as count FROM session_summaries WHERE project = ?
+      `).get(this.project) as { count: number };
 
       logger.info('CHROMA_SYNC', 'Backfilling summaries', {
         project: this.project,
-        count: summaries.length
+        missing: summaries.length,
+        existing: existing.summaries.size,
+        total: totalSummaryCount.count
       });
 
       // Format all summary documents
@@ -471,10 +651,67 @@ export class ChromaSync {
         });
       }
 
-      logger.info('CHROMA_SYNC', 'Backfill complete', {
+      // Build exclusion list for prompts
+      const existingPromptIds = Array.from(existing.prompts);
+      const promptExclusionClause = existingPromptIds.length > 0
+        ? `AND up.id NOT IN (${existingPromptIds.join(',')})`
+        : '';
+
+      // Get only user prompts missing from Chroma
+      const prompts = db.db.prepare(`
+        SELECT
+          up.*,
+          s.project,
+          s.sdk_session_id
+        FROM user_prompts up
+        JOIN sdk_sessions s ON up.claude_session_id = s.claude_session_id
+        WHERE s.project = ? ${promptExclusionClause}
+        ORDER BY up.id ASC
+      `).all(this.project) as StoredUserPrompt[];
+
+      const totalPromptCount = db.db.prepare(`
+        SELECT COUNT(*) as count
+        FROM user_prompts up
+        JOIN sdk_sessions s ON up.claude_session_id = s.claude_session_id
+        WHERE s.project = ?
+      `).get(this.project) as { count: number };
+
+      logger.info('CHROMA_SYNC', 'Backfilling user prompts', {
         project: this.project,
-        observationDocs: allDocs.length,
-        summaryDocs: summaryDocs.length
+        missing: prompts.length,
+        existing: existing.prompts.size,
+        total: totalPromptCount.count
+      });
+
+      // Format all prompt documents
+      const promptDocs: ChromaDocument[] = [];
+      for (const prompt of prompts) {
+        promptDocs.push(this.formatUserPromptDoc(prompt));
+      }
+
+      // Sync in batches
+      for (let i = 0; i < promptDocs.length; i += this.BATCH_SIZE) {
+        const batch = promptDocs.slice(i, i + this.BATCH_SIZE);
+        await this.addDocuments(batch);
+
+        logger.info('CHROMA_SYNC', 'Backfill progress', {
+          project: this.project,
+          progress: `${Math.min(i + this.BATCH_SIZE, promptDocs.length)}/${promptDocs.length}`
+        });
+      }
+
+      logger.info('CHROMA_SYNC', 'Smart backfill complete', {
+        project: this.project,
+        synced: {
+          observationDocs: allDocs.length,
+          summaryDocs: summaryDocs.length,
+          promptDocs: promptDocs.length
+        },
+        skipped: {
+          observations: existing.observations.size,
+          summaries: existing.summaries.size,
+          prompts: existing.prompts.size
+        }
       });
 
     } catch (error) {

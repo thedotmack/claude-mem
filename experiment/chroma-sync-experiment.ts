@@ -280,6 +280,71 @@ async function main() {
   const sessionTotalTime = ((Date.now() - sessionStartTime) / 1000).toFixed(1);
   console.log(`✅ Synced ${sessionDocs.length} session documents in ${sessionTotalTime}s\n`);
 
+  // Fetch user prompts
+  console.log('📖 Reading user prompts from SQLite...');
+  const prompts = store.db.prepare(`
+    SELECT
+      up.*,
+      s.project,
+      s.sdk_session_id
+    FROM user_prompts up
+    JOIN sdk_sessions s ON up.claude_session_id = s.claude_session_id
+    WHERE s.project = ?
+    ORDER BY up.created_at_epoch DESC
+    LIMIT 1000
+  `).all(project) as any[];
+  console.log(`Found ${prompts.length} user prompts`);
+
+  // Prepare prompt documents - one document per prompt
+  const promptDocs: ChromaDocument[] = [];
+
+  for (const prompt of prompts) {
+    promptDocs.push({
+      id: `prompt_${prompt.id}`,
+      document: prompt.prompt_text,
+      metadata: {
+        sqlite_id: prompt.id,
+        doc_type: 'user_prompt',
+        sdk_session_id: prompt.sdk_session_id,
+        project: prompt.project,
+        created_at_epoch: prompt.created_at_epoch,
+        prompt_number: prompt.prompt_number || 0
+      }
+    });
+  }
+
+  console.log(`Created ${promptDocs.length} user prompt documents\n`);
+
+  // Sync prompts in batches
+  console.log('⬆️  Syncing user prompts to ChromaDB...');
+  const promptBatches = Math.ceil(promptDocs.length / batchSize);
+  const promptStartTime = Date.now();
+
+  for (let i = 0; i < promptDocs.length; i += batchSize) {
+    const batch = promptDocs.slice(i, i + batchSize);
+    const batchNumber = Math.floor(i / batchSize) + 1;
+    const progress = Math.round((batchNumber / promptBatches) * 100);
+    const docsProcessed = Math.min(i + batchSize, promptDocs.length);
+    const elapsed = ((Date.now() - promptStartTime) / 1000).toFixed(1);
+
+    process.stdout.write(`  [${batchNumber}/${promptBatches}] ${progress}% - Syncing docs ${i + 1}-${docsProcessed}/${promptDocs.length} (${elapsed}s elapsed)...`);
+
+    await client.callTool({
+      name: 'chroma_add_documents',
+      arguments: {
+        collection_name: collectionName,
+        documents: batch.map(d => d.document),
+        ids: batch.map(d => d.id),
+        metadatas: batch.map(d => d.metadata)
+      }
+    });
+
+    console.log(' ✓');
+  }
+
+  const promptTotalTime = ((Date.now() - promptStartTime) / 1000).toFixed(1);
+  console.log(`✅ Synced ${promptDocs.length} user prompt documents in ${promptTotalTime}s\n`);
+
   // Get collection info
   const infoResult = await client.callTool({
     name: 'chroma_get_collection_info',
