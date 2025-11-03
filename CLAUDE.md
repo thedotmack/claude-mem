@@ -165,6 +165,36 @@ Tool Execution → Hook Capture → Worker Processing → AI Compression → Dat
 Search Query → MCP Server → SessionSearch → FTS5 Query → Results with Citations
 ```
 
+### Usage Tracking
+
+Claude-mem automatically tracks SDK usage metrics to JSONL files for cost analysis:
+
+**Location**: `~/.claude-mem/usage-logs/usage-YYYY-MM-DD.jsonl`
+
+**Captured Metrics**:
+- Token counts (input, output, cache creation, cache read)
+- Total cost in USD per API call
+- Duration metrics (total time and API time)
+- Number of turns per session
+- Session and project attribution
+- Model information
+
+**Analysis Tools**:
+```bash
+# Analyze today's usage
+npm run usage:today
+
+# Analyze specific date
+npm run usage:analyze 2025-11-03
+```
+
+The analysis script provides:
+- Total cost and token usage
+- Cache hit rates and savings
+- Cost breakdowns by project
+- Cost breakdowns by model
+- Average cost per API call
+
 ## Development
 
 ### Directory Structure
