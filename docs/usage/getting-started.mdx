@@ -11,9 +11,9 @@ Claude-Mem works automatically once installed. No manual intervention required!
 
 ### The Full Cycle
 
-1. **Start Claude Code** - Context from last 3 sessions appears automatically
+1. **Start Claude Code** - Context from last 10 sessions appears automatically
 2. **Work normally** - Every tool execution is captured
-3. **Stop Claude** - Summary is generated and saved
+3. **Claude finishes responding** - Stop hook automatically generates and saves a summary
 4. **Next session** - Previous work appears in context
 
 ### What Gets Captured
@@ -42,7 +42,7 @@ The worker service processes tool observations and extracts:
 
 ### Session Summaries
 
-When you stop Claude (or a session ends), a summary is generated with:
+When Claude finishes responding (triggering the Stop hook), a summary is automatically generated with:
 
 - **Request** - What you asked for
 - **Investigated** - What Claude explored
@@ -159,7 +159,7 @@ Context injection uses three-tier verbosity for efficient token usage:
 
 This ensures you get maximum detail for recent work while still having context from older sessions.
 
-## Multi-Prompt Sessions
+## Multi-Prompt Sessions & `/clear` Behavior
 
 Claude-Mem supports sessions that span multiple user prompts:
 
@@ -167,7 +167,15 @@ Claude-Mem supports sessions that span multiple user prompts:
 - **prompt_number**: Identifies specific prompt within session
 - **Session continuity**: Observations and summaries link across prompts
 
-When you use `/clear`, the session doesn't end - it continues with a new prompt number. This preserves context across conversation restarts.
+### Important Note About `/clear`
+
+When you use `/clear`, the session doesn't end - it continues with a new prompt number. This means:
+
+- ✅ **Context is re-injected** from recent sessions (SessionStart hook fires with `source: "clear"`)
+- ✅ **Observations are still being captured** and added to the current session
+- ✅ **A summary will be generated** when Claude finishes responding (Stop hook fires)
+
+The `/clear` command clears the conversation context visible to Claude AND re-injects fresh context from recent sessions, while the underlying session continues tracking observations.
 
 ## Next Steps
 
