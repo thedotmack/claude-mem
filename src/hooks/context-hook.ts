@@ -6,7 +6,6 @@
 import path from 'path';
 import { stdin } from 'process';
 import { SessionStore } from '../services/sqlite/SessionStore.js';
-import { ensureWorkerRunning } from '../shared/worker-utils.js';
 
 // Configuration: Read from environment or use defaults
 const DISPLAY_OBSERVATION_COUNT = parseInt(process.env.CLAUDE_MEM_CONTEXT_OBSERVATIONS || '50', 10);
@@ -127,7 +126,6 @@ function getObservations(db: SessionStore, sessionIds: string[]): Observation[] 
  * Context Hook Main Logic
  */
 function contextHook(input?: SessionStartInput, useColors: boolean = false, useIndexView: boolean = false): string {
-  ensureWorkerRunning();
   const cwd = input?.cwd ?? process.cwd();
   const project = cwd ? path.basename(cwd) : 'unknown-project';
 

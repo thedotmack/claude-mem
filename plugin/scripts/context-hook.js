@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-import P from"path";import{stdin as F}from"process";import ae from"better-sqlite3";import{join as b,dirname as te,basename as fe}from"path";import{homedir as H}from"os";import{existsSync as Oe,mkdirSync as re}from"fs";import{fileURLToPath as ne}from"url";function oe(){return typeof __dirname<"u"?__dirname:te(ne(import.meta.url))}var ie=oe(),I=process.env.CLAUDE_MEM_DATA_DIR||b(H(),".claude-mem"),$=process.env.CLAUDE_CONFIG_DIR||b(H(),".claude"),Le=b(I,"archives"),ye=b(I,"logs"),ve=b(I,"trash"),Ae=b(I,"backups"),Ce=b(I,"settings.json"),j=b(I,"claude-mem.db"),De=b(I,"vector-db"),ke=b($,"settings.json"),xe=b($,"commands"),$e=b($,"CLAUDE.md");function G(d){re(d,{recursive:!0})}function Y(){return b(ie,"..","..")}var U=(n=>(n[n.DEBUG=0]="DEBUG",n[n.INFO=1]="INFO",n[n.WARN=2]="WARN",n[n.ERROR=3]="ERROR",n[n.SILENT=4]="SILENT",n))(U||{}),w=class{level;useColor;constructor(){let e=process.env.CLAUDE_MEM_LOG_LEVEL?.toUpperCase()||"INFO";this.level=U[e]??1,this.useColor=process.stdout.isTTY??!1}correlationId(e,s){return`obs-${e}-${s}`}sessionId(e){return`session-${e}`}formatData(e){if(e==null)return"";if(typeof e=="string")return e;if(typeof e=="number"||typeof e=="boolean")return e.toString();if(typeof e=="object"){if(e instanceof Error)return this.level===0?`${e.message}
-${e.stack}`:e.message;if(Array.isArray(e))return`[${e.length} items]`;let s=Object.keys(e);return s.length===0?"{}":s.length<=3?JSON.stringify(e):`{${s.length} keys: ${s.slice(0,3).join(", ")}...}`}return String(e)}formatTool(e,s){if(!s)return e;try{let t=typeof s=="string"?JSON.parse(s):s;if(e==="Bash"&&t.command){let r=t.command.length>50?t.command.substring(0,50)+"...":t.command;return`${e}(${r})`}if(e==="Read"&&t.file_path){let r=t.file_path.split("/").pop()||t.file_path;return`${e}(${r})`}if(e==="Edit"&&t.file_path){let r=t.file_path.split("/").pop()||t.file_path;return`${e}(${r})`}if(e==="Write"&&t.file_path){let r=t.file_path.split("/").pop()||t.file_path;return`${e}(${r})`}return e}catch{return e}}log(e,s,t,r,n){if(e<this.level)return;let a=new Date().toISOString().replace("T"," ").substring(0,23),c=U[e].padEnd(5),u=s.padEnd(6),E="";r?.correlationId?E=`[${r.correlationId}] `:r?.sessionId&&(E=`[session-${r.sessionId}] `);let f="";n!=null&&(this.level===0&&typeof n=="object"?f=`
-`+JSON.stringify(n,null,2):f=" "+this.formatData(n));let o="";if(r){let{sessionId:S,sdkSessionId:N,correlationId:m,...p}=r;Object.keys(p).length>0&&(o=` {${Object.entries(p).map(([_,T])=>`${_}=${T}`).join(", ")}}`)}let y=`[${a}] [${c}] [${u}] ${E}${t}${o}${f}`;e===3?console.error(y):console.log(y)}debug(e,s,t,r){this.log(0,e,s,t,r)}info(e,s,t,r){this.log(1,e,s,t,r)}warn(e,s,t,r){this.log(2,e,s,t,r)}error(e,s,t,r){this.log(3,e,s,t,r)}dataIn(e,s,t,r){this.info(e,`\u2192 ${s}`,t,r)}dataOut(e,s,t,r){this.info(e,`\u2190 ${s}`,t,r)}success(e,s,t,r){this.info(e,`\u2713 ${s}`,t,r)}failure(e,s,t,r){this.error(e,`\u2717 ${s}`,t,r)}timing(e,s,t,r){this.info(e,`\u23F1 ${s}`,r,{duration:`${t}ms`})}},V=new w;var D=class{db;constructor(){G(I),this.db=new ae(j),this.db.pragma("journal_mode = WAL"),this.db.pragma("synchronous = NORMAL"),this.db.pragma("foreign_keys = ON"),this.initializeSchema(),this.ensureWorkerPortColumn(),this.ensurePromptTrackingColumns(),this.removeSessionSummariesUniqueConstraint(),this.addObservationHierarchicalFields(),this.makeObservationsTextNullable(),this.createUserPromptsTable()}initializeSchema(){try{this.db.exec(`
+import X from"path";import{stdin as w}from"process";import se from"better-sqlite3";import{join as S,dirname as Q,basename as _e}from"path";import{homedir as P}from"os";import{existsSync as Ee,mkdirSync as z}from"fs";import{fileURLToPath as Z}from"url";function ee(){return typeof __dirname<"u"?__dirname:Q(Z(import.meta.url))}var he=ee(),I=process.env.CLAUDE_MEM_DATA_DIR||S(P(),".claude-mem"),$=process.env.CLAUDE_CONFIG_DIR||S(P(),".claude"),ge=S(I,"archives"),be=S(I,"logs"),Se=S(I,"trash"),fe=S(I,"backups"),Re=S(I,"settings.json"),H=S(I,"claude-mem.db"),Ne=S(I,"vector-db"),Oe=S($,"settings.json"),Ie=S($,"commands"),Le=S($,"CLAUDE.md");function G(p){z(p,{recursive:!0})}var U=(i=>(i[i.DEBUG=0]="DEBUG",i[i.INFO=1]="INFO",i[i.WARN=2]="WARN",i[i.ERROR=3]="ERROR",i[i.SILENT=4]="SILENT",i))(U||{}),M=class{level;useColor;constructor(){let e=process.env.CLAUDE_MEM_LOG_LEVEL?.toUpperCase()||"INFO";this.level=U[e]??1,this.useColor=process.stdout.isTTY??!1}correlationId(e,s){return`obs-${e}-${s}`}sessionId(e){return`session-${e}`}formatData(e){if(e==null)return"";if(typeof e=="string")return e;if(typeof e=="number"||typeof e=="boolean")return e.toString();if(typeof e=="object"){if(e instanceof Error)return this.level===0?`${e.message}
+${e.stack}`:e.message;if(Array.isArray(e))return`[${e.length} items]`;let s=Object.keys(e);return s.length===0?"{}":s.length<=3?JSON.stringify(e):`{${s.length} keys: ${s.slice(0,3).join(", ")}...}`}return String(e)}formatTool(e,s){if(!s)return e;try{let t=typeof s=="string"?JSON.parse(s):s;if(e==="Bash"&&t.command){let r=t.command.length>50?t.command.substring(0,50)+"...":t.command;return`${e}(${r})`}if(e==="Read"&&t.file_path){let r=t.file_path.split("/").pop()||t.file_path;return`${e}(${r})`}if(e==="Edit"&&t.file_path){let r=t.file_path.split("/").pop()||t.file_path;return`${e}(${r})`}if(e==="Write"&&t.file_path){let r=t.file_path.split("/").pop()||t.file_path;return`${e}(${r})`}return e}catch{return e}}log(e,s,t,r,i){if(e<this.level)return;let d=new Date().toISOString().replace("T"," ").substring(0,23),a=U[e].padEnd(5),_=s.padEnd(6),E="";r?.correlationId?E=`[${r.correlationId}] `:r?.sessionId&&(E=`[session-${r.sessionId}] `);let b="";i!=null&&(this.level===0&&typeof i=="object"?b=`
+`+JSON.stringify(i,null,2):b=" "+this.formatData(i));let n="";if(r){let{sessionId:f,sdkSessionId:N,correlationId:l,...c}=r;Object.keys(c).length>0&&(n=` {${Object.entries(c).map(([u,T])=>`${u}=${T}`).join(", ")}}`)}let v=`[${d}] [${a}] [${_}] ${E}${t}${n}${b}`;e===3?console.error(v):console.log(v)}debug(e,s,t,r){this.log(0,e,s,t,r)}info(e,s,t,r){this.log(1,e,s,t,r)}warn(e,s,t,r){this.log(2,e,s,t,r)}error(e,s,t,r){this.log(3,e,s,t,r)}dataIn(e,s,t,r){this.info(e,`\u2192 ${s}`,t,r)}dataOut(e,s,t,r){this.info(e,`\u2190 ${s}`,t,r)}success(e,s,t,r){this.info(e,`\u2713 ${s}`,t,r)}failure(e,s,t,r){this.error(e,`\u2717 ${s}`,t,r)}timing(e,s,t,r){this.info(e,`\u23F1 ${s}`,r,{duration:`${t}ms`})}},W=new M;var D=class{db;constructor(){G(I),this.db=new se(H),this.db.pragma("journal_mode = WAL"),this.db.pragma("synchronous = NORMAL"),this.db.pragma("foreign_keys = ON"),this.initializeSchema(),this.ensureWorkerPortColumn(),this.ensurePromptTrackingColumns(),this.removeSessionSummariesUniqueConstraint(),this.addObservationHierarchicalFields(),this.makeObservationsTextNullable(),this.createUserPromptsTable()}initializeSchema(){try{this.db.exec(`
         CREATE TABLE IF NOT EXISTS schema_versions (
           id INTEGER PRIMARY KEY,
           version INTEGER UNIQUE NOT NULL,
@@ -63,7 +63,7 @@ ${e.stack}`:e.message;if(Array.isArray(e))return`[${e.length} items]`;let s=Obje
           CREATE INDEX IF NOT EXISTS idx_session_summaries_sdk_session ON session_summaries(sdk_session_id);
           CREATE INDEX IF NOT EXISTS idx_session_summaries_project ON session_summaries(project);
           CREATE INDEX IF NOT EXISTS idx_session_summaries_created ON session_summaries(created_at_epoch DESC);
-        `),this.db.prepare("INSERT INTO schema_versions (version, applied_at) VALUES (?, ?)").run(4,new Date().toISOString()),console.error("[SessionStore] Migration004 applied successfully"))}catch(e){throw console.error("[SessionStore] Schema initialization error:",e.message),e}}ensureWorkerPortColumn(){try{if(this.db.prepare("SELECT version FROM schema_versions WHERE version = ?").get(5))return;this.db.pragma("table_info(sdk_sessions)").some(r=>r.name==="worker_port")||(this.db.exec("ALTER TABLE sdk_sessions ADD COLUMN worker_port INTEGER"),console.error("[SessionStore] Added worker_port column to sdk_sessions table")),this.db.prepare("INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)").run(5,new Date().toISOString())}catch(e){console.error("[SessionStore] Migration error:",e.message)}}ensurePromptTrackingColumns(){try{if(this.db.prepare("SELECT version FROM schema_versions WHERE version = ?").get(6))return;this.db.pragma("table_info(sdk_sessions)").some(u=>u.name==="prompt_counter")||(this.db.exec("ALTER TABLE sdk_sessions ADD COLUMN prompt_counter INTEGER DEFAULT 0"),console.error("[SessionStore] Added prompt_counter column to sdk_sessions table")),this.db.pragma("table_info(observations)").some(u=>u.name==="prompt_number")||(this.db.exec("ALTER TABLE observations ADD COLUMN prompt_number INTEGER"),console.error("[SessionStore] Added prompt_number column to observations table")),this.db.pragma("table_info(session_summaries)").some(u=>u.name==="prompt_number")||(this.db.exec("ALTER TABLE session_summaries ADD COLUMN prompt_number INTEGER"),console.error("[SessionStore] Added prompt_number column to session_summaries table")),this.db.prepare("INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)").run(6,new Date().toISOString())}catch(e){console.error("[SessionStore] Prompt tracking migration error:",e.message)}}removeSessionSummariesUniqueConstraint(){try{if(this.db.prepare("SELECT version FROM schema_versions WHERE version = ?").get(7))return;if(!this.db.pragma("index_list(session_summaries)").some(r=>r.unique===1)){this.db.prepare("INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)").run(7,new Date().toISOString());return}console.error("[SessionStore] Removing UNIQUE constraint from session_summaries.sdk_session_id..."),this.db.exec("BEGIN TRANSACTION");try{this.db.exec(`
+        `),this.db.prepare("INSERT INTO schema_versions (version, applied_at) VALUES (?, ?)").run(4,new Date().toISOString()),console.error("[SessionStore] Migration004 applied successfully"))}catch(e){throw console.error("[SessionStore] Schema initialization error:",e.message),e}}ensureWorkerPortColumn(){try{if(this.db.prepare("SELECT version FROM schema_versions WHERE version = ?").get(5))return;this.db.pragma("table_info(sdk_sessions)").some(r=>r.name==="worker_port")||(this.db.exec("ALTER TABLE sdk_sessions ADD COLUMN worker_port INTEGER"),console.error("[SessionStore] Added worker_port column to sdk_sessions table")),this.db.prepare("INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)").run(5,new Date().toISOString())}catch(e){console.error("[SessionStore] Migration error:",e.message)}}ensurePromptTrackingColumns(){try{if(this.db.prepare("SELECT version FROM schema_versions WHERE version = ?").get(6))return;this.db.pragma("table_info(sdk_sessions)").some(_=>_.name==="prompt_counter")||(this.db.exec("ALTER TABLE sdk_sessions ADD COLUMN prompt_counter INTEGER DEFAULT 0"),console.error("[SessionStore] Added prompt_counter column to sdk_sessions table")),this.db.pragma("table_info(observations)").some(_=>_.name==="prompt_number")||(this.db.exec("ALTER TABLE observations ADD COLUMN prompt_number INTEGER"),console.error("[SessionStore] Added prompt_number column to observations table")),this.db.pragma("table_info(session_summaries)").some(_=>_.name==="prompt_number")||(this.db.exec("ALTER TABLE session_summaries ADD COLUMN prompt_number INTEGER"),console.error("[SessionStore] Added prompt_number column to session_summaries table")),this.db.prepare("INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)").run(6,new Date().toISOString())}catch(e){console.error("[SessionStore] Prompt tracking migration error:",e.message)}}removeSessionSummariesUniqueConstraint(){try{if(this.db.prepare("SELECT version FROM schema_versions WHERE version = ?").get(7))return;if(!this.db.pragma("index_list(session_summaries)").some(r=>r.unique===1)){this.db.prepare("INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)").run(7,new Date().toISOString());return}console.error("[SessionStore] Removing UNIQUE constraint from session_summaries.sdk_session_id..."),this.db.exec("BEGIN TRANSACTION");try{this.db.exec(`
           CREATE TABLE session_summaries_new (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             sdk_session_id TEXT NOT NULL,
@@ -214,12 +214,12 @@ ${e.stack}`:e.message;if(Array.isArray(e))return`[${e.length} items]`;let s=Obje
       SELECT *
       FROM observations
       WHERE id = ?
-    `).get(e)||null}getObservationsByIds(e,s={}){if(e.length===0)return[];let{orderBy:t="date_desc",limit:r}=s,n=t==="date_asc"?"ASC":"DESC",a=r?`LIMIT ${r}`:"",c=e.map(()=>"?").join(",");return this.db.prepare(`
+    `).get(e)||null}getObservationsByIds(e,s={}){if(e.length===0)return[];let{orderBy:t="date_desc",limit:r}=s,i=t==="date_asc"?"ASC":"DESC",d=r?`LIMIT ${r}`:"",a=e.map(()=>"?").join(",");return this.db.prepare(`
       SELECT *
       FROM observations
-      WHERE id IN (${c})
-      ORDER BY created_at_epoch ${n}
-      ${a}
+      WHERE id IN (${a})
+      ORDER BY created_at_epoch ${i}
+      ${d}
     `).all(...e)}getSummaryForSession(e){return this.db.prepare(`
       SELECT
         request, investigated, learned, completed, next_steps,
@@ -232,7 +232,7 @@ ${e.stack}`:e.message;if(Array.isArray(e))return`[${e.length} items]`;let s=Obje
       SELECT files_read, files_modified
       FROM observations
       WHERE sdk_session_id = ?
-    `).all(e),r=new Set,n=new Set;for(let a of t){if(a.files_read)try{let c=JSON.parse(a.files_read);Array.isArray(c)&&c.forEach(u=>r.add(u))}catch{}if(a.files_modified)try{let c=JSON.parse(a.files_modified);Array.isArray(c)&&c.forEach(u=>n.add(u))}catch{}}return{filesRead:Array.from(r),filesModified:Array.from(n)}}getSessionById(e){return this.db.prepare(`
+    `).all(e),r=new Set,i=new Set;for(let d of t){if(d.files_read)try{let a=JSON.parse(d.files_read);Array.isArray(a)&&a.forEach(_=>r.add(_))}catch{}if(d.files_modified)try{let a=JSON.parse(d.files_modified);Array.isArray(a)&&a.forEach(_=>i.add(_))}catch{}}return{filesRead:Array.from(r),filesModified:Array.from(i)}}getSessionById(e){return this.db.prepare(`
       SELECT id, claude_session_id, sdk_session_id, project, user_prompt
       FROM sdk_sessions
       WHERE id = ?
@@ -259,17 +259,17 @@ ${e.stack}`:e.message;if(Array.isArray(e))return`[${e.length} items]`;let s=Obje
       SELECT prompt_counter FROM sdk_sessions WHERE id = ?
     `).get(e)?.prompt_counter||1}getPromptCounter(e){return this.db.prepare(`
       SELECT prompt_counter FROM sdk_sessions WHERE id = ?
-    `).get(e)?.prompt_counter||0}createSDKSession(e,s,t){let r=new Date,n=r.getTime(),c=this.db.prepare(`
+    `).get(e)?.prompt_counter||0}createSDKSession(e,s,t){let r=new Date,i=r.getTime(),a=this.db.prepare(`
       INSERT OR IGNORE INTO sdk_sessions
       (claude_session_id, sdk_session_id, project, user_prompt, started_at, started_at_epoch, status)
       VALUES (?, ?, ?, ?, ?, ?, 'active')
-    `).run(e,e,s,t,r.toISOString(),n);return c.lastInsertRowid===0||c.changes===0?this.db.prepare(`
+    `).run(e,e,s,t,r.toISOString(),i);return a.lastInsertRowid===0||a.changes===0?this.db.prepare(`
         SELECT id FROM sdk_sessions WHERE claude_session_id = ? LIMIT 1
-      `).get(e).id:c.lastInsertRowid}updateSDKSessionId(e,s){return this.db.prepare(`
+      `).get(e).id:a.lastInsertRowid}updateSDKSessionId(e,s){return this.db.prepare(`
       UPDATE sdk_sessions
       SET sdk_session_id = ?
       WHERE id = ? AND sdk_session_id IS NULL
-    `).run(s,e).changes===0?(V.debug("DB","sdk_session_id already set, skipping update",{sessionId:e,sdkSessionId:s}),!1):!0}setWorkerPort(e,s){this.db.prepare(`
+    `).run(s,e).changes===0?(W.debug("DB","sdk_session_id already set, skipping update",{sessionId:e,sdkSessionId:s}),!1):!0}setWorkerPort(e,s){this.db.prepare(`
       UPDATE sdk_sessions
       SET worker_port = ?
       WHERE id = ?
@@ -278,33 +278,33 @@ ${e.stack}`:e.message;if(Array.isArray(e))return`[${e.length} items]`;let s=Obje
       FROM sdk_sessions
       WHERE id = ?
       LIMIT 1
-    `).get(e)?.worker_port||null}saveUserPrompt(e,s,t){let r=new Date,n=r.getTime();return this.db.prepare(`
+    `).get(e)?.worker_port||null}saveUserPrompt(e,s,t){let r=new Date,i=r.getTime();return this.db.prepare(`
       INSERT INTO user_prompts
       (claude_session_id, prompt_number, prompt_text, created_at, created_at_epoch)
       VALUES (?, ?, ?, ?, ?)
-    `).run(e,s,t,r.toISOString(),n).lastInsertRowid}storeObservation(e,s,t,r){let n=new Date,a=n.getTime();this.db.prepare(`
+    `).run(e,s,t,r.toISOString(),i).lastInsertRowid}storeObservation(e,s,t,r){let i=new Date,d=i.getTime();this.db.prepare(`
       SELECT id FROM sdk_sessions WHERE sdk_session_id = ?
     `).get(e)||(this.db.prepare(`
         INSERT INTO sdk_sessions
         (claude_session_id, sdk_session_id, project, started_at, started_at_epoch, status)
         VALUES (?, ?, ?, ?, ?, 'active')
-      `).run(e,e,s,n.toISOString(),a),console.error(`[SessionStore] Auto-created session record for session_id: ${e}`));let f=this.db.prepare(`
+      `).run(e,e,s,i.toISOString(),d),console.error(`[SessionStore] Auto-created session record for session_id: ${e}`));let b=this.db.prepare(`
       INSERT INTO observations
       (sdk_session_id, project, type, title, subtitle, facts, narrative, concepts,
        files_read, files_modified, prompt_number, created_at, created_at_epoch)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(e,s,t.type,t.title,t.subtitle,JSON.stringify(t.facts),t.narrative,JSON.stringify(t.concepts),JSON.stringify(t.files_read),JSON.stringify(t.files_modified),r||null,n.toISOString(),a);return{id:Number(f.lastInsertRowid),createdAtEpoch:a}}storeSummary(e,s,t,r){let n=new Date,a=n.getTime();this.db.prepare(`
+    `).run(e,s,t.type,t.title,t.subtitle,JSON.stringify(t.facts),t.narrative,JSON.stringify(t.concepts),JSON.stringify(t.files_read),JSON.stringify(t.files_modified),r||null,i.toISOString(),d);return{id:Number(b.lastInsertRowid),createdAtEpoch:d}}storeSummary(e,s,t,r){let i=new Date,d=i.getTime();this.db.prepare(`
       SELECT id FROM sdk_sessions WHERE sdk_session_id = ?
     `).get(e)||(this.db.prepare(`
         INSERT INTO sdk_sessions
         (claude_session_id, sdk_session_id, project, started_at, started_at_epoch, status)
         VALUES (?, ?, ?, ?, ?, 'active')
-      `).run(e,e,s,n.toISOString(),a),console.error(`[SessionStore] Auto-created session record for session_id: ${e}`));let f=this.db.prepare(`
+      `).run(e,e,s,i.toISOString(),d),console.error(`[SessionStore] Auto-created session record for session_id: ${e}`));let b=this.db.prepare(`
       INSERT INTO session_summaries
       (sdk_session_id, project, request, investigated, learned, completed,
        next_steps, notes, prompt_number, created_at, created_at_epoch)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(e,s,t.request,t.investigated,t.learned,t.completed,t.next_steps,t.notes,r||null,n.toISOString(),a);return{id:Number(f.lastInsertRowid),createdAtEpoch:a}}markSessionCompleted(e){let s=new Date,t=s.getTime();this.db.prepare(`
+    `).run(e,s,t.request,t.investigated,t.learned,t.completed,t.next_steps,t.notes,r||null,i.toISOString(),d);return{id:Number(b.lastInsertRowid),createdAtEpoch:d}}markSessionCompleted(e){let s=new Date,t=s.getTime();this.db.prepare(`
       UPDATE sdk_sessions
       SET status = 'completed', completed_at = ?, completed_at_epoch = ?
       WHERE id = ?
@@ -316,62 +316,62 @@ ${e.stack}`:e.message;if(Array.isArray(e))return`[${e.length} items]`;let s=Obje
       UPDATE sdk_sessions
       SET status = 'failed', completed_at = ?, completed_at_epoch = ?
       WHERE status = 'active'
-    `).run(e.toISOString(),s).changes}getSessionSummariesByIds(e,s={}){if(e.length===0)return[];let{orderBy:t="date_desc",limit:r}=s,n=t==="date_asc"?"ASC":"DESC",a=r?`LIMIT ${r}`:"",c=e.map(()=>"?").join(",");return this.db.prepare(`
+    `).run(e.toISOString(),s).changes}getSessionSummariesByIds(e,s={}){if(e.length===0)return[];let{orderBy:t="date_desc",limit:r}=s,i=t==="date_asc"?"ASC":"DESC",d=r?`LIMIT ${r}`:"",a=e.map(()=>"?").join(",");return this.db.prepare(`
       SELECT * FROM session_summaries
-      WHERE id IN (${c})
-      ORDER BY created_at_epoch ${n}
-      ${a}
-    `).all(...e)}getUserPromptsByIds(e,s={}){if(e.length===0)return[];let{orderBy:t="date_desc",limit:r}=s,n=t==="date_asc"?"ASC":"DESC",a=r?`LIMIT ${r}`:"",c=e.map(()=>"?").join(",");return this.db.prepare(`
+      WHERE id IN (${a})
+      ORDER BY created_at_epoch ${i}
+      ${d}
+    `).all(...e)}getUserPromptsByIds(e,s={}){if(e.length===0)return[];let{orderBy:t="date_desc",limit:r}=s,i=t==="date_asc"?"ASC":"DESC",d=r?`LIMIT ${r}`:"",a=e.map(()=>"?").join(",");return this.db.prepare(`
       SELECT
         up.*,
         s.project,
         s.sdk_session_id
       FROM user_prompts up
       JOIN sdk_sessions s ON up.claude_session_id = s.claude_session_id
-      WHERE up.id IN (${c})
-      ORDER BY up.created_at_epoch ${n}
-      ${a}
-    `).all(...e)}getTimelineAroundTimestamp(e,s=10,t=10,r){return this.getTimelineAroundObservation(null,e,s,t,r)}getTimelineAroundObservation(e,s,t=10,r=10,n){let a=n?"AND project = ?":"",c=n?[n]:[],u,E;if(e!==null){let S=`
+      WHERE up.id IN (${a})
+      ORDER BY up.created_at_epoch ${i}
+      ${d}
+    `).all(...e)}getTimelineAroundTimestamp(e,s=10,t=10,r){return this.getTimelineAroundObservation(null,e,s,t,r)}getTimelineAroundObservation(e,s,t=10,r=10,i){let d=i?"AND project = ?":"",a=i?[i]:[],_,E;if(e!==null){let f=`
         SELECT id, created_at_epoch
         FROM observations
-        WHERE id <= ? ${a}
+        WHERE id <= ? ${d}
         ORDER BY id DESC
         LIMIT ?
       `,N=`
         SELECT id, created_at_epoch
         FROM observations
-        WHERE id >= ? ${a}
+        WHERE id >= ? ${d}
         ORDER BY id ASC
         LIMIT ?
-      `;try{let m=this.db.prepare(S).all(e,...c,t+1),p=this.db.prepare(N).all(e,...c,r+1);if(m.length===0&&p.length===0)return{observations:[],sessions:[],prompts:[]};u=m.length>0?m[m.length-1].created_at_epoch:s,E=p.length>0?p[p.length-1].created_at_epoch:s}catch(m){return console.error("[SessionStore] Error getting boundary observations:",m.message),{observations:[],sessions:[],prompts:[]}}}else{let S=`
+      `;try{let l=this.db.prepare(f).all(e,...a,t+1),c=this.db.prepare(N).all(e,...a,r+1);if(l.length===0&&c.length===0)return{observations:[],sessions:[],prompts:[]};_=l.length>0?l[l.length-1].created_at_epoch:s,E=c.length>0?c[c.length-1].created_at_epoch:s}catch(l){return console.error("[SessionStore] Error getting boundary observations:",l.message),{observations:[],sessions:[],prompts:[]}}}else{let f=`
         SELECT created_at_epoch
         FROM observations
-        WHERE created_at_epoch <= ? ${a}
+        WHERE created_at_epoch <= ? ${d}
         ORDER BY created_at_epoch DESC
         LIMIT ?
       `,N=`
         SELECT created_at_epoch
         FROM observations
-        WHERE created_at_epoch >= ? ${a}
+        WHERE created_at_epoch >= ? ${d}
         ORDER BY created_at_epoch ASC
         LIMIT ?
-      `;try{let m=this.db.prepare(S).all(s,...c,t),p=this.db.prepare(N).all(s,...c,r+1);if(m.length===0&&p.length===0)return{observations:[],sessions:[],prompts:[]};u=m.length>0?m[m.length-1].created_at_epoch:s,E=p.length>0?p[p.length-1].created_at_epoch:s}catch(m){return console.error("[SessionStore] Error getting boundary timestamps:",m.message),{observations:[],sessions:[],prompts:[]}}}let f=`
+      `;try{let l=this.db.prepare(f).all(s,...a,t),c=this.db.prepare(N).all(s,...a,r+1);if(l.length===0&&c.length===0)return{observations:[],sessions:[],prompts:[]};_=l.length>0?l[l.length-1].created_at_epoch:s,E=c.length>0?c[c.length-1].created_at_epoch:s}catch(l){return console.error("[SessionStore] Error getting boundary timestamps:",l.message),{observations:[],sessions:[],prompts:[]}}}let b=`
       SELECT *
       FROM observations
-      WHERE created_at_epoch >= ? AND created_at_epoch <= ? ${a}
+      WHERE created_at_epoch >= ? AND created_at_epoch <= ? ${d}
       ORDER BY created_at_epoch ASC
-    `,o=`
+    `,n=`
       SELECT *
       FROM session_summaries
-      WHERE created_at_epoch >= ? AND created_at_epoch <= ? ${a}
+      WHERE created_at_epoch >= ? AND created_at_epoch <= ? ${d}
       ORDER BY created_at_epoch ASC
-    `,y=`
+    `,v=`
       SELECT up.*, s.project, s.sdk_session_id
       FROM user_prompts up
       JOIN sdk_sessions s ON up.claude_session_id = s.claude_session_id
-      WHERE up.created_at_epoch >= ? AND up.created_at_epoch <= ? ${a.replace("project","s.project")}
+      WHERE up.created_at_epoch >= ? AND up.created_at_epoch <= ? ${d.replace("project","s.project")}
       ORDER BY up.created_at_epoch ASC
-    `;try{let S=this.db.prepare(f).all(u,E,...c),N=this.db.prepare(o).all(u,E,...c),m=this.db.prepare(y).all(u,E,...c);return{observations:S,sessions:N.map(p=>({id:p.id,sdk_session_id:p.sdk_session_id,project:p.project,request:p.request,completed:p.completed,next_steps:p.next_steps,created_at:p.created_at,created_at_epoch:p.created_at_epoch})),prompts:m.map(p=>({id:p.id,claude_session_id:p.claude_session_id,project:p.project,prompt:p.prompt_text,created_at:p.created_at,created_at_epoch:p.created_at_epoch}))}}catch(S){return console.error("[SessionStore] Error querying timeline records:",S.message),{observations:[],sessions:[],prompts:[]}}}close(){this.db.close()}};import M from"path";import{existsSync as X}from"fs";import{spawn as de}from"child_process";var ce=parseInt(process.env.CLAUDE_MEM_WORKER_PORT||"37777",10),pe=`http://127.0.0.1:${ce}/health`;async function K(){try{return(await fetch(pe,{signal:AbortSignal.timeout(500)})).ok}catch{return!1}}async function q(){try{if(await K())return!0;console.error("[claude-mem] Worker not responding, starting...");let d=Y(),e=M.join(d,"plugin","scripts","worker-service.cjs");if(!X(e))return console.error(`[claude-mem] Worker service not found at ${e}`),!1;let s=M.join(d,"ecosystem.config.cjs"),t=M.join(d,"node_modules",".bin","pm2");if(!X(t))throw new Error(`PM2 binary not found at ${t}. This is a bundled dependency - try running: npm install`);if(!X(s))throw new Error(`PM2 ecosystem config not found at ${s}. Plugin installation may be corrupted.`);let r=de(t,["start",s],{detached:!0,stdio:"ignore",cwd:d});r.on("error",n=>{throw new Error(`Failed to spawn PM2: ${n.message}`)}),r.unref(),console.error("[claude-mem] Worker started with PM2");for(let n=0;n<3;n++)if(await new Promise(a=>setTimeout(a,500)),await K())return console.error("[claude-mem] Worker is healthy"),!0;return console.error("[claude-mem] Worker failed to become healthy after startup"),!1}catch(d){return console.error(`[claude-mem] Failed to start worker: ${d.message}`),!1}}var ue=parseInt(process.env.CLAUDE_MEM_CONTEXT_OBSERVATIONS||"50",10),J=10,i={reset:"\x1B[0m",bright:"\x1B[1m",dim:"\x1B[2m",cyan:"\x1B[36m",green:"\x1B[32m",yellow:"\x1B[33m",blue:"\x1B[34m",magenta:"\x1B[35m",gray:"\x1B[90m",red:"\x1B[31m"};function _e(d){if(!d)return[];let e=JSON.parse(d);return Array.isArray(e)?e:[]}function me(d){return new Date(d).toLocaleString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit",hour12:!0})}function le(d){return new Date(d).toLocaleString("en-US",{hour:"numeric",minute:"2-digit",hour12:!0})}function Ee(d){return new Date(d).toLocaleString("en-US",{month:"short",day:"numeric",year:"numeric"})}function Te(d){return d?Math.ceil(d.length/4):0}function he(d,e){return P.isAbsolute(d)?P.relative(e,d):d}function Q(d,e=!1,s=!1){q();let t=d?.cwd??process.cwd(),r=t?P.basename(t):"unknown-project",n=new D,a=n.db.prepare(`
+    `;try{let f=this.db.prepare(b).all(_,E,...a),N=this.db.prepare(n).all(_,E,...a),l=this.db.prepare(v).all(_,E,...a);return{observations:f,sessions:N.map(c=>({id:c.id,sdk_session_id:c.sdk_session_id,project:c.project,request:c.request,completed:c.completed,next_steps:c.next_steps,created_at:c.created_at,created_at_epoch:c.created_at_epoch})),prompts:l.map(c=>({id:c.id,claude_session_id:c.claude_session_id,project:c.project,prompt:c.prompt_text,created_at:c.created_at,created_at_epoch:c.created_at_epoch}))}}catch(f){return console.error("[SessionStore] Error querying timeline records:",f.message),{observations:[],sessions:[],prompts:[]}}}close(){this.db.close()}};var te=parseInt(process.env.CLAUDE_MEM_CONTEXT_OBSERVATIONS||"50",10),j=10,o={reset:"\x1B[0m",bright:"\x1B[1m",dim:"\x1B[2m",cyan:"\x1B[36m",green:"\x1B[32m",yellow:"\x1B[33m",blue:"\x1B[34m",magenta:"\x1B[35m",gray:"\x1B[90m",red:"\x1B[31m"};function re(p){if(!p)return[];let e=JSON.parse(p);return Array.isArray(e)?e:[]}function ne(p){return new Date(p).toLocaleString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit",hour12:!0})}function ie(p){return new Date(p).toLocaleString("en-US",{hour:"numeric",minute:"2-digit",hour12:!0})}function oe(p){return new Date(p).toLocaleString("en-US",{month:"short",day:"numeric",year:"numeric"})}function ae(p){return p?Math.ceil(p.length/4):0}function de(p,e){return X.isAbsolute(p)?X.relative(e,p):p}function Y(p,e=!1,s=!1){let t=p?.cwd??process.cwd(),r=t?X.basename(t):"unknown-project",i=new D,d=i.db.prepare(`
     SELECT
       id, sdk_session_id, type, title, subtitle, narrative,
       facts, concepts, files_read, files_modified,
@@ -380,18 +380,18 @@ ${e.stack}`:e.message;if(Array.isArray(e))return`[${e.length} items]`;let s=Obje
     WHERE project = ?
     ORDER BY created_at_epoch DESC
     LIMIT ?
-  `).all(r,ue),c=n.db.prepare(`
+  `).all(r,te),a=i.db.prepare(`
     SELECT id, sdk_session_id, request, completed, next_steps, created_at, created_at_epoch
     FROM session_summaries
     WHERE project = ?
     ORDER BY created_at_epoch DESC
     LIMIT ?
-  `).all(r,J+1);if(a.length===0&&c.length===0)return n.close(),e?`
-${i.bright}${i.cyan}\u{1F4DD} [${r}] recent context${i.reset}
-${i.gray}${"\u2500".repeat(60)}${i.reset}
+  `).all(r,j+1);if(d.length===0&&a.length===0)return i.close(),e?`
+${o.bright}${o.cyan}\u{1F4DD} [${r}] recent context${o.reset}
+${o.gray}${"\u2500".repeat(60)}${o.reset}
 
-${i.dim}No previous sessions found for this project yet.${i.reset}
+${o.dim}No previous sessions found for this project yet.${o.reset}
 `:`# [${r}] recent context
 
-No previous sessions found for this project yet.`;let u=a,E=c.slice(0,J),f=u,o=[];if(e?(o.push(""),o.push(`${i.bright}${i.cyan}\u{1F4DD} [${r}] recent context${i.reset}`),o.push(`${i.gray}${"\u2500".repeat(60)}${i.reset}`),o.push("")):(o.push(`# [${r}] recent context`),o.push("")),f.length>0){e?(o.push(`${i.dim}Legend: \u{1F3AF} session-request | \u{1F534} bugfix | \u{1F7E3} feature | \u{1F504} refactor | \u2705 change | \u{1F535} discovery | \u{1F9E0} decision${i.reset}`),o.push("")):(o.push("**Legend:** \u{1F3AF} session-request | \u{1F534} bugfix | \u{1F7E3} feature | \u{1F504} refactor | \u2705 change | \u{1F535} discovery | \u{1F9E0} decision"),o.push("")),e?(o.push(`${i.dim}\u{1F4A1} Progressive Disclosure: This index shows WHAT exists (titles) and retrieval COST (token counts).${i.reset}`),o.push(`${i.dim}   \u2192 Use MCP search tools to fetch full observation details on-demand (Layer 2)${i.reset}`),o.push(`${i.dim}   \u2192 Prefer searching observations over re-reading code for past decisions and learnings${i.reset}`),o.push(`${i.dim}   \u2192 Critical types (\u{1F534} bugfix, \u{1F9E0} decision) often worth fetching immediately${i.reset}`),o.push("")):(o.push("\u{1F4A1} **Progressive Disclosure:** This index shows WHAT exists (titles) and retrieval COST (token counts)."),o.push("- Use MCP search tools to fetch full observation details on-demand (Layer 2)"),o.push("- Prefer searching observations over re-reading code for past decisions and learnings"),o.push("- Critical types (\u{1F534} bugfix, \u{1F9E0} decision) often worth fetching immediately"),o.push(""));let y=c[0]?.id,S=E.map((_,T)=>{let l=T===0?null:c[T+1];return{..._,displayEpoch:l?l.created_at_epoch:_.created_at_epoch,displayTime:l?l.created_at:_.created_at,isMostRecent:_.id===y}}),N=[...f.map(_=>({type:"observation",data:_})),...S.map(_=>({type:"summary",data:_}))];N.sort((_,T)=>{let l=_.type==="observation"?_.data.created_at_epoch:_.data.displayEpoch,L=T.type==="observation"?T.data.created_at_epoch:T.data.displayEpoch;return l-L});let m=new Map;for(let _ of N){let T=_.type==="observation"?_.data.created_at:_.data.displayTime,l=Ee(T);m.has(l)||m.set(l,[]),m.get(l).push(_)}let p=Array.from(m.entries()).sort((_,T)=>{let l=new Date(_[0]).getTime(),L=new Date(T[0]).getTime();return l-L});for(let[_,T]of p){e?(o.push(`${i.bright}${i.cyan}${_}${i.reset}`),o.push("")):(o.push(`### ${_}`),o.push(""));let l=null,L="",v=!1;for(let k of T)if(k.type==="summary"){v&&(o.push(""),v=!1,l=null,L="");let h=k.data,A=`${h.request||"Session started"} (${me(h.displayTime)})`,O=h.isMostRecent?"":`claude-mem://session-summary/${h.id}`;if(e){let g=O?`${i.dim}[${O}]${i.reset}`:"";o.push(`\u{1F3AF} ${i.yellow}#S${h.id}${i.reset} ${A} ${g}`)}else{let g=O?` [\u2192](${O})`:"";o.push(`**\u{1F3AF} #S${h.id}** ${A}${g}`)}o.push("")}else{let h=k.data,A=_e(h.files_modified),O=A.length>0?he(A[0],t):"General";O!==l&&(v&&o.push(""),e?o.push(`${i.dim}${O}${i.reset}`):o.push(`**${O}**`),e||(o.push("| ID | Time | T | Title | Tokens |"),o.push("|----|------|---|-------|--------|")),l=O,v=!0,L="");let g="\u2022";switch(h.type){case"bugfix":g="\u{1F534}";break;case"feature":g="\u{1F7E3}";break;case"refactor":g="\u{1F504}";break;case"change":g="\u2705";break;case"discovery":g="\u{1F535}";break;case"decision":g="\u{1F9E0}";break;default:g="\u2022"}let C=le(h.created_at),B=h.title||"Untitled",x=Te(h.narrative),W=C!==L,Z=W?C:"";if(L=C,e){let ee=W?`${i.dim}${C}${i.reset}`:" ".repeat(C.length),se=x>0?`${i.dim}(~${x}t)${i.reset}`:"";o.push(`  ${i.dim}#${h.id}${i.reset}  ${ee}  ${g}  ${B} ${se}`)}else o.push(`| #${h.id} | ${Z||"\u2033"} | ${g} | ${B} | ~${x} |`)}v&&o.push("")}let R=c[0];R&&(R.completed||R.next_steps)&&(R.completed&&(e?o.push(`${i.green}Completed:${i.reset} ${R.completed}`):o.push(`**Completed**: ${R.completed}`),o.push("")),R.next_steps&&(e?o.push(`${i.magenta}Next Steps:${i.reset} ${R.next_steps}`):o.push(`**Next Steps**: ${R.next_steps}`),o.push(""))),e?o.push(`${i.dim}Use claude-mem MCP search to access records with the given ID${i.reset}`):o.push("*Use claude-mem MCP search to access records with the given ID*")}return n.close(),o.join(`
-`).trimEnd()}var z=process.argv.includes("--index"),ge=process.argv.includes("--colors");if(F.isTTY||ge){let d=Q(void 0,!0,z);console.log(d),process.exit(0)}else{let d="";F.on("data",e=>d+=e),F.on("end",()=>{let e=d.trim()?JSON.parse(d):void 0,t={hookSpecificOutput:{hookEventName:"SessionStart",additionalContext:Q(e,!1,z)}};console.log(JSON.stringify(t)),process.exit(0)})}
+No previous sessions found for this project yet.`;let _=d,E=a.slice(0,j),b=_,n=[];if(e?(n.push(""),n.push(`${o.bright}${o.cyan}\u{1F4DD} [${r}] recent context${o.reset}`),n.push(`${o.gray}${"\u2500".repeat(60)}${o.reset}`),n.push("")):(n.push(`# [${r}] recent context`),n.push("")),b.length>0){e?(n.push(`${o.dim}Legend: \u{1F3AF} session-request | \u{1F534} bugfix | \u{1F7E3} feature | \u{1F504} refactor | \u2705 change | \u{1F535} discovery | \u{1F9E0} decision${o.reset}`),n.push("")):(n.push("**Legend:** \u{1F3AF} session-request | \u{1F534} bugfix | \u{1F7E3} feature | \u{1F504} refactor | \u2705 change | \u{1F535} discovery | \u{1F9E0} decision"),n.push("")),e?(n.push(`${o.dim}\u{1F4A1} Progressive Disclosure: This index shows WHAT exists (titles) and retrieval COST (token counts).${o.reset}`),n.push(`${o.dim}   \u2192 Use MCP search tools to fetch full observation details on-demand (Layer 2)${o.reset}`),n.push(`${o.dim}   \u2192 Prefer searching observations over re-reading code for past decisions and learnings${o.reset}`),n.push(`${o.dim}   \u2192 Critical types (\u{1F534} bugfix, \u{1F9E0} decision) often worth fetching immediately${o.reset}`),n.push("")):(n.push("\u{1F4A1} **Progressive Disclosure:** This index shows WHAT exists (titles) and retrieval COST (token counts)."),n.push("- Use MCP search tools to fetch full observation details on-demand (Layer 2)"),n.push("- Prefer searching observations over re-reading code for past decisions and learnings"),n.push("- Critical types (\u{1F534} bugfix, \u{1F9E0} decision) often worth fetching immediately"),n.push(""));let v=a[0]?.id,f=E.map((u,T)=>{let m=T===0?null:a[T+1];return{...u,displayEpoch:m?m.created_at_epoch:u.created_at_epoch,displayTime:m?m.created_at:u.created_at,isMostRecent:u.id===v}}),N=[...b.map(u=>({type:"observation",data:u})),...f.map(u=>({type:"summary",data:u}))];N.sort((u,T)=>{let m=u.type==="observation"?u.data.created_at_epoch:u.data.displayEpoch,L=T.type==="observation"?T.data.created_at_epoch:T.data.displayEpoch;return m-L});let l=new Map;for(let u of N){let T=u.type==="observation"?u.data.created_at:u.data.displayTime,m=oe(T);l.has(m)||l.set(m,[]),l.get(m).push(u)}let c=Array.from(l.entries()).sort((u,T)=>{let m=new Date(u[0]).getTime(),L=new Date(T[0]).getTime();return m-L});for(let[u,T]of c){e?(n.push(`${o.bright}${o.cyan}${u}${o.reset}`),n.push("")):(n.push(`### ${u}`),n.push(""));let m=null,L="",A=!1;for(let x of T)if(x.type==="summary"){A&&(n.push(""),A=!1,m=null,L="");let h=x.data,y=`${h.request||"Session started"} (${ne(h.displayTime)})`,O=h.isMostRecent?"":`claude-mem://session-summary/${h.id}`;if(e){let g=O?`${o.dim}[${O}]${o.reset}`:"";n.push(`\u{1F3AF} ${o.yellow}#S${h.id}${o.reset} ${y} ${g}`)}else{let g=O?` [\u2192](${O})`:"";n.push(`**\u{1F3AF} #S${h.id}** ${y}${g}`)}n.push("")}else{let h=x.data,y=re(h.files_modified),O=y.length>0?de(y[0],t):"General";O!==m&&(A&&n.push(""),e?n.push(`${o.dim}${O}${o.reset}`):n.push(`**${O}**`),e||(n.push("| ID | Time | T | Title | Tokens |"),n.push("|----|------|---|-------|--------|")),m=O,A=!0,L="");let g="\u2022";switch(h.type){case"bugfix":g="\u{1F534}";break;case"feature":g="\u{1F7E3}";break;case"refactor":g="\u{1F504}";break;case"change":g="\u2705";break;case"discovery":g="\u{1F535}";break;case"decision":g="\u{1F9E0}";break;default:g="\u2022"}let C=ie(h.created_at),F=h.title||"Untitled",k=ae(h.narrative),B=C!==L,q=B?C:"";if(L=C,e){let K=B?`${o.dim}${C}${o.reset}`:" ".repeat(C.length),J=k>0?`${o.dim}(~${k}t)${o.reset}`:"";n.push(`  ${o.dim}#${h.id}${o.reset}  ${K}  ${g}  ${F} ${J}`)}else n.push(`| #${h.id} | ${q||"\u2033"} | ${g} | ${F} | ~${k} |`)}A&&n.push("")}let R=a[0];R&&(R.completed||R.next_steps)&&(R.completed&&(e?n.push(`${o.green}Completed:${o.reset} ${R.completed}`):n.push(`**Completed**: ${R.completed}`),n.push("")),R.next_steps&&(e?n.push(`${o.magenta}Next Steps:${o.reset} ${R.next_steps}`):n.push(`**Next Steps**: ${R.next_steps}`),n.push(""))),e?n.push(`${o.dim}Use claude-mem MCP search to access records with the given ID${o.reset}`):n.push("*Use claude-mem MCP search to access records with the given ID*")}return i.close(),n.join(`
+`).trimEnd()}var V=process.argv.includes("--index"),ce=process.argv.includes("--colors");if(w.isTTY||ce){let p=Y(void 0,!0,V);console.log(p),process.exit(0)}else{let p="";w.on("data",e=>p+=e),w.on("end",()=>{let e=p.trim()?JSON.parse(p):void 0,t={hookSpecificOutput:{hookEventName:"SessionStart",additionalContext:Y(e,!1,V)}};console.log(JSON.stringify(t)),process.exit(0)})}

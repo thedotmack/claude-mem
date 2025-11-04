@@ -20,13 +20,24 @@ const DISALLOWED_TOOLS = ['Glob', 'Grep', 'ListMcpResourcesTool', 'WebSearch'];
 const FIXED_PORT = parseInt(process.env.CLAUDE_MEM_WORKER_PORT || '37777', 10);
 
 /**
+ * Cached Claude executable path
+ */
+let cachedClaudePath: string | null = null;
+
+/**
  * Find Claude Code executable path using which (Unix/Mac) or where (Windows)
+ * Cached after first call
  */
 function findClaudePath(): string {
+  if (cachedClaudePath) {
+    return cachedClaudePath;
+  }
+
   try {
     // Try environment variable first
     if (process.env.CLAUDE_CODE_PATH) {
-      return process.env.CLAUDE_CODE_PATH;
+      cachedClaudePath = process.env.CLAUDE_CODE_PATH;
+      return cachedClaudePath;
     }
 
     // Use which on Unix/Mac, where on Windows
@@ -41,7 +52,8 @@ function findClaudePath(): string {
     }
 
     logger.info('SYSTEM', `Found Claude executable: ${path}`);
-    return path;
+    cachedClaudePath = path;
+    return cachedClaudePath;
   } catch (error: any) {
     logger.failure('SYSTEM', 'Failed to find Claude executable', {}, error);
     throw new Error('Claude Code executable not found. Please ensure claude is in your PATH or set CLAUDE_CODE_PATH environment variable.');
@@ -76,23 +88,18 @@ interface ActiveSession {
   abortController: AbortController;
   generatorPromise: Promise<void> | null;
   lastPromptNumber: number; // Track which prompt_number we last sent to SDK
-  observationCounter: number; // Counter for correlation IDs
   startTime: number; // Session start timestamp
 }
 
 class WorkerService {
   private app: express.Application;
-  private port: number | null = null;
+  private port: number = FIXED_PORT;
   private sessions: Map<number, ActiveSession> = new Map();
-  private chromaSync: ChromaSync;
+  private chromaSync!: ChromaSync;
 
   constructor() {
     this.app = express();
     this.app.use(express.json({ limit: '50mb' }));
-
-    // Initialize ChromaSync (fail fast if Chroma unavailable)
-    this.chromaSync = new ChromaSync('claude-mem');
-    logger.info('SYSTEM', 'ChromaSync initialized');
 
     // Health check
     this.app.get('/health', this.handleHealth.bind(this));
@@ -106,7 +113,17 @@ class WorkerService {
   }
 
   async start(): Promise<void> {
-    this.port = FIXED_PORT;
+    // Start HTTP server FIRST - nothing else matters until we can respond
+    await new Promise<void>((resolve, reject) => {
+      this.app.listen(FIXED_PORT, () => resolve())
+        .on('error', reject);
+    });
+
+    logger.info('SYSTEM', 'Worker started', { port: FIXED_PORT, pid: process.pid });
+
+    // Initialize ChromaSync after HTTP is ready
+    this.chromaSync = new ChromaSync('claude-mem');
+    logger.info('SYSTEM', 'ChromaSync initialized');
 
     // Clean up orphaned sessions from previous worker instances
     const db = new SessionStore();
@@ -117,41 +134,23 @@ class WorkerService {
       logger.info('SYSTEM', `Cleaned up ${cleanedCount} orphaned sessions`);
     }
 
-    // Backfill Chroma with any missing observations/summaries (blocking)
-    logger.info('SYSTEM', 'Starting Chroma backfill...');
-    try {
-      await this.chromaSync.ensureBackfilled();
-      logger.info('SYSTEM', 'Chroma backfill complete');
-    } catch (error) {
-      logger.error('SYSTEM', 'Chroma backfill failed - worker cannot start', {}, error as Error);
-      throw error;
-    }
-
-    return new Promise((resolve, reject) => {
-      this.app.listen(FIXED_PORT, '127.0.0.1', () => {
-        logger.info('SYSTEM', `Worker started`, { port: FIXED_PORT, pid: process.pid, activeSessions: this.sessions.size });
-        resolve();
-      }).on('error', (err: any) => {
-        if (err.code === 'EADDRINUSE') {
-          logger.error('SYSTEM', `Port ${FIXED_PORT} already in use - worker may already be running`);
-        }
-        reject(err);
+    // Backfill Chroma in background (non-blocking, non-critical)
+    logger.info('SYSTEM', 'Starting Chroma backfill in background...');
+    this.chromaSync.ensureBackfilled()
+      .then(() => {
+        logger.info('SYSTEM', 'Chroma backfill complete');
+      })
+      .catch((error: Error) => {
+        logger.error('SYSTEM', 'Chroma backfill failed - continuing anyway', {}, error);
+        // Don't exit - allow worker to continue serving requests
       });
-    });
   }
 
   /**
    * GET /health
    */
-  private handleHealth(req: Request, res: Response): void {
-    res.json({
-      status: 'ok',
-      port: this.port,
-      pid: process.pid,
-      activeSessions: this.sessions.size,
-      uptime: process.uptime(),
-      memory: process.memoryUsage()
-    });
+  private handleHealth(_req: Request, res: Response): void {
+    res.json({ status: 'ok' });
   }
 
   /**
@@ -162,8 +161,7 @@ class WorkerService {
     const sessionDbId = parseInt(req.params.sessionDbId, 10);
     const { project, userPrompt } = req.body;
 
-    const correlationId = logger.sessionId(sessionDbId);
-    logger.info('WORKER', 'Session init', { correlationId, project });
+    logger.info('WORKER', 'Session init', { sessionDbId, project });
 
     // Fetch real Claude Code session ID from database
     const db = new SessionStore();
@@ -187,7 +185,6 @@ class WorkerService {
       abortController: new AbortController(),
       generatorPromise: null,
       lastPromptNumber: 0,
-      observationCounter: 0,
       startTime: Date.now()
     };
 
@@ -221,8 +218,8 @@ class WorkerService {
         latestPrompt.prompt_number,
         latestPrompt.created_at_epoch
       ).catch(err => {
-        logger.failure('WORKER', 'Failed to sync user_prompt to Chroma', { promptId: latestPrompt.id }, err);
-        process.exit(1); // Fail fast - Chroma sync is critical
+        logger.failure('WORKER', 'Failed to sync user_prompt to Chroma - continuing', { promptId: latestPrompt.id }, err);
+        // Don't crash - SQLite has the data
       });
     }
 
@@ -268,7 +265,6 @@ class WorkerService {
         abortController: new AbortController(),
         generatorPromise: null,
         lastPromptNumber: 0,
-        observationCounter: 0,
         startTime: Date.now()
       };
       this.sessions.set(sessionDbId, session);
@@ -283,13 +279,10 @@ class WorkerService {
       });
     }
 
-    // Create correlation ID for tracking this observation
-    session.observationCounter++;
-    const correlationId = logger.correlationId(sessionDbId, session.observationCounter);
     const toolStr = logger.formatTool(tool_name, tool_input);
 
     logger.dataIn('WORKER', `Observation queued: ${toolStr}`, {
-      correlationId,
+      sessionId: sessionDbId,
       queue: session.pendingMessages.length + 1
     });
 
@@ -329,7 +322,6 @@ class WorkerService {
         abortController: new AbortController(),
         generatorPromise: null,
         lastPromptNumber: 0,
-        observationCounter: 0,
         startTime: Date.now()
       };
       this.sessions.set(sessionDbId, session);
@@ -559,14 +551,13 @@ class WorkerService {
           });
 
           const toolStr = logger.formatTool(message.tool_name, message.tool_input);
-          const correlationId = logger.correlationId(session.sessionDbId, session.observationCounter);
 
           logger.dataIn('SDK', `Observation prompt: ${toolStr}`, {
-            correlationId,
+            sessionId: session.sessionDbId,
             promptNumber: message.prompt_number,
             size: `${observationPrompt.length} chars`
           });
-          logger.debug('SDK', 'Full observation prompt', { correlationId }, observationPrompt);
+          logger.debug('SDK', 'Full observation prompt', { sessionId: session.sessionDbId }, observationPrompt);
 
           yield {
             type: 'user',
@@ -587,8 +578,6 @@ class WorkerService {
    * Gets prompt_number from the message that triggered this response
    */
   private handleAgentMessage(session: ActiveSession, content: string, promptNumber: number): void {
-    const correlationId = logger.correlationId(session.sessionDbId, session.observationCounter);
-
     // Always log what we received for debugging
     logger.info('PARSER', `Processing response (${content.length} chars)`, {
       sessionId: session.sessionDbId,
@@ -597,11 +586,11 @@ class WorkerService {
     });
 
     // Parse observations
-    const observations = parseObservations(content, correlationId);
+    const observations = parseObservations(content);
 
     if (observations.length > 0) {
       logger.info('PARSER', `Parsed ${observations.length} observation(s)`, {
-        correlationId,
+        sessionId: session.sessionDbId,
         promptNumber,
         types: observations.map(o => o.type).join(', ')
       });
@@ -613,7 +602,7 @@ class WorkerService {
     for (const obs of observations) {
       const { id, createdAtEpoch } = db.storeObservation(session.claudeSessionId, session.project, obs, promptNumber);
       logger.success('DB', 'Observation stored', {
-        correlationId,
+        sessionId: session.sessionDbId,
         type: obs.type,
         title: obs.title,
         id
@@ -628,16 +617,16 @@ class WorkerService {
         promptNumber,
         createdAtEpoch
       ).then(() => {
-        logger.success('CHROMA', 'Observation synced', {
-          correlationId,
+        logger.success('WORKER', 'Observation synced to Chroma', {
+          sessionId: session.sessionDbId,
           observationId: id
         });
       }).catch((error: Error) => {
-        logger.error('CHROMA', 'Observation sync failed - crashing worker', {
-          correlationId,
+        logger.error('WORKER', 'Observation sync failed - continuing', {
+          sessionId: session.sessionDbId,
           observationId: id
         }, error);
-        process.exit(1); // Fail fast - no fallbacks
+        // Don't crash - SQLite has the data
       });
     }
 
@@ -667,16 +656,16 @@ class WorkerService {
         promptNumber,
         createdAtEpoch
       ).then(() => {
-        logger.success('CHROMA', 'Summary synced', {
+        logger.success('WORKER', 'Summary synced to Chroma', {
           sessionId: session.sessionDbId,
           summaryId: id
         });
       }).catch((error: Error) => {
-        logger.error('CHROMA', 'Summary sync failed - crashing worker', {
+        logger.error('WORKER', 'Summary sync failed - continuing', {
           sessionId: session.sessionDbId,
           summaryId: id
         }, error);
-        process.exit(1); // Fail fast - no fallbacks
+        // Don't crash - SQLite has the data
       });
     } else {
       logger.warn('PARSER', 'NO SUMMARY TAGS FOUND in response', {
