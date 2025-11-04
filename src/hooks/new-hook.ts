@@ -7,7 +7,7 @@ import path from 'path';
 import { stdin } from 'process';
 import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { createHookResponse } from './hook-response.js';
-import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
+import { ensureWorkerRunning } from '../shared/worker-utils.js';
 
 export interface UserPromptSubmitInput {
   session_id: string;
@@ -27,11 +27,8 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
   const { session_id, cwd, prompt } = input;
   const project = path.basename(cwd);
 
-  // Ensure worker is running first
-  const workerReady = await ensureWorkerRunning();
-  if (!workerReady) {
-    throw new Error('Worker service failed to start or become healthy');
-  }
+  // Ensure worker is running
+  ensureWorkerRunning();
 
   const db = new SessionStore();
 
@@ -46,20 +43,29 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
 
   db.close();
 
-  // Get fixed port
-  const port = getWorkerPort();
+  // Use fixed worker port
+  const FIXED_PORT = parseInt(process.env.CLAUDE_MEM_WORKER_PORT || '37777', 10);
 
-  // Initialize session via HTTP
-  const response = await fetch(`http://127.0.0.1:${port}/sessions/${sessionDbId}/init`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ project, userPrompt: prompt }),
-    signal: AbortSignal.timeout(5000)
-  });
+  try {
+    // Initialize session via HTTP
+    const response = await fetch(`http://127.0.0.1:${FIXED_PORT}/sessions/${sessionDbId}/init`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project, userPrompt: prompt }),
+      signal: AbortSignal.timeout(5000)
+    });
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Failed to initialize session: ${response.status} ${errorText}`);
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Failed to initialize session: ${response.status} ${errorText}`);
+    }
+  } catch (error: any) {
+    // Only show restart message for connection errors, not HTTP errors
+    if (error.cause?.code === 'ECONNREFUSED' || error.name === 'TimeoutError' || error.message.includes('fetch failed')) {
+      throw new Error("There's a problem with the worker. If you just updated, type `pm2 restart claude-mem-worker` in your terminal to continue");
+    }
+    // Re-throw HTTP errors and other errors as-is
+    throw error;
   }
 
   console.log(createHookResponse('UserPromptSubmit', true));

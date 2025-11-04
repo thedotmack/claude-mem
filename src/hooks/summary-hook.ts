@@ -25,11 +25,8 @@ async function summaryHook(input?: StopInput): Promise<void> {
 
   const { session_id } = input;
 
-  // Ensure worker is running first
-  const workerReady = await ensureWorkerRunning();
-  if (!workerReady) {
-    throw new Error('Worker service failed to start or become healthy');
-  }
+  // Ensure worker is running
+  ensureWorkerRunning();
 
   const db = new SessionStore();
 
@@ -47,23 +44,33 @@ async function summaryHook(input?: StopInput): Promise<void> {
     promptNumber
   });
 
-  const response = await fetch(`http://127.0.0.1:${FIXED_PORT}/sessions/${sessionDbId}/summarize`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt_number: promptNumber }),
-    signal: AbortSignal.timeout(2000)
-  });
+  try {
+    const response = await fetch(`http://127.0.0.1:${FIXED_PORT}/sessions/${sessionDbId}/summarize`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt_number: promptNumber }),
+      signal: AbortSignal.timeout(2000)
+    });
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    logger.failure('HOOK', 'Failed to generate summary', {
-      sessionId: sessionDbId,
-      status: response.status
-    }, errorText);
-    throw new Error(`Failed to request summary from worker: ${response.status} ${errorText}`);
+    if (!response.ok) {
+      const errorText = await response.text();
+      logger.failure('HOOK', 'Failed to generate summary', {
+        sessionId: sessionDbId,
+        status: response.status
+      }, errorText);
+      throw new Error(`Failed to request summary from worker: ${response.status} ${errorText}`);
+    }
+
+    logger.debug('HOOK', 'Summary request sent successfully', { sessionId: sessionDbId });
+  } catch (error: any) {
+    // Only show restart message for connection errors, not HTTP errors
+    if (error.cause?.code === 'ECONNREFUSED' || error.name === 'TimeoutError' || error.message.includes('fetch failed')) {
+      throw new Error("There's a problem with the worker. If you just updated, type `pm2 restart claude-mem-worker` in your terminal to continue");
+    }
+    // Re-throw HTTP errors and other errors as-is
+    throw error;
   }
 
-  logger.debug('HOOK', 'Summary request sent successfully', { sessionId: sessionDbId });
   console.log(createHookResponse('Stop', true));
 }
 

@@ -9,44 +9,28 @@
  *   pm2 status
  */
 
-const os = require('os');
-const path = require('path');
-
-// Determine log directory
-const logDir = path.join(os.homedir(), '.claude-mem', 'logs');
-
 module.exports = {
   apps: [{
     name: 'claude-mem-worker',
     script: './plugin/scripts/worker-service.cjs',
-    interpreter: 'node',
-    instances: 1,
-    exec_mode: 'fork',
-    autorestart: true,
-    watch: false,
-
-    env: {
-      NODE_ENV: 'production',
-      CLAUDE_MEM_WORKER_PORT: 37777, // Fixed port for reliability
-      FORCE_COLOR: '1'
-    },
-
-    // Logging
-    error_file: path.join(logDir, 'worker-error.log'),
-    out_file: path.join(logDir, 'worker-out.log'),
-    log_date_format: 'YYYY-MM-DD HH:mm:ss.SSS Z',
-    merge_logs: true,
-
-    // Keep logs from last 7 days
-    log_type: 'json',
-
-    // Process management
-    kill_timeout: 1000,
-    listen_timeout: 3000,
-    shutdown_with_message: true,
-
-    // PM2 Plus (optional monitoring)
-    // instance_var: 'INSTANCE_ID',
-    // pmx: true
+    // INTENTIONAL: Watch mode enables auto-restart on plugin updates
+    //
+    // Why this is enabled:
+    // - When you run `npm run sync-marketplace` or rebuild the plugin,
+    //   files in ~/.claude/plugins/marketplaces/thedotmack/ change
+    // - Watch mode detects these changes and auto-restarts the worker
+    // - Users get the latest code without manually running `pm2 restart`
+    //
+    // This is a feature, not a bug - it ensures users always run the
+    // latest version after plugin updates.
+    watch: true,
+    ignore_watch: [
+      'node_modules',
+      'logs',
+      '*.log',
+      '*.db',
+      '*.db-*',
+      '.git'
+    ]
   }]
 };

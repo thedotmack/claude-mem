@@ -5,7 +5,6 @@
 
 import { stdin } from 'process';
 import { SessionStore } from '../services/sqlite/SessionStore.js';
-import { ensureWorkerRunning } from '../shared/worker-utils.js';
 
 export interface SessionEndInput {
   session_id: string;
@@ -44,12 +43,6 @@ async function cleanupHook(input?: SessionEndInput): Promise<void> {
 
   const { session_id, reason } = input;
   console.error('[claude-mem cleanup] Searching for active SDK session', { session_id, reason });
-
-  // Ensure worker is running first
-  const workerReady = await ensureWorkerRunning();
-  if (!workerReady) {
-    console.error('[claude-mem cleanup] Worker not available - skipping HTTP cleanup');
-  }
 
   // Find active SDK session
   const db = new SessionStore();

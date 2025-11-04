@@ -127,7 +127,9 @@ function getObservations(db: SessionStore, sessionIds: string[]): Observation[] 
  * Context Hook Main Logic
  */
 function contextHook(input?: SessionStartInput, useColors: boolean = false, useIndexView: boolean = false): string {
+  // Ensure worker is running
   ensureWorkerRunning();
+
   const cwd = input?.cwd ?? process.cwd();
   const project = cwd ? path.basename(cwd) : 'unknown-project';
 
