@@ -35,6 +35,14 @@ export function ensureWorkerRunning(): void {
         cwd: packageRoot,
         stdio: 'ignore'
       });
+
+      // Give PM2 200ms to actually start the worker
+      // Prevents race condition where hooks fire before worker is ready
+      // Simple blocking wait - no complex health checks needed
+      const start = Date.now();
+      while (Date.now() - start < 200) {
+        // Busy wait
+      }
     }
   });
 }
