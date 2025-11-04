@@ -250,7 +250,24 @@ class WorkerService {
 
     let session = this.sessions.get(sessionDbId);
     if (!session) {
-      // Auto-create session if it doesn't exist (e.g., worker restarted)
+      // INTENTIONAL: Auto-create session to preserve observation data
+      //
+      // Design rationale:
+      // - Session IDs come from Claude Code's hook system and are unified across all hooks
+      // - UserPromptSubmit (new-hook) normally creates the session first
+      // - BUT if new-hook fails, subsequent hooks (save-hook, summary-hook) still fire
+      // - Without auto-creation, all observations from that session would be LOST
+      //
+      // Data preservation priority:
+      // - Observations (tool usage, decisions, bugs, features) are the valuable data
+      // - Session metadata is just organizational
+      // - Better to have "orphaned" observations than no observations at all
+      // - Can query observations later and see sets without userPromptSubmit (that's OK)
+      //
+      // Why non-null assertion is safe:
+      // - If session doesn't exist in DB, it means hooks are firing without new-hook
+      // - This creates the session record inline to preserve the observation data
+      // - Session ID is guaranteed valid (comes from Claude Code)
       const db = new SessionStore();
       const dbSession = db.getSessionById(sessionDbId);
       db.close();
@@ -307,7 +324,24 @@ class WorkerService {
 
     let session = this.sessions.get(sessionDbId);
     if (!session) {
-      // Auto-create session if it doesn't exist (e.g., worker restarted)
+      // INTENTIONAL: Auto-create session to preserve observation data
+      //
+      // Design rationale:
+      // - Session IDs come from Claude Code's hook system and are unified across all hooks
+      // - UserPromptSubmit (new-hook) normally creates the session first
+      // - BUT if new-hook fails, subsequent hooks (save-hook, summary-hook) still fire
+      // - Without auto-creation, all observations from that session would be LOST
+      //
+      // Data preservation priority:
+      // - Observations (tool usage, decisions, bugs, features) are the valuable data
+      // - Session metadata is just organizational
+      // - Better to have "orphaned" observations than no observations at all
+      // - Can query observations later and see sets without userPromptSubmit (that's OK)
+      //
+      // Why non-null assertion is safe:
+      // - If session doesn't exist in DB, it means hooks are firing without new-hook
+      // - This creates the session record inline to preserve the observation data
+      // - Session ID is guaranteed valid (comes from Claude Code)
       const db = new SessionStore();
       const dbSession = db.getSessionById(sessionDbId);
       db.close();
