@@ -153,6 +153,30 @@ Configure which AI model processes your observations:
 The script manages `CLAUDE_MEM_MODEL` in `~/.claude/settings.json`.
 TODO: also have script create and manage `CLAUDE_MEM_MODEL` in `~/.claude/plugins/marketplaces/thedotmack/.env` so our worker script has access to the value (we may not even need it in our settings but only in our plugin folder since hooks shouldn't be calling queries, not sure).
 
+### Context Display Settings
+
+Configure how much historical context is displayed at session start via `~/.claude/settings.json`:
+
+**Environment variable** (in the `env` section):
+- `CLAUDE_MEM_CONTEXT_OBSERVATIONS` - Number of recent observations to display (default: 50, ~1.2K tokens typical)
+
+**Example settings.json**:
+```json
+{
+  "env": {
+    "CLAUDE_MEM_MODEL": "claude-haiku-4-5",
+    "CLAUDE_MEM_CONTEXT_OBSERVATIONS": "100"
+  }
+}
+```
+
+**Notes**:
+- Higher observation counts = more context but more tokens consumed at startup
+- 50 observations ≈ 4-8 hours of work ≈ 1.2K tokens
+- 100 observations ≈ 1-2 days of work ≈ 2.4K tokens
+- 200 observations ≈ 2-3 days of work ≈ 4.8K tokens
+- Session summaries are shown when available but are not the primary timeline
+
 ## Data Flow
 
 ### Memory Pipeline
@@ -227,38 +251,61 @@ claude-mem/
 
 ### Build Process
 
-**Build and compile**:
+**Build and sync to marketplace plugin**:
 ```bash
 npm run build
+npm run sync-marketplace
 ```
 
-This compiles TypeScript and outputs hook executables to `plugin/scripts/`.
-
-**Local testing workflow**:
+**If you changed the worker service** (`src/services/worker-service.ts`):
 ```bash
-# 1. Build the project
-npm run build
-
-# 2. Copy built files to marketplace plugin folder for testing
-cp plugin/scripts/worker-service.cjs ~/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs
-
-# 3. Restart worker to pick up changes
-pm2 restart claude-mem-worker
-
-# 4. Check logs
-pm2 logs claude-mem-worker --nostream
+npm run worker:restart
 ```
 
-**Git workflow**:
-- Create feature branches for all changes
-- Commit to feature branch
-- Create pull request for review
-- Do NOT push directly to main (branch protection rules in place)
+**What happens**:
+1. `npm run build` - Compiles TypeScript and outputs hook executables to `plugin/scripts/`
+2. `npm run sync-marketplace` - Syncs built files to `~/.claude/plugins/marketplaces/thedotmack/`
+3. `npm run worker:restart` - (Optional) Only needed if you modified the worker service code
 
 **Build Outputs**:
 - Hook executables: `*-hook.js` (ESM format)
 - Worker service: `worker-service.cjs` (CJS format)
 - Search server: `search-server.js` (ESM format)
+
+**Note**: Hook changes take effect immediately on next session. Worker changes require restart.
+
+### Investigation Best Practices
+
+**When investigations are failing persistently**, use Task agents for comprehensive file analysis instead of grep/search:
+
+**❌ Don't:** Repeatedly grep and search for patterns when failing to find the issue
+```bash
+# Multiple failed attempts with grep, Glob, etc.
+```
+
+**✅ Do:** Deploy a Task agent to read files in full and answer specific questions
+```
+"Read these files in full and answer: [specific questions about the implementation]"
+- Reduces token usage by delegating to a specialized agent
+- Provides comprehensive analysis in one pass
+- Finds issues that grep might miss due to poor query formulation
+- More efficient than multiple rounds of searching
+```
+
+**Example usage:**
+```
+Deploy a general-purpose Task agent to:
+1. Read src/hooks/context-hook.ts in full
+2. Read src/servers/search-server.ts in full
+3. Answer: How do these files work together? What's the current implementation state?
+4. Find any bugs or inconsistencies between them
+```
+
+This approach is especially valuable when:
+- You're investigating how multiple files interact
+- Search queries aren't finding what you expect
+- You need to understand complete implementation context
+- The issue might be a subtle inconsistency between files
 
 ## Version History
 

@@ -35,6 +35,7 @@
     "test:parser": "npx tsx src/sdk/parser.test.ts",
     "test:context": "echo '{\"session_id\":\"test-'$(date +%s)'\",\"cwd\":\"'$(pwd)'\",\"source\":\"startup\"}' | node plugin/scripts/context-hook.js 2>/dev/null",
     "test:context:verbose": "echo '{\"session_id\":\"test-'$(date +%s)'\",\"cwd\":\"'$(pwd)'\",\"source\":\"startup\"}' | node plugin/scripts/context-hook.js",
+    "sync-marketplace": "rsync -av --delete plugin/ ~/.claude/plugins/marketplaces/thedotmack/plugin/ # --delete flag removes orphaned files from destination only",
     "worker:start": "pm2 start ecosystem.config.cjs",
     "worker:stop": "pm2 stop claude-mem-worker",
     "worker:restart": "pm2 restart claude-mem-worker",

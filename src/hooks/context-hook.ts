@@ -8,8 +8,10 @@ import { stdin } from 'process';
 import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { ensureWorkerRunning } from '../shared/worker-utils.js';
 
-// Configuration: Number of sessions to display in context
-const DISPLAY_SESSION_COUNT = 8;
+// Configuration: Read from environment or use defaults
+const DISPLAY_OBSERVATION_COUNT = parseInt(process.env.CLAUDE_MEM_CONTEXT_OBSERVATIONS || '50', 10);
+// Summaries are supplementary - show last 10 for context but not configurable
+const DISPLAY_SESSION_COUNT = 10;
 
 export interface SessionStartInput {
   session_id?: string;
@@ -131,7 +133,21 @@ function contextHook(input?: SessionStartInput, useColors: boolean = false, useI
 
   const db = new SessionStore();
 
-  // Get last N summaries (use N+1 for offset calculation)
+  // Get ALL recent observations for this project (not filtered by summaries)
+  // This ensures we show observations even when summaries haven't been generated
+  // Configurable via CLAUDE_MEM_CONTEXT_OBSERVATIONS env var (default: 50)
+  const allObservations = db.db.prepare(`
+    SELECT
+      id, sdk_session_id, type, title, subtitle, narrative,
+      facts, concepts, files_read, files_modified,
+      created_at, created_at_epoch
+    FROM observations
+    WHERE project = ?
+    ORDER BY created_at_epoch DESC
+    LIMIT ?
+  `).all(project, DISPLAY_OBSERVATION_COUNT) as Observation[];
+
+  // Get recent summaries (optional - may not exist for recent sessions)
   const recentSummaries = db.db.prepare(`
     SELECT id, sdk_session_id, request, completed, next_steps, created_at, created_at_epoch
     FROM session_summaries
@@ -140,7 +156,8 @@ function contextHook(input?: SessionStartInput, useColors: boolean = false, useI
     LIMIT ?
   `).all(project, DISPLAY_SESSION_COUNT + 1) as Array<{ id: number; sdk_session_id: string; request: string | null; completed: string | null; next_steps: string | null; created_at: string; created_at_epoch: number }>;
 
-  if (recentSummaries.length === 0) {
+  // If we have neither observations nor summaries, show empty state
+  if (allObservations.length === 0 && recentSummaries.length === 0) {
     db.close();
     if (useColors) {
       return `\n${colors.bright}${colors.cyan}📝 [${project}] recent context${colors.reset}\n${colors.gray}${'─'.repeat(60)}${colors.reset}\n\n${colors.dim}No previous sessions found for this project yet.${colors.reset}\n`;
@@ -148,25 +165,12 @@ function contextHook(input?: SessionStartInput, useColors: boolean = false, useI
     return `# [${project}] recent context\n\nNo previous sessions found for this project yet.`;
   }
 
-  // Extract unique session IDs from first N summaries
+  // Use observations for display (summaries are supplementary)
+  const observations = allObservations;
   const displaySummaries = recentSummaries.slice(0, DISPLAY_SESSION_COUNT);
-  const sessionIds = [...new Set(displaySummaries.map(s => s.sdk_session_id))];
 
-  // Get all observations from these sessions
-  const observations = getObservations(db, sessionIds);
-
-  // Filter observations by key concepts for timeline
-  const timelineObs = observations.filter(obs => {
-    const concepts = parseJsonArray(obs.concepts);
-    return concepts.includes('what-changed') ||
-           concepts.includes('how-it-works') ||
-           concepts.includes('problem-solution') ||
-           concepts.includes('gotcha') ||
-           concepts.includes('discovery') ||
-           concepts.includes('why-it-exists') ||
-           concepts.includes('decision') ||
-           concepts.includes('trade-off');
-  });
+  // All observations are shown in timeline (filtered by type, not concepts)
+  const timelineObs = observations;
 
   // Build output
   const output: string[] = [];
@@ -186,10 +190,10 @@ function contextHook(input?: SessionStartInput, useColors: boolean = false, useI
   if (timelineObs.length > 0) {
     // Legend/Key
     if (useColors) {
-      output.push(`${colors.dim}Legend: 🎯 session-request | 🔴 gotcha | 🟡 problem-solution | 🔵 how-it-works | 🟢 what-changed | 🟣 discovery | 🟠 why-it-exists | 🟤 decision | ⚖️ trade-off${colors.reset}`);
+      output.push(`${colors.dim}Legend: 🎯 session-request | 🔴 bugfix | 🟣 feature | 🔄 refactor | ✅ change | 🔵 discovery | 🧠 decision${colors.reset}`);
       output.push('');
     } else {
-      output.push(`**Legend:** 🎯 session-request | 🔴 gotcha | 🟡 problem-solution | 🔵 how-it-works | 🟢 what-changed | 🟣 discovery | 🟠 why-it-exists | 🟤 decision | ⚖️ trade-off`);
+      output.push(`**Legend:** 🎯 session-request | 🔴 bugfix | 🟣 feature | 🔄 refactor | ✅ change | 🔵 discovery | 🧠 decision`);
       output.push('');
     }
 
@@ -198,13 +202,13 @@ function contextHook(input?: SessionStartInput, useColors: boolean = false, useI
       output.push(`${colors.dim}💡 Progressive Disclosure: This index shows WHAT exists (titles) and retrieval COST (token counts).${colors.reset}`);
       output.push(`${colors.dim}   → Use MCP search tools to fetch full observation details on-demand (Layer 2)${colors.reset}`);
       output.push(`${colors.dim}   → Prefer searching observations over re-reading code for past decisions and learnings${colors.reset}`);
-      output.push(`${colors.dim}   → Critical types (🔴 gotcha, 🟤 decision, ⚖️ trade-off) often worth fetching immediately${colors.reset}`);
+      output.push(`${colors.dim}   → Critical types (🔴 bugfix, 🧠 decision) often worth fetching immediately${colors.reset}`);
       output.push('');
     } else {
       output.push(`💡 **Progressive Disclosure:** This index shows WHAT exists (titles) and retrieval COST (token counts).`);
       output.push(`- Use MCP search tools to fetch full observation details on-demand (Layer 2)`);
       output.push(`- Prefer searching observations over re-reading code for past decisions and learnings`);
-      output.push(`- Critical types (🔴 gotcha, 🟤 decision, ⚖️ trade-off) often worth fetching immediately`);
+      output.push(`- Critical types (🔴 bugfix, 🧠 decision) often worth fetching immediately`);
       output.push('');
     }
 
@@ -328,26 +332,30 @@ function contextHook(input?: SessionStartInput, useColors: boolean = false, useI
           }
 
           // Render observation row
-          const concepts = parseJsonArray(obs.concepts);
           let icon = '•';
 
-          // Priority order: gotcha > decision > trade-off > problem-solution > discovery > why-it-exists > how-it-works > what-changed
-          if (concepts.includes('gotcha')) {
-            icon = '🔴';
-          } else if (concepts.includes('decision')) {
-            icon = '🟤';
-          } else if (concepts.includes('trade-off')) {
-            icon = '⚖️';
-          } else if (concepts.includes('problem-solution')) {
-            icon = '🟡';
-          } else if (concepts.includes('discovery')) {
-            icon = '🟣';
-          } else if (concepts.includes('why-it-exists')) {
-            icon = '🟠';
-          } else if (concepts.includes('how-it-works')) {
-            icon = '🔵';
-          } else if (concepts.includes('what-changed')) {
-            icon = '🟢';
+          // Map observation type to emoji
+          switch (obs.type) {
+            case 'bugfix':
+              icon = '🔴';
+              break;
+            case 'feature':
+              icon = '🟣';
+              break;
+            case 'refactor':
+              icon = '🔄';
+              break;
+            case 'change':
+              icon = '✅';
+              break;
+            case 'discovery':
+              icon = '🔵';
+              break;
+            case 'decision':
+              icon = '🧠';
+              break;
+            default:
+              icon = '•';
           }
 
           const time = formatTime(obs.created_at);
