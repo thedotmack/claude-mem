@@ -454,6 +454,11 @@ class WorkerService {
           // Parse and store with prompt number (non-blocking Chroma sync)
           this.handleAgentMessage(session, textContent, session.lastPromptNumber);
         }
+
+        // Capture usage data from result messages
+        if (message.type === 'result' && message.subtype === 'success') {
+          // Usage telemetry is captured at SDK level
+        }
       }
 
       // Mark completed

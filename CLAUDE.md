@@ -4,7 +4,7 @@
 
 Claude-mem is a persistent memory compression system that preserves context across Claude Code sessions. It automatically captures tool usage observations, processes them through the Claude Agent SDK, and makes summaries available to future sessions.
 
-**Current Version**: 4.3.3
+**Current Version**: 4.3.4
 **License**: AGPL-3.0
 **Author**: Alex Newman (@thedotmack)
 
@@ -189,6 +189,36 @@ Tool Execution → Hook Capture → Worker Processing → AI Compression → Dat
 Search Query → MCP Server → SessionSearch → FTS5 Query → Results with Citations
 ```
 
+### Usage Tracking
+
+Claude-mem automatically tracks SDK usage metrics to JSONL files for cost analysis:
+
+**Location**: `~/.claude-mem/usage-logs/usage-YYYY-MM-DD.jsonl`
+
+**Captured Metrics**:
+- Token counts (input, output, cache creation, cache read)
+- Total cost in USD per API call
+- Duration metrics (total time and API time)
+- Number of turns per session
+- Session and project attribution
+- Model information
+
+**Analysis Tools**:
+```bash
+# Analyze today's usage
+npm run usage:today
+
+# Analyze specific date
+npm run usage:analyze 2025-11-03
+```
+
+The analysis script provides:
+- Total cost and token usage
+- Cache hit rates and savings
+- Cost breakdowns by project
+- Cost breakdowns by model
+- Average cost per API call
+
 ## Development
 
 ### Directory Structure
@@ -281,9 +311,21 @@ This approach is especially valuable when:
 
 For detailed version history and changelog, see [CHANGELOG.md](CHANGELOG.md).
 
-**Current Version**: 4.3.3
+**Current Version**: 4.3.4
 
 ### Recent Highlights
+
+#### v4.3.4 (2025-11-01)
+**Breaking Changes**: None (patch version)
+
+**Fixes**:
+- Fixed SessionStart hooks running on session resume (plugin/hooks/hooks.json:4)
+- Added matcher configuration to only run SessionStart hooks on startup, clear, or compact events
+- Prevents unnecessary hook execution and improves performance on session resume
+
+**Technical Details**:
+- Modified: plugin/hooks/hooks.json:4 (added `"matcher": "startup|clear|compact"`)
+- Impact: Hooks now skip execution when resuming existing sessions
 
 #### v4.3.3 (2025-10-27)
 **Breaking Changes**: None (patch version)
