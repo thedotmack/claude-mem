@@ -4,7 +4,7 @@
 
 Claude-mem is a persistent memory compression system that preserves context across Claude Code sessions. It automatically captures tool usage observations, processes them through the Claude Agent SDK, and makes summaries available to future sessions.
 
-**Current Version**: 4.3.4
+**Current Version**: 5.0.1
 **License**: AGPL-3.0
 **Author**: Alex Newman (@thedotmack)
 
@@ -311,9 +311,36 @@ This approach is especially valuable when:
 
 For detailed version history and changelog, see [CHANGELOG.md](CHANGELOG.md).
 
-**Current Version**: 4.3.4
+**Current Version**: 5.0.1
 
 ### Recent Highlights
+
+#### v5.0.1 (2025-11-04)
+**Breaking Changes**: None (patch version)
+
+**Fixes**:
+- Fixed worker service stability issues (PR #47: src/services/worker-service.ts, src/shared/worker-utils.ts)
+- Improved worker process management and restart reliability (src/hooks/*-hook.ts)
+- Enhanced session management and logging across all hooks
+- Removed error/output file redirection from PM2 ecosystem config for better debugging (ecosystem.config.cjs)
+
+**Improvements**:
+- Added GitHub Actions workflows for automated code review (PR #48)
+  - Claude Code Review workflow (.github/workflows/claude-code-review.yml)
+  - Claude PR Assistant workflow (.github/workflows/claude.yml)
+- Better worker health checks and startup sequence
+- Improved error handling and logging throughout hook lifecycle
+- Cleaned up documentation files and consolidated project context
+
+**Technical Details**:
+- Modified: src/services/worker-service.ts (stability improvements)
+- Modified: src/shared/worker-utils.ts (consistent formatting and readability)
+- Modified: ecosystem.config.cjs (removed error/output redirection)
+- Modified: src/hooks/*-hook.ts (ensure worker running before processing)
+- New: .github/workflows/claude-code-review.yml
+- New: .github/workflows/claude.yml
+- Rebuilt: plugin/scripts/*.js (all hook executables)
+- Impact: More reliable worker service with better error visibility and automated PR assistance
 
 #### v4.3.4 (2025-11-01)
 **Breaking Changes**: None (patch version)
