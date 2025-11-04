@@ -523,9 +523,9 @@ export class ChromaSync {
           if (meta.sqlite_id) {
             if (meta.doc_type === 'observation') {
               observationIds.add(meta.sqlite_id);
-            } else if (meta.doc_type === 'summary') {
+            } else if (meta.doc_type === 'session_summary') {
               summaryIds.add(meta.sqlite_id);
-            } else if (meta.doc_type === 'prompt') {
+            } else if (meta.doc_type === 'user_prompt') {
               promptIds.add(meta.sqlite_id);
             }
           }

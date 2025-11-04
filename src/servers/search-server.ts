@@ -294,15 +294,12 @@ function formatSessionResult(session: SessionSummarySearchResult, index: number)
 }
 
 /**
- * Format user prompt as index entry (truncated text, date, ID only)
+ * Format user prompt as index entry (full text - don't truncate context!)
  */
 function formatUserPromptIndex(prompt: UserPromptSearchResult, index: number): string {
-  const truncated = prompt.prompt.length > 100
-    ? prompt.prompt.substring(0, 100) + '...'
-    : prompt.prompt;
   const date = new Date(prompt.created_at_epoch).toLocaleString();
 
-  return `${index + 1}. "${truncated}"
+  return `${index + 1}. "${prompt.prompt_text}"
    Date: ${date} | Prompt #${prompt.prompt_number}
    Source: claude-mem://user-prompt/${prompt.id}`;
 }
@@ -315,7 +312,7 @@ function formatUserPromptResult(prompt: UserPromptSearchResult, index: number): 
   contentParts.push(`## User Prompt #${prompt.prompt_number}`);
   contentParts.push(`*Source: claude-mem://user-prompt/${prompt.id}*`);
   contentParts.push('');
-  contentParts.push(prompt.prompt);
+  contentParts.push(prompt.prompt_text);
   contentParts.push('');
   contentParts.push('---');
 
@@ -371,7 +368,7 @@ const tools = [
 
             if (chromaResults.ids.length > 0) {
               // Step 2: Filter by recency (90 days)
-              const ninetyDaysAgo = Math.floor(Date.now() / 1000) - (90 * 24 * 60 * 60);
+              const ninetyDaysAgo = Date.now() - (90 * 24 * 60 * 60 * 1000);
               const recentIds = chromaResults.ids.filter((id, idx) => {
                 const meta = chromaResults.metadatas[idx];
                 return meta && meta.created_at_epoch > ninetyDaysAgo;
@@ -466,7 +463,7 @@ const tools = [
 
             if (chromaResults.ids.length > 0) {
               // Step 2: Filter by recency (90 days)
-              const ninetyDaysAgo = Math.floor(Date.now() / 1000) - (90 * 24 * 60 * 60);
+              const ninetyDaysAgo = Date.now() - (90 * 24 * 60 * 60 * 1000);
               const recentIds = chromaResults.ids.filter((id, idx) => {
                 const meta = chromaResults.metadatas[idx];
                 return meta && meta.created_at_epoch > ninetyDaysAgo;
@@ -531,9 +528,9 @@ const tools = [
   },
   {
     name: 'find_by_concept',
-    description: 'Find observations tagged with a specific concept. IMPORTANT: Always use index format first (default) to get an overview with minimal token usage, then use format: "full" only for specific items of interest.',
+    description: 'Find observations tagged with a specific concept. Available concepts: "discovery", "problem-solution", "what-changed", "how-it-works", "pattern", "gotcha", "change". IMPORTANT: Always use index format first (default) to get an overview with minimal token usage, then use format: "full" only for specific items of interest.',
     inputSchema: z.object({
-      concept: z.string().describe('Concept tag to search for'),
+      concept: z.string().describe('Concept tag to search for. Available: discovery, problem-solution, what-changed, how-it-works, pattern, gotcha, change'),
       format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default, RECOMMENDED for initial search), "full" for complete details (use only after reviewing index results)'),
       project: z.string().optional().describe('Filter by project name'),
       dateRange: z.object({
@@ -1032,7 +1029,7 @@ const tools = [
 
             if (chromaResults.ids.length > 0) {
               // Step 2: Filter by recency (90 days)
-              const ninetyDaysAgo = Math.floor(Date.now() / 1000) - (90 * 24 * 60 * 60);
+              const ninetyDaysAgo = Date.now() - (90 * 24 * 60 * 60 * 1000);
               const recentIds = chromaResults.ids.filter((id, idx) => {
                 const meta = chromaResults.metadatas[idx];
                 return meta && meta.created_at_epoch > ninetyDaysAgo;
@@ -1405,7 +1402,7 @@ const tools = [
 
             if (chromaResults.ids.length > 0) {
               // Filter by recency (90 days)
-              const ninetyDaysAgo = Math.floor(Date.now() / 1000) - (90 * 24 * 60 * 60);
+              const ninetyDaysAgo = Date.now() - (90 * 24 * 60 * 60 * 1000);
               const recentIds = chromaResults.ids.filter((id, idx) => {
                 const meta = chromaResults.metadatas[idx];
                 return meta && meta.created_at_epoch > ninetyDaysAgo;
