@@ -7,6 +7,7 @@ import path from 'path';
 import { stdin } from 'process';
 import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { createHookResponse } from './hook-response.js';
+import { ensureWorkerRunning } from '../shared/worker-utils.js';
 
 export interface UserPromptSubmitInput {
   session_id: string;
@@ -25,6 +26,9 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
 
   const { session_id, cwd, prompt } = input;
   const project = path.basename(cwd);
+
+  // Ensure worker is running
+  ensureWorkerRunning();
 
   const db = new SessionStore();
 

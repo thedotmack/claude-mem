@@ -14,6 +14,15 @@ module.exports = {
     name: 'claude-mem-worker',
     script: './plugin/scripts/worker-service.cjs',
     error_file: '/dev/null',
-    out_file: '/dev/null'
+    out_file: '/dev/null',
+    watch: true,
+    ignore_watch: [
+      'node_modules',
+      'logs',
+      '*.log',
+      '*.db',
+      '*.db-*',
+      '.git'
+    ]
   }]
 };

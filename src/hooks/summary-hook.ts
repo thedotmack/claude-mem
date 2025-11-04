@@ -7,6 +7,7 @@ import { stdin } from 'process';
 import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { createHookResponse } from './hook-response.js';
 import { logger } from '../utils/logger.js';
+import { ensureWorkerRunning } from '../shared/worker-utils.js';
 
 export interface StopInput {
   session_id: string;
@@ -23,6 +24,9 @@ async function summaryHook(input?: StopInput): Promise<void> {
   }
 
   const { session_id } = input;
+
+  // Ensure worker is running
+  ensureWorkerRunning();
 
   const db = new SessionStore();
 

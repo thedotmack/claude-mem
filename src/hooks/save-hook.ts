@@ -7,6 +7,7 @@ import { stdin } from 'process';
 import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { createHookResponse } from './hook-response.js';
 import { logger } from '../utils/logger.js';
+import { ensureWorkerRunning } from '../shared/worker-utils.js';
 
 export interface PostToolUseInput {
   session_id: string;
@@ -36,6 +37,9 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
     console.log(createHookResponse('PostToolUse', true));
     return;
   }
+
+  // Ensure worker is running
+  ensureWorkerRunning();
 
   const db = new SessionStore();
 
