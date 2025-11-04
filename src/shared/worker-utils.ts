@@ -1,8 +1,8 @@
-import path from 'path';
-import { spawn } from 'child_process';
-import { getPackageRoot } from './paths.js';
+import path from "path";
+import { spawn } from "child_process";
+import { getPackageRoot } from "./paths.js";
 
-const FIXED_PORT = parseInt(process.env.CLAUDE_MEM_WORKER_PORT || '37777', 10);
+const FIXED_PORT = parseInt(process.env.CLAUDE_MEM_WORKER_PORT || "37777", 10);
 
 /**
  * Ensure worker service is running
@@ -11,34 +11,32 @@ const FIXED_PORT = parseInt(process.env.CLAUDE_MEM_WORKER_PORT || '37777', 10);
  */
 export function ensureWorkerRunning(): void {
   const packageRoot = getPackageRoot();
-  const pm2Path = path.join(packageRoot, 'node_modules', '.bin', 'pm2');
-  const ecosystemPath = path.join(packageRoot, 'ecosystem.config.cjs');
+  const pm2Path = path.join(packageRoot, "node_modules", ".bin", "pm2");
+  const ecosystemPath = path.join(packageRoot, "ecosystem.config.cjs");
 
   // Check if worker is already running
-  const checkProcess = spawn(pm2Path, ['list', '--no-color'], {
+  const checkProcess = spawn(pm2Path, ["list", "--no-color"], {
     cwd: packageRoot,
-    stdio: ['ignore', 'pipe', 'ignore']
+    stdio: ["ignore", "pipe", "ignore"],
   });
 
-  let output = '';
-  checkProcess.stdout?.on('data', (data) => {
+  let output = "";
+  checkProcess.stdout?.on("data", (data) => {
     output += data.toString();
   });
 
-  checkProcess.on('close', (code) => {
+  checkProcess.on("close", (code) => {
     // Check if 'claude-mem-worker' is in the PM2 list output and is 'online'
-    const isRunning = output.includes('claude-mem-worker') && output.includes('online');
+    const isRunning = output.includes("claude-mem-worker") && output.includes("online");
 
     if (!isRunning) {
       // Only start if not already running
-      spawn(pm2Path, ['start', ecosystemPath], {
+      spawn(pm2Path, ["start", ecosystemPath], {
         cwd: packageRoot,
-        stdio: 'ignore'
+        stdio: "ignore",
       });
 
-      // Give PM2 200ms to actually start the worker
-      // Prevents race condition where hooks fire before worker is ready
-      // Simple blocking wait - no complex health checks needed
+      // Simple wait - no complex health checks needed
       const start = Date.now();
       while (Date.now() - start < 200) {
         // Busy wait
