@@ -90,9 +90,9 @@ class WorkerService {
     this.app = express();
     this.app.use(express.json({ limit: '50mb' }));
 
-    // Initialize ChromaSync (fail fast if Chroma unavailable)
+    // Initialize ChromaSync (lazy connection - will gracefully degrade if Chroma unavailable)
     this.chromaSync = new ChromaSync('claude-mem');
-    logger.info('SYSTEM', 'ChromaSync initialized');
+    logger.info('SYSTEM', 'ChromaSync initialized (semantic search enabled if Python/uvx available)');
 
     // Health check
     this.app.get('/health', this.handleHealth.bind(this));
@@ -211,7 +211,7 @@ class WorkerService {
 
     db.close();
 
-    // Sync user prompt to Chroma (fire-and-forget, but crash on failure)
+    // Sync user prompt to Chroma (fire-and-forget with graceful fallback)
     if (latestPrompt) {
       this.chromaSync.syncUserPrompt(
         latestPrompt.id,
@@ -221,8 +221,8 @@ class WorkerService {
         latestPrompt.prompt_number,
         latestPrompt.created_at_epoch
       ).catch(err => {
-        logger.failure('WORKER', 'Failed to sync user_prompt to Chroma', { promptId: latestPrompt.id }, err);
-        process.exit(1); // Fail fast - Chroma sync is critical
+        logger.warn('CHROMA', 'Failed to sync user_prompt to Chroma (continuing without semantic search)', { promptId: latestPrompt.id }, err);
+        // Graceful degradation: Plugin continues without Chroma sync
       });
     }
 
@@ -619,7 +619,7 @@ class WorkerService {
         id
       });
 
-      // Sync to Chroma (non-blocking fire-and-forget, but crash on failure)
+      // Sync to Chroma (non-blocking fire-and-forget with graceful fallback)
       this.chromaSync.syncObservation(
         id,
         session.claudeSessionId,
@@ -633,11 +633,11 @@ class WorkerService {
           observationId: id
         });
       }).catch((error: Error) => {
-        logger.error('CHROMA', 'Observation sync failed - crashing worker', {
+        logger.warn('CHROMA', 'Observation sync failed (continuing without semantic search)', {
           correlationId,
           observationId: id
         }, error);
-        process.exit(1); // Fail fast - no fallbacks
+        // Graceful degradation: Plugin continues without Chroma sync
       });
     }
 
@@ -658,7 +658,7 @@ class WorkerService {
       const { id, createdAtEpoch } = db.storeSummary(session.claudeSessionId, session.project, summary, promptNumber);
       logger.success('DB', '📝 SUMMARY STORED IN DATABASE', { sessionId: session.sessionDbId, promptNumber, id });
 
-      // Sync to Chroma (non-blocking fire-and-forget, but crash on failure)
+      // Sync to Chroma (non-blocking fire-and-forget with graceful fallback)
       this.chromaSync.syncSummary(
         id,
         session.claudeSessionId,
@@ -672,11 +672,11 @@ class WorkerService {
           summaryId: id
         });
       }).catch((error: Error) => {
-        logger.error('CHROMA', 'Summary sync failed - crashing worker', {
+        logger.warn('CHROMA', 'Summary sync failed (continuing without semantic search)', {
           sessionId: session.sessionDbId,
           summaryId: id
         }, error);
-        process.exit(1); // Fail fast - no fallbacks
+        // Graceful degradation: Plugin continues without Chroma sync
       });
     } else {
       logger.warn('PARSER', 'NO SUMMARY TAGS FOUND in response', {

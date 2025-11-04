@@ -4,7 +4,7 @@
 
 Claude-mem is a persistent memory compression system that preserves context across Claude Code sessions. It automatically captures tool usage observations, processes them through the Claude Agent SDK, and makes summaries available to future sessions.
 
-**Current Version**: 4.3.4
+**Current Version**: 5.0.0
 **License**: AGPL-3.0
 **Author**: Alex Newman (@thedotmack)
 
@@ -15,7 +15,8 @@ Claude-mem operates as a Claude Code plugin that:
 - Processes observations using AI-powered compression
 - Generates session summaries when sessions end
 - Injects relevant context into future sessions
-- Provides full-text search across your entire project history
+- Provides hybrid semantic + keyword search across your entire project history (v5.0.0+)
+- Falls back to keyword-only search if Python unavailable
 
 This creates a continuous memory system where Claude can learn from past sessions and maintain context across your entire project lifecycle.
 
@@ -88,25 +89,48 @@ The worker service runs as a PM2-managed background process that handles AI proc
 - `SessionStore` - CRUD operations for sessions, observations, summaries, user prompts
 - `SessionSearch` - FTS5 full-text search with 8 search methods
 
+### Vector Database Layer (Optional)
+
+**Technology**: ChromaDB via MCP (Model Context Protocol)
+**Location**: `~/.claude-mem/vector_db/`
+**Requirement**: Python 3.8+ and Chroma MCP server
+
+**Purpose**: Semantic similarity search to complement SQLite keyword search
+
+**ChromaSync Service** (`src/services/sync/ChromaSync.ts`):
+- Automatically syncs observations, summaries, and user prompts to Chroma
+- Splits large text into multiple vectors for granularity
+- Maintains metadata for filtering (project, type, concepts, files)
+- Document ID format: `obs_{id}_narrative`, `summary_{id}_request`, `prompt_{id}`
+- Syncs 8,000+ vector documents from ~1,400 observations
+
+**Graceful Fallback**: If Python/Chroma unavailable, system falls back to FTS5 keyword search
+
 ### MCP Search Server
 
 **Location**: `src/servers/search-server.ts`
 **Configuration**: `plugin/.mcp.json`
 
-Exposes 8 specialized search tools to Claude:
+Exposes 9 specialized search tools to Claude:
 
-1. **search_observations** - Full-text search across observations
-2. **search_sessions** - Full-text search across session summaries
-3. **search_user_prompts** - Full-text search across raw user prompts (as of v4.2.0)
+1. **search_observations** - Hybrid semantic + keyword search across observations
+2. **search_sessions** - Hybrid semantic + keyword search across session summaries
+3. **search_user_prompts** - Hybrid semantic + keyword search across raw user prompts
 4. **find_by_concept** - Find observations tagged with specific concepts
 5. **find_by_file** - Find observations referencing specific file paths
 6. **find_by_type** - Find observations by type (decision/bugfix/feature/etc.)
-7. **get_recent_context** - Get recent session context including summaries and observations for a project
-8. **advanced_search** - Combine multiple filters with full-text search
+7. **get_recent_context** - Get recent session context for a project (temporal only)
+8. **get_context_timeline** - Get timeline context around an anchor point (temporal only)
+9. **get_timeline_by_query** - Natural language timeline search with auto/interactive modes
 
-**Search Pipeline**:
+**Hybrid Search Pipeline** (when Chroma available):
 ```
-Claude Request → MCP Server → SessionSearch Service → FTS5 Database → Results → Claude
+Query → Chroma Semantic Search (top 100) → 90-day Filter → SQLite Hydration (temporal) → Results
+```
+
+**Fallback Pipeline** (when Chroma unavailable):
+```
+Query → SessionSearch Service → FTS5 Database → Results
 ```
 
 **Citations**: All search results use the `claude-mem://` URI scheme for referencing specific observations and sessions.
@@ -114,8 +138,16 @@ Claude Request → MCP Server → SessionSearch Service → FTS5 Database → Re
 ## Installation
 
 ### Requirements
+
+**Required:**
 - Node.js 18+
 - Claude Code plugin system
+
+**Optional (for semantic search):**
+- Python 3.8+ (for Chroma vector database)
+- Chroma MCP server
+
+**Note**: Without Python, the system falls back to SQLite FTS5 keyword search. Semantic search provides better relevance matching for natural language queries.
 
 ### Installation Method
 
@@ -184,40 +216,24 @@ Configure how much historical context is displayed at session start via `~/.clau
 Tool Execution → Hook Capture → Worker Processing → AI Compression → Database Storage → Future Context Injection
 ```
 
-### Search Pipeline
+### Hybrid Search Pipeline
+
+**With Chroma (Semantic + Temporal):**
 ```
-Search Query → MCP Server → SessionSearch → FTS5 Query → Results with Citations
-```
-
-### Usage Tracking
-
-Claude-mem automatically tracks SDK usage metrics to JSONL files for cost analysis:
-
-**Location**: `~/.claude-mem/usage-logs/usage-YYYY-MM-DD.jsonl`
-
-**Captured Metrics**:
-- Token counts (input, output, cache creation, cache read)
-- Total cost in USD per API call
-- Duration metrics (total time and API time)
-- Number of turns per session
-- Session and project attribution
-- Model information
-
-**Analysis Tools**:
-```bash
-# Analyze today's usage
-npm run usage:today
-
-# Analyze specific date
-npm run usage:analyze 2025-11-03
+Search Query → Chroma Semantic Search (top 100) → 90-day Recency Filter → SQLite Temporal Hydration → Results with Citations
 ```
 
-The analysis script provides:
-- Total cost and token usage
-- Cache hit rates and savings
-- Cost breakdowns by project
-- Cost breakdowns by model
-- Average cost per API call
+**Without Chroma (Keyword Only):**
+```
+Search Query → SessionSearch → FTS5 Query → Results with Citations
+```
+
+**Key Features:**
+- Semantic search prioritizes conceptual relevance over exact keyword matches
+- 90-day temporal window ensures recent, relevant results
+- SQLite hydration provides chronological ordering
+- Graceful fallback to FTS5 when Chroma unavailable
+- All search modes return results with `claude-mem://` citations
 
 ## Development
 
@@ -311,9 +327,41 @@ This approach is especially valuable when:
 
 For detailed version history and changelog, see [CHANGELOG.md](CHANGELOG.md).
 
-**Current Version**: 4.3.4
+**Current Version**: 5.0.0
 
 ### Recent Highlights
+
+#### v5.0.0 (2025-11-03)
+**BREAKING CHANGES**: Python dependency for optimal performance (semantic search)
+
+**Major Features**:
+- **Hybrid Search Architecture**: Combines ChromaDB semantic search with SQLite temporal filtering
+  - Chroma vector database for semantic similarity (top 100 matches)
+  - 90-day temporal recency window for relevant results
+  - Graceful fallback to FTS5 when Chroma unavailable
+- **ChromaSync Service**: Automatic vector database synchronization (738 lines)
+  - Syncs observations, session summaries, and user prompts to Chroma
+  - Splits large text into multiple vectors for better granularity
+  - Background sync via worker service
+- **get_timeline_by_query Tool**: Natural language timeline search with dual modes
+  - Auto mode: Automatically uses top search result as timeline anchor
+  - Interactive mode: Shows top N results for manual anchor selection
+- **Enhanced MCP Tools**: All 8 existing search tools now support hybrid semantic + keyword search
+  - search_observations, search_sessions, search_user_prompts now use hybrid algorithm
+  - find_by_concept, find_by_file, find_by_type enhanced with semantic capabilities
+
+**Technical Details**:
+- New files: src/services/sync/ChromaSync.ts (738 lines)
+- Modified: src/servers/search-server.ts (+995 lines for hybrid search)
+- Modified: src/services/worker-service.ts (+136 lines for ChromaSync integration)
+- Modified: src/services/sqlite/SessionStore.ts (+276 lines for enhanced timeline queries)
+- Validation: 1,390 observations synced to 8,279 vector documents
+- Performance: Semantic search with 90-day window in <200ms
+
+**Migration Notes**:
+- No data migration required - existing SQLite data continues to work
+- Optional: Install Python 3.8+ and Chroma MCP server for semantic search
+- Without Python: System falls back to FTS5 keyword search (no functionality loss)
 
 #### v4.3.4 (2025-11-01)
 **Breaking Changes**: None (patch version)
@@ -408,13 +456,40 @@ For detailed version history and changelog, see [CHANGELOG.md](CHANGELOG.md).
 
 ## Key Design Decisions
 
+### Hybrid Search Architecture (v5.0.0)
+Combines semantic search (ChromaDB vectors) with temporal ordering (SQLite) for relevance-first, recency-aware results:
+
+**Design Rationale:**
+- **Semantic First**: Chroma finds conceptually relevant matches regardless of keyword overlap
+- **Temporal Constraint**: 90-day window filters to recent, still-relevant observations
+- **Chronological Order**: SQLite provides temporal ordering for timeline coherence
+- **Graceful Fallback**: System continues working without Python via FTS5 keyword search
+
+**Architecture Trade-offs:**
+- **Top 100 semantic limit**: Balances relevance with performance (<200ms queries)
+- **90-day window**: Captures 2-3 months of active work without overwhelming results
+- **Vector granularity**: Splits large text into multiple documents for better semantic matching
+- **Dual storage**: Accepts storage overhead (vectors + SQLite) for hybrid search benefits
+
+**ChromaSync Integration:**
+- Automatic background sync via worker service
+- Splits observations into narrative + facts vectors
+- Splits summaries into request + learned vectors
+- Indexes user prompts as single vectors
+- Example: 1,390 observations → 8,279 vector documents
+
+**Search Strategy:**
+1. Text queries (e.g., "authentication bugs") → Semantic search via Chroma
+2. Metadata queries (e.g., concept="gotcha") → Direct SQLite lookup
+3. Hybrid queries combine both strategies
+
 ### Graceful Cleanup (v4.1.0)
 Changed from aggressive session deletion (HTTP DELETE to workers) to graceful completion (marking sessions complete and allowing workers to finish). This prevents interruption of important operations like summary generation.
 
-### FTS5 for Search Performance
-Implements SQLite FTS5 (Full-Text Search) virtual tables with automatic synchronization triggers, enabling fast full-text search across thousands of observations without performance degradation.
+### FTS5 for Search Performance (v4.0.0)
+Implements SQLite FTS5 (Full-Text Search) virtual tables with automatic synchronization triggers, enabling fast full-text search across thousands of observations without performance degradation. Continues to serve as fallback when Chroma unavailable.
 
-### Multi-Prompt Session Support
+### Multi-Prompt Session Support (v4.0.0)
 Tracks `prompt_counter` and `prompt_number` across sessions and observations, enabling context preservation across conversation restarts within the same coding session.
 
 ## Troubleshooting

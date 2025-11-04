@@ -5,7 +5,8 @@
  * This service provides real-time semantic search capabilities by maintaining
  * a vector database synchronized with SQLite.
  *
- * Design: Fail-fast with no fallbacks - if Chroma is unavailable, syncing fails.
+ * Design: Fail-fast throws - worker handles failures with graceful degradation.
+ * If Chroma/Python unavailable, sync operations throw but worker continues without semantic search.
  */
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';

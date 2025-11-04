@@ -8,6 +8,68 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 
+## [5.0.0] - 2025-11-03
+
+### BREAKING CHANGES
+- **Python dependency for optimal performance**: While the plugin works without Python, installing Python 3.8+ and the Chroma MCP server unlocks semantic search capabilities. Without Python, the system falls back to SQLite FTS5 keyword search.
+- **Search behavior changes**: Search queries now prioritize semantic relevance when Chroma is available, then apply temporal ordering. Keyword-only queries may return different results than v4.x.
+- **Worker service changes**: Worker now initializes ChromaSync on startup. If Chroma MCP is unavailable, worker continues with FTS5-only mode but logs a warning.
+
+### Added
+- **Hybrid Search Architecture**: Combines ChromaDB semantic search with SQLite temporal/metadata filtering
+  - Chroma vector database for semantic similarity (top 100 matches)
+  - 90-day temporal recency window for relevant results
+  - SQLite hydration in chronological order
+  - Graceful fallback to FTS5 when Chroma unavailable
+- **ChromaSync Service**: Automatic vector database synchronization
+  - Syncs observations, session summaries, and user prompts to Chroma
+  - Splits large text fields into multiple vectors for better granularity
+  - Maintains metadata for filtering (project, type, concepts, files)
+  - Background sync process via worker service
+- **get_timeline_by_query Tool**: Natural language timeline search with dual modes
+  - Auto mode: Automatically uses top search result as timeline anchor
+  - Interactive mode: Shows top N results for manual anchor selection
+  - Combines semantic search discovery with timeline context retrieval
+- **User Prompt Semantic Search**: Raw user prompts now indexed in Chroma for semantic discovery
+- **Enhanced MCP Tools**: All 8 existing search tools now support hybrid search
+  - search_observations - Now uses semantic + temporal hybrid algorithm
+  - search_sessions - Semantic search across session summaries
+  - search_user_prompts - Semantic search across raw prompts
+  - find_by_concept, find_by_file, find_by_type - Enhanced with semantic capabilities
+  - get_recent_context - Unchanged (temporal only)
+  - get_context_timeline - Unchanged (anchor-based temporal)
+
+### Changed
+- **Search Server**: Expanded from ~500 to ~1,500 lines with hybrid search implementation
+- **Worker Service**: Now initializes ChromaSync and handles Chroma MCP lifecycle
+- **Search Pipeline**: Now follows semantic-first strategy with temporal ordering
+  ```
+  Query → Chroma Semantic Search (top 100) → 90-day Filter → SQLite Hydration (temporal order) → Results
+  ```
+- **Worker Resilience**: Worker no longer crashes when Chroma MCP unavailable; gracefully falls back to FTS5
+
+### Fixed
+- **Critical temporal filtering bug**: Fixed deduplication and date range filtering in search results
+- **User prompt formatting bug**: Corrected field reference in search result formatting
+- **Worker crash prevention**: Worker now handles missing Chroma MCP gracefully instead of crashing
+
+### Technical Details
+- New files:
+  - src/services/sync/ChromaSync.ts (738 lines) - Vector database sync service
+  - experiment/chroma-search-test.ts - Comprehensive hybrid search testing
+  - experiment/chroma-sync-experiment.ts - Vector sync validation
+  - docs/chroma-search-completion-plan.md - Implementation planning
+  - FEATURE_PLAN_HYBRID_SEARCH.md - Feature specification
+  - IMPLEMENTATION_STATUS.md - Testing and validation results
+- Modified files:
+  - src/servers/search-server.ts (+995 lines) - Hybrid search algorithm implementation
+  - src/services/worker-service.ts (+136 lines) - ChromaSync integration
+  - src/services/sqlite/SessionStore.ts (+276 lines) - Enhanced timeline queries
+  - src/hooks/context-hook.ts - Type legend improvements
+- Validation: 1,390 observations synced to 8,279 vector documents
+- Performance: Semantic search with 90-day window returns results in <200ms
+
+
 ## [4.3.1] - 2025-10-26
 
 ### Fixed
