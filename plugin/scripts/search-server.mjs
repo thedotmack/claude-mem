@@ -324,7 +324,19 @@ ${e.stack}`:e.message;if(Array.isArray(e))return`[${e.length} items]`;let r=Obje
       WHERE project = ?
       ORDER BY created_at_epoch DESC
       LIMIT ?
-    `).all(e,r)}getRecentSessionsWithStatus(e,r=3){return this.db.prepare(`
+    `).all(e,r)}getAllRecentObservations(e=100){return this.db.prepare(`
+      SELECT id, type, title, subtitle, text, project, prompt_number, created_at, created_at_epoch
+      FROM observations
+      ORDER BY created_at_epoch DESC
+      LIMIT ?
+    `).all(e)}getAllRecentSummaries(e=50){return this.db.prepare(`
+      SELECT id, request, investigated, learned, completed, next_steps,
+             files_read, files_edited, notes, project, prompt_number,
+             created_at, created_at_epoch
+      FROM session_summaries
+      ORDER BY created_at_epoch DESC
+      LIMIT ?
+    `).all(e)}getRecentSessionsWithStatus(e,r=3){return this.db.prepare(`
       SELECT * FROM (
         SELECT
           s.sdk_session_id,

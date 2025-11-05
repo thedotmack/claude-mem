@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>claude-mem viewer</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica', 'Arial', sans-serif;
+      background: #1e1e1e;
+      color: #cccccc;
+      font-size: 14px;
+      overflow: hidden;
+    }
+
+    .container {
+      display: flex;
+      height: 100vh;
+      width: 100vw;
+    }
+
+    .left-col {
+      width: 60%;
+      border-right: 1px solid #404040;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .right-col {
+      width: 40%;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .header {
+      padding: 14px 18px;
+      border-bottom: 1px solid #404040;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: #252526;
+    }
+
+    .header h1 {
+      font-size: 16px;
+      font-weight: 500;
+      color: #e0e0e0;
+    }
+
+    .status {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 13px;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #e74856;
+    }
+
+    .status-dot.connected {
+      background: #16c60c;
+    }
+
+    select, input, button {
+      background: #2d2d2d;
+      color: #cccccc;
+      border: 1px solid #404040;
+      padding: 6px 12px;
+      font-family: inherit;
+      font-size: 13px;
+      border-radius: 4px;
+      transition: all 0.15s ease;
+    }
+
+    select:hover, input:hover {
+      border-color: #58a6ff;
+    }
+
+    select:focus, input:focus {
+      outline: none;
+      border-color: #58a6ff;
+      box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.2);
+    }
+
+    button {
+      background: #0969da;
+      color: #ffffff;
+      border: none;
+      font-weight: 500;
+      cursor: pointer;
+    }
+
+    button:hover {
+      background: #1177e6;
+    }
+
+    button:active {
+      background: #0860ca;
+    }
+
+    .feed {
+      flex: 1;
+      overflow-y: auto;
+      padding: 18px;
+    }
+
+    .card {
+      margin-bottom: 16px;
+      padding: 14px 16px;
+      background: #2d2d2d;
+      border: 1px solid #404040;
+      border-radius: 6px;
+      transition: border-color 0.15s ease;
+    }
+
+    .card:hover {
+      border-color: #505050;
+    }
+
+    .card-header {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 8px;
+      font-size: 12px;
+      color: #8b949e;
+      font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+    }
+
+    .card-type {
+      padding: 2px 8px;
+      background: #58a6ff20;
+      color: #58a6ff;
+      border-radius: 3px;
+      font-weight: 500;
+      text-transform: uppercase;
+      font-size: 11px;
+      letter-spacing: 0.5px;
+    }
+
+    .card-title {
+      font-size: 15px;
+      margin-bottom: 6px;
+      color: #e0e0e0;
+      font-weight: 500;
+    }
+
+    .card-subtitle {
+      font-size: 13px;
+      color: #a0a0a0;
+      margin-bottom: 6px;
+      line-height: 1.5;
+    }
+
+    .card-meta {
+      font-size: 12px;
+      color: #6e7681;
+      margin-top: 8px;
+      font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+    }
+
+    .summary-card {
+      border-color: #9e6a03;
+      background: #3d2f00;
+    }
+
+    .summary-card:hover {
+      border-color: #ae7a13;
+    }
+
+    .summary-card .card-type {
+      background: #f2cc6020;
+      color: #f2cc60;
+    }
+
+    .summary-card .card-title {
+      color: #f2cc60;
+    }
+
+    .settings-section {
+      padding: 18px;
+      border-bottom: 1px solid #404040;
+    }
+
+    .settings-section h3 {
+      font-size: 14px;
+      font-weight: 600;
+      margin-bottom: 14px;
+      color: #e0e0e0;
+      letter-spacing: 0.3px;
+    }
+
+    .form-group {
+      margin-bottom: 14px;
+    }
+
+    .form-group label {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 12px;
+      color: #8b949e;
+      font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+    }
+
+    .stats-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    .stat {
+      padding: 10px 12px;
+      background: #2d2d2d;
+      border: 1px solid #404040;
+      border-radius: 4px;
+    }
+
+    .stat-label {
+      color: #8b949e;
+      margin-bottom: 4px;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .stat-value {
+      font-size: 18px;
+      color: #e0e0e0;
+      font-weight: 600;
+      font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+    }
+
+    .stats-scroll {
+      flex: 1;
+      overflow-y: auto;
+    }
+
+    ::-webkit-scrollbar {
+      width: 10px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: #1e1e1e;
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: #424242;
+      border-radius: 5px;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+      background: #4e4e4e;
+    }
+
+    .save-status {
+      margin-top: 8px;
+      font-size: 12px;
+      color: #8b949e;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Left Column: Live Stream -->
+    <div class="left-col">
+      <div class="header">
+        <h1>claude-mem viewer</h1>
+        <div class="status">
+          <select id="projectFilter">
+            <option value="">All Projects</option>
+          </select>
+          <span class="status-dot" id="statusDot"></span>
+          <span id="statusText">Connecting...</span>
+        </div>
+      </div>
+      <div class="feed" id="feed">
+        <!-- Observation cards will be inserted here -->
+      </div>
+    </div>
+
+    <!-- Right Column: Settings & Stats -->
+    <div class="right-col">
+      <div class="header">
+        <h1>Settings</h1>
+        <button id="saveBtn">Save</button>
+      </div>
+      <div class="stats-scroll">
+        <div class="settings-section">
+          <h3>Environment Variables</h3>
+          <div class="form-group">
+            <label for="model">CLAUDE_MEM_MODEL</label>
+            <select id="model">
+              <option value="claude-haiku-4-5">claude-haiku-4-5</option>
+              <option value="claude-sonnet-4-5">claude-sonnet-4-5</option>
+              <option value="claude-opus-4">claude-opus-4</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="contextObs">CLAUDE_MEM_CONTEXT_OBSERVATIONS</label>
+            <input type="number" id="contextObs" min="1" max="200" />
+          </div>
+          <div class="form-group">
+            <label for="workerPort">CLAUDE_MEM_WORKER_PORT</label>
+            <input type="number" id="workerPort" min="1024" max="65535" />
+          </div>
+          <div class="save-status" id="saveStatus"></div>
+        </div>
+
+        <div class="settings-section">
+          <h3>Worker Stats</h3>
+          <div class="stats-grid">
+            <div class="stat">
+              <div class="stat-label">Version</div>
+              <div class="stat-value" id="statVersion">-</div>
+            </div>
+            <div class="stat">
+              <div class="stat-label">Uptime</div>
+              <div class="stat-value" id="statUptime">-</div>
+            </div>
+            <div class="stat">
+              <div class="stat-label">Active Sessions</div>
+              <div class="stat-value" id="statSessions">-</div>
+            </div>
+            <div class="stat">
+              <div class="stat-label">SSE Clients</div>
+              <div class="stat-value" id="statClients">-</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-section">
+          <h3>Database Stats</h3>
+          <div class="stats-grid">
+            <div class="stat">
+              <div class="stat-label">DB Size</div>
+              <div class="stat-value" id="statDbSize">-</div>
+            </div>
+            <div class="stat">
+              <div class="stat-label">Observations</div>
+              <div class="stat-value" id="statObsCount">-</div>
+            </div>
+            <div class="stat">
+              <div class="stat-label">Sessions</div>
+              <div class="stat-value" id="statSessionCount">-</div>
+            </div>
+            <div class="stat">
+              <div class="stat-label">Summaries</div>
+              <div class="stat-value" id="statSummaryCount">-</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let eventSource = null;
+    let observations = [];
+    let summaries = [];
+    let currentFilter = '';
+
+    // DOM elements
+    const statusDot = document.getElementById('statusDot');
+    const statusText = document.getElementById('statusText');
+    const feed = document.getElementById('feed');
+    const projectFilter = document.getElementById('projectFilter');
+    const saveBtn = document.getElementById('saveBtn');
+    const saveStatus = document.getElementById('saveStatus');
+
+    // Settings inputs
+    const modelInput = document.getElementById('model');
+    const contextObsInput = document.getElementById('contextObs');
+    const workerPortInput = document.getElementById('workerPort');
+
+    // Connect to SSE stream
+    function connect() {
+      eventSource = new EventSource('/stream');
+
+      eventSource.onopen = () => {
+        statusDot.classList.add('connected');
+        statusText.textContent = 'Connected';
+      };
+
+      eventSource.onerror = () => {
+        statusDot.classList.remove('connected');
+        statusText.textContent = 'Disconnected';
+        setTimeout(connect, 5000); // Reconnect after 5s
+      };
+
+      eventSource.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+
+        if (data.type === 'initial_load') {
+          observations = data.observations || [];
+          summaries = data.summaries || [];
+          updateProjectFilter();
+          renderFeed();
+        } else if (data.type === 'new_observation') {
+          observations.unshift(data.observation);
+          updateProjectFilter();
+          renderFeed();
+        } else if (data.type === 'new_summary') {
+          summaries.unshift(data.summary);
+          renderFeed();
+        }
+      };
+    }
+
+    // Update project filter dropdown
+    function updateProjectFilter() {
+      const projects = [...new Set(observations.map(o => o.project))];
+      const currentValue = projectFilter.value;
+
+      projectFilter.innerHTML = '<option value="">All Projects</option>';
+      projects.forEach(project => {
+        const option = document.createElement('option');
+        option.value = project;
+        option.textContent = project;
+        projectFilter.appendChild(option);
+      });
+
+      projectFilter.value = currentValue;
+    }
+
+    // Render feed with current filter
+    function renderFeed() {
+      const filtered = currentFilter
+        ? observations.filter(o => o.project === currentFilter)
+        : observations;
+
+      const filteredSummaries = currentFilter
+        ? summaries.filter(s => s.project === currentFilter)
+        : summaries;
+
+      // Combine and sort by timestamp
+      const items = [
+        ...filtered.map(o => ({ ...o, itemType: 'observation' })),
+        ...filteredSummaries.map(s => ({ ...s, itemType: 'summary' }))
+      ].sort((a, b) => b.created_at_epoch - a.created_at_epoch);
+
+      feed.innerHTML = '';
+      items.slice(0, 100).forEach(item => {
+        if (item.itemType === 'observation') {
+          feed.appendChild(createObservationCard(item));
+        } else {
+          feed.appendChild(createSummaryCard(item));
+        }
+      });
+    }
+
+    // Create observation card
+    function createObservationCard(obs) {
+      const card = document.createElement('div');
+      card.className = 'card';
+
+      const date = new Date(obs.created_at_epoch).toLocaleString();
+
+      card.innerHTML = `
+        <div class="card-header">
+          <span class="card-type">${obs.type}</span>
+          <span>${obs.project}</span>
+        </div>
+        <div class="card-title">${obs.title || 'Untitled'}</div>
+        ${obs.subtitle ? `<div class="card-subtitle">${obs.subtitle}</div>` : ''}
+        <div class="card-meta">#${obs.id} • ${date}</div>
+      `;
+
+      return card;
+    }
+
+    // Create summary card
+    function createSummaryCard(summary) {
+      const card = document.createElement('div');
+      card.className = 'card summary-card';
+
+      const date = new Date(summary.created_at_epoch).toLocaleString();
+
+      card.innerHTML = `
+        <div class="card-header">
+          <span class="card-type">SUMMARY</span>
+          <span>${summary.project}</span>
+        </div>
+        ${summary.request ? `<div class="card-title">Request: ${summary.request}</div>` : ''}
+        ${summary.learned ? `<div class="card-subtitle">Learned: ${summary.learned}</div>` : ''}
+        ${summary.completed ? `<div class="card-subtitle">Completed: ${summary.completed}</div>` : ''}
+        ${summary.next_steps ? `<div class="card-subtitle">Next: ${summary.next_steps}</div>` : ''}
+        <div class="card-meta">#${summary.id} • ${date}</div>
+      `;
+
+      return card;
+    }
+
+    // Project filter change
+    projectFilter.addEventListener('change', (e) => {
+      currentFilter = e.target.value;
+      renderFeed();
+    });
+
+    // Load settings
+    async function loadSettings() {
+      try {
+        const response = await fetch('/api/settings');
+        const settings = await response.json();
+
+        modelInput.value = settings.CLAUDE_MEM_MODEL || 'claude-haiku-4-5';
+        contextObsInput.value = settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS || '50';
+        workerPortInput.value = settings.CLAUDE_MEM_WORKER_PORT || '37777';
+      } catch (error) {
+        console.error('Failed to load settings:', error);
+      }
+    }
+
+    // Load stats
+    async function loadStats() {
+      try {
+        const response = await fetch('/api/stats');
+        const stats = await response.json();
+
+        if (stats.worker) {
+          document.getElementById('statVersion').textContent = stats.worker.version || '-';
+          document.getElementById('statUptime').textContent = formatUptime(stats.worker.uptime);
+          document.getElementById('statSessions').textContent = stats.worker.activeSessions || '0';
+          document.getElementById('statClients').textContent = stats.worker.sseClients || '0';
+        }
+
+        if (stats.database) {
+          document.getElementById('statDbSize').textContent = formatBytes(stats.database.size);
+          document.getElementById('statObsCount').textContent = stats.database.observations || '0';
+          document.getElementById('statSessionCount').textContent = stats.database.sessions || '0';
+          document.getElementById('statSummaryCount').textContent = stats.database.summaries || '0';
+        }
+      } catch (error) {
+        console.error('Failed to load stats:', error);
+      }
+    }
+
+    // Save settings
+    saveBtn.addEventListener('click', async () => {
+      try {
+        saveStatus.textContent = 'Saving...';
+
+        const response = await fetch('/api/settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            CLAUDE_MEM_MODEL: modelInput.value,
+            CLAUDE_MEM_CONTEXT_OBSERVATIONS: contextObsInput.value,
+            CLAUDE_MEM_WORKER_PORT: workerPortInput.value
+          })
+        });
+
+        const result = await response.json();
+
+        if (result.success) {
+          saveStatus.textContent = '✓ Saved';
+          setTimeout(() => saveStatus.textContent = '', 3000);
+        } else {
+          saveStatus.textContent = `✗ Error: ${result.error}`;
+        }
+      } catch (error) {
+        saveStatus.textContent = `✗ Error: ${error.message}`;
+      }
+    });
+
+    // Utility functions
+    function formatUptime(seconds) {
+      if (!seconds) return '-';
+      const hours = Math.floor(seconds / 3600);
+      const minutes = Math.floor((seconds % 3600) / 60);
+      return `${hours}h ${minutes}m`;
+    }
+
+    function formatBytes(bytes) {
+      if (!bytes) return '-';
+      if (bytes < 1024) return bytes + ' B';
+      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+      return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+    }
+
+    // Initialize
+    connect();
+    loadSettings();
+    loadStats();
+    setInterval(loadStats, 10000); // Refresh stats every 10s
+  </script>
+</body>
+</html>

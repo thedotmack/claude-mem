@@ -40,14 +40,27 @@ async function buildHooks() {
     const version = packageJson.version;
     console.log(`📌 Version: ${version}`);
 
-    // Create output directory
-    console.log('\n📦 Preparing output directory...');
+    // Create output directories
+    console.log('\n📦 Preparing output directories...');
     const hooksDir = 'plugin/scripts';
+    const uiDir = 'plugin/ui';
 
     if (!fs.existsSync(hooksDir)) {
       fs.mkdirSync(hooksDir, { recursive: true });
     }
-    console.log('✓ Output directory ready');
+    if (!fs.existsSync(uiDir)) {
+      fs.mkdirSync(uiDir, { recursive: true });
+    }
+    console.log('✓ Output directories ready');
+
+    // Copy UI files
+    console.log('\n📋 Copying UI files...');
+    if (fs.existsSync('src/ui/viewer.html')) {
+      fs.copyFileSync('src/ui/viewer.html', 'plugin/ui/viewer.html');
+      console.log('✓ viewer.html copied');
+    } else {
+      console.log('⚠ viewer.html not found (skipping)');
+    }
 
     // Build worker service
     console.log(`\n🔧 Building worker service...`);

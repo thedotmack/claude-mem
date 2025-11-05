@@ -14,6 +14,10 @@ import type { SDKSession } from '../sdk/prompts.js';
 import { logger } from '../utils/logger.js';
 import { ensureAllDataDirs } from '../shared/paths.js';
 import { execSync } from 'child_process';
+import { readFileSync, writeFileSync, existsSync, statSync } from 'fs';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
+import { homedir } from 'os';
 
 const MODEL = process.env.CLAUDE_MEM_MODEL || 'claude-sonnet-4-5';
 const DISALLOWED_TOOLS = ['Glob', 'Grep', 'ListMcpResourcesTool', 'WebSearch'];
@@ -96,6 +100,7 @@ class WorkerService {
   private port: number = FIXED_PORT;
   private sessions: Map<number, ActiveSession> = new Map();
   private chromaSync!: ChromaSync;
+  private sseClients: Set<Response> = new Set();
 
   constructor() {
     this.app = express();
@@ -103,6 +108,17 @@ class WorkerService {
 
     // Health check
     this.app.get('/health', this.handleHealth.bind(this));
+
+    // Web UI viewer
+    this.app.get('/', this.handleViewerHTML.bind(this));
+
+    // SSE stream for web UI
+    this.app.get('/stream', this.handleSSEStream.bind(this));
+
+    // API endpoints for web UI
+    this.app.get('/api/stats', this.handleStats.bind(this));
+    this.app.get('/api/settings', this.handleGetSettings.bind(this));
+    this.app.post('/api/settings', this.handlePostSettings.bind(this));
 
     // Session endpoints
     this.app.post('/sessions/:sessionDbId/init', this.handleInit.bind(this));
@@ -151,6 +167,245 @@ class WorkerService {
    */
   private handleHealth(_req: Request, res: Response): void {
     res.json({ status: 'ok' });
+  }
+
+  /**
+   * GET / - Serve viewer HTML
+   */
+  private handleViewerHTML(_req: Request, res: Response): void {
+    try {
+      // When built to CJS, __dirname is injected by esbuild
+      // UI file is at plugin/ui/viewer.html relative to plugin/scripts/worker-service.cjs
+      // So we need to go up one directory and into ui/
+      // Use __dirname directly (works in both ESM with url workaround and in CJS build)
+      let scriptDir: string;
+      if (typeof __dirname !== 'undefined') {
+        // CJS context (production build)
+        scriptDir = __dirname;
+      } else {
+        // ESM context (development - won't work in production)
+        const __filename = fileURLToPath(import.meta.url);
+        scriptDir = dirname(__filename);
+      }
+
+      const uiPath = join(scriptDir, '..', 'ui', 'viewer.html');
+
+      const html = readFileSync(uiPath, 'utf-8');
+      res.setHeader('Content-Type', 'text/html');
+      res.send(html);
+    } catch (error: any) {
+      logger.error('WORKER', 'Failed to serve viewer HTML', {}, error);
+      res.status(500).send('Failed to load viewer');
+    }
+  }
+
+  /**
+   * GET /stream - SSE endpoint for web UI
+   */
+  private handleSSEStream(req: Request, res: Response): void {
+    // Set SSE headers
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+
+    // Add client to set
+    this.sseClients.add(res);
+    logger.info('WORKER', `SSE client connected`, { totalClients: this.sseClients.size });
+
+    // Send initial data snapshot
+    const db = new SessionStore();
+    const recentObservations = db.getAllRecentObservations(100);
+    const recentSummaries = db.getAllRecentSummaries(50);
+    db.close();
+
+    const initialData = {
+      type: 'initial_load',
+      observations: recentObservations,
+      summaries: recentSummaries,
+      timestamp: Date.now()
+    };
+
+    res.write(`data: ${JSON.stringify(initialData)}\n\n`);
+
+    // Handle client disconnect
+    req.on('close', () => {
+      this.sseClients.delete(res);
+      logger.info('WORKER', `SSE client disconnected`, { remainingClients: this.sseClients.size });
+    });
+  }
+
+  /**
+   * Broadcast SSE event to all connected clients
+   */
+  private broadcastSSE(event: any): void {
+    if (this.sseClients.size === 0) {
+      return; // No clients connected, skip broadcast
+    }
+
+    const data = `data: ${JSON.stringify(event)}\n\n`;
+    const clientsToRemove: Response[] = [];
+
+    for (const client of this.sseClients) {
+      try {
+        client.write(data);
+      } catch (error) {
+        // Client disconnected, mark for removal
+        clientsToRemove.push(client);
+      }
+    }
+
+    // Clean up disconnected clients
+    for (const client of clientsToRemove) {
+      this.sseClients.delete(client);
+    }
+
+    if (clientsToRemove.length > 0) {
+      logger.info('WORKER', `SSE cleaned up disconnected clients`, { count: clientsToRemove.length });
+    }
+  }
+
+  /**
+   * GET /api/stats - Return worker and database stats
+   */
+  private handleStats(_req: Request, res: Response): void {
+    try {
+      const db = new SessionStore();
+
+      // Get database stats
+      const obsCount = db.db.prepare('SELECT COUNT(*) as count FROM observations').get() as { count: number };
+      const sessionCount = db.db.prepare('SELECT COUNT(*) as count FROM sdk_sessions').get() as { count: number };
+      const summaryCount = db.db.prepare('SELECT COUNT(*) as count FROM session_summaries').get() as { count: number };
+
+      // Get database file size
+      const dbPath = join(homedir(), '.claude-mem', 'claude-mem.db');
+      let dbSize = 0;
+      if (existsSync(dbPath)) {
+        dbSize = statSync(dbPath).size;
+      }
+
+      db.close();
+
+      // Get worker stats
+      const uptime = process.uptime();
+      const version = process.env.npm_package_version || '5.0.3'; // fallback to current version
+
+      res.json({
+        worker: {
+          version,
+          uptime: Math.floor(uptime),
+          activeSessions: this.sessions.size,
+          sseClients: this.sseClients.size,
+          port: this.port
+        },
+        database: {
+          path: dbPath,
+          size: dbSize,
+          observations: obsCount.count,
+          sessions: sessionCount.count,
+          summaries: summaryCount.count
+        }
+      });
+    } catch (error: any) {
+      logger.error('WORKER', 'Failed to get stats', {}, error);
+      res.status(500).json({ error: 'Failed to get stats' });
+    }
+  }
+
+  /**
+   * GET /api/settings - Read settings from ~/.claude/settings.json
+   */
+  private handleGetSettings(_req: Request, res: Response): void {
+    try {
+      const settingsPath = join(homedir(), '.claude', 'settings.json');
+
+      if (!existsSync(settingsPath)) {
+        // Return defaults if file doesn't exist
+        res.json({
+          CLAUDE_MEM_MODEL: 'claude-haiku-4-5',
+          CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
+          CLAUDE_MEM_WORKER_PORT: '37777'
+        });
+        return;
+      }
+
+      const settingsData = readFileSync(settingsPath, 'utf-8');
+      const settings = JSON.parse(settingsData);
+      const env = settings.env || {};
+
+      res.json({
+        CLAUDE_MEM_MODEL: env.CLAUDE_MEM_MODEL || 'claude-haiku-4-5',
+        CLAUDE_MEM_CONTEXT_OBSERVATIONS: env.CLAUDE_MEM_CONTEXT_OBSERVATIONS || '50',
+        CLAUDE_MEM_WORKER_PORT: env.CLAUDE_MEM_WORKER_PORT || '37777'
+      });
+    } catch (error: any) {
+      logger.error('WORKER', 'Failed to read settings', {}, error);
+      res.status(500).json({ error: 'Failed to read settings' });
+    }
+  }
+
+  /**
+   * POST /api/settings - Update settings in ~/.claude/settings.json
+   */
+  private handlePostSettings(req: Request, res: Response): void {
+    try {
+      const { CLAUDE_MEM_MODEL, CLAUDE_MEM_CONTEXT_OBSERVATIONS, CLAUDE_MEM_WORKER_PORT } = req.body;
+
+      // Validate inputs
+      const validModels = ['claude-haiku-4-5', 'claude-sonnet-4-5', 'claude-opus-4'];
+      if (CLAUDE_MEM_MODEL && !validModels.includes(CLAUDE_MEM_MODEL)) {
+        res.status(400).json({ success: false, error: `Invalid model name: ${CLAUDE_MEM_MODEL}` });
+        return;
+      }
+
+      if (CLAUDE_MEM_CONTEXT_OBSERVATIONS) {
+        const obsCount = parseInt(CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10);
+        if (isNaN(obsCount) || obsCount < 1 || obsCount > 200) {
+          res.status(400).json({ success: false, error: 'CLAUDE_MEM_CONTEXT_OBSERVATIONS must be between 1 and 200' });
+          return;
+        }
+      }
+
+      if (CLAUDE_MEM_WORKER_PORT) {
+        const port = parseInt(CLAUDE_MEM_WORKER_PORT, 10);
+        if (isNaN(port) || port < 1024 || port > 65535) {
+          res.status(400).json({ success: false, error: 'CLAUDE_MEM_WORKER_PORT must be between 1024 and 65535' });
+          return;
+        }
+      }
+
+      // Read existing settings
+      const settingsPath = join(homedir(), '.claude', 'settings.json');
+      let settings: any = { env: {} };
+
+      if (existsSync(settingsPath)) {
+        const settingsData = readFileSync(settingsPath, 'utf-8');
+        settings = JSON.parse(settingsData);
+        if (!settings.env) {
+          settings.env = {};
+        }
+      }
+
+      // Update settings
+      if (CLAUDE_MEM_MODEL) {
+        settings.env.CLAUDE_MEM_MODEL = CLAUDE_MEM_MODEL;
+      }
+      if (CLAUDE_MEM_CONTEXT_OBSERVATIONS) {
+        settings.env.CLAUDE_MEM_CONTEXT_OBSERVATIONS = CLAUDE_MEM_CONTEXT_OBSERVATIONS;
+      }
+      if (CLAUDE_MEM_WORKER_PORT) {
+        settings.env.CLAUDE_MEM_WORKER_PORT = CLAUDE_MEM_WORKER_PORT;
+      }
+
+      // Write back
+      writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf-8');
+
+      logger.info('WORKER', 'Settings updated', {});
+      res.json({ success: true, message: 'Settings updated successfully' });
+    } catch (error: any) {
+      logger.error('WORKER', 'Failed to update settings', {}, error);
+      res.status(500).json({ success: false, error: 'Failed to update settings' });
+    }
   }
 
   /**
@@ -612,6 +867,21 @@ class WorkerService {
         id
       });
 
+      // Broadcast to SSE clients (for web UI)
+      this.broadcastSSE({
+        type: 'new_observation',
+        observation: {
+          id,
+          type: obs.type,
+          title: obs.title,
+          subtitle: obs.subtitle,
+          text: obs.text,
+          project: session.project,
+          prompt_number: promptNumber,
+          created_at_epoch: createdAtEpoch
+        }
+      });
+
       // Sync to Chroma (non-blocking fire-and-forget, but crash on failure)
       this.chromaSync.syncObservation(
         id,
@@ -650,6 +920,23 @@ class WorkerService {
 
       const { id, createdAtEpoch } = db.storeSummary(session.claudeSessionId, session.project, summary, promptNumber);
       logger.success('DB', '📝 SUMMARY STORED IN DATABASE', { sessionId: session.sessionDbId, promptNumber, id });
+
+      // Broadcast to SSE clients (for web UI)
+      this.broadcastSSE({
+        type: 'new_summary',
+        summary: {
+          id,
+          request: summary.request,
+          investigated: summary.investigated,
+          learned: summary.learned,
+          completed: summary.completed,
+          next_steps: summary.next_steps,
+          notes: summary.notes,
+          project: session.project,
+          prompt_number: promptNumber,
+          created_at_epoch: createdAtEpoch
+        }
+      });
 
       // Sync to Chroma (non-blocking fire-and-forget, but crash on failure)
       this.chromaSync.syncSummary(

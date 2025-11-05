@@ -566,6 +566,60 @@ export class SessionStore {
   }
 
   /**
+   * Get recent observations across all projects (for web UI)
+   */
+  getAllRecentObservations(limit: number = 100): Array<{
+    id: number;
+    type: string;
+    title: string | null;
+    subtitle: string | null;
+    text: string;
+    project: string;
+    prompt_number: number | null;
+    created_at: string;
+    created_at_epoch: number;
+  }> {
+    const stmt = this.db.prepare(`
+      SELECT id, type, title, subtitle, text, project, prompt_number, created_at, created_at_epoch
+      FROM observations
+      ORDER BY created_at_epoch DESC
+      LIMIT ?
+    `);
+
+    return stmt.all(limit) as any[];
+  }
+
+  /**
+   * Get recent summaries across all projects (for web UI)
+   */
+  getAllRecentSummaries(limit: number = 50): Array<{
+    id: number;
+    request: string | null;
+    investigated: string | null;
+    learned: string | null;
+    completed: string | null;
+    next_steps: string | null;
+    files_read: string | null;
+    files_edited: string | null;
+    notes: string | null;
+    project: string;
+    prompt_number: number | null;
+    created_at: string;
+    created_at_epoch: number;
+  }> {
+    const stmt = this.db.prepare(`
+      SELECT id, request, investigated, learned, completed, next_steps,
+             files_read, files_edited, notes, project, prompt_number,
+             created_at, created_at_epoch
+      FROM session_summaries
+      ORDER BY created_at_epoch DESC
+      LIMIT ?
+    `);
+
+    return stmt.all(limit) as any[];
+  }
+
+  /**
    * Get recent sessions with their status and summary info
    */
   getRecentSessionsWithStatus(project: string, limit: number = 3): Array<{
