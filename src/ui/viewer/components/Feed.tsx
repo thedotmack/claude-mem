@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useRef, useEffect } from 'react';
 import { Observation, Summary, UserPrompt } from '../types';
 import { ObservationCard } from './ObservationCard';
 import { SummaryCard } from './SummaryCard';
@@ -10,6 +10,9 @@ interface FeedProps {
   prompts: UserPrompt[];
   processingSessions: Set<string>;
   currentFilter: string;
+  onLoadMore?: () => void;
+  isLoading?: boolean;
+  hasMore?: boolean;
 }
 
 type FeedItem =
@@ -17,7 +20,30 @@ type FeedItem =
   | (Summary & { itemType: 'summary' })
   | (UserPrompt & { itemType: 'prompt' });
 
-export function Feed({ observations, summaries, prompts, processingSessions, currentFilter }: FeedProps) {
+export function Feed({ observations, summaries, prompts, processingSessions, currentFilter, onLoadMore, isLoading = false, hasMore = true }: FeedProps) {
+  const loadMoreRef = useRef<HTMLDivElement>(null);
+
+  // Set up intersection observer for infinite scroll
+  useEffect(() => {
+    if (!onLoadMore || !loadMoreRef.current) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const first = entries[0];
+        if (first.isIntersecting && hasMore && !isLoading) {
+          onLoadMore();
+        }
+      },
+      { threshold: 0.1 }
+    );
+
+    observer.observe(loadMoreRef.current);
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [onLoadMore, hasMore, isLoading]);
+
   const items = useMemo<FeedItem[]>(() => {
     const filtered = currentFilter
       ? observations.filter(o => o.project === currentFilter)
@@ -39,8 +65,7 @@ export function Feed({ observations, summaries, prompts, processingSessions, cur
     ];
 
     return combined
-      .sort((a, b) => b.created_at_epoch - a.created_at_epoch)
-      .slice(0, 100);
+      .sort((a, b) => b.created_at_epoch - a.created_at_epoch);
   }, [observations, summaries, prompts, currentFilter]);
 
   return (
@@ -52,13 +77,26 @@ export function Feed({ observations, summaries, prompts, processingSessions, cur
           } else if (item.itemType === 'summary') {
             return <SummaryCard key={`sum-${item.id}`} summary={item} />;
           } else {
-            const isProcessing = processingSessions.has(item.claude_session_id);
-            return <PromptCard key={`prompt-${item.id}`} prompt={item} isProcessing={isProcessing} />;
+            return <PromptCard key={`prompt-${item.id}`} prompt={item} />;
           }
         })}
-        {items.length === 0 && (
+        {items.length === 0 && !isLoading && (
           <div style={{ textAlign: 'center', padding: '40px', color: '#8b949e' }}>
             No items to display
+          </div>
+        )}
+        {isLoading && (
+          <div style={{ textAlign: 'center', padding: '20px', color: '#8b949e' }}>
+            <div className="spinner" style={{ display: 'inline-block', marginRight: '10px' }}></div>
+            Loading more...
+          </div>
+        )}
+        {hasMore && !isLoading && items.length > 0 && (
+          <div ref={loadMoreRef} style={{ height: '20px', margin: '10px 0' }} />
+        )}
+        {!hasMore && items.length > 0 && (
+          <div style={{ textAlign: 'center', padding: '20px', color: '#8b949e', fontSize: '14px' }}>
+            No more items to load
           </div>
         )}
       </div>

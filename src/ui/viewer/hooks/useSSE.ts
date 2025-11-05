@@ -5,6 +5,7 @@ export function useSSE() {
   const [observations, setObservations] = useState<Observation[]>([]);
   const [summaries, setSummaries] = useState<Summary[]>([]);
   const [prompts, setPrompts] = useState<UserPrompt[]>([]);
+  const [projects, setProjects] = useState<string[]>([]);
   const [isConnected, setIsConnected] = useState(false);
   const [processingSessions, setProcessingSessions] = useState<Set<string>>(new Set());
   const eventSourceRef = useRef<EventSource | null>(null);
@@ -50,23 +51,19 @@ export function useSSE() {
               console.log('[SSE] Initial load:', {
                 observations: data.observations?.length || 0,
                 summaries: data.summaries?.length || 0,
-                prompts: data.prompts?.length || 0
+                prompts: data.prompts?.length || 0,
+                projects: data.projects?.length || 0
               });
               setObservations(data.observations || []);
               setSummaries(data.summaries || []);
               setPrompts(data.prompts || []);
+              setProjects(data.projects || []);
               break;
 
             case 'new_observation':
               if (data.observation) {
                 console.log('[SSE] New observation:', data.observation.id);
                 setObservations(prev => [data.observation!, ...prev]);
-                // Mark session as no longer processing
-                setProcessingSessions(prev => {
-                  const next = new Set(prev);
-                  next.delete(data.observation!.session_id);
-                  return next;
-                });
               }
               break;
 
@@ -74,6 +71,12 @@ export function useSSE() {
               if (data.summary) {
                 console.log('[SSE] New summary:', data.summary.id);
                 setSummaries(prev => [data.summary!, ...prev]);
+                // Mark session as no longer processing (summary is the final step)
+                setProcessingSessions(prev => {
+                  const next = new Set(prev);
+                  next.delete(data.summary!.session_id);
+                  return next;
+                });
               }
               break;
 
@@ -120,5 +123,5 @@ export function useSSE() {
     };
   }, []);
 
-  return { observations, summaries, prompts, processingSessions, isConnected };
+  return { observations, summaries, prompts, projects, processingSessions, isConnected };
 }

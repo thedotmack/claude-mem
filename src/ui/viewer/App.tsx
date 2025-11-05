@@ -5,23 +5,34 @@ import { Sidebar } from './components/Sidebar';
 import { useSSE } from './hooks/useSSE';
 import { useSettings } from './hooks/useSettings';
 import { useStats } from './hooks/useStats';
+import { usePagination } from './hooks/usePagination';
 import { Observation, Summary } from './types';
 
 export function App() {
   const [currentFilter, setCurrentFilter] = useState('');
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [paginatedObservations, setPaginatedObservations] = useState<Observation[]>([]);
 
-  const { observations, summaries, prompts, processingSessions, isConnected } = useSSE();
+  const { observations, summaries, prompts, projects, processingSessions, isConnected } = useSSE();
   const { settings, saveSettings, isSaving, saveStatus } = useSettings();
   const { stats } = useStats();
+  const { isLoading, hasMore, loadMore } = usePagination();
 
-  // Get unique projects from observations
-  const projects = Array.from(new Set(observations.map(o => o.project)));
+  // Merge real-time observations with paginated ones
+  const allObservations = [...observations, ...paginatedObservations];
 
   // Toggle sidebar
   const toggleSidebar = useCallback(() => {
     setSidebarOpen(prev => !prev);
   }, []);
+
+  // Handle loading more observations
+  const handleLoadMore = useCallback(async () => {
+    const newObservations = await loadMore();
+    if (newObservations.length > 0) {
+      setPaginatedObservations(prev => [...prev, ...newObservations]);
+    }
+  }, [loadMore]);
 
   return (
     <div className="container">
@@ -33,13 +44,17 @@ export function App() {
           onFilterChange={setCurrentFilter}
           onSettingsToggle={toggleSidebar}
           sidebarOpen={sidebarOpen}
+          isProcessing={processingSessions.size > 0}
         />
         <Feed
-          observations={observations}
+          observations={allObservations}
           summaries={summaries}
           prompts={prompts}
           processingSessions={processingSessions}
           currentFilter={currentFilter}
+          onLoadMore={handleLoadMore}
+          isLoading={isLoading}
+          hasMore={hasMore}
         />
       </div>
 

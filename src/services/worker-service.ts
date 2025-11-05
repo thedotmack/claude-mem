@@ -123,6 +123,7 @@ class WorkerService {
     this.app.get('/api/stats', this.handleStats.bind(this));
     this.app.get('/api/settings', this.handleGetSettings.bind(this));
     this.app.post('/api/settings', this.handlePostSettings.bind(this));
+    this.app.get('/api/observations', this.handleGetObservations.bind(this));
 
     // Session endpoints
     this.app.post('/sessions/:sessionDbId/init', this.handleInit.bind(this));
@@ -223,6 +224,7 @@ class WorkerService {
     const recentObservations = db.getAllRecentObservations(100);
     const recentSummaries = db.getAllRecentSummaries(50);
     const recentPrompts = db.getAllRecentUserPrompts(100);
+    const allProjects = db.getAllProjects();
     db.close();
 
     const initialData = {
@@ -230,6 +232,7 @@ class WorkerService {
       observations: recentObservations,
       summaries: recentSummaries,
       prompts: recentPrompts,
+      projects: allProjects,
       timestamp: Date.now()
     };
 
@@ -270,6 +273,19 @@ class WorkerService {
     if (clientsToRemove.length > 0) {
       logger.info('WORKER', `SSE cleaned up disconnected clients`, { count: clientsToRemove.length });
     }
+  }
+
+  /**
+   * Broadcast processing status to SSE clients
+   */
+  private broadcastProcessingStatus(claudeSessionId: string, isProcessing: boolean): void {
+    this.broadcastSSE({
+      type: 'processing_status',
+      processing: {
+        session_id: claudeSessionId,
+        is_processing: isProcessing
+      }
+    });
   }
 
   /**
@@ -412,6 +428,47 @@ class WorkerService {
     } catch (error: any) {
       logger.error('WORKER', 'Failed to update settings', {}, error);
       res.status(500).json({ success: false, error: 'Failed to update settings' });
+    }
+  }
+
+  /**
+   * GET /api/observations - Paginated observations fetch
+   * Query params: offset (default 0), limit (default 50)
+   */
+  private handleGetObservations(req: Request, res: Response): void {
+    try {
+      const offset = parseInt(req.query.offset as string || '0', 10);
+      const limit = Math.min(parseInt(req.query.limit as string || '50', 10), 100); // Cap at 100
+
+      const db = new SessionStore();
+
+      // Get paginated observations
+      const stmt = db.db.prepare(`
+        SELECT id, type, title, subtitle, text, project, prompt_number, created_at, created_at_epoch
+        FROM observations
+        ORDER BY created_at_epoch DESC
+        LIMIT ? OFFSET ?
+      `);
+
+      const observations = stmt.all(limit, offset);
+
+      // Check if there are more results
+      const countStmt = db.db.prepare('SELECT COUNT(*) as total FROM observations');
+      const { total } = countStmt.get() as { total: number };
+      const hasMore = (offset + limit) < total;
+
+      db.close();
+
+      res.json({
+        observations,
+        hasMore,
+        total,
+        offset,
+        limit
+      });
+    } catch (error: any) {
+      logger.error('WORKER', 'Failed to get observations', {}, error);
+      res.status(500).json({ error: 'Failed to get observations' });
     }
   }
 
@@ -572,6 +629,9 @@ class WorkerService {
       prompt_number
     });
 
+    // Notify UI that processing is active
+    this.broadcastProcessingStatus(session.claudeSessionId, true);
+
     res.json({ status: 'queued', queueLength: session.pendingMessages.length });
   }
 
@@ -626,6 +686,9 @@ class WorkerService {
       type: 'summarize',
       prompt_number
     });
+
+    // Notify UI that processing is active
+    this.broadcastProcessingStatus(session.claudeSessionId, true);
 
     res.json({ status: 'queued', queueLength: session.pendingMessages.length });
   }
@@ -893,6 +956,7 @@ class WorkerService {
         type: 'new_observation',
         observation: {
           id,
+          session_id: session.claudeSessionId,
           type: obs.type,
           title: obs.title,
           subtitle: obs.subtitle,
@@ -946,6 +1010,7 @@ class WorkerService {
         type: 'new_summary',
         summary: {
           id,
+          session_id: session.claudeSessionId,
           request: summary.request,
           investigated: summary.investigated,
           learned: summary.learned,
@@ -957,6 +1022,9 @@ class WorkerService {
           created_at_epoch: createdAtEpoch
         }
       });
+
+      // Notify UI that processing is complete (summary is the final step)
+      this.broadcastProcessingStatus(session.claudeSessionId, false);
 
       // Sync to Chroma (non-blocking fire-and-forget, but crash on failure)
       this.chromaSync.syncSummary(
@@ -984,6 +1052,9 @@ class WorkerService {
         promptNumber,
         contentSample: content.substring(0, 500)
       });
+
+      // Still mark processing as complete even if no summary was generated
+      this.broadcastProcessingStatus(session.claudeSessionId, false);
     }
 
     db.close();

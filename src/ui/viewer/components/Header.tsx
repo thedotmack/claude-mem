@@ -7,6 +7,7 @@ interface HeaderProps {
   onFilterChange: (filter: string) => void;
   onSettingsToggle: () => void;
   sidebarOpen: boolean;
+  isProcessing: boolean;
 }
 
 export function Header({
@@ -15,13 +16,13 @@ export function Header({
   currentFilter,
   onFilterChange,
   onSettingsToggle,
-  sidebarOpen
+  sidebarOpen,
+  isProcessing
 }: HeaderProps) {
   return (
     <div className="header">
       <h1>
         <img src="claude-mem-logo-for-dark-mode.webp" alt="claude-mem" className="logo" />
-        viewer
       </h1>
       <div className="status">
         <select
@@ -35,6 +36,12 @@ export function Header({
         </select>
         <span className={`status-dot ${isConnected ? 'connected' : ''}`} />
         <span>{isConnected ? 'Connected' : 'Disconnected'}</span>
+        {isProcessing && (
+          <span className="processing-indicator">
+            <span className="spinner"></span>
+            Processing...
+          </span>
+        )}
         <button
           className={`settings-btn ${sidebarOpen ? 'active' : ''}`}
           onClick={onSettingsToggle}

@@ -33,6 +33,7 @@ export interface StreamEvent {
   observations?: Observation[];
   summaries?: Summary[];
   prompts?: UserPrompt[];
+  projects?: string[];
   observation?: Observation;
   summary?: Summary;
   prompt?: UserPrompt;

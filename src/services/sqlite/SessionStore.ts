@@ -641,6 +641,20 @@ export class SessionStore {
   }
 
   /**
+   * Get all unique projects from the database (for web UI project filter)
+   */
+  getAllProjects(): string[] {
+    const stmt = this.db.prepare(`
+      SELECT DISTINCT project
+      FROM sdk_sessions
+      ORDER BY project ASC
+    `);
+
+    const rows = stmt.all() as Array<{ project: string }>;
+    return rows.map(row => row.project);
+  }
+
+  /**
    * Get recent sessions with their status and summary info
    */
   getRecentSessionsWithStatus(project: string, limit: number = 3): Array<{

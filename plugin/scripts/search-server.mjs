@@ -341,7 +341,11 @@ ${e.stack}`:e.message;if(Array.isArray(e))return`[${e.length} items]`;let r=Obje
       FROM user_prompts
       ORDER BY created_at_epoch DESC
       LIMIT ?
-    `).all(e)}getRecentSessionsWithStatus(e,r=3){return this.db.prepare(`
+    `).all(e)}getAllProjects(){return this.db.prepare(`
+      SELECT DISTINCT project
+      FROM sdk_sessions
+      ORDER BY project ASC
+    `).all().map(s=>s.project)}getRecentSessionsWithStatus(e,r=3){return this.db.prepare(`
       SELECT * FROM (
         SELECT
           s.sdk_session_id,
