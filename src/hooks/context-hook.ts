@@ -424,24 +424,34 @@ const forceColors = process.argv.includes('--colors');  // Add this line
 
 if (stdin.isTTY || forceColors) {  // Modify this line to include forceColors
   // Running manually from terminal - print formatted output with colors
-  contextHook(undefined, true, useIndexView).then(contextOutput => {
-    console.log(contextOutput);
-    process.exit(0);
-  });
+  contextHook(undefined, true, useIndexView)
+    .then(contextOutput => {
+      console.log(contextOutput);
+      process.exit(0);
+    })
+    .catch(error => {
+      console.error('Error:', error.message);
+      process.exit(1);
+    });
 } else {
   // Running from hook - wrap in hookSpecificOutput JSON format
   let input = '';
   stdin.on('data', (chunk) => input += chunk);
   stdin.on('end', async () => {
-    const parsed = input.trim() ? JSON.parse(input) : undefined;
-    const contextOutput = await contextHook(parsed, false, useIndexView);
-    const result = {
-      hookSpecificOutput: {
-        hookEventName: "SessionStart",
-        additionalContext: contextOutput
-      }
-    };
-    console.log(JSON.stringify(result));
-    process.exit(0);
+    try {
+      const parsed = input.trim() ? JSON.parse(input) : undefined;
+      const contextOutput = await contextHook(parsed, false, useIndexView);
+      const result = {
+        hookSpecificOutput: {
+          hookEventName: "SessionStart",
+          additionalContext: contextOutput
+        }
+      };
+      console.log(JSON.stringify(result));
+      process.exit(0);
+    } catch (error: any) {
+      console.error('Error:', error.message);
+      process.exit(1);
+    }
   });
 }

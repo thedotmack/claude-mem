@@ -26,7 +26,8 @@ async function waitForWorkerHealth(maxWaitMs: number = 10000): Promise<boolean> 
   const checkInterval = 100; // Check every 100ms
   
   while (Date.now() - start < maxWaitMs) {
-    if (await isWorkerHealthy(1000)) {
+    // Use shorter timeout (300ms) for faster failure detection during polling
+    if (await isWorkerHealthy(300)) {
       return true;
     }
     // Wait before next check
@@ -85,6 +86,8 @@ export async function ensureWorkerRunning(): Promise<void> {
     await new Promise<void>((resolve, reject) => {
       startProcess.on("error", (error) => reject(error));
       startProcess.on("close", (code) => {
+        // Exit code 0 means success, null means process terminated abnormally
+        // but PM2 sometimes returns null for successful daemon starts
         if (code !== 0 && code !== null) {
           reject(new Error(`PM2 start command failed with exit code ${code}`));
         } else {
