@@ -62,8 +62,13 @@ export async function ensureWorkerRunning(): Promise<void> {
   });
 
   // Wait for PM2 list to complete
-  await new Promise<void>((resolve) => {
-    checkProcess.on("close", () => resolve());
+  await new Promise<void>((resolve, reject) => {
+    checkProcess.on("error", (error) => reject(error));
+    checkProcess.on("close", (code) => {
+      // PM2 list can fail, but we should still continue - just assume worker isn't running
+      // This handles cases where PM2 isn't installed yet
+      resolve();
+    });
   });
 
   // Check if 'claude-mem-worker' is in the PM2 list output and is 'online'
@@ -77,8 +82,15 @@ export async function ensureWorkerRunning(): Promise<void> {
     });
 
     // Wait for PM2 start command to complete
-    await new Promise<void>((resolve) => {
-      startProcess.on("close", () => resolve());
+    await new Promise<void>((resolve, reject) => {
+      startProcess.on("error", (error) => reject(error));
+      startProcess.on("close", (code) => {
+        if (code !== 0 && code !== null) {
+          reject(new Error(`PM2 start command failed with exit code ${code}`));
+        } else {
+          resolve();
+        }
+      });
     });
   }
 
