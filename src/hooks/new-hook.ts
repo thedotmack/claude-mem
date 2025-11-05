@@ -28,7 +28,7 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
   const project = path.basename(cwd);
 
   // Ensure worker is running
-  ensureWorkerRunning();
+  await ensureWorkerRunning();
 
   const db = new SessionStore();
 

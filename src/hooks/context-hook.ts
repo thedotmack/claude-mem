@@ -126,9 +126,9 @@ function getObservations(db: SessionStore, sessionIds: string[]): Observation[] 
 /**
  * Context Hook Main Logic
  */
-function contextHook(input?: SessionStartInput, useColors: boolean = false, useIndexView: boolean = false): string {
+async function contextHook(input?: SessionStartInput, useColors: boolean = false, useIndexView: boolean = false): Promise<string> {
   // Ensure worker is running
-  ensureWorkerRunning();
+  await ensureWorkerRunning();
 
   const cwd = input?.cwd ?? process.cwd();
   const project = cwd ? path.basename(cwd) : 'unknown-project';
@@ -424,16 +424,17 @@ const forceColors = process.argv.includes('--colors');  // Add this line
 
 if (stdin.isTTY || forceColors) {  // Modify this line to include forceColors
   // Running manually from terminal - print formatted output with colors
-  const contextOutput = contextHook(undefined, true, useIndexView);
-  console.log(contextOutput);
-  process.exit(0);
+  contextHook(undefined, true, useIndexView).then(contextOutput => {
+    console.log(contextOutput);
+    process.exit(0);
+  });
 } else {
   // Running from hook - wrap in hookSpecificOutput JSON format
   let input = '';
   stdin.on('data', (chunk) => input += chunk);
-  stdin.on('end', () => {
+  stdin.on('end', async () => {
     const parsed = input.trim() ? JSON.parse(input) : undefined;
-    const contextOutput = contextHook(parsed, false, useIndexView);
+    const contextOutput = await contextHook(parsed, false, useIndexView);
     const result = {
       hookSpecificOutput: {
         hookEventName: "SessionStart",

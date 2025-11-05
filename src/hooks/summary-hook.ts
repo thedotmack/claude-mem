@@ -26,7 +26,7 @@ async function summaryHook(input?: StopInput): Promise<void> {
   const { session_id } = input;
 
   // Ensure worker is running
-  ensureWorkerRunning();
+  await ensureWorkerRunning();
 
   const db = new SessionStore();
 

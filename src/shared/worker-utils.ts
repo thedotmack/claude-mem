@@ -5,16 +5,52 @@ import { getPackageRoot } from "./paths.js";
 const FIXED_PORT = parseInt(process.env.CLAUDE_MEM_WORKER_PORT || "37777", 10);
 
 /**
+ * Check if worker is responsive by trying the health endpoint
+ */
+async function isWorkerHealthy(timeoutMs: number = 3000): Promise<boolean> {
+  try {
+    const response = await fetch(`http://127.0.0.1:${FIXED_PORT}/health`, {
+      signal: AbortSignal.timeout(timeoutMs)
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Wait for worker to become healthy
+ */
+async function waitForWorkerHealth(maxWaitMs: number = 10000): Promise<boolean> {
+  const start = Date.now();
+  const checkInterval = 100; // Check every 100ms
+  
+  while (Date.now() - start < maxWaitMs) {
+    if (await isWorkerHealthy(1000)) {
+      return true;
+    }
+    // Wait before next check
+    await new Promise(resolve => setTimeout(resolve, checkInterval));
+  }
+  return false;
+}
+
+/**
  * Ensure worker service is running
  * Checks if worker is already running before attempting to start
  * This prevents unnecessary restarts that could interrupt mid-action processing
  */
-export function ensureWorkerRunning(): void {
+export async function ensureWorkerRunning(): Promise<void> {
+  // First, check if worker is already healthy
+  if (await isWorkerHealthy(1000)) {
+    return; // Worker is already running and responsive
+  }
+
   const packageRoot = getPackageRoot();
   const pm2Path = path.join(packageRoot, "node_modules", ".bin", "pm2");
   const ecosystemPath = path.join(packageRoot, "ecosystem.config.cjs");
 
-  // Check if worker is already running
+  // Check PM2 status to see if worker process exists
   const checkProcess = spawn(pm2Path, ["list", "--no-color"], {
     cwd: packageRoot,
     stdio: ["ignore", "pipe", "ignore"],
@@ -25,24 +61,32 @@ export function ensureWorkerRunning(): void {
     output += data.toString();
   });
 
-  checkProcess.on("close", (code) => {
-    // Check if 'claude-mem-worker' is in the PM2 list output and is 'online'
-    const isRunning = output.includes("claude-mem-worker") && output.includes("online");
-
-    if (!isRunning) {
-      // Only start if not already running
-      spawn(pm2Path, ["start", ecosystemPath], {
-        cwd: packageRoot,
-        stdio: "ignore",
-      });
-
-      // Simple wait - no complex health checks needed
-      const start = Date.now();
-      while (Date.now() - start < 200) {
-        // Busy wait
-      }
-    }
+  // Wait for PM2 list to complete
+  await new Promise<void>((resolve) => {
+    checkProcess.on("close", () => resolve());
   });
+
+  // Check if 'claude-mem-worker' is in the PM2 list output and is 'online'
+  const isRunning = output.includes("claude-mem-worker") && output.includes("online");
+
+  if (!isRunning) {
+    // Start the worker
+    const startProcess = spawn(pm2Path, ["start", ecosystemPath], {
+      cwd: packageRoot,
+      stdio: "ignore",
+    });
+
+    // Wait for PM2 start command to complete
+    await new Promise<void>((resolve) => {
+      startProcess.on("close", () => resolve());
+    });
+  }
+
+  // Wait for worker to become healthy (either just started or was starting)
+  const healthy = await waitForWorkerHealth(10000);
+  if (!healthy) {
+    throw new Error("Worker failed to become healthy after starting");
+  }
 }
 
 /**
