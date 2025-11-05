@@ -447,6 +447,71 @@ Tracks `prompt_counter` and `prompt_number` across sessions and observations, en
 ## Troubleshooting
 
 ### Worker Service Issues
+
+#### Worker Service Not Found/Not Running
+
+**Symptoms**:
+```
+Error: There's a problem with the worker. If you just updated, type `pm2 restart claude-mem-worker` in your terminal to continue
+```
+
+When checking PM2 status:
+```bash
+pm2 restart claude-mem-worker
+# [PM2][ERROR] Process or Namespace claude-mem-worker not found
+```
+
+**Root Causes**:
+1. **Fresh Installation**: The worker service hasn't been started initially after plugin installation
+2. **PM2 Not Initialized**: PM2 process manager hasn't loaded the worker configuration
+3. **Worker Crashed**: The worker process crashed and PM2 didn't auto-restart it
+4. **Port Conflict**: Another process is using port 37777 (or the configured CLAUDE_MEM_WORKER_PORT)
+
+**Solutions**:
+
+1. **Manual Worker Start** (most common fix):
+   ```bash
+   # Navigate to the plugin directory
+   cd ~/.claude/plugins/marketplaces/thedotmack/
+
+   # Start the worker using PM2
+   pm2 start ecosystem.config.cjs
+   ```
+
+2. **Verify Worker Status**:
+   ```bash
+   pm2 list
+   # Should show 'claude-mem-worker' with status 'online'
+   ```
+
+3. **Check Worker Logs** (if worker keeps failing):
+   ```bash
+   cd ~/.claude/plugins/marketplaces/thedotmack/
+   npm run worker:logs
+   ```
+
+4. **Check Port Availability** (if worker won't start):
+   ```bash
+   # Check if port 37777 is in use
+   lsof -i :37777  # macOS/Linux
+   netstat -ano | findstr :37777  # Windows
+   ```
+
+5. **Complete Worker Reset**:
+   ```bash
+   cd ~/.claude/plugins/marketplaces/thedotmack/
+   pm2 delete claude-mem-worker  # Remove any existing worker
+   pm2 start ecosystem.config.cjs  # Start fresh
+   ```
+
+**Prevention**:
+- The SessionStart hook should auto-start the worker, but if you experience this issue repeatedly, consider adding the worker to PM2's startup script:
+  ```bash
+  pm2 startup
+  pm2 save
+  ```
+
+#### Other Worker Commands
 - Check PM2 status: `pm2 list`
 - View logs: `npm run worker:logs`
 - Restart worker: `npm run worker:restart`
