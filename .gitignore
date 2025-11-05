@@ -5,6 +5,7 @@ node_modules/
 .env.local
 *.tmp
 *.temp
+.install-version
 .claude/settings.local.json
 plugin/data/
 plugin/data.backup/
