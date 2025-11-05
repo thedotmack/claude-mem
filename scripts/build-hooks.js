@@ -53,14 +53,19 @@ async function buildHooks() {
     }
     console.log('✓ Output directories ready');
 
-    // Copy UI files
-    console.log('\n📋 Copying UI files...');
-    if (fs.existsSync('src/ui/viewer.html')) {
-      fs.copyFileSync('src/ui/viewer.html', 'plugin/ui/viewer.html');
-      console.log('✓ viewer.html copied');
-    } else {
-      console.log('⚠ viewer.html not found (skipping)');
-    }
+    // Build React viewer
+    console.log('\n📋 Building React viewer...');
+    const { spawn } = await import('child_process');
+    const viewerBuild = spawn('node', ['scripts/build-viewer.js'], { stdio: 'inherit' });
+    await new Promise((resolve, reject) => {
+      viewerBuild.on('exit', (code) => {
+        if (code === 0) {
+          resolve();
+        } else {
+          reject(new Error(`Viewer build failed with exit code ${code}`));
+        }
+      });
+    });
 
     // Build worker service
     console.log(`\n🔧 Building worker service...`);

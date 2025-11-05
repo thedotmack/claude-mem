@@ -51,12 +51,16 @@
     "glob": "^11.0.3",
     "handlebars": "^4.7.8",
     "pm2": "^6.0.13",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
     "zod-to-json-schema": "^3.24.6"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.8",
     "@types/express": "^4.17.21",
     "@types/node": "^20.0.0",
+    "@types/react": "^18.3.5",
+    "@types/react-dom": "^18.3.0",
     "esbuild": "^0.25.12",
     "tsx": "^4.20.6",
     "typescript": "^5.3.0"

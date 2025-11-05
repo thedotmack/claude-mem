@@ -1,0 +1,60 @@
+#!/usr/bin/env node
+
+import * as esbuild from 'esbuild';
+import * as fs from 'fs';
+import * as path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const rootDir = path.join(__dirname, '..');
+
+async function buildViewer() {
+  console.log('Building React viewer...');
+
+  try {
+    // Build React app
+    await esbuild.build({
+      entryPoints: [path.join(rootDir, 'src/ui/viewer/index.tsx')],
+      bundle: true,
+      minify: true,
+      sourcemap: false,
+      target: ['es2020'],
+      format: 'iife',
+      outfile: path.join(rootDir, 'plugin/ui/viewer-bundle.js'),
+      jsx: 'automatic',
+      loader: {
+        '.tsx': 'tsx',
+        '.ts': 'ts'
+      },
+      define: {
+        'process.env.NODE_ENV': '"production"'
+      }
+    });
+
+    // Copy HTML template
+    const htmlTemplate = fs.readFileSync(
+      path.join(rootDir, 'src/ui/viewer-template.html'),
+      'utf-8'
+    );
+    fs.writeFileSync(
+      path.join(rootDir, 'plugin/ui/viewer.html'),
+      htmlTemplate
+    );
+
+    // Copy viewer assets to src/ui as well (for consistency with old structure)
+    fs.copyFileSync(
+      path.join(rootDir, 'plugin/ui/viewer.html'),
+      path.join(rootDir, 'src/ui/viewer.html')
+    );
+
+    console.log('✓ React viewer built successfully');
+    console.log('  - plugin/ui/viewer-bundle.js');
+    console.log('  - plugin/ui/viewer.html');
+  } catch (error) {
+    console.error('Failed to build viewer:', error);
+    process.exit(1);
+  }
+}
+
+buildViewer();

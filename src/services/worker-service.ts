@@ -106,6 +106,10 @@ class WorkerService {
     this.app = express();
     this.app.use(express.json({ limit: '50mb' }));
 
+    // Serve static files for web UI (viewer-bundle.js, logos, etc.)
+    const uiDir = this.getUIDirectory();
+    this.app.use(express.static(uiDir));
+
     // Health check
     this.app.get('/health', this.handleHealth.bind(this));
 
@@ -163,6 +167,22 @@ class WorkerService {
   }
 
   /**
+   * Get UI directory path (works in both dev ESM and production CJS)
+   */
+  private getUIDirectory(): string {
+    let scriptDir: string;
+    if (typeof __dirname !== 'undefined') {
+      // CJS context (production build)
+      scriptDir = __dirname;
+    } else {
+      // ESM context (development)
+      const __filename = fileURLToPath(import.meta.url);
+      scriptDir = dirname(__filename);
+    }
+    return join(scriptDir, '..', 'ui');
+  }
+
+  /**
    * GET /health
    */
   private handleHealth(_req: Request, res: Response): void {
@@ -174,22 +194,7 @@ class WorkerService {
    */
   private handleViewerHTML(_req: Request, res: Response): void {
     try {
-      // When built to CJS, __dirname is injected by esbuild
-      // UI file is at plugin/ui/viewer.html relative to plugin/scripts/worker-service.cjs
-      // So we need to go up one directory and into ui/
-      // Use __dirname directly (works in both ESM with url workaround and in CJS build)
-      let scriptDir: string;
-      if (typeof __dirname !== 'undefined') {
-        // CJS context (production build)
-        scriptDir = __dirname;
-      } else {
-        // ESM context (development - won't work in production)
-        const __filename = fileURLToPath(import.meta.url);
-        scriptDir = dirname(__filename);
-      }
-
-      const uiPath = join(scriptDir, '..', 'ui', 'viewer.html');
-
+      const uiPath = join(this.getUIDirectory(), 'viewer.html');
       const html = readFileSync(uiPath, 'utf-8');
       res.setHeader('Content-Type', 'text/html');
       res.send(html);
@@ -875,7 +880,6 @@ class WorkerService {
           type: obs.type,
           title: obs.title,
           subtitle: obs.subtitle,
-          text: obs.text,
           project: session.project,
           prompt_number: promptNumber,
           created_at_epoch: createdAtEpoch
