@@ -48,6 +48,7 @@ export function App() {
         isSaving={isSaving}
         saveStatus={saveStatus}
         onSave={saveSettings}
+        onClose={toggleSidebar}
       />
     </div>
   );

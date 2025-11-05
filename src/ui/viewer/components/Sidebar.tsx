@@ -8,9 +8,10 @@ interface SidebarProps {
   isSaving: boolean;
   saveStatus: string;
   onSave: (settings: Settings) => void;
+  onClose: () => void;
 }
 
-export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, onSave }: SidebarProps) {
+export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, onSave, onClose }: SidebarProps) {
   const [model, setModel] = useState(settings.CLAUDE_MEM_MODEL || 'claude-haiku-4-5');
   const [contextObs, setContextObs] = useState(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS || '50');
   const [workerPort, setWorkerPort] = useState(settings.CLAUDE_MEM_WORKER_PORT || '37777');
@@ -48,9 +49,30 @@ export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, onSave 
     <div className={`sidebar ${isOpen ? 'open' : ''}`}>
       <div className="header">
         <h1>Settings</h1>
-        <button onClick={handleSave} disabled={isSaving}>
-          {isSaving ? 'Saving...' : 'Save'}
-        </button>
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          <button onClick={handleSave} disabled={isSaving}>
+            {isSaving ? 'Saving...' : 'Save'}
+          </button>
+          <button
+            onClick={onClose}
+            title="Close settings"
+            style={{
+              background: 'transparent',
+              border: '1px solid #404040',
+              padding: '8px',
+              width: '36px',
+              height: '36px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center'
+            }}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+          </button>
+        </div>
       </div>
       <div className="stats-scroll">
         <div className="settings-section">

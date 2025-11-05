@@ -175,17 +175,25 @@
     .feed {
       flex: 1;
       overflow-y: auto;
-      padding: 18px;
+      padding: 24px 18px;
+      display: flex;
+      justify-content: center;
+    }
+
+    .feed-content {
+      width: 100%;
+      max-width: 42rem;
     }
 
     .card {
-      margin-bottom: 16px;
-      padding: 14px 16px;
+      margin-bottom: 24px;
+      padding: 20px 24px;
       background: #2d2d2d;
       border: 1px solid #404040;
-      border-radius: 6px;
+      border-radius: 8px;
       transition: all 0.15s ease;
       animation: slideIn 0.3s ease-out;
+      line-height: 1.7;
     }
 
     @keyframes slideIn {
@@ -226,17 +234,19 @@
     }
 
     .card-title {
-      font-size: 15px;
-      margin-bottom: 6px;
+      font-size: 17px;
+      margin-bottom: 8px;
       color: #e0e0e0;
-      font-weight: 500;
+      font-weight: 600;
+      line-height: 1.4;
+      letter-spacing: -0.01em;
     }
 
     .card-subtitle {
-      font-size: 13px;
+      font-size: 14px;
       color: #a0a0a0;
-      margin-bottom: 6px;
-      line-height: 1.5;
+      margin-bottom: 8px;
+      line-height: 1.6;
     }
 
     .card-meta {

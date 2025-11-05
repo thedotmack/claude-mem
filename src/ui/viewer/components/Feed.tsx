@@ -34,18 +34,20 @@ export function Feed({ observations, summaries, currentFilter }: FeedProps) {
 
   return (
     <div className="feed">
-      {items.map(item => {
-        if (item.itemType === 'observation') {
-          return <ObservationCard key={`obs-${item.id}`} observation={item} />;
-        } else {
-          return <SummaryCard key={`sum-${item.id}`} summary={item} />;
-        }
-      })}
-      {items.length === 0 && (
-        <div style={{ textAlign: 'center', padding: '40px', color: '#8b949e' }}>
-          No items to display
-        </div>
-      )}
+      <div className="feed-content">
+        {items.map(item => {
+          if (item.itemType === 'observation') {
+            return <ObservationCard key={`obs-${item.id}`} observation={item} />;
+          } else {
+            return <SummaryCard key={`sum-${item.id}`} summary={item} />;
+          }
+        })}
+        {items.length === 0 && (
+          <div style={{ textAlign: 'center', padding: '40px', color: '#8b949e' }}>
+            No items to display
+          </div>
+        )}
+      </div>
     </div>
   );
 }
