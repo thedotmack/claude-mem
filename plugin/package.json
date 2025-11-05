@@ -1,0 +1,20 @@
+{
+  "name": "claude-mem-plugin",
+  "version": "5.0.2",
+  "description": "Claude-mem plugin runtime dependencies",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.1.27",
+    "@modelcontextprotocol/sdk": "^1.20.1",
+    "better-sqlite3": "^11.0.0",
+    "express": "^4.18.2",
+    "glob": "^11.0.3",
+    "handlebars": "^4.7.8",
+    "pm2": "^6.0.13",
+    "zod-to-json-schema": "^3.24.6"
+  }
+}
