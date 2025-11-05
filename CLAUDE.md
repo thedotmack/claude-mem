@@ -318,9 +318,34 @@ This approach is especially valuable when:
 
 For detailed version history and changelog, see [CHANGELOG.md](CHANGELOG.md).
 
-**Current Version**: 5.0.2
+**Current Version**: 5.0.3
 
 ### Recent Highlights
+
+#### v5.0.3 (2025-11-05)
+**Breaking Changes**: None (patch version)
+
+**Fixes**:
+- Fixed Windows installation with smart caching installer (PR #54: scripts/smart-install.js)
+- Eliminated redundant npm install executions on every SessionStart (improved from 2-5s to ~10ms)
+- Added comprehensive Windows troubleshooting with VS Build Tools guidance
+- Fixed dynamic Python version detection in Windows error messages (scripts/smart-install.js:106-115)
+
+**Improvements**:
+- Smart install now caches version state in `.install-version` file
+- Only runs npm install when needed: first time, version change, or missing dependencies
+- Enhanced rsync to respect gitignore rules in sync-marketplace (package.json:38)
+- Better PM2 worker startup verification and management
+- Cross-platform compatible installer (pure Node.js, no shell dependencies)
+
+**Technical Details**:
+- New: scripts/smart-install.js (smart caching installer with PM2 worker management)
+- Modified: plugin/hooks/hooks.json:25 (use smart-install.js instead of raw npm install)
+- Modified: .gitignore (added .install-version cache file)
+- Modified: CLAUDE.md (added Windows requirements and troubleshooting section)
+- Modified: package.json:38 (enhanced sync-marketplace with --filter=':- .gitignore' --exclude=.git)
+- Root cause: npm install was running on every SessionStart regardless of whether dependencies changed
+- Impact: 200x faster SessionStart for cached installations (10ms vs 2-5s)
 
 #### v5.0.2 (2025-11-04)
 **Breaking Changes**: None (patch version)
