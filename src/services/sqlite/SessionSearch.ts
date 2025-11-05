@@ -37,10 +37,14 @@ export class SessionSearch {
     try {
       // Check if FTS tables already exist
       const tables = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%_fts'").all() as any[];
-      const hasFTS = tables.some((t: any) => t.name === 'observations_fts' || t.name === 'session_summaries_fts');
 
-      if (hasFTS) {
-        // Already migrated
+      // FIXED: Check that ALL required FTS tables exist, not just ANY
+      const expectedTables = ['observations_fts', 'session_summaries_fts'];
+      const existingTables = new Set(tables.map((t: any) => t.name));
+      const allTablesExist = expectedTables.every(name => existingTables.has(name));
+
+      if (allTablesExist) {
+        // All FTS tables already exist, skip migration
         return;
       }
 
@@ -136,12 +140,12 @@ export class SessionSearch {
 
   /**
    * Escape FTS5 special characters in user input
-   * 
+   *
    * FTS5 uses double quotes for phrase searches and treats certain characters
    * as operators (*, AND, OR, NOT, parentheses, etc.). To prevent injection,
    * we wrap user input in double quotes and escape internal quotes by doubling them.
    * This converts any user input into a safe phrase search.
-   * 
+   *
    * @param text - User input to escape for FTS5 MATCH queries
    * @returns Safely escaped FTS5 query string
    */
