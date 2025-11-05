@@ -4,7 +4,7 @@
 
 Claude-mem is a persistent memory compression system that preserves context across Claude Code sessions. It automatically captures tool usage observations, processes them through the Claude Agent SDK, and makes summaries available to future sessions.
 
-**Current Version**: 5.0.1
+**Current Version**: 5.0.2
 **License**: AGPL-3.0
 **Author**: Alex Newman (@thedotmack)
 
@@ -311,9 +311,25 @@ This approach is especially valuable when:
 
 For detailed version history and changelog, see [CHANGELOG.md](CHANGELOG.md).
 
-**Current Version**: 5.0.1
+**Current Version**: 5.0.2
 
 ### Recent Highlights
+
+#### v5.0.2 (2025-11-04)
+**Breaking Changes**: None (patch version)
+
+**Fixes**:
+- Fixed worker startup reliability with async health checks (PR #51: src/shared/worker-utils.ts)
+- Added proper error handling to PM2 process spawning (src/shared/worker-utils.ts)
+- Worker now verifies health before proceeding with hook operations
+- Improved handling of PM2 failures when not yet installed
+
+**Technical Details**:
+- Modified: src/shared/worker-utils.ts (added isWorkerHealthy, waitForWorkerHealth functions)
+- Modified: src/hooks/*.ts (all hooks now await ensureWorkerRunning)
+- Modified: plugin/scripts/*.js (rebuilt hook executables)
+- Root cause: ensureWorkerRunning was synchronous and didn't verify worker was actually responsive before proceeding
+- Impact: More reliable worker startup with proper health verification
 
 #### v5.0.1 (2025-11-04)
 **Breaking Changes**: None (patch version)
