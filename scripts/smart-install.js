@@ -103,6 +103,18 @@ function needsInstall() {
 }
 
 function getWindowsErrorHelp(errorOutput) {
+  // Detect Python version at runtime
+  let pythonStatus = '   Python not detected or version unknown';
+  try {
+    const pythonVersion = execSync('python --version', { encoding: 'utf-8', stdio: 'pipe' }).trim();
+    const versionMatch = pythonVersion.match(/Python\s+([\d.]+)/);
+    if (versionMatch) {
+      pythonStatus = `   You have ${versionMatch[0]} installed ✓`;
+    }
+  } catch (error) {
+    // Python not available or failed to detect - use default message
+  }
+
   const help = [
     '',
     '╔══════════════════════════════════════════════════════════════════════╗',
@@ -122,7 +134,8 @@ function getWindowsErrorHelp(errorOutput) {
     '   npm install --global windows-build-tools',
     '',
     '🐍 Python Requirement:',
-    '   Python 3.6+ is required. You have Python 3.14 installed ✓',
+    '   Python 3.6+ is required.',
+    pythonStatus,
     '',
   ];
 
