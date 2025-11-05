@@ -8,5 +8,5 @@ node_modules/
 .claude/settings.local.json
 plugin/data/
 plugin/data.backup/
-package-lock.json
+/package-lock.json
 private/
