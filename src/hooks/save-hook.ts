@@ -39,7 +39,7 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
   }
 
   // Ensure worker is running
-  ensureWorkerRunning();
+  await ensureWorkerRunning();
 
   const db = new SessionStore();
 
