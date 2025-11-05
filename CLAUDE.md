@@ -117,6 +117,13 @@ Claude Request → MCP Server → SessionSearch Service → FTS5 Database → Re
 - Node.js 18+
 - Claude Code plugin system
 
+**Windows Users**: better-sqlite3 v12.x includes prebuilt binaries for most configurations. If installation fails, you may need Visual Studio Build Tools:
+- Install from: https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022
+- Select "Desktop development with C++"
+- Or run as Administrator: `npm install --global windows-build-tools`
+
+**Note**: The plugin automatically installs dependencies on first launch. Installation is cached and only re-runs when the plugin version changes.
+
 ### Installation Method
 
 **Local Marketplace Installation** (recommended as of v4.0.4+):
@@ -461,6 +468,43 @@ Implements SQLite FTS5 (Full-Text Search) virtual tables with automatic synchron
 Tracks `prompt_counter` and `prompt_number` across sessions and observations, enabling context preservation across conversation restarts within the same coding session.
 
 ## Troubleshooting
+
+### Windows Installation Issues
+
+**Error: `ERR_MODULE_NOT_FOUND: Cannot find package 'better-sqlite3'`**
+
+This typically means the native module failed to install. Solutions:
+
+1. **Check for prebuilt binaries** (works for 95% of users):
+   - better-sqlite3 v12.x ships with prebuilt binaries
+   - They should install automatically
+   - No build tools needed if prebuilts match your Node.js version
+
+2. **If prebuilts don't match your configuration**:
+   - Install Visual Studio Build Tools:
+     - Download: https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022
+     - Select "Desktop development with C++"
+     - Restart terminal after installation
+   - Or use npm (run as Administrator):
+     ```bash
+     npm install --global windows-build-tools
+     ```
+
+3. **Verify installation**:
+   ```bash
+   cd ~/.claude/plugins/marketplaces/thedotmack
+   npm list better-sqlite3
+   ```
+
+4. **Check build tools** (if needed):
+   - Python 3.6+ required
+   - Visual C++ Build Tools required
+   - See: https://github.com/WiseLibs/better-sqlite3/blob/master/docs/troubleshooting.md
+
+**Smart Install Script**: The plugin uses a cached installation system. It only runs npm install when:
+- First time setup (no node_modules)
+- Plugin version changes
+- Dependencies are missing
 
 ### Worker Service Issues
 - Check PM2 status: `pm2 list`
