@@ -1,294 +1,260 @@
-# Claude-Mem: Persistent Memory for Claude Code
+# Claude-Mem: AI Development Instructions
 
-## Overview
+## What This Project Is
 
-Claude-mem is a persistent memory compression system that preserves context across Claude Code sessions. It automatically captures tool usage observations, processes them through the Claude Agent SDK, and makes summaries available to future sessions.
+Claude-mem is a Claude Code plugin providing persistent memory across sessions. It captures tool usage, compresses observations using the Claude Agent SDK, and injects relevant context into future sessions.
 
-**Current Version**: 5.0.2
-**License**: AGPL-3.0
-**Author**: Alex Newman (@thedotmack)
+**Your Role**: You are working on the plugin itself. When users interact with Claude Code with this plugin installed, your observations get captured and become their persistent memory.
 
-## What It Does
+**Current Version**: 5.0.3
 
-Claude-mem operates as a Claude Code plugin that:
-- Captures every tool execution during your coding sessions
-- Processes observations using AI-powered compression
-- Generates session summaries when sessions end
-- Injects relevant context into future sessions
-- Provides full-text search across your entire project history
+## Critical Architecture Knowledge
 
-This creates a continuous memory system where Claude can learn from past sessions and maintain context across your entire project lifecycle.
+### The Lifecycle Flow
 
-## Architecture
+1. **SessionStart** → `context-hook.ts` runs
+   - Smart installer checks dependencies (cached, only runs on version changes)
+   - Starts PM2 worker if not healthy
+   - Injects context from previous sessions (configurable observation count)
 
-### Hook-Based Lifecycle System
+2. **UserPromptSubmit** → `new-hook.ts` runs
+   - Creates session record in SQLite
+   - Saves raw user prompt for FTS5 search
 
-Claude-mem integrates with Claude Code through 5 lifecycle hooks:
+3. **PostToolUse** → `save-hook.ts` runs
+   - Captures your tool executions
+   - Sends to worker service for AI compression
 
-1. **SessionStart Hook** (`context-hook`)
-   - Ensures dependencies are installed (runs fast idempotent npm install)
-   - Injects context from previous sessions
-   - Auto-starts PM2 worker service
-   - Retrieves last 10 session summaries with three-tier verbosity (v4.2.0)
-   - Fixed in v4.1.0 to use proper JSON hookSpecificOutput format
+4. **Summary** → Summary hook generates session summaries
 
-2. **UserPromptSubmit Hook** (`new-hook`)
-   - Creates new session records
-   - Initializes session tracking
-   - Saves raw user prompts for full-text search (as of v4.2.0)
+5. **SessionEnd** → `cleanup-hook.ts` runs
+   - Marks session complete (graceful, not DELETE)
+   - Skips on `/clear` to preserve ongoing sessions
 
-3. **PostToolUse Hook** (`save-hook`)
-   - Captures tool execution observations
-   - Sends observations to worker service for processing
+### Key Components
 
-4. **Summary Hook**
-   - Generates AI-powered session summaries
-   - Processes accumulated observations
+**Hooks** (`src/hooks/*.ts`)
+- Built to `plugin/scripts/*-hook.js` (ESM format)
+- Must output valid JSON to `hookSpecificOutput` field
+- Called by Claude Code lifecycle events
 
-5. **SessionEnd Hook** (`cleanup-hook`)
-   - Marks sessions as completed (graceful cleanup as of v4.1.0)
-   - Skips cleanup on `/clear` commands to preserve ongoing sessions
-   - Previously sent DELETE requests; now allows workers to finish naturally
+**Worker Service** (`src/services/worker-service.ts`)
+- Express.js API on port 37777 (configurable via `CLAUDE_MEM_WORKER_PORT`)
+- Managed by PM2 (auto-started by hooks)
+- Built to `plugin/worker-service.cjs` (CJS format)
+- Handles AI processing asynchronously to avoid hook timeouts
 
-### Worker Service Architecture
+**Database** (`src/services/sqlite/`)
+- SQLite3 with better-sqlite3 (NOT bun:sqlite - that's legacy)
+- Location: `~/.claude-mem/claude-mem.db`
+- FTS5 virtual tables for full-text search
+- `SessionStore` = CRUD, `SessionSearch` = FTS5 queries
 
-- **Technology**: HTTP REST API built with Express.js, managed by PM2
-- **Port**: Fixed port 37777 (configurable via CLAUDE_MEM_WORKER_PORT)
-- **Location**: `src/services/worker-service.ts`
-- **Configurable Model**: Uses `CLAUDE_MEM_MODEL` environment variable (default: claude-sonnet-4-5)
+**MCP Search Server** (`src/servers/search-server.ts`)
+- Exposes 8 search tools to Claude Code
+- Configured in `plugin/.mcp.json`
+- Built to `plugin/search-server.js` (ESM format)
 
-**REST API Endpoints** (6 total):
-- Session management endpoints
-- Observation processing endpoints
-- Worker port tracking
+## How to Make Changes
 
-The worker service runs as a PM2-managed background process that handles AI processing separately from the hook execution, preventing hook timeout issues.
-
-### Database Layer
-
-**Technology**: SQLite 3 with better-sqlite3 native module
-**Location**: `~/.claude-mem/claude-mem.db`
-
-**Note**: SessionStore and SessionSearch use better-sqlite3 as the primary database implementation. Database.ts (which uses bun:sqlite) is legacy code.
-
-**Core Tables**:
-- `sdk_sessions` - Session tracking with prompt counters
-- `session_summaries` - AI-generated session summaries (multiple per session)
-- `observations` - Captured tool usage with structured fields
-- `user_prompts` - Raw user prompts with FTS5 search (as of v4.2.0)
-
-**Schema Features**:
-- FTS5 (Full-Text Search) virtual tables for fast searching
-- Automatic sync triggers between main tables and FTS5 tables
-- Support for multi-prompt sessions (prompt_counter, prompt_number)
-- Hierarchical observations (title, subtitle, facts, narrative, concepts, files_read, files_modified)
-- Observation types: decision, bugfix, feature, refactor, discovery, change
-
-**Database Classes**:
-- `SessionStore` - CRUD operations for sessions, observations, summaries, user prompts
-- `SessionSearch` - FTS5 full-text search with 8 search methods
-
-### MCP Search Server
-
-**Location**: `src/servers/search-server.ts`
-**Configuration**: `plugin/.mcp.json`
-
-Exposes 8 specialized search tools to Claude:
-
-1. **search_observations** - Full-text search across observations
-2. **search_sessions** - Full-text search across session summaries
-3. **search_user_prompts** - Full-text search across raw user prompts (as of v4.2.0)
-4. **find_by_concept** - Find observations tagged with specific concepts
-5. **find_by_file** - Find observations referencing specific file paths
-6. **find_by_type** - Find observations by type (decision/bugfix/feature/etc.)
-7. **get_recent_context** - Get recent session context including summaries and observations for a project
-8. **advanced_search** - Combine multiple filters with full-text search
-
-**Search Pipeline**:
-```
-Claude Request → MCP Server → SessionSearch Service → FTS5 Database → Results → Claude
-```
-
-**Citations**: All search results use the `claude-mem://` URI scheme for referencing specific observations and sessions.
-
-## Installation
-
-### Requirements
-- Node.js 18+
-- Claude Code plugin system
-
-**Windows Users**: better-sqlite3 v12.x includes prebuilt binaries for most configurations. If installation fails, you may need Visual Studio Build Tools:
-- Install from: https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022
-- Select "Desktop development with C++"
-- Or run as Administrator: `npm install --global windows-build-tools`
-
-**Note**: The plugin automatically installs dependencies on first launch. Installation is cached and only re-runs when the plugin version changes.
-
-### Installation Method
-
-**Local Marketplace Installation** (recommended as of v4.0.4+):
-
-```bash
-# 1. Clone the repository
-git clone https://github.com/thedotmack/claude-mem.git
-cd claude-mem
-
-# 2. Add to Claude Code marketplace
-/plugin marketplace add .claude-plugin/marketplace.json
-
-# 3. Install the plugin
-/plugin install claude-mem
-```
-
-## Configuration
-
-### Model Selection
-
-Configure which AI model processes your observations:
-
-**Using the interactive script**:
-```bash
-./claude-mem-settings.sh
-```
-
-**Available models**:
-- `claude-haiku-4-5` - Fast, cost-efficient
-- `claude-sonnet-4-5` - Balanced (default)
-- `claude-opus-4` - Most capable
-- `claude-3-7-sonnet` - Alternative version
-
-The script manages `CLAUDE_MEM_MODEL` in `~/.claude/settings.json`.
-TODO: also have script create and manage `CLAUDE_MEM_MODEL` in `~/.claude/plugins/marketplaces/thedotmack/.env` so our worker script has access to the value (we may not even need it in our settings but only in our plugin folder since hooks shouldn't be calling queries, not sure).
-
-### Context Display Settings
-
-Configure how much historical context is displayed at session start via `~/.claude/settings.json`:
-
-**Environment variable** (in the `env` section):
-- `CLAUDE_MEM_CONTEXT_OBSERVATIONS` - Number of recent observations to display (default: 50, ~1.2K tokens typical)
-
-**Example settings.json**:
-```json
-{
-  "env": {
-    "CLAUDE_MEM_MODEL": "claude-haiku-4-5",
-    "CLAUDE_MEM_CONTEXT_OBSERVATIONS": "100"
-  }
-}
-```
-
-**Notes**:
-- Higher observation counts = more context but more tokens consumed at startup
-- 50 observations ≈ 4-8 hours of work ≈ 1.2K tokens
-- 100 observations ≈ 1-2 days of work ≈ 2.4K tokens
-- 200 observations ≈ 2-3 days of work ≈ 4.8K tokens
-- Session summaries are shown when available but are not the primary timeline
-
-## Data Flow
-
-### Memory Pipeline
-```
-Tool Execution → Hook Capture → Worker Processing → AI Compression → Database Storage → Future Context Injection
-```
-
-### Search Pipeline
-```
-Search Query → MCP Server → SessionSearch → FTS5 Query → Results with Citations
-```
-
-### Usage Tracking
-
-Claude-mem automatically tracks SDK usage metrics to JSONL files for cost analysis:
-
-**Location**: `~/.claude-mem/usage-logs/usage-YYYY-MM-DD.jsonl`
-
-**Captured Metrics**:
-- Token counts (input, output, cache creation, cache read)
-- Total cost in USD per API call
-- Duration metrics (total time and API time)
-- Number of turns per session
-- Session and project attribution
-- Model information
-
-**Analysis Tools**:
-```bash
-# Analyze today's usage
-npm run usage:today
-
-# Analyze specific date
-npm run usage:analyze 2025-11-03
-```
-
-The analysis script provides:
-- Total cost and token usage
-- Cache hit rates and savings
-- Cost breakdowns by project
-- Cost breakdowns by model
-- Average cost per API call
-
-## Development
-
-### Directory Structure
-```
-claude-mem/
-├── src/
-│   ├── bin/hooks/          # Hook entry points
-│   ├── hooks/              # Hook implementations
-│   ├── services/           # Worker service
-│   ├── services/sqlite/    # Database layer
-│   ├── servers/            # MCP search server
-│   ├── sdk/                # Claude Agent SDK integration
-│   ├── shared/             # Shared utilities
-│   └── utils/              # General utilities
-├── plugin/                 # Built plugin files
-│   ├── scripts/            # Built hook executables
-│   └── .mcp.json          # MCP server configuration
-└── .claude-plugin/        # Plugin metadata
-    └── marketplace.json   # Marketplace definition
-```
-
-### Technology Stack
-- **Language**: TypeScript
-- **Database**: SQLite 3 with better-sqlite3
-- **HTTP**: Express.js
-- **Process Management**: PM2
-- **AI SDK**: @anthropic-ai/claude-agent-sdk (v0.1.23)
-- **MCP SDK**: @modelcontextprotocol/sdk (v1.20.1)
-- **Schema Validation**: zod-to-json-schema (v3.24.6)
-
-### Build Process
-
-**Build and sync to marketplace plugin**:
+### When You Modify Hooks
 ```bash
 npm run build
 npm run sync-marketplace
 ```
+Changes take effect on next Claude Code session. No worker restart needed.
 
-**If you changed the worker service** (`src/services/worker-service.ts`):
+### When You Modify Worker Service
 ```bash
+npm run build
+npm run sync-marketplace
 npm run worker:restart
 ```
+Must restart PM2 worker for changes to take effect.
 
-**What happens**:
-1. `npm run build` - Compiles TypeScript and outputs hook executables to `plugin/scripts/`
-2. `npm run sync-marketplace` - Syncs built files to `~/.claude/plugins/marketplaces/thedotmack/`
-3. `npm run worker:restart` - (Optional) Only needed if you modified the worker service code
+### When You Modify MCP Server
+```bash
+npm run build
+npm run sync-marketplace
+# Restart Claude Code for MCP changes
+```
 
-**Build Outputs**:
-- Hook executables: `*-hook.js` (ESM format)
-- Worker service: `worker-service.cjs` (CJS format)
-- Search server: `search-server.js` (ESM format)
+### Build Pipeline
+1. `npm run build` → Compiles TypeScript, outputs to `plugin/`
+2. `npm run sync-marketplace` → Syncs to `~/.claude/plugins/marketplaces/thedotmack/`
+3. Changes are live for next session (hooks/MCP) or after restart (worker)
 
-**Note**: Hook changes take effect immediately on next session. Worker changes require restart.
+## Coding Standards: DRY, YAGNI, and Anti-Patterns
 
-### Investigation Best Practices
+**Philosophy**: Write the dumb, obvious thing first. Add complexity only when you actually hit the problem.
+
+### Common Anti-Patterns to Avoid
+
+**1. Wrapper Functions for Constants**
+```typescript
+// ❌ DON'T: Ceremonial wrapper that adds zero value
+export function getWorkerPort(): number {
+  return FIXED_PORT;
+}
+
+// ✅ DO: Export the constant directly
+export const WORKER_PORT = parseInt(process.env.CLAUDE_MEM_WORKER_PORT || "37777", 10);
+```
+
+**2. Unused Default Parameters**
+```typescript
+// ❌ DON'T: Defaults that are never actually used
+async function isHealthy(timeout: number = 3000) { ... }
+// Every call: isHealthy(1000) - the default is dead code
+
+// ✅ DO: Remove the default if no one uses it
+async function isHealthy(timeout: number) { ... }
+```
+
+**3. Magic Numbers Everywhere**
+```typescript
+// ❌ DON'T: Unexplained magic numbers scattered throughout
+if (await isWorkerHealthy(1000)) { ... }
+await waitForHealth(10000);
+setTimeout(resolve, 100);
+
+// ✅ DO: Named constants with context
+const HEALTH_CHECK_TIMEOUT_MS = 1000;
+const HEALTH_CHECK_MAX_WAIT_MS = 10000;
+const HEALTH_CHECK_POLL_INTERVAL_MS = 100;
+```
+
+**4. Overengineered Error Handling**
+```typescript
+// ❌ DON'T: Silent failures and defensive programming for ghosts
+checkProcess.on("close", (code) => {
+  // PM2 list can fail, but we should still continue - just assume worker isn't running
+  resolve(); // <- Silent failure!
+});
+
+// ✅ DO: Fail fast with clear errors
+checkProcess.on("close", (code) => {
+  if (code !== 0) {
+    reject(new Error(`PM2 not found - install dependencies first`));
+  }
+  resolve();
+});
+```
+
+**5. Fragile String Parsing**
+```typescript
+// ❌ DON'T: Parse human-readable output with string matching
+const isRunning = output.includes("claude-mem-worker") && output.includes("online");
+
+// ✅ DO: Use structured output (JSON)
+const processes = JSON.parse(execSync('pm2 jlist'));
+const isRunning = processes.some(p => p.name === 'claude-mem-worker' && p.pm2_env.status === 'online');
+```
+
+**6. Duplicated Promise Wrappers**
+```typescript
+// ❌ DON'T: Copy-paste the same promise pattern multiple times
+await new Promise((resolve, reject) => {
+  process1.on("error", reject);
+  process1.on("close", (code) => { /* ... */ });
+});
+// ... later ...
+await new Promise((resolve, reject) => {
+  process2.on("error", reject);
+  process2.on("close", (code) => { /* ... same pattern */ });
+});
+
+// ✅ DO: Extract a helper function
+async function waitForProcess(process: ChildProcess, validateExitCode = false): Promise<void> {
+  return new Promise((resolve, reject) => {
+    process.on("error", reject);
+    process.on("close", (code) => {
+      if (validateExitCode && code !== 0 && code !== null) {
+        reject(new Error(`Process failed with exit code ${code}`));
+      } else {
+        resolve();
+      }
+    });
+  });
+}
+```
+
+**7. YAGNI Violations - Solving Problems You Don't Have**
+```typescript
+// ❌ DON'T: 50+ lines checking PM2 status before starting
+const checkProcess = spawn(pm2Path, ["list", "--no-color"]);
+// ... parse output ...
+// ... check if running ...
+// ... then maybe start it ...
+
+// ✅ DO: Just start it (PM2 start is idempotent)
+if (!await isWorkerHealthy()) {
+  await startWorker(); // PM2 handles "already running" gracefully
+  if (!await waitForWorkerHealth()) {
+    throw new Error("Worker failed to become healthy");
+  }
+}
+```
+
+### Why These Patterns Appear
+
+These anti-patterns often emerge from:
+- **Training bias**: Code that looks "professional" is often overengineered
+- **Risk aversion**: Optimizing for "what could go wrong" instead of "what do you actually need"
+- **Pattern matching**: Seeing a problem and immediately scaffolding a framework
+- **No real-world pain**: Not debugging at 2am means not feeling the cost of complexity
+
+### The Actual Standard
+
+1. **YAGNI (You Aren't Gonna Need It)**: Don't build it until you need it
+2. **DRY (Don't Repeat Yourself)**: Extract patterns after the second duplication, not before
+3. **Fail Fast**: Explicit errors beat silent failures
+4. **Simple First**: Write the obvious solution, then optimize only if needed
+5. **Delete Aggressively**: Less code = fewer bugs
+
+**Reference**: See worker-utils.ts critique (conversation 2025-11-05) for detailed examples.
+
+## Common Tasks
+
+### Adding a New Hook
+1. Create `src/hooks/new-hook.ts`
+2. Add to `scripts/build-hooks.js` build list
+3. Add configuration to `plugin/hooks/hooks.json`
+4. Build and sync: `npm run build && npm run sync-marketplace`
+
+### Modifying Database Schema
+1. Update schema in `src/services/sqlite/schema.ts`
+2. Update SessionStore/SessionSearch classes
+3. Migration strategy: The plugin currently recreates on schema changes (acceptable for alpha)
+4. TODO: Add proper migrations for production
+
+### Debugging Worker Issues
+```bash
+pm2 list                    # Check worker status
+npm run worker:logs         # View logs
+npm run worker:restart      # Restart if needed
+pm2 delete claude-mem-worker # Force clean start
+```
+
+### Testing Changes Locally
+1. Make changes in `src/`
+2. `npm run build && npm run sync-marketplace`
+3. Start new Claude Code session (hooks) or restart worker (worker changes)
+4. Check `~/.claude-mem/claude-mem.db` for database state
+5. Use MCP search tools to verify behavior
+
+### Version Bumps
+Use the version-bump skill:
+```bash
+/skill version-bump
+```
+Choose patch/minor/major. Updates package.json, marketplace.json, plugin.json, and CLAUDE.md.
+
+## Investigation Best Practices
 
 **When investigations are failing persistently**, use Task agents for comprehensive file analysis instead of grep/search:
 
 **❌ Don't:** Repeatedly grep and search for patterns when failing to find the issue
-```bash
-# Multiple failed attempts with grep, Glob, etc.
-```
 
 **✅ Do:** Deploy a Task agent to read files in full and answer specific questions
 ```
@@ -299,7 +265,7 @@ npm run worker:restart
 - More efficient than multiple rounds of searching
 ```
 
-**Example usage:**
+**Example:**
 ```
 Deploy a general-purpose Task agent to:
 1. Read src/hooks/context-hook.ts in full
@@ -308,260 +274,82 @@ Deploy a general-purpose Task agent to:
 4. Find any bugs or inconsistencies between them
 ```
 
-This approach is especially valuable when:
-- You're investigating how multiple files interact
+Use this when:
+- Investigating how multiple files interact
 - Search queries aren't finding what you expect
-- You need to understand complete implementation context
-- The issue might be a subtle inconsistency between files
+- Need complete implementation context
+- Issue might be a subtle inconsistency between files
 
-## Version History
+## Recent Changes (v5.0.3)
 
-For detailed version history and changelog, see [CHANGELOG.md](CHANGELOG.md).
+**Key Fix**: Smart caching installer for Windows compatibility
+- Eliminated redundant npm install on every SessionStart (2-5s → 10ms)
+- Caches version in `.install-version` file
+- Only runs npm install when actually needed (first time, version change, missing deps)
 
-**Current Version**: 5.0.3
+**Files Changed**:
+- `scripts/smart-install.js` - New smart caching installer
+- `plugin/hooks/hooks.json` - Use smart-install instead of raw npm install
+- `src/shared/worker-utils.ts` - Health checks before worker operations
 
-### Recent Highlights
+**Why This Matters**: Every SessionStart hook was running npm install, causing 2-5s delays even when nothing changed. Now it's ~10ms for cached installs (200x faster).
 
-#### v5.0.3 (2025-11-05)
-**Breaking Changes**: None (patch version)
+## Configuration Users Can Set
 
-**Fixes**:
-- Fixed Windows installation with smart caching installer (PR #54: scripts/smart-install.js)
-- Eliminated redundant npm install executions on every SessionStart (improved from 2-5s to ~10ms)
-- Added comprehensive Windows troubleshooting with VS Build Tools guidance
-- Fixed dynamic Python version detection in Windows error messages (scripts/smart-install.js:106-115)
+**Model Selection** (`~/.claude/settings.json`):
+```json
+{
+  "env": {
+    "CLAUDE_MEM_MODEL": "claude-haiku-4-5"  // or sonnet-4-5, opus-4, etc.
+  }
+}
+```
 
-**Improvements**:
-- Smart install now caches version state in `.install-version` file
-- Only runs npm install when needed: first time, version change, or missing dependencies
-- Enhanced rsync to respect gitignore rules in sync-marketplace (package.json:38)
-- Better PM2 worker startup verification and management
-- Cross-platform compatible installer (pure Node.js, no shell dependencies)
+**Context Observation Count** (`~/.claude/settings.json`):
+```json
+{
+  "env": {
+    "CLAUDE_MEM_CONTEXT_OBSERVATIONS": "50"  // default, adjust based on needs
+  }
+}
+```
 
-**Technical Details**:
-- New: scripts/smart-install.js (smart caching installer with PM2 worker management)
-- Modified: plugin/hooks/hooks.json:25 (use smart-install.js instead of raw npm install)
-- Modified: .gitignore (added .install-version cache file)
-- Modified: CLAUDE.md (added Windows requirements and troubleshooting section)
-- Modified: package.json:38 (enhanced sync-marketplace with --filter=':- .gitignore' --exclude=.git)
-- Root cause: npm install was running on every SessionStart regardless of whether dependencies changed
-- Impact: 200x faster SessionStart for cached installations (10ms vs 2-5s)
-
-#### v5.0.2 (2025-11-04)
-**Breaking Changes**: None (patch version)
-
-**Fixes**:
-- Fixed worker startup reliability with async health checks (PR #51: src/shared/worker-utils.ts)
-- Added proper error handling to PM2 process spawning (src/shared/worker-utils.ts)
-- Worker now verifies health before proceeding with hook operations
-- Improved handling of PM2 failures when not yet installed
-
-**Technical Details**:
-- Modified: src/shared/worker-utils.ts (added isWorkerHealthy, waitForWorkerHealth functions)
-- Modified: src/hooks/*.ts (all hooks now await ensureWorkerRunning)
-- Modified: plugin/scripts/*.js (rebuilt hook executables)
-- Root cause: ensureWorkerRunning was synchronous and didn't verify worker was actually responsive before proceeding
-- Impact: More reliable worker startup with proper health verification
-
-#### v5.0.1 (2025-11-04)
-**Breaking Changes**: None (patch version)
-
-**Fixes**:
-- Fixed worker service stability issues (PR #47: src/services/worker-service.ts, src/shared/worker-utils.ts)
-- Improved worker process management and restart reliability (src/hooks/*-hook.ts)
-- Enhanced session management and logging across all hooks
-- Removed error/output file redirection from PM2 ecosystem config for better debugging (ecosystem.config.cjs)
-
-**Improvements**:
-- Added GitHub Actions workflows for automated code review (PR #48)
-  - Claude Code Review workflow (.github/workflows/claude-code-review.yml)
-  - Claude PR Assistant workflow (.github/workflows/claude.yml)
-- Better worker health checks and startup sequence
-- Improved error handling and logging throughout hook lifecycle
-- Cleaned up documentation files and consolidated project context
-
-**Technical Details**:
-- Modified: src/services/worker-service.ts (stability improvements)
-- Modified: src/shared/worker-utils.ts (consistent formatting and readability)
-- Modified: ecosystem.config.cjs (removed error/output redirection)
-- Modified: src/hooks/*-hook.ts (ensure worker running before processing)
-- New: .github/workflows/claude-code-review.yml
-- New: .github/workflows/claude.yml
-- Rebuilt: plugin/scripts/*.js (all hook executables)
-- Impact: More reliable worker service with better error visibility and automated PR assistance
-
-#### v4.3.4 (2025-11-01)
-**Breaking Changes**: None (patch version)
-
-**Fixes**:
-- Fixed SessionStart hooks running on session resume (plugin/hooks/hooks.json:4)
-- Added matcher configuration to only run SessionStart hooks on startup, clear, or compact events
-- Prevents unnecessary hook execution and improves performance on session resume
-
-**Technical Details**:
-- Modified: plugin/hooks/hooks.json:4 (added `"matcher": "startup|clear|compact"`)
-- Impact: Hooks now skip execution when resuming existing sessions
-
-#### v4.3.3 (2025-10-27)
-**Breaking Changes**: None (patch version)
-
-**Improvements**:
-- Made session display count configurable via constant (DISPLAY_SESSION_COUNT = 8) in src/hooks/context-hook.ts:11
-- Added first-time setup detection with helpful user messaging in src/hooks/user-message-hook.ts:12-39
-- Improved user experience: First install message clarifies why it appears under "Plugin Hook Error"
-
-**Fixes**:
-- Cleaned up profanity in code comments (src/hooks/context-hook.ts:3)
-- Fixed first-time setup UX by detecting missing node_modules and showing informative message
-
-**Technical Details**:
-- Modified: src/hooks/context-hook.ts:11 (configurable DISPLAY_SESSION_COUNT constant)
-- Modified: src/hooks/user-message-hook.ts:12-39 (first-time setup detection and messaging)
-- Modified: plugin/scripts/context-hook.js (rebuilt)
-- Modified: plugin/scripts/user-message-hook.js (rebuilt)
-
-#### v4.3.2 (2025-10-27)
-**Breaking Changes**: None (patch version)
-
-**Improvements**:
-- Added user-message-hook for displaying context to users via stderr mechanism (src/hooks/user-message-hook.ts)
-- Enhanced context visibility: Hook fires simultaneously with context injection, sending duplicate message as "error" so Claude Code displays it to users
-- Added comprehensive documentation (4 new MDX files covering architecture evolution, context engineering, hooks architecture, and progressive disclosure)
-- Improved cross-platform path handling in context-hook (src/hooks/context-hook.ts:14)
-
-**Technical Details**:
-- New files:
-  - src/hooks/user-message-hook.ts (stderr-based user-facing context display)
-  - plugin/scripts/user-message-hook.js (built hook executable)
-  - docs/architecture-evolution.mdx (801 lines)
-  - docs/context-engineering.mdx (222 lines)
-  - docs/hooks-architecture.mdx (784 lines)
-  - docs/progressive-disclosure.mdx (655 lines)
-- Modified:
-  - plugin/hooks/hooks.json:5 (added user-message-hook configuration)
-  - src/hooks/context-hook.ts:14 (improved path handling)
-  - scripts/build-hooks.js:3 (build support for new hook)
-- Design rationale: Error messages don't get added to context, so we intentionally duplicate context output via stderr for user visibility. This is a temporary workaround until Claude Code potentially adds ability to share messages with both user and context simultaneously.
-
-#### v4.3.1 (2025-10-26)
-**Breaking Changes**: None (patch version)
-
-**Fixes**:
-- Fixed SessionStart hook context injection by silencing npm install output (plugin/hooks/hooks.json:25)
-- Changed npm loglevel from `--loglevel=error` to `--loglevel=silent` to ensure clean JSON output
-- Consolidated hooks architecture by removing bin/hooks wrapper layer (src/hooks/*-hook.ts)
-- Fixed double shebang issues in hook executables (esbuild now adds shebang during build)
-
-**Technical Details**:
-- Modified: plugin/hooks/hooks.json (npm install verbosity)
-- Removed: src/bin/hooks/* (wrapper layer no longer needed)
-- Consolidated: Hook logic moved directly into src/hooks/*-hook.ts files
-- Root cause: npm install stderr/stdout was polluting hook JSON output, preventing context injection
-
-#### v4.3.0 (2025-10-25)
-- Progressive Disclosure Context: Enhanced context hook with observation timeline and token cost visibility
-- Session observations now display in table format showing ID, timestamp, type indicators, title, and token counts
-- Added progressive disclosure usage instructions to guide Claude on when to fetch full observation details vs. reading code
-- Added Agent Skills documentation and version bump management skill
-- Cross-platform path improvements: Removed hardcoded paths for project and Claude Code executable (fixes #23)
-
-#### v4.2.11 (2025-10-25)
-- Fixed cross-platform Claude executable path detection using `which`/`where` commands
-- Full Windows, macOS, and Linux compatibility
-
-#### v4.2.8 (2025-10-25)
-- Fixed NOT NULL constraint violation for claude_session_id
-
-#### v4.2.3 (2025-10-23)
-- Fixed FTS5 injection vulnerability
-- Fixed Windows PowerShell compatibility
-
-#### v4.0.0 (2025-10-18)
-- MCP Search Server with FTS5 full-text search
-- Plugin data directory integration
-- HTTP REST API architecture with PM2
+**Worker Port** (`~/.claude/settings.json`):
+```json
+{
+  "env": {
+    "CLAUDE_MEM_WORKER_PORT": "37777"  // default
+  }
+}
+```
 
 ## Key Design Decisions
 
-### Graceful Cleanup (v4.1.0)
-Changed from aggressive session deletion (HTTP DELETE to workers) to graceful completion (marking sessions complete and allowing workers to finish). This prevents interruption of important operations like summary generation.
+### Why PM2 Instead of Direct Process
+Hooks have strict timeout limits. PM2 manages a persistent background worker, allowing AI processing to continue after hooks complete.
 
-### FTS5 for Search Performance
-Implements SQLite FTS5 (Full-Text Search) virtual tables with automatic synchronization triggers, enabling fast full-text search across thousands of observations without performance degradation.
+### Why SQLite FTS5
+Enables instant full-text search across thousands of observations without external dependencies. Automatic sync triggers keep FTS5 tables synchronized.
 
-### Multi-Prompt Session Support
-Tracks `prompt_counter` and `prompt_number` across sessions and observations, enabling context preservation across conversation restarts within the same coding session.
+### Why Graceful Cleanup (v4.1.0)
+Changed from aggressive DELETE requests to marking sessions complete. Prevents interrupting summary generation and other async operations.
 
-## Troubleshooting
+### Why Smart Install Caching (v5.0.3)
+npm install is expensive (2-5s). Caching version state and only installing on changes makes SessionStart nearly instant (10ms).
 
-### Windows Installation Issues
+## File Locations
 
-**Error: `ERR_MODULE_NOT_FOUND: Cannot find package 'better-sqlite3'`**
+**Source**: `/Users/alexnewman/Scripts/claude-mem/src/`
+**Built Plugin**: `/Users/alexnewman/Scripts/claude-mem/plugin/`
+**Installed Plugin**: `~/.claude/plugins/marketplaces/thedotmack/`
+**Database**: `~/.claude-mem/claude-mem.db`
+**Usage Logs**: `~/.claude-mem/usage-logs/usage-YYYY-MM-DD.jsonl`
 
-This typically means the native module failed to install. Solutions:
+## Quick Reference
 
-1. **Check for prebuilt binaries** (works for 95% of users):
-   - better-sqlite3 v12.x ships with prebuilt binaries
-   - They should install automatically
-   - No build tools needed if prebuilts match your Node.js version
-
-2. **If prebuilts don't match your configuration**:
-   - Install Visual Studio Build Tools:
-     - Download: https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022
-     - Select "Desktop development with C++"
-     - Restart terminal after installation
-   - Or use npm (run as Administrator):
-     ```bash
-     npm install --global windows-build-tools
-     ```
-
-3. **Verify installation**:
-   ```bash
-   cd ~/.claude/plugins/marketplaces/thedotmack
-   npm list better-sqlite3
-   ```
-
-4. **Check build tools** (if needed):
-   - Python 3.6+ required
-   - Visual C++ Build Tools required
-   - See: https://github.com/WiseLibs/better-sqlite3/blob/master/docs/troubleshooting.md
-
-**Smart Install Script**: The plugin uses a cached installation system. It only runs npm install when:
-- First time setup (no node_modules)
-- Plugin version changes
-- Dependencies are missing
-
-### Worker Service Issues
-- Check PM2 status: `pm2 list`
-- View logs: `npm run worker:logs`
-- Restart worker: `npm run worker:restart`
-
-### Database Issues
-- Database location: `~/.claude-mem/claude-mem.db`
-- Check schema: `sqlite3 <db-path> ".schema"`
-- FTS5 tables are automatically synchronized via triggers
-
-### Hook Issues
-- Hooks output to Claude Code's hook execution log
-- Check `plugin/scripts/` for built executables
-
-### Model Configuration Issues
-- Use `./claude-mem-settings.sh` to manage model settings
-- Settings stored in `~/.claude/settings.json`
-- Default fallback: `claude-sonnet-4-5`
-
-## Citations & References
-
-This project uses the `claude-mem://` URI scheme for citations:
-- `claude-mem://observation/{id}` - References specific observations
-- `claude-mem://session/{id}` - References specific sessions
-
-All MCP search results include citations, enabling Claude to reference specific historical context.
-
-## License
-
-AGPL-3.0
-
-## Repository
-
-https://github.com/thedotmack/claude-mem
+**Build**: `npm run build`
+**Sync**: `npm run sync-marketplace`
+**Worker Restart**: `npm run worker:restart`
+**Worker Logs**: `npm run worker:logs`
+**Version Bump**: `/skill version-bump`
+**Usage Analysis**: `npm run usage:today`
