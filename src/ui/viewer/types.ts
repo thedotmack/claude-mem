@@ -20,12 +20,26 @@ export interface Summary {
   created_at_epoch: number;
 }
 
+export interface UserPrompt {
+  id: number;
+  claude_session_id: string;
+  prompt_number: number;
+  prompt_text: string;
+  created_at_epoch: number;
+}
+
 export interface StreamEvent {
-  type: 'initial_load' | 'new_observation' | 'new_summary';
+  type: 'initial_load' | 'new_observation' | 'new_summary' | 'new_prompt' | 'processing_status';
   observations?: Observation[];
   summaries?: Summary[];
+  prompts?: UserPrompt[];
   observation?: Observation;
   summary?: Summary;
+  prompt?: UserPrompt;
+  processing?: {
+    session_id: string;
+    is_processing: boolean;
+  };
 }
 
 export interface Settings {

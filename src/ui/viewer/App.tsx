@@ -11,7 +11,7 @@ export function App() {
   const [currentFilter, setCurrentFilter] = useState('');
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
-  const { observations, summaries, isConnected } = useSSE();
+  const { observations, summaries, prompts, processingSessions, isConnected } = useSSE();
   const { settings, saveSettings, isSaving, saveStatus } = useSettings();
   const { stats } = useStats();
 
@@ -37,6 +37,8 @@ export function App() {
         <Feed
           observations={observations}
           summaries={summaries}
+          prompts={prompts}
+          processingSessions={processingSessions}
           currentFilter={currentFilter}
         />
       </div>

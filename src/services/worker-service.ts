@@ -222,12 +222,14 @@ class WorkerService {
     const db = new SessionStore();
     const recentObservations = db.getAllRecentObservations(100);
     const recentSummaries = db.getAllRecentSummaries(50);
+    const recentPrompts = db.getAllRecentUserPrompts(100);
     db.close();
 
     const initialData = {
       type: 'initial_load',
       observations: recentObservations,
       summaries: recentSummaries,
+      prompts: recentPrompts,
       timestamp: Date.now()
     };
 
@@ -467,6 +469,20 @@ class WorkerService {
     `).get(claudeSessionId) as any;
 
     db.close();
+
+    // Broadcast new prompt to SSE clients (for web UI)
+    if (latestPrompt) {
+      this.broadcastSSE({
+        type: 'new_prompt',
+        prompt: {
+          id: latestPrompt.id,
+          claude_session_id: latestPrompt.claude_session_id,
+          prompt_number: latestPrompt.prompt_number,
+          prompt_text: latestPrompt.prompt_text,
+          created_at_epoch: latestPrompt.created_at_epoch
+        }
+      });
+    }
 
     // Sync user prompt to Chroma (fire-and-forget, but crash on failure)
     if (latestPrompt) {

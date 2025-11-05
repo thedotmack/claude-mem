@@ -620,6 +620,27 @@ export class SessionStore {
   }
 
   /**
+   * Get recent user prompts across all sessions (for web UI)
+   */
+  getAllRecentUserPrompts(limit: number = 100): Array<{
+    id: number;
+    claude_session_id: string;
+    prompt_number: number;
+    prompt_text: string;
+    created_at: string;
+    created_at_epoch: number;
+  }> {
+    const stmt = this.db.prepare(`
+      SELECT id, claude_session_id, prompt_number, prompt_text, created_at, created_at_epoch
+      FROM user_prompts
+      ORDER BY created_at_epoch DESC
+      LIMIT ?
+    `);
+
+    return stmt.all(limit) as any[];
+  }
+
+  /**
    * Get recent sessions with their status and summary info
    */
   getRecentSessionsWithStatus(project: string, limit: number = 3): Array<{

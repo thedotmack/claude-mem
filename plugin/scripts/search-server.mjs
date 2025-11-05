@@ -336,6 +336,11 @@ ${e.stack}`:e.message;if(Array.isArray(e))return`[${e.length} items]`;let r=Obje
       FROM session_summaries
       ORDER BY created_at_epoch DESC
       LIMIT ?
+    `).all(e)}getAllRecentUserPrompts(e=100){return this.db.prepare(`
+      SELECT id, claude_session_id, prompt_number, prompt_text, created_at, created_at_epoch
+      FROM user_prompts
+      ORDER BY created_at_epoch DESC
+      LIMIT ?
     `).all(e)}getRecentSessionsWithStatus(e,r=3){return this.db.prepare(`
       SELECT * FROM (
         SELECT
