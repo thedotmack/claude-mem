@@ -29,18 +29,10 @@ export interface UserPrompt {
   created_at_epoch: number;
 }
 
-export interface SkeletonItem {
-  id: string;
-  session_id: string;
-  project?: string;
-  created_at_epoch: number;
-}
-
 export type FeedItem =
   | (Observation & { itemType: 'observation' })
   | (Summary & { itemType: 'summary' })
-  | (UserPrompt & { itemType: 'prompt' })
-  | (SkeletonItem & { itemType: 'skeleton' });
+  | (UserPrompt & { itemType: 'prompt' });
 
 export interface StreamEvent {
   type: 'initial_load' | 'new_observation' | 'new_summary' | 'new_prompt' | 'processing_status';
@@ -51,10 +43,7 @@ export interface StreamEvent {
   observation?: Observation;
   summary?: Summary;
   prompt?: UserPrompt;
-  processing?: {
-    session_id: string;
-    is_processing: boolean;
-  };
+  isProcessing?: boolean;
 }
 
 export interface Settings {
