@@ -11,7 +11,7 @@ export function PromptCard({ prompt }: PromptCardProps) {
     <div className="card prompt-card">
       <div className="card-header">
         <span className="card-type">Prompt</span>
-        <span>#{prompt.prompt_number}</span>
+        <span>{prompt.project}</span>
       </div>
       <div className="card-content">
         {prompt.prompt_text}

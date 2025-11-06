@@ -106,6 +106,7 @@ export function App() {
         stats={stats}
         isSaving={isSaving}
         saveStatus={saveStatus}
+        isConnected={isConnected}
         onSave={saveSettings}
         onClose={toggleSidebar}
       />

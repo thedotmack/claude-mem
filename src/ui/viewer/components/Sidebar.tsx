@@ -9,11 +9,12 @@ interface SidebarProps {
   stats: Stats;
   isSaving: boolean;
   saveStatus: string;
+  isConnected: boolean;
   onSave: (settings: Settings) => void;
   onClose: () => void;
 }
 
-export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, onSave, onClose }: SidebarProps) {
+export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, isConnected, onSave, onClose }: SidebarProps) {
   const [model, setModel] = useState(settings.CLAUDE_MEM_MODEL || DEFAULT_SETTINGS.CLAUDE_MEM_MODEL);
   const [contextObs, setContextObs] = useState(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_OBSERVATIONS);
   const [workerPort, setWorkerPort] = useState(settings.CLAUDE_MEM_WORKER_PORT || DEFAULT_SETTINGS.CLAUDE_MEM_WORKER_PORT);
@@ -35,9 +36,13 @@ export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, onSave,
 
   return (
     <div className={`sidebar ${isOpen ? 'open' : ''}`}>
-      <div className="header">
+      <div className="sidebar-header">
         <h1>Settings</h1>
         <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <span className={`status-dot ${isConnected ? 'connected' : ''}`} />
+            <span style={{ fontSize: '11px', opacity: 0.5, fontWeight: 300 }}>{isConnected ? 'Connected' : 'Disconnected'}</span>
+          </div>
           <button onClick={handleSave} disabled={isSaving}>
             {isSaving ? 'Saving...' : 'Save'}
           </button>
@@ -63,6 +68,7 @@ export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, onSave,
         </div>
       </div>
       <div className="stats-scroll">
+
         <div className="settings-section">
           <h3>Environment Variables</h3>
           <div className="form-group">
