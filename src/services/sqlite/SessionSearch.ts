@@ -35,11 +35,15 @@ export class SessionSearch {
    */
   private ensureFTSTables(): void {
     try {
-      // Check if FTS tables already exist
+      // Check if ALL FTS tables already exist
       const tables = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%_fts'").all() as any[];
-      const hasFTS = tables.some((t: any) => t.name === 'observations_fts' || t.name === 'session_summaries_fts');
+      const existingTableNames = new Set(tables.map((t: any) => t.name));
+      
+      // Required FTS tables that this method creates
+      const requiredTables = ['observations_fts', 'session_summaries_fts'];
+      const allTablesExist = requiredTables.every(name => existingTableNames.has(name));
 
-      if (hasFTS) {
+      if (allTablesExist) {
         // Already migrated
         return;
       }

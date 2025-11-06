@@ -330,3 +330,137 @@ describe('SessionSearch FTS5 Injection Tests', () => {
     teardownTestDB();
   });
 });
+
+describe('SessionSearch FTS5 Migration Tests', () => {
+  let search: SessionSearch;
+  let db: Database.Database;
+
+  const TEST_DB_DIR_MIGRATION = '/tmp/claude-mem-test-migration';
+  const TEST_DB_PATH_MIGRATION = path.join(TEST_DB_DIR_MIGRATION, 'test-migration.db');
+
+  function teardownMigrationTestDB() {
+    if (search) {
+      search.close();
+      search = null;
+    }
+    if (fs.existsSync(TEST_DB_DIR_MIGRATION)) {
+      fs.rmSync(TEST_DB_DIR_MIGRATION, { recursive: true, force: true });
+    }
+  }
+
+  test('should create all FTS tables when observations_fts exists but session_summaries_fts is missing', () => {
+    // Clean up any existing test database
+    if (fs.existsSync(TEST_DB_DIR_MIGRATION)) {
+      fs.rmSync(TEST_DB_DIR_MIGRATION, { recursive: true, force: true });
+    }
+    fs.mkdirSync(TEST_DB_DIR_MIGRATION, { recursive: true });
+
+    // Create database with schema and ONLY observations_fts table (simulate partial migration)
+    db = new Database(TEST_DB_PATH_MIGRATION);
+    db.pragma('journal_mode = WAL');
+
+    db.exec(`
+      CREATE TABLE sdk_sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        claude_session_id TEXT UNIQUE NOT NULL,
+        project TEXT NOT NULL,
+        started_at_epoch INTEGER DEFAULT ((unixepoch() * 1000))
+      );
+
+      CREATE TABLE observations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        claude_session_id TEXT NOT NULL,
+        prompt_number INTEGER DEFAULT 1,
+        type TEXT NOT NULL,
+        title TEXT,
+        subtitle TEXT,
+        narrative TEXT,
+        text TEXT,
+        facts TEXT,
+        concepts TEXT,
+        files_read TEXT,
+        files_modified TEXT,
+        project TEXT,
+        created_at_epoch INTEGER DEFAULT ((unixepoch() * 1000)),
+        FOREIGN KEY (claude_session_id) REFERENCES sdk_sessions(claude_session_id)
+      );
+
+      CREATE TABLE session_summaries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        claude_session_id TEXT NOT NULL,
+        prompt_number INTEGER DEFAULT 1,
+        request TEXT,
+        investigated TEXT,
+        learned TEXT,
+        completed TEXT,
+        next_steps TEXT,
+        notes TEXT,
+        files_read TEXT,
+        files_edited TEXT,
+        project TEXT,
+        created_at_epoch INTEGER DEFAULT ((unixepoch() * 1000)),
+        FOREIGN KEY (claude_session_id) REFERENCES sdk_sessions(claude_session_id)
+      );
+
+      CREATE TABLE user_prompts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        claude_session_id TEXT NOT NULL,
+        prompt_number INTEGER DEFAULT 1,
+        prompt_text TEXT NOT NULL,
+        created_at_epoch INTEGER DEFAULT ((unixepoch() * 1000)),
+        FOREIGN KEY (claude_session_id) REFERENCES sdk_sessions(claude_session_id)
+      );
+
+      -- ONLY create observations_fts (simulate partial migration bug)
+      CREATE VIRTUAL TABLE observations_fts USING fts5(
+        title,
+        subtitle,
+        narrative,
+        text,
+        facts,
+        concepts,
+        content='observations',
+        content_rowid='id'
+      );
+
+      CREATE TRIGGER observations_ai AFTER INSERT ON observations BEGIN
+        INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
+        VALUES (new.id, new.title, new.subtitle, new.narrative, new.text, new.facts, new.concepts);
+      END;
+    `);
+
+    // Verify only observations_fts exists before SessionSearch instantiation
+    const tablesBefore = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%_fts'").all() as any[];
+    const tableNamesBefore = tablesBefore.map((t: any) => t.name);
+    assert.ok(tableNamesBefore.includes('observations_fts'), 'observations_fts should exist before');
+    assert.ok(!tableNamesBefore.includes('session_summaries_fts'), 'session_summaries_fts should NOT exist before');
+
+    db.close();
+
+    // Now instantiate SessionSearch - it should create the missing FTS tables
+    search = new SessionSearch(TEST_DB_PATH_MIGRATION);
+
+    // Verify all FTS tables exist after SessionSearch instantiation
+    const tablesAfter = search['db'].prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%_fts'").all() as any[];
+    const tableNamesAfter = tablesAfter.map((t: any) => t.name);
+    
+    assert.ok(tableNamesAfter.includes('observations_fts'), 'observations_fts should still exist after');
+    assert.ok(tableNamesAfter.includes('session_summaries_fts'), 'session_summaries_fts should be created');
+
+    // Verify that session search works now
+    const db2 = new Database(TEST_DB_PATH_MIGRATION);
+    db2.exec(`
+      INSERT INTO sdk_sessions (claude_session_id, project) VALUES ('test-migration-1', 'test-project');
+      INSERT INTO session_summaries (claude_session_id, prompt_number, request, investigated, learned, completed, next_steps, notes, files_read, files_edited, project)
+      VALUES ('test-migration-1', 1, 'Fix bug in search', 'Investigated FTS tables', 'Learned about migration', 'Fixed the bug', 'Test thoroughly', 'Notes here', '[]', '[]', 'test-project');
+    `);
+    db2.close();
+
+    // This should not throw "no such table: session_summaries_fts"
+    const results = search.searchSessions('Fix bug');
+    assert.strictEqual(Array.isArray(results), true, 'Should return an array');
+    assert.ok(results.length > 0, 'Should find at least one result');
+
+    teardownMigrationTestDB();
+  });
+});
