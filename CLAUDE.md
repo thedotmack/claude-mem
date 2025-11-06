@@ -6,7 +6,7 @@ Claude-mem is a Claude Code plugin providing persistent memory across sessions. 
 
 **Your Role**: You are working on the plugin itself. When users interact with Claude Code with this plugin installed, your observations get captured and become their persistent memory.
 
-**Current Version**: 5.0.3
+**Current Version**: 5.1.0
 
 ## Critical Architecture Knowledge
 
@@ -55,6 +55,14 @@ Claude-mem is a Claude Code plugin providing persistent memory across sessions. 
 - Configured in `plugin/.mcp.json`
 - Built to `plugin/search-server.js` (ESM format)
 
+**Viewer UI** (`src/ui/viewer/`)
+- React + TypeScript web interface accessible at http://localhost:37777
+- Real-time memory stream visualization via Server-Sent Events (SSE)
+- Infinite scroll pagination for observations, sessions, and user prompts
+- Project filtering and settings persistence
+- Built to `plugin/ui/viewer.html` (self-contained bundle via esbuild)
+- Auto-reconnection and error recovery
+
 ## How to Make Changes
 
 ### When You Modify Hooks
@@ -78,6 +86,14 @@ npm run build
 npm run sync-marketplace
 # Restart Claude Code for MCP changes
 ```
+
+### When You Modify Viewer UI
+```bash
+npm run build
+npm run sync-marketplace
+npm run worker:restart
+```
+Changes to React components, styles, or viewer logic require rebuilding and restarting the worker. Refresh browser to see changes.
 
 ### Build Pipeline
 1. `npm run build` → Compiles TypeScript, outputs to `plugin/`
@@ -280,19 +296,49 @@ Use this when:
 - Need complete implementation context
 - Issue might be a subtle inconsistency between files
 
-## Recent Changes (v5.0.3)
+## Recent Changes (v5.1.0)
 
-**Key Fix**: Smart caching installer for Windows compatibility
+**Major Feature**: Web-Based Viewer UI for Real-Time Memory Stream
+- Production-ready viewer accessible at http://localhost:37777
+- Real-time visualization via Server-Sent Events (SSE) - see observations, sessions, and prompts as they happen
+- Infinite scroll pagination with automatic deduplication
+- Project filtering to focus on specific codebases
+- Settings persistence (sidebar state, selected project)
+- Auto-reconnection with exponential backoff
+- GPU-accelerated animations for smooth interactions
+
+**New Worker Endpoints** (8 HTTP/SSE endpoints, +500 lines):
+- `/api/prompts` - Paginated user prompts with project filtering
+- `/api/observations` - Paginated observations with project filtering
+- `/api/summaries` - Paginated session summaries with project filtering
+- `/api/stats` - Database statistics (total counts by project)
+- `/api/projects` - List of unique project names
+- `/stream` - Server-Sent Events for real-time updates
+- `/` - Serves viewer HTML
+- `/health` - Health check endpoint
+
+**Database Enhancements** (+98 lines in SessionStore):
+- `getRecentPrompts()` - Paginated prompts with OFFSET/LIMIT
+- `getRecentObservations()` - Paginated observations with OFFSET/LIMIT
+- `getRecentSummaries()` - Paginated summaries with OFFSET/LIMIT
+- `getStats()` - Aggregated statistics by project
+- `getUniqueProjects()` - Distinct project names
+
+**Complete React UI** (17 new files, 1,500+ lines):
+- Components: Header, Sidebar, Feed, Cards (Observation, Prompt, Summary, Skeleton)
+- Hooks: useSSE, usePagination, useSettings, useStats
+- Utils: Data merging, formatters, constants
+- Assets: Monaspace Radon font, logos (dark mode + logomark)
+- Build: esbuild pipeline for self-contained HTML bundle
+
+**Why This Matters**: Users can now visualize their memory stream in real-time. See exactly what claude-mem is capturing as you work, filter by project, and understand the context being injected into sessions.
+
+### Previous Release (v5.0.3)
+
+**Smart Caching Installer for Windows Compatibility**:
 - Eliminated redundant npm install on every SessionStart (2-5s → 10ms)
 - Caches version in `.install-version` file
 - Only runs npm install when actually needed (first time, version change, missing deps)
-
-**Files Changed**:
-- `scripts/smart-install.js` - New smart caching installer
-- `plugin/hooks/hooks.json` - Use smart-install instead of raw npm install
-- `src/shared/worker-utils.ts` - Health checks before worker operations
-
-**Why This Matters**: Every SessionStart hook was running npm install, causing 2-5s delays even when nothing changed. Now it's ~10ms for cached installs (200x faster).
 
 ## Configuration Users Can Set
 
@@ -337,6 +383,9 @@ Changed from aggressive DELETE requests to marking sessions complete. Prevents i
 ### Why Smart Install Caching (v5.0.3)
 npm install is expensive (2-5s). Caching version state and only installing on changes makes SessionStart nearly instant (10ms).
 
+### Why Web-Based Viewer UI (v5.1.0)
+Real-time visibility into memory stream helps users understand what's being captured and how context is being built. SSE provides instant updates without polling. Self-contained HTML bundle (esbuild) eliminates deployment complexity - everything served from a single file.
+
 ## File Locations
 
 **Source**: `/Users/alexnewman/Scripts/claude-mem/src/`
@@ -353,3 +402,4 @@ npm install is expensive (2-5s). Caching version state and only installing on ch
 **Worker Logs**: `npm run worker:logs`
 **Version Bump**: `/skill version-bump`
 **Usage Analysis**: `npm run usage:today`
+**Viewer UI**: http://localhost:37777 (auto-starts with worker)
