@@ -6,44 +6,102 @@ import { useSSE } from './hooks/useSSE';
 import { useSettings } from './hooks/useSettings';
 import { useStats } from './hooks/useStats';
 import { usePagination } from './hooks/usePagination';
-import { Observation, Summary } from './types';
+import { Observation, Summary, UserPrompt } from './types';
 
 export function App() {
   const [currentFilter, setCurrentFilter] = useState('');
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [paginatedObservations, setPaginatedObservations] = useState<Observation[]>([]);
+  const [paginatedSummaries, setPaginatedSummaries] = useState<Summary[]>([]);
+  const [paginatedPrompts, setPaginatedPrompts] = useState<UserPrompt[]>([]);
 
   const { observations, summaries, prompts, projects, processingSessions, isConnected } = useSSE();
   const { settings, saveSettings, isSaving, saveStatus } = useSettings();
   const { stats } = useStats();
-  const { isLoading, hasMore, loadMore } = usePagination();
+  const pagination = usePagination(currentFilter);
 
-  // Merge real-time observations with paginated ones, removing duplicates
+  // Reset paginated data when filter changes
+  useEffect(() => {
+    setPaginatedObservations([]);
+    setPaginatedSummaries([]);
+    setPaginatedPrompts([]);
+  }, [currentFilter]);
+
+  // Merge real-time data with paginated data, removing duplicates and filtering by project
   const allObservations = useMemo(() => {
+    // Filter SSE observations by current project (pagination is already filtered)
+    const filteredSSE = currentFilter
+      ? observations.filter(obs => obs.project === currentFilter)
+      : observations;
+
     const seen = new Set<number>();
-    return [...observations, ...paginatedObservations].filter(obs => {
+    return [...filteredSSE, ...paginatedObservations].filter(obs => {
       if (seen.has(obs.id)) return false;
       seen.add(obs.id);
       return true;
     });
-  }, [observations, paginatedObservations]);
+  }, [observations, paginatedObservations, currentFilter]);
+
+  const allSummaries = useMemo(() => {
+    // Filter SSE summaries by current project (pagination is already filtered)
+    const filteredSSE = currentFilter
+      ? summaries.filter(sum => sum.project === currentFilter)
+      : summaries;
+
+    const seen = new Set<number>();
+    return [...filteredSSE, ...paginatedSummaries].filter(sum => {
+      if (seen.has(sum.id)) return false;
+      seen.add(sum.id);
+      return true;
+    });
+  }, [summaries, paginatedSummaries, currentFilter]);
+
+  const allPrompts = useMemo(() => {
+    // Filter SSE prompts by current project (pagination is already filtered)
+    const filteredSSE = currentFilter
+      ? prompts.filter(prompt => prompt.project === currentFilter)
+      : prompts;
+
+    const seen = new Set<number>();
+    return [...filteredSSE, ...paginatedPrompts].filter(prompt => {
+      if (seen.has(prompt.id)) return false;
+      seen.add(prompt.id);
+      return true;
+    });
+  }, [prompts, paginatedPrompts, currentFilter]);
 
   // Toggle sidebar
   const toggleSidebar = useCallback(() => {
     setSidebarOpen(prev => !prev);
   }, []);
 
-  // Handle loading more observations
+  // Handle loading more data
   const handleLoadMore = useCallback(async () => {
     try {
-      const newObservations = await loadMore();
+      const [newObservations, newSummaries, newPrompts] = await Promise.all([
+        pagination.observations.loadMore(),
+        pagination.summaries.loadMore(),
+        pagination.prompts.loadMore()
+      ]);
+
       if (newObservations.length > 0) {
         setPaginatedObservations(prev => [...prev, ...newObservations]);
       }
+      if (newSummaries.length > 0) {
+        setPaginatedSummaries(prev => [...prev, ...newSummaries]);
+      }
+      if (newPrompts.length > 0) {
+        setPaginatedPrompts(prev => [...prev, ...newPrompts]);
+      }
     } catch (error) {
-      console.error('Failed to load more observations:', error);
+      console.error('Failed to load more data:', error);
     }
-  }, [loadMore]);
+  }, [pagination]);
+
+  // Load first page when filter changes or pagination handlers update
+  useEffect(() => {
+    handleLoadMore();
+  }, [currentFilter, handleLoadMore]);
 
   return (
     <div className="container">
@@ -59,13 +117,12 @@ export function App() {
         />
         <Feed
           observations={allObservations}
-          summaries={summaries}
-          prompts={prompts}
+          summaries={allSummaries}
+          prompts={allPrompts}
           processingSessions={processingSessions}
-          currentFilter={currentFilter}
           onLoadMore={handleLoadMore}
-          isLoading={isLoading}
-          hasMore={hasMore}
+          isLoading={pagination.observations.isLoading || pagination.summaries.isLoading || pagination.prompts.isLoading}
+          hasMore={pagination.observations.hasMore || pagination.summaries.hasMore || pagination.prompts.hasMore}
         />
       </div>
 

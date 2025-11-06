@@ -10,7 +10,6 @@ interface FeedProps {
   summaries: Summary[];
   prompts: UserPrompt[];
   processingSessions: Set<string>;
-  currentFilter: string;
   onLoadMore: () => void;
   isLoading: boolean;
   hasMore: boolean;
@@ -21,7 +20,7 @@ type FeedItem =
   | (Summary & { itemType: 'summary' })
   | (UserPrompt & { itemType: 'prompt' });
 
-export function Feed({ observations, summaries, prompts, processingSessions, currentFilter, onLoadMore, isLoading, hasMore }: FeedProps) {
+export function Feed({ observations, summaries, prompts, processingSessions, onLoadMore, isLoading, hasMore }: FeedProps) {
   const loadMoreRef = useRef<HTMLDivElement>(null);
   const onLoadMoreRef = useRef(onLoadMore);
 
@@ -56,28 +55,16 @@ export function Feed({ observations, summaries, prompts, processingSessions, cur
   }, [hasMore, isLoading]);
 
   const items = useMemo<FeedItem[]>(() => {
-    const filtered = currentFilter
-      ? observations.filter(o => o.project === currentFilter)
-      : observations;
-
-    const filteredSummaries = currentFilter
-      ? summaries.filter(s => s.project === currentFilter)
-      : summaries;
-
-    // For now, don't filter prompts by project since they don't have a project field directly
-    // We can enhance this later if needed
-    const filteredPrompts = prompts;
-
-    // Combine and sort by timestamp
+    // Data is already filtered by App.tsx - no need to filter again
     const combined = [
-      ...filtered.map(o => ({ ...o, itemType: 'observation' as const })),
-      ...filteredSummaries.map(s => ({ ...s, itemType: 'summary' as const })),
-      ...filteredPrompts.map(p => ({ ...p, itemType: 'prompt' as const }))
+      ...observations.map(o => ({ ...o, itemType: 'observation' as const })),
+      ...summaries.map(s => ({ ...s, itemType: 'summary' as const })),
+      ...prompts.map(p => ({ ...p, itemType: 'prompt' as const }))
     ];
 
     return combined
       .sort((a, b) => b.created_at_epoch - a.created_at_epoch);
-  }, [observations, summaries, prompts, currentFilter]);
+  }, [observations, summaries, prompts]);
 
   return (
     <div className="feed">

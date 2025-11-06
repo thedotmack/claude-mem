@@ -124,6 +124,8 @@ class WorkerService {
     this.app.get('/api/settings', this.handleGetSettings.bind(this));
     this.app.post('/api/settings', this.handlePostSettings.bind(this));
     this.app.get('/api/observations', this.handleGetObservations.bind(this));
+    this.app.get('/api/summaries', this.handleGetSummaries.bind(this));
+    this.app.get('/api/prompts', this.handleGetPrompts.bind(this));
 
     // Session endpoints
     this.app.post('/sessions/:sessionDbId/init', this.handleInit.bind(this));
@@ -219,19 +221,13 @@ class WorkerService {
     this.sseClients.add(res);
     logger.info('WORKER', `SSE client connected`, { totalClients: this.sseClients.size });
 
-    // Send initial data snapshot
+    // Send only projects list - all data will be loaded via pagination
     const db = new SessionStore();
-    const recentObservations = db.getAllRecentObservations(100);
-    const recentSummaries = db.getAllRecentSummaries(50);
-    const recentPrompts = db.getAllRecentUserPrompts(100);
     const allProjects = db.getAllProjects();
     db.close();
 
     const initialData = {
       type: 'initial_load',
-      observations: recentObservations,
-      summaries: recentSummaries,
-      prompts: recentPrompts,
       projects: allProjects,
       timestamp: Date.now()
     };
@@ -433,28 +429,41 @@ class WorkerService {
 
   /**
    * GET /api/observations - Paginated observations fetch
-   * Query params: offset (default 0), limit (default 50)
+   * Query params: offset (default 0), limit (default 50), project (optional)
    */
   private handleGetObservations(req: Request, res: Response): void {
     try {
       const offset = parseInt(req.query.offset as string || '0', 10);
       const limit = Math.min(parseInt(req.query.limit as string || '50', 10), 100); // Cap at 100
+      const project = req.query.project as string | undefined;
 
       const db = new SessionStore();
 
-      // Get paginated observations
-      const stmt = db.db.prepare(`
+      // Build query with optional project filter
+      let query = `
         SELECT id, type, title, subtitle, text, project, prompt_number, created_at, created_at_epoch
         FROM observations
-        ORDER BY created_at_epoch DESC
-        LIMIT ? OFFSET ?
-      `);
+      `;
+      let countQuery = 'SELECT COUNT(*) as total FROM observations';
+      const params: any[] = [];
+      const countParams: any[] = [];
 
-      const observations = stmt.all(limit, offset);
+      if (project) {
+        query += ' WHERE project = ?';
+        countQuery += ' WHERE project = ?';
+        params.push(project);
+        countParams.push(project);
+      }
+
+      query += ' ORDER BY created_at_epoch DESC LIMIT ? OFFSET ?';
+      params.push(limit, offset);
+
+      const stmt = db.db.prepare(query);
+      const observations = stmt.all(...params);
 
       // Check if there are more results
-      const countStmt = db.db.prepare('SELECT COUNT(*) as total FROM observations');
-      const { total } = countStmt.get() as { total: number };
+      const countStmt = db.db.prepare(countQuery);
+      const { total } = countStmt.get(...countParams) as { total: number };
       const hasMore = (offset + limit) < total;
 
       db.close();
@@ -469,6 +478,111 @@ class WorkerService {
     } catch (error: any) {
       logger.error('WORKER', 'Failed to get observations', {}, error);
       res.status(500).json({ error: 'Failed to get observations' });
+    }
+  }
+
+  private handleGetSummaries(req: Request, res: Response): void {
+    try {
+      const offset = parseInt(req.query.offset as string || '0', 10);
+      const limit = Math.min(parseInt(req.query.limit as string || '50', 10), 100); // Cap at 100
+      const project = req.query.project as string | undefined;
+
+      const db = new SessionStore();
+
+      // Build query with optional project filter
+      let query = `
+        SELECT id, sdk_session_id as session_id, request, learned, completed, next_steps, project, created_at, created_at_epoch
+        FROM session_summaries
+      `;
+      let countQuery = 'SELECT COUNT(*) as total FROM session_summaries';
+      const params: any[] = [];
+      const countParams: any[] = [];
+
+      if (project) {
+        query += ' WHERE project = ?';
+        countQuery += ' WHERE project = ?';
+        params.push(project);
+        countParams.push(project);
+      }
+
+      query += ' ORDER BY created_at_epoch DESC LIMIT ? OFFSET ?';
+      params.push(limit, offset);
+
+      const stmt = db.db.prepare(query);
+      const summaries = stmt.all(...params);
+
+      // Check if there are more results
+      const countStmt = db.db.prepare(countQuery);
+      const { total } = countStmt.get(...countParams) as { total: number };
+      const hasMore = (offset + limit) < total;
+
+      db.close();
+
+      res.json({
+        summaries,
+        hasMore,
+        total,
+        offset,
+        limit
+      });
+    } catch (error: any) {
+      logger.error('WORKER', 'Failed to get summaries', {}, error);
+      res.status(500).json({ error: 'Failed to get summaries' });
+    }
+  }
+
+  private handleGetPrompts(req: Request, res: Response): void {
+    try {
+      const offset = parseInt(req.query.offset as string || '0', 10);
+      const limit = Math.min(parseInt(req.query.limit as string || '50', 10), 100); // Cap at 100
+      const project = req.query.project as string | undefined;
+
+      const db = new SessionStore();
+
+      // Build query with optional project filter - JOIN with sdk_sessions to get project
+      let query = `
+        SELECT up.id, up.claude_session_id, s.project, up.prompt_number, up.prompt_text, up.created_at, up.created_at_epoch
+        FROM user_prompts up
+        JOIN sdk_sessions s ON up.claude_session_id = s.claude_session_id
+      `;
+      let countQuery = `
+        SELECT COUNT(*) as total
+        FROM user_prompts up
+        JOIN sdk_sessions s ON up.claude_session_id = s.claude_session_id
+      `;
+      const params: any[] = [];
+      const countParams: any[] = [];
+
+      if (project) {
+        query += ' WHERE s.project = ?';
+        countQuery += ' WHERE s.project = ?';
+        params.push(project);
+        countParams.push(project);
+      }
+
+      query += ' ORDER BY created_at_epoch DESC LIMIT ? OFFSET ?';
+      params.push(limit, offset);
+
+      const stmt = db.db.prepare(query);
+      const prompts = stmt.all(...params);
+
+      // Check if there are more results
+      const countStmt = db.db.prepare(countQuery);
+      const { total } = countStmt.get(...countParams) as { total: number };
+      const hasMore = (offset + limit) < total;
+
+      db.close();
+
+      res.json({
+        prompts,
+        hasMore,
+        total,
+        offset,
+        limit
+      });
+    } catch (error: any) {
+      logger.error('WORKER', 'Failed to get prompts', {}, error);
+      res.status(500).json({ error: 'Failed to get prompts' });
     }
   }
 
@@ -534,6 +648,7 @@ class WorkerService {
         prompt: {
           id: latestPrompt.id,
           claude_session_id: latestPrompt.claude_session_id,
+          project: latestPrompt.project,
           prompt_number: latestPrompt.prompt_number,
           prompt_text: latestPrompt.prompt_text,
           created_at_epoch: latestPrompt.created_at_epoch

@@ -52,14 +52,9 @@ export function useSSE() {
           switch (data.type) {
             case 'initial_load':
               console.log('[SSE] Initial load:', {
-                observations: data.observations?.length || 0,
-                summaries: data.summaries?.length || 0,
-                prompts: data.prompts?.length || 0,
                 projects: data.projects?.length || 0
               });
-              setObservations(data.observations || []);
-              setSummaries(data.summaries || []);
-              setPrompts(data.prompts || []);
+              // Only load projects list - data will come via pagination
               setProjects(data.projects || []);
               break;
 

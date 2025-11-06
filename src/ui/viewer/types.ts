@@ -23,6 +23,7 @@ export interface Summary {
 export interface UserPrompt {
   id: number;
   claude_session_id: string;
+  project: string;
   prompt_number: number;
   prompt_text: string;
   created_at_epoch: number;

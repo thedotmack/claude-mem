@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import{stdin as U}from"process";import j from"better-sqlite3";import{join as E,dirname as X,basename as J}from"path";import{homedir as L}from"os";import{existsSync as ee,mkdirSync as F}from"fs";import{fileURLToPath as P}from"url";function B(){return typeof __dirname<"u"?__dirname:X(P(import.meta.url))}var H=B(),l=process.env.CLAUDE_MEM_DATA_DIR||E(L(),".claude-mem"),h=process.env.CLAUDE_CONFIG_DIR||E(L(),".claude"),te=E(l,"archives"),re=E(l,"logs"),ne=E(l,"trash"),oe=E(l,"backups"),ie=E(l,"settings.json"),A=E(l,"claude-mem.db"),ae=E(l,"vector-db"),de=E(h,"settings.json"),pe=E(h,"commands"),ce=E(h,"CLAUDE.md");function C(p){F(p,{recursive:!0})}function v(){return E(H,"..","..")}var N=(n=>(n[n.DEBUG=0]="DEBUG",n[n.INFO=1]="INFO",n[n.WARN=2]="WARN",n[n.ERROR=3]="ERROR",n[n.SILENT=4]="SILENT",n))(N||{}),O=class{level;useColor;constructor(){let e=process.env.CLAUDE_MEM_LOG_LEVEL?.toUpperCase()||"INFO";this.level=N[e]??1,this.useColor=process.stdout.isTTY??!1}correlationId(e,s){return`obs-${e}-${s}`}sessionId(e){return`session-${e}`}formatData(e){if(e==null)return"";if(typeof e=="string")return e;if(typeof e=="number"||typeof e=="boolean")return e.toString();if(typeof e=="object"){if(e instanceof Error)return this.level===0?`${e.message}
+import{stdin as U}from"process";import j from"better-sqlite3";import{join as E,dirname as F,basename as J}from"path";import{homedir as L}from"os";import{existsSync as ee,mkdirSync as X}from"fs";import{fileURLToPath as P}from"url";function B(){return typeof __dirname<"u"?__dirname:F(P(import.meta.url))}var H=B(),l=process.env.CLAUDE_MEM_DATA_DIR||E(L(),".claude-mem"),h=process.env.CLAUDE_CONFIG_DIR||E(L(),".claude"),te=E(l,"archives"),re=E(l,"logs"),ne=E(l,"trash"),oe=E(l,"backups"),ie=E(l,"settings.json"),A=E(l,"claude-mem.db"),ae=E(l,"vector-db"),de=E(h,"settings.json"),pe=E(h,"commands"),ce=E(h,"CLAUDE.md");function C(p){X(p,{recursive:!0})}function v(){return E(H,"..","..")}var N=(n=>(n[n.DEBUG=0]="DEBUG",n[n.INFO=1]="INFO",n[n.WARN=2]="WARN",n[n.ERROR=3]="ERROR",n[n.SILENT=4]="SILENT",n))(N||{}),O=class{level;useColor;constructor(){let e=process.env.CLAUDE_MEM_LOG_LEVEL?.toUpperCase()||"INFO";this.level=N[e]??1,this.useColor=process.stdout.isTTY??!1}correlationId(e,s){return`obs-${e}-${s}`}sessionId(e){return`session-${e}`}formatData(e){if(e==null)return"";if(typeof e=="string")return e;if(typeof e=="number"||typeof e=="boolean")return e.toString();if(typeof e=="object"){if(e instanceof Error)return this.level===0?`${e.message}
 ${e.stack}`:e.message;if(Array.isArray(e))return`[${e.length} items]`;let s=Object.keys(e);return s.length===0?"{}":s.length<=3?JSON.stringify(e):`{${s.length} keys: ${s.slice(0,3).join(", ")}...}`}return String(e)}formatTool(e,s){if(!s)return e;try{let t=typeof s=="string"?JSON.parse(s):s;if(e==="Bash"&&t.command){let r=t.command.length>50?t.command.substring(0,50)+"...":t.command;return`${e}(${r})`}if(e==="Read"&&t.file_path){let r=t.file_path.split("/").pop()||t.file_path;return`${e}(${r})`}if(e==="Edit"&&t.file_path){let r=t.file_path.split("/").pop()||t.file_path;return`${e}(${r})`}if(e==="Write"&&t.file_path){let r=t.file_path.split("/").pop()||t.file_path;return`${e}(${r})`}return e}catch{return e}}log(e,s,t,r,n){if(e<this.level)return;let o=new Date().toISOString().replace("T"," ").substring(0,23),i=N[e].padEnd(5),a=s.padEnd(6),_="";r?.correlationId?_=`[${r.correlationId}] `:r?.sessionId&&(_=`[session-${r.sessionId}] `);let c="";n!=null&&(this.level===0&&typeof n=="object"?c=`
 `+JSON.stringify(n,null,2):c=" "+this.formatData(n));let m="";if(r){let{sessionId:T,sdkSessionId:g,correlationId:u,...d}=r;Object.keys(d).length>0&&(m=` {${Object.entries(d).map(([w,M])=>`${w}=${M}`).join(", ")}}`)}let S=`[${o}] [${i}] [${a}] ${_}${t}${m}${c}`;e===3?console.error(S):console.log(S)}debug(e,s,t,r){this.log(0,e,s,t,r)}info(e,s,t,r){this.log(1,e,s,t,r)}warn(e,s,t,r){this.log(2,e,s,t,r)}error(e,s,t,r){this.log(3,e,s,t,r)}dataIn(e,s,t,r){this.info(e,`\u2192 ${s}`,t,r)}dataOut(e,s,t,r){this.info(e,`\u2190 ${s}`,t,r)}success(e,s,t,r){this.info(e,`\u2713 ${s}`,t,r)}failure(e,s,t,r){this.error(e,`\u2717 ${s}`,t,r)}timing(e,s,t,r){this.info(e,`\u23F1 ${s}`,r,{duration:`${t}ms`})}},b=new O;var R=class{db;constructor(){C(l),this.db=new j(A),this.db.pragma("journal_mode = WAL"),this.db.pragma("synchronous = NORMAL"),this.db.pragma("foreign_keys = ON"),this.initializeSchema(),this.ensureWorkerPortColumn(),this.ensurePromptTrackingColumns(),this.removeSessionSummariesUniqueConstraint(),this.addObservationHierarchicalFields(),this.makeObservationsTextNullable(),this.createUserPromptsTable()}initializeSchema(){try{this.db.exec(`
         CREATE TABLE IF NOT EXISTS schema_versions (
@@ -201,9 +201,17 @@ ${e.stack}`:e.message;if(Array.isArray(e))return`[${e.length} items]`;let s=Obje
       ORDER BY created_at_epoch DESC
       LIMIT ?
     `).all(e)}getAllRecentUserPrompts(e=100){return this.db.prepare(`
-      SELECT id, claude_session_id, prompt_number, prompt_text, created_at, created_at_epoch
-      FROM user_prompts
-      ORDER BY created_at_epoch DESC
+      SELECT
+        up.id,
+        up.claude_session_id,
+        s.project,
+        up.prompt_number,
+        up.prompt_text,
+        up.created_at,
+        up.created_at_epoch
+      FROM user_prompts up
+      LEFT JOIN sdk_sessions s ON up.claude_session_id = s.claude_session_id
+      ORDER BY up.created_at_epoch DESC
       LIMIT ?
     `).all(e)}getAllProjects(){return this.db.prepare(`
       SELECT DISTINCT project

@@ -625,15 +625,24 @@ export class SessionStore {
   getAllRecentUserPrompts(limit: number = 100): Array<{
     id: number;
     claude_session_id: string;
+    project: string;
     prompt_number: number;
     prompt_text: string;
     created_at: string;
     created_at_epoch: number;
   }> {
     const stmt = this.db.prepare(`
-      SELECT id, claude_session_id, prompt_number, prompt_text, created_at, created_at_epoch
-      FROM user_prompts
-      ORDER BY created_at_epoch DESC
+      SELECT
+        up.id,
+        up.claude_session_id,
+        s.project,
+        up.prompt_number,
+        up.prompt_text,
+        up.created_at,
+        up.created_at_epoch
+      FROM user_prompts up
+      LEFT JOIN sdk_sessions s ON up.claude_session_id = s.claude_session_id
+      ORDER BY up.created_at_epoch DESC
       LIMIT ?
     `);
 
