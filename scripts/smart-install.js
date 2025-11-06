@@ -12,7 +12,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync } from 'fs';
-import { execSync } from 'child_process';
+import { execSync, spawnSync } from 'child_process';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -211,17 +211,25 @@ function runNpmInstall() {
 
 function startWorker() {
   const ECOSYSTEM_CONFIG = join(PLUGIN_ROOT, 'ecosystem.config.cjs');
+  const PM2_BIN = join(NODE_MODULES_PATH, '.bin', 'pm2');
 
   log('🚀 Starting worker service...', colors.dim);
 
   try {
-    // Use pm2 start which works whether worker is running or not
+    // Use local pm2 binary (not global) to ensure it works immediately after npm install
+    // Using spawnSync for cross-platform compatibility (handles .cmd on Windows automatically)
     // PM2 will either start it or report it's already running (both are success cases)
-    execSync(`pm2 start "${ECOSYSTEM_CONFIG}"`, {
+    const result = spawnSync(PM2_BIN, ['start', ECOSYSTEM_CONFIG], {
       cwd: PLUGIN_ROOT,
-      stdio: 'pipe', // Capture output to avoid clutter
       encoding: 'utf-8',
+      // shell: true is needed on Windows to handle .cmd files properly
+      shell: process.platform === 'win32',
     });
+
+    // Check for errors
+    if (result.error) {
+      throw result.error;
+    }
 
     log('✓ Worker service ready', colors.dim);
     return true;
