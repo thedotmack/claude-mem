@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Header } from './components/Header';
 import { Feed } from './components/Feed';
 import { Sidebar } from './components/Sidebar';
@@ -18,8 +18,15 @@ export function App() {
   const { stats } = useStats();
   const { isLoading, hasMore, loadMore } = usePagination();
 
-  // Merge real-time observations with paginated ones
-  const allObservations = [...observations, ...paginatedObservations];
+  // Merge real-time observations with paginated ones, removing duplicates
+  const allObservations = useMemo(() => {
+    const seen = new Set<number>();
+    return [...observations, ...paginatedObservations].filter(obs => {
+      if (seen.has(obs.id)) return false;
+      seen.add(obs.id);
+      return true;
+    });
+  }, [observations, paginatedObservations]);
 
   // Toggle sidebar
   const toggleSidebar = useCallback(() => {
@@ -28,9 +35,13 @@ export function App() {
 
   // Handle loading more observations
   const handleLoadMore = useCallback(async () => {
-    const newObservations = await loadMore();
-    if (newObservations.length > 0) {
-      setPaginatedObservations(prev => [...prev, ...newObservations]);
+    try {
+      const newObservations = await loadMore();
+      if (newObservations.length > 0) {
+        setPaginatedObservations(prev => [...prev, ...newObservations]);
+      }
+    } catch (error) {
+      console.error('Failed to load more observations:', error);
     }
   }, [loadMore]);
 

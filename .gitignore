@@ -11,3 +11,6 @@ plugin/data/
 plugin/data.backup/
 package-lock.json
 private/
+
+# Generated UI files (built from viewer-template.html)
+src/ui/viewer.html

@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { Observation, Summary, UserPrompt, StreamEvent } from '../types';
+import { API_ENDPOINTS } from '../constants/api';
+import { TIMING } from '../constants/timing';
 
 export function useSSE() {
   const [observations, setObservations] = useState<Observation[]>([]);
@@ -18,7 +20,7 @@ export function useSSE() {
         eventSourceRef.current.close();
       }
 
-      const eventSource = new EventSource('/stream');
+      const eventSource = new EventSource(API_ENDPOINTS.STREAM);
       eventSourceRef.current = eventSource;
 
       eventSource.onopen = () => {
@@ -35,11 +37,12 @@ export function useSSE() {
         setIsConnected(false);
         eventSource.close();
 
-        // Reconnect after 3 seconds
+        // Reconnect after delay
         reconnectTimeoutRef.current = setTimeout(() => {
+          reconnectTimeoutRef.current = undefined; // Clear before reconnecting
           console.log('[SSE] Attempting to reconnect...');
           connect();
-        }, 3000);
+        }, TIMING.SSE_RECONNECT_DELAY_MS);
       };
 
       eventSource.onmessage = (event) => {
@@ -63,18 +66,19 @@ export function useSSE() {
             case 'new_observation':
               if (data.observation) {
                 console.log('[SSE] New observation:', data.observation.id);
-                setObservations(prev => [data.observation!, ...prev]);
+                setObservations(prev => [data.observation, ...prev]);
               }
               break;
 
             case 'new_summary':
               if (data.summary) {
-                console.log('[SSE] New summary:', data.summary.id);
-                setSummaries(prev => [data.summary!, ...prev]);
+                const summary = data.summary;
+                console.log('[SSE] New summary:', summary.id);
+                setSummaries(prev => [summary, ...prev]);
                 // Mark session as no longer processing (summary is the final step)
                 setProcessingSessions(prev => {
                   const next = new Set(prev);
-                  next.delete(data.summary!.session_id);
+                  next.delete(summary.session_id);
                   return next;
                 });
               }
@@ -82,22 +86,24 @@ export function useSSE() {
 
             case 'new_prompt':
               if (data.prompt) {
-                console.log('[SSE] New prompt:', data.prompt.id);
-                setPrompts(prev => [data.prompt!, ...prev]);
+                const prompt = data.prompt;
+                console.log('[SSE] New prompt:', prompt.id);
+                setPrompts(prev => [prompt, ...prev]);
                 // Mark session as processing
-                setProcessingSessions(prev => new Set(prev).add(data.prompt!.claude_session_id));
+                setProcessingSessions(prev => new Set(prev).add(prompt.claude_session_id));
               }
               break;
 
             case 'processing_status':
               if (data.processing) {
-                console.log('[SSE] Processing status:', data.processing);
+                const processing = data.processing;
+                console.log('[SSE] Processing status:', processing);
                 setProcessingSessions(prev => {
                   const next = new Set(prev);
-                  if (data.processing!.is_processing) {
-                    next.add(data.processing!.session_id);
+                  if (processing.is_processing) {
+                    next.add(processing.session_id);
                   } else {
-                    next.delete(data.processing!.session_id);
+                    next.delete(processing.session_id);
                   }
                   return next;
                 });

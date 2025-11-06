@@ -1,5 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Settings, Stats } from '../types';
+import { DEFAULT_SETTINGS } from '../constants/settings';
+import { formatUptime, formatBytes } from '../utils/formatters';
 
 interface SidebarProps {
   isOpen: boolean;
@@ -12,15 +14,15 @@ interface SidebarProps {
 }
 
 export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, onSave, onClose }: SidebarProps) {
-  const [model, setModel] = useState(settings.CLAUDE_MEM_MODEL || 'claude-haiku-4-5');
-  const [contextObs, setContextObs] = useState(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS || '50');
-  const [workerPort, setWorkerPort] = useState(settings.CLAUDE_MEM_WORKER_PORT || '37777');
+  const [model, setModel] = useState(settings.CLAUDE_MEM_MODEL || DEFAULT_SETTINGS.CLAUDE_MEM_MODEL);
+  const [contextObs, setContextObs] = useState(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_OBSERVATIONS);
+  const [workerPort, setWorkerPort] = useState(settings.CLAUDE_MEM_WORKER_PORT || DEFAULT_SETTINGS.CLAUDE_MEM_WORKER_PORT);
 
   // Update local state when settings change
-  React.useEffect(() => {
-    setModel(settings.CLAUDE_MEM_MODEL || 'claude-haiku-4-5');
-    setContextObs(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS || '50');
-    setWorkerPort(settings.CLAUDE_MEM_WORKER_PORT || '37777');
+  useEffect(() => {
+    setModel(settings.CLAUDE_MEM_MODEL || DEFAULT_SETTINGS.CLAUDE_MEM_MODEL);
+    setContextObs(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_OBSERVATIONS);
+    setWorkerPort(settings.CLAUDE_MEM_WORKER_PORT || DEFAULT_SETTINGS.CLAUDE_MEM_WORKER_PORT);
   }, [settings]);
 
   const handleSave = () => {
@@ -29,20 +31,6 @@ export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, onSave,
       CLAUDE_MEM_CONTEXT_OBSERVATIONS: contextObs,
       CLAUDE_MEM_WORKER_PORT: workerPort
     });
-  };
-
-  const formatUptime = (seconds?: number) => {
-    if (!seconds) return '-';
-    const hours = Math.floor(seconds / 3600);
-    const minutes = Math.floor((seconds % 3600) / 60);
-    return `${hours}h ${minutes}m`;
-  };
-
-  const formatBytes = (bytes?: number) => {
-    if (!bytes) return '-';
-    if (bytes < 1024) return bytes + ' B';
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
   };
 
   return (

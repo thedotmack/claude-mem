@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Stats } from '../types';
+import { API_ENDPOINTS } from '../constants/api';
+import { TIMING } from '../constants/timing';
 
 export function useStats() {
   const [stats, setStats] = useState<Stats>({});
@@ -7,7 +9,7 @@ export function useStats() {
   useEffect(() => {
     const loadStats = async () => {
       try {
-        const response = await fetch('/api/stats');
+        const response = await fetch(API_ENDPOINTS.STATS);
         const data = await response.json();
         setStats(data);
       } catch (error) {
@@ -18,8 +20,8 @@ export function useStats() {
     // Load immediately
     loadStats();
 
-    // Refresh every 10 seconds
-    const interval = setInterval(loadStats, 10000);
+    // Refresh periodically
+    const interval = setInterval(loadStats, TIMING.STATS_REFRESH_INTERVAL_MS);
 
     return () => clearInterval(interval);
   }, []);

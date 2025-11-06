@@ -1,24 +1,23 @@
 import { useState, useEffect } from 'react';
 import { Settings } from '../types';
+import { DEFAULT_SETTINGS } from '../constants/settings';
+import { API_ENDPOINTS } from '../constants/api';
+import { TIMING } from '../constants/timing';
 
 export function useSettings() {
-  const [settings, setSettings] = useState<Settings>({
-    CLAUDE_MEM_MODEL: 'claude-haiku-4-5',
-    CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
-    CLAUDE_MEM_WORKER_PORT: '37777'
-  });
+  const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [isSaving, setIsSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState('');
 
   useEffect(() => {
     // Load initial settings
-    fetch('/api/settings')
+    fetch(API_ENDPOINTS.SETTINGS)
       .then(res => res.json())
       .then(data => {
         setSettings({
-          CLAUDE_MEM_MODEL: data.CLAUDE_MEM_MODEL || 'claude-haiku-4-5',
-          CLAUDE_MEM_CONTEXT_OBSERVATIONS: data.CLAUDE_MEM_CONTEXT_OBSERVATIONS || '50',
-          CLAUDE_MEM_WORKER_PORT: data.CLAUDE_MEM_WORKER_PORT || '37777'
+          CLAUDE_MEM_MODEL: data.CLAUDE_MEM_MODEL || DEFAULT_SETTINGS.CLAUDE_MEM_MODEL,
+          CLAUDE_MEM_CONTEXT_OBSERVATIONS: data.CLAUDE_MEM_CONTEXT_OBSERVATIONS || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_OBSERVATIONS,
+          CLAUDE_MEM_WORKER_PORT: data.CLAUDE_MEM_WORKER_PORT || DEFAULT_SETTINGS.CLAUDE_MEM_WORKER_PORT
         });
       })
       .catch(error => {
@@ -31,7 +30,7 @@ export function useSettings() {
     setSaveStatus('Saving...');
 
     try {
-      const response = await fetch('/api/settings', {
+      const response = await fetch(API_ENDPOINTS.SETTINGS, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(newSettings)
@@ -42,7 +41,7 @@ export function useSettings() {
       if (result.success) {
         setSettings(newSettings);
         setSaveStatus('✓ Saved');
-        setTimeout(() => setSaveStatus(''), 3000);
+        setTimeout(() => setSaveStatus(''), TIMING.SAVE_STATUS_DISPLAY_DURATION_MS);
       } else {
         setSaveStatus(`✗ Error: ${result.error}`);
       }

@@ -3,6 +3,7 @@ import { Observation, Summary, UserPrompt } from '../types';
 import { ObservationCard } from './ObservationCard';
 import { SummaryCard } from './SummaryCard';
 import { PromptCard } from './PromptCard';
+import { UI } from '../constants/ui';
 
 interface FeedProps {
   observations: Observation[];
@@ -10,9 +11,9 @@ interface FeedProps {
   prompts: UserPrompt[];
   processingSessions: Set<string>;
   currentFilter: string;
-  onLoadMore?: () => void;
-  isLoading?: boolean;
-  hasMore?: boolean;
+  onLoadMore: () => void;
+  isLoading: boolean;
+  hasMore: boolean;
 }
 
 type FeedItem =
@@ -20,29 +21,39 @@ type FeedItem =
   | (Summary & { itemType: 'summary' })
   | (UserPrompt & { itemType: 'prompt' });
 
-export function Feed({ observations, summaries, prompts, processingSessions, currentFilter, onLoadMore, isLoading = false, hasMore = true }: FeedProps) {
+export function Feed({ observations, summaries, prompts, processingSessions, currentFilter, onLoadMore, isLoading, hasMore }: FeedProps) {
   const loadMoreRef = useRef<HTMLDivElement>(null);
+  const onLoadMoreRef = useRef(onLoadMore);
+
+  // Keep the callback ref up to date
+  useEffect(() => {
+    onLoadMoreRef.current = onLoadMore;
+  }, [onLoadMore]);
 
   // Set up intersection observer for infinite scroll
   useEffect(() => {
-    if (!onLoadMore || !loadMoreRef.current) return;
+    const element = loadMoreRef.current;
+    if (!element) return;
 
     const observer = new IntersectionObserver(
       (entries) => {
         const first = entries[0];
         if (first.isIntersecting && hasMore && !isLoading) {
-          onLoadMore();
+          onLoadMoreRef.current?.();
         }
       },
-      { threshold: 0.1 }
+      { threshold: UI.LOAD_MORE_THRESHOLD }
     );
 
-    observer.observe(loadMoreRef.current);
+    observer.observe(element);
 
     return () => {
+      if (element) {
+        observer.unobserve(element);
+      }
       observer.disconnect();
     };
-  }, [onLoadMore, hasMore, isLoading]);
+  }, [hasMore, isLoading]);
 
   const items = useMemo<FeedItem[]>(() => {
     const filtered = currentFilter
@@ -72,12 +83,13 @@ export function Feed({ observations, summaries, prompts, processingSessions, cur
     <div className="feed">
       <div className="feed-content">
         {items.map(item => {
+          const key = `${item.itemType}-${item.id}`;
           if (item.itemType === 'observation') {
-            return <ObservationCard key={`obs-${item.id}`} observation={item} />;
+            return <ObservationCard key={key} observation={item} />;
           } else if (item.itemType === 'summary') {
-            return <SummaryCard key={`sum-${item.id}`} summary={item} />;
+            return <SummaryCard key={key} summary={item} />;
           } else {
-            return <PromptCard key={`prompt-${item.id}`} prompt={item} />;
+            return <PromptCard key={key} prompt={item} />;
           }
         })}
         {items.length === 0 && !isLoading && (

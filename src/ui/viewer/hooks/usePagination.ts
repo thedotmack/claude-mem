@@ -1,36 +1,33 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { Observation } from '../types';
+import { UI } from '../constants/ui';
+import { API_ENDPOINTS } from '../constants/api';
 
 interface PaginationState {
   isLoading: boolean;
   hasMore: boolean;
-  error: string | null;
 }
 
 export function usePagination() {
   const [state, setState] = useState<PaginationState>({
     isLoading: false,
-    hasMore: true,
-    error: null
+    hasMore: true
   });
   const [offset, setOffset] = useState(0);
-  const LIMIT = 50;
-  const loadingRef = useRef(false);
 
   /**
    * Load more observations from the API
    */
   const loadMore = useCallback(async (): Promise<Observation[]> => {
-    // Prevent concurrent requests
-    if (loadingRef.current || !state.hasMore) {
+    // Prevent concurrent requests using state
+    if (state.isLoading || !state.hasMore) {
       return [];
     }
 
-    loadingRef.current = true;
-    setState(prev => ({ ...prev, isLoading: true, error: null }));
+    setState(prev => ({ ...prev, isLoading: true }));
 
     try {
-      const response = await fetch(`/api/observations?offset=${offset}&limit=${LIMIT}`);
+      const response = await fetch(`${API_ENDPOINTS.OBSERVATIONS}?offset=${offset}&limit=${UI.PAGINATION_PAGE_SIZE}`);
 
       if (!response.ok) {
         throw new Error(`Failed to load observations: ${response.statusText}`);
@@ -44,36 +41,17 @@ export function usePagination() {
         hasMore: data.hasMore
       }));
 
-      setOffset(prev => prev + LIMIT);
+      setOffset(prev => prev + UI.PAGINATION_PAGE_SIZE);
       return data.observations as Observation[];
-    } catch (error: any) {
-      setState(prev => ({
-        ...prev,
-        isLoading: false,
-        error: error.message || 'Failed to load observations'
-      }));
+    } catch (error) {
+      console.error('Failed to load observations:', error);
+      setState(prev => ({ ...prev, isLoading: false }));
       return [];
-    } finally {
-      loadingRef.current = false;
     }
-  }, [offset, state.hasMore]);
-
-  /**
-   * Reset pagination state
-   */
-  const reset = useCallback(() => {
-    setOffset(0);
-    setState({
-      isLoading: false,
-      hasMore: true,
-      error: null
-    });
-    loadingRef.current = false;
-  }, []);
+  }, [offset, state.hasMore, state.isLoading]);
 
   return {
     ...state,
-    loadMore,
-    reset
+    loadMore
   };
 }

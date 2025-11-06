@@ -32,7 +32,7 @@ async function buildViewer() {
       }
     });
 
-    // Copy HTML template
+    // Copy HTML template to build output
     const htmlTemplate = fs.readFileSync(
       path.join(rootDir, 'src/ui/viewer-template.html'),
       'utf-8'
@@ -42,15 +42,9 @@ async function buildViewer() {
       htmlTemplate
     );
 
-    // Copy viewer assets to src/ui as well (for consistency with old structure)
-    fs.copyFileSync(
-      path.join(rootDir, 'plugin/ui/viewer.html'),
-      path.join(rootDir, 'src/ui/viewer.html')
-    );
-
     console.log('✓ React viewer built successfully');
     console.log('  - plugin/ui/viewer-bundle.js');
-    console.log('  - plugin/ui/viewer.html');
+    console.log('  - plugin/ui/viewer.html (from viewer-template.html)');
   } catch (error) {
     console.error('Failed to build viewer:', error);
     process.exit(1);
