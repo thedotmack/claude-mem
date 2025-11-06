@@ -33,13 +33,16 @@ The build process uses esbuild to compile TypeScript:
 
 1. Compiles TypeScript to JavaScript
 2. Creates standalone executables for each hook in `plugin/scripts/`
-3. Bundles MCP search server to `plugin/scripts/search-server.js`
+3. Bundles MCP search server to `plugin/scripts/search-server.mjs`
 4. Bundles worker service to `plugin/scripts/worker-service.cjs`
+5. Bundles web viewer UI to `plugin/ui/viewer.html`
 
 **Build Output**:
 - Hook executables: `*-hook.js` (ESM format)
+- Smart installer: `smart-install.js` (ESM format)
 - Worker service: `worker-service.cjs` (CJS format)
-- Search server: `search-server.js` (ESM format)
+- Search server: `search-server.mjs` (ESM format)
+- Viewer UI: `viewer.html` (self-contained HTML bundle)
 
 ### Build Scripts
 
@@ -66,6 +69,8 @@ src/
 ├── servers/         # MCP search server
 ├── sdk/             # Claude Agent SDK integration
 ├── shared/          # Shared utilities
+├── ui/
+│   └── viewer/      # React web viewer UI components
 └── utils/           # General utilities
 ```
 
@@ -110,6 +115,111 @@ echo '{"session_id":"test-123","cwd":"'$(pwd)'","source":"startup"}' | node plug
 ### 5. Iterate
 
 Repeat steps 1-4 until your changes work as expected.
+
+## Viewer UI Development
+
+### Working with the React Viewer
+
+The web viewer UI is a React application built into a self-contained HTML bundle.
+
+**Location**: `src/ui/viewer/`
+
+**Structure**:
+```
+src/ui/viewer/
+├── index.tsx              # Entry point
+├── App.tsx                # Main application component
+├── components/            # React components
+│   ├── Header.tsx         # Header with logo and actions
+│   ├── Sidebar.tsx        # Project filter sidebar
+│   ├── Feed.tsx           # Main feed with infinite scroll
+│   ├── cards/             # Card components
+│   │   ├── ObservationCard.tsx
+│   │   ├── PromptCard.tsx
+│   │   ├── SummaryCard.tsx
+│   │   └── SkeletonCard.tsx
+├── hooks/                 # Custom React hooks
+│   ├── useSSE.ts          # Server-Sent Events connection
+│   ├── usePagination.ts   # Infinite scroll pagination
+│   ├── useSettings.ts     # Settings persistence
+│   └── useStats.ts        # Database statistics
+├── utils/                 # Utilities
+│   ├── constants.ts       # Constants (API URLs, etc.)
+│   ├── formatters.ts      # Date/time formatting
+│   └── merge.ts           # Data merging and deduplication
+└── assets/                # Static assets (fonts, logos)
+```
+
+### Building Viewer UI
+
+```bash
+# Build everything including viewer
+npm run build
+
+# The viewer is built to plugin/ui/viewer.html
+# It's a self-contained HTML file with inlined JS and CSS
+```
+
+### Testing Viewer Changes
+
+1. Make changes to React components in `src/ui/viewer/`
+2. Build: `npm run build`
+3. Sync to installed plugin: `npm run sync-marketplace`
+4. Restart worker: `npm run worker:restart`
+5. Refresh browser at http://localhost:37777
+
+**Hot Reload**: Not currently supported. Full rebuild + restart required for changes.
+
+### Adding New Viewer Features
+
+**Example: Adding a new card type**
+
+1. Create component in `src/ui/viewer/components/cards/YourCard.tsx`:
+
+```tsx
+import React from 'react';
+
+export interface YourCardProps {
+  // Your data structure
+}
+
+export const YourCard: React.FC<YourCardProps> = ({ ... }) => {
+  return (
+    <div className="card">
+      {/* Your UI */}
+    </div>
+  );
+};
+```
+
+2. Import and use in `Feed.tsx`:
+
+```tsx
+import { YourCard } from './cards/YourCard';
+
+// In render logic:
+{item.type === 'your_type' && <YourCard {...item} />}
+```
+
+3. Update types if needed in `src/ui/viewer/types.ts`
+
+4. Rebuild and test
+
+### Viewer UI Architecture
+
+**Data Flow**:
+1. Worker service exposes HTTP + SSE endpoints
+2. React app fetches initial data via HTTP (paginated)
+3. SSE connection provides real-time updates
+4. Custom hooks handle state management and data merging
+5. Components render cards based on item type
+
+**Key Patterns**:
+- **Infinite Scroll**: `usePagination` hook with Intersection Observer
+- **Real-Time Updates**: `useSSE` hook with auto-reconnection
+- **Deduplication**: `merge.ts` utilities prevent duplicate items
+- **Settings Persistence**: `useSettings` hook with localStorage
+- **Theme Support**: CSS variables with light/dark/system themes
 
 ## Adding New Features
 

@@ -15,15 +15,15 @@ Claude-Mem is fundamentally a **hook-driven system**. Every piece of functionali
 │  (Main session - user interacting with Claude)          │
 │                                                          │
 │  SessionStart → UserPromptSubmit → Tool Use → Stop      │
-│       ↓              ↓               ↓          ↓        │
-│    [Hook]         [Hook]          [Hook]     [Hook]     │
+│     ↓ ↓ ↓            ↓               ↓          ↓        │
+│  [3 Hooks]        [Hook]          [Hook]     [Hook]     │
 └─────────────────────────────────────────────────────────┘
-       ↓              ↓               ↓          ↓
+    ↓ ↓ ↓             ↓               ↓          ↓
 ┌─────────────────────────────────────────────────────────┐
 │                  CLAUDE-MEM SYSTEM                       │
 │                                                          │
-│  Context      New Session    Observation    Summary     │
-│  Injection    Tracking       Capture        Generation  │
+│  Smart      Context     User       New        Obs       │
+│  Install    Inject      Message    Session    Capture   │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -68,42 +68,71 @@ Claude Code's hook system provides exactly what we need:
 
 ---
 
-## The Five Hooks
+## The Seven Hook Scripts
 
-### Hook 1: SessionStart (Context Hook)
+Claude-Mem uses 7 hook scripts across 5 lifecycle events. SessionStart runs 3 hooks in sequence.
 
-**Purpose:** Inject relevant context from previous sessions
+### Hook 1: SessionStart - Smart Install
 
-**When:** Claude Code starts or resumes
+**Purpose:** Intelligently manage dependencies and start worker service
+
+**When:** Claude Code starts (startup, clear, or compact)
 
 **What it does:**
-1. Extracts project name from current working directory
-2. Queries SQLite for recent session summaries (last 10)
-3. Queries SQLite for recent observations (last 50)
-4. Formats as progressive disclosure index
-5. Outputs to stdout (automatically injected into context)
+1. Checks if dependencies need installation (version marker)
+2. Only runs `npm install` when necessary:
+   - First-time installation
+   - Version changed in package.json
+   - Critical dependency missing (better-sqlite3)
+3. Provides Windows-specific error messages
+4. Starts PM2 worker service
 
 **Configuration:**
 ```json
 {
   "hooks": {
     "SessionStart": [{
-      "matcher": "startup",
+      "matcher": "startup|clear|compact",
       "hooks": [{
         "type": "command",
-        "command": "${CLAUDE_PLUGIN_ROOT}/scripts/context-hook.js",
-        "timeout": 120
+        "command": "node \"${CLAUDE_PLUGIN_ROOT}/../scripts/smart-install.js\" && node ${CLAUDE_PLUGIN_ROOT}/scripts/context-hook.js",
+        "timeout": 300
       }]
     }]
   }
 }
 ```
 
+**Key Features:**
+- ✅ Version caching (`.install-version` file)
+- ✅ Fast when already installed (~10ms vs 2-5 seconds)
+- ✅ Cross-platform compatible
+- ✅ Helpful Windows error messages for build tools
+
+**v5.0.3 Enhancement:** Smart caching eliminates redundant installs
+
+**Source:** `scripts/smart-install.js`
+
+---
+
+### Hook 2: SessionStart - Context Injection
+
+**Purpose:** Inject relevant context from previous sessions
+
+**When:** Claude Code starts (runs after smart-install)
+
+**What it does:**
+1. Extracts project name from current working directory
+2. Queries SQLite for recent session summaries (last 10)
+3. Queries SQLite for recent observations (configurable, default 50)
+4. Formats as progressive disclosure index
+5. Outputs to stdout (automatically injected into context)
+
 **Key decisions:**
-- ✅ Only runs on "startup" (not "clear" or "compact")
-- ✅ 120-second timeout for npm install (v4.3.1 fix)
-- ✅ Uses `--loglevel=silent` for clean JSON output
+- ✅ Runs on startup, clear, and compact
+- ✅ 300-second timeout (allows for npm install if needed)
 - ✅ Progressive disclosure format (index, not full details)
+- ✅ Configurable observation count via `CLAUDE_MEM_CONTEXT_OBSERVATIONS`
 
 **Output format:**
 ```markdown
@@ -125,7 +154,56 @@ Claude Code's hook system provides exactly what we need:
 
 ---
 
-### Hook 2: UserPromptSubmit (New Session Hook)
+### Hook 3: SessionStart - User Message
+
+**Purpose:** Display helpful user messages during first-time setup
+
+**When:** Claude Code starts (runs after context-hook)
+
+**What it does:**
+1. Checks if dependencies are installed
+2. Shows first-time setup message if needed
+3. Displays formatted context information with colors
+4. Shows link to viewer UI (http://localhost:37777)
+5. Exits with code 3 (informational, not error)
+
+**Configuration:**
+```json
+{
+  "hooks": {
+    "SessionStart": [{
+      "matcher": "startup|clear|compact",
+      "hooks": [{
+        "type": "command",
+        "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/user-message-hook.js",
+        "timeout": 10
+      }]
+    }]
+  }
+}
+```
+
+**Output Example:**
+```
+📝 Claude-Mem Context Loaded
+   ℹ️  Note: This appears as stderr but is informational only
+
+[Context details with colors...]
+
+📺 Watch live in browser http://localhost:37777/ (New! v5.1)
+```
+
+**Key Features:**
+- ✅ User-friendly first-time experience
+- ✅ Visual context display
+- ✅ Links to viewer UI
+- ✅ Non-intrusive (exit code 3)
+
+**Source:** `plugin/scripts/user-message-hook.js` (minified)
+
+---
+
+### Hook 4: UserPromptSubmit (New Session Hook)
 
 **Purpose:** Initialize session tracking when user submits a prompt
 
@@ -172,7 +250,7 @@ VALUES (?, ?, ?, ...)
 
 ---
 
-### Hook 3: PostToolUse (Save Observation Hook)
+### Hook 5: PostToolUse (Save Observation Hook)
 
 **Purpose:** Capture tool execution observations for later processing
 
@@ -233,7 +311,7 @@ VALUES (?, ?, ?, ?, ...)
 
 ---
 
-### Hook 4: Summary Hook (Mid-Session Checkpoint)
+### Hook 6: Summary Hook (Mid-Session Checkpoint)
 
 **Purpose:** Generate AI-powered session summaries during the session
 
@@ -288,7 +366,7 @@ VALUES (?, ?, ?, ?, ...)
 
 ---
 
-### Hook 5: SessionEnd (Cleanup Hook)
+### Hook 7: SessionEnd (Cleanup Hook)
 
 **Purpose:** Mark sessions as completed when they end
 
@@ -395,11 +473,13 @@ sequenceDiagram
 
 | Event | Timing | Blocking | Timeout | Output Handling |
 |-------|--------|----------|---------|-----------------|
-| **SessionStart** | Before session | No | 120s | stdout → context |
-| **UserPromptSubmit** | Before processing | No | 60s | stdout → context |
-| **PostToolUse** | After tool | No | 60s | Transcript only |
-| **Summary** | Worker triggered | No | 300s | Database |
-| **SessionEnd** | On exit | No | 60s | Log only |
+| **SessionStart (smart-install)** | Before session | No | 300s | stderr (info) |
+| **SessionStart (context)** | Before session | No | 300s | stdout → context |
+| **SessionStart (user-message)** | Before session | No | 10s | stderr (info) |
+| **UserPromptSubmit** | Before processing | No | 120s | stdout → context |
+| **PostToolUse** | After tool | No | 120s | Transcript only |
+| **Summary** | Worker triggered | No | 120s | Database |
+| **SessionEnd** | On exit | No | 120s | Log only |
 
 ---
 
@@ -668,20 +748,23 @@ claude --debug
 
 | Hook | Average | p95 | p99 |
 |------|---------|-----|-----|
-| SessionStart | 45ms | 120ms | 250ms |
+| SessionStart (smart-install, cached) | 10ms | 20ms | 40ms |
+| SessionStart (smart-install, first run) | 2500ms | 5000ms | 8000ms |
+| SessionStart (context) | 45ms | 120ms | 250ms |
+| SessionStart (user-message) | 5ms | 10ms | 15ms |
 | UserPromptSubmit | 12ms | 25ms | 50ms |
 | PostToolUse | 8ms | 15ms | 30ms |
 | SessionEnd | 5ms | 10ms | 20ms |
 
-**Why SessionStart is slower:**
-- npm install check (idempotent but runs every time)
-- Database query for 10 sessions + 50 observations
-- Formatting progressive disclosure index
+**Why smart-install is sometimes slow:**
+- First-time: Full npm install (2-5 seconds)
+- Cached: Version check only (~10ms)
+- Version change: Full npm install + PM2 restart
 
-**Optimization (v4.3.1):**
-- Use `--loglevel=silent` for npm install
-- Cache package.json hash to skip unnecessary installs
-- Use prepared statements for database queries
+**Optimization (v5.0.3):**
+- Version caching with `.install-version` marker
+- Only install on version change or missing deps
+- Windows-specific error messages with build tool help
 
 ### Database Performance
 

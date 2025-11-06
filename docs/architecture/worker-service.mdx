@@ -18,12 +18,32 @@ The worker service is a long-running HTTP API built with Express.js and managed 
 
 ## REST API Endpoints
 
-The worker service exposes 6 HTTP endpoints:
+The worker service exposes 14 HTTP endpoints organized into four categories:
 
-### 1. Health Check
+### Viewer & Health Endpoints
+
+#### 1. Viewer UI
+```
+GET /
+```
+
+**Purpose**: Serves the web-based viewer UI (v5.1.0+)
+
+**Response**: HTML page with embedded React application
+
+**Features**:
+- Real-time memory stream visualization
+- Infinite scroll pagination
+- Project filtering
+- SSE-based live updates
+- Theme toggle (light/dark mode) as of v5.1.2
+
+#### 2. Health Check
 ```
 GET /health
 ```
+
+**Purpose**: Worker health status check
 
 **Response**:
 ```json
@@ -34,7 +54,182 @@ GET /health
 }
 ```
 
-### 2. Initialize Session
+#### 3. Server-Sent Events Stream
+```
+GET /stream
+```
+
+**Purpose**: Real-time updates for viewer UI
+
+**Response**: SSE stream with events:
+- `observation-created`: New observation added
+- `session-summary-created`: New summary generated
+- `user-prompt-created`: New prompt recorded
+
+**Event Format**:
+```
+event: observation-created
+data: {"id": 123, "title": "...", ...}
+```
+
+### Data Retrieval Endpoints
+
+#### 4. Get Prompts
+```
+GET /api/prompts?project=my-project&limit=20&offset=0
+```
+
+**Purpose**: Retrieve paginated user prompts
+
+**Query Parameters**:
+- `project` (optional): Filter by project name
+- `limit` (default: 20): Number of results
+- `offset` (default: 0): Pagination offset
+
+**Response**:
+```json
+{
+  "prompts": [{
+    "id": 1,
+    "session_id": "abc123",
+    "prompt": "User's prompt text",
+    "prompt_number": 1,
+    "created_at": "2025-11-06T10:30:00Z"
+  }],
+  "total": 150,
+  "hasMore": true
+}
+```
+
+#### 5. Get Observations
+```
+GET /api/observations?project=my-project&limit=20&offset=0
+```
+
+**Purpose**: Retrieve paginated observations
+
+**Query Parameters**:
+- `project` (optional): Filter by project name
+- `limit` (default: 20): Number of results
+- `offset` (default: 0): Pagination offset
+
+**Response**:
+```json
+{
+  "observations": [{
+    "id": 123,
+    "title": "Fix authentication bug",
+    "type": "bugfix",
+    "narrative": "...",
+    "created_at": "2025-11-06T10:30:00Z"
+  }],
+  "total": 500,
+  "hasMore": true
+}
+```
+
+#### 6. Get Summaries
+```
+GET /api/summaries?project=my-project&limit=20&offset=0
+```
+
+**Purpose**: Retrieve paginated session summaries
+
+**Query Parameters**:
+- `project` (optional): Filter by project name
+- `limit` (default: 20): Number of results
+- `offset` (default: 0): Pagination offset
+
+**Response**:
+```json
+{
+  "summaries": [{
+    "id": 456,
+    "session_id": "abc123",
+    "request": "User's original request",
+    "completed": "Work finished",
+    "created_at": "2025-11-06T10:30:00Z"
+  }],
+  "total": 100,
+  "hasMore": true
+}
+```
+
+#### 7. Get Stats
+```
+GET /api/stats
+```
+
+**Purpose**: Get database statistics by project
+
+**Response**:
+```json
+{
+  "byProject": {
+    "my-project": {
+      "observations": 245,
+      "summaries": 12,
+      "prompts": 48
+    },
+    "other-project": {
+      "observations": 156,
+      "summaries": 8,
+      "prompts": 32
+    }
+  },
+  "total": {
+    "observations": 401,
+    "summaries": 20,
+    "prompts": 80,
+    "sessions": 20
+  }
+}
+```
+
+### Settings Endpoints
+
+#### 8. Get Settings
+```
+GET /api/settings
+```
+
+**Purpose**: Retrieve user settings
+
+**Response**:
+```json
+{
+  "sidebarOpen": true,
+  "selectedProject": "my-project",
+  "theme": "dark"
+}
+```
+
+#### 9. Save Settings
+```
+POST /api/settings
+```
+
+**Purpose**: Persist user settings
+
+**Request Body**:
+```json
+{
+  "sidebarOpen": false,
+  "selectedProject": "other-project",
+  "theme": "light"
+}
+```
+
+**Response**:
+```json
+{
+  "success": true
+}
+```
+
+### Session Management Endpoints
+
+#### 10. Initialize Session
 ```
 POST /sessions/:sessionDbId/init
 ```
@@ -55,7 +250,7 @@ POST /sessions/:sessionDbId/init
 }
 ```
 
-### 3. Add Observation
+#### 11. Add Observation
 ```
 POST /sessions/:sessionDbId/observations
 ```
@@ -78,7 +273,7 @@ POST /sessions/:sessionDbId/observations
 }
 ```
 
-### 4. Generate Summary
+#### 12. Generate Summary
 ```
 POST /sessions/:sessionDbId/summarize
 ```
@@ -98,7 +293,7 @@ POST /sessions/:sessionDbId/summarize
 }
 ```
 
-### 5. Session Status
+#### 13. Session Status
 ```
 GET /sessions/:sessionDbId/status
 ```
@@ -113,7 +308,7 @@ GET /sessions/:sessionDbId/status
 }
 ```
 
-### 6. Delete Session
+#### 14. Delete Session
 ```
 DELETE /sessions/:sessionDbId
 ```

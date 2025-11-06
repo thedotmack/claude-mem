@@ -23,7 +23,9 @@ Restart Claude Code. Context from previous sessions will automatically appear in
 ## Key Features
 
 - 🧠 **Persistent Memory** - Context survives across sessions
-- 🔍 **7 Search Tools** - Query your project history via MCP
+- 🔍 **9 Search Tools** - Query your project history via MCP
+- 🌐 **Web Viewer UI** - Real-time memory stream visualization at http://localhost:37777
+- 🎨 **Theme Toggle** - Light, dark, and system preference themes
 - 🤖 **Automatic Operation** - No manual intervention required
 - 📊 **FTS5 Search** - Fast full-text search across observations
 - 🔗 **Citations** - Reference past decisions with `claude-mem://` URIs
@@ -56,7 +58,8 @@ Restart Claude Code. Context from previous sessions will automatically appear in
 1. **5 Lifecycle Hooks** - SessionStart, UserPromptSubmit, PostToolUse, Stop, SessionEnd
 2. **Worker Service** - HTTP API on port 37777 managed by PM2
 3. **SQLite Database** - Stores sessions, observations, summaries with FTS5 search
-4. **7 MCP Search Tools** - Query historical context with citations
+4. **9 MCP Search Tools** - Query historical context with citations
+5. **Web Viewer UI** - Real-time visualization with SSE and infinite scroll
 
 See [Architecture Overview](architecture/overview) for details.
 
@@ -67,21 +70,22 @@ See [Architecture Overview](architecture/overview) for details.
 - **PM2**: Process manager (bundled - no global install required)
 - **SQLite 3**: For persistent storage (bundled)
 
-## What's New in v4.3.1
+## What's New in v5.1.2
 
-**Critical Fix:**
-- Fixed SessionStart hook context injection (v4.3.1)
-  - Context wasn't being injected due to npm output pollution
-  - Changed npm loglevel to `--loglevel=silent` for clean JSON output
+**Latest Updates (v5.1.2):**
+- Theme toggle for light, dark, and system preferences in viewer UI
+- Improved visual design with theme-aware components
 
-**Code Quality:**
-- Consolidated hooks architecture (removed bin/hooks wrapper layer)
-- Fixed double shebang issues in hook executables
+**Recent Updates (v5.1.0):**
+- Web-based viewer UI for real-time memory stream visualization
+- Server-Sent Events (SSE) for instant updates
+- Infinite scroll pagination with project filtering
+- 8 new HTTP/SSE endpoints in worker service
 
-**Recent Updates (v4.3.0):**
+**Previous Updates (v4.3.1):**
+- Fixed SessionStart hook context injection
+- Smart install caching for Windows compatibility
 - Progressive disclosure context with observation timelines
-- Enhanced session summaries with token cost visibility
-- Cross-platform path detection improvements
 
 ## Next Steps
 

@@ -51,9 +51,15 @@ Claude-mem is a Claude Code plugin providing persistent memory across sessions. 
 - `SessionStore` = CRUD, `SessionSearch` = FTS5 queries
 
 **MCP Search Server** (`src/servers/search-server.ts`)
-- Exposes 8 search tools to Claude Code
+- Exposes 9 search tools to Claude Code
 - Configured in `plugin/.mcp.json`
-- Built to `plugin/search-server.js` (ESM format)
+- Built to `plugin/search-server.mjs` (ESM format)
+
+**Chroma Vector Database** (`src/services/sync/ChromaSync.ts`)
+- Hybrid semantic + keyword search architecture
+- Automatic vector embedding synchronization
+- 90-day recency filtering for relevant results
+- Combined with SQLite FTS5 for optimal search performance
 
 **Viewer UI** (`src/ui/viewer/`)
 - React + TypeScript web interface accessible at http://localhost:37777
@@ -296,8 +302,16 @@ Use this when:
 - Need complete implementation context
 - Issue might be a subtle inconsistency between files
 
-## Recent Changes (v5.1.0)
+## Recent Changes
 
+### v5.1.2 - Theme Toggle
+**Theme Support**: Light/dark mode for viewer UI
+- User-selectable theme with persistent settings
+- Automatic system preference detection
+- Smooth transitions between themes
+- Settings stored in browser localStorage
+
+### v5.1.0 - Web-Based Viewer UI
 **Major Feature**: Web-Based Viewer UI for Real-Time Memory Stream
 - Production-ready viewer accessible at http://localhost:37777
 - Real-time visualization via Server-Sent Events (SSE) - see observations, sessions, and prompts as they happen
@@ -307,15 +321,29 @@ Use this when:
 - Auto-reconnection with exponential backoff
 - GPU-accelerated animations for smooth interactions
 
-**New Worker Endpoints** (8 HTTP/SSE endpoints, +500 lines):
-- `/api/prompts` - Paginated user prompts with project filtering
-- `/api/observations` - Paginated observations with project filtering
-- `/api/summaries` - Paginated session summaries with project filtering
-- `/api/stats` - Database statistics (total counts by project)
-- `/api/projects` - List of unique project names
-- `/stream` - Server-Sent Events for real-time updates
-- `/` - Serves viewer HTML
-- `/health` - Health check endpoint
+**Worker Service API Endpoints** (14 HTTP/SSE endpoints total):
+
+*Viewer & Health:*
+- `GET /` - Serves viewer HTML (self-contained React app)
+- `GET /health` - Health check endpoint
+- `GET /stream` - Server-Sent Events for real-time updates
+
+*Data Retrieval:*
+- `GET /api/prompts` - Paginated user prompts with project filtering
+- `GET /api/observations` - Paginated observations with project filtering
+- `GET /api/summaries` - Paginated session summaries with project filtering
+- `GET /api/stats` - Database statistics (total counts by project)
+
+*Settings:*
+- `GET /api/settings` - Get current viewer settings
+- `POST /api/settings` - Update viewer settings
+
+*Session Management:*
+- `POST /sessions/:sessionDbId/init` - Initialize new session
+- `POST /sessions/:sessionDbId/observations` - Add observations to session
+- `POST /sessions/:sessionDbId/summarize` - Generate session summary
+- `GET /sessions/:sessionDbId/status` - Get session status
+- `DELETE /sessions/:sessionDbId` - Delete session (graceful cleanup)
 
 **Database Enhancements** (+98 lines in SessionStore):
 - `getRecentPrompts()` - Paginated prompts with OFFSET/LIMIT
@@ -333,12 +361,21 @@ Use this when:
 
 **Why This Matters**: Users can now visualize their memory stream in real-time. See exactly what claude-mem is capturing as you work, filter by project, and understand the context being injected into sessions.
 
-### Previous Release (v5.0.3)
-
+### v5.0.3 - Smart Install Caching
 **Smart Caching Installer for Windows Compatibility**:
 - Eliminated redundant npm install on every SessionStart (2-5s → 10ms)
 - Caches version in `.install-version` file
 - Only runs npm install when actually needed (first time, version change, missing deps)
+- 200x performance improvement for cached installations
+
+### v5.0.0 - Hybrid Search Architecture
+**Major Feature**: Chroma Vector Database Integration
+- Hybrid semantic + keyword search combining ChromaDB with SQLite FTS5
+- ChromaSync service for automatic vector embedding synchronization (738 lines)
+- 90-day recency filtering for contextually relevant results
+- New MCP tools: `get_context_timeline` and `get_timeline_by_query`
+- Performance: Semantic search <200ms with 8,000+ vector documents
+- Enhanced all 9 MCP search tools with hybrid search capabilities
 
 ## Configuration Users Can Set
 
@@ -388,11 +425,12 @@ Real-time visibility into memory stream helps users understand what's being capt
 
 ## File Locations
 
-**Source**: `/Users/alexnewman/Scripts/claude-mem/src/`
-**Built Plugin**: `/Users/alexnewman/Scripts/claude-mem/plugin/`
-**Installed Plugin**: `~/.claude/plugins/marketplaces/thedotmack/`
-**Database**: `~/.claude-mem/claude-mem.db`
-**Usage Logs**: `~/.claude-mem/usage-logs/usage-YYYY-MM-DD.jsonl`
+**Source**: `<project-root>/src/` - TypeScript source files
+**Built Plugin**: `<project-root>/plugin/` - Compiled JavaScript outputs
+**Installed Plugin**: `~/.claude/plugins/marketplaces/thedotmack/` - User's installed plugin location
+**Database**: `~/.claude-mem/claude-mem.db` - SQLite database with observations, sessions, summaries
+**Chroma Database**: `~/.claude-mem/chroma/` - Vector embeddings for semantic search
+**Usage Logs**: `~/.claude-mem/usage-logs/usage-YYYY-MM-DD.jsonl` - Daily API usage tracking
 
 ## Quick Reference
 

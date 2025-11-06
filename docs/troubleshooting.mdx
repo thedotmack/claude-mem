@@ -5,6 +5,177 @@ description: "Common issues and solutions for Claude-Mem"
 
 # Troubleshooting Guide
 
+## v5.x Specific Issues
+
+### Viewer UI Not Loading
+
+**Symptoms**: Cannot access http://localhost:37777, page doesn't load, or shows connection error.
+
+**Solutions**:
+
+1. Check if worker is running on port 37777:
+   ```bash
+   lsof -i :37777
+   # or
+   npm run worker:status
+   ```
+
+2. Verify worker is healthy:
+   ```bash
+   curl http://localhost:37777/health
+   ```
+
+3. Check worker logs for errors:
+   ```bash
+   npm run worker:logs
+   ```
+
+4. Restart worker service:
+   ```bash
+   npm run worker:restart
+   ```
+
+5. Check for port conflicts:
+   ```bash
+   # If port 37777 is in use by another service
+   export CLAUDE_MEM_WORKER_PORT=38000
+   npm run worker:restart
+   ```
+
+### Theme Toggle Not Persisting
+
+**Symptoms**: Theme preference (light/dark mode) resets after browser refresh.
+
+**Solutions**:
+
+1. Check browser localStorage is enabled:
+   ```javascript
+   // In browser console
+   localStorage.getItem('claude-mem-settings')
+   ```
+
+2. Verify settings endpoint is working:
+   ```bash
+   curl http://localhost:37777/api/settings
+   ```
+
+3. Clear localStorage and try again:
+   ```javascript
+   // In browser console
+   localStorage.removeItem('claude-mem-settings')
+   ```
+
+4. Check for browser privacy mode (blocks localStorage)
+
+### SSE Connection Issues
+
+**Symptoms**: Viewer shows "Disconnected" status, updates not appearing in real-time.
+
+**Solutions**:
+
+1. Check SSE endpoint is accessible:
+   ```bash
+   curl -N http://localhost:37777/stream
+   ```
+
+2. Check browser console for errors:
+   - Open DevTools (F12)
+   - Look for EventSource errors
+   - Check Network tab for failed /stream requests
+
+3. Verify worker is running:
+   ```bash
+   npm run worker:status
+   ```
+
+4. Check for network/proxy issues blocking SSE
+   - Corporate firewalls may block SSE
+   - Try disabling VPN temporarily
+
+5. Restart worker and refresh browser:
+   ```bash
+   npm run worker:restart
+   ```
+
+### Chroma/Python Dependency Issues (v5.0.0+)
+
+**Symptoms**: Installation fails with chromadb or Python-related errors.
+
+**Solutions**:
+
+1. Verify Python 3.8+ is installed:
+   ```bash
+   python --version
+   # or
+   python3 --version
+   ```
+
+2. Install chromadb manually:
+   ```bash
+   cd ~/.claude/plugins/marketplaces/thedotmack
+   npm install chromadb
+   ```
+
+3. Check chromadb health:
+   ```bash
+   npm run chroma:health
+   ```
+
+4. Windows-specific: Ensure Python is in PATH:
+   ```bash
+   where python
+   # Should show Python installation path
+   ```
+
+5. If Chroma continues to fail, hybrid search will gracefully degrade to SQLite FTS5 only
+
+### Smart Install Caching Issues (v5.0.3+)
+
+**Symptoms**: Dependencies not updating after plugin update, stale version marker.
+
+**Solutions**:
+
+1. Clear install cache:
+   ```bash
+   rm ~/.claude/plugins/marketplaces/thedotmack/.install-version
+   ```
+
+2. Force reinstall:
+   ```bash
+   cd ~/.claude/plugins/marketplaces/thedotmack
+   npm install --force
+   ```
+
+3. Check version marker:
+   ```bash
+   cat ~/.claude/plugins/marketplaces/thedotmack/.install-version
+   cat ~/.claude/plugins/marketplaces/thedotmack/package.json | grep version
+   ```
+
+4. Restart Claude Code after manual install
+
+### PM2 ENOENT Error on Windows (v5.1.1 Fix)
+
+**Symptoms**: Worker fails to start with "ENOENT" error on Windows.
+
+**Solutions**:
+
+1. This was fixed in v5.1.1 - update to latest version:
+   ```bash
+   /plugin update claude-mem
+   ```
+
+2. If still experiencing issues, verify PM2 path:
+   ```bash
+   cd ~/.claude/plugins/marketplaces/thedotmack
+   dir node_modules\.bin\pm2.cmd
+   ```
+
+3. Manual PM2 install if needed:
+   ```bash
+   npm install pm2@latest
+   ```
+
 ## Worker Service Issues
 
 ### Worker Service Not Starting

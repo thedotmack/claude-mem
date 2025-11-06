@@ -8,6 +8,194 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 
+## [5.1.2] - 2025-11-06
+
+### Added
+- **Theme Toggle**: Light/dark mode support in viewer UI
+  - User-selectable theme with persistent settings
+  - Automatic system preference detection
+  - Smooth transitions between themes
+- Updated viewer UI with theme toggle controls in header
+
+### Changed
+- Version bumped from 5.1.1 to 5.1.2 across all metadata files
+- Rebuilt all plugin scripts with theme functionality
+
+
+## [5.1.1] - 2025-11-06
+
+### Fixed
+- **PM2 ENOENT error on Windows**: Fixed PM2 process spawning by using full path to PM2 binary
+- Improved cross-platform compatibility for PM2 process management
+- Updated scripts/smart-install.js to use full PM2 binary path
+
+
+## [5.1.0] - 2025-11-05
+
+### Added
+- **Web-Based Viewer UI**: Production-ready viewer accessible at http://localhost:37777
+  - Real-time visualization via Server-Sent Events (SSE)
+  - Infinite scroll pagination with automatic deduplication
+  - Project filtering to focus on specific codebases
+  - Settings persistence (sidebar state, selected project)
+  - Auto-reconnection with exponential backoff
+  - GPU-accelerated animations for smooth interactions
+- **New Worker Endpoints** (8 HTTP/SSE routes, +500 lines):
+  - `/api/prompts` - Paginated user prompts with project filtering
+  - `/api/observations` - Paginated observations with project filtering
+  - `/api/summaries` - Paginated session summaries with project filtering
+  - `/api/stats` - Database statistics (total counts by project)
+  - `/api/projects` - List of unique project names
+  - `/stream` - Server-Sent Events for real-time updates
+  - `/` - Serves viewer HTML
+- **Database Enhancements** (+98 lines in SessionStore):
+  - `getRecentPrompts()` - Paginated prompts with OFFSET/LIMIT
+  - `getRecentObservations()` - Paginated observations with OFFSET/LIMIT
+  - `getRecentSummaries()` - Paginated summaries with OFFSET/LIMIT
+  - `getStats()` - Aggregated statistics by project
+  - `getUniqueProjects()` - Distinct project names
+- **Complete React UI** (17 new files, 1,500+ lines):
+  - Components: Header, Sidebar, Feed, Cards (Observation, Prompt, Summary, Skeleton)
+  - Hooks: useSSE, usePagination, useSettings, useStats
+  - Utils: Data merging, formatters, constants
+  - Assets: Monaspace Radon font, logos (dark mode + logomark)
+  - Build: esbuild pipeline for self-contained HTML bundle
+
+
+## [5.0.3] - 2025-11-05
+
+### Added
+- **Smart Install Caching**: Eliminated redundant npm install on every SessionStart (2-5s → 10ms)
+  - Caches version state in `.install-version` file
+  - Only runs npm install when actually needed (first time, version change, missing deps)
+  - 200x faster SessionStart for cached installations
+- Dynamic Python version detection in Windows error messages
+- Comprehensive Windows troubleshooting guidance
+
+### Fixed
+- Fixed Windows installation issues with smart caching installer
+
+### Changed
+- Enhanced rsync to respect gitignore rules
+- Better PM2 worker startup verification
+- Cross-platform compatible (pure Node.js)
+
+### Technical Details
+- New: scripts/smart-install.js (smart caching installer)
+- Modified: plugin/hooks/hooks.json (use smart-install.js instead of inline npm install)
+- Modified: package.json (enhanced sync-marketplace script)
+
+
+## [5.0.2] - 2025-11-05
+
+### Fixed
+- **Worker startup reliability**: Fixed async health checks with proper error handling
+- Added isWorkerHealthy() and waitForWorkerHealth() functions to src/shared/worker-utils.ts
+- Worker now verifies health before proceeding with hook operations
+- Improved handling of PM2 failures when not yet installed
+
+### Changed
+- Changed ensureWorkerRunning() from synchronous to async with proper await
+- All hooks now await ensureWorkerRunning for reliable worker communication
+- Rebuilt all plugin executables with version 5.0.2
+
+
+## [5.0.1] - 2025-11-05
+
+### Fixed
+- Fixed worker service stability issues
+- Enhanced worker process management and restart reliability
+- Improved session management and logging across all hooks
+- Better error handling throughout hook lifecycle
+
+### Added
+- GitHub Actions workflows for automated code review
+
+### Technical Details
+- Modified: src/services/worker-service.ts (stability improvements)
+- Modified: src/shared/worker-utils.ts (consistent formatting)
+- Modified: ecosystem.config.cjs (removed error/output redirection)
+- Modified: src/hooks/*-hook.ts (ensure worker running)
+- New: .github/workflows/claude-code-review.yml
+- New: .github/workflows/claude.yml
+
+
+## [5.0.0] - 2025-10-27
+
+### BREAKING CHANGES
+- **Python dependency for optimal performance**: Semantic search requires Python for ChromaDB
+- **Search behavior prioritizes semantic relevance**: Chroma semantic search combined with SQLite temporal filtering
+- **Worker service now initializes ChromaSync on startup**: Automatic vector database synchronization
+
+### Added
+- **Hybrid Search Architecture**: Combining ChromaDB semantic search with SQLite FTS5 keyword search
+  - ChromaSync Service for automatic vector database synchronization (738 lines)
+  - Vector embeddings for semantic similarity search
+  - 90-day recency filtering for relevant results
+  - Performance: Semantic search <200ms
+- **get_context_timeline** MCP tool: Get unified timeline of context around a specific point in time
+  - Anchor by observation ID, session ID, or ISO timestamp
+  - Configurable depth before/after anchor
+- **get_timeline_by_query** MCP tool: Search for observations and get timeline context around best match
+  - Auto mode: Automatically use top search result as timeline anchor
+  - Interactive mode: Show top N search results for manual anchor selection
+- **Enhanced MCP tools**: All 9 search tools now support hybrid semantic + keyword search
+
+### Technical Details
+- New: src/services/sync/ChromaSync.ts (vector database sync)
+- Modified: src/servers/search-server.ts (+995 lines for hybrid search)
+- Modified: src/services/worker-service.ts (+136 lines for ChromaSync integration)
+- Modified: src/services/sqlite/SessionStore.ts (+276 lines for timeline queries)
+- Validation: 1,390 observations → 8,279 vector documents
+- Total MCP tools: 7 → 9 (added timeline tools)
+
+
+## [4.3.4] - 2025-10-26
+
+### Fixed
+- **SessionStart hooks running on session resume**: Added matcher configuration to only run hooks on startup, clear, or compact events
+- Prevents unnecessary hook execution and improves performance
+
+### Technical Details
+- Modified: plugin/hooks/hooks.json (added matcher configuration)
+
+
+## [4.3.3] - 2025-10-26
+
+### Added
+- Made session display count configurable (DISPLAY_SESSION_COUNT = 8)
+- First-time setup detection with helpful user messaging
+- Improved UX: First install message clarifies Plugin Hook Error display
+
+### Technical Details
+- Updated: src/hooks/context-hook.ts (configurable session count)
+- Updated: src/hooks/user-message-hook.ts (first-time setup detection)
+
+
+## [4.3.2] - 2025-10-26
+
+### Added
+- **User-facing context display**: Added user-message-hook for displaying context to users via stderr
+  - Hook fires simultaneously with context injection
+  - Error messages don't get added to context, enabling user visibility
+  - Temporary workaround until Claude Code adds ability to share messages with both user and context
+- **Comprehensive documentation** (4 new files, 2500+ lines total):
+  - docs/architecture-evolution.mdx (801 lines)
+  - docs/context-engineering.mdx (222 lines)
+  - docs/hooks-architecture.mdx (784 lines)
+  - docs/progressive-disclosure.mdx (655 lines)
+
+### Fixed
+- Improved cross-platform path handling in context-hook
+
+### Technical Details
+- New: src/hooks/user-message-hook.ts (stderr-based display mechanism)
+- New: plugin/scripts/user-message-hook.js (built executable)
+- Modified: plugin/hooks/hooks.json (hook configuration)
+- Modified: src/hooks/context-hook.ts (path handling)
+- Modified: scripts/build-hooks.js (build support)
+
+
 ## [4.3.1] - 2025-10-26
 
 ### Fixed

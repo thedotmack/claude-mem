@@ -7,12 +7,13 @@ description: "System components and data flow in Claude-Mem"
 
 ## System Components
 
-Claude-Mem operates as a Claude Code plugin with four core components:
+Claude-Mem operates as a Claude Code plugin with five core components:
 
-1. **Plugin Hooks** - Capture lifecycle events
+1. **Plugin Hooks** - Capture lifecycle events (7 hook files)
 2. **Worker Service** - Process observations via Claude Agent SDK
 3. **Database Layer** - Store sessions and observations (SQLite + FTS5)
-4. **MCP Search Server** - Query historical context
+4. **MCP Search Server** - Query historical context (9 search tools)
+5. **Viewer UI** - Web-based real-time memory stream visualization
 
 ## Technology Stack
 
@@ -21,7 +22,10 @@ Claude-Mem operates as a Claude Code plugin with four core components:
 | **Language**           | TypeScript (ES2022, ESNext modules)       |
 | **Runtime**            | Node.js 18+                               |
 | **Database**           | SQLite 3 with better-sqlite3 driver       |
+| **Vector Store**       | ChromaDB (optional, for semantic search)  |
 | **HTTP Server**        | Express.js 4.18                           |
+| **Real-time**          | Server-Sent Events (SSE)                  |
+| **UI Framework**       | React + TypeScript                        |
 | **AI SDK**             | @anthropic-ai/claude-agent-sdk            |
 | **Build Tool**         | esbuild (bundles TypeScript)              |
 | **Process Manager**    | PM2                                       |
@@ -55,18 +59,24 @@ Claude Request → MCP Server → SessionSearch Service → FTS5 Database → Se
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
+│ 0. Smart Install Hook Fires                                     │
+│    Checks dependencies (cached), only runs on version changes   │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
 │ 1. Session Starts → Context Hook Fires                          │
-│    Injects summaries from last 3 sessions into Claude's context │
+│    Starts PM2 worker if needed, injects context from previous   │
+│    sessions (configurable observation count)                    │
 └─────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
 │ 2. User Types Prompt → UserPromptSubmit Hook Fires              │
-│    Creates SDK session in database, notifies worker service     │
+│    Creates session in database, saves raw user prompt for FTS5  │
 └─────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
 │ 3. Claude Uses Tools → PostToolUse Hook Fires (100+ times)      │
-│    Sends observations to worker service for processing          │
+│    Captures tool executions, sends to worker for AI compression │
 └─────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
@@ -75,13 +85,14 @@ Claude Request → MCP Server → SessionSearch Service → FTS5 Database → Se
 └─────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│ 5. Claude Stops → Stop Hook Fires                               │
-│    Generates final summary with request, status, next steps     │
+│ 5. Claude Stops → Summary Hook Fires                            │
+│    Generates final summary with request, completions, learnings │
 └─────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
 │ 6. Session Ends → Cleanup Hook Fires                            │
-│    Marks session complete, ready for next session context       │
+│    Marks session complete (graceful, not DELETE), ready for     │
+│    next session context. Skips on /clear to preserve ongoing    │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -90,15 +101,17 @@ Claude Request → MCP Server → SessionSearch Service → FTS5 Database → Se
 ```
 claude-mem/
 ├── src/
-│   ├── hooks/                  # Hook implementations (v4.3.1+ consolidated)
+│   ├── hooks/                  # Hook implementations (7 hooks)
+│   │   ├── smart-install.ts    # Dependency check (cached)
 │   │   ├── context-hook.ts     # SessionStart
+│   │   ├── user-message-hook.ts # UserMessage (for debugging)
 │   │   ├── new-hook.ts         # UserPromptSubmit
 │   │   ├── save-hook.ts        # PostToolUse
 │   │   ├── summary-hook.ts     # Stop
 │   │   └── cleanup-hook.ts     # SessionEnd
 │   │
 │   ├── servers/                # MCP servers
-│   │   └── search-server.ts    # MCP search tools server
+│   │   └── search-server.ts    # MCP search tools server (9 tools)
 │   │
 │   ├── sdk/                    # Claude Agent SDK integration
 │   │   ├── prompts.ts          # XML prompt builders
@@ -106,12 +119,19 @@ claude-mem/
 │   │   └── worker.ts           # Main SDK agent loop
 │   │
 │   ├── services/
-│   │   ├── worker-service.ts   # Express HTTP service
+│   │   ├── worker-service.ts   # Express HTTP + SSE service
 │   │   └── sqlite/             # Database layer
 │   │       ├── SessionStore.ts # CRUD operations
 │   │       ├── SessionSearch.ts # FTS5 search service
 │   │       ├── migrations.ts
 │   │       └── types.ts
+│   │
+│   ├── ui/                     # Viewer UI
+│   │   └── viewer/             # React + TypeScript web interface
+│   │       ├── components/     # UI components
+│   │       ├── hooks/          # React hooks
+│   │       ├── utils/          # Utilities
+│   │       └── assets/         # Fonts, logos
 │   │
 │   ├── shared/                 # Shared utilities
 │   │   ├── config.ts
@@ -129,14 +149,19 @@ claude-mem/
 │   ├── .mcp.json               # MCP server configuration
 │   ├── hooks/
 │   │   └── hooks.json
-│   └── scripts/                # Built executables
-│       ├── context-hook.js
-│       ├── new-hook.js
-│       ├── save-hook.js
-│       ├── summary-hook.js
-│       ├── cleanup-hook.js
-│       ├── worker-service.cjs  # Background worker
-│       └── search-server.js    # MCP search server
+│   ├── scripts/                # Built executables
+│   │   ├── smart-install.js
+│   │   ├── context-hook.js
+│   │   ├── user-message-hook.js
+│   │   ├── new-hook.js
+│   │   ├── save-hook.js
+│   │   ├── summary-hook.js
+│   │   ├── cleanup-hook.js
+│   │   ├── worker-service.cjs  # Background worker
+│   │   └── search-server.mjs   # MCP search server
+│   │
+│   └── ui/                     # Built viewer UI
+│       └── viewer.html         # Self-contained bundle
 │
 ├── tests/                      # Test suite
 ├── docs/                       # Documentation
@@ -145,14 +170,49 @@ claude-mem/
 
 ## Component Details
 
-### 1. Plugin Hooks
+### 1. Plugin Hooks (7 Hooks)
+- **smart-install.js** - Cached dependency checker (only runs on version changes)
+- **context-hook.js** - SessionStart: Starts PM2 worker, injects context
+- **user-message-hook.js** - UserMessage: Debugging hook
+- **new-hook.js** - UserPromptSubmit: Creates session, saves prompt
+- **save-hook.js** - PostToolUse: Captures tool executions
+- **summary-hook.js** - Stop: Generates session summary
+- **cleanup-hook.js** - SessionEnd: Marks session complete
+
 See [Plugin Hooks](/architecture/hooks) for detailed hook documentation.
 
 ### 2. Worker Service
+Express.js HTTP server on port 37777 (configurable) with:
+- 8 HTTP/SSE endpoints for viewer UI
+- Async observation processing via Claude Agent SDK
+- Real-time updates via Server-Sent Events
+- Auto-managed by PM2 process manager
+
 See [Worker Service](/architecture/worker-service) for HTTP API and endpoints.
 
 ### 3. Database Layer
+SQLite3 with better-sqlite3 driver featuring:
+- FTS5 virtual tables for full-text search
+- SessionStore for CRUD operations
+- SessionSearch for FTS5 queries
+- Location: `~/.claude-mem/claude-mem.db`
+
 See [Database Architecture](/architecture/database) for schema and FTS5 search.
 
-### 4. MCP Search Server
+### 4. MCP Search Server (9 Tools)
+Provides 9 specialized search tools:
+- search_observations, search_sessions, search_user_prompts
+- find_by_concept, find_by_file, find_by_type
+- get_recent_context, get_context_timeline, get_timeline_by_query
+
 See [MCP Search Server](/architecture/mcp-search) for search tools and examples.
+
+### 5. Viewer UI
+React + TypeScript web interface at http://localhost:37777 featuring:
+- Real-time memory stream via Server-Sent Events
+- Infinite scroll pagination with automatic deduplication
+- Project filtering and settings persistence
+- GPU-accelerated animations
+- Self-contained HTML bundle (viewer.html)
+
+Built with esbuild into a single file deployment.

@@ -1,11 +1,11 @@
 ---
 title: "MCP Search Tools"
-description: "Query your project history with 7 specialized search tools"
+description: "Query your project history with 9 specialized search tools"
 ---
 
 # MCP Search Tools Usage
 
-Once claude-mem is installed as a plugin, 7 search tools become available in your Claude Code sessions for querying project history.
+Once claude-mem is installed as a plugin, 9 search tools become available in your Claude Code sessions for querying project history.
 
 ## Quick Reference
 
@@ -18,6 +18,8 @@ Once claude-mem is installed as a plugin, 7 search tools become available in you
 | find_by_file            | Find observations referencing files          |
 | find_by_type            | Find observations by type                    |
 | get_recent_context      | Get recent session context                   |
+| get_context_timeline    | Get unified timeline around a specific point |
+| get_timeline_by_query   | Search and get timeline context in one step  |
 
 ## Example Queries
 
@@ -114,6 +116,70 @@ Get recent context for debugging:
 ```
 Use get_recent_context to show me what we've been working on
 ```
+
+### get_context_timeline
+
+Get a unified timeline of context around a specific point in time. This tool interleaves observations, sessions, and user prompts chronologically to show what was happening before and after a specific moment.
+
+**Anchor by observation ID:**
+```
+get_context_timeline with anchor=12345 and depth_before=10 and depth_after=10
+```
+
+**Anchor by session ID:**
+```
+get_context_timeline with anchor="S123" and depth_before=5 and depth_after=5
+```
+
+**Anchor by ISO timestamp:**
+```
+get_context_timeline with anchor="2025-10-21T14:30:00Z" and depth_before=15 and depth_after=15
+```
+
+**Use cases:**
+- Understand what was happening when a specific observation occurred
+- See the full context around a bug fix or decision
+- Trace the events leading up to and following a specific change
+- View chronological sequence of related work
+
+**Benefits:**
+- All record types (observations, sessions, prompts) in one chronological view
+- Configurable depth before/after anchor point
+- Flexible anchoring by ID or timestamp
+- See the complete narrative arc around key events
+
+### get_timeline_by_query
+
+Search for observations using natural language and get timeline context around the best match. This combines search + timeline into a single operation for faster context discovery.
+
+**Auto mode (default):**
+```
+get_timeline_by_query with query="authentication implementation"
+```
+Automatically uses the top search result as timeline anchor and returns surrounding context.
+
+**Interactive mode:**
+```
+get_timeline_by_query with query="authentication" and mode="interactive" and limit=5
+```
+Shows top 5 search results for you to manually choose which to use as timeline anchor.
+
+**Customize timeline depth:**
+```
+get_timeline_by_query with query="bug fix" and depth_before=20 and depth_after=10
+```
+
+**Use cases:**
+- Quick context discovery: "What was happening when we implemented X?"
+- Investigate issues: Find a bug fix and see what led to it
+- Decision archaeology: Search for a decision and understand the context
+- Feature timeline: See the complete story of a feature implementation
+
+**Benefits:**
+- Single-step operation (no need to search, then timeline separately)
+- Auto mode provides instant context
+- Interactive mode gives you control over anchor selection
+- Natural language search makes it easy to find relevant moments
 
 ## Search Strategy
 

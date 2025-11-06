@@ -1,18 +1,19 @@
 ---
 title: "MCP Search Server"
-description: "7 search tools with examples and usage patterns"
+description: "9 search tools with examples and usage patterns"
 ---
 
 # MCP Search Server
 
-Claude-Mem includes a Model Context Protocol (MCP) server that exposes 7 specialized search tools for querying stored observations and sessions.
+Claude-Mem includes a Model Context Protocol (MCP) server that exposes 9 specialized search tools for querying stored observations and sessions.
 
 ## Overview
 
 - **Location**: `src/servers/search-server.ts`
+- **Built Output**: `plugin/scripts/search-server.mjs`
 - **Configuration**: `plugin/.mcp.json`
 - **Transport**: stdio
-- **Tools**: 7 specialized search functions
+- **Tools**: 9 specialized search functions
 - **Citations**: All results use `claude-mem://` URI scheme
 
 ## Configuration
@@ -24,13 +25,13 @@ The MCP server is automatically registered via `plugin/.mcp.json`:
   "mcpServers": {
     "claude-mem-search": {
       "type": "stdio",
-      "command": "${CLAUDE_PLUGIN_ROOT}/scripts/search-server.js"
+      "command": "${CLAUDE_PLUGIN_ROOT}/scripts/search-server.mjs"
     }
   }
 }
 ```
 
-This registers the `claude-mem-search` server with Claude Code, making the 7 search tools available in all sessions. The server is automatically started when Claude Code launches and communicates via stdio transport.
+This registers the `claude-mem-search` server with Claude Code, making the 9 search tools available in all sessions. The server is automatically started when Claude Code launches and communicates via stdio transport.
 
 ## Search Tools
 
@@ -163,6 +164,133 @@ Get recent session context including summaries and observations for a project.
 get_recent_context with limit=5
 ```
 
+### 8. get_context_timeline
+
+Get a unified timeline of context (observations, sessions, and prompts) around a specific point in time. All record types are interleaved chronologically.
+
+**Parameters**:
+- `anchor` (required): Anchor point - observation ID, session ID (e.g., "S123"), or ISO timestamp
+- `depth_before` (default: 10): Number of records to retrieve before anchor (max: 50)
+- `depth_after` (default: 10): Number of records to retrieve after anchor (max: 50)
+- `project`: Filter by project name
+
+**Return Format**:
+Returns `depth_before` records + anchor + `depth_after` records, all interleaved chronologically. Total records: `depth_before + 1 + depth_after`.
+
+**Use Case**: Understanding "what was happening when X occurred"
+
+**Example**:
+```
+# Timeline around observation #123
+get_context_timeline with anchor=123 and depth_before=5 and depth_after=5
+
+# Timeline around a session
+get_context_timeline with anchor="S456" and depth_before=10 and depth_after=10
+
+# Timeline around a timestamp
+get_context_timeline with anchor="2025-11-06T10:30:00Z" and depth_before=15 and depth_after=5
+```
+
+**Response Structure**:
+```json
+{
+  "timeline": [
+    {
+      "type": "observation",
+      "id": 120,
+      "title": "Context before",
+      "created_at": "2025-11-06T10:25:00Z"
+    },
+    {
+      "type": "user-prompt",
+      "id": 45,
+      "prompt": "User request",
+      "created_at": "2025-11-06T10:28:00Z"
+    },
+    {
+      "type": "observation",
+      "id": 123,
+      "title": "Anchor observation",
+      "created_at": "2025-11-06T10:30:00Z",
+      "isAnchor": true
+    },
+    {
+      "type": "session",
+      "id": "S456",
+      "request": "Session summary",
+      "created_at": "2025-11-06T10:32:00Z"
+    }
+  ],
+  "anchor": {
+    "type": "observation",
+    "id": 123
+  }
+}
+```
+
+### 9. get_timeline_by_query
+
+Search for observations using natural language and get timeline context around the best match. Combines search + timeline into a single operation.
+
+**Parameters**:
+- `query` (required): Natural language search query to find relevant observations
+- `mode` (default: "auto"): Operation mode
+  - `"auto"`: Automatically use top search result as timeline anchor
+  - `"interactive"`: Return top N search results for manual anchor selection
+- `depth_before` (default: 10): Number of timeline records before anchor (max: 50)
+- `depth_after` (default: 10): Number of timeline records after anchor (max: 50)
+- `limit` (default: 5): For interactive mode - number of top search results to display (max: 20)
+- `project`: Filter by project name
+
+**Use Case**: Faster context discovery - "show me what happened around when we fixed the authentication bug"
+
+**Example - Auto Mode**:
+```
+# Automatically find and show timeline for "authentication bug"
+get_timeline_by_query with query="authentication bug" and mode="auto" and depth_before=10 and depth_after=10
+```
+
+**Example - Interactive Mode**:
+```
+# Show top 5 matches, let user choose anchor
+get_timeline_by_query with query="authentication bug" and mode="interactive" and limit=5
+```
+
+**Auto Mode Response**:
+```json
+{
+  "search_result": {
+    "id": 123,
+    "title": "Fix authentication bug",
+    "relevance": 0.95
+  },
+  "timeline": [
+    /* timeline records before and after observation 123 */
+  ]
+}
+```
+
+**Interactive Mode Response**:
+```json
+{
+  "top_results": [
+    {
+      "id": 123,
+      "title": "Fix authentication bug",
+      "relevance": 0.95,
+      "created_at": "2025-11-06T10:30:00Z"
+    },
+    {
+      "id": 98,
+      "title": "Authentication refactor",
+      "relevance": 0.82,
+      "created_at": "2025-11-05T14:20:00Z"
+    }
+  ],
+  "message": "Select an observation ID to view its timeline context"
+}
+```
+
 ## Output Formats
 
 All search tools support two output formats:
@@ -252,6 +380,12 @@ search_user_prompts with query="authentication"
 
 # Get recent context for debugging
 get_recent_context with limit=5
+
+# Timeline around a specific observation
+get_context_timeline with anchor=123 and depth_before=10 and depth_after=10
+
+# Quick timeline search for authentication work
+get_timeline_by_query with query="authentication bug" and mode="auto"
 ```
 
 ## Implementation
@@ -277,7 +411,7 @@ If search tools are not available in Claude Code sessions:
 
 2. Verify search server is built:
    ```bash
-   ls -l plugin/scripts/search-server.js
+   ls -l plugin/scripts/search-server.mjs
    ```
 
 3. Rebuild if needed:

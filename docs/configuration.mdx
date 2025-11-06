@@ -7,14 +7,16 @@ description: "Environment variables and settings for Claude-Mem"
 
 ## Environment Variables
 
-| Variable                | Default                         | Description                           |
-|-------------------------|---------------------------------|---------------------------------------|
-| `CLAUDE_PLUGIN_ROOT`    | Set by Claude Code              | Plugin installation directory         |
-| `CLAUDE_MEM_DATA_DIR`   | `~/.claude-mem/`                | Data directory (dev override)         |
-| `CLAUDE_MEM_WORKER_PORT`| `37777`                         | Worker service port                   |
-| `CLAUDE_MEM_MODEL`      | `claude-sonnet-4-5`             | AI model for processing observations  |
-| `NODE_ENV`              | `production`                    | Environment mode                      |
-| `FORCE_COLOR`           | `1`                             | Enable colored logs                   |
+| Variable                      | Default                         | Description                           |
+|-------------------------------|---------------------------------|---------------------------------------|
+| `CLAUDE_PLUGIN_ROOT`          | Set by Claude Code              | Plugin installation directory         |
+| `CLAUDE_MEM_DATA_DIR`         | `~/.claude-mem/`                | Data directory (production default)   |
+| `CLAUDE_CODE_PATH`            | Auto-detected                   | Path to Claude Code CLI (for Windows) |
+| `CLAUDE_MEM_WORKER_PORT`      | `37777`                         | Worker service port                   |
+| `CLAUDE_MEM_MODEL`            | `claude-sonnet-4-5`             | AI model for processing observations  |
+| `CLAUDE_MEM_CONTEXT_OBSERVATIONS` | `50`                        | Number of observations to inject      |
+| `NODE_ENV`                    | `production`                    | Environment mode                      |
+| `FORCE_COLOR`                 | `1`                             | Enable colored logs                   |
 
 ## Model Configuration
 
@@ -49,9 +51,14 @@ Edit `~/.claude/settings.json`:
 
 ### Data Directory Structure
 
+The data directory location depends on the environment:
+- **Production (installed plugin)**: `~/.claude-mem/` (always, regardless of CLAUDE_PLUGIN_ROOT)
+- **Development**: Can be overridden with `CLAUDE_MEM_DATA_DIR`
+
 ```
 ~/.claude-mem/
 ├── claude-mem.db           # SQLite database
+├── .install-version        # Cached version for smart installer
 ├── worker.port             # Current worker port file
 └── logs/
     ├── worker-out.log      # Worker stdout logs
@@ -67,14 +74,17 @@ ${CLAUDE_PLUGIN_ROOT}/
 ├── .mcp.json               # MCP server configuration
 ├── hooks/
 │   └── hooks.json          # Hook configuration
-└── scripts/                # Built executables
-    ├── context-hook.js
-    ├── new-hook.js
-    ├── save-hook.js
-    ├── summary-hook.js
-    ├── cleanup-hook.js
-    ├── worker-service.cjs
-    └── search-server.js
+├── scripts/                # Built executables
+│   ├── smart-install.js    # Smart installer script
+│   ├── context-hook.js     # Context injection hook
+│   ├── new-hook.js         # Session creation hook
+│   ├── save-hook.js        # Observation capture hook
+│   ├── summary-hook.js     # Summary generation hook
+│   ├── cleanup-hook.js     # Session cleanup hook
+│   ├── worker-service.cjs  # Worker service (CJS)
+│   └── search-server.mjs   # MCP search server (ESM)
+└── ui/
+    └── viewer.html         # Web viewer UI bundle
 ```
 
 ## Plugin Configuration
@@ -90,7 +100,7 @@ Hooks are configured in `plugin/hooks/hooks.json`:
     "SessionStart": [{
       "hooks": [{
         "type": "command",
-        "command": "cd \"${CLAUDE_PLUGIN_ROOT}/..\" && npm install --prefer-offline --no-audit --no-fund --loglevel=error && node ${CLAUDE_PLUGIN_ROOT}/scripts/context-hook.js",
+        "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/smart-install.js && node ${CLAUDE_PLUGIN_ROOT}/scripts/context-hook.js",
         "timeout": 120
       }]
     }],
@@ -136,13 +146,13 @@ The MCP search server is configured in `plugin/.mcp.json`:
   "mcpServers": {
     "claude-mem-search": {
       "type": "stdio",
-      "command": "${CLAUDE_PLUGIN_ROOT}/scripts/search-server.js"
+      "command": "${CLAUDE_PLUGIN_ROOT}/scripts/search-server.mjs"
     }
   }
 }
 ```
 
-This registers the `claude-mem-search` server with Claude Code, making the 7 search tools available in all sessions.
+This registers the `claude-mem-search` server with Claude Code, making the 9 search tools available in all sessions.
 
 ## PM2 Configuration
 
@@ -171,6 +181,36 @@ module.exports = {
 - **autorestart**: true (auto-restart on crash)
 - **watch**: false (no file watching)
 - **max_memory_restart**: 1G (restart if memory exceeds 1GB)
+
+## Context Injection Configuration
+
+### CLAUDE_MEM_CONTEXT_OBSERVATIONS
+
+Controls how many observations are injected into each new session for context continuity.
+
+**Default**: 50 observations
+
+**What it does**:
+- Fetches the most recent N observations from the database
+- Injects them as context at SessionStart
+- Allows Claude to maintain awareness of recent work across sessions
+
+**Configuration** in `~/.claude/settings.json`:
+
+```json
+{
+  "env": {
+    "CLAUDE_MEM_CONTEXT_OBSERVATIONS": "100"
+  }
+}
+```
+
+**Considerations**:
+- **Higher values** = More context but slower SessionStart and more tokens used
+- **Lower values** = Faster SessionStart but less historical awareness
+- Default of 50 balances context richness with performance
+
+**Note**: This injects individual observations, not entire sessions. Each observation represents a single tool execution (Read, Write, Edit, etc.) that was compressed into a semantic learning.
 
 ## Customization
 
@@ -213,11 +253,13 @@ Modify timeouts in `plugin/hooks/hooks.json`:
 ```
 
 Recommended values:
-- SessionStart: 120s (needs time for npm install and context retrieval)
+- SessionStart: 120s (needs time for smart install check and context retrieval)
 - UserPromptSubmit: 60s
 - PostToolUse: 120s (can process many observations)
 - Stop: 60s
 - SessionEnd: 60s
+
+**Note**: With smart install caching (v5.0.3+), SessionStart is typically very fast (10ms) unless dependencies need installation.
 
 ### Worker Memory Limit
 
