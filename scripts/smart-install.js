@@ -164,49 +164,85 @@ function runNpmInstall() {
   log('🔨 Installing dependencies...', colors.bright);
   log('', colors.reset);
 
-  try {
-    // Run npm install with error output visible
-    execSync('npm install --prefer-offline --no-audit --no-fund', {
-      cwd: PLUGIN_ROOT,
-      stdio: 'inherit', // Show all output including errors
-      encoding: 'utf-8',
-    });
+  // Try normal install first, then retry with force if it fails
+  const strategies = [
+    { command: 'npm install', label: 'normal' },
+    { command: 'npm install --force', label: 'with force flag' },
+  ];
 
-    // Verify better-sqlite3 was installed
-    if (!existsSync(BETTER_SQLITE3_PATH)) {
-      throw new Error('better-sqlite3 installation verification failed');
+  let lastError = null;
+
+  for (const { command, label } of strategies) {
+    try {
+      log(`Attempting install ${label}...`, colors.dim);
+      
+      // Run npm install silently
+      execSync(command, {
+        cwd: PLUGIN_ROOT,
+        stdio: 'pipe', // Silent output unless error
+        encoding: 'utf-8',
+      });
+
+      // Verify better-sqlite3 was installed
+      if (!existsSync(BETTER_SQLITE3_PATH)) {
+        throw new Error('better-sqlite3 installation verification failed');
+      }
+
+      const version = getPackageVersion();
+      setInstalledVersion(version);
+
+      log('', colors.green);
+      log('✅ Dependencies installed successfully!', colors.bright);
+      log(`   Version: ${version}`, colors.dim);
+      log('', colors.reset);
+
+      return true;
+
+    } catch (error) {
+      lastError = error;
+      // Continue to next strategy
     }
-
-    const version = getPackageVersion();
-    setInstalledVersion(version);
-
-    log('', colors.green);
-    log('✅ Dependencies installed successfully!', colors.bright);
-    log(`   Version: ${version}`, colors.dim);
-    log('', colors.reset);
-
-    return true;
-
-  } catch (error) {
-    log('', colors.red);
-    log('❌ Installation failed!', colors.bright);
-    log('', colors.reset);
-
-    // Provide Windows-specific help
-    if (isWindows && error.message && error.message.includes('better-sqlite3')) {
-      log(getWindowsErrorHelp(error.message), colors.yellow);
-    }
-
-    // Show generic error info
-    if (error.stderr) {
-      log('Error output:', colors.dim);
-      log(error.stderr.toString(), colors.red);
-    } else if (error.message) {
-      log(error.message, colors.red);
-    }
-
-    return false;
   }
+
+  // All strategies failed - show error
+  log('', colors.red);
+  log('❌ Installation failed after retrying!', colors.bright);
+  log('', colors.reset);
+
+  // Provide Windows-specific help
+  if (isWindows && lastError && lastError.message && lastError.message.includes('better-sqlite3')) {
+    log(getWindowsErrorHelp(lastError.message), colors.yellow);
+  }
+
+  // Show generic error info with troubleshooting steps
+  if (lastError) {
+    if (lastError.stderr) {
+      log('Error output:', colors.dim);
+      log(lastError.stderr.toString(), colors.red);
+    } else if (lastError.message) {
+      log(lastError.message, colors.red);
+    }
+
+    log('', colors.yellow);
+    log('📋 Troubleshooting Steps:', colors.bright);
+    log('', colors.reset);
+    log('1. Check your internet connection', colors.yellow);
+    log('2. Try running: npm cache clean --force', colors.yellow);
+    log('3. Try running: npm install (in plugin directory)', colors.yellow);
+    log('4. Check npm version: npm --version (requires npm 7+)', colors.yellow);
+    log('5. Try updating npm: npm install -g npm@latest', colors.yellow);
+    log('', colors.reset);
+  }
+
+  return false;
+}
+
+/**
+ * Check if we should fail when worker startup fails
+ * Returns true if worker failed AND dependencies are missing
+ */
+function shouldFailOnWorkerStartup(workerStarted) {
+  return !workerStarted && !existsSync(NODE_MODULES_PATH);
 }
 
 function startWorker() {
@@ -253,21 +289,30 @@ async function main() {
 
       if (!installSuccess) {
         log('', colors.red);
-        log('⚠️  Installation failed - worker startup may fail', colors.yellow);
+        log('❌ Installation failed - cannot start worker without dependencies', colors.bright);
         log('', colors.reset);
-        // Don't exit - still try to start worker with existing deps
+        log('Please resolve the installation issues above and try again.', colors.yellow);
+        log('', colors.reset);
+        process.exit(1);
       }
     }
 
-    // Always start/ensure worker is running
-    // This runs whether we installed deps or not
-    startWorker();
+    // Start/ensure worker is running (only after successful install or if deps already exist)
+    const workerStarted = startWorker();
 
-    // Success - dependencies installed (if needed) and worker running
+    if (shouldFailOnWorkerStartup(workerStarted)) {
+      log('', colors.red);
+      log('❌ Worker failed to start and dependencies are missing', colors.bright);
+      log('', colors.reset);
+      process.exit(1);
+    }
+
+    // Success - dependencies installed (if needed) and worker running (or already running)
     process.exit(0);
 
   } catch (error) {
     log(`❌ Unexpected error: ${error.message}`, colors.red);
+    log('', colors.reset);
     process.exit(1);
   }
 }
