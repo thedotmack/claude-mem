@@ -6,6 +6,7 @@ import { useSSE } from './hooks/useSSE';
 import { useSettings } from './hooks/useSettings';
 import { useStats } from './hooks/useStats';
 import { usePagination } from './hooks/usePagination';
+import { useTheme } from './hooks/useTheme';
 import { Observation, Summary, UserPrompt } from './types';
 import { mergeAndDeduplicateByProject } from './utils/data';
 
@@ -19,6 +20,7 @@ export function App() {
   const { observations, summaries, prompts, projects, processingSessions, isConnected } = useSSE();
   const { settings, saveSettings, isSaving, saveStatus } = useSettings();
   const { stats } = useStats();
+  const { preference, resolvedTheme, setThemePreference } = useTheme();
   const pagination = usePagination(currentFilter);
 
   // Reset paginated data when filter changes
@@ -88,6 +90,8 @@ export function App() {
           onSettingsToggle={toggleSidebar}
           sidebarOpen={sidebarOpen}
           isProcessing={processingSessions.size > 0}
+          themePreference={preference}
+          onThemeChange={setThemePreference}
         />
         <Feed
           observations={allObservations}

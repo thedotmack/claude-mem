@@ -1,4 +1,6 @@
 import React from 'react';
+import { ThemeToggle } from './ThemeToggle';
+import { ThemePreference } from '../hooks/useTheme';
 
 interface HeaderProps {
   isConnected: boolean;
@@ -8,6 +10,8 @@ interface HeaderProps {
   onSettingsToggle: () => void;
   sidebarOpen: boolean;
   isProcessing: boolean;
+  themePreference: ThemePreference;
+  onThemeChange: (theme: ThemePreference) => void;
 }
 
 export function Header({
@@ -17,7 +21,9 @@ export function Header({
   onFilterChange,
   onSettingsToggle,
   sidebarOpen,
-  isProcessing
+  isProcessing,
+  themePreference,
+  onThemeChange
 }: HeaderProps) {
   return (
     <div className="header">
@@ -73,6 +79,10 @@ export function Header({
             <option key={project} value={project}>{project}</option>
           ))}
         </select>
+        <ThemeToggle
+          preference={themePreference}
+          onThemeChange={onThemeChange}
+        />
         <button
           className={`settings-btn ${sidebarOpen ? 'active' : ''}`}
           onClick={onSettingsToggle}
