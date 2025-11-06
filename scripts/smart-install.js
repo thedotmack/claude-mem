@@ -237,6 +237,14 @@ function runNpmInstall() {
   return false;
 }
 
+/**
+ * Check if we should fail when worker startup fails
+ * Returns true if worker failed AND dependencies are missing
+ */
+function shouldFailOnWorkerStartup(workerStarted) {
+  return !workerStarted && !existsSync(NODE_MODULES_PATH);
+}
+
 function startWorker() {
   const ECOSYSTEM_CONFIG = join(PLUGIN_ROOT, 'ecosystem.config.cjs');
   const PM2_PATH = join(PLUGIN_ROOT, 'node_modules', '.bin', 'pm2');
@@ -292,7 +300,7 @@ async function main() {
     // Start/ensure worker is running (only after successful install or if deps already exist)
     const workerStarted = startWorker();
 
-    if (!workerStarted && !existsSync(NODE_MODULES_PATH)) {
+    if (shouldFailOnWorkerStartup(workerStarted)) {
       log('', colors.red);
       log('❌ Worker failed to start and dependencies are missing', colors.bright);
       log('', colors.reset);
