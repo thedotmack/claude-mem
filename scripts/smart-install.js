@@ -211,13 +211,14 @@ function runNpmInstall() {
 
 function startWorker() {
   const ECOSYSTEM_CONFIG = join(PLUGIN_ROOT, 'ecosystem.config.cjs');
+  const PM2_PATH = join(PLUGIN_ROOT, 'node_modules', '.bin', 'pm2');
 
   log('🚀 Starting worker service...', colors.dim);
 
   try {
-    // Use pm2 start which works whether worker is running or not
+    // Use the full path to PM2 to avoid PATH issues on Windows
     // PM2 will either start it or report it's already running (both are success cases)
-    execSync(`pm2 start "${ECOSYSTEM_CONFIG}"`, {
+    execSync(`"${PM2_PATH}" start "${ECOSYSTEM_CONFIG}"`, {
       cwd: PLUGIN_ROOT,
       stdio: 'pipe', // Capture output to avoid clutter
       encoding: 'utf-8',
