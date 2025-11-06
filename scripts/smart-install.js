@@ -174,7 +174,7 @@ function runNpmInstall() {
 
   for (const { command, label } of strategies) {
     try {
-      log(`   Attempting install ${label}...`, colors.dim);
+      log(`Attempting install ${label}...`, colors.dim);
       
       // Run npm install with error output visible
       execSync(command, {
