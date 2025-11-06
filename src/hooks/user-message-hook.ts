@@ -49,7 +49,8 @@ try {
   console.error(
     "\n\n📝 Claude-Mem Context Loaded\n" +
     "   ℹ️  Note: This appears as stderr but is informational only\n\n" +
-    output
+    output +
+    "\n\n📺 Watch live in browser http://localhost:37777/ (New! v5.1)\n"
   );
 
 } catch (error) {

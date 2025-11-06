@@ -40,14 +40,32 @@ async function buildHooks() {
     const version = packageJson.version;
     console.log(`📌 Version: ${version}`);
 
-    // Create output directory
-    console.log('\n📦 Preparing output directory...');
+    // Create output directories
+    console.log('\n📦 Preparing output directories...');
     const hooksDir = 'plugin/scripts';
+    const uiDir = 'plugin/ui';
 
     if (!fs.existsSync(hooksDir)) {
       fs.mkdirSync(hooksDir, { recursive: true });
     }
-    console.log('✓ Output directory ready');
+    if (!fs.existsSync(uiDir)) {
+      fs.mkdirSync(uiDir, { recursive: true });
+    }
+    console.log('✓ Output directories ready');
+
+    // Build React viewer
+    console.log('\n📋 Building React viewer...');
+    const { spawn } = await import('child_process');
+    const viewerBuild = spawn('node', ['scripts/build-viewer.js'], { stdio: 'inherit' });
+    await new Promise((resolve, reject) => {
+      viewerBuild.on('exit', (code) => {
+        if (code === 0) {
+          resolve();
+        } else {
+          reject(new Error(`Viewer build failed with exit code ${code}`));
+        }
+      });
+    });
 
     // Build worker service
     console.log(`\n🔧 Building worker service...`);

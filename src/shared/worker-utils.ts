@@ -7,7 +7,7 @@ const FIXED_PORT = parseInt(process.env.CLAUDE_MEM_WORKER_PORT || "37777", 10);
 /**
  * Check if worker is responsive by trying the health endpoint
  */
-async function isWorkerHealthy(timeoutMs: number = 3000): Promise<boolean> {
+async function isWorkerHealthy(timeoutMs: number = 100): Promise<boolean> {
   try {
     const response = await fetch(`http://127.0.0.1:${FIXED_PORT}/health`, {
       signal: AbortSignal.timeout(timeoutMs)
@@ -42,7 +42,7 @@ async function waitForWorkerHealth(maxWaitMs: number = 10000): Promise<boolean> 
  */
 export async function ensureWorkerRunning(): Promise<void> {
   // First, check if worker is already healthy
-  if (await isWorkerHealthy(1000)) {
+  if (await isWorkerHealthy()) {
     return; // Worker is already running and responsive
   }
 

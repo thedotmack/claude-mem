@@ -22,4 +22,7 @@ This message was not added to your startup context, so you can continue working 
 \u{1F4DD} Claude-Mem Context Loaded
    \u2139\uFE0F  Note: This appears as stderr but is informational only
 
-`+n)}catch(e){console.error(`\u274C Failed to load context display: ${e}`)}process.exit(3);
+`+n+`
+
+\u{1F4FA} Watch live in browser http://localhost:37777/ (New! v5.1)
+`)}catch(e){console.error(`\u274C Failed to load context display: ${e}`)}process.exit(3);

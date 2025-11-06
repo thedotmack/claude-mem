@@ -14,6 +14,10 @@ import type { SDKSession } from '../sdk/prompts.js';
 import { logger } from '../utils/logger.js';
 import { ensureAllDataDirs } from '../shared/paths.js';
 import { execSync } from 'child_process';
+import { readFileSync, writeFileSync, existsSync, statSync } from 'fs';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
+import { homedir } from 'os';
 
 const MODEL = process.env.CLAUDE_MEM_MODEL || 'claude-sonnet-4-5';
 const DISALLOWED_TOOLS = ['Glob', 'Grep', 'ListMcpResourcesTool', 'WebSearch'];
@@ -96,13 +100,32 @@ class WorkerService {
   private port: number = FIXED_PORT;
   private sessions: Map<number, ActiveSession> = new Map();
   private chromaSync!: ChromaSync;
+  private sseClients: Set<Response> = new Set();
 
   constructor() {
     this.app = express();
     this.app.use(express.json({ limit: '50mb' }));
 
+    // Serve static files for web UI (viewer-bundle.js, logos, etc.)
+    const uiDir = this.getUIDirectory();
+    this.app.use(express.static(uiDir));
+
     // Health check
     this.app.get('/health', this.handleHealth.bind(this));
+
+    // Web UI viewer
+    this.app.get('/', this.handleViewerHTML.bind(this));
+
+    // SSE stream for web UI
+    this.app.get('/stream', this.handleSSEStream.bind(this));
+
+    // API endpoints for web UI
+    this.app.get('/api/stats', this.handleStats.bind(this));
+    this.app.get('/api/settings', this.handleGetSettings.bind(this));
+    this.app.post('/api/settings', this.handlePostSettings.bind(this));
+    this.app.get('/api/observations', this.handleGetObservations.bind(this));
+    this.app.get('/api/summaries', this.handleGetSummaries.bind(this));
+    this.app.get('/api/prompts', this.handleGetPrompts.bind(this));
 
     // Session endpoints
     this.app.post('/sessions/:sessionDbId/init', this.handleInit.bind(this));
@@ -147,10 +170,431 @@ class WorkerService {
   }
 
   /**
+   * Get UI directory path (works in both dev ESM and production CJS)
+   */
+  private getUIDirectory(): string {
+    let scriptDir: string;
+    if (typeof __dirname !== 'undefined') {
+      // CJS context (production build)
+      scriptDir = __dirname;
+    } else {
+      // ESM context (development)
+      const __filename = fileURLToPath(import.meta.url);
+      scriptDir = dirname(__filename);
+    }
+    return join(scriptDir, '..', 'ui');
+  }
+
+  /**
    * GET /health
    */
   private handleHealth(_req: Request, res: Response): void {
     res.json({ status: 'ok' });
+  }
+
+  /**
+   * GET / - Serve viewer HTML
+   */
+  private handleViewerHTML(_req: Request, res: Response): void {
+    try {
+      const uiPath = join(this.getUIDirectory(), 'viewer.html');
+      const html = readFileSync(uiPath, 'utf-8');
+      res.setHeader('Content-Type', 'text/html');
+      res.send(html);
+    } catch (error: any) {
+      logger.error('WORKER', 'Failed to serve viewer HTML', {}, error);
+      res.status(500).send('Failed to load viewer');
+    }
+  }
+
+  /**
+   * GET /stream - SSE endpoint for web UI
+   */
+  private handleSSEStream(req: Request, res: Response): void {
+    // Set SSE headers
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+
+    // Add client to set
+    this.sseClients.add(res);
+    logger.info('WORKER', `SSE client connected`, { totalClients: this.sseClients.size });
+
+    // Send only projects list - all data will be loaded via pagination
+    const db = new SessionStore();
+    const allProjects = db.getAllProjects();
+    db.close();
+
+    const initialData = {
+      type: 'initial_load',
+      projects: allProjects,
+      timestamp: Date.now()
+    };
+
+    res.write(`data: ${JSON.stringify(initialData)}\n\n`);
+
+    // Handle client disconnect
+    req.on('close', () => {
+      this.sseClients.delete(res);
+      logger.info('WORKER', `SSE client disconnected`, { remainingClients: this.sseClients.size });
+    });
+  }
+
+  /**
+   * Broadcast SSE event to all connected clients
+   */
+  private broadcastSSE(event: any): void {
+    if (this.sseClients.size === 0) {
+      return; // No clients connected, skip broadcast
+    }
+
+    const data = `data: ${JSON.stringify(event)}\n\n`;
+    const clientsToRemove: Response[] = [];
+
+    for (const client of this.sseClients) {
+      try {
+        client.write(data);
+      } catch (error) {
+        // Client disconnected, mark for removal
+        clientsToRemove.push(client);
+      }
+    }
+
+    // Clean up disconnected clients
+    for (const client of clientsToRemove) {
+      this.sseClients.delete(client);
+    }
+
+    if (clientsToRemove.length > 0) {
+      logger.info('WORKER', `SSE cleaned up disconnected clients`, { count: clientsToRemove.length });
+    }
+  }
+
+  /**
+   * Broadcast processing status to SSE clients
+   */
+  private broadcastProcessingStatus(claudeSessionId: string, isProcessing: boolean): void {
+    this.broadcastSSE({
+      type: 'processing_status',
+      processing: {
+        session_id: claudeSessionId,
+        is_processing: isProcessing
+      }
+    });
+  }
+
+  /**
+   * GET /api/stats - Return worker and database stats
+   */
+  private handleStats(_req: Request, res: Response): void {
+    try {
+      const db = new SessionStore();
+
+      // Get database stats
+      const obsCount = db.db.prepare('SELECT COUNT(*) as count FROM observations').get() as { count: number };
+      const sessionCount = db.db.prepare('SELECT COUNT(*) as count FROM sdk_sessions').get() as { count: number };
+      const summaryCount = db.db.prepare('SELECT COUNT(*) as count FROM session_summaries').get() as { count: number };
+
+      // Get database file size
+      const dbPath = join(homedir(), '.claude-mem', 'claude-mem.db');
+      let dbSize = 0;
+      if (existsSync(dbPath)) {
+        dbSize = statSync(dbPath).size;
+      }
+
+      db.close();
+
+      // Get worker stats
+      const uptime = process.uptime();
+      const version = process.env.npm_package_version || '5.0.3'; // fallback to current version
+
+      res.json({
+        worker: {
+          version,
+          uptime: Math.floor(uptime),
+          activeSessions: this.sessions.size,
+          sseClients: this.sseClients.size,
+          port: this.port
+        },
+        database: {
+          path: dbPath,
+          size: dbSize,
+          observations: obsCount.count,
+          sessions: sessionCount.count,
+          summaries: summaryCount.count
+        }
+      });
+    } catch (error: any) {
+      logger.error('WORKER', 'Failed to get stats', {}, error);
+      res.status(500).json({ error: 'Failed to get stats' });
+    }
+  }
+
+  /**
+   * GET /api/settings - Read settings from ~/.claude/settings.json
+   */
+  private handleGetSettings(_req: Request, res: Response): void {
+    try {
+      const settingsPath = join(homedir(), '.claude', 'settings.json');
+
+      if (!existsSync(settingsPath)) {
+        // Return defaults if file doesn't exist
+        res.json({
+          CLAUDE_MEM_MODEL: 'claude-haiku-4-5',
+          CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
+          CLAUDE_MEM_WORKER_PORT: '37777'
+        });
+        return;
+      }
+
+      const settingsData = readFileSync(settingsPath, 'utf-8');
+      const settings = JSON.parse(settingsData);
+      const env = settings.env || {};
+
+      res.json({
+        CLAUDE_MEM_MODEL: env.CLAUDE_MEM_MODEL || 'claude-haiku-4-5',
+        CLAUDE_MEM_CONTEXT_OBSERVATIONS: env.CLAUDE_MEM_CONTEXT_OBSERVATIONS || '50',
+        CLAUDE_MEM_WORKER_PORT: env.CLAUDE_MEM_WORKER_PORT || '37777'
+      });
+    } catch (error: any) {
+      logger.error('WORKER', 'Failed to read settings', {}, error);
+      res.status(500).json({ error: 'Failed to read settings' });
+    }
+  }
+
+  /**
+   * POST /api/settings - Update settings in ~/.claude/settings.json
+   */
+  private handlePostSettings(req: Request, res: Response): void {
+    try {
+      const { CLAUDE_MEM_MODEL, CLAUDE_MEM_CONTEXT_OBSERVATIONS, CLAUDE_MEM_WORKER_PORT } = req.body;
+
+      // Validate inputs
+      const validModels = ['claude-haiku-4-5', 'claude-sonnet-4-5', 'claude-opus-4'];
+      if (CLAUDE_MEM_MODEL && !validModels.includes(CLAUDE_MEM_MODEL)) {
+        res.status(400).json({ success: false, error: `Invalid model name: ${CLAUDE_MEM_MODEL}` });
+        return;
+      }
+
+      if (CLAUDE_MEM_CONTEXT_OBSERVATIONS) {
+        const obsCount = parseInt(CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10);
+        if (isNaN(obsCount) || obsCount < 1 || obsCount > 200) {
+          res.status(400).json({ success: false, error: 'CLAUDE_MEM_CONTEXT_OBSERVATIONS must be between 1 and 200' });
+          return;
+        }
+      }
+
+      if (CLAUDE_MEM_WORKER_PORT) {
+        const port = parseInt(CLAUDE_MEM_WORKER_PORT, 10);
+        if (isNaN(port) || port < 1024 || port > 65535) {
+          res.status(400).json({ success: false, error: 'CLAUDE_MEM_WORKER_PORT must be between 1024 and 65535' });
+          return;
+        }
+      }
+
+      // Read existing settings
+      const settingsPath = join(homedir(), '.claude', 'settings.json');
+      let settings: any = { env: {} };
+
+      if (existsSync(settingsPath)) {
+        const settingsData = readFileSync(settingsPath, 'utf-8');
+        settings = JSON.parse(settingsData);
+        if (!settings.env) {
+          settings.env = {};
+        }
+      }
+
+      // Update settings
+      if (CLAUDE_MEM_MODEL) {
+        settings.env.CLAUDE_MEM_MODEL = CLAUDE_MEM_MODEL;
+      }
+      if (CLAUDE_MEM_CONTEXT_OBSERVATIONS) {
+        settings.env.CLAUDE_MEM_CONTEXT_OBSERVATIONS = CLAUDE_MEM_CONTEXT_OBSERVATIONS;
+      }
+      if (CLAUDE_MEM_WORKER_PORT) {
+        settings.env.CLAUDE_MEM_WORKER_PORT = CLAUDE_MEM_WORKER_PORT;
+      }
+
+      // Write back
+      writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf-8');
+
+      logger.info('WORKER', 'Settings updated', {});
+      res.json({ success: true, message: 'Settings updated successfully' });
+    } catch (error: any) {
+      logger.error('WORKER', 'Failed to update settings', {}, error);
+      res.status(500).json({ success: false, error: 'Failed to update settings' });
+    }
+  }
+
+  /**
+   * GET /api/observations - Paginated observations fetch
+   * Query params: offset (default 0), limit (default 50), project (optional)
+   */
+  private handleGetObservations(req: Request, res: Response): void {
+    try {
+      const offset = parseInt(req.query.offset as string || '0', 10);
+      const limit = Math.min(parseInt(req.query.limit as string || '50', 10), 100); // Cap at 100
+      const project = req.query.project as string | undefined;
+
+      const db = new SessionStore();
+
+      // Build query with optional project filter
+      let query = `
+        SELECT id, type, title, subtitle, text, project, prompt_number, created_at, created_at_epoch
+        FROM observations
+      `;
+      let countQuery = 'SELECT COUNT(*) as total FROM observations';
+      const params: any[] = [];
+      const countParams: any[] = [];
+
+      if (project) {
+        query += ' WHERE project = ?';
+        countQuery += ' WHERE project = ?';
+        params.push(project);
+        countParams.push(project);
+      }
+
+      query += ' ORDER BY created_at_epoch DESC LIMIT ? OFFSET ?';
+      params.push(limit, offset);
+
+      const stmt = db.db.prepare(query);
+      const observations = stmt.all(...params);
+
+      // Check if there are more results
+      const countStmt = db.db.prepare(countQuery);
+      const { total } = countStmt.get(...countParams) as { total: number };
+      const hasMore = (offset + limit) < total;
+
+      db.close();
+
+      res.json({
+        observations,
+        hasMore,
+        total,
+        offset,
+        limit
+      });
+    } catch (error: any) {
+      logger.error('WORKER', 'Failed to get observations', {}, error);
+      res.status(500).json({ error: 'Failed to get observations' });
+    }
+  }
+
+  private handleGetSummaries(req: Request, res: Response): void {
+    try {
+      const offset = parseInt(req.query.offset as string || '0', 10);
+      const limit = Math.min(parseInt(req.query.limit as string || '50', 10), 100); // Cap at 100
+      const project = req.query.project as string | undefined;
+
+      const db = new SessionStore();
+
+      // Build query with optional project filter
+      // JOIN with sdk_sessions to get claude_session_id (needed for UI matching with processingSessions)
+      let query = `
+        SELECT
+          ss.id,
+          s.claude_session_id as session_id,
+          ss.request,
+          ss.learned,
+          ss.completed,
+          ss.next_steps,
+          ss.project,
+          ss.created_at,
+          ss.created_at_epoch
+        FROM session_summaries ss
+        JOIN sdk_sessions s ON ss.sdk_session_id = s.sdk_session_id
+      `;
+      let countQuery = 'SELECT COUNT(*) as total FROM session_summaries';
+      const params: any[] = [];
+      const countParams: any[] = [];
+
+      if (project) {
+        query += ' WHERE ss.project = ?';
+        countQuery += ' WHERE project = ?';
+        params.push(project);
+        countParams.push(project);
+      }
+
+      query += ' ORDER BY ss.created_at_epoch DESC LIMIT ? OFFSET ?';
+      params.push(limit, offset);
+
+      const stmt = db.db.prepare(query);
+      const summaries = stmt.all(...params);
+
+      // Check if there are more results
+      const countStmt = db.db.prepare(countQuery);
+      const { total } = countStmt.get(...countParams) as { total: number };
+      const hasMore = (offset + limit) < total;
+
+      db.close();
+
+      res.json({
+        summaries,
+        hasMore,
+        total,
+        offset,
+        limit
+      });
+    } catch (error: any) {
+      logger.error('WORKER', 'Failed to get summaries', {}, error);
+      res.status(500).json({ error: 'Failed to get summaries' });
+    }
+  }
+
+  private handleGetPrompts(req: Request, res: Response): void {
+    try {
+      const offset = parseInt(req.query.offset as string || '0', 10);
+      const limit = Math.min(parseInt(req.query.limit as string || '50', 10), 100); // Cap at 100
+      const project = req.query.project as string | undefined;
+
+      const db = new SessionStore();
+
+      // Build query with optional project filter - JOIN with sdk_sessions to get project
+      let query = `
+        SELECT up.id, up.claude_session_id, s.project, up.prompt_number, up.prompt_text, up.created_at, up.created_at_epoch
+        FROM user_prompts up
+        JOIN sdk_sessions s ON up.claude_session_id = s.claude_session_id
+      `;
+      let countQuery = `
+        SELECT COUNT(*) as total
+        FROM user_prompts up
+        JOIN sdk_sessions s ON up.claude_session_id = s.claude_session_id
+      `;
+      const params: any[] = [];
+      const countParams: any[] = [];
+
+      if (project) {
+        query += ' WHERE s.project = ?';
+        countQuery += ' WHERE s.project = ?';
+        params.push(project);
+        countParams.push(project);
+      }
+
+      query += ' ORDER BY created_at_epoch DESC LIMIT ? OFFSET ?';
+      params.push(limit, offset);
+
+      const stmt = db.db.prepare(query);
+      const prompts = stmt.all(...params);
+
+      // Check if there are more results
+      const countStmt = db.db.prepare(countQuery);
+      const { total } = countStmt.get(...countParams) as { total: number };
+      const hasMore = (offset + limit) < total;
+
+      db.close();
+
+      res.json({
+        prompts,
+        hasMore,
+        total,
+        offset,
+        limit
+      });
+    } catch (error: any) {
+      logger.error('WORKER', 'Failed to get prompts', {}, error);
+      res.status(500).json({ error: 'Failed to get prompts' });
+    }
   }
 
   /**
@@ -207,6 +651,21 @@ class WorkerService {
     `).get(claudeSessionId) as any;
 
     db.close();
+
+    // Broadcast new prompt to SSE clients (for web UI)
+    if (latestPrompt) {
+      this.broadcastSSE({
+        type: 'new_prompt',
+        prompt: {
+          id: latestPrompt.id,
+          claude_session_id: latestPrompt.claude_session_id,
+          project: latestPrompt.project,
+          prompt_number: latestPrompt.prompt_number,
+          prompt_text: latestPrompt.prompt_text,
+          created_at_epoch: latestPrompt.created_at_epoch
+        }
+      });
+    }
 
     // Sync user prompt to Chroma (fire-and-forget, but crash on failure)
     if (latestPrompt) {
@@ -296,6 +755,9 @@ class WorkerService {
       prompt_number
     });
 
+    // Don't broadcast processing status for observations - only for summaries
+    // Observations are processed continuously, skeleton should only show during summary generation
+
     res.json({ status: 'queued', queueLength: session.pendingMessages.length });
   }
 
@@ -350,6 +812,9 @@ class WorkerService {
       type: 'summarize',
       prompt_number
     });
+
+    // Notify UI that processing is active
+    this.broadcastProcessingStatus(session.claudeSessionId, true);
 
     res.json({ status: 'queued', queueLength: session.pendingMessages.length });
   }
@@ -612,6 +1077,21 @@ class WorkerService {
         id
       });
 
+      // Broadcast to SSE clients (for web UI)
+      this.broadcastSSE({
+        type: 'new_observation',
+        observation: {
+          id,
+          session_id: session.claudeSessionId,
+          type: obs.type,
+          title: obs.title,
+          subtitle: obs.subtitle,
+          project: session.project,
+          prompt_number: promptNumber,
+          created_at_epoch: createdAtEpoch
+        }
+      });
+
       // Sync to Chroma (non-blocking fire-and-forget, but crash on failure)
       this.chromaSync.syncObservation(
         id,
@@ -651,6 +1131,27 @@ class WorkerService {
       const { id, createdAtEpoch } = db.storeSummary(session.claudeSessionId, session.project, summary, promptNumber);
       logger.success('DB', '📝 SUMMARY STORED IN DATABASE', { sessionId: session.sessionDbId, promptNumber, id });
 
+      // Broadcast to SSE clients (for web UI)
+      this.broadcastSSE({
+        type: 'new_summary',
+        summary: {
+          id,
+          session_id: session.claudeSessionId,
+          request: summary.request,
+          investigated: summary.investigated,
+          learned: summary.learned,
+          completed: summary.completed,
+          next_steps: summary.next_steps,
+          notes: summary.notes,
+          project: session.project,
+          prompt_number: promptNumber,
+          created_at_epoch: createdAtEpoch
+        }
+      });
+
+      // Notify UI that processing is complete (summary is the final step)
+      this.broadcastProcessingStatus(session.claudeSessionId, false);
+
       // Sync to Chroma (non-blocking fire-and-forget, but crash on failure)
       this.chromaSync.syncSummary(
         id,
@@ -677,6 +1178,9 @@ class WorkerService {
         promptNumber,
         contentSample: content.substring(0, 500)
       });
+
+      // Still mark processing as complete even if no summary was generated
+      this.broadcastProcessingStatus(session.claudeSessionId, false);
     }
 
     db.close();
