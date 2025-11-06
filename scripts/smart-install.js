@@ -164,10 +164,10 @@ function runNpmInstall() {
   log('🔨 Installing dependencies...', colors.bright);
   log('', colors.reset);
 
-  // Try install with cache first, then retry without cache if it fails
+  // Try normal install first, then retry with force if it fails
   const strategies = [
-    { command: 'npm install --prefer-offline --no-audit --no-fund', label: 'with cache' },
-    { command: 'npm install --force --no-audit --no-fund', label: 'clearing cache' },
+    { command: 'npm install', label: 'normal' },
+    { command: 'npm install --force', label: 'with force flag' },
   ];
 
   let lastError = null;
@@ -176,10 +176,10 @@ function runNpmInstall() {
     try {
       log(`Attempting install ${label}...`, colors.dim);
       
-      // Run npm install with error output visible
+      // Run npm install silently
       execSync(command, {
         cwd: PLUGIN_ROOT,
-        stdio: 'inherit', // Show all output including errors
+        stdio: 'pipe', // Silent output unless error
         encoding: 'utf-8',
       });
 
