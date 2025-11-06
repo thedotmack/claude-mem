@@ -29,6 +29,19 @@ export interface UserPrompt {
   created_at_epoch: number;
 }
 
+export interface SkeletonItem {
+  id: string;
+  session_id: string;
+  project?: string;
+  created_at_epoch: number;
+}
+
+export type FeedItem =
+  | (Observation & { itemType: 'observation' })
+  | (Summary & { itemType: 'summary' })
+  | (UserPrompt & { itemType: 'prompt' })
+  | (SkeletonItem & { itemType: 'skeleton' });
+
 export interface StreamEvent {
   type: 'initial_load' | 'new_observation' | 'new_summary' | 'new_prompt' | 'processing_status';
   observations?: Observation[];

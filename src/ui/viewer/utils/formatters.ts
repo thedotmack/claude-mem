@@ -4,6 +4,15 @@
  */
 
 /**
+ * Format epoch timestamp to locale string
+ * @param epoch - Timestamp in milliseconds since epoch
+ * @returns Formatted date string
+ */
+export function formatDate(epoch: number): string {
+  return new Date(epoch).toLocaleString();
+}
+
+/**
  * Format seconds into hours and minutes
  * @param seconds - Uptime in seconds
  * @returns Formatted string like "12h 34m" or "-" if no value

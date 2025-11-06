@@ -490,22 +490,33 @@ class WorkerService {
       const db = new SessionStore();
 
       // Build query with optional project filter
+      // JOIN with sdk_sessions to get claude_session_id (needed for UI matching with processingSessions)
       let query = `
-        SELECT id, sdk_session_id as session_id, request, learned, completed, next_steps, project, created_at, created_at_epoch
-        FROM session_summaries
+        SELECT
+          ss.id,
+          s.claude_session_id as session_id,
+          ss.request,
+          ss.learned,
+          ss.completed,
+          ss.next_steps,
+          ss.project,
+          ss.created_at,
+          ss.created_at_epoch
+        FROM session_summaries ss
+        JOIN sdk_sessions s ON ss.sdk_session_id = s.sdk_session_id
       `;
       let countQuery = 'SELECT COUNT(*) as total FROM session_summaries';
       const params: any[] = [];
       const countParams: any[] = [];
 
       if (project) {
-        query += ' WHERE project = ?';
+        query += ' WHERE ss.project = ?';
         countQuery += ' WHERE project = ?';
         params.push(project);
         countParams.push(project);
       }
 
-      query += ' ORDER BY created_at_epoch DESC LIMIT ? OFFSET ?';
+      query += ' ORDER BY ss.created_at_epoch DESC LIMIT ? OFFSET ?';
       params.push(limit, offset);
 
       const stmt = db.db.prepare(query);
@@ -744,8 +755,8 @@ class WorkerService {
       prompt_number
     });
 
-    // Notify UI that processing is active
-    this.broadcastProcessingStatus(session.claudeSessionId, true);
+    // Don't broadcast processing status for observations - only for summaries
+    // Observations are processed continuously, skeleton should only show during summary generation
 
     res.json({ status: 'queued', queueLength: session.pendingMessages.length });
   }

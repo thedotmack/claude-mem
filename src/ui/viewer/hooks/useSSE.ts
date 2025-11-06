@@ -84,8 +84,6 @@ export function useSSE() {
                 const prompt = data.prompt;
                 console.log('[SSE] New prompt:', prompt.id);
                 setPrompts(prev => [prompt, ...prev]);
-                // Mark session as processing
-                setProcessingSessions(prev => new Set(prev).add(prompt.claude_session_id));
               }
               break;
 

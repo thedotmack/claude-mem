@@ -67,6 +67,9 @@ export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, onSave,
           <h3>Environment Variables</h3>
           <div className="form-group">
             <label htmlFor="model">CLAUDE_MEM_MODEL</label>
+            <div className="setting-description">
+              Model used for AI compression of tool observations. Haiku is fast and cheap, Sonnet offers better quality, Opus is most capable but expensive.
+            </div>
             <select
               id="model"
               value={model}
@@ -79,6 +82,9 @@ export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, onSave,
           </div>
           <div className="form-group">
             <label htmlFor="contextObs">CLAUDE_MEM_CONTEXT_OBSERVATIONS</label>
+            <div className="setting-description">
+              Number of recent observations to inject at session start. Higher values provide more context but increase token usage. Default: 50
+            </div>
             <input
               type="number"
               id="contextObs"
@@ -90,6 +96,9 @@ export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, onSave,
           </div>
           <div className="form-group">
             <label htmlFor="workerPort">CLAUDE_MEM_WORKER_PORT</label>
+            <div className="setting-description">
+              Port number for the background worker service. Change only if port 37777 conflicts with another service.
+            </div>
             <input
               type="number"
               id="workerPort"

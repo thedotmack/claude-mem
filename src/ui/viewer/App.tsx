@@ -7,6 +7,7 @@ import { useSettings } from './hooks/useSettings';
 import { useStats } from './hooks/useStats';
 import { usePagination } from './hooks/usePagination';
 import { Observation, Summary, UserPrompt } from './types';
+import { mergeAndDeduplicateByProject } from './utils/data';
 
 export function App() {
   const [currentFilter, setCurrentFilter] = useState('');
@@ -28,47 +29,20 @@ export function App() {
   }, [currentFilter]);
 
   // Merge real-time data with paginated data, removing duplicates and filtering by project
-  const allObservations = useMemo(() => {
-    // Filter SSE observations by current project (pagination is already filtered)
-    const filteredSSE = currentFilter
-      ? observations.filter(obs => obs.project === currentFilter)
-      : observations;
+  const allObservations = useMemo(
+    () => mergeAndDeduplicateByProject(observations, paginatedObservations, currentFilter),
+    [observations, paginatedObservations, currentFilter]
+  );
 
-    const seen = new Set<number>();
-    return [...filteredSSE, ...paginatedObservations].filter(obs => {
-      if (seen.has(obs.id)) return false;
-      seen.add(obs.id);
-      return true;
-    });
-  }, [observations, paginatedObservations, currentFilter]);
+  const allSummaries = useMemo(
+    () => mergeAndDeduplicateByProject(summaries, paginatedSummaries, currentFilter),
+    [summaries, paginatedSummaries, currentFilter]
+  );
 
-  const allSummaries = useMemo(() => {
-    // Filter SSE summaries by current project (pagination is already filtered)
-    const filteredSSE = currentFilter
-      ? summaries.filter(sum => sum.project === currentFilter)
-      : summaries;
-
-    const seen = new Set<number>();
-    return [...filteredSSE, ...paginatedSummaries].filter(sum => {
-      if (seen.has(sum.id)) return false;
-      seen.add(sum.id);
-      return true;
-    });
-  }, [summaries, paginatedSummaries, currentFilter]);
-
-  const allPrompts = useMemo(() => {
-    // Filter SSE prompts by current project (pagination is already filtered)
-    const filteredSSE = currentFilter
-      ? prompts.filter(prompt => prompt.project === currentFilter)
-      : prompts;
-
-    const seen = new Set<number>();
-    return [...filteredSSE, ...paginatedPrompts].filter(prompt => {
-      if (seen.has(prompt.id)) return false;
-      seen.add(prompt.id);
-      return true;
-    });
-  }, [prompts, paginatedPrompts, currentFilter]);
+  const allPrompts = useMemo(
+    () => mergeAndDeduplicateByProject(prompts, paginatedPrompts, currentFilter),
+    [prompts, paginatedPrompts, currentFilter]
+  );
 
   // Toggle sidebar
   const toggleSidebar = useCallback(() => {

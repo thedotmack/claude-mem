@@ -1,12 +1,13 @@
 import React from 'react';
 import { Observation } from '../types';
+import { formatDate } from '../utils/formatters';
 
 interface ObservationCardProps {
   observation: Observation;
 }
 
 export function ObservationCard({ observation }: ObservationCardProps) {
-  const date = new Date(observation.created_at_epoch).toLocaleString();
+  const date = formatDate(observation.created_at_epoch);
 
   return (
     <div className="card">

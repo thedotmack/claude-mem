@@ -1,12 +1,13 @@
 import React from 'react';
 import { Summary } from '../types';
+import { formatDate } from '../utils/formatters';
 
 interface SummaryCardProps {
   summary: Summary;
 }
 
 export function SummaryCard({ summary }: SummaryCardProps) {
-  const date = new Date(summary.created_at_epoch).toLocaleString();
+  const date = formatDate(summary.created_at_epoch);
 
   return (
     <div className="card summary-card">

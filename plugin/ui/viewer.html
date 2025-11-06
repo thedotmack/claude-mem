@@ -1,11 +1,20 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>claude-mem viewer</title>
   <link rel="icon" type="image/webp" href="claude-mem-logomark.webp">
   <style>
+    @font-face {
+      font-family: 'Monaspace Radon';
+      src: url('assets/fonts/monaspace-radon-var.woff2') format('woff2-variations'),
+        url('assets/fonts/monaspace-radon-var.woff') format('woff-variations');
+      font-weight: 200 900;
+      font-display: swap;
+    }
+
     * {
       margin: 0;
       padding: 0;
@@ -67,12 +76,28 @@
       color: #e0e0e0;
       display: flex;
       align-items: center;
-      gap: 12px;
+      gap: 10px;
     }
 
-    .logo {
-      height: 28px;
+
+
+
+
+    .logomark {
+      height: 32px;
       width: auto;
+    }
+
+    .logomark.spinning {
+      animation: spin 1.5s linear infinite;
+    }
+
+    .logo-text {
+      font-family: 'Monaspace Radon', monospace;
+      font-weight: 100;
+      font-size: 20px;
+      letter-spacing: -0.03em;
+      color: #dadada;
     }
 
     .status {
@@ -126,11 +151,20 @@
     }
 
     @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.5; }
+
+      0%,
+      100% {
+        opacity: 1;
+      }
+
+      50% {
+        opacity: 0.5;
+      }
     }
 
-    select, input, button {
+    select,
+    input,
+    button {
       background: #2d2d2d;
       color: #cccccc;
       border: 1px solid #404040;
@@ -141,11 +175,13 @@
       transition: all 0.15s ease;
     }
 
-    select:hover, input:hover {
+    select:hover,
+    input:hover {
       border-color: #58a6ff;
     }
 
-    select:focus, input:focus {
+    select:focus,
+    input:focus {
       outline: none;
       border-color: #58a6ff;
       box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.2);
@@ -201,6 +237,7 @@
         opacity: 0;
         transform: translateY(-10px);
       }
+
       to {
         opacity: 1;
         transform: translateY(0);
@@ -215,6 +252,7 @@
 
     .card-header {
       display: flex;
+      align-items: center;
       gap: 10px;
       margin-bottom: 8px;
       font-size: 12px;
@@ -397,12 +435,57 @@
     }
 
     @keyframes spin {
-      to { transform: rotate(360deg); }
+      to {
+        transform: rotate(360deg);
+      }
+    }
+
+    .summary-skeleton {
+      opacity: 0.7;
+    }
+
+    .summary-skeleton .processing-indicator {
+      margin-left: auto;
+    }
+
+    .skeleton-line {
+      height: 16px;
+      background: linear-gradient(90deg, #404040 25%, #505050 50%, #404040 75%);
+      background-size: 200% 100%;
+      animation: shimmer 1.5s infinite;
+      border-radius: 4px;
+      margin-bottom: 8px;
+    }
+
+    .skeleton-title {
+      height: 20px;
+      width: 80%;
+      margin-bottom: 10px;
+    }
+
+    .skeleton-subtitle {
+      height: 16px;
+      width: 90%;
+    }
+
+    .skeleton-subtitle.short {
+      width: 60%;
+    }
+
+    @keyframes shimmer {
+      0% {
+        background-position: 200% 0;
+      }
+      100% {
+        background-position: -200% 0;
+      }
     }
   </style>
 </head>
+
 <body>
   <div id="root"></div>
   <script src="viewer-bundle.js"></script>
 </body>
+
 </html>

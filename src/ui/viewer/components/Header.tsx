@@ -22,7 +22,8 @@ export function Header({
   return (
     <div className="header">
       <h1>
-        <img src="claude-mem-logo-for-dark-mode.webp" alt="claude-mem" className="logo" />
+        <img src="claude-mem-logomark.webp" alt="" className={`logomark ${isProcessing ? 'spinning' : ''}`} />
+        <span className="logo-text">claude-mem</span>
       </h1>
       <div className="status">
         <select
@@ -36,12 +37,6 @@ export function Header({
         </select>
         <span className={`status-dot ${isConnected ? 'connected' : ''}`} />
         <span>{isConnected ? 'Connected' : 'Disconnected'}</span>
-        {isProcessing && (
-          <span className="processing-indicator">
-            <span className="spinner"></span>
-            Processing...
-          </span>
-        )}
         <button
           className={`settings-btn ${sidebarOpen ? 'active' : ''}`}
           onClick={onSettingsToggle}

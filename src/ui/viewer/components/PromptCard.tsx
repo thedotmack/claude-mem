@@ -1,5 +1,6 @@
 import React from 'react';
 import { UserPrompt } from '../types';
+import { formatDate } from '../utils/formatters';
 
 interface PromptCardProps {
   prompt: UserPrompt;
@@ -16,7 +17,7 @@ export function PromptCard({ prompt }: PromptCardProps) {
         {prompt.prompt_text}
       </div>
       <div className="card-meta">
-        {new Date(prompt.created_at_epoch).toLocaleString()}
+        {formatDate(prompt.created_at_epoch)}
       </div>
     </div>
   );
