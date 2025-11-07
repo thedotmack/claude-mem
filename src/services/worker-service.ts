@@ -68,7 +68,7 @@ interface ObservationMessage {
   type: 'observation';
   tool_name: string;
   tool_input: string;
-  tool_output: string;
+  tool_response: string;
   prompt_number: number;
 }
 
@@ -701,11 +701,11 @@ class WorkerService {
 
   /**
    * POST /sessions/:sessionDbId/observations
-   * Body: { tool_name, tool_input, tool_output, prompt_number }
+   * Body: { tool_name, tool_input, tool_response, prompt_number }
    */
   private handleObservation(req: Request, res: Response): void {
     const sessionDbId = parseInt(req.params.sessionDbId, 10);
-    const { tool_name, tool_input, tool_output, prompt_number } = req.body;
+    const { tool_name, tool_input, tool_response, prompt_number } = req.body;
 
     let session = this.sessions.get(sessionDbId);
     if (!session) {
@@ -751,7 +751,7 @@ class WorkerService {
       type: 'observation',
       tool_name,
       tool_input,
-      tool_output,
+      tool_response,
       prompt_number
     });
 
@@ -1015,7 +1015,7 @@ class WorkerService {
             id: 0,
             tool_name: message.tool_name,
             tool_input: message.tool_input,
-            tool_output: message.tool_output,
+            tool_response: message.tool_response,
             created_at_epoch: Date.now()
           });
 
