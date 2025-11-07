@@ -7,7 +7,7 @@ import { stdin } from 'process';
 import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { createHookResponse } from './hook-response.js';
 import { logger } from '../utils/logger.js';
-import { ensureWorkerRunning } from '../shared/worker-utils.js';
+import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
 
 export interface PostToolUseInput {
   session_id: string;
@@ -50,16 +50,15 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
 
   const toolStr = logger.formatTool(tool_name, tool_input);
 
-  // Use fixed worker port
-  const FIXED_PORT = parseInt(process.env.CLAUDE_MEM_WORKER_PORT || '37777', 10);
+  const port = getWorkerPort();
 
   logger.dataIn('HOOK', `PostToolUse: ${toolStr}`, {
     sessionId: sessionDbId,
-    workerPort: FIXED_PORT
+    workerPort: port
   });
 
   try {
-    const response = await fetch(`http://127.0.0.1:${FIXED_PORT}/sessions/${sessionDbId}/observations`, {
+    const response = await fetch(`http://127.0.0.1:${port}/sessions/${sessionDbId}/observations`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

@@ -7,7 +7,7 @@ import path from 'path';
 import { stdin } from 'process';
 import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { createHookResponse } from './hook-response.js';
-import { ensureWorkerRunning } from '../shared/worker-utils.js';
+import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
 
 export interface UserPromptSubmitInput {
   session_id: string;
@@ -43,12 +43,11 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
 
   db.close();
 
-  // Use fixed worker port
-  const FIXED_PORT = parseInt(process.env.CLAUDE_MEM_WORKER_PORT || '37777', 10);
+  const port = getWorkerPort();
 
   try {
     // Initialize session via HTTP
-    const response = await fetch(`http://127.0.0.1:${FIXED_PORT}/sessions/${sessionDbId}/init`, {
+    const response = await fetch(`http://127.0.0.1:${port}/sessions/${sessionDbId}/init`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ project, userPrompt: prompt }),

@@ -7,7 +7,7 @@ import { stdin } from 'process';
 import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { createHookResponse } from './hook-response.js';
 import { logger } from '../utils/logger.js';
-import { ensureWorkerRunning } from '../shared/worker-utils.js';
+import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
 
 export interface StopInput {
   session_id: string;
@@ -35,17 +35,16 @@ async function summaryHook(input?: StopInput): Promise<void> {
   const promptNumber = db.getPromptCounter(sessionDbId);
   db.close();
 
-  // Use fixed worker port
-  const FIXED_PORT = parseInt(process.env.CLAUDE_MEM_WORKER_PORT || '37777', 10);
+  const port = getWorkerPort();
 
   logger.dataIn('HOOK', 'Stop: Requesting summary', {
     sessionId: sessionDbId,
-    workerPort: FIXED_PORT,
+    workerPort: port,
     promptNumber
   });
 
   try {
-    const response = await fetch(`http://127.0.0.1:${FIXED_PORT}/sessions/${sessionDbId}/summarize`, {
+    const response = await fetch(`http://127.0.0.1:${port}/sessions/${sessionDbId}/summarize`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ prompt_number: promptNumber }),

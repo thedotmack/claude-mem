@@ -16,12 +16,18 @@ import { ensureAllDataDirs } from '../shared/paths.js';
 import { execSync } from 'child_process';
 import { readFileSync, writeFileSync, existsSync, statSync } from 'fs';
 import { join, dirname } from 'path';
-import { fileURLToPath } from 'url';
 import { homedir } from 'os';
+import { fileURLToPath } from 'url';
+import { getWorkerPort } from '../shared/worker-utils.js';
+
+// Read version from package.json (works in both ESM and CJS after bundling)
+const packageJson = JSON.parse(readFileSync(join(__dirname, '..', '..', 'package.json'), 'utf-8'));
+const VERSION = packageJson.version;
 
 const MODEL = process.env.CLAUDE_MEM_MODEL || 'claude-sonnet-4-5';
 const DISALLOWED_TOOLS = ['Glob', 'Grep', 'ListMcpResourcesTool', 'WebSearch'];
-const FIXED_PORT = parseInt(process.env.CLAUDE_MEM_WORKER_PORT || '37777', 10);
+const MESSAGE_POLL_INTERVAL_MS = 100;
+const MAX_REQUEST_SIZE = '50mb';
 
 /**
  * Cached Claude executable path
@@ -97,7 +103,6 @@ interface ActiveSession {
 
 class WorkerService {
   private app: express.Application;
-  private port: number = FIXED_PORT;
   private sessions: Map<number, ActiveSession> = new Map();
   private chromaSync!: ChromaSync;
   private sseClients: Set<Response> = new Set();
@@ -106,7 +111,7 @@ class WorkerService {
 
   constructor() {
     this.app = express();
-    this.app.use(express.json({ limit: '50mb' }));
+    this.app.use(express.json({ limit: MAX_REQUEST_SIZE }));
 
     // Serve static files for web UI (viewer-bundle.js, logos, etc.)
     const uiDir = this.getUIDirectory();
@@ -140,12 +145,13 @@ class WorkerService {
 
   async start(): Promise<void> {
     // Start HTTP server FIRST - nothing else matters until we can respond
+    const port = getWorkerPort();
     await new Promise<void>((resolve, reject) => {
-      this.app.listen(FIXED_PORT, () => resolve())
+      this.app.listen(port, () => resolve())
         .on('error', reject);
     });
 
-    logger.info('SYSTEM', 'Worker started', { port: FIXED_PORT, pid: process.pid });
+    logger.info('SYSTEM', 'Worker started', { port, pid: process.pid });
 
     // Initialize ChromaSync after HTTP is ready
     this.chromaSync = new ChromaSync('claude-mem');
@@ -186,6 +192,48 @@ class WorkerService {
       scriptDir = dirname(__filename);
     }
     return join(scriptDir, '..', 'ui');
+  }
+
+  /**
+   * Get or create session state
+   * Consolidates session lookup/creation logic used by init, observation, and summarize handlers
+   */
+  private getOrCreateSession(sessionDbId: number): ActiveSession {
+    let session = this.sessions.get(sessionDbId);
+    if (session) return session;
+
+    const db = new SessionStore();
+    const dbSession = db.getSessionById(sessionDbId);
+    if (!dbSession) {
+      db.close();
+      throw new Error(`Session ${sessionDbId} not found in database`);
+    }
+
+    session = {
+      sessionDbId,
+      claudeSessionId: dbSession.claude_session_id,
+      sdkSessionId: null,
+      project: dbSession.project,
+      userPrompt: dbSession.user_prompt,
+      pendingMessages: [],
+      abortController: new AbortController(),
+      generatorPromise: null,
+      lastPromptNumber: 0,
+      startTime: Date.now()
+    };
+
+    this.sessions.set(sessionDbId, session);
+
+    session.generatorPromise = this.runSDKAgent(session).catch(err => {
+      logger.failure('WORKER', 'SDK agent error', { sessionId: sessionDbId }, err);
+      const db = new SessionStore();
+      db.markSessionFailed(sessionDbId);
+      db.close();
+      this.sessions.delete(sessionDbId);
+    });
+
+    db.close();
+    return session;
   }
 
   /**
@@ -340,15 +388,14 @@ class WorkerService {
 
       // Get worker stats
       const uptime = process.uptime();
-      const version = process.env.npm_package_version || '5.0.3'; // fallback to current version
 
       res.json({
         worker: {
-          version,
+          version: VERSION,
           uptime: Math.floor(uptime),
           activeSessions: this.sessions.size,
           sseClients: this.sseClients.size,
-          port: this.port
+          port: getWorkerPort()
         },
         database: {
           path: dbPath,
@@ -403,13 +450,7 @@ class WorkerService {
     try {
       const { CLAUDE_MEM_MODEL, CLAUDE_MEM_CONTEXT_OBSERVATIONS, CLAUDE_MEM_WORKER_PORT } = req.body;
 
-      // Validate inputs
-      const validModels = ['claude-haiku-4-5', 'claude-sonnet-4-5', 'claude-opus-4'];
-      if (CLAUDE_MEM_MODEL && !validModels.includes(CLAUDE_MEM_MODEL)) {
-        res.status(400).json({ success: false, error: `Invalid model name: ${CLAUDE_MEM_MODEL}` });
-        return;
-      }
-
+      // Validate inputs (SDK will handle model validation)
       if (CLAUDE_MEM_CONTEXT_OBSERVATIONS) {
         const obsCount = parseInt(CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10);
         if (isNaN(obsCount) || obsCount < 1 || obsCount > 200) {
@@ -648,35 +689,12 @@ class WorkerService {
 
     logger.info('WORKER', 'Session init', { sessionDbId, project });
 
-    // Fetch real Claude Code session ID from database
-    const db = new SessionStore();
-    const dbSession = db.getSessionById(sessionDbId);
-    if (!dbSession) {
-      db.close();
-      res.status(404).json({ error: 'Session not found in database' });
-      return;
-    }
-
-    const claudeSessionId = dbSession.claude_session_id;
-
-    // Create session state
-    const session: ActiveSession = {
-      sessionDbId,
-      claudeSessionId,
-      sdkSessionId: null,
-      project,
-      userPrompt,
-      pendingMessages: [],
-      abortController: new AbortController(),
-      generatorPromise: null,
-      lastPromptNumber: 0,
-      startTime: Date.now()
-    };
-
-    this.sessions.set(sessionDbId, session);
+    const session = this.getOrCreateSession(sessionDbId);
+    const claudeSessionId = session.claudeSessionId;
 
     // Update port in database
-    db.setWorkerPort(sessionDbId, this.port!);
+    const db = new SessionStore();
+    db.setWorkerPort(sessionDbId, getWorkerPort());
 
     // Get the latest user_prompt for this session to sync to Chroma
     const latestPrompt = db.db.prepare(`
@@ -723,23 +741,14 @@ class WorkerService {
       });
     }
 
-    // Start SDK agent in background
-    session.generatorPromise = this.runSDKAgent(session).catch(err => {
-      logger.failure('WORKER', 'SDK agent error', { sessionId: sessionDbId }, err);
-      const db = new SessionStore();
-      db.markSessionFailed(sessionDbId);
-      db.close();
-      this.sessions.delete(sessionDbId);
-    });
-
     // Start processing indicator (user submitted prompt)
     this.broadcastProcessingStatus(true);
 
-    logger.success('WORKER', 'Session initialized', { sessionId: sessionDbId, port: this.port });
+    logger.success('WORKER', 'Session initialized', { sessionId: sessionDbId, port: getWorkerPort() });
     res.json({
       status: 'initialized',
       sessionDbId,
-      port: this.port
+      port: getWorkerPort()
     });
   }
 
@@ -751,39 +760,7 @@ class WorkerService {
     const sessionDbId = parseInt(req.params.sessionDbId, 10);
     const { tool_name, tool_input, tool_output, prompt_number } = req.body;
 
-    let session = this.sessions.get(sessionDbId);
-    if (!session) {
-      // Auto-create session if not in memory (worker restart, etc.)
-      // Sessions are organizational metadata - observations are first-class data in vector store
-      // Session ID comes from Claude Code hooks (guaranteed valid)
-      const db = new SessionStore();
-      const dbSession = db.getSessionById(sessionDbId);
-      db.close();
-
-      session = {
-        sessionDbId,
-        claudeSessionId: dbSession!.claude_session_id,
-        sdkSessionId: null,
-        project: dbSession!.project,
-        userPrompt: dbSession!.user_prompt,
-        pendingMessages: [],
-        abortController: new AbortController(),
-        generatorPromise: null,
-        lastPromptNumber: 0,
-        startTime: Date.now()
-      };
-      this.sessions.set(sessionDbId, session);
-
-      // Start SDK agent in background
-      session.generatorPromise = this.runSDKAgent(session).catch(err => {
-        logger.failure('WORKER', 'SDK agent error', { sessionId: sessionDbId }, err);
-        const db = new SessionStore();
-        db.markSessionFailed(sessionDbId);
-        db.close();
-        this.sessions.delete(sessionDbId);
-      });
-    }
-
+    const session = this.getOrCreateSession(sessionDbId);
     const toolStr = logger.formatTool(tool_name, tool_input);
 
     logger.dataIn('WORKER', `Observation queued: ${toolStr}`, {
@@ -810,38 +787,7 @@ class WorkerService {
     const sessionDbId = parseInt(req.params.sessionDbId, 10);
     const { prompt_number } = req.body;
 
-    let session = this.sessions.get(sessionDbId);
-    if (!session) {
-      // Auto-create session if not in memory (worker restart, etc.)
-      // Sessions are organizational metadata - observations are first-class data in vector store
-      // Session ID comes from Claude Code hooks (guaranteed valid)
-      const db = new SessionStore();
-      const dbSession = db.getSessionById(sessionDbId);
-      db.close();
-
-      session = {
-        sessionDbId,
-        claudeSessionId: dbSession!.claude_session_id,
-        sdkSessionId: null,
-        project: dbSession!.project,
-        userPrompt: dbSession!.user_prompt,
-        pendingMessages: [],
-        abortController: new AbortController(),
-        generatorPromise: null,
-        lastPromptNumber: 0,
-        startTime: Date.now()
-      };
-      this.sessions.set(sessionDbId, session);
-
-      // Start SDK agent in background
-      session.generatorPromise = this.runSDKAgent(session).catch(err => {
-        logger.failure('WORKER', 'SDK agent error', { sessionId: sessionDbId }, err);
-        const db = new SessionStore();
-        db.markSessionFailed(sessionDbId);
-        db.close();
-        this.sessions.delete(sessionDbId);
-      });
-    }
+    const session = this.getOrCreateSession(sessionDbId);
 
     logger.dataIn('WORKER', 'Summary requested', {
       sessionId: sessionDbId,
@@ -994,7 +940,7 @@ class WorkerService {
       }
 
       if (session.pendingMessages.length === 0) {
-        await new Promise(resolve => setTimeout(resolve, 100));
+        await new Promise(resolve => setTimeout(resolve, MESSAGE_POLL_INTERVAL_MS));
         continue;
       }
 
