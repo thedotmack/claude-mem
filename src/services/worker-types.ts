@@ -25,14 +25,14 @@ export interface PendingMessage {
   type: 'observation' | 'summarize';
   tool_name?: string;
   tool_input?: any;
-  tool_output?: any;
+  tool_response?: any;
   prompt_number?: number;
 }
 
 export interface ObservationData {
   tool_name: string;
   tool_input: any;
-  tool_output: any;
+  tool_response: any;
   prompt_number: number;
 }
 

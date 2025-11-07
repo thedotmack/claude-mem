@@ -80,7 +80,7 @@ export class SessionManager {
       type: 'observation',
       tool_name: data.tool_name,
       tool_input: data.tool_input,
-      tool_output: data.tool_output,
+      tool_response: data.tool_response,
       prompt_number: data.prompt_number
     });
 

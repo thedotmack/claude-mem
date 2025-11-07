@@ -137,7 +137,7 @@ export class SDKAgent {
               id: 0, // Not used in prompt
               tool_name: message.tool_name!,
               tool_input: JSON.stringify(message.tool_input),
-              tool_output: JSON.stringify(message.tool_output),
+              tool_output: JSON.stringify(message.tool_response),
               created_at_epoch: Date.now()
             })
           },

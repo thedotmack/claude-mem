@@ -206,12 +206,12 @@ export class WorkerService {
   private handleObservations(req: Request, res: Response): void {
     try {
       const sessionDbId = parseInt(req.params.sessionDbId, 10);
-      const { tool_name, tool_input, tool_output, prompt_number } = req.body;
+      const { tool_name, tool_input, tool_response, prompt_number } = req.body;
 
       this.sessionManager.queueObservation(sessionDbId, {
         tool_name,
         tool_input,
-        tool_output,
+        tool_response,
         prompt_number
       });
 
