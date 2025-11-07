@@ -1209,22 +1209,10 @@ export class SessionStore {
     stmt.run(now.toISOString(), nowEpoch, id);
   }
 
-  /**
-   * Clean up orphaned active sessions (called on worker startup)
-   */
-  cleanupOrphanedSessions(): number {
-    const now = new Date();
-    const nowEpoch = now.getTime();
-
-    const stmt = this.db.prepare(`
-      UPDATE sdk_sessions
-      SET status = 'failed', completed_at = ?, completed_at_epoch = ?
-      WHERE status = 'active'
-    `);
-
-    const result = stmt.run(now.toISOString(), nowEpoch);
-    return result.changes;
-  }
+  // REMOVED: cleanupOrphanedSessions - violates "EVERYTHING SHOULD SAVE ALWAYS"
+  // There's no such thing as an "orphaned" session. Sessions are created by hooks
+  // and managed by Claude Code's lifecycle. Worker restarts don't invalidate them.
+  // Marking all active sessions as 'failed' on startup destroys the user's current work.
 
   /**
    * Get session summaries by IDs (for hybrid Chroma search)

@@ -245,39 +245,6 @@ function shouldFailOnWorkerStartup(workerStarted) {
   return !workerStarted && !existsSync(NODE_MODULES_PATH);
 }
 
-function startWorker() {
-  const ECOSYSTEM_CONFIG = join(PLUGIN_ROOT, 'ecosystem.config.cjs');
-  const PM2_PATH = join(PLUGIN_ROOT, 'node_modules', '.bin', 'pm2');
-
-  log('🚀 Starting worker service...', colors.dim);
-
-  try {
-    // Use the full path to PM2 to avoid PATH issues on Windows
-    // PM2 will either start it or report it's already running (both are success cases)
-    execSync(`"${PM2_PATH}" start "${ECOSYSTEM_CONFIG}"`, {
-      cwd: PLUGIN_ROOT,
-      stdio: 'pipe', // Capture output to avoid clutter
-      encoding: 'utf-8',
-    });
-
-    log('✓ Worker service ready', colors.dim);
-    return true;
-
-  } catch (error) {
-    // PM2 errors are often non-critical (e.g., "already running")
-    // Don't fail the entire setup if worker start has issues
-    log(`⚠️  Worker startup issue (non-critical): ${error.message}`, colors.yellow);
-
-    // Check if it's just because worker is already running
-    if (error.message && (error.message.includes('already') || error.message.includes('exist'))) {
-      log('✓ Worker was already running', colors.dim);
-      return true;
-    }
-
-    return false;
-  }
-}
-
 async function main() {
   try {
     // Check if we need to install dependencies
@@ -289,25 +256,16 @@ async function main() {
 
       if (!installSuccess) {
         log('', colors.red);
-        log('❌ Installation failed - cannot start worker without dependencies', colors.bright);
-        log('', colors.reset);
-        log('Please resolve the installation issues above and try again.', colors.yellow);
+        log('⚠️  Installation failed', colors.yellow);
         log('', colors.reset);
         process.exit(1);
       }
     }
 
-    // Start/ensure worker is running (only after successful install or if deps already exist)
-    const workerStarted = startWorker();
+    // Worker will be started lazily when needed (e.g., when save-hook sends data)
+    // Context hook only needs database access, not the worker service
 
-    if (shouldFailOnWorkerStartup(workerStarted)) {
-      log('', colors.red);
-      log('❌ Worker failed to start and dependencies are missing', colors.bright);
-      log('', colors.reset);
-      process.exit(1);
-    }
-
-    // Success - dependencies installed (if needed) and worker running (or already running)
+    // Success - dependencies installed (if needed)
     process.exit(0);
 
   } catch (error) {

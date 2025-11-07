@@ -77,6 +77,7 @@ async function buildHooks() {
       format: 'cjs',
       outfile: `${hooksDir}/${WORKER_SERVICE.name}.cjs`,
       minify: true,
+      logLevel: 'error', // Suppress warnings (import.meta warning is benign)
       external: ['better-sqlite3'],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
@@ -147,7 +148,7 @@ async function buildHooks() {
     console.log(`   Output: ${hooksDir}/`);
     console.log(`   - Hooks: *-hook.js`);
     console.log(`   - Worker: worker-service.cjs`);
-    console.log(`   - Search: search-server.js`);
+    console.log(`   - Search: search-server.mjs`);
     console.log('\n💡 Note: Dependencies will be auto-installed on first hook execution');
 
   } catch (error) {

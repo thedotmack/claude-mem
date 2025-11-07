@@ -2,22 +2,22 @@ import React, { useMemo, useRef, useEffect } from 'react';
 import { Observation, Summary, UserPrompt, FeedItem } from '../types';
 import { ObservationCard } from './ObservationCard';
 import { SummaryCard } from './SummaryCard';
-import { SummarySkeleton } from './SummarySkeleton';
 import { PromptCard } from './PromptCard';
+import { ScrollToTop } from './ScrollToTop';
 import { UI } from '../constants/ui';
 
 interface FeedProps {
   observations: Observation[];
   summaries: Summary[];
   prompts: UserPrompt[];
-  processingSessions: Set<string>;
   onLoadMore: () => void;
   isLoading: boolean;
   hasMore: boolean;
 }
 
-export function Feed({ observations, summaries, prompts, processingSessions, onLoadMore, isLoading, hasMore }: FeedProps) {
+export function Feed({ observations, summaries, prompts, onLoadMore, isLoading, hasMore }: FeedProps) {
   const loadMoreRef = useRef<HTMLDivElement>(null);
+  const feedRef = useRef<HTMLDivElement>(null);
   const onLoadMoreRef = useRef(onLoadMore);
 
   // Keep the callback ref up to date
@@ -51,48 +51,18 @@ export function Feed({ observations, summaries, prompts, processingSessions, onL
   }, [hasMore, isLoading]);
 
   const items = useMemo<FeedItem[]>(() => {
-    // Create a set of session IDs that already have summaries
-    const sessionsWithSummaries = new Set(summaries.map(s => s.session_id));
-
-    // Find the most recent prompt for each processing session
-    const sessionPrompts = new Map<string, UserPrompt>();
-    prompts.forEach(p => {
-      const existing = sessionPrompts.get(p.claude_session_id);
-      if (!existing || p.created_at_epoch > existing.created_at_epoch) {
-        sessionPrompts.set(p.claude_session_id, p);
-      }
-    });
-
-    // Create skeleton items for sessions being processed that don't have summaries yet
-    const skeletons: FeedItem[] = [];
-    processingSessions.forEach(sessionId => {
-      if (!sessionsWithSummaries.has(sessionId)) {
-        const prompt = sessionPrompts.get(sessionId);
-        skeletons.push({
-          itemType: 'skeleton',
-          id: sessionId, // Don't add prefix - key construction adds itemType already
-          session_id: sessionId,
-          project: prompt?.project,
-          // Always use current time so skeletons appear at top of feed
-          created_at_epoch: Date.now()
-        });
-      }
-    });
-
-    // Data is already filtered by App.tsx - no need to filter again
     const combined = [
       ...observations.map(o => ({ ...o, itemType: 'observation' as const })),
       ...summaries.map(s => ({ ...s, itemType: 'summary' as const })),
-      ...prompts.map(p => ({ ...p, itemType: 'prompt' as const })),
-      ...skeletons
+      ...prompts.map(p => ({ ...p, itemType: 'prompt' as const }))
     ];
 
-    return combined
-      .sort((a, b) => b.created_at_epoch - a.created_at_epoch);
-  }, [observations, summaries, prompts, processingSessions]);
+    return combined.sort((a, b) => b.created_at_epoch - a.created_at_epoch);
+  }, [observations, summaries, prompts]);
 
   return (
-    <div className="feed">
+    <div className="feed" ref={feedRef}>
+      <ScrollToTop targetRef={feedRef} />
       <div className="feed-content">
         {items.map(item => {
           const key = `${item.itemType}-${item.id}`;
@@ -100,8 +70,6 @@ export function Feed({ observations, summaries, prompts, processingSessions, onL
             return <ObservationCard key={key} observation={item} />;
           } else if (item.itemType === 'summary') {
             return <SummaryCard key={key} summary={item} />;
-          } else if (item.itemType === 'skeleton') {
-            return <SummarySkeleton key={key} sessionId={item.session_id} project={item.project} />;
           } else {
             return <PromptCard key={key} prompt={item} />;
           }

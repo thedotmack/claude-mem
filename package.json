@@ -1,6 +1,6 @@
 {
   "name": "claude-mem",
-  "version": "5.1.4",
+  "version": "5.2.0",
   "description": "Memory compression system for Claude Code - persist context across sessions",
   "keywords": [
     "claude",
@@ -57,6 +57,7 @@
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.8",
+    "@types/cors": "^2.8.19",
     "@types/express": "^4.17.21",
     "@types/node": "^20.0.0",
     "@types/react": "^18.3.5",

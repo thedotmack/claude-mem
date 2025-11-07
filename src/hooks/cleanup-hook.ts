@@ -5,6 +5,7 @@
 
 import { stdin } from 'process';
 import { SessionStore } from '../services/sqlite/SessionStore.js';
+import { getWorkerPort } from '../shared/worker-utils.js';
 
 export interface SessionEndInput {
   session_id: string;
@@ -68,6 +69,19 @@ async function cleanupHook(input?: SessionEndInput): Promise<void> {
   console.error('[claude-mem cleanup] Session marked as completed in database');
 
   db.close();
+
+  // Tell worker to stop spinner
+  try {
+    const workerPort = session.worker_port || getWorkerPort();
+    await fetch(`http://127.0.0.1:${workerPort}/sessions/${session.id}/complete`, {
+      method: 'POST',
+      signal: AbortSignal.timeout(1000)
+    });
+    console.error('[claude-mem cleanup] Worker notified to stop processing indicator');
+  } catch (err) {
+    // Non-critical - worker might be down
+    console.error('[claude-mem cleanup] Failed to notify worker (non-critical):', err);
+  }
 
   console.error('[claude-mem cleanup] Cleanup completed successfully');
   console.log('{"continue": true, "suppressOutput": true}');

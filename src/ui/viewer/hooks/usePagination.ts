@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Observation, Summary, UserPrompt } from '../types';
 import { UI } from '../constants/ui';
 import { API_ENDPOINTS } from '../constants/api';
@@ -21,6 +21,18 @@ function usePaginationFor(endpoint: string, dataType: DataType, currentFilter: s
   });
   const [offset, setOffset] = useState(0);
 
+  // Use refs to avoid stale closures and prevent infinite loops
+  const stateRef = useRef(state);
+  const offsetRef = useRef(offset);
+
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
+
+  useEffect(() => {
+    offsetRef.current = offset;
+  }, [offset]);
+
   // Reset pagination when filter changes
   useEffect(() => {
     setOffset(0);
@@ -34,17 +46,17 @@ function usePaginationFor(endpoint: string, dataType: DataType, currentFilter: s
    * Load more items from the API
    */
   const loadMore = useCallback(async (): Promise<DataItem[]> => {
-    // Prevent concurrent requests using state
-    if (state.isLoading || !state.hasMore) {
+    // Prevent concurrent requests using ref (always current)
+    if (stateRef.current.isLoading || !stateRef.current.hasMore) {
       return [];
     }
 
     setState(prev => ({ ...prev, isLoading: true }));
 
     try {
-      // Build query params
+      // Build query params using ref (always current)
       const params = new URLSearchParams({
-        offset: offset.toString(),
+        offset: offsetRef.current.toString(),
         limit: UI.PAGINATION_PAGE_SIZE.toString()
       });
 
@@ -68,13 +80,13 @@ function usePaginationFor(endpoint: string, dataType: DataType, currentFilter: s
       }));
 
       setOffset(prev => prev + UI.PAGINATION_PAGE_SIZE);
-      return data[dataType] as DataItem[];
+      return data.items as DataItem[];
     } catch (error) {
       console.error(`Failed to load ${dataType}:`, error);
       setState(prev => ({ ...prev, isLoading: false }));
       return [];
     }
-  }, [offset, state.hasMore, state.isLoading, currentFilter, endpoint, dataType]);
+  }, [currentFilter, endpoint, dataType]); // Only stable values - no state/offset deps
 
   return {
     ...state,

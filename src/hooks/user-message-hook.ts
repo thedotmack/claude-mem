@@ -10,6 +10,7 @@ import { execSync } from "child_process";
 import { join } from "path";
 import { homedir } from "os";
 import { existsSync } from "fs";
+import { getWorkerPort } from "../shared/worker-utils.js";
 
 // Check if node_modules exists - if not, this is first run
 const pluginDir = join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
@@ -46,11 +47,12 @@ try {
     encoding: 'utf8'
   });
 
+  const port = getWorkerPort();
   console.error(
     "\n\n📝 Claude-Mem Context Loaded\n" +
     "   ℹ️  Note: This appears as stderr but is informational only\n\n" +
     output +
-    "\n\n📺 Watch live in browser http://localhost:37777/ (New! v5.1)\n"
+    `\n\n📺 Watch live in browser http://localhost:${port}/ (New! v5.1)\n`
   );
 
 } catch (error) {

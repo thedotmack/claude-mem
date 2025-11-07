@@ -17,7 +17,7 @@ export function App() {
   const [paginatedSummaries, setPaginatedSummaries] = useState<Summary[]>([]);
   const [paginatedPrompts, setPaginatedPrompts] = useState<UserPrompt[]>([]);
 
-  const { observations, summaries, prompts, projects, processingSessions, isConnected } = useSSE();
+  const { observations, summaries, prompts, projects, isProcessing, isConnected } = useSSE();
   const { settings, saveSettings, isSaving, saveStatus } = useSettings();
   const { stats } = useStats();
   const { preference, resolvedTheme, setThemePreference } = useTheme();
@@ -72,12 +72,13 @@ export function App() {
     } catch (error) {
       console.error('Failed to load more data:', error);
     }
-  }, [pagination]);
+  }, [pagination.observations, pagination.summaries, pagination.prompts]);
 
-  // Load first page when filter changes or pagination handlers update
+  // Load first page only when filter changes
   useEffect(() => {
     handleLoadMore();
-  }, [currentFilter, handleLoadMore]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentFilter]); // Only re-run when filter changes, not when handleLoadMore changes
 
   return (
     <div className="container">
@@ -89,7 +90,7 @@ export function App() {
           onFilterChange={setCurrentFilter}
           onSettingsToggle={toggleSidebar}
           sidebarOpen={sidebarOpen}
-          isProcessing={processingSessions.size > 0}
+          isProcessing={isProcessing}
           themePreference={preference}
           onThemeChange={setThemePreference}
         />
@@ -97,7 +98,6 @@ export function App() {
           observations={allObservations}
           summaries={allSummaries}
           prompts={allPrompts}
-          processingSessions={processingSessions}
           onLoadMore={handleLoadMore}
           isLoading={pagination.observations.isLoading || pagination.summaries.isLoading || pagination.prompts.isLoading}
           hasMore={pagination.observations.hasMore || pagination.summaries.hasMore || pagination.prompts.hasMore}

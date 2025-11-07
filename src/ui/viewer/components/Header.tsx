@@ -33,10 +33,10 @@ export function Header({
       </h1>
       <div className="status">
         <a
-          href="https://github.com/thedotmack/claude-mem/"
+          href="https://docs.claude-mem.ai"
           target="_blank"
           rel="noopener noreferrer"
-          title="GitHub"
+          title="Documentation"
           style={{
             display: 'block',
             padding: '8px 4px 8px 8px',
@@ -44,7 +44,27 @@ export function Header({
             transition: 'color 0.2s',
             lineHeight: 0
           }}
-          onMouseEnter={(e) => e.currentTarget.style.color = '#ffffff'}
+          onMouseEnter={(e) => e.currentTarget.style.color = '#606060'}
+          onMouseLeave={(e) => e.currentTarget.style.color = '#a0a0a0'}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
+            <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
+          </svg>
+        </a>
+        <a
+          href="https://github.com/thedotmack/claude-mem/"
+          target="_blank"
+          rel="noopener noreferrer"
+          title="GitHub"
+          style={{
+            display: 'block',
+            padding: '8px 4px',
+            color: '#a0a0a0',
+            transition: 'color 0.2s',
+            lineHeight: 0
+          }}
+          onMouseEnter={(e) => e.currentTarget.style.color = '#606060'}
           onMouseLeave={(e) => e.currentTarget.style.color = '#a0a0a0'}
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
@@ -63,7 +83,7 @@ export function Header({
             transition: 'color 0.2s',
             lineHeight: 0
           }}
-          onMouseEnter={(e) => e.currentTarget.style.color = '#ffffff'}
+          onMouseEnter={(e) => e.currentTarget.style.color = '#606060'}
           onMouseLeave={(e) => e.currentTarget.style.color = '#a0a0a0'}
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">

@@ -55,6 +55,7 @@ Skip routine operations:
 - Package installations with no errors
 - Simple file listings
 - Repetitive operations you've already documented
+- If file related research comes back as empty or not found
 - **No output necessary if skipping.**
 
 OUTPUT FORMAT

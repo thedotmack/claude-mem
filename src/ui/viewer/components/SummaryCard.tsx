@@ -12,8 +12,10 @@ export function SummaryCard({ summary }: SummaryCardProps) {
   return (
     <div className="card summary-card">
       <div className="card-header">
-        <span className="card-type">SUMMARY</span>
-        <span>{summary.project}</span>
+        <div className="card-header-left">
+          <span className="card-type">SUMMARY</span>
+          <span className="card-project">{summary.project}</span>
+        </div>
       </div>
       {summary.request && (
         <div className="card-title">Request: {summary.request}</div>
@@ -27,7 +29,9 @@ export function SummaryCard({ summary }: SummaryCardProps) {
       {summary.next_steps && (
         <div className="card-subtitle">Next: {summary.next_steps}</div>
       )}
-      <div className="card-meta">#{summary.id} • {date}</div>
+      <div className="card-meta">
+        <span className="meta-date">#{summary.id} • {date}</span>
+      </div>
     </div>
   );
 }

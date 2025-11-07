@@ -9,7 +9,7 @@ export function useSSE() {
   const [prompts, setPrompts] = useState<UserPrompt[]>([]);
   const [projects, setProjects] = useState<string[]>([]);
   const [isConnected, setIsConnected] = useState(false);
-  const [processingSessions, setProcessingSessions] = useState<Set<string>>(new Set());
+  const [isProcessing, setIsProcessing] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout>();
 
@@ -70,12 +70,6 @@ export function useSSE() {
                 const summary = data.summary;
                 console.log('[SSE] New summary:', summary.id);
                 setSummaries(prev => [summary, ...prev]);
-                // Mark session as no longer processing (summary is the final step)
-                setProcessingSessions(prev => {
-                  const next = new Set(prev);
-                  next.delete(summary.session_id);
-                  return next;
-                });
               }
               break;
 
@@ -88,18 +82,9 @@ export function useSSE() {
               break;
 
             case 'processing_status':
-              if (data.processing) {
-                const processing = data.processing;
-                console.log('[SSE] Processing status:', processing);
-                setProcessingSessions(prev => {
-                  const next = new Set(prev);
-                  if (processing.is_processing) {
-                    next.add(processing.session_id);
-                  } else {
-                    next.delete(processing.session_id);
-                  }
-                  return next;
-                });
+              if (typeof data.isProcessing === 'boolean') {
+                console.log('[SSE] Processing status:', data.isProcessing);
+                setIsProcessing(data.isProcessing);
               }
               break;
           }
@@ -122,5 +107,5 @@ export function useSSE() {
     };
   }, []);
 
-  return { observations, summaries, prompts, projects, processingSessions, isConnected };
+  return { observations, summaries, prompts, projects, isProcessing, isConnected };
 }

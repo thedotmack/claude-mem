@@ -1,11 +1,18 @@
 export interface Observation {
   id: number;
-  session_id: string;
+  sdk_session_id: string;
   project: string;
   type: string;
-  title: string;
-  subtitle?: string;
-  content?: string;
+  title: string | null;
+  subtitle: string | null;
+  narrative: string | null;
+  text: string | null;
+  facts: string | null;
+  concepts: string | null;
+  files_read: string | null;
+  files_modified: string | null;
+  prompt_number: number | null;
+  created_at: string;
   created_at_epoch: number;
 }
 
@@ -29,18 +36,10 @@ export interface UserPrompt {
   created_at_epoch: number;
 }
 
-export interface SkeletonItem {
-  id: string;
-  session_id: string;
-  project?: string;
-  created_at_epoch: number;
-}
-
 export type FeedItem =
   | (Observation & { itemType: 'observation' })
   | (Summary & { itemType: 'summary' })
-  | (UserPrompt & { itemType: 'prompt' })
-  | (SkeletonItem & { itemType: 'skeleton' });
+  | (UserPrompt & { itemType: 'prompt' });
 
 export interface StreamEvent {
   type: 'initial_load' | 'new_observation' | 'new_summary' | 'new_prompt' | 'processing_status';
@@ -51,10 +50,7 @@ export interface StreamEvent {
   observation?: Observation;
   summary?: Summary;
   prompt?: UserPrompt;
-  processing?: {
-    session_id: string;
-    is_processing: boolean;
-  };
+  isProcessing?: boolean;
 }
 
 export interface Settings {
