@@ -151,7 +151,7 @@ export const migration002: Migration = {
     console.log('✅ Added hierarchical memory fields to memories table');
   },
 
-  down: (db: Database) => {
+  down: (_db: Database) => {
     // Note: SQLite doesn't support DROP COLUMN in all versions
     // In production, we'd need to recreate the table without these columns
     // For now, we'll just log a warning

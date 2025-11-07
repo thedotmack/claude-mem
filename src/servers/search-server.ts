@@ -148,7 +148,7 @@ function formatSessionIndex(session: SessionSummarySearchResult, index: number):
 /**
  * Format observation as text content with metadata
  */
-function formatObservationResult(obs: ObservationSearchResult, index: number): string {
+function formatObservationResult(obs: ObservationSearchResult): string {
   const title = obs.title || `Observation #${obs.id}`;
 
   // Build content from available fields
@@ -228,7 +228,7 @@ function formatObservationResult(obs: ObservationSearchResult, index: number): s
 /**
  * Format session summary as text content with metadata
  */
-function formatSessionResult(session: SessionSummarySearchResult, index: number): string {
+function formatSessionResult(session: SessionSummarySearchResult): string {
   const title = session.request || `Session ${session.sdk_session_id.substring(0, 8)}`;
 
   // Build content from available fields
@@ -307,7 +307,7 @@ function formatUserPromptIndex(prompt: UserPromptSearchResult, index: number): s
 /**
  * Format user prompt as text content with metadata
  */
-function formatUserPromptResult(prompt: UserPromptSearchResult, index: number): string {
+function formatUserPromptResult(prompt: UserPromptSearchResult): string {
   const contentParts: string[] = [];
   contentParts.push(`## User Prompt #${prompt.prompt_number}`);
   contentParts.push(`*Source: claude-mem://user-prompt/${prompt.id}*`);
@@ -369,7 +369,7 @@ const tools = [
             if (chromaResults.ids.length > 0) {
               // Step 2: Filter by recency (90 days)
               const ninetyDaysAgo = Date.now() - (90 * 24 * 60 * 60 * 1000);
-              const recentIds = chromaResults.ids.filter((id, idx) => {
+              const recentIds = chromaResults.ids.filter((_id, idx) => {
                 const meta = chromaResults.metadatas[idx];
                 return meta && meta.created_at_epoch > ninetyDaysAgo;
               });
@@ -411,7 +411,7 @@ const tools = [
           const formattedResults = results.map((obs, i) => formatObservationIndex(obs, i));
           combinedText = header + formattedResults.join('\n\n') + formatSearchTips();
         } else {
-          const formattedResults = results.map((obs, i) => formatObservationResult(obs, i));
+          const formattedResults = results.map((obs) => formatObservationResult(obs));
           combinedText = formattedResults.join('\n\n---\n\n');
         }
 
@@ -464,7 +464,7 @@ const tools = [
             if (chromaResults.ids.length > 0) {
               // Step 2: Filter by recency (90 days)
               const ninetyDaysAgo = Date.now() - (90 * 24 * 60 * 60 * 1000);
-              const recentIds = chromaResults.ids.filter((id, idx) => {
+              const recentIds = chromaResults.ids.filter((_id, idx) => {
                 const meta = chromaResults.metadatas[idx];
                 return meta && meta.created_at_epoch > ninetyDaysAgo;
               });
@@ -505,7 +505,7 @@ const tools = [
           const formattedResults = results.map((session, i) => formatSessionIndex(session, i));
           combinedText = header + formattedResults.join('\n\n') + formatSearchTips();
         } else {
-          const formattedResults = results.map((session, i) => formatSessionResult(session, i));
+          const formattedResults = results.map((session) => formatSessionResult(session));
           combinedText = formattedResults.join('\n\n---\n\n');
         }
 
@@ -605,7 +605,7 @@ const tools = [
           const formattedResults = results.map((obs, i) => formatObservationIndex(obs, i));
           combinedText = header + formattedResults.join('\n\n') + formatSearchTips();
         } else {
-          const formattedResults = results.map((obs, i) => formatObservationResult(obs, i));
+          const formattedResults = results.map((obs) => formatObservationResult(obs));
           combinedText = formattedResults.join('\n\n---\n\n');
         }
 
@@ -727,13 +727,13 @@ const tools = [
           const formattedResults: string[] = [];
 
           // Add observations
-          observations.forEach((obs, i) => {
-            formattedResults.push(formatObservationResult(obs, i));
+          observations.forEach((obs) => {
+            formattedResults.push(formatObservationResult(obs));
           });
 
           // Add sessions
-          sessions.forEach((session, i) => {
-            formattedResults.push(formatSessionResult(session, i + observations.length));
+          sessions.forEach((session) => {
+            formattedResults.push(formatSessionResult(session));
           });
 
           combinedText = formattedResults.join('\n\n---\n\n');
@@ -839,7 +839,7 @@ const tools = [
           const formattedResults = results.map((obs, i) => formatObservationIndex(obs, i));
           combinedText = header + formattedResults.join('\n\n') + formatSearchTips();
         } else {
-          const formattedResults = results.map((obs, i) => formatObservationResult(obs, i));
+          const formattedResults = results.map((obs) => formatObservationResult(obs));
           combinedText = formattedResults.join('\n\n---\n\n');
         }
 
@@ -1030,7 +1030,7 @@ const tools = [
             if (chromaResults.ids.length > 0) {
               // Step 2: Filter by recency (90 days)
               const ninetyDaysAgo = Date.now() - (90 * 24 * 60 * 60 * 1000);
-              const recentIds = chromaResults.ids.filter((id, idx) => {
+              const recentIds = chromaResults.ids.filter((_id, idx) => {
                 const meta = chromaResults.metadatas[idx];
                 return meta && meta.created_at_epoch > ninetyDaysAgo;
               });
@@ -1071,7 +1071,7 @@ const tools = [
           const formattedResults = results.map((prompt, i) => formatUserPromptIndex(prompt, i));
           combinedText = header + formattedResults.join('\n\n') + formatSearchTips();
         } else {
-          const formattedResults = results.map((prompt, i) => formatUserPromptResult(prompt, i));
+          const formattedResults = results.map((prompt) => formatUserPromptResult(prompt));
           combinedText = formattedResults.join('\n\n---\n\n');
         }
 
@@ -1403,7 +1403,7 @@ const tools = [
             if (chromaResults.ids.length > 0) {
               // Filter by recency (90 days)
               const ninetyDaysAgo = Date.now() - (90 * 24 * 60 * 60 * 1000);
-              const recentIds = chromaResults.ids.filter((id, idx) => {
+              const recentIds = chromaResults.ids.filter((_id, idx) => {
                 const meta = chromaResults.metadatas[idx];
                 return meta && meta.created_at_epoch > ninetyDaysAgo;
               });
