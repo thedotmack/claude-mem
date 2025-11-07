@@ -3,6 +3,7 @@ import { Observation, Summary, UserPrompt, FeedItem } from '../types';
 import { ObservationCard } from './ObservationCard';
 import { SummaryCard } from './SummaryCard';
 import { PromptCard } from './PromptCard';
+import { ScrollToTop } from './ScrollToTop';
 import { UI } from '../constants/ui';
 
 interface FeedProps {
@@ -16,6 +17,7 @@ interface FeedProps {
 
 export function Feed({ observations, summaries, prompts, onLoadMore, isLoading, hasMore }: FeedProps) {
   const loadMoreRef = useRef<HTMLDivElement>(null);
+  const feedRef = useRef<HTMLDivElement>(null);
   const onLoadMoreRef = useRef(onLoadMore);
 
   // Keep the callback ref up to date
@@ -59,7 +61,8 @@ export function Feed({ observations, summaries, prompts, onLoadMore, isLoading, 
   }, [observations, summaries, prompts]);
 
   return (
-    <div className="feed">
+    <div className="feed" ref={feedRef}>
+      <ScrollToTop targetRef={feedRef} />
       <div className="feed-content">
         {items.map(item => {
           const key = `${item.itemType}-${item.id}`;

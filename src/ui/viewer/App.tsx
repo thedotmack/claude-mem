@@ -72,12 +72,13 @@ export function App() {
     } catch (error) {
       console.error('Failed to load more data:', error);
     }
-  }, [pagination]);
+  }, [pagination.observations, pagination.summaries, pagination.prompts]);
 
-  // Load first page when filter changes or pagination handlers update
+  // Load first page only when filter changes
   useEffect(() => {
     handleLoadMore();
-  }, [currentFilter, handleLoadMore]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentFilter]); // Only re-run when filter changes, not when handleLoadMore changes
 
   return (
     <div className="container">

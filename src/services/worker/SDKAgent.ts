@@ -198,10 +198,17 @@ export class SDKAgent {
           type: 'new_observation',
           observation: {
             id: obsId,
+            sdk_session_id: session.sdkSessionId,
             session_id: session.claudeSessionId,
             type: obs.type,
             title: obs.title,
             subtitle: obs.subtitle,
+            text: obs.text || null,
+            narrative: null,
+            facts: JSON.stringify(obs.facts || []),
+            concepts: JSON.stringify(obs.concepts || []),
+            files_read: JSON.stringify(obs.files || []),
+            files_modified: JSON.stringify([]),
             project: session.project,
             prompt_number: session.lastPromptNumber,
             created_at_epoch: createdAtEpoch
