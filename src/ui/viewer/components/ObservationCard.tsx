@@ -41,8 +41,8 @@ export function ObservationCard({ observation }: ObservationCardProps) {
   const filesRead = observation.files_read ? JSON.parse(observation.files_read).map(stripProjectRoot) : [];
   const filesModified = observation.files_modified ? JSON.parse(observation.files_modified).map(stripProjectRoot) : [];
 
-  // Show summary when both are off
-  const showSummary = !showFacts && !showNarrative;
+  // Show facts toggle if there are facts, concepts, or files
+  const hasFactsContent = facts.length > 0 || concepts.length > 0 || filesRead.length > 0 || filesModified.length > 0;
 
   return (
     <div className="card">
@@ -55,7 +55,7 @@ export function ObservationCard({ observation }: ObservationCardProps) {
           <span className="card-project">{observation.project}</span>
         </div>
         <div className="view-mode-toggles">
-          {facts.length > 0 && (
+          {hasFactsContent && (
             <button
               className={`view-mode-toggle ${showFacts ? 'active' : ''}`}
               onClick={() => {
@@ -95,7 +95,7 @@ export function ObservationCard({ observation }: ObservationCardProps) {
 
       {/* Content based on toggle state */}
       <div className="view-mode-content">
-        {showSummary && observation.subtitle && (
+        {!showFacts && !showNarrative && observation.subtitle && (
           <div className="card-subtitle">{observation.subtitle}</div>
         )}
         {showFacts && facts.length > 0 && (
@@ -112,23 +112,34 @@ export function ObservationCard({ observation }: ObservationCardProps) {
         )}
       </div>
 
-      {/* Metadata with concepts and files inline */}
+      {/* Metadata footer - id, date, and conditionally concepts/files when facts toggle is on */}
       <div className="card-meta">
         <span className="meta-date">#{observation.id} • {date}</span>
-        {concepts.length > 0 && (
-          <span className="meta-concepts">
-            • {concepts.join(', ')}
-          </span>
-        )}
-        {filesRead.length > 0 && (
-          <span className="meta-files">
-            • <span className="file-label">read:</span> {filesRead.join(', ')}
-          </span>
-        )}
-        {filesModified.length > 0 && (
-          <span className="meta-files">
-            • <span className="file-label">modified:</span> {filesModified.join(', ')}
-          </span>
+        {showFacts && (concepts.length > 0 || filesRead.length > 0 || filesModified.length > 0) && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
+            {concepts.map((concept: string, i: number) => (
+              <span key={i} style={{
+                padding: '2px 8px',
+                background: 'var(--color-type-badge-bg)',
+                color: 'var(--color-type-badge-text)',
+                borderRadius: '3px',
+                fontWeight: '500',
+                fontSize: '10px'
+              }}>
+                {concept}
+              </span>
+            ))}
+            {filesRead.length > 0 && (
+              <span className="meta-files">
+                <span className="file-label">read:</span> {filesRead.join(', ')}
+              </span>
+            )}
+            {filesModified.length > 0 && (
+              <span className="meta-files">
+                <span className="file-label">modified:</span> {filesModified.join(', ')}
+              </span>
+            )}
+          </div>
         )}
       </div>
     </div>
