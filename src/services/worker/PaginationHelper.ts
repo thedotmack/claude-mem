@@ -18,16 +18,72 @@ export class PaginationHelper {
   }
 
   /**
+   * Strip project path from file paths using heuristic
+   * Converts "/Users/user/project/src/file.ts" -> "src/file.ts"
+   * Uses first occurrence of project name from left (project root)
+   */
+  private stripProjectPath(filePath: string, projectName: string): string {
+    const marker = `/${projectName}/`;
+    const index = filePath.indexOf(marker);
+
+    if (index !== -1) {
+      // Strip everything before and including the project name
+      return filePath.substring(index + marker.length);
+    }
+
+    // Fallback: return original path if project name not found
+    return filePath;
+  }
+
+  /**
+   * Strip project path from JSON array of file paths
+   */
+  private stripProjectPaths(filePathsStr: string | null, projectName: string): string | null {
+    if (!filePathsStr) return filePathsStr;
+
+    try {
+      // Parse JSON array
+      const paths = JSON.parse(filePathsStr) as string[];
+
+      // Strip project path from each file
+      const strippedPaths = paths.map(p => this.stripProjectPath(p, projectName));
+
+      // Return as JSON string
+      return JSON.stringify(strippedPaths);
+    } catch (error) {
+      // If parsing fails, return original string
+      return filePathsStr;
+    }
+  }
+
+  /**
+   * Sanitize observation by stripping project paths from files
+   */
+  private sanitizeObservation(obs: Observation): Observation {
+    return {
+      ...obs,
+      files_read: this.stripProjectPaths(obs.files_read, obs.project),
+      files_modified: this.stripProjectPaths(obs.files_modified, obs.project)
+    };
+  }
+
+  /**
    * Get paginated observations
    */
   getObservations(offset: number, limit: number, project?: string): PaginatedResult<Observation> {
-    return this.paginate<Observation>(
+    const result = this.paginate<Observation>(
       'observations',
       'id, sdk_session_id, project, type, title, subtitle, narrative, text, facts, concepts, files_read, files_modified, prompt_number, created_at, created_at_epoch',
       offset,
       limit,
       project
     );
+
+    // Strip project paths from file paths before returning
+    return {
+      ...result,
+      items: result.items.map(obs => this.sanitizeObservation(obs))
+    };
   }
 
   /**
@@ -41,6 +97,7 @@ export class PaginationHelper {
         ss.id,
         s.claude_session_id as session_id,
         ss.request,
+        ss.investigated,
         ss.learned,
         ss.completed,
         ss.next_steps,

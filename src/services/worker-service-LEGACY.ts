@@ -569,6 +569,7 @@ class WorkerService {
           ss.id,
           s.claude_session_id as session_id,
           ss.request,
+          ss.investigated,
           ss.learned,
           ss.completed,
           ss.next_steps,

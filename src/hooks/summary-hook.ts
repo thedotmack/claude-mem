@@ -68,6 +68,12 @@ async function summaryHook(input?: StopInput): Promise<void> {
     }
     // Re-throw HTTP errors and other errors as-is
     throw error;
+  } finally {
+    await fetch(`http://127.0.0.1:${port}/api/processing`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ isProcessing: false })
+    });
   }
 
   console.log(createHookResponse('Stop', true));

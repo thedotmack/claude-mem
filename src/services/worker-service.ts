@@ -43,7 +43,6 @@ export class WorkerService {
 
   // Processing status tracking for viewer UI spinner
   private isProcessing: boolean = false;
-  private spinnerStopTimer: NodeJS.Timeout | null = null;
 
   constructor() {
     this.app = express();
@@ -96,6 +95,7 @@ export class WorkerService {
     this.app.get('/api/prompts', this.handleGetPrompts.bind(this));
     this.app.get('/api/stats', this.handleGetStats.bind(this));
     this.app.get('/api/processing-status', this.handleGetProcessingStatus.bind(this));
+    this.app.post('/api/processing', this.handleSetProcessing.bind(this));
 
     // Settings
     this.app.get('/api/settings', this.handleGetSettings.bind(this));
@@ -266,6 +266,7 @@ export class WorkerService {
 
   /**
    * Queue observations for processing
+   * CRITICAL: Ensures SDK agent is running to process the queue (ALWAYS SAVE EVERYTHING)
    */
   private handleObservations(req: Request, res: Response): void {
     try {
@@ -278,6 +279,14 @@ export class WorkerService {
         tool_response,
         prompt_number
       });
+
+      // CRITICAL: Ensure SDK agent is running to consume the queue
+      const session = this.sessionManager.getSession(sessionDbId);
+      if (session && !session.generatorPromise) {
+        session.generatorPromise = this.sdkAgent.startSession(session, this).catch(err => {
+          logger.failure('WORKER', 'SDK agent error', { sessionId: sessionDbId }, err);
+        });
+      }
 
       // Broadcast SSE event
       this.sseBroadcaster.broadcast({
@@ -294,11 +303,20 @@ export class WorkerService {
 
   /**
    * Queue summarize request
+   * CRITICAL: Ensures SDK agent is running to process the queue (ALWAYS SAVE EVERYTHING)
    */
   private handleSummarize(req: Request, res: Response): void {
     try {
       const sessionDbId = parseInt(req.params.sessionDbId, 10);
       this.sessionManager.queueSummarize(sessionDbId);
+
+      // CRITICAL: Ensure SDK agent is running to consume the queue
+      const session = this.sessionManager.getSession(sessionDbId);
+      if (session && !session.generatorPromise) {
+        session.generatorPromise = this.sdkAgent.startSession(session, this).catch(err => {
+          logger.failure('WORKER', 'SDK agent error', { sessionId: sessionDbId }, err);
+        });
+      }
 
       res.json({ status: 'queued' });
     } catch (error) {
@@ -604,25 +622,24 @@ export class WorkerService {
   }
 
   /**
-   * Check if all sessions have empty queues and stop spinner after debounce (1.5s)
+   * Set processing status (called by hooks)
    */
-  checkAndStopSpinner(): void {
-    // Clear any existing timer
-    if (this.spinnerStopTimer) {
-      clearTimeout(this.spinnerStopTimer);
-      this.spinnerStopTimer = null;
-    }
+  private handleSetProcessing(req: Request, res: Response): void {
+    try {
+      const { isProcessing } = req.body;
 
-    // Check if any session has pending messages
-    if (!this.sessionManager.hasPendingMessages()) {
-      // Debounce: wait 1.5s and check again
-      this.spinnerStopTimer = setTimeout(() => {
-        if (!this.sessionManager.hasPendingMessages()) {
-          logger.debug('WORKER', 'All queues empty - stopping spinner');
-          this.broadcastProcessingStatus(false);
-        }
-        this.spinnerStopTimer = null;
-      }, 1500);
+      if (typeof isProcessing !== 'boolean') {
+        res.status(400).json({ error: 'isProcessing must be a boolean' });
+        return;
+      }
+
+      this.broadcastProcessingStatus(isProcessing);
+      logger.debug('WORKER', 'Processing status updated', { isProcessing });
+
+      res.json({ status: 'ok', isProcessing });
+    } catch (error) {
+      logger.failure('WORKER', 'Failed to set processing status', {}, error as Error);
+      res.status(500).json({ error: (error as Error).message });
     }
   }
 }

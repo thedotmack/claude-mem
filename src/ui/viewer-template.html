@@ -578,8 +578,8 @@
       color: var(--color-text-primary);
     }
 
-    /* Expanded content container */
-    .card-expanded-content {
+    /* Verbose content container (narrative and facts - collapsible) */
+    .card-verbose-content {
       margin-top: 16px;
       padding-top: 16px;
       border-top: 1px solid var(--color-border-primary);
@@ -595,6 +595,48 @@
         opacity: 1;
         transform: translateY(0);
       }
+    }
+
+    /* Metadata grid (concepts, files, session info - always visible) */
+    .card-metadata-grid {
+      margin-top: 16px;
+      padding-top: 16px;
+      border-top: 1px solid var(--color-border-primary);
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      grid-auto-flow: dense;
+    }
+
+    /* Files section spans full width */
+    .card-metadata-grid .card-section.files-section {
+      grid-column: 1 / -1;
+    }
+
+    /* Responsive: stack on smaller screens */
+    @media (max-width: 768px) {
+      .card-metadata-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .card-metadata-grid .card-section.files-section {
+        grid-column: 1;
+      }
+    }
+
+    /* Compact section styling for grid items */
+    .card-section.compact {
+      margin-bottom: 0;
+    }
+
+    .card-section.compact .section-header {
+      font-size: 12px;
+      margin-bottom: 6px;
+    }
+
+    .card-section.compact .section-content {
+      padding-left: 0;
+      font-size: 12px;
     }
 
     /* Section styling */
