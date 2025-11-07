@@ -34,8 +34,9 @@ export class SDKAgent {
 
   /**
    * Start SDK agent for a session (event-driven, no polling)
+   * @param worker WorkerService reference for spinner control (optional)
    */
-  async startSession(session: ActiveSession): Promise<void> {
+  async startSession(session: ActiveSession, worker?: any): Promise<void> {
     try {
       // Find Claude executable
       const claudePath = this.findClaudeExecutable();
@@ -74,7 +75,7 @@ export class SDKAgent {
           });
 
           // Parse and process response
-          await this.processSDKResponse(session, textContent);
+          await this.processSDKResponse(session, textContent, worker);
         }
 
         // Log result messages
@@ -168,7 +169,7 @@ export class SDKAgent {
   /**
    * Process SDK response text (parse XML, save to database, sync to Chroma)
    */
-  private async processSDKResponse(session: ActiveSession, text: string): Promise<void> {
+  private async processSDKResponse(session: ActiveSession, text: string, worker?: any): Promise<void> {
     // Parse observations
     const observations = parseObservations(text, session.claudeSessionId);
 
@@ -190,6 +191,23 @@ export class SDKAgent {
         session.lastPromptNumber,
         createdAtEpoch
       ).catch(() => {});
+
+      // Broadcast to SSE clients (for web UI)
+      if (worker && worker.sseBroadcaster) {
+        worker.sseBroadcaster.broadcast({
+          type: 'new_observation',
+          observation: {
+            id: obsId,
+            session_id: session.claudeSessionId,
+            type: obs.type,
+            title: obs.title,
+            subtitle: obs.subtitle,
+            project: session.project,
+            prompt_number: session.lastPromptNumber,
+            created_at_epoch: createdAtEpoch
+          }
+        });
+      }
 
       logger.info('SDK', 'Observation saved', { obsId, type: obs.type });
     }
@@ -216,7 +234,32 @@ export class SDKAgent {
         createdAtEpoch
       ).catch(() => {});
 
+      // Broadcast to SSE clients (for web UI)
+      if (worker && worker.sseBroadcaster) {
+        worker.sseBroadcaster.broadcast({
+          type: 'new_summary',
+          summary: {
+            id: summaryId,
+            session_id: session.claudeSessionId,
+            request: summary.request,
+            investigated: summary.investigated,
+            learned: summary.learned,
+            completed: summary.completed,
+            next_steps: summary.next_steps,
+            notes: summary.notes,
+            project: session.project,
+            prompt_number: session.lastPromptNumber,
+            created_at_epoch: createdAtEpoch
+          }
+        });
+      }
+
       logger.info('SDK', 'Summary saved', { summaryId });
+    }
+
+    // Check and stop spinner after processing (debounced)
+    if (worker && typeof worker.checkAndStopSpinner === 'function') {
+      worker.checkAndStopSpinner();
     }
   }
 

@@ -23,7 +23,7 @@ export class PaginationHelper {
   getObservations(offset: number, limit: number, project?: string): PaginatedResult<Observation> {
     return this.paginate<Observation>(
       'observations',
-      'id, session_db_id, claude_session_id, project, type, title, subtitle, text, concepts, files, prompt_number, created_at, created_at_epoch',
+      'id, sdk_session_id, project, type, title, subtitle, narrative, text, facts, concepts, files_read, files_modified, prompt_number, created_at, created_at_epoch',
       offset,
       limit,
       project
@@ -34,26 +34,73 @@ export class PaginationHelper {
    * Get paginated summaries
    */
   getSummaries(offset: number, limit: number, project?: string): PaginatedResult<Summary> {
-    return this.paginate<Summary>(
-      'summaries',
-      'id, session_db_id, claude_session_id, project, request, completion, summary, learnings, notes, created_at, created_at_epoch',
+    const db = this.dbManager.getSessionStore().db;
+
+    let query = `
+      SELECT
+        ss.id,
+        s.claude_session_id as session_id,
+        ss.request,
+        ss.learned,
+        ss.completed,
+        ss.next_steps,
+        ss.project,
+        ss.created_at,
+        ss.created_at_epoch
+      FROM session_summaries ss
+      JOIN sdk_sessions s ON ss.sdk_session_id = s.sdk_session_id
+    `;
+    const params: any[] = [];
+
+    if (project) {
+      query += ' WHERE ss.project = ?';
+      params.push(project);
+    }
+
+    query += ' ORDER BY ss.created_at_epoch DESC LIMIT ? OFFSET ?';
+    params.push(limit + 1, offset);
+
+    const stmt = db.prepare(query);
+    const results = stmt.all(...params) as Summary[];
+
+    return {
+      items: results.slice(0, limit),
+      hasMore: results.length > limit,
       offset,
-      limit,
-      project
-    );
+      limit
+    };
   }
 
   /**
    * Get paginated user prompts
    */
   getPrompts(offset: number, limit: number, project?: string): PaginatedResult<UserPrompt> {
-    return this.paginate<UserPrompt>(
-      'user_prompts',
-      'id, session_db_id, claude_session_id, project, prompt, created_at, created_at_epoch',
+    const db = this.dbManager.getSessionStore().db;
+
+    let query = `
+      SELECT up.id, up.claude_session_id, s.project, up.prompt_number, up.prompt_text, up.created_at, up.created_at_epoch
+      FROM user_prompts up
+      JOIN sdk_sessions s ON up.claude_session_id = s.claude_session_id
+    `;
+    const params: any[] = [];
+
+    if (project) {
+      query += ' WHERE s.project = ?';
+      params.push(project);
+    }
+
+    query += ' ORDER BY up.created_at_epoch DESC LIMIT ? OFFSET ?';
+    params.push(limit + 1, offset);
+
+    const stmt = db.prepare(query);
+    const results = stmt.all(...params) as UserPrompt[];
+
+    return {
+      items: results.slice(0, limit),
+      hasMore: results.length > limit,
       offset,
-      limit,
-      project
-    );
+      limit
+    };
   }
 
   /**

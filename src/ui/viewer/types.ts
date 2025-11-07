@@ -1,11 +1,18 @@
 export interface Observation {
   id: number;
-  session_id: string;
+  sdk_session_id: string;
   project: string;
   type: string;
-  title: string;
-  subtitle?: string;
-  content?: string;
+  title: string | null;
+  subtitle: string | null;
+  narrative: string | null;
+  text: string | null;
+  facts: string | null;
+  concepts: string | null;
+  files_read: string | null;
+  files_modified: string | null;
+  prompt_number: number | null;
+  created_at: string;
   created_at_epoch: number;
 }
 

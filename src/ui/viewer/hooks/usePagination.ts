@@ -68,7 +68,7 @@ function usePaginationFor(endpoint: string, dataType: DataType, currentFilter: s
       }));
 
       setOffset(prev => prev + UI.PAGINATION_PAGE_SIZE);
-      return data[dataType] as DataItem[];
+      return data.items as DataItem[];
     } catch (error) {
       console.error(`Failed to load ${dataType}:`, error);
       setState(prev => ({ ...prev, isLoading: false }));

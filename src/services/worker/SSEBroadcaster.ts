@@ -44,11 +44,14 @@ export class SSEBroadcaster {
    */
   broadcast(event: SSEEvent): void {
     if (this.sseClients.size === 0) {
+      logger.debug('WORKER', 'SSE broadcast skipped (no clients)', { eventType: event.type });
       return; // Short-circuit if no clients
     }
 
     const eventWithTimestamp = { ...event, timestamp: Date.now() };
     const data = `data: ${JSON.stringify(eventWithTimestamp)}\n\n`;
+
+    logger.debug('WORKER', 'SSE broadcast sent', { eventType: event.type, clients: this.sseClients.size });
 
     // Single-pass write + cleanup
     for (const client of this.sseClients) {

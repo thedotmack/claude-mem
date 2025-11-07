@@ -81,15 +81,17 @@ export interface ViewerSettings {
 
 export interface Observation {
   id: number;
-  session_db_id: number;
-  claude_session_id: string;
+  sdk_session_id: string;
   project: string;
   type: string;
   title: string;
   subtitle: string | null;
-  text: string;
+  text: string | null;
+  narrative: string | null;
+  facts: string | null;
   concepts: string | null;
-  files: string | null;
+  files_read: string | null;
+  files_modified: string | null;
   prompt_number: number;
   created_at: string;
   created_at_epoch: number;
@@ -97,13 +99,12 @@ export interface Observation {
 
 export interface Summary {
   id: number;
-  session_db_id: number;
-  claude_session_id: string;
+  session_id: string; // claude_session_id (from JOIN)
   project: string;
   request: string | null;
-  completion: string | null;
-  summary: string;
-  learnings: string | null;
+  learned: string | null;
+  completed: string | null;
+  next_steps: string | null;
   notes: string | null;
   created_at: string;
   created_at_epoch: number;
@@ -111,10 +112,10 @@ export interface Summary {
 
 export interface UserPrompt {
   id: number;
-  session_db_id: number;
   claude_session_id: string;
-  project: string;
-  prompt: string;
+  project: string; // From JOIN with sdk_sessions
+  prompt_number: number;
+  prompt_text: string;
   created_at: string;
   created_at_epoch: number;
 }
@@ -150,9 +151,10 @@ export interface ParsedObservation {
 
 export interface ParsedSummary {
   request: string | null;
-  completion: string | null;
-  summary: string;
-  learnings: string | null;
+  investigated: string | null;
+  learned: string | null;
+  completed: string | null;
+  next_steps: string | null;
   notes: string | null;
 }
 

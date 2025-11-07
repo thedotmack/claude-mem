@@ -13,14 +13,6 @@ export function useSSE() {
   const eventSourceRef = useRef<EventSource | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout>();
 
-  // Fetch initial processing status on mount
-  useEffect(() => {
-    fetch(API_ENDPOINTS.PROCESSING_STATUS)
-      .then(res => res.json())
-      .then(data => setIsProcessing(data.isProcessing))
-      .catch(err => console.error('[SSE] Failed to fetch initial processing status:', err));
-  }, []);
-
   useEffect(() => {
     const connect = () => {
       // Clean up existing connection

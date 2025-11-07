@@ -69,11 +69,13 @@ export class SessionManager {
 
   /**
    * Queue an observation for processing (zero-latency notification)
+   * Auto-initializes session if not in memory but exists in database
    */
   queueObservation(sessionDbId: number, data: ObservationData): void {
-    const session = this.sessions.get(sessionDbId);
+    // Auto-initialize from database if needed (handles worker restarts)
+    let session = this.sessions.get(sessionDbId);
     if (!session) {
-      throw new Error(`Session ${sessionDbId} not active`);
+      session = this.initializeSession(sessionDbId);
     }
 
     session.pendingMessages.push({
@@ -96,11 +98,13 @@ export class SessionManager {
 
   /**
    * Queue a summarize request (zero-latency notification)
+   * Auto-initializes session if not in memory but exists in database
    */
   queueSummarize(sessionDbId: number): void {
-    const session = this.sessions.get(sessionDbId);
+    // Auto-initialize from database if needed (handles worker restarts)
+    let session = this.sessions.get(sessionDbId);
     if (!session) {
-      throw new Error(`Session ${sessionDbId} not active`);
+      session = this.initializeSession(sessionDbId);
     }
 
     session.pendingMessages.push({ type: 'summarize' });
@@ -144,12 +148,30 @@ export class SessionManager {
   }
 
   /**
+   * Check if any session has pending messages (for spinner tracking)
+   */
+  hasPendingMessages(): boolean {
+    return Array.from(this.sessions.values()).some(
+      session => session.pendingMessages.length > 0
+    );
+  }
+
+  /**
+   * Get number of active sessions (for stats)
+   */
+  getActiveSessionCount(): number {
+    return this.sessions.size;
+  }
+
+  /**
    * Get message iterator for SDKAgent to consume (event-driven, no polling)
+   * Auto-initializes session if not in memory but exists in database
    */
   async *getMessageIterator(sessionDbId: number): AsyncIterableIterator<PendingMessage> {
-    const session = this.sessions.get(sessionDbId);
+    // Auto-initialize from database if needed (handles worker restarts)
+    let session = this.sessions.get(sessionDbId);
     if (!session) {
-      throw new Error(`Session ${sessionDbId} not active`);
+      session = this.initializeSession(sessionDbId);
     }
 
     const emitter = this.sessionQueues.get(sessionDbId);
