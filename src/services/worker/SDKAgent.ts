@@ -204,7 +204,7 @@ export class SDKAgent {
             title: obs.title,
             subtitle: obs.subtitle,
             text: obs.text || null,
-            narrative: null,
+            narrative: obs.narrative || null,
             facts: JSON.stringify(obs.facts || []),
             concepts: JSON.stringify(obs.concepts || []),
             files_read: JSON.stringify(obs.files || []),
