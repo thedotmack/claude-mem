@@ -5,14 +5,13 @@
 
 import express, { Request, Response } from 'express';
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import type { SDKUserMessage, SDKSystemMessage } from '@anthropic-ai/claude-agent-sdk';
+import type { SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { SessionStore } from './sqlite/SessionStore.js';
 import { ChromaSync } from './sync/ChromaSync.js';
 import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt } from '../sdk/prompts.js';
 import { parseObservations, parseSummary } from '../sdk/parser.js';
 import type { SDKSession } from '../sdk/prompts.js';
 import { logger } from '../utils/logger.js';
-import { ensureAllDataDirs } from '../shared/paths.js';
 import { execSync } from 'child_process';
 import { readFileSync, writeFileSync, existsSync, statSync } from 'fs';
 import { join, dirname } from 'path';
@@ -685,7 +684,7 @@ class WorkerService {
    */
   private async handleInit(req: Request, res: Response): Promise<void> {
     const sessionDbId = parseInt(req.params.sessionDbId, 10);
-    const { project, userPrompt } = req.body;
+    const { project } = req.body;
 
     logger.info('WORKER', 'Session init', { sessionDbId, project });
 
