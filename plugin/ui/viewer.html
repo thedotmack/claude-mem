@@ -482,7 +482,7 @@
 
     .card {
       margin-bottom: 24px;
-      padding: 20px 24px;
+      padding: 24px;
       background: var(--color-bg-card);
       border: 1px solid var(--color-border-primary);
       border-radius: 8px;
@@ -510,11 +510,17 @@
     .card-header {
       display: flex;
       align-items: center;
-      gap: 10px;
-      margin-bottom: 8px;
+      justify-content: space-between;
+      margin-bottom: 14px;
       font-size: 12px;
       color: var(--color-text-muted);
       font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+    }
+
+    .card-header-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
     }
 
     .card-type {
@@ -530,213 +536,141 @@
 
     .card-title {
       font-size: 17px;
-      margin-bottom: 8px;
+      margin-bottom: 14px;
       color: var(--color-text-title);
       font-weight: 600;
       line-height: 1.4;
       letter-spacing: -0.01em;
     }
 
-    .card-subtitle {
-      font-size: 14px;
-      color: var(--color-text-subtitle);
-      margin-bottom: 8px;
-      line-height: 1.6;
-    }
-
-    .card-meta {
-      font-size: 12px;
-      color: var(--color-text-tertiary);
-      margin-top: 8px;
-      font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+    .view-mode-toggles {
       display: flex;
-      justify-content: space-between;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+
+    .view-mode-toggle {
+      display: flex;
       align-items: center;
-    }
-
-    /* Expanded card state */
-    .card-expanded {
-      /* Increased shadow when expanded */
-      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-    }
-
-    /* Expand toggle button */
-    .expand-toggle {
-      background: none;
-      border: none;
-      color: var(--color-text-secondary);
-      cursor: pointer;
-      font-size: 12px;
+      gap: 4px;
+      background: var(--color-bg-tertiary);
+      border: 1px solid var(--color-border-primary);
       padding: 4px 8px;
       border-radius: 4px;
+      cursor: pointer;
+      color: var(--color-text-secondary);
       transition: all 0.15s ease;
-      font-family: inherit;
+      font-size: 11px;
+      font-weight: 500;
+      text-transform: lowercase;
+      font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
     }
 
-    .expand-toggle:hover {
-      background: var(--color-bg-secondary);
+    .view-mode-toggle svg {
+      flex-shrink: 0;
+      opacity: 0.7;
+      transition: opacity 0.15s ease;
+    }
+
+    .view-mode-toggle:hover {
+      background: var(--color-bg-card-hover);
+      border-color: var(--color-border-hover);
       color: var(--color-text-primary);
     }
 
-    /* Verbose content container (narrative and facts - collapsible) */
-    .card-verbose-content {
-      margin-top: 16px;
-      padding-top: 16px;
-      border-top: 1px solid var(--color-border-primary);
-      animation: expandDown 0.2s ease-out;
+    .view-mode-toggle:hover svg {
+      opacity: 1;
     }
 
-    @keyframes expandDown {
-      from {
-        opacity: 0;
-        transform: translateY(-8px);
-      }
-      to {
-        opacity: 1;
-        transform: translateY(0);
-      }
+    .view-mode-toggle.active {
+      background: var(--color-accent-primary);
+      border-color: var(--color-accent-primary);
+      color: var(--color-text-button);
     }
 
-    /* Metadata grid (concepts, files, session info - always visible) */
-    .card-metadata-grid {
-      margin-top: 16px;
-      padding-top: 16px;
-      border-top: 1px solid var(--color-border-primary);
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 16px;
-      grid-auto-flow: dense;
+    .view-mode-toggle.active svg {
+      opacity: 1;
     }
 
-    /* Files section spans full width */
-    .card-metadata-grid .card-section.files-section {
-      grid-column: 1 / -1;
+    .view-mode-content {
+      margin-bottom: 12px;
     }
 
-    /* Responsive: stack on smaller screens */
-    @media (max-width: 768px) {
-      .card-metadata-grid {
-        grid-template-columns: 1fr;
-      }
-
-      .card-metadata-grid .card-section.files-section {
-        grid-column: 1;
-      }
-    }
-
-    /* Compact section styling for grid items */
-    .card-section.compact {
+    .view-mode-content .card-subtitle {
       margin-bottom: 0;
     }
 
-    .card-section.compact .section-header {
-      font-size: 12px;
-      margin-bottom: 6px;
-    }
-
-    .card-section.compact .section-content {
-      padding-left: 0;
-      font-size: 12px;
-    }
-
-    /* Section styling */
-    .card-section {
-      margin-bottom: 16px;
-    }
-
-    .card-section:last-child {
-      margin-bottom: 0;
-    }
-
-    .section-header {
-      font-weight: 600;
-      font-size: 13px;
-      color: var(--color-text-primary);
-      margin-bottom: 8px;
-      display: flex;
-      align-items: center;
-      gap: 6px;
-    }
-
-    .section-content {
+    .view-mode-content .facts-list {
+      list-style: disc;
+      margin: 0;
       padding-left: 20px;
       color: var(--color-text-secondary);
       font-size: 13px;
-      line-height: 1.6;
+      line-height: 1.7;
     }
 
-    /* Narrative styling */
-    .narrative {
+    .view-mode-content .facts-list li {
+      margin-bottom: 6px;
+    }
+
+    .view-mode-content .narrative {
       max-height: 300px;
       overflow-y: auto;
       white-space: pre-wrap;
       word-wrap: break-word;
+      color: var(--color-text-secondary);
+      font-size: 13px;
+      line-height: 1.7;
     }
 
-    /* Facts list styling */
-    .facts-list {
-      list-style: disc;
-      margin: 0;
-      padding-left: 20px;
+    .card-subtitle {
+      font-size: 14px;
+      color: var(--color-text-subtitle);
+      line-height: 1.7;
+      margin-bottom: 10px;
     }
 
-    .facts-list li {
-      margin-bottom: 4px;
-    }
-
-    /* Concepts tags */
-    .concepts {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 6px;
-    }
-
-    .concept-tag {
-      background: var(--color-type-badge-bg);
-      color: var(--color-type-badge-text);
-      padding: 4px 10px;
-      border-radius: 12px;
-      font-size: 11px;
-      font-weight: 500;
-    }
-
-    /* File paths */
-    .file-group {
-      margin-bottom: 8px;
-    }
-
-    .file-group:last-child {
+    .card-subtitle:last-child {
       margin-bottom: 0;
     }
 
-    .file-group-label {
-      font-weight: 500;
-      margin-bottom: 4px;
-      color: var(--color-text-primary);
-    }
 
-    .file-path {
-      font-family: 'SF Mono', 'Monaco', 'Courier New', monospace;
-      font-size: 12px;
-      padding: 4px 8px;
-      background: var(--color-bg-secondary);
-      border-radius: 4px;
-      margin-bottom: 2px;
-      overflow-x: auto;
-      white-space: nowrap;
-    }
-
-    /* Session info */
-    .session-info {
+    .card-meta {
+      font-size: 11px;
+      color: var(--color-text-tertiary);
+      margin-top: 18px;
+      font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
       display: flex;
-      gap: 16px;
-      font-size: 12px;
+      flex-wrap: wrap;
+      gap: 6px;
+      line-height: 1.5;
     }
 
-    .session-id {
-      font-family: 'SF Mono', 'Monaco', 'Courier New', monospace;
+    .meta-date {
       color: var(--color-text-tertiary);
     }
+
+    .meta-concepts {
+      font-style: italic;
+      color: var(--color-text-muted);
+    }
+
+    .meta-files {
+      color: var(--color-text-muted);
+      font-size: 10px;
+    }
+
+    .meta-files .file-label {
+      font-weight: 500;
+      color: var(--color-text-tertiary);
+    }
+
+
+
+    /* Stack single column on narrow screens (removed - no longer using card-files) */
+    @media (max-width: 600px) {
+    }
+
 
     /* Project badge styling */
     .card-project {
@@ -864,8 +798,9 @@
     }
 
     .card-content {
-      margin-top: 12px;
-      line-height: 1.6;
+      margin-top: 14px;
+      margin-bottom: 12px;
+      line-height: 1.7;
       color: var(--color-text-primary);
       white-space: pre-wrap;
       word-wrap: break-word;
