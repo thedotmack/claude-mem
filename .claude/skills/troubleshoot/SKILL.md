@@ -109,7 +109,6 @@ Verify all required npm packages are installed:
 
 ```bash
 cd ~/.claude/plugins/marketplaces/thedotmack/
-ls node_modules/ | wc -l
 
 # Check for critical packages
 ls node_modules/@anthropic-ai/claude-agent-sdk 2>&1 | head -1
@@ -118,9 +117,7 @@ ls node_modules/express 2>&1 | head -1
 ls node_modules/pm2 2>&1 | head -1
 ```
 
-**Expected:** 
-- 300+ packages installed
-- All critical packages present
+**Expected:** All critical packages present
 
 **If dependencies missing:**
 ```bash
@@ -128,26 +125,7 @@ cd ~/.claude/plugins/marketplaces/thedotmack/
 npm install
 ```
 
-### 5. Check Version Cache
-
-The plugin uses smart caching to avoid redundant npm installs. Check if cache is stale:
-
-```bash
-# Check installed version marker
-cat ~/.claude/plugins/marketplaces/thedotmack/.install-version 2>/dev/null
-
-# Compare with package.json
-grep '"version"' ~/.claude/plugins/marketplaces/thedotmack/package.json
-```
-
-**If versions don't match:**
-```bash
-cd ~/.claude/plugins/marketplaces/thedotmack/
-npm install
-# Cache will auto-update on next session
-```
-
-### 6. Check Worker Logs
+### 5. Check Worker Logs
 
 Review recent worker logs for errors:
 
@@ -163,7 +141,7 @@ node_modules/.bin/pm2 logs claude-mem-worker --lines 50 --nostream
 pm2 logs claude-mem-worker --lines 100 --nostream | grep -i "error\|exception\|failed"
 ```
 
-### 7. Test Viewer UI
+### 6. Test Viewer UI
 
 Check if the web viewer is accessible:
 
@@ -179,7 +157,7 @@ curl -s http://127.0.0.1:37777/api/stats
 - `/` returns HTML page with React viewer
 - `/api/stats` returns JSON with database counts
 
-### 8. Check Port Configuration
+### 7. Check Port Configuration
 
 Verify port settings and availability:
 
@@ -273,20 +251,16 @@ node_modules/.bin/pm2 logs claude-mem-worker --lines 20 --nostream
 **Root cause:**
 - Port already in use
 - PM2 not installed or not in PATH
-- Node.js version incompatible
+- Missing dependencies
 
 **Fix:**
-1. Check Node.js version (requires >= 18.0.0):
-   ```bash
-   node --version
-   ```
-2. Try manual worker start:
+1. Try manual worker start:
    ```bash
    cd ~/.claude/plugins/marketplaces/thedotmack/
    node plugin/scripts/worker-service.cjs
    # Should start server on port 37777
    ```
-3. If port in use, change it:
+2. If port in use, change it:
    ```bash
    echo '{"env":{"CLAUDE_MEM_WORKER_PORT":"37778"}}' > ~/.claude-mem/settings.json
    ```
@@ -300,13 +274,11 @@ Run this comprehensive diagnostic script:
 echo "=== Claude-Mem Troubleshooting Report ==="
 echo ""
 echo "1. Environment"
-echo "   Node version: $(node --version)"
 echo "   OS: $(uname -s)"
 echo ""
 echo "2. Plugin Installation"
 echo "   Plugin directory exists: $([ -d ~/.claude/plugins/marketplaces/thedotmack ] && echo 'YES' || echo 'NO')"
 echo "   Package version: $(grep '"version"' ~/.claude/plugins/marketplaces/thedotmack/package.json 2>/dev/null | head -1)"
-echo "   Dependencies count: $(ls ~/.claude/plugins/marketplaces/thedotmack/node_modules/ 2>/dev/null | wc -l)"
 echo ""
 echo "3. Database"
 echo "   Database exists: $([ -f ~/.claude-mem/claude-mem.db ] && echo 'YES' || echo 'NO')"
@@ -360,7 +332,6 @@ Post to: https://github.com/thedotmack/claude-mem/issues
 - Monitor database size (shouldn't grow unbounded)
 - Update plugin when new versions are released
 - Keep Claude Code updated
-- Ensure Node.js stays >= 18.0.0
 
 **Performance tuning:**
 - Adjust `CLAUDE_MEM_CONTEXT_OBSERVATIONS` if context is too large/small
