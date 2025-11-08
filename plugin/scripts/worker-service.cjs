@@ -266,6 +266,7 @@ ${e.stack}`:e.message;if(Array.isArray(e))return`[${e.length} items]`;let a=Obje
     `).all(e)}getAllProjects(){return this.db.prepare(`
       SELECT DISTINCT project
       FROM sdk_sessions
+      WHERE project IS NOT NULL AND project != ''
       ORDER BY project ASC
     `).all().map(t=>t.project)}getRecentSessionsWithStatus(e,a=3){return this.db.prepare(`
       SELECT * FROM (

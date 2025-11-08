@@ -20,6 +20,9 @@ export function SummaryCard({ summary }: SummaryCardProps) {
       {summary.request && (
         <div className="card-title">Request: {summary.request}</div>
       )}
+      {summary.investigated && (
+        <div className="card-subtitle">Investigated: {summary.investigated}</div>
+      )}
       {summary.learned && (
         <div className="card-subtitle">Learned: {summary.learned}</div>
       )}

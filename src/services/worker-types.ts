@@ -102,6 +102,7 @@ export interface Summary {
   session_id: string; // claude_session_id (from JOIN)
   project: string;
   request: string | null;
+  investigated: string | null;
   learned: string | null;
   completed: string | null;
   next_steps: string | null;

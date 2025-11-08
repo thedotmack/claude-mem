@@ -656,6 +656,7 @@ export class SessionStore {
     const stmt = this.db.prepare(`
       SELECT DISTINCT project
       FROM sdk_sessions
+      WHERE project IS NOT NULL AND project != ''
       ORDER BY project ASC
     `);
 

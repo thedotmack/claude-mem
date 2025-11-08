@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { Observation, Summary, UserPrompt } from '../types';
 import { UI } from '../constants/ui';
 import { API_ENDPOINTS } from '../constants/api';
@@ -19,42 +19,40 @@ function usePaginationFor(endpoint: string, dataType: DataType, currentFilter: s
     isLoading: false,
     hasMore: true
   });
-  const [offset, setOffset] = useState(0);
 
-  // Use refs to avoid stale closures and prevent infinite loops
+  // Track offset and filter in refs to handle synchronous resets
+  const offsetRef = useRef(0);
+  const lastFilterRef = useRef(currentFilter);
   const stateRef = useRef(state);
-  const offsetRef = useRef(offset);
-
-  useEffect(() => {
-    stateRef.current = state;
-  }, [state]);
-
-  useEffect(() => {
-    offsetRef.current = offset;
-  }, [offset]);
-
-  // Reset pagination when filter changes
-  useEffect(() => {
-    setOffset(0);
-    setState({
-      isLoading: false,
-      hasMore: true
-    });
-  }, [currentFilter]);
 
   /**
    * Load more items from the API
+   * Automatically resets offset to 0 if filter has changed
    */
   const loadMore = useCallback(async (): Promise<DataItem[]> => {
+    // Check if filter changed - if so, reset pagination synchronously
+    const filterChanged = lastFilterRef.current !== currentFilter;
+
+    if (filterChanged) {
+      offsetRef.current = 0;
+      lastFilterRef.current = currentFilter;
+
+      // Reset state both in React state and ref synchronously
+      const newState = { isLoading: false, hasMore: true };
+      setState(newState);
+      stateRef.current = newState;  // Update ref immediately to avoid stale checks
+    }
+
     // Prevent concurrent requests using ref (always current)
-    if (stateRef.current.isLoading || !stateRef.current.hasMore) {
+    // Skip this check if we just reset the filter - we want to load the first page
+    if (!filterChanged && (stateRef.current.isLoading || !stateRef.current.hasMore)) {
       return [];
     }
 
     setState(prev => ({ ...prev, isLoading: true }));
 
     try {
-      // Build query params using ref (always current)
+      // Build query params using current offset from ref
       const params = new URLSearchParams({
         offset: offsetRef.current.toString(),
         limit: UI.PAGINATION_PAGE_SIZE.toString()
@@ -71,7 +69,7 @@ function usePaginationFor(endpoint: string, dataType: DataType, currentFilter: s
         throw new Error(`Failed to load ${dataType}: ${response.statusText}`);
       }
 
-      const data = await response.json();
+      const data = await response.json() as { items: DataItem[], hasMore: boolean };
 
       setState(prev => ({
         ...prev,
@@ -79,14 +77,16 @@ function usePaginationFor(endpoint: string, dataType: DataType, currentFilter: s
         hasMore: data.hasMore
       }));
 
-      setOffset(prev => prev + UI.PAGINATION_PAGE_SIZE);
-      return data.items as DataItem[];
+      // Increment offset after successful load
+      offsetRef.current += UI.PAGINATION_PAGE_SIZE;
+
+      return data.items;
     } catch (error) {
       console.error(`Failed to load ${dataType}:`, error);
       setState(prev => ({ ...prev, isLoading: false }));
       return [];
     }
-  }, [currentFilter, endpoint, dataType]); // Only stable values - no state/offset deps
+  }, [currentFilter, endpoint, dataType]);
 
   return {
     ...state,

@@ -21,6 +21,7 @@ export interface Summary {
   session_id: string;
   project: string;
   request?: string;
+  investigated?: string;
   learned?: string;
   completed?: string;
   next_steps?: string;

@@ -4,25 +4,21 @@
  */
 
 /**
- * Merge real-time SSE items with paginated items, removing duplicates and filtering by project
- * @param liveItems - Items from SSE stream
- * @param paginatedItems - Items from pagination API (already filtered by project)
- * @param projectFilter - Current project filter (empty string = all projects)
+ * Merge real-time SSE items with paginated items, removing duplicates by ID
+ * NOTE: This should ONLY be used when no project filter is active.
+ * When filtering, use ONLY paginated data (API-filtered).
+ *
+ * @param liveItems - Items from SSE stream (unfiltered)
+ * @param paginatedItems - Items from pagination API
  * @returns Merged and deduplicated array
  */
 export function mergeAndDeduplicateByProject<T extends { id: number; project?: string }>(
   liveItems: T[],
-  paginatedItems: T[],
-  projectFilter: string
+  paginatedItems: T[]
 ): T[] {
-  // Filter SSE items by current project (pagination is already filtered)
-  const filteredLive = projectFilter
-    ? liveItems.filter(item => item.project === projectFilter)
-    : liveItems;
-
-  // Deduplicate using Set
+  // Deduplicate by ID
   const seen = new Set<number>();
-  return [...filteredLive, ...paginatedItems].filter(item => {
+  return [...liveItems, ...paginatedItems].filter(item => {
     if (seen.has(item.id)) return false;
     seen.add(item.id);
     return true;
