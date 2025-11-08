@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Header } from './components/Header';
 import { Feed } from './components/Feed';
 import { Sidebar } from './components/Sidebar';
@@ -23,28 +23,33 @@ export function App() {
   const { preference, resolvedTheme, setThemePreference } = useTheme();
   const pagination = usePagination(currentFilter);
 
-  // Reset paginated data when filter changes
-  useEffect(() => {
-    setPaginatedObservations([]);
-    setPaginatedSummaries([]);
-    setPaginatedPrompts([]);
-  }, [currentFilter]);
+  // Track the last filter to detect changes in handleLoadMore
+  const lastFilterRef = useRef(currentFilter);
 
-  // Merge real-time data with paginated data, removing duplicates and filtering by project
-  const allObservations = useMemo(
-    () => mergeAndDeduplicateByProject(observations, paginatedObservations, currentFilter),
-    [observations, paginatedObservations, currentFilter]
-  );
+  // When filtering by project: ONLY use paginated data (API-filtered)
+  // When showing all projects: merge SSE live data with paginated data
+  const allObservations = useMemo(() => {
+    if (currentFilter) {
+      // Project filter active: API handles filtering, ignore SSE items
+      return paginatedObservations;
+    }
+    // No filter: merge SSE + paginated, deduplicate by ID
+    return mergeAndDeduplicateByProject(observations, paginatedObservations, '');
+  }, [observations, paginatedObservations, currentFilter]);
 
-  const allSummaries = useMemo(
-    () => mergeAndDeduplicateByProject(summaries, paginatedSummaries, currentFilter),
-    [summaries, paginatedSummaries, currentFilter]
-  );
+  const allSummaries = useMemo(() => {
+    if (currentFilter) {
+      return paginatedSummaries;
+    }
+    return mergeAndDeduplicateByProject(summaries, paginatedSummaries, '');
+  }, [summaries, paginatedSummaries, currentFilter]);
 
-  const allPrompts = useMemo(
-    () => mergeAndDeduplicateByProject(prompts, paginatedPrompts, currentFilter),
-    [prompts, paginatedPrompts, currentFilter]
-  );
+  const allPrompts = useMemo(() => {
+    if (currentFilter) {
+      return paginatedPrompts;
+    }
+    return mergeAndDeduplicateByProject(prompts, paginatedPrompts, '');
+  }, [prompts, paginatedPrompts, currentFilter]);
 
   // Toggle sidebar
   const toggleSidebar = useCallback(() => {
@@ -53,6 +58,14 @@ export function App() {
 
   // Handle loading more data
   const handleLoadMore = useCallback(async () => {
+    // If filter changed, reset paginated data synchronously before loading
+    if (lastFilterRef.current !== currentFilter) {
+      lastFilterRef.current = currentFilter;
+      setPaginatedObservations([]);
+      setPaginatedSummaries([]);
+      setPaginatedPrompts([]);
+    }
+
     try {
       const [newObservations, newSummaries, newPrompts] = await Promise.all([
         pagination.observations.loadMore(),
@@ -72,13 +85,12 @@ export function App() {
     } catch (error) {
       console.error('Failed to load more data:', error);
     }
-  }, [pagination.observations, pagination.summaries, pagination.prompts]);
+  }, [currentFilter, pagination.observations, pagination.summaries, pagination.prompts]);
 
-  // Load first page only when filter changes
+  // Load first page when filter changes
   useEffect(() => {
     handleLoadMore();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentFilter]); // Only re-run when filter changes, not when handleLoadMore changes
+  }, [currentFilter, handleLoadMore]);
 
   return (
     <div className="container">
