@@ -82,6 +82,13 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentFilter]);
 
+  // Reset paginated data when filter changes
+  useEffect(() => {
+    setPaginatedObservations([]);
+    setPaginatedSummaries([]);
+    setPaginatedPrompts([]);
+  }, [currentFilter]);
+
   return (
     <div className="container">
       <div className="main-col">
