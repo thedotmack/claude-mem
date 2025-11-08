@@ -305,6 +305,14 @@ See [Development Guide](docs/development.mdx) for detailed instructions.
 
 ## Troubleshooting
 
+**Quick Diagnostic:**
+
+Run the troubleshooting skill for automated diagnosis and fixes:
+
+```
+/skill troubleshoot
+```
+
 **Common Issues:**
 
 - Worker not starting → `npm run worker:restart`
