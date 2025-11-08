@@ -147,12 +147,12 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
 
   // Get recent summaries (optional - may not exist for recent sessions)
   const recentSummaries = db.db.prepare(`
-    SELECT id, sdk_session_id, request, completed, next_steps, created_at, created_at_epoch
+    SELECT id, sdk_session_id, request, investigated, learned, completed, next_steps, created_at, created_at_epoch
     FROM session_summaries
     WHERE project = ?
     ORDER BY created_at_epoch DESC
     LIMIT ?
-  `).all(project, DISPLAY_SESSION_COUNT + 1) as Array<{ id: number; sdk_session_id: string; request: string | null; completed: string | null; next_steps: string | null; created_at: string; created_at_epoch: number }>;
+  `).all(project, DISPLAY_SESSION_COUNT + 1) as Array<{ id: number; sdk_session_id: string; request: string | null; investigated: string | null; learned: string | null; completed: string | null; next_steps: string | null; created_at: string; created_at_epoch: number }>;
 
   // If we have neither observations nor summaries, show empty state
   if (allObservations.length === 0 && recentSummaries.length === 0) {
@@ -382,7 +382,25 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
 
     // Add full summary details for most recent session
     const mostRecentSummary = recentSummaries[0];
-    if (mostRecentSummary && (mostRecentSummary.completed || mostRecentSummary.next_steps)) {
+    if (mostRecentSummary && (mostRecentSummary.investigated || mostRecentSummary.learned || mostRecentSummary.completed || mostRecentSummary.next_steps)) {
+      if (mostRecentSummary.investigated) {
+        if (useColors) {
+          output.push(`${colors.blue}Investigated:${colors.reset} ${mostRecentSummary.investigated}`);
+        } else {
+          output.push(`**Investigated**: ${mostRecentSummary.investigated}`);
+        }
+        output.push('');
+      }
+
+      if (mostRecentSummary.learned) {
+        if (useColors) {
+          output.push(`${colors.yellow}Learned:${colors.reset} ${mostRecentSummary.learned}`);
+        } else {
+          output.push(`**Learned**: ${mostRecentSummary.learned}`);
+        }
+        output.push('');
+      }
+
       if (mostRecentSummary.completed) {
         if (useColors) {
           output.push(`${colors.green}Completed:${colors.reset} ${mostRecentSummary.completed}`);
