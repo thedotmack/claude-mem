@@ -76,17 +76,13 @@ export function App() {
     }
   }, [currentFilter, pagination.observations, pagination.summaries, pagination.prompts]);
 
-  // Load first page when filter changes
-  useEffect(() => {
-    handleLoadMore();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentFilter]);
-
-  // Reset paginated data when filter changes
+  // Reset paginated data and load first page when filter changes
   useEffect(() => {
     setPaginatedObservations([]);
     setPaginatedSummaries([]);
     setPaginatedPrompts([]);
+    handleLoadMore();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentFilter]);
 
   return (
