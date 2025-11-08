@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Header } from './components/Header';
 import { Feed } from './components/Feed';
 import { Sidebar } from './components/Sidebar';
@@ -23,9 +23,6 @@ export function App() {
   const { preference, resolvedTheme, setThemePreference } = useTheme();
   const pagination = usePagination(currentFilter);
 
-  // Track the last filter to detect changes in handleLoadMore
-  const lastFilterRef = useRef(currentFilter);
-
   // When filtering by project: ONLY use paginated data (API-filtered)
   // When showing all projects: merge SSE live data with paginated data
   const allObservations = useMemo(() => {
@@ -34,21 +31,21 @@ export function App() {
       return paginatedObservations;
     }
     // No filter: merge SSE + paginated, deduplicate by ID
-    return mergeAndDeduplicateByProject(observations, paginatedObservations, '');
+    return mergeAndDeduplicateByProject(observations, paginatedObservations);
   }, [observations, paginatedObservations, currentFilter]);
 
   const allSummaries = useMemo(() => {
     if (currentFilter) {
       return paginatedSummaries;
     }
-    return mergeAndDeduplicateByProject(summaries, paginatedSummaries, '');
+    return mergeAndDeduplicateByProject(summaries, paginatedSummaries);
   }, [summaries, paginatedSummaries, currentFilter]);
 
   const allPrompts = useMemo(() => {
     if (currentFilter) {
       return paginatedPrompts;
     }
-    return mergeAndDeduplicateByProject(prompts, paginatedPrompts, '');
+    return mergeAndDeduplicateByProject(prompts, paginatedPrompts);
   }, [prompts, paginatedPrompts, currentFilter]);
 
   // Toggle sidebar
@@ -58,14 +55,6 @@ export function App() {
 
   // Handle loading more data
   const handleLoadMore = useCallback(async () => {
-    // If filter changed, reset paginated data synchronously before loading
-    if (lastFilterRef.current !== currentFilter) {
-      lastFilterRef.current = currentFilter;
-      setPaginatedObservations([]);
-      setPaginatedSummaries([]);
-      setPaginatedPrompts([]);
-    }
-
     try {
       const [newObservations, newSummaries, newPrompts] = await Promise.all([
         pagination.observations.loadMore(),
@@ -90,7 +79,8 @@ export function App() {
   // Load first page when filter changes
   useEffect(() => {
     handleLoadMore();
-  }, [currentFilter, handleLoadMore]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentFilter]);
 
   return (
     <div className="container">

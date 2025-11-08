@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { Observation, Summary, UserPrompt } from '../types';
 import { UI } from '../constants/ui';
 import { API_ENDPOINTS } from '../constants/api';
@@ -24,10 +24,6 @@ function usePaginationFor(endpoint: string, dataType: DataType, currentFilter: s
   const offsetRef = useRef(0);
   const lastFilterRef = useRef(currentFilter);
   const stateRef = useRef(state);
-
-  useEffect(() => {
-    stateRef.current = state;
-  }, [state]);
 
   /**
    * Load more items from the API
