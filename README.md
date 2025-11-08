@@ -28,6 +28,10 @@
 </p>
 
 <p align="center">
+  <img src="docs/cm-preview.gif" alt="Claude-Mem Preview" width="800">
+</p>
+
+<p align="center">
   <a href="#quick-start">Quick Start</a> •
   <a href="#how-it-works">How It Works</a> •
   <a href="#mcp-search-tools">Search Tools</a> •
@@ -39,10 +43,6 @@
 
 <p align="center">
   Claude-Mem seamlessly preserves context across sessions by automatically capturing tool usage observations, generating semantic summaries, and making them available to future sessions. This enables Claude to maintain continuity of knowledge about projects even after sessions end or reconnect.
-</p>
-
-<p align="center">
-  <img src="docs/cm-preview.gif" alt="Claude-Mem Preview" width="800">
 </p>
 
 ---
