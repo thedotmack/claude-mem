@@ -27,7 +27,6 @@
   </a>
 </p>
 
-<hr>
 <br>
 <p align="center">
     <img src="docs/cm-preview.gif" alt="Claude-Mem Preview" width="800">
