@@ -28,12 +28,14 @@
 </p>
 
 <br>
+
 <p align="center">
-    <img src="docs/cm-preview.gif" alt="Claude-Mem Preview" width="800">
+  <a href="https://github.com/thedotmack/claude-mem">
+    <picture>
+      <img src="docs/cm-preview.gif" alt="Claude-Mem Preview" width="800">
+    </picture>
+  </a>
 </p>
-
-
-
 
 <p align="center">
   <a href="#quick-start">Quick Start</a> •
@@ -64,6 +66,7 @@ Start a new Claude Code session in the terminal and enter the following commands
 Restart Claude Code. Context from previous sessions will automatically appear in new sessions.
 
 **Key Features:**
+
 - 🧠 **Persistent Memory** - Context survives across sessions
 - 📊 **Progressive Disclosure** - Layered memory retrieval with token cost visibility
 - 🔍 **9 Search Tools** - Query your project history via MCP
@@ -78,21 +81,25 @@ Restart Claude Code. Context from previous sessions will automatically appear in
 📚 **[View Full Documentation](docs/)** - Browse markdown docs on GitHub
 
 💻 **Local Preview**: Run Mintlify docs locally:
+
 ```bash
 cd docs
 npx mintlify dev
 ```
 
 ### Getting Started
+
 - **[Installation Guide](docs/installation.mdx)** - Quick start & advanced installation
 - **[Usage Guide](docs/usage/getting-started.mdx)** - How Claude-Mem works automatically
 - **[MCP Search Tools](docs/usage/search-tools.mdx)** - Query your project history
 
 ### Best Practices
+
 - **[Context Engineering](docs/context-engineering.mdx)** - AI agent context optimization principles
 - **[Progressive Disclosure](docs/progressive-disclosure.mdx)** - Philosophy behind Claude-Mem's context priming strategy
 
 ### Architecture
+
 - **[Overview](docs/architecture/overview.mdx)** - System components & data flow
 - **[Architecture Evolution](docs/architecture-evolution.mdx)** - The journey from v3 to v5
 - **[Hooks Architecture](docs/hooks-architecture.mdx)** - How Claude-Mem uses lifecycle hooks
@@ -103,6 +110,7 @@ npx mintlify dev
 - **[Viewer UI](docs/VIEWER.md)** - Web-based memory stream visualization
 
 ### Configuration & Development
+
 - **[Configuration](docs/configuration.mdx)** - Environment variables & settings
 - **[Development](docs/development.mdx)** - Building, testing, contributing
 - **[Troubleshooting](docs/troubleshooting.mdx)** - Common issues & solutions
@@ -134,6 +142,7 @@ npx mintlify dev
 ```
 
 **Core Components:**
+
 1. **7 Lifecycle Hook Scripts** - smart-install, context-hook, user-message-hook, new-hook, save-hook, summary-hook, cleanup-hook
 2. **Worker Service** - HTTP API on port 37777 with web viewer UI, managed by PM2
 3. **SQLite Database** - Stores sessions, observations, summaries with FTS5 full-text search
@@ -159,6 +168,7 @@ Claude-Mem provides 9 specialized search tools:
 9. **get_timeline_by_query** - Search for observations and get timeline context around best match
 
 **Example Queries:**
+
 ```
 search_observations with query="authentication" and type="decision"
 find_by_file with filePath="worker-service.ts"
@@ -175,12 +185,14 @@ See [MCP Search Tools Guide](docs/usage/search-tools.mdx) for detailed examples.
 ## What's New in v5.1.2
 
 **🎨 Theme Toggle (v5.1.2):**
+
 - Light/dark mode support in viewer UI
 - System preference detection
 - Persistent theme settings across sessions
 - Smooth transitions between themes
 
 **🖥️ Web-Based Viewer UI (v5.1.0):**
+
 - Real-time memory stream visualization at http://localhost:37777
 - Server-Sent Events (SSE) for instant updates
 - Infinite scroll pagination with automatic deduplication
@@ -189,11 +201,13 @@ See [MCP Search Tools Guide](docs/usage/search-tools.mdx) for detailed examples.
 - Auto-reconnection with exponential backoff
 
 **⚡ Smart Install Caching (v5.0.3):**
+
 - Eliminated redundant npm installs on every session (2-5s → 10ms)
 - Caches version in `.install-version` file
 - Only runs npm install when needed (first time, version change, missing deps)
 
 **🔍 Hybrid Search Architecture (v5.0.0):**
+
 - Chroma vector database for semantic search
 - Combined with FTS5 keyword search
 - Intelligent context retrieval with 90-day recency filtering
@@ -214,6 +228,7 @@ See [CHANGELOG.md](CHANGELOG.md) for complete version history.
 ## Key Benefits
 
 ### Progressive Disclosure Context
+
 - **Layered memory retrieval** mirrors human memory patterns
 - **Layer 1 (Index)**: See what observations exist with token costs at session start
 - **Layer 2 (Details)**: Fetch full narratives on-demand via MCP search
@@ -222,21 +237,25 @@ See [CHANGELOG.md](CHANGELOG.md) for complete version history.
 - **Type indicators**: Visual cues (🔴 critical, 🟤 decision, 🔵 informational) highlight observation importance
 
 ### Automatic Memory
+
 - Context automatically injected when Claude starts
 - No manual commands or configuration needed
 - Works transparently in the background
 
 ### Full History Search
+
 - Search across all sessions and observations
 - FTS5 full-text search for fast queries
 - Citations link back to specific observations
 
 ### Structured Observations
+
 - AI-powered extraction of learnings
 - Categorized by type (decision, bugfix, feature, etc.)
 - Tagged with concepts and file references
 
 ### Multi-Prompt Sessions
+
 - Sessions span multiple user prompts
 - Context preserved across `/clear` commands
 - Track entire conversation threads
@@ -246,11 +265,13 @@ See [CHANGELOG.md](CHANGELOG.md) for complete version history.
 ## Configuration
 
 **Model Selection:**
+
 ```bash
 ./claude-mem-settings.sh
 ```
 
 **Environment Variables:**
+
 - `CLAUDE_MEM_MODEL` - AI model for processing (default: claude-sonnet-4-5)
 - `CLAUDE_MEM_WORKER_PORT` - Worker port (default: 37777)
 - `CLAUDE_MEM_DATA_DIR` - Data directory override (dev only)
@@ -285,6 +306,7 @@ See [Development Guide](docs/development.mdx) for detailed instructions.
 ## Troubleshooting
 
 **Common Issues:**
+
 - Worker not starting → `npm run worker:restart`
 - No context appearing → `npm run test:context`
 - Database issues → `sqlite3 ~/.claude-mem/claude-mem.db "PRAGMA integrity_check;"`
@@ -317,6 +339,7 @@ Copyright (C) 2025 Alex Newman (@thedotmack). All rights reserved.
 See the [LICENSE](LICENSE) file for full details.
 
 **What This Means:**
+
 - You can use, modify, and distribute this software freely
 - If you modify and deploy on a network server, you must make your source code available
 - Derivative works must also be licensed under AGPL-3.0
