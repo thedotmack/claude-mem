@@ -8,6 +8,55 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 
+## [5.4.0] - 2025-11-09
+
+### ⚠️ BREAKING CHANGE: MCP Search Tools Removed
+
+**Migration**: None required. Claude automatically uses the search skill when needed.
+
+### Changed
+- **Skill-Based Search Architecture**: Replaced MCP search tools with skill-based HTTP API
+  - **Token Savings**: ~2,250 tokens per session start
+  - **Progressive Disclosure**: Skill frontmatter (~250 tokens) vs MCP tool definitions (~2,500 tokens)
+  - Search functionality works identically but with better efficiency
+  - No user action required - migration is transparent
+
+### Added
+- **10 New HTTP Search API Endpoints** in worker service:
+  - `GET /api/search/observations` - Full-text search observations
+  - `GET /api/search/sessions` - Full-text search session summaries
+  - `GET /api/search/prompts` - Full-text search user prompts
+  - `GET /api/search/by-concept` - Find observations by concept tag
+  - `GET /api/search/by-file` - Find work related to specific files
+  - `GET /api/search/by-type` - Find observations by type (bugfix, feature, etc.)
+  - `GET /api/context/recent` - Get recent session context
+  - `GET /api/context/timeline` - Get timeline around specific point in time
+  - `GET /api/timeline/by-query` - Search + timeline in one call
+  - `GET /api/search/help` - API documentation
+- **Search Skill** (`plugin/skills/search/SKILL.md`):
+  - Auto-invoked when users ask about past work, decisions, or history
+  - Comprehensive documentation with usage examples and workflows
+  - Format guidelines for presenting search results
+
+### Removed
+- **MCP Search Server** (deprecated):
+  - Removed `claude-mem-search` from plugin/.mcp.json
+  - Build script no longer compiles search-server.mjs
+  - Source file kept for reference: src/servers/search-server.ts
+  - All 9 MCP tools replaced by equivalent HTTP API endpoints
+
+### Technical Details
+- **How It Works**: User asks → Claude recognizes intent → Invokes search skill → Skill uses curl to call HTTP API → Formats results
+- **User Experience**: Identical search capabilities with significantly lower context overhead
+- **Performance**: Same search speed, better session start performance
+
+### Documentation
+- Updated CLAUDE.md with skill-based search explanation
+- Removed MCP references throughout documentation
+- Added comprehensive search skill documentation
+- Updated build scripts to skip search-server compilation
+
+
 ## [5.1.2] - 2025-11-06
 
 ### Added
