@@ -4,13 +4,38 @@
  */
 
 import path from 'path';
+import { homedir } from 'os';
+import { existsSync, readFileSync } from 'fs';
 import { stdin } from 'process';
 import { SessionStore } from '../services/sqlite/SessionStore.js';
 
-// Configuration: Read from environment or use defaults
-const DISPLAY_OBSERVATION_COUNT = parseInt(process.env.CLAUDE_MEM_CONTEXT_OBSERVATIONS || '50', 10);
-// Summaries are supplementary - show last 10 for context but not configurable
-const DISPLAY_SESSION_COUNT = 10;
+/**
+ * Get context depth from settings
+ * Priority: ~/.claude/settings.json > env var > default
+ */
+function getContextDepth(): number {
+  try {
+    const settingsPath = path.join(homedir(), '.claude', 'settings.json');
+    if (existsSync(settingsPath)) {
+      const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+      if (settings.env?.CLAUDE_MEM_CONTEXT_OBSERVATIONS) {
+        const count = parseInt(settings.env.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10);
+        if (!isNaN(count) && count > 0) {
+          return count;
+        }
+      }
+    }
+  } catch {
+    // Fall through to env var or default
+  }
+  return parseInt(process.env.CLAUDE_MEM_CONTEXT_OBSERVATIONS || '50', 10);
+}
+
+// Configuration: Read from settings.json or environment
+const DISPLAY_OBSERVATION_COUNT = getContextDepth();
+const DISPLAY_SESSION_COUNT = 10; // Recent sessions for timeline context
+const CHARS_PER_TOKEN_ESTIMATE = 4; // Rough estimate for token counting
+const SUMMARY_LOOKAHEAD = 1; // Fetch one extra summary for offset calculation
 
 export interface SessionStartInput {
   session_id?: string;
@@ -50,11 +75,27 @@ interface Observation {
   created_at_epoch: number;
 }
 
+interface SessionSummary {
+  id: number;
+  sdk_session_id: string;
+  request: string | null;
+  investigated: string | null;
+  learned: string | null;
+  completed: string | null;
+  next_steps: string | null;
+  created_at: string;
+  created_at_epoch: number;
+}
+
 // Helper: Parse JSON array safely
 function parseJsonArray(json: string | null): string[] {
   if (!json) return [];
-  const parsed = JSON.parse(json);
-  return Array.isArray(parsed) ? parsed : [];
+  try {
+    const parsed = JSON.parse(json);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (err) {
+    return [];
+  }
 }
 
 // Helper: Format date with time
@@ -92,8 +133,7 @@ function formatDate(dateStr: string): string {
 // Helper: Estimate token count for text
 function estimateTokens(text: string | null): number {
   if (!text) return 0;
-  // Rough estimate: ~4 characters per token
-  return Math.ceil(text.length / 4);
+  return Math.ceil(text.length / CHARS_PER_TOKEN_ESTIMATE);
 }
 
 // Helper: Convert absolute paths to relative paths
@@ -102,6 +142,16 @@ function toRelativePath(filePath: string, cwd: string): string {
     return path.relative(cwd, filePath);
   }
   return filePath;
+}
+
+// Helper: Render a summary field (investigated, learned, etc.)
+function renderSummaryField(label: string, value: string | null, color: string, useColors: boolean): string[] {
+  if (!value) return [];
+
+  if (useColors) {
+    return [`${color}${label}:${colors.reset} ${value}`, ''];
+  }
+  return [`**${label}**: ${value}`, ''];
 }
 
 // Helper: Get all observations for given sessions
@@ -125,7 +175,7 @@ function getObservations(db: SessionStore, sessionIds: string[]): Observation[] 
 /**
  * Context Hook Main Logic
  */
-async function contextHook(input?: SessionStartInput, useColors: boolean = false, useIndexView: boolean = false): Promise<string> {
+async function contextHook(input?: SessionStartInput, useColors: boolean = false): Promise<string> {
   const cwd = input?.cwd ?? process.cwd();
   const project = cwd ? path.basename(cwd) : 'unknown-project';
 
@@ -146,13 +196,14 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
   `).all(project, DISPLAY_OBSERVATION_COUNT) as Observation[];
 
   // Get recent summaries (optional - may not exist for recent sessions)
+  // Fetch one extra for offset calculation
   const recentSummaries = db.db.prepare(`
     SELECT id, sdk_session_id, request, investigated, learned, completed, next_steps, created_at, created_at_epoch
     FROM session_summaries
     WHERE project = ?
     ORDER BY created_at_epoch DESC
     LIMIT ?
-  `).all(project, DISPLAY_SESSION_COUNT + 1) as Array<{ id: number; sdk_session_id: string; request: string | null; investigated: string | null; learned: string | null; completed: string | null; next_steps: string | null; created_at: string; created_at_epoch: number }>;
+  `).all(project, DISPLAY_SESSION_COUNT + SUMMARY_LOOKAHEAD) as SessionSummary[];
 
   // If we have neither observations nor summaries, show empty state
   if (allObservations.length === 0 && recentSummaries.length === 0) {
@@ -210,28 +261,37 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
       output.push('');
     }
 
-    // Create unified timeline with both observations and summaries
+    // Prepare summaries for timeline display
+    // The most recent summary shows full details (investigated, learned, etc.)
+    // Older summaries only show as timeline markers (no link needed)
     const mostRecentSummaryId = recentSummaries[0]?.id;
 
-    // Create offset summaries
-    const summariesWithOffset = displaySummaries.map((summary, i) => {
-      // Most recent keeps its own time, others offset to next summary's time
-      const nextSummary = i === 0 ? null : recentSummaries[i + 1];
+    interface SummaryTimelineItem extends SessionSummary {
+      displayEpoch: number;
+      displayTime: string;
+      shouldShowLink: boolean;
+    }
+
+    const summariesForTimeline: SummaryTimelineItem[] = displaySummaries.map((summary, i) => {
+      // For visual grouping, display each summary at the time range it covers
+      // Most recent: shows at its own time (current session)
+      // Older: shows at the previous (older) summary's time to mark the session range
+      const olderSummary = i === 0 ? null : recentSummaries[i + 1];
       return {
         ...summary,
-        displayEpoch: nextSummary ? nextSummary.created_at_epoch : summary.created_at_epoch,
-        displayTime: nextSummary ? nextSummary.created_at : summary.created_at,
-        isMostRecent: summary.id === mostRecentSummaryId
+        displayEpoch: olderSummary ? olderSummary.created_at_epoch : summary.created_at_epoch,
+        displayTime: olderSummary ? olderSummary.created_at : summary.created_at,
+        shouldShowLink: summary.id !== mostRecentSummaryId
       };
     });
 
     type TimelineItem =
       | { type: 'observation'; data: Observation }
-      | { type: 'summary'; data: typeof summariesWithOffset[0] };
+      | { type: 'summary'; data: SummaryTimelineItem };
 
     const timeline: TimelineItem[] = [
       ...timelineObs.map(obs => ({ type: 'observation' as const, data: obs })),
-      ...summariesWithOffset.map(summary => ({ type: 'summary' as const, data: summary }))
+      ...summariesForTimeline.map(summary => ({ type: 'summary' as const, data: summary }))
     ];
 
     // Sort chronologically
@@ -242,18 +302,18 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
     });
 
     // Group by day for rendering
-    const dayTimelines = new Map<string, typeof timeline>();
+    const itemsByDay = new Map<string, TimelineItem[]>();
     for (const item of timeline) {
       const itemDate = item.type === 'observation' ? item.data.created_at : item.data.displayTime;
       const day = formatDate(itemDate);
-      if (!dayTimelines.has(day)) {
-        dayTimelines.set(day, []);
+      if (!itemsByDay.has(day)) {
+        itemsByDay.set(day, []);
       }
-      dayTimelines.get(day)!.push(item);
+      itemsByDay.get(day)!.push(item);
     }
 
     // Sort days chronologically
-    const sortedDays = Array.from(dayTimelines.entries()).sort((a, b) => {
+    const sortedDays = Array.from(itemsByDay.entries()).sort((a, b) => {
       const aDate = new Date(a[0]).getTime();
       const bDate = new Date(b[0]).getTime();
       return aDate - bDate;
@@ -288,7 +348,7 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
           // Render summary
           const summary = item.data;
           const summaryTitle = `${summary.request || 'Session started'} (${formatDateTime(summary.displayTime)})`;
-          const link = summary.isMostRecent ? '' : `claude-mem://session-summary/${summary.id}`;
+          const link = summary.shouldShowLink ? `claude-mem://session-summary/${summary.id}` : '';
 
           if (useColors) {
             const linkPart = link ? `${colors.dim}[${link}]${colors.reset}` : '';
@@ -383,41 +443,10 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
     // Add full summary details for most recent session
     const mostRecentSummary = recentSummaries[0];
     if (mostRecentSummary && (mostRecentSummary.investigated || mostRecentSummary.learned || mostRecentSummary.completed || mostRecentSummary.next_steps)) {
-      if (mostRecentSummary.investigated) {
-        if (useColors) {
-          output.push(`${colors.blue}Investigated:${colors.reset} ${mostRecentSummary.investigated}`);
-        } else {
-          output.push(`**Investigated**: ${mostRecentSummary.investigated}`);
-        }
-        output.push('');
-      }
-
-      if (mostRecentSummary.learned) {
-        if (useColors) {
-          output.push(`${colors.yellow}Learned:${colors.reset} ${mostRecentSummary.learned}`);
-        } else {
-          output.push(`**Learned**: ${mostRecentSummary.learned}`);
-        }
-        output.push('');
-      }
-
-      if (mostRecentSummary.completed) {
-        if (useColors) {
-          output.push(`${colors.green}Completed:${colors.reset} ${mostRecentSummary.completed}`);
-        } else {
-          output.push(`**Completed**: ${mostRecentSummary.completed}`);
-        }
-        output.push('');
-      }
-
-      if (mostRecentSummary.next_steps) {
-        if (useColors) {
-          output.push(`${colors.magenta}Next Steps:${colors.reset} ${mostRecentSummary.next_steps}`);
-        } else {
-          output.push(`**Next Steps**: ${mostRecentSummary.next_steps}`);
-        }
-        output.push('');
-      }
+      output.push(...renderSummaryField('Investigated', mostRecentSummary.investigated, colors.blue, useColors));
+      output.push(...renderSummaryField('Learned', mostRecentSummary.learned, colors.yellow, useColors));
+      output.push(...renderSummaryField('Completed', mostRecentSummary.completed, colors.green, useColors));
+      output.push(...renderSummaryField('Next Steps', mostRecentSummary.next_steps, colors.magenta, useColors));
     }
 
     // Footer with MCP search instructions
@@ -433,12 +462,11 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
 }
 
 // Entry Point - handle stdin/stdout
-const useIndexView = process.argv.includes('--index');
-const forceColors = process.argv.includes('--colors');  // Add this line
+const forceColors = process.argv.includes('--colors');
 
-if (stdin.isTTY || forceColors) {  // Modify this line to include forceColors
+if (stdin.isTTY || forceColors) {
   // Running manually from terminal - print formatted output with colors
-  contextHook(undefined, true, useIndexView).then(contextOutput => {
+  contextHook(undefined, true).then(contextOutput => {
     console.log(contextOutput);
     process.exit(0);
   });
@@ -448,7 +476,7 @@ if (stdin.isTTY || forceColors) {  // Modify this line to include forceColors
   stdin.on('data', (chunk) => input += chunk);
   stdin.on('end', async () => {
     const parsed = input.trim() ? JSON.parse(input) : undefined;
-    const contextOutput = await contextHook(parsed, false, useIndexView);
+    const contextOutput = await contextHook(parsed, false);
     const result = {
       hookSpecificOutput: {
         hookEventName: "SessionStart",

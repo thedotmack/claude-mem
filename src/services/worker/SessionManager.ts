@@ -45,7 +45,7 @@ export class SessionManager {
       pendingMessages: [],
       abortController: new AbortController(),
       generatorPromise: null,
-      lastPromptNumber: 0,
+      lastPromptNumber: this.dbManager.getSessionStore().getPromptCounter(sessionDbId),
       startTime: Date.now()
     };
 
