@@ -29,6 +29,8 @@ CRITICAL: Record what was BUILT/FIXED/DEPLOYED/CONFIGURED, not what you (the obs
 User's Goal: ${userPrompt}
 Date: ${new Date().toISOString().split('T')[0]}
 
+SESSION LIFECYCLE: You will observe tool executions, create observations, generate progress summaries when requested, and receive continuation prompts as the session progresses.
+
 WHAT TO RECORD
 --------------
 Focus on deliverables and capabilities:
@@ -154,26 +156,31 @@ export function buildObservationPrompt(obs: Observation): string {
 }
 
 /**
- * Build prompt to generate request summary
+ * Build prompt to generate progress summary
  */
 export function buildSummaryPrompt(session: SDKSession): string {
-  return `THIS REQUEST'S SUMMARY
-===============
-Think about the last request, and write a summary of what was done, what was learned, and what's next.
+  return `PROGRESS SUMMARY CHECKPOINT
+===========================
+Write progress notes of what was done, what was learned, and what's next. This is a checkpoint to capture progress so far.
 
 IMPORTANT! DO NOT summarize the observation process itself - you are summarizing a DIFFERENT claude code session, not this one.
 
-User's Original Request: ${session.user_prompt}
-
 Respond in this XML format:
 <summary>
-  <request>[What did the user request? Form a title that reflects the actual request: ${session.user_prompt}]</request>
-  <investigated>[Was anything explored? What was it?]</investigated>
-  <learned>[Did you learn anything? What was learned about how things work?]</learned>
-  <completed>[Did you do any work? What shipped? What does the system now do?]</completed>
-  <next_steps>[What are the next steps?]</next_steps>
-  <notes>[Additional insights]</notes>
+  <request>[Short title related to the most recent prompt]</request>
+  <investigated>[What has been explored so far? What was examined?]</investigated>
+  <learned>[What have you learned about how things work?]</learned>
+  <completed>[What work has been completed so far? What has shipped or changed?]</completed>
+  <next_steps>[What are you actively working on or planning to work on next in this session?]</next_steps>
+  <notes>[Additional insights or observations about the current progress]</notes>
 </summary>
 
-IMPORTANT: This is not the end of the session. You will receive more requests to process, and more tool usages to observe and record. The summary helps keep track of progress. Always write at least a minimal summary explaining where we are at currently, even if you didn't learn anything new or complete any work.`; 
+FRAMING: This is a mid-session progress checkpoint. The session is ongoing - you may receive more requests and tool executions after this summary. Write "next_steps" as the current trajectory of work (what's actively being worked on or coming up next), not as post-session future work. Always write at least a minimal summary explaining current progress, even if work is still in early stages.`;
+}
+
+/**
+ * Build prompt for continuation of existing session
+ */
+export function buildContinuationPrompt(userPrompt: string, promptNumber: number): string {
+  return `User's request #${promptNumber}: ${userPrompt}`;
 }

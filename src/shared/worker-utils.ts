@@ -70,7 +70,7 @@ export async function ensureWorkerRunning(): Promise<void> {
   const pm2Path = path.join(packageRoot, "node_modules", ".bin", "pm2");
   const ecosystemPath = path.join(packageRoot, "ecosystem.config.cjs");
 
-  execSync(`"${pm2Path}" restart "${ecosystemPath}"`, {
+  execSync(`"${pm2Path}" start "${ecosystemPath}"`, {
     cwd: packageRoot,
     stdio: 'pipe'
   });

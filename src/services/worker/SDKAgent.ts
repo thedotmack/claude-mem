@@ -16,7 +16,7 @@ import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
 import { parseObservations, parseSummary } from '../../sdk/parser.js';
-import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt } from '../../sdk/prompts.js';
+import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
 import type { ActiveSession, SDKUserMessage, PendingMessage } from '../worker-types.js';
 
 // Import Agent SDK (assumes it's installed)
@@ -110,12 +110,14 @@ export class SDKAgent {
    * Create event-driven message generator (yields messages from SessionManager)
    */
   private async *createMessageGenerator(session: ActiveSession): AsyncIterableIterator<SDKUserMessage> {
-    // Yield initial user prompt with context
+    // Yield initial user prompt with context (or continuation if prompt #2+)
     yield {
       type: 'user',
       message: {
         role: 'user',
-        content: buildInitPrompt(session.project, session.claudeSessionId, session.userPrompt)
+        content: session.lastPromptNumber === 1
+          ? buildInitPrompt(session.project, session.claudeSessionId, session.userPrompt)
+          : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber)
       },
       session_id: session.claudeSessionId,
       parent_tool_use_id: null,
