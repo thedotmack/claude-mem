@@ -54,10 +54,21 @@ When Claude finishes responding (triggering the Stop hook), a summary is automat
 
 When you start a new Claude Code session, the SessionStart hook:
 
-1. Queries the database for recent sessions in your project
-2. Retrieves the last 10 session summaries
-3. Formats them with three-tier verbosity (most recent = most detail)
-4. Injects them into Claude's initial context
+1. Queries the database for recent observations in your project (default: 50)
+2. Retrieves recent session summaries for context
+3. Displays observations in a chronological timeline with session markers
+4. Shows full summary details (Investigated, Learned, Completed, Next Steps) **only if the summary was generated after the last observation**
+5. Injects formatted context into Claude's initial context
+
+**Summary Display Logic:**
+
+The most recent summary's full details appear at the end of the context display **only when** the summary was generated after the most recent observation. This ensures you see summary details when they represent the latest state of your project, but not when new observations have been captured since the last summary.
+
+For example:
+- ✅ **Shows summary**: Last observation at 2:00 PM, summary generated at 2:05 PM → Summary details appear
+- ❌ **Hides summary**: Summary generated at 2:00 PM, new observation at 2:05 PM → Summary details hidden (outdated)
+
+This prevents showing stale summaries when new work has been captured but not yet summarized.
 
 This means Claude "remembers" what happened in previous sessions!
 
@@ -138,26 +149,29 @@ FROM observations
 WHERE session_id = 'YOUR_SESSION_ID';
 ```
 
-## Understanding Verbosity Levels
+## Understanding Progressive Disclosure
 
-Context injection uses three-tier verbosity for efficient token usage:
+Context injection uses progressive disclosure for efficient token usage:
 
-### Tier 1 (Most Recent Session)
-- Full summary with all details
-- Request, investigated, learned, completed, next_steps, notes
-- ~500-1000 tokens
+### Layer 1: Index Display (Session Start)
+- Shows observation titles with token cost estimates
+- Displays session markers in chronological timeline
+- Groups observations by file for visual clarity
+- Shows full summary details **only if** generated after last observation
+- Token cost: ~50-200 tokens for index view
 
-### Tier 2 (Sessions 2-5)
-- Medium detail
-- Request, learned, completed
-- ~200-400 tokens
+### Layer 2: On-Demand Details (MCP Search)
+- Fetch full observation narratives when needed
+- Search by concept, file, type, or keyword
+- Timeline context around specific observations
+- Token cost: ~100-500 tokens per observation fetched
 
-### Tier 3 (Sessions 6-10)
-- Brief summary
-- Request and completed only
-- ~100-200 tokens
+### Layer 3: Perfect Recall (Code Access)
+- Read source files directly when needed
+- Access original transcripts and raw data
+- Full context available on-demand
 
-This ensures you get maximum detail for recent work while still having context from older sessions.
+This ensures efficient token usage while maintaining access to complete history when needed.
 
 ## Multi-Prompt Sessions & `/clear` Behavior
 
