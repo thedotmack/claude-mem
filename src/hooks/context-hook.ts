@@ -11,15 +11,18 @@ import { SessionStore } from '../services/sqlite/SessionStore.js';
 
 /**
  * Get context depth from settings
- * Priority: ~/.claude-mem/settings.json > env var > default
+ * Priority: ~/.claude/settings.json > env var > default
  */
 function getContextDepth(): number {
   try {
-    const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+    const settingsPath = path.join(homedir(), '.claude', 'settings.json');
     if (existsSync(settingsPath)) {
       const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
-      if (typeof settings.contextDepth === 'number' && settings.contextDepth > 0) {
-        return settings.contextDepth;
+      if (settings.env?.CLAUDE_MEM_CONTEXT_OBSERVATIONS) {
+        const count = parseInt(settings.env.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10);
+        if (!isNaN(count) && count > 0) {
+          return count;
+        }
       }
     }
   } catch {
