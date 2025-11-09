@@ -4,11 +4,32 @@
  */
 
 import path from 'path';
+import { homedir } from 'os';
+import { existsSync, readFileSync } from 'fs';
 import { stdin } from 'process';
 import { SessionStore } from '../services/sqlite/SessionStore.js';
 
-// Configuration: Read from environment or use defaults
-const DISPLAY_OBSERVATION_COUNT = parseInt(process.env.CLAUDE_MEM_CONTEXT_OBSERVATIONS || '50', 10);
+/**
+ * Get context depth from settings
+ * Priority: ~/.claude-mem/settings.json > env var > default
+ */
+function getContextDepth(): number {
+  try {
+    const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+    if (existsSync(settingsPath)) {
+      const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+      if (typeof settings.contextDepth === 'number' && settings.contextDepth > 0) {
+        return settings.contextDepth;
+      }
+    }
+  } catch {
+    // Fall through to env var or default
+  }
+  return parseInt(process.env.CLAUDE_MEM_CONTEXT_OBSERVATIONS || '50', 10);
+}
+
+// Configuration: Read from settings.json or environment
+const DISPLAY_OBSERVATION_COUNT = getContextDepth();
 const DISPLAY_SESSION_COUNT = 10; // Recent sessions for timeline context
 const CHARS_PER_TOKEN_ESTIMATE = 4; // Rough estimate for token counting
 const SUMMARY_LOOKAHEAD = 1; // Fetch one extra summary for offset calculation
