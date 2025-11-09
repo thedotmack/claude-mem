@@ -50,10 +50,11 @@ Claude-mem is a Claude Code plugin providing persistent memory across sessions. 
 - FTS5 virtual tables for full-text search
 - `SessionStore` = CRUD, `SessionSearch` = FTS5 queries
 
-**MCP Search Server** (`src/servers/search-server.ts`)
-- Exposes 9 search tools to Claude Code
-- Configured in `plugin/.mcp.json`
-- Built to `plugin/search-server.mjs` (ESM format)
+**Search Skill** (`plugin/skills/search/SKILL.md`)
+- Provides access to all search functionality via HTTP API + skill
+- Auto-invoked when users ask about past work, decisions, or history
+- Uses HTTP endpoints instead of MCP tools (~2,250 token savings per session)
+- 10 search operations: observations, sessions, prompts, by-type, by-file, by-concept, timelines, etc.
 
 **Chroma Vector Database** (`src/services/sync/ChromaSync.ts`)
 - Hybrid semantic + keyword search architecture
@@ -86,12 +87,11 @@ npm run worker:restart
 ```
 Must restart PM2 worker for changes to take effect.
 
-### When You Modify MCP Server
+### When You Modify Search Skill
 ```bash
-npm run build
 npm run sync-marketplace
-# Restart Claude Code for MCP changes
 ```
+Skill changes take effect immediately on next Claude Code session. No build or restart needed (skills are markdown).
 
 ### When You Modify Viewer UI
 ```bash
@@ -104,7 +104,7 @@ Changes to React components, styles, or viewer logic require rebuilding and rest
 ### Build Pipeline
 1. `npm run build` → Compiles TypeScript, outputs to `plugin/`
 2. `npm run sync-marketplace` → Syncs to `~/.claude/plugins/marketplaces/thedotmack/`
-3. Changes are live for next session (hooks/MCP) or after restart (worker)
+3. Changes are live for next session (hooks/skills) or after restart (worker)
 
 ## Coding Standards: DRY, YAGNI, and Anti-Patterns
 
@@ -263,7 +263,7 @@ pm2 delete claude-mem-worker # Force clean start
 2. `npm run build && npm run sync-marketplace`
 3. Start new Claude Code session (hooks) or restart worker (worker changes)
 4. Check `~/.claude-mem/claude-mem.db` for database state
-5. Use MCP search tools to verify behavior
+5. Use search skill to verify behavior (auto-invoked when asking about past work)
 
 ### Version Bumps
 Use the version-bump skill:
@@ -291,7 +291,7 @@ Choose patch/minor/major. Updates package.json, marketplace.json, plugin.json, a
 ```
 Deploy a general-purpose Task agent to:
 1. Read src/hooks/context-hook.ts in full
-2. Read src/servers/search-server.ts in full
+2. Read src/services/worker-service.ts in full
 3. Answer: How do these files work together? What's the current implementation state?
 4. Find any bugs or inconsistencies between them
 ```
@@ -303,6 +303,33 @@ Use this when:
 - Issue might be a subtle inconsistency between files
 
 ## Recent Changes
+
+### v5.4.0 - Skill-Based Search Migration
+**Breaking Change**: MCP search tools replaced with skill-based approach
+- **Token Savings**: ~2,250 tokens per session start
+- **Progressive Disclosure**: Skill frontmatter (~250 tokens) instead of 9 MCP tool definitions (~2,500 tokens)
+- **New HTTP API**: 10 search endpoints in worker service (localhost:37777/api/search/*)
+- **Search Skill**: Auto-invoked when users ask about past work, decisions, or history
+- **No User Action Required**: Migration is transparent, searches work automatically
+- **Deprecated**: MCP search server (source kept for reference: src/servers/search-server.ts)
+
+**Available Search Operations:**
+1. Search observations (full-text)
+2. Search session summaries (full-text)
+3. Search user prompts (full-text)
+4. Search by observation type (bugfix, feature, refactor, discovery, decision)
+5. Search by concept tag
+6. Search by file path
+7. Get recent context for a project
+8. Get timeline around specific point in time
+9. Get timeline by query (search + timeline in one call)
+10. Get API help documentation
+
+**How It Works:**
+- User asks: "What bug did we fix last session?"
+- Claude sees skill description matches → invokes search skill
+- Skill loads full instructions → uses curl to call HTTP API → formats results
+- User sees formatted answer with past work context
 
 ### v5.1.2 - Theme Toggle
 **Theme Support**: Light/dark mode for viewer UI
@@ -373,9 +400,9 @@ Use this when:
 - Hybrid semantic + keyword search combining ChromaDB with SQLite FTS5
 - ChromaSync service for automatic vector embedding synchronization (738 lines)
 - 90-day recency filtering for contextually relevant results
-- New MCP tools: `get_context_timeline` and `get_timeline_by_query`
+- Timeline and context search capabilities (now provided via skill-based HTTP API)
 - Performance: Semantic search <200ms with 8,000+ vector documents
-- Enhanced all 9 MCP search tools with hybrid search capabilities
+- Full-text search across observations, sessions, and prompts
 
 ## Configuration Users Can Set
 

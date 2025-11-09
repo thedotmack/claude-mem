@@ -26,13 +26,15 @@ const WORKER_SERVICE = {
   source: 'src/services/worker-service.ts'
 };
 
-const SEARCH_SERVER = {
-  name: 'search-server',
-  source: 'src/servers/search-server.ts'
-};
+// DEPRECATED: MCP search server replaced by skill-based search
+// Keeping source file for reference: src/servers/search-server.ts
+// const SEARCH_SERVER = {
+//   name: 'search-server',
+//   source: 'src/servers/search-server.ts'
+// };
 
 async function buildHooks() {
-  console.log('🔨 Building claude-mem hooks, worker service, and search server...\n');
+  console.log('🔨 Building claude-mem hooks and worker service...\n');
 
   try {
     // Read version from package.json
@@ -124,31 +126,15 @@ async function buildHooks() {
       console.log(`✓ ${hook.name} built (${sizeInKB} KB)`);
     }
 
-    // Build search server
-    console.log(`\n🔧 Building search server...`);
-    await build({
-      entryPoints: [SEARCH_SERVER.source],
-      bundle: true,
-      format: 'esm',
-      platform: 'node',
-      outfile: `${hooksDir}/${SEARCH_SERVER.name}.mjs`,
-      minify: true,
-      packages: 'external',
-      banner: {
-        js: '#!/usr/bin/env node'
-      }
-    });
+    // DEPRECATED: MCP search server no longer built (replaced by skill-based search)
+    // Search functionality now provided via HTTP API + search skill
+    // Source file kept for reference: src/servers/search-server.ts
 
-    // Make search server executable
-    fs.chmodSync(`${hooksDir}/${SEARCH_SERVER.name}.mjs`, 0o755);
-    const searchStats = fs.statSync(`${hooksDir}/${SEARCH_SERVER.name}.mjs`);
-    console.log(`✓ search-server built (${(searchStats.size / 1024).toFixed(2)} KB)`);
-
-    console.log('\n✅ All hooks, worker service, and search server built successfully!');
+    console.log('\n✅ All hooks and worker service built successfully!');
     console.log(`   Output: ${hooksDir}/`);
     console.log(`   - Hooks: *-hook.js`);
     console.log(`   - Worker: worker-service.cjs`);
-    console.log(`   - Search: search-server.mjs`);
+    console.log(`   - Skills: plugin/skills/`);
     console.log('\n💡 Note: Dependencies will be auto-installed on first hook execution');
 
   } catch (error) {

@@ -441,8 +441,15 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
     }
 
     // Add full summary details for most recent session
+    // Only show if summary was generated AFTER the last observation
     const mostRecentSummary = recentSummaries[0];
-    if (mostRecentSummary && (mostRecentSummary.investigated || mostRecentSummary.learned || mostRecentSummary.completed || mostRecentSummary.next_steps)) {
+    const mostRecentObservation = observations[0]; // observations are DESC by created_at_epoch
+
+    const shouldShowSummary = mostRecentSummary &&
+      (mostRecentSummary.investigated || mostRecentSummary.learned || mostRecentSummary.completed || mostRecentSummary.next_steps) &&
+      (!mostRecentObservation || mostRecentSummary.created_at_epoch > mostRecentObservation.created_at_epoch);
+
+    if (shouldShowSummary) {
       output.push(...renderSummaryField('Investigated', mostRecentSummary.investigated, colors.blue, useColors));
       output.push(...renderSummaryField('Learned', mostRecentSummary.learned, colors.yellow, useColors));
       output.push(...renderSummaryField('Completed', mostRecentSummary.completed, colors.green, useColors));

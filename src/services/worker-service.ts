@@ -100,6 +100,18 @@ export class WorkerService {
     // Settings
     this.app.get('/api/settings', this.handleGetSettings.bind(this));
     this.app.post('/api/settings', this.handleUpdateSettings.bind(this));
+
+    // Search API endpoints (for skill-based search)
+    this.app.get('/api/search/observations', this.handleSearchObservations.bind(this));
+    this.app.get('/api/search/sessions', this.handleSearchSessions.bind(this));
+    this.app.get('/api/search/prompts', this.handleSearchPrompts.bind(this));
+    this.app.get('/api/search/by-concept', this.handleSearchByConcept.bind(this));
+    this.app.get('/api/search/by-file', this.handleSearchByFile.bind(this));
+    this.app.get('/api/search/by-type', this.handleSearchByType.bind(this));
+    this.app.get('/api/context/recent', this.handleGetRecentContext.bind(this));
+    this.app.get('/api/context/timeline', this.handleGetContextTimeline.bind(this));
+    this.app.get('/api/timeline/by-query', this.handleGetTimelineByQuery.bind(this));
+    this.app.get('/api/search/help', this.handleSearchHelp.bind(this));
   }
 
   /**
@@ -641,6 +653,557 @@ export class WorkerService {
       logger.failure('WORKER', 'Failed to set processing status', {}, error as Error);
       res.status(500).json({ error: (error as Error).message });
     }
+  }
+
+  // ============================================================================
+  // Search API Handlers (for skill-based search)
+  // ============================================================================
+
+  /**
+   * Search observations
+   * GET /api/search/observations?query=...&format=index&limit=20&project=...
+   */
+  private handleSearchObservations(req: Request, res: Response): void {
+    try {
+      const query = req.query.query as string;
+      const format = (req.query.format as string) || 'full';
+      const limit = parseInt(req.query.limit as string, 10) || 20;
+      const project = req.query.project as string | undefined;
+
+      if (!query) {
+        res.status(400).json({ error: 'Missing required parameter: query' });
+        return;
+      }
+
+      const sessionSearch = this.dbManager.getSessionSearch();
+      const results = sessionSearch.searchObservations(query, { limit, project });
+
+      res.json({
+        query,
+        count: results.length,
+        format,
+        results: format === 'index' ? results.map(r => ({
+          id: r.id,
+          type: r.type,
+          title: r.title,
+          subtitle: r.subtitle,
+          created_at_epoch: r.created_at_epoch,
+          project: r.project,
+          score: r.score
+        })) : results
+      });
+    } catch (error) {
+      logger.failure('WORKER', 'Search observations failed', {}, error as Error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  }
+
+  /**
+   * Search session summaries
+   * GET /api/search/sessions?query=...&format=index&limit=20
+   */
+  private handleSearchSessions(req: Request, res: Response): void {
+    try {
+      const query = req.query.query as string;
+      const format = (req.query.format as string) || 'full';
+      const limit = parseInt(req.query.limit as string, 10) || 20;
+
+      if (!query) {
+        res.status(400).json({ error: 'Missing required parameter: query' });
+        return;
+      }
+
+      const sessionSearch = this.dbManager.getSessionSearch();
+      const results = sessionSearch.searchSessions(query, { limit });
+
+      res.json({
+        query,
+        count: results.length,
+        format,
+        results: format === 'index' ? results.map(r => ({
+          id: r.id,
+          request: r.request,
+          completed: r.completed,
+          created_at_epoch: r.created_at_epoch,
+          project: r.project,
+          score: r.score
+        })) : results
+      });
+    } catch (error) {
+      logger.failure('WORKER', 'Search sessions failed', {}, error as Error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  }
+
+  /**
+   * Search user prompts
+   * GET /api/search/prompts?query=...&format=index&limit=20
+   */
+  private handleSearchPrompts(req: Request, res: Response): void {
+    try {
+      const query = req.query.query as string;
+      const format = (req.query.format as string) || 'full';
+      const limit = parseInt(req.query.limit as string, 10) || 20;
+      const project = req.query.project as string | undefined;
+
+      if (!query) {
+        res.status(400).json({ error: 'Missing required parameter: query' });
+        return;
+      }
+
+      const sessionSearch = this.dbManager.getSessionSearch();
+      const results = sessionSearch.searchUserPrompts(query, { limit, project });
+
+      res.json({
+        query,
+        count: results.length,
+        format,
+        results: format === 'index' ? results.map(r => ({
+          id: r.id,
+          claude_session_id: r.claude_session_id,
+          prompt_number: r.prompt_number,
+          prompt_text: r.prompt_text,
+          created_at_epoch: r.created_at_epoch,
+          score: r.score
+        })) : results
+      });
+    } catch (error) {
+      logger.failure('WORKER', 'Search prompts failed', {}, error as Error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  }
+
+  /**
+   * Search observations by concept
+   * GET /api/search/by-concept?concept=discovery&format=index&limit=5
+   */
+  private handleSearchByConcept(req: Request, res: Response): void {
+    try {
+      const concept = req.query.concept as string;
+      const format = (req.query.format as string) || 'full';
+      const limit = parseInt(req.query.limit as string, 10) || 10;
+      const project = req.query.project as string | undefined;
+
+      if (!concept) {
+        res.status(400).json({ error: 'Missing required parameter: concept' });
+        return;
+      }
+
+      const sessionSearch = this.dbManager.getSessionSearch();
+      const results = sessionSearch.findByConcept(concept, { limit, project });
+
+      res.json({
+        concept,
+        count: results.length,
+        format,
+        results: format === 'index' ? results.map(r => ({
+          id: r.id,
+          type: r.type,
+          title: r.title,
+          subtitle: r.subtitle,
+          created_at_epoch: r.created_at_epoch,
+          project: r.project,
+          concepts: r.concepts
+        })) : results
+      });
+    } catch (error) {
+      logger.failure('WORKER', 'Search by concept failed', {}, error as Error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  }
+
+  /**
+   * Search by file path
+   * GET /api/search/by-file?filePath=...&format=index&limit=10
+   */
+  private handleSearchByFile(req: Request, res: Response): void {
+    try {
+      const filePath = req.query.filePath as string;
+      const format = (req.query.format as string) || 'full';
+      const limit = parseInt(req.query.limit as string, 10) || 10;
+      const project = req.query.project as string | undefined;
+
+      if (!filePath) {
+        res.status(400).json({ error: 'Missing required parameter: filePath' });
+        return;
+      }
+
+      const sessionSearch = this.dbManager.getSessionSearch();
+      const results = sessionSearch.findByFile(filePath, { limit, project });
+
+      res.json({
+        filePath,
+        count: results.observations.length + results.sessions.length,
+        format,
+        results: {
+          observations: format === 'index' ? results.observations.map(r => ({
+            id: r.id,
+            type: r.type,
+            title: r.title,
+            subtitle: r.subtitle,
+            created_at_epoch: r.created_at_epoch,
+            project: r.project
+          })) : results.observations,
+          sessions: format === 'index' ? results.sessions.map(r => ({
+            id: r.id,
+            request: r.request,
+            completed: r.completed,
+            created_at_epoch: r.created_at_epoch,
+            project: r.project
+          })) : results.sessions
+        }
+      });
+    } catch (error) {
+      logger.failure('WORKER', 'Search by file failed', {}, error as Error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  }
+
+  /**
+   * Search observations by type
+   * GET /api/search/by-type?type=bugfix&format=index&limit=10
+   */
+  private handleSearchByType(req: Request, res: Response): void {
+    try {
+      const type = req.query.type as string;
+      const format = (req.query.format as string) || 'full';
+      const limit = parseInt(req.query.limit as string, 10) || 10;
+      const project = req.query.project as string | undefined;
+
+      if (!type) {
+        res.status(400).json({ error: 'Missing required parameter: type' });
+        return;
+      }
+
+      const sessionSearch = this.dbManager.getSessionSearch();
+      const results = sessionSearch.findByType(type as any, { limit, project });
+
+      res.json({
+        type,
+        count: results.length,
+        format,
+        results: format === 'index' ? results.map(r => ({
+          id: r.id,
+          type: r.type,
+          title: r.title,
+          subtitle: r.subtitle,
+          created_at_epoch: r.created_at_epoch,
+          project: r.project
+        })) : results
+      });
+    } catch (error) {
+      logger.failure('WORKER', 'Search by type failed', {}, error as Error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  }
+
+  /**
+   * Get recent context (summaries and observations for a project)
+   * GET /api/context/recent?project=...&limit=3
+   */
+  private handleGetRecentContext(req: Request, res: Response): void {
+    try {
+      const project = (req.query.project as string) || path.basename(process.cwd());
+      const limit = parseInt(req.query.limit as string, 10) || 3;
+
+      const sessionStore = this.dbManager.getSessionStore();
+      const sessions = sessionStore.getRecentSessionsWithStatus(project, limit);
+
+      const contextData = sessions.map(session => {
+        const summary = session.has_summary && session.sdk_session_id
+          ? sessionStore.getSummaryForSession(session.sdk_session_id)
+          : null;
+
+        const observations = session.sdk_session_id
+          ? sessionStore.getObservationsForSession(session.sdk_session_id)
+          : [];
+
+        return {
+          session_id: session.id,
+          sdk_session_id: session.sdk_session_id,
+          project: session.project,
+          status: session.status,
+          has_summary: session.has_summary,
+          summary,
+          observations: observations.map(o => ({
+            id: o.id,
+            type: o.type,
+            title: o.title,
+            subtitle: o.subtitle,
+            created_at_epoch: o.created_at_epoch
+          })),
+          created_at_epoch: session.started_at_epoch
+        };
+      });
+
+      res.json({
+        project,
+        limit,
+        count: contextData.length,
+        sessions: contextData
+      });
+    } catch (error) {
+      logger.failure('WORKER', 'Get recent context failed', {}, error as Error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  }
+
+  /**
+   * Get context timeline around an anchor point
+   * GET /api/context/timeline?anchor=123&depth_before=10&depth_after=10&project=...
+   */
+  private handleGetContextTimeline(req: Request, res: Response): void {
+    try {
+      const anchor = req.query.anchor as string;
+      const depthBefore = parseInt(req.query.depth_before as string, 10) || 10;
+      const depthAfter = parseInt(req.query.depth_after as string, 10) || 10;
+      const project = req.query.project as string | undefined;
+
+      if (!anchor) {
+        res.status(400).json({ error: 'Missing required parameter: anchor' });
+        return;
+      }
+
+      const sessionStore = this.dbManager.getSessionStore();
+      let timeline;
+
+      // Check if anchor is a number (observation ID)
+      if (/^\d+$/.test(anchor)) {
+        const obsId = parseInt(anchor, 10);
+        const obs = sessionStore.getObservationById(obsId);
+        if (!obs) {
+          res.status(404).json({ error: `Observation #${obsId} not found` });
+          return;
+        }
+        timeline = sessionStore.getTimelineAroundObservation(obsId, obs.created_at_epoch, depthBefore, depthAfter, project);
+      } else if (anchor.startsWith('S') || anchor.startsWith('#S')) {
+        // Session ID
+        const sessionId = anchor.replace(/^#?S/, '');
+        const sessionNum = parseInt(sessionId, 10);
+        const sessions = sessionStore.getSessionSummariesByIds([sessionNum]);
+        if (sessions.length === 0) {
+          res.status(404).json({ error: `Session #${sessionNum} not found` });
+          return;
+        }
+        timeline = sessionStore.getTimelineAroundTimestamp(sessions[0].created_at_epoch, depthBefore, depthAfter, project);
+      } else {
+        // ISO timestamp
+        const date = new Date(anchor);
+        if (isNaN(date.getTime())) {
+          res.status(400).json({ error: `Invalid timestamp: ${anchor}` });
+          return;
+        }
+        timeline = sessionStore.getTimelineAroundTimestamp(date.getTime(), depthBefore, depthAfter, project);
+      }
+
+      res.json({
+        anchor,
+        depth_before: depthBefore,
+        depth_after: depthAfter,
+        project,
+        timeline
+      });
+    } catch (error) {
+      logger.failure('WORKER', 'Get context timeline failed', {}, error as Error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  }
+
+  /**
+   * Get timeline by query (search first, then get timeline around best match)
+   * GET /api/timeline/by-query?query=...&mode=auto&depth_before=10&depth_after=10
+   */
+  private handleGetTimelineByQuery(req: Request, res: Response): void {
+    try {
+      const query = req.query.query as string;
+      const mode = (req.query.mode as string) || 'auto';
+      const depthBefore = parseInt(req.query.depth_before as string, 10) || 10;
+      const depthAfter = parseInt(req.query.depth_after as string, 10) || 10;
+      const project = req.query.project as string | undefined;
+
+      if (!query) {
+        res.status(400).json({ error: 'Missing required parameter: query' });
+        return;
+      }
+
+      const sessionSearch = this.dbManager.getSessionSearch();
+      const sessionStore = this.dbManager.getSessionStore();
+
+      // Search based on mode
+      let bestMatch: any = null;
+      let searchResults: any = null;
+
+      if (mode === 'observations' || mode === 'auto') {
+        const obsResults = sessionSearch.searchObservations(query, { limit: 1, project });
+        if (obsResults.length > 0) {
+          bestMatch = obsResults[0];
+          searchResults = { type: 'observation', results: obsResults };
+        }
+      }
+
+      if (!bestMatch && (mode === 'sessions' || mode === 'auto')) {
+        const sessionResults = sessionSearch.searchSessions(query, { limit: 1 });
+        if (sessionResults.length > 0) {
+          bestMatch = sessionResults[0];
+          searchResults = { type: 'session', results: sessionResults };
+        }
+      }
+
+      if (!bestMatch) {
+        res.json({
+          query,
+          mode,
+          match: null,
+          timeline: null,
+          message: 'No matches found for query'
+        });
+        return;
+      }
+
+      // Get timeline around best match
+      const timeline = searchResults.type === 'observation'
+        ? sessionStore.getTimelineAroundObservation(bestMatch.id, bestMatch.created_at_epoch, depthBefore, depthAfter, project)
+        : sessionStore.getTimelineAroundTimestamp(bestMatch.created_at_epoch, depthBefore, depthAfter, project);
+
+      res.json({
+        query,
+        mode,
+        match: {
+          type: searchResults.type,
+          id: bestMatch.id,
+          title: bestMatch.title || bestMatch.request,
+          score: bestMatch.score,
+          created_at_epoch: bestMatch.created_at_epoch
+        },
+        depth_before: depthBefore,
+        depth_after: depthAfter,
+        timeline
+      });
+    } catch (error) {
+      logger.failure('WORKER', 'Get timeline by query failed', {}, error as Error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  }
+
+  /**
+   * Get search help documentation
+   * GET /api/search/help
+   */
+  private handleSearchHelp(req: Request, res: Response): void {
+    res.json({
+      title: 'Claude-Mem Search API',
+      description: 'HTTP API for searching persistent memory',
+      endpoints: [
+        {
+          path: '/api/search/observations',
+          method: 'GET',
+          description: 'Search observations using full-text search',
+          parameters: {
+            query: 'Search query (required)',
+            format: 'Response format: "index" or "full" (default: "full")',
+            limit: 'Number of results (default: 20)',
+            project: 'Filter by project name (optional)'
+          }
+        },
+        {
+          path: '/api/search/sessions',
+          method: 'GET',
+          description: 'Search session summaries using full-text search',
+          parameters: {
+            query: 'Search query (required)',
+            format: 'Response format: "index" or "full" (default: "full")',
+            limit: 'Number of results (default: 20)'
+          }
+        },
+        {
+          path: '/api/search/prompts',
+          method: 'GET',
+          description: 'Search user prompts using full-text search',
+          parameters: {
+            query: 'Search query (required)',
+            format: 'Response format: "index" or "full" (default: "full")',
+            limit: 'Number of results (default: 20)',
+            project: 'Filter by project name (optional)'
+          }
+        },
+        {
+          path: '/api/search/by-concept',
+          method: 'GET',
+          description: 'Find observations by concept tag',
+          parameters: {
+            concept: 'Concept tag (required): discovery, decision, bugfix, feature, refactor',
+            format: 'Response format: "index" or "full" (default: "full")',
+            limit: 'Number of results (default: 10)',
+            project: 'Filter by project name (optional)'
+          }
+        },
+        {
+          path: '/api/search/by-file',
+          method: 'GET',
+          description: 'Find observations and sessions by file path',
+          parameters: {
+            filePath: 'File path or partial path (required)',
+            format: 'Response format: "index" or "full" (default: "full")',
+            limit: 'Number of results per type (default: 10)',
+            project: 'Filter by project name (optional)'
+          }
+        },
+        {
+          path: '/api/search/by-type',
+          method: 'GET',
+          description: 'Find observations by type',
+          parameters: {
+            type: 'Observation type (required): discovery, decision, bugfix, feature, refactor',
+            format: 'Response format: "index" or "full" (default: "full")',
+            limit: 'Number of results (default: 10)',
+            project: 'Filter by project name (optional)'
+          }
+        },
+        {
+          path: '/api/context/recent',
+          method: 'GET',
+          description: 'Get recent session context including summaries and observations',
+          parameters: {
+            project: 'Project name (default: current directory)',
+            limit: 'Number of recent sessions (default: 3)'
+          }
+        },
+        {
+          path: '/api/context/timeline',
+          method: 'GET',
+          description: 'Get unified timeline around a specific point in time',
+          parameters: {
+            anchor: 'Anchor point: observation ID, session ID (e.g., "S123"), or ISO timestamp (required)',
+            depth_before: 'Number of records before anchor (default: 10)',
+            depth_after: 'Number of records after anchor (default: 10)',
+            project: 'Filter by project name (optional)'
+          }
+        },
+        {
+          path: '/api/timeline/by-query',
+          method: 'GET',
+          description: 'Search for best match, then get timeline around it',
+          parameters: {
+            query: 'Search query (required)',
+            mode: 'Search mode: "auto", "observations", or "sessions" (default: "auto")',
+            depth_before: 'Number of records before match (default: 10)',
+            depth_after: 'Number of records after match (default: 10)',
+            project: 'Filter by project name (optional)'
+          }
+        },
+        {
+          path: '/api/search/help',
+          method: 'GET',
+          description: 'Get this help documentation'
+        }
+      ],
+      examples: [
+        'curl "http://localhost:37777/api/search/observations?query=authentication&format=index&limit=5"',
+        'curl "http://localhost:37777/api/search/by-type?type=bugfix&limit=10"',
+        'curl "http://localhost:37777/api/context/recent?project=claude-mem&limit=3"',
+        'curl "http://localhost:37777/api/context/timeline?anchor=123&depth_before=5&depth_after=5"'
+      ]
+    });
   }
 }
 
