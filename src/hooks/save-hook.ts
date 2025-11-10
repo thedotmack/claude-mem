@@ -31,7 +31,7 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
     throw new Error('saveHook requires input');
   }
 
-  const { session_id, tool_name, tool_input, tool_response } = input;
+  const { session_id, cwd, tool_name, tool_input, tool_response } = input;
 
   if (SKIP_TOOLS.has(tool_name)) {
     console.log(createHookResponse('PostToolUse', true));
@@ -65,7 +65,8 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
         tool_name,
         tool_input: tool_input !== undefined ? JSON.stringify(tool_input) : '{}',
         tool_response: tool_response !== undefined ? JSON.stringify(tool_response) : '{}',
-        prompt_number: promptNumber
+        prompt_number: promptNumber,
+        cwd: cwd || ''
       }),
       signal: AbortSignal.timeout(2000)
     });
