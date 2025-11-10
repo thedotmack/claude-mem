@@ -17,7 +17,7 @@
     <img src="https://img.shields.io/badge/License-AGPL%203.0-blue.svg" alt="License">
   </a>
   <a href="package.json">
-    <img src="https://img.shields.io/badge/version-5.1.2-green.svg" alt="Version">
+    <img src="https://img.shields.io/badge/version-5.4.0-green.svg" alt="Version">
   </a>
   <a href="package.json">
     <img src="https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg" alt="Node">
@@ -69,7 +69,7 @@ Restart Claude Code. Context from previous sessions will automatically appear in
 
 - 🧠 **Persistent Memory** - Context survives across sessions
 - 📊 **Progressive Disclosure** - Layered memory retrieval with token cost visibility
-- 🔍 **9 Search Tools** - Query your project history via MCP
+- 🔍 **Skill-Based Search** - Query your project history with natural language (~2,250 token savings)
 - 🖥️ **Web Viewer UI** - Real-time memory stream at http://localhost:37777
 - 🤖 **Automatic Operation** - No manual intervention required
 - 🔗 **Citations** - Reference past decisions with `claude-mem://` URIs
@@ -91,7 +91,7 @@ npx mintlify dev
 
 - **[Installation Guide](docs/installation.mdx)** - Quick start & advanced installation
 - **[Usage Guide](docs/usage/getting-started.mdx)** - How Claude-Mem works automatically
-- **[MCP Search Tools](docs/usage/search-tools.mdx)** - Query your project history
+- **[Search Tools](docs/usage/search-tools.mdx)** - Query your project history with natural language
 
 ### Best Practices
 
@@ -144,73 +144,83 @@ npx mintlify dev
 **Core Components:**
 
 1. **7 Lifecycle Hook Scripts** - smart-install, context-hook, user-message-hook, new-hook, save-hook, summary-hook, cleanup-hook
-2. **Worker Service** - HTTP API on port 37777 with web viewer UI, managed by PM2
+2. **Worker Service** - HTTP API on port 37777 with web viewer UI and 10 search endpoints, managed by PM2
 3. **SQLite Database** - Stores sessions, observations, summaries with FTS5 full-text search
-4. **9 MCP Search Tools** - Query historical context with citations and timeline analysis
+4. **Search Skill** - Natural language queries with progressive disclosure (~2,250 token savings vs MCP)
 5. **Chroma Vector Database** - Hybrid semantic + keyword search for intelligent context retrieval
 
 See [Architecture Overview](docs/architecture/overview.mdx) for details.
 
 ---
 
-## MCP Search Tools
+## Skill-Based Search
 
-Claude-Mem provides 9 specialized search tools:
+Claude-Mem provides intelligent search through a skill that auto-invokes when you ask about past work:
 
-1. **search_observations** - Full-text search across observations
-2. **search_sessions** - Full-text search across session summaries
-3. **search_user_prompts** - Search raw user requests
-4. **find_by_concept** - Find by concept tags (discovery, problem-solution, pattern, etc.)
-5. **find_by_file** - Find observations referencing specific files
-6. **find_by_type** - Find by type (decision, bugfix, feature, refactor, discovery, change)
-7. **get_recent_context** - Get recent session context for a project
-8. **get_context_timeline** - Get unified timeline of context around a specific point in time
-9. **get_timeline_by_query** - Search for observations and get timeline context around best match
+**How It Works:**
+- Just ask naturally: *"What did we do last session?"* or *"Did we fix this bug before?"*
+- Claude automatically invokes the search skill to find relevant context
+- ~2,250 token savings per session start vs MCP approach
 
-**Example Queries:**
+**Available Search Operations:**
+
+1. **Search Observations** - Full-text search across observations
+2. **Search Sessions** - Full-text search across session summaries
+3. **Search Prompts** - Search raw user requests
+4. **By Concept** - Find by concept tags (discovery, problem-solution, pattern, etc.)
+5. **By File** - Find observations referencing specific files
+6. **By Type** - Find by type (decision, bugfix, feature, refactor, discovery, change)
+7. **Recent Context** - Get recent session context for a project
+8. **Timeline** - Get unified timeline of context around a specific point in time
+9. **Timeline by Query** - Search for observations and get timeline context around best match
+10. **API Help** - Get search API documentation
+
+**Example Natural Language Queries:**
 
 ```
-search_observations with query="authentication" and type="decision"
-find_by_file with filePath="worker-service.ts"
-search_user_prompts with query="add dark mode"
-get_recent_context with limit=5
-get_context_timeline with anchor="S890" depth_before=10 depth_after=10
-get_timeline_by_query with query="viewer UI implementation" mode="auto"
+"What bugs did we fix last session?"
+"How did we implement authentication?"
+"What changes were made to worker-service.ts?"
+"Show me recent work on this project"
+"What was happening when we added the viewer UI?"
 ```
 
-See [MCP Search Tools Guide](docs/usage/search-tools.mdx) for detailed examples.
+See [Search Tools Guide](docs/usage/search-tools.mdx) for detailed examples.
 
 ---
 
-## What's New in v5.1.2
+## What's New in v5.4.0
+
+**🔍 Skill-Based Search Architecture (v5.4.0):**
+
+- **Token Savings**: ~2,250 tokens per session start
+- **Progressive Disclosure**: Skill frontmatter (~250 tokens) vs MCP tool definitions (~2,500 tokens)
+- **Natural Language**: Just ask about past work - Claude auto-invokes the search skill
+- **10 HTTP API Endpoints**: Fast, efficient search operations
+- **No User Action Required**: Migration is transparent
 
 **🎨 Theme Toggle (v5.1.2):**
 
 - Light/dark mode support in viewer UI
 - System preference detection
 - Persistent theme settings across sessions
-- Smooth transitions between themes
 
 **🖥️ Web-Based Viewer UI (v5.1.0):**
 
 - Real-time memory stream visualization at http://localhost:37777
 - Server-Sent Events (SSE) for instant updates
-- Infinite scroll pagination with automatic deduplication
-- Project filtering to focus on specific codebases
-- Settings persistence (sidebar state, selected project)
-- Auto-reconnection with exponential backoff
+- Infinite scroll pagination with project filtering
 
 **⚡ Smart Install Caching (v5.0.3):**
 
-- Eliminated redundant npm installs on every session (2-5s → 10ms)
-- Caches version in `.install-version` file
-- Only runs npm install when needed (first time, version change, missing deps)
+- Eliminated redundant npm installs (2-5s → 10ms)
+- Caches version state, only installs when needed
 
 **🔍 Hybrid Search Architecture (v5.0.0):**
 
 - Chroma vector database for semantic search
 - Combined with FTS5 keyword search
-- Intelligent context retrieval with 90-day recency filtering
+- 90-day recency filtering
 
 See [CHANGELOG.md](CHANGELOG.md) for complete version history.
 

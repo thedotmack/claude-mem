@@ -1,0 +1,440 @@
+---
+title: "Search Architecture"
+description: "Skill-based search with HTTP API and progressive disclosure"
+---
+
+# Search Architecture
+
+Claude-Mem uses a skill-based search architecture that provides intelligent memory retrieval through natural language queries. This replaced the MCP-based approach in v5.4.0, saving ~2,250 tokens per session start.
+
+## Overview
+
+**Architecture**: Skill-Based Search + HTTP API + Progressive Disclosure
+
+**Key Components**:
+1. **Search Skill** (`plugin/skills/search/SKILL.md`) - Auto-invoked when users ask about past work
+2. **HTTP API Endpoints** (10 routes) - Fast, efficient search operations on port 37777
+3. **Worker Service** - Express.js server with FTS5 full-text search
+4. **SQLite Database** - Persistent storage with FTS5 virtual tables
+5. **Chroma Vector DB** - Semantic search with hybrid retrieval
+
+## How It Works
+
+### 1. User Query (Natural Language)
+
+```
+User: "What bugs did we fix last session?"
+```
+
+### 2. Skill Invocation
+
+Claude recognizes the intent and invokes the search skill:
+- Skill frontmatter (~250 tokens) loaded at session start
+- Full skill instructions loaded on-demand when skill is invoked
+- Progressive disclosure pattern minimizes context overhead
+
+### 3. HTTP API Call
+
+The skill uses `curl` to call the HTTP API:
+
+```bash
+curl "http://localhost:37777/api/search/observations?query=bugs&type=bugfix&limit=5"
+```
+
+### 4. FTS5 Search
+
+Worker service queries SQLite FTS5 virtual tables:
+
+```sql
+SELECT * FROM observations_fts
+WHERE observations_fts MATCH ?
+AND type = 'bugfix'
+ORDER BY rank
+LIMIT 5
+```
+
+### 5. Results Formatted
+
+Skill formats results and returns to Claude:
+
+```
+## Recent Bugfixes
+
+1. [bugfix] Fixed authentication token expiry
+   Date: 2025-11-08 14:23:45
+   Files: src/auth/jwt.ts
+
+2. [bugfix] Resolved database connection leak
+   Date: 2025-11-08 13:15:22
+   Files: src/services/database.ts
+```
+
+### 6. User Sees Answer
+
+Claude presents the formatted results naturally in conversation.
+
+## Architecture Change (v5.4.0)
+
+### Before: MCP-Based Search
+
+**Approach**: 9 MCP tools registered at session start
+
+**Token Cost**: ~2,500 tokens in tool definitions per session
+- Each tool's schema, parameters, descriptions loaded
+- All 9 tools available whether needed or not
+- No progressive disclosure
+
+**Example MCP Tool**:
+```json
+{
+  "name": "search_observations",
+  "description": "Full-text search across observations...",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "query": { "type": "string", "description": "..." },
+      "type": { "type": "array", "items": { "enum": [...] } },
+      "format": { "enum": ["index", "full"] },
+      // ... many more parameters
+    }
+  }
+}
+```
+
+### After: Skill-Based Search
+
+**Approach**: 1 search skill with progressive disclosure
+
+**Token Cost**: ~250 tokens in skill frontmatter per session
+- Only skill description loaded at session start
+- Full instructions loaded on-demand when skill is invoked
+- HTTP API endpoints instead of MCP protocol
+
+**Example Skill Frontmatter**:
+```markdown
+# Claude-Mem Search Skill
+
+Access claude-mem's persistent memory through a comprehensive HTTP API.
+Search for past work, understand context, and learn from previous decisions.
+
+## When to Use This Skill
+
+Invoke this skill when users ask about:
+- Past work: "What did we do last session?"
+- Bug fixes: "Did we fix this before?"
+- Features: "How did we implement authentication?"
+...
+```
+
+**Token Savings**: ~2,250 tokens per session start (90% reduction)
+
+## HTTP API Endpoints
+
+The worker service exposes 10 search endpoints:
+
+### Full-Text Search
+
+```
+GET /api/search/observations
+GET /api/search/sessions
+GET /api/search/prompts
+```
+
+**Parameters**:
+- `query` - FTS5 search query (required)
+- `type` - Filter by type (bugfix, feature, refactor, etc.)
+- `project` - Filter by project name
+- `limit` - Maximum results (default: 20)
+- `offset` - Pagination offset
+- `format` - Response format (index or full)
+
+**Example**:
+```bash
+curl "http://localhost:37777/api/search/observations?query=authentication&type=decision&limit=5"
+```
+
+### Filtered Search
+
+```
+GET /api/search/by-type
+GET /api/search/by-concept
+GET /api/search/by-file
+```
+
+**Parameters**:
+- `type` / `concept` / `filePath` - Filter criteria (required)
+- `project` - Filter by project
+- `limit` - Maximum results
+- `format` - Response format
+
+**Example**:
+```bash
+curl "http://localhost:37777/api/search/by-file?filePath=worker-service.ts&limit=10"
+```
+
+### Context Retrieval
+
+```
+GET /api/context/recent
+GET /api/context/timeline
+GET /api/timeline/by-query
+```
+
+**Parameters**:
+- `project` - Filter by project
+- `limit` - Number of sessions/records
+- `anchor` - Timeline anchor point (ID or timestamp)
+- `depth_before` - Records before anchor
+- `depth_after` - Records after anchor
+
+**Example**:
+```bash
+curl "http://localhost:37777/api/context/recent?project=claude-mem&limit=5"
+```
+
+### Documentation
+
+```
+GET /api/search/help
+```
+
+Returns API documentation in JSON format.
+
+## Progressive Disclosure Pattern
+
+The search skill uses progressive disclosure to minimize token usage:
+
+### Layer 1: Skill Frontmatter (Session Start)
+
+**What's Loaded**: Skill description and when to use it (~250 tokens)
+
+**Purpose**: Claude can recognize when to invoke the skill
+
+**Example**:
+```markdown
+# Claude-Mem Search Skill
+
+Access claude-mem's persistent memory through a comprehensive HTTP API.
+
+## When to Use This Skill
+Invoke this skill when users ask about:
+- Past work: "What did we do last session?"
+- Bug fixes: "Did we fix this before?"
+...
+```
+
+### Layer 2: Full Skill Instructions (On-Demand)
+
+**What's Loaded**: Complete operation documentation (~2,500 tokens)
+
+**Purpose**: Detailed instructions for each search operation
+
+**When Loaded**: Only when Claude invokes the skill
+
+**Example Structure**:
+```
+/skills/search/
+├── SKILL.md (main frontmatter)
+├── operations/
+│   ├── observations.md (detailed instructions)
+│   ├── sessions.md
+│   ├── prompts.md
+│   ├── by-type.md
+│   ├── by-concept.md
+│   ├── by-file.md
+│   ├── recent-context.md
+│   ├── timeline.md
+│   ├── timeline-by-query.md
+│   ├── help.md
+│   ├── formatting.md
+│   └── common-workflows.md
+```
+
+### Layer 3: API Response
+
+**What's Returned**: Search results in requested format
+
+**Format Options**:
+- `index` - Titles, dates, IDs only (~50-100 tokens per result)
+- `full` - Complete details (~500-1000 tokens per result)
+
+**Progressive Usage**: Start with `index`, drill down with `full` as needed
+
+## Implementation Details
+
+### Search Skill Structure
+
+```
+plugin/skills/search/
+├── SKILL.md                           # Main frontmatter (~250 tokens)
+├── operations/
+│   ├── observations.md                # Search observations
+│   ├── sessions.md                    # Search sessions
+│   ├── prompts.md                     # Search prompts
+│   ├── by-type.md                     # Filter by type
+│   ├── by-concept.md                  # Filter by concept
+│   ├── by-file.md                     # Filter by file
+│   ├── recent-context.md              # Get recent context
+│   ├── timeline.md                    # Timeline around point
+│   ├── timeline-by-query.md           # Search + timeline
+│   ├── help.md                        # API documentation
+│   ├── formatting.md                  # Result formatting guide
+│   └── common-workflows.md            # Usage patterns
+```
+
+### Worker Service Integration
+
+**File**: `src/services/worker-service.ts`
+
+**Search Routes**:
+```typescript
+// Full-text search
+app.get('/api/search/observations', handleSearchObservations);
+app.get('/api/search/sessions', handleSearchSessions);
+app.get('/api/search/prompts', handleSearchPrompts);
+
+// Filtered search
+app.get('/api/search/by-type', handleSearchByType);
+app.get('/api/search/by-concept', handleSearchByConcept);
+app.get('/api/search/by-file', handleSearchByFile);
+
+// Context retrieval
+app.get('/api/context/recent', handleRecentContext);
+app.get('/api/context/timeline', handleTimeline);
+app.get('/api/timeline/by-query', handleTimelineByQuery);
+
+// Documentation
+app.get('/api/search/help', handleHelp);
+```
+
+**Database Access**:
+- Uses `SessionSearch` service for FTS5 queries
+- Uses `SessionStore` for structured queries
+- Hybrid search with ChromaDB for semantic similarity
+
+### Security
+
+**FTS5 Injection Prevention** (v4.2.3):
+```typescript
+function escapeFTS5Query(query: string): string {
+  return query.replace(/"/g, '""');
+}
+```
+
+All user-provided search queries are properly escaped to prevent SQL injection.
+
+**Comprehensive Testing**: 332 injection attack tests covering:
+- Special characters
+- SQL keywords
+- Quote escaping
+- Boolean operators
+
+## Benefits
+
+### 1. Token Efficiency
+
+**Before (MCP)**:
+- Session start: ~2,500 tokens for tool definitions
+- Every session pays this cost
+- No progressive disclosure
+
+**After (Skill)**:
+- Session start: ~250 tokens for skill frontmatter
+- Full instructions: ~2,500 tokens (only when invoked)
+- Net savings: ~2,250 tokens per session (~90% reduction)
+
+### 2. Natural Language Interface
+
+**Before**: Users needed to learn MCP tool syntax
+```
+search_observations with query="authentication" and type="decision"
+```
+
+**After**: Users ask naturally
+```
+"What decisions did we make about authentication?"
+```
+
+Claude translates to appropriate API call.
+
+### 3. Flexibility
+
+**HTTP API Benefits**:
+- Can be called from skills, MCP tools, or other clients
+- Easy to test with curl
+- Standard REST conventions
+- JSON responses
+
+**Progressive Disclosure**:
+- Loads only what's needed
+- Can add more operations without increasing base cost
+- Documentation co-located with operations
+
+### 4. Performance
+
+**Fast Queries**: FTS5 full-text search <10ms for typical queries
+
+**Caching**: HTTP layer allows response caching
+
+**Pagination**: Efficient result pagination with offset/limit
+
+## Migration Notes
+
+### For Users
+
+**No Action Required**: The migration from MCP to skill-based search is transparent.
+
+**Same Questions Work**: Natural language queries work exactly the same way.
+
+**Invisible Change**: Users won't notice any difference except better performance.
+
+### For Developers
+
+**Deprecated**: MCP search server (`src/servers/search-server.ts`)
+- Source file kept for reference
+- No longer built or registered
+- MCP configuration removed from `plugin/.mcp.json`
+
+**New Implementation**: Skill-based search
+- Skill files: `plugin/skills/search/`
+- HTTP endpoints: `src/services/worker-service.ts` (lines 200-400)
+- Build script: `npm run build` includes skill files
+- Sync script: `npm run sync-marketplace` copies to plugin directory
+
+## Troubleshooting
+
+### Worker Service Not Running
+
+If searches fail, check worker service:
+
+```bash
+pm2 list                    # Check status
+npm run worker:restart      # Restart worker
+npm run worker:logs         # View logs
+```
+
+### HTTP Endpoints Not Responding
+
+Test endpoints directly:
+
+```bash
+# Health check
+curl http://localhost:37777/health
+
+# Search test
+curl "http://localhost:37777/api/search/observations?query=test&limit=1"
+```
+
+### Skill Not Invoking
+
+If Claude doesn't invoke the skill:
+
+1. Check skill files exist: `ls ~/.claude/plugins/marketplaces/thedotmack/plugin/skills/search/`
+2. Restart Claude Code session
+3. Try explicit skill invocation: `/skill search`
+
+## Next Steps
+
+- [Search Tools Usage](/usage/search-tools) - User guide with examples
+- [Worker Service Architecture](/architecture/worker-service) - HTTP API details
+- [Database Schema](/architecture/database) - FTS5 tables and indexes

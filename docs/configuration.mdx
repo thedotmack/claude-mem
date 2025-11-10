@@ -137,22 +137,19 @@ Hooks are configured in `plugin/hooks/hooks.json`:
 }
 ```
 
-### MCP Server Configuration
+### Search Configuration (v5.4.0+)
 
-The MCP search server is configured in `plugin/.mcp.json`:
+**Migration Note**: As of v5.4.0, Claude-Mem uses skill-based search instead of MCP tools.
 
-```json
-{
-  "mcpServers": {
-    "claude-mem-search": {
-      "type": "stdio",
-      "command": "${CLAUDE_PLUGIN_ROOT}/scripts/search-server.mjs"
-    }
-  }
-}
-```
+**Previous (v5.3.x and earlier)**: MCP search server with 9 tools (~2,500 tokens per session)
+**Current (v5.4.0+)**: Search skill with HTTP API (~250 tokens per session)
 
-This registers the `claude-mem-search` server with Claude Code, making the 9 search tools available in all sessions.
+**No configuration required** - the search skill is automatically available in Claude Code sessions.
+
+Search operations are now provided via:
+- **Skill**: `plugin/skills/search/SKILL.md` (auto-invoked when users ask about past work)
+- **HTTP API**: 10 endpoints on worker service port 37777
+- **Progressive Disclosure**: Full instructions loaded on-demand only when needed
 
 ## PM2 Configuration
 

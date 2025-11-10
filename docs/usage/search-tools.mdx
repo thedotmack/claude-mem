@@ -1,320 +1,221 @@
 ---
-title: "MCP Search Tools"
-description: "Query your project history with 9 specialized search tools"
+title: "Skill-Based Search"
+description: "Query your project history with natural language"
 ---
 
-# MCP Search Tools Usage
+# Skill-Based Search Usage
 
-Once claude-mem is installed as a plugin, 9 search tools become available in your Claude Code sessions for querying project history.
+Once claude-mem is installed as a plugin, you can search your project history using natural language. Claude automatically invokes the search skill when you ask about past work.
+
+## How It Works
+
+**v5.4.0 Migration**: Claude-Mem now uses a skill-based search architecture instead of MCP tools, saving ~2,250 tokens per session start through progressive disclosure.
+
+**Simple Usage:**
+- Just ask naturally: *"What did we do last session?"*
+- Claude recognizes the intent and invokes the search skill
+- The skill uses HTTP API endpoints to query your memory
+- Results are formatted and presented to you
+
+**Benefits:**
+- **Token Efficient**: ~250 tokens (skill frontmatter) vs ~2,500 tokens (MCP tool definitions)
+- **Natural Language**: No need to learn specific tool syntax
+- **Progressive Disclosure**: Only loads detailed instructions when needed
+- **Auto-Invoked**: Claude knows when to search based on your questions
 
 ## Quick Reference
 
-| Tool                    | Purpose                                      |
+| Operation               | Purpose                                      |
 |-------------------------|----------------------------------------------|
-| search_observations     | Full-text search across observations         |
-| search_sessions         | Full-text search across session summaries    |
-| search_user_prompts     | Full-text search across raw user prompts     |
-| find_by_concept         | Find observations tagged with concepts       |
-| find_by_file            | Find observations referencing files          |
-| find_by_type            | Find observations by type                    |
-| get_recent_context      | Get recent session context                   |
-| get_context_timeline    | Get unified timeline around a specific point |
-| get_timeline_by_query   | Search and get timeline context in one step  |
+| Search Observations     | Full-text search across observations         |
+| Search Sessions         | Full-text search across session summaries    |
+| Search Prompts          | Full-text search across raw user prompts     |
+| By Concept              | Find observations tagged with concepts       |
+| By File                 | Find observations referencing files          |
+| By Type                 | Find observations by type                    |
+| Recent Context          | Get recent session context                   |
+| Timeline                | Get unified timeline around a specific point |
+| Timeline by Query       | Search and get timeline context in one step  |
+| API Help                | Get search API documentation                 |
 
 ## Example Queries
 
-### search_observations
+### Natural Language Queries
 
-Find all decisions about the build system:
+**Search Observations:**
 ```
-Use search_observations to find all decisions about the build system
-```
-
-Find bugs related to authentication:
-```
-search_observations with query="authentication" and type="bugfix"
+"What bugs did we fix related to authentication?"
+"Show me all decisions about the build system"
+"Find refactoring work on the database"
 ```
 
-Search for refactoring work:
+**Search Sessions:**
 ```
-search_observations with query="refactor database" and type="refactor"
-```
-
-### search_sessions
-
-Find what we learned about hooks:
-```
-Use search_sessions to find what we learned about hooks
+"What did we learn about hooks?"
+"What was accomplished in the API implementation?"
+"Show me recent work on this project"
 ```
 
-Search for completed work on the API:
+**Search Prompts:**
 ```
-search_sessions with query="API implementation"
-```
-
-### search_user_prompts
-
-Find when user asked about authentication:
-```
-search_user_prompts with query="authentication feature"
+"When did I ask about authentication features?"
+"Find all my requests about dark mode"
 ```
 
-Trace user requests for a specific feature:
+**Note**: Claude automatically translates your natural language queries into the appropriate search operations.
+
+### Search by File
+
 ```
-search_user_prompts with query="dark mode"
+"Show me everything related to worker-service.ts"
+"What changes were made to migrations.ts?"
+"Find all work on the database file"
 ```
 
-**Benefits**:
-- See exactly what the user asked for (vs what was implemented)
-- Detect patterns in repeated requests
-- Debug miscommunications between user intent and implementation
+### Search by Concept
 
-### find_by_file
-
-Show everything related to worker-service.ts:
 ```
-Use find_by_file to show me everything related to worker-service.ts
+"Show observations tagged with architecture"
+"Find all security-related observations"
+"What patterns have we used?"
 ```
 
-Find all work on the database migration file:
+### Search by Type
+
 ```
-find_by_file with filePath="migrations.ts"
+"Find all feature implementations"
+"Show me all decisions and discoveries"
+"What bugs have we fixed?"
 ```
 
-### find_by_concept
+### Recent Context
 
-Show observations tagged with 'architecture':
 ```
-Use find_by_concept to show observations tagged with 'architecture'
-```
-
-Find all 'security' related observations:
-```
-find_by_concept with concept="security"
+"Show me what we've been working on"
+"Get context from the last 5 sessions"
+"What happened recently on this project?"
 ```
 
-### find_by_type
+### Timeline Queries
 
-Find all feature implementations:
+**Get timeline around a specific point:**
 ```
-find_by_type with type="feature"
-```
-
-Find all decisions and discoveries:
-```
-find_by_type with type=["decision", "discovery"]
+"What was happening when we implemented authentication?"
+"Show me the context around that bug fix"
+"What led to the decision to refactor the database?"
 ```
 
-### get_recent_context
-
-Get the last 5 sessions for context:
+**Timeline by query:**
 ```
-get_recent_context with limit=5
+"Find when we added the viewer UI and show what happened around that time"
+"Search for authentication work and show the timeline"
 ```
-
-Get recent context for debugging:
-```
-Use get_recent_context to show me what we've been working on
-```
-
-### get_context_timeline
-
-Get a unified timeline of context around a specific point in time. This tool interleaves observations, sessions, and user prompts chronologically to show what was happening before and after a specific moment.
-
-**Anchor by observation ID:**
-```
-get_context_timeline with anchor=12345 and depth_before=10 and depth_after=10
-```
-
-**Anchor by session ID:**
-```
-get_context_timeline with anchor="S123" and depth_before=5 and depth_after=5
-```
-
-**Anchor by ISO timestamp:**
-```
-get_context_timeline with anchor="2025-10-21T14:30:00Z" and depth_before=15 and depth_after=15
-```
-
-**Use cases:**
-- Understand what was happening when a specific observation occurred
-- See the full context around a bug fix or decision
-- Trace the events leading up to and following a specific change
-- View chronological sequence of related work
 
 **Benefits:**
-- All record types (observations, sessions, prompts) in one chronological view
-- Configurable depth before/after anchor point
-- Flexible anchoring by ID or timestamp
 - See the complete narrative arc around key events
-
-### get_timeline_by_query
-
-Search for observations using natural language and get timeline context around the best match. This combines search + timeline into a single operation for faster context discovery.
-
-**Auto mode (default):**
-```
-get_timeline_by_query with query="authentication implementation"
-```
-Automatically uses the top search result as timeline anchor and returns surrounding context.
-
-**Interactive mode:**
-```
-get_timeline_by_query with query="authentication" and mode="interactive" and limit=5
-```
-Shows top 5 search results for you to manually choose which to use as timeline anchor.
-
-**Customize timeline depth:**
-```
-get_timeline_by_query with query="bug fix" and depth_before=20 and depth_after=10
-```
-
-**Use cases:**
-- Quick context discovery: "What was happening when we implemented X?"
-- Investigate issues: Find a bug fix and see what led to it
-- Decision archaeology: Search for a decision and understand the context
-- Feature timeline: See the complete story of a feature implementation
-
-**Benefits:**
-- Single-step operation (no need to search, then timeline separately)
-- Auto mode provides instant context
-- Interactive mode gives you control over anchor selection
-- Natural language search makes it easy to find relevant moments
+- All record types (observations, sessions, prompts) in chronological view
+- Understand what was happening before and after important changes
 
 ## Search Strategy
 
-### 1. Start with Index Format
+The search skill uses a progressive disclosure pattern to efficiently retrieve information:
 
-**Always use index format first** to get an overview:
+### 1. Ask Naturally
 
+Start with a natural language question:
 ```
-search_observations with query="authentication" and format="index"
-```
-
-**Why?**
-- Index format uses ~10x fewer tokens than full format
-- See titles, dates, and sources to identify relevant results
-- Avoid hitting MCP token limits
-
-### 2. Review Results
-
-Look at the index results to identify items of interest:
-
-```
-1. [decision] Implement JWT authentication
-   Date: 2025-10-21 14:23:45
-   Source: claude-mem://observation/123
-
-2. [feature] Add user authentication endpoints
-   Date: 2025-10-21 13:15:22
-   Source: claude-mem://observation/124
-
-3. [bugfix] Fix authentication token expiry
-   Date: 2025-10-20 16:45:30
-   Source: claude-mem://observation/125
+"What bugs did we fix related to authentication?"
 ```
 
-### 3. Deep Dive with Full Format
+### 2. Claude Invokes Search Skill
 
-Only use full format for specific items:
+Claude recognizes your intent and loads the search skill (~250 tokens for skill frontmatter).
 
+### 3. Skill Uses HTTP API
+
+The skill calls the appropriate HTTP endpoint (e.g., `/api/search/observations`) with the query.
+
+### 4. Results Formatted
+
+Results are formatted and presented to you, usually starting with an index/summary format.
+
+### 5. Deep Dive if Needed
+
+If you need more details, ask follow-up questions:
 ```
-search_observations with query="JWT authentication" and format="full" and limit=3
+"Tell me more about observation #123"
+"Show me the full details of that decision"
 ```
 
-### 4. Use Filters to Narrow Results
-
-Combine filters for precise searches:
-
-```
-search_observations with query="authentication" and type="decision" and dateRange={start: "2025-10-20", end: "2025-10-21"}
-```
+**Benefits of This Approach:**
+- **Token Efficient**: Only loads what you need, when you need it
+- **Natural**: No syntax to learn
+- **Progressive**: Start with overview, drill down as needed
+- **Automatic**: Claude handles the search invocation
 
 ## Advanced Filtering
 
+You can refine searches using natural language filters:
+
 ### Date Ranges
 
-Search within specific time periods:
-
-```json
-{
-  "dateRange": {
-    "start": "2025-10-01",
-    "end": "2025-10-31"
-  }
-}
 ```
-
-Or use epoch timestamps:
-
-```json
-{
-  "dateRange": {
-    "start": 1729449600,
-    "end": 1732128000
-  }
-}
+"What bugs did we fix in October?"
+"Show me work from last week"
+"Find decisions made between October 1-31"
 ```
 
 ### Multiple Types
 
-Search across multiple observation types:
-
 ```
-find_by_type with type=["decision", "feature", "refactor"]
-```
-
-### Multiple Concepts
-
-Search observations with specific concepts:
-
-```
-search_observations with query="database" and concepts=["architecture", "performance"]
+"Show me all decisions and features"
+"Find bugfixes and refactorings"
 ```
 
-### File Filtering
-
-Search observations that touched specific files:
+### Concepts
 
 ```
-search_observations with query="refactor" and files="worker-service.ts"
+"Find database work related to architecture and performance"
+"Show security observations"
+```
+
+### File-Specific
+
+```
+"Show refactoring work that touched worker-service.ts"
+"Find changes to auth files"
 ```
 
 ### Project Filtering
 
-Search within specific projects:
-
 ```
-search_observations with query="authentication" and project="my-app"
-```
-
-## FTS5 Query Syntax
-
-The `query` parameter supports SQLite FTS5 full-text search syntax:
-
-### Simple Queries
-```
-"authentication"           # Single word
-"error handling"           # Multiple words (OR)
+"Show authentication work on my-app project"
+"What have we done on this codebase?"
 ```
 
-### Boolean Operators
-```
-"error" AND "handling"     # Both terms required
-"bug" OR "fix"             # Either term
-"bug" NOT "feature"        # First term, not second
-```
+**Note**: Claude translates your natural language into the appropriate API filters automatically.
 
-### Phrase Searches
-```
-"'exact phrase'"           # Exact phrase match
-```
+## Under the Hood: HTTP API
 
-### Column Searches
-```
-title:"authentication"     # Search specific column
-narrative:"bug fix"        # Search narrative field
-```
+The search skill uses HTTP endpoints on the worker service (port 37777):
+
+- `GET /api/search/observations` - Full-text search observations
+- `GET /api/search/sessions` - Full-text search session summaries
+- `GET /api/search/prompts` - Full-text search user prompts
+- `GET /api/search/by-concept` - Find observations by concept tag
+- `GET /api/search/by-file` - Find work related to specific files
+- `GET /api/search/by-type` - Find observations by type
+- `GET /api/context/recent` - Get recent session context
+- `GET /api/context/timeline` - Get timeline around specific point
+- `GET /api/timeline/by-query` - Search + timeline in one call
+- `GET /api/search/help` - API documentation
+
+These endpoints use FTS5 full-text search with support for:
+- Boolean operators (AND, OR, NOT)
+- Phrase searches
+- Column-specific searches
+- Date range filtering
+- Project filtering
 
 ## Result Metadata
 
@@ -441,52 +342,61 @@ search_sessions with query="[YOUR PROJECT NAME]" and orderBy="date_desc"
    sqlite3 ~/.claude-mem/claude-mem.db "SELECT COUNT(*) FROM observations;"
    ```
 
-2. Try broader query:
+2. Try broader natural language query:
    ```
-   search_observations with query="authentication"  # Good
+   "Show me anything about authentication"  # Broader
    vs
-   search_observations with query="'exact JWT authentication implementation'"  # Too specific
+   "Find exact JWT authentication implementation"  # Too specific
    ```
 
-3. Remove filters:
+3. Ask without filters first:
    ```
-   # Start broad
-   search_observations with query="auth"
-
-   # Then add filters
-   search_observations with query="auth" and type="decision"
+   "What do we have about auth?"
+   # Then narrow down
+   "Show me auth-related decisions"
    ```
 
-### Token Limit Errors
+### Worker Service Not Running
 
-1. Use index format:
-   ```
-   search_observations with query="..." and format="index"
-   ```
+If search isn't working, check the worker service:
 
-2. Reduce limit:
-   ```
-   search_observations with query="..." and limit=3
-   ```
+```bash
+pm2 list                    # Check worker status
+npm run worker:restart      # Restart if needed
+npm run worker:logs         # View logs
+```
 
-3. Use pagination:
-   ```
-   # First page
-   search_observations with query="..." and limit=5 and offset=0
+Or use the troubleshooting skill:
+```
+/skill troubleshoot
+```
 
-   # Second page
-   search_observations with query="..." and limit=5 and offset=5
-   ```
+### Performance Issues
 
-### Search Too Slow
+If searches seem slow:
+1. Be more specific in your queries
+2. Ask for recent work (naturally filters by date)
+3. Specify the project you're interested in
+4. Ask for fewer results initially
 
-1. Use more specific queries
-2. Add date range filters
-3. Add type/concept filters
-4. Reduce result limit
+## Technical Details
+
+**Architecture Change (v5.4.0)**:
+- **Before**: 9 MCP tools (~2,500 tokens in tool definitions per session start)
+- **After**: 1 search skill (~250 tokens in frontmatter, full instructions loaded on-demand)
+- **Savings**: ~2,250 tokens per session start
+- **Migration**: Transparent - users don't need to change how they ask questions
+
+**How the Skill Works:**
+1. User asks a question about past work
+2. Claude recognizes the intent matches the search skill description
+3. Skill loads full instructions from `plugin/skills/search/SKILL.md`
+4. Skill uses `curl` to call HTTP API endpoints
+5. Results formatted and returned to Claude
+6. Claude presents results to user
 
 ## Next Steps
 
-- [MCP Search Architecture](/architecture/mcp-search) - Technical details
+- [Architecture Overview](/architecture/overview) - System components
 - [Database Schema](/architecture/database) - Understanding the data
 - [Getting Started](/usage/getting-started) - Automatic operation
