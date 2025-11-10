@@ -329,4 +329,104 @@ describe('SessionSearch FTS5 Injection Tests', () => {
     
     teardownTestDB();
   });
+
+  test('should filter observations by date range using ISO strings', () => {
+    search = setupTestDB();
+    
+    // Insert test data with specific timestamps
+    const db = new Database(TEST_DB_PATH);
+    const now = Date.now();
+    const yesterday = now - (24 * 60 * 60 * 1000);
+    const weekAgo = now - (7 * 24 * 60 * 60 * 1000);
+    
+    db.exec(`
+      INSERT INTO sdk_sessions (claude_session_id, project) VALUES ('test-session-7', 'test-project');
+      INSERT INTO observations (claude_session_id, project, type, title, created_at_epoch)
+      VALUES 
+        ('test-session-7', 'test-project', 'feature', 'Recent feature', ${now}),
+        ('test-session-7', 'test-project', 'bugfix', 'Yesterday bug', ${yesterday}),
+        ('test-session-7', 'test-project', 'feature', 'Old feature', ${weekAgo});
+    `);
+    db.close();
+
+    // Test date range filtering with ISO strings
+    const yesterdayISO = new Date(yesterday).toISOString();
+    const nowISO = new Date(now).toISOString();
+    
+    const results = search.searchObservations('feature', {
+      dateRange: {
+        start: yesterdayISO,
+        end: nowISO
+      }
+    });
+    
+    assert.strictEqual(results.length, 1, 'Should find only 1 feature in date range');
+    assert.strictEqual(results[0].title, 'Recent feature', 'Should find the recent feature');
+    
+    teardownTestDB();
+  });
+
+  test('should filter observations by date range using Unix timestamps', () => {
+    search = setupTestDB();
+    
+    // Insert test data with specific timestamps
+    const db = new Database(TEST_DB_PATH);
+    const now = Date.now();
+    const yesterday = now - (24 * 60 * 60 * 1000);
+    const weekAgo = now - (7 * 24 * 60 * 60 * 1000);
+    
+    db.exec(`
+      INSERT INTO sdk_sessions (claude_session_id, project) VALUES ('test-session-8', 'test-project');
+      INSERT INTO observations (claude_session_id, project, type, title, created_at_epoch)
+      VALUES 
+        ('test-session-8', 'test-project', 'feature', 'Recent feature', ${now}),
+        ('test-session-8', 'test-project', 'bugfix', 'Yesterday bug', ${yesterday}),
+        ('test-session-8', 'test-project', 'feature', 'Old feature', ${weekAgo});
+    `);
+    db.close();
+
+    // Test date range filtering with Unix timestamps
+    const results = search.searchObservations('feature', {
+      dateRange: {
+        start: yesterday,
+        end: now
+      }
+    });
+    
+    assert.strictEqual(results.length, 1, 'Should find only 1 feature in date range');
+    assert.strictEqual(results[0].title, 'Recent feature', 'Should find the recent feature');
+    
+    teardownTestDB();
+  });
+
+  test('should filter by type with date range', () => {
+    search = setupTestDB();
+    
+    // Insert test data
+    const db = new Database(TEST_DB_PATH);
+    const now = Date.now();
+    const yesterday = now - (24 * 60 * 60 * 1000);
+    
+    db.exec(`
+      INSERT INTO sdk_sessions (claude_session_id, project) VALUES ('test-session-9', 'test-project');
+      INSERT INTO observations (claude_session_id, project, type, title, created_at_epoch)
+      VALUES 
+        ('test-session-9', 'test-project', 'bugfix', 'Recent bug', ${now}),
+        ('test-session-9', 'test-project', 'bugfix', 'Old bug', ${yesterday});
+    `);
+    db.close();
+
+    // Test filtering by type with date range
+    const results = search.findByType('bugfix', {
+      dateRange: {
+        start: now - 1000, // Just before now
+        end: now + 1000    // Just after now
+      }
+    });
+    
+    assert.strictEqual(results.length, 1, 'Should find only 1 bugfix in date range');
+    assert.strictEqual(results[0].title, 'Recent bug', 'Should find the recent bug');
+    
+    teardownTestDB();
+  });
 });
