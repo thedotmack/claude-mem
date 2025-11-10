@@ -91,6 +91,7 @@ export class WorkerService {
 
     // Data retrieval
     this.app.get('/api/observations', this.handleGetObservations.bind(this));
+    this.app.get('/api/observations/by-ids', this.handleGetObservationsByIds.bind(this));
     this.app.get('/api/summaries', this.handleGetSummaries.bind(this));
     this.app.get('/api/prompts', this.handleGetPrompts.bind(this));
     this.app.get('/api/stats', this.handleGetStats.bind(this));
@@ -431,6 +432,40 @@ export class WorkerService {
       res.json(result);
     } catch (error) {
       logger.failure('WORKER', 'Get observations failed', {}, error as Error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  }
+
+  /**
+   * Get observations by comma-separated IDs
+   * Example: GET /api/observations/by-ids?ids=5972,5973,5974
+   */
+  private handleGetObservationsByIds(req: Request, res: Response): void {
+    try {
+      const idsParam = req.query.ids as string;
+      if (!idsParam) {
+        res.status(400).json({ error: 'Missing required parameter: ids' });
+        return;
+      }
+
+      // Parse comma-separated IDs
+      const ids = idsParam.split(',').map(id => parseInt(id.trim(), 10)).filter(id => !isNaN(id));
+      if (ids.length === 0) {
+        res.status(400).json({ error: 'No valid IDs provided' });
+        return;
+      }
+
+      // Fetch observations
+      const store = this.dbManager.getSessionStore();
+      const observations = store.getObservationsByIds(ids);
+
+      res.json({
+        observations,
+        count: observations.length,
+        requestedIds: ids
+      });
+    } catch (error) {
+      logger.failure('WORKER', 'Get observations by IDs failed', {}, error as Error);
       res.status(500).json({ error: (error as Error).message });
     }
   }

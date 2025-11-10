@@ -4,32 +4,9 @@
  */
 
 import path from 'path';
-import { homedir } from 'os';
-import { existsSync, readFileSync } from 'fs';
 import { stdin } from 'process';
 import { SessionStore } from '../services/sqlite/SessionStore.js';
-
-/**
- * Get context depth from settings
- * Priority: ~/.claude/settings.json > env var > default
- */
-function getContextDepth(): number {
-  try {
-    const settingsPath = path.join(homedir(), '.claude', 'settings.json');
-    if (existsSync(settingsPath)) {
-      const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
-      if (settings.env?.CLAUDE_MEM_CONTEXT_OBSERVATIONS) {
-        const count = parseInt(settings.env.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10);
-        if (!isNaN(count) && count > 0) {
-          return count;
-        }
-      }
-    }
-  } catch {
-    // Fall through to env var or default
-  }
-  return parseInt(process.env.CLAUDE_MEM_CONTEXT_OBSERVATIONS || '50', 10);
-}
+import { getContextDepth } from '../shared/settings.js';
 
 // Configuration: Read from settings.json or environment
 const DISPLAY_OBSERVATION_COUNT = getContextDepth();
