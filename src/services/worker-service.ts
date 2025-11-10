@@ -14,7 +14,7 @@ import express, { Request, Response } from 'express';
 import cors from 'cors';
 import http from 'http';
 import path from 'path';
-import { readFileSync, writeFileSync, statSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, statSync, existsSync, renameSync } from 'fs';
 import { homedir } from 'os';
 import { getPackageRoot } from '../shared/paths.js';
 import { getWorkerPort } from '../shared/worker-utils.js';
@@ -100,6 +100,10 @@ export class WorkerService {
     // Settings
     this.app.get('/api/settings', this.handleGetSettings.bind(this));
     this.app.post('/api/settings', this.handleUpdateSettings.bind(this));
+
+    // MCP toggle
+    this.app.get('/api/mcp/status', this.handleGetMcpStatus.bind(this));
+    this.app.post('/api/mcp/toggle', this.handleToggleMcp.bind(this));
 
     // Search API endpoints (for skill-based search)
     this.app.get('/api/search/observations', this.handleSearchObservations.bind(this));
@@ -527,8 +531,7 @@ export class WorkerService {
         res.json({
           CLAUDE_MEM_MODEL: 'claude-haiku-4-5',
           CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
-          CLAUDE_MEM_WORKER_PORT: '37777',
-          CLAUDE_MEM_MCP_ENABLED: this.isMcpEnabled()
+          CLAUDE_MEM_WORKER_PORT: '37777'
         });
         return;
       }
@@ -540,8 +543,7 @@ export class WorkerService {
       res.json({
         CLAUDE_MEM_MODEL: env.CLAUDE_MEM_MODEL || 'claude-haiku-4-5',
         CLAUDE_MEM_CONTEXT_OBSERVATIONS: env.CLAUDE_MEM_CONTEXT_OBSERVATIONS || '50',
-        CLAUDE_MEM_WORKER_PORT: env.CLAUDE_MEM_WORKER_PORT || '37777',
-        CLAUDE_MEM_MCP_ENABLED: this.isMcpEnabled()
+        CLAUDE_MEM_WORKER_PORT: env.CLAUDE_MEM_WORKER_PORT || '37777'
       });
     } catch (error) {
       logger.failure('WORKER', 'Get settings failed', {}, error as Error);
@@ -554,7 +556,7 @@ export class WorkerService {
    */
   private handleUpdateSettings(req: Request, res: Response): void {
     try {
-      const { CLAUDE_MEM_MODEL, CLAUDE_MEM_CONTEXT_OBSERVATIONS, CLAUDE_MEM_WORKER_PORT, CLAUDE_MEM_MCP_ENABLED } = req.body;
+      const { CLAUDE_MEM_MODEL, CLAUDE_MEM_CONTEXT_OBSERVATIONS, CLAUDE_MEM_WORKER_PORT } = req.body;
 
       // Validate inputs
       if (CLAUDE_MEM_CONTEXT_OBSERVATIONS) {
@@ -577,11 +579,6 @@ export class WorkerService {
           });
           return;
         }
-      }
-
-      // Handle MCP toggle
-      if (CLAUDE_MEM_MCP_ENABLED !== undefined) {
-        this.toggleMcp(CLAUDE_MEM_MCP_ENABLED);
       }
 
       // Read existing settings
@@ -663,6 +660,44 @@ export class WorkerService {
   }
 
   // ============================================================================
+  // MCP Toggle Handlers
+  // ============================================================================
+
+  /**
+   * GET /api/mcp/status - Check if MCP search server is enabled
+   */
+  private handleGetMcpStatus(req: Request, res: Response): void {
+    try {
+      const enabled = this.isMcpEnabled();
+      res.json({ enabled });
+    } catch (error) {
+      logger.failure('WORKER', 'Get MCP status failed', {}, error as Error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  }
+
+  /**
+   * POST /api/mcp/toggle - Toggle MCP search server on/off
+   * Body: { enabled: boolean }
+   */
+  private handleToggleMcp(req: Request, res: Response): void {
+    try {
+      const { enabled } = req.body;
+
+      if (typeof enabled !== 'boolean') {
+        res.status(400).json({ error: 'enabled must be a boolean' });
+        return;
+      }
+
+      this.toggleMcp(enabled);
+      res.json({ success: true, enabled: this.isMcpEnabled() });
+    } catch (error) {
+      logger.failure('WORKER', 'Toggle MCP failed', {}, error as Error);
+      res.status(500).json({ success: false, error: (error as Error).message });
+    }
+  }
+
+  // ============================================================================
   // MCP Toggle Helpers
   // ============================================================================
 
@@ -679,20 +714,25 @@ export class WorkerService {
    * Toggle MCP search server (rename .mcp.json <-> .mcp.json.disabled)
    */
   private toggleMcp(enabled: boolean): void {
-    const packageRoot = getPackageRoot();
-    const mcpPath = path.join(packageRoot, 'plugin', '.mcp.json');
-    const mcpDisabledPath = path.join(packageRoot, 'plugin', '.mcp.json.disabled');
+    try {
+      const packageRoot = getPackageRoot();
+      const mcpPath = path.join(packageRoot, 'plugin', '.mcp.json');
+      const mcpDisabledPath = path.join(packageRoot, 'plugin', '.mcp.json.disabled');
 
-    if (enabled && existsSync(mcpDisabledPath)) {
-      // Enable: rename .mcp.json.disabled -> .mcp.json
-      const fs = require('fs');
-      fs.renameSync(mcpDisabledPath, mcpPath);
-      logger.info('WORKER', 'MCP search server enabled');
-    } else if (!enabled && existsSync(mcpPath)) {
-      // Disable: rename .mcp.json -> .mcp.json.disabled
-      const fs = require('fs');
-      fs.renameSync(mcpPath, mcpDisabledPath);
-      logger.info('WORKER', 'MCP search server disabled');
+      if (enabled && existsSync(mcpDisabledPath)) {
+        // Enable: rename .mcp.json.disabled -> .mcp.json
+        renameSync(mcpDisabledPath, mcpPath);
+        logger.info('WORKER', 'MCP search server enabled');
+      } else if (!enabled && existsSync(mcpPath)) {
+        // Disable: rename .mcp.json -> .mcp.json.disabled
+        renameSync(mcpPath, mcpDisabledPath);
+        logger.info('WORKER', 'MCP search server disabled');
+      } else {
+        logger.debug('WORKER', 'MCP toggle no-op (already in desired state)', { enabled });
+      }
+    } catch (error) {
+      logger.failure('WORKER', 'Failed to toggle MCP', { enabled }, error as Error);
+      throw error;
     }
   }
 
