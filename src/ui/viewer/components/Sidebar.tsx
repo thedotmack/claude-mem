@@ -18,19 +18,22 @@ export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, isConne
   const [model, setModel] = useState(settings.CLAUDE_MEM_MODEL || DEFAULT_SETTINGS.CLAUDE_MEM_MODEL);
   const [contextObs, setContextObs] = useState(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_OBSERVATIONS);
   const [workerPort, setWorkerPort] = useState(settings.CLAUDE_MEM_WORKER_PORT || DEFAULT_SETTINGS.CLAUDE_MEM_WORKER_PORT);
+  const [mcpEnabled, setMcpEnabled] = useState(settings.CLAUDE_MEM_MCP_ENABLED ?? DEFAULT_SETTINGS.CLAUDE_MEM_MCP_ENABLED);
 
   // Update local state when settings change
   useEffect(() => {
     setModel(settings.CLAUDE_MEM_MODEL || DEFAULT_SETTINGS.CLAUDE_MEM_MODEL);
     setContextObs(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_OBSERVATIONS);
     setWorkerPort(settings.CLAUDE_MEM_WORKER_PORT || DEFAULT_SETTINGS.CLAUDE_MEM_WORKER_PORT);
+    setMcpEnabled(settings.CLAUDE_MEM_MCP_ENABLED ?? DEFAULT_SETTINGS.CLAUDE_MEM_MCP_ENABLED);
   }, [settings]);
 
   const handleSave = () => {
     onSave({
       CLAUDE_MEM_MODEL: model,
       CLAUDE_MEM_CONTEXT_OBSERVATIONS: contextObs,
-      CLAUDE_MEM_WORKER_PORT: workerPort
+      CLAUDE_MEM_WORKER_PORT: workerPort,
+      CLAUDE_MEM_MCP_ENABLED: mcpEnabled
     });
   };
 
@@ -113,6 +116,21 @@ export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, isConne
               value={workerPort}
               onChange={e => setWorkerPort(e.target.value)}
             />
+          </div>
+          <div className="form-group">
+            <label htmlFor="mcpEnabled" style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                id="mcpEnabled"
+                checked={mcpEnabled}
+                onChange={e => setMcpEnabled(e.target.checked)}
+                style={{ cursor: 'pointer' }}
+              />
+              Enable MCP Search Server
+            </label>
+            <div className="setting-description">
+              claude-mem suggests using skill-based search (saves ~2,500 tokens at session start), but some users prefer MCP. Disable to only use skill-based search. Requires Claude Code restart.
+            </div>
           </div>
           {saveStatus && (
             <div className="save-status">{saveStatus}</div>
