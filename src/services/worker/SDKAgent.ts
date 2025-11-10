@@ -141,7 +141,8 @@ export class SDKAgent {
               tool_name: message.tool_name!,
               tool_input: JSON.stringify(message.tool_input),
               tool_output: JSON.stringify(message.tool_response),
-              created_at_epoch: Date.now()
+              created_at_epoch: Date.now(),
+              cwd: message.cwd
             })
           },
           session_id: session.claudeSessionId,

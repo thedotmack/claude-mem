@@ -27,6 +27,7 @@ export interface PendingMessage {
   tool_input?: any;
   tool_response?: any;
   prompt_number?: number;
+  cwd?: string;
 }
 
 export interface ObservationData {
@@ -34,6 +35,7 @@ export interface ObservationData {
   tool_input: any;
   tool_response: any;
   prompt_number: number;
+  cwd?: string;
 }
 
 // ============================================================================
