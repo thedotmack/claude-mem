@@ -305,13 +305,16 @@ Use this when:
 ## Recent Changes
 
 ### v5.4.0 - Skill-Based Search Migration
-**Breaking Change**: MCP search tools replaced with skill-based approach
-- **Token Savings**: ~2,250 tokens per session start
+**Default**: Skill-based search with progressive disclosure (MCP available as opt-in)
+- **Token Savings**: ~2,250 tokens per session start (90% reduction)
 - **Progressive Disclosure**: Skill frontmatter (~250 tokens) instead of 9 MCP tool definitions (~2,500 tokens)
 - **New HTTP API**: 10 search endpoints in worker service (localhost:37777/api/search/*)
 - **Search Skill**: Auto-invoked when users ask about past work, decisions, or history
 - **No User Action Required**: Migration is transparent, searches work automatically
-- **Deprecated**: MCP search server (source kept for reference: src/servers/search-server.ts)
+- **MCP Still Available**: Users can enable MCP search server if preferred (see `plugin/MCP-SEARCH-README.md`)
+  - MCP loads all tools at session start (~2,500 tokens)
+  - Skill loads progressively on-demand (~250 tokens initially)
+  - Both use same HTTP API backend
 
 **Available Search Operations:**
 1. Search observations (full-text)

@@ -26,12 +26,13 @@ const WORKER_SERVICE = {
   source: 'src/services/worker-service.ts'
 };
 
-// DEPRECATED: MCP search server replaced by skill-based search
-// Keeping source file for reference: src/servers/search-server.ts
-// const SEARCH_SERVER = {
-//   name: 'search-server',
-//   source: 'src/servers/search-server.ts'
-// };
+// OPTIONAL: MCP search server (users can enable via .mcp.json)
+// Default: skill-based search (progressive disclosure, ~2,250 token savings)
+// To enable MCP: UI toggle copies .mcp.json.template to plugin/.mcp.json
+const SEARCH_SERVER = {
+  name: 'search-server',
+  source: 'src/servers/search-server.ts'
+};
 
 async function buildHooks() {
   console.log('🔨 Building claude-mem hooks and worker service...\n');
@@ -126,16 +127,34 @@ async function buildHooks() {
       console.log(`✓ ${hook.name} built (${sizeInKB} KB)`);
     }
 
-    // DEPRECATED: MCP search server no longer built (replaced by skill-based search)
-    // Search functionality now provided via HTTP API + search skill
-    // Source file kept for reference: src/servers/search-server.ts
+    // Build MCP search server (optional - users can enable via .mcp.json)
+    console.log(`\n🔧 Building MCP search server (optional)...`);
+    await build({
+      entryPoints: [SEARCH_SERVER.source],
+      bundle: true,
+      platform: 'node',
+      target: 'node18',
+      format: 'esm',
+      outfile: `${hooksDir}/${SEARCH_SERVER.name}.mjs`,
+      minify: true,
+      external: ['better-sqlite3'],
+      banner: {
+        js: '#!/usr/bin/env node'
+      }
+    });
+
+    fs.chmodSync(`${hooksDir}/${SEARCH_SERVER.name}.mjs`, 0o755);
+    const searchStats = fs.statSync(`${hooksDir}/${SEARCH_SERVER.name}.mjs`);
+    console.log(`✓ search-server built (${(searchStats.size / 1024).toFixed(2)} KB)`);
 
     console.log('\n✅ All hooks and worker service built successfully!');
     console.log(`   Output: ${hooksDir}/`);
     console.log(`   - Hooks: *-hook.js`);
     console.log(`   - Worker: worker-service.cjs`);
+    console.log(`   - MCP Server: search-server.mjs (optional)`);
     console.log(`   - Skills: plugin/skills/`);
     console.log('\n💡 Note: Dependencies will be auto-installed on first hook execution');
+    console.log('💡 MCP search: disabled by default (enable via viewer UI at http://localhost:37777)');
 
   } catch (error) {
     console.error('\n❌ Build failed:', error.message);

@@ -522,12 +522,19 @@ export class WorkerService {
     try {
       const settingsPath = path.join(homedir(), '.claude', 'settings.json');
 
+      // Check MCP search status (enabled if .mcp.json exists, disabled if .mcp.json.disabled exists)
+      const pluginRoot = getPackageRoot();
+      const mcpPath = path.join(pluginRoot, 'plugin', '.mcp.json');
+      const mcpDisabledPath = path.join(pluginRoot, 'plugin', '.mcp.json.disabled');
+      const mcpSearchEnabled = existsSync(mcpPath) && !existsSync(mcpDisabledPath);
+
       if (!existsSync(settingsPath)) {
         // Return defaults if file doesn't exist
         res.json({
           CLAUDE_MEM_MODEL: 'claude-haiku-4-5',
           CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
-          CLAUDE_MEM_WORKER_PORT: '37777'
+          CLAUDE_MEM_WORKER_PORT: '37777',
+          mcpSearchEnabled
         });
         return;
       }
@@ -539,7 +546,8 @@ export class WorkerService {
       res.json({
         CLAUDE_MEM_MODEL: env.CLAUDE_MEM_MODEL || 'claude-haiku-4-5',
         CLAUDE_MEM_CONTEXT_OBSERVATIONS: env.CLAUDE_MEM_CONTEXT_OBSERVATIONS || '50',
-        CLAUDE_MEM_WORKER_PORT: env.CLAUDE_MEM_WORKER_PORT || '37777'
+        CLAUDE_MEM_WORKER_PORT: env.CLAUDE_MEM_WORKER_PORT || '37777',
+        mcpSearchEnabled
       });
     } catch (error) {
       logger.failure('WORKER', 'Get settings failed', {}, error as Error);
@@ -552,7 +560,7 @@ export class WorkerService {
    */
   private handleUpdateSettings(req: Request, res: Response): void {
     try {
-      const { CLAUDE_MEM_MODEL, CLAUDE_MEM_CONTEXT_OBSERVATIONS, CLAUDE_MEM_WORKER_PORT } = req.body;
+      const { CLAUDE_MEM_MODEL, CLAUDE_MEM_CONTEXT_OBSERVATIONS, CLAUDE_MEM_WORKER_PORT, mcpSearchEnabled } = req.body;
 
       // Validate inputs
       if (CLAUDE_MEM_CONTEXT_OBSERVATIONS) {
@@ -600,11 +608,42 @@ export class WorkerService {
         settings.env.CLAUDE_MEM_WORKER_PORT = CLAUDE_MEM_WORKER_PORT;
       }
 
+      // Handle MCP search toggle (rename .mcp.json <-> .mcp.json.disabled)
+      if (mcpSearchEnabled !== undefined) {
+        const pluginRoot = getPackageRoot();
+        const mcpPath = path.join(pluginRoot, 'plugin', '.mcp.json');
+        const mcpDisabledPath = path.join(pluginRoot, 'plugin', '.mcp.json.disabled');
+
+        const { renameSync } = require('fs');
+
+        if (mcpSearchEnabled) {
+          // Enable MCP: rename .mcp.json.disabled -> .mcp.json
+          if (existsSync(mcpDisabledPath)) {
+            renameSync(mcpDisabledPath, mcpPath);
+            logger.info('WORKER', 'MCP search enabled');
+          } else if (!existsSync(mcpPath)) {
+            // Neither file exists, copy from .mcp.json.template
+            const mcpTemplatePath = path.join(pluginRoot, 'plugin', '.mcp.json.template');
+            if (existsSync(mcpTemplatePath)) {
+              const mcpConfig = readFileSync(mcpTemplatePath, 'utf-8');
+              writeFileSync(mcpPath, mcpConfig, 'utf-8');
+              logger.info('WORKER', 'MCP search enabled (created from template)');
+            }
+          }
+        } else {
+          // Disable MCP: rename .mcp.json -> .mcp.json.disabled
+          if (existsSync(mcpPath)) {
+            renameSync(mcpPath, mcpDisabledPath);
+            logger.info('WORKER', 'MCP search disabled');
+          }
+        }
+      }
+
       // Write back
       writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf-8');
 
       logger.info('WORKER', 'Settings updated');
-      res.json({ success: true, message: 'Settings updated successfully' });
+      res.json({ success: true, message: 'Settings updated successfully. Restart Claude Code to apply changes.' });
     } catch (error) {
       logger.failure('WORKER', 'Update settings failed', {}, error as Error);
       res.status(500).json({ success: false, error: String(error) });

@@ -17,7 +17,8 @@ export function useSettings() {
         setSettings({
           CLAUDE_MEM_MODEL: data.CLAUDE_MEM_MODEL || DEFAULT_SETTINGS.CLAUDE_MEM_MODEL,
           CLAUDE_MEM_CONTEXT_OBSERVATIONS: data.CLAUDE_MEM_CONTEXT_OBSERVATIONS || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_OBSERVATIONS,
-          CLAUDE_MEM_WORKER_PORT: data.CLAUDE_MEM_WORKER_PORT || DEFAULT_SETTINGS.CLAUDE_MEM_WORKER_PORT
+          CLAUDE_MEM_WORKER_PORT: data.CLAUDE_MEM_WORKER_PORT || DEFAULT_SETTINGS.CLAUDE_MEM_WORKER_PORT,
+          mcpSearchEnabled: data.mcpSearchEnabled !== undefined ? data.mcpSearchEnabled : DEFAULT_SETTINGS.mcpSearchEnabled
         });
       })
       .catch(error => {
