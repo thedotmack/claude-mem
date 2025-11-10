@@ -70,10 +70,25 @@ export async function ensureWorkerRunning(): Promise<void> {
   const pm2Path = path.join(packageRoot, "node_modules", ".bin", "pm2");
   const ecosystemPath = path.join(packageRoot, "ecosystem.config.cjs");
 
-  execSync(`"${pm2Path}" start "${ecosystemPath}"`, {
-    cwd: packageRoot,
-    stdio: 'pipe'
-  });
+  try {
+    execSync(`"${pm2Path}" start "${ecosystemPath}"`, {
+      cwd: packageRoot,
+      stdio: 'pipe'
+    });
+  } catch (error: any) {
+    // Ignore PM2 race condition errors when watch mode is also restarting
+    // These errors are cosmetic - watch mode handles the restart
+    const errorMessage = error.message || error.stderr?.toString() || '';
+    const isRaceConditionError =
+      errorMessage.includes('Process') && errorMessage.includes('not found') ||
+      errorMessage.includes("Cannot read properties of undefined (reading 'pm2_env')");
+
+    if (!isRaceConditionError) {
+      // Re-throw non-race-condition errors
+      throw error;
+    }
+    // Race condition detected - ignore and wait for worker health below
+  }
 
   if (!await waitForWorkerHealth()) {
     throw new Error("Worker failed to become healthy after restart");
