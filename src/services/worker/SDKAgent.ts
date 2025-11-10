@@ -69,13 +69,17 @@ export class SDKAgent {
             : typeof content === 'string' ? content : '';
 
           const responseSize = textContent.length;
-          logger.dataOut('SDK', `Response received (${responseSize} chars)`, {
-            sessionId: session.sessionDbId,
-            promptNumber: session.lastPromptNumber
-          });
 
-          // Parse and process response
-          await this.processSDKResponse(session, textContent, worker);
+          // Only log non-empty responses (filter out noise)
+          if (responseSize > 0) {
+            logger.dataOut('SDK', `Response received (${responseSize} chars)`, {
+              sessionId: session.sessionDbId,
+              promptNumber: session.lastPromptNumber
+            });
+
+            // Parse and process response
+            await this.processSDKResponse(session, textContent, worker);
+          }
         }
 
         // Log result messages
@@ -184,7 +188,18 @@ export class SDKAgent {
         session.lastPromptNumber
       );
 
-      // Sync to Chroma (fire-and-forget)
+      // Log observation details
+      logger.info('SDK', 'Observation saved', {
+        sessionId: session.sessionDbId,
+        obsId,
+        type: obs.type,
+        title: obs.title.substring(0, 60) + (obs.title.length > 60 ? '...' : ''),
+        files: obs.files?.length || 0,
+        concepts: obs.concepts?.length || 0
+      });
+
+      // Sync to Chroma with error logging
+      const chromaStart = Date.now();
       this.dbManager.getChromaSync().syncObservation(
         obsId,
         session.claudeSessionId,
@@ -192,7 +207,12 @@ export class SDKAgent {
         obs,
         session.lastPromptNumber,
         createdAtEpoch
-      ).catch(() => {});
+      ).then(() => {
+        const chromaDuration = Date.now() - chromaStart;
+        logger.debug('CHROMA', 'Observation synced', { obsId, duration: `${chromaDuration}ms` });
+      }).catch(err => {
+        logger.error('CHROMA', 'Failed to sync observation', { obsId, sessionId: session.sessionDbId }, err);
+      });
 
       // Broadcast to SSE clients (for web UI)
       if (worker && worker.sseBroadcaster) {
@@ -217,8 +237,6 @@ export class SDKAgent {
           }
         });
       }
-
-      logger.info('SDK', 'Observation saved', { obsId, type: obs.type });
     }
 
     // Parse summary
@@ -233,7 +251,17 @@ export class SDKAgent {
         session.lastPromptNumber
       );
 
-      // Sync to Chroma (fire-and-forget)
+      // Log summary details
+      logger.info('SDK', 'Summary saved', {
+        sessionId: session.sessionDbId,
+        summaryId,
+        request: summary.request.substring(0, 60) + (summary.request.length > 60 ? '...' : ''),
+        hasCompleted: !!summary.completed,
+        hasNextSteps: !!summary.next_steps
+      });
+
+      // Sync to Chroma with error logging
+      const chromaStart = Date.now();
       this.dbManager.getChromaSync().syncSummary(
         summaryId,
         session.claudeSessionId,
@@ -241,7 +269,12 @@ export class SDKAgent {
         summary,
         session.lastPromptNumber,
         createdAtEpoch
-      ).catch(() => {});
+      ).then(() => {
+        const chromaDuration = Date.now() - chromaStart;
+        logger.debug('CHROMA', 'Summary synced', { summaryId, duration: `${chromaDuration}ms` });
+      }).catch(err => {
+        logger.error('CHROMA', 'Failed to sync summary', { summaryId, sessionId: session.sessionDbId }, err);
+      });
 
       // Broadcast to SSE clients (for web UI)
       if (worker && worker.sseBroadcaster) {
@@ -262,8 +295,6 @@ export class SDKAgent {
           }
         });
       }
-
-      logger.info('SDK', 'Summary saved', { summaryId });
     }
 
     // Check and stop spinner after processing (debounced)

@@ -66,10 +66,82 @@ export class WorkerService {
     this.app.use(express.json({ limit: '50mb' }));
     this.app.use(cors());
 
+    // HTTP request/response logging middleware
+    this.app.use((req, res, next) => {
+      // Skip logging for static assets and health checks
+      if (req.path.startsWith('/health') || req.path === '/' || req.path.includes('.')) {
+        return next();
+      }
+
+      const start = Date.now();
+      const requestId = `${req.method}-${Date.now()}`;
+
+      // Log incoming request with body summary
+      const bodySummary = this.summarizeRequestBody(req.method, req.path, req.body);
+      logger.info('HTTP', `→ ${req.method} ${req.path}`, { requestId }, bodySummary);
+
+      // Capture response
+      const originalSend = res.send.bind(res);
+      res.send = function(body: any) {
+        const duration = Date.now() - start;
+        logger.info('HTTP', `← ${res.statusCode} ${req.path}`, { requestId, duration: `${duration}ms` });
+        return originalSend(body);
+      };
+
+      next();
+    });
+
     // Serve static files for web UI (viewer-bundle.js, logos, fonts, etc.)
     const packageRoot = getPackageRoot();
     const uiDir = path.join(packageRoot, 'plugin', 'ui');
     this.app.use(express.static(uiDir));
+  }
+
+  /**
+   * Summarize request body for logging
+   */
+  private summarizeRequestBody(method: string, path: string, body: any): string {
+    if (!body || Object.keys(body).length === 0) return '';
+
+    // Session init
+    if (path.includes('/init')) {
+      return '';
+    }
+
+    // Observations
+    if (path.includes('/observations')) {
+      const toolName = body.tool_name || '?';
+      const toolInput = body.tool_input;
+      let toolSummary = toolName;
+
+      // Format tool input for common tools
+      try {
+        if (toolName === 'Read' && toolInput?.file_path) {
+          const fileName = toolInput.file_path.split('/').pop();
+          toolSummary = `Read(${fileName})`;
+        } else if (toolName === 'Edit' && toolInput?.file_path) {
+          const fileName = toolInput.file_path.split('/').pop();
+          toolSummary = `Edit(${fileName})`;
+        } else if (toolName === 'Write' && toolInput?.file_path) {
+          const fileName = toolInput.file_path.split('/').pop();
+          toolSummary = `Write(${fileName})`;
+        } else if (toolName === 'Bash' && toolInput?.command) {
+          const cmd = toolInput.command.substring(0, 40);
+          toolSummary = `Bash(${cmd}${toolInput.command.length > 40 ? '...' : ''})`;
+        }
+      } catch {
+        // Keep default
+      }
+
+      return `tool=${toolSummary}`;
+    }
+
+    // Summarize request
+    if (path.includes('/summarize')) {
+      return 'requesting summary';
+    }
+
+    return '';
   }
 
   /**
@@ -245,7 +317,8 @@ export class WorkerService {
           }
         });
 
-        // Sync user prompt to Chroma (fire-and-forget)
+        // Sync user prompt to Chroma with error logging
+        const chromaStart = Date.now();
         this.dbManager.getChromaSync().syncUserPrompt(
           latestPrompt.id,
           latestPrompt.sdk_session_id,
@@ -253,8 +326,17 @@ export class WorkerService {
           latestPrompt.prompt_text,
           latestPrompt.prompt_number,
           latestPrompt.created_at_epoch
-        ).catch(err => {
-          logger.error('WORKER', 'Failed to sync user_prompt to Chroma', { promptId: latestPrompt.id }, err);
+        ).then(() => {
+          const chromaDuration = Date.now() - chromaStart;
+          logger.debug('CHROMA', 'User prompt synced', {
+            promptId: latestPrompt.id,
+            duration: `${chromaDuration}ms`
+          });
+        }).catch(err => {
+          logger.error('CHROMA', 'Failed to sync user_prompt', {
+            promptId: latestPrompt.id,
+            sessionId: sessionDbId
+          }, err);
         });
       }
 
@@ -262,8 +344,14 @@ export class WorkerService {
       this.broadcastProcessingStatus(true);
 
       // Start SDK agent in background (pass worker ref for spinner control)
+      logger.info('SESSION', 'Generator starting', {
+        sessionId: sessionDbId,
+        project: session.project,
+        promptNum: session.lastPromptNumber
+      });
+
       session.generatorPromise = this.sdkAgent.startSession(session, this).catch(err => {
-        logger.failure('WORKER', 'SDK agent error', { sessionId: sessionDbId }, err);
+        logger.failure('SDK', 'SDK agent error', { sessionId: sessionDbId }, err);
       });
 
       // Broadcast SSE event
@@ -299,8 +387,13 @@ export class WorkerService {
       // CRITICAL: Ensure SDK agent is running to consume the queue
       const session = this.sessionManager.getSession(sessionDbId);
       if (session && !session.generatorPromise) {
+        logger.info('SESSION', 'Generator auto-starting (observation)', {
+          sessionId: sessionDbId,
+          queueDepth: session.pendingMessages.length
+        });
+
         session.generatorPromise = this.sdkAgent.startSession(session, this).catch(err => {
-          logger.failure('WORKER', 'SDK agent error', { sessionId: sessionDbId }, err);
+          logger.failure('SDK', 'SDK agent error', { sessionId: sessionDbId }, err);
         });
       }
 
@@ -329,8 +422,13 @@ export class WorkerService {
       // CRITICAL: Ensure SDK agent is running to consume the queue
       const session = this.sessionManager.getSession(sessionDbId);
       if (session && !session.generatorPromise) {
+        logger.info('SESSION', 'Generator auto-starting (summarize)', {
+          sessionId: sessionDbId,
+          queueDepth: session.pendingMessages.length
+        });
+
         session.generatorPromise = this.sdkAgent.startSession(session, this).catch(err => {
-          logger.failure('WORKER', 'SDK agent error', { sessionId: sessionDbId }, err);
+          logger.failure('SDK', 'SDK agent error', { sessionId: sessionDbId }, err);
         });
       }
 

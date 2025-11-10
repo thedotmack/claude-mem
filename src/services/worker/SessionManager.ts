@@ -55,7 +55,13 @@ export class SessionManager {
     const emitter = new EventEmitter();
     this.sessionQueues.set(sessionDbId, emitter);
 
-    logger.info('WORKER', 'Session initialized', { sessionDbId, project: session.project });
+    logger.info('SESSION', 'Session initialized', {
+      sessionId: sessionDbId,
+      project: session.project,
+      claudeSessionId: session.claudeSessionId,
+      queueDepth: 0,
+      hasGenerator: false
+    });
 
     return session;
   }
@@ -78,6 +84,8 @@ export class SessionManager {
       session = this.initializeSession(sessionDbId);
     }
 
+    const beforeDepth = session.pendingMessages.length;
+
     session.pendingMessages.push({
       type: 'observation',
       tool_name: data.tool_name,
@@ -86,13 +94,34 @@ export class SessionManager {
       prompt_number: data.prompt_number
     });
 
+    const afterDepth = session.pendingMessages.length;
+
     // Notify generator immediately (zero latency)
     const emitter = this.sessionQueues.get(sessionDbId);
     emitter?.emit('message');
 
-    logger.debug('WORKER', 'Observation queued', {
-      sessionDbId,
-      queueLength: session.pendingMessages.length
+    // Format tool name for logging
+    let toolSummary = data.tool_name;
+    try {
+      const input = data.tool_input;
+      if (data.tool_name === 'Read' && input?.file_path) {
+        toolSummary = `Read(${input.file_path.split('/').pop()})`;
+      } else if (data.tool_name === 'Edit' && input?.file_path) {
+        toolSummary = `Edit(${input.file_path.split('/').pop()})`;
+      } else if (data.tool_name === 'Write' && input?.file_path) {
+        toolSummary = `Write(${input.file_path.split('/').pop()})`;
+      } else if (data.tool_name === 'Bash' && input?.command) {
+        const cmd = input.command.substring(0, 30);
+        toolSummary = `Bash(${cmd}${input.command.length > 30 ? '...' : ''})`;
+      }
+    } catch {
+      // Keep default
+    }
+
+    logger.info('SESSION', `Observation queued (${beforeDepth}→${afterDepth})`, {
+      sessionId: sessionDbId,
+      tool: toolSummary,
+      hasGenerator: !!session.generatorPromise
     });
   }
 
@@ -124,6 +153,8 @@ export class SessionManager {
       return; // Already deleted
     }
 
+    const sessionDuration = Date.now() - session.startTime;
+
     // Abort the SDK agent
     session.abortController.abort();
 
@@ -136,7 +167,11 @@ export class SessionManager {
     this.sessions.delete(sessionDbId);
     this.sessionQueues.delete(sessionDbId);
 
-    logger.info('WORKER', 'Session deleted', { sessionDbId });
+    logger.info('SESSION', 'Session deleted', {
+      sessionId: sessionDbId,
+      duration: `${(sessionDuration / 1000).toFixed(1)}s`,
+      project: session.project
+    });
   }
 
   /**
