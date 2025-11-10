@@ -15,16 +15,30 @@ interface SidebarProps {
 }
 
 export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, isConnected, onSave, onClose }: SidebarProps) {
+  // Settings form state
   const [model, setModel] = useState(settings.CLAUDE_MEM_MODEL || DEFAULT_SETTINGS.CLAUDE_MEM_MODEL);
   const [contextObs, setContextObs] = useState(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_OBSERVATIONS);
   const [workerPort, setWorkerPort] = useState(settings.CLAUDE_MEM_WORKER_PORT || DEFAULT_SETTINGS.CLAUDE_MEM_WORKER_PORT);
 
-  // Update local state when settings change
+  // MCP toggle state (separate from settings)
+  const [mcpEnabled, setMcpEnabled] = useState(true);
+  const [mcpToggling, setMcpToggling] = useState(false);
+  const [mcpStatus, setMcpStatus] = useState('');
+
+  // Update settings form state when settings change
   useEffect(() => {
     setModel(settings.CLAUDE_MEM_MODEL || DEFAULT_SETTINGS.CLAUDE_MEM_MODEL);
     setContextObs(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_OBSERVATIONS);
     setWorkerPort(settings.CLAUDE_MEM_WORKER_PORT || DEFAULT_SETTINGS.CLAUDE_MEM_WORKER_PORT);
   }, [settings]);
+
+  // Fetch MCP status on mount
+  useEffect(() => {
+    fetch('/api/mcp/status')
+      .then(res => res.json())
+      .then(data => setMcpEnabled(data.enabled))
+      .catch(error => console.error('Failed to load MCP status:', error));
+  }, []);
 
   const handleSave = () => {
     onSave({
@@ -32,6 +46,35 @@ export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, isConne
       CLAUDE_MEM_CONTEXT_OBSERVATIONS: contextObs,
       CLAUDE_MEM_WORKER_PORT: workerPort
     });
+  };
+
+  const handleMcpToggle = async (enabled: boolean) => {
+    setMcpToggling(true);
+    setMcpStatus('Toggling...');
+
+    try {
+      const response = await fetch('/api/mcp/toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled })
+      });
+
+      const result = await response.json();
+
+      if (result.success) {
+        setMcpEnabled(result.enabled);
+        setMcpStatus('✓ Updated (restart Claude Code to apply)');
+        setTimeout(() => setMcpStatus(''), 3000);
+      } else {
+        setMcpStatus(`✗ Error: ${result.error}`);
+        setTimeout(() => setMcpStatus(''), 3000);
+      }
+    } catch (error) {
+      setMcpStatus(`✗ Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      setTimeout(() => setMcpStatus(''), 3000);
+    } finally {
+      setMcpToggling(false);
+    }
   };
 
   return (
@@ -117,6 +160,29 @@ export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, isConne
           {saveStatus && (
             <div className="save-status">{saveStatus}</div>
           )}
+        </div>
+
+        <div className="settings-section">
+          <h3>MCP Search Server</h3>
+          <div className="form-group">
+            <label htmlFor="mcpEnabled" style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                id="mcpEnabled"
+                checked={mcpEnabled}
+                onChange={e => handleMcpToggle(e.target.checked)}
+                disabled={mcpToggling}
+                style={{ cursor: mcpToggling ? 'not-allowed' : 'pointer' }}
+              />
+              Enable MCP Search Server
+            </label>
+            <div className="setting-description">
+              claude-mem suggests using skill-based search (saves ~2,500 tokens at session start), but some users prefer MCP. Disable to only use skill-based search. Requires Claude Code restart to apply changes.
+            </div>
+            {mcpStatus && (
+              <div className="save-status">{mcpStatus}</div>
+            )}
+          </div>
         </div>
 
         <div className="settings-section">
