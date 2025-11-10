@@ -209,9 +209,10 @@ export class WorkerService {
   /**
    * Initialize a new session
    */
-  private handleSessionInit(req: Request, res: Response): void {
+  private async handleSessionInit(req: Request, res: Response): Promise<void> {
     try {
       const sessionDbId = parseInt(req.params.sessionDbId, 10);
+      const { jitEnabled } = req.body;
       const session = this.sessionManager.initializeSession(sessionDbId);
 
       // Get the latest user_prompt for this session to sync to Chroma
@@ -255,6 +256,50 @@ export class WorkerService {
         });
       }
 
+      // JIT context filtering (if enabled)
+      let context = null;
+      if (jitEnabled) {
+        try {
+          // Fetch recent observations for this project (for JIT filtering)
+          const recentObservations = this.dbManager.getSessionStore().getRecentObservations(session.project, 50);
+          const observationList = recentObservations.map(obs => ({
+            id: obs.id,
+            type: obs.type,
+            title: obs.title
+          }));
+
+          // Start persistent JIT session
+          await this.sdkAgent.startJitSession(session, observationList);
+
+          // Run filter query with user prompt
+          const selectedIds = await this.sdkAgent.runFilterQuery(sessionDbId, session.userPrompt);
+
+          // Fetch full observations by IDs
+          if (selectedIds.length > 0) {
+            const fullObservations = this.dbManager.getSessionStore().getObservationsByIds(selectedIds);
+            context = fullObservations.map(obs => ({
+              id: obs.id,
+              type: obs.type,
+              title: obs.title,
+              subtitle: obs.subtitle,
+              text: obs.text,
+              narrative: obs.narrative
+            }));
+
+            logger.info('WORKER', 'JIT context filtered', {
+              sessionDbId,
+              totalObservations: observationList.length,
+              selectedCount: selectedIds.length
+            });
+          } else {
+            logger.info('WORKER', 'JIT filter returned no observations', { sessionDbId });
+          }
+        } catch (error) {
+          logger.failure('WORKER', 'JIT context filtering failed', { sessionDbId }, error as Error);
+          // Continue without context on error (graceful degradation)
+        }
+      }
+
       // Start processing indicator
       this.broadcastProcessingStatus(true);
 
@@ -270,7 +315,12 @@ export class WorkerService {
         project: session.project
       });
 
-      res.json({ status: 'initialized', sessionDbId, port: getWorkerPort() });
+      res.json({
+        status: 'initialized',
+        sessionDbId,
+        port: getWorkerPort(),
+        context
+      });
     } catch (error) {
       logger.failure('WORKER', 'Session init failed', {}, error as Error);
       res.status(500).json({ error: (error as Error).message });
@@ -370,9 +420,14 @@ export class WorkerService {
   private async handleSessionDelete(req: Request, res: Response): Promise<void> {
     try {
       const sessionDbId = parseInt(req.params.sessionDbId, 10);
+
+      // Cleanup JIT session resources
+      this.sdkAgent.cleanupJitSession(sessionDbId);
+
+      // Complete session (aborts SDK agents, cleans up in-memory resources)
       await this.sessionManager.deleteSession(sessionDbId);
 
-      // Mark session complete in database
+      // Mark session as completed in database (preserves record)
       this.dbManager.markSessionComplete(sessionDbId);
 
       // Broadcast SSE event
@@ -400,9 +455,13 @@ export class WorkerService {
         return;
       }
 
+      // Cleanup JIT session resources
+      this.sdkAgent.cleanupJitSession(sessionDbId);
+
+      // Complete session (aborts SDK agents, cleans up in-memory resources)
       await this.sessionManager.deleteSession(sessionDbId);
 
-      // Mark session complete in database
+      // Mark session as completed in database (preserves record)
       this.dbManager.markSessionComplete(sessionDbId);
 
       // Stop processing indicator

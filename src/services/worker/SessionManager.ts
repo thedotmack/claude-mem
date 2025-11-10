@@ -40,6 +40,9 @@ export class SessionManager {
       sessionDbId,
       claudeSessionId: dbSession.claude_session_id,
       sdkSessionId: null,
+      jitSessionId: null,
+      jitAbortController: null,
+      jitGeneratorPromise: null,
       project: dbSession.project,
       userPrompt: dbSession.user_prompt,
       pendingMessages: [],
@@ -116,27 +119,38 @@ export class SessionManager {
   }
 
   /**
-   * Delete a session (abort SDK agent and cleanup)
+   * Complete a session (abort SDK agents and cleanup in-memory resources)
+   * NOTE: Does not delete from database - only marks as completed
    */
   async deleteSession(sessionDbId: number): Promise<void> {
     const session = this.sessions.get(sessionDbId);
     if (!session) {
-      return; // Already deleted
+      return; // Already cleaned up
     }
 
-    // Abort the SDK agent
+    // Abort the main SDK agent
     session.abortController.abort();
 
-    // Wait for generator to finish
+    // Abort the JIT session if it exists
+    if (session.jitAbortController) {
+      session.jitAbortController.abort();
+    }
+
+    // Wait for main generator to finish
     if (session.generatorPromise) {
       await session.generatorPromise.catch(() => {});
     }
 
-    // Cleanup
+    // Wait for JIT generator to finish
+    if (session.jitGeneratorPromise) {
+      await session.jitGeneratorPromise.catch(() => {});
+    }
+
+    // Cleanup in-memory resources
     this.sessions.delete(sessionDbId);
     this.sessionQueues.delete(sessionDbId);
 
-    logger.info('WORKER', 'Session deleted', { sessionDbId });
+    logger.info('WORKER', 'Session completed and cleaned up', { sessionDbId });
   }
 
   /**

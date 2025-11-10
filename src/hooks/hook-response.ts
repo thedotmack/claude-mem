@@ -38,8 +38,6 @@ function buildHookResponse(
   if (hookType === 'SessionStart') {
     if (success && options.context) {
       return {
-        continue: true,
-        suppressOutput: true,
         hookSpecificOutput: {
           hookEventName: 'SessionStart',
           additionalContext: options.context
@@ -56,8 +54,6 @@ function buildHookResponse(
   if (hookType === 'UserPromptSubmit') {
     if (success && options.context) {
       return {
-        continue: true,
-        suppressOutput: true,
         hookSpecificOutput: {
           hookEventName: 'UserPromptSubmit',
           additionalContext: options.context

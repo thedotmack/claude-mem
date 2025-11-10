@@ -12,6 +12,7 @@ import { execSync } from 'child_process';
 import { homedir } from 'os';
 import path from 'path';
 import { existsSync, readFileSync } from 'fs';
+import { EventEmitter } from 'events';
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
@@ -23,9 +24,22 @@ import type { ActiveSession, SDKUserMessage, PendingMessage } from '../worker-ty
 // @ts-ignore - Agent SDK types may not be available
 import { query } from '@anthropic-ai/claude-agent-sdk';
 
+interface JITFilterRequest {
+  userPrompt: string;
+  resolve: (ids: number[]) => void;
+  reject: (error: Error) => void;
+}
+
 export class SDKAgent {
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
+
+  // JIT filter coordination
+  private jitFilterQueues: Map<number, {
+    requests: JITFilterRequest[];
+    emitter: EventEmitter;
+    currentResponse: string;
+  }> = new Map();
 
   constructor(dbManager: DatabaseManager, sessionManager: SessionManager) {
     this.dbManager = dbManager;
@@ -103,6 +117,205 @@ export class SDKAgent {
     } finally {
       // Cleanup
       this.sessionManager.deleteSession(session.sessionDbId).catch(() => {});
+    }
+  }
+
+  /**
+   * Start JIT filter session (persistent, waits for filter requests)
+   */
+  async startJitSession(
+    session: ActiveSession,
+    observations: Array<{id: number, type: string, title: string}>
+  ): Promise<void> {
+    try {
+      // Initialize JIT filter queue
+      this.jitFilterQueues.set(session.sessionDbId, {
+        requests: [],
+        emitter: new EventEmitter(),
+        currentResponse: ''
+      });
+
+      // Setup abort controller for JIT session
+      session.jitAbortController = new AbortController();
+      session.jitSessionId = `jit-${session.claudeSessionId}`;
+
+      // Find Claude executable
+      const claudePath = this.findClaudeExecutable();
+      const modelId = this.getModelId();
+
+      // Create JIT message generator
+      const messageGenerator = this.createJitMessageGenerator(session.sessionDbId, observations);
+
+      // Run Agent SDK query loop for JIT filtering
+      const queryResult = query({
+        prompt: messageGenerator,
+        options: {
+          model: modelId,
+          disallowedTools: ['Bash'],
+          abortController: session.jitAbortController,
+          pathToClaudeCodeExecutable: claudePath
+        }
+      });
+
+      // Store generator promise
+      session.jitGeneratorPromise = (async () => {
+        for await (const message of queryResult) {
+          if (message.type === 'assistant') {
+            const content = message.message.content;
+            const textContent = Array.isArray(content)
+              ? content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n')
+              : typeof content === 'string' ? content : '';
+
+            // Process filter response
+            await this.processJitFilterResponse(session.sessionDbId, textContent);
+          }
+        }
+      })().catch(error => {
+        if (error.name !== 'AbortError') {
+          logger.failure('SDK', 'JIT session error', { sessionDbId: session.sessionDbId }, error);
+        }
+      });
+
+      logger.info('SDK', 'JIT session started', {
+        sessionDbId: session.sessionDbId,
+        observationCount: observations.length
+      });
+
+    } catch (error: any) {
+      if (error.name === 'AbortError') {
+        logger.warn('SDK', 'JIT session aborted', { sessionDbId: session.sessionDbId });
+      } else {
+        logger.failure('SDK', 'JIT session error', { sessionDbId: session.sessionDbId }, error);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Create JIT message generator (yields filter requests on-demand)
+   */
+  private async *createJitMessageGenerator(
+    sessionDbId: number,
+    observations: Array<{id: number, type: string, title: string}>
+  ): AsyncIterableIterator<SDKUserMessage> {
+    // Get session for jitSessionId
+    const session = this.sessionManager.getSession(sessionDbId);
+    if (!session || !session.jitSessionId) {
+      throw new Error(`No JIT session ID for session ${sessionDbId}`);
+    }
+
+    // Yield initial prompt with observation list
+    const observationList = observations.map(obs => {
+      const typeEmoji = this.getTypeEmoji(obs.type);
+      return `${typeEmoji} #${obs.id}: ${obs.title || 'Untitled'}`;
+    }).join('\n');
+
+    yield {
+      type: 'user',
+      message: {
+        role: 'user',
+        content: `You are a context filter for an AI memory system. You'll receive a list of past observations, then filter requests asking which observations are relevant to specific user questions.
+
+# Available observations:
+${observationList}
+
+Reply "READY" when you've loaded the observation list.`
+      },
+      session_id: session.jitSessionId,
+      parent_tool_use_id: null,
+      isSynthetic: true
+    };
+
+    // Wait for filter requests
+    const queue = this.jitFilterQueues.get(sessionDbId);
+    if (!queue) {
+      throw new Error(`No JIT queue for session ${sessionDbId}`);
+    }
+
+    const abortController = session.jitAbortController;
+    if (!abortController) {
+      throw new Error(`No JIT abort controller for session ${sessionDbId}`);
+    }
+
+    while (!abortController.signal.aborted) {
+      // Wait for filter request if queue is empty
+      if (queue.requests.length === 0) {
+        await new Promise<void>(resolve => {
+          const handler = () => resolve();
+          queue.emitter.once('request', handler);
+
+          // Also listen for abort
+          abortController.signal.addEventListener('abort', () => {
+            queue.emitter.off('request', handler);
+            resolve();
+          }, { once: true });
+        });
+      }
+
+      // Process pending requests
+      if (queue.requests.length > 0) {
+        const request = queue.requests[0]; // Keep in queue until processed
+        queue.currentResponse = ''; // Reset response buffer
+
+        yield {
+          type: 'user',
+          message: {
+            role: 'user',
+            content: `# User's current question:
+${request.userPrompt}
+
+# Task:
+Select the 3-5 most relevant observation IDs (just the numbers) that would help answer this question.
+If nothing is relevant, respond with "NONE".
+
+Respond ONLY with comma-separated IDs (e.g., "1234,5678,9012") or "NONE".`
+          },
+          session_id: session.jitSessionId,
+          parent_tool_use_id: null,
+          isSynthetic: true
+        };
+      }
+    }
+  }
+
+  /**
+   * Process JIT filter response and resolve the corresponding promise
+   */
+  private async processJitFilterResponse(sessionDbId: number, textContent: string): Promise<void> {
+    const queue = this.jitFilterQueues.get(sessionDbId);
+    if (!queue || queue.requests.length === 0) {
+      return; // No pending request (might be initial "READY" response)
+    }
+
+    // Accumulate response
+    queue.currentResponse += textContent;
+
+    // Check if response is complete (simple heuristic: contains NONE or numbers)
+    const response = queue.currentResponse.trim();
+    if (response === 'READY') {
+      queue.currentResponse = ''; // Clear initial response
+      return;
+    }
+
+    if (response === 'NONE' || response === '' || /^\d+(,\d+)*$/.test(response)) {
+      // Response is complete, resolve promise
+      const request = queue.requests.shift()!;
+      queue.currentResponse = '';
+
+      if (response === 'NONE' || !response) {
+        request.resolve([]);
+      } else {
+        const selectedIds = response
+          .split(',')
+          .map((id: string) => parseInt(id.trim(), 10))
+          .filter((id: number) => !isNaN(id));
+        request.resolve(selectedIds);
+      }
+
+      logger.debug('SDK', 'JIT filter response processed', {
+        sessionDbId,
+        selectedIds: response
+      });
     }
   }
 
@@ -307,5 +520,83 @@ export class SDKAgent {
     }
 
     return process.env.CLAUDE_MEM_MODEL || 'claude-haiku-4-5';
+  }
+
+  /**
+   * Run a filter query using persistent JIT session
+   * Sends filter request to running JIT session and waits for response
+   */
+  async runFilterQuery(sessionDbId: number, userPrompt: string): Promise<number[]> {
+    try {
+      const queue = this.jitFilterQueues.get(sessionDbId);
+      if (!queue) {
+        logger.warn('SDK', 'No JIT session for filter query', { sessionDbId });
+        return []; // Return empty if JIT session not available
+      }
+
+      // Create promise for this filter request
+      const resultPromise = new Promise<number[]>((resolve, reject) => {
+        queue.requests.push({
+          userPrompt,
+          resolve,
+          reject
+        });
+
+        // Notify generator that new request is available
+        queue.emitter.emit('request');
+      });
+
+      // Wait for response (with timeout)
+      const timeout = 30000; // 30 second timeout
+      const timeoutPromise = new Promise<number[]>((_, reject) => {
+        setTimeout(() => reject(new Error('JIT filter query timeout')), timeout);
+      });
+
+      const selectedIds = await Promise.race([resultPromise, timeoutPromise]);
+
+      logger.debug('SDK', 'JIT filter query completed', {
+        sessionDbId,
+        selectedCount: selectedIds.length
+      });
+
+      return selectedIds;
+    } catch (error: any) {
+      logger.failure('SDK', 'JIT filter query failed', { sessionDbId }, error);
+      return []; // Return empty array on error (graceful degradation)
+    }
+  }
+
+  /**
+   * Cleanup JIT session resources
+   */
+  cleanupJitSession(sessionDbId: number): void {
+    const queue = this.jitFilterQueues.get(sessionDbId);
+    if (queue) {
+      // Reject any pending requests
+      queue.requests.forEach(req => {
+        req.reject(new Error('JIT session aborted'));
+      });
+      queue.requests = [];
+
+      // Remove queue
+      this.jitFilterQueues.delete(sessionDbId);
+
+      logger.debug('SDK', 'JIT session cleaned up', { sessionDbId });
+    }
+  }
+
+  /**
+   * Get emoji for observation type
+   */
+  private getTypeEmoji(type: string): string {
+    const emojiMap: Record<string, string> = {
+      'bugfix': '🔴',
+      'feature': '🟣',
+      'refactor': '🔄',
+      'change': '✅',
+      'discovery': '🔵',
+      'decision': '🧠'
+    };
+    return emojiMap[type] || '📝';
   }
 }

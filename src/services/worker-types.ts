@@ -12,6 +12,9 @@ export interface ActiveSession {
   sessionDbId: number;
   claudeSessionId: string;
   sdkSessionId: string | null;
+  jitSessionId: string | null;
+  jitAbortController: AbortController | null;
+  jitGeneratorPromise: Promise<void> | null;
   project: string;
   userPrompt: string;
   pendingMessages: PendingMessage[];
