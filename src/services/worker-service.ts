@@ -262,7 +262,7 @@ export class WorkerService {
       this.broadcastProcessingStatus(true);
 
       // Start SDK agent in background (pass worker ref for spinner control)
-      this.sdkAgent.startSession(session, this).catch(err => {
+      session.generatorPromise = this.sdkAgent.startSession(session, this).catch(err => {
         logger.failure('WORKER', 'SDK agent error', { sessionId: sessionDbId }, err);
       });
 
