@@ -2,11 +2,44 @@
 
 Get comprehensive API documentation from the search service.
 
-## Command
+## Wrapper Script (Recommended)
+
+The `claude-mem-search` wrapper script provides a unified interface to all search endpoints with:
+- **Single permission prompt** (no repeated permission requests)
+- Proper error handling
+- Clean output formatting
+
+### Usage Examples
+
+```bash
+# Search operations
+claude-mem-search.cjs observations "authentication" --format=index --limit=5
+claude-mem-search.cjs sessions "bug fix" --format=index
+claude-mem-search.cjs prompts "implement feature" --project=myapp
+
+# Filtered search
+claude-mem-search.cjs by-type bugfix --limit=10 --from=2025-11-09T00:00:00
+claude-mem-search.cjs by-concept discovery --limit=5
+claude-mem-search.cjs by-file "auth/login.ts" --format=index
+
+# Context retrieval
+claude-mem-search.cjs recent --project=myapp --limit=3
+claude-mem-search.cjs timeline 1234 --depth-before=5 --depth-after=5
+claude-mem-search.cjs timeline-by-query "authentication" --depth-before=10
+
+# Documentation
+claude-mem-search.cjs help
+```
+
+## Direct API Command
+
+You can also access the API directly using curl:
 
 ```bash
 curl -s "http://localhost:37777/api/search/help"
 ```
+
+**Note:** Direct curl usage requires permission for each API call, which can become tedious when making multiple requests. Use the wrapper script for better usability.
 
 ## Response
 

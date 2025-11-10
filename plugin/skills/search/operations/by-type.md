@@ -7,10 +7,17 @@ Find observations by their classification (bugfix, feature, refactor, decision, 
 - User asks: "What bugs did we fix?"
 - User asks: "What features did we add?"
 - User asks: "What decisions did we make?"
+- User asks: "What bugs did we fix yesterday?"
 - Looking for specific types of work
 
 ## Command
 
+Using the wrapper script (recommended - single permission prompt):
+```bash
+claude-mem-search.cjs by-type bugfix --limit=10 --format=index
+```
+
+Or using curl directly:
 ```bash
 curl -s "http://localhost:37777/api/search/by-type?type=bugfix&limit=10&format=index"
 ```
@@ -21,6 +28,8 @@ curl -s "http://localhost:37777/api/search/by-type?type=bugfix&limit=10&format=i
 - **format**: "index" or "full" (default: "full")
 - **limit**: Number of results (default: 10, max: 100)
 - **project**: Filter by project name (optional)
+- **from**: Start date - ISO string or Unix timestamp in ms (optional)
+- **to**: End date - ISO string or Unix timestamp in ms (optional)
 
 ## Valid Types
 
@@ -35,17 +44,17 @@ curl -s "http://localhost:37777/api/search/by-type?type=bugfix&limit=10&format=i
 
 **"Show me recent bugs we fixed"**
 ```bash
-curl -s "http://localhost:37777/api/search/by-type?type=bugfix&limit=10&format=index"
+claude-mem-search.cjs by-type bugfix --limit=10 --format=index
 ```
 
-**"What features did we add this week?"**
+**"What features did we add yesterday?"**
 ```bash
-curl -s "http://localhost:37777/api/search/by-type?type=feature&limit=20&format=index"
+claude-mem-search.cjs by-type feature --from=2025-11-09T00:00:00 --to=2025-11-09T23:59:59 --format=index
 ```
 
 **"What architectural decisions have we made?"**
 ```bash
-curl -s "http://localhost:37777/api/search/by-type?type=decision&limit=10&format=full"
+claude-mem-search.cjs by-type decision --limit=10 --format=full
 ```
 
 ## How to Present Results

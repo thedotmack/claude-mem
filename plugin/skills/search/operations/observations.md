@@ -7,10 +7,17 @@ Search all observations using natural language queries.
 - User asks: "How did we implement authentication?"
 - User asks: "What bugs did we fix?"
 - User asks: "What features did we add?"
+- User asks: "What did we do yesterday/last week?"
 - Looking for past work by keyword or topic
 
 ## Command
 
+Using the wrapper script (recommended - single permission prompt):
+```bash
+claude-mem-search.cjs observations "authentication" --format=index --limit=20
+```
+
+Or using curl directly:
 ```bash
 curl -s "http://localhost:37777/api/search/observations?query=authentication&format=index&limit=20"
 ```
@@ -21,6 +28,21 @@ curl -s "http://localhost:37777/api/search/observations?query=authentication&for
 - **format**: "index" (summary) or "full" (complete details). Default: "full"
 - **limit**: Number of results (default: 20, max: 100)
 - **project**: Filter by project name (optional)
+- **from**: Start date - ISO string (e.g., "2025-11-09T00:00:00") or Unix timestamp in ms (optional)
+- **to**: End date - ISO string (e.g., "2025-11-09T23:59:59") or Unix timestamp in ms (optional)
+
+## Date Range Examples
+
+Search for observations from a specific day:
+```bash
+claude-mem-search.cjs observations "bug" --from=2025-11-09T00:00:00 --to=2025-11-09T23:59:59
+```
+
+Search for observations from the last 7 days using Unix timestamps:
+```bash
+# Calculate timestamps: from = now - 7 days, to = now
+claude-mem-search.cjs observations "feature" --from=1731196800000 --to=1731801600000
+```
 
 ## When to Use Each Format
 

@@ -1,11 +1,35 @@
 ---
 name: search
-description: Search claude-mem persistent memory for past sessions, observations, bugs fixed, features implemented, decisions made, code changes, and previous work. Use when answering questions about history, finding past decisions, or researching previous implementations.
+description: |
+  **AUTO-INVOKE THIS SKILL** when users ask about past work, history, previous sessions, what was done before, bug fixes, features implemented, decisions made, or any question requiring context from previous interactions. This skill searches claude-mem's persistent memory across all past sessions to find relevant observations, decisions, code changes, and work history. Use it proactively whenever questions involve "what did we...", "how did we...", "did we fix...", "what bugs...", "what features...", "last session...", "yesterday...", "last week...", or any temporal/historical queries.
 ---
 
 # Claude-Mem Search Skill
 
 Access claude-mem's persistent memory through a comprehensive HTTP API. Search for past work, understand context, and learn from previous decisions.
+
+## 🔑 Key Tools Available
+
+1. **`claude-mem-search.cjs` wrapper script** (RECOMMENDED): Unified command-line tool that wraps all search endpoints with a single permission prompt. Eliminates repeated permission requests.
+
+2. **Direct HTTP API**: Use curl for direct API access (requires permission for each request).
+
+## ⚠️ CRITICAL: Reading Documentation
+
+**When fetching API documentation or help information:**
+- **ALWAYS** read the complete response without truncation
+- **NEVER** use `head`, `tail`, or other truncation commands on documentation endpoints
+- **ONLY** truncate actual data responses (search results) when appropriate to save tokens
+
+Example - ✅ CORRECT:
+```bash
+claude-mem-search help  # Reads complete documentation
+```
+
+Example - ❌ WRONG:
+```bash
+curl -s "http://localhost:37777/api/search/help" | head -100  # TRUNCATES DOCS!
+```
 
 ## When to Use This Skill
 
@@ -73,18 +97,22 @@ For guidelines on how to present search results to users, see [operations/format
 
 ## Technical Notes
 
+- **Wrapper Script:** `claude-mem-search.cjs` command available in `plugin/scripts/` - **USE THIS** to avoid repeated permission prompts
 - **Port:** Default 37777 (configurable via `CLAUDE_MEM_WORKER_PORT`)
 - **Response format:** Always JSON
 - **Search type:** FTS5 full-text search + structured filters
+- **Date filtering:** All search endpoints support `--from` and `--to` parameters (ISO strings or Unix timestamps)
 - **All operations use HTTP GET** with query parameters
 
 ## Performance Tips
 
-1. Use **format=index** first for overviews, then **format=full** for details
-2. Start with **limit=5-10**, expand if needed
-3. Use **project filtering** when working on one codebase
-4. Use **timeline depth** of 5-10 for focused context
-5. Be specific in search queries: "authentication JWT" > "auth"
+1. **USE the wrapper script** (`claude-mem-search.cjs`) instead of curl to minimize permission prompts
+2. Use **format=index** first for overviews, then **format=full** for details
+3. Start with **limit=5-10**, expand if needed
+4. Use **project filtering** when working on one codebase
+5. Use **date range filtering** (--from/--to) for temporal queries like "yesterday" or "last week"
+6. Use **timeline depth** of 5-10 for focused context
+7. Be specific in search queries: "authentication JWT" > "auth"
 
 ## Error Handling
 

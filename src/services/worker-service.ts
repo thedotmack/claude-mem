@@ -669,6 +669,7 @@ export class WorkerService {
       const format = (req.query.format as string) || 'full';
       const limit = parseInt(req.query.limit as string, 10) || 20;
       const project = req.query.project as string | undefined;
+      const dateRange = parseDateRange(req.query.from as string | undefined, req.query.to as string | undefined);
 
       if (!query) {
         res.status(400).json({ error: 'Missing required parameter: query' });
@@ -676,7 +677,7 @@ export class WorkerService {
       }
 
       const sessionSearch = this.dbManager.getSessionSearch();
-      const results = sessionSearch.searchObservations(query, { limit, project });
+      const results = sessionSearch.searchObservations(query, { limit, project, dateRange });
 
       res.json({
         query,
@@ -707,6 +708,8 @@ export class WorkerService {
       const query = req.query.query as string;
       const format = (req.query.format as string) || 'full';
       const limit = parseInt(req.query.limit as string, 10) || 20;
+      const project = req.query.project as string | undefined;
+      const dateRange = parseDateRange(req.query.from as string | undefined, req.query.to as string | undefined);
 
       if (!query) {
         res.status(400).json({ error: 'Missing required parameter: query' });
@@ -714,7 +717,7 @@ export class WorkerService {
       }
 
       const sessionSearch = this.dbManager.getSessionSearch();
-      const results = sessionSearch.searchSessions(query, { limit });
+      const results = sessionSearch.searchSessions(query, { limit, project, dateRange });
 
       res.json({
         query,
@@ -745,6 +748,7 @@ export class WorkerService {
       const format = (req.query.format as string) || 'full';
       const limit = parseInt(req.query.limit as string, 10) || 20;
       const project = req.query.project as string | undefined;
+      const dateRange = parseDateRange(req.query.from as string | undefined, req.query.to as string | undefined);
 
       if (!query) {
         res.status(400).json({ error: 'Missing required parameter: query' });
@@ -752,7 +756,7 @@ export class WorkerService {
       }
 
       const sessionSearch = this.dbManager.getSessionSearch();
-      const results = sessionSearch.searchUserPrompts(query, { limit, project });
+      const results = sessionSearch.searchUserPrompts(query, { limit, project, dateRange });
 
       res.json({
         query,
@@ -783,6 +787,7 @@ export class WorkerService {
       const format = (req.query.format as string) || 'full';
       const limit = parseInt(req.query.limit as string, 10) || 10;
       const project = req.query.project as string | undefined;
+      const dateRange = parseDateRange(req.query.from as string | undefined, req.query.to as string | undefined);
 
       if (!concept) {
         res.status(400).json({ error: 'Missing required parameter: concept' });
@@ -790,7 +795,7 @@ export class WorkerService {
       }
 
       const sessionSearch = this.dbManager.getSessionSearch();
-      const results = sessionSearch.findByConcept(concept, { limit, project });
+      const results = sessionSearch.findByConcept(concept, { limit, project, dateRange });
 
       res.json({
         concept,
@@ -822,6 +827,7 @@ export class WorkerService {
       const format = (req.query.format as string) || 'full';
       const limit = parseInt(req.query.limit as string, 10) || 10;
       const project = req.query.project as string | undefined;
+      const dateRange = parseDateRange(req.query.from as string | undefined, req.query.to as string | undefined);
 
       if (!filePath) {
         res.status(400).json({ error: 'Missing required parameter: filePath' });
@@ -829,7 +835,7 @@ export class WorkerService {
       }
 
       const sessionSearch = this.dbManager.getSessionSearch();
-      const results = sessionSearch.findByFile(filePath, { limit, project });
+      const results = sessionSearch.findByFile(filePath, { limit, project, dateRange });
 
       res.json({
         filePath,
@@ -869,6 +875,7 @@ export class WorkerService {
       const format = (req.query.format as string) || 'full';
       const limit = parseInt(req.query.limit as string, 10) || 10;
       const project = req.query.project as string | undefined;
+      const dateRange = parseDateRange(req.query.from as string | undefined, req.query.to as string | undefined);
 
       if (!type) {
         res.status(400).json({ error: 'Missing required parameter: type' });
@@ -876,7 +883,7 @@ export class WorkerService {
       }
 
       const sessionSearch = this.dbManager.getSessionSearch();
-      const results = sessionSearch.findByType(type as any, { limit, project });
+      const results = sessionSearch.findByType(type as any, { limit, project, dateRange });
 
       res.json({
         type,
@@ -1102,7 +1109,9 @@ export class WorkerService {
             query: 'Search query (required)',
             format: 'Response format: "index" or "full" (default: "full")',
             limit: 'Number of results (default: 20)',
-            project: 'Filter by project name (optional)'
+            project: 'Filter by project name (optional)',
+            from: 'Start date (ISO string or Unix timestamp in ms) (optional)',
+            to: 'End date (ISO string or Unix timestamp in ms) (optional)'
           }
         },
         {
@@ -1112,7 +1121,10 @@ export class WorkerService {
           parameters: {
             query: 'Search query (required)',
             format: 'Response format: "index" or "full" (default: "full")',
-            limit: 'Number of results (default: 20)'
+            limit: 'Number of results (default: 20)',
+            project: 'Filter by project name (optional)',
+            from: 'Start date (ISO string or Unix timestamp in ms) (optional)',
+            to: 'End date (ISO string or Unix timestamp in ms) (optional)'
           }
         },
         {
@@ -1123,7 +1135,9 @@ export class WorkerService {
             query: 'Search query (required)',
             format: 'Response format: "index" or "full" (default: "full")',
             limit: 'Number of results (default: 20)',
-            project: 'Filter by project name (optional)'
+            project: 'Filter by project name (optional)',
+            from: 'Start date (ISO string or Unix timestamp in ms) (optional)',
+            to: 'End date (ISO string or Unix timestamp in ms) (optional)'
           }
         },
         {
@@ -1134,7 +1148,9 @@ export class WorkerService {
             concept: 'Concept tag (required): discovery, decision, bugfix, feature, refactor',
             format: 'Response format: "index" or "full" (default: "full")',
             limit: 'Number of results (default: 10)',
-            project: 'Filter by project name (optional)'
+            project: 'Filter by project name (optional)',
+            from: 'Start date (ISO string or Unix timestamp in ms) (optional)',
+            to: 'End date (ISO string or Unix timestamp in ms) (optional)'
           }
         },
         {
@@ -1145,7 +1161,9 @@ export class WorkerService {
             filePath: 'File path or partial path (required)',
             format: 'Response format: "index" or "full" (default: "full")',
             limit: 'Number of results per type (default: 10)',
-            project: 'Filter by project name (optional)'
+            project: 'Filter by project name (optional)',
+            from: 'Start date (ISO string or Unix timestamp in ms) (optional)',
+            to: 'End date (ISO string or Unix timestamp in ms) (optional)'
           }
         },
         {
@@ -1156,7 +1174,9 @@ export class WorkerService {
             type: 'Observation type (required): discovery, decision, bugfix, feature, refactor',
             format: 'Response format: "index" or "full" (default: "full")',
             limit: 'Number of results (default: 10)',
-            project: 'Filter by project name (optional)'
+            project: 'Filter by project name (optional)',
+            from: 'Start date (ISO string or Unix timestamp in ms) (optional)',
+            to: 'End date (ISO string or Unix timestamp in ms) (optional)'
           }
         },
         {
@@ -1200,6 +1220,7 @@ export class WorkerService {
       examples: [
         'curl "http://localhost:37777/api/search/observations?query=authentication&format=index&limit=5"',
         'curl "http://localhost:37777/api/search/by-type?type=bugfix&limit=10"',
+        'curl "http://localhost:37777/api/search/observations?query=bug&from=2025-11-09T00:00:00&to=2025-11-09T23:59:59"',
         'curl "http://localhost:37777/api/context/recent?project=claude-mem&limit=3"',
         'curl "http://localhost:37777/api/context/timeline?anchor=123&depth_before=5&depth_after=5"'
       ]
@@ -1210,6 +1231,42 @@ export class WorkerService {
 // ============================================================================
 // Utilities
 // ============================================================================
+
+/**
+ * Parse date range parameters from query string
+ * Accepts ISO strings or Unix timestamps (milliseconds)
+ */
+function parseDateRange(from?: string, to?: string): { start?: string | number; end?: string | number } | undefined {
+  if (!from && !to) {
+    return undefined;
+  }
+
+  const dateRange: { start?: string | number; end?: string | number } = {};
+
+  if (from) {
+    // Try parsing as number first (Unix timestamp)
+    const timestamp = parseInt(from, 10);
+    if (!isNaN(timestamp)) {
+      dateRange.start = timestamp;
+    } else {
+      // Assume it's an ISO string
+      dateRange.start = from;
+    }
+  }
+
+  if (to) {
+    // Try parsing as number first (Unix timestamp)
+    const timestamp = parseInt(to, 10);
+    if (!isNaN(timestamp)) {
+      dateRange.end = timestamp;
+    } else {
+      // Assume it's an ISO string
+      dateRange.end = to;
+    }
+  }
+
+  return dateRange;
+}
 
 /**
  * Parse pagination parameters from request
