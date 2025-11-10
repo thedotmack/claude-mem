@@ -7,6 +7,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+- **SDK Agent Spatial Awareness**: Added working directory (CWD) context propagation
+  - SDK agent now receives `<tool_cwd>` element with each tool execution
+  - Prevents false "file not found" reports when files exist in different repositories
+  - Enables accurate path matching between requested and executed paths
+  - Works with all models (Haiku, Sonnet, Opus) - no premium workaround needed
+  - See `docs/CWD_CONTEXT_FIX.md` for technical details
+
 
 ## [5.4.0] - 2025-11-09
 
