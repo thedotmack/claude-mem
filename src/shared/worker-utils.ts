@@ -1,13 +1,9 @@
 import path from "path";
 import { homedir } from "os";
 import { existsSync, readFileSync } from "fs";
-import { execSync } from "child_process";
-import { getPackageRoot } from "./paths.js";
 
 // Named constants for health checks
 const HEALTH_CHECK_TIMEOUT_MS = 100;
-const HEALTH_CHECK_POLL_INTERVAL_MS = 100;
-const HEALTH_CHECK_MAX_WAIT_MS = 10000;
 
 /**
  * Get the worker port number
@@ -43,39 +39,19 @@ async function isWorkerHealthy(): Promise<boolean> {
 }
 
 /**
- * Wait for worker to become healthy
- */
-async function waitForWorkerHealth(): Promise<boolean> {
-  const start = Date.now();
-
-  while (Date.now() - start < HEALTH_CHECK_MAX_WAIT_MS) {
-    if (await isWorkerHealthy()) {
-      return true;
-    }
-    await new Promise(resolve => setTimeout(resolve, HEALTH_CHECK_POLL_INTERVAL_MS));
-  }
-  return false;
-}
-
-/**
  * Ensure worker service is running
- * If unhealthy, restarts PM2 and waits for health
+ * Checks health and fails with instructions if not healthy
+ * PM2's watch mode handles auto-restarts automatically
  */
 export async function ensureWorkerRunning(): Promise<void> {
   if (await isWorkerHealthy()) {
     return;
   }
 
-  const packageRoot = getPackageRoot();
-  const pm2Path = path.join(packageRoot, "node_modules", ".bin", "pm2");
-  const ecosystemPath = path.join(packageRoot, "ecosystem.config.cjs");
-
-  execSync(`"${pm2Path}" start "${ecosystemPath}"`, {
-    cwd: packageRoot,
-    stdio: 'pipe'
-  });
-
-  if (!await waitForWorkerHealth()) {
-    throw new Error("Worker failed to become healthy after restart");
-  }
+  const port = getWorkerPort();
+  throw new Error(
+    `Worker service is not responding on port ${port}.\n\n` +
+    `If you just updated the plugin, PM2's watch mode should restart automatically.\n` +
+    `If the problem persists, run: pm2 restart claude-mem-worker`
+  );
 }

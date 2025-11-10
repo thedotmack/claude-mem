@@ -287,13 +287,14 @@ export class WorkerService {
   private handleObservations(req: Request, res: Response): void {
     try {
       const sessionDbId = parseInt(req.params.sessionDbId, 10);
-      const { tool_name, tool_input, tool_response, prompt_number } = req.body;
+      const { tool_name, tool_input, tool_response, prompt_number, cwd } = req.body;
 
       this.sessionManager.queueObservation(sessionDbId, {
         tool_name,
         tool_input,
         tool_response,
-        prompt_number
+        prompt_number,
+        cwd
       });
 
       // CRITICAL: Ensure SDK agent is running to consume the queue
