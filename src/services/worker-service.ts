@@ -621,14 +621,6 @@ export class WorkerService {
           if (existsSync(mcpDisabledPath)) {
             renameSync(mcpDisabledPath, mcpPath);
             logger.info('WORKER', 'MCP search enabled');
-          } else if (!existsSync(mcpPath)) {
-            // Neither file exists, copy from .mcp.json.template
-            const mcpTemplatePath = path.join(pluginRoot, 'plugin', '.mcp.json.template');
-            if (existsSync(mcpTemplatePath)) {
-              const mcpConfig = readFileSync(mcpTemplatePath, 'utf-8');
-              writeFileSync(mcpPath, mcpConfig, 'utf-8');
-              logger.info('WORKER', 'MCP search enabled (created from template)');
-            }
           }
         } else {
           // Disable MCP: rename .mcp.json -> .mcp.json.disabled
