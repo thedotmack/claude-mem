@@ -101,22 +101,7 @@ export class SessionManager {
     emitter?.emit('message');
 
     // Format tool name for logging
-    let toolSummary = data.tool_name;
-    try {
-      const input = data.tool_input;
-      if (data.tool_name === 'Read' && input?.file_path) {
-        toolSummary = `Read(${input.file_path.split('/').pop()})`;
-      } else if (data.tool_name === 'Edit' && input?.file_path) {
-        toolSummary = `Edit(${input.file_path.split('/').pop()})`;
-      } else if (data.tool_name === 'Write' && input?.file_path) {
-        toolSummary = `Write(${input.file_path.split('/').pop()})`;
-      } else if (data.tool_name === 'Bash' && input?.command) {
-        const cmd = input.command.substring(0, 30);
-        toolSummary = `Bash(${cmd}${input.command.length > 30 ? '...' : ''})`;
-      }
-    } catch {
-      // Keep default
-    }
+    const toolSummary = logger.formatTool(data.tool_name, data.tool_input);
 
     logger.info('SESSION', `Observation queued (${beforeDepth}→${afterDepth})`, {
       sessionId: sessionDbId,
@@ -136,12 +121,19 @@ export class SessionManager {
       session = this.initializeSession(sessionDbId);
     }
 
+    const beforeDepth = session.pendingMessages.length;
+
     session.pendingMessages.push({ type: 'summarize' });
+
+    const afterDepth = session.pendingMessages.length;
 
     const emitter = this.sessionQueues.get(sessionDbId);
     emitter?.emit('message');
 
-    logger.debug('WORKER', 'Summarize queued', { sessionDbId });
+    logger.info('SESSION', `Summarize queued (${beforeDepth}→${afterDepth})`, {
+      sessionId: sessionDbId,
+      hasGenerator: !!session.generatorPromise
+    });
   }
 
   /**

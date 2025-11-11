@@ -112,27 +112,7 @@ export class WorkerService {
     if (path.includes('/observations')) {
       const toolName = body.tool_name || '?';
       const toolInput = body.tool_input;
-      let toolSummary = toolName;
-
-      // Format tool input for common tools
-      try {
-        if (toolName === 'Read' && toolInput?.file_path) {
-          const fileName = toolInput.file_path.split('/').pop();
-          toolSummary = `Read(${fileName})`;
-        } else if (toolName === 'Edit' && toolInput?.file_path) {
-          const fileName = toolInput.file_path.split('/').pop();
-          toolSummary = `Edit(${fileName})`;
-        } else if (toolName === 'Write' && toolInput?.file_path) {
-          const fileName = toolInput.file_path.split('/').pop();
-          toolSummary = `Write(${fileName})`;
-        } else if (toolName === 'Bash' && toolInput?.command) {
-          const cmd = toolInput.command.substring(0, 40);
-          toolSummary = `Bash(${cmd}${toolInput.command.length > 40 ? '...' : ''})`;
-        }
-      } catch {
-        // Keep default
-      }
-
+      const toolSummary = logger.formatTool(toolName, toolInput);
       return `tool=${toolSummary}`;
     }
 
@@ -319,18 +299,23 @@ export class WorkerService {
 
         // Sync user prompt to Chroma with error logging
         const chromaStart = Date.now();
+        const promptText = latestPrompt.prompt_text;
         this.dbManager.getChromaSync().syncUserPrompt(
           latestPrompt.id,
           latestPrompt.sdk_session_id,
           latestPrompt.project,
-          latestPrompt.prompt_text,
+          promptText,
           latestPrompt.prompt_number,
           latestPrompt.created_at_epoch
         ).then(() => {
           const chromaDuration = Date.now() - chromaStart;
+          const truncatedPrompt = promptText.length > 60
+            ? promptText.substring(0, 60) + '...'
+            : promptText;
           logger.debug('CHROMA', 'User prompt synced', {
             promptId: latestPrompt.id,
-            duration: `${chromaDuration}ms`
+            duration: `${chromaDuration}ms`,
+            prompt: truncatedPrompt
           });
         }).catch(err => {
           logger.error('CHROMA', 'Failed to sync user_prompt', {

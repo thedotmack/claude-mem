@@ -72,10 +72,13 @@ export class SDKAgent {
 
           // Only log non-empty responses (filter out noise)
           if (responseSize > 0) {
+            const truncatedResponse = responseSize > 100
+              ? textContent.substring(0, 100) + '...'
+              : textContent;
             logger.dataOut('SDK', `Response received (${responseSize} chars)`, {
               sessionId: session.sessionDbId,
               promptNumber: session.lastPromptNumber
-            });
+            }, truncatedResponse);
 
             // Parse and process response
             await this.processSDKResponse(session, textContent, worker);
@@ -200,6 +203,8 @@ export class SDKAgent {
 
       // Sync to Chroma with error logging
       const chromaStart = Date.now();
+      const obsType = obs.type;
+      const obsTitle = obs.title;
       this.dbManager.getChromaSync().syncObservation(
         obsId,
         session.claudeSessionId,
@@ -209,9 +214,22 @@ export class SDKAgent {
         createdAtEpoch
       ).then(() => {
         const chromaDuration = Date.now() - chromaStart;
-        logger.debug('CHROMA', 'Observation synced', { obsId, duration: `${chromaDuration}ms` });
+        const truncatedTitle = obsTitle.length > 50
+          ? obsTitle.substring(0, 50) + '...'
+          : obsTitle;
+        logger.debug('CHROMA', 'Observation synced', {
+          obsId,
+          duration: `${chromaDuration}ms`,
+          type: obsType,
+          title: truncatedTitle
+        });
       }).catch(err => {
-        logger.error('CHROMA', 'Failed to sync observation', { obsId, sessionId: session.sessionDbId }, err);
+        logger.error('CHROMA', 'Failed to sync observation', {
+          obsId,
+          sessionId: session.sessionDbId,
+          type: obsType,
+          title: obsTitle.substring(0, 50)
+        }, err);
       });
 
       // Broadcast to SSE clients (for web UI)
@@ -262,6 +280,7 @@ export class SDKAgent {
 
       // Sync to Chroma with error logging
       const chromaStart = Date.now();
+      const summaryRequest = summary.request;
       this.dbManager.getChromaSync().syncSummary(
         summaryId,
         session.claudeSessionId,
@@ -271,9 +290,20 @@ export class SDKAgent {
         createdAtEpoch
       ).then(() => {
         const chromaDuration = Date.now() - chromaStart;
-        logger.debug('CHROMA', 'Summary synced', { summaryId, duration: `${chromaDuration}ms` });
+        const truncatedRequest = summaryRequest.length > 50
+          ? summaryRequest.substring(0, 50) + '...'
+          : summaryRequest;
+        logger.debug('CHROMA', 'Summary synced', {
+          summaryId,
+          duration: `${chromaDuration}ms`,
+          request: truncatedRequest
+        });
       }).catch(err => {
-        logger.error('CHROMA', 'Failed to sync summary', { summaryId, sessionId: session.sessionDbId }, err);
+        logger.error('CHROMA', 'Failed to sync summary', {
+          summaryId,
+          sessionId: session.sessionDbId,
+          request: summaryRequest.substring(0, 50)
+        }, err);
       });
 
       // Broadcast to SSE clients (for web UI)

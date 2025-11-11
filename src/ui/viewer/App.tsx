@@ -19,7 +19,7 @@ export function App() {
 
   const { observations, summaries, prompts, projects, isProcessing, isConnected } = useSSE();
   const { settings, saveSettings, isSaving, saveStatus } = useSettings();
-  const { stats } = useStats();
+  const { stats, refreshStats } = useStats();
   const { preference, resolvedTheme, setThemePreference } = useTheme();
   const pagination = usePagination(currentFilter);
 
@@ -118,6 +118,7 @@ export function App() {
         isConnected={isConnected}
         onSave={saveSettings}
         onClose={toggleSidebar}
+        onRefreshStats={refreshStats}
       />
     </div>
   );
