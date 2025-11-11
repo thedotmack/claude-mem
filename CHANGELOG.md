@@ -7,6 +7,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+- **mem-search Skill**: Enhanced search skill with 100% effectiveness compliance
+  - Replaces `search` skill with improved scope differentiation and trigger design
+  - 85% concrete triggers (vs 44% in previous version) for reliable auto-invocation
+  - 5+ unique identifiers (vs 1) to distinguish from native conversation memory
+  - 9 scope differentiation keywords to prevent confusion with current session context
+  - Progressive disclosure architecture with token efficiency documentation
+  - 17 files: SKILL.md + 12 operations + 2 principles directories
+  - Validated against Anthropic's official skill-creator documentation
+  - See `docs/skill-audit-report.md` for detailed compliance analysis
+
 ### Fixed
 - **SDK Agent Spatial Awareness**: Added working directory (CWD) context propagation
   - SDK agent now receives `<tool_cwd>` element with each tool execution

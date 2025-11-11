@@ -934,14 +934,37 @@ export class SessionStore {
 
   /**
    * Create a new SDK session (idempotent - returns existing session ID if already exists)
-   * Sets both claude_session_id and sdk_session_id to the same value
+   *
+   * CRITICAL ARCHITECTURE: Session ID Threading
+   * ============================================
+   * This function is the KEY to how claude-mem stays unified across hooks:
+   *
+   * - NEW hook calls: createSDKSession(session_id, project, prompt)
+   * - SAVE hook calls: createSDKSession(session_id, '', '')
+   * - Both use the SAME session_id from Claude Code's hook context
+   *
+   * IDEMPOTENT BEHAVIOR (INSERT OR IGNORE):
+   * - Prompt #1: session_id not in database → INSERT creates new row
+   * - Prompt #2+: session_id exists → INSERT ignored, fetch existing ID
+   * - Result: Same database ID returned for all prompts in conversation
+   *
+   * WHY THIS MATTERS:
+   * - NO "does session exist?" checks needed anywhere
+   * - NO risk of creating duplicate sessions
+   * - ALL hooks automatically connected via session_id
+   * - SAVE hook observations go to correct session (same session_id)
+   * - SDKAgent continuation prompt has correct context (same session_id)
+   *
+   * This is KISS in action: Trust the database UNIQUE constraint and
+   * INSERT OR IGNORE to handle both creation and lookup elegantly.
    */
   createSDKSession(claudeSessionId: string, project: string, userPrompt: string): number {
     const now = new Date();
     const nowEpoch = now.getTime();
 
-    // Try to insert - will be ignored if session already exists
-    // claude_session_id and sdk_session_id are the same value
+    // CRITICAL: INSERT OR IGNORE makes this idempotent
+    // First call (prompt #1): Creates new row
+    // Subsequent calls (prompt #2+): Ignored, returns existing ID
     const stmt = this.db.prepare(`
       INSERT OR IGNORE INTO sdk_sessions
       (claude_session_id, sdk_session_id, project, user_prompt, started_at, started_at_epoch, status)

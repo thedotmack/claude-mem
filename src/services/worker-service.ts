@@ -19,6 +19,8 @@ import { homedir } from 'os';
 import { getPackageRoot } from '../shared/paths.js';
 import { getWorkerPort } from '../shared/worker-utils.js';
 import { logger } from '../utils/logger.js';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
 // Import composed services
 import { DatabaseManager } from './worker/DatabaseManager.js';
@@ -32,6 +34,7 @@ export class WorkerService {
   private app: express.Application;
   private server: http.Server | null = null;
   private startTime: number = Date.now();
+  private mcpClient: Client;
 
   // Composed services
   private dbManager: DatabaseManager;
@@ -54,6 +57,11 @@ export class WorkerService {
     this.sdkAgent = new SDKAgent(this.dbManager, this.sessionManager);
     this.paginationHelper = new PaginationHelper(this.dbManager);
     this.settingsManager = new SettingsManager(this.dbManager);
+
+    this.mcpClient = new Client({
+      name: 'worker-search-proxy',
+      version: '1.0.0'
+    }, { capabilities: {} });
 
     this.setupMiddleware();
     this.setupRoutes();
@@ -176,6 +184,17 @@ export class WorkerService {
   async start(): Promise<void> {
     // Initialize database (once, stays open)
     await this.dbManager.initialize();
+
+    // Connect to MCP search server
+    const searchServerPath = path.join(__dirname, '..', '..', 'plugin', 'scripts', 'search-server.mjs');
+    const transport = new StdioClientTransport({
+      command: 'node',
+      args: [searchServerPath],
+      env: process.env
+    });
+
+    await this.mcpClient.connect(transport);
+    logger.success('WORKER', 'Connected to MCP search server');
 
     // Start HTTP server
     const port = getWorkerPort();
@@ -828,37 +847,15 @@ export class WorkerService {
    * Search observations
    * GET /api/search/observations?query=...&format=index&limit=20&project=...
    */
-  private handleSearchObservations(req: Request, res: Response): void {
+  private async handleSearchObservations(req: Request, res: Response): Promise<void> {
     try {
-      const query = req.query.query as string;
-      const format = (req.query.format as string) || 'full';
-      const limit = parseInt(req.query.limit as string, 10) || 20;
-      const project = req.query.project as string | undefined;
-
-      if (!query) {
-        res.status(400).json({ error: 'Missing required parameter: query' });
-        return;
-      }
-
-      const sessionSearch = this.dbManager.getSessionSearch();
-      const results = sessionSearch.searchObservations(query, { limit, project });
-
-      res.json({
-        query,
-        count: results.length,
-        format,
-        results: format === 'index' ? results.map(r => ({
-          id: r.id,
-          type: r.type,
-          title: r.title,
-          subtitle: r.subtitle,
-          created_at_epoch: r.created_at_epoch,
-          project: r.project,
-          score: r.score
-        })) : results
+      const result = await this.mcpClient.callTool({
+        name: 'search_observations',
+        arguments: req.query
       });
+      res.json(result.content);
     } catch (error) {
-      logger.failure('WORKER', 'Search observations failed', {}, error as Error);
+      logger.failure('WORKER', 'Search failed', {}, error as Error);
       res.status(500).json({ error: (error as Error).message });
     }
   }
@@ -867,35 +864,15 @@ export class WorkerService {
    * Search session summaries
    * GET /api/search/sessions?query=...&format=index&limit=20
    */
-  private handleSearchSessions(req: Request, res: Response): void {
+  private async handleSearchSessions(req: Request, res: Response): Promise<void> {
     try {
-      const query = req.query.query as string;
-      const format = (req.query.format as string) || 'full';
-      const limit = parseInt(req.query.limit as string, 10) || 20;
-
-      if (!query) {
-        res.status(400).json({ error: 'Missing required parameter: query' });
-        return;
-      }
-
-      const sessionSearch = this.dbManager.getSessionSearch();
-      const results = sessionSearch.searchSessions(query, { limit });
-
-      res.json({
-        query,
-        count: results.length,
-        format,
-        results: format === 'index' ? results.map(r => ({
-          id: r.id,
-          request: r.request,
-          completed: r.completed,
-          created_at_epoch: r.created_at_epoch,
-          project: r.project,
-          score: r.score
-        })) : results
+      const result = await this.mcpClient.callTool({
+        name: 'search_sessions',
+        arguments: req.query
       });
+      res.json(result.content);
     } catch (error) {
-      logger.failure('WORKER', 'Search sessions failed', {}, error as Error);
+      logger.failure('WORKER', 'Search failed', {}, error as Error);
       res.status(500).json({ error: (error as Error).message });
     }
   }
@@ -904,36 +881,15 @@ export class WorkerService {
    * Search user prompts
    * GET /api/search/prompts?query=...&format=index&limit=20
    */
-  private handleSearchPrompts(req: Request, res: Response): void {
+  private async handleSearchPrompts(req: Request, res: Response): Promise<void> {
     try {
-      const query = req.query.query as string;
-      const format = (req.query.format as string) || 'full';
-      const limit = parseInt(req.query.limit as string, 10) || 20;
-      const project = req.query.project as string | undefined;
-
-      if (!query) {
-        res.status(400).json({ error: 'Missing required parameter: query' });
-        return;
-      }
-
-      const sessionSearch = this.dbManager.getSessionSearch();
-      const results = sessionSearch.searchUserPrompts(query, { limit, project });
-
-      res.json({
-        query,
-        count: results.length,
-        format,
-        results: format === 'index' ? results.map(r => ({
-          id: r.id,
-          claude_session_id: r.claude_session_id,
-          prompt_number: r.prompt_number,
-          prompt_text: r.prompt_text,
-          created_at_epoch: r.created_at_epoch,
-          score: r.score
-        })) : results
+      const result = await this.mcpClient.callTool({
+        name: 'search_user_prompts',
+        arguments: req.query
       });
+      res.json(result.content);
     } catch (error) {
-      logger.failure('WORKER', 'Search prompts failed', {}, error as Error);
+      logger.failure('WORKER', 'Search failed', {}, error as Error);
       res.status(500).json({ error: (error as Error).message });
     }
   }
@@ -942,37 +898,15 @@ export class WorkerService {
    * Search observations by concept
    * GET /api/search/by-concept?concept=discovery&format=index&limit=5
    */
-  private handleSearchByConcept(req: Request, res: Response): void {
+  private async handleSearchByConcept(req: Request, res: Response): Promise<void> {
     try {
-      const concept = req.query.concept as string;
-      const format = (req.query.format as string) || 'full';
-      const limit = parseInt(req.query.limit as string, 10) || 10;
-      const project = req.query.project as string | undefined;
-
-      if (!concept) {
-        res.status(400).json({ error: 'Missing required parameter: concept' });
-        return;
-      }
-
-      const sessionSearch = this.dbManager.getSessionSearch();
-      const results = sessionSearch.findByConcept(concept, { limit, project });
-
-      res.json({
-        concept,
-        count: results.length,
-        format,
-        results: format === 'index' ? results.map(r => ({
-          id: r.id,
-          type: r.type,
-          title: r.title,
-          subtitle: r.subtitle,
-          created_at_epoch: r.created_at_epoch,
-          project: r.project,
-          concepts: r.concepts
-        })) : results
+      const result = await this.mcpClient.callTool({
+        name: 'find_by_concept',
+        arguments: req.query
       });
+      res.json(result.content);
     } catch (error) {
-      logger.failure('WORKER', 'Search by concept failed', {}, error as Error);
+      logger.failure('WORKER', 'Search failed', {}, error as Error);
       res.status(500).json({ error: (error as Error).message });
     }
   }
@@ -981,45 +915,15 @@ export class WorkerService {
    * Search by file path
    * GET /api/search/by-file?filePath=...&format=index&limit=10
    */
-  private handleSearchByFile(req: Request, res: Response): void {
+  private async handleSearchByFile(req: Request, res: Response): Promise<void> {
     try {
-      const filePath = req.query.filePath as string;
-      const format = (req.query.format as string) || 'full';
-      const limit = parseInt(req.query.limit as string, 10) || 10;
-      const project = req.query.project as string | undefined;
-
-      if (!filePath) {
-        res.status(400).json({ error: 'Missing required parameter: filePath' });
-        return;
-      }
-
-      const sessionSearch = this.dbManager.getSessionSearch();
-      const results = sessionSearch.findByFile(filePath, { limit, project });
-
-      res.json({
-        filePath,
-        count: results.observations.length + results.sessions.length,
-        format,
-        results: {
-          observations: format === 'index' ? results.observations.map(r => ({
-            id: r.id,
-            type: r.type,
-            title: r.title,
-            subtitle: r.subtitle,
-            created_at_epoch: r.created_at_epoch,
-            project: r.project
-          })) : results.observations,
-          sessions: format === 'index' ? results.sessions.map(r => ({
-            id: r.id,
-            request: r.request,
-            completed: r.completed,
-            created_at_epoch: r.created_at_epoch,
-            project: r.project
-          })) : results.sessions
-        }
+      const result = await this.mcpClient.callTool({
+        name: 'find_by_file',
+        arguments: req.query
       });
+      res.json(result.content);
     } catch (error) {
-      logger.failure('WORKER', 'Search by file failed', {}, error as Error);
+      logger.failure('WORKER', 'Search failed', {}, error as Error);
       res.status(500).json({ error: (error as Error).message });
     }
   }
@@ -1028,36 +932,15 @@ export class WorkerService {
    * Search observations by type
    * GET /api/search/by-type?type=bugfix&format=index&limit=10
    */
-  private handleSearchByType(req: Request, res: Response): void {
+  private async handleSearchByType(req: Request, res: Response): Promise<void> {
     try {
-      const type = req.query.type as string;
-      const format = (req.query.format as string) || 'full';
-      const limit = parseInt(req.query.limit as string, 10) || 10;
-      const project = req.query.project as string | undefined;
-
-      if (!type) {
-        res.status(400).json({ error: 'Missing required parameter: type' });
-        return;
-      }
-
-      const sessionSearch = this.dbManager.getSessionSearch();
-      const results = sessionSearch.findByType(type as any, { limit, project });
-
-      res.json({
-        type,
-        count: results.length,
-        format,
-        results: format === 'index' ? results.map(r => ({
-          id: r.id,
-          type: r.type,
-          title: r.title,
-          subtitle: r.subtitle,
-          created_at_epoch: r.created_at_epoch,
-          project: r.project
-        })) : results
+      const result = await this.mcpClient.callTool({
+        name: 'find_by_type',
+        arguments: req.query
       });
+      res.json(result.content);
     } catch (error) {
-      logger.failure('WORKER', 'Search by type failed', {}, error as Error);
+      logger.failure('WORKER', 'Search failed', {}, error as Error);
       res.status(500).json({ error: (error as Error).message });
     }
   }
@@ -1066,49 +949,15 @@ export class WorkerService {
    * Get recent context (summaries and observations for a project)
    * GET /api/context/recent?project=...&limit=3
    */
-  private handleGetRecentContext(req: Request, res: Response): void {
+  private async handleGetRecentContext(req: Request, res: Response): Promise<void> {
     try {
-      const project = (req.query.project as string) || path.basename(process.cwd());
-      const limit = parseInt(req.query.limit as string, 10) || 3;
-
-      const sessionStore = this.dbManager.getSessionStore();
-      const sessions = sessionStore.getRecentSessionsWithStatus(project, limit);
-
-      const contextData = sessions.map(session => {
-        const summary = session.has_summary && session.sdk_session_id
-          ? sessionStore.getSummaryForSession(session.sdk_session_id)
-          : null;
-
-        const observations = session.sdk_session_id
-          ? sessionStore.getObservationsForSession(session.sdk_session_id)
-          : [];
-
-        return {
-          session_id: session.id,
-          sdk_session_id: session.sdk_session_id,
-          project: session.project,
-          status: session.status,
-          has_summary: session.has_summary,
-          summary,
-          observations: observations.map(o => ({
-            id: o.id,
-            type: o.type,
-            title: o.title,
-            subtitle: o.subtitle,
-            created_at_epoch: o.created_at_epoch
-          })),
-          created_at_epoch: session.started_at_epoch
-        };
+      const result = await this.mcpClient.callTool({
+        name: 'get_recent_context',
+        arguments: req.query
       });
-
-      res.json({
-        project,
-        limit,
-        count: contextData.length,
-        sessions: contextData
-      });
+      res.json(result.content);
     } catch (error) {
-      logger.failure('WORKER', 'Get recent context failed', {}, error as Error);
+      logger.failure('WORKER', 'Search failed', {}, error as Error);
       res.status(500).json({ error: (error as Error).message });
     }
   }
@@ -1117,59 +966,15 @@ export class WorkerService {
    * Get context timeline around an anchor point
    * GET /api/context/timeline?anchor=123&depth_before=10&depth_after=10&project=...
    */
-  private handleGetContextTimeline(req: Request, res: Response): void {
+  private async handleGetContextTimeline(req: Request, res: Response): Promise<void> {
     try {
-      const anchor = req.query.anchor as string;
-      const depthBefore = parseInt(req.query.depth_before as string, 10) || 10;
-      const depthAfter = parseInt(req.query.depth_after as string, 10) || 10;
-      const project = req.query.project as string | undefined;
-
-      if (!anchor) {
-        res.status(400).json({ error: 'Missing required parameter: anchor' });
-        return;
-      }
-
-      const sessionStore = this.dbManager.getSessionStore();
-      let timeline;
-
-      // Check if anchor is a number (observation ID)
-      if (/^\d+$/.test(anchor)) {
-        const obsId = parseInt(anchor, 10);
-        const obs = sessionStore.getObservationById(obsId);
-        if (!obs) {
-          res.status(404).json({ error: `Observation #${obsId} not found` });
-          return;
-        }
-        timeline = sessionStore.getTimelineAroundObservation(obsId, obs.created_at_epoch, depthBefore, depthAfter, project);
-      } else if (anchor.startsWith('S') || anchor.startsWith('#S')) {
-        // Session ID
-        const sessionId = anchor.replace(/^#?S/, '');
-        const sessionNum = parseInt(sessionId, 10);
-        const sessions = sessionStore.getSessionSummariesByIds([sessionNum]);
-        if (sessions.length === 0) {
-          res.status(404).json({ error: `Session #${sessionNum} not found` });
-          return;
-        }
-        timeline = sessionStore.getTimelineAroundTimestamp(sessions[0].created_at_epoch, depthBefore, depthAfter, project);
-      } else {
-        // ISO timestamp
-        const date = new Date(anchor);
-        if (isNaN(date.getTime())) {
-          res.status(400).json({ error: `Invalid timestamp: ${anchor}` });
-          return;
-        }
-        timeline = sessionStore.getTimelineAroundTimestamp(date.getTime(), depthBefore, depthAfter, project);
-      }
-
-      res.json({
-        anchor,
-        depth_before: depthBefore,
-        depth_after: depthAfter,
-        project,
-        timeline
+      const result = await this.mcpClient.callTool({
+        name: 'get_context_timeline',
+        arguments: req.query
       });
+      res.json(result.content);
     } catch (error) {
-      logger.failure('WORKER', 'Get context timeline failed', {}, error as Error);
+      logger.failure('WORKER', 'Search failed', {}, error as Error);
       res.status(500).json({ error: (error as Error).message });
     }
   }
@@ -1178,74 +983,15 @@ export class WorkerService {
    * Get timeline by query (search first, then get timeline around best match)
    * GET /api/timeline/by-query?query=...&mode=auto&depth_before=10&depth_after=10
    */
-  private handleGetTimelineByQuery(req: Request, res: Response): void {
+  private async handleGetTimelineByQuery(req: Request, res: Response): Promise<void> {
     try {
-      const query = req.query.query as string;
-      const mode = (req.query.mode as string) || 'auto';
-      const depthBefore = parseInt(req.query.depth_before as string, 10) || 10;
-      const depthAfter = parseInt(req.query.depth_after as string, 10) || 10;
-      const project = req.query.project as string | undefined;
-
-      if (!query) {
-        res.status(400).json({ error: 'Missing required parameter: query' });
-        return;
-      }
-
-      const sessionSearch = this.dbManager.getSessionSearch();
-      const sessionStore = this.dbManager.getSessionStore();
-
-      // Search based on mode
-      let bestMatch: any = null;
-      let searchResults: any = null;
-
-      if (mode === 'observations' || mode === 'auto') {
-        const obsResults = sessionSearch.searchObservations(query, { limit: 1, project });
-        if (obsResults.length > 0) {
-          bestMatch = obsResults[0];
-          searchResults = { type: 'observation', results: obsResults };
-        }
-      }
-
-      if (!bestMatch && (mode === 'sessions' || mode === 'auto')) {
-        const sessionResults = sessionSearch.searchSessions(query, { limit: 1 });
-        if (sessionResults.length > 0) {
-          bestMatch = sessionResults[0];
-          searchResults = { type: 'session', results: sessionResults };
-        }
-      }
-
-      if (!bestMatch) {
-        res.json({
-          query,
-          mode,
-          match: null,
-          timeline: null,
-          message: 'No matches found for query'
-        });
-        return;
-      }
-
-      // Get timeline around best match
-      const timeline = searchResults.type === 'observation'
-        ? sessionStore.getTimelineAroundObservation(bestMatch.id, bestMatch.created_at_epoch, depthBefore, depthAfter, project)
-        : sessionStore.getTimelineAroundTimestamp(bestMatch.created_at_epoch, depthBefore, depthAfter, project);
-
-      res.json({
-        query,
-        mode,
-        match: {
-          type: searchResults.type,
-          id: bestMatch.id,
-          title: bestMatch.title || bestMatch.request,
-          score: bestMatch.score,
-          created_at_epoch: bestMatch.created_at_epoch
-        },
-        depth_before: depthBefore,
-        depth_after: depthAfter,
-        timeline
+      const result = await this.mcpClient.callTool({
+        name: 'get_timeline_by_query',
+        arguments: req.query
       });
+      res.json(result.content);
     } catch (error) {
-      logger.failure('WORKER', 'Get timeline by query failed', {}, error as Error);
+      logger.failure('WORKER', 'Search failed', {}, error as Error);
       res.status(500).json({ error: (error as Error).message });
     }
   }

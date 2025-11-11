@@ -184,9 +184,27 @@ IMPORTANT! DO NOT do any work other than generate the PROGRESS SUMMARY  - and re
 
 /**
  * Build prompt for continuation of existing session
+ *
+ * CRITICAL: Why claudeSessionId Parameter is Required
+ * ====================================================
+ * This function receives claudeSessionId from SDKAgent.ts, which comes from:
+ * - SessionManager.initializeSession (fetched from database)
+ * - SessionStore.createSDKSession (stored by new-hook.ts)
+ * - new-hook.ts receives it from Claude Code's hook context
+ *
+ * The claudeSessionId is the SAME session_id used by:
+ * - NEW hook (to create/fetch session)
+ * - SAVE hook (to store observations)
+ * - This continuation prompt (to maintain session context)
+ *
+ * This is how everything stays connected - ONE session_id threading through
+ * all hooks and prompts in the same conversation.
+ *
+ * Called when: promptNumber > 1 (see SDKAgent.ts line 150)
+ * First prompt: Uses buildInitPrompt instead (promptNumber === 1)
  */
-export function buildContinuationPrompt(userPrompt: string, promptNumber: number): string {
-  return `This is the next prompt from the user for the session you're observing. 
+export function buildContinuationPrompt(userPrompt: string, promptNumber: number, claudeSessionId: string): string {
+  return `This is continuation prompt #${promptNumber} for session ${claudeSessionId} that you're observing. 
 
 CRITICAL: Record what was LEARNED/BUILT/FIXED/DEPLOYED/CONFIGURED, not what you (the observer) are doing.
 

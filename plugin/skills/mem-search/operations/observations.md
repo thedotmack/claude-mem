@@ -12,7 +12,7 @@ Search all observations using natural language queries.
 ## Command
 
 ```bash
-curl -s "http://localhost:37777/api/search/observations?query=authentication&format=index&limit=20"
+curl -s "http://localhost:37777/api/search/observations?query=authentication&format=index&limit=5"
 ```
 
 ## Parameters
@@ -28,10 +28,12 @@ curl -s "http://localhost:37777/api/search/observations?query=authentication&for
 - Quick overviews
 - Finding IDs for deeper investigation
 - Listing multiple results
+- **Token cost: ~50-100 per result**
 
 **Use format=full for:**
 - Complete details including narrative, facts, files, concepts
 - Understanding the full context of specific observations
+- **Token cost: ~500-1000 per result**
 
 ## Example Response (format=index)
 
@@ -72,7 +74,7 @@ Found 5 results for "authentication":
 
 **Include:** ID (for follow-up), type emoji (🔴 bugfix, 🟣 feature, 🔄 refactor, 🔵 discovery, 🧠 decision, ✅ change), title, subtitle, date, project.
 
-For complete formatting guidelines, see [formatting.md](formatting.md).
+For complete formatting guidelines, see formatting.md (documentation coming soon).
 
 ## Error Handling
 
@@ -94,3 +96,8 @@ Response: "No results found for 'foobar'. Try different search terms."
 2. Start with format=index and limit=5-10
 3. Use project filtering when working on one codebase
 4. If no results, try broader terms or check spelling
+
+**Token Efficiency:**
+- Start with format=index (~50-100 tokens per result)
+- Use format=full only for relevant items (~500-1000 tokens per result)
+- See [../principles/progressive-disclosure.md](../principles/progressive-disclosure.md)
