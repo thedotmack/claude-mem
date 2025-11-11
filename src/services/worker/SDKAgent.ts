@@ -188,7 +188,8 @@ export class SDKAgent {
               id: session.sessionDbId,
               sdk_session_id: session.sdkSessionId,
               project: session.project,
-              user_prompt: session.userPrompt
+              user_prompt: session.userPrompt,
+              last_user_message: message.last_user_message || ''
             })
           },
           session_id: session.claudeSessionId,
@@ -351,9 +352,9 @@ export class SDKAgent {
       }
     }
 
-    // Check and stop spinner after processing (debounced)
-    if (worker && typeof worker.checkAndStopSpinner === 'function') {
-      worker.checkAndStopSpinner();
+    // Broadcast activity status after processing (queue may have changed)
+    if (worker && typeof worker.broadcastProcessingStatus === 'function') {
+      worker.broadcastProcessingStatus();
     }
   }
 

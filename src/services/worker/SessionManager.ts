@@ -17,9 +17,17 @@ export class SessionManager {
   private dbManager: DatabaseManager;
   private sessions: Map<number, ActiveSession> = new Map();
   private sessionQueues: Map<number, EventEmitter> = new Map();
+  private onSessionDeletedCallback?: () => void;
 
   constructor(dbManager: DatabaseManager) {
     this.dbManager = dbManager;
+  }
+
+  /**
+   * Set callback to be called when a session is deleted (for broadcasting status)
+   */
+  setOnSessionDeleted(callback: () => void): void {
+    this.onSessionDeletedCallback = callback;
   }
 
   /**
@@ -115,7 +123,7 @@ export class SessionManager {
    * Queue a summarize request (zero-latency notification)
    * Auto-initializes session if not in memory but exists in database
    */
-  queueSummarize(sessionDbId: number): void {
+  queueSummarize(sessionDbId: number, lastUserMessage: string): void {
     // Auto-initialize from database if needed (handles worker restarts)
     let session = this.sessions.get(sessionDbId);
     if (!session) {
@@ -124,7 +132,10 @@ export class SessionManager {
 
     const beforeDepth = session.pendingMessages.length;
 
-    session.pendingMessages.push({ type: 'summarize' });
+    session.pendingMessages.push({
+      type: 'summarize',
+      last_user_message: lastUserMessage
+    });
 
     const afterDepth = session.pendingMessages.length;
 
@@ -165,6 +176,11 @@ export class SessionManager {
       duration: `${(sessionDuration / 1000).toFixed(1)}s`,
       project: session.project
     });
+
+    // Trigger callback to broadcast status update (spinner may need to stop)
+    if (this.onSessionDeletedCallback) {
+      this.onSessionDeletedCallback();
+    }
   }
 
   /**
@@ -189,6 +205,35 @@ export class SessionManager {
    */
   getActiveSessionCount(): number {
     return this.sessions.size;
+  }
+
+  /**
+   * Get total queue depth across all sessions (for activity indicator)
+   */
+  getTotalQueueDepth(): number {
+    let total = 0;
+    for (const session of this.sessions.values()) {
+      total += session.pendingMessages.length;
+    }
+    return total;
+  }
+
+  /**
+   * Check if any session is actively processing (has pending messages OR active generator)
+   * Used for activity indicator to prevent spinner from stopping while SDK is processing
+   */
+  isAnySessionProcessing(): boolean {
+    for (const session of this.sessions.values()) {
+      // Has queued messages waiting to be processed
+      if (session.pendingMessages.length > 0) {
+        return true;
+      }
+      // Has active SDK generator running (processing dequeued messages)
+      if (session.generatorPromise !== null) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**
@@ -226,6 +271,12 @@ export class SessionManager {
       while (session.pendingMessages.length > 0) {
         const message = session.pendingMessages.shift()!;
         yield message;
+
+        // If we just yielded a summary, that's the end of this batch - stop the iterator
+        if (message.type === 'summarize') {
+          logger.info('SESSION', `Summary yielded - ending generator`, { sessionId: sessionDbId });
+          return;
+        }
       }
     }
   }

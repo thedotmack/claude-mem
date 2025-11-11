@@ -4,6 +4,7 @@
  */
 
 import { stdin } from 'process';
+import { readFileSync, existsSync } from 'fs';
 import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { createHookResponse } from './hook-response.js';
 import { logger } from '../utils/logger.js';
@@ -12,7 +13,51 @@ import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
 export interface StopInput {
   session_id: string;
   cwd: string;
+  transcript_path?: string;
   [key: string]: any;
+}
+
+/**
+ * Extract last user message from transcript JSONL file
+ */
+function extractLastUserMessage(transcriptPath: string): string {
+  if (!transcriptPath || !existsSync(transcriptPath)) {
+    return '';
+  }
+
+  try {
+    const content = readFileSync(transcriptPath, 'utf-8').trim();
+    if (!content) {
+      return '';
+    }
+
+    const lines = content.split('\n');
+
+    // Parse JSONL and find last user message
+    for (let i = lines.length - 1; i >= 0; i--) {
+      try {
+        const line = JSON.parse(lines[i]);
+        if (line.role === 'user' && line.content) {
+          // Extract text content (handle both string and array formats)
+          if (typeof line.content === 'string') {
+            return line.content;
+          } else if (Array.isArray(line.content)) {
+            const textParts = line.content
+              .filter((c: any) => c.type === 'text')
+              .map((c: any) => c.text);
+            return textParts.join('\n');
+          }
+        }
+      } catch (parseError) {
+        // Skip malformed lines
+        continue;
+      }
+    }
+  } catch (error) {
+    logger.error('HOOK', 'Failed to read transcript', { transcriptPath }, error as Error);
+  }
+
+  return '';
 }
 
 /**
@@ -37,17 +82,24 @@ async function summaryHook(input?: StopInput): Promise<void> {
 
   const port = getWorkerPort();
 
+  // Extract last user message from transcript
+  const lastUserMessage = extractLastUserMessage(input.transcript_path || '');
+
   logger.dataIn('HOOK', 'Stop: Requesting summary', {
     sessionId: sessionDbId,
     workerPort: port,
-    promptNumber
+    promptNumber,
+    hasLastUserMessage: !!lastUserMessage
   });
 
   try {
     const response = await fetch(`http://127.0.0.1:${port}/sessions/${sessionDbId}/summarize`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt_number: promptNumber }),
+      body: JSON.stringify({
+        prompt_number: promptNumber,
+        last_user_message: lastUserMessage
+      }),
       signal: AbortSignal.timeout(2000)
     });
 

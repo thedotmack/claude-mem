@@ -17,6 +17,7 @@ export interface SDKSession {
   sdk_session_id: string | null;
   project: string;
   user_prompt: string;
+  last_user_message?: string;
 }
 
 /**
@@ -165,13 +166,18 @@ export function buildObservationPrompt(obs: Observation): string {
  * Build prompt to generate progress summary
  */
 export function buildSummaryPrompt(session: SDKSession): string {
+  const lastUserMessage = session.last_user_message || '';
+
   return `PROGRESS SUMMARY CHECKPOINT
 ===========================
 Write progress notes of what was done, what was learned, and what's next. This is a checkpoint to capture progress so far. The session is ongoing - you may receive more requests and tool executions after this summary. Write "next_steps" as the current trajectory of work (what's actively being worked on or coming up next), not as post-session future work. Always write at least a minimal summary explaining current progress, even if work is still in early stages, so that users see a summary output tied to each request.
 
+Last User Message:
+${lastUserMessage}
+
 Respond in this XML format:
 <summary>
-  <request>[Short title related to the most recent prompt]</request>
+  <request>[Short title related to the last user message above]</request>
   <investigated>[What has been explored so far? What was examined?]</investigated>
   <learned>[What have you learned about how things work?]</learned>
   <completed>[What work has been completed so far? What has shipped or changed?]</completed>

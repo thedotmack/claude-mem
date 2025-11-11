@@ -44,9 +44,6 @@ export class WorkerService {
   private paginationHelper: PaginationHelper;
   private settingsManager: SettingsManager;
 
-  // Processing status tracking for viewer UI spinner
-  private isProcessing: boolean = false;
-
   constructor() {
     this.app = express();
 
@@ -57,6 +54,11 @@ export class WorkerService {
     this.sdkAgent = new SDKAgent(this.dbManager, this.sessionManager);
     this.paginationHelper = new PaginationHelper(this.dbManager);
     this.settingsManager = new SettingsManager(this.dbManager);
+
+    // Set callback for when sessions are deleted (to update activity indicator)
+    this.sessionManager.setOnSessionDeleted(() => {
+      this.broadcastProcessingStatus();
+    });
 
     this.mcpClient = new Client({
       name: 'worker-search-proxy',
@@ -273,10 +275,11 @@ export class WorkerService {
       timestamp: Date.now()
     });
 
-    // Send initial processing status
+    // Send initial processing status (based on queue depth + active generators)
+    const isProcessing = this.sessionManager.isAnySessionProcessing();
     this.sseBroadcaster.broadcast({
       type: 'processing_status',
-      isProcessing: this.isProcessing
+      isProcessing
     });
   }
 
@@ -316,6 +319,12 @@ export class WorkerService {
           }
         });
 
+        // Start activity indicator immediately when prompt arrives (work is about to begin)
+        this.sseBroadcaster.broadcast({
+          type: 'processing_status',
+          isProcessing: true
+        });
+
         // Sync user prompt to Chroma with error logging
         const chromaStart = Date.now();
         const promptText = latestPrompt.prompt_text;
@@ -344,8 +353,8 @@ export class WorkerService {
         });
       }
 
-      // Start processing indicator
-      this.broadcastProcessingStatus(true);
+      // Broadcast processing status (based on queue depth)
+      this.broadcastProcessingStatus();
 
       // Start SDK agent in background (pass worker ref for spinner control)
       logger.info('SESSION', 'Generator starting', {
@@ -354,9 +363,17 @@ export class WorkerService {
         promptNum: session.lastPromptNumber
       });
 
-      session.generatorPromise = this.sdkAgent.startSession(session, this).catch(err => {
-        logger.failure('SDK', 'SDK agent error', { sessionId: sessionDbId }, err);
-      });
+      session.generatorPromise = this.sdkAgent.startSession(session, this)
+        .catch(err => {
+          logger.failure('SDK', 'SDK agent error', { sessionId: sessionDbId }, err);
+        })
+        .finally(() => {
+          // Clear generator reference when completed
+          logger.info('SESSION', `Generator finished`, { sessionId: sessionDbId });
+          session.generatorPromise = null;
+          // Broadcast status change (generator finished, may stop spinner)
+          this.broadcastProcessingStatus();
+        });
 
       // Broadcast SSE event
       this.sseBroadcaster.broadcast({
@@ -397,10 +414,21 @@ export class WorkerService {
           queueDepth: session.pendingMessages.length
         });
 
-        session.generatorPromise = this.sdkAgent.startSession(session, this).catch(err => {
-          logger.failure('SDK', 'SDK agent error', { sessionId: sessionDbId }, err);
-        });
+        session.generatorPromise = this.sdkAgent.startSession(session, this)
+          .catch(err => {
+            logger.failure('SDK', 'SDK agent error', { sessionId: sessionDbId }, err);
+          })
+          .finally(() => {
+            // Clear generator reference when completed
+            logger.info('SESSION', `Generator finished`, { sessionId: sessionDbId });
+            session.generatorPromise = null;
+            // Broadcast status change (generator finished, may stop spinner)
+            this.broadcastProcessingStatus();
+          });
       }
+
+      // Broadcast activity status (queue depth changed)
+      this.broadcastProcessingStatus();
 
       // Broadcast SSE event
       this.sseBroadcaster.broadcast({
@@ -422,7 +450,9 @@ export class WorkerService {
   private handleSummarize(req: Request, res: Response): void {
     try {
       const sessionDbId = parseInt(req.params.sessionDbId, 10);
-      this.sessionManager.queueSummarize(sessionDbId);
+      const { last_user_message } = req.body;
+
+      this.sessionManager.queueSummarize(sessionDbId, last_user_message);
 
       // CRITICAL: Ensure SDK agent is running to consume the queue
       const session = this.sessionManager.getSession(sessionDbId);
@@ -432,10 +462,21 @@ export class WorkerService {
           queueDepth: session.pendingMessages.length
         });
 
-        session.generatorPromise = this.sdkAgent.startSession(session, this).catch(err => {
-          logger.failure('SDK', 'SDK agent error', { sessionId: sessionDbId }, err);
-        });
+        session.generatorPromise = this.sdkAgent.startSession(session, this)
+          .catch(err => {
+            logger.failure('SDK', 'SDK agent error', { sessionId: sessionDbId }, err);
+          })
+          .finally(() => {
+            // Clear generator reference when completed
+            logger.info('SESSION', `Generator finished`, { sessionId: sessionDbId });
+            session.generatorPromise = null;
+            // Broadcast status change (generator finished, may stop spinner)
+            this.broadcastProcessingStatus();
+          });
       }
+
+      // Broadcast activity status (queue depth changed)
+      this.broadcastProcessingStatus();
 
       res.json({ status: 'queued' });
     } catch (error) {
@@ -511,8 +552,8 @@ export class WorkerService {
       // Mark session complete in database
       this.dbManager.markSessionComplete(sessionDbId);
 
-      // Stop processing indicator
-      this.broadcastProcessingStatus(false);
+      // Broadcast processing status (based on queue depth)
+      this.broadcastProcessingStatus();
 
       // Broadcast SSE event
       this.sseBroadcaster.broadcast({
@@ -722,7 +763,8 @@ export class WorkerService {
    * Get processing status (for viewer UI spinner)
    */
   private handleGetProcessingStatus(req: Request, res: Response): void {
-    res.json({ isProcessing: this.isProcessing });
+    const isProcessing = this.sessionManager.isAnySessionProcessing();
+    res.json({ isProcessing });
   }
 
   // ============================================================================
@@ -731,9 +773,19 @@ export class WorkerService {
 
   /**
    * Broadcast processing status change to SSE clients
+   * Checks both queue depth and active generators to prevent premature spinner stop
    */
-  broadcastProcessingStatus(isProcessing: boolean): void {
-    this.isProcessing = isProcessing;
+  broadcastProcessingStatus(): void {
+    const isProcessing = this.sessionManager.isAnySessionProcessing();
+    const queueDepth = this.sessionManager.getTotalQueueDepth();
+    const activeSessions = this.sessionManager.getActiveSessionCount();
+
+    logger.info('WORKER', 'Broadcasting processing status', {
+      isProcessing,
+      queueDepth,
+      activeSessions
+    });
+
     this.sseBroadcaster.broadcast({
       type: 'processing_status',
       isProcessing
@@ -742,22 +794,21 @@ export class WorkerService {
 
   /**
    * Set processing status (called by hooks)
+   * NOTE: This now broadcasts computed status based on active processing (ignores input)
    */
   private handleSetProcessing(req: Request, res: Response): void {
     try {
-      const { isProcessing } = req.body;
+      // Broadcast current computed status (ignores manual input)
+      this.broadcastProcessingStatus();
 
-      if (typeof isProcessing !== 'boolean') {
-        res.status(400).json({ error: 'isProcessing must be a boolean' });
-        return;
-      }
-
-      this.broadcastProcessingStatus(isProcessing);
-      logger.debug('WORKER', 'Processing status updated', { isProcessing });
+      const isProcessing = this.sessionManager.isAnySessionProcessing();
+      const queueDepth = this.sessionManager.getTotalQueueDepth();
+      const activeSessions = this.sessionManager.getActiveSessionCount();
+      logger.debug('WORKER', 'Processing status broadcast', { isProcessing, queueDepth, activeSessions });
 
       res.json({ status: 'ok', isProcessing });
     } catch (error) {
-      logger.failure('WORKER', 'Failed to set processing status', {}, error as Error);
+      logger.failure('WORKER', 'Failed to broadcast processing status', {}, error as Error);
       res.status(500).json({ error: (error as Error).message });
     }
   }
