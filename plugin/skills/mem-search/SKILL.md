@@ -1,12 +1,6 @@
 ---
 name: mem-search
-description: >
-  Search claude-mem's persistent cross-session memory database to find work from previous conversations
-  days, weeks, or months ago. Access past session summaries, bug fixes, feature implementations, and
-  decisions that are NOT in the current conversation context. Use when user asks "did we already solve this?",
-  "how did we do X last time?", "what happened in last week's session?", or needs information from previous
-  sessions stored in the PM2-managed database. Searches observations, session summaries, and user prompts
-  across entire project history.
+description: Search claude-mem's persistent cross-session memory database to find work from previous conversations days, weeks, or months ago. Access past session summaries, bug fixes, feature implementations, and decisions that are NOT in the current conversation context. Use when user asks "did we already solve this?", "how did we do X last time?", "what happened in last week's session?", or needs information from previous sessions stored in the PM2-managed database. Searches observations, session summaries, and user prompts across entire project history.
 ---
 
 # Memory Search
