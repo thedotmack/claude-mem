@@ -91,7 +91,8 @@ export class SessionManager {
       tool_name: data.tool_name,
       tool_input: data.tool_input,
       tool_response: data.tool_response,
-      prompt_number: data.prompt_number
+      prompt_number: data.prompt_number,
+      cwd: data.cwd
     });
 
     const afterDepth = session.pendingMessages.length;

@@ -9,6 +9,7 @@ export interface Observation {
   tool_input: string;
   tool_output: string;
   created_at_epoch: number;
+  cwd?: string;
 }
 
 export interface SDKSession {
@@ -30,6 +31,11 @@ User's Goal: ${userPrompt}
 Date: ${new Date().toISOString().split('T')[0]}
 
 Your job is to monitor a different Claude Code session happening RIGHT NOW, with the goal of creating observations and progress summaries as the work is being done LIVE by the user. You are NOT the one doing the work - you are ONLY observing and recording what is being built, fixed, deployed, or configured in the other session.
+
+SPATIAL AWARENESS: Tool executions include the working directory (tool_cwd) to help you understand:
+- Which repository/project is being worked on
+- Where files are located relative to the project root
+- How to match requested paths to actual execution paths
 
 WHAT TO RECORD
 --------------
@@ -149,7 +155,7 @@ export function buildObservationPrompt(obs: Observation): string {
 
   return `<tool_used>
   <tool_name>${obs.tool_name}</tool_name>
-  <tool_time>${new Date(obs.created_at_epoch).toISOString()}</tool_time>
+  <tool_time>${new Date(obs.created_at_epoch).toISOString()}</tool_time>${obs.cwd ? `\n  <tool_cwd>${obs.cwd}</tool_cwd>` : ''}
   <tool_input>${JSON.stringify(toolInput, null, 2)}</tool_input>
   <tool_output>${JSON.stringify(toolOutput, null, 2)}</tool_output>
 </tool_used>`;

@@ -1,6 +1,6 @@
 {
   "name": "claude-mem",
-  "version": "5.4.1",
+  "version": "5.4.4",
   "description": "Memory compression system for Claude Code - persist context across sessions",
   "keywords": [
     "claude",
