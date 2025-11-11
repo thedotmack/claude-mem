@@ -187,6 +187,29 @@ gh release create vX.Y.Z --title "vX.Y.Z" --generate-notes
 
 **IMPORTANT:** Always create the GitHub release immediately after pushing the tag. This makes the release discoverable to users and triggers any automated workflows.
 
+## Step 10: Generate CHANGELOG
+
+After creating the GitHub release, regenerate CHANGELOG.md from all releases:
+
+```bash
+# Generate CHANGELOG.md from all GitHub releases
+npm run changelog:generate
+
+# Review the generated changelog
+git diff CHANGELOG.md
+
+# Commit and push the updated changelog
+git add CHANGELOG.md
+git commit -m "Update CHANGELOG.md for vX.Y.Z release"
+git push
+```
+
+**Why this step:**
+- CHANGELOG.md is auto-generated from GitHub releases
+- Keeps the changelog in sync with release notes
+- No manual editing required
+- Single source of truth: GitHub releases
+
 ## Verification
 
 After completing all steps, verify:

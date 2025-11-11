@@ -4,563 +4,1508 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-
 ## [5.5.0] - 2025-11-11
 
-### Added
-- **mem-search Skill**: Enhanced search skill with 100% effectiveness compliance (by @basher83)
-  - Replaces `search` skill with improved scope differentiation and trigger design
-  - 85% concrete triggers (vs 44% in previous version) for reliable auto-invocation
-  - 5+ unique identifiers (vs 1) to distinguish from native conversation memory
-  - 9 scope differentiation keywords to prevent confusion with current session context
-  - Progressive disclosure architecture with token efficiency documentation
-  - 17 files: SKILL.md + 12 operations + 2 principles directories
-  - Validated against Anthropic's official skill-creator documentation
-  - See `docs/skill-audit-report.md` for detailed compliance analysis
+**Breaking Changes**: None (minor version)
 
-### Fixed
-- **SDK Agent Spatial Awareness**: Added working directory (CWD) context propagation
-  - SDK agent now receives `<tool_cwd>` element with each tool execution
-  - Prevents false "file not found" reports when files exist in different repositories
-  - Enables accurate path matching between requested and executed paths
-  - Works with all models (Haiku, Sonnet, Opus) - no premium workaround needed
-  - See `docs/CWD_CONTEXT_FIX.md` for technical details
+**Improvements**:
+- Merged PR #91: Replace generic "search" skill with enhanced "mem-search" skill
+- Improved skill effectiveness from 67% to 100% (Anthropic standards)
+- Enhanced scope differentiation to prevent confusion with native conversation memory
+- Increased concrete triggers from 44% to 85%
+- Added 5+ unique identifiers and explicit exclusion patterns
+- Comprehensive documentation reorganization (17 total files)
 
+**Technical Changes**:
+- New mem-search skill with system-specific naming
+- Explicit temporal keywords ("previous sessions", "weeks/months ago")
+- Technical anchors referencing FTS5 full-text index and typed observations
+- Documentation moved from /context/ to /docs/context/
+- Detailed technical architecture documentation added
+- 12 operation guides + 2 principle directories
 
-## [5.4.0] - 2025-11-09
+**Credits**:
+- Skill design and enhancement by @basher83
+
+## [5.4.5] - 2025-11-11
+
+**Patch Release**: Bugfixes and minor improvements
+
+## [5.4.4] - 2025-11-10
+
+**Breaking Changes**: None (patch version)
+
+**Bugfix**:
+- Fixed duplicate observations and summaries appearing in viewer with different IDs and timestamps
+- Root cause: `handleSessionInit` spawned an SDK agent but didn't save the promise to `session.generatorPromise`, causing `handleObservations` to spawn a second agent for the same session
+
+**Technical Details**:
+- Modified: src/services/worker-service.ts:265
+- Change: Now assigns `session.generatorPromise = this.sdkAgent.startSession(...)` to track the promise
+- Impact: Single SDK agent per session (previously two), eliminates duplicate database entries and SSE broadcasts
+- Pattern: Matches existing implementation in `handleSummarize` (line 332)
+- Guard: Leverages existing condition in `handleObservations` (line 301) that checks for existing promise
+
+**User Impact**:
+- No more duplicate entries in the viewer UI
+- Cleaner, more accurate memory stream visualization
+- Reduced redundant processing and database writes
+
+Merged via PR #86
+
+## [5.4.3] - 2025-11-10
+
+**Breaking Changes**: None (patch version)
+
+**Bug Fixes**:
+- Fixed PM2 race condition between watch mode and PostToolUse hook
+- Eliminated `TypeError: Cannot read properties of undefined (reading 'pm2_env')` errors
+- Reduced unnecessary worker restarts (39+ restarts → minimal)
+
+**Technical Details**:
+- Removed PM2 restart logic from `ensureWorkerRunning()` in `src/shared/worker-utils.ts`
+- PM2 watch mode now exclusively handles worker restarts on file changes
+- Function now only checks worker health via HTTP endpoint and provides clear error messaging
+- Removed unused imports and helper functions (`execSync`, `getPackageRoot`, `waitForWorkerHealth`)
+
+**Files Modified**:
+- `src/shared/worker-utils.ts` (40 deletions, 14 additions)
+- All built hooks and worker service (rebuilt from source)
+
+**Impact**: This fix eliminates error spam in hook output while maintaining full functionality. Users will see cleaner output and fewer unnecessary restarts.
+
+**Upgrade Notes**: No action required. PM2 watch mode will automatically restart the worker on plugin updates.
+
+## [5.4.2] - 2025-11-10
+
+**Bugfix Release**: CWD spatial awareness for SDK agent
+
+### What's Fixed
+
+- **CWD Context Propagation**: SDK agent now receives current working directory (CWD) context from tool executions
+- **Spatial Awareness**: Prevents false "file not found" reports when working across multiple repositories
+- **Observer Guidance**: Agent prompts now include tool_cwd XML elements with spatial awareness instructions
+
+### Technical Details
+
+**Data Flow**:
+1. Hook extracts CWD from PostToolUseInput (`hookInput.result.tool_cwd`)
+2. Worker service receives CWD in PendingMessage and ObservationData interfaces
+3. SessionManager passes CWD to SDKAgent's addObservation method
+4. SDK agent includes CWD in tool observation objects sent to Claude API
+5. Prompts conditionally render tool_cwd XML with spatial awareness guidance
+
+**Implementation**:
+- Optional CWD fields throughout for backward compatibility
+- Defaults to empty string when CWD is missing
+- CWD treated as read-only display context, not for file operations
+- Complete propagation chain from hook → worker → SDK → prompts
+
+**Test Coverage**:
+- 8 comprehensive tests validating CWD propagation
+- Tests cover hook extraction, worker forwarding, SDK inclusion, and prompt rendering
+- All tests pass with tsx TypeScript loader
+
+**Security**:
+- Zero vulnerabilities introduced
+- CodeQL analysis: No alerts
+- Read-only context display (no file operation changes)
+- Input validation and sanitization maintained
+
+### Files Changed
+
+**Source Files**:
+- `src/hooks/save-hook.ts` - Extract CWD from PostToolUseInput
+- `src/services/worker-types.ts` - Add optional CWD fields to interfaces
+- `src/services/worker-service.ts` - Forward CWD in message handling
+- `src/services/worker/SessionManager.ts` - Pass CWD to SDK agent
+- `src/services/worker/SDKAgent.ts` - Include CWD in tool observations
+- `src/sdk/prompts.ts` - Render tool_cwd XML with spatial guidance
+
+**Built Artifacts**:
+- `plugin/scripts/save-hook.js` - Compiled hook with CWD extraction
+- `plugin/scripts/worker-service.cjs` - Compiled worker with CWD handling
+
+**Tests & Documentation**:
+- `tests/cwd-propagation.test.ts` - Comprehensive test suite (8 tests)
+- `context/CWD_CONTEXT_FIX.md` - Technical implementation documentation
+- `PR_SUMMARY.md` - Pull request summary and rationale
+- `SECURITY_SUMMARY.md` - Security analysis and review
+- `CHANGELOG.md` - Version history entry
+
+### Installation
+
+```bash
+# Update to latest version
+/plugin update claude-mem
+```
+
+Or restart Claude Code to auto-update.
+
+### Upgrade Notes
+
+- **Backward Compatible**: No breaking changes
+- **No Action Required**: CWD propagation works automatically
+- **Existing Sessions**: Will benefit from improved spatial awareness
+
+---
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v5.4.1...v5.4.2
+
+## [5.4.1] - 2025-11-10
+
+**Breaking Changes**: None (patch version)
+
+**New Features**:
+- Added REST API endpoints for MCP server status and toggle control
+- Implemented UI toggle in viewer sidebar for enabling/disabling MCP search server
+- File-based persistence mechanism (.mcp.json ↔ .mcp.json.disabled)
+- Independent state management for MCP toggle
+
+**Technical Details**:
+- New endpoints:
+  - GET /api/mcp/status (returns mcpEnabled boolean)
+  - POST /api/mcp/toggle (toggles MCP server state)
+- Modified files:
+  - src/services/worker-service.ts (added MCP control logic)
+  - src/ui/viewer/components/Sidebar.tsx (added MCP toggle UI)
+  - plugin/.mcp.json (MCP server configuration)
+- Design rationale: Provides runtime control of the MCP search server to allow users to disable it when not needed, reducing resource usage. The file-based toggle mechanism ensures persistence across worker restarts.
+
+**Known Issues**: None
+
+**Upgrade Notes**: No breaking changes. Upgrade by running standard update process.
+
+## [5.4.0] - 2025-11-10
 
 ### ⚠️ BREAKING CHANGE: MCP Search Tools Removed
 
 **Migration**: None required. Claude automatically uses the search skill when needed.
 
-### Changed
-- **Skill-Based Search Architecture**: Replaced MCP search tools with skill-based HTTP API
-  - **Token Savings**: ~2,250 tokens per session start
-  - **Progressive Disclosure**: Skill frontmatter (~250 tokens) vs MCP tool definitions (~2,500 tokens)
-  - Search functionality works identically but with better efficiency
-  - No user action required - migration is transparent
+### 🔍 Major Feature: Skill-Based Search Architecture
 
-### Added
-- **10 New HTTP Search API Endpoints** in worker service:
-  - `GET /api/search/observations` - Full-text search observations
-  - `GET /api/search/sessions` - Full-text search session summaries
-  - `GET /api/search/prompts` - Full-text search user prompts
-  - `GET /api/search/by-concept` - Find observations by concept tag
-  - `GET /api/search/by-file` - Find work related to specific files
-  - `GET /api/search/by-type` - Find observations by type (bugfix, feature, etc.)
-  - `GET /api/context/recent` - Get recent session context
-  - `GET /api/context/timeline` - Get timeline around specific point in time
-  - `GET /api/timeline/by-query` - Search + timeline in one call
-  - `GET /api/search/help` - API documentation
-- **Search Skill** (`plugin/skills/search/SKILL.md`):
-  - Auto-invoked when users ask about past work, decisions, or history
-  - Comprehensive documentation with usage examples and workflows
-  - Format guidelines for presenting search results
+**Token Savings**: ~2,250 tokens per session start (90% reduction)
 
-### Removed
-- **MCP Search Server** (deprecated):
-  - Removed `claude-mem-search` from plugin/.mcp.json
-  - Build script no longer compiles search-server.mjs
-  - Source file kept for reference: src/servers/search-server.ts
-  - All 9 MCP tools replaced by equivalent HTTP API endpoints
+**What Changed:**
+- **Before**: 9 MCP tools (~2,500 tokens in tool definitions per session start)
+- **After**: 1 search skill (~250 tokens in frontmatter, full instructions loaded on-demand)
+- **User Experience**: Identical - just ask naturally about past work
 
-### Technical Details
-- **How It Works**: User asks → Claude recognizes intent → Invokes search skill → Skill uses curl to call HTTP API → Formats results
-- **User Experience**: Identical search capabilities with significantly lower context overhead
-- **Performance**: Same search speed, better session start performance
+### ✨ Improvements
 
-### Documentation
-- Updated CLAUDE.md with skill-based search explanation
-- Removed MCP references throughout documentation
-- Added comprehensive search skill documentation
-- Updated build scripts to skip search-server compilation
+**Progressive Disclosure Pattern:**
+- Skill frontmatter (~250 tokens) loads at session start
+- Full instructions (~2,500 tokens) load only when skill is invoked
+- HTTP API endpoints replace MCP protocol
+- No user action required - migration is transparent
 
+**Natural Language Queries:**
+```
+"What bugs did we fix last session?"
+"How did we implement authentication?"
+"What changes were made to worker-service.ts?"
+"Show me recent work on this project"
+```
+
+### 🆕 Added
+
+**10 New HTTP Search API Endpoints** in worker service:
+- `GET /api/search/observations` - Full-text search observations
+- `GET /api/search/sessions` - Full-text search session summaries
+- `GET /api/search/prompts` - Full-text search user prompts
+- `GET /api/search/by-concept` - Find observations by concept tag
+- `GET /api/search/by-file` - Find work related to specific files
+- `GET /api/search/by-type` - Find observations by type (bugfix, feature, etc.)
+- `GET /api/context/recent` - Get recent session context
+- `GET /api/context/timeline` - Get timeline around specific point in time
+- `GET /api/timeline/by-query` - Search + timeline in one call
+- `GET /api/search/help` - API documentation
+
+**Search Skill** (`plugin/skills/search/SKILL.md`):
+- Auto-invoked when users ask about past work, decisions, or history
+- Comprehensive documentation with usage examples and workflows
+- Format guidelines for presenting search results
+- 12 operation files with detailed instructions
+
+### 🗑️ Removed
+
+**MCP Search Server** (deprecated):
+- Removed `claude-mem-search` from plugin/.mcp.json
+- Build script no longer compiles search-server.mjs
+- Source file kept for reference: src/servers/search-server.ts
+- All 9 MCP tools replaced by equivalent HTTP API endpoints
+
+### 📚 Documentation
+
+**Comprehensive Updates:**
+- `README.md`: Updated version badge, What's New, and search section
+- `docs/usage/search-tools.mdx`: Complete rewrite for skill-based approach
+- `docs/architecture/mcp-search.mdx` → `search-architecture.mdx`: New architecture doc
+- `docs/architecture/overview.mdx`: Updated components and search pipeline
+- `docs/usage/getting-started.mdx`: Added skill-based search section
+- `docs/configuration.mdx`: Updated search configuration
+- `docs/introduction.mdx`: Updated key features
+
+### 🔧 Technical Details
+
+**How It Works:**
+1. User asks: "What did we do last session?"
+2. Claude recognizes intent → invokes search skill
+3. Skill loads full instructions from `SKILL.md`
+4. Skill uses `curl` to call HTTP API endpoint
+5. Results formatted and returned to Claude
+6. Claude presents results to user
+
+**Benefits:**
+- **Token Efficient**: Only loads what you need, when you need it
+- **Natural**: No syntax to learn, just ask questions
+- **Progressive**: Start with overview, drill down as needed
+- **Flexible**: HTTP API can be called from skills, MCP tools, or other clients
+
+### 🐛 Migration Notes
+
+**For Users:**
+- ✅ No action required - migration is transparent
+- ✅ Same questions work - natural language queries identical
+- ✅ Invisible change - only notice better performance
+
+**For Developers:**
+- ⚠️ MCP search server deprecated (source kept for reference)
+- ✅ New implementation: Skill files + HTTP endpoints
+- ✅ Build/sync workflow unchanged
+
+### 📦 Installation
+
+```bash
+/plugin marketplace add thedotmack/claude-mem
+/plugin install claude-mem
+```
+
+Restart Claude Code to start using v5.4.0.
+
+### 🔗 Resources
+
+- **Documentation**: https://github.com/thedotmack/claude-mem/tree/main/docs
+- **Issues**: https://github.com/thedotmack/claude-mem/issues
+- **CHANGELOG**: https://github.com/thedotmack/claude-mem/blob/main/CHANGELOG.md
+
+---
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v5.3.0...v5.4.0
+
+## [5.3.0] - 2025-11-09
+
+**Breaking Changes**: None (minor version)
+
+**Session Lifecycle Improvements**:
+- **Prompt Counter Restoration**: SessionManager now loads prompt counter from database on worker restart, preventing state loss
+- **Continuation Prompts**: Lightweight prompts for request #2+ avoid re-initializing SDK agent's mental model
+- **Summary Framing**: Changed from "final report" to "progress checkpoint" to clarify mid-session summaries
+
+**Bug Fixes**:
+- **#76**: Fixed PM2 "Process 0 not found" error by using idempotent `pm2 start` instead of `pm2 restart`
+- **#74, #75**: Fixed troubleshooting skill distribution by moving to `plugin/skills/` directory
+- **#73 (Partial)**: Improved context-loading task reporting in summaries
+
+**Technical Details**:
+- Modified files:
+  - `src/services/worker/SessionManager.ts` (loads prompt_counter from DB)
+  - `src/services/worker/SDKAgent.ts` (uses continuation prompts)
+  - `src/sdk/prompts.ts` (added buildContinuationPrompt function)
+  - `src/shared/worker-utils.ts` (pm2 start instead of restart)
+  - `src/hooks/context-hook.ts` (improved context loading)
+  - Moved `.claude/skills/troubleshoot` → `plugin/skills/troubleshoot`
+
+**Why These Changes Matter**:
+- Worker restarts no longer lose session state
+- Subsequent prompts are more efficient (no re-initialization overhead)
+- Summaries better reflect ongoing work vs completed sessions
+- PM2 errors eliminated for new users
+- Troubleshooting skill now properly distributed to plugin users
+
+**Upgrade Notes**: No breaking changes. Worker will automatically pick up improvements on restart.
+
+## [5.2.3] - 2025-11-09
+
+**Breaking Changes**: None (patch version)
+
+**Improvements**:
+- Added troubleshooting slash command skill for diagnosing claude-mem installation issues
+- Comprehensive diagnostic workflow covering PM2, worker health, database, dependencies, logs, and viewer UI
+- Automated fix sequences and common issue resolutions
+- Full system diagnostic report generation
+
+**Technical Details**:
+- New file: `.claude/skills/troubleshoot/SKILL.md` (363 lines)
+- Added troubleshooting skill documentation to `README.md` and `docs/troubleshooting.mdx`
+- Version bumped to 5.2.3 across all metadata files
+
+**Usage**:
+Run `/skill troubleshoot` or invoke the `troubleshoot` skill to diagnose claude-mem issues.
+
+The skill provides systematic checks for:
+- PM2 worker status
+- Worker service health
+- Database state and integrity
+- Dependencies installation
+- Worker logs
+- Viewer UI endpoints
+- Full system diagnostic report
+
+## [5.2.2] - 2025-11-08
+
+**Breaking Changes**: None (patch version)
+
+**Improvements**:
+- Context hook now displays 'investigated' and 'learned' fields from session summaries
+- Enhanced startup context visibility with color-coded formatting (blue for investigated, yellow for learned)
+- Improved session summary detail display at startup
+
+**Technical Details**:
+- Modified files:
+  - src/hooks/context-hook.ts (enhanced SQL query and display logic)
+  - plugin/scripts/context-hook.js (built hook with new functionality)
+- Updated SQL query to SELECT investigated and learned columns
+- Added TypeScript type definitions for nullable investigated and learned fields
+- Added conditional display blocks with appropriate color formatting
+
+**Impact**: Users will now see more comprehensive session summary information at startup, providing better context about what was investigated and learned in previous sessions.
+
+## [5.2.1] - 2025-11-08
+
+**Breaking Changes**: None (patch version)
+
+### Bug Fixes
+
+This patch release fixes critical race conditions and state synchronization issues in the viewer UI's project filtering system.
+
+**Fixed Issues:**
+- **Race condition with offset reset**: When filter changed, offset wasn't reset synchronously, causing incorrect pagination ranges (e.g., loading items 20-40 for new project with < 20 items)
+- **State ref synchronization**: `stateRef.current.hasMore` retained old value when filter changed, preventing new filter from loading if previous filter had no more data
+- **Data mixing between projects**: Batched state updates caused data from different projects to appear together in the UI
+- **useEffect dependency cycle**: `handleLoadMore` in dependencies caused double renders when filter changed
+- **NULL projects in dropdown**: Empty/NULL project values appeared in the project filter dropdown
+
+**Technical Improvements:**
+- Combined two separate useEffect hooks into one for guaranteed execution order (reset → load)
+- Removed redundant filter change detection logic (DRY principle)
+- Simplified validation in `mergeAndDeduplicateByProject` function
+- Added `investigated` field to Summary interface for better session tracking
+
+**Files Changed:**
+- `src/ui/viewer/App.tsx` - Fixed filter change detection and data reset logic
+- `src/ui/viewer/hooks/usePagination.ts` - Improved offset and state ref handling
+- `src/ui/viewer/utils/data.ts` - Simplified validation logic
+- `src/services/sqlite/SessionStore.ts` - Filter NULL/empty projects from dropdown
+- `src/ui/viewer/types.ts` - Added investigated field to Summary interface
+- `src/ui/viewer/components/SummaryCard.tsx` - Display investigated field
+
+All changes follow CLAUDE.md coding standards: DRY, YAGNI, and fail-fast error handling.
+
+### Testing
+
+Verified fixes work correctly:
+1. ✅ Select project from dropdown → Data loads immediately
+2. ✅ Switch between multiple projects → Only selected project's data shown (no mixing)
+3. ✅ Rapid switching between projects → No race conditions or stale data
+4. ✅ Switch back to "All Projects" → All data appears correctly with SSE updates
+
+## [5.2.0] - 2025-11-07
+
+This release delivers a comprehensive architectural refactor of the worker service, extensive UI enhancements, and significant code cleanup. Merges PR #69.
+
+**Breaking Changes**: None (backward compatible)
+
+---
+
+## 🏗️ Architecture Changes (Worker Service v2)
+
+### Modular Rewrite
+
+Extracted monolithic `worker-service.ts` into focused, single-responsibility modules:
+
+- **DatabaseManager.ts** (111 lines): Centralized database initialization and access
+- **SessionManager.ts** (204 lines): Complete session lifecycle management
+- **SDKAgent.ts** (309 lines): Claude SDK interactions & observation compression
+- **SSEBroadcaster.ts** (86 lines): Server-Sent Events broadcast management
+- **PaginationHelper.ts** (196 lines): Reusable pagination logic for all data types
+- **SettingsManager.ts** (68 lines): Viewer settings persistence
+- **worker-types.ts** (176 lines): Shared TypeScript types
+
+### Key Improvements
+
+- ✅ Eliminated duplicated session logic (4 instances → 1 helper)
+- ✅ Replaced magic numbers with named constants (HEALTH_CHECK_TIMEOUT_MS, etc.)
+- ✅ Removed fragile PM2 string parsing → Direct PM2 restart
+- ✅ Fail-fast error handling instead of silent failures
+- ✅ Fixed SDK agent bug: Changed from `obs.title` to `obs.narrative`
+
+---
+
+## 🎨 UI/UX Improvements
+
+### New Features
+
+**ScrollToTop Component** (`src/ui/viewer/components/ScrollToTop.tsx`)
+- GPU-accelerated smooth scrolling
+- Appears after scrolling 400px
+- Accessible with ARIA labels
+
+### Enhancements
+
+**ObservationCard Refactoring**
+- Fixed facts toggle logic
+- Improved metadata display (timestamps, tokens, model)
+- Enhanced narrative display with proper typography
+- Better empty states
+
+**Pagination Improvements**
+- Better loading state management
+- Improved error recovery on failed fetches
+- Automatic deduplication
+- Scroll preservation
+
+**Card Consistency**
+- Unified layout patterns across Observation/Prompt/Summary cards
+- Consistent spacing and alignment
+
+---
+
+## 📚 Documentation
+
+**New Files** (7,542 lines total):
+
+- `context/agent-sdk-ref.md` (1,797 lines): Complete Agent SDK reference
+- `docs/worker-service-architecture.md` (1,174 lines): v2 architecture documentation
+- `docs/worker-service-rewrite-outline.md` (1,069 lines): Refactor planning document
+- `docs/worker-service-overhead.md` (959 lines): Performance analysis
+- `docs/processing-indicator-audit.md` + `processing-indicator-code-reference.md` (980 lines): Processing status documentation
+- `docs/typescript-errors.md` (180 lines): TypeScript error reference
+- `PLAN-full-observation-display.md` (468 lines): Future UI enhancement roadmap
+- `src-analysis.md` + `src-tree.md` (418 lines): Source code organization
+
+---
+
+## 🧹 Code Cleanup
+
+### Deleted Dead Code (~2,000 lines)
+
+**Shared Modules**:
+- `src/shared/config.ts` (48 lines)
+- `src/shared/storage.ts` (188 lines)
+- `src/shared/types.ts` (29 lines)
+
+**Utils**:
+- `src/utils/platform.ts` (64 lines)
+- `src/utils/usage-logger.ts` (61 lines)
+
+**Index Files**:
+- `src/hooks/index.ts`
+- `src/sdk/index.ts`
+
+**Documentation**:
+- `docs/VIEWER.md` (405 lines)
+- `docs/worker-server-architecture.md` (1,129 lines)
+
+---
+
+## 🐛 Bug Fixes
+
+1. **SDK Agent Narrative Assignment** (commit e22edad)
+   - Fixed: Changed from `obs.title` to `obs.narrative` 
+   - Impact: Observations now correctly preserve narrative content
+
+2. **PostToolUse Hook Field Name** (commit 13643a5)
+   - Fixed: Corrected field reference in hook output
+   - Impact: Tool usage properly captured
+
+3. **Smart Install Flow** (commit 6204fe9)
+   - Removed: Unnecessary `startWorker()` function
+   - Simplified: Installation flow now relies on context-hook to start worker
+   - Rationale: PM2 start is idempotent, no pre-flight checks needed
+
+4. **Context Hook Worker Management** (commit 6204fe9)
+   - Removed: Redundant worker status checks
+   - Simplified: Direct health check + restart if unhealthy
+   - Performance: Faster session startup
+
+---
+
+## 📊 Statistics
+
+**Files Changed**: 70 total
+- 11 new files
+- 7 deleted files
+- 52 modified files
+
+**Net Impact**: +7,470 lines
+- 11,105 additions
+- 3,635 deletions
+
+---
+
+## ✅ Testing
+
+All systems verified:
+- ✓ Worker service starts successfully
+- ✓ All hooks function correctly (context, save, cleanup, summary)
+- ✓ Viewer UI renders properly with all improvements
+- ✓ Build pipeline compiles without errors
+- ✓ SSE broadcasts work for real-time updates
+- ✓ Pagination loads correctly
+
+---
+
+## 🔄 Migration Guide
+
+**No action required** - this release is fully backward compatible.
+
+All changes are internal refactoring. Public APIs remain unchanged:
+- Hook interfaces unchanged
+- MCP search tools unchanged
+- Database schema unchanged
+- Environment variables unchanged
+
+To activate:
+1. Pull latest: `git pull`
+2. Rebuild: `npm run build`
+3. Sync to marketplace: `npm run sync-marketplace`
+4. Restart worker: `npm run worker:restart`
+5. Start new Claude Code session
+
+---
+
+## 📖 Related
+
+- **PR**: #69
+- **Previous Version**: 5.1.4
+- **Semantic Version**: MINOR (backward compatible features & improvements)
+
+## [5.1.4] - 2025-11-07
+
+**Bugfix Release**: PostToolUse Hook Schema Compliance
+
+**Changes**:
+- Fixed parameter naming in save-hook to match Claude Code PostToolUse API schema
+- Renamed `tool_output` to `tool_response` throughout the codebase
+- Updated worker-service to handle `tool_response` field correctly
+
+**Technical Details**:
+- Modified files:
+  - `src/hooks/save-hook.ts`: Updated interface and parameter destructuring
+  - `src/services/worker-service.ts`: Updated observation message handling
+  - `plugin/scripts/save-hook.js`: Rebuilt with corrected names
+  - `plugin/scripts/worker-service.cjs`: Rebuilt with corrected names
+
+**Why This Matters**: The Claude Code PostToolUse hook API provides `tool_response` not `tool_output`. This fix ensures proper schema compliance and prevents potential errors when capturing tool executions.
 
 ## [5.1.2] - 2025-11-06
 
-### Added
-- **Theme Toggle**: Light/dark mode support in viewer UI
-  - User-selectable theme with persistent settings
-  - Automatic system preference detection
-  - Smooth transitions between themes
-- Updated viewer UI with theme toggle controls in header
+**Breaking Changes**: None (patch version)
 
-### Changed
-- Version bumped from 5.1.1 to 5.1.2 across all metadata files
-- Rebuilt all plugin scripts with theme functionality
+**Features**:
+- Theme toggle functionality with light, dark, and system preferences
+- User-selectable theme with persistent settings across sessions
+- Automatic system preference detection and matching
 
+**Technical Details**:
+- Enhanced viewer UI with theme toggle controls
+- Theme preference stored in localStorage
+- Seamless integration with existing viewer interface
+- Version bumped from 5.1.1 → 5.1.2
+
+**Usage**:
+Access the viewer at http://localhost:37777 and use the theme toggle to switch between light mode, dark mode, or system preference.
 
 ## [5.1.1] - 2025-11-06
 
-### Fixed
-- **PM2 ENOENT error on Windows**: Fixed PM2 process spawning by using full path to PM2 binary
+**Breaking Changes**: None (patch version)
+
+**Bugfix**:
+- Fixed PM2 ENOENT error on Windows by using full path to PM2 binary
 - Improved cross-platform compatibility for PM2 process management
-- Updated scripts/smart-install.js to use full PM2 binary path
 
+**Technical Details**:
+- Modified files:
+  - scripts/smart-install.js (improved PM2 binary path resolution)
+  - package-lock.json (dependency updates)
+- The fix ensures PM2 commands work correctly on Windows systems by using the full path to the PM2 binary instead of relying on PATH resolution
+- This resolves the "ENOENT: no such file or directory" error that Windows users encountered when the plugin tried to start the worker service
 
-## [5.1.0] - 2025-11-05
+**Installation**:
+Users on Windows will now have a smoother installation experience with automatic PM2 worker startup working correctly.
 
-### Added
-- **Web-Based Viewer UI**: Production-ready viewer accessible at http://localhost:37777
-  - Real-time visualization via Server-Sent Events (SSE)
-  - Infinite scroll pagination with automatic deduplication
-  - Project filtering to focus on specific codebases
-  - Settings persistence (sidebar state, selected project)
-  - Auto-reconnection with exponential backoff
-  - GPU-accelerated animations for smooth interactions
-- **New Worker Endpoints** (8 HTTP/SSE routes, +500 lines):
-  - `/api/prompts` - Paginated user prompts with project filtering
-  - `/api/observations` - Paginated observations with project filtering
-  - `/api/summaries` - Paginated session summaries with project filtering
-  - `/api/stats` - Database statistics (total counts by project)
-  - `/api/projects` - List of unique project names
-  - `/stream` - Server-Sent Events for real-time updates
-  - `/` - Serves viewer HTML
-- **Database Enhancements** (+98 lines in SessionStore):
-  - `getRecentPrompts()` - Paginated prompts with OFFSET/LIMIT
-  - `getRecentObservations()` - Paginated observations with OFFSET/LIMIT
-  - `getRecentSummaries()` - Paginated summaries with OFFSET/LIMIT
-  - `getStats()` - Aggregated statistics by project
-  - `getUniqueProjects()` - Distinct project names
-- **Complete React UI** (17 new files, 1,500+ lines):
-  - Components: Header, Sidebar, Feed, Cards (Observation, Prompt, Summary, Skeleton)
-  - Hooks: useSSE, usePagination, useSettings, useStats
-  - Utils: Data merging, formatters, constants
-  - Assets: Monaspace Radon font, logos (dark mode + logomark)
-  - Build: esbuild pipeline for self-contained HTML bundle
+## [5.1.0] - 2025-11-06
 
+### 🎉 Major Feature: Web-Based Viewer UI
+
+This release introduces a production-ready web interface for visualizing your memory stream in real-time!
+
+**Access the viewer**: http://localhost:37777 (auto-starts with the worker)
+
+### ✨ Key Features
+
+**Real-Time Visualization**
+- Server-Sent Events (SSE) for instant updates as observations are captured
+- See user prompts, observations, and session summaries as they happen
+- No polling - efficient push-based updates
+
+**Infinite Scroll & Pagination**
+- Load more content seamlessly as you scroll
+- Automatic deduplication prevents duplicates
+- Smooth loading states with skeleton components
+
+**Project Filtering**
+- Filter memory stream by project/codebase
+- Quick project switcher in sidebar
+- View stats for all projects or focus on one
+
+**Persistent Settings**
+- Sidebar state (open/closed) saved to localStorage
+- Selected project filter persists across sessions
+- Smooth GPU-accelerated animations
+
+**Auto-Reconnection**
+- Exponential backoff retry logic
+- Graceful handling of worker restarts
+- Connection status indicator
+
+### 🔧 Technical Improvements
+
+**New Worker Endpoints** (+500 lines)
+- `/api/prompts` - Paginated user prompts with project filtering
+- `/api/observations` - Paginated observations with project filtering
+- `/api/summaries` - Paginated session summaries with project filtering
+- `/api/stats` - Database statistics (total counts by project)
+- `/api/projects` - List of unique project names
+- `/stream` - Server-Sent Events for real-time updates
+- `/` - Serves viewer HTML
+- `/health` - Health check endpoint
+
+**Database Enhancements** (+98 lines in SessionStore)
+- `getRecentPrompts()` - Paginated prompts with OFFSET/LIMIT
+- `getRecentObservations()` - Paginated observations with OFFSET/LIMIT
+- `getRecentSummaries()` - Paginated summaries with OFFSET/LIMIT
+- `getStats()` - Aggregated statistics by project
+- `getUniqueProjects()` - Distinct project names
+
+**Complete React UI** (17 new files, 1,500+ lines)
+- Components: Header, Sidebar, Feed, Cards (Observation, Prompt, Summary, Skeleton)
+- Hooks: useSSE, usePagination, useSettings, useStats
+- Utils: Data merging, formatters, constants
+- Assets: Monaspace Radon font, logos (dark mode + logomark)
+- Build: esbuild pipeline for self-contained HTML bundle
+
+### 📚 Documentation
+
+Updated CLAUDE.md with:
+- Viewer UI architecture and components
+- Build process for viewer changes
+- Configuration and usage instructions
+- Design rationale for SSE and self-contained bundle approach
+
+### 🎨 Design Highlights
+
+- **Monaspace Radon** variable font for beautiful monospace rendering
+- **Claude branding** with official logos and dark mode support
+- **Responsive layout** with collapsible sidebar
+- **Smooth animations** using GPU acceleration (transform/opacity)
+- **Error boundaries** for graceful failure handling
+
+### 🚀 Getting Started
+
+1. Update claude-mem to v5.1.0
+2. Start a Claude Code session (worker auto-starts)
+3. Open http://localhost:37777 in your browser
+4. Watch your memory stream in real-time!
+
+### 📦 Files Changed
+
+**New Files:**
+- `src/ui/viewer/` - Complete React application (17 files)
+- `src/ui/viewer-template.html` - HTML template for bundle
+- `scripts/build-viewer.js` - esbuild configuration
+- `plugin/ui/viewer.html` - Built self-contained bundle
+- `plugin/ui/viewer-bundle.js` - Compiled React code
+- `plugin/ui/assets/fonts/` - Monaspace Radon font files
+- `src/ui/*.webp` - Claude logos and branding
+
+**Modified Files:**
+- `src/services/worker-service.ts` - Added 8 new HTTP/SSE endpoints
+- `src/services/sqlite/SessionStore.ts` - Added pagination methods
+- `scripts/build-hooks.js` - Integrated viewer build process
+- `CLAUDE.md` - Comprehensive documentation update
+
+### 🙏 Acknowledgments
+
+Built with:
+- React 19 + TypeScript
+- esbuild for ultra-fast bundling
+- Monaspace Radon font by GitHub Next
+- Server-Sent Events for real-time updates
+
+---
+
+**Breaking Changes**: None (backward compatible MINOR version)
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v5.0.3...v5.1.0
 
 ## [5.0.3] - 2025-11-05
 
-### Added
-- **Smart Install Caching**: Eliminated redundant npm install on every SessionStart (2-5s → 10ms)
-  - Caches version state in `.install-version` file
-  - Only runs npm install when actually needed (first time, version change, missing deps)
-  - 200x faster SessionStart for cached installations
-- Dynamic Python version detection in Windows error messages
-- Comprehensive Windows troubleshooting guidance
+**Breaking Changes**: None (patch version)
 
-### Fixed
-- Fixed Windows installation issues with smart caching installer
+**Fixes**:
+- Fixed Windows installation with smart caching installer (PR #54: scripts/smart-install.js)
+- Eliminated redundant npm install executions on every SessionStart (improved from 2-5s to ~10ms)
+- Added comprehensive Windows troubleshooting with VS Build Tools guidance
+- Fixed dynamic Python version detection in Windows error messages (scripts/smart-install.js:106-115)
 
-### Changed
-- Enhanced rsync to respect gitignore rules
-- Better PM2 worker startup verification
-- Cross-platform compatible (pure Node.js)
+**Improvements**:
+- Smart install now caches version state in `.install-version` file
+- Only runs npm install when needed: first time, version change, or missing dependencies
+- Enhanced rsync to respect gitignore rules in sync-marketplace (package.json:38)
+- Better PM2 worker startup verification and management
+- Cross-platform compatible installer (pure Node.js, no shell dependencies)
 
-### Technical Details
-- New: scripts/smart-install.js (smart caching installer)
-- Modified: plugin/hooks/hooks.json (use smart-install.js instead of inline npm install)
-- Modified: package.json (enhanced sync-marketplace script)
+**Technical Details**:
+- New: scripts/smart-install.js (smart caching installer with PM2 worker management)
+- Modified: plugin/hooks/hooks.json:25 (use smart-install.js instead of raw npm install)
+- Modified: .gitignore (added .install-version cache file)
+- Modified: CLAUDE.md (added Windows requirements and troubleshooting section)
+- Modified: package.json:38 (enhanced sync-marketplace with --filter=':- .gitignore' --exclude=.git)
+- Root cause: npm install was running on every SessionStart regardless of whether dependencies changed
+- Impact: 200x faster SessionStart for cached installations (10ms vs 2-5s)
 
+**For Windows Users**:
+This release should completely resolve installation issues. The smart installer will:
+1. Show you clear error messages if better-sqlite3 fails to install
+2. Guide you to install VS Build Tools if needed (though you probably won't need them)
+3. Only run once on first launch, then be instant on subsequent launches
 
 ## [5.0.2] - 2025-11-05
 
-### Fixed
-- **Worker startup reliability**: Fixed async health checks with proper error handling
-- Added isWorkerHealthy() and waitForWorkerHealth() functions to src/shared/worker-utils.ts
+**Breaking Changes**: None (patch version)
+
+**Fixes**:
+- Fixed worker startup reliability with async health checks (PR #51: src/shared/worker-utils.ts)
+- Added proper error handling to PM2 process spawning (src/shared/worker-utils.ts)
 - Worker now verifies health before proceeding with hook operations
 - Improved handling of PM2 failures when not yet installed
 
-### Changed
-- Changed ensureWorkerRunning() from synchronous to async with proper await
-- All hooks now await ensureWorkerRunning for reliable worker communication
-- Rebuilt all plugin executables with version 5.0.2
+**Technical Details**:
+- Modified: src/shared/worker-utils.ts (added isWorkerHealthy, waitForWorkerHealth functions)
+- Modified: src/hooks/*.ts (all hooks now await ensureWorkerRunning)
+- Modified: plugin/scripts/*.js (rebuilt hook executables)
+- Root cause: ensureWorkerRunning was synchronous and didn't verify worker was actually responsive before proceeding
+- Impact: More reliable worker startup with proper health verification
 
+## Installation
 
-## [5.0.1] - 2025-11-05
+Install via Claude Code marketplace:
+```bash
+/plugin marketplace add https://raw.githubusercontent.com/thedotmack/claude-mem/main/.claude-plugin/marketplace.json
+/plugin install claude-mem
+```
 
-### Fixed
-- Fixed worker service stability issues
-- Enhanced worker process management and restart reliability
-- Improved session management and logging across all hooks
-- Better error handling throughout hook lifecycle
+## Full Changelog
+[View all changes](https://github.com/thedotmack/claude-mem/compare/v5.0.1...v5.0.2)
 
-### Added
-- GitHub Actions workflows for automated code review
+## [5.0.1] - 2025-11-04
 
-### Technical Details
+**Breaking Changes**: None (patch version)
+
+**Fixes**:
+- Fixed worker service stability issues (PR #47: src/services/worker-service.ts, src/shared/worker-utils.ts)
+- Improved worker process management and restart reliability (src/hooks/*-hook.ts)
+- Enhanced session management and logging across all hooks
+- Removed error/output file redirection from PM2 ecosystem config for better debugging (ecosystem.config.cjs)
+
+**Improvements**:
+- Added GitHub Actions workflows for automated code review (PR #48)
+  - Claude Code Review workflow (.github/workflows/claude-code-review.yml)
+  - Claude PR Assistant workflow (.github/workflows/claude.yml)
+- Better worker health checks and startup sequence
+- Improved error handling and logging throughout hook lifecycle
+- Cleaned up documentation files and consolidated project context
+
+**Technical Details**:
 - Modified: src/services/worker-service.ts (stability improvements)
-- Modified: src/shared/worker-utils.ts (consistent formatting)
+- Modified: src/shared/worker-utils.ts (consistent formatting and readability)
 - Modified: ecosystem.config.cjs (removed error/output redirection)
-- Modified: src/hooks/*-hook.ts (ensure worker running)
+- Modified: src/hooks/*-hook.ts (ensure worker running before processing)
 - New: .github/workflows/claude-code-review.yml
 - New: .github/workflows/claude.yml
+- Rebuilt: plugin/scripts/*.js (all hook executables)
+- Impact: More reliable worker service with better error visibility and automated PR assistance
 
+---
 
-## [5.0.0] - 2025-10-27
+**Installation**: See [README](https://github.com/thedotmack/claude-mem#readme) for installation instructions.
+
+## [5.0.0] - 2025-11-04
 
 ### BREAKING CHANGES
-- **Python dependency for optimal performance**: Semantic search requires Python for ChromaDB
-- **Search behavior prioritizes semantic relevance**: Chroma semantic search combined with SQLite temporal filtering
-- **Worker service now initializes ChromaSync on startup**: Automatic vector database synchronization
+- **Python dependency for optimal performance**: While the plugin works without Python, installing Python 3.8+ and the Chroma MCP server unlocks semantic search capabilities. Without Python, the system falls back to SQLite FTS5 keyword search.
+- **Search behavior changes**: Search queries now prioritize semantic relevance when Chroma is available, then apply temporal ordering. Keyword-only queries may return different results than v4.x.
+- **Worker service changes**: Worker now initializes ChromaSync on startup. If Chroma MCP is unavailable, worker continues with FTS5-only mode but logs a warning.
 
 ### Added
-- **Hybrid Search Architecture**: Combining ChromaDB semantic search with SQLite FTS5 keyword search
-  - ChromaSync Service for automatic vector database synchronization (738 lines)
-  - Vector embeddings for semantic similarity search
-  - 90-day recency filtering for relevant results
-  - Performance: Semantic search <200ms
-- **get_context_timeline** MCP tool: Get unified timeline of context around a specific point in time
-  - Anchor by observation ID, session ID, or ISO timestamp
-  - Configurable depth before/after anchor
-- **get_timeline_by_query** MCP tool: Search for observations and get timeline context around best match
-  - Auto mode: Automatically use top search result as timeline anchor
-  - Interactive mode: Show top N search results for manual anchor selection
-- **Enhanced MCP tools**: All 9 search tools now support hybrid semantic + keyword search
+- **Hybrid Search Architecture**: Combines ChromaDB semantic search with SQLite temporal/metadata filtering
+  - Chroma vector database for semantic similarity (top 100 matches)
+  - 90-day temporal recency window for relevant results
+  - SQLite hydration in chronological order
+  - Graceful fallback to FTS5 when Chroma unavailable
+- **ChromaSync Service**: Automatic vector database synchronization
+  - Syncs observations, session summaries, and user prompts to Chroma
+  - Splits large text fields into multiple vectors for better granularity
+  - Maintains metadata for filtering (project, type, concepts, files)
+  - Background sync process via worker service
+- **get_timeline_by_query Tool**: Natural language timeline search with dual modes
+  - Auto mode: Automatically uses top search result as timeline anchor
+  - Interactive mode: Shows top N results for manual anchor selection
+  - Combines semantic search discovery with timeline context retrieval
+- **User Prompt Semantic Search**: Raw user prompts now indexed in Chroma for semantic discovery
+- **Enhanced MCP Tools**: All 8 existing search tools now support hybrid search
+  - search_observations - Now uses semantic + temporal hybrid algorithm
+  - search_sessions - Semantic search across session summaries
+  - search_user_prompts - Semantic search across raw prompts
+  - find_by_concept, find_by_file, find_by_type - Enhanced with semantic capabilities
+  - get_recent_context - Unchanged (temporal only)
+  - get_context_timeline - Unchanged (anchor-based temporal)
 
-### Technical Details
-- New: src/services/sync/ChromaSync.ts (vector database sync)
-- Modified: src/servers/search-server.ts (+995 lines for hybrid search)
-- Modified: src/services/worker-service.ts (+136 lines for ChromaSync integration)
-- Modified: src/services/sqlite/SessionStore.ts (+276 lines for timeline queries)
-- Validation: 1,390 observations → 8,279 vector documents
-- Total MCP tools: 7 → 9 (added timeline tools)
-
-
-## [4.3.4] - 2025-10-26
+### Changed
+- **Search Server**: Expanded from ~500 to ~1,500 lines with hybrid search implementation
+- **Worker Service**: Now initializes ChromaSync and handles Chroma MCP lifecycle
+- **Search Pipeline**: Now follows semantic-first strategy with temporal ordering
+  ```
+  Query → Chroma Semantic Search (top 100) → 90-day Filter → SQLite Hydration (temporal order) → Results
+  ```
+- **Worker Resilience**: Worker no longer crashes when Chroma MCP unavailable; gracefully falls back to FTS5
 
 ### Fixed
-- **SessionStart hooks running on session resume**: Added matcher configuration to only run hooks on startup, clear, or compact events
-- Prevents unnecessary hook execution and improves performance
+- **Critical temporal filtering bug**: Fixed deduplication and date range filtering in search results
+- **User prompt formatting bug**: Corrected field reference in search result formatting
+- **Worker crash prevention**: Worker now handles missing Chroma MCP gracefully instead of crashing
 
 ### Technical Details
-- Modified: plugin/hooks/hooks.json (added matcher configuration)
+- New files:
+  - src/services/sync/ChromaSync.ts (738 lines) - Vector database sync service
+  - experiment/chroma-search-test.ts - Comprehensive hybrid search testing
+  - experiment/chroma-sync-experiment.ts - Vector sync validation
+  - docs/chroma-search-completion-plan.md - Implementation planning
+  - FEATURE_PLAN_HYBRID_SEARCH.md - Feature specification
+  - IMPLEMENTATION_STATUS.md - Testing and validation results
+- Modified files:
+  - src/servers/search-server.ts (+995 lines) - Hybrid search algorithm implementation
+  - src/services/worker-service.ts (+136 lines) - ChromaSync integration
+  - src/services/sqlite/SessionStore.ts (+276 lines) - Enhanced timeline queries
+  - src/hooks/context-hook.ts - Type legend improvements
+- Validation: 1,390 observations synced to 8,279 vector documents
+- Performance: Semantic search with 90-day window returns results in <200ms
 
+## [4.3.4] - 2025-11-02
 
-## [4.3.3] - 2025-10-26
+**Breaking Changes**: None (patch version)
 
-### Added
-- Made session display count configurable (DISPLAY_SESSION_COUNT = 8)
-- First-time setup detection with helpful user messaging
-- Improved UX: First install message clarifies Plugin Hook Error display
+**Fixes**:
+- Fixed SessionStart hooks running on session resume (plugin/hooks/hooks.json:4)
+- Added matcher configuration to only run SessionStart hooks on startup, clear, or compact events
+- Prevents unnecessary hook execution and improves performance on session resume
 
-### Technical Details
-- Updated: src/hooks/context-hook.ts (configurable session count)
-- Updated: src/hooks/user-message-hook.ts (first-time setup detection)
+**Technical Details**:
+- Modified: plugin/hooks/hooks.json:4 (added `"matcher": "startup|clear|compact"`)
+- Impact: Hooks now skip execution when resuming existing sessions
 
+## [4.3.3] - 2025-10-27
 
-## [4.3.2] - 2025-10-26
+**Breaking Changes**: None (patch version)
 
-### Added
-- **User-facing context display**: Added user-message-hook for displaying context to users via stderr
-  - Hook fires simultaneously with context injection
-  - Error messages don't get added to context, enabling user visibility
-  - Temporary workaround until Claude Code adds ability to share messages with both user and context
-- **Comprehensive documentation** (4 new files, 2500+ lines total):
+**Improvements**:
+- Made session display count configurable via constant (DISPLAY_SESSION_COUNT = 8) in src/hooks/context-hook.ts:11
+- Added first-time setup detection with helpful user messaging in src/hooks/user-message-hook.ts:12-39
+- Improved user experience: First install message clarifies why it appears under "Plugin Hook Error"
+
+**Fixes**:
+- Cleaned up profanity in code comments (src/hooks/context-hook.ts:3)
+- Fixed first-time setup UX by detecting missing node_modules and showing informative message
+
+**Technical Details**:
+- Modified: src/hooks/context-hook.ts:11 (configurable DISPLAY_SESSION_COUNT constant)
+- Modified: src/hooks/user-message-hook.ts:12-39 (first-time setup detection and messaging)
+- Modified: plugin/scripts/context-hook.js (rebuilt)
+- Modified: plugin/scripts/user-message-hook.js (rebuilt)
+
+## [4.3.2] - 2025-10-27
+
+**Breaking Changes**: None (patch version)
+
+**Improvements**:
+- Added user-message-hook for displaying context to users via stderr mechanism
+- Enhanced context visibility: Hook fires simultaneously with context injection, sending duplicate message as "error" so Claude Code displays it to users
+- Added comprehensive documentation (4 new MDX files covering architecture evolution, context engineering, hooks architecture, and progressive disclosure)
+- Improved cross-platform path handling in context-hook
+
+**Technical Details**:
+- New files:
+  - src/hooks/user-message-hook.ts (stderr-based user-facing context display)
+  - plugin/scripts/user-message-hook.js (built hook executable)
   - docs/architecture-evolution.mdx (801 lines)
   - docs/context-engineering.mdx (222 lines)
   - docs/hooks-architecture.mdx (784 lines)
   - docs/progressive-disclosure.mdx (655 lines)
-
-### Fixed
-- Improved cross-platform path handling in context-hook
-
-### Technical Details
-- New: src/hooks/user-message-hook.ts (stderr-based display mechanism)
-- New: plugin/scripts/user-message-hook.js (built executable)
-- Modified: plugin/hooks/hooks.json (hook configuration)
-- Modified: src/hooks/context-hook.ts (path handling)
-- Modified: scripts/build-hooks.js (build support)
-
+- Modified:
+  - plugin/hooks/hooks.json (added user-message-hook configuration)
+  - src/hooks/context-hook.ts (improved path handling)
+  - scripts/build-hooks.js (build support for new hook)
+- Design rationale: Error messages don't get added to context, so we intentionally duplicate context output via stderr for user visibility. This is a temporary workaround until Claude Code potentially adds ability to share messages with both user and context simultaneously.
 
 ## [4.3.1] - 2025-10-26
 
-### Fixed
-- **SessionStart hook context injection**: Fixed context not being injected into new sessions due to npm output pollution
-  - Changed npm loglevel from `--loglevel=error` to `--loglevel=silent` in `plugin/hooks/hooks.json`
-  - npm install stdout/stderr was polluting hook JSON output, preventing proper context injection
-  - Hook now produces clean JSON output for reliable context injection
-- **Hooks architecture consolidation**: Removed wrapper layer to simplify codebase
-  - Removed `src/bin/hooks/*` wrapper files
-  - Consolidated hook logic directly into `src/hooks/*-hook.ts` files
-  - Fixed double shebang issues (esbuild now adds shebang during build)
+## Fixes
 
-### Technical Details
-- Modified: `plugin/hooks/hooks.json` (line 25: npm install verbosity)
-- Removed: All files in `src/bin/hooks/` directory
-- Root cause: npm stderr/stdout interfering with hook's JSON hookSpecificOutput format
+- **Fixed SessionStart hook context injection** by silencing npm install output (`plugin/hooks/hooks.json:25`)
+- Changed npm loglevel from `--loglevel=error` to `--loglevel=silent` to ensure clean JSON output
+- **Consolidated hooks architecture** by removing bin/hooks wrapper layer (`src/hooks/*-hook.ts`)
+- Fixed double shebang issues in hook executables (esbuild now adds shebang during build)
 
+## Technical Details
+
+- **Modified**: `plugin/hooks/hooks.json` (npm install verbosity)
+- **Removed**: `src/bin/hooks/*` (wrapper layer no longer needed)
+- **Consolidated**: Hook logic moved directly into `src/hooks/*-hook.ts` files
+- **Root cause**: npm install stderr/stdout was polluting hook JSON output, preventing context injection
+
+## Breaking Changes
+
+None (patch version)
+
+---
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v4.3.0...v4.3.1
 
 ## [4.3.0] - 2025-10-25
 
-### Added
-- **Progressive Disclosure Context**: Enhanced context hook with layered memory retrieval system
-  - Layer 1 (Index): Observation titles, token costs, and type indicators at session start
-  - Layer 2 (Details): Full narratives retrieved on-demand via MCP search
-  - Layer 3 (Perfect Recall): Source code and original transcripts
-  - Context hook now displays observations in table format with ID, timestamp, type indicator, title, and token count
-  - Type indicators: 🔴 (critical/gotcha), 🟤 (decision), 🔵 (informational/how-it-works)
-  - Progressive disclosure instructions guide Claude on when to fetch full observation details vs. reading code
-  - Token counts (~200-500 per observation) help Claude make informed retrieval decisions
-- **Agent Skills documentation**: Added comprehensive documentation on creating and using Claude Code agent skills
-- **Version bump skill**: Added automated version bump management skill for streamlined releases
-- **Memory toggle feature planning**: Added design document for future pause/resume recording capability
+## What's Changed
+* feat: Enhanced context hook with session observations and cross-platform improvements by @thedotmack in https://github.com/thedotmack/claude-mem/pull/25
 
-### Changed
-- **Enhanced session summary handling**: Improved timeline rendering and summary organization
-- **Improved context hook output**: Added structured timeline with session grouping and observation details
-- **Context token cost**: Increased from ~800 tokens to ~2,500 tokens for richer observation index
+## New Contributors
+* @thedotmack made their first contribution in https://github.com/thedotmack/claude-mem/pull/25
 
-### Fixed
-- **Cross-platform path detection**: Removed hardcoded macOS-specific paths for project and Claude Code executable (fixes #23)
-  - Removed hardcoded paths in context hook, worker service, and SDK integration
-  - Now uses dynamic path resolution for cross-platform compatibility
-  - Affects: `src/hooks/context.ts`, `src/services/worker-service.ts`, `src/sdk/worker.ts`
-
-
-## [4.2.11] - 2025-10-25
-
-### Fixed
-- **Cross-platform Claude path detection**: Fixed SDK auto-detection failure by implementing explicit `which`/`where` command execution
-  - SDK's automatic Claude path detection was returning undefined
-  - Unix/macOS: Uses `which claude` command to find executable
-  - Windows: Uses `where claude` command (works in both CMD and PowerShell)
-  - Fallback to `CLAUDE_CODE_PATH` environment variable if set
-  - Handles Windows multiple results by taking first match
-  - Worker now logs discovered path for debugging: "Found Claude executable: /path/to/claude"
-
-### Technical Details
-- Added `findClaudePath()` helper function using `child_process.execSync`
-- Platform detection via `process.platform === 'win32'` to choose appropriate command
-- Updated `src/sdk/worker.ts` and `src/services/worker-service.ts` with explicit path detection
-- Both files now pass `pathToClaudeCodeExecutable: claudePath` to SDK query
-
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v4.2.11...v4.3.0
 
 ## [4.2.10] - 2025-10-25
 
-### Fixed
+## Fixed
 - **Windows compatibility**: Removed hardcoded macOS-specific Claude executable path that prevented worker service from running on Windows
-  - Removed hardcoded path: `/Users/alexnewman/.nvm/versions/node/v24.5.0/bin/claude`
-  - Removed `pathToClaudeCodeExecutable` parameter from SDK query() calls
-  - SDK now automatically detects Claude Code executable path on all platforms
-  - Affects: `src/sdk/worker.ts`, `src/services/worker-service.ts`, `plugin/scripts/worker-service.cjs`
 
+## Changes
+- Removed hardcoded path: `/Users/alexnewman/.nvm/versions/node/v24.5.0/bin/claude`
+- Removed `pathToClaudeCodeExecutable` parameter from SDK query() calls  
+- SDK now automatically detects Claude Code executable path on all platforms
+- Improved cross-platform compatibility (Windows, macOS, Linux)
 
-## [4.2.3] - 2025-10-23
+## Technical Details
+- Updated `src/sdk/worker.ts` to remove hardcoded Claude path and `pathToClaudeCodeExecutable` parameter
+- Updated `src/services/worker-service.ts` to remove hardcoded Claude path and parameter
+- Built `plugin/scripts/worker-service.cjs` reflects changes
+- Affects all SDK agent initialization in worker service
 
-### Security
-- **FTS5 injection vulnerability fix**: Added proper escaping to prevent SQL injection attacks in search functions
-  - Implemented double-quote escaping for FTS5 full-text search queries
-  - Added comprehensive test suite with 332 new tests covering injection scenarios
-  - Affects: `search_observations`, `search_sessions`, `search_user_prompts` MCP tools
+## Impact
+- **Before**: Worker service failed on Windows due to hardcoded macOS path
+- **After**: Worker service works correctly on all platforms
 
-### Fixed
-- **ESM/CJS compatibility**: Fixed getDirname function to work in both ESM (hooks) and CJS (worker) contexts
-  - Detects context using `typeof __dirname !== 'undefined'`
-  - Falls back to `fileURLToPath(import.meta.url)` for ESM modules
-  - Resolves path resolution issues across different module systems
-- **Windows PowerShell compatibility**: Fixed SessionStart hook error on Windows systems
-  - Replaced bash-specific test command `[` with standard cross-platform npm install
-  - Simplified hook command to use idempotent npm install (fast when dependencies exist)
-  - Dependencies install from root package.json in marketplace folder
+## Files Changed
+- `src/sdk/worker.ts`
+- `src/services/worker-service.ts`
+- `plugin/scripts/worker-service.cjs` (rebuilt)
 
-### Changed
-- **SessionStart hook command**: Now uses `cd ... && npm install --prefer-offline --no-audit --no-fund --loglevel=error && node context-hook.js`
-  - Removed bash-specific conditional check
-  - npm install is fast (~500ms) and idempotent when dependencies already exist
-  - Works cross-platform on Windows, macOS, and Linux
+## [4.2.3] - 2025-10-24
 
+## [4.2.1] - 2025-10-23
 
-## [4.2.1] - 2025-10-22
+## [3.9.16] - 2025-10-07
 
-### Added
-- **Summary skip logic**: Summaries now skip when work is already covered, banter/trivial requests, or no meaningful observations
-  - New "WHEN NOT TO SUMMARIZE" section in buildSummaryPrompt guides SDK to avoid duplicate/trivial summaries
-  - Parser detects `<skip_summary reason="..."/>` format and logs reason
-  - Prevents duplicate summaries like the three "restore 6 types" summaries observed in session d9137878
+## What's New
 
-### Fixed
-- **Observation type validation**: Parser now validates all 6 observation types (bugfix, feature, refactor, change, discovery, decision) instead of only 3
+This release includes the latest updates from the npm package.
 
-### Changed
-- **Chronological summary guidance**: Summaries now explicitly instructed to capture "what happened in THIS prompt" rather than re-summarizing previous work
+### Installation
+```bash
+npm install -g claude-mem@3.9.16
+```
 
+### Quick Start
+```bash
+claude-mem install
+```
 
-## [4.1.1] - 2025-10-21
+For full documentation, visit the [README](https://github.com/thedotmack/claude-mem#readme).
 
-### Removed
-- **advanced_search tool**: Removed redundant MCP tool that provided no functionality beyond calling search_observations + search_sessions
+## [3.9.14] - 2025-10-04
 
-### Fixed
-- **MCP search limit bug**: Fixed findByConcept, findByType, and findByFile methods to properly respect limit/offset parameters
-- **Type contamination in concepts**: Added parser validation to prevent observation types from being added to concepts array
-- **Token limit warnings**: Added guidance in tool descriptions to start with 3-5 results to avoid MCP token limits
+## What's New
 
-### Changed
-- **Simplified MCP API**: Reduced from 7 to 6 search tools by removing the redundant advanced_search
-- **Improved search prompts**: Enhanced type and concept constraint language in SDK prompts to prevent AI contamination
+This release includes the latest updates from the npm package.
 
+### Installation
+```bash
+npm install -g claude-mem@3.9.14
+```
 
-## [4.1.0] - 2025-10-21
+### Quick Start
+```bash
+claude-mem install
+```
 
-### Changed
-- **Graceful session cleanup**: Cleanup hook now marks sessions as completed instead of sending DELETE requests to worker
-- **Natural worker shutdown**: Workers now finish pending operations (like summary generation) before terminating
-- **Restored MCP search server**: Re-enabled full-text search capabilities from backup
+For full documentation, visit the [README](https://github.com/thedotmack/claude-mem#readme).
 
-### Fixed
-- Session summaries no longer interrupted by aggressive cleanup during session end
-- Workers can now complete final operations before shutdown
+## [3.9.13] - 2025-10-04
 
+## What's New
 
-## [4.0.2] - 2025-10-19
+This release includes the latest updates from the npm package.
 
-### Changed
-- **PM2 bundled as dependency**: Moved pm2 from devDependencies to dependencies for out-of-the-box functionality
-- **Worker scripts use local PM2**: All npm worker scripts now use `npx pm2` to ensure local binary is used
-- **Worker startup uses local PM2**: Worker auto-start now uses `node_modules/.bin/pm2` instead of global pm2
+### Installation
+```bash
+npm install -g claude-mem@3.9.13
+```
 
-### Fixed
-- **Fail loudly on missing dependencies**: Worker startup now throws explicit errors when bundled pm2 is missing instead of silently falling back
-- **Better error messages**: Clear actionable error messages guide users to run `npm install` when dependencies are missing
-- **Removed silent fallback**: Eliminated silent degradation that masked "works on my machine" installation failures
+### Quick Start
+```bash
+claude-mem install
+```
 
-### Documentation
-- Updated README system requirements to reflect pm2 is bundled with plugin (no global install required)
+For full documentation, visit the [README](https://github.com/thedotmack/claude-mem#readme).
 
+## [3.9.12] - 2025-10-04
 
-## [4.0.0] - 2025-10-18
+## What's New
 
-### BREAKING CHANGES
-- **Data directory moved to plugin location**: Database and worker files now stored in `${CLAUDE_PLUGIN_ROOT}/data/` instead of `~/.claude-mem/`
-- **Fresh start required**: No automatic migration from v3.x databases. Users must start fresh with v4.0.0
-- **Worker auto-starts**: Worker service now starts automatically on SessionStart hook, no manual PM2 commands needed
+This release includes the latest updates from the npm package.
 
-### Added
-- **MCP Search Server**: 6 specialized search tools with FTS5 full-text search capabilities
-  - `search_observations` - Full-text search across observation titles, narratives, facts, and concepts
-  - `search_sessions` - Full-text search across session summaries, requests, and learnings
-  - `find_by_concept` - Find observations tagged with specific concepts
-  - `find_by_file` - Find observations and sessions that reference specific file paths
-  - `find_by_type` - Find observations by type (decision, bugfix, feature, refactor, discovery, change)
-  - `advanced_search` - Combined search with filters across observations and sessions
-- **Citation support**: All search results include `claude-mem://` URI citations for referencing specific observations and sessions
-- **Automatic worker startup**: Worker service now starts automatically in SessionStart hook
-- **Plugin data directory**: Full integration with Claude Code plugin system using `CLAUDE_PLUGIN_ROOT`
+### Installation
+```bash
+npm install -g claude-mem@3.9.12
+```
 
-### Changed
-- **Worker service architecture**: HTTP REST API with PM2 management for long-running background service
-- **Data directory priority**: `CLAUDE_PLUGIN_ROOT/data` > `CLAUDE_MEM_DATA_DIR` > `~/.claude-mem` (fallback for dev)
-- **Port file location**: Worker port file now stored in plugin data directory
-- **Session continuity**: Automatic context injection from last 3 sessions on startup
-- **Package structure**: Reorganized to properly distribute plugin/, dist/, and src/ directories
+### Quick Start
+```bash
+claude-mem install
+```
 
-### Fixed
-- Context hook now uses proper `hookSpecificOutput` JSON format for SessionStart
-- Added missing process.exit(0) calls in all hook entry points
-- Worker service now ensures data directory exists before writing port file
-- Improved error handling and graceful degradation across all components
+For full documentation, visit the [README](https://github.com/thedotmack/claude-mem#readme).
 
+## [3.9.11] - 2025-10-04
 
-## [3.7.1] - 2025-09-17
+## What's New
 
-### Added
-- SQLite storage backend with session, memory, overview, and diagnostics management
-- Mintlify documentation site with searchable interface and comprehensive guides
-- Context7 MCP integration for documentation retrieval
+This release includes the latest updates from the npm package.
 
-### Changed
-- Session-start overviews to display chronologically from oldest to newest
+### Installation
+```bash
+npm install -g claude-mem@3.9.11
+```
 
-### Fixed
-- Migration index parsing bug that prevented JSONL records from importing to SQLite
+### Quick Start
+```bash
+claude-mem install
+```
 
+For full documentation, visit the [README](https://github.com/thedotmack/claude-mem#readme).
 
-## [3.6.10] - 2025-09-16
+## [3.9.10] - 2025-10-03
 
-### Added
-- Claude Code statusline integration for real-time memory status
-- MCP memory tools server providing compress, stats, search, and overview commands
-- Concept documentation explaining memory compression and context loading
+## What's New
 
-### Fixed
-- Corrected integration architecture to use hooks instead of MCP SDK
+This release includes the latest updates from the npm package.
 
+### Installation
+```bash
+npm install -g claude-mem@3.9.10
+```
 
-## [3.6.9] - 2025-09-14
+### Quick Start
+```bash
+claude-mem install
+```
 
-### Added
-- Display current date and time at the top of session-start hook output for better temporal context
+For full documentation, visit the [README](https://github.com/thedotmack/claude-mem#readme).
 
-### Changed
-- Enhanced session-start hook formatting with emoji icons and separator lines for improved readability
+## [3.9.9] - 2025-10-03
 
+## What's New
+
+This release includes the latest updates from the npm package.
+
+### Installation
+```bash
+npm install -g claude-mem@3.9.9
+```
+
+### Quick Start
+```bash
+claude-mem install
+```
+
+For full documentation, visit the [README](https://github.com/thedotmack/claude-mem#readme).
+
+## [3.7.2] - 2025-09-22
+
+## What's New
+
+This release includes the latest updates from the npm package.
+
+### Installation
+```bash
+npm install -g claude-mem@3.7.2
+```
+
+### Quick Start
+```bash
+claude-mem install
+```
+
+For full documentation, visit the [README](https://github.com/thedotmack/claude-mem#readme).
+
+## [3.7.1] - 2025-09-18
+
+## What's New
+
+This release includes the latest updates from the npm package.
+
+### Installation
+```bash
+npm install -g claude-mem@3.7.1
+```
+
+### Quick Start
+```bash
+claude-mem install
+```
+
+For full documentation, visit the [README](https://github.com/thedotmack/claude-mem#readme).
+
+## [3.7.0] - 2025-09-18
+
+## What's New
+
+This release includes the latest updates from the npm package.
+
+### Installation
+```bash
+npm install -g claude-mem@3.7.0
+```
+
+### Quick Start
+```bash
+claude-mem install
+```
+
+For full documentation, visit the [README](https://github.com/thedotmack/claude-mem#readme).
+
+## [3.6.10] - 2025-09-17
+
+## What's New
+
+This release includes the latest updates from the npm package.
+
+### Installation
+```bash
+npm install -g claude-mem@3.6.10
+```
+
+### Quick Start
+```bash
+claude-mem install
+```
+
+For full documentation, visit the [README](https://github.com/thedotmack/claude-mem#readme).
+
+## [3.6.9] - 2025-09-15
+
+## What's New
+
+This release includes the latest updates from the npm package.
+
+### Installation
+```bash
+npm install -g claude-mem@3.6.9
+```
+
+### Quick Start
+```bash
+claude-mem install
+```
+
+For full documentation, visit the [README](https://github.com/thedotmack/claude-mem#readme).
 
 ## [3.6.8] - 2025-09-14
 
-### Fixed
-- Fixed publish command failing when no version-related memories exist for changelog generation
+## What's New
 
+This release includes the latest updates from the npm package.
+
+### Installation
+```bash
+npm install -g claude-mem@3.6.8
+```
+
+### Quick Start
+```bash
+claude-mem install
+```
+
+For full documentation, visit the [README](https://github.com/thedotmack/claude-mem#readme).
 
 ## [3.6.6] - 2025-09-14
 
-### Fixed
-- Resolved compaction errors when processing large conversation histories by reducing chunk size limits to stay within Claude's context window
+## What's New
 
+This release includes the latest updates from the npm package.
+
+### Installation
+```bash
+npm install -g claude-mem@3.6.6
+```
+
+### Quick Start
+```bash
+claude-mem install
+```
+
+For full documentation, visit the [README](https://github.com/thedotmack/claude-mem#readme).
 
 ## [3.6.5] - 2025-09-14
 
-### Changed
-- Session groups now display in chronological order (most recent first)
+## What's New
 
-### Fixed
-- Improved CLI path detection for cross-platform compatibility
+This release includes the latest updates from the npm package.
 
+### Installation
+```bash
+npm install -g claude-mem@3.6.5
+```
 
-## [3.6.4] - 2025-09-13
+### Quick Start
+```bash
+claude-mem install
+```
 
-### Changed
-- Update save documentation to include allowed-tools and description metadata fields
+For full documentation, visit the [README](https://github.com/thedotmack/claude-mem#readme).
 
-### Removed
-- Remove deprecated markdown to JSONL migration script
+## [3.6.4] - 2025-09-14
 
+## What's New
+
+This release includes the latest updates from the npm package.
+
+### Installation
+```bash
+npm install -g claude-mem@3.6.4
+```
+
+### Quick Start
+```bash
+claude-mem install
+```
+
+For full documentation, visit the [README](https://github.com/thedotmack/claude-mem#readme).
 
 ## [3.6.3] - 2025-09-11
 
-### Changed
-- Updated changelog generation prompts to use date strings in query text for temporal filtering
+## What's New
 
-### Fixed
-- Resolved changelog timestamp filtering by using semantic search instead of metadata queries, enabling proper date-based searches
-- Corrected install.ts search instructions to remove misleading metadata filtering guidance that caused 'Error finding id' errors
+This release includes the latest updates from the npm package.
 
+### Installation
+```bash
+npm install -g claude-mem@3.6.3
+```
 
-## [3.6.2] - 2025-09-10
+### Quick Start
+```bash
+claude-mem install
+```
 
-### Added
-- Visual feedback to changelog command showing current version, next version, and number of overviews being processed
-- Generate changelog for specific versions using `--generate` flag with npm publish time boundaries
-- Introduce 'Who Wants To Be a Memoryonaire?' trivia game that generates personalized questions from your stored memories
-- Add interactive terminal UI with lifelines (50:50, Phone-a-Friend, Audience Poll) and cross-platform audio support
-- Implement permanent question caching with --regenerate flag for instant game loading
-- Enable hybrid vector search to discover related memory chains during question generation
+For full documentation, visit the [README](https://github.com/thedotmack/claude-mem#readme).
 
-### Changed
-- Changelog regeneration automatically removes old entries from JSONL file when using `--generate` or `--historical` flags
-- Switch to direct JSONL file loading for instant memory access without API calls
-- Optimize AI generation with faster 'sonnet' model for improved performance
-- Reduce memory query limit from 100 to 50 to prevent token overflow
+## [3.6.2] - 2025-09-11
 
-### Fixed
-- Changelog command now uses npm publish timestamps exclusively for accurate version time ranges
-- Resolved timestamp filtering issues with Chroma database by leveraging semantic search with embedded dates
-- Resolve game hanging at startup due to confirmation loop
-- Fix memory integration bypass that prevented questions from using actual stored memories
-- Consolidate 500+ lines of duplicate code for better maintainability
+## What's New
 
+This release includes the latest updates from the npm package.
+
+### Installation
+```bash
+npm install -g claude-mem@3.6.2
+```
+
+### Quick Start
+```bash
+claude-mem install
+```
+
+For full documentation, visit the [README](https://github.com/thedotmack/claude-mem#readme).
 
 ## [3.6.1] - 2025-09-10
 
-### Changed
-- Refactored pre-compact hook to work independently without status line updates
+## What's New
 
-### Removed
-- Removed status line integration and ccstatusline configuration support
+This release includes the latest updates from the npm package.
 
+### Installation
+```bash
+npm install -g claude-mem@3.6.1
+```
 
-## [3.5.5] - 2025-09-10
+### Quick Start
+```bash
+claude-mem install
+```
 
-### Changed
-- Standardized GitHub release naming to lowercase 'claude-mem vX.X.X' format for consistent branding
+For full documentation, visit the [README](https://github.com/thedotmack/claude-mem#readme).
+
+## [3.6.0] - 2025-09-10
+
+## What's New
+
+This release includes the latest updates from the npm package.
+
+### Installation
+```bash
+npm install -g claude-mem@3.6.0
+```
+
+### Quick Start
+```bash
+claude-mem install
+```
+
+For full documentation, visit the [README](https://github.com/thedotmack/claude-mem#readme).
+
+## [3.5.9] - 2025-09-10
+
+## What's New
+
+This release includes the latest updates from the npm package.
+
+### Installation
+```bash
+npm install -g claude-mem@3.5.9
+```
+
+### Quick Start
+```bash
+claude-mem install
+```
+
+For full documentation, visit the [README](https://github.com/thedotmack/claude-mem#readme).
+
+## [3.5.8] - 2025-09-10
+
+## What's New
+
+This release includes the latest updates from the npm package.
+
+### Installation
+```bash
+npm install -g claude-mem@3.5.8
+```
+
+### Quick Start
+```bash
+claude-mem install
+```
+
+For full documentation, visit the [README](https://github.com/thedotmack/claude-mem#readme).
+
+## [3.5.7] - 2025-09-10
+
+## What's New
+
+This release includes the latest updates from the npm package.
+
+### Installation
+```bash
+npm install -g claude-mem@3.5.7
+```
+
+### Quick Start
+```bash
+claude-mem install
+```
+
+For full documentation, visit the [README](https://github.com/thedotmack/claude-mem#readme).
+
+## [3.5.6] - 2025-09-09
+
+## What's New
+
+This release includes the latest updates from the npm package.
+
+### Installation
+```bash
+npm install -g claude-mem@3.5.6
+```
+
+### Quick Start
+```bash
+claude-mem install
+```
+
+For full documentation, visit the [README](https://github.com/thedotmack/claude-mem#readme).
+
+## [3.5.5] - 2025-09-09
+
+## What's New
+
+This release includes the latest updates from the npm package.
+
+### Installation
+```bash
+npm install -g claude-mem@3.5.5
+```
+
+### Quick Start
+```bash
+claude-mem install
+```
+
+For full documentation, visit the [README](https://github.com/thedotmack/claude-mem#readme).
+
+## [3.5.4] - 2025-09-09
+
+## 🎉 claude-mem v3.5.4
+
+### Installation
+```bash
+npm install -g claude-mem
+claude-mem install
+```
+
+### What's New
+- Enhanced memory compression and loading
+- Improved hook system reliability  
+- Better error handling and logging
+- Updated dependencies
+- Bug fixes and performance improvements
+
+### Key Features
+- 🧠 **Intelligent Memory Compression** - Automatically extracts key learnings from Claude Code conversations
+- 🔄 **Seamless Integration** - Works invisibly in the background with /compact and /clear commands
+- 🎯 **Smart Context Loading** - Loads relevant memories when starting new sessions
+- 📚 **Comprehensive Knowledge Base** - Stores solutions, patterns, and decisions
+- 🔍 **Powerful Search** - Vector-based semantic search across all memories
+
+### Files Included
+- `dist/claude-mem.min.js` - Minified CLI executable
+- `hooks/` - Claude Code integration hooks
+- `commands/` - Claude Code custom commands
+- `package.json` - Package configuration
+
+### Requirements
+- Node.js 18+
+- Claude Code CLI
+- uv (automatically installed if missing)
+
+For documentation and support, visit the [GitHub repository](https://github.com/thedotmack/claude-mem).

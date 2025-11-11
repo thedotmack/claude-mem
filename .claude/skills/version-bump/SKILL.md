@@ -1,6 +1,6 @@
 ---
 name: version-bump
-description: Manage semantic version updates for claude-mem project. Handles patch, minor, and major version increments following semantic versioning. Updates package.json, marketplace.json, plugin.json, and CLAUDE.md version number (NOT version history). Creates git tags.
+description: Manage semantic version updates for claude-mem project. Handles patch, minor, and major version increments following semantic versioning. Updates package.json, marketplace.json, plugin.json, and CLAUDE.md version number (NOT version history). Creates git tags and GitHub releases. Auto-generates CHANGELOG.md from releases.
 ---
 
 # Version Bump Skill
@@ -42,6 +42,7 @@ See [operations/workflow.md](operations/workflow.md) for detailed step-by-step p
 6. Build and test
 7. Commit and create git tag
 8. Push and create GitHub release
+9. Generate CHANGELOG.md from releases and commit
 
 ## Common Scenarios
 
@@ -56,6 +57,7 @@ See [operations/scenarios.md](operations/scenarios.md) for examples:
 - Update ALL FOUR files with matching version numbers
 - Create git tag with format `vX.Y.Z`
 - Create GitHub release from the tag
+- Generate CHANGELOG.md from releases after creating release
 - Ask user if version type is unclear
 
 **NEVER:**
@@ -73,6 +75,7 @@ Before considering the task complete:
 - [ ] Git tag created (format: vX.Y.Z)
 - [ ] Commit and tags pushed to remote
 - [ ] GitHub release created from the tag
+- [ ] CHANGELOG.md generated and committed
 - [ ] CLAUDE.md: ONLY line 9 updated (version number), NOT version history
 
 ## Reference Commands
