@@ -319,6 +319,12 @@ export class WorkerService {
           }
         });
 
+        // Start activity indicator immediately when prompt arrives (work is about to begin)
+        this.sseBroadcaster.broadcast({
+          type: 'processing_status',
+          isProcessing: true
+        });
+
         // Sync user prompt to Chroma with error logging
         const chromaStart = Date.now();
         const promptText = latestPrompt.prompt_text;
@@ -362,8 +368,11 @@ export class WorkerService {
           logger.failure('SDK', 'SDK agent error', { sessionId: sessionDbId }, err);
         })
         .finally(() => {
-          // Clear generator reference when completed (deleteSession callback will broadcast)
+          // Clear generator reference when completed
+          logger.info('SESSION', `Generator finished`, { sessionId: sessionDbId });
           session.generatorPromise = null;
+          // Broadcast status change (generator finished, may stop spinner)
+          this.broadcastProcessingStatus();
         });
 
       // Broadcast SSE event
@@ -410,8 +419,11 @@ export class WorkerService {
             logger.failure('SDK', 'SDK agent error', { sessionId: sessionDbId }, err);
           })
           .finally(() => {
-            // Clear generator reference when completed (deleteSession callback will broadcast)
+            // Clear generator reference when completed
+            logger.info('SESSION', `Generator finished`, { sessionId: sessionDbId });
             session.generatorPromise = null;
+            // Broadcast status change (generator finished, may stop spinner)
+            this.broadcastProcessingStatus();
           });
       }
 
@@ -455,8 +467,11 @@ export class WorkerService {
             logger.failure('SDK', 'SDK agent error', { sessionId: sessionDbId }, err);
           })
           .finally(() => {
-            // Clear generator reference when completed (deleteSession callback will broadcast)
+            // Clear generator reference when completed
+            logger.info('SESSION', `Generator finished`, { sessionId: sessionDbId });
             session.generatorPromise = null;
+            // Broadcast status change (generator finished, may stop spinner)
+            this.broadcastProcessingStatus();
           });
       }
 
@@ -762,6 +777,15 @@ export class WorkerService {
    */
   broadcastProcessingStatus(): void {
     const isProcessing = this.sessionManager.isAnySessionProcessing();
+    const queueDepth = this.sessionManager.getTotalQueueDepth();
+    const activeSessions = this.sessionManager.getActiveSessionCount();
+
+    logger.info('WORKER', 'Broadcasting processing status', {
+      isProcessing,
+      queueDepth,
+      activeSessions
+    });
+
     this.sseBroadcaster.broadcast({
       type: 'processing_status',
       isProcessing

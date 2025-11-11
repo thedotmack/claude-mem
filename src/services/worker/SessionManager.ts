@@ -271,6 +271,12 @@ export class SessionManager {
       while (session.pendingMessages.length > 0) {
         const message = session.pendingMessages.shift()!;
         yield message;
+
+        // If we just yielded a summary, that's the end of this batch - stop the iterator
+        if (message.type === 'summarize') {
+          logger.info('SESSION', `Summary yielded - ending generator`, { sessionId: sessionDbId });
+          return;
+        }
       }
     }
   }
