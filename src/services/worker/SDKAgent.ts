@@ -115,16 +115,39 @@ export class SDKAgent {
 
   /**
    * Create event-driven message generator (yields messages from SessionManager)
+   *
+   * CRITICAL: CONTINUATION PROMPT LOGIC
+   * ====================================
+   * This is where NEW hook's dual-purpose nature comes together:
+   *
+   * - Prompt #1 (lastPromptNumber === 1): buildInitPrompt
+   *   - Full initialization prompt with instructions
+   *   - Sets up the SDK agent's context
+   *
+   * - Prompt #2+ (lastPromptNumber > 1): buildContinuationPrompt
+   *   - Continuation prompt for same session
+   *   - Includes session context and prompt number
+   *
+   * BOTH prompts receive session.claudeSessionId:
+   * - This comes from the hook's session_id (see new-hook.ts)
+   * - Same session_id used by SAVE hook to store observations
+   * - This is how everything stays connected in one unified session
+   *
+   * NO SESSION EXISTENCE CHECKS NEEDED:
+   * - SessionManager.initializeSession already fetched this from database
+   * - Database row was created by new-hook's createSDKSession call
+   * - We just use the session_id we're given - simple and reliable
    */
   private async *createMessageGenerator(session: ActiveSession): AsyncIterableIterator<SDKUserMessage> {
     // Yield initial user prompt with context (or continuation if prompt #2+)
+    // CRITICAL: Both paths use session.claudeSessionId from the hook
     yield {
       type: 'user',
       message: {
         role: 'user',
         content: session.lastPromptNumber === 1
           ? buildInitPrompt(session.project, session.claudeSessionId, session.userPrompt)
-          : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber)
+          : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.claudeSessionId)
       },
       session_id: session.claudeSessionId,
       parent_tool_use_id: null,

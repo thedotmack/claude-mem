@@ -1,6 +1,36 @@
 /**
  * New Hook - UserPromptSubmit
- * Consolidated entry point + logic
+ *
+ * DUAL PURPOSE HOOK: Handles BOTH session initialization AND continuation
+ * ==========================================================================
+ *
+ * CRITICAL ARCHITECTURE FACTS (NEVER FORGET):
+ *
+ * 1. SESSION ID THREADING - The Single Source of Truth
+ *    - Claude Code assigns ONE session_id per conversation
+ *    - ALL hooks in that conversation receive the SAME session_id
+ *    - We ALWAYS use this session_id - NEVER generate our own
+ *    - This is how NEW hook, SAVE hook, and SUMMARY hook stay connected
+ *
+ * 2. NO EXISTENCE CHECKS NEEDED
+ *    - createSDKSession is idempotent (INSERT OR IGNORE)
+ *    - Prompt #1: Creates new database row, returns new ID
+ *    - Prompt #2+: Row exists, returns existing ID
+ *    - We NEVER need to check "does session exist?" - just use the session_id
+ *
+ * 3. CONTINUATION LOGIC LOCATION
+ *    - This hook does NOT contain continuation prompt logic
+ *    - That lives in SDKAgent.ts (lines 125-127)
+ *    - SDKAgent checks promptNumber to choose init vs continuation prompt
+ *    - BOTH prompts receive the SAME session_id from this hook
+ *
+ * 4. UNIFIED WITH SAVE HOOK
+ *    - SAVE hook uses: db.createSDKSession(session_id, '', '')
+ *    - NEW hook uses: db.createSDKSession(session_id, project, prompt)
+ *    - Both use session_id from hook context - this keeps everything connected
+ *
+ * This is KISS in action: Use the session_id we're given, trust idempotent
+ * database operations, and let SDKAgent handle init vs continuation logic.
  */
 
 import path from 'path';
@@ -32,7 +62,9 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
 
   const db = new SessionStore();
 
-  // Save session_id for indexing
+  // CRITICAL: Use session_id from hook as THE source of truth
+  // createSDKSession is idempotent - creates new or returns existing
+  // This is how ALL hooks stay connected to the same session
   const sessionDbId = db.createSDKSession(session_id, project, prompt);
   const promptNumber = db.incrementPromptCounter(sessionDbId);
 
@@ -50,7 +82,7 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
     const response = await fetch(`http://127.0.0.1:${port}/sessions/${sessionDbId}/init`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ project, userPrompt: prompt }),
+      body: JSON.stringify({ project, userPrompt: prompt, promptNumber }),
       signal: AbortSignal.timeout(5000)
     });
 
