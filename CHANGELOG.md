@@ -7,8 +7,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+
+## [5.5.0] - 2025-11-11
+
 ### Added
-- **mem-search Skill**: Enhanced search skill with 100% effectiveness compliance
+- **mem-search Skill**: Enhanced search skill with 100% effectiveness compliance (by @basher83)
   - Replaces `search` skill with improved scope differentiation and trigger design
   - 85% concrete triggers (vs 44% in previous version) for reliable auto-invocation
   - 5+ unique identifiers (vs 1) to distinguish from native conversation memory
