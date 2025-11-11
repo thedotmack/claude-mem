@@ -12,9 +12,10 @@ interface SidebarProps {
   isConnected: boolean;
   onSave: (settings: Settings) => void;
   onClose: () => void;
+  onRefreshStats: () => void;
 }
 
-export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, isConnected, onSave, onClose }: SidebarProps) {
+export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, isConnected, onSave, onClose, onRefreshStats }: SidebarProps) {
   // Settings form state
   const [model, setModel] = useState(settings.CLAUDE_MEM_MODEL || DEFAULT_SETTINGS.CLAUDE_MEM_MODEL);
   const [contextObs, setContextObs] = useState(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_OBSERVATIONS);
@@ -39,6 +40,13 @@ export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, isConne
       .then(data => setMcpEnabled(data.enabled))
       .catch(error => console.error('Failed to load MCP status:', error));
   }, []);
+
+  // Refresh stats when sidebar opens
+  useEffect(() => {
+    if (isOpen) {
+      onRefreshStats();
+    }
+  }, [isOpen, onRefreshStats]);
 
   const handleSave = () => {
     onSave({
