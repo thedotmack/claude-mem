@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-import ee from"path";import{stdin as M}from"process";import j from"better-sqlite3";import{join as E,dirname as X,basename as re}from"path";import{homedir as v}from"os";import{existsSync as ae,mkdirSync as $}from"fs";import{fileURLToPath as P}from"url";function H(){return typeof __dirname<"u"?__dirname:X(P(import.meta.url))}var de=H(),g=process.env.CLAUDE_MEM_DATA_DIR||E(v(),".claude-mem"),I=process.env.CLAUDE_CONFIG_DIR||E(v(),".claude"),ce=E(g,"archives"),ue=E(g,"logs"),_e=E(g,"trash"),le=E(g,"backups"),Ee=E(g,"settings.json"),y=E(g,"claude-mem.db"),me=E(g,"vector-db"),Te=E(I,"settings.json"),Se=E(I,"commands"),be=E(I,"CLAUDE.md");function D(c){$(c,{recursive:!0})}var L=(n=>(n[n.DEBUG=0]="DEBUG",n[n.INFO=1]="INFO",n[n.WARN=2]="WARN",n[n.ERROR=3]="ERROR",n[n.SILENT=4]="SILENT",n))(L||{}),A=class{level;useColor;constructor(){let e=process.env.CLAUDE_MEM_LOG_LEVEL?.toUpperCase()||"INFO";this.level=L[e]??1,this.useColor=process.stdout.isTTY??!1}correlationId(e,s){return`obs-${e}-${s}`}sessionId(e){return`session-${e}`}formatData(e){if(e==null)return"";if(typeof e=="string")return e;if(typeof e=="number"||typeof e=="boolean")return e.toString();if(typeof e=="object"){if(e instanceof Error)return this.level===0?`${e.message}
+import ee from"path";import{stdin as M}from"process";import j from"better-sqlite3";import{join as m,dirname as X,basename as re}from"path";import{homedir as v}from"os";import{existsSync as ae,mkdirSync as $}from"fs";import{fileURLToPath as P}from"url";function H(){return typeof __dirname<"u"?__dirname:X(P(import.meta.url))}var de=H(),g=process.env.CLAUDE_MEM_DATA_DIR||m(v(),".claude-mem"),I=process.env.CLAUDE_CONFIG_DIR||m(v(),".claude"),ce=m(g,"archives"),ue=m(g,"logs"),_e=m(g,"trash"),le=m(g,"backups"),me=m(g,"settings.json"),y=m(g,"claude-mem.db"),Ee=m(g,"vector-db"),Te=m(I,"settings.json"),be=m(I,"commands"),Se=m(I,"CLAUDE.md");function D(c){$(c,{recursive:!0})}var L=(n=>(n[n.DEBUG=0]="DEBUG",n[n.INFO=1]="INFO",n[n.WARN=2]="WARN",n[n.ERROR=3]="ERROR",n[n.SILENT=4]="SILENT",n))(L||{}),A=class{level;useColor;constructor(){let e=process.env.CLAUDE_MEM_LOG_LEVEL?.toUpperCase()||"INFO";this.level=L[e]??1,this.useColor=process.stdout.isTTY??!1}correlationId(e,s){return`obs-${e}-${s}`}sessionId(e){return`session-${e}`}formatData(e){if(e==null)return"";if(typeof e=="string")return e;if(typeof e=="number"||typeof e=="boolean")return e.toString();if(typeof e=="object"){if(e instanceof Error)return this.level===0?`${e.message}
 ${e.stack}`:e.message;if(Array.isArray(e))return`[${e.length} items]`;let s=Object.keys(e);return s.length===0?"{}":s.length<=3?JSON.stringify(e):`{${s.length} keys: ${s.slice(0,3).join(", ")}...}`}return String(e)}formatTool(e,s){if(!s)return e;try{let t=typeof s=="string"?JSON.parse(s):s;if(e==="Bash"&&t.command){let r=t.command.length>50?t.command.substring(0,50)+"...":t.command;return`${e}(${r})`}if(e==="Read"&&t.file_path){let r=t.file_path.split("/").pop()||t.file_path;return`${e}(${r})`}if(e==="Edit"&&t.file_path){let r=t.file_path.split("/").pop()||t.file_path;return`${e}(${r})`}if(e==="Write"&&t.file_path){let r=t.file_path.split("/").pop()||t.file_path;return`${e}(${r})`}return e}catch{return e}}log(e,s,t,r,n){if(e<this.level)return;let i=new Date().toISOString().replace("T"," ").substring(0,23),o=L[e].padEnd(5),p=s.padEnd(6),u="";r?.correlationId?u=`[${r.correlationId}] `:r?.sessionId&&(u=`[session-${r.sessionId}] `);let d="";n!=null&&(this.level===0&&typeof n=="object"?d=`
-`+JSON.stringify(n,null,2):d=" "+this.formatData(n));let m="";if(r){let{sessionId:l,sdkSessionId:T,correlationId:_,...a}=r;Object.keys(a).length>0&&(m=` {${Object.entries(a).map(([S,h])=>`${S}=${h}`).join(", ")}}`)}let b=`[${i}] [${o}] [${p}] ${u}${t}${m}${d}`;e===3?console.error(b):console.log(b)}debug(e,s,t,r){this.log(0,e,s,t,r)}info(e,s,t,r){this.log(1,e,s,t,r)}warn(e,s,t,r){this.log(2,e,s,t,r)}error(e,s,t,r){this.log(3,e,s,t,r)}dataIn(e,s,t,r){this.info(e,`\u2192 ${s}`,t,r)}dataOut(e,s,t,r){this.info(e,`\u2190 ${s}`,t,r)}success(e,s,t,r){this.info(e,`\u2713 ${s}`,t,r)}failure(e,s,t,r){this.error(e,`\u2717 ${s}`,t,r)}timing(e,s,t,r){this.info(e,`\u23F1 ${s}`,r,{duration:`${t}ms`})}},k=new A;var N=class{db;constructor(){D(g),this.db=new j(y),this.db.pragma("journal_mode = WAL"),this.db.pragma("synchronous = NORMAL"),this.db.pragma("foreign_keys = ON"),this.initializeSchema(),this.ensureWorkerPortColumn(),this.ensurePromptTrackingColumns(),this.removeSessionSummariesUniqueConstraint(),this.addObservationHierarchicalFields(),this.makeObservationsTextNullable(),this.createUserPromptsTable()}initializeSchema(){try{this.db.exec(`
+`+JSON.stringify(n,null,2):d=" "+this.formatData(n));let T="";if(r){let{sessionId:l,sdkSessionId:E,correlationId:_,...a}=r;Object.keys(a).length>0&&(T=` {${Object.entries(a).map(([b,h])=>`${b}=${h}`).join(", ")}}`)}let S=`[${i}] [${o}] [${p}] ${u}${t}${T}${d}`;e===3?console.error(S):console.log(S)}debug(e,s,t,r){this.log(0,e,s,t,r)}info(e,s,t,r){this.log(1,e,s,t,r)}warn(e,s,t,r){this.log(2,e,s,t,r)}error(e,s,t,r){this.log(3,e,s,t,r)}dataIn(e,s,t,r){this.info(e,`\u2192 ${s}`,t,r)}dataOut(e,s,t,r){this.info(e,`\u2190 ${s}`,t,r)}success(e,s,t,r){this.info(e,`\u2713 ${s}`,t,r)}failure(e,s,t,r){this.error(e,`\u2717 ${s}`,t,r)}timing(e,s,t,r){this.info(e,`\u23F1 ${s}`,r,{duration:`${t}ms`})}},k=new A;var N=class{db;constructor(){D(g),this.db=new j(y),this.db.pragma("journal_mode = WAL"),this.db.pragma("synchronous = NORMAL"),this.db.pragma("foreign_keys = ON"),this.initializeSchema(),this.ensureWorkerPortColumn(),this.ensurePromptTrackingColumns(),this.removeSessionSummariesUniqueConstraint(),this.addObservationHierarchicalFields(),this.makeObservationsTextNullable(),this.createUserPromptsTable()}initializeSchema(){try{this.db.exec(`
         CREATE TABLE IF NOT EXISTS schema_versions (
           id INTEGER PRIMARY KEY,
           version INTEGER UNIQUE NOT NULL,
@@ -363,69 +363,69 @@ ${e.stack}`:e.message;if(Array.isArray(e))return`[${e.length} items]`;let s=Obje
         WHERE id <= ? ${i}
         ORDER BY id DESC
         LIMIT ?
-      `,T=`
+      `,E=`
         SELECT id, created_at_epoch
         FROM observations
         WHERE id >= ? ${i}
         ORDER BY id ASC
         LIMIT ?
-      `;try{let _=this.db.prepare(l).all(e,...o,t+1),a=this.db.prepare(T).all(e,...o,r+1);if(_.length===0&&a.length===0)return{observations:[],sessions:[],prompts:[]};p=_.length>0?_[_.length-1].created_at_epoch:s,u=a.length>0?a[a.length-1].created_at_epoch:s}catch(_){return console.error("[SessionStore] Error getting boundary observations:",_.message),{observations:[],sessions:[],prompts:[]}}}else{let l=`
+      `;try{let _=this.db.prepare(l).all(e,...o,t+1),a=this.db.prepare(E).all(e,...o,r+1);if(_.length===0&&a.length===0)return{observations:[],sessions:[],prompts:[]};p=_.length>0?_[_.length-1].created_at_epoch:s,u=a.length>0?a[a.length-1].created_at_epoch:s}catch(_){return console.error("[SessionStore] Error getting boundary observations:",_.message),{observations:[],sessions:[],prompts:[]}}}else{let l=`
         SELECT created_at_epoch
         FROM observations
         WHERE created_at_epoch <= ? ${i}
         ORDER BY created_at_epoch DESC
         LIMIT ?
-      `,T=`
+      `,E=`
         SELECT created_at_epoch
         FROM observations
         WHERE created_at_epoch >= ? ${i}
         ORDER BY created_at_epoch ASC
         LIMIT ?
-      `;try{let _=this.db.prepare(l).all(s,...o,t),a=this.db.prepare(T).all(s,...o,r+1);if(_.length===0&&a.length===0)return{observations:[],sessions:[],prompts:[]};p=_.length>0?_[_.length-1].created_at_epoch:s,u=a.length>0?a[a.length-1].created_at_epoch:s}catch(_){return console.error("[SessionStore] Error getting boundary timestamps:",_.message),{observations:[],sessions:[],prompts:[]}}}let d=`
+      `;try{let _=this.db.prepare(l).all(s,...o,t),a=this.db.prepare(E).all(s,...o,r+1);if(_.length===0&&a.length===0)return{observations:[],sessions:[],prompts:[]};p=_.length>0?_[_.length-1].created_at_epoch:s,u=a.length>0?a[a.length-1].created_at_epoch:s}catch(_){return console.error("[SessionStore] Error getting boundary timestamps:",_.message),{observations:[],sessions:[],prompts:[]}}}let d=`
       SELECT *
       FROM observations
       WHERE created_at_epoch >= ? AND created_at_epoch <= ? ${i}
       ORDER BY created_at_epoch ASC
-    `,m=`
+    `,T=`
       SELECT *
       FROM session_summaries
       WHERE created_at_epoch >= ? AND created_at_epoch <= ? ${i}
       ORDER BY created_at_epoch ASC
-    `,b=`
+    `,S=`
       SELECT up.*, s.project, s.sdk_session_id
       FROM user_prompts up
       JOIN sdk_sessions s ON up.claude_session_id = s.claude_session_id
       WHERE up.created_at_epoch >= ? AND up.created_at_epoch <= ? ${i.replace("project","s.project")}
       ORDER BY up.created_at_epoch ASC
-    `;try{let l=this.db.prepare(d).all(p,u,...o),T=this.db.prepare(m).all(p,u,...o),_=this.db.prepare(b).all(p,u,...o);return{observations:l,sessions:T.map(a=>({id:a.id,sdk_session_id:a.sdk_session_id,project:a.project,request:a.request,completed:a.completed,next_steps:a.next_steps,created_at:a.created_at,created_at_epoch:a.created_at_epoch})),prompts:_.map(a=>({id:a.id,claude_session_id:a.claude_session_id,project:a.project,prompt:a.prompt_text,created_at:a.created_at,created_at_epoch:a.created_at_epoch}))}}catch(l){return console.error("[SessionStore] Error querying timeline records:",l.message),{observations:[],sessions:[],prompts:[]}}}close(){this.db.close()}};function B(c,e,s){return c==="PreCompact"?e?{continue:!0,suppressOutput:!0}:{continue:!1,stopReason:s.reason||"Pre-compact operation failed",suppressOutput:!0}:c==="SessionStart"?e&&s.context?{continue:!0,suppressOutput:!0,hookSpecificOutput:{hookEventName:"SessionStart",additionalContext:s.context}}:{continue:!0,suppressOutput:!0}:c==="UserPromptSubmit"?e&&s.context?{continue:!0,suppressOutput:!0,hookSpecificOutput:{hookEventName:"UserPromptSubmit",additionalContext:s.context}}:{continue:!0,suppressOutput:!0}:c==="PostToolUse"?{continue:!0,suppressOutput:!0}:c==="Stop"?{continue:!0,suppressOutput:!0}:{continue:e,suppressOutput:!0,...s.reason&&!e?{stopReason:s.reason}:{}}}function x(c,e,s={}){let t=B(c,e,s);return JSON.stringify(t)}import W from"path";import{homedir as G}from"os";import{existsSync as Y,readFileSync as K}from"fs";var V=100;function O(){try{let c=W.join(G(),".claude-mem","settings.json");if(Y(c)){let e=JSON.parse(K(c,"utf-8")),s=parseInt(e.env?.CLAUDE_MEM_WORKER_PORT,10);if(!isNaN(s))return s}}catch{}return parseInt(process.env.CLAUDE_MEM_WORKER_PORT||"37777",10)}async function q(){try{let c=O();return(await fetch(`http://127.0.0.1:${c}/health`,{signal:AbortSignal.timeout(V)})).ok}catch{return!1}}async function U(){if(await q())return;let c=O();throw new Error(`Worker service is not responding on port ${c}.
+    `;try{let l=this.db.prepare(d).all(p,u,...o),E=this.db.prepare(T).all(p,u,...o),_=this.db.prepare(S).all(p,u,...o);return{observations:l,sessions:E.map(a=>({id:a.id,sdk_session_id:a.sdk_session_id,project:a.project,request:a.request,completed:a.completed,next_steps:a.next_steps,created_at:a.created_at,created_at_epoch:a.created_at_epoch})),prompts:_.map(a=>({id:a.id,claude_session_id:a.claude_session_id,project:a.project,prompt:a.prompt_text,created_at:a.created_at,created_at_epoch:a.created_at_epoch}))}}catch(l){return console.error("[SessionStore] Error querying timeline records:",l.message),{observations:[],sessions:[],prompts:[]}}}close(){this.db.close()}};function B(c,e,s){return c==="PreCompact"?e?{continue:!0,suppressOutput:!0}:{continue:!1,stopReason:s.reason||"Pre-compact operation failed",suppressOutput:!0}:c==="SessionStart"?e&&s.context?{continue:!0,suppressOutput:!0,hookSpecificOutput:{hookEventName:"SessionStart",additionalContext:s.context}}:{continue:!0,suppressOutput:!0}:c==="UserPromptSubmit"?e&&s.context?{continue:!0,suppressOutput:!0,hookSpecificOutput:{hookEventName:"UserPromptSubmit",additionalContext:s.context}}:{continue:!0,suppressOutput:!0}:c==="PostToolUse"?{continue:!0,suppressOutput:!0}:c==="Stop"?{continue:!0,suppressOutput:!0}:{continue:e,suppressOutput:!0,...s.reason&&!e?{stopReason:s.reason}:{}}}function x(c,e,s={}){let t=B(c,e,s);return JSON.stringify(t)}import W from"path";import{homedir as G}from"os";import{existsSync as Y,readFileSync as K}from"fs";var V=100;function O(){try{let c=W.join(G(),".claude-mem","settings.json");if(Y(c)){let e=JSON.parse(K(c,"utf-8")),s=parseInt(e.env?.CLAUDE_MEM_WORKER_PORT,10);if(!isNaN(s))return s}}catch{}return parseInt(process.env.CLAUDE_MEM_WORKER_PORT||"37777",10)}async function q(){try{let c=O();return(await fetch(`http://127.0.0.1:${c}/health`,{signal:AbortSignal.timeout(V)})).ok}catch{return!1}}async function U(){if(await q())return;let c=O();throw new Error(`Worker service is not responding on port ${c}.
 
 If you just updated the plugin, PM2's watch mode should restart automatically.
 If the problem persists, run: pm2 restart claude-mem-worker`)}import{appendFileSync as J}from"fs";import{homedir as Q}from"os";import{join as z}from"path";var Z=z(Q(),".claude-mem","silent.log");function R(c,e,s=""){let t=new Date().toISOString(),o=((new Error().stack||"").split(`
 `)[2]||"").match(/at\s+(?:.*\s+)?\(?([^:]+):(\d+):(\d+)\)?/),p=o?`${o[1].split("/").pop()}:${o[2]}`:"unknown",u=`[${t}] [${p}] ${c}`;if(e!==void 0)try{u+=` ${JSON.stringify(e)}`}catch(d){u+=` [stringify error: ${d}]`}u+=`
-`;try{J(Z,u)}catch(d){console.error("[silent-debug] Failed to write to log:",d)}return s}async function se(c){if(!c)throw new Error("newHook requires input");let{session_id:e,cwd:s,prompt:t}=c,r=ee.basename(s);await U();let n=new N,i=n.createSDKSession(e,r,t),o=n.incrementPromptCounter(i);n.saveUserPrompt(e,o,t),console.error(`[new-hook] Session ${i}, prompt #${o}`);let p=O();try{let d=await fetch(`http://127.0.0.1:${p}/sessions/${i}/init`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({project:r,userPrompt:t,promptNumber:o}),signal:AbortSignal.timeout(5e3)});if(!d.ok){let m=await d.text();throw new Error(`Failed to initialize session: ${d.status} ${m}`)}}catch(d){throw d.cause?.code==="ECONNREFUSED"||d.name==="TimeoutError"||d.message.includes("fetch failed")?new Error("There's a problem with the worker. If you just updated, type `pm2 restart claude-mem-worker` in your terminal to continue"):d}let u="";if(process.env.CLAUDE_MEM_REALTIME_CONTEXT==="true")try{let d=parseInt(process.env.CLAUDE_MEM_CONTEXT_OBSERVATIONS||"50",10),m=n.db.prepare(`
+`;try{J(Z,u)}catch(d){console.error("[silent-debug] Failed to write to log:",d)}return s}async function se(c){if(!c)throw new Error("newHook requires input");let{session_id:e,cwd:s,prompt:t}=c,r=ee.basename(s);await U();let n=new N,i=n.createSDKSession(e,r,t),o=n.incrementPromptCounter(i);n.saveUserPrompt(e,o,t),console.error(`[new-hook] Session ${i}, prompt #${o}`);let p=O();try{let d=await fetch(`http://127.0.0.1:${p}/sessions/${i}/init`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({project:r,userPrompt:t,promptNumber:o}),signal:AbortSignal.timeout(5e3)});if(!d.ok){let T=await d.text();throw new Error(`Failed to initialize session: ${d.status} ${T}`)}}catch(d){throw d.cause?.code==="ECONNREFUSED"||d.name==="TimeoutError"||d.message.includes("fetch failed")?new Error("There's a problem with the worker. If you just updated, type `pm2 restart claude-mem-worker` in your terminal to continue"):d}let u="";if(process.env.CLAUDE_MEM_REALTIME_CONTEXT==="true")try{let d=parseInt(process.env.CLAUDE_MEM_CONTEXT_OBSERVATIONS||"50",10),T=n.db.prepare(`
         SELECT id, type, title, subtitle
         FROM observations
         WHERE project = ?
         ORDER BY created_at_epoch DESC
         LIMIT ?
-      `).all(r,d);R(`[new-hook] Calling context selection with ${m.length} session start observations`);let b=await fetch(`http://127.0.0.1:${p}/api/context/select`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({userPrompt:t,sessionStartObservations:m,project:r})});if(b.ok){let l=await b.json();R("[new-hook] Context selection complete",l);let T=l.relevant_session_start_ids||[];if(T.length>0){let _=T.map(()=>"?").join(",");u=`# Relevant Context from Past Sessions
+      `).all(r,d);R(`[new-hook] Calling context selection with ${T.length} session start observations`);let S=await fetch(`http://127.0.0.1:${p}/api/context/select-from-timeline`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({userPrompt:t,project:r})});if(S.ok){let l=await S.json();R("[new-hook] Context selection complete",l);let E=l.relevant_observation_ids||[];if(E.length>0){let _=E.map(()=>"?").join(",");u=`# Relevant Context from Past Sessions
 
 ${n.db.prepare(`
             SELECT id, type, title, subtitle, narrative, facts, concepts
             FROM observations
             WHERE id IN (${_})
             ORDER BY created_at_epoch DESC
-          `).all(...T).map(S=>{let h=`### [${S.id}] ${S.title}
+          `).all(...E).map(b=>{let h=`### [${b.id}] ${b.title}
 
-`;if(S.subtitle&&(h+=`${S.subtitle}
+`;if(b.subtitle&&(h+=`${b.subtitle}
 
-`),S.narrative&&(h+=`**Context:** ${S.narrative}
+`),b.narrative&&(h+=`**Context:** ${b.narrative}
 
-`),S.facts)try{let f=JSON.parse(S.facts);Array.isArray(f)&&f.length>0&&(h+=`**Facts:**
+`),b.facts)try{let f=JSON.parse(b.facts);Array.isArray(f)&&f.length>0&&(h+=`**Facts:**
 ${f.map(F=>`- ${F}`).join(`
 `)}
 
 `)}catch{}return h}).join(`
 ---
 
-`)}`,R(`[new-hook] \u2713 Injected ${T.length} observations as context`)}else R("[new-hook] No relevant observations selected")}else{let l=await b.text();R(`[new-hook] Context selection failed with ${b.status}`,{error:l})}}catch(d){R("[new-hook] Real-time context selection failed",{message:d.message,cause:d.cause,stack:d.stack})}n.close(),console.log(x("UserPromptSubmit",!0,{context:u}))}var C="";M.on("data",c=>C+=c);M.on("end",async()=>{let c=C?JSON.parse(C):void 0;await se(c)});
+`)}`,R(`[new-hook] \u2713 Injected ${E.length} observations as context`)}else R("[new-hook] No relevant observations selected")}else{let l=await S.text();R(`[new-hook] Context selection failed with ${S.status}`,{error:l})}}catch(d){R("[new-hook] Real-time context selection failed",{message:d.message,cause:d.cause,stack:d.stack})}n.close(),console.log(x("UserPromptSubmit",!0,{context:u}))}var C="";M.on("data",c=>C+=c);M.on("end",async()=>{let c=C?JSON.parse(C):void 0;await se(c)});

@@ -119,12 +119,11 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
       silentDebug(`[new-hook] Calling context selection with ${sessionStartObs.length} session start observations`);
 
       // Step 2: Call context selection endpoint
-      const selectionResponse = await fetch(`http://127.0.0.1:${port}/api/context/select`, {
+      const selectionResponse = await fetch(`http://127.0.0.1:${port}/api/context/select-from-timeline`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           userPrompt: prompt,
-          sessionStartObservations: sessionStartObs,
           project
         })
       });
@@ -137,7 +136,7 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
         silentDebug(`[new-hook] Context selection complete`, selection);
 
         // Step 3: Fetch full observations for selected IDs
-        const selectedIds: number[] = selection.relevant_session_start_ids || [];
+        const selectedIds: number[] = selection.relevant_observation_ids || [];
 
         if (selectedIds.length > 0) {
           const placeholders = selectedIds.map(() => '?').join(',');

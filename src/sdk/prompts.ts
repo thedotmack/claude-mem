@@ -212,7 +212,7 @@ IMPORTANT! DO NOT do any work other than generate the PROGRESS SUMMARY  - and re
  * First prompt: Uses buildInitPrompt instead (promptNumber === 1)
  */
 export function buildContinuationPrompt(userPrompt: string, promptNumber: number, claudeSessionId: string): string {
-  return `This is continuation prompt #${promptNumber} for session ${claudeSessionId} that you're observing. 
+  return `This is continuation prompt #${promptNumber} for session ${claudeSessionId} that you're observing.
 
 CRITICAL: Record what was LEARNED/BUILT/FIXED/DEPLOYED/CONFIGURED, not what you (the observer) are doing.
 
@@ -316,4 +316,57 @@ IMPORTANT! DO NOT do any work other than generate the OBSERVATIONS or PROGRESS S
 MEMORY PROCESSING START
 =======================`;
 
+}
+
+/**
+ * Build prompt for intelligent context selection
+ *
+ * This implements the workflow from docs/context/real-time-context-workflow.md:
+ * 1. Think about questions needed to answer the request
+ * 2. Check session start observations first
+ * 3. Search if needed
+ * 4. Return specific observation IDs
+ */
+export function buildContextSelectionPrompt(
+  userPrompt: string,
+  sessionStartObservations: Array<{ id: number; title: string; subtitle: string; type: string }>,
+  project: string
+): string {
+  const obsTable = sessionStartObservations.length > 0
+    ? sessionStartObservations.map(o => `  - [${o.id}] (${o.type}) ${o.title}: ${o.subtitle}`).join('\n')
+    : '  (No observations available from session start)';
+
+  return `You are helping select relevant context for a user's request in a Claude Code session.
+
+PROJECT: ${project}
+DATE: ${new Date().toISOString().split('T')[0]}
+
+USER REQUEST:
+${userPrompt}
+
+WORKFLOW:
+1. Think about all the questions you might need answered to complete this request successfully
+2. Review the session start observations below
+3. Would any of these observations contain answers to your questions?
+4. If yes, list those observation IDs
+5. If no, you'll need to search for more context
+
+SESSION START OBSERVATIONS:
+${obsTable}
+
+TASK:
+Analyze the user's request and the available observations. Return a JSON response with:
+
+{
+  "questions": ["question 1", "question 2", ...],
+  "relevant_session_start_ids": [id1, id2, ...],
+  "needs_search": true/false,
+  "search_query": "optional search query if needs_search is true"
+}
+
+IMPORTANT:
+- Only include observation IDs that ACTUALLY help answer the user's request
+- If session start observations are sufficient, set needs_search to false
+- If you need more context, set needs_search to true and provide a search query
+- Return ONLY the JSON object, nothing else`;
 }

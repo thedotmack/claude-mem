@@ -175,6 +175,7 @@ export class WorkerService {
     this.app.get('/api/search/by-file', this.handleSearchByFile.bind(this));
     this.app.get('/api/search/by-type', this.handleSearchByType.bind(this));
     this.app.get('/api/context/recent', this.handleGetRecentContext.bind(this));
+    this.app.post('/api/context/select-from-timeline', this.handleContextSelectionFromTimeline.bind(this));
     this.app.get('/api/context/timeline', this.handleGetContextTimeline.bind(this));
     this.app.get('/api/timeline/by-query', this.handleGetTimelineByQuery.bind(this));
     this.app.get('/api/search/help', this.handleSearchHelp.bind(this));
@@ -1014,6 +1015,128 @@ export class WorkerService {
   }
 
   /**
+   * Orchestrate real-time context selection using timeline and Agent SDK
+   * POST /api/context/select-from-timeline
+   * Body: { userPrompt: string, project: string }
+   */
+  private async handleContextSelectionFromTimeline(req: Request, res: Response): Promise<void> {
+    try {
+      const { userPrompt, project } = req.body;
+
+      if (!userPrompt || !project) {
+        return res.status(400).json({ error: 'userPrompt and project required' });
+      }
+
+      // Step 1: Get timeline markdown from existing endpoint
+      const timelineUrl = `http://127.0.0.1:${getWorkerPort()}/api/timeline/by-query?${new URLSearchParams({
+        query: userPrompt,
+        mode: 'auto',
+        depth_before: '10',
+        depth_after: '10',
+        project: project
+      })}`;
+
+      console.error(`[context-selection] Fetching timeline from: ${timelineUrl}`);
+      const timelineRes = await fetch(timelineUrl);
+      const timelineData = await timelineRes.json();
+      const markdownTimeline = timelineData[0]?.text || '';
+      console.error(`[context-selection] Timeline length: ${markdownTimeline.length} chars`);
+
+      // Step 2: Use Agent SDK to analyze markdown and select relevant IDs
+      const { query } = await import('@anthropic-ai/claude-agent-sdk');
+
+      const selectionPrompt = `You are helping select relevant past observations to inject as context for a new user prompt.
+
+**Be EXTREMELY selective** - less is more. Only pick observations that are directly critical.
+
+USER'S CURRENT PROMPT: "${userPrompt}"
+
+PAST OBSERVATIONS TIMELINE (with token counts):
+${markdownTimeline}
+
+TASK: Identify 2-5 observation IDs that are absolutely essential.
+
+TOKEN BUDGET: Maximum 1500 tokens total
+- Each observation shows its token count (~XXX tokens)
+- Select observations in priority order until budget is exhausted
+- Track cumulative tokens as you select
+- STOP as soon as you hit ~1500 tokens
+
+SELECTION CRITERIA (in priority order):
+1. Direct topic matches ONLY (e.g., if they ask about "context injection", select observations about context injection)
+2. 🧠 Decisions and 🔴 Bugfixes directly related to the prompt
+3. Only if clearly relevant: 🟣 Features and 🔵 Discoveries
+4. Skip tangentially related observations
+
+PHASE AWARENESS:
+- If the prompt suggests "exploration" (e.g., "how does X work"), select 2-3 architectural observations
+- If the prompt suggests "implementation" (e.g., "fix", "add", "change"), select 1-2 critical decisions/bugfixes
+
+CRITICAL: 2-5 observations maximum. If nothing is directly relevant, return empty array.
+
+Return a JSON object with the selected IDs: { "relevant_observation_ids": [id1, id2, ...] }
+
+If NO observations are directly relevant, return: { "relevant_observation_ids": [] }`;
+
+      const claudePath = this.findClaudeExecutable();
+
+      const result = await query({
+        prompt: selectionPrompt,
+        options: {
+          model: process.env.CLAUDE_MEM_MODEL || 'claude-haiku-4-5',
+          disallowedTools: ['Bash'],
+          pathToClaudeCodeExecutable: claudePath
+        }
+      });
+
+      // Extract response
+      let responseText = '';
+      for await (const message of result) {
+        if (message.type === 'assistant') {
+          const content = message.message.content;
+          const textContent = Array.isArray(content)
+            ? content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n')
+            : typeof content === 'string' ? content : '';
+          responseText += textContent;
+        }
+      }
+
+      console.error(`[context-selection] Agent SDK response: ${responseText.slice(0, 500)}`);
+
+      // Parse IDs
+      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) {
+        console.error(`[context-selection] No JSON found in response. Full text: ${responseText}`);
+        return res.json({ relevant_observation_ids: [] });
+      }
+
+      const selection = JSON.parse(jsonMatch[0]);
+      console.error(`[context-selection] Parsed selection: ${JSON.stringify(selection)}`);
+      res.json(selection);
+
+    } catch (error) {
+      logger.failure('WORKER', 'Timeline-based context selection failed', {}, error as Error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  }
+
+  /**
+   * Find Claude executable path
+   */
+  private findClaudeExecutable(): string {
+    const { execSync } = require('child_process');
+    const claudePath = process.env.CLAUDE_CODE_PATH ||
+      execSync(process.platform === 'win32' ? 'where claude' : 'which claude', { encoding: 'utf8' })
+        .trim().split('\n')[0].trim();
+
+    if (!claudePath) {
+      throw new Error('Claude executable not found in PATH');
+    }
+
+    return claudePath;
+  }
+
+  /**
    * Get context timeline around an anchor point
    * GET /api/context/timeline?anchor=123&depth_before=10&depth_after=10&project=...
    */
@@ -1167,6 +1290,7 @@ export class WorkerService {
       ]
     });
   }
+
 }
 
 // ============================================================================
