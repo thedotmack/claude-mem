@@ -9,11 +9,12 @@ description: "System components and data flow in Claude-Mem"
 
 Claude-Mem operates as a Claude Code plugin with five core components:
 
-1. **Plugin Hooks** - Capture lifecycle events (7 hook files)
-2. **Worker Service** - Process observations via Claude Agent SDK + HTTP API (10 search endpoints)
-3. **Database Layer** - Store sessions and observations (SQLite + FTS5 + ChromaDB)
-4. **Search Skill** - Skill-based search with progressive disclosure (v5.4.0+)
-5. **Viewer UI** - Web-based real-time memory stream visualization
+1. **Plugin Hooks** - Capture lifecycle events (6 hook files)
+2. **Smart Install** - Cached dependency checker (pre-hook script, runs before context-hook)
+3. **Worker Service** - Process observations via Claude Agent SDK + HTTP API (10 search endpoints)
+4. **Database Layer** - Store sessions and observations (SQLite + FTS5 + ChromaDB)
+5. **mem-search Skill** - Skill-based search with progressive disclosure (v5.4.0+)
+6. **Viewer UI** - Web-based real-time memory stream visualization
 
 ## Technology Stack
 
@@ -46,11 +47,11 @@ Hook (stdin) → Database → Worker Service → SDK Processor → Database → 
 
 ### Search Pipeline (v5.4.0+)
 ```
-User Query → Skill Invoked → HTTP API → SessionSearch Service → FTS5 Database → Search Results → Claude
+User Query → mem-search Skill Invoked → HTTP API → SessionSearch Service → FTS5 Database → Search Results → Claude
 ```
 
 1. **User Query**: User asks naturally: "What bugs did we fix?"
-2. **Skill Invoked**: Claude recognizes intent and invokes search skill
+2. **Skill Invoked**: Claude recognizes intent and invokes mem-search skill
 3. **HTTP API**: Skill uses curl to call HTTP endpoint (e.g., `/api/search/observations`)
 4. **SessionSearch**: Worker service queries FTS5 virtual tables
 5. **Format**: Results formatted and returned to skill
@@ -62,8 +63,9 @@ User Query → Skill Invoked → HTTP API → SessionSearch Service → FTS5 Dat
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│ 0. Smart Install Hook Fires                                     │
+│ 0. Smart Install Pre-Hook Fires                                 │
 │    Checks dependencies (cached), only runs on version changes   │
+│    Not a lifecycle hook - runs before context-hook starts       │
 └─────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
@@ -104,14 +106,14 @@ User Query → Skill Invoked → HTTP API → SessionSearch Service → FTS5 Dat
 ```
 claude-mem/
 ├── src/
-│   ├── hooks/                  # Hook implementations (7 hooks)
-│   │   ├── smart-install.ts    # Dependency check (cached)
+│   ├── hooks/                  # Hook implementations (6 hooks)
 │   │   ├── context-hook.ts     # SessionStart
 │   │   ├── user-message-hook.ts # UserMessage (for debugging)
 │   │   ├── new-hook.ts         # UserPromptSubmit
 │   │   ├── save-hook.ts        # PostToolUse
 │   │   ├── summary-hook.ts     # Stop
-│   │   └── cleanup-hook.ts     # SessionEnd
+│   │   ├── cleanup-hook.ts     # SessionEnd
+│   │   └── hook-response.ts    # Hook response utilities
 │   │
 │   ├── sdk/                    # Claude Agent SDK integration
 │   │   ├── prompts.ts          # XML prompt builders
@@ -143,13 +145,15 @@ claude-mem/
 │       ├── platform.ts
 │       └── port-allocator.ts
 │
+├── scripts/                    # Build and utility scripts
+│   └── smart-install.js        # Cached dependency checker (pre-hook)
+│
 ├── plugin/                     # Plugin distribution
 │   ├── .claude-plugin/
 │   │   └── plugin.json
 │   ├── hooks/
 │   │   └── hooks.json
 │   ├── scripts/                # Built executables
-│   │   ├── smart-install.js
 │   │   ├── context-hook.js
 │   │   ├── user-message-hook.js
 │   │   ├── new-hook.js
@@ -159,11 +163,14 @@ claude-mem/
 │   │   └── worker-service.cjs  # Background worker + HTTP API
 │   │
 │   ├── skills/                 # Agent skills (v5.4.0+)
-│   │   ├── search/             # Search skill with progressive disclosure
+│   │   ├── mem-search/         # Search skill with progressive disclosure (v5.5.0)
 │   │   │   ├── SKILL.md        # Skill frontmatter (~250 tokens)
-│   │   │   └── operations/     # Detailed operation docs
+│   │   │   ├── operations/     # 12 detailed operation docs
+│   │   │   └── principles/     # 2 principle guides
 │   │   ├── troubleshoot/       # Troubleshooting skill
-│   │   └── version-bump/       # Version management skill
+│   │   │   ├── SKILL.md
+│   │   │   └── operations/     # 6 operation docs
+│   │   └── version-bump/       # Version management skill (deprecated)
 │   │
 │   └── ui/                     # Built viewer UI
 │       └── viewer.html         # Self-contained bundle
@@ -175,14 +182,15 @@ claude-mem/
 
 ## Component Details
 
-### 1. Plugin Hooks (7 Hooks)
-- **smart-install.js** - Cached dependency checker (only runs on version changes)
+### 1. Plugin Hooks (6 Hooks)
 - **context-hook.js** - SessionStart: Starts PM2 worker, injects context
 - **user-message-hook.js** - UserMessage: Debugging hook
 - **new-hook.js** - UserPromptSubmit: Creates session, saves prompt
 - **save-hook.js** - PostToolUse: Captures tool executions
 - **summary-hook.js** - Stop: Generates session summary
 - **cleanup-hook.js** - SessionEnd: Marks session complete
+
+**Note**: smart-install.js is a pre-hook dependency checker (not a lifecycle hook). It's called before context-hook via command chaining in hooks.json and only runs when dependencies need updating.
 
 See [Plugin Hooks](/architecture/hooks) for detailed hook documentation.
 
@@ -205,7 +213,7 @@ SQLite3 with better-sqlite3 driver featuring:
 
 See [Database Architecture](/architecture/database) for schema and FTS5 search.
 
-### 4. Search Skill (v5.4.0+)
+### 4. mem-search Skill (v5.4.0+)
 Skill-based search with progressive disclosure providing 10 search operations:
 - Search observations, sessions, prompts (full-text FTS5)
 - Filter by type, concept, file
@@ -216,6 +224,8 @@ Skill-based search with progressive disclosure providing 10 search operations:
 - Skill frontmatter: ~250 tokens (loaded at session start)
 - Full instructions: ~2,500 tokens (loaded on-demand when invoked)
 - HTTP API endpoints instead of MCP tools
+
+**Skill Enhancement (v5.5.0)**: Renamed from "search" to "mem-search" for better scope differentiation. Effectiveness increased from 67% to 100% with enhanced triggers and comprehensive documentation.
 
 See [Search Architecture](/architecture/search-architecture) for technical details and examples.
 

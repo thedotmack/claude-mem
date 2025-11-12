@@ -1,19 +1,21 @@
 ---
-title: "Skill-Based Search"
+title: "mem-search Skill"
 description: "Query your project history with natural language"
 ---
 
-# Skill-Based Search Usage
+# mem-search Skill Usage
 
-Once claude-mem is installed as a plugin, you can search your project history using natural language. Claude automatically invokes the search skill when you ask about past work.
+Once claude-mem is installed as a plugin, you can search your project history using natural language. Claude automatically invokes the mem-search skill when you ask about past work.
 
 ## How It Works
 
-**v5.4.0 Migration**: Claude-Mem now uses a skill-based search architecture instead of MCP tools, saving ~2,250 tokens per session start through progressive disclosure.
+**v5.5.0 Enhancement**: The search skill was renamed to "mem-search" for better scope differentiation, with effectiveness increased from 67% to 100% and enhanced concrete triggers (85% vs 44%).
+
+**v5.4.0 Architecture**: Claude-Mem uses a skill-based search architecture instead of MCP tools, saving ~2,250 tokens per session start through progressive disclosure.
 
 **Simple Usage:**
 - Just ask naturally: *"What did we do last session?"*
-- Claude recognizes the intent and invokes the search skill
+- Claude recognizes the intent and invokes the mem-search skill
 - The skill uses HTTP API endpoints to query your memory
 - Results are formatted and presented to you
 
@@ -22,6 +24,7 @@ Once claude-mem is installed as a plugin, you can search your project history us
 - **Natural Language**: No need to learn specific tool syntax
 - **Progressive Disclosure**: Only loads detailed instructions when needed
 - **Auto-Invoked**: Claude knows when to search based on your questions
+- **Scope Differentiation**: "mem-search" clearly distinguishes from native conversation memory
 
 ## Quick Reference
 
@@ -118,7 +121,7 @@ Once claude-mem is installed as a plugin, you can search your project history us
 
 ## Search Strategy
 
-The search skill uses a progressive disclosure pattern to efficiently retrieve information:
+The mem-search skill uses a progressive disclosure pattern to efficiently retrieve information:
 
 ### 1. Ask Naturally
 
@@ -127,9 +130,9 @@ Start with a natural language question:
 "What bugs did we fix related to authentication?"
 ```
 
-### 2. Claude Invokes Search Skill
+### 2. Claude Invokes mem-search Skill
 
-Claude recognizes your intent and loads the search skill (~250 tokens for skill frontmatter).
+Claude recognizes your intent and loads the mem-search skill (~250 tokens for skill frontmatter).
 
 ### 3. Skill Uses HTTP API
 
@@ -197,7 +200,7 @@ You can refine searches using natural language filters:
 
 ## Under the Hood: HTTP API
 
-The search skill uses HTTP endpoints on the worker service (port 37777):
+The mem-search skill uses HTTP endpoints on the worker service (port 37777):
 
 - `GET /api/search/observations` - Full-text search observations
 - `GET /api/search/sessions` - Full-text search session summaries
@@ -366,10 +369,7 @@ npm run worker:restart      # Restart if needed
 npm run worker:logs         # View logs
 ```
 
-Or use the troubleshooting skill:
-```
-/skill troubleshoot
-```
+Or describe the issue to Claude and the troubleshoot skill will automatically activate to provide diagnosis.
 
 ### Performance Issues
 
@@ -383,14 +383,16 @@ If searches seem slow:
 
 **Architecture Change (v5.4.0)**:
 - **Before**: 9 MCP tools (~2,500 tokens in tool definitions per session start)
-- **After**: 1 search skill (~250 tokens in frontmatter, full instructions loaded on-demand)
+- **After**: 1 mem-search skill (~250 tokens in frontmatter, full instructions loaded on-demand)
 - **Savings**: ~2,250 tokens per session start
 - **Migration**: Transparent - users don't need to change how they ask questions
 
+**v5.5.0 Enhancement**: Renamed from "search" to "mem-search" with improved effectiveness (67% → 100%) and enhanced triggers (44% → 85%).
+
 **How the Skill Works:**
 1. User asks a question about past work
-2. Claude recognizes the intent matches the search skill description
-3. Skill loads full instructions from `plugin/skills/search/SKILL.md`
+2. Claude recognizes the intent matches the mem-search skill description
+3. Skill loads full instructions from `plugin/skills/mem-search/SKILL.md`
 4. Skill uses `curl` to call HTTP API endpoints
 5. Results formatted and returned to Claude
 6. Claude presents results to user

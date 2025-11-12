@@ -8,11 +8,31 @@ Claude-mem is a Claude Code plugin providing persistent memory across sessions. 
 
 **Current Version**: 5.5.1
 
+## IMPORTANT: Skills Are Auto-Invoked, Not Commands
+
+**THERE IS NO `/skill` COMMAND IN CLAUDE CODE.**
+
+Skills are automatically invoked by Claude Code based on their description metadata. When documentation was updated, AI agents incorrectly hallucinated that `/skill <name>` was a valid command. It is not.
+
+**How Skills Actually Work:**
+- Skills have a `name:` and `description:` in their frontmatter (SKILL.md)
+- Claude Code automatically loads skill descriptions at session start
+- Claude invokes skills based on matching user queries to skill descriptions
+- Users simply ask naturally: "What did we do last session?" → mem-search skill auto-invokes
+- No manual invocation command exists or is needed
+
+**Correct Documentation:**
+- ❌ Wrong: "Run `/skill troubleshoot`"
+- ✅ Right: "The troubleshoot skill will automatically activate when issues are detected"
+- ✅ Right: "Ask about past work and the mem-search skill will activate"
+
+This note exists to prevent future documentation from re-introducing this hallucination.
+
 ## Critical Architecture Knowledge
 
 ### The Lifecycle Flow
 
-1. **SessionStart** → `context-hook.ts` runs
+1. **SessionStart** → smart-install.js runs first (pre-hook), then `context-hook.ts` runs
    - Smart installer checks dependencies (cached, only runs on version changes)
    - Starts PM2 worker if not healthy
    - Injects context from previous sessions (configurable observation count)
@@ -30,6 +50,8 @@ Claude-mem is a Claude Code plugin providing persistent memory across sessions. 
 5. **SessionEnd** → `cleanup-hook.ts` runs
    - Marks session complete (graceful, not DELETE)
    - Skips on `/clear` to preserve ongoing sessions
+
+**Note**: smart-install.js is a pre-hook script (not a lifecycle hook). It's called before context-hook via command chaining in hooks.json and only runs when dependencies need updating.
 
 ### Key Components
 
@@ -50,11 +72,12 @@ Claude-mem is a Claude Code plugin providing persistent memory across sessions. 
 - FTS5 virtual tables for full-text search
 - `SessionStore` = CRUD, `SessionSearch` = FTS5 queries
 
-**Search Skill** (`plugin/skills/search/SKILL.md`)
+**Search Skill** (`plugin/skills/mem-search/SKILL.md`)
 - Provides access to all search functionality via HTTP API + skill
 - Auto-invoked when users ask about past work, decisions, or history
 - Uses HTTP endpoints instead of MCP tools (~2,250 token savings per session)
 - 10 search operations: observations, sessions, prompts, by-type, by-file, by-concept, timelines, etc.
+- Enhanced in v5.5.0 with "mem-search" naming for better scope differentiation
 
 **Chroma Vector Database** (`src/services/sync/ChromaSync.ts`)
 - Hybrid semantic + keyword search architecture
@@ -244,6 +267,8 @@ These anti-patterns often emerge from:
 3. Add configuration to `plugin/hooks/hooks.json`
 4. Build and sync: `npm run build && npm run sync-marketplace`
 
+**Note**: smart-install.js is not a hook - it's a pre-hook dependency checker that runs before context-hook via command chaining.
+
 ### Modifying Database Schema
 1. Update schema in `src/services/sqlite/schema.ts`
 2. Update SessionStore/SessionSearch classes
@@ -263,14 +288,19 @@ pm2 delete claude-mem-worker # Force clean start
 2. `npm run build && npm run sync-marketplace`
 3. Start new Claude Code session (hooks) or restart worker (worker changes)
 4. Check `~/.claude-mem/claude-mem.db` for database state
-5. Use search skill to verify behavior (auto-invoked when asking about past work)
+5. Use mem-search skill to verify behavior (auto-invoked when asking about past work)
 
 ### Version Bumps
-Use the version-bump skill:
+**Note**: There is no version-bump skill currently available. Version bumping must be done manually by updating:
+- `package.json` - Update `version` field
+- `plugin/.claude-plugin/plugin.json` - Update `version` field  
+- `CLAUDE.md` - Update version number at top
+- `README.md` - Update version badge
+
+Then run:
 ```bash
-/skill version-bump
+npm run build && npm run sync-marketplace
 ```
-Choose patch/minor/major. Updates package.json, marketplace.json, plugin.json, and CLAUDE.md.
 
 ## Investigation Best Practices
 
@@ -303,6 +333,20 @@ Use this when:
 - Issue might be a subtle inconsistency between files
 
 ## Recent Changes
+
+### v5.5.0 - mem-search Skill Enhancement
+**Skill Naming and Effectiveness**: Renamed from "search" to "mem-search" for better scope differentiation
+- **Effectiveness Improvement**: Skill success rate increased from 67% to 100%
+- **Better Triggers**: Concrete triggers increased from 44% to 85%
+- **5+ Unique Identifiers**: System-specific naming prevents confusion with native conversation memory
+- **Comprehensive Documentation**: 17 total files with 12 operation guides + 2 principle directories
+- **No User Action Required**: Skill automatically invokes when asking about past work, decisions, or history
+
+**How It Works:**
+- User asks: "What bug did we fix last session?"
+- Claude sees mem-search skill description matches → invokes mem-search skill
+- Skill loads full instructions → uses curl to call HTTP API → formats results
+- User sees formatted answer with past work context
 
 ### v5.4.0 - Skill-Based Search Migration
 **Breaking Change**: MCP search tools replaced with skill-based approach
@@ -465,6 +509,5 @@ Real-time visibility into memory stream helps users understand what's being capt
 **Sync**: `npm run sync-marketplace`
 **Worker Restart**: `npm run worker:restart`
 **Worker Logs**: `npm run worker:logs`
-**Version Bump**: `/skill version-bump`
 **Usage Analysis**: `npm run usage:today`
 **Viewer UI**: http://localhost:37777 (auto-starts with worker)

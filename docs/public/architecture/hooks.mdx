@@ -1,23 +1,25 @@
 ---
 title: "Plugin Hooks"
-description: "7 hook scripts that power Claude-Mem"
+description: "6 lifecycle hooks that power Claude-Mem"
 ---
 
 # Plugin Hooks
 
-Claude-Mem integrates with Claude Code through 7 hook scripts across 5 lifecycle events that capture events and inject context.
+Claude-Mem integrates with Claude Code through 6 hook scripts across 5 lifecycle events that capture events and inject context. Additionally, a smart-install pre-hook script manages dependencies.
 
 ## Hook Overview
 
-| Hook Name           | Purpose                              | Timeout | Script                  |
+| Hook Type           | Purpose                              | Timeout | Script                  |
 |---------------------|--------------------------------------|---------|-------------------------|
-| SessionStart        | Smart dependency installation        | 300s    | smart-install.js        |
+| Pre-Hook            | Smart dependency installation        | 300s    | smart-install.js*       |
 | SessionStart        | Inject context from previous sessions| 300s    | context-hook.js         |
 | SessionStart        | Display first-time setup message     | 10s     | user-message-hook.js    |
 | UserPromptSubmit    | Create/track new sessions            | 120s    | new-hook.js             |
 | PostToolUse         | Capture tool execution observations  | 120s    | save-hook.js            |
 | Stop                | Generate session summaries           | 120s    | summary-hook.js         |
 | SessionEnd          | Mark sessions complete               | 120s    | cleanup-hook.js         |
+
+*smart-install.js is a pre-hook script (not a lifecycle hook). It's called before context-hook via command chaining in hooks.json.
 
 ## Hook Configuration
 
@@ -72,9 +74,11 @@ Hooks are configured in `plugin/hooks/hooks.json`:
 }
 ```
 
-## 1. SessionStart Hook - Smart Install (`smart-install.js`)
+## 1. Pre-Hook Script - Smart Install (`smart-install.js`)
 
 **Purpose**: Intelligently manage dependencies and ensure worker service is running.
+
+**Note**: This is NOT a lifecycle hook - it's a pre-hook script executed via command chaining before context-hook.js runs.
 
 **Behavior**:
 - Checks if dependencies need installation using version marker (`.install-version`)
@@ -95,7 +99,7 @@ Hooks are configured in `plugin/hooks/hooks.json`:
 }
 ```
 
-**Implementation**: `scripts/smart-install.js`
+**Implementation**: `scripts/smart-install.js` (standalone script, not in src/hooks/)
 
 **Key Features**:
 - Version caching prevents redundant installs

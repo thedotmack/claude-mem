@@ -17,7 +17,7 @@
     <img src="https://img.shields.io/badge/License-AGPL%203.0-blue.svg" alt="License">
   </a>
   <a href="package.json">
-    <img src="https://img.shields.io/badge/version-5.4.0-green.svg" alt="Version">
+    <img src="https://img.shields.io/badge/version-5.5.1-green.svg" alt="Version">
   </a>
   <a href="package.json">
     <img src="https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg" alt="Node">
@@ -69,7 +69,7 @@ Restart Claude Code. Context from previous sessions will automatically appear in
 
 - 🧠 **Persistent Memory** - Context survives across sessions
 - 📊 **Progressive Disclosure** - Layered memory retrieval with token cost visibility
-- 🔍 **Skill-Based Search** - Query your project history with natural language (~2,250 token savings)
+- 🔍 **Skill-Based Search** - Query your project history with mem-search skill (~2,250 token savings)
 - 🖥️ **Web Viewer UI** - Real-time memory stream at http://localhost:37777
 - 🤖 **Automatic Operation** - No manual intervention required
 - 🔗 **Citations** - Reference past decisions with `claude-mem://` URIs
@@ -143,23 +143,24 @@ npx mintlify dev
 
 **Core Components:**
 
-1. **7 Lifecycle Hook Scripts** - smart-install, context-hook, user-message-hook, new-hook, save-hook, summary-hook, cleanup-hook
-2. **Worker Service** - HTTP API on port 37777 with web viewer UI and 10 search endpoints, managed by PM2
-3. **SQLite Database** - Stores sessions, observations, summaries with FTS5 full-text search
-4. **Search Skill** - Natural language queries with progressive disclosure (~2,250 token savings vs MCP)
-5. **Chroma Vector Database** - Hybrid semantic + keyword search for intelligent context retrieval
+1. **6 Lifecycle Hooks** - context-hook, user-message-hook, new-hook, save-hook, summary-hook, cleanup-hook
+2. **Smart Install** - Cached dependency checker (pre-hook script, not a lifecycle hook)
+3. **Worker Service** - HTTP API on port 37777 with web viewer UI and 10 search endpoints, managed by PM2
+4. **SQLite Database** - Stores sessions, observations, summaries with FTS5 full-text search
+5. **mem-search Skill** - Natural language queries with progressive disclosure (~2,250 token savings vs MCP)
+6. **Chroma Vector Database** - Hybrid semantic + keyword search for intelligent context retrieval
 
 See [Architecture Overview](docs/architecture/overview.mdx) for details.
 
 ---
 
-## Skill-Based Search
+## mem-search Skill
 
-Claude-Mem provides intelligent search through a skill that auto-invokes when you ask about past work:
+Claude-Mem provides intelligent search through the mem-search skill that auto-invokes when you ask about past work:
 
 **How It Works:**
 - Just ask naturally: *"What did we do last session?"* or *"Did we fix this bug before?"*
-- Claude automatically invokes the search skill to find relevant context
+- Claude automatically invokes the mem-search skill to find relevant context
 - ~2,250 token savings per session start vs MCP approach
 
 **Available Search Operations:**
@@ -189,13 +190,21 @@ See [Search Tools Guide](docs/usage/search-tools.mdx) for detailed examples.
 
 ---
 
-## What's New in v5.4.0
+## What's New in v5.5.1
+
+**🎯 mem-search Skill Enhancement (v5.5.0):**
+
+- **Improved Effectiveness**: Skill success rate increased from 67% to 100%
+- **Better Scope Differentiation**: Clear distinction from native conversation memory
+- **Enhanced Triggers**: Concrete triggers increased from 44% to 85%
+- **System-Specific Naming**: "mem-search" replaces generic "search" for clarity
+- **Comprehensive Documentation**: 17 total files with detailed operation guides
 
 **🔍 Skill-Based Search Architecture (v5.4.0):**
 
 - **Token Savings**: ~2,250 tokens per session start
 - **Progressive Disclosure**: Skill frontmatter (~250 tokens) vs MCP tool definitions (~2,500 tokens)
-- **Natural Language**: Just ask about past work - Claude auto-invokes the search skill
+- **Natural Language**: Just ask about past work - Claude auto-invokes the mem-search skill
 - **10 HTTP API Endpoints**: Fast, efficient search operations
 - **No User Action Required**: Migration is transparent
 
@@ -317,11 +326,7 @@ See [Development Guide](docs/development.mdx) for detailed instructions.
 
 **Quick Diagnostic:**
 
-Run the troubleshooting skill for automated diagnosis and fixes:
-
-```
-/skill troubleshoot
-```
+If you're experiencing issues, describe the problem to Claude and the troubleshoot skill will automatically activate to diagnose and provide fixes.
 
 **Common Issues:**
 
