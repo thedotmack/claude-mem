@@ -55,6 +55,8 @@
 
 ## Quick Start
 
+### For Claude Code
+
 Start a new Claude Code session in the terminal and enter the following commands:
 
 ```
@@ -64,6 +66,29 @@ Start a new Claude Code session in the terminal and enter the following commands
 ```
 
 Restart Claude Code. Context from previous sessions will automatically appear in new sessions.
+
+### For VSCode Copilot
+
+A VSCode extension is available that brings claude-mem's persistent memory to GitHub Copilot:
+
+1. Install the claude-mem worker service (required):
+   ```bash
+   npm install -g claude-mem
+   pm2 start claude-mem-worker
+   ```
+
+2. Install the VSCode extension from the marketplace or build from source:
+   ```bash
+   cd vscode-extension
+   npm install
+   npm run build
+   npx @vscode/vsce package
+   code --install-extension claude-mem-vscode-*.vsix
+   ```
+
+3. The extension provides Language Model Tools that Copilot can invoke to capture memory
+
+See [vscode-extension/README.md](vscode-extension/README.md) for details.
 
 **Key Features:**
 

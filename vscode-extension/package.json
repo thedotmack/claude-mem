@@ -1,0 +1,264 @@
+{
+  "name": "claude-mem-vscode",
+  "displayName": "Claude Mem for VSCode Copilot",
+  "description": "Persistent memory for GitHub Copilot conversations powered by claude-mem",
+  "version": "0.1.0",
+  "publisher": "thedotmack",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "AI",
+    "Chat",
+    "Other"
+  ],
+  "keywords": [
+    "copilot",
+    "memory",
+    "context",
+    "ai",
+    "claude"
+  ],
+  "icon": "icon.png",
+  "activationEvents": [
+    "onLanguageModelTool:mem_session_init",
+    "onLanguageModelTool:mem_user_prompt_log",
+    "onLanguageModelTool:mem_observation_record",
+    "onLanguageModelTool:mem_summary_finalize",
+    "onLanguageModelTool:mem_session_cleanup"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "languageModelTools": [
+      {
+        "name": "mem_session_init",
+        "displayName": "Initialize Memory Session",
+        "modelDescription": "Initialize a new claude-mem session for this conversation. This captures the project context and user's initial prompt. Call this once at the start of each conversation.",
+        "userDescription": "Initializes memory tracking for this conversation",
+        "icon": "$(database)",
+        "tags": [
+          "memory",
+          "session",
+          "init"
+        ],
+        "canBeReferencedInPrompt": false,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "project": {
+              "type": "string",
+              "description": "The project name (typically workspace folder name)"
+            },
+            "userPrompt": {
+              "type": "string",
+              "description": "The initial user prompt that started this conversation"
+            },
+            "conversationId": {
+              "type": "string",
+              "description": "The unique Copilot conversation ID"
+            }
+          },
+          "required": [
+            "project",
+            "userPrompt",
+            "conversationId"
+          ]
+        }
+      },
+      {
+        "name": "mem_user_prompt_log",
+        "displayName": "Log User Prompt",
+        "modelDescription": "Log a user prompt to claude-mem for full-text search. Use this for each user message in the conversation (after session init).",
+        "userDescription": "Logs user prompts for searchability",
+        "icon": "$(comment)",
+        "tags": [
+          "memory",
+          "prompt",
+          "log"
+        ],
+        "canBeReferencedInPrompt": false,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "prompt": {
+              "type": "string",
+              "description": "The user's prompt text"
+            }
+          },
+          "required": [
+            "prompt"
+          ]
+        }
+      },
+      {
+        "name": "mem_observation_record",
+        "displayName": "Record Observation",
+        "modelDescription": "Record a tool usage observation (file edits, terminal commands, etc.) to claude-mem. The AI will compress this into structured knowledge. Call this after significant actions.",
+        "userDescription": "Records tool usage for memory building",
+        "icon": "$(eye)",
+        "tags": [
+          "memory",
+          "observation",
+          "tool"
+        ],
+        "canBeReferencedInPrompt": false,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "tool_name": {
+              "type": "string",
+              "description": "The name of the tool that was used"
+            },
+            "tool_input": {
+              "type": "string",
+              "description": "JSON string of the tool's input parameters"
+            },
+            "tool_response": {
+              "type": "string",
+              "description": "JSON string of the tool's response/output"
+            },
+            "cwd": {
+              "type": "string",
+              "description": "Current working directory (optional)"
+            }
+          },
+          "required": [
+            "tool_name",
+            "tool_input",
+            "tool_response"
+          ]
+        }
+      },
+      {
+        "name": "mem_summary_finalize",
+        "displayName": "Finalize Session Summary",
+        "modelDescription": "Generate a summary of the conversation session. This creates a structured summary of what was investigated, learned, and completed. Call this when the conversation is ending or when the user explicitly stops.",
+        "userDescription": "Generates session summary for future reference",
+        "icon": "$(list-unordered)",
+        "tags": [
+          "memory",
+          "summary",
+          "session"
+        ],
+        "canBeReferencedInPrompt": false,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "last_user_message": {
+              "type": "string",
+              "description": "The last message from the user (optional)"
+            }
+          }
+        }
+      },
+      {
+        "name": "mem_session_cleanup",
+        "displayName": "Cleanup Memory Session",
+        "modelDescription": "Mark the memory session as complete and cleanup resources. Call this when the conversation ends or when switching to a new conversation.",
+        "userDescription": "Marks session as complete",
+        "icon": "$(close)",
+        "tags": [
+          "memory",
+          "session",
+          "cleanup"
+        ],
+        "canBeReferencedInPrompt": false,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "reason": {
+              "type": "string",
+              "enum": [
+                "exit",
+                "clear",
+                "switch",
+                "other"
+              ],
+              "description": "Reason for cleanup"
+            }
+          }
+        }
+      }
+    ],
+    "configuration": {
+      "title": "Claude Mem",
+      "properties": {
+        "claudeMem.workerPort": {
+          "type": "number",
+          "default": 37777,
+          "description": "Port for the claude-mem worker service"
+        },
+        "claudeMem.autoInit": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically initialize memory session for new conversations"
+        },
+        "claudeMem.autoCapture": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically capture tool usage as observations"
+        },
+        "claudeMem.maxObservationsPerPrompt": {
+          "type": "number",
+          "default": 10,
+          "description": "Maximum observations to capture per user prompt"
+        },
+        "claudeMem.showStatusBar": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show worker health status in status bar"
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "claudeMem.checkWorkerHealth",
+        "title": "Claude Mem: Check Worker Health"
+      },
+      {
+        "command": "claudeMem.restartWorker",
+        "title": "Claude Mem: Restart Worker"
+      },
+      {
+        "command": "claudeMem.openViewer",
+        "title": "Claude Mem: Open Memory Viewer"
+      },
+      {
+        "command": "claudeMem.openSettings",
+        "title": "Claude Mem: Open Settings"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "build": "node build.mjs",
+    "watch": "node build.mjs --watch",
+    "lint": "eslint src --ext ts",
+    "test": "node ./out/test/runTest.js"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.x",
+    "@types/node": "^20.x",
+    "@types/vscode": "^1.90.0",
+    "@typescript-eslint/eslint-plugin": "^7.x",
+    "@typescript-eslint/parser": "^7.x",
+    "@vscode/test-electron": "^2.3.x",
+    "esbuild": "^0.21.x",
+    "eslint": "^8.x",
+    "glob": "^10.x",
+    "mocha": "^10.x",
+    "typescript": "^5.4.x"
+  },
+  "author": "thedotmack",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/thedotmack/claude-mem"
+  },
+  "bugs": {
+    "url": "https://github.com/thedotmack/claude-mem/issues"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.0.0"
+  }
+}
