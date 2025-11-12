@@ -526,11 +526,14 @@ The `release` script:
 6. Publish to NPM
 
 ```bash
-# Use the version bump skill (recommended as of v4.3.0)
-# In Claude Code, run: /skill version-bump
-# This updates package.json, marketplace.json, and CLAUDE.md
+# Manual version bump:
+# 1. Update version in package.json
+# 2. Update version in plugin/.claude-plugin/plugin.json
+# 3. Update version at top of CLAUDE.md
+# 4. Update version badge in README.md
+# 5. Run: npm run build && npm run sync-marketplace
 
-# Or manually:
+# Or use npm version command:
 npm version 4.3.2
 
 # Update changelog

@@ -23,7 +23,7 @@ Restart Claude Code. Context from previous sessions will automatically appear in
 ## Key Features
 
 - 🧠 **Persistent Memory** - Context survives across sessions
-- 🔍 **Skill-Based Search** - Query your project history with natural language (~2,250 token savings)
+- 🔍 **mem-search Skill** - Query your project history with natural language (~2,250 token savings)
 - 🌐 **Web Viewer UI** - Real-time memory stream visualization at http://localhost:37777
 - 🎨 **Theme Toggle** - Light, dark, and system preference themes
 - 🤖 **Automatic Operation** - No manual intervention required
@@ -55,11 +55,12 @@ Restart Claude Code. Context from previous sessions will automatically appear in
 ```
 
 **Core Components:**
-1. **5 Lifecycle Hooks** - SessionStart, UserPromptSubmit, PostToolUse, Stop, SessionEnd
-2. **Worker Service** - HTTP API on port 37777 managed by PM2
-3. **SQLite Database** - Stores sessions, observations, summaries with FTS5 search
-4. **9 MCP Search Tools** - Query historical context with citations
-5. **Web Viewer UI** - Real-time visualization with SSE and infinite scroll
+1. **6 Lifecycle Hooks** - SessionStart, UserPromptSubmit, PostToolUse, Stop, SessionEnd, UserMessage
+2. **Smart Install** - Cached dependency checker (pre-hook script)
+3. **Worker Service** - HTTP API on port 37777 managed by PM2
+4. **SQLite Database** - Stores sessions, observations, summaries with FTS5 search
+5. **mem-search Skill** - Query historical context with natural language
+6. **Web Viewer UI** - Real-time visualization with SSE and infinite scroll
 
 See [Architecture Overview](architecture/overview) for details.
 
@@ -70,22 +71,22 @@ See [Architecture Overview](architecture/overview) for details.
 - **PM2**: Process manager (bundled - no global install required)
 - **SQLite 3**: For persistent storage (bundled)
 
-## What's New in v5.1.2
+## What's New in v5.5.1
 
-**Latest Updates (v5.1.2):**
+**Latest Updates (v5.5.0):**
+- mem-search skill enhancement with 100% effectiveness rate
+- Improved scope differentiation from native conversation memory
+- Enhanced concrete triggers (85% vs 44% previously)
+- Comprehensive documentation reorganization (17 total files)
+
+**Recent Updates (v5.4.0):**
+- Skill-based search architecture with ~2,250 token savings per session
+- Progressive disclosure with HTTP API endpoints
+- Replaced MCP tools with mem-search skill for better efficiency
+
+**Previous Updates (v5.1.2):**
 - Theme toggle for light, dark, and system preferences in viewer UI
 - Improved visual design with theme-aware components
-
-**Recent Updates (v5.1.0):**
-- Web-based viewer UI for real-time memory stream visualization
-- Server-Sent Events (SSE) for instant updates
-- Infinite scroll pagination with project filtering
-- 8 new HTTP/SSE endpoints in worker service
-
-**Previous Updates (v4.3.1):**
-- Fixed SessionStart hook context injection
-- Smart install caching for Windows compatibility
-- Progressive disclosure context with observation timelines
 
 ## Next Steps
 
