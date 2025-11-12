@@ -160,9 +160,9 @@ Context injection uses progressive disclosure for efficient token usage:
 - Shows full summary details **only if** generated after last observation
 - Token cost: ~50-200 tokens for index view
 
-### Layer 2: On-Demand Details (Skill-Based Search)
+### Layer 2: On-Demand Details (mem-search Skill)
 - Ask naturally: "What bugs did we fix?" or "How did we implement X?"
-- Claude auto-invokes search skill to fetch full details
+- Claude auto-invokes mem-search skill to fetch full details
 - Search by concept, file, type, or keyword
 - Timeline context around specific observations
 - Token cost: ~100-500 tokens per observation fetched
@@ -195,7 +195,7 @@ The `/clear` command clears the conversation context visible to Claude AND re-in
 
 ## Searching Your History (v5.4.0+)
 
-Claude-Mem now uses skill-based search for querying your project history. Simply ask naturally:
+Claude-Mem uses the mem-search skill for querying your project history. Simply ask naturally:
 
 ```
 "What bugs did we fix last session?"
@@ -204,7 +204,7 @@ Claude-Mem now uses skill-based search for querying your project history. Simply
 "Show me recent work on this project"
 ```
 
-Claude automatically recognizes your intent and invokes the search skill, which uses HTTP API endpoints to query your memory efficiently.
+Claude automatically recognizes your intent and invokes the mem-search skill, which uses HTTP API endpoints to query your memory efficiently.
 
 **Token Savings**: ~2,250 tokens per session start vs previous MCP approach
 

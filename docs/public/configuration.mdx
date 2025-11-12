@@ -139,15 +139,15 @@ Hooks are configured in `plugin/hooks/hooks.json`:
 
 ### Search Configuration (v5.4.0+)
 
-**Migration Note**: As of v5.4.0, Claude-Mem uses skill-based search instead of MCP tools.
+**Migration Note**: As of v5.4.0, Claude-Mem uses skill-based search instead of MCP tools. As of v5.5.0, the skill was renamed to "mem-search" for better scope differentiation.
 
 **Previous (v5.3.x and earlier)**: MCP search server with 9 tools (~2,500 tokens per session)
-**Current (v5.4.0+)**: Search skill with HTTP API (~250 tokens per session)
+**Current (v5.4.0+)**: mem-search skill with HTTP API (~250 tokens per session)
 
-**No configuration required** - the search skill is automatically available in Claude Code sessions.
+**No configuration required** - the mem-search skill is automatically available in Claude Code sessions.
 
 Search operations are now provided via:
-- **Skill**: `plugin/skills/search/SKILL.md` (auto-invoked when users ask about past work)
+- **Skill**: `plugin/skills/mem-search/SKILL.md` (auto-invoked when users ask about past work)
 - **HTTP API**: 10 endpoints on worker service port 37777
 - **Progressive Disclosure**: Full instructions loaded on-demand only when needed
 

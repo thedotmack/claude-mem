@@ -110,7 +110,7 @@ Claude presents the formatted results naturally in conversation.
 
 ### After: Skill-Based Search
 
-**Approach**: 1 search skill with progressive disclosure
+**Approach**: 1 mem-search skill with progressive disclosure
 
 **Token Cost**: ~250 tokens in skill frontmatter per session
 - Only skill description loaded at session start
@@ -119,7 +119,7 @@ Claude presents the formatted results naturally in conversation.
 
 **Example Skill Frontmatter**:
 ```markdown
-# Claude-Mem Search Skill
+# Claude-Mem mem-search Skill
 
 Access claude-mem's persistent memory through a comprehensive HTTP API.
 Search for past work, understand context, and learn from previous decisions.
@@ -209,7 +209,7 @@ Returns API documentation in JSON format.
 
 ## Progressive Disclosure Pattern
 
-The search skill uses progressive disclosure to minimize token usage:
+The mem-search skill uses progressive disclosure to minimize token usage:
 
 ### Layer 1: Skill Frontmatter (Session Start)
 
@@ -219,7 +219,7 @@ The search skill uses progressive disclosure to minimize token usage:
 
 **Example**:
 ```markdown
-# Claude-Mem Search Skill
+# Claude-Mem mem-search Skill
 
 Access claude-mem's persistent memory through a comprehensive HTTP API.
 
@@ -269,10 +269,10 @@ Invoke this skill when users ask about:
 
 ## Implementation Details
 
-### Search Skill Structure
+### mem-search Skill Structure
 
 ```
-plugin/skills/search/
+plugin/skills/mem-search/
 ├── SKILL.md                           # Main frontmatter (~250 tokens)
 ├── operations/
 │   ├── observations.md                # Search observations
