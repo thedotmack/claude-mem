@@ -3,6 +3,8 @@
  * Generates prompts for the Claude Agent SDK memory worker
  */
 
+import { silentDebug } from '../utils/silent-debug.js';
+
 export interface Observation {
   id: number;
   tool_name: string;
@@ -166,7 +168,7 @@ export function buildObservationPrompt(obs: Observation): string {
  * Build prompt to generate progress summary
  */
 export function buildSummaryPrompt(session: SDKSession): string {
-  const lastUserMessage = session.last_user_message || '';
+  const lastUserMessage = session.last_user_message || silentDebug('session.last_user_message missing', { session });
 
   return `PROGRESS SUMMARY CHECKPOINT
 ===========================

@@ -9,6 +9,7 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { SessionSearch } from '../src/services/sqlite/SessionSearch.js';
+import { silentDebug } from '../src/utils/silent-debug.js';
 import path from 'path';
 import os from 'os';
 import fs from 'fs';
@@ -132,7 +133,7 @@ async function main() {
         }
       });
 
-      const resultText = chromaResult.content[0]?.text || '';
+      const resultText = chromaResult.content[0]?.text || silentDebug('chromaResult.content[0]?.text missing', { chromaResult });
       testResult.chromaResults = resultText;
       testResult.chromaFound = resultText.includes('ids') && resultText.length > 50;
 

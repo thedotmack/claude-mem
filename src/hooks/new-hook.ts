@@ -38,62 +38,13 @@ import { stdin } from 'process';
 import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { createHookResponse } from './hook-response.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
+import { silentDebug } from '../utils/silent-debug.js';
 
 export interface UserPromptSubmitInput {
   session_id: string;
   cwd: string;
   prompt: string;
   [key: string]: any;
-}
-
-/**
- * Format observations as real-time context
- */
-function formatRealtimeContext(observations: any[]): string {
-  if (observations.length === 0) return '';
-
-  const output: string[] = [];
-  output.push('# [claude-mem] real-time context');
-  output.push('');
-  output.push(`Found ${observations.length} relevant observation${observations.length === 1 ? '' : 's'} for your request:`);
-  output.push('');
-
-  for (const obs of observations) {
-    const typeEmoji = {
-      'bugfix': '🔴',
-      'feature': '🟣',
-      'refactor': '🔄',
-      'discovery': '🔵',
-      'decision': '🧠',
-      'change': '✅'
-    }[obs.type] || '📝';
-
-    output.push(`**${typeEmoji} #${obs.id}** ${obs.title || 'Untitled'}`);
-
-    if (obs.subtitle) {
-      output.push(`*${obs.subtitle}*`);
-    }
-
-    if (obs.narrative) {
-      output.push('');
-      output.push(obs.narrative);
-    }
-
-    if (obs.facts) {
-      const facts = JSON.parse(obs.facts);
-      if (Array.isArray(facts) && facts.length > 0) {
-        output.push('');
-        output.push('**Facts:**');
-        facts.forEach((fact: string) => output.push(`- ${fact}`));
-      }
-    }
-
-    output.push('');
-    output.push('---');
-    output.push('');
-  }
-
-  return output.join('\n');
 }
 
 /**
@@ -150,35 +101,40 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
   }
 
   // Real-time context: Search for relevant observations based on user prompt
+  // IMPORTANT: The user CANNOT see this injected context - only Claude can see it.
+  // This is why we use silentDebug() - so the user can verify it's working by
+  // checking ~/.claude-mem/silent.log for success/error messages.
+  // The user only knows it worked if Claude's responses show relevant past context.
   let realtimeContext = '';
   if (process.env.CLAUDE_MEM_REALTIME_CONTEXT === 'true') {
     try {
-      const searchResponse = await fetch(`http://127.0.0.1:${port}/api/search/timeline-by-query`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          query: prompt,
-          project,
-          mode: 'auto',
-          depth_before: 5,
-          depth_after: 5
-        }),
-        signal: AbortSignal.timeout(1000)
+      const url = new URL(`http://127.0.0.1:${port}/api/timeline/by-query`);
+      url.searchParams.set('query', prompt);
+      url.searchParams.set('project', project);
+      url.searchParams.set('mode', 'auto');
+      url.searchParams.set('depth_before', '5');
+      url.searchParams.set('depth_after', '5');
+
+      silentDebug(`[new-hook] Searching for context: "${prompt.substring(0, 60)}..."`);
+
+      const searchResponse = await fetch(url.toString(), {
+        signal: AbortSignal.timeout(2000) // Increased timeout to 2s
       });
 
-      if (searchResponse.ok) {
-        const { timeline } = await searchResponse.json();
-        if (timeline?.records && timeline.records.length > 0) {
-          const observations = timeline.records.filter((r: any) => r.type === 'observation');
-          if (observations.length > 0) {
-            realtimeContext = formatRealtimeContext(observations);
-            console.error(`[new-hook] Found ${observations.length} relevant observations`);
-          }
-        }
+      if (!searchResponse.ok) {
+        const errorText = await searchResponse.text();
+        silentDebug(`[new-hook] Search failed with ${searchResponse.status}`, { error: errorText });
+      } else {
+        // Timeline API returns markdown text directly (NOT JSON)
+        realtimeContext = await searchResponse.text();
+        silentDebug(`[new-hook] ✓ Retrieved real-time context (${realtimeContext.length} chars)`);
       }
-    } catch (error) {
-      // Silent failure - don't block prompt
-      console.error('[new-hook] Real-time context search failed:', error);
+    } catch (error: any) {
+      // Log the error but don't block the prompt
+      silentDebug('[new-hook] Real-time context search failed', {
+        message: error.message,
+        cause: error.cause
+      });
     }
   }
 

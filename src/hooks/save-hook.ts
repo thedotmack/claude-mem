@@ -8,6 +8,7 @@ import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { createHookResponse } from './hook-response.js';
 import { logger } from '../utils/logger.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
+import { silentDebug } from '../utils/silent-debug.js';
 
 export interface PostToolUseInput {
   session_id: string;
@@ -66,7 +67,7 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
         tool_input: tool_input !== undefined ? JSON.stringify(tool_input) : '{}',
         tool_response: tool_response !== undefined ? JSON.stringify(tool_response) : '{}',
         prompt_number: promptNumber,
-        cwd: cwd || ''
+        cwd: cwd || silentDebug('cwd missing in save-hook', { input })
       }),
       signal: AbortSignal.timeout(2000)
     });
