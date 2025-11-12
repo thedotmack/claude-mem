@@ -806,7 +806,7 @@ export class WorkerService {
       this.broadcastProcessingStatus();
 
       const isProcessing = this.sessionManager.isAnySessionProcessing();
-      const queueDepth = this.sessionManager.getTotalQueueDepth();
+      const queueDepth = this.sessionManager.getTotalActiveWork(); // Includes queued + actively processing
       const activeSessions = this.sessionManager.getActiveSessionCount();
       logger.debug('WORKER', 'Processing status broadcast', { isProcessing, queueDepth, activeSessions });
 
