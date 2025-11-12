@@ -68,13 +68,15 @@ Claude Code's hook system provides exactly what we need:
 
 ---
 
-## The Seven Hook Scripts
+## The Six Hook Scripts + Pre-Hook
 
-Claude-Mem uses 7 hook scripts across 5 lifecycle events. SessionStart runs 3 hooks in sequence.
+Claude-Mem uses 6 lifecycle hook scripts across 5 lifecycle events, plus 1 pre-hook script for dependency management. SessionStart runs 2 hooks in sequence (after the pre-hook script).
 
-### Hook 1: SessionStart - Smart Install
+### Pre-Hook: Smart Install (Before SessionStart)
 
 **Purpose:** Intelligently manage dependencies and start worker service
+
+**Note:** This is NOT a lifecycle hook - it's a pre-hook script executed via command chaining before context-hook runs.
 
 **When:** Claude Code starts (startup, clear, or compact)
 
@@ -115,11 +117,11 @@ Claude-Mem uses 7 hook scripts across 5 lifecycle events. SessionStart runs 3 ho
 
 ---
 
-### Hook 2: SessionStart - Context Injection
+### Hook 1: SessionStart - Context Injection
 
 **Purpose:** Inject relevant context from previous sessions
 
-**When:** Claude Code starts (runs after smart-install)
+**When:** Claude Code starts (runs after smart-install pre-hook)
 
 **What it does:**
 1. Extracts project name from current working directory
@@ -147,14 +149,14 @@ Claude-Mem uses 7 hook scripts across 5 lifecycle events. SessionStart runs 3 ho
 |----|------|---|-------|--------|
 | #2586 | 12:58 AM | 🔵 | Context hook file empty | ~51 |
 
-*Use claude-mem MCP search to access full details*
+*Use mem-search skill to access full details*
 ```
 
 **Source:** `src/hooks/context-hook.ts` → `plugin/scripts/context-hook.js`
 
 ---
 
-### Hook 3: SessionStart - User Message
+### Hook 2: SessionStart - User Message
 
 **Purpose:** Display helpful user messages during first-time setup
 
@@ -203,7 +205,7 @@ Claude-Mem uses 7 hook scripts across 5 lifecycle events. SessionStart runs 3 ho
 
 ---
 
-### Hook 4: UserPromptSubmit (New Session Hook)
+### Hook 3: UserPromptSubmit (New Session Hook)
 
 **Purpose:** Initialize session tracking when user submits a prompt
 
@@ -250,7 +252,7 @@ VALUES (?, ?, ?, ...)
 
 ---
 
-### Hook 5: PostToolUse (Save Observation Hook)
+### Hook 4: PostToolUse (Save Observation Hook)
 
 **Purpose:** Capture tool execution observations for later processing
 
@@ -311,11 +313,11 @@ VALUES (?, ?, ?, ?, ...)
 
 ---
 
-### Hook 6: Summary Hook (Mid-Session Checkpoint)
+### Hook 5: Stop Hook (Summary Generation)
 
 **Purpose:** Generate AI-powered session summaries during the session
 
-**When:** Triggered programmatically by the worker service
+**When:** When Claude stops (triggered by Stop lifecycle event)
 
 **What it does:**
 1. Gathers session observations from database
@@ -327,7 +329,7 @@ VALUES (?, ?, ?, ?, ...)
 ```json
 {
   "hooks": {
-    "Summary": [{
+    "Stop": [{
       "hooks": [{
         "type": "command",
         "command": "${CLAUDE_PLUGIN_ROOT}/scripts/summary-hook.js"
@@ -338,7 +340,7 @@ VALUES (?, ?, ?, ?, ...)
 ```
 
 **Key decisions:**
-- ✅ Triggered by worker, not by Claude Code lifecycle
+- ✅ Triggered by Stop lifecycle event
 - ✅ Multiple summaries per session (v4.2.0+)
 - ✅ Summaries are checkpoints, not endings
 - ✅ Uses Claude Agent SDK for AI compression
@@ -366,7 +368,7 @@ VALUES (?, ?, ?, ?, ...)
 
 ---
 
-### Hook 7: SessionEnd (Cleanup Hook)
+### Hook 6: SessionEnd (Cleanup Hook)
 
 **Purpose:** Mark sessions as completed when they end
 
