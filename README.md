@@ -326,11 +326,7 @@ See [Development Guide](docs/development.mdx) for detailed instructions.
 
 **Quick Diagnostic:**
 
-Run the troubleshooting skill for automated diagnosis and fixes:
-
-```
-/skill troubleshoot
-```
+If you're experiencing issues, describe the problem to Claude and the troubleshoot skill will automatically activate to diagnose and provide fixes.
 
 **Common Issues:**
 

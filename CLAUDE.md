@@ -8,6 +8,26 @@ Claude-mem is a Claude Code plugin providing persistent memory across sessions. 
 
 **Current Version**: 5.5.1
 
+## IMPORTANT: Skills Are Auto-Invoked, Not Commands
+
+**THERE IS NO `/skill` COMMAND IN CLAUDE CODE.**
+
+Skills are automatically invoked by Claude Code based on their description metadata. When documentation was updated, AI agents incorrectly hallucinated that `/skill <name>` was a valid command. It is not.
+
+**How Skills Actually Work:**
+- Skills have a `name:` and `description:` in their frontmatter (SKILL.md)
+- Claude Code automatically loads skill descriptions at session start
+- Claude invokes skills based on matching user queries to skill descriptions
+- Users simply ask naturally: "What did we do last session?" → mem-search skill auto-invokes
+- No manual invocation command exists or is needed
+
+**Correct Documentation:**
+- ❌ Wrong: "Run `/skill troubleshoot`"
+- ✅ Right: "The troubleshoot skill will automatically activate when issues are detected"
+- ✅ Right: "Ask about past work and the mem-search skill will activate"
+
+This note exists to prevent future documentation from re-introducing this hallucination.
+
 ## Critical Architecture Knowledge
 
 ### The Lifecycle Flow
@@ -271,11 +291,16 @@ pm2 delete claude-mem-worker # Force clean start
 5. Use mem-search skill to verify behavior (auto-invoked when asking about past work)
 
 ### Version Bumps
-Use the version-bump skill:
+**Note**: There is no version-bump skill currently available. Version bumping must be done manually by updating:
+- `package.json` - Update `version` field
+- `plugin/.claude-plugin/plugin.json` - Update `version` field  
+- `CLAUDE.md` - Update version number at top
+- `README.md` - Update version badge
+
+Then run:
 ```bash
-/skill version-bump
+npm run build && npm run sync-marketplace
 ```
-Choose patch/minor/major. Updates package.json, marketplace.json, plugin.json, and CLAUDE.md.
 
 ## Investigation Best Practices
 
@@ -484,6 +509,5 @@ Real-time visibility into memory stream helps users understand what's being capt
 **Sync**: `npm run sync-marketplace`
 **Worker Restart**: `npm run worker:restart`
 **Worker Logs**: `npm run worker:logs`
-**Version Bump**: `/skill version-bump`
 **Usage Analysis**: `npm run usage:today`
 **Viewer UI**: http://localhost:37777 (auto-starts with worker)
