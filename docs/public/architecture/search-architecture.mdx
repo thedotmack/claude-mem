@@ -403,7 +403,7 @@ Claude translates to appropriate API call.
 - MCP configuration removed from `plugin/.mcp.json`
 
 **New Implementation**: Skill-based search
-- Skill files: `plugin/skills/search/`
+- Skill files: `plugin/skills/mem-search/`
 - HTTP endpoints: `src/services/worker-service.ts` (lines 200-400)
 - Build script: `npm run build` includes skill files
 - Sync script: `npm run sync-marketplace` copies to plugin directory
@@ -436,9 +436,9 @@ curl "http://localhost:37777/api/search/observations?query=test&limit=1"
 
 If Claude doesn't invoke the skill:
 
-1. Check skill files exist: `ls ~/.claude/plugins/marketplaces/thedotmack/plugin/skills/search/`
+1. Check skill files exist: `ls ~/.claude/plugins/marketplaces/thedotmack/plugin/skills/mem-search/`
 2. Restart Claude Code session
-3. Try explicit skill invocation: `/skill search`
+3. Try explicit skill invocation: `/skill mem-search`
 
 ## Next Steps
 
