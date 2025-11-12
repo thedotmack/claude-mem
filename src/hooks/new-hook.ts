@@ -47,6 +47,56 @@ export interface UserPromptSubmitInput {
 }
 
 /**
+ * Format observations as real-time context
+ */
+function formatRealtimeContext(observations: any[]): string {
+  if (observations.length === 0) return '';
+
+  const output: string[] = [];
+  output.push('# [claude-mem] real-time context');
+  output.push('');
+  output.push(`Found ${observations.length} relevant observation${observations.length === 1 ? '' : 's'} for your request:`);
+  output.push('');
+
+  for (const obs of observations) {
+    const typeEmoji = {
+      'bugfix': '🔴',
+      'feature': '🟣',
+      'refactor': '🔄',
+      'discovery': '🔵',
+      'decision': '🧠',
+      'change': '✅'
+    }[obs.type] || '📝';
+
+    output.push(`**${typeEmoji} #${obs.id}** ${obs.title || 'Untitled'}`);
+
+    if (obs.subtitle) {
+      output.push(`*${obs.subtitle}*`);
+    }
+
+    if (obs.narrative) {
+      output.push('');
+      output.push(obs.narrative);
+    }
+
+    if (obs.facts) {
+      const facts = JSON.parse(obs.facts);
+      if (Array.isArray(facts) && facts.length > 0) {
+        output.push('');
+        output.push('**Facts:**');
+        facts.forEach((fact: string) => output.push(`- ${fact}`));
+      }
+    }
+
+    output.push('');
+    output.push('---');
+    output.push('');
+  }
+
+  return output.join('\n');
+}
+
+/**
  * New Hook Main Logic
  */
 async function newHook(input?: UserPromptSubmitInput): Promise<void> {
@@ -99,7 +149,40 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
     throw error;
   }
 
-  console.log(createHookResponse('UserPromptSubmit', true));
+  // Real-time context: Search for relevant observations based on user prompt
+  let realtimeContext = '';
+  if (process.env.CLAUDE_MEM_REALTIME_CONTEXT === 'true') {
+    try {
+      const searchResponse = await fetch(`http://127.0.0.1:${port}/api/search/timeline-by-query`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          query: prompt,
+          project,
+          mode: 'auto',
+          depth_before: 5,
+          depth_after: 5
+        }),
+        signal: AbortSignal.timeout(1000)
+      });
+
+      if (searchResponse.ok) {
+        const { timeline } = await searchResponse.json();
+        if (timeline?.records && timeline.records.length > 0) {
+          const observations = timeline.records.filter((r: any) => r.type === 'observation');
+          if (observations.length > 0) {
+            realtimeContext = formatRealtimeContext(observations);
+            console.error(`[new-hook] Found ${observations.length} relevant observations`);
+          }
+        }
+      }
+    } catch (error) {
+      // Silent failure - don't block prompt
+      console.error('[new-hook] Real-time context search failed:', error);
+    }
+  }
+
+  console.log(createHookResponse('UserPromptSubmit', true, { context: realtimeContext }));
 }
 
 // Entry Point
