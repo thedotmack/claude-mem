@@ -74,8 +74,6 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
 
   console.error(`[new-hook] Session ${sessionDbId}, prompt #${promptNumber}`);
 
-  db.close();
-
   const port = getWorkerPort();
 
   try {
@@ -100,7 +98,7 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
     throw error;
   }
 
-  // Real-time context: Search for relevant observations based on user prompt
+  // Real-time context: Intelligent context selection following workflow
   // IMPORTANT: The user CANNOT see this injected context - only Claude can see it.
   // This is why we use silentDebug() - so the user can verify it's working by
   // checking ~/.claude-mem/silent.log for success/error messages.
@@ -108,35 +106,85 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
   let realtimeContext = '';
   if (process.env.CLAUDE_MEM_REALTIME_CONTEXT === 'true') {
     try {
-      const url = new URL(`http://127.0.0.1:${port}/api/timeline/by-query`);
-      url.searchParams.set('query', prompt);
-      url.searchParams.set('project', project);
-      url.searchParams.set('mode', 'auto');
-      url.searchParams.set('depth_before', '5');
-      url.searchParams.set('depth_after', '5');
+      // Step 1: Get session start observations (recent observations for this project)
+      const CONTEXT_DEPTH = parseInt(process.env.CLAUDE_MEM_CONTEXT_OBSERVATIONS || '50', 10);
+      const sessionStartObs = db.db.prepare(`
+        SELECT id, type, title, subtitle
+        FROM observations
+        WHERE project = ?
+        ORDER BY created_at_epoch DESC
+        LIMIT ?
+      `).all(project, CONTEXT_DEPTH) as Array<{ id: number; type: string; title: string; subtitle: string }>;
 
-      silentDebug(`[new-hook] Searching for context: "${prompt.substring(0, 60)}..."`);
+      silentDebug(`[new-hook] Calling context selection with ${sessionStartObs.length} session start observations`);
 
-      const searchResponse = await fetch(url.toString(), {
-        signal: AbortSignal.timeout(2000) // Increased timeout to 2s
+      // Step 2: Call context selection endpoint
+      const selectionResponse = await fetch(`http://127.0.0.1:${port}/api/context/select`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userPrompt: prompt,
+          sessionStartObservations: sessionStartObs,
+          project
+        })
       });
 
-      if (!searchResponse.ok) {
-        const errorText = await searchResponse.text();
-        silentDebug(`[new-hook] Search failed with ${searchResponse.status}`, { error: errorText });
+      if (!selectionResponse.ok) {
+        const errorText = await selectionResponse.text();
+        silentDebug(`[new-hook] Context selection failed with ${selectionResponse.status}`, { error: errorText });
       } else {
-        // Timeline API returns markdown text directly (NOT JSON)
-        realtimeContext = await searchResponse.text();
-        silentDebug(`[new-hook] ✓ Retrieved real-time context (${realtimeContext.length} chars)`);
+        const selection = await selectionResponse.json();
+        silentDebug(`[new-hook] Context selection complete`, selection);
+
+        // Step 3: Fetch full observations for selected IDs
+        const selectedIds: number[] = selection.relevant_session_start_ids || [];
+
+        if (selectedIds.length > 0) {
+          const placeholders = selectedIds.map(() => '?').join(',');
+          const fullObservations = db.db.prepare(`
+            SELECT id, type, title, subtitle, narrative, facts, concepts
+            FROM observations
+            WHERE id IN (${placeholders})
+            ORDER BY created_at_epoch DESC
+          `).all(...selectedIds);
+
+          // Format observations as markdown
+          const obsContext = fullObservations.map((obs: any) => {
+            let text = `### [${obs.id}] ${obs.title}\n\n`;
+            if (obs.subtitle) text += `${obs.subtitle}\n\n`;
+            if (obs.narrative) text += `**Context:** ${obs.narrative}\n\n`;
+            if (obs.facts) {
+              try {
+                const facts = JSON.parse(obs.facts);
+                if (Array.isArray(facts) && facts.length > 0) {
+                  text += `**Facts:**\n${facts.map(f => `- ${f}`).join('\n')}\n\n`;
+                }
+              } catch {}
+            }
+            return text;
+          }).join('\n---\n\n');
+
+          realtimeContext = `# Relevant Context from Past Sessions\n\n${obsContext}`;
+          silentDebug(`[new-hook] ✓ Injected ${selectedIds.length} observations as context`);
+        } else {
+          silentDebug(`[new-hook] No relevant observations selected`);
+        }
+
+        // TODO: Step 4: If needs_search is true, search for additional observations
+        // This would call the search API and add those results to the context
       }
     } catch (error: any) {
       // Log the error but don't block the prompt
-      silentDebug('[new-hook] Real-time context search failed', {
+      silentDebug('[new-hook] Real-time context selection failed', {
         message: error.message,
-        cause: error.cause
+        cause: error.cause,
+        stack: error.stack
       });
     }
   }
+
+  // Close database connection after all operations complete
+  db.close();
 
   console.log(createHookResponse('UserPromptSubmit', true, { context: realtimeContext }));
 }
