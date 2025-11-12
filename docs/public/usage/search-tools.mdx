@@ -1,19 +1,21 @@
 ---
-title: "Skill-Based Search"
+title: "mem-search Skill"
 description: "Query your project history with natural language"
 ---
 
-# Skill-Based Search Usage
+# mem-search Skill Usage
 
-Once claude-mem is installed as a plugin, you can search your project history using natural language. Claude automatically invokes the search skill when you ask about past work.
+Once claude-mem is installed as a plugin, you can search your project history using natural language. Claude automatically invokes the mem-search skill when you ask about past work.
 
 ## How It Works
 
-**v5.4.0 Migration**: Claude-Mem now uses a skill-based search architecture instead of MCP tools, saving ~2,250 tokens per session start through progressive disclosure.
+**v5.5.0 Enhancement**: The search skill was renamed to "mem-search" for better scope differentiation, with effectiveness increased from 67% to 100% and enhanced concrete triggers (85% vs 44%).
+
+**v5.4.0 Architecture**: Claude-Mem uses a skill-based search architecture instead of MCP tools, saving ~2,250 tokens per session start through progressive disclosure.
 
 **Simple Usage:**
 - Just ask naturally: *"What did we do last session?"*
-- Claude recognizes the intent and invokes the search skill
+- Claude recognizes the intent and invokes the mem-search skill
 - The skill uses HTTP API endpoints to query your memory
 - Results are formatted and presented to you
 
@@ -22,6 +24,7 @@ Once claude-mem is installed as a plugin, you can search your project history us
 - **Natural Language**: No need to learn specific tool syntax
 - **Progressive Disclosure**: Only loads detailed instructions when needed
 - **Auto-Invoked**: Claude knows when to search based on your questions
+- **Scope Differentiation**: "mem-search" clearly distinguishes from native conversation memory
 
 ## Quick Reference
 
