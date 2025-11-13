@@ -167,7 +167,11 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
             return text;
           }).join('\n---\n\n');
 
-          realtimeContext = `# Relevant Context from Past Sessions\n\n${obsContext}`;
+          realtimeContext = `<claude-mem-context>
+# Relevant Context from Past Sessions
+
+${obsContext}
+</claude-mem-context>`;
           silentDebug(`[new-hook] ✓ Injected ${selectedIds.length} observations as context`);
         } else {
           silentDebug(`[new-hook] No relevant observations selected`);
