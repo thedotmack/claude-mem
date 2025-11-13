@@ -337,6 +337,49 @@ The dual-tag system prevents recursive memory storage as designed. All verificat
 
 Implementation verified and ready for production.
 
+## Known Limitations
+
+### Testing Methodology
+
+**Manual verification, not automated:**
+- Testing was performed manually via database queries and log inspection
+- No automated test suite for the complete feature (only unit tests for stripMemoryTags function)
+- Integration testing was done in active development environment
+
+**Small data set:**
+- Verification performed with only 3 observations in database
+- Long-term behavior (100+ sessions) not tested
+- Scale testing (1000+ observations in timeline) not performed
+
+**"Before fix" evidence:**
+- No direct measurements of token growth before the fix
+- Problem was identified through architectural analysis, not observed in production
+- Impact claims are based on expected behavior, not measured behavior
+
+### Edge Cases Not Tested
+
+1. **Nested tags:** Behavior with `<claude-mem-context>...<private>...</private>...</claude-mem-context>` not explicitly tested
+2. **Multiple injections per session:** What happens if context is injected multiple times in one session?
+3. **Malformed tags:** Regex replacement failure scenarios not covered
+4. **Large context:** No testing with >1MB JSON.stringify() output
+5. **Backwards compatibility:** No verification that old observations with these tag names won't cause issues
+
+### Future Testing Recommendations
+
+**Automated integration tests:**
+- Test that context injection doesn't create duplicate observations over 100 sessions
+- Verify observation count stability with multiple concurrent sessions
+- Test edge cases (nested tags, malformed tags, large content)
+
+**Performance testing:**
+- Measure actual token usage before/after fix over extended period
+- Test with 10,000+ observations in timeline
+- Verify regex performance doesn't degrade with very large content
+
+**Regression testing:**
+- Ensure existing functionality (non-real-time-context sessions) still works
+- Verify feature can be safely disabled/re-enabled without data corruption
+
 ## References
 
 ### Issue & Branch
