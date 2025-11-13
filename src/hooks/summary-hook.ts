@@ -9,6 +9,7 @@ import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { createHookResponse } from './hook-response.js';
 import { logger } from '../utils/logger.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
+import { silentDebug } from '../utils/silent-debug.js';
 
 export interface StopInput {
   session_id: string;
@@ -83,7 +84,7 @@ async function summaryHook(input?: StopInput): Promise<void> {
   const port = getWorkerPort();
 
   // Extract last user message from transcript
-  const lastUserMessage = extractLastUserMessage(input.transcript_path || '');
+  const lastUserMessage = extractLastUserMessage(input.transcript_path || silentDebug('input.transcript_path missing', { input }));
 
   logger.dataIn('HOOK', 'Stop: Requesting summary', {
     sessionId: sessionDbId,

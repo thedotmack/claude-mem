@@ -10,7 +10,7 @@ export interface HookResponse {
   suppressOutput?: boolean;
   stopReason?: string;
   hookSpecificOutput?: {
-    hookEventName: 'SessionStart';
+    hookEventName: 'SessionStart' | 'UserPromptSubmit';
     additionalContext: string;
   };
 }
@@ -53,7 +53,25 @@ function buildHookResponse(
     };
   }
 
-  if (hookType === 'UserPromptSubmit' || hookType === 'PostToolUse') {
+  if (hookType === 'UserPromptSubmit') {
+    if (success && options.context) {
+      return {
+        continue: true,
+        suppressOutput: true,
+        hookSpecificOutput: {
+          hookEventName: 'UserPromptSubmit',
+          additionalContext: options.context
+        }
+      };
+    }
+
+    return {
+      continue: true,
+      suppressOutput: true
+    };
+  }
+
+  if (hookType === 'PostToolUse') {
     return {
       continue: true,
       suppressOutput: true

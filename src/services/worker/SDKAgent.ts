@@ -17,6 +17,7 @@ import { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
 import { parseObservations, parseSummary } from '../../sdk/parser.js';
 import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
+import { silentDebug } from '../../utils/silent-debug.js';
 import type { ActiveSession, SDKUserMessage, PendingMessage } from '../worker-types.js';
 
 // Import Agent SDK (assumes it's installed)
@@ -189,7 +190,7 @@ export class SDKAgent {
               sdk_session_id: session.sdkSessionId,
               project: session.project,
               user_prompt: session.userPrompt,
-              last_user_message: message.last_user_message || ''
+              last_user_message: message.last_user_message || silentDebug('message.last_user_message missing in summarize', { message })
             })
           },
           session_id: session.claudeSessionId,

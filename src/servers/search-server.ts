@@ -18,6 +18,7 @@ import { SessionSearch } from '../services/sqlite/SessionSearch.js';
 import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../services/sqlite/types.js';
 import { VECTOR_DB_DIR } from '../shared/paths.js';
+import { silentDebug } from '../utils/silent-debug.js';
 
 // Initialize search instances
 let search: SessionSearch;
@@ -56,7 +57,7 @@ async function queryChroma(
     }
   });
 
-  const resultText = result.content[0]?.text || '';
+  const resultText = result.content[0]?.text || silentDebug('result.content[0]?.text missing in queryChroma', { result });
 
   // Parse JSON response
   let parsed: any;
