@@ -29,6 +29,7 @@ export interface PendingMessage {
   prompt_number?: number;
   cwd?: string;
   last_user_message?: string;
+  last_assistant_message?: string;
 }
 
 export interface ObservationData {

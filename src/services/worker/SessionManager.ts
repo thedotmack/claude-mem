@@ -11,6 +11,7 @@
 import { EventEmitter } from 'events';
 import { DatabaseManager } from './DatabaseManager.js';
 import { logger } from '../../utils/logger.js';
+import { silentDebug } from '../../utils/silent-debug.js';
 import type { ActiveSession, PendingMessage, ObservationData } from '../worker-types.js';
 
 export class SessionManager {
@@ -33,15 +34,49 @@ export class SessionManager {
   /**
    * Initialize a new session or return existing one
    */
-  initializeSession(sessionDbId: number): ActiveSession {
+  initializeSession(sessionDbId: number, currentUserPrompt?: string, promptNumber?: number): ActiveSession {
     // Check if already active
     let session = this.sessions.get(sessionDbId);
     if (session) {
+      // Update userPrompt for continuation prompts
+      if (currentUserPrompt) {
+        silentDebug('[SessionManager] Updating userPrompt for continuation', {
+          sessionDbId,
+          promptNumber,
+          oldPrompt: session.userPrompt.substring(0, 80),
+          newPrompt: currentUserPrompt.substring(0, 80)
+        });
+        session.userPrompt = currentUserPrompt;
+        session.lastPromptNumber = promptNumber || session.lastPromptNumber;
+      } else {
+        silentDebug('[SessionManager] No currentUserPrompt provided for existing session', {
+          sessionDbId,
+          promptNumber,
+          usingCachedPrompt: session.userPrompt.substring(0, 80)
+        });
+      }
       return session;
     }
 
     // Fetch from database
     const dbSession = this.dbManager.getSessionById(sessionDbId);
+
+    // Use currentUserPrompt if provided, otherwise fall back to database (first prompt)
+    const userPrompt = currentUserPrompt || dbSession.user_prompt;
+
+    if (!currentUserPrompt) {
+      silentDebug('[SessionManager] No currentUserPrompt provided for new session, using database', {
+        sessionDbId,
+        promptNumber,
+        dbPrompt: dbSession.user_prompt.substring(0, 80)
+      });
+    } else {
+      silentDebug('[SessionManager] Initializing session with fresh userPrompt', {
+        sessionDbId,
+        promptNumber,
+        userPrompt: currentUserPrompt.substring(0, 80)
+      });
+    }
 
     // Create active session
     session = {
@@ -49,11 +84,11 @@ export class SessionManager {
       claudeSessionId: dbSession.claude_session_id,
       sdkSessionId: null,
       project: dbSession.project,
-      userPrompt: dbSession.user_prompt,
+      userPrompt,
       pendingMessages: [],
       abortController: new AbortController(),
       generatorPromise: null,
-      lastPromptNumber: this.dbManager.getSessionStore().getPromptCounter(sessionDbId),
+      lastPromptNumber: promptNumber || this.dbManager.getSessionStore().getPromptCounter(sessionDbId),
       startTime: Date.now()
     };
 
@@ -123,7 +158,7 @@ export class SessionManager {
    * Queue a summarize request (zero-latency notification)
    * Auto-initializes session if not in memory but exists in database
    */
-  queueSummarize(sessionDbId: number, lastUserMessage: string): void {
+  queueSummarize(sessionDbId: number, lastUserMessage: string, lastAssistantMessage?: string): void {
     // Auto-initialize from database if needed (handles worker restarts)
     let session = this.sessions.get(sessionDbId);
     if (!session) {
@@ -134,7 +169,8 @@ export class SessionManager {
 
     session.pendingMessages.push({
       type: 'summarize',
-      last_user_message: lastUserMessage
+      last_user_message: lastUserMessage,
+      last_assistant_message: lastAssistantMessage
     });
 
     const afterDepth = session.pendingMessages.length;

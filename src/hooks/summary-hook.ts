@@ -9,6 +9,7 @@ import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { createHookResponse } from './hook-response.js';
 import { logger } from '../utils/logger.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
+import { silentDebug } from '../utils/silent-debug.js';
 
 export interface StopInput {
   session_id: string;
@@ -37,16 +38,77 @@ function extractLastUserMessage(transcriptPath: string): string {
     for (let i = lines.length - 1; i >= 0; i--) {
       try {
         const line = JSON.parse(lines[i]);
-        if (line.role === 'user' && line.content) {
+
+        // Claude Code transcript format: {type: "user", message: {role: "user", content: [...]}}
+        if (line.type === 'user' && line.message?.content) {
+          const content = line.message.content;
+
           // Extract text content (handle both string and array formats)
-          if (typeof line.content === 'string') {
-            return line.content;
-          } else if (Array.isArray(line.content)) {
-            const textParts = line.content
+          if (typeof content === 'string') {
+            return content;
+          } else if (Array.isArray(content)) {
+            const textParts = content
               .filter((c: any) => c.type === 'text')
               .map((c: any) => c.text);
             return textParts.join('\n');
           }
+        }
+      } catch (parseError) {
+        // Skip malformed lines
+        continue;
+      }
+    }
+  } catch (error) {
+    logger.error('HOOK', 'Failed to read transcript', { transcriptPath }, error as Error);
+  }
+
+  return '';
+}
+
+/**
+ * Extract last assistant message from transcript JSONL file
+ * Filters out system-reminder tags to avoid polluting summaries
+ */
+function extractLastAssistantMessage(transcriptPath: string): string {
+  if (!transcriptPath || !existsSync(transcriptPath)) {
+    return '';
+  }
+
+  try {
+    const content = readFileSync(transcriptPath, 'utf-8').trim();
+    if (!content) {
+      return '';
+    }
+
+    const lines = content.split('\n');
+
+    // Parse JSONL and find last assistant message
+    for (let i = lines.length - 1; i >= 0; i--) {
+      try {
+        const line = JSON.parse(lines[i]);
+
+        // Claude Code transcript format: {type: "assistant", message: {role: "assistant", content: [...]}}
+        if (line.type === 'assistant' && line.message?.content) {
+          let text = '';
+          const content = line.message.content;
+
+          // Extract text content (handle both string and array formats)
+          if (typeof content === 'string') {
+            text = content;
+          } else if (Array.isArray(content)) {
+            const textParts = content
+              .filter((c: any) => c.type === 'text')
+              .map((c: any) => c.text);
+            text = textParts.join('\n');
+          }
+
+          // Filter out system-reminder tags and their content
+          text = text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '');
+
+          // Clean up excessive whitespace
+          text = text.replace(/\n{3,}/g, '\n\n').trim();
+
+          return text;
         }
       } catch (parseError) {
         // Skip malformed lines
@@ -78,18 +140,50 @@ async function summaryHook(input?: StopInput): Promise<void> {
   // Get or create session
   const sessionDbId = db.createSDKSession(session_id, '', '');
   const promptNumber = db.getPromptCounter(sessionDbId);
+
+  // DIAGNOSTIC: Check session and observations
+  const sessionInfo = db.db.prepare(`
+    SELECT id, claude_session_id, sdk_session_id, project
+    FROM sdk_sessions WHERE id = ?
+  `).get(sessionDbId) as any;
+
+  const obsCount = db.db.prepare(`
+    SELECT COUNT(*) as count
+    FROM observations
+    WHERE sdk_session_id = ?
+  `).get(sessionInfo?.sdk_session_id) as { count: number };
+
+  silentDebug('[summary-hook] Session diagnostics', {
+    claudeSessionId: session_id,
+    sessionDbId,
+    sdkSessionId: sessionInfo?.sdk_session_id,
+    project: sessionInfo?.project,
+    promptNumber,
+    observationCount: obsCount?.count || 0,
+    transcriptPath: input.transcript_path
+  });
+
   db.close();
 
   const port = getWorkerPort();
 
-  // Extract last user message from transcript
+  // Extract last user AND assistant messages from transcript
   const lastUserMessage = extractLastUserMessage(input.transcript_path || '');
+  const lastAssistantMessage = extractLastAssistantMessage(input.transcript_path || '');
+
+  silentDebug('[summary-hook] Extracted messages', {
+    hasLastUserMessage: !!lastUserMessage,
+    hasLastAssistantMessage: !!lastAssistantMessage,
+    lastAssistantPreview: lastAssistantMessage.substring(0, 200),
+    lastAssistantLength: lastAssistantMessage.length
+  });
 
   logger.dataIn('HOOK', 'Stop: Requesting summary', {
     sessionId: sessionDbId,
     workerPort: port,
     promptNumber,
-    hasLastUserMessage: !!lastUserMessage
+    hasLastUserMessage: !!lastUserMessage,
+    hasLastAssistantMessage: !!lastAssistantMessage
   });
 
   try {
@@ -98,7 +192,8 @@ async function summaryHook(input?: StopInput): Promise<void> {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         prompt_number: promptNumber,
-        last_user_message: lastUserMessage
+        last_user_message: lastUserMessage,
+        last_assistant_message: lastAssistantMessage
       }),
       signal: AbortSignal.timeout(2000)
     });

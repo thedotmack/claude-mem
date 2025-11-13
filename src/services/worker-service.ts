@@ -289,7 +289,8 @@ export class WorkerService {
   private handleSessionInit(req: Request, res: Response): void {
     try {
       const sessionDbId = parseInt(req.params.sessionDbId, 10);
-      const session = this.sessionManager.initializeSession(sessionDbId);
+      const { userPrompt, promptNumber } = req.body;
+      const session = this.sessionManager.initializeSession(sessionDbId, userPrompt, promptNumber);
 
       // Get the latest user_prompt for this session to sync to Chroma
       const db = this.dbManager.getSessionStore().db;
@@ -450,9 +451,9 @@ export class WorkerService {
   private handleSummarize(req: Request, res: Response): void {
     try {
       const sessionDbId = parseInt(req.params.sessionDbId, 10);
-      const { last_user_message } = req.body;
+      const { last_user_message, last_assistant_message } = req.body;
 
-      this.sessionManager.queueSummarize(sessionDbId, last_user_message);
+      this.sessionManager.queueSummarize(sessionDbId, last_user_message, last_assistant_message);
 
       // CRITICAL: Ensure SDK agent is running to consume the queue
       const session = this.sessionManager.getSession(sessionDbId);

@@ -18,6 +18,7 @@ export interface SDKSession {
   project: string;
   user_prompt: string;
   last_user_message?: string;
+  last_assistant_message?: string;
 }
 
 /**
@@ -28,8 +29,12 @@ export function buildInitPrompt(project: string, sessionId: string, userPrompt: 
 
 CRITICAL: Record what was LEARNED/BUILT/FIXED/DEPLOYED/CONFIGURED, not what you (the observer) are doing.
 
-User's Goal: ${userPrompt}
-Date: ${new Date().toISOString().split('T')[0]}
+You do not have access to tools. All information you need is provided in <observed_from_primary_session> messages. Create observations from what you observe - no investigation needed.
+
+<observed_from_primary_session>
+  <user_request>${userPrompt}</user_request>
+  <requested_at>${new Date().toISOString().split('T')[0]}</requested_at>
+</observed_from_primary_session>
 
 Your job is to monitor a different Claude Code session happening RIGHT NOW, with the goal of creating observations and progress summaries as the work is being done LIVE by the user. You are NOT the one doing the work - you are ONLY observing and recording what is being built, fixed, deployed, or configured in the other session.
 
@@ -128,7 +133,11 @@ Output observations using this XML structure:
 </observation>
 \`\`\`
 
-IMPORTANT! DO NOT do any work other than generate the OBSERVATIONS or PROGRESS SUMMARIES - and remember that you are a memory agent designed to summarize a DIFFERENT claude code session, not this one. Never reference yourself or your own actions. Never output anything other than the XML structures defined for observations and summaries. All other output is ignored and would be better left unsaid.
+IMPORTANT! DO NOT do any work right now other than generating this OBSERVATIONS from tool use messages - and remember that you are a memory agent designed to summarize a DIFFERENT claude code session, not this one. 
+
+Never reference yourself or your own actions. Do not output anything other than the observation content formatted in the XML structure above. All other output is ignored by the system, and the system has been designed to be smart about token usage. Please spend your tokens wisely on useful observations. 
+
+Remember that we record these observations as a way of helping us stay on track with our progress, and to help us keep important decisions and changes at the forefront of our minds! :) Thank you so much for your help!
 
 MEMORY PROCESSING START
 =======================`;
@@ -154,30 +163,30 @@ export function buildObservationPrompt(obs: Observation): string {
     toolOutput = obs.tool_output;  // If parse fails, use raw value
   }
 
-  return `<tool_used>
-  <tool_name>${obs.tool_name}</tool_name>
-  <tool_time>${new Date(obs.created_at_epoch).toISOString()}</tool_time>${obs.cwd ? `\n  <tool_cwd>${obs.cwd}</tool_cwd>` : ''}
-  <tool_input>${JSON.stringify(toolInput, null, 2)}</tool_input>
-  <tool_output>${JSON.stringify(toolOutput, null, 2)}</tool_output>
-</tool_used>`;
+  return `<observed_from_primary_session>
+  <what_happened>${obs.tool_name}</what_happened>
+  <occurred_at>${new Date(obs.created_at_epoch).toISOString()}</occurred_at>${obs.cwd ? `\n  <working_directory>${obs.cwd}</working_directory>` : ''}
+  <parameters>${JSON.stringify(toolInput, null, 2)}</parameters>
+  <outcome>${JSON.stringify(toolOutput, null, 2)}</outcome>
+</observed_from_primary_session>`;
 }
 
 /**
  * Build prompt to generate progress summary
  */
 export function buildSummaryPrompt(session: SDKSession): string {
-  const lastUserMessage = session.last_user_message || '';
+  const lastAssistantMessage = session.last_assistant_message || '';
 
   return `PROGRESS SUMMARY CHECKPOINT
 ===========================
 Write progress notes of what was done, what was learned, and what's next. This is a checkpoint to capture progress so far. The session is ongoing - you may receive more requests and tool executions after this summary. Write "next_steps" as the current trajectory of work (what's actively being worked on or coming up next), not as post-session future work. Always write at least a minimal summary explaining current progress, even if work is still in early stages, so that users see a summary output tied to each request.
 
-Last User Message:
-${lastUserMessage}
+Claude's Full Response to User:
+${lastAssistantMessage}
 
 Respond in this XML format:
 <summary>
-  <request>[Short title related to the last user message above]</request>
+  <request>[Short title capturing the user's request AND the substance of what was discussed/done]</request>
   <investigated>[What has been explored so far? What was examined?]</investigated>
   <learned>[What have you learned about how things work?]</learned>
   <completed>[What work has been completed so far? What has shipped or changed?]</completed>
@@ -185,7 +194,11 @@ Respond in this XML format:
   <notes>[Additional insights or observations about the current progress]</notes>
 </summary>
 
-IMPORTANT! DO NOT do any work other than generate the PROGRESS SUMMARY  - and remember that you are a memory agent designed to summarize a DIFFERENT claude code session, not this one. Never reference yourself or your own actions. Never output anything other than the XML structures defined for observations and summaries. All other output is ignored and would be better left unsaid.`;
+IMPORTANT! DO NOT do any work right now other than generating this next PROGRESS SUMMARY - and remember that you are a memory agent designed to summarize a DIFFERENT claude code session, not this one.
+
+Never reference yourself or your own actions. Do not output anything other than the summary content formatted in the XML structure above. All other output is ignored by the system, and the system has been designed to be smart about token usage. Please spend your tokens wisely on useful summary content.
+
+Thank you, this summary will be very useful for keeping track of our progress!`;
 }
 
 /**
@@ -210,43 +223,17 @@ IMPORTANT! DO NOT do any work other than generate the PROGRESS SUMMARY  - and re
  * First prompt: Uses buildInitPrompt instead (promptNumber === 1)
  */
 export function buildContinuationPrompt(userPrompt: string, promptNumber: number, claudeSessionId: string): string {
-  return `This is continuation prompt #${promptNumber} for session ${claudeSessionId} that you're observing. 
+  return `
+Hello memory agent, you are continuing to observe the primary Claude session.
 
-CRITICAL: Record what was LEARNED/BUILT/FIXED/DEPLOYED/CONFIGURED, not what you (the observer) are doing.
+<observed_from_primary_session>
+  <user_request>${userPrompt}</user_request>
+  <requested_at>${new Date().toISOString().split('T')[0]}</requested_at>
+</observed_from_primary_session>
 
-User's Goal: ${userPrompt}
-Date: ${new Date().toISOString().split('T')[0]}
+You do not have access to tools. All information you need is provided in <observed_from_primary_session> messages. Create observations from what you observe - no investigation needed.
 
-Your job is to continue monitoring the different Claude Code session happening RIGHT NOW, with the goal of creating observations and a progress summary as the work is being done LIVE by the user. You are NOT the one doing the work - you are ONLY observing and recording what is being built, fixed, deployed, or configured in the other session.
-
-WHAT TO RECORD
---------------
-Focus on deliverables and capabilities:
-- What the system NOW DOES differently (new capabilities)
-- What shipped to users/production (features, fixes, configs, docs)
-- Changes in technical domains (auth, data, UI, infra, DevOps, docs)
-
-Use verbs like: implemented, fixed, deployed, configured, migrated, optimized, added, refactored
-
-✅ GOOD EXAMPLES (describes what was built):
-- "Authentication now supports OAuth2 with PKCE flow"
-- "Deployment pipeline runs canary releases with auto-rollback"
-- "Database indexes optimized for common query patterns"
-
-❌ BAD EXAMPLES (describes observation process - DO NOT DO THIS):
-- "Analyzed authentication implementation and stored findings"
-- "Tracked deployment steps and logged outcomes"
-- "Monitored database performance and recorded metrics"
-
-WHEN TO SKIP
-------------
-Skip routine operations:
-- Empty status checks
-- Package installations with no errors
-- Simple file listings
-- Repetitive operations you've already documented
-- If file related research comes back as empty or not found
-- **No output necessary if skipping.**
+IMPORTANT: Continue generating observations from tool use messages using the XML structure below.
 
 OUTPUT FORMAT
 -------------
@@ -309,9 +296,10 @@ Output observations using this XML structure:
 </observation>
 \`\`\`
 
-IMPORTANT! DO NOT do any work other than generate the OBSERVATIONS or PROGRESS SUMMARIES - and remember that you are a memory agent designed to summarize a DIFFERENT claude code session, not this one. Never reference yourself or your own actions. Never output anything other than the XML structures defined for observations and summaries. All other output is ignored and would be better left unsaid.
+Never reference yourself or your own actions. Do not output anything other than the observation content formatted in the XML structure above. All other output is ignored by the system, and the system has been designed to be smart about token usage. Please spend your tokens wisely on useful observations.
 
-MEMORY PROCESSING START
-=======================`;
+Remember that we record these observations as a way of helping us stay on track with our progress, and to help us keep important decisions and changes at the forefront of our minds! :) Thank you so much for your continued help!
 
-}
+MEMORY PROCESSING CONTINUED
+===========================`;
+} 

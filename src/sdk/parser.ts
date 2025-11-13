@@ -17,11 +17,11 @@ export interface ParsedObservation {
 }
 
 export interface ParsedSummary {
-  request: string;
-  investigated: string;
-  learned: string;
-  completed: string;
-  next_steps: string;
+  request: string | null;
+  investigated: string | null;
+  learned: string | null;
+  completed: string | null;
+  next_steps: string | null;
   notes: string | null;
 }
 

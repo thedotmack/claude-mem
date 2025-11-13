@@ -137,7 +137,7 @@ function formatObservationIndex(obs: ObservationSearchResult, index: number): st
  * Format session summary as index entry (title, date, ID only)
  */
 function formatSessionIndex(session: SessionSummarySearchResult, index: number): string {
-  const title = session.request || `Session ${session.sdk_session_id.substring(0, 8)}`;
+  const title = session.request || `Session ${session.sdk_session_id?.substring(0, 8) || 'unknown'}`;
   const date = new Date(session.created_at_epoch).toLocaleString();
 
   return `${index + 1}. ${title}
@@ -229,7 +229,7 @@ function formatObservationResult(obs: ObservationSearchResult): string {
  * Format session summary as text content with metadata
  */
 function formatSessionResult(session: SessionSummarySearchResult): string {
-  const title = session.request || `Session ${session.sdk_session_id.substring(0, 8)}`;
+  const title = session.request || `Session ${session.sdk_session_id?.substring(0, 8) || 'unknown'}`;
 
   // Build content from available fields
   const contentParts: string[] = [];
