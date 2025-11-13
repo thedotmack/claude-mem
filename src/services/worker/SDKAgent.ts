@@ -189,7 +189,8 @@ export class SDKAgent {
               sdk_session_id: session.sdkSessionId,
               project: session.project,
               user_prompt: session.userPrompt,
-              last_user_message: message.last_user_message || ''
+              last_user_message: message.last_user_message || '',
+              last_assistant_message: message.last_assistant_message || ''
             })
           },
           session_id: session.claudeSessionId,

@@ -18,6 +18,7 @@ export interface SDKSession {
   project: string;
   user_prompt: string;
   last_user_message?: string;
+  last_assistant_message?: string;
 }
 
 /**
@@ -170,18 +171,18 @@ export function buildObservationPrompt(obs: Observation): string {
  * Build prompt to generate progress summary
  */
 export function buildSummaryPrompt(session: SDKSession): string {
-  const lastUserMessage = session.last_user_message || '';
+  const lastAssistantMessage = session.last_assistant_message || '';
 
   return `PROGRESS SUMMARY CHECKPOINT
 ===========================
 Write progress notes of what was done, what was learned, and what's next. This is a checkpoint to capture progress so far. The session is ongoing - you may receive more requests and tool executions after this summary. Write "next_steps" as the current trajectory of work (what's actively being worked on or coming up next), not as post-session future work. Always write at least a minimal summary explaining current progress, even if work is still in early stages, so that users see a summary output tied to each request.
 
-Summary Of Work Message From Claude to User:
-${lastUserMessage}
+Claude's Full Response to User:
+${lastAssistantMessage}
 
 Respond in this XML format:
 <summary>
-  <request>[Short title related to the last user message above]</request>
+  <request>[Short title capturing the user's request AND the substance of what was discussed/done]</request>
   <investigated>[What has been explored so far? What was examined?]</investigated>
   <learned>[What have you learned about how things work?]</learned>
   <completed>[What work has been completed so far? What has shipped or changed?]</completed>
@@ -189,9 +190,9 @@ Respond in this XML format:
   <notes>[Additional insights or observations about the current progress]</notes>
 </summary>
 
-IMPORTANT! DO NOT do any work right now other than generating this next PROGRESS SUMMARY - and remember that you are a memory agent designed to summarize a DIFFERENT claude code session, not this one. 
+IMPORTANT! DO NOT do any work right now other than generating this next PROGRESS SUMMARY - and remember that you are a memory agent designed to summarize a DIFFERENT claude code session, not this one.
 
-Never reference yourself or your own actions. Do not output anything other than the summary content formatted in the XML structure above. All other output is ignored by the system, and the system has been designed to be smart about token usage. Please spend your tokens wisely on useful summary content. 
+Never reference yourself or your own actions. Do not output anything other than the summary content formatted in the XML structure above. All other output is ignored by the system, and the system has been designed to be smart about token usage. Please spend your tokens wisely on useful summary content.
 
 Thank you, this summary will be very useful for keeping track of our progress!`;
 }

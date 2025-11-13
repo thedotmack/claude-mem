@@ -450,9 +450,9 @@ export class WorkerService {
   private handleSummarize(req: Request, res: Response): void {
     try {
       const sessionDbId = parseInt(req.params.sessionDbId, 10);
-      const { last_user_message } = req.body;
+      const { last_user_message, last_assistant_message } = req.body;
 
-      this.sessionManager.queueSummarize(sessionDbId, last_user_message);
+      this.sessionManager.queueSummarize(sessionDbId, last_user_message, last_assistant_message);
 
       // CRITICAL: Ensure SDK agent is running to consume the queue
       const session = this.sessionManager.getSession(sessionDbId);

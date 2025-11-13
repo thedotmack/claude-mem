@@ -123,7 +123,7 @@ export class SessionManager {
    * Queue a summarize request (zero-latency notification)
    * Auto-initializes session if not in memory but exists in database
    */
-  queueSummarize(sessionDbId: number, lastUserMessage: string): void {
+  queueSummarize(sessionDbId: number, lastUserMessage: string, lastAssistantMessage?: string): void {
     // Auto-initialize from database if needed (handles worker restarts)
     let session = this.sessions.get(sessionDbId);
     if (!session) {
@@ -134,7 +134,8 @@ export class SessionManager {
 
     session.pendingMessages.push({
       type: 'summarize',
-      last_user_message: lastUserMessage
+      last_user_message: lastUserMessage,
+      last_assistant_message: lastAssistantMessage
     });
 
     const afterDepth = session.pendingMessages.length;
