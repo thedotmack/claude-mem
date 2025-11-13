@@ -4,6 +4,69 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [6.0.0] - 2025-11-13
+
+## What's New
+
+### Major Enhancements
+
+**Session Management**
+- Enhanced session initialization to accept userPrompt and promptNumber
+- Live userPrompt updates for multi-turn conversations
+- Improved SessionManager with better context handling
+
+**Transcript Processing**
+- Added comprehensive transcript processing scripts for analysis
+- New transcript data structures and parsing utilities
+- Rich context extraction capabilities
+
+**Architecture Improvements**
+- Refactored hooks and SDKAgent for improved observation handling
+- Added silent debug logging utilities
+- Better error handling and debugging capabilities
+
+### Documentation
+- Added implementation plan for ROI metrics feature
+- Added rich context examples and documentation
+- Multiple transcript processing examples
+
+### Files Changed
+- 39 files changed, 4584 insertions(+), 2809 deletions(-)
+
+## Breaking Changes
+
+This is a major version bump due to significant architectural changes in session management and observation handling. Existing sessions will continue to work, but the internal APIs have evolved.
+
+---
+
+📦 Install via Claude Code: `~/.claude/plugins/marketplaces/thedotmack/`
+📖 Documentation: [CLAUDE.md](https://github.com/thedotmack/claude-mem/blob/main/CLAUDE.md)
+
+## [5.5.1] - 2025-11-11
+
+**Breaking Changes**: None (patch version)
+
+**Improvements**:
+- Enhanced summary hook to capture last user message from Claude Code session transcripts
+- Improved activity indicator that tracks both active sessions and queue depth
+- Better user feedback during prompt processing
+- More accurate processing status broadcasting
+
+**Technical Details**:
+- Modified files:
+  - src/hooks/summary-hook.ts (added transcript parser for extracting last user message)
+  - src/services/worker-service.ts (enhanced processing status broadcasting)
+  - src/services/worker/SessionManager.ts (queue depth tracking for activity indicators)
+  - src/services/worker-types.ts (added last_user_message field to SDKSession)
+  - src/sdk/prompts.ts (updated summary prompt to include last user message context)
+  - src/services/worker/SDKAgent.ts (pass through last user message to SDK)
+- Built outputs updated:
+  - plugin/scripts/summary-hook.js
+  - plugin/scripts/worker-service.cjs
+
+**What Changed**:
+The summary hook now reads Claude Code transcript files to extract the last user message before generating session summaries. This provides better context for AI-powered session summarization. The activity indicator now accurately reflects both active sessions and queued work, giving users better feedback about what's happening behind the scenes.
+
 ## [5.5.0] - 2025-11-11
 
 **Breaking Changes**: None (minor version)
