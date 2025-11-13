@@ -221,7 +221,7 @@ export class SDKAgent {
         sessionId: session.sessionDbId,
         obsId,
         type: obs.type,
-        title: obs.title.substring(0, 60) + (obs.title.length > 60 ? '...' : ''),
+        title: (obs.title || '').substring(0, 60) + ((obs.title || '').length > 60 ? '...' : ''),
         files: obs.files?.length || 0,
         concepts: obs.concepts?.length || 0
       });
@@ -239,9 +239,9 @@ export class SDKAgent {
         createdAtEpoch
       ).then(() => {
         const chromaDuration = Date.now() - chromaStart;
-        const truncatedTitle = obsTitle.length > 50
-          ? obsTitle.substring(0, 50) + '...'
-          : obsTitle;
+        const truncatedTitle = (obsTitle || '').length > 50
+          ? (obsTitle || '').substring(0, 50) + '...'
+          : (obsTitle || '');
         logger.debug('CHROMA', 'Observation synced', {
           obsId,
           duration: `${chromaDuration}ms`,
@@ -253,7 +253,7 @@ export class SDKAgent {
           obsId,
           sessionId: session.sessionDbId,
           type: obsType,
-          title: obsTitle.substring(0, 50)
+          title: (obsTitle || '').substring(0, 50)
         }, err);
       });
 
@@ -298,7 +298,7 @@ export class SDKAgent {
       logger.info('SDK', 'Summary saved', {
         sessionId: session.sessionDbId,
         summaryId,
-        request: summary.request.substring(0, 60) + (summary.request.length > 60 ? '...' : ''),
+        request: (summary.request || '').substring(0, 60) + ((summary.request || '').length > 60 ? '...' : ''),
         hasCompleted: !!summary.completed,
         hasNextSteps: !!summary.next_steps
       });
@@ -315,9 +315,9 @@ export class SDKAgent {
         createdAtEpoch
       ).then(() => {
         const chromaDuration = Date.now() - chromaStart;
-        const truncatedRequest = summaryRequest.length > 50
-          ? summaryRequest.substring(0, 50) + '...'
-          : summaryRequest;
+        const truncatedRequest = (summaryRequest || '').length > 50
+          ? (summaryRequest || '').substring(0, 50) + '...'
+          : (summaryRequest || '');
         logger.debug('CHROMA', 'Summary synced', {
           summaryId,
           duration: `${chromaDuration}ms`,
@@ -327,7 +327,7 @@ export class SDKAgent {
         logger.error('CHROMA', 'Failed to sync summary', {
           summaryId,
           sessionId: session.sessionDbId,
-          request: summaryRequest.substring(0, 50)
+          request: (summaryRequest || '').substring(0, 50)
         }, err);
       });
 
