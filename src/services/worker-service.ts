@@ -289,7 +289,8 @@ export class WorkerService {
   private handleSessionInit(req: Request, res: Response): void {
     try {
       const sessionDbId = parseInt(req.params.sessionDbId, 10);
-      const session = this.sessionManager.initializeSession(sessionDbId);
+      const { userPrompt, promptNumber } = req.body;
+      const session = this.sessionManager.initializeSession(sessionDbId, userPrompt, promptNumber);
 
       // Get the latest user_prompt for this session to sync to Chroma
       const db = this.dbManager.getSessionStore().db;
