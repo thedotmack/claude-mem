@@ -128,7 +128,11 @@ Output observations using this XML structure:
 </observation>
 \`\`\`
 
-IMPORTANT! DO NOT do any work other than generate the OBSERVATIONS or PROGRESS SUMMARIES - and remember that you are a memory agent designed to summarize a DIFFERENT claude code session, not this one. Never reference yourself or your own actions. Never output anything other than the XML structures defined for observations and summaries. All other output is ignored and would be better left unsaid.
+IMPORTANT! DO NOT do any work right now other than generating this OBSERVATIONS from tool use messages - and remember that you are a memory agent designed to summarize a DIFFERENT claude code session, not this one. 
+
+Never reference yourself or your own actions. Do not output anything other than the observation content formatted in the XML structure above. All other output is ignored by the system, and the system has been designed to be smart about token usage. Please spend your tokens wisely on useful observations. 
+
+Remember that we record these observations as a way of helping us stay on track with our progress, and to help us keep important decisions and changes at the forefront of our minds! :) Thank you so much for your help!
 
 MEMORY PROCESSING START
 =======================`;
@@ -172,7 +176,7 @@ export function buildSummaryPrompt(session: SDKSession): string {
 ===========================
 Write progress notes of what was done, what was learned, and what's next. This is a checkpoint to capture progress so far. The session is ongoing - you may receive more requests and tool executions after this summary. Write "next_steps" as the current trajectory of work (what's actively being worked on or coming up next), not as post-session future work. Always write at least a minimal summary explaining current progress, even if work is still in early stages, so that users see a summary output tied to each request.
 
-Last User Message:
+Summary Of Work Message From Claude to User:
 ${lastUserMessage}
 
 Respond in this XML format:
@@ -185,7 +189,11 @@ Respond in this XML format:
   <notes>[Additional insights or observations about the current progress]</notes>
 </summary>
 
-IMPORTANT! DO NOT do any work other than generate the PROGRESS SUMMARY  - and remember that you are a memory agent designed to summarize a DIFFERENT claude code session, not this one. Never reference yourself or your own actions. Never output anything other than the XML structures defined for observations and summaries. All other output is ignored and would be better left unsaid.`;
+IMPORTANT! DO NOT do any work right now other than generating this next PROGRESS SUMMARY - and remember that you are a memory agent designed to summarize a DIFFERENT claude code session, not this one. 
+
+Never reference yourself or your own actions. Do not output anything other than the summary content formatted in the XML structure above. All other output is ignored by the system, and the system has been designed to be smart about token usage. Please spend your tokens wisely on useful summary content. 
+
+Thank you, this summary will be very useful for keeping track of our progress!`;
 }
 
 /**
@@ -210,13 +218,16 @@ IMPORTANT! DO NOT do any work other than generate the PROGRESS SUMMARY  - and re
  * First prompt: Uses buildInitPrompt instead (promptNumber === 1)
  */
 export function buildContinuationPrompt(userPrompt: string, promptNumber: number, claudeSessionId: string): string {
-  return `This is continuation prompt #${promptNumber} for session ${claudeSessionId} that you're observing. 
-
-Next Prompt in Session: ${userPrompt}
+  return `
+New Follow Up Prompt: ${userPrompt}
 Date: ${new Date().toISOString().split('T')[0]}
 
-Continue generating observations and progress summaries as the work is being done LIVE by the user in the other Claude Code session. Remember, you are ONLY observing and recording what is being built, fixed, deployed, or configured in the other session.
+IMPORTANT: Continue generating observations from tool use messages for this ongoing session.
 
-MEMORY PROCESSING START
-=======================`;
-}
+Never reference yourself or your own actions. Do not output anything other than the observation content formatted in the XML structure from your original instructions. All other output is ignored by the system, and the system has been designed to be smart about token usage. Please spend your tokens wisely on useful observations. 
+
+Remember that we record these observations as a way of helping us stay on track with our progress, and to help us keep important decisions and changes at the forefront of our minds! :) Thank you so much for your continued help!
+
+MEMORY PROCESSING CONTINUED
+===========================`;
+} 
