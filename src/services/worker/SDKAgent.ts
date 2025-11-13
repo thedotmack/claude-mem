@@ -15,6 +15,7 @@ import { existsSync, readFileSync } from 'fs';
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
+import { silentDebug } from '../../utils/silent-debug.js';
 import { parseObservations, parseSummary } from '../../sdk/parser.js';
 import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
 import type { ActiveSession, SDKUserMessage, PendingMessage } from '../worker-types.js';
@@ -222,15 +223,16 @@ export class SDKAgent {
         sessionId: session.sessionDbId,
         obsId,
         type: obs.type,
-        title: obs.title.substring(0, 60) + (obs.title.length > 60 ? '...' : ''),
-        files: obs.files?.length || 0,
-        concepts: obs.concepts?.length || 0
+        title: obs.title || silentDebug('obs.title is null', { obsId, type: obs.type }, '(untitled)'),
+        filesRead: obs.files_read?.length ?? silentDebug('obs.files_read is null/undefined', { obsId }, '0'),
+        filesModified: obs.files_modified?.length ?? silentDebug('obs.files_modified is null/undefined', { obsId }, '0'),
+        concepts: obs.concepts?.length ?? silentDebug('obs.concepts is null/undefined', { obsId }, '0')
       });
 
       // Sync to Chroma with error logging
       const chromaStart = Date.now();
       const obsType = obs.type;
-      const obsTitle = obs.title;
+      const obsTitle = obs.title || silentDebug('obs.title is null for Chroma sync', { obsId, type: obs.type }, '(untitled)');
       this.dbManager.getChromaSync().syncObservation(
         obsId,
         session.claudeSessionId,
@@ -240,21 +242,18 @@ export class SDKAgent {
         createdAtEpoch
       ).then(() => {
         const chromaDuration = Date.now() - chromaStart;
-        const truncatedTitle = obsTitle.length > 50
-          ? obsTitle.substring(0, 50) + '...'
-          : obsTitle;
         logger.debug('CHROMA', 'Observation synced', {
           obsId,
           duration: `${chromaDuration}ms`,
           type: obsType,
-          title: truncatedTitle
+          title: obsTitle
         });
       }).catch(err => {
         logger.error('CHROMA', 'Failed to sync observation', {
           obsId,
           sessionId: session.sessionDbId,
           type: obsType,
-          title: obsTitle.substring(0, 50)
+          title: obsTitle
         }, err);
       });
 
@@ -299,14 +298,14 @@ export class SDKAgent {
       logger.info('SDK', 'Summary saved', {
         sessionId: session.sessionDbId,
         summaryId,
-        request: summary.request.substring(0, 60) + (summary.request.length > 60 ? '...' : ''),
+        request: summary.request || silentDebug('summary.request is null', { summaryId }, '(no request)'),
         hasCompleted: !!summary.completed,
         hasNextSteps: !!summary.next_steps
       });
 
       // Sync to Chroma with error logging
       const chromaStart = Date.now();
-      const summaryRequest = summary.request;
+      const summaryRequest = summary.request || silentDebug('summary.request is null for Chroma sync', { summaryId }, '(no request)');
       this.dbManager.getChromaSync().syncSummary(
         summaryId,
         session.claudeSessionId,
@@ -316,19 +315,16 @@ export class SDKAgent {
         createdAtEpoch
       ).then(() => {
         const chromaDuration = Date.now() - chromaStart;
-        const truncatedRequest = summaryRequest.length > 50
-          ? summaryRequest.substring(0, 50) + '...'
-          : summaryRequest;
         logger.debug('CHROMA', 'Summary synced', {
           summaryId,
           duration: `${chromaDuration}ms`,
-          request: truncatedRequest
+          request: summaryRequest
         });
       }).catch(err => {
         logger.error('CHROMA', 'Failed to sync summary', {
           summaryId,
           sessionId: session.sessionDbId,
-          request: summaryRequest.substring(0, 50)
+          request: summaryRequest
         }, err);
       });
 
