@@ -77,12 +77,16 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
 
   const port = getWorkerPort();
 
+  // Strip leading slash from commands for memory agent
+  // /review 101 → review 101 (more semantic for observations)
+  const cleanedPrompt = prompt.startsWith('/') ? prompt.substring(1) : prompt;
+
   try {
     // Initialize session via HTTP
     const response = await fetch(`http://127.0.0.1:${port}/sessions/${sessionDbId}/init`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ project, userPrompt: prompt, promptNumber }),
+      body: JSON.stringify({ project, userPrompt: cleanedPrompt, promptNumber }),
       signal: AbortSignal.timeout(5000)
     });
 

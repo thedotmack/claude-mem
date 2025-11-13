@@ -29,8 +29,12 @@ export function buildInitPrompt(project: string, sessionId: string, userPrompt: 
 
 CRITICAL: Record what was LEARNED/BUILT/FIXED/DEPLOYED/CONFIGURED, not what you (the observer) are doing.
 
-User's Goal: ${userPrompt}
-Date: ${new Date().toISOString().split('T')[0]}
+You do not have access to tools. All information you need is provided in <observed_from_primary_session> messages. Create observations from what you observe - no investigation needed.
+
+<observed_from_primary_session>
+  <user_request>${userPrompt}</user_request>
+  <requested_at>${new Date().toISOString().split('T')[0]}</requested_at>
+</observed_from_primary_session>
 
 Your job is to monitor a different Claude Code session happening RIGHT NOW, with the goal of creating observations and progress summaries as the work is being done LIVE by the user. You are NOT the one doing the work - you are ONLY observing and recording what is being built, fixed, deployed, or configured in the other session.
 
@@ -159,12 +163,12 @@ export function buildObservationPrompt(obs: Observation): string {
     toolOutput = obs.tool_output;  // If parse fails, use raw value
   }
 
-  return `<tool_used>
-  <tool_name>${obs.tool_name}</tool_name>
-  <tool_time>${new Date(obs.created_at_epoch).toISOString()}</tool_time>${obs.cwd ? `\n  <tool_cwd>${obs.cwd}</tool_cwd>` : ''}
-  <tool_input>${JSON.stringify(toolInput, null, 2)}</tool_input>
-  <tool_output>${JSON.stringify(toolOutput, null, 2)}</tool_output>
-</tool_used>`;
+  return `<observed_from_primary_session>
+  <what_happened>${obs.tool_name}</what_happened>
+  <occurred_at>${new Date(obs.created_at_epoch).toISOString()}</occurred_at>${obs.cwd ? `\n  <working_directory>${obs.cwd}</working_directory>` : ''}
+  <parameters>${JSON.stringify(toolInput, null, 2)}</parameters>
+  <outcome>${JSON.stringify(toolOutput, null, 2)}</outcome>
+</observed_from_primary_session>`;
 }
 
 /**
@@ -220,12 +224,79 @@ Thank you, this summary will be very useful for keeping track of our progress!`;
  */
 export function buildContinuationPrompt(userPrompt: string, promptNumber: number, claudeSessionId: string): string {
   return `
-New Follow Up Prompt: ${userPrompt}
-Date: ${new Date().toISOString().split('T')[0]}
+Hello memory agent, you are continuing to observe the primary Claude session.
 
-IMPORTANT: Continue generating observations from tool use messages.
+<observed_from_primary_session>
+  <user_request>${userPrompt}</user_request>
+  <requested_at>${new Date().toISOString().split('T')[0]}</requested_at>
+</observed_from_primary_session>
 
-Never reference yourself or your own actions. Do not output anything other than the observation content formatted in the XML structure from your original instructions. All other output is ignored by the system, and the system has been designed to be smart about token usage. Please spend your tokens wisely on useful observations. 
+You do not have access to tools. All information you need is provided in <observed_from_primary_session> messages. Create observations from what you observe - no investigation needed.
+
+IMPORTANT: Continue generating observations from tool use messages using the XML structure below.
+
+OUTPUT FORMAT
+-------------
+Output observations using this XML structure:
+
+\`\`\`xml
+<observation>
+  <type>[ bugfix | feature | refactor | change | discovery | decision ]</type>
+  <!--
+    **type**: MUST be EXACTLY one of these 6 options (no other values allowed):
+      - bugfix: something was broken, now fixed
+      - feature: new capability or functionality added
+      - refactor: code restructured, behavior unchanged
+      - change: generic modification (docs, config, misc)
+      - discovery: learning about existing system
+      - decision: architectural/design choice with rationale
+  -->
+  <title>[**title**: Short title capturing the core action or topic]</title>
+  <subtitle>[**subtitle**: One sentence explanation (max 24 words)]</subtitle>
+  <facts>
+    <fact>[Concise, self-contained statement]</fact>
+    <fact>[Concise, self-contained statement]</fact>
+    <fact>[Concise, self-contained statement]</fact>
+  </facts>
+  <!--
+    **facts**: Concise, self-contained statements
+      Each fact is ONE piece of information
+      No pronouns - each fact must stand alone
+      Include specific details: filenames, functions, values
+  -->
+  <narrative>[**narrative**: Full context: What was done, how it works, why it matters]</narrative>
+  <concepts>
+    <concept>[knowledge-type-category]</concept>
+    <concept>[knowledge-type-category]</concept>
+  </concepts>
+  <!--
+    **concepts**: 2-5 knowledge-type categories. MUST use ONLY these exact keywords:
+      - how-it-works: understanding mechanisms
+      - why-it-exists: purpose or rationale
+      - what-changed: modifications made
+      - problem-solution: issues and their fixes
+      - gotcha: traps or edge cases
+      - pattern: reusable approach
+      - trade-off: pros/cons of a decision
+
+    IMPORTANT: Do NOT include the observation type (change/discovery/decision) as a concept.
+    Types and concepts are separate dimensions.
+  -->
+  <files_read>
+    <file>[path/to/file]</file>
+    <file>[path/to/file]</file>
+  </files_read>
+  <files_modified>
+    <file>[path/to/file]</file>
+    <file>[path/to/file]</file>
+  </files_modified>
+  <!--
+    **files**: All files touched (full paths from project root)
+  -->
+</observation>
+\`\`\`
+
+Never reference yourself or your own actions. Do not output anything other than the observation content formatted in the XML structure above. All other output is ignored by the system, and the system has been designed to be smart about token usage. Please spend your tokens wisely on useful observations.
 
 Remember that we record these observations as a way of helping us stay on track with our progress, and to help us keep important decisions and changes at the forefront of our minds! :) Thank you so much for your continued help!
 

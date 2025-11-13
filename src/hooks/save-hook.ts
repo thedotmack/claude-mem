@@ -20,7 +20,11 @@ export interface PostToolUseInput {
 
 // Tools to skip (low value or too frequent)
 const SKIP_TOOLS = new Set([
-  'ListMcpResourcesTool'
+  'ListMcpResourcesTool',  // MCP infrastructure
+  'SlashCommand',          // Command invocation (observe what it produces, not the call)
+  'Skill',                 // Skill invocation (observe what it produces, not the call)
+  'TodoWrite',             // Task management meta-tool
+  'AskUserQuestion'        // User interaction, not substantive work
 ]);
 
 /**

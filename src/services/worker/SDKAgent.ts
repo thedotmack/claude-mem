@@ -44,7 +44,21 @@ export class SDKAgent {
 
       // Get model ID and disallowed tools
       const modelId = this.getModelId();
-      const disallowedTools = ['Bash']; // Prevent infinite loops
+      // Memory agent is OBSERVER ONLY - no tools allowed
+      const disallowedTools = [
+        'Bash',           // Prevent infinite loops
+        'Read',           // No file reading
+        'Write',          // No file writing
+        'Edit',           // No file editing
+        'Grep',           // No code searching
+        'Glob',           // No file pattern matching
+        'WebFetch',       // No web fetching
+        'WebSearch',      // No web searching
+        'Task',           // No spawning sub-agents
+        'NotebookEdit',   // No notebook editing
+        'AskUserQuestion',// No asking questions
+        'TodoWrite'       // No todo management
+      ];
 
       // Create message generator (event-driven)
       const messageGenerator = this.createMessageGenerator(session);
@@ -224,9 +238,9 @@ export class SDKAgent {
         obsId,
         type: obs.type,
         title: obs.title || silentDebug('obs.title is null', { obsId, type: obs.type }, '(untitled)'),
-        filesRead: obs.files_read?.length ?? silentDebug('obs.files_read is null/undefined', { obsId }, '0'),
-        filesModified: obs.files_modified?.length ?? silentDebug('obs.files_modified is null/undefined', { obsId }, '0'),
-        concepts: obs.concepts?.length ?? silentDebug('obs.concepts is null/undefined', { obsId }, '0')
+        filesRead: obs.files_read?.length ?? (silentDebug('obs.files_read is null/undefined', { obsId }), 0),
+        filesModified: obs.files_modified?.length ?? (silentDebug('obs.files_modified is null/undefined', { obsId }), 0),
+        concepts: obs.concepts?.length ?? (silentDebug('obs.concepts is null/undefined', { obsId }), 0)
       });
 
       // Sync to Chroma with error logging
