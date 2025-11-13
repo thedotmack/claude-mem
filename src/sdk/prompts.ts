@@ -134,6 +134,8 @@ Never reference yourself or your own actions. Do not output anything other than 
 
 Remember that we record these observations as a way of helping us stay on track with our progress, and to help us keep important decisions and changes at the forefront of our minds! :) Thank you so much for your help!
 
+IMPORTANT: Before doing any work, THINK about the above instructions so you have clarity on your role and your expected output.
+
 MEMORY PROCESSING START
 =======================`;
 }
@@ -222,7 +224,7 @@ export function buildContinuationPrompt(userPrompt: string, promptNumber: number
 New Follow Up Prompt: ${userPrompt}
 Date: ${new Date().toISOString().split('T')[0]}
 
-IMPORTANT: Continue generating observations from tool use messages for this ongoing session.
+IMPORTANT: Continue generating observations from tool use messages.
 
 Never reference yourself or your own actions. Do not output anything other than the observation content formatted in the XML structure from your original instructions. All other output is ignored by the system, and the system has been designed to be smart about token usage. Please spend your tokens wisely on useful observations. 
 
