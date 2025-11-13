@@ -32,7 +32,10 @@ const SKIP_TOOLS = new Set([
  * Strip memory tags to prevent recursive storage
  */
 function stripMemoryTags(content: string): string {
-  if (typeof content !== 'string') return content;
+  if (typeof content !== 'string') {
+    silentDebug('[save-hook] stripMemoryTags received non-string:', { type: typeof content });
+    return '{}';  // Safe default for JSON context
+  }
 
   return content
     .replace(/<claude-mem-context>[\s\S]*?<\/claude-mem-context>/g, '')
@@ -87,7 +90,10 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
           ? stripMemoryTags(JSON.stringify(tool_response))
           : '{}',
         prompt_number: promptNumber,
-        cwd: cwd || silentDebug('cwd missing in save-hook', { input })
+        cwd: cwd || (() => {
+          silentDebug('cwd missing in save-hook', { input });
+          return '';
+        })()
       }),
       signal: AbortSignal.timeout(2000)
     });
