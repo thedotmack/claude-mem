@@ -1,3 +1,14 @@
 {
-  "env": {}
+  "env": {},
+  "permissions": {
+    "deny": [
+      "Read(./CHANGELOG.md)",
+      "Read(./README.md)",
+      "Read(./package-lock.json)",
+      "Read(./docs/public/**)",
+      "Read(./plugin/**)",
+      "Read(./node_modules/**)",
+      "Read(./.DS_Store)"
+    ]
+  }
 }

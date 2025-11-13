@@ -134,8 +134,6 @@ Never reference yourself or your own actions. Do not output anything other than 
 
 Remember that we record these observations as a way of helping us stay on track with our progress, and to help us keep important decisions and changes at the forefront of our minds! :) Thank you so much for your help!
 
-IMPORTANT: Before doing any work, THINK about the above instructions so you have clarity on your role and your expected output.
-
 MEMORY PROCESSING START
 =======================`;
 }
