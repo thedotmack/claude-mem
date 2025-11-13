@@ -10,6 +10,7 @@ interface HeaderProps {
   onSettingsToggle: () => void;
   sidebarOpen: boolean;
   isProcessing: boolean;
+  queueDepth: number;
   themePreference: ThemePreference;
   onThemeChange: (theme: ThemePreference) => void;
 }
@@ -22,13 +23,21 @@ export function Header({
   onSettingsToggle,
   sidebarOpen,
   isProcessing,
+  queueDepth,
   themePreference,
   onThemeChange
 }: HeaderProps) {
   return (
     <div className="header">
       <h1>
-        <img src="claude-mem-logomark.webp" alt="" className={`logomark ${isProcessing ? 'spinning' : ''}`} />
+        <div style={{ position: 'relative', display: 'inline-block' }}>
+          <img src="claude-mem-logomark.webp" alt="" className={`logomark ${isProcessing ? 'spinning' : ''}`} />
+          {queueDepth > 0 && (
+            <div className="queue-bubble">
+              {queueDepth}
+            </div>
+          )}
+        </div>
         <span className="logo-text">claude-mem</span>
       </h1>
       <div className="status">

@@ -10,6 +10,7 @@ export function useSSE() {
   const [projects, setProjects] = useState<string[]>([]);
   const [isConnected, setIsConnected] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [queueDepth, setQueueDepth] = useState(0);
   const eventSourceRef = useRef<EventSource | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout>();
 
@@ -83,8 +84,9 @@ export function useSSE() {
 
             case 'processing_status':
               if (typeof data.isProcessing === 'boolean') {
-                console.log('[SSE] Processing status:', data.isProcessing);
+                console.log('[SSE] Processing status:', data.isProcessing, 'Queue depth:', data.queueDepth);
                 setIsProcessing(data.isProcessing);
+                setQueueDepth(data.queueDepth || 0);
               }
               break;
           }
@@ -107,5 +109,5 @@ export function useSSE() {
     };
   }, []);
 
-  return { observations, summaries, prompts, projects, isProcessing, isConnected };
+  return { observations, summaries, prompts, projects, isProcessing, queueDepth, isConnected };
 }
