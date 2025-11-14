@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [6.0.1] - 2025-11-14
+
+## UI Enhancements
+
+### Changes
+- Refined color theme with warmer tones for better visual hierarchy
+- New observation card blue/teal theme with distinct light/dark mode values
+- Added 8 SVG icon assets for summary card sections (thick and thin variants)
+- Enhanced summary card component with icon support for completed, investigated, learned, and next-steps sections
+- Updated build system to handle icon asset copying
+
+### Visual Improvements
+- Unified color palette refinements across all UI components
+- Improved card type differentiation: gold/amber for summaries, purple for prompts, blue/teal for observations
+- Better visual consistency in viewer UI
+
+Full changelog: https://github.com/thedotmack/claude-mem/compare/v6.0.0...v6.0.1
+
 ## [6.0.0] - 2025-11-13
 
 ## What's New
