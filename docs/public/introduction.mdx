@@ -71,22 +71,25 @@ See [Architecture Overview](architecture/overview) for details.
 - **PM2**: Process manager (bundled - no global install required)
 - **SQLite 3**: For persistent storage (bundled)
 
-## What's New in v5.5.1
+## What's New in v6.0.0
 
-**Latest Updates (v5.5.0):**
-- mem-search skill enhancement with 100% effectiveness rate
-- Improved scope differentiation from native conversation memory
-- Enhanced concrete triggers (85% vs 44% previously)
-- Comprehensive documentation reorganization (17 total files)
+**🚀 Major Session Management & Transcript Processing Improvements:**
 
-**Recent Updates (v5.4.0):**
-- Skill-based search architecture with ~2,250 token savings per session
-- Progressive disclosure with HTTP API endpoints
-- Replaced MCP tools with mem-search skill for better efficiency
+- **Enhanced Session Initialization**: Accept userPrompt and promptNumber for better context tracking
+- **Live UserPrompt Updates**: Multi-turn conversation support with real-time prompt tracking
+- **Improved SessionManager**: Better context handling and observation processing
+- **Comprehensive Transcript Processing**: New scripts and utilities for analyzing Claude Code transcripts
+- **Rich Context Extraction**: Advanced parsing utilities for extracting meaningful context from sessions
+- **Refactored Architecture**: Improved hooks and SDKAgent for more reliable observation handling
+- **Silent Debug Logging**: Better debugging capabilities without cluttering output
+- **Enhanced Error Handling**: More robust error recovery and debugging tools
 
-**Previous Updates (v5.1.2):**
-- Theme toggle for light, dark, and system preferences in viewer UI
-- Improved visual design with theme-aware components
+**Breaking Changes**: Significant architectural changes in session management and observation handling. Existing sessions continue to work, but internal APIs have evolved.
+
+**Previous Highlights:**
+- **v5.5.0**: mem-search skill enhancement with 100% effectiveness rate
+- **v5.4.0**: Skill-based search architecture (~2,250 tokens saved per session)
+- **v5.1.2**: Theme toggle for light/dark mode in viewer UI
 
 ## Next Steps
 

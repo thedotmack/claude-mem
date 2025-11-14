@@ -17,7 +17,7 @@
     <img src="https://img.shields.io/badge/License-AGPL%203.0-blue.svg" alt="License">
   </a>
   <a href="package.json">
-    <img src="https://img.shields.io/badge/version-5.5.1-green.svg" alt="Version">
+    <img src="https://img.shields.io/badge/version-6.0.0-green.svg" alt="Version">
   </a>
   <a href="package.json">
     <img src="https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg" alt="Node">
@@ -190,46 +190,29 @@ See [Search Tools Guide](docs/usage/search-tools.mdx) for detailed examples.
 
 ---
 
-## What's New in v5.5.1
+## What's New in v6.0.0
 
-**🎯 mem-search Skill Enhancement (v5.5.0):**
+**🚀 Major Session Management & Transcript Processing Improvements:**
 
-- **Improved Effectiveness**: Skill success rate increased from 67% to 100%
-- **Better Scope Differentiation**: Clear distinction from native conversation memory
-- **Enhanced Triggers**: Concrete triggers increased from 44% to 85%
-- **System-Specific Naming**: "mem-search" replaces generic "search" for clarity
-- **Comprehensive Documentation**: 17 total files with detailed operation guides
+- **Enhanced Session Initialization**: Accept userPrompt and promptNumber for better context tracking
+- **Live UserPrompt Updates**: Multi-turn conversation support with real-time prompt tracking
+- **Improved SessionManager**: Better context handling and observation processing
+- **Comprehensive Transcript Processing**: New scripts and utilities for analyzing Claude Code transcripts
+- **Rich Context Extraction**: Advanced parsing utilities for extracting meaningful context from sessions
+- **Refactored Architecture**: Improved hooks and SDKAgent for more reliable observation handling
+- **Silent Debug Logging**: Better debugging capabilities without cluttering output
+- **Enhanced Error Handling**: More robust error recovery and debugging tools
 
-**🔍 Skill-Based Search Architecture (v5.4.0):**
+**Breaking Changes**: Significant architectural changes in session management and observation handling. Existing sessions continue to work, but internal APIs have evolved.
 
-- **Token Savings**: ~2,250 tokens per session start
-- **Progressive Disclosure**: Skill frontmatter (~250 tokens) vs MCP tool definitions (~2,500 tokens)
-- **Natural Language**: Just ask about past work - Claude auto-invokes the mem-search skill
-- **10 HTTP API Endpoints**: Fast, efficient search operations
-- **No User Action Required**: Migration is transparent
+**Previous Highlights:**
 
-**🎨 Theme Toggle (v5.1.2):**
-
-- Light/dark mode support in viewer UI
-- System preference detection
-- Persistent theme settings across sessions
-
-**🖥️ Web-Based Viewer UI (v5.1.0):**
-
-- Real-time memory stream visualization at http://localhost:37777
-- Server-Sent Events (SSE) for instant updates
-- Infinite scroll pagination with project filtering
-
-**⚡ Smart Install Caching (v5.0.3):**
-
-- Eliminated redundant npm installs (2-5s → 10ms)
-- Caches version state, only installs when needed
-
-**🔍 Hybrid Search Architecture (v5.0.0):**
-
-- Chroma vector database for semantic search
-- Combined with FTS5 keyword search
-- 90-day recency filtering
+- **v5.5.0**: mem-search skill enhancement with 100% effectiveness rate
+- **v5.4.0**: Skill-based search architecture (~2,250 tokens saved per session)
+- **v5.1.2**: Theme toggle for light/dark mode in viewer UI
+- **v5.1.0**: Web-based viewer UI with real-time updates
+- **v5.0.3**: Smart install caching (2-5s → 10ms)
+- **v5.0.0**: Hybrid search with Chroma vector database
 
 See [CHANGELOG.md](CHANGELOG.md) for complete version history.
 
