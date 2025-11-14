@@ -57,10 +57,22 @@ async function buildViewer() {
       }
     }
 
+    // Copy icon SVG files
+    const srcUiDir = path.join(rootDir, 'src/ui');
+    const outputUiDir = path.join(rootDir, 'plugin/ui');
+    const iconFiles = fs.readdirSync(srcUiDir).filter(file => file.startsWith('icon-thick-') && file.endsWith('.svg'));
+    for (const file of iconFiles) {
+      fs.copyFileSync(
+        path.join(srcUiDir, file),
+        path.join(outputUiDir, file)
+      );
+    }
+
     console.log('✓ React viewer built successfully');
     console.log('  - plugin/ui/viewer-bundle.js');
     console.log('  - plugin/ui/viewer.html (from viewer-template.html)');
     console.log('  - plugin/ui/assets/fonts/* (font files)');
+    console.log(`  - plugin/ui/icon-thick-*.svg (${iconFiles.length} icon files)`);
   } catch (error) {
     console.error('Failed to build viewer:', error);
     process.exit(1);
