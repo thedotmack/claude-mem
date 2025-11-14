@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [6.0.2] - 2025-11-14
+
+## Changes
+
+- Updated user message hook with Claude-Mem community discussion link for better user engagement and support
+
+## What's Changed
+- Enhanced startup context messaging with community connection information
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v6.0.1...v6.0.2
+
 ## [6.0.1] - 2025-11-14
 
 ## UI Enhancements
