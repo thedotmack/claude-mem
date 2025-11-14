@@ -52,7 +52,8 @@ try {
     "\n\n📝 Claude-Mem Context Loaded\n" +
     "   ℹ️  Note: This appears as stderr but is informational only\n\n" +
     output +
-    `\n\n📺 Watch live in browser http://localhost:${port}/ (New! v5.1)\n`
+    "\n\n💬 New! Connect with Claude-Mem\nhttps://github.com/thedotmack/claude-mem/discussions/110\n" +
+    `\n📺 Watch live in browser http://localhost:${port}/\n`
   );
 
 } catch (error) {
