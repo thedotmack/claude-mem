@@ -264,6 +264,7 @@ export class SessionSearch {
     const sql = `
       SELECT
         o.*,
+        o.discovery_tokens,
         observations_fts.rank as rank
       FROM observations o
       JOIN observations_fts ON o.id = observations_fts.rowid
@@ -326,6 +327,7 @@ export class SessionSearch {
     const sql = `
       SELECT
         s.*,
+        s.discovery_tokens,
         session_summaries_fts.rank as rank
       FROM session_summaries s
       JOIN session_summaries_fts ON s.id = session_summaries_fts.rowid
@@ -368,7 +370,7 @@ export class SessionSearch {
     const orderClause = this.buildOrderClause(orderBy, false);
 
     const sql = `
-      SELECT o.*
+      SELECT o.*, o.discovery_tokens
       FROM observations o
       WHERE ${filterClause}
       ${orderClause}
@@ -396,7 +398,7 @@ export class SessionSearch {
     const orderClause = this.buildOrderClause(orderBy, false);
 
     const observationsSql = `
-      SELECT o.*
+      SELECT o.*, o.discovery_tokens
       FROM observations o
       WHERE ${filterClause}
       ${orderClause}
@@ -440,7 +442,7 @@ export class SessionSearch {
     sessionParams.push(`%${filePath}%`, `%${filePath}%`);
 
     const sessionsSql = `
-      SELECT s.*
+      SELECT s.*, s.discovery_tokens
       FROM session_summaries s
       WHERE ${baseConditions.join(' AND ')}
       ORDER BY s.created_at_epoch DESC
@@ -470,7 +472,7 @@ export class SessionSearch {
     const orderClause = this.buildOrderClause(orderBy, false);
 
     const sql = `
-      SELECT o.*
+      SELECT o.*, o.discovery_tokens
       FROM observations o
       WHERE ${filterClause}
       ${orderClause}

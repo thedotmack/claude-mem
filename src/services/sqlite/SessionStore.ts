@@ -28,6 +28,7 @@ export class SessionStore {
     this.addObservationHierarchicalFields();
     this.makeObservationsTextNullable();
     this.createUserPromptsTable();
+    this.ensureDiscoveryTokensColumn();
   }
 
   /**
@@ -489,6 +490,40 @@ export class SessionStore {
       }
     } catch (error: any) {
       console.error('[SessionStore] Migration error (create user_prompts table):', error.message);
+    }
+  }
+
+  /**
+   * Ensure discovery_tokens column exists (migration 11)
+   */
+  private ensureDiscoveryTokensColumn(): void {
+    try {
+      // Check if migration already applied
+      const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(11) as {version: number} | undefined;
+      if (applied) return;
+
+      // Check if discovery_tokens column exists in observations table
+      const observationsInfo = this.db.pragma('table_info(observations)');
+      const obsHasDiscoveryTokens = (observationsInfo as any[]).some((col: any) => col.name === 'discovery_tokens');
+
+      if (!obsHasDiscoveryTokens) {
+        this.db.exec('ALTER TABLE observations ADD COLUMN discovery_tokens INTEGER DEFAULT 0');
+        console.error('[SessionStore] Added discovery_tokens column to observations table');
+      }
+
+      // Check if discovery_tokens column exists in session_summaries table
+      const summariesInfo = this.db.pragma('table_info(session_summaries)');
+      const sumHasDiscoveryTokens = (summariesInfo as any[]).some((col: any) => col.name === 'discovery_tokens');
+
+      if (!sumHasDiscoveryTokens) {
+        this.db.exec('ALTER TABLE session_summaries ADD COLUMN discovery_tokens INTEGER DEFAULT 0');
+        console.error('[SessionStore] Added discovery_tokens column to session_summaries table');
+      }
+
+      // Record migration
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(11, new Date().toISOString());
+    } catch (error: any) {
+      console.error('[SessionStore] Discovery tokens migration error:', error.message);
     }
   }
 
@@ -1074,7 +1109,8 @@ export class SessionStore {
       files_read: string[];
       files_modified: string[];
     },
-    promptNumber?: number
+    promptNumber?: number,
+    discoveryTokens: number = 0
   ): { id: number; createdAtEpoch: number } {
     const now = new Date();
     const nowEpoch = now.getTime();
@@ -1105,8 +1141,8 @@ export class SessionStore {
     const stmt = this.db.prepare(`
       INSERT INTO observations
       (sdk_session_id, project, type, title, subtitle, facts, narrative, concepts,
-       files_read, files_modified, prompt_number, created_at, created_at_epoch)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       files_read, files_modified, prompt_number, discovery_tokens, created_at, created_at_epoch)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
@@ -1121,6 +1157,7 @@ export class SessionStore {
       JSON.stringify(observation.files_read),
       JSON.stringify(observation.files_modified),
       promptNumber || null,
+      discoveryTokens,
       now.toISOString(),
       nowEpoch
     );
@@ -1146,7 +1183,8 @@ export class SessionStore {
       next_steps: string;
       notes: string | null;
     },
-    promptNumber?: number
+    promptNumber?: number,
+    discoveryTokens: number = 0
   ): { id: number; createdAtEpoch: number } {
     const now = new Date();
     const nowEpoch = now.getTime();
@@ -1177,8 +1215,8 @@ export class SessionStore {
     const stmt = this.db.prepare(`
       INSERT INTO session_summaries
       (sdk_session_id, project, request, investigated, learned, completed,
-       next_steps, notes, prompt_number, created_at, created_at_epoch)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
@@ -1191,6 +1229,7 @@ export class SessionStore {
       summary.next_steps,
       summary.notes,
       promptNumber || null,
+      discoveryTokens,
       now.toISOString(),
       nowEpoch
     );

@@ -71,6 +71,7 @@ interface Observation {
   concepts: string | null;
   files_read: string | null;
   files_modified: string | null;
+  discovery_tokens: number | null;
   created_at: string;
   created_at_epoch: number;
 }
@@ -187,7 +188,7 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
   const allObservations = db.db.prepare(`
     SELECT
       id, sdk_session_id, type, title, subtitle, narrative,
-      facts, concepts, files_read, files_modified,
+      facts, concepts, files_read, files_modified, discovery_tokens,
       created_at, created_at_epoch
     FROM observations
     WHERE project = ?
@@ -258,6 +259,41 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
       output.push(`- Use MCP search tools to fetch full observation details on-demand (Layer 2)`);
       output.push(`- Prefer searching observations over re-reading code for past decisions and learnings`);
       output.push(`- Critical types (🔴 bugfix, 🧠 decision) often worth fetching immediately`);
+      output.push('');
+    }
+
+    // Section 1: Aggregate ROI Metrics
+    const totalObservations = observations.length;
+    const totalReadTokens = observations.reduce((sum, obs) => {
+      // Estimate read tokens from observation size
+      const obsSize = (obs.title?.length || 0) +
+                      (obs.subtitle?.length || 0) +
+                      (obs.narrative?.length || 0) +
+                      JSON.stringify(obs.facts || []).length;
+      return sum + Math.ceil(obsSize / CHARS_PER_TOKEN_ESTIMATE);
+    }, 0);
+    const totalDiscoveryTokens = observations.reduce((sum, obs) => sum + (obs.discovery_tokens || 0), 0);
+    const savings = totalDiscoveryTokens - totalReadTokens;
+    const savingsPercent = totalDiscoveryTokens > 0
+      ? Math.round((savings / totalDiscoveryTokens) * 100)
+      : 0;
+
+    // Display Context Economics section
+    if (useColors) {
+      output.push(`${colors.bright}${colors.cyan}📊 Context Economics${colors.reset}`);
+      output.push(`${colors.dim}  Loading: ${totalObservations} observations (${totalReadTokens.toLocaleString()} tokens to read)${colors.reset}`);
+      output.push(`${colors.dim}  Discovery investment: ${totalDiscoveryTokens.toLocaleString()} tokens spent by previous sessions${colors.reset}`);
+      if (totalDiscoveryTokens > 0) {
+        output.push(`${colors.green}  Your savings: ${savings.toLocaleString()} tokens (${savingsPercent}% reduction from reuse)${colors.reset}`);
+      }
+      output.push('');
+    } else {
+      output.push(`📊 **Context Economics**:`);
+      output.push(`- Loading: ${totalObservations} observations (${totalReadTokens.toLocaleString()} tokens to read)`);
+      output.push(`- Discovery investment: ${totalDiscoveryTokens.toLocaleString()} tokens spent by previous sessions`);
+      if (totalDiscoveryTokens > 0) {
+        output.push(`- Your savings: ${savings.toLocaleString()} tokens (${savingsPercent}% reduction from reuse)`);
+      }
       output.push('');
     }
 
@@ -380,8 +416,8 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
 
             // Table header (markdown only)
             if (!useColors) {
-              output.push(`| ID | Time | T | Title | Tokens |`);
-              output.push(`|----|------|---|-------|--------|`);
+              output.push(`| ID | Time | T | Title | Read | Discovery |`);
+              output.push(`|----|------|---|-------|------|-----------|`);
             }
 
             currentFile = file;
@@ -418,7 +454,17 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
 
           const time = formatTime(obs.created_at);
           const title = obs.title || 'Untitled';
-          const tokens = estimateTokens(obs.narrative);
+
+          // Section 2: Calculate read tokens (estimate from observation size)
+          const obsSize = (obs.title?.length || 0) +
+                          (obs.subtitle?.length || 0) +
+                          (obs.narrative?.length || 0) +
+                          JSON.stringify(obs.facts || []).length;
+          const readTokens = Math.ceil(obsSize / CHARS_PER_TOKEN_ESTIMATE);
+
+          // Get discovery tokens (handle old observations without this field)
+          const discoveryTokens = obs.discovery_tokens || 0;
+          const discoveryDisplay = discoveryTokens > 0 ? `🔍 ${discoveryTokens.toLocaleString()}` : '-';
 
           const showTime = time !== lastTime;
           const timeDisplay = showTime ? time : '';
@@ -426,10 +472,11 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
 
           if (useColors) {
             const timePart = showTime ? `${colors.dim}${time}${colors.reset}` : ' '.repeat(time.length);
-            const tokensPart = tokens > 0 ? `${colors.dim}(~${tokens}t)${colors.reset}` : '';
-            output.push(`  ${colors.dim}#${obs.id}${colors.reset}  ${timePart}  ${icon}  ${title} ${tokensPart}`);
+            const readPart = readTokens > 0 ? `${colors.dim}(~${readTokens}t)${colors.reset}` : '';
+            const discoveryPart = discoveryTokens > 0 ? `${colors.dim}(🔍 ${discoveryTokens.toLocaleString()}t)${colors.reset}` : '';
+            output.push(`  ${colors.dim}#${obs.id}${colors.reset}  ${timePart}  ${icon}  ${title} ${readPart} ${discoveryPart}`);
           } else {
-            output.push(`| #${obs.id} | ${timeDisplay || '″'} | ${icon} | ${title} | ~${tokens} |`);
+            output.push(`| #${obs.id} | ${timeDisplay || '″'} | ${icon} | ${title} | ~${readTokens} | ${discoveryDisplay} |`);
           }
         }
       }
@@ -461,6 +508,26 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
       output.push(`${colors.dim}Use claude-mem MCP search to access records with the given ID${colors.reset}`);
     } else {
       output.push(`*Use claude-mem MCP search to access records with the given ID*`);
+    }
+
+    // Section 3: Footer explanation of ROI metrics
+    output.push('');
+    if (useColors) {
+      output.push(`${colors.bright}💡 Column Key${colors.reset}`);
+      output.push(`${colors.dim}  Read: Tokens to read this observation (cost to learn it now)${colors.reset}`);
+      output.push(`${colors.dim}  Discovery: Tokens Previous Claude spent exploring/researching this topic${colors.reset}`);
+      output.push('');
+      if (totalDiscoveryTokens > 0 && savingsPercent > 0) {
+        output.push(`${colors.green}📈 ROI: Reading these learnings instead of re-discovering saves ${savingsPercent}% tokens${colors.reset}`);
+      }
+    } else {
+      output.push(`💡 **Column Key**:`);
+      output.push(`- **Read**: Tokens to read this observation (cost to learn it now)`);
+      output.push(`- **Discovery**: Tokens Previous Claude spent exploring/researching this topic`);
+      output.push('');
+      if (totalDiscoveryTokens > 0 && savingsPercent > 0) {
+        output.push(`**📈 ROI**: Reading these learnings instead of re-discovering saves ${savingsPercent}% tokens`);
+      }
     }
   }
 
