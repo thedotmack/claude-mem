@@ -85,6 +85,28 @@ export class SDKAgent {
 
           const responseSize = textContent.length;
 
+          // Extract and track token usage
+          const usage = message.message.usage;
+          if (usage) {
+            session.cumulativeInputTokens += usage.input_tokens || 0;
+            session.cumulativeOutputTokens += usage.output_tokens || 0;
+
+            // Cache creation counts as discovery, cache read doesn't
+            if (usage.cache_creation_input_tokens) {
+              session.cumulativeInputTokens += usage.cache_creation_input_tokens;
+            }
+
+            logger.debug('SDK', 'Token usage captured', {
+              sessionId: session.sessionDbId,
+              inputTokens: usage.input_tokens,
+              outputTokens: usage.output_tokens,
+              cacheCreation: usage.cache_creation_input_tokens || 0,
+              cacheRead: usage.cache_read_input_tokens || 0,
+              cumulativeInput: session.cumulativeInputTokens,
+              cumulativeOutput: session.cumulativeOutputTokens
+            });
+          }
+
           // Only log non-empty responses (filter out noise)
           if (responseSize > 0) {
             const truncatedResponse = responseSize > 100
@@ -229,7 +251,8 @@ export class SDKAgent {
         session.claudeSessionId,
         session.project,
         obs,
-        session.lastPromptNumber
+        session.lastPromptNumber,
+        session.cumulativeInputTokens + session.cumulativeOutputTokens
       );
 
       // Log observation details
@@ -253,7 +276,8 @@ export class SDKAgent {
         session.project,
         obs,
         session.lastPromptNumber,
-        createdAtEpoch
+        createdAtEpoch,
+        session.cumulativeInputTokens + session.cumulativeOutputTokens
       ).then(() => {
         const chromaDuration = Date.now() - chromaStart;
         logger.debug('CHROMA', 'Observation synced', {
@@ -305,7 +329,8 @@ export class SDKAgent {
         session.claudeSessionId,
         session.project,
         summary,
-        session.lastPromptNumber
+        session.lastPromptNumber,
+        session.cumulativeInputTokens + session.cumulativeOutputTokens
       );
 
       // Log summary details
@@ -326,7 +351,8 @@ export class SDKAgent {
         session.project,
         summary,
         session.lastPromptNumber,
-        createdAtEpoch
+        createdAtEpoch,
+        session.cumulativeInputTokens + session.cumulativeOutputTokens
       ).then(() => {
         const chromaDuration = Date.now() - chromaStart;
         logger.debug('CHROMA', 'Summary synced', {

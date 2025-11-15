@@ -19,6 +19,8 @@ export interface ActiveSession {
   generatorPromise: Promise<void> | null;
   lastPromptNumber: number;
   startTime: number;
+  cumulativeInputTokens: number;   // Track input tokens for discovery cost
+  cumulativeOutputTokens: number;  // Track output tokens for discovery cost
 }
 
 export interface PendingMessage {

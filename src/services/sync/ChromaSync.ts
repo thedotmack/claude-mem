@@ -36,6 +36,7 @@ interface StoredObservation {
   files_read: string | null; // JSON
   files_modified: string | null; // JSON
   prompt_number: number;
+  discovery_tokens: number; // ROI metrics
   created_at: string;
   created_at_epoch: number;
 }
@@ -51,6 +52,7 @@ interface StoredSummary {
   next_steps: string | null;
   notes: string | null;
   prompt_number: number;
+  discovery_tokens: number; // ROI metrics
   created_at: string;
   created_at_epoch: number;
 }
@@ -345,7 +347,8 @@ export class ChromaSync {
     project: string,
     obs: ParsedObservation,
     promptNumber: number,
-    createdAtEpoch: number
+    createdAtEpoch: number,
+    discoveryTokens: number = 0
   ): Promise<void> {
     // Convert ParsedObservation to StoredObservation format
     const stored: StoredObservation = {
@@ -362,6 +365,7 @@ export class ChromaSync {
       files_read: JSON.stringify(obs.files_read),
       files_modified: JSON.stringify(obs.files_modified),
       prompt_number: promptNumber,
+      discovery_tokens: discoveryTokens,
       created_at: new Date(createdAtEpoch * 1000).toISOString(),
       created_at_epoch: createdAtEpoch
     };
@@ -387,7 +391,8 @@ export class ChromaSync {
     project: string,
     summary: ParsedSummary,
     promptNumber: number,
-    createdAtEpoch: number
+    createdAtEpoch: number,
+    discoveryTokens: number = 0
   ): Promise<void> {
     // Convert ParsedSummary to StoredSummary format
     const stored: StoredSummary = {
@@ -401,6 +406,7 @@ export class ChromaSync {
       next_steps: summary.next_steps,
       notes: summary.notes,
       prompt_number: promptNumber,
+      discovery_tokens: discoveryTokens,
       created_at: new Date(createdAtEpoch * 1000).toISOString(),
       created_at_epoch: createdAtEpoch
     };

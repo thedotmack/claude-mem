@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import{execSync as u}from"child_process";import{join as r}from"path";import{homedir as s}from"os";import{existsSync as p}from"fs";import i from"path";import{homedir as a}from"os";import{existsSync as c,readFileSync as l}from"fs";function n(){try{let e=i.join(a(),".claude-mem","settings.json");if(c(e)){let o=JSON.parse(l(e,"utf-8")),t=parseInt(o.env?.CLAUDE_MEM_WORKER_PORT,10);if(!isNaN(t))return t}}catch{}return parseInt(process.env.CLAUDE_MEM_WORKER_PORT||"37777",10)}var m=r(s(),".claude","plugins","marketplaces","thedotmack"),d=r(m,"node_modules");p(d)||(console.error(`
+import{execSync as u}from"child_process";import{join as r}from"path";import{homedir as s}from"os";import{existsSync as l}from"fs";import i from"path";import{homedir as a}from"os";import{existsSync as c,readFileSync as p}from"fs";function n(){try{let e=i.join(a(),".claude-mem","settings.json");if(c(e)){let t=JSON.parse(p(e,"utf-8")),o=parseInt(t.env?.CLAUDE_MEM_WORKER_PORT,10);if(!isNaN(o))return o}}catch{}return parseInt(process.env.CLAUDE_MEM_WORKER_PORT||"37777",10)}var m=r(s(),".claude","plugins","marketplaces","thedotmack"),d=r(m,"node_modules");l(d)||(console.error(`
 ---
 \u{1F389}  Note: This appears under Plugin Hook Error, but it's not an error. That's the only option for 
    user messages in Claude Code UI until a better method is provided.
@@ -17,15 +17,15 @@ Dependencies have been installed in the background. This only happens once.
 Thank you for installing Claude-Mem!
 
 This message was not added to your startup context, so you can continue working as normal.
-`),process.exit(3));try{let e=r(s(),".claude","plugins","marketplaces","thedotmack","plugin","scripts","context-hook.js"),o=u(`node "${e}" --colors`,{encoding:"utf8"}),t=n();console.error(`
+`),process.exit(3));try{let e=r(s(),".claude","plugins","marketplaces","thedotmack","plugin","scripts","context-hook.js"),t=u(`node "${e}" --colors`,{encoding:"utf8"}),o=n();console.error(`
 
 \u{1F4DD} Claude-Mem Context Loaded
    \u2139\uFE0F  Note: This appears as stderr but is informational only
 
-`+o+`
+`+t+`
 
-\u{1F4AC} New! Connect with Claude-Mem
+\u{1F4AC} Feedback & Support
 https://github.com/thedotmack/claude-mem/discussions/110
 
-\u{1F4FA} Watch live in browser http://localhost:${t}/
+\u{1F4FA} Watch live in browser http://localhost:${o}/
 `)}catch(e){console.error(`\u274C Failed to load context display: ${e}`)}process.exit(3);

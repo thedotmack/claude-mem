@@ -472,6 +472,30 @@ export const migration006: Migration = {
 };
 
 /**
+ * Migration 007 - Add discovery_tokens column for ROI metrics
+ * Tracks token cost of discovering/creating each observation and summary
+ */
+export const migration007: Migration = {
+  version: 7,
+  up: (db: Database) => {
+    // Add discovery_tokens to observations table
+    db.run(`ALTER TABLE observations ADD COLUMN discovery_tokens INTEGER DEFAULT 0`);
+
+    // Add discovery_tokens to session_summaries table
+    db.run(`ALTER TABLE session_summaries ADD COLUMN discovery_tokens INTEGER DEFAULT 0`);
+
+    console.log('✅ Added discovery_tokens columns for ROI tracking');
+  },
+
+  down: (db: Database) => {
+    // Note: SQLite doesn't support DROP COLUMN in all versions
+    // In production, would need to recreate tables without these columns
+    console.log('⚠️  Warning: SQLite ALTER TABLE DROP COLUMN not fully supported');
+    console.log('⚠️  To rollback, manually recreate the observations and session_summaries tables');
+  }
+};
+
+/**
  * All migrations in order
  */
 export const migrations: Migration[] = [
@@ -480,5 +504,6 @@ export const migrations: Migration[] = [
   migration003,
   migration004,
   migration005,
-  migration006
+  migration006,
+  migration007
 ];
