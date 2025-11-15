@@ -1,4 +1,4 @@
-# Search Observations (Full-Text)
+# Search Observations (Semantic + Full-Text Hybrid)
 
 Search all observations using natural language queries.
 
@@ -17,7 +17,7 @@ curl -s "http://localhost:37777/api/search/observations?query=authentication&for
 
 ## Parameters
 
-- **query** (required): Search terms (e.g., "authentication", "bug fix", "database migration")
+- **query** (required): Natural language search query - uses semantic search (ChromaDB) for ranking with SQLite FTS5 fallback (e.g., "authentication", "bug fix", "database migration")
 - **format**: "index" (summary) or "full" (complete details). Default: "full"
 - **limit**: Number of results (default: 20, max: 100)
 - **project**: Filter by project name (optional)

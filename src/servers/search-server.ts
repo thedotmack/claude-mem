@@ -346,9 +346,9 @@ const filterSchema = z.object({
 const tools = [
   {
     name: 'search_observations',
-    description: 'Search observations using full-text search across titles, narratives, facts, and concepts. IMPORTANT: Always use index format first (default) to get an overview with minimal token usage, then use format: "full" only for specific items of interest.',
+    description: 'Search observations using hybrid semantic + full-text search (ChromaDB primary, SQLite FTS5 fallback). IMPORTANT: Always use index format first (default) to get an overview with minimal token usage, then use format: "full" only for specific items of interest.',
     inputSchema: z.object({
-      query: z.string().describe('Search query for FTS5 full-text search'),
+      query: z.string().describe('Natural language search query (semantic ranking via ChromaDB, FTS5 fallback)'),
       format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default, RECOMMENDED for initial search), "full" for complete details (use only after reviewing index results)'),
       ...filterSchema.shape
     }),
@@ -434,9 +434,9 @@ const tools = [
   },
   {
     name: 'search_sessions',
-    description: 'Search session summaries using full-text search across requests, completions, learnings, and notes. IMPORTANT: Always use index format first (default) to get an overview with minimal token usage, then use format: "full" only for specific items of interest.',
+    description: 'Search session summaries using hybrid semantic + full-text search (ChromaDB primary, SQLite FTS5 fallback). IMPORTANT: Always use index format first (default) to get an overview with minimal token usage, then use format: "full" only for specific items of interest.',
     inputSchema: z.object({
-      query: z.string().describe('Search query for FTS5 full-text search'),
+      query: z.string().describe('Natural language search query (semantic ranking via ChromaDB, FTS5 fallback)'),
       format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default, RECOMMENDED for initial search), "full" for complete details (use only after reviewing index results)'),
       project: z.string().optional().describe('Filter by project name'),
       dateRange: z.object({
@@ -1000,9 +1000,9 @@ const tools = [
   },
   {
     name: 'search_user_prompts',
-    description: 'Search raw user prompts with full-text search. Use this to find what the user actually said/requested across all sessions. IMPORTANT: Always use index format first (default) to get an overview with minimal token usage, then use format: "full" only for specific items of interest.',
+    description: 'Search raw user prompts using hybrid semantic + full-text search (ChromaDB primary, SQLite FTS5 fallback). Use this to find what the user actually said/requested across all sessions. IMPORTANT: Always use index format first (default) to get an overview with minimal token usage, then use format: "full" only for specific items of interest.',
     inputSchema: z.object({
-      query: z.string().describe('Search query for FTS5 full-text search'),
+      query: z.string().describe('Natural language search query (semantic ranking via ChromaDB, FTS5 fallback)'),
       format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for truncated prompts/dates (default, RECOMMENDED for initial search), "full" for complete prompt text (use only after reviewing index results)'),
       project: z.string().optional().describe('Filter by project name'),
       dateRange: z.object({

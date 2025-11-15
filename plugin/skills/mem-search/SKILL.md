@@ -169,7 +169,7 @@ For guidelines on presenting search results to users, see [operations/formatting
 
 - **Port:** Default 37777 (configurable via `CLAUDE_MEM_WORKER_PORT`)
 - **Response format:** Always JSON
-- **Search engine:** FTS5 full-text search + structured filters
+- **Search engine:** ChromaDB semantic search (primary ranking) + SQLite FTS5 (fallback) + 90-day recency filter + temporal ordering (hybrid architecture)
 - **All operations:** HTTP GET with query parameters
 - **Worker:** PM2-managed background process
 
