@@ -494,12 +494,12 @@ export class SessionStore {
   }
 
   /**
-   * Ensure discovery_tokens column exists (migration 11)
+   * Ensure discovery_tokens column exists (migration 7)
    */
   private ensureDiscoveryTokensColumn(): void {
     try {
       // Check if migration already applied
-      const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(11) as {version: number} | undefined;
+      const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(7) as {version: number} | undefined;
       if (applied) return;
 
       // Check if discovery_tokens column exists in observations table
@@ -521,7 +521,7 @@ export class SessionStore {
       }
 
       // Record migration
-      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(11, new Date().toISOString());
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(7, new Date().toISOString());
     } catch (error: any) {
       console.error('[SessionStore] Discovery tokens migration error:', error.message);
     }

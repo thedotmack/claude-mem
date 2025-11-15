@@ -85,6 +85,9 @@ export class SDKAgent {
 
           const responseSize = textContent.length;
 
+          // Capture token state BEFORE updating (for delta calculation)
+          const tokensBeforeResponse = session.cumulativeInputTokens + session.cumulativeOutputTokens;
+
           // Extract and track token usage
           const usage = message.message.usage;
           if (usage) {
@@ -107,6 +110,9 @@ export class SDKAgent {
             });
           }
 
+          // Calculate discovery tokens (delta for this response only)
+          const discoveryTokens = (session.cumulativeInputTokens + session.cumulativeOutputTokens) - tokensBeforeResponse;
+
           // Only log non-empty responses (filter out noise)
           if (responseSize > 0) {
             const truncatedResponse = responseSize > 100
@@ -117,8 +123,8 @@ export class SDKAgent {
               promptNumber: session.lastPromptNumber
             }, truncatedResponse);
 
-            // Parse and process response
-            await this.processSDKResponse(session, textContent, worker);
+            // Parse and process response with discovery token delta
+            await this.processSDKResponse(session, textContent, worker, discoveryTokens);
           }
         }
 
@@ -240,8 +246,9 @@ export class SDKAgent {
 
   /**
    * Process SDK response text (parse XML, save to database, sync to Chroma)
+   * @param discoveryTokens - Token cost for discovering this response (delta, not cumulative)
    */
-  private async processSDKResponse(session: ActiveSession, text: string, worker?: any): Promise<void> {
+  private async processSDKResponse(session: ActiveSession, text: string, worker: any | undefined, discoveryTokens: number): Promise<void> {
     // Parse observations
     const observations = parseObservations(text, session.claudeSessionId);
 
@@ -252,7 +259,7 @@ export class SDKAgent {
         session.project,
         obs,
         session.lastPromptNumber,
-        session.cumulativeInputTokens + session.cumulativeOutputTokens
+        discoveryTokens
       );
 
       // Log observation details
@@ -277,7 +284,7 @@ export class SDKAgent {
         obs,
         session.lastPromptNumber,
         createdAtEpoch,
-        session.cumulativeInputTokens + session.cumulativeOutputTokens
+        discoveryTokens
       ).then(() => {
         const chromaDuration = Date.now() - chromaStart;
         logger.debug('CHROMA', 'Observation synced', {
@@ -330,7 +337,7 @@ export class SDKAgent {
         session.project,
         summary,
         session.lastPromptNumber,
-        session.cumulativeInputTokens + session.cumulativeOutputTokens
+        discoveryTokens
       );
 
       // Log summary details
@@ -352,7 +359,7 @@ export class SDKAgent {
         summary,
         session.lastPromptNumber,
         createdAtEpoch,
-        session.cumulativeInputTokens + session.cumulativeOutputTokens
+        discoveryTokens
       ).then(() => {
         const chromaDuration = Date.now() - chromaStart;
         logger.debug('CHROMA', 'Summary synced', {
