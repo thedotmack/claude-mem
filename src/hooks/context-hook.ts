@@ -217,26 +217,40 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
     // Legend/Key
     if (useColors) {
       output.push(`${colors.dim}Legend: 🎯 session-request | 🔴 bugfix | 🟣 feature | 🔄 refactor | ✅ change | 🔵 discovery | ⚖️  decision${colors.reset}`);
-      output.push('');
     } else {
       output.push(`**Legend:** 🎯 session-request | 🔴 bugfix | 🟣 feature | 🔄 refactor | ✅ change | 🔵 discovery | ⚖️  decision`);
-      output.push('');
     }
+    output.push('');
 
-    // Progressive Disclosure Usage Instructions
+    // Column Key
     if (useColors) {
-      output.push(`${colors.dim}💡 Progressive Disclosure: This index shows WHAT exists (titles) and retrieval COST (token counts).${colors.reset}`);
-      output.push(`${colors.dim}   → Use MCP search tools to fetch full observation details on-demand (Layer 2)${colors.reset}`);
-      output.push(`${colors.dim}   → Prefer searching observations over re-reading code for past decisions and learnings${colors.reset}`);
-      output.push(`${colors.dim}   → Critical types (🔴 bugfix, 🧠 decision) often worth fetching immediately${colors.reset}`);
-      output.push('');
+      output.push(`${colors.bright}💡 Column Key${colors.reset}`);
+      output.push(`${colors.dim}  Read: Tokens to read this observation (cost to learn it now)${colors.reset}`);
+      output.push(`${colors.dim}  Work: Tokens spent on work that produced this record (🔍 research, 🛠️ building, ⚖️  deciding)${colors.reset}`);
     } else {
-      output.push(`💡 **Progressive Disclosure:** This index shows WHAT exists (titles) and retrieval COST (token counts).`);
-      output.push(`- Use MCP search tools to fetch full observation details on-demand (Layer 2)`);
-      output.push(`- Prefer searching observations over re-reading code for past decisions and learnings`);
-      output.push(`- Critical types (🔴 bugfix, 🧠 decision) often worth fetching immediately`);
-      output.push('');
+      output.push(`💡 **Column Key**:`);
+      output.push(`- **Read**: Tokens to read this observation (cost to learn it now)`);
+      output.push(`- **Work**: Tokens spent on work that produced this record (🔍 research, 🛠️ building, ⚖️  deciding)`);
     }
+    output.push('');
+
+    // Context Index Usage Instructions
+    if (useColors) {
+      output.push(`${colors.dim}💡 Context Index: This semantic index (titles, types, files, tokens) is usually sufficient to understand past work.${colors.reset}`);
+      output.push('');
+      output.push(`${colors.dim}When you need implementation details, rationale, or debugging context:${colors.reset}`);
+      output.push(`${colors.dim}  - Use the mem-search skill to fetch full observations on-demand${colors.reset}`);
+      output.push(`${colors.dim}  - Critical types (🔴 bugfix, ⚖️ decision) often need detailed fetching${colors.reset}`);
+      output.push(`${colors.dim}  - Trust this index over re-reading code for past decisions and learnings${colors.reset}`);
+    } else {
+      output.push(`💡 **Context Index:** This semantic index (titles, types, files, tokens) is usually sufficient to understand past work.`);
+      output.push('');
+      output.push(`When you need implementation details, rationale, or debugging context:`);
+      output.push(`- Use the mem-search skill to fetch full observations on-demand`);
+      output.push(`- Critical types (🔴 bugfix, ⚖️ decision) often need detailed fetching`);
+      output.push(`- Trust this index over re-reading code for past decisions and learnings`);
+    }
+    output.push('');
 
     // Section 1: Aggregate ROI Metrics
     const totalObservations = observations.length;
@@ -404,6 +418,31 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
           const time = formatTime(obs.created_at);
           const title = obs.title || 'Untitled';
 
+          // Map observation type to emoji icon
+          let icon = '•';
+          switch (obs.type) {
+            case 'bugfix':
+              icon = '🔴';
+              break;
+            case 'feature':
+              icon = '🟣';
+              break;
+            case 'refactor':
+              icon = '🔄';
+              break;
+            case 'change':
+              icon = '✅';
+              break;
+            case 'discovery':
+              icon = '🔵';
+              break;
+            case 'decision':
+              icon = '⚖️';
+              break;
+            default:
+              icon = '•';
+          }
+
           // Section 2: Calculate read tokens (estimate from observation size)
           const obsSize = (obs.title?.length || 0) +
                           (obs.subtitle?.length || 0) +
@@ -441,9 +480,9 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
             const timePart = showTime ? `${colors.dim}${time}${colors.reset}` : ' '.repeat(time.length);
             const readPart = readTokens > 0 ? `${colors.dim}(~${readTokens}t)${colors.reset}` : '';
             const discoveryPart = discoveryTokens > 0 ? `${colors.dim}(${workEmoji} ${discoveryTokens.toLocaleString()}t)${colors.reset}` : '';
-            output.push(`  ${colors.dim}#${obs.id}${colors.reset}  ${timePart}  ${title} ${readPart} ${discoveryPart}`);
+            output.push(`  ${colors.dim}#${obs.id}${colors.reset}  ${timePart}  ${icon}  ${title} ${readPart} ${discoveryPart}`);
           } else {
-            output.push(`| #${obs.id} | ${timeDisplay || '″'} | ${obs.type} | ${title} | ~${readTokens} | ${discoveryDisplay} |`);
+            output.push(`| #${obs.id} | ${timeDisplay || '″'} | ${icon} | ${title} | ~${readTokens} | ${discoveryDisplay} |`);
           }
         }
       }
@@ -470,30 +509,14 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
       output.push(...renderSummaryField('Next Steps', mostRecentSummary.next_steps, colors.magenta, useColors));
     }
 
-    // Footer with MCP search instructions
-    if (useColors) {
-      output.push(`${colors.dim}Use claude-mem MCP search to access records with the given ID${colors.reset}`);
-    } else {
-      output.push(`*Use claude-mem MCP search to access records with the given ID*`);
-    }
-
-    // Section 3: Footer explanation of ROI metrics
-    output.push('');
-    if (useColors) {
-      output.push(`${colors.bright}💡 Column Key${colors.reset}`);
-      output.push(`${colors.dim}  Read: Tokens to read this observation (cost to learn it now)${colors.reset}`);
-      output.push(`${colors.dim}  Work: Tokens spent on work that produced this record (🔍 research, 🛠️ building, ⚖️  deciding)${colors.reset}`);
+    // Footer with token savings message
+    if (totalDiscoveryTokens > 0 && savings > 0) {
+      const workTokensK = Math.round(totalDiscoveryTokens / 1000);
       output.push('');
-      if (totalDiscoveryTokens > 0 && savingsPercent > 0) {
-        output.push(`${colors.green}📈 Important: Look up records (if you need to) instead of doing the research again. Save up to ${savingsPercent}% in future token costs.${colors.reset}`);
-      }
-    } else {
-      output.push(`💡 **Column Key**:`);
-      output.push(`- **Read**: Tokens to read this observation (cost to learn it now)`);
-      output.push(`- **Work**: Tokens spent on work that produced this record (🔍 research, 🛠️ building, ⚖️  deciding)`);
-      output.push('');
-      if (totalDiscoveryTokens > 0 && savingsPercent > 0) {
-        output.push(`${colors.green}📈 Important: Look up records (if you need to) instead of doing the research again. Save up to ${savingsPercent}% in future token costs.${colors.reset}`);
+      if (useColors) {
+        output.push(`${colors.dim}💰 Access ${workTokensK}k tokens of past research & decisions for just ${totalReadTokens.toLocaleString()}t. Use claude-mem search to access memories by ID instead of re-reading files.${colors.reset}`);
+      } else {
+        output.push(`💰 Access ${workTokensK}k tokens of past research & decisions for just ${totalReadTokens.toLocaleString()}t. Use claude-mem search to access memories by ID instead of re-reading files.`);
       }
     }
   }
