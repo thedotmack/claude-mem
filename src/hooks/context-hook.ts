@@ -131,12 +131,6 @@ function formatDate(dateStr: string): string {
   });
 }
 
-// Helper: Estimate token count for text
-function estimateTokens(text: string | null): number {
-  if (!text) return 0;
-  return Math.ceil(text.length / CHARS_PER_TOKEN_ESTIMATE);
-}
-
 // Helper: Convert absolute paths to relative paths
 function toRelativePath(filePath: string, cwd: string): string {
   if (path.isAbsolute(filePath)) {
@@ -153,24 +147,6 @@ function renderSummaryField(label: string, value: string | null, color: string, 
     return [`${color}${label}:${colors.reset} ${value}`, ''];
   }
   return [`**${label}**: ${value}`, ''];
-}
-
-// Helper: Get all observations for given sessions
-function getObservations(db: SessionStore, sessionIds: string[]): Observation[] {
-  if (sessionIds.length === 0) return [];
-
-  const placeholders = sessionIds.map(() => '?').join(',');
-  const observations = db.db.prepare(`
-    SELECT
-      id, sdk_session_id, type, title, subtitle, narrative,
-      facts, concepts, files_read, files_modified,
-      created_at, created_at_epoch
-    FROM observations
-    WHERE sdk_session_id IN (${placeholders})
-    ORDER BY created_at_epoch DESC
-  `).all(...sessionIds) as Observation[];
-
-  return observations;
 }
 
 /**
@@ -240,10 +216,10 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
   if (timelineObs.length > 0) {
     // Legend/Key
     if (useColors) {
-      output.push(`${colors.dim}Legend: 🎯 session-request | 🔴 bugfix | 🟣 feature | 🔄 refactor | ✅ change | 🔵 discovery | 🧠 decision${colors.reset}`);
+      output.push(`${colors.dim}Legend: 🎯 session-request | 🔴 bugfix | 🟣 feature | 🔄 refactor | ✅ change | 🔵 discovery | ⚖️  decision${colors.reset}`);
       output.push('');
     } else {
-      output.push(`**Legend:** 🎯 session-request | 🔴 bugfix | 🟣 feature | 🔄 refactor | ✅ change | 🔵 discovery | 🧠 decision`);
+      output.push(`**Legend:** 🎯 session-request | 🔴 bugfix | 🟣 feature | 🔄 refactor | ✅ change | 🔵 discovery | ⚖️  decision`);
       output.push('');
     }
 
@@ -282,7 +258,7 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
     if (useColors) {
       output.push(`${colors.bright}${colors.cyan}📊 Context Economics${colors.reset}`);
       output.push(`${colors.dim}  Loading: ${totalObservations} observations (${totalReadTokens.toLocaleString()} tokens to read)${colors.reset}`);
-      output.push(`${colors.dim}  Discovery investment: ${totalDiscoveryTokens.toLocaleString()} tokens spent by previous sessions${colors.reset}`);
+      output.push(`${colors.dim}  Work investment: ${totalDiscoveryTokens.toLocaleString()} tokens spent on research, building, and decisions${colors.reset}`);
       if (totalDiscoveryTokens > 0) {
         output.push(`${colors.green}  Your savings: ${savings.toLocaleString()} tokens (${savingsPercent}% reduction from reuse)${colors.reset}`);
       }
@@ -290,7 +266,7 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
     } else {
       output.push(`📊 **Context Economics**:`);
       output.push(`- Loading: ${totalObservations} observations (${totalReadTokens.toLocaleString()} tokens to read)`);
-      output.push(`- Discovery investment: ${totalDiscoveryTokens.toLocaleString()} tokens spent by previous sessions`);
+      output.push(`- Work investment: ${totalDiscoveryTokens.toLocaleString()} tokens spent on research, building, and decisions`);
       if (totalDiscoveryTokens > 0) {
         output.push(`- Your savings: ${savings.toLocaleString()} tokens (${savingsPercent}% reduction from reuse)`);
       }
@@ -416,40 +392,13 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
 
             // Table header (markdown only)
             if (!useColors) {
-              output.push(`| ID | Time | T | Title | Read | Discovery |`);
-              output.push(`|----|------|---|-------|------|-----------|`);
+              output.push(`| ID | Time | T | Title | Read | Work |`);
+              output.push(`|----|------|---|-------|------|------|`);
             }
 
             currentFile = file;
             tableOpen = true;
             lastTime = '';
-          }
-
-          // Render observation row
-          let icon = '•';
-
-          // Map observation type to emoji
-          switch (obs.type) {
-            case 'bugfix':
-              icon = '🔴';
-              break;
-            case 'feature':
-              icon = '🟣';
-              break;
-            case 'refactor':
-              icon = '🔄';
-              break;
-            case 'change':
-              icon = '✅';
-              break;
-            case 'discovery':
-              icon = '🔵';
-              break;
-            case 'decision':
-              icon = '🧠';
-              break;
-            default:
-              icon = '•';
           }
 
           const time = formatTime(obs.created_at);
@@ -464,7 +413,25 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
 
           // Get discovery tokens (handle old observations without this field)
           const discoveryTokens = obs.discovery_tokens || 0;
-          const discoveryDisplay = discoveryTokens > 0 ? `🔍 ${discoveryTokens.toLocaleString()}` : '-';
+
+          // Map observation type to work emoji
+          let workEmoji = '🔍'; // default to research/discovery
+          switch (obs.type) {
+            case 'discovery':
+              workEmoji = '🔍'; // research/exploration
+              break;
+            case 'change':
+            case 'feature':
+            case 'bugfix':
+            case 'refactor':
+              workEmoji = '🛠️'; // building/modifying
+              break;
+            case 'decision':
+              workEmoji = '⚖️'; // decision-making
+              break;
+          }
+
+          const discoveryDisplay = discoveryTokens > 0 ? `${workEmoji} ${discoveryTokens.toLocaleString()}` : '-';
 
           const showTime = time !== lastTime;
           const timeDisplay = showTime ? time : '';
@@ -473,10 +440,10 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
           if (useColors) {
             const timePart = showTime ? `${colors.dim}${time}${colors.reset}` : ' '.repeat(time.length);
             const readPart = readTokens > 0 ? `${colors.dim}(~${readTokens}t)${colors.reset}` : '';
-            const discoveryPart = discoveryTokens > 0 ? `${colors.dim}(🔍 ${discoveryTokens.toLocaleString()}t)${colors.reset}` : '';
-            output.push(`  ${colors.dim}#${obs.id}${colors.reset}  ${timePart}  ${icon}  ${title} ${readPart} ${discoveryPart}`);
+            const discoveryPart = discoveryTokens > 0 ? `${colors.dim}(${workEmoji} ${discoveryTokens.toLocaleString()}t)${colors.reset}` : '';
+            output.push(`  ${colors.dim}#${obs.id}${colors.reset}  ${timePart}  ${title} ${readPart} ${discoveryPart}`);
           } else {
-            output.push(`| #${obs.id} | ${timeDisplay || '″'} | ${icon} | ${title} | ~${readTokens} | ${discoveryDisplay} |`);
+            output.push(`| #${obs.id} | ${timeDisplay || '″'} | ${obs.type} | ${title} | ~${readTokens} | ${discoveryDisplay} |`);
           }
         }
       }
@@ -515,18 +482,18 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
     if (useColors) {
       output.push(`${colors.bright}💡 Column Key${colors.reset}`);
       output.push(`${colors.dim}  Read: Tokens to read this observation (cost to learn it now)${colors.reset}`);
-      output.push(`${colors.dim}  Discovery: Tokens Previous Claude spent exploring/researching this topic${colors.reset}`);
+      output.push(`${colors.dim}  Work: Tokens spent on work that produced this record (🔍 research, 🛠️ building, ⚖️  deciding)${colors.reset}`);
       output.push('');
       if (totalDiscoveryTokens > 0 && savingsPercent > 0) {
-        output.push(`${colors.green}📈 ROI: Reading these learnings instead of re-discovering saves ${savingsPercent}% tokens${colors.reset}`);
+        output.push(`${colors.green}📈 Important: Look up records (if you need to) instead of doing the research again. Save up to ${savingsPercent}% in future token costs.${colors.reset}`);
       }
     } else {
       output.push(`💡 **Column Key**:`);
       output.push(`- **Read**: Tokens to read this observation (cost to learn it now)`);
-      output.push(`- **Discovery**: Tokens Previous Claude spent exploring/researching this topic`);
+      output.push(`- **Work**: Tokens spent on work that produced this record (🔍 research, 🛠️ building, ⚖️  deciding)`);
       output.push('');
       if (totalDiscoveryTokens > 0 && savingsPercent > 0) {
-        output.push(`**📈 ROI**: Reading these learnings instead of re-discovering saves ${savingsPercent}% tokens`);
+        output.push(`${colors.green}📈 Important: Look up records (if you need to) instead of doing the research again. Save up to ${savingsPercent}% in future token costs.${colors.reset}`);
       }
     }
   }
