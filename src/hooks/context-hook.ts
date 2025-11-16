@@ -71,6 +71,7 @@ interface Observation {
   concepts: string | null;
   files_read: string | null;
   files_modified: string | null;
+  discovery_tokens: number | null;
   created_at: string;
   created_at_epoch: number;
 }
@@ -130,12 +131,6 @@ function formatDate(dateStr: string): string {
   });
 }
 
-// Helper: Estimate token count for text
-function estimateTokens(text: string | null): number {
-  if (!text) return 0;
-  return Math.ceil(text.length / CHARS_PER_TOKEN_ESTIMATE);
-}
-
 // Helper: Convert absolute paths to relative paths
 function toRelativePath(filePath: string, cwd: string): string {
   if (path.isAbsolute(filePath)) {
@@ -154,24 +149,6 @@ function renderSummaryField(label: string, value: string | null, color: string, 
   return [`**${label}**: ${value}`, ''];
 }
 
-// Helper: Get all observations for given sessions
-function getObservations(db: SessionStore, sessionIds: string[]): Observation[] {
-  if (sessionIds.length === 0) return [];
-
-  const placeholders = sessionIds.map(() => '?').join(',');
-  const observations = db.db.prepare(`
-    SELECT
-      id, sdk_session_id, type, title, subtitle, narrative,
-      facts, concepts, files_read, files_modified,
-      created_at, created_at_epoch
-    FROM observations
-    WHERE sdk_session_id IN (${placeholders})
-    ORDER BY created_at_epoch DESC
-  `).all(...sessionIds) as Observation[];
-
-  return observations;
-}
-
 /**
  * Context Hook Main Logic
  */
@@ -187,7 +164,7 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
   const allObservations = db.db.prepare(`
     SELECT
       id, sdk_session_id, type, title, subtitle, narrative,
-      facts, concepts, files_read, files_modified,
+      facts, concepts, files_read, files_modified, discovery_tokens,
       created_at, created_at_epoch
     FROM observations
     WHERE project = ?
@@ -239,25 +216,74 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
   if (timelineObs.length > 0) {
     // Legend/Key
     if (useColors) {
-      output.push(`${colors.dim}Legend: 🎯 session-request | 🔴 bugfix | 🟣 feature | 🔄 refactor | ✅ change | 🔵 discovery | 🧠 decision${colors.reset}`);
-      output.push('');
+      output.push(`${colors.dim}Legend: 🎯 session-request | 🔴 bugfix | 🟣 feature | 🔄 refactor | ✅ change | 🔵 discovery | ⚖️  decision${colors.reset}`);
     } else {
-      output.push(`**Legend:** 🎯 session-request | 🔴 bugfix | 🟣 feature | 🔄 refactor | ✅ change | 🔵 discovery | 🧠 decision`);
-      output.push('');
+      output.push(`**Legend:** 🎯 session-request | 🔴 bugfix | 🟣 feature | 🔄 refactor | ✅ change | 🔵 discovery | ⚖️  decision`);
     }
+    output.push('');
 
-    // Progressive Disclosure Usage Instructions
+    // Column Key
     if (useColors) {
-      output.push(`${colors.dim}💡 Progressive Disclosure: This index shows WHAT exists (titles) and retrieval COST (token counts).${colors.reset}`);
-      output.push(`${colors.dim}   → Use MCP search tools to fetch full observation details on-demand (Layer 2)${colors.reset}`);
-      output.push(`${colors.dim}   → Prefer searching observations over re-reading code for past decisions and learnings${colors.reset}`);
-      output.push(`${colors.dim}   → Critical types (🔴 bugfix, 🧠 decision) often worth fetching immediately${colors.reset}`);
+      output.push(`${colors.bright}💡 Column Key${colors.reset}`);
+      output.push(`${colors.dim}  Read: Tokens to read this observation (cost to learn it now)${colors.reset}`);
+      output.push(`${colors.dim}  Work: Tokens spent on work that produced this record (🔍 research, 🛠️ building, ⚖️  deciding)${colors.reset}`);
+    } else {
+      output.push(`💡 **Column Key**:`);
+      output.push(`- **Read**: Tokens to read this observation (cost to learn it now)`);
+      output.push(`- **Work**: Tokens spent on work that produced this record (🔍 research, 🛠️ building, ⚖️  deciding)`);
+    }
+    output.push('');
+
+    // Context Index Usage Instructions
+    if (useColors) {
+      output.push(`${colors.dim}💡 Context Index: This semantic index (titles, types, files, tokens) is usually sufficient to understand past work.${colors.reset}`);
+      output.push('');
+      output.push(`${colors.dim}When you need implementation details, rationale, or debugging context:${colors.reset}`);
+      output.push(`${colors.dim}  - Use the mem-search skill to fetch full observations on-demand${colors.reset}`);
+      output.push(`${colors.dim}  - Critical types (🔴 bugfix, ⚖️ decision) often need detailed fetching${colors.reset}`);
+      output.push(`${colors.dim}  - Trust this index over re-reading code for past decisions and learnings${colors.reset}`);
+    } else {
+      output.push(`💡 **Context Index:** This semantic index (titles, types, files, tokens) is usually sufficient to understand past work.`);
+      output.push('');
+      output.push(`When you need implementation details, rationale, or debugging context:`);
+      output.push(`- Use the mem-search skill to fetch full observations on-demand`);
+      output.push(`- Critical types (🔴 bugfix, ⚖️ decision) often need detailed fetching`);
+      output.push(`- Trust this index over re-reading code for past decisions and learnings`);
+    }
+    output.push('');
+
+    // Section 1: Aggregate ROI Metrics
+    const totalObservations = observations.length;
+    const totalReadTokens = observations.reduce((sum, obs) => {
+      // Estimate read tokens from observation size
+      const obsSize = (obs.title?.length || 0) +
+                      (obs.subtitle?.length || 0) +
+                      (obs.narrative?.length || 0) +
+                      JSON.stringify(obs.facts || []).length;
+      return sum + Math.ceil(obsSize / CHARS_PER_TOKEN_ESTIMATE);
+    }, 0);
+    const totalDiscoveryTokens = observations.reduce((sum, obs) => sum + (obs.discovery_tokens || 0), 0);
+    const savings = totalDiscoveryTokens - totalReadTokens;
+    const savingsPercent = totalDiscoveryTokens > 0
+      ? Math.round((savings / totalDiscoveryTokens) * 100)
+      : 0;
+
+    // Display Context Economics section
+    if (useColors) {
+      output.push(`${colors.bright}${colors.cyan}📊 Context Economics${colors.reset}`);
+      output.push(`${colors.dim}  Loading: ${totalObservations} observations (${totalReadTokens.toLocaleString()} tokens to read)${colors.reset}`);
+      output.push(`${colors.dim}  Work investment: ${totalDiscoveryTokens.toLocaleString()} tokens spent on research, building, and decisions${colors.reset}`);
+      if (totalDiscoveryTokens > 0) {
+        output.push(`${colors.green}  Your savings: ${savings.toLocaleString()} tokens (${savingsPercent}% reduction from reuse)${colors.reset}`);
+      }
       output.push('');
     } else {
-      output.push(`💡 **Progressive Disclosure:** This index shows WHAT exists (titles) and retrieval COST (token counts).`);
-      output.push(`- Use MCP search tools to fetch full observation details on-demand (Layer 2)`);
-      output.push(`- Prefer searching observations over re-reading code for past decisions and learnings`);
-      output.push(`- Critical types (🔴 bugfix, 🧠 decision) often worth fetching immediately`);
+      output.push(`📊 **Context Economics**:`);
+      output.push(`- Loading: ${totalObservations} observations (${totalReadTokens.toLocaleString()} tokens to read)`);
+      output.push(`- Work investment: ${totalDiscoveryTokens.toLocaleString()} tokens spent on research, building, and decisions`);
+      if (totalDiscoveryTokens > 0) {
+        output.push(`- Your savings: ${savings.toLocaleString()} tokens (${savingsPercent}% reduction from reuse)`);
+      }
       output.push('');
     }
 
@@ -380,8 +406,8 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
 
             // Table header (markdown only)
             if (!useColors) {
-              output.push(`| ID | Time | T | Title | Tokens |`);
-              output.push(`|----|------|---|-------|--------|`);
+              output.push(`| ID | Time | T | Title | Read | Work |`);
+              output.push(`|----|------|---|-------|------|------|`);
             }
 
             currentFile = file;
@@ -389,10 +415,11 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
             lastTime = '';
           }
 
-          // Render observation row
-          let icon = '•';
+          const time = formatTime(obs.created_at);
+          const title = obs.title || 'Untitled';
 
-          // Map observation type to emoji
+          // Map observation type to emoji icon
+          let icon = '•';
           switch (obs.type) {
             case 'bugfix':
               icon = '🔴';
@@ -410,15 +437,40 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
               icon = '🔵';
               break;
             case 'decision':
-              icon = '🧠';
+              icon = '⚖️';
               break;
             default:
               icon = '•';
           }
 
-          const time = formatTime(obs.created_at);
-          const title = obs.title || 'Untitled';
-          const tokens = estimateTokens(obs.narrative);
+          // Section 2: Calculate read tokens (estimate from observation size)
+          const obsSize = (obs.title?.length || 0) +
+                          (obs.subtitle?.length || 0) +
+                          (obs.narrative?.length || 0) +
+                          JSON.stringify(obs.facts || []).length;
+          const readTokens = Math.ceil(obsSize / CHARS_PER_TOKEN_ESTIMATE);
+
+          // Get discovery tokens (handle old observations without this field)
+          const discoveryTokens = obs.discovery_tokens || 0;
+
+          // Map observation type to work emoji
+          let workEmoji = '🔍'; // default to research/discovery
+          switch (obs.type) {
+            case 'discovery':
+              workEmoji = '🔍'; // research/exploration
+              break;
+            case 'change':
+            case 'feature':
+            case 'bugfix':
+            case 'refactor':
+              workEmoji = '🛠️'; // building/modifying
+              break;
+            case 'decision':
+              workEmoji = '⚖️'; // decision-making
+              break;
+          }
+
+          const discoveryDisplay = discoveryTokens > 0 ? `${workEmoji} ${discoveryTokens.toLocaleString()}` : '-';
 
           const showTime = time !== lastTime;
           const timeDisplay = showTime ? time : '';
@@ -426,10 +478,11 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
 
           if (useColors) {
             const timePart = showTime ? `${colors.dim}${time}${colors.reset}` : ' '.repeat(time.length);
-            const tokensPart = tokens > 0 ? `${colors.dim}(~${tokens}t)${colors.reset}` : '';
-            output.push(`  ${colors.dim}#${obs.id}${colors.reset}  ${timePart}  ${icon}  ${title} ${tokensPart}`);
+            const readPart = readTokens > 0 ? `${colors.dim}(~${readTokens}t)${colors.reset}` : '';
+            const discoveryPart = discoveryTokens > 0 ? `${colors.dim}(${workEmoji} ${discoveryTokens.toLocaleString()}t)${colors.reset}` : '';
+            output.push(`  ${colors.dim}#${obs.id}${colors.reset}  ${timePart}  ${icon}  ${title} ${readPart} ${discoveryPart}`);
           } else {
-            output.push(`| #${obs.id} | ${timeDisplay || '″'} | ${icon} | ${title} | ~${tokens} |`);
+            output.push(`| #${obs.id} | ${timeDisplay || '″'} | ${icon} | ${title} | ~${readTokens} | ${discoveryDisplay} |`);
           }
         }
       }
@@ -456,11 +509,15 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
       output.push(...renderSummaryField('Next Steps', mostRecentSummary.next_steps, colors.magenta, useColors));
     }
 
-    // Footer with MCP search instructions
-    if (useColors) {
-      output.push(`${colors.dim}Use claude-mem MCP search to access records with the given ID${colors.reset}`);
-    } else {
-      output.push(`*Use claude-mem MCP search to access records with the given ID*`);
+    // Footer with token savings message
+    if (totalDiscoveryTokens > 0 && savings > 0) {
+      const workTokensK = Math.round(totalDiscoveryTokens / 1000);
+      output.push('');
+      if (useColors) {
+        output.push(`${colors.dim}💰 Access ${workTokensK}k tokens of past research & decisions for just ${totalReadTokens.toLocaleString()}t. Use claude-mem search to access memories by ID instead of re-reading files.${colors.reset}`);
+      } else {
+        output.push(`💰 Access ${workTokensK}k tokens of past research & decisions for just ${totalReadTokens.toLocaleString()}t. Use claude-mem search to access memories by ID instead of re-reading files.`);
+      }
     }
   }
 

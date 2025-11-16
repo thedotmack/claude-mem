@@ -215,6 +215,7 @@ export interface ObservationRow {
   files_read: string | null; // JSON array
   files_modified: string | null; // JSON array
   prompt_number: number | null;
+  discovery_tokens: number; // ROI metrics: tokens spent discovering this observation
   created_at: string;
   created_at_epoch: number;
 }
@@ -232,6 +233,7 @@ export interface SessionSummaryRow {
   files_edited: string | null; // JSON array
   notes: string | null;
   prompt_number: number | null;
+  discovery_tokens: number; // ROI metrics: cumulative tokens spent in this session
   created_at: string;
   created_at_epoch: number;
 }

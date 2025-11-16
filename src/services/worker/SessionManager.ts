@@ -89,7 +89,9 @@ export class SessionManager {
       abortController: new AbortController(),
       generatorPromise: null,
       lastPromptNumber: promptNumber || this.dbManager.getSessionStore().getPromptCounter(sessionDbId),
-      startTime: Date.now()
+      startTime: Date.now(),
+      cumulativeInputTokens: 0,
+      cumulativeOutputTokens: 0
     };
 
     this.sessions.set(sessionDbId, session);

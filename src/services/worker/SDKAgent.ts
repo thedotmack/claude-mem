@@ -85,6 +85,34 @@ export class SDKAgent {
 
           const responseSize = textContent.length;
 
+          // Capture token state BEFORE updating (for delta calculation)
+          const tokensBeforeResponse = session.cumulativeInputTokens + session.cumulativeOutputTokens;
+
+          // Extract and track token usage
+          const usage = message.message.usage;
+          if (usage) {
+            session.cumulativeInputTokens += usage.input_tokens || 0;
+            session.cumulativeOutputTokens += usage.output_tokens || 0;
+
+            // Cache creation counts as discovery, cache read doesn't
+            if (usage.cache_creation_input_tokens) {
+              session.cumulativeInputTokens += usage.cache_creation_input_tokens;
+            }
+
+            logger.debug('SDK', 'Token usage captured', {
+              sessionId: session.sessionDbId,
+              inputTokens: usage.input_tokens,
+              outputTokens: usage.output_tokens,
+              cacheCreation: usage.cache_creation_input_tokens || 0,
+              cacheRead: usage.cache_read_input_tokens || 0,
+              cumulativeInput: session.cumulativeInputTokens,
+              cumulativeOutput: session.cumulativeOutputTokens
+            });
+          }
+
+          // Calculate discovery tokens (delta for this response only)
+          const discoveryTokens = (session.cumulativeInputTokens + session.cumulativeOutputTokens) - tokensBeforeResponse;
+
           // Only log non-empty responses (filter out noise)
           if (responseSize > 0) {
             const truncatedResponse = responseSize > 100
@@ -95,8 +123,8 @@ export class SDKAgent {
               promptNumber: session.lastPromptNumber
             }, truncatedResponse);
 
-            // Parse and process response
-            await this.processSDKResponse(session, textContent, worker);
+            // Parse and process response with discovery token delta
+            await this.processSDKResponse(session, textContent, worker, discoveryTokens);
           }
         }
 
@@ -218,8 +246,9 @@ export class SDKAgent {
 
   /**
    * Process SDK response text (parse XML, save to database, sync to Chroma)
+   * @param discoveryTokens - Token cost for discovering this response (delta, not cumulative)
    */
-  private async processSDKResponse(session: ActiveSession, text: string, worker?: any): Promise<void> {
+  private async processSDKResponse(session: ActiveSession, text: string, worker: any | undefined, discoveryTokens: number): Promise<void> {
     // Parse observations
     const observations = parseObservations(text, session.claudeSessionId);
 
@@ -229,7 +258,8 @@ export class SDKAgent {
         session.claudeSessionId,
         session.project,
         obs,
-        session.lastPromptNumber
+        session.lastPromptNumber,
+        discoveryTokens
       );
 
       // Log observation details
@@ -253,7 +283,8 @@ export class SDKAgent {
         session.project,
         obs,
         session.lastPromptNumber,
-        createdAtEpoch
+        createdAtEpoch,
+        discoveryTokens
       ).then(() => {
         const chromaDuration = Date.now() - chromaStart;
         logger.debug('CHROMA', 'Observation synced', {
@@ -305,7 +336,8 @@ export class SDKAgent {
         session.claudeSessionId,
         session.project,
         summary,
-        session.lastPromptNumber
+        session.lastPromptNumber,
+        discoveryTokens
       );
 
       // Log summary details
@@ -326,7 +358,8 @@ export class SDKAgent {
         session.project,
         summary,
         session.lastPromptNumber,
-        createdAtEpoch
+        createdAtEpoch,
+        discoveryTokens
       ).then(() => {
         const chromaDuration = Date.now() - chromaStart;
         logger.debug('CHROMA', 'Summary synced', {
