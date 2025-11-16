@@ -89,31 +89,30 @@ npx mintlify dev
 
 ### Getting Started
 
-- **[Installation Guide](docs/installation.mdx)** - Quick start & advanced installation
-- **[Usage Guide](docs/usage/getting-started.mdx)** - How Claude-Mem works automatically
-- **[Search Tools](docs/usage/search-tools.mdx)** - Query your project history with natural language
+- **[Installation Guide](https://docs.claude-mem.ai/installation)** - Quick start & advanced installation
+- **[Usage Guide](https://docs.claude-mem.ai/usage/getting-started)** - How Claude-Mem works automatically
+- **[Search Tools](https://docs.claude-mem.ai/usage/search-tools)** - Query your project history with natural language
 
 ### Best Practices
 
-- **[Context Engineering](docs/context-engineering.mdx)** - AI agent context optimization principles
-- **[Progressive Disclosure](docs/progressive-disclosure.mdx)** - Philosophy behind Claude-Mem's context priming strategy
+- **[Context Engineering](https://docs.claude-mem.ai/context-engineering)** - AI agent context optimization principles
+- **[Progressive Disclosure](https://docs.claude-mem.ai/progressive-disclosure)** - Philosophy behind Claude-Mem's context priming strategy
 
 ### Architecture
 
-- **[Overview](docs/architecture/overview.mdx)** - System components & data flow
-- **[Architecture Evolution](docs/architecture-evolution.mdx)** - The journey from v3 to v5
-- **[Hooks Architecture](docs/hooks-architecture.mdx)** - How Claude-Mem uses lifecycle hooks
-- **[Hooks Reference](docs/architecture/hooks.mdx)** - 7 hook scripts explained
-- **[Worker Service](docs/architecture/worker-service.mdx)** - HTTP API & PM2 management
-- **[Database](docs/architecture/database.mdx)** - SQLite schema & FTS5 search
-- **[MCP Search](docs/architecture/mcp-search.mdx)** - 9 search tools & examples
-- **[Viewer UI](docs/VIEWER.md)** - Web-based memory stream visualization
+- **[Overview](https://docs.claude-mem.ai/architecture/overview)** - System components & data flow
+- **[Architecture Evolution](https://docs.claude-mem.ai/architecture-evolution)** - The journey from v3 to v5
+- **[Hooks Architecture](https://docs.claude-mem.ai/hooks-architecture)** - How Claude-Mem uses lifecycle hooks
+- **[Hooks Reference](https://docs.claude-mem.ai/architecture/hooks)** - 7 hook scripts explained
+- **[Worker Service](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API & PM2 management
+- **[Database](https://docs.claude-mem.ai/architecture/database)** - SQLite schema & FTS5 search
+- **[Search Architecture](https://docs.claude-mem.ai/architecture/search-architecture)** - Hybrid search with Chroma vector database
 
 ### Configuration & Development
 
-- **[Configuration](docs/configuration.mdx)** - Environment variables & settings
-- **[Development](docs/development.mdx)** - Building, testing, contributing
-- **[Troubleshooting](docs/troubleshooting.mdx)** - Common issues & solutions
+- **[Configuration](https://docs.claude-mem.ai/configuration)** - Environment variables & settings
+- **[Development](https://docs.claude-mem.ai/development)** - Building, testing, contributing
+- **[Troubleshooting](https://docs.claude-mem.ai/troubleshooting)** - Common issues & solutions
 
 ---
 
@@ -150,7 +149,7 @@ npx mintlify dev
 5. **mem-search Skill** - Natural language queries with progressive disclosure (~2,250 token savings vs MCP)
 6. **Chroma Vector Database** - Hybrid semantic + keyword search for intelligent context retrieval
 
-See [Architecture Overview](docs/architecture/overview.mdx) for details.
+See [Architecture Overview](https://docs.claude-mem.ai/architecture/overview) for details.
 
 ---
 
@@ -186,7 +185,7 @@ Claude-Mem provides intelligent search through the mem-search skill that auto-in
 "What was happening when we added the viewer UI?"
 ```
 
-See [Search Tools Guide](docs/usage/search-tools.mdx) for detailed examples.
+See [Search Tools Guide](https://docs.claude-mem.ai/usage/search-tools) for detailed examples.
 
 ---
 
@@ -278,7 +277,7 @@ See [CHANGELOG.md](CHANGELOG.md) for complete version history.
 - `CLAUDE_MEM_WORKER_PORT` - Worker port (default: 37777)
 - `CLAUDE_MEM_DATA_DIR` - Data directory override (dev only)
 
-See [Configuration Guide](docs/configuration.mdx) for details.
+See [Configuration Guide](https://docs.claude-mem.ai/configuration) for details.
 
 ---
 
@@ -301,7 +300,7 @@ npm run worker:start
 npm run worker:logs
 ```
 
-See [Development Guide](docs/development.mdx) for detailed instructions.
+See [Development Guide](https://docs.claude-mem.ai/development) for detailed instructions.
 
 ---
 
@@ -318,7 +317,7 @@ If you're experiencing issues, describe the problem to Claude and the troublesho
 - Database issues → `sqlite3 ~/.claude-mem/claude-mem.db "PRAGMA integrity_check;"`
 - Search not working → Check FTS5 tables exist
 
-See [Troubleshooting Guide](docs/troubleshooting.mdx) for complete solutions.
+See [Troubleshooting Guide](https://docs.claude-mem.ai/troubleshooting) for complete solutions.
 
 ---
 
@@ -332,7 +331,7 @@ Contributions are welcome! Please:
 4. Update documentation
 5. Submit a Pull Request
 
-See [Development Guide](docs/development.mdx) for contribution workflow.
+See [Development Guide](https://docs.claude-mem.ai/development) for contribution workflow.
 
 ---
 
