@@ -236,7 +236,17 @@ export class WorkerService {
    * Health check endpoint
    */
   private handleHealth(req: Request, res: Response): void {
-    res.json({ status: 'ok', timestamp: Date.now() });
+    const v8 = require('v8');
+    const heapStats = v8.getHeapStatistics();
+    res.json({
+      status: 'ok',
+      timestamp: Date.now(),
+      heap: {
+        limit_mb: Math.round(heapStats.heap_size_limit / 1024 / 1024),
+        used_mb: Math.round(heapStats.used_heap_size / 1024 / 1024),
+        total_mb: Math.round(heapStats.total_heap_size / 1024 / 1024)
+      }
+    });
   }
 
   /**

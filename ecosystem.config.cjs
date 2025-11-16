@@ -9,11 +9,40 @@
  *   pm2 status
  */
 
+const path = require('path');
+const fs = require('fs');
+const os = require('os');
+
+/**
+ * Load NODE_OPTIONS from settings file
+ * Priority: ~/.claude-mem/settings.json > default
+ * Default provides reasonable heap size for vector database workload
+ */
+function getNodeOptions() {
+  try {
+    const settingsPath = path.join(os.homedir(), '.claude-mem', 'settings.json');
+    if (fs.existsSync(settingsPath)) {
+      const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
+      if (settings.env?.NODE_OPTIONS) {
+        return settings.env.NODE_OPTIONS;
+      }
+    }
+  } catch (error) {
+    // Fall through to default if settings file is invalid
+    console.warn('Failed to load NODE_OPTIONS from settings.json:', error.message);
+  }
+
+  // Default: 256 MB heap for vector database + observations
+  // Industry standard: Worker services should idle at 40-60% heap usage
+  return '--max-old-space-size=256';
+}
+
 module.exports = {
   apps: [
     {
       name: 'claude-mem-worker',
       script: './plugin/scripts/worker-service.cjs',
+      interpreter_args: getNodeOptions(),
       // INTENTIONAL: Watch mode enables auto-restart on plugin updates
       //
       // Why this is enabled:
