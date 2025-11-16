@@ -148,16 +148,19 @@ When Claude invokes the skill:
 
 ## Search Architecture
 
-### Hybrid Search System
+### 3-Layer Hybrid Search System
 
-claude-mem uses a **hybrid search architecture** combining:
+claude-mem uses a **3-layer sequential search architecture** that mimics human long-term memory:
 
-1. **SQLite FTS5 (Full-Text Search)** - Keyword-based search
-2. **ChromaDB (Vector Search)** - Semantic similarity search
+**Storage Flow (Write Path):**
+1. **SQLite First** - Data written synchronously to SQLite (fast, immediate access)
+2. **ChromaDB Background Sync** - Worker asynchronously generates embeddings and syncs to ChromaDB
+
+**Search Flow (Read Path - Sequential, NOT parallel):**
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                   Search Request Flow                        │
+│                3-Layer Sequential Search Flow                │
 └─────────────────────────────────────────────────────────────┘
                             │
                             ▼
@@ -166,61 +169,70 @@ claude-mem uses a **hybrid search architecture** combining:
               │  /api/search/*          │
               └─────────────────────────┘
                             │
-              ┌─────────────┴─────────────┐
-              ▼                           ▼
-┌──────────────────────────┐  ┌──────────────────────────┐
-│  SessionSearch (FTS5)    │  │  ChromaSync (Vector DB)  │
-│                          │  │                          │
-│  Full-text keyword       │  │  Semantic similarity     │
-│  search on:              │  │  search on:              │
-│  - titles                │  │  - narratives            │
-│  - narratives            │  │  - facts                 │
-│  - facts                 │  │  - file content          │
-│  - concepts              │  │                          │
-│                          │  │  Embeddings:             │
-│  SQLite DB:              │  │  - text-embedding-3-small│
-│  observations_fts        │  │  - 90-day recency filter │
-│  sessions_fts            │  │                          │
-│  prompts_fts             │  │  ChromaDB:               │
-│                          │  │  observations collection │
-└──────────────────────────┘  └──────────────────────────┘
-              │                           │
-              └─────────────┬─────────────┘
                             ▼
-              ┌─────────────────────────┐
-              │  Merged Results         │
-              │  - Deduplicated         │
-              │  - Sorted by relevance  │
-              │  - Formatted (index/full)│
-              └─────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│  LAYER 1: Semantic Retrieval (ChromaDB)                     │
+│  ─────────────────────────────────────────────────────────  │
+│  Vector similarity search finds semantically relevant items  │
+│  Returns: observation IDs in index format (~50-100 tokens)  │
+│  Filter: 90-day recency prioritizes recent work             │
+│  Output: List of relevant observation IDs                   │
+└─────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────┐
+│  LAYER 2: Temporal Ordering (SQLite)                        │
+│  ─────────────────────────────────────────────────────────  │
+│  Takes observation IDs from Layer 1                         │
+│  Sorts by created_at timestamp (fast SQLite temporal query) │
+│  Identifies: MOST RECENT relevant observation               │
+│  Why: ChromaDB doesn't easily query by date range sorted    │
+│  Output: Top observation ID by time                         │
+└─────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────┐
+│  LAYER 3: Instant Context Timeline (SQLite)                 │
+│  ─────────────────────────────────────────────────────────  │
+│  Uses top observation ID from Layer 2 as anchor             │
+│  Retrieves N observations BEFORE and AFTER that point       │
+│  Provides: "what led here" + "what happened next" context   │
+│  This is the KILLER FEATURE: mimics human memory            │
+│  Output: Timeline with temporal context                     │
+└─────────────────────────────────────────────────────────────┘
 ```
+
+**Why This Architecture Exists:**
+
+The problem: LLMs don't experience time linearly like humans do. Finding semantically relevant information isn't enough—you need temporal context.
+
+The solution:
+- **ChromaDB** for "what's relevant" (semantic understanding)
+- **SQLite** for "when did it happen" (temporal ordering with fast date-range queries)
+- **Timeline** for "what was the context" (before/after observations)
+
+Together, they mimic how humans recall: "I did X, which led to Y, then Z happened."
+
+**Human Memory Analogy:**
+
+Humans don't just remember isolated facts. They remember sequences: what they did before something, what happened after. The instant context timeline gives LLMs this same temporal awareness that humans experience naturally.
 
 ### Search Types
 
-#### 1. Full-Text Search (FTS5)
+#### 1. Vector Search (ChromaDB) - PRIMARY Search Layer
 
-**How it works:**
-- Uses SQLite FTS5 virtual tables for instant keyword matching
-- Supports boolean operators: `AND`, `OR`, `NOT`, `NEAR`, `*` (wildcard)
-- Ranks results by BM25 relevance scoring
-- Sub-100ms performance on 8,000+ observations
-
-**Example query:**
-```sql
--- User asks: "How did we implement JWT authentication?"
-SELECT * FROM observations_fts
-WHERE observations_fts MATCH 'JWT AND authentication'
-ORDER BY rank
-LIMIT 20;
-```
-
-#### 2. Vector Search (ChromaDB)
+**Role:** Layer 1 - Semantic Retrieval
 
 **How it works:**
 - Text is embedded using OpenAI's `text-embedding-3-small` model
-- Vector similarity search finds semantically related content
+- Vector similarity search finds semantically related content, not just keyword matches
 - 90-day recency filter prioritizes recent work
-- Combined with keyword search for hybrid results
+- Returns observation IDs for temporal processing in Layer 2
+
+**Why it's primary:**
+- Understands meaning, not just keywords ("auth flow" matches "JWT implementation")
+- Finds relevant work even when you don't know exact terms used
+- Semantic understanding crucial for LLM memory retrieval
 
 **Example query:**
 ```python
@@ -230,6 +242,37 @@ collection.query(
     n_results=20,
     where={"created_at": {"$gte": ninety_days_ago}}
 )
+# Returns: observation IDs semantically related to login/auth
+```
+
+#### 2. Full-Text Search (FTS5) - Supporting Layer
+
+**Role:** Layer 2 & 3 - Temporal Ordering and Timeline Context
+
+**How it works:**
+- Uses SQLite FTS5 virtual tables for instant keyword matching
+- Supports boolean operators: `AND`, `OR`, `NOT`, `NEAR`, `*` (wildcard)
+- Fast temporal queries with date-range sorting
+- Sub-100ms performance on 8,000+ observations
+
+**Why it's supporting:**
+- ChromaDB handles semantic "what's relevant"
+- SQLite/FTS5 handles temporal "when did it happen" and "what came before/after"
+- Optimized for timeline queries and date-based sorting
+
+**Example query:**
+```sql
+-- Takes observation IDs from ChromaDB, sorts by time
+SELECT * FROM observations
+WHERE id IN (/* IDs from ChromaDB */)
+ORDER BY created_at_epoch DESC
+LIMIT 1;
+
+-- Then retrieves timeline context around that observation
+SELECT * FROM observations
+WHERE created_at_epoch < anchor_timestamp
+ORDER BY created_at_epoch DESC
+LIMIT 10; -- "what led here"
 ```
 
 #### 3. Structured Filters
