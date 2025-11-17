@@ -495,13 +495,11 @@ export class SessionStore {
 
   /**
    * Ensure discovery_tokens column exists (migration 7)
+   * CRITICAL: Always verify column existence, don't trust schema_versions alone
+   * This prevents "no such column" errors when migrations were recorded but failed
    */
   private ensureDiscoveryTokensColumn(): void {
     try {
-      // Check if migration already applied
-      const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(7) as {version: number} | undefined;
-      if (applied) return;
-
       // Check if discovery_tokens column exists in observations table
       const observationsInfo = this.db.pragma('table_info(observations)');
       const obsHasDiscoveryTokens = (observationsInfo as any[]).some((col: any) => col.name === 'discovery_tokens');
@@ -520,10 +518,11 @@ export class SessionStore {
         console.error('[SessionStore] Added discovery_tokens column to session_summaries table');
       }
 
-      // Record migration
+      // Record migration only after successful column verification/addition
       this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(7, new Date().toISOString());
     } catch (error: any) {
       console.error('[SessionStore] Discovery tokens migration error:', error.message);
+      throw error; // Re-throw to prevent silent failures
     }
   }
 
