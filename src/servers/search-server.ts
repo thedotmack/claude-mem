@@ -1740,6 +1740,47 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
+// Cleanup function to properly terminate all child processes
+async function cleanup() {
+  console.error('[search-server] Shutting down...');
+  
+  // Close Chroma client (terminates uvx/python processes)
+  if (chromaClient) {
+    try {
+      await chromaClient.close();
+      console.error('[search-server] Chroma client closed');
+    } catch (error: any) {
+      console.error('[search-server] Error closing Chroma client:', error.message);
+    }
+  }
+  
+  // Close database connections
+  if (search) {
+    try {
+      search.close();
+      console.error('[search-server] SessionSearch closed');
+    } catch (error: any) {
+      console.error('[search-server] Error closing SessionSearch:', error.message);
+    }
+  }
+  
+  if (store) {
+    try {
+      store.close();
+      console.error('[search-server] SessionStore closed');
+    } catch (error: any) {
+      console.error('[search-server] Error closing SessionStore:', error.message);
+    }
+  }
+  
+  console.error('[search-server] Shutdown complete');
+  process.exit(0);
+}
+
+// Register cleanup handlers for graceful shutdown
+process.on('SIGTERM', cleanup);
+process.on('SIGINT', cleanup);
+
 // Start the server
 async function main() {
   // Start the MCP server FIRST (critical - must start before blocking operations)

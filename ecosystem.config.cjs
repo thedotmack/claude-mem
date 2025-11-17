@@ -31,8 +31,16 @@ module.exports = {
         '*.log',
         '*.db',
         '*.db-*',
-        '.git'
-      ]
+        '.git',
+        'vector-db',  // Ignore Chroma vector DB files
+        '.claude-mem' // Ignore data directory
+      ],
+      // Allow extra time for graceful shutdown (cleanup of child processes)
+      kill_timeout: 5000,
+      // Wait before restarting to allow full cleanup
+      wait_ready: true,
+      // Shutdown signal (SIGTERM for graceful shutdown)
+      kill_signal: 'SIGTERM'
     }
   ]
 };

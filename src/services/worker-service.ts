@@ -215,6 +215,16 @@ export class WorkerService {
     // Shutdown all active sessions
     await this.sessionManager.shutdownAll();
 
+    // Close MCP client connection (terminates search server process)
+    if (this.mcpClient) {
+      try {
+        await this.mcpClient.close();
+        logger.info('SYSTEM', 'MCP client closed');
+      } catch (error) {
+        logger.error('SYSTEM', 'Failed to close MCP client', {}, error as Error);
+      }
+    }
+
     // Close HTTP server
     if (this.server) {
       await new Promise<void>((resolve, reject) => {
@@ -222,7 +232,7 @@ export class WorkerService {
       });
     }
 
-    // Close database connection
+    // Close database connection (includes ChromaSync cleanup)
     await this.dbManager.close();
 
     logger.info('SYSTEM', 'Worker shutdown complete');
