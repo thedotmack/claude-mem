@@ -4,6 +4,31 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [6.0.4] - 2025-11-17
+
+**Patch Release**
+
+Fixes memory leaks from orphaned uvx/python processes that could accumulate during ChromaDB operations.
+
+**Changes:**
+- Fixed process cleanup in ChromaDB sync operations to prevent orphaned processes
+- Improved resource management for external process spawning
+
+**Full Changelog:** https://github.com/thedotmack/claude-mem/compare/v6.0.3...v6.0.4
+
+## [6.0.3] - 2025-11-16
+
+## What's Changed
+
+Documentation alignment release - merged PR #116 fixing hybrid search architecture documentation.
+
+### Documentation Updates
+- Added comprehensive  guide
+- Updated technical architecture documentation to reflect hybrid ChromaDB + SQLite + timeline context flow
+- Fixed skill operation guides to accurately describe semantic search capabilities
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v6.0.2...v6.0.3
+
 ## [6.0.2] - 2025-11-14
 
 ## Changes
