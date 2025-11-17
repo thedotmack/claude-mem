@@ -40,6 +40,7 @@
     "worker:stop": "pm2 stop claude-mem-worker",
     "worker:restart": "pm2 restart claude-mem-worker",
     "worker:logs": "pm2 logs claude-mem-worker",
+    "logs:silent": "tail -f ~/.claude-mem/silent.log",
     "changelog:generate": "node scripts/generate-changelog.js",
     "usage:analyze": "node scripts/analyze-usage.js",
     "usage:today": "node scripts/analyze-usage.js $(date +%Y-%m-%d)"

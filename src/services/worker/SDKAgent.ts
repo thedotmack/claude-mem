@@ -152,7 +152,9 @@ export class SDKAgent {
       throw error;
     } finally {
       // Cleanup
-      this.sessionManager.deleteSession(session.sessionDbId).catch(() => {});
+      this.sessionManager.deleteSession(session.sessionDbId).catch((error) => {
+        silentDebug('Failed to delete session during cleanup in SDKAgent', { sessionDbId: session.sessionDbId, error });
+      });
     }
   }
 

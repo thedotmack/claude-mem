@@ -12,6 +12,7 @@ import { EventEmitter } from 'events';
 import { DatabaseManager } from './DatabaseManager.js';
 import { logger } from '../../utils/logger.js';
 import { silentDebug } from '../../utils/silent-debug.js';
+import { silentDebug } from '../../utils/silent-debug.js';
 import type { ActiveSession, PendingMessage, ObservationData } from '../worker-types.js';
 
 export class SessionManager {
@@ -202,7 +203,9 @@ export class SessionManager {
 
     // Wait for generator to finish
     if (session.generatorPromise) {
-      await session.generatorPromise.catch(() => {});
+      await session.generatorPromise.catch((error) => {
+        silentDebug('Failed to wait for generator promise during session deletion', { sessionDbId, error });
+      });
     }
 
     // Cleanup
