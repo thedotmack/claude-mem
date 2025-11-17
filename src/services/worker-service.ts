@@ -181,9 +181,44 @@ export class WorkerService {
   }
 
   /**
+   * Cleanup orphaned MCP server processes (uvx/chroma) from previous sessions
+   */
+  private async cleanupOrphanedProcesses(): Promise<void> {
+    try {
+      const { execSync } = await import('child_process');
+
+      // Find orphaned uvx processes (which spawn chroma servers)
+      try {
+        const processes = execSync('pgrep -fl uvx', { encoding: 'utf-8', stdio: 'pipe' }).trim();
+        if (processes) {
+          const processCount = processes.split('\n').length;
+          logger.info('WORKER', 'Cleaning up orphaned MCP processes', { count: processCount });
+
+          // Kill the processes
+          execSync('pkill -f uvx', { stdio: 'pipe' });
+          logger.success('WORKER', `Cleaned up ${processCount} orphaned MCP server processes`);
+        }
+      } catch (error: any) {
+        // pgrep returns exit code 1 if no processes found (not an error)
+        if (error.status === 1) {
+          logger.debug('WORKER', 'No orphaned MCP processes to clean up');
+        } else {
+          throw error;
+        }
+      }
+    } catch (error) {
+      // Don't fail startup if cleanup fails
+      logger.warn('WORKER', 'Failed to cleanup orphaned processes (non-fatal)', {}, error as Error);
+    }
+  }
+
+  /**
    * Start the worker service
    */
   async start(): Promise<void> {
+    // Cleanup orphaned processes from previous sessions
+    await this.cleanupOrphanedProcesses();
+
     // Initialize database (once, stays open)
     await this.dbManager.initialize();
 
