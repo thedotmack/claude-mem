@@ -4,6 +4,29 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [6.0.8] - 2025-11-17
+
+## Critical Fix
+
+This patch release fixes a critical bug where the PM2 worker process would start from the wrong directory (development folder instead of marketplace folder), causing the plugin to malfunction when installed via the marketplace.
+
+### What's Fixed
+
+- **Worker Startup Path Resolution** (`src/shared/worker-utils.ts:61`)  
+  Added `cwd: pluginRoot` option to `execSync` when starting PM2
+  
+  This ensures the worker always starts from the correct marketplace directory (`~/.claude/plugins/marketplaces/thedotmack/`), regardless of where the hook is invoked from.
+
+### Impact
+
+Users will no longer experience issues with the worker starting from the wrong location. The plugin now works correctly when installed via marketplace without manual intervention.
+
+### Verification
+
+Run `pm2 info claude-mem-worker` to verify:
+- **exec cwd** should be: `/Users/[username]/.claude/plugins/marketplaces/thedotmack`
+- **script path** should be: `/Users/[username]/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs`
+
 ## [6.0.7] - 2025-11-17
 
 ## Critical Hotfix: Database Migration Issue (#121)
