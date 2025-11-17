@@ -17,7 +17,7 @@ export function App() {
   const [paginatedSummaries, setPaginatedSummaries] = useState<Summary[]>([]);
   const [paginatedPrompts, setPaginatedPrompts] = useState<UserPrompt[]>([]);
 
-  const { observations, summaries, prompts, projects, isProcessing, isConnected } = useSSE();
+  const { observations, summaries, prompts, projects, isProcessing, queueDepth, isConnected } = useSSE();
   const { settings, saveSettings, isSaving, saveStatus } = useSettings();
   const { stats, refreshStats } = useStats();
   const { preference, resolvedTheme, setThemePreference } = useTheme();
@@ -96,6 +96,7 @@ export function App() {
           onSettingsToggle={toggleSidebar}
           sidebarOpen={sidebarOpen}
           isProcessing={isProcessing}
+          queueDepth={queueDepth}
           themePreference={preference}
           onThemeChange={setThemePreference}
         />

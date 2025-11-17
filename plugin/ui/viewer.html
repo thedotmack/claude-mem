@@ -376,6 +376,36 @@
       animation: spin 1.5s linear infinite;
     }
 
+    .queue-bubble {
+      position: absolute;
+      top: -8px;
+      right: -8px;
+      background: var(--color-accent-primary);
+      color: var(--color-text-button);
+      font-size: 10px;
+      font-weight: 600;
+      font-family: 'Monaspace Radon', monospace;
+      min-width: 18px;
+      height: 18px;
+      border-radius: 9px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 5px;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+      animation: pulse 2s ease-in-out infinite;
+      z-index: 10;
+    }
+
+    @keyframes pulse {
+      0%, 100% {
+        transform: scale(1);
+      }
+      50% {
+        transform: scale(1.1);
+      }
+    }
+
     .logo-text {
       font-family: 'Monaspace Radon', monospace;
       font-weight: 100;

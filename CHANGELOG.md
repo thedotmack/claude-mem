@@ -4,20 +4,151 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [6.0.5] - 2025-11-16
+## [6.0.9] - 2025-11-17
 
-### Added
-- Automatic cleanup of orphaned MCP server processes on worker startup
-- Self-healing maintenance runs on every worker restart
+## Queue Depth Indicator Feature
 
-### Improved
-- Removed manual cleanup notice from session context
-- Streamlined worker initialization process
-- Prevents orphaned process accumulation and resource leaks
+Added a real-time queue depth indicator to the viewer UI that displays the count of active work items (queued + currently processing).
+
+### Features
+- Visual badge next to claude-mem logo
+- Shows count of pending messages + active SDK generators
+- Only displays when queueDepth > 0
+- Subtle pulse animation for visual feedback
+- Theme-aware styling
+- Real-time updates via SSE
+
+### Implementation
+- Backend: Added `getTotalActiveWork()` method to SessionManager
+- Backend: Updated worker-service to broadcast queueDepth via SSE
+- Frontend: Enhanced Header component to display queue bubble
+- Frontend: Updated useSSE hook to track queueDepth state
+- Frontend: Added CSS styling with pulse animation
+
+### Closes
+- #122 - Implement queue depth indicator feature
+- #96 - Add real-time queue depth indicator to viewer UI
+- #97 - Fix inconsistent queue depth calculation
+
+### Credit
+Original implementation by @thedotmack in PR #96
+Bug fix by @copilot-swe-agent in PR #97
+
+## [6.0.8] - 2025-11-17
+
+## Critical Fix
+
+This patch release fixes a critical bug where the PM2 worker process would start from the wrong directory (development folder instead of marketplace folder), causing the plugin to malfunction when installed via the marketplace.
+
+### What's Fixed
+
+- **Worker Startup Path Resolution** (`src/shared/worker-utils.ts:61`)  
+  Added `cwd: pluginRoot` option to `execSync` when starting PM2
+  
+  This ensures the worker always starts from the correct marketplace directory (`~/.claude/plugins/marketplaces/thedotmack/`), regardless of where the hook is invoked from.
+
+### Impact
+
+Users will no longer experience issues with the worker starting from the wrong location. The plugin now works correctly when installed via marketplace without manual intervention.
+
+### Verification
+
+Run `pm2 info claude-mem-worker` to verify:
+- **exec cwd** should be: `/Users/[username]/.claude/plugins/marketplaces/thedotmack`
+- **script path** should be: `/Users/[username]/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs`
+
+## [6.0.7] - 2025-11-17
+
+## Critical Hotfix: Database Migration Issue (#121)
+
+This is an emergency hotfix addressing a critical database migration bug that prevented claude-mem from loading for some users.
+
+### What was fixed
+
+**Issue**: Users were seeing `SqliteError: no such column: discovery_tokens` when starting Claude Code.
+
+**Root Cause**: The `ensureDiscoveryTokensColumn` migration was using version number 7, which was already taken by another migration (`removeSessionSummariesUniqueConstraint`). This duplicate version number caused migration tracking issues in databases that were upgraded through multiple versions.
+
+**Fix**: 
+- Changed migration version from 7 to 11 (next available)
+- Added explicit schema_versions check to prevent unnecessary re-runs
+- Improved error propagation and documentation
+
+### Upgrade Instructions
+
+**If you're experiencing the error:**
+
+Option 1 - Manual fix (preserves history):
+```bash
+sqlite3 ~/.claude-mem/claude-mem.db "ALTER TABLE observations ADD COLUMN discovery_tokens INTEGER DEFAULT 0; ALTER TABLE session_summaries ADD COLUMN discovery_tokens INTEGER DEFAULT 0;"
+```
+
+Option 2 - Delete and recreate (loses history):
+```bash
+rm ~/.claude-mem/claude-mem.db
+# Restart Claude Code - database will recreate with correct schema
+```
+
+Option 3 - Fresh install:
+Just upgrade to v6.0.7 and the migration will work correctly.
+
+### Changes
+
+- **Fixed**: Database migration version conflict (migration 7 → 11) (#121)
+- **Improved**: Migration error handling and schema_versions tracking
+
+### Full Changelog
+
+See [CHANGELOG.md](https://github.com/thedotmack/claude-mem/blob/main/CHANGELOG.md) for complete version history.
+
+---
+
+**Affected Users**: @liadtigloo @notmyself - this release fixes your reported issue. Please try one of the upgrade options above and let me know if the issue persists.
+
+Thanks to everyone who reported this issue with detailed error logs! 🙏
+
+## [6.0.6] - 2025-11-17
+
+## Critical Bugfix Release
 
 ### Fixed
+- **Database Migration**: Fixed critical bug where `discovery_tokens` migration logic trusted `schema_versions` table without verifying actual column existence (#121)
+- Migration now always checks if columns exist before queries, preventing "no such column" errors
+- Safe for all users - auto-migrates on next Claude Code session without data loss
+
+### Technical Details
+- Removed early return based on `schema_versions` check that could skip actual column verification
+- Migration now uses `PRAGMA table_info()` to verify column existence before every query
+- Ensures idempotent, safe schema migrations for SQLite databases
+
+### Impact
+- Users experiencing "SqliteError: no such column: discovery_tokens" will be automatically fixed
+- No manual intervention or database backup required
+- Update to v6.0.6 via marketplace or `git pull` and restart Claude Code
+
+**Affected Users**: All users who upgraded to v6.0.5 and experienced the migration error
+
+## [6.0.5] - 2025-11-17
+
+## Changes
+
+### Automatic MCP Server Cleanup
+- Automatic cleanup of orphaned MCP server processes on worker startup
+- Self-healing maintenance runs on every worker restart
+- Prevents orphaned process accumulation and resource leaks
+
+### Improvements
+- Removed manual cleanup notice from session context
+- Streamlined worker initialization process
+
+## What's Fixed
 - Memory leaks from orphaned uvx/python processes are now prevented automatically
 - Workers self-heal on every restart without manual intervention
+
+---
+
+**Release Date**: November 16, 2025
+**Plugin Version**: 6.0.5
 
 ## [6.0.4] - 2025-11-17
 
