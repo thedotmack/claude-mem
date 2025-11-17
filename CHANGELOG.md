@@ -4,6 +4,36 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [6.0.9] - 2025-11-17
+
+## Queue Depth Indicator Feature
+
+Added a real-time queue depth indicator to the viewer UI that displays the count of active work items (queued + currently processing).
+
+### Features
+- Visual badge next to claude-mem logo
+- Shows count of pending messages + active SDK generators
+- Only displays when queueDepth > 0
+- Subtle pulse animation for visual feedback
+- Theme-aware styling
+- Real-time updates via SSE
+
+### Implementation
+- Backend: Added `getTotalActiveWork()` method to SessionManager
+- Backend: Updated worker-service to broadcast queueDepth via SSE
+- Frontend: Enhanced Header component to display queue bubble
+- Frontend: Updated useSSE hook to track queueDepth state
+- Frontend: Added CSS styling with pulse animation
+
+### Closes
+- #122 - Implement queue depth indicator feature
+- #96 - Add real-time queue depth indicator to viewer UI
+- #97 - Fix inconsistent queue depth calculation
+
+### Credit
+Original implementation by @thedotmack in PR #96
+Bug fix by @copilot-swe-agent in PR #97
+
 ## [6.0.8] - 2025-11-17
 
 ## Critical Fix
