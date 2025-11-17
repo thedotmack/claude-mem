@@ -56,7 +56,9 @@ async function startWorker(): Promise<boolean> {
     }
 
     // Start using PM2 with the ecosystem config
+    // CRITICAL: Must set cwd to pluginRoot so PM2 starts from marketplace directory
     execSync(`pm2 start "${ecosystemPath}"`, {
+      cwd: pluginRoot,
       stdio: 'pipe',
       encoding: 'utf-8'
     });
