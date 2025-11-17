@@ -1,3 +1,5 @@
+/* To @claude: be vigilant about only leaving evergreen context in this file, claude-mem handles working context separately. */
+
 # Claude-Mem: AI Development Instructions
 
 ## What This Project Is
@@ -122,6 +124,7 @@ Changes to React components, styles, or viewer logic require rebuilding and rest
 3. **Fail Fast**: Explicit errors beat silent failures
 4. **Simple First**: Write the obvious solution, optimize only if needed
 5. **Delete Aggressively**: Less code = fewer bugs
+6. **Semantic Naming**: Always name variables, parameters, and API endpoints with verbose, self-documenting names that optimize for comprehension by both humans and LLMs, not brevity (e.g., `wait_until_obs_is_saved=true` vs `wait=true`)
 
 **Common anti-patterns to avoid:**
 - Ceremonial wrapper functions for constants (just export the constant)
@@ -145,8 +148,7 @@ Changes to React components, styles, or viewer logic require rebuilding and rest
 ### Modifying Database Schema
 1. Update schema in `src/services/sqlite/schema.ts`
 2. Update SessionStore/SessionSearch classes
-3. Migration strategy: The plugin currently recreates on schema changes (acceptable for alpha)
-4. TODO: Add proper migrations for production
+3. Migration strategy: The plugin currently recreates on schema changes (alpha phase). Production deployments will require proper migration handling.
 
 ### Debugging Worker Issues
 ```bash
