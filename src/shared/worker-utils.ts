@@ -2,10 +2,7 @@ import path from "path";
 import { homedir } from "os";
 import { existsSync, readFileSync } from "fs";
 import { execSync } from "child_process";
-import { fileURLToPath } from "url";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import { getPackageRoot } from "./paths.js";
 
 // Named constants for health checks
 const HEALTH_CHECK_TIMEOUT_MS = 100;
@@ -51,7 +48,7 @@ async function isWorkerHealthy(): Promise<boolean> {
 async function startWorker(): Promise<boolean> {
   try {
     // Find the ecosystem config file (built version in plugin/)
-    const pluginRoot = path.resolve(__dirname, '..', '..');
+    const pluginRoot = getPackageRoot();
     const ecosystemPath = path.join(pluginRoot, 'ecosystem.config.cjs');
 
     if (!existsSync(ecosystemPath)) {
