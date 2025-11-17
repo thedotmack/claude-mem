@@ -22,6 +22,7 @@ export interface ActiveSession {
   cumulativeInputTokens: number;   // Track input tokens for discovery cost
   cumulativeOutputTokens: number;  // Track output tokens for discovery cost
   currentToolUseId: string | null; // Endless Mode: currently processing tool_use_id
+  pendingObservationResolvers: Map<string, { resolve: (observation: any) => void, reject: (error: Error) => void }>; // Endless Mode: wait for observations
 }
 
 export interface PendingMessage {

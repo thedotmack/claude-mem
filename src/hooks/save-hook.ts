@@ -4,12 +4,13 @@
  */
 
 import { stdin } from 'process';
-import { readFileSync } from 'fs';
+import { readFileSync, writeFileSync, copyFileSync, renameSync, unlinkSync } from 'fs';
 import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { createHookResponse } from './hook-response.js';
 import { logger } from '../utils/logger.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
-import type { TranscriptEntry, AssistantTranscriptEntry, ToolUseContent } from '../types/transcript.js';
+import type { TranscriptEntry, AssistantTranscriptEntry, ToolUseContent, UserTranscriptEntry, ToolResultContent } from '../types/transcript.js';
+import type { Observation } from '../services/worker-types.js';
 
 export interface PostToolUseInput {
   session_id: string;
@@ -69,6 +70,199 @@ function getLatestToolUseId(transcriptPath: string, toolName: string): string | 
   } catch (error) {
     logger.warn('HOOK', 'Failed to read transcript for tool_use_id', { transcriptPath }, error);
     return null;
+  }
+}
+
+/**
+ * Format an observation as markdown for Endless Mode compression
+ */
+function formatObservationAsMarkdown(obs: Observation): string {
+  const parts: string[] = [];
+
+  // Title and subtitle
+  parts.push(`# ${obs.title}`);
+  if (obs.subtitle) {
+    parts.push(`**${obs.subtitle}**`);
+  }
+  parts.push('');
+
+  // Narrative
+  if (obs.narrative) {
+    parts.push(obs.narrative);
+    parts.push('');
+  }
+
+  // Facts (handle both array and JSON string)
+  if (obs.facts) {
+    try {
+      const factsArray = Array.isArray(obs.facts) ? obs.facts : JSON.parse(obs.facts);
+      if (Array.isArray(factsArray) && factsArray.length > 0) {
+        parts.push('**Key Facts:**');
+        factsArray.forEach((fact: string) => parts.push(`- ${fact}`));
+        parts.push('');
+      }
+    } catch (e) {
+      // Skip malformed facts
+    }
+  }
+
+  // Concepts (handle both array and JSON string)
+  if (obs.concepts) {
+    try {
+      const conceptsArray = Array.isArray(obs.concepts) ? obs.concepts : JSON.parse(obs.concepts);
+      if (Array.isArray(conceptsArray) && conceptsArray.length > 0) {
+        parts.push(`**Concepts**: ${conceptsArray.join(', ')}`);
+        parts.push('');
+      }
+    } catch (e) {
+      // Skip malformed concepts
+    }
+  }
+
+  // Files (handle both array and JSON string)
+  if (obs.files_read) {
+    try {
+      const filesArray = Array.isArray(obs.files_read) ? obs.files_read : JSON.parse(obs.files_read);
+      if (Array.isArray(filesArray) && filesArray.length > 0) {
+        parts.push(`**Files Read**: ${filesArray.join(', ')}`);
+        parts.push('');
+      }
+    } catch (e) {
+      // Skip malformed files
+    }
+  }
+
+  if (obs.files_modified) {
+    try {
+      const filesArray = Array.isArray(obs.files_modified) ? obs.files_modified : JSON.parse(obs.files_modified);
+      if (Array.isArray(filesArray) && filesArray.length > 0) {
+        parts.push(`**Files Modified**: ${filesArray.join(', ')}`);
+        parts.push('');
+      }
+    } catch (e) {
+      // Skip malformed files
+    }
+  }
+
+  // Footer
+  parts.push('---');
+  parts.push('*[Compressed by Endless Mode]*');
+
+  return parts.join('\n');
+}
+
+/**
+ * Transform transcript JSONL file by replacing tool result with compressed observation
+ * Phase 2 of Endless Mode implementation
+ */
+async function transformTranscript(
+  transcriptPath: string,
+  toolUseId: string,
+  observation: Observation
+): Promise<void> {
+  // Create backup
+  const backupPath = `${transcriptPath}.backup`;
+  copyFileSync(transcriptPath, backupPath);
+
+  try {
+    // Read transcript
+    const transcriptContent = readFileSync(transcriptPath, 'utf-8');
+    const lines = transcriptContent.trim().split('\n');
+
+    // Track transformation
+    let found = false;
+    let originalSize = 0;
+    let compressedSize = 0;
+
+    // Process each line
+    const transformedLines = lines.map(line => {
+      if (!line.trim()) return line;
+
+      try {
+        const entry: TranscriptEntry = JSON.parse(line);
+
+        // Look for user messages with tool_result content
+        if (entry.type === 'user') {
+          const userEntry = entry as UserTranscriptEntry;
+          const content = userEntry.message.content;
+
+          // Check if content is an array
+          if (Array.isArray(content)) {
+            // Find and replace matching tool_result
+            for (let i = 0; i < content.length; i++) {
+              const item = content[i];
+              if (item.type === 'tool_result') {
+                const toolResult = item as ToolResultContent;
+                if (toolResult.tool_use_id === toolUseId) {
+                  found = true;
+
+                  // Measure original size
+                  originalSize = JSON.stringify(toolResult.content).length;
+
+                  // Format compressed observation
+                  const compressedContent = formatObservationAsMarkdown(observation);
+                  compressedSize = compressedContent.length;
+
+                  // Replace content
+                  toolResult.content = compressedContent;
+
+                  logger.success('HOOK', 'Transformed tool result', {
+                    toolUseId,
+                    originalSize,
+                    compressedSize,
+                    savings: `${Math.round((1 - compressedSize / originalSize) * 100)}%`
+                  });
+                }
+              }
+            }
+          }
+        }
+
+        return JSON.stringify(entry);
+      } catch (parseError) {
+        // Return malformed lines as-is
+        return line;
+      }
+    });
+
+    if (!found) {
+      logger.warn('HOOK', 'Tool result not found in transcript', { toolUseId });
+      // Clean up backup and return without modifying
+      unlinkSync(backupPath);
+      return;
+    }
+
+    // Write to temp file
+    const tempPath = `${transcriptPath}.tmp`;
+    writeFileSync(tempPath, transformedLines.join('\n') + '\n', 'utf-8');
+
+    // Validate JSONL structure
+    const validatedContent = readFileSync(tempPath, 'utf-8');
+    const validatedLines = validatedContent.trim().split('\n');
+    for (const line of validatedLines) {
+      if (line.trim()) {
+        JSON.parse(line); // Will throw if invalid
+      }
+    }
+
+    // Atomic rename
+    renameSync(tempPath, transcriptPath);
+
+    // Clean up backup
+    unlinkSync(backupPath);
+
+    logger.success('HOOK', 'Transcript transformation complete', {
+      toolUseId,
+      originalSize,
+      compressedSize,
+      savings: `${Math.round((1 - compressedSize / originalSize) * 100)}%`
+    });
+  } catch (error) {
+    // Rollback on error
+    logger.failure('HOOK', 'Transcript transformation failed, rolling back', { toolUseId }, error);
+    copyFileSync(backupPath, transcriptPath);
+    unlinkSync(backupPath);
+    throw error;
   }
 }
 

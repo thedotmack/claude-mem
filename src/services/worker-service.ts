@@ -441,11 +441,15 @@ export class WorkerService {
   /**
    * Queue observations for processing
    * CRITICAL: Ensures SDK agent is running to process the queue (ALWAYS SAVE EVERYTHING)
+   *
+   * Supports synchronous mode via query parameter: ?wait_until_obs_is_saved=true
+   * In sync mode, waits for observation to be created and returns observation data
    */
-  private handleObservations(req: Request, res: Response): void {
+  private async handleObservations(req: Request, res: Response): Promise<void> {
     try {
       const sessionDbId = parseInt(req.params.sessionDbId, 10);
       const { tool_name, tool_input, tool_response, prompt_number, cwd, tool_use_id } = req.body;
+      const wait_until_obs_is_saved = req.query.wait_until_obs_is_saved === 'true';
 
       this.sessionManager.queueObservation(sessionDbId, {
         tool_name,
@@ -486,7 +490,67 @@ export class WorkerService {
         sessionDbId
       });
 
-      res.json({ status: 'queued' });
+      // Endless Mode: Synchronous mode - wait for observation to be created
+      if (wait_until_obs_is_saved && tool_use_id && session) {
+        logger.info('WORKER', 'Waiting for observation (synchronous mode)', {
+          sessionId: sessionDbId,
+          toolUseId: tool_use_id,
+          timeout: '90s'
+        });
+
+        const TIMEOUT_MS = 90000; // 90 seconds
+        const startTime = Date.now();
+
+        try {
+          // Create promise that will be resolved when observation is saved
+          const observationPromise = new Promise<any>((resolve, reject) => {
+            session.pendingObservationResolvers.set(tool_use_id, { resolve, reject });
+
+            // Set timeout to reject after 90s
+            setTimeout(() => {
+              if (session.pendingObservationResolvers.has(tool_use_id)) {
+                session.pendingObservationResolvers.delete(tool_use_id);
+                reject(new Error('Observation creation timeout (90s exceeded)'));
+              }
+            }, TIMEOUT_MS);
+          });
+
+          // Wait for observation or timeout
+          const observation = await observationPromise;
+          const processingTimeMs = Date.now() - startTime;
+
+          logger.success('WORKER', 'Observation ready (synchronous mode)', {
+            sessionId: sessionDbId,
+            toolUseId: tool_use_id,
+            obsId: observation.id,
+            processingTimeMs
+          });
+
+          res.json({
+            status: 'completed',
+            observation,
+            processing_time_ms: processingTimeMs
+          });
+        } catch (error) {
+          // Timeout occurred - fall back to async behavior
+          const processingTimeMs = Date.now() - startTime;
+          logger.warn('WORKER', 'Observation timeout (falling back to async)', {
+            sessionId: sessionDbId,
+            toolUseId: tool_use_id,
+            processingTimeMs
+          });
+
+          res.json({
+            status: 'timeout',
+            observation: null,
+            processing_time_ms: processingTimeMs,
+            message: 'Observation creation exceeded timeout, processing continues asynchronously'
+          });
+        }
+      } else {
+        // Async mode (default behavior)
+        res.json({ status: 'queued' });
+      }
     } catch (error) {
       logger.failure('WORKER', 'Observation queuing failed', {}, error as Error);
       res.status(500).json({ error: (error as Error).message });

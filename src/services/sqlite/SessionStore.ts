@@ -530,13 +530,13 @@ export class SessionStore {
   }
 
   /**
-   * Add tool_use_id column to observations table (migration 11)
+   * Add tool_use_id column to observations table (migration 12)
    * Part of Endless Mode implementation for real-time context compression
    */
   private addToolUseIdColumn(): void {
     try {
       // Check if migration already applied
-      const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(11) as {version: number} | undefined;
+      const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(12) as {version: number} | undefined;
       if (applied) return;
 
       // Check if tool_use_id column exists
@@ -553,7 +553,7 @@ export class SessionStore {
       }
 
       // Record migration
-      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(11, new Date().toISOString());
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(12, new Date().toISOString());
     } catch (error: any) {
       console.error('[SessionStore] Tool use ID migration error:', error.message);
     }

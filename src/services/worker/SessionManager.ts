@@ -92,7 +92,8 @@ export class SessionManager {
       startTime: Date.now(),
       cumulativeInputTokens: 0,
       cumulativeOutputTokens: 0,
-      currentToolUseId: null
+      currentToolUseId: null,
+      pendingObservationResolvers: new Map()
     };
 
     this.sessions.set(sessionDbId, session);
