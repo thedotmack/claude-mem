@@ -4,6 +4,56 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [6.0.7] - 2025-11-17
+
+## Critical Hotfix: Database Migration Issue (#121)
+
+This is an emergency hotfix addressing a critical database migration bug that prevented claude-mem from loading for some users.
+
+### What was fixed
+
+**Issue**: Users were seeing `SqliteError: no such column: discovery_tokens` when starting Claude Code.
+
+**Root Cause**: The `ensureDiscoveryTokensColumn` migration was using version number 7, which was already taken by another migration (`removeSessionSummariesUniqueConstraint`). This duplicate version number caused migration tracking issues in databases that were upgraded through multiple versions.
+
+**Fix**: 
+- Changed migration version from 7 to 11 (next available)
+- Added explicit schema_versions check to prevent unnecessary re-runs
+- Improved error propagation and documentation
+
+### Upgrade Instructions
+
+**If you're experiencing the error:**
+
+Option 1 - Manual fix (preserves history):
+```bash
+sqlite3 ~/.claude-mem/claude-mem.db "ALTER TABLE observations ADD COLUMN discovery_tokens INTEGER DEFAULT 0; ALTER TABLE session_summaries ADD COLUMN discovery_tokens INTEGER DEFAULT 0;"
+```
+
+Option 2 - Delete and recreate (loses history):
+```bash
+rm ~/.claude-mem/claude-mem.db
+# Restart Claude Code - database will recreate with correct schema
+```
+
+Option 3 - Fresh install:
+Just upgrade to v6.0.7 and the migration will work correctly.
+
+### Changes
+
+- **Fixed**: Database migration version conflict (migration 7 → 11) (#121)
+- **Improved**: Migration error handling and schema_versions tracking
+
+### Full Changelog
+
+See [CHANGELOG.md](https://github.com/thedotmack/claude-mem/blob/main/CHANGELOG.md) for complete version history.
+
+---
+
+**Affected Users**: @liadtigloo @notmyself - this release fixes your reported issue. Please try one of the upgrade options above and let me know if the issue persists.
+
+Thanks to everyone who reported this issue with detailed error logs! 🙏
+
 ## [6.0.6] - 2025-11-17
 
 ## Critical Bugfix Release
