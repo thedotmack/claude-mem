@@ -322,9 +322,11 @@ export class WorkerService {
 
     // Send initial processing status (based on queue depth + active generators)
     const isProcessing = this.sessionManager.isAnySessionProcessing();
+    const queueDepth = this.sessionManager.getTotalActiveWork(); // Includes queued + actively processing
     this.sseBroadcaster.broadcast({
       type: 'processing_status',
-      isProcessing
+      isProcessing,
+      queueDepth
     });
   }
 
@@ -806,11 +808,12 @@ export class WorkerService {
   }
 
   /**
-   * Get processing status (for viewer UI spinner)
+   * Get processing status (for viewer UI spinner and queue indicator)
    */
   private handleGetProcessingStatus(req: Request, res: Response): void {
     const isProcessing = this.sessionManager.isAnySessionProcessing();
-    res.json({ isProcessing });
+    const queueDepth = this.sessionManager.getTotalActiveWork(); // Includes queued + actively processing
+    res.json({ isProcessing, queueDepth });
   }
 
   // ============================================================================
@@ -823,7 +826,7 @@ export class WorkerService {
    */
   broadcastProcessingStatus(): void {
     const isProcessing = this.sessionManager.isAnySessionProcessing();
-    const queueDepth = this.sessionManager.getTotalQueueDepth();
+    const queueDepth = this.sessionManager.getTotalActiveWork(); // Includes queued + actively processing
     const activeSessions = this.sessionManager.getActiveSessionCount();
 
     logger.info('WORKER', 'Broadcasting processing status', {
@@ -834,7 +837,8 @@ export class WorkerService {
 
     this.sseBroadcaster.broadcast({
       type: 'processing_status',
-      isProcessing
+      isProcessing,
+      queueDepth
     });
   }
 

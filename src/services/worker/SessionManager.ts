@@ -257,6 +257,23 @@ export class SessionManager {
   }
 
   /**
+   * Get total active work (queued + currently processing)
+   * Counts both pending messages and items actively being processed by SDK agents
+   */
+  getTotalActiveWork(): number {
+    let total = 0;
+    for (const session of this.sessions.values()) {
+      // Count queued messages
+      total += session.pendingMessages.length;
+      // Count currently processing item (1 per active generator)
+      if (session.generatorPromise !== null) {
+        total += 1;
+      }
+    }
+    return total;
+  }
+
+  /**
    * Check if any session is actively processing (has pending messages OR active generator)
    * Used for activity indicator to prevent spinner from stopping while SDK is processing
    */
