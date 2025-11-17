@@ -4,20 +4,48 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [6.0.5] - 2025-11-16
+## [6.0.6] - 2025-11-17
 
-### Added
-- Automatic cleanup of orphaned MCP server processes on worker startup
-- Self-healing maintenance runs on every worker restart
-
-### Improved
-- Removed manual cleanup notice from session context
-- Streamlined worker initialization process
-- Prevents orphaned process accumulation and resource leaks
+## Critical Bugfix Release
 
 ### Fixed
+- **Database Migration**: Fixed critical bug where `discovery_tokens` migration logic trusted `schema_versions` table without verifying actual column existence (#121)
+- Migration now always checks if columns exist before queries, preventing "no such column" errors
+- Safe for all users - auto-migrates on next Claude Code session without data loss
+
+### Technical Details
+- Removed early return based on `schema_versions` check that could skip actual column verification
+- Migration now uses `PRAGMA table_info()` to verify column existence before every query
+- Ensures idempotent, safe schema migrations for SQLite databases
+
+### Impact
+- Users experiencing "SqliteError: no such column: discovery_tokens" will be automatically fixed
+- No manual intervention or database backup required
+- Update to v6.0.6 via marketplace or `git pull` and restart Claude Code
+
+**Affected Users**: All users who upgraded to v6.0.5 and experienced the migration error
+
+## [6.0.5] - 2025-11-17
+
+## Changes
+
+### Automatic MCP Server Cleanup
+- Automatic cleanup of orphaned MCP server processes on worker startup
+- Self-healing maintenance runs on every worker restart
+- Prevents orphaned process accumulation and resource leaks
+
+### Improvements
+- Removed manual cleanup notice from session context
+- Streamlined worker initialization process
+
+## What's Fixed
 - Memory leaks from orphaned uvx/python processes are now prevented automatically
 - Workers self-heal on every restart without manual intervention
+
+---
+
+**Release Date**: November 16, 2025
+**Plugin Version**: 6.0.5
 
 ## [6.0.4] - 2025-11-17
 
