@@ -283,29 +283,28 @@ export class SDKAgent {
       });
 
       // Endless Mode: Resolve any pending observation promise for this tool_use_id
-      if (session.currentToolUseId && session.pendingObservationResolvers.has(session.currentToolUseId)) {
-        const resolver = session.pendingObservationResolvers.get(session.currentToolUseId)!;
-        session.pendingObservationResolvers.delete(session.currentToolUseId);
-
-        // Resolve with the observation data
-        resolver.resolve({
-          id: obsId,
-          type: obs.type,
-          title: obs.title,
-          subtitle: obs.subtitle,
-          narrative: obs.narrative || null,
-          facts: obs.facts || [],
-          concepts: obs.concepts || [],
-          files_read: obs.files || [],
-          created_at_epoch: createdAtEpoch,
-          tool_use_id: session.currentToolUseId
-        });
-
-        logger.debug('SDK', 'Resolved pending observation promise', {
-          sessionId: session.sessionDbId,
-          obsId,
-          toolUseId: session.currentToolUseId
-        });
+      if (session.currentToolUseId) {
+        const resolver = session.pendingObservationResolvers.get(session.currentToolUseId);
+        if (resolver) {
+          session.pendingObservationResolvers.delete(session.currentToolUseId);
+          resolver({
+            id: obsId,
+            type: obs.type,
+            title: obs.title,
+            subtitle: obs.subtitle,
+            narrative: obs.narrative || null,
+            facts: obs.facts || [],
+            concepts: obs.concepts || [],
+            files_read: obs.files || [],
+            created_at_epoch: createdAtEpoch,
+            tool_use_id: session.currentToolUseId
+          });
+          logger.debug('SDK', 'Resolved pending observation promise', {
+            sessionId: session.sessionDbId,
+            obsId,
+            toolUseId: session.currentToolUseId
+          });
+        }
       }
 
       // Sync to Chroma with error logging

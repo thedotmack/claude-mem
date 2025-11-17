@@ -506,12 +506,17 @@ export class WorkerService {
         try {
           // Create promise that will be resolved when observation is saved
           const observationPromise = new Promise<any>((resolve, reject) => {
-            session.pendingObservationResolvers.set(tool_use_id, { resolve, reject });
+            session.pendingObservationResolvers.set(tool_use_id, resolve);
 
             // Set timeout to reject after 90s
             setTimeout(() => {
               if (session.pendingObservationResolvers.has(tool_use_id)) {
                 session.pendingObservationResolvers.delete(tool_use_id);
+                logger.warn('WORKER', 'Observation timeout', {
+                  sessionId: sessionDbId,
+                  tool_use_id,
+                  timeoutMs: TIMEOUT_MS
+                });
                 reject(new Error('Observation creation timeout (90s exceeded)'));
               }
             }, TIMEOUT_MS);
