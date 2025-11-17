@@ -178,6 +178,9 @@ export class WorkerService {
     this.app.get('/api/context/timeline', this.handleGetContextTimeline.bind(this));
     this.app.get('/api/timeline/by-query', this.handleGetTimelineByQuery.bind(this));
     this.app.get('/api/search/help', this.handleSearchHelp.bind(this));
+
+    // Endless Mode: batch lookup observations by tool_use_id
+    this.app.post('/api/observations/batch-lookup', this.handleBatchLookupObservations.bind(this));
   }
 
   /**
@@ -442,14 +445,15 @@ export class WorkerService {
   private handleObservations(req: Request, res: Response): void {
     try {
       const sessionDbId = parseInt(req.params.sessionDbId, 10);
-      const { tool_name, tool_input, tool_response, prompt_number, cwd } = req.body;
+      const { tool_name, tool_input, tool_response, prompt_number, cwd, tool_use_id } = req.body;
 
       this.sessionManager.queueObservation(sessionDbId, {
         tool_name,
         tool_input,
         tool_response,
         prompt_number,
-        cwd
+        cwd,
+        tool_use_id
       });
 
       // CRITICAL: Ensure SDK agent is running to consume the queue
@@ -1212,6 +1216,34 @@ export class WorkerService {
         'curl "http://localhost:37777/api/context/timeline?anchor=123&depth_before=5&depth_after=5"'
       ]
     });
+  }
+
+  /**
+   * Batch lookup observations by tool_use_ids (for Endless Mode transform layer)
+   * Used by hooks to transform transcript JSONL with compressed observations
+   */
+  private handleBatchLookupObservations(req: Request, res: Response): void {
+    try {
+      const { tool_use_ids } = req.body;
+
+      if (!Array.isArray(tool_use_ids)) {
+        res.status(400).json({ error: 'tool_use_ids must be an array' });
+        return;
+      }
+
+      const observationsMap = this.dbManager.getSessionStore().getObservationsByToolUseIds(tool_use_ids);
+
+      // Convert Map to plain object for JSON response
+      const result: Record<string, any> = {};
+      for (const [toolUseId, observation] of observationsMap) {
+        result[toolUseId] = observation;
+      }
+
+      res.json(result);
+    } catch (error: any) {
+      console.error('[WorkerService] Batch lookup error:', error.message);
+      res.status(500).json({ error: 'Internal server error' });
+    }
   }
 }
 

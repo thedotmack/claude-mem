@@ -91,7 +91,8 @@ export class SessionManager {
       lastPromptNumber: promptNumber || this.dbManager.getSessionStore().getPromptCounter(sessionDbId),
       startTime: Date.now(),
       cumulativeInputTokens: 0,
-      cumulativeOutputTokens: 0
+      cumulativeOutputTokens: 0,
+      currentToolUseId: null
     };
 
     this.sessions.set(sessionDbId, session);
@@ -137,7 +138,8 @@ export class SessionManager {
       tool_input: data.tool_input,
       tool_response: data.tool_response,
       prompt_number: data.prompt_number,
-      cwd: data.cwd
+      cwd: data.cwd,
+      tool_use_id: data.tool_use_id
     });
 
     const afterDepth = session.pendingMessages.length;

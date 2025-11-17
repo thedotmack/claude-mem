@@ -205,6 +205,9 @@ export class SDKAgent {
           session.lastPromptNumber = message.prompt_number;
         }
 
+        // Track current tool_use_id for Endless Mode (so it can be linked when observation is stored)
+        session.currentToolUseId = message.tool_use_id || null;
+
         yield {
           type: 'user',
           message: {
@@ -254,10 +257,16 @@ export class SDKAgent {
 
     // Store observations
     for (const obs of observations) {
+      // Include tool_use_id for Endless Mode linking
+      const obsWithToolUseId = {
+        ...obs,
+        tool_use_id: session.currentToolUseId
+      };
+
       const { id: obsId, createdAtEpoch } = this.dbManager.getSessionStore().storeObservation(
         session.claudeSessionId,
         session.project,
-        obs,
+        obsWithToolUseId,
         session.lastPromptNumber,
         discoveryTokens
       );

@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import { DATA_DIR, DB_PATH, ensureDir } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
+import type { ObservationRow } from './types.js';
 
 /**
  * Session data store for SDK sessions, observations, and summaries
@@ -29,6 +30,7 @@ export class SessionStore {
     this.makeObservationsTextNullable();
     this.createUserPromptsTable();
     this.ensureDiscoveryTokensColumn();
+    this.addToolUseIdColumn();
   }
 
   /**
@@ -524,6 +526,36 @@ export class SessionStore {
       this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(7, new Date().toISOString());
     } catch (error: any) {
       console.error('[SessionStore] Discovery tokens migration error:', error.message);
+    }
+  }
+
+  /**
+   * Add tool_use_id column to observations table (migration 11)
+   * Part of Endless Mode implementation for real-time context compression
+   */
+  private addToolUseIdColumn(): void {
+    try {
+      // Check if migration already applied
+      const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(11) as {version: number} | undefined;
+      if (applied) return;
+
+      // Check if tool_use_id column exists
+      const tableInfo = this.db.pragma('table_info(observations)');
+      const hasToolUseId = (tableInfo as any[]).some((col: any) => col.name === 'tool_use_id');
+
+      if (!hasToolUseId) {
+        this.db.exec('ALTER TABLE observations ADD COLUMN tool_use_id TEXT');
+        console.error('[SessionStore] Added tool_use_id column to observations table');
+
+        // Create unique index for efficient lookups
+        this.db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_observations_tool_use_id ON observations(tool_use_id) WHERE tool_use_id IS NOT NULL');
+        console.error('[SessionStore] Created unique index on tool_use_id column');
+      }
+
+      // Record migration
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(11, new Date().toISOString());
+    } catch (error: any) {
+      console.error('[SessionStore] Tool use ID migration error:', error.message);
     }
   }
 
@@ -1108,6 +1140,7 @@ export class SessionStore {
       concepts: string[];
       files_read: string[];
       files_modified: string[];
+      tool_use_id?: string | null;
     },
     promptNumber?: number,
     discoveryTokens: number = 0
@@ -1141,8 +1174,8 @@ export class SessionStore {
     const stmt = this.db.prepare(`
       INSERT INTO observations
       (sdk_session_id, project, type, title, subtitle, facts, narrative, concepts,
-       files_read, files_modified, prompt_number, discovery_tokens, created_at, created_at_epoch)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       files_read, files_modified, prompt_number, discovery_tokens, tool_use_id, created_at, created_at_epoch)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
@@ -1158,6 +1191,7 @@ export class SessionStore {
       JSON.stringify(observation.files_modified),
       promptNumber || null,
       discoveryTokens,
+      observation.tool_use_id || null,
       now.toISOString(),
       nowEpoch
     );
@@ -1166,6 +1200,49 @@ export class SessionStore {
       id: Number(result.lastInsertRowid),
       createdAtEpoch: nowEpoch
     };
+  }
+
+  /**
+   * Get observation by tool_use_id (for Endless Mode transform layer)
+   * Returns the compressed observation data for replacing tool use content
+   */
+  getObservationByToolUseId(toolUseId: string): ObservationRow | null {
+    const stmt = this.db.prepare(`
+      SELECT * FROM observations
+      WHERE tool_use_id = ?
+      LIMIT 1
+    `);
+
+    const result = stmt.get(toolUseId) as ObservationRow | undefined;
+    return result || null;
+  }
+
+  /**
+   * Get observations by array of tool_use_ids (for Endless Mode batch transform)
+   * Returns map of tool_use_id -> ObservationRow for efficient lookup
+   */
+  getObservationsByToolUseIds(toolUseIds: string[]): Map<string, ObservationRow> {
+    if (toolUseIds.length === 0) {
+      return new Map();
+    }
+
+    const placeholders = toolUseIds.map(() => '?').join(',');
+    const stmt = this.db.prepare(`
+      SELECT * FROM observations
+      WHERE tool_use_id IN (${placeholders})
+    `);
+
+    const results = stmt.all(...toolUseIds) as ObservationRow[];
+
+    // Build map for O(1) lookup
+    const map = new Map<string, ObservationRow>();
+    for (const row of results) {
+      if (row.tool_use_id) {
+        map.set(row.tool_use_id, row);
+      }
+    }
+
+    return map;
   }
 
   /**
