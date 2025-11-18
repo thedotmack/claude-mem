@@ -145,7 +145,11 @@ export class SessionSearch {
    * @param text - User input to escape for FTS5 MATCH queries
    * @returns Safely escaped FTS5 query string
    */
-  private escapeFTS5(text: string): string {
+  /**
+   * FALLBACK ONLY - FTS5 keyword search when ChromaDB unavailable
+   * FTS5 is degraded search (no semantic understanding) - only used when uvx/Python/ChromaDB disabled
+   */
+  private escapeFTS5_fallback_when_chroma_unavailable(text: string): string {
     // Escape internal double quotes by doubling them (FTS5 standard)
     // Then wrap the entire string in double quotes for phrase search
     return `"${text.replace(/"/g, '""')}"`;
@@ -243,14 +247,36 @@ export class SessionSearch {
   }
 
   /**
-   * Search observations using FTS5 full-text search
+   * Search observations using FTS5 full-text search (fallback when ChromaDB unavailable)
+   * OR filter-only direct SQLite query when no query text provided
    */
-  searchObservations(query: string, options: SearchOptions = {}): ObservationSearchResult[] {
+  searchObservations(query: string | undefined, options: SearchOptions = {}): ObservationSearchResult[] {
     const params: any[] = [];
     const { limit = 50, offset = 0, orderBy = 'relevance', ...filters } = options;
 
-    // Build FTS5 match query
-    const ftsQuery = this.escapeFTS5(query);
+    // FILTER-ONLY PATH: When no query text, skip FTS5 and query observations table directly
+    if (!query) {
+      const filterClause = this.buildFilterClause(filters, params, 'o');
+      if (!filterClause) {
+        throw new Error('Either query or filters required for search');
+      }
+
+      const orderClause = this.buildOrderClause(orderBy, false); // No FTS5 rank available
+
+      const sql = `
+        SELECT o.*, o.discovery_tokens
+        FROM observations o
+        WHERE ${filterClause}
+        ${orderClause}
+        LIMIT ? OFFSET ?
+      `;
+
+      params.push(limit, offset);
+      return this.db.prepare(sql).all(...params) as ObservationSearchResult[];
+    }
+
+    // FTS5 PATH: When query text exists (fallback mode when ChromaDB unavailable)
+    const ftsQuery = this.escapeFTS5_fallback_when_chroma_unavailable(query);
     params.push(ftsQuery);
 
     // Build filter conditions
@@ -296,14 +322,40 @@ export class SessionSearch {
   }
 
   /**
-   * Search session summaries using FTS5 full-text search
+   * Search session summaries using FTS5 full-text search (fallback when ChromaDB unavailable)
+   * OR filter-only direct SQLite query when no query text provided
    */
-  searchSessions(query: string, options: SearchOptions = {}): SessionSummarySearchResult[] {
+  searchSessions(query: string | undefined, options: SearchOptions = {}): SessionSummarySearchResult[] {
     const params: any[] = [];
     const { limit = 50, offset = 0, orderBy = 'relevance', ...filters } = options;
 
-    // Build FTS5 match query
-    const ftsQuery = this.escapeFTS5(query);
+    // FILTER-ONLY PATH: When no query text, skip FTS5 and query session_summaries table directly
+    if (!query) {
+      const filterOptions = { ...filters };
+      delete filterOptions.type;
+      const filterClause = this.buildFilterClause(filterOptions, params, 's');
+      if (!filterClause) {
+        throw new Error('Either query or filters required for search');
+      }
+
+      const orderClause = orderBy === 'date_asc'
+        ? 'ORDER BY s.created_at_epoch ASC'
+        : 'ORDER BY s.created_at_epoch DESC';
+
+      const sql = `
+        SELECT s.*, s.discovery_tokens
+        FROM session_summaries s
+        WHERE ${filterClause}
+        ${orderClause}
+        LIMIT ? OFFSET ?
+      `;
+
+      params.push(limit, offset);
+      return this.db.prepare(sql).all(...params) as SessionSummarySearchResult[];
+    }
+
+    // FTS5 PATH: When query text exists (fallback mode when ChromaDB unavailable)
+    const ftsQuery = this.escapeFTS5_fallback_when_chroma_unavailable(query);
     params.push(ftsQuery);
 
     // Build filter conditions (without type filter - not applicable to summaries)
@@ -485,15 +537,12 @@ export class SessionSearch {
   }
 
   /**
-   * Search user prompts with full-text search
+   * Search user prompts with full-text search (fallback when ChromaDB unavailable)
+   * OR filter-only direct SQLite query when no query text provided
    */
-  searchUserPrompts(query: string, options: SearchOptions = {}): UserPromptSearchResult[] {
+  searchUserPrompts(query: string | undefined, options: SearchOptions = {}): UserPromptSearchResult[] {
     const params: any[] = [];
     const { limit = 20, offset = 0, orderBy = 'relevance', ...filters } = options;
-
-    // Build FTS5 match query
-    const ftsQuery = this.escapeFTS5(query);
-    params.push(ftsQuery);
 
     // Build filter conditions (join with sdk_sessions for project filtering)
     const baseConditions: string[] = [];
@@ -516,7 +565,55 @@ export class SessionSearch {
       }
     }
 
-    const whereClause = baseConditions.length > 0 ? `AND ${baseConditions.join(' AND ')}` : '';
+    // FILTER-ONLY PATH: When no query text, skip FTS5 and query user_prompts table directly
+    if (!query) {
+      if (baseConditions.length === 0) {
+        throw new Error('Either query or filters required for search');
+      }
+
+      const whereClause = `WHERE ${baseConditions.join(' AND ')}`;
+      const orderClause = orderBy === 'date_asc'
+        ? 'ORDER BY up.created_at_epoch ASC'
+        : 'ORDER BY up.created_at_epoch DESC';
+
+      const sql = `
+        SELECT up.*
+        FROM user_prompts up
+        JOIN sdk_sessions s ON up.claude_session_id = s.claude_session_id
+        ${whereClause}
+        ${orderClause}
+        LIMIT ? OFFSET ?
+      `;
+
+      params.push(limit, offset);
+      return this.db.prepare(sql).all(...params) as UserPromptSearchResult[];
+    }
+
+    // FTS5 PATH: When query text exists (fallback mode when ChromaDB unavailable)
+    const ftsQuery = this.escapeFTS5_fallback_when_chroma_unavailable(query);
+    const ftsParams: any[] = [ftsQuery];
+
+    // Re-build filter conditions for FTS5 path
+    const ftsConditions: string[] = [];
+    if (filters.project) {
+      ftsConditions.push('s.project = ?');
+      ftsParams.push(filters.project);
+    }
+    if (filters.dateRange) {
+      const { start, end } = filters.dateRange;
+      if (start) {
+        const startEpoch = typeof start === 'number' ? start : new Date(start).getTime();
+        ftsConditions.push('up.created_at_epoch >= ?');
+        ftsParams.push(startEpoch);
+      }
+      if (end) {
+        const endEpoch = typeof end === 'number' ? end : new Date(end).getTime();
+        ftsConditions.push('up.created_at_epoch <= ?');
+        ftsParams.push(endEpoch);
+      }
+    }
+
+    const whereClause = ftsConditions.length > 0 ? `AND ${ftsConditions.join(' AND ')}` : '';
 
     // Build ORDER BY
     const orderClause = orderBy === 'relevance'
@@ -539,9 +636,9 @@ export class SessionSearch {
       LIMIT ? OFFSET ?
     `;
 
-    params.push(limit, offset);
+    ftsParams.push(limit, offset);
 
-    const results = this.db.prepare(sql).all(...params) as UserPromptSearchResult[];
+    const results = this.db.prepare(sql).all(...ftsParams) as UserPromptSearchResult[];
 
     // Normalize rank to score
     if (results.length > 0) {

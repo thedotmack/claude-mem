@@ -363,7 +363,7 @@ const tools = [
     name: 'search',
     description: 'Unified search across all memory types (observations, sessions, and user prompts) using hybrid semantic + full-text search (ChromaDB primary, SQLite FTS5 fallback). Returns combined results from all document types. IMPORTANT: Always use index format first (default) to get an overview with minimal token usage, then use format: "full" only for specific items of interest.',
     inputSchema: z.object({
-      query: z.string().describe('Natural language search query (semantic ranking via ChromaDB, FTS5 fallback)'),
+      query: z.string().optional().describe('Natural language search query (semantic ranking via ChromaDB when available, FTS5 fallback if ChromaDB unavailable). Optional - omit for filter-only queries.'),
       format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default, RECOMMENDED for initial search), "full" for complete details (use only after reviewing index results)'),
       type: z.enum(['observations', 'sessions', 'prompts']).optional().describe('Filter by document type (observations, sessions, or prompts). Omit to search all types.'),
       obs_type: z.union([
@@ -399,10 +399,25 @@ const tools = [
         const searchSessions = !type || type === 'sessions';
         const searchPrompts = !type || type === 'prompts';
 
-        // Hybrid search: Try Chroma semantic search first
-        if (chromaClient) {
+        // PATH 1: FILTER-ONLY (no query text) - Skip Chroma/FTS5, use direct SQLite filtering
+        if (!query) {
+          console.error(`[search-server] Filter-only query (no query text), using direct SQLite filtering`);
+          const obsOptions = { ...options, type: obs_type, concepts, files };
+          if (searchObservations) {
+            observations = search.searchObservations(undefined, obsOptions);
+          }
+          if (searchSessions) {
+            sessions = search.searchSessions(undefined, options);
+          }
+          if (searchPrompts) {
+            prompts = search.searchUserPrompts(undefined, options);
+          }
+        }
+        // PATH 2: CHROMA SEMANTIC SEARCH (query text + Chroma available)
+        else if (chromaClient) {
+          let chromaSucceeded = false;
           try {
-            console.error(`[search-server] Using unified hybrid semantic search (type filter: ${type || 'all'})`);
+            console.error(`[search-server] Using ChromaDB semantic search (type filter: ${type || 'all'})`);
 
             // Build Chroma where filter for doc_type
             let whereFilter: Record<string, any> | undefined;
@@ -416,7 +431,8 @@ const tools = [
 
             // Step 1: Chroma semantic search with optional type filter
             const chromaResults = await queryChroma(query, 100, whereFilter);
-            console.error(`[search-server] Chroma returned ${chromaResults.ids.length} semantic matches`);
+            chromaSucceeded = true; // Chroma didn't throw error
+            console.error(`[search-server] ChromaDB returned ${chromaResults.ids.length} semantic matches`);
 
             if (chromaResults.ids.length > 0) {
               // Step 2: Filter by recency (90 days)
@@ -461,16 +477,33 @@ const tools = [
               }
 
               console.error(`[search-server] Hydrated ${observations.length} obs, ${sessions.length} sessions, ${prompts.length} prompts from SQLite`);
+            } else {
+              // Chroma returned 0 results - this is the correct answer, don't fall back to FTS5
+              console.error(`[search-server] ChromaDB found no matches (this is final - NOT falling back to FTS5)`);
             }
           } catch (chromaError: any) {
-            console.error('[search-server] Chroma query failed, falling back to FTS5:', chromaError.message);
-            // Fall through to FTS5 fallback
+            console.error('[search-server] ChromaDB failed, falling back to FTS5:', chromaError.message);
+            chromaSucceeded = false;
+          }
+
+          // PATH 3: FTS5 FALLBACK (Chroma failed/unavailable, NOT when Chroma returns 0)
+          if (!chromaSucceeded) {
+            console.error(`[search-server] Using FTS5 fallback search (ChromaDB unavailable)`);
+            const obsOptions = { ...options, type: obs_type, concepts, files };
+            if (searchObservations) {
+              observations = search.searchObservations(query, obsOptions);
+            }
+            if (searchSessions) {
+              sessions = search.searchSessions(query, options);
+            }
+            if (searchPrompts) {
+              prompts = search.searchUserPrompts(query, options);
+            }
           }
         }
-
-        // Fall back to FTS5 if Chroma unavailable or returned no results
-        if (observations.length === 0 && sessions.length === 0 && prompts.length === 0) {
-          console.error(`[search-server] Using FTS5 keyword search (type filter: ${type || 'all'})`);
+        // PATH 3: FTS5 FALLBACK (query text but no Chroma client)
+        else {
+          console.error(`[search-server] Using FTS5 fallback search (ChromaDB not initialized)`);
           const obsOptions = { ...options, type: obs_type, concepts, files };
           if (searchObservations) {
             observations = search.searchObservations(query, obsOptions);
