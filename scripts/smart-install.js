@@ -260,10 +260,27 @@ async function main() {
         log('', colors.reset);
         process.exit(1);
       }
-    }
 
-    // Worker will be started lazily when needed (e.g., when save-hook sends data)
-    // Context hook only needs database access, not the worker service
+      // Try to start the PM2 worker after fresh install
+      try {
+        log('🚀 Starting worker service...', colors.cyan);
+        const localPm2 = join(NODE_MODULES_PATH, '.bin', 'pm2');
+        const pm2Command = existsSync(localPm2) ? localPm2 : 'pm2';
+        const ecosystemPath = join(PLUGIN_ROOT, 'ecosystem.config.cjs');
+
+        execSync(`"${pm2Command}" start "${ecosystemPath}"`, {
+          cwd: PLUGIN_ROOT,
+          stdio: 'pipe',
+          encoding: 'utf-8'
+        });
+
+        log('✅ Worker service started', colors.green);
+      } catch (error) {
+        // Worker might already be running or PM2 not available - that's okay
+        // The ensureWorkerRunning() function will handle auto-start when needed
+        log('ℹ️  Worker will start automatically when needed', colors.dim);
+      }
+    }
 
     // Success - dependencies installed (if needed)
     process.exit(0);
