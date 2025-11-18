@@ -18,6 +18,7 @@ import { SessionSearch } from '../services/sqlite/SessionSearch.js';
 import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../services/sqlite/types.js';
 import { VECTOR_DB_DIR } from '../shared/paths.js';
+import { silentDebug } from '../utils/silent-debug.js';
 
 // Initialize search instances
 let search: SessionSearch;
@@ -45,18 +46,31 @@ async function queryChroma(
     throw new Error('Chroma client not initialized');
   }
 
+  silentDebug('queryChroma called', { query, limit, whereFilter });
+
+  const whereStringified = whereFilter ? JSON.stringify(whereFilter) : undefined;
+  silentDebug('where filter stringified', { whereFilter, whereStringified });
+
+  const arguments_obj = {
+    collection_name: COLLECTION_NAME,
+    query_texts: [query],
+    n_results: limit,
+    include: ['documents', 'metadatas', 'distances'],
+    where: whereStringified
+  };
+  silentDebug('calling chroma_query_documents', arguments_obj);
+
   const result = await chromaClient.callTool({
     name: 'chroma_query_documents',
-    arguments: {
-      collection_name: COLLECTION_NAME,
-      query_texts: [query],
-      n_results: limit,
-      include: ['documents', 'metadatas', 'distances'],
-      where: whereFilter
-    }
+    arguments: arguments_obj
   });
 
   const resultText = result.content[0]?.text || '';
+  silentDebug('chroma response received', {
+    hasContent: !!result.content[0]?.text,
+    textLength: resultText.length,
+    textPreview: resultText.substring(0, 200)
+  });
 
   // Parse JSON response
   let parsed: any;
@@ -64,6 +78,7 @@ async function queryChroma(
     parsed = JSON.parse(resultText);
   } catch (error) {
     console.error('[search-server] Failed to parse Chroma response as JSON:', error);
+    console.error('[search-server] Raw Chroma response:', resultText);
     return { ids: [], distances: [], metadatas: [] };
   }
 
@@ -350,6 +365,19 @@ const tools = [
     inputSchema: z.object({
       query: z.string().describe('Natural language search query (semantic ranking via ChromaDB, FTS5 fallback)'),
       format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default, RECOMMENDED for initial search), "full" for complete details (use only after reviewing index results)'),
+      type: z.enum(['observations', 'sessions', 'prompts']).optional().describe('Filter by document type (observations, sessions, or prompts). Omit to search all types.'),
+      obs_type: z.union([
+        z.enum(['decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change']),
+        z.array(z.enum(['decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change']))
+      ]).optional().describe('Filter observations by type. Only applies when type="observations"'),
+      concepts: z.union([
+        z.string(),
+        z.array(z.string())
+      ]).optional().describe('Filter by concept tags. Only applies when type="observations"'),
+      files: z.union([
+        z.string(),
+        z.array(z.string())
+      ]).optional().describe('Filter by file paths (partial match). Only applies when type="observations"'),
       project: z.string().optional().describe('Filter by project name'),
       dateRange: z.object({
         start: z.union([z.string(), z.number()]).optional().describe('Start date (ISO string or epoch)'),
@@ -361,19 +389,34 @@ const tools = [
     }),
     handler: async (args: any) => {
       try {
-        const { query, format = 'index', ...options } = args;
+        const { query, format = 'index', type, obs_type, concepts, files, ...options } = args;
         let observations: ObservationSearchResult[] = [];
         let sessions: SessionSummarySearchResult[] = [];
         let prompts: UserPromptSearchResult[] = [];
 
-        // Hybrid search: Try Chroma semantic search first (no doc_type filter = all types)
+        // Determine which types to query based on type filter
+        const searchObservations = !type || type === 'observations';
+        const searchSessions = !type || type === 'sessions';
+        const searchPrompts = !type || type === 'prompts';
+
+        // Hybrid search: Try Chroma semantic search first
         if (chromaClient) {
           try {
-            console.error('[search-server] Using unified hybrid semantic search (all document types)');
+            console.error(`[search-server] Using unified hybrid semantic search (type filter: ${type || 'all'})`);
 
-            // Step 1: Chroma semantic search across ALL document types (no doc_type filter)
-            const chromaResults = await queryChroma(query, 100);
-            console.error(`[search-server] Chroma returned ${chromaResults.ids.length} semantic matches across all types`);
+            // Build Chroma where filter for doc_type
+            let whereFilter: Record<string, any> | undefined;
+            if (type === 'observations') {
+              whereFilter = { doc_type: 'observation' };
+            } else if (type === 'sessions') {
+              whereFilter = { doc_type: 'session_summary' };
+            } else if (type === 'prompts') {
+              whereFilter = { doc_type: 'user_prompt' };
+            }
+
+            // Step 1: Chroma semantic search with optional type filter
+            const chromaResults = await queryChroma(query, 100, whereFilter);
+            console.error(`[search-server] Chroma returned ${chromaResults.ids.length} semantic matches`);
 
             if (chromaResults.ids.length > 0) {
               // Step 2: Filter by recency (90 days)
@@ -393,20 +436,22 @@ const tools = [
 
               for (const item of recentMetadata) {
                 const docType = item.meta?.doc_type;
-                if (docType === 'observation') {
+                if (docType === 'observation' && searchObservations) {
                   obsIds.push(item.id);
-                } else if (docType === 'session_summary') {
+                } else if (docType === 'session_summary' && searchSessions) {
                   sessionIds.push(item.id);
-                } else if (docType === 'user_prompt') {
+                } else if (docType === 'user_prompt' && searchPrompts) {
                   promptIds.push(item.id);
                 }
               }
 
               console.error(`[search-server] Categorized: ${obsIds.length} obs, ${sessionIds.length} sessions, ${promptIds.length} prompts`);
 
-              // Step 4: Hydrate from SQLite (each type in semantic rank order)
+              // Step 4: Hydrate from SQLite with additional filters
               if (obsIds.length > 0) {
-                observations = store.getObservationsByIds(obsIds, { orderBy: 'date_desc', limit: options.limit });
+                // Apply obs_type, concepts, files filters if provided
+                const obsOptions = { ...options, type: obs_type, concepts, files };
+                observations = store.getObservationsByIds(obsIds, obsOptions);
               }
               if (sessionIds.length > 0) {
                 sessions = store.getSessionSummariesByIds(sessionIds, { orderBy: 'date_desc', limit: options.limit });
@@ -425,10 +470,17 @@ const tools = [
 
         // Fall back to FTS5 if Chroma unavailable or returned no results
         if (observations.length === 0 && sessions.length === 0 && prompts.length === 0) {
-          console.error('[search-server] Using FTS5 keyword search across all types');
-          observations = search.searchObservations(query, options);
-          sessions = search.searchSessions(query, options);
-          prompts = search.searchUserPrompts(query, options);
+          console.error(`[search-server] Using FTS5 keyword search (type filter: ${type || 'all'})`);
+          const obsOptions = { ...options, type: obs_type, concepts, files };
+          if (searchObservations) {
+            observations = search.searchObservations(query, obsOptions);
+          }
+          if (searchSessions) {
+            sessions = search.searchSessions(query, options);
+          }
+          if (searchPrompts) {
+            prompts = search.searchUserPrompts(query, options);
+          }
         }
 
         const totalResults = observations.length + sessions.length + prompts.length;

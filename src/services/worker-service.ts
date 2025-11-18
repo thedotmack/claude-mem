@@ -176,7 +176,7 @@ export class WorkerService {
     this.app.get('/api/how-it-works', this.handleHowItWorks.bind(this));
     this.app.get('/api/contextualize', this.handleContextualize.bind(this));
 
-    // Legacy endpoints (backward compatibility)
+    // Backward compatibility endpoints (use /api/search with type param instead)
     this.app.get('/api/search/observations', this.handleSearchObservations.bind(this));
     this.app.get('/api/search/sessions', this.handleSearchSessions.bind(this));
     this.app.get('/api/search/prompts', this.handleSearchPrompts.bind(this));
@@ -1060,11 +1060,12 @@ export class WorkerService {
   }
 
   // ============================================================================
-  // Legacy Search API Handlers (Backward Compatibility)
+  // Backward Compatibility API Handlers
+  // All functionality available via /api/search with type/obs_type/concepts/files params
   // ============================================================================
 
   /**
-   * Search observations
+   * Search observations (use /api/search?type=observations instead)
    * GET /api/search/observations?query=...&format=index&limit=20&project=...
    */
   private async handleSearchObservations(req: Request, res: Response): Promise<void> {
