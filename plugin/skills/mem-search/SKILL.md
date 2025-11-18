@@ -42,18 +42,20 @@ This skill activates when detecting phrases about **cross-session history**:
 
 ## Available Operations
 
+**Endpoint:** All operations use the unified `http://localhost:37777/api/search` endpoint with query parameters.
+
 ### Full-Text Search
 - **observations** - Search all observations by keyword (bugs, features, decisions, discoveries, changes)
   - Use when: "How did we implement X?" or "What bugs did we fix?"
-  - Example: Search for "authentication JWT" to find auth-related work
+  - Example: `?query=authentication+JWT&type=observations&format=index&limit=5`
 
 - **sessions** - Search session summaries to find what was accomplished when
   - Use when: "What did we accomplish last time?" or "What was the goal of that session?"
-  - Example: Find sessions where "added login feature"
+  - Example: `?query=added+login+feature&type=sessions&format=index&limit=5`
 
 - **prompts** - Find what users have asked about in previous sessions
   - Use when: "Did I ask about this before?" or "What did I request last week?"
-  - Example: Search for "database migration" in past user prompts
+  - Example: `?query=database+migration&type=prompts&format=index&limit=5`
 
 ### Filtered Search
 - **by-type** - Filter observations by type (bugfix, feature, refactor, decision, discovery, change)
@@ -169,8 +171,10 @@ For guidelines on presenting search results to users, see [operations/formatting
 
 - **Port:** Default 37777 (configurable via `CLAUDE_MEM_WORKER_PORT`)
 - **Response format:** Always JSON
-- **Search engine:** ChromaDB semantic search (primary ranking) + SQLite FTS5 (fallback) + 90-day recency filter + temporal ordering (hybrid architecture)
-- **All operations:** HTTP GET with query parameters
+- **Search engine:** ChromaDB semantic search (primary) + SQLite FTS5 (fallback ONLY when UVX/Python unavailable) + 90-day recency filter + temporal ordering
+- **FTS5 gotcha:** FTS5 is degraded keyword-only search with no semantic understanding. Only used when UVX/Python dependency is missing (not when Chroma returns 0 results - Chroma and FTS5 have identical data)
+- **Undefined query gotcha:** Omit query parameter for date-filtered queries only (Chroma cannot filter by date, requires direct SQLite access)
+- **Endpoint:** All operations use unified `/api/search` with query parameters
 - **Worker:** PM2-managed background process
 
 ## Error Handling

@@ -363,7 +363,7 @@ const tools = [
     name: 'search',
     description: 'Unified search across all memory types (observations, sessions, and user prompts) using hybrid semantic + full-text search (ChromaDB primary, SQLite FTS5 fallback). Returns combined results from all document types. IMPORTANT: Always use index format first (default) to get an overview with minimal token usage, then use format: "full" only for specific items of interest.',
     inputSchema: z.object({
-      query: z.string().optional().describe('Natural language search query (semantic ranking via ChromaDB when available, FTS5 fallback if ChromaDB unavailable). Optional - omit for filter-only queries.'),
+      query: z.string().optional().describe('Natural language search query for semantic ranking via ChromaDB (or FTS5 keyword fallback if UVX/Python unavailable - degraded search with no semantic understanding). Optional - omit for date-filtered queries only (Chroma cannot filter by date, requires direct SQLite).'),
       format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default, RECOMMENDED for initial search), "full" for complete details (use only after reviewing index results)'),
       type: z.enum(['observations', 'sessions', 'prompts']).optional().describe('Filter by document type (observations, sessions, or prompts). Omit to search all types.'),
       obs_type: z.union([
@@ -400,8 +400,9 @@ const tools = [
         const searchPrompts = !type || type === 'prompts';
 
         // PATH 1: FILTER-ONLY (no query text) - Skip Chroma/FTS5, use direct SQLite filtering
+        // This path enables date filtering which Chroma cannot do (requires direct SQLite access)
         if (!query) {
-          console.error(`[search-server] Filter-only query (no query text), using direct SQLite filtering`);
+          console.error(`[search-server] Filter-only query (no query text), using direct SQLite filtering (enables date filters)`);
           const obsOptions = { ...options, type: obs_type, concepts, files };
           if (searchObservations) {
             observations = search.searchObservations(undefined, obsOptions);
@@ -486,9 +487,10 @@ const tools = [
             chromaSucceeded = false;
           }
 
-          // PATH 3: FTS5 FALLBACK (Chroma failed/unavailable, NOT when Chroma returns 0)
+          // PATH 3: FTS5 FALLBACK (UVX/Python dependency missing - Chroma unavailable, NOT when Chroma returns 0 matches)
+          // WARNING: Degraded keyword-only search, no semantic understanding
           if (!chromaSucceeded) {
-            console.error(`[search-server] Using FTS5 fallback search (ChromaDB unavailable)`);
+            console.error(`[search-server] Using FTS5 fallback search (UVX/Python unavailable - degraded keyword-only)`);
             const obsOptions = { ...options, type: obs_type, concepts, files };
             if (searchObservations) {
               observations = search.searchObservations(query, obsOptions);
@@ -501,9 +503,10 @@ const tools = [
             }
           }
         }
-        // PATH 3: FTS5 FALLBACK (query text but no Chroma client)
+        // PATH 3: FTS5 FALLBACK (query text but no Chroma client - UVX/Python dependency missing)
+        // WARNING: Degraded keyword-only search, no semantic understanding
         else {
-          console.error(`[search-server] Using FTS5 fallback search (ChromaDB not initialized)`);
+          console.error(`[search-server] Using FTS5 fallback search (UVX/Python unavailable - ChromaDB not initialized)`);
           const obsOptions = { ...options, type: obs_type, concepts, files };
           if (searchObservations) {
             observations = search.searchObservations(query, obsOptions);
@@ -1465,7 +1468,7 @@ const tools = [
     name: 'search_observations',
     description: 'Search observations using hybrid semantic + full-text search (ChromaDB primary, SQLite FTS5 fallback). IMPORTANT: Always use index format first (default) to get an overview with minimal token usage, then use format: "full" only for specific items of interest.',
     inputSchema: z.object({
-      query: z.string().describe('Natural language search query (semantic ranking via ChromaDB, FTS5 fallback)'),
+      query: z.string().describe('Natural language search query for semantic ranking via ChromaDB (or FTS5 keyword fallback if UVX/Python unavailable - degraded search with no semantic understanding)'),
       format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default, RECOMMENDED for initial search), "full" for complete details (use only after reviewing index results)'),
       ...filterSchema.shape
     }),
@@ -1553,7 +1556,7 @@ const tools = [
     name: 'search_sessions',
     description: 'Search session summaries using hybrid semantic + full-text search (ChromaDB primary, SQLite FTS5 fallback). IMPORTANT: Always use index format first (default) to get an overview with minimal token usage, then use format: "full" only for specific items of interest.',
     inputSchema: z.object({
-      query: z.string().describe('Natural language search query (semantic ranking via ChromaDB, FTS5 fallback)'),
+      query: z.string().describe('Natural language search query for semantic ranking via ChromaDB (or FTS5 keyword fallback if UVX/Python unavailable - degraded search with no semantic understanding)'),
       format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default, RECOMMENDED for initial search), "full" for complete details (use only after reviewing index results)'),
       project: z.string().optional().describe('Filter by project name'),
       dateRange: z.object({
@@ -2119,7 +2122,7 @@ const tools = [
     name: 'search_user_prompts',
     description: 'Search raw user prompts using hybrid semantic + full-text search (ChromaDB primary, SQLite FTS5 fallback). Use this to find what the user actually said/requested across all sessions. IMPORTANT: Always use index format first (default) to get an overview with minimal token usage, then use format: "full" only for specific items of interest.',
     inputSchema: z.object({
-      query: z.string().describe('Natural language search query (semantic ranking via ChromaDB, FTS5 fallback)'),
+      query: z.string().describe('Natural language search query for semantic ranking via ChromaDB (or FTS5 keyword fallback if UVX/Python unavailable - degraded search with no semantic understanding)'),
       format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for truncated prompts/dates (default, RECOMMENDED for initial search), "full" for complete prompt text (use only after reviewing index results)'),
       project: z.string().optional().describe('Filter by project name'),
       dateRange: z.object({

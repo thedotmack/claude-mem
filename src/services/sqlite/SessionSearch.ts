@@ -146,10 +146,11 @@ export class SessionSearch {
    * @returns Safely escaped FTS5 query string
    */
   /**
-   * FALLBACK ONLY - FTS5 keyword search when ChromaDB unavailable
-   * FTS5 is degraded search (no semantic understanding) - only used when uvx/Python/ChromaDB disabled
+   * FALLBACK ONLY - FTS5 keyword search when UVX/Python unavailable
+   * FTS5 is degraded search (no semantic understanding) - only used when uvx/Python dependency missing
+   * Root cause: UVX unavailable, not just "Chroma unavailable" (Chroma requires UVX/Python)
    */
-  private escapeFTS5_fallback_when_chroma_unavailable(text: string): string {
+  private degraded_search_query__when_uvx_unavailable(text: string): string {
     // Escape internal double quotes by doubling them (FTS5 standard)
     // Then wrap the entire string in double quotes for phrase search
     return `"${text.replace(/"/g, '""')}"`;
@@ -254,7 +255,8 @@ export class SessionSearch {
     const params: any[] = [];
     const { limit = 50, offset = 0, orderBy = 'relevance', ...filters } = options;
 
-    // FILTER-ONLY PATH: When no query text, skip FTS5 and query observations table directly
+    // FILTER-ONLY PATH: When no query text, skip FTS5 and query table directly
+    // This enables date filtering which Chroma cannot do (requires direct SQLite access)
     if (!query) {
       const filterClause = this.buildFilterClause(filters, params, 'o');
       if (!filterClause) {
@@ -275,9 +277,9 @@ export class SessionSearch {
       return this.db.prepare(sql).all(...params) as ObservationSearchResult[];
     }
 
-    // FTS5 PATH: When query text exists (fallback mode when ChromaDB unavailable)
-    const ftsQuery = this.escapeFTS5_fallback_when_chroma_unavailable(query);
-    params.push(ftsQuery);
+    // FTS5 FALLBACK PATH: Only when UVX/Python unavailable (degraded keyword search, no semantic understanding)
+    const degraded_search_query__when_uvx_unavailable = this.degraded_search_query__when_uvx_unavailable(query);
+    params.push(degraded_search_query__when_uvx_unavailable);
 
     // Build filter conditions
     const filterClause = this.buildFilterClause(filters, params, 'o');
@@ -354,9 +356,9 @@ export class SessionSearch {
       return this.db.prepare(sql).all(...params) as SessionSummarySearchResult[];
     }
 
-    // FTS5 PATH: When query text exists (fallback mode when ChromaDB unavailable)
-    const ftsQuery = this.escapeFTS5_fallback_when_chroma_unavailable(query);
-    params.push(ftsQuery);
+    // FTS5 FALLBACK PATH: Only when UVX/Python unavailable (degraded keyword search, no semantic understanding)
+    const degraded_search_query__when_uvx_unavailable = this.degraded_search_query__when_uvx_unavailable(query);
+    params.push(degraded_search_query__when_uvx_unavailable);
 
     // Build filter conditions (without type filter - not applicable to summaries)
     const filterOptions = { ...filters };
@@ -589,9 +591,9 @@ export class SessionSearch {
       return this.db.prepare(sql).all(...params) as UserPromptSearchResult[];
     }
 
-    // FTS5 PATH: When query text exists (fallback mode when ChromaDB unavailable)
-    const ftsQuery = this.escapeFTS5_fallback_when_chroma_unavailable(query);
-    const ftsParams: any[] = [ftsQuery];
+    // FTS5 FALLBACK PATH: Only when UVX/Python unavailable (degraded keyword search, no semantic understanding)
+    const degraded_search_query__when_uvx_unavailable = this.degraded_search_query__when_uvx_unavailable(query);
+    const ftsParams: any[] = [degraded_search_query__when_uvx_unavailable];
 
     // Re-build filter conditions for FTS5 path
     const ftsConditions: string[] = [];

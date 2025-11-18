@@ -513,7 +513,7 @@ ${e.stack}`:e.message;if(Array.isArray(e))return`[${e.length} items]`;let a=Obje
           INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
           VALUES (new.id, new.request, new.investigated, new.learned, new.completed, new.next_steps, new.notes);
         END;
-      `),console.error("[SessionSearch] FTS5 tables created successfully")}catch(e){console.error("[SessionSearch] FTS migration error:",e.message)}}escapeFTS5_fallback_when_chroma_unavailable(e){return`"${e.replace(/"/g,'""')}"`}buildFilterClause(e,a,t="o"){let s=[];if(e.project&&(s.push(`${t}.project = ?`),a.push(e.project)),e.type)if(Array.isArray(e.type)){let i=e.type.map(()=>"?").join(",");s.push(`${t}.type IN (${i})`),a.push(...e.type)}else s.push(`${t}.type = ?`),a.push(e.type);if(e.dateRange){let{start:i,end:n}=e.dateRange;if(i){let o=typeof i=="number"?i:new Date(i).getTime();s.push(`${t}.created_at_epoch >= ?`),a.push(o)}if(n){let o=typeof n=="number"?n:new Date(n).getTime();s.push(`${t}.created_at_epoch <= ?`),a.push(o)}}if(e.concepts){let i=Array.isArray(e.concepts)?e.concepts:[e.concepts],n=i.map(()=>`EXISTS (SELECT 1 FROM json_each(${t}.concepts) WHERE value = ?)`);n.length>0&&(s.push(`(${n.join(" OR ")})`),a.push(...i))}if(e.files){let i=Array.isArray(e.files)?e.files:[e.files],n=i.map(()=>`(
+      `),console.error("[SessionSearch] FTS5 tables created successfully")}catch(e){console.error("[SessionSearch] FTS migration error:",e.message)}}degraded_search_query__when_uvx_unavailable(e){return`"${e.replace(/"/g,'""')}"`}buildFilterClause(e,a,t="o"){let s=[];if(e.project&&(s.push(`${t}.project = ?`),a.push(e.project)),e.type)if(Array.isArray(e.type)){let i=e.type.map(()=>"?").join(",");s.push(`${t}.type IN (${i})`),a.push(...e.type)}else s.push(`${t}.type = ?`),a.push(e.type);if(e.dateRange){let{start:i,end:n}=e.dateRange;if(i){let o=typeof i=="number"?i:new Date(i).getTime();s.push(`${t}.created_at_epoch >= ?`),a.push(o)}if(n){let o=typeof n=="number"?n:new Date(n).getTime();s.push(`${t}.created_at_epoch <= ?`),a.push(o)}}if(e.concepts){let i=Array.isArray(e.concepts)?e.concepts:[e.concepts],n=i.map(()=>`EXISTS (SELECT 1 FROM json_each(${t}.concepts) WHERE value = ?)`);n.length>0&&(s.push(`(${n.join(" OR ")})`),a.push(...i))}if(e.files){let i=Array.isArray(e.files)?e.files:[e.files],n=i.map(()=>`(
           EXISTS (SELECT 1 FROM json_each(${t}.files_read) WHERE value LIKE ?)
           OR EXISTS (SELECT 1 FROM json_each(${t}.files_modified) WHERE value LIKE ?)
         )`);n.length>0&&(s.push(`(${n.join(" OR ")})`),i.forEach(o=>{a.push(`%${o}%`,`%${o}%`)}))}return s.length>0?s.join(" AND "):""}buildOrderClause(e="relevance",a=!0,t="observations_fts"){switch(e){case"relevance":return a?`ORDER BY ${t}.rank ASC`:"ORDER BY o.created_at_epoch DESC";case"date_desc":return"ORDER BY o.created_at_epoch DESC";case"date_asc":return"ORDER BY o.created_at_epoch ASC";default:return"ORDER BY o.created_at_epoch DESC"}}searchObservations(e,a={}){let t=[],{limit:s=50,offset:i=0,orderBy:n="relevance",...o}=a;if(!e){let h=this.buildFilterClause(o,t,"o");if(!h)throw new Error("Either query or filters required for search");let d=this.buildOrderClause(n,!1),v=`
@@ -522,7 +522,7 @@ ${e.stack}`:e.message;if(Array.isArray(e))return`[${e.length} items]`;let a=Obje
         WHERE ${h}
         ${d}
         LIMIT ? OFFSET ?
-      `;return t.push(s,i),this.db.prepare(v).all(...t)}let l=this.escapeFTS5_fallback_when_chroma_unavailable(e);t.push(l);let c=this.buildFilterClause(o,t,"o"),u=c?`AND ${c}`:"",p=this.buildOrderClause(n,!0),m=`
+      `;return t.push(s,i),this.db.prepare(v).all(...t)}let l=this.degraded_search_query__when_uvx_unavailable(e);t.push(l);let c=this.buildFilterClause(o,t,"o"),u=c?`AND ${c}`:"",p=this.buildOrderClause(n,!0),m=`
       SELECT
         o.*,
         o.discovery_tokens,
@@ -539,7 +539,7 @@ ${e.stack}`:e.message;if(Array.isArray(e))return`[${e.length} items]`;let a=Obje
         WHERE ${g}
         ${n==="date_asc"?"ORDER BY s.created_at_epoch ASC":"ORDER BY s.created_at_epoch DESC"}
         LIMIT ? OFFSET ?
-      `;return t.push(s,i),this.db.prepare(_).all(...t)}let l=this.escapeFTS5_fallback_when_chroma_unavailable(e);t.push(l);let c={...o};delete c.type;let u=this.buildFilterClause(c,t,"s"),h=`
+      `;return t.push(s,i),this.db.prepare(_).all(...t)}let l=this.degraded_search_query__when_uvx_unavailable(e);t.push(l);let c={...o};delete c.type;let u=this.buildFilterClause(c,t,"s"),h=`
       SELECT
         s.*,
         s.discovery_tokens,
@@ -584,7 +584,7 @@ ${e.stack}`:e.message;if(Array.isArray(e))return`[${e.length} items]`;let a=Obje
         ${`WHERE ${l.join(" AND ")}`}
         ${n==="date_asc"?"ORDER BY up.created_at_epoch ASC":"ORDER BY up.created_at_epoch DESC"}
         LIMIT ? OFFSET ?
-      `;return t.push(s,i),this.db.prepare(y).all(...t)}let u=[this.escapeFTS5_fallback_when_chroma_unavailable(e)],p=[];if(o.project&&(p.push("s.project = ?"),u.push(o.project)),o.dateRange){let{start:v,end:g}=o.dateRange;if(v){let y=typeof v=="number"?v:new Date(v).getTime();p.push("up.created_at_epoch >= ?"),u.push(y)}if(g){let y=typeof g=="number"?g:new Date(g).getTime();p.push("up.created_at_epoch <= ?"),u.push(y)}}let h=`
+      `;return t.push(s,i),this.db.prepare(y).all(...t)}let u=[this.degraded_search_query__when_uvx_unavailable(e)],p=[];if(o.project&&(p.push("s.project = ?"),u.push(o.project)),o.dateRange){let{start:v,end:g}=o.dateRange;if(v){let y=typeof v=="number"?v:new Date(v).getTime();p.push("up.created_at_epoch >= ?"),u.push(y)}if(g){let y=typeof g=="number"?g:new Date(g).getTime();p.push("up.created_at_epoch <= ?"),u.push(y)}}let h=`
       SELECT
         up.*,
         user_prompts_fts.rank as rank
