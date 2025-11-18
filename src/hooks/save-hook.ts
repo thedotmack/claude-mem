@@ -10,6 +10,7 @@ import { createHookResponse } from './hook-response.js';
 import { logger } from '../utils/logger.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
 import { EndlessModeConfig } from '../services/worker/EndlessModeConfig.js';
+import { silentDebug } from '../utils/silent-debug.js';
 import type { TranscriptEntry, AssistantTranscriptEntry, ToolUseContent, UserTranscriptEntry, ToolResultContent } from '../types/transcript.js';
 import type { Observation } from '../services/worker-types.js';
 
@@ -21,6 +22,13 @@ export interface PostToolUseInput {
   tool_response: any;
   transcript_path: string;
   [key: string]: any;
+}
+
+interface ObservationEndpointResponse {
+  status: 'queued' | 'completed' | 'timeout';
+  observation?: Observation | null;
+  processing_time_ms?: number;
+  message?: string;
 }
 
 // Tools to skip (low value or too frequent)
@@ -207,7 +215,13 @@ async function transformTranscript(
  * Save Hook Main Logic
  */
 async function saveHook(input?: PostToolUseInput): Promise<void> {
-  const { session_id, cwd, tool_name, tool_input, tool_response, transcript_path } = input;
+  if (!input) {
+    logger.warn('HOOK', 'PostToolUse called with no input');
+    console.log(createHookResponse('PostToolUse', true));
+    return;
+  }
+
+  const { session_id, cwd, tool_name, tool_input, tool_response, transcript_path, tool_use_id } = input;
 
   if (SKIP_TOOLS.has(tool_name)) {
     console.log(createHookResponse('PostToolUse', true));
@@ -224,21 +238,65 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
   const promptNumber = db.getPromptCounter(sessionDbId);
   db.close();
 
-  // Use tool_use_id from hook input (always available from Claude Code)
-  const toolUseId = input.tool_use_id;
-
   const toolStr = logger.formatTool(tool_name, tool_input);
-
   const port = getWorkerPort();
+
+  // Phase 3: Extract tool_use_id from transcript if available
+  let extractedToolUseId: string | undefined = tool_use_id;
+  if (!extractedToolUseId && transcript_path) {
+    try {
+      const transcriptContent = readFileSync(transcript_path, 'utf-8');
+      const lines = transcriptContent.trim().split('\n');
+
+      // Search backwards for the most recent tool_result
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const entry = JSON.parse(lines[i]) as TranscriptEntry;
+        if (entry.type === 'user' && Array.isArray(entry.message.content)) {
+          for (const item of entry.message.content) {
+            if (item.type === 'tool_result' && (item as ToolResultContent).tool_use_id) {
+              extractedToolUseId = (item as ToolResultContent).tool_use_id;
+              break;
+            }
+          }
+          if (extractedToolUseId) break;
+        }
+      }
+    } catch (error) {
+      silentDebug('Failed to extract tool_use_id from transcript', { error });
+    }
+  }
 
   logger.dataIn('HOOK', `PostToolUse: ${toolStr}`, {
     sessionId: sessionDbId,
     workerPort: port,
-    toolUseId: toolUseId || '(none)'
+    toolUseId: extractedToolUseId || silentDebug('tool_use_id not found in transcript', { toolName: tool_name }, '(none)')
+  });
+
+  // Phase 3: Check if Endless Mode is enabled
+  const endlessModeConfig = EndlessModeConfig.getConfig();
+  const isEndlessModeEnabled = endlessModeConfig.enabled && extractedToolUseId && transcript_path;
+
+  // Debug logging for endless mode conditions AND all input fields
+  silentDebug('Endless Mode Check', {
+    configEnabled: endlessModeConfig.enabled,
+    hasToolUseId: !!extractedToolUseId,
+    hasTranscriptPath: !!transcript_path,
+    isEndlessModeEnabled,
+    toolName: tool_name,
+    toolUseId: extractedToolUseId,
+    allInputKeys: Object.keys(input).join(', ')
   });
 
   try {
-    const response = await fetch(`http://127.0.0.1:${port}/sessions/${sessionDbId}/observations`, {
+    // Build endpoint URL with conditional query parameter
+    const endpoint = isEndlessModeEnabled
+      ? `http://127.0.0.1:${port}/sessions/${sessionDbId}/observations?wait_until_obs_is_saved=true`
+      : `http://127.0.0.1:${port}/sessions/${sessionDbId}/observations`;
+
+    // Set timeout based on mode (90s for sync, 2s for async)
+    const timeoutMs = isEndlessModeEnabled ? 90000 : 2000;
+
+    const response = await fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -247,9 +305,9 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
         tool_response: tool_response !== undefined ? JSON.stringify(tool_response) : '{}',
         prompt_number: promptNumber,
         cwd: cwd || '',
-        tool_use_id: toolUseId
+        tool_use_id: extractedToolUseId
       }),
-      signal: AbortSignal.timeout(2000)
+      signal: AbortSignal.timeout(timeoutMs)
     });
 
     if (!response.ok) {
@@ -261,7 +319,41 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
       throw new Error(`Failed to send observation to worker: ${response.status} ${errorText}`);
     }
 
-    logger.debug('HOOK', 'Observation sent successfully', { sessionId: sessionDbId, toolName: tool_name });
+    const result = await response.json() as ObservationEndpointResponse;
+
+    // Phase 3: Handle synchronous mode response
+    if (isEndlessModeEnabled) {
+      if (result.status === 'completed' && result.observation) {
+        logger.success('HOOK', 'Observation ready, transforming transcript', {
+          sessionId: sessionDbId,
+          toolUseId: tool_use_id,
+          processingTimeMs: result.processing_time_ms
+        });
+
+        try {
+          await transformTranscript(transcript_path, tool_use_id, result.observation);
+        } catch (transformError: any) {
+          logger.failure('HOOK', 'Transcript transformation failed', {
+            sessionId: sessionDbId,
+            toolUseId: tool_use_id
+          }, transformError);
+          // Continue anyway - observation is saved, just not compressed in transcript
+        }
+      } else if (result.status === 'timeout') {
+        logger.warn('HOOK', 'Endless Mode timeout - using full output', {
+          sessionId: sessionDbId,
+          toolUseId: tool_use_id,
+          processingTimeMs: result.processing_time_ms,
+          message: result.message
+        });
+        // Fall back to async behavior - observation will complete in background
+      }
+    } else {
+      logger.debug('HOOK', 'Observation sent successfully (async mode)', {
+        sessionId: sessionDbId,
+        toolName: tool_name
+      });
+    }
   } catch (error: any) {
     // Only show restart message for connection errors, not HTTP errors
     if (error.cause?.code === 'ECONNREFUSED' || error.name === 'TimeoutError' || error.message.includes('fetch failed')) {

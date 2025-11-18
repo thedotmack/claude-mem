@@ -28,6 +28,15 @@ import { SessionManager } from './worker/SessionManager.js';
 import { SSEBroadcaster } from './worker/SSEBroadcaster.js';
 import { SDKAgent } from './worker/SDKAgent.js';
 import { PaginationHelper } from './worker/PaginationHelper.js';
+
+// Tools to skip (low value or too frequent)
+const SKIP_TOOLS = new Set([
+  'ListMcpResourcesTool',
+  'SlashCommand',
+  'Skill',
+  'TodoWrite',
+  'AskUserQuestion'
+]);
 import { SettingsManager } from './worker/SettingsManager.js';
 
 export class WorkerService {
@@ -452,6 +461,16 @@ export class WorkerService {
       const sessionDbId = parseInt(req.params.sessionDbId, 10);
       const { tool_name, tool_input, tool_response, prompt_number, cwd, tool_use_id } = req.body;
       const wait_until_obs_is_saved = req.query.wait_until_obs_is_saved === 'true';
+
+      // Early exit for skipped tools - no need to wait or call Claude API
+      if (SKIP_TOOLS.has(tool_name)) {
+        res.json({
+          status: 'skipped',
+          message: `Tool '${tool_name}' is in SKIP_TOOLS list`,
+          processing_time_ms: 0
+        });
+        return;
+      }
 
       this.sessionManager.queueObservation(sessionDbId, {
         tool_name,
