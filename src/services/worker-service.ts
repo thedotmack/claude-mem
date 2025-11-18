@@ -155,6 +155,12 @@ export class WorkerService {
     this.app.get('/api/observations', this.handleGetObservations.bind(this));
     this.app.get('/api/summaries', this.handleGetSummaries.bind(this));
     this.app.get('/api/prompts', this.handleGetPrompts.bind(this));
+
+    // Fetch by ID
+    this.app.get('/api/observation/:id', this.handleGetObservationById.bind(this));
+    this.app.get('/api/session/:id', this.handleGetSessionById.bind(this));
+    this.app.get('/api/prompt/:id', this.handleGetPromptById.bind(this));
+
     this.app.get('/api/stats', this.handleGetStats.bind(this));
     this.app.get('/api/processing-status', this.handleGetProcessingStatus.bind(this));
     this.app.post('/api/processing', this.handleSetProcessing.bind(this));
@@ -664,6 +670,87 @@ export class WorkerService {
       res.json(result);
     } catch (error) {
       logger.failure('WORKER', 'Get prompts failed', {}, error as Error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  }
+
+  /**
+   * Get observation by ID
+   * GET /api/observation/:id
+   */
+  private handleGetObservationById(req: Request, res: Response): void {
+    try {
+      const id = parseInt(req.params.id, 10);
+      if (isNaN(id)) {
+        res.status(400).json({ error: 'Invalid observation ID' });
+        return;
+      }
+
+      const store = this.dbManager.getSessionStore();
+      const observation = store.getObservationById(id);
+
+      if (!observation) {
+        res.status(404).json({ error: `Observation #${id} not found` });
+        return;
+      }
+
+      res.json(observation);
+    } catch (error) {
+      logger.failure('WORKER', 'Get observation by ID failed', {}, error as Error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  }
+
+  /**
+   * Get session by ID
+   * GET /api/session/:id
+   */
+  private handleGetSessionById(req: Request, res: Response): void {
+    try {
+      const id = parseInt(req.params.id, 10);
+      if (isNaN(id)) {
+        res.status(400).json({ error: 'Invalid session ID' });
+        return;
+      }
+
+      const store = this.dbManager.getSessionStore();
+      const sessions = store.getSessionSummariesByIds([id]);
+
+      if (sessions.length === 0) {
+        res.status(404).json({ error: `Session #${id} not found` });
+        return;
+      }
+
+      res.json(sessions[0]);
+    } catch (error) {
+      logger.failure('WORKER', 'Get session by ID failed', {}, error as Error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  }
+
+  /**
+   * Get user prompt by ID
+   * GET /api/prompt/:id
+   */
+  private handleGetPromptById(req: Request, res: Response): void {
+    try {
+      const id = parseInt(req.params.id, 10);
+      if (isNaN(id)) {
+        res.status(400).json({ error: 'Invalid prompt ID' });
+        return;
+      }
+
+      const store = this.dbManager.getSessionStore();
+      const prompts = store.getUserPromptsByIds([id]);
+
+      if (prompts.length === 0) {
+        res.status(404).json({ error: `Prompt #${id} not found` });
+        return;
+      }
+
+      res.json(prompts[0]);
+    } catch (error) {
+      logger.failure('WORKER', 'Get prompt by ID failed', {}, error as Error);
       res.status(500).json({ error: (error as Error).message });
     }
   }
