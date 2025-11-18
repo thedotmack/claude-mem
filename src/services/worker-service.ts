@@ -168,6 +168,15 @@ export class WorkerService {
     this.app.post('/api/mcp/toggle', this.handleToggleMcp.bind(this));
 
     // Search API endpoints (for skill-based search)
+    // Unified endpoints (new consolidated API)
+    this.app.get('/api/search', this.handleUnifiedSearch.bind(this));
+    this.app.get('/api/timeline', this.handleUnifiedTimeline.bind(this));
+    this.app.get('/api/decisions', this.handleDecisions.bind(this));
+    this.app.get('/api/changes', this.handleChanges.bind(this));
+    this.app.get('/api/how-it-works', this.handleHowItWorks.bind(this));
+    this.app.get('/api/contextualize', this.handleContextualize.bind(this));
+
+    // Legacy endpoints (backward compatibility)
     this.app.get('/api/search/observations', this.handleSearchObservations.bind(this));
     this.app.get('/api/search/sessions', this.handleSearchSessions.bind(this));
     this.app.get('/api/search/prompts', this.handleSearchPrompts.bind(this));
@@ -223,7 +232,7 @@ export class WorkerService {
     await this.dbManager.initialize();
 
     // Connect to MCP search server
-    const searchServerPath = path.join(__dirname, '..', '..', 'plugin', 'scripts', 'search-server.mjs');
+    const searchServerPath = path.join(__dirname, '..', '..', 'plugin', 'scripts', 'search-server.cjs');
     const transport = new StdioClientTransport({
       command: 'node',
       args: [searchServerPath],
@@ -942,6 +951,116 @@ export class WorkerService {
 
   // ============================================================================
   // Search API Handlers (for skill-based search)
+  // ============================================================================
+
+  // ============================================================================
+  // Unified Search API Handlers (New Consolidated API)
+  // ============================================================================
+
+  /**
+   * Unified search across all memory types (observations, sessions, prompts)
+   * GET /api/search?query=...&format=index&limit=20
+   */
+  private async handleUnifiedSearch(req: Request, res: Response): Promise<void> {
+    try {
+      const result = await this.mcpClient.callTool({
+        name: 'search',
+        arguments: req.query
+      });
+      res.json(result.content);
+    } catch (error) {
+      logger.failure('WORKER', 'Unified search failed', {}, error as Error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  }
+
+  /**
+   * Unified timeline (anchor or query-based)
+   * GET /api/timeline?anchor=123 OR GET /api/timeline?query=...
+   */
+  private async handleUnifiedTimeline(req: Request, res: Response): Promise<void> {
+    try {
+      const result = await this.mcpClient.callTool({
+        name: 'timeline',
+        arguments: req.query
+      });
+      res.json(result.content);
+    } catch (error) {
+      logger.failure('WORKER', 'Unified timeline failed', {}, error as Error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  }
+
+  /**
+   * Semantic shortcut for finding decision observations
+   * GET /api/decisions?format=index&limit=20
+   */
+  private async handleDecisions(req: Request, res: Response): Promise<void> {
+    try {
+      const result = await this.mcpClient.callTool({
+        name: 'decisions',
+        arguments: req.query
+      });
+      res.json(result.content);
+    } catch (error) {
+      logger.failure('WORKER', 'Decisions search failed', {}, error as Error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  }
+
+  /**
+   * Semantic shortcut for finding change-related observations
+   * GET /api/changes?format=index&limit=20
+   */
+  private async handleChanges(req: Request, res: Response): Promise<void> {
+    try {
+      const result = await this.mcpClient.callTool({
+        name: 'changes',
+        arguments: req.query
+      });
+      res.json(result.content);
+    } catch (error) {
+      logger.failure('WORKER', 'Changes search failed', {}, error as Error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  }
+
+  /**
+   * Semantic shortcut for finding "how it works" explanations
+   * GET /api/how-it-works?format=index&limit=20
+   */
+  private async handleHowItWorks(req: Request, res: Response): Promise<void> {
+    try {
+      const result = await this.mcpClient.callTool({
+        name: 'how_it_works',
+        arguments: req.query
+      });
+      res.json(result.content);
+    } catch (error) {
+      logger.failure('WORKER', 'How it works search failed', {}, error as Error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  }
+
+  /**
+   * Hybrid context builder - comprehensive project overview
+   * GET /api/contextualize?project=...&observations_limit=7&sessions_limit=7&prompts_limit=3
+   */
+  private async handleContextualize(req: Request, res: Response): Promise<void> {
+    try {
+      const result = await this.mcpClient.callTool({
+        name: 'contextualize',
+        arguments: req.query
+      });
+      res.json(result.content);
+    } catch (error) {
+      logger.failure('WORKER', 'Contextualize failed', {}, error as Error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  }
+
+  // ============================================================================
+  // Legacy Search API Handlers (Backward Compatibility)
   // ============================================================================
 
   /**
