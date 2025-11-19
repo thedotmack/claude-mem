@@ -153,7 +153,7 @@ async function buildHooks() {
     console.log(`   Output: ${hooksDir}/`);
     console.log(`   - Hooks: *-hook.js`);
     console.log(`   - Worker: worker-service.cjs`);
-    console.log(`   - Search Server: search-server.mjs`);
+    console.log(`   - Search Server: search-server.cjs`);
     console.log(`   - Skills: plugin/skills/`);
     console.log('\n💡 Note: Dependencies will be auto-installed on first hook execution');
 

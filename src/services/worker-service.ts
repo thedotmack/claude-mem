@@ -180,7 +180,6 @@ export class WorkerService {
     this.app.get('/api/decisions', this.handleDecisions.bind(this));
     this.app.get('/api/changes', this.handleChanges.bind(this));
     this.app.get('/api/how-it-works', this.handleHowItWorks.bind(this));
-    this.app.get('/api/contextualize', this.handleContextualize.bind(this));
 
     // Backward compatibility endpoints (use /api/search with type param instead)
     this.app.get('/api/search/observations', this.handleSearchObservations.bind(this));
@@ -1125,23 +1124,6 @@ export class WorkerService {
       res.json(result.content);
     } catch (error) {
       logger.failure('WORKER', 'How it works search failed', {}, error as Error);
-      res.status(500).json({ error: (error as Error).message });
-    }
-  }
-
-  /**
-   * Hybrid context builder - comprehensive project overview
-   * GET /api/contextualize?project=...&observations_limit=7&sessions_limit=7&prompts_limit=3
-   */
-  private async handleContextualize(req: Request, res: Response): Promise<void> {
-    try {
-      const result = await this.mcpClient.callTool({
-        name: 'contextualize',
-        arguments: req.query
-      });
-      res.json(result.content);
-    } catch (error) {
-      logger.failure('WORKER', 'Contextualize failed', {}, error as Error);
       res.status(500).json({ error: (error as Error).message });
     }
   }

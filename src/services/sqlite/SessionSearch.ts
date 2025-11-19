@@ -33,7 +33,17 @@ export class SessionSearch {
 
   /**
    * Ensure FTS5 tables exist (backward compatibility only - no longer used for search)
-   * FTS5 tables are maintained for existing installations but all search now uses ChromaDB
+   *
+   * FTS5 tables are maintained for backward compatibility but not used for search.
+   * Vector search (Chroma) is now the primary search mechanism.
+   *
+   * Retention Rationale:
+   * - Prevents breaking existing installations with FTS5 tables
+   * - Allows graceful migration path for users
+   * - Tables maintained but search paths removed
+   * - Triggers still fire to keep tables synchronized
+   *
+   * TODO: Remove FTS5 infrastructure in future major version (v7.0.0)
    */
   private ensureFTSTables(): void {
     try {
