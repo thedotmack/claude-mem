@@ -10,7 +10,7 @@
   "plugins": [
     {
       "name": "claude-mem",
-      "version": "6.0.9",
+      "version": "6.1.0",
       "source": "./plugin",
       "description": "Persistent memory system for Claude Code - context compression across sessions"
     }
