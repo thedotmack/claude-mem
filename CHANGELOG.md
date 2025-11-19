@@ -4,6 +4,28 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [6.1.0] - 2025-11-19
+
+## New Features
+
+### Responsive Mobile Navigation
+
+Implemented a Discord-style mobile navigation system that reorganizes controls at smaller breakpoints:
+
+- **Community button** relocates to sidebar at 600px breakpoint
+- **Projects dropdown** relocates to sidebar at 480px breakpoint
+- **Sidebar width constraints** added (100% width, 400px max-width)
+- **Full-height layout** fixes for proper flex behavior
+
+This creates an intuitive mobile experience where the sidebar becomes the primary navigation container, similar to Discord's mobile UI pattern.
+
+## Technical Details
+
+- Clean separation between header and sidebar navigation responsibilities
+- Responsive breakpoints at 600px and 480px
+- Proper width constraints prevent excessive sidebar width on larger screens
+- Consistent layout behavior across all screen sizes
+
 ## [6.0.9] - 2025-11-17
 
 ## Queue Depth Indicator Feature
