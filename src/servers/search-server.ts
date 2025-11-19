@@ -361,9 +361,9 @@ const filterSchema = z.object({
 const tools = [
   {
     name: 'search',
-    description: 'Unified search across all memory types (observations, sessions, and user prompts) using hybrid semantic + full-text search (ChromaDB primary, SQLite FTS5 fallback). Returns combined results from all document types. IMPORTANT: Always use index format first (default) to get an overview with minimal token usage, then use format: "full" only for specific items of interest.',
+    description: 'Unified search across all memory types (observations, sessions, and user prompts) using vector-first semantic search (ChromaDB). Returns combined results from all document types. IMPORTANT: Always use index format first (default) to get an overview with minimal token usage, then use format: "full" only for specific items of interest.',
     inputSchema: z.object({
-      query: z.string().optional().describe('Natural language search query for semantic ranking via ChromaDB (or FTS5 keyword fallback if UVX/Python unavailable - degraded search with no semantic understanding). Optional - omit for date-filtered queries only (Chroma cannot filter by date, requires direct SQLite).'),
+      query: z.string().optional().describe('Natural language search query for semantic ranking via ChromaDB vector search. Optional - omit for date-filtered queries only (Chroma cannot filter by date, requires direct SQLite).'),
       format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default, RECOMMENDED for initial search), "full" for complete details (use only after reviewing index results)'),
       type: z.enum(['observations', 'sessions', 'prompts']).optional().describe('Filter by document type (observations, sessions, or prompts). Omit to search all types.'),
       obs_type: z.union([
@@ -483,40 +483,21 @@ const tools = [
               console.error(`[search-server] ChromaDB found no matches (this is final - NOT falling back to FTS5)`);
             }
           } catch (chromaError: any) {
-            console.error('[search-server] ChromaDB failed, falling back to FTS5:', chromaError.message);
-            chromaSucceeded = false;
-          }
-
-          // PATH 3: FTS5 FALLBACK (UVX/Python dependency missing - Chroma unavailable, NOT when Chroma returns 0 matches)
-          // WARNING: Degraded keyword-only search, no semantic understanding
-          if (!chromaSucceeded) {
-            console.error(`[search-server] Using FTS5 fallback search (UVX/Python unavailable - degraded keyword-only)`);
-            const obsOptions = { ...options, type: obs_type, concepts, files };
-            if (searchObservations) {
-              observations = search.searchObservations(query, obsOptions);
-            }
-            if (searchSessions) {
-              sessions = search.searchSessions(query, options);
-            }
-            if (searchPrompts) {
-              prompts = search.searchUserPrompts(query, options);
-            }
+            console.error('[search-server] ChromaDB failed - returning empty results (FTS5 fallback removed):', chromaError.message);
+            console.error('[search-server] Install UVX/Python to enable vector search: https://docs.astral.sh/uv/getting-started/installation/');
+            // Return empty results - no fallback
+            observations = [];
+            sessions = [];
+            prompts = [];
           }
         }
-        // PATH 3: FTS5 FALLBACK (query text but no Chroma client - UVX/Python dependency missing)
-        // WARNING: Degraded keyword-only search, no semantic understanding
+        // ChromaDB not initialized - return empty results (no fallback)
         else {
-          console.error(`[search-server] Using FTS5 fallback search (UVX/Python unavailable - ChromaDB not initialized)`);
-          const obsOptions = { ...options, type: obs_type, concepts, files };
-          if (searchObservations) {
-            observations = search.searchObservations(query, obsOptions);
-          }
-          if (searchSessions) {
-            sessions = search.searchSessions(query, options);
-          }
-          if (searchPrompts) {
-            prompts = search.searchUserPrompts(query, options);
-          }
+          console.error(`[search-server] ChromaDB not initialized - returning empty results (FTS5 fallback removed)`);
+          console.error(`[search-server] Install UVX/Python to enable vector search: https://docs.astral.sh/uv/getting-started/installation/`);
+          observations = [];
+          sessions = [];
+          prompts = [];
         }
 
         const totalResults = observations.length + sessions.length + prompts.length;
@@ -662,13 +643,8 @@ const tools = [
                 }
               }
             } catch (chromaError: any) {
-              console.error('[search-server] Chroma query failed, falling back to FTS5:', chromaError.message);
+              console.error('[search-server] Chroma query failed - no results (FTS5 fallback removed):', chromaError.message);
             }
-          }
-
-          if (results.length === 0) {
-            console.error('[search-server] Using FTS5 keyword search');
-            results = search.searchObservations(query, { orderBy: 'relevance', limit: 1, project });
           }
 
           if (results.length === 0) {
@@ -1234,9 +1210,9 @@ const tools = [
   },
   {
     name: 'search_observations',
-    description: 'Search observations using hybrid semantic + full-text search (ChromaDB primary, SQLite FTS5 fallback). IMPORTANT: Always use index format first (default) to get an overview with minimal token usage, then use format: "full" only for specific items of interest.',
+    description: 'DEPRECATED: Use the unified "search" tool instead. Search observations using vector-first semantic search (ChromaDB). IMPORTANT: Always use index format first (default) to get an overview with minimal token usage, then use format: "full" only for specific items of interest.',
     inputSchema: z.object({
-      query: z.string().describe('Natural language search query for semantic ranking via ChromaDB (or FTS5 keyword fallback if UVX/Python unavailable - degraded search with no semantic understanding)'),
+      query: z.string().describe('Natural language search query for semantic ranking via ChromaDB vector search'),
       format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default, RECOMMENDED for initial search), "full" for complete details (use only after reviewing index results)'),
       ...filterSchema.shape
     }),
@@ -1245,7 +1221,7 @@ const tools = [
         const { query, format = 'index', ...options } = args;
         let results: ObservationSearchResult[] = [];
 
-        // Hybrid search: Try Chroma semantic search first, fall back to FTS5
+        // Vector-first search via ChromaDB
         if (chromaClient) {
           try {
             console.error('[search-server] Using hybrid semantic search (Chroma + SQLite)');
@@ -1272,15 +1248,8 @@ const tools = [
               }
             }
           } catch (chromaError: any) {
-            console.error('[search-server] Chroma query failed, falling back to FTS5:', chromaError.message);
-            // Fall through to FTS5 fallback
+            console.error('[search-server] Chroma query failed - no results (FTS5 fallback removed):', chromaError.message);
           }
-        }
-
-        // Fall back to FTS5 if Chroma unavailable or returned no results
-        if (results.length === 0) {
-          console.error('[search-server] Using FTS5 keyword search');
-          results = search.searchObservations(query, options);
         }
 
         if (results.length === 0) {
@@ -1322,9 +1291,9 @@ const tools = [
   },
   {
     name: 'search_sessions',
-    description: 'Search session summaries using hybrid semantic + full-text search (ChromaDB primary, SQLite FTS5 fallback). IMPORTANT: Always use index format first (default) to get an overview with minimal token usage, then use format: "full" only for specific items of interest.',
+    description: 'DEPRECATED: Use the unified "search" tool instead. Search session summaries using vector-first semantic search (ChromaDB). IMPORTANT: Always use index format first (default) to get an overview with minimal token usage, then use format: "full" only for specific items of interest.',
     inputSchema: z.object({
-      query: z.string().describe('Natural language search query for semantic ranking via ChromaDB (or FTS5 keyword fallback if UVX/Python unavailable - degraded search with no semantic understanding)'),
+      query: z.string().describe('Natural language search query for semantic ranking via ChromaDB vector search'),
       format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default, RECOMMENDED for initial search), "full" for complete details (use only after reviewing index results)'),
       project: z.string().optional().describe('Filter by project name'),
       dateRange: z.object({
@@ -1340,7 +1309,7 @@ const tools = [
         const { query, format = 'index', ...options } = args;
         let results: SessionSummarySearchResult[] = [];
 
-        // Hybrid search: Try Chroma semantic search first, fall back to FTS5
+        // Vector-first search via ChromaDB
         if (chromaClient) {
           try {
             console.error('[search-server] Using hybrid semantic search for sessions');
@@ -1367,14 +1336,8 @@ const tools = [
               }
             }
           } catch (chromaError: any) {
-            console.error('[search-server] Chroma query failed, falling back to FTS5:', chromaError.message);
+            console.error('[search-server] Chroma query failed - no results (FTS5 fallback removed):', chromaError.message);
           }
-        }
-
-        // Fall back to FTS5 if Chroma unavailable or returned no results
-        if (results.length === 0) {
-          console.error('[search-server] Using FTS5 keyword search');
-          results = search.searchSessions(query, options);
         }
 
         if (results.length === 0) {
@@ -1888,9 +1851,9 @@ const tools = [
   },
   {
     name: 'search_user_prompts',
-    description: 'Search raw user prompts using hybrid semantic + full-text search (ChromaDB primary, SQLite FTS5 fallback). Use this to find what the user actually said/requested across all sessions. IMPORTANT: Always use index format first (default) to get an overview with minimal token usage, then use format: "full" only for specific items of interest.',
+    description: 'DEPRECATED: Use the unified "search" tool instead. Search raw user prompts using vector-first semantic search (ChromaDB). Use this to find what the user actually said/requested across all sessions. IMPORTANT: Always use index format first (default) to get an overview with minimal token usage, then use format: "full" only for specific items of interest.',
     inputSchema: z.object({
-      query: z.string().describe('Natural language search query for semantic ranking via ChromaDB (or FTS5 keyword fallback if UVX/Python unavailable - degraded search with no semantic understanding)'),
+      query: z.string().describe('Natural language search query for semantic ranking via ChromaDB vector search'),
       format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for truncated prompts/dates (default, RECOMMENDED for initial search), "full" for complete prompt text (use only after reviewing index results)'),
       project: z.string().optional().describe('Filter by project name'),
       dateRange: z.object({
@@ -1906,7 +1869,7 @@ const tools = [
         const { query, format = 'index', ...options } = args;
         let results: UserPromptSearchResult[] = [];
 
-        // Hybrid search: Try Chroma semantic search first, fall back to FTS5
+        // Vector-first search via ChromaDB
         if (chromaClient) {
           try {
             console.error('[search-server] Using hybrid semantic search for user prompts');
@@ -1933,14 +1896,8 @@ const tools = [
               }
             }
           } catch (chromaError: any) {
-            console.error('[search-server] Chroma query failed, falling back to FTS5:', chromaError.message);
+            console.error('[search-server] Chroma query failed - no results (FTS5 fallback removed):', chromaError.message);
           }
-        }
-
-        // Fall back to FTS5 if Chroma unavailable or returned no results
-        if (results.length === 0) {
-          console.error('[search-server] Using FTS5 keyword search');
-          results = search.searchUserPrompts(query, options);
         }
 
         if (results.length === 0) {
@@ -2304,18 +2261,8 @@ const tools = [
               }
             }
           } catch (chromaError: any) {
-            console.error('[search-server] Chroma query failed, falling back to FTS5:', chromaError.message);
+            console.error('[search-server] Chroma query failed - no results (FTS5 fallback removed):', chromaError.message);
           }
-        }
-
-        // Fall back to FTS5
-        if (results.length === 0) {
-          console.error('[search-server] Using FTS5 keyword search');
-          results = search.searchObservations(query, {
-            orderBy: 'relevance',
-            limit: mode === 'auto' ? 1 : limit,
-            project
-          });
         }
 
         if (results.length === 0) {
@@ -2698,7 +2645,8 @@ async function main() {
       console.error('[search-server] Chroma client connected successfully');
     } catch (error: any) {
       console.error('[search-server] Failed to initialize Chroma client:', error.message);
-      console.error('[search-server] Falling back to FTS5-only search');
+      console.error('[search-server] Vector search unavailable - text queries will return empty results (FTS5 fallback removed)');
+      console.error('[search-server] Install UVX/Python to enable vector search: https://docs.astral.sh/uv/getting-started/installation/');
       chromaClient = null;
     }
   }, 0);
