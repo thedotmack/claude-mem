@@ -78,6 +78,16 @@ Claude-mem is a Claude Code plugin providing persistent memory across sessions. 
 - Built to `plugin/ui/viewer.html` (self-contained bundle via esbuild)
 - Auto-reconnection and error recovery
 
+**Endless Mode** (`src/hooks/save-hook.ts`, `src/services/worker-service.ts`)
+- Experimental feature that compresses tool outputs in real-time to enable indefinite sessions
+- Achieves 80-95% token reduction by replacing full outputs with AI-compressed observations
+- save-hook blocks for up to 90s waiting for observation creation (graceful timeout fallback)
+- Transcript transformation happens atomically before hook returns
+- Enable via `~/.claude-mem/settings.json`: `{ "env": { "CLAUDE_MEM_ENDLESS_MODE": true } }`
+- Monitor with: `npm run endless-mode:metrics`
+- Status: Implementation complete (Phases 1-3), ready for Phase 4 testing
+- See `docs/endless-mode-status.md` for technical details
+
 ## How to Make Changes
 
 ### When You Modify Hooks

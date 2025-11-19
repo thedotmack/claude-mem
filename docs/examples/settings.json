@@ -1,0 +1,10 @@
+{
+  "model": "claude-sonnet-4-5",
+  "workerPort": 37777,
+  "enableMemoryStorage": true,
+  "enableContextInjection": true,
+  "contextDepth": 7,
+  "env": {
+    "CLAUDE_MEM_ENDLESS_MODE": false
+  }
+}
