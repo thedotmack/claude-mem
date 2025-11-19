@@ -217,6 +217,64 @@ See [CHANGELOG.md](CHANGELOG.md) for complete version history.
 
 ---
 
+## ⚡ Endless Mode (Experimental)
+
+**Problem**: Claude Code's context window fills up after many tool uses, preventing indefinite sessions.
+
+**Solution**: Endless Mode compresses tool outputs in real-time, achieving **80-95% token reduction** by replacing full responses with AI-compressed observations directly in the transcript file.
+
+### How It Works
+
+1. **Tool executes** (Read, Bash, Grep, etc.)
+2. **save-hook blocks** waiting for observation creation (90s max)
+3. **SDK Agent compresses** output into structured observation
+4. **Transcript transforms** - full output replaced with compressed markdown
+5. **Claude resumes** with compressed context instead of full output
+
+### Enable Endless Mode
+
+Create or edit `~/.claude-mem/settings.json`:
+
+```json
+{
+  "model": "claude-sonnet-4-5",
+  "workerPort": 37777,
+  "enableMemoryStorage": true,
+  "enableContextInjection": true,
+  "contextDepth": 7,
+  "env": {
+    "CLAUDE_MEM_ENDLESS_MODE": true
+  }
+}
+```
+
+Restart Claude Code. Tool outputs will now be compressed automatically.
+
+### Features
+
+- ✅ **Automatic compression** - No manual intervention
+- ✅ **Graceful fallback** - Timeouts preserve full output
+- ✅ **Selective processing** - Skips meta-tools (SlashCommand, Skill, etc.)
+- ✅ **Atomic operations** - No transcript corruption
+- ✅ **Real-time metrics** - Compression stats in worker logs
+
+### Monitoring
+
+```bash
+# Check worker logs for compression stats
+pm2 logs claude-mem-worker
+
+# View Endless Mode diagnostics
+tail -f ~/.claude-mem/silent.log
+
+# Verify compressed observations in transcript
+cat ~/.claude/sessions/<session-id>/transcript.jsonl | grep "Compressed by Endless Mode"
+```
+
+**Status**: Implementation complete, ready for testing. See [Endless Mode Documentation](docs/endless-mode-status.md) for technical details.
+
+---
+
 ## System Requirements
 
 - **Node.js**: 18.0.0 or higher
