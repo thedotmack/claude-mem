@@ -146,15 +146,18 @@ export class SessionSearch {
    * @returns Safely escaped FTS5 query string
    */
   /**
+   * DEPRECATED - FTS5 fallback disabled
    * FALLBACK ONLY - FTS5 keyword search when UVX/Python unavailable
    * FTS5 is degraded search (no semantic understanding) - only used when uvx/Python dependency missing
    * Root cause: UVX unavailable, not just "Chroma unavailable" (Chroma requires UVX/Python)
    */
+  /* DEPRECATED - DO NOT USE
   private degraded_search_query__when_uvx_unavailable(text: string): string {
     // Escape internal double quotes by doubling them (FTS5 standard)
     // Then wrap the entire string in double quotes for phrase search
     return `"${text.replace(/"/g, '""')}"`;
   }
+  */
 
   /**
    * Build WHERE clause for structured filters
@@ -277,7 +280,14 @@ export class SessionSearch {
       return this.db.prepare(sql).all(...params) as ObservationSearchResult[];
     }
 
-    // FTS5 FALLBACK PATH: Only when UVX/Python unavailable (degraded keyword search, no semantic understanding)
+    // DEPRECATED - FTS5 FALLBACK PATH DISABLED
+    // FTS5 is no longer supported. This path should never be reached in normal operation.
+    // If you're seeing empty results, it means Chroma vector search returned nothing.
+    // The filter-only path (query=undefined) should be used for non-search filtering.
+    console.warn('[SessionSearch] FTS5 fallback disabled - returning empty results');
+    return [];
+
+    /* DEPRECATED FTS5 CODE - DO NOT USE
     const degraded_search_query__when_uvx_unavailable = this.degraded_search_query__when_uvx_unavailable(query);
     params.push(degraded_search_query__when_uvx_unavailable);
 
@@ -321,6 +331,7 @@ export class SessionSearch {
     }
 
     return results;
+    */
   }
 
   /**
@@ -356,7 +367,14 @@ export class SessionSearch {
       return this.db.prepare(sql).all(...params) as SessionSummarySearchResult[];
     }
 
-    // FTS5 FALLBACK PATH: Only when UVX/Python unavailable (degraded keyword search, no semantic understanding)
+    // DEPRECATED - FTS5 FALLBACK PATH DISABLED
+    // FTS5 is no longer supported. This path should never be reached in normal operation.
+    // If you're seeing empty results, it means Chroma vector search returned nothing.
+    // The filter-only path (query=undefined) should be used for non-search filtering.
+    console.warn('[SessionSearch] FTS5 fallback disabled for sessions - returning empty results');
+    return [];
+
+    /* DEPRECATED FTS5 CODE - DO NOT USE
     const degraded_search_query__when_uvx_unavailable = this.degraded_search_query__when_uvx_unavailable(query);
     params.push(degraded_search_query__when_uvx_unavailable);
 
@@ -409,6 +427,7 @@ export class SessionSearch {
     }
 
     return results;
+    */
   }
 
   /**
@@ -591,7 +610,14 @@ export class SessionSearch {
       return this.db.prepare(sql).all(...params) as UserPromptSearchResult[];
     }
 
-    // FTS5 FALLBACK PATH: Only when UVX/Python unavailable (degraded keyword search, no semantic understanding)
+    // DEPRECATED - FTS5 FALLBACK PATH DISABLED
+    // FTS5 is no longer supported. This path should never be reached in normal operation.
+    // If you're seeing empty results, it means Chroma vector search returned nothing.
+    // The filter-only path (query=undefined) should be used for non-search filtering.
+    console.warn('[SessionSearch] FTS5 fallback disabled for user prompts - returning empty results');
+    return [];
+
+    /* DEPRECATED FTS5 CODE - DO NOT USE
     const degraded_search_query__when_uvx_unavailable = this.degraded_search_query__when_uvx_unavailable(query);
     const ftsParams: any[] = [degraded_search_query__when_uvx_unavailable];
 
@@ -656,6 +682,7 @@ export class SessionSearch {
     }
 
     return results;
+    */
   }
 
   /**

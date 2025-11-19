@@ -10,10 +10,6 @@ Claude-mem is a Claude Code plugin providing persistent memory across sessions. 
 
 **Current Version**: 6.0.9
 
-## IMPORTANT: Skills Are Auto-Invoked
-
-**There is no `/skill` command.** Skills auto-invoke based on description metadata matching user queries. Don't document manual invocation (e.g., "Run `/skill troubleshoot`"). Instead: "The troubleshoot skill auto-activates when issues are detected."
-
 ## Critical Architecture Knowledge
 
 ### The Lifecycle Flow
@@ -58,11 +54,8 @@ Claude-mem is a Claude Code plugin providing persistent memory across sessions. 
 - FTS5 virtual tables for full-text search
 - `SessionStore` = CRUD, `SessionSearch` = FTS5 queries
 
-**Search Skill** (`plugin/skills/mem-search/SKILL.md`)
+**Mem-Search Skill** (`plugin/skills/mem-search/SKILL.md`)
 - Provides access to all search functionality via HTTP API + skill
-- Auto-invoked when users ask about past work, decisions, or history
-- Uses HTTP endpoints instead of MCP tools (~2,250 token savings per session)
-- 10 search operations: observations, sessions, prompts, by-type, by-file, by-concept, timelines, etc.
 
 **Chroma Vector Database** (`src/services/sync/ChromaSync.ts`)
 - Hybrid semantic + keyword search architecture
