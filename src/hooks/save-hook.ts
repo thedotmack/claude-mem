@@ -4,13 +4,14 @@
  */
 
 import { stdin } from 'process';
-import { readFileSync, writeFileSync, renameSync } from 'fs';
+import { readFileSync, writeFileSync, renameSync, copyFileSync } from 'fs';
 import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { createHookResponse } from './hook-response.js';
 import { logger } from '../utils/logger.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
 import { EndlessModeConfig } from '../services/worker/EndlessModeConfig.js';
 import { silentDebug } from '../utils/silent-debug.js';
+import { BACKUPS_DIR, createBackupFilename, ensureDir } from '../shared/paths.js';
 import type { TranscriptEntry, AssistantTranscriptEntry, ToolUseContent, UserTranscriptEntry, ToolResultContent } from '../types/transcript.js';
 import type { Observation } from '../services/worker-types.js';
 
@@ -113,12 +114,28 @@ function formatObservationAsMarkdown(obs: Observation): string {
 /**
  * Transform transcript JSONL file by replacing tool result with compressed observation
  * Phase 2 of Endless Mode implementation
+ *
+ * ALWAYS creates timestamped backup before transformation for data safety
  */
 async function transformTranscript(
   transcriptPath: string,
   toolUseId: string,
   observation: Observation
 ): Promise<void> {
+  // ALWAYS create backup before transformation
+  try {
+    ensureDir(BACKUPS_DIR);
+    const backupPath = createBackupFilename(transcriptPath);
+    copyFileSync(transcriptPath, backupPath);
+    logger.info('HOOK', 'Created transcript backup', {
+      original: transcriptPath,
+      backup: backupPath
+    });
+  } catch (error) {
+    logger.error('HOOK', 'Failed to create transcript backup', { transcriptPath }, error as Error);
+    throw new Error('Backup creation failed - aborting transformation for safety');
+  }
+
   // Read transcript
   const transcriptContent = readFileSync(transcriptPath, 'utf-8');
   const lines = transcriptContent.trim().split('\n');

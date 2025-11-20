@@ -120,7 +120,8 @@ export function getPackageCommandsDir(): string {
 }
 
 /**
- * Create a timestamped backup filename
+ * Create a timestamped backup filename in BACKUPS_DIR
+ * Converts /path/to/file.ext -> ~/.claude-mem/backups/file.ext.backup.YYYY-MM-DD_HH-mm-ss
  */
 export function createBackupFilename(originalPath: string): string {
   const timestamp = new Date()
@@ -129,5 +130,6 @@ export function createBackupFilename(originalPath: string): string {
     .replace('T', '_')
     .slice(0, 19);
 
-  return `${originalPath}.backup.${timestamp}`;
+  const filename = basename(originalPath);
+  return join(BACKUPS_DIR, `${filename}.backup.${timestamp}`);
 }
