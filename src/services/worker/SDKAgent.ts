@@ -125,7 +125,25 @@ export class SDKAgent {
             }, truncatedResponse);
 
             // Parse and process response with discovery token delta
-            await this.processSDKResponse(session, textContent, worker, discoveryTokens);
+            try {
+              await this.processSDKResponse(session, textContent, worker, discoveryTokens);
+            } catch (error) {
+              // If processing fails, resolve any pending Endless Mode resolvers to prevent 90s hang
+              if (session.currentToolUseId) {
+                const resolver = session.pendingObservationResolvers.get(session.currentToolUseId);
+                if (resolver) {
+                  session.pendingObservationResolvers.delete(session.currentToolUseId);
+                  resolver(null); // Fail fast - signal skip to prevent hanging
+                  logger.warn('SDK', 'Observation processing failed - resolved as skip to prevent hang', {
+                    sessionId: session.sessionDbId,
+                    toolUseId: session.currentToolUseId,
+                    error: error instanceof Error ? error.message : String(error)
+                  });
+                }
+              }
+              // Re-throw to maintain existing error handling behavior
+              throw error;
+            }
           }
         }
 
