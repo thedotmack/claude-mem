@@ -81,6 +81,7 @@ Claude-mem is a Claude Code plugin providing persistent memory across sessions. 
 **Endless Mode** (`src/hooks/save-hook.ts`, `src/services/worker-service.ts`)
 - Experimental feature that compresses tool outputs in real-time to enable indefinite sessions
 - Achieves 80-95% token reduction by replacing full outputs with AI-compressed observations
+- Creates observations for ALL tool uses (even routine operations) to ensure complete transcript compression
 - save-hook blocks for up to 90s waiting for observation creation (graceful timeout fallback)
 - Transcript transformation happens atomically before hook returns
 - Enable via `~/.claude-mem/settings.json`: `{ "env": { "CLAUDE_MEM_ENDLESS_MODE": true } }`
@@ -191,6 +192,7 @@ When investigations fail persistently, use Task agents for comprehensive file an
 - `CLAUDE_MEM_MODEL` - Model for observations/summaries (default: claude-haiku-4-5)
 - `CLAUDE_MEM_CONTEXT_OBSERVATIONS` - Observations injected at SessionStart (default: 50)
 - `CLAUDE_MEM_WORKER_PORT` - Worker service port (default: 37777)
+- `CLAUDE_MEM_OBSERVE_EVERYTHING` - Create observations for all tool uses when Endless Mode is enabled (default: same as CLAUDE_MEM_ENDLESS_MODE)
 
 ## Key Design Decisions
 

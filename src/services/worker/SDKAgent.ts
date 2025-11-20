@@ -14,6 +14,7 @@ import path from 'path';
 import { existsSync, readFileSync } from 'fs';
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
+import { EndlessModeConfig } from './EndlessModeConfig.js';
 import { logger } from '../../utils/logger.js';
 import { silentDebug } from '../../utils/silent-debug.js';
 import { parseObservations, parseSummary } from '../../sdk/parser.js';
@@ -182,6 +183,10 @@ export class SDKAgent {
    * - We just use the session_id we're given - simple and reliable
    */
   private async *createMessageGenerator(session: ActiveSession): AsyncIterableIterator<SDKUserMessage> {
+    // Get Endless Mode config to determine if we should observe everything
+    const config = EndlessModeConfig.getConfig();
+    const observeEverything = config.observeEverything;
+
     // Yield initial user prompt with context (or continuation if prompt #2+)
     // CRITICAL: Both paths use session.claudeSessionId from the hook
     yield {
@@ -189,8 +194,8 @@ export class SDKAgent {
       message: {
         role: 'user',
         content: session.lastPromptNumber === 1
-          ? buildInitPrompt(session.project, session.claudeSessionId, session.userPrompt)
-          : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.claudeSessionId)
+          ? buildInitPrompt(session.project, session.claudeSessionId, session.userPrompt, observeEverything)
+          : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.claudeSessionId, observeEverything)
       },
       session_id: session.claudeSessionId,
       parent_tool_use_id: null,
@@ -254,6 +259,21 @@ export class SDKAgent {
   private async processSDKResponse(session: ActiveSession, text: string, worker: any | undefined, discoveryTokens: number): Promise<void> {
     // Parse observations
     const observations = parseObservations(text, session.claudeSessionId);
+
+    // Handle skip case: If no observations found AND there's a pending Endless Mode resolver
+    // Resolve immediately to prevent 90s timeout
+    if (observations.length === 0 && session.currentToolUseId) {
+      const resolver = session.pendingObservationResolvers.get(session.currentToolUseId);
+      if (resolver) {
+        session.pendingObservationResolvers.delete(session.currentToolUseId);
+        resolver(null); // Signal skip to save-hook
+        logger.debug('SDK', 'No observation created (skipped)', {
+          sessionId: session.sessionDbId,
+          toolUseId: session.currentToolUseId
+        });
+      }
+      return; // Exit early, nothing to store
+    }
 
     // Store observations
     for (const obs of observations) {

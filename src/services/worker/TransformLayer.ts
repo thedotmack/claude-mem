@@ -16,6 +16,7 @@ export interface TransformLayerConfig {
   fallbackToOriginal: boolean;   // If observation missing, use full content
   maxLookupTime: number;         // Timeout for SQLite queries (ms)
   keepRecentToolUses: number;    // Keep recent N tool uses uncompressed (0 = compress all)
+  observeEverything: boolean;    // Create observations for all tool uses, even routine operations
 }
 
 export interface TransformStats {

@@ -62,18 +62,26 @@ export class EndlessModeConfig {
       0
     );
 
+    const observeEverything = this.getBooleanSetting(
+      settings.env?.CLAUDE_MEM_OBSERVE_EVERYTHING,
+      process.env.CLAUDE_MEM_OBSERVE_EVERYTHING,
+      enabled  // Default to same as Endless Mode enabled state
+    );
+
     this.config = {
       enabled,
       fallbackToOriginal,
       maxLookupTime,
-      keepRecentToolUses
+      keepRecentToolUses,
+      observeEverything
     };
 
     if (enabled) {
       logger.info('CONFIG', 'Endless Mode enabled', {
         fallback: fallbackToOriginal,
         maxLookupTime: `${maxLookupTime}ms`,
-        keepRecent: keepRecentToolUses
+        keepRecent: keepRecentToolUses,
+        observeEverything
       });
     } else {
       logger.debug('CONFIG', 'Endless Mode disabled');

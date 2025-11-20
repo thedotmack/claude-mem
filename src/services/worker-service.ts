@@ -29,13 +29,14 @@ import { SSEBroadcaster } from './worker/SSEBroadcaster.js';
 import { SDKAgent } from './worker/SDKAgent.js';
 import { PaginationHelper } from './worker/PaginationHelper.js';
 
-// Tools to skip (low value or too frequent)
+// Tools to skip - ALWAYS skipped, even in Endless Mode "observe everything"
+// These tools don't produce compressible output useful for transcript compression
 const SKIP_TOOLS = new Set([
-  'ListMcpResourcesTool',
-  'SlashCommand',
-  'Skill',
-  'TodoWrite',
-  'AskUserQuestion'
+  'ListMcpResourcesTool',  // MCP infrastructure - no user-facing work
+  'SlashCommand',          // Command invocation (observe what it produces, not the call)
+  'Skill',                 // Skill invocation (observe what it produces, not the call)
+  'TodoWrite',             // Task management meta-tool - internal tracking only
+  'AskUserQuestion'        // User interaction - no substantive work to compress
 ]);
 import { SettingsManager } from './worker/SettingsManager.js';
 
@@ -544,6 +545,23 @@ export class WorkerService {
           // Wait for observation or timeout
           const observation = await observationPromise;
           const processingTimeMs = Date.now() - startTime;
+
+          // Handle skip case (observation is null when SDK Agent skipped)
+          if (observation === null) {
+            logger.debug('WORKER', 'Observation skipped (synchronous mode)', {
+              sessionId: sessionDbId,
+              toolUseId: tool_use_id,
+              processingTimeMs
+            });
+
+            res.json({
+              status: 'skipped',
+              observation: null,
+              processing_time_ms: processingTimeMs,
+              message: 'No observation created (routine operation)'
+            });
+            return;
+          }
 
           logger.success('WORKER', 'Observation ready (synchronous mode)', {
             sessionId: sessionDbId,

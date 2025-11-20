@@ -316,37 +316,47 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
         sessionId: sessionDbId,
         status: response.status
       }, errorText);
-      throw new Error(`Failed to send observation to worker: ${response.status} ${errorText}`);
+      // Continue anyway - observation failed but don't block the hook
+      console.log(createHookResponse('PostToolUse', true));
+      return;
     }
 
     const result = await response.json() as ObservationEndpointResponse;
 
-    // Phase 3: Handle synchronous mode response
+    // Phase 3: Handle synchronous mode response - always continue regardless of response
     if (isEndlessModeEnabled) {
       if (result.status === 'completed' && result.observation) {
         logger.success('HOOK', 'Observation ready, transforming transcript', {
           sessionId: sessionDbId,
-          toolUseId: tool_use_id,
+          toolUseId: extractedToolUseId,
           processingTimeMs: result.processing_time_ms
         });
 
         try {
-          await transformTranscript(transcript_path, tool_use_id, result.observation);
+          await transformTranscript(transcript_path, extractedToolUseId, result.observation);
         } catch (transformError: any) {
           logger.failure('HOOK', 'Transcript transformation failed', {
             sessionId: sessionDbId,
-            toolUseId: tool_use_id
+            toolUseId: extractedToolUseId
           }, transformError);
           // Continue anyway - observation is saved, just not compressed in transcript
         }
       } else if (result.status === 'timeout') {
         logger.warn('HOOK', 'Endless Mode timeout - using full output', {
           sessionId: sessionDbId,
-          toolUseId: tool_use_id,
+          toolUseId: extractedToolUseId,
           processingTimeMs: result.processing_time_ms,
           message: result.message
         });
         // Fall back to async behavior - observation will complete in background
+      } else {
+        // Handle any other status (queued, error, unexpected response, etc.)
+        logger.debug('HOOK', 'Endless Mode received non-standard response - continuing', {
+          sessionId: sessionDbId,
+          toolUseId: extractedToolUseId,
+          status: result.status || 'unknown'
+        });
+        // Continue anyway - LLM may not always respond as expected
       }
     } else {
       logger.debug('HOOK', 'Observation sent successfully (async mode)', {
@@ -355,12 +365,31 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
       });
     }
   } catch (error: any) {
-    // Only show restart message for connection errors, not HTTP errors
-    if (error.cause?.code === 'ECONNREFUSED' || error.name === 'TimeoutError' || error.message.includes('fetch failed')) {
-      throw new Error("There's a problem with the worker. If you just updated, type `pm2 restart claude-mem-worker` in your terminal to continue");
+    // Worker connection errors - suggest restart
+    if (error.cause?.code === 'ECONNREFUSED') {
+      logger.failure('HOOK', 'Worker connection refused', { sessionId: sessionDbId }, error);
+      console.log(createHookResponse('PostToolUse', true, "Worker connection failed. Try: pm2 restart claude-mem-worker"));
+      return;
     }
-    // Re-throw HTTP errors and other errors as-is
-    throw error;
+
+    // Timeout errors - just continue (observation will complete in background)
+    if (error.name === 'TimeoutError' || error.message?.includes('timed out')) {
+      logger.warn('HOOK', 'Observation request timed out - continuing', {
+        sessionId: sessionDbId,
+        toolName: tool_name
+      });
+      console.log(createHookResponse('PostToolUse', true));
+      return;
+    }
+
+    // All other errors - log and continue (never block the hook)
+    logger.warn('HOOK', 'Observation request failed - continuing anyway', {
+      sessionId: sessionDbId,
+      toolName: tool_name,
+      error: error.message
+    });
+    console.log(createHookResponse('PostToolUse', true));
+    return;
   }
 
   console.log(createHookResponse('PostToolUse', true));

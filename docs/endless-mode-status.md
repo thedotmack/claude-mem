@@ -93,6 +93,30 @@ Claude Code's PostToolUse hook doesn't provide `tool_use_id` directly.
 - Falls back gracefully with silentDebug logging
 - Now `tool_use_id` is available for Endless Mode
 
+### ✅ Observe Everything Mode (COMPLETE)
+**Files**: `src/sdk/prompts.ts`, `src/services/worker/SDKAgent.ts`, `src/services/worker/EndlessModeConfig.ts`
+
+**Problem solved:**
+Endless Mode focuses on compression, not just memory storage. The SDK Agent's default skip logic filters out "routine operations" (git status, package.json reads, directory listings), which creates gaps in transcript compression.
+
+**Solution implemented:**
+- Added `observeEverything` boolean to `TransformLayerConfig` interface
+- Modified `buildInitPrompt()` and `buildContinuationPrompt()` to accept `observeEverything` parameter
+- When enabled, replaces "WHEN TO SKIP" prompt section with "OBSERVATION REQUIREMENTS"
+- Instructs agent to create observations for ALL tool uses, using concise format for routine operations
+- Defaults to same value as `CLAUDE_MEM_ENDLESS_MODE` (can be disabled independently via `CLAUDE_MEM_OBSERVE_EVERYTHING=false`)
+
+**Key features:**
+- Complete transcript compression (no gaps from skipped tools)
+- Smart prompt engineering: concise observations for routine ops, full detail for meaningful work
+- SKIP_TOOLS still apply (TodoWrite, AskUserQuestion, etc. - meta-tools that don't produce compressible output)
+- Configuration documented in CLAUDE.md environment variables section
+
+**Key code locations:**
+- `src/sdk/prompts.ts`: Lines 27, 65-86 (buildInitPrompt), 238, 251-262 (buildContinuationPrompt)
+- `src/services/worker/SDKAgent.ts`: Lines 186-188 (config loading)
+- `src/services/worker/EndlessModeConfig.ts`: Lines 65-69 (config setting)
+
 ---
 
 ## What Remains: Phase 4 (Testing & Validation)
@@ -150,10 +174,13 @@ ls -lh <transcript_path>
   "enableContextInjection": true,
   "contextDepth": 7,
   "env": {
-    "CLAUDE_MEM_ENDLESS_MODE": true
+    "CLAUDE_MEM_ENDLESS_MODE": true,
+    "CLAUDE_MEM_OBSERVE_EVERYTHING": true
   }
 }
 ```
+
+**Note**: `CLAUDE_MEM_OBSERVE_EVERYTHING` defaults to the same value as `CLAUDE_MEM_ENDLESS_MODE`. Set to `false` to enable Endless Mode but skip routine operations (not recommended for complete transcript compression).
 
 ### 🔲 4. Monitoring & Debugging Tools
 **Objective**: Provide visibility into Endless Mode operation

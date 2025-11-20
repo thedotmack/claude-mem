@@ -24,7 +24,7 @@ export interface SDKSession {
 /**
  * Build initial prompt to initialize the SDK agent
  */
-export function buildInitPrompt(project: string, sessionId: string, userPrompt: string): string {
+export function buildInitPrompt(project: string, sessionId: string, userPrompt: string, observeEverything = false): string {
   return `You are a Claude-Mem, a specialized observer tool for creating searchable memory FOR FUTURE SESSIONS.
 
 CRITICAL: Record what was LEARNED/BUILT/FIXED/DEPLOYED/CONFIGURED, not what you (the observer) are doing.
@@ -62,7 +62,20 @@ Use verbs like: implemented, fixed, deployed, configured, migrated, optimized, a
 - "Tracked deployment steps and logged outcomes"
 - "Monitored database performance and recorded metrics"
 
-WHEN TO SKIP
+${observeEverything ? `OBSERVATION REQUIREMENTS
+-----------------------
+CREATE AN OBSERVATION FOR EVERY TOOL USE, even routine operations like status checks or file listings.
+
+For routine operations (git status, package.json reads, directory listings), use a concise format:
+- Title: Brief description of the operation
+- Facts: 1-2 key outcomes only
+- Narrative: Single sentence summary
+
+For meaningful operations (file modifications, discoveries, fixes), provide full detail as usual.
+
+This ensures complete transcript compression while optimizing token usage for low-value operations.
+
+**Always output an observation - never skip.**` : `WHEN TO SKIP
 ------------
 Skip routine operations:
 - Empty status checks
@@ -70,7 +83,7 @@ Skip routine operations:
 - Simple file listings
 - Repetitive operations you've already documented
 - If file related research comes back as empty or not found
-- **No output necessary if skipping.**
+- **No output necessary if skipping.**`}
 
 OUTPUT FORMAT
 -------------
@@ -222,7 +235,7 @@ Thank you, this summary will be very useful for keeping track of our progress!`;
  * Called when: promptNumber > 1 (see SDKAgent.ts line 150)
  * First prompt: Uses buildInitPrompt instead (promptNumber === 1)
  */
-export function buildContinuationPrompt(userPrompt: string, promptNumber: number, claudeSessionId: string): string {
+export function buildContinuationPrompt(userPrompt: string, promptNumber: number, claudeSessionId: string, observeEverything = false): string {
   return `
 Hello memory agent, you are continuing to observe the primary Claude session.
 
@@ -234,6 +247,19 @@ Hello memory agent, you are continuing to observe the primary Claude session.
 You do not have access to tools. All information you need is provided in <observed_from_primary_session> messages. Create observations from what you observe - no investigation needed.
 
 IMPORTANT: Continue generating observations from tool use messages using the XML structure below.
+
+${observeEverything ? `OBSERVATION REQUIREMENTS
+-----------------------
+CREATE AN OBSERVATION FOR EVERY TOOL USE, even routine operations like status checks or file listings.
+
+For routine operations (git status, package.json reads, directory listings), use a concise format:
+- Title: Brief description of the operation
+- Facts: 1-2 key outcomes only
+- Narrative: Single sentence summary
+
+For meaningful operations (file modifications, discoveries, fixes), provide full detail as usual.
+
+**Always output an observation - never skip.**` : ''}
 
 OUTPUT FORMAT
 -------------
