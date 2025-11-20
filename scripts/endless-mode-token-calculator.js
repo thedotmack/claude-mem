@@ -3,8 +3,10 @@
 /**
  * Endless Mode Token Economics Calculator
  *
- * Simulates the recursive/cumulative token savings from Endless Mode by
- * "playing the tape through" with real observation data from SQLite.
+ * Usage: node endless-mode-token-calculator.js <observation_id>
+ *
+ * Takes an observation ID, finds its session, and calculates token savings
+ * for that entire session by comparing WITH and WITHOUT Endless Mode.
  *
  * Key Insight:
  * - Discovery tokens are ALWAYS spent (creating observations)
@@ -12,62 +14,78 @@
  * - Savings compound recursively - each tool benefits from ALL previous compressions
  */
 
-const observationsData = [{"id":10136,"type":"decision","title":"Token Accounting Function for Recursive Continuation Pattern","discovery_tokens":4037,"created_at_epoch":1763360747429,"compressed_size":1613},
-{"id":10135,"type":"discovery","title":"Sequential Thinking Analysis of Token Economics Calculator","discovery_tokens":1439,"created_at_epoch":1763360651617,"compressed_size":1812},
-{"id":10134,"type":"discovery","title":"Recent Context Query Execution","discovery_tokens":1273,"created_at_epoch":1763360646273,"compressed_size":1228},
-{"id":10133,"type":"discovery","title":"Token Data Query Execution and Historical Context","discovery_tokens":11878,"created_at_epoch":1763360642485,"compressed_size":1924},
-{"id":10132,"type":"discovery","title":"Token Data Query and Script Validation Request","discovery_tokens":4167,"created_at_epoch":1763360628269,"compressed_size":903},
-{"id":10131,"type":"discovery","title":"Endless Mode Token Economics Analysis Output: Complete Infrastructure Impact","discovery_tokens":2458,"created_at_epoch":1763360553238,"compressed_size":2166},
-{"id":10130,"type":"change","title":"Integration of Actual Compute Savings Analysis into Main Execution Flow","discovery_tokens":11031,"created_at_epoch":1763360545347,"compressed_size":1032},
-{"id":10129,"type":"discovery","title":"Prompt Caching Economics: User Cost vs. Anthropic Compute Cost Divergence","discovery_tokens":20059,"created_at_epoch":1763360540854,"compressed_size":1802},
-{"id":10128,"type":"discovery","title":"Token Caching Cost Analysis Across AI Model Providers","discovery_tokens":3506,"created_at_epoch":1763360478133,"compressed_size":1245},
-{"id":10127,"type":"discovery","title":"Endless Mode Token Economics Calculator Successfully Integrated Prompt Caching Cost Model","discovery_tokens":3481,"created_at_epoch":1763360384055,"compressed_size":2444},
-{"id":10126,"type":"bugfix","title":"Fix Return Statement Variable Names in playTheTapeThrough Function","discovery_tokens":8326,"created_at_epoch":1763360374566,"compressed_size":1250},
-{"id":10125,"type":"change","title":"Redesign Timeline Display to Show Fresh/Cached Token Breakdown and Real Dollar Costs","discovery_tokens":12999,"created_at_epoch":1763360368843,"compressed_size":2004},
-{"id":10124,"type":"change","title":"Replace Estimated Cost Model with Actual Caching-Based Costs in Anthropic Scale Analysis","discovery_tokens":12867,"created_at_epoch":1763360361147,"compressed_size":2064},
-{"id":10123,"type":"change","title":"Pivot Session Length Comparison Table from Token to Cost Metrics","discovery_tokens":9746,"created_at_epoch":1763360352992,"compressed_size":1652},
-{"id":10122,"type":"change","title":"Add Dual Reporting: Token Count vs Actual Cost in Comparison Output","discovery_tokens":9602,"created_at_epoch":1763360346495,"compressed_size":1640},
-{"id":10121,"type":"change","title":"Apply Prompt Caching Cost Model to Endless Mode Calculation Function","discovery_tokens":9963,"created_at_epoch":1763360339238,"compressed_size":2003},
-{"id":10120,"type":"change","title":"Integrate Prompt Caching Cost Calculations into Without-Endless-Mode Function","discovery_tokens":8652,"created_at_epoch":1763360332046,"compressed_size":1701},
-{"id":10119,"type":"change","title":"Display Prompt Caching Pricing in Initial Calculator Output","discovery_tokens":6669,"created_at_epoch":1763360325882,"compressed_size":1188},
-{"id":10118,"type":"change","title":"Add Prompt Caching Pricing Model to Token Economics Calculator","discovery_tokens":10433,"created_at_epoch":1763360320552,"compressed_size":1264},
-{"id":10117,"type":"discovery","title":"Claude API Prompt Caching Cost Optimization Factor","discovery_tokens":3439,"created_at_epoch":1763360210175,"compressed_size":1142},
-{"id":10116,"type":"discovery","title":"Endless Mode Token Economics Verified at Scale","discovery_tokens":2855,"created_at_epoch":1763360144039,"compressed_size":2184},
-{"id":10115,"type":"feature","title":"Token Economics Calculator for Endless Mode Sessions","discovery_tokens":13468,"created_at_epoch":1763360134068,"compressed_size":1858},
-{"id":10114,"type":"decision","title":"Token Accounting for Recursive Session Continuations","discovery_tokens":3550,"created_at_epoch":1763360052317,"compressed_size":1478},
-{"id":10113,"type":"discovery","title":"Performance and Token Optimization Impact Analysis for Endless Mode","discovery_tokens":3464,"created_at_epoch":1763359862175,"compressed_size":1259},
-{"id":10112,"type":"change","title":"Endless Mode Blocking Hooks & Transcript Transformation Plan Document Created","discovery_tokens":17312,"created_at_epoch":1763359465307,"compressed_size":2181},
-{"id":10111,"type":"change","title":"Plan Document Creation for Morning Implementation","discovery_tokens":3652,"created_at_epoch":1763359347166,"compressed_size":843},
-{"id":10110,"type":"decision","title":"Blocking vs Non-Blocking Behavior by Mode","discovery_tokens":3652,"created_at_epoch":1763359347165,"compressed_size":797},
-{"id":10109,"type":"decision","title":"Tool Use and Observation Processing Architecture: Non-Blocking vs Blocking","discovery_tokens":3472,"created_at_epoch":1763359247045,"compressed_size":1349},
-{"id":10108,"type":"feature","title":"SessionManager.getMessageIterator implements event-driven async generator with graceful abort handling","discovery_tokens":2417,"created_at_epoch":1763359189299,"compressed_size":2016},
-{"id":10107,"type":"feature","title":"SessionManager implements event-driven session lifecycle with auto-initialization and zero-latency queue notifications","discovery_tokens":4734,"created_at_epoch":1763359165608,"compressed_size":2781},
-{"id":10106,"type":"discovery","title":"Two distinct uses of transcript data: live data flow vs session initialization","discovery_tokens":2933,"created_at_epoch":1763359156448,"compressed_size":2015},
-{"id":10105,"type":"discovery","title":"Transcript initialization pattern identified for compressed context on session resume","discovery_tokens":2933,"created_at_epoch":1763359156447,"compressed_size":2536},
-{"id":10104,"type":"feature","title":"SDKAgent implements event-driven message generator with continuation prompt logic and Endless Mode integration","discovery_tokens":6148,"created_at_epoch":1763359140399,"compressed_size":3241},
-{"id":10103,"type":"discovery","title":"Endless Mode architecture documented with phased implementation plan and context economics","discovery_tokens":5296,"created_at_epoch":1763359127954,"compressed_size":3145},
-{"id":10102,"type":"feature","title":"Save hook enhanced to extract and forward tool_use_id for Endless Mode linking","discovery_tokens":3294,"created_at_epoch":1763359115848,"compressed_size":2125},
-{"id":10101,"type":"feature","title":"TransformLayer implements Endless Mode context compression via observation substitution","discovery_tokens":4637,"created_at_epoch":1763359108317,"compressed_size":2629},
-{"id":10100,"type":"feature","title":"EndlessModeConfig implemented for loading Endless Mode settings from files and environment","discovery_tokens":2313,"created_at_epoch":1763359099972,"compressed_size":2125},
-{"id":10098,"type":"change","title":"User prompts wrapped with semantic XML structure in buildInitPrompt and buildContinuationPrompt","discovery_tokens":7806,"created_at_epoch":1763359091460,"compressed_size":1585},
-{"id":10099,"type":"discovery","title":"Session persistence mechanism relies on SDK internal state without context reload","discovery_tokens":7806,"created_at_epoch":1763359091460,"compressed_size":1883},
-{"id":10097,"type":"change","title":"Worker service session init now extracts userPrompt and promptNumber from request body","discovery_tokens":7806,"created_at_epoch":1763359091459,"compressed_size":1148},
-{"id":10096,"type":"feature","title":"SessionManager enhanced to accept dynamic userPrompt updates during multi-turn conversations","discovery_tokens":7806,"created_at_epoch":1763359091457,"compressed_size":1528},
-{"id":10095,"type":"discovery","title":"Five lifecycle hooks integrate claude-mem at critical session boundaries","discovery_tokens":6625,"created_at_epoch":1763359074808,"compressed_size":1570},
-{"id":10094,"type":"discovery","title":"PostToolUse hook is real-time observation creation point, not delayed processing","discovery_tokens":6625,"created_at_epoch":1763359074807,"compressed_size":2371},
-{"id":10093,"type":"discovery","title":"PostToolUse hook timing and compression integration options explored","discovery_tokens":1696,"created_at_epoch":1763359062088,"compressed_size":1605},
-{"id":10092,"type":"discovery","title":"Transcript transformation strategy for endless mode identified","discovery_tokens":6112,"created_at_epoch":1763359057563,"compressed_size":1968},
-{"id":10091,"type":"decision","title":"Finalized Transcript Compression Implementation Strategy","discovery_tokens":1419,"created_at_epoch":1763358943803,"compressed_size":1556},
-{"id":10090,"type":"discovery","title":"UserPromptSubmit Hook as Compression Integration Point","discovery_tokens":1546,"created_at_epoch":1763358931936,"compressed_size":1621},
-{"id":10089,"type":"decision","title":"Hypothesis 5 Selected: UserPromptSubmit Hook for Transcript Compression","discovery_tokens":1465,"created_at_epoch":1763358920209,"compressed_size":1918}];
+import Database from 'better-sqlite3';
+import { homedir } from 'os';
+import { join } from 'path';
+import { existsSync, readFileSync, readdirSync } from 'fs';
 
-// Estimate original tool output size from discovery tokens
-// Heuristic: discovery_tokens roughly correlates with original content size
-// Assumption: If it took 10k tokens to analyze, original was probably 15-30k tokens
+const DB_PATH = join(homedir(), '.claude-mem', 'claude-mem.db');
+
+// Get mode from command line
+const mode = process.argv[2];
+const observationId = process.argv[3];
+const noTruncate = process.argv.includes('--no-truncate');
+
+// Open database
+const db = new Database(DB_PATH, { readonly: true });
+
+let sessionsToAnalyze = [];
+
+if (mode === '--all') {
+  // Get all sessions that have observations with discovery_tokens
+  const sessions = db.prepare(`
+    SELECT DISTINCT sdk_session_id
+    FROM observations
+    WHERE discovery_tokens IS NOT NULL AND discovery_tokens > 0
+    ORDER BY created_at_epoch ASC
+  `).all();
+
+  if (sessions.length === 0) {
+    console.error('❌ No sessions found with discovery_tokens');
+    db.close();
+    process.exit(1);
+  }
+
+  sessionsToAnalyze = sessions.map(s => s.sdk_session_id);
+  console.log(`\n📊 Analyzing ${sessionsToAnalyze.length} sessions with discovery_tokens...\n`);
+
+} else if (mode && !mode.startsWith('--')) {
+  // Original behavior: single observation ID
+  const obsId = mode; // First arg is the observation ID
+  const observation = db.prepare(`
+    SELECT sdk_session_id, id, title
+    FROM observations
+    WHERE id = ?
+  `).get(obsId);
+
+  if (!observation) {
+    console.error(`❌ Observation ${obsId} not found`);
+    db.close();
+    process.exit(1);
+  }
+
+  sessionsToAnalyze = [observation.sdk_session_id];
+  console.log(`\n📍 Analyzing session from observation #${observation.id}: "${observation.title}"\n`);
+
+} else {
+  console.error('Usage:');
+  console.error('  node endless-mode-token-calculator.js <observation_id>');
+  console.error('  node endless-mode-token-calculator.js --all [--no-truncate]');
+  console.error('');
+  console.error('Options:');
+  console.error('  --no-truncate    Show full observation titles without truncation');
+  console.error('');
+  console.error('Examples:');
+  console.error('  node endless-mode-token-calculator.js 10136');
+  console.error('  node endless-mode-token-calculator.js --all');
+  console.error('  node endless-mode-token-calculator.js --all --no-truncate');
+  process.exit(1);
+}
+
+// Use discovery tokens as proxy for original tool output size
+// Discovery cost is proportional to output complexity: bigger output = more tokens to analyze
 function estimateOriginalToolOutputSize(discoveryTokens) {
-  // Conservative multiplier: 2x (original content was 2x the discovery cost)
-  // This accounts for: reading the tool output + analyzing it + generating observation
-  return discoveryTokens * 2;
+  return discoveryTokens;
 }
 
 // Convert compressed_size (character count) to approximate token count
@@ -103,7 +121,7 @@ function calculateWithoutEndlessMode(observations) {
     timeline.push({
       tool: toolNumber,
       obsId: obs.id,
-      title: obs.title.substring(0, 60),
+      title: (obs.title || 'Untitled').substring(0, 60),
       originalSize: originalToolSize,
       discoveryCost,
       contextSize: cumulativeContextTokens,
@@ -112,10 +130,16 @@ function calculateWithoutEndlessMode(observations) {
     });
   });
 
+  // Calculate non-compounded total (just sum of all tool outputs, no accumulation)
+  const nonCompoundedTotal = observations.reduce((sum, obs) => {
+    return sum + estimateOriginalToolOutputSize(obs.discovery_tokens);
+  }, 0);
+
   return {
     totalDiscoveryTokens,
     totalContinuationTokens,
     totalTokens: totalDiscoveryTokens + totalContinuationTokens,
+    nonCompoundedTotal: totalDiscoveryTokens + nonCompoundedTotal,
     timeline
   };
 }
@@ -149,7 +173,7 @@ function calculateWithEndlessMode(observations) {
     timeline.push({
       tool: toolNumber,
       obsId: obs.id,
-      title: obs.title.substring(0, 60),
+      title: (obs.title || 'Untitled').substring(0, 60),
       originalSize: originalToolSize,
       compressedSize,
       compressionRatio: `${compressionRatio}%`,
@@ -160,10 +184,16 @@ function calculateWithEndlessMode(observations) {
     });
   });
 
+  // Calculate non-compounded total (just sum of all compressed observations, no accumulation)
+  const nonCompoundedTotal = observations.reduce((sum, obs) => {
+    return sum + charsToTokens(obs.compressed_size);
+  }, 0);
+
   return {
     totalDiscoveryTokens,
     totalContinuationTokens,
     totalTokens: totalDiscoveryTokens + totalContinuationTokens,
+    nonCompoundedTotal: totalDiscoveryTokens + nonCompoundedTotal,
     timeline
   };
 }
@@ -269,5 +299,197 @@ function playTheTapeThrough(observations) {
   };
 }
 
-// Run the calculation
-playTheTapeThrough(observationsData);
+// Run calculations for all sessions
+let aggregateResults = {
+  totalSessions: 0,
+  totalObservations: 0,
+  totalDiscoveryTokens: 0,
+  totalContinuationTokensWithout: 0,
+  totalContinuationTokensWith: 0,
+  totalTokensWithout: 0,
+  totalTokensWith: 0,
+  nonCompoundedWithout: 0,
+  nonCompoundedWith: 0
+};
+
+const sessionResults = []; // Store per-session results for table
+
+for (const sessionId of sessionsToAnalyze) {
+  // Get all observations from this session
+  const observationsData = db.prepare(`
+    SELECT
+      id,
+      type,
+      title,
+      discovery_tokens,
+      created_at_epoch,
+      (
+        COALESCE(LENGTH(title), 0) +
+        COALESCE(LENGTH(subtitle), 0) +
+        COALESCE(LENGTH(narrative), 0) +
+        COALESCE(LENGTH(facts), 0) +
+        COALESCE(LENGTH(concepts), 0) +
+        COALESCE(LENGTH(files_read), 0) +
+        COALESCE(LENGTH(files_modified), 0)
+      ) as compressed_size
+    FROM observations
+    WHERE sdk_session_id = ?
+      AND discovery_tokens IS NOT NULL
+      AND discovery_tokens > 0
+    ORDER BY created_at_epoch ASC
+  `).all(sessionId);
+
+  if (observationsData.length === 0) continue;
+
+  // Get session summary if it exists
+  const summary = db.prepare(`
+    SELECT request, created_at
+    FROM session_summaries
+    WHERE sdk_session_id = ?
+    ORDER BY created_at_epoch DESC
+    LIMIT 1
+  `).get(sessionId);
+
+  // Check if this session has Endless Mode enabled
+  // Search across all project folders for the transcript
+  let hasEndlessMode = false;
+  try {
+    const projectsDir = join(homedir(), '.claude', 'projects');
+    if (existsSync(projectsDir)) {
+      const projectFolders = readdirSync(projectsDir);
+
+      for (const projectFolder of projectFolders) {
+        const transcriptPath = join(projectsDir, projectFolder, `${sessionId}.jsonl`);
+        if (existsSync(transcriptPath)) {
+          const transcriptContent = readFileSync(transcriptPath, 'utf-8');
+          if (transcriptContent.includes('Compressed by Endless Mode')) {
+            hasEndlessMode = true;
+            break;
+          }
+        }
+      }
+    }
+  } catch (e) {
+    // Transcript not found or error reading - assume no Endless Mode
+  }
+
+  if (mode === '--all') {
+    // Aggregate mode: accumulate totals and store per-session results
+    const without = calculateWithoutEndlessMode(observationsData);
+    const withMode = calculateWithEndlessMode(observationsData);
+
+    const tokensSaved = without.totalTokens - withMode.totalTokens;
+    const percentSaved = (tokensSaved / without.totalTokens * 100).toFixed(1);
+
+    // Format date/time
+    let dateStr = '';
+    if (summary) {
+      const date = new Date(summary.created_at);
+      dateStr = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    }
+
+    // Use first observation title instead of session summary
+    const firstObsTitle = observationsData[0]?.title || 'Untitled';
+
+    sessionResults.push({
+      sessionId: sessionId.substring(0, 8), // Short ID for table
+      date: dateStr,
+      summary: firstObsTitle,
+      obsCount: observationsData.length,
+      discoveryTokens: without.totalDiscoveryTokens,
+      withoutTotal: without.totalTokens,
+      withTotal: withMode.totalTokens,
+      withoutUserVisible: without.nonCompoundedTotal,
+      withUserVisible: withMode.nonCompoundedTotal,
+      saved: tokensSaved,
+      percent: percentSaved,
+      endless: hasEndlessMode
+    });
+
+    aggregateResults.totalSessions++;
+    aggregateResults.totalObservations += observationsData.length;
+    aggregateResults.totalDiscoveryTokens += without.totalDiscoveryTokens;
+    aggregateResults.totalContinuationTokensWithout += without.totalContinuationTokens;
+    aggregateResults.totalContinuationTokensWith += withMode.totalContinuationTokens;
+    aggregateResults.totalTokensWithout += without.totalTokens;
+    aggregateResults.totalTokensWith += withMode.totalTokens;
+    aggregateResults.nonCompoundedWithout += without.nonCompoundedTotal;
+    aggregateResults.nonCompoundedWith += withMode.nonCompoundedTotal;
+  } else {
+    // Single session mode: show detailed output
+    playTheTapeThrough(observationsData);
+  }
+}
+
+// Show aggregate results for --all mode
+if (mode === '--all') {
+  const tokensSaved = aggregateResults.totalTokensWithout - aggregateResults.totalTokensWith;
+  const percentSaved = (tokensSaved / aggregateResults.totalTokensWithout * 100).toFixed(1);
+  const efficiencyGain = (aggregateResults.totalTokensWithout / aggregateResults.totalTokensWith).toFixed(2);
+
+  console.log('='.repeat(210));
+  console.log('PER-SESSION BREAKDOWN');
+  console.log('='.repeat(210) + '\n');
+
+  // Table header - dynamic width for summary column
+  const summaryWidth = noTruncate ? 80 : 36;
+  const summaryHeader = 'First Observation Title'.padEnd(summaryWidth);
+  console.log(`Date      | Session  | ${summaryHeader} | Obs | EM | User-Visible  | User-Visible  | Processing    | Processing    | Saved  | %     `);
+  console.log(`          |          | ${' '.repeat(summaryWidth)} |     |    | (Without)     | (With)        | (Without)     | (With)        |        |       `);
+  console.log(`----------|----------|${'-'.repeat(summaryWidth)}--|-----|-------|---------------|---------------|---------------|---------------|--------|-------`);
+
+  // Table rows
+  for (const session of sessionResults) {
+    const date = (session.date || '').padEnd(9);
+    const sessionId = session.sessionId.padEnd(8);
+    const summaryText = session.summary || 'Untitled';
+    const summary = noTruncate
+      ? summaryText.padEnd(summaryWidth)
+      : summaryText.substring(0, summaryWidth).padEnd(summaryWidth);
+    const obsCount = String(session.obsCount).padStart(3);
+    const endlessMode = session.endless ? ' ✓ ' : '   ';
+    const userVisWithout = session.withoutUserVisible.toLocaleString().padStart(13);
+    const userVisWith = session.withUserVisible.toLocaleString().padStart(13);
+    const procWithout = session.withoutTotal.toLocaleString().padStart(13);
+    const procWith = session.withTotal.toLocaleString().padStart(13);
+    const saved = session.saved.toLocaleString().padStart(6);
+    const percent = String(session.percent).padStart(5);
+
+    console.log(`${date} | ${sessionId} | ${summary} | ${obsCount} | ${endlessMode} | ${userVisWithout} | ${userVisWith} | ${procWithout} | ${procWith} | ${saved} | ${percent}%`);
+  }
+
+  console.log('');
+  console.log('='.repeat(120));
+  console.log('AGGREGATE RESULTS ACROSS ALL SESSIONS');
+  console.log('='.repeat(120) + '\n');
+
+  console.log(`📊 Total Sessions Analyzed: ${aggregateResults.totalSessions}`);
+  console.log(`📊 Total Observations: ${aggregateResults.totalObservations.toLocaleString()}`);
+  console.log('');
+
+  console.log('WITHOUT Endless Mode (What You Built):');
+  console.log(`  User-visible tokens:   ${aggregateResults.nonCompoundedWithout.toLocaleString()}t (discovery + tool outputs, no accumulation)`);
+  console.log(`  Processing tokens:     ${aggregateResults.totalContinuationTokensWithout.toLocaleString()}t (context re-reading accumulation)`);
+  console.log(`  TOTAL PROCESSING:      ${aggregateResults.totalTokensWithout.toLocaleString()}t`);
+  console.log('');
+
+  console.log('WITH Endless Mode (Power Consumption Savings):');
+  console.log(`  User-visible tokens:   ${aggregateResults.nonCompoundedWith.toLocaleString()}t (discovery + compressed, no accumulation)`);
+  console.log(`  Processing tokens:     ${aggregateResults.totalContinuationTokensWith.toLocaleString()}t (compressed context re-reading)`);
+  console.log(`  TOTAL PROCESSING:      ${aggregateResults.totalTokensWith.toLocaleString()}t`);
+  console.log('');
+
+  const userVisibleSaved = aggregateResults.nonCompoundedWithout - aggregateResults.nonCompoundedWith;
+  const userVisiblePercent = (userVisibleSaved / aggregateResults.nonCompoundedWithout * 100).toFixed(1);
+
+  console.log('💰 SAVINGS:');
+  console.log(`  User-visible saved:    ${userVisibleSaved.toLocaleString()}t (${userVisiblePercent}% reduction in "spent" tokens)`);
+  console.log(`  Processing saved:      ${tokensSaved.toLocaleString()}t (${percentSaved}% reduction in compute)`);
+  console.log(`  Efficiency gain:       ${efficiencyGain}x`);
+  console.log('');
+
+  console.log('='.repeat(120) + '\n');
+}
+
+// Close database
+db.close();
