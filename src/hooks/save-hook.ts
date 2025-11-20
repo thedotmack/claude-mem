@@ -4,14 +4,13 @@
  */
 
 import { stdin } from 'process';
-import { readFileSync, writeFileSync, renameSync, copyFileSync } from 'fs';
+import { readFileSync, writeFileSync, renameSync, copyFileSync, existsSync } from 'fs';
 import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { createHookResponse } from './hook-response.js';
 import { logger } from '../utils/logger.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
 import { EndlessModeConfig } from '../services/worker/EndlessModeConfig.js';
 import { silentDebug } from '../utils/silent-debug.js';
-import { BACKUPS_DIR, createBackupFilename, ensureDir } from '../shared/paths.js';
 import type { TranscriptEntry, AssistantTranscriptEntry, ToolUseContent, UserTranscriptEntry, ToolResultContent } from '../types/transcript.js';
 import type { Observation } from '../services/worker-types.js';
 
@@ -115,7 +114,8 @@ function formatObservationAsMarkdown(obs: Observation): string {
  * Transform transcript JSONL file by replacing tool result with compressed observation
  * Phase 2 of Endless Mode implementation
  *
- * ALWAYS creates timestamped backup before transformation for data safety
+ * Maintains single .original backup file that is 1:1 with non-Endless-Mode transcript
+ * Syncs new content to .original before transforming main transcript
  *
  * Returns compression stats for tracking
  */
@@ -124,18 +124,38 @@ async function transformTranscript(
   toolUseId: string,
   observation: Observation
 ): Promise<{ originalTokens: number; compressedTokens: number }> {
-  // ALWAYS create backup before transformation
+  // Maintain single .original backup file
+  const originalPath = `${transcriptPath}.original`;
+
   try {
-    ensureDir(BACKUPS_DIR);
-    const backupPath = createBackupFilename(transcriptPath);
-    copyFileSync(transcriptPath, backupPath);
-    logger.info('HOOK', 'Created transcript backup', {
-      original: transcriptPath,
-      backup: backupPath
-    });
+    const mainContent = readFileSync(transcriptPath, 'utf-8');
+    const mainLines = mainContent.trim().split('\n');
+
+    if (!existsSync(originalPath)) {
+      // First transformation: Create full copy
+      copyFileSync(transcriptPath, originalPath);
+      logger.info('HOOK', 'Created original transcript backup', {
+        original: transcriptPath,
+        backup: originalPath
+      });
+    } else {
+      // Subsequent transformations: Sync new lines before compressing
+      const originalContent = readFileSync(originalPath, 'utf-8');
+      const originalLines = originalContent.trim().split('\n');
+
+      if (mainLines.length > originalLines.length) {
+        // New content exists in main file - append to original
+        const newLines = mainLines.slice(originalLines.length);
+        writeFileSync(originalPath, originalContent + '\n' + newLines.join('\n'), 'utf-8');
+        logger.debug('HOOK', 'Synced new lines to original backup', {
+          newLinesCount: newLines.length,
+          totalLines: mainLines.length
+        });
+      }
+    }
   } catch (error) {
-    logger.error('HOOK', 'Failed to create transcript backup', { transcriptPath }, error as Error);
-    throw new Error('Backup creation failed - aborting transformation for safety');
+    logger.error('HOOK', 'Failed to sync original backup', { transcriptPath }, error as Error);
+    throw new Error('Backup sync failed - aborting transformation for safety');
   }
 
   // Read transcript
@@ -359,7 +379,8 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
         });
 
         try {
-          const stats = await transformTranscript(transcript_path, extractedToolUseId, result.observation);
+          // transcript_path guaranteed to exist by isEndlessModeEnabled check
+          const stats = await transformTranscript(transcript_path!, extractedToolUseId!, result.observation);
 
           // Update Endless Mode stats in database
           if (stats.originalTokens > 0) {
@@ -401,7 +422,9 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
     // Worker connection errors - suggest restart
     if (error.cause?.code === 'ECONNREFUSED') {
       logger.failure('HOOK', 'Worker connection refused', { sessionId: sessionDbId }, error);
-      console.log(createHookResponse('PostToolUse', true, "Worker connection failed. Try: pm2 restart claude-mem-worker"));
+      console.log(createHookResponse('PostToolUse', true, {
+        reason: "Worker connection failed. Try: pm2 restart claude-mem-worker"
+      }));
       return;
     }
 
