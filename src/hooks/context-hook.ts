@@ -8,6 +8,7 @@ import { homedir } from 'os';
 import { existsSync, readFileSync } from 'fs';
 import { stdin } from 'process';
 import { SessionStore } from '../services/sqlite/SessionStore.js';
+import { silentDebug } from '../utils/silent-debug.js';
 
 /**
  * Get context depth from settings
@@ -25,8 +26,9 @@ function getContextDepth(): number {
         }
       }
     }
-  } catch {
+  } catch (error) {
     // Fall through to env var or default
+    silentDebug('Failed to read context depth from settings.json', { error });
   }
   return parseInt(process.env.CLAUDE_MEM_CONTEXT_OBSERVATIONS || '50', 10);
 }
@@ -94,7 +96,8 @@ function parseJsonArray(json: string | null): string[] {
   try {
     const parsed = JSON.parse(json);
     return Array.isArray(parsed) ? parsed : [];
-  } catch (err) {
+  } catch (error) {
+    silentDebug('Failed to parse JSON array in context-hook', { json: json?.substring(0, 100), error });
     return [];
   }
 }

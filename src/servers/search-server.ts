@@ -182,7 +182,9 @@ function formatObservationResult(obs: ObservationSearchResult): string {
       if (facts.length > 0) {
         metadata.push(`Facts: ${facts.join('; ')}`);
       }
-    } catch {}
+    } catch (error) {
+      silentDebug('Failed to parse observation facts in search-server', { obsId: obs.id, error });
+    }
   }
 
   if (obs.concepts) {
@@ -191,7 +193,9 @@ function formatObservationResult(obs: ObservationSearchResult): string {
       if (concepts.length > 0) {
         metadata.push(`Concepts: ${concepts.join(', ')}`);
       }
-    } catch {}
+    } catch (error) {
+      silentDebug('Failed to parse observation concepts in search-server', { obsId: obs.id, error });
+    }
   }
 
   if (obs.files_read || obs.files_modified) {
@@ -199,12 +203,16 @@ function formatObservationResult(obs: ObservationSearchResult): string {
     if (obs.files_read) {
       try {
         files.push(...JSON.parse(obs.files_read));
-      } catch {}
+      } catch (error) {
+        silentDebug('Failed to parse observation files_read in search-server', { obsId: obs.id, error });
+      }
     }
     if (obs.files_modified) {
       try {
         files.push(...JSON.parse(obs.files_modified));
-      } catch {}
+      } catch (error) {
+        silentDebug('Failed to parse observation files_modified in search-server', { obsId: obs.id, error });
+      }
     }
     if (files.length > 0) {
       metadata.push(`Files: ${[...new Set(files)].join(', ')}`);
@@ -270,12 +278,16 @@ function formatSessionResult(session: SessionSummarySearchResult): string {
     if (session.files_read) {
       try {
         files.push(...JSON.parse(session.files_read));
-      } catch {}
+      } catch (error) {
+        silentDebug('Failed to parse session files_read in search-server', { sessionId: session.id, error });
+      }
     }
     if (session.files_edited) {
       try {
         files.push(...JSON.parse(session.files_edited));
-      } catch {}
+      } catch (error) {
+        silentDebug('Failed to parse session files_edited in search-server', { sessionId: session.id, error });
+      }
     }
     if (files.length > 0) {
       metadata.push(`Files: ${[...new Set(files)].join(', ')}`);
