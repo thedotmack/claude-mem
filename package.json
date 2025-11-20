@@ -43,7 +43,9 @@
     "changelog:generate": "node scripts/generate-changelog.js",
     "usage:analyze": "node scripts/analyze-usage.js",
     "usage:today": "node scripts/analyze-usage.js $(date +%Y-%m-%d)",
-    "endless-mode:metrics": "node scripts/endless-mode-metrics.js"
+    "endless-mode:metrics": "node scripts/endless-mode-metrics.js",
+    "endless-mode:restore": "npx tsx src/bin/restore-endless-mode.ts",
+    "endless-mode:backup-info": "npx tsx src/bin/restore-endless-mode.ts -- --info"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.1.27",

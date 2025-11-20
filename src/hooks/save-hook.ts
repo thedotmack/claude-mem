@@ -12,6 +12,7 @@ import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
 import { EndlessModeConfig } from '../services/worker/EndlessModeConfig.js';
 import { silentDebug } from '../utils/silent-debug.js';
 import { BACKUPS_DIR, createBackupFilename, ensureDir } from '../shared/paths.js';
+import { appendToolOutput, trimBackupFile } from '../shared/tool-output-backup.js';
 import type { TranscriptEntry, AssistantTranscriptEntry, ToolUseContent, UserTranscriptEntry, ToolResultContent } from '../types/transcript.js';
 import type { Observation } from '../services/worker-types.js';
 
@@ -169,6 +170,15 @@ async function transformTranscript(
               if (toolResult.tool_use_id === toolUseId) {
                 found = true;
 
+                // Backup original tool output BEFORE compression (for restoration if user disables Endless Mode)
+                try {
+                  appendToolOutput(toolUseId, toolResult.content, Date.now());
+                  logger.debug('HOOK', 'Backed up original tool output', { toolUseId });
+                } catch (backupError) {
+                  logger.warn('HOOK', 'Failed to backup original tool output', { toolUseId }, backupError as Error);
+                  // Continue anyway - backup failure shouldn't block compression
+                }
+
                 // Measure original size
                 originalSize = JSON.stringify(toolResult.content).length;
 
@@ -233,6 +243,18 @@ async function transformTranscript(
     compressedSize,
     savings: `${Math.round((1 - compressedSize / originalSize) * 100)}%`
   });
+
+  // Trim backup file to stay under size limit
+  try {
+    const config = EndlessModeConfig.getConfig();
+    if (config.maxToolHistoryMB > 0) {
+      trimBackupFile(config.maxToolHistoryMB);
+      logger.debug('HOOK', 'Trimmed tool output backup', { maxSizeMB: config.maxToolHistoryMB });
+    }
+  } catch (trimError) {
+    logger.warn('HOOK', 'Failed to trim tool output backup', {}, trimError as Error);
+    // Continue anyway - trim failure shouldn't block hook
+  }
 
   return { originalTokens, compressedTokens };
 }

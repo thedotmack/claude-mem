@@ -68,12 +68,19 @@ export class EndlessModeConfig {
       enabled  // Default to same as Endless Mode enabled state
     );
 
+    const maxToolHistoryMB = this.getNumberSetting(
+      settings.env?.CLAUDE_MEM_ENDLESS_MODE__MAX_TOOL_HISTORY__MB,
+      process.env.CLAUDE_MEM_ENDLESS_MODE__MAX_TOOL_HISTORY__MB,
+      50  // Default: 50MB rolling backup
+    );
+
     this.config = {
       enabled,
       fallbackToOriginal,
       maxLookupTime,
       keepRecentToolUses,
-      observeEverything
+      observeEverything,
+      maxToolHistoryMB
     };
 
     if (enabled) {
@@ -81,7 +88,8 @@ export class EndlessModeConfig {
         fallback: fallbackToOriginal,
         maxLookupTime: `${maxLookupTime}ms`,
         keepRecent: keepRecentToolUses,
-        observeEverything
+        observeEverything,
+        maxToolHistoryMB: `${maxToolHistoryMB}MB`
       });
     } else {
       logger.debug('CONFIG', 'Endless Mode disabled');
