@@ -199,6 +199,10 @@ export interface SDKSessionRow {
   status: 'active' | 'completed' | 'failed';
   worker_port?: number;
   prompt_counter?: number;
+  // Endless Mode stats
+  endless_original_tokens?: number;
+  endless_compressed_tokens?: number;
+  endless_tokens_saved?: number;
 }
 
 export interface ObservationRow {

@@ -116,12 +116,14 @@ function formatObservationAsMarkdown(obs: Observation): string {
  * Phase 2 of Endless Mode implementation
  *
  * ALWAYS creates timestamped backup before transformation for data safety
+ *
+ * Returns compression stats for tracking
  */
 async function transformTranscript(
   transcriptPath: string,
   toolUseId: string,
   observation: Observation
-): Promise<void> {
+): Promise<{ originalTokens: number; compressedTokens: number }> {
   // ALWAYS create backup before transformation
   try {
     ensureDir(BACKUPS_DIR);
@@ -201,7 +203,7 @@ async function transformTranscript(
 
   if (!found) {
     logger.warn('HOOK', 'Tool result not found in transcript', { toolUseId });
-    return;
+    return { originalTokens: 0, compressedTokens: 0 };
   }
 
   // Write to temp file
@@ -220,12 +222,19 @@ async function transformTranscript(
   // Atomic rename (original untouched until this succeeds)
   renameSync(tempPath, transcriptPath);
 
+  // Convert character counts to approximate token counts (1 token ≈ 4 chars)
+  const CHARS_PER_TOKEN = 4;
+  const originalTokens = Math.ceil(originalSize / CHARS_PER_TOKEN);
+  const compressedTokens = Math.ceil(compressedSize / CHARS_PER_TOKEN);
+
   logger.success('HOOK', 'Transcript transformation complete', {
     toolUseId,
     originalSize,
     compressedSize,
     savings: `${Math.round((1 - compressedSize / originalSize) * 100)}%`
   });
+
+  return { originalTokens, compressedTokens };
 }
 
 /**
@@ -350,7 +359,14 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
         });
 
         try {
-          await transformTranscript(transcript_path, extractedToolUseId, result.observation);
+          const stats = await transformTranscript(transcript_path, extractedToolUseId, result.observation);
+
+          // Update Endless Mode stats in database
+          if (stats.originalTokens > 0) {
+            const statsDb = new SessionStore();
+            statsDb.incrementEndlessModeStats(session_id, stats.originalTokens, stats.compressedTokens);
+            statsDb.close();
+          }
         } catch (transformError: any) {
           logger.failure('HOOK', 'Transcript transformation failed', {
             sessionId: sessionDbId,
