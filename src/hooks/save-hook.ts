@@ -4,16 +4,16 @@
  */
 
 import { stdin } from 'process';
-import { readFileSync } from 'fs';
+import { readFileSync, writeFileSync, renameSync, copyFileSync } from 'fs';
 import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { createHookResponse } from './hook-response.js';
 import { logger } from '../utils/logger.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
 import { EndlessModeConfig } from '../services/worker/EndlessModeConfig.js';
 import { silentDebug } from '../utils/silent-debug.js';
-import { SKIP_TOOLS } from '../shared/skip-tools.js';
-import { transformTranscript } from '../shared/transcript-transformation.js';
-import type { TranscriptEntry, UserTranscriptEntry, ToolResultContent } from '../types/transcript.js';
+import { BACKUPS_DIR, createBackupFilename, ensureDir } from '../shared/paths.js';
+import { appendToolOutput, trimBackupFile } from '../shared/tool-output-backup.js';
+import type { TranscriptEntry, AssistantTranscriptEntry, ToolUseContent, UserTranscriptEntry, ToolResultContent } from '../types/transcript.js';
 import type { Observation } from '../services/worker-types.js';
 
 export interface PostToolUseInput {
@@ -31,6 +31,232 @@ interface ObservationEndpointResponse {
   observation?: Observation | null;
   processing_time_ms?: number;
   message?: string;
+}
+
+// Tools to skip (low value or too frequent)
+const SKIP_TOOLS = new Set([
+  'ListMcpResourcesTool',  // MCP infrastructure
+  'SlashCommand',          // Command invocation (observe what it produces, not the call)
+  'Skill',                 // Skill invocation (observe what it produces, not the call)
+  'TodoWrite',             // Task management meta-tool
+  'AskUserQuestion'        // User interaction, not substantive work
+]);
+
+/**
+ * Helper: Parse array field (handles both arrays and JSON strings)
+ */
+function parseArrayField(field: any, fieldName: string): string[] {
+  if (!field) return [];
+  if (Array.isArray(field)) return field;
+  try {
+    const parsed = JSON.parse(field);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (e) {
+    logger.debug('HOOK', `Failed to parse ${fieldName}`, { field, error: e });
+    return [];
+  }
+}
+
+/**
+ * Format an observation as markdown for Endless Mode compression
+ */
+function formatObservationAsMarkdown(obs: Observation): string {
+  const parts: string[] = [];
+
+  // Title and subtitle
+  parts.push(`# ${obs.title}`);
+  if (obs.subtitle) {
+    parts.push(`**${obs.subtitle}**`);
+  }
+  parts.push('');
+
+  // Narrative
+  if (obs.narrative) {
+    parts.push(obs.narrative);
+    parts.push('');
+  }
+
+  // Facts
+  const factsArray = parseArrayField(obs.facts, 'facts');
+  if (factsArray.length > 0) {
+    parts.push('**Key Facts:**');
+    factsArray.forEach((fact: string) => parts.push(`- ${fact}`));
+    parts.push('');
+  }
+
+  // Concepts
+  const conceptsArray = parseArrayField(obs.concepts, 'concepts');
+  if (conceptsArray.length > 0) {
+    parts.push(`**Concepts**: ${conceptsArray.join(', ')}`);
+    parts.push('');
+  }
+
+  // Files read
+  const filesRead = parseArrayField(obs.files_read, 'files_read');
+  if (filesRead.length > 0) {
+    parts.push(`**Files Read**: ${filesRead.join(', ')}`);
+    parts.push('');
+  }
+
+  // Files modified
+  const filesModified = parseArrayField(obs.files_modified, 'files_modified');
+  if (filesModified.length > 0) {
+    parts.push(`**Files Modified**: ${filesModified.join(', ')}`);
+    parts.push('');
+  }
+
+  // Footer
+  parts.push('---');
+  parts.push('*[Compressed by Endless Mode]*');
+
+  return parts.join('\n');
+}
+
+/**
+ * Transform transcript JSONL file by replacing tool result with compressed observation
+ * Phase 2 of Endless Mode implementation
+ *
+ * ALWAYS creates timestamped backup before transformation for data safety
+ *
+ * Returns compression stats for tracking
+ */
+async function transformTranscript(
+  transcriptPath: string,
+  toolUseId: string,
+  observation: Observation
+): Promise<{ originalTokens: number; compressedTokens: number }> {
+  // ALWAYS create backup before transformation
+  try {
+    ensureDir(BACKUPS_DIR);
+    const backupPath = createBackupFilename(transcriptPath);
+    copyFileSync(transcriptPath, backupPath);
+    logger.info('HOOK', 'Created transcript backup', {
+      original: transcriptPath,
+      backup: backupPath
+    });
+  } catch (error) {
+    logger.error('HOOK', 'Failed to create transcript backup', { transcriptPath }, error as Error);
+    throw new Error('Backup creation failed - aborting transformation for safety');
+  }
+
+  // Read transcript
+  const transcriptContent = readFileSync(transcriptPath, 'utf-8');
+  const lines = transcriptContent.trim().split('\n');
+
+  // Track transformation
+  let found = false;
+  let originalSize = 0;
+  let compressedSize = 0;
+
+  // Process each line
+  const transformedLines = lines.map((line, i) => {
+    if (!line.trim()) return line;
+
+    try {
+      const entry: TranscriptEntry = JSON.parse(line);
+
+      // Look for user messages with tool_result content
+      if (entry.type === 'user') {
+        const userEntry = entry as UserTranscriptEntry;
+        const content = userEntry.message.content;
+
+        // Check if content is an array
+        if (Array.isArray(content)) {
+          // Find and replace matching tool_result
+          for (let j = 0; j < content.length; j++) {
+            const item = content[j];
+            if (item.type === 'tool_result') {
+              const toolResult = item as ToolResultContent;
+              if (toolResult.tool_use_id === toolUseId) {
+                found = true;
+
+                // Backup original tool output BEFORE compression (for restoration if user disables Endless Mode)
+                try {
+                  appendToolOutput(toolUseId, toolResult.content, Date.now());
+                  logger.debug('HOOK', 'Backed up original tool output', { toolUseId });
+                } catch (backupError) {
+                  logger.warn('HOOK', 'Failed to backup original tool output', { toolUseId }, backupError as Error);
+                  // Continue anyway - backup failure shouldn't block compression
+                }
+
+                // Measure original size
+                originalSize = JSON.stringify(toolResult.content).length;
+
+                // Format compressed observation
+                const compressedContent = formatObservationAsMarkdown(observation);
+                compressedSize = compressedContent.length;
+
+                // Replace content
+                toolResult.content = compressedContent;
+
+                logger.success('HOOK', 'Transformed tool result', {
+                  toolUseId,
+                  originalSize,
+                  compressedSize,
+                  savings: `${Math.round((1 - compressedSize / originalSize) * 100)}%`
+                });
+              }
+            }
+          }
+        }
+      }
+
+      return JSON.stringify(entry);
+    } catch (parseError: any) {
+      logger.warn('HOOK', 'Malformed JSONL line in transcript', {
+        lineIndex: i,
+        error: parseError
+      });
+      throw new Error(`Malformed JSONL line at index ${i}: ${parseError.message}`);
+    }
+  });
+
+  if (!found) {
+    logger.warn('HOOK', 'Tool result not found in transcript', { toolUseId });
+    return { originalTokens: 0, compressedTokens: 0 };
+  }
+
+  // Write to temp file
+  const tempPath = `${transcriptPath}.tmp`;
+  writeFileSync(tempPath, transformedLines.join('\n') + '\n', 'utf-8');
+
+  // Validate JSONL structure
+  const validatedContent = readFileSync(tempPath, 'utf-8');
+  const validatedLines = validatedContent.trim().split('\n');
+  for (const line of validatedLines) {
+    if (line.trim()) {
+      JSON.parse(line); // Will throw if invalid
+    }
+  }
+
+  // Atomic rename (original untouched until this succeeds)
+  renameSync(tempPath, transcriptPath);
+
+  // Convert character counts to approximate token counts (1 token ≈ 4 chars)
+  const CHARS_PER_TOKEN = 4;
+  const originalTokens = Math.ceil(originalSize / CHARS_PER_TOKEN);
+  const compressedTokens = Math.ceil(compressedSize / CHARS_PER_TOKEN);
+
+  logger.success('HOOK', 'Transcript transformation complete', {
+    toolUseId,
+    originalSize,
+    compressedSize,
+    savings: `${Math.round((1 - compressedSize / originalSize) * 100)}%`
+  });
+
+  // Trim backup file to stay under size limit
+  try {
+    const config = EndlessModeConfig.getConfig();
+    if (config.maxToolHistoryMB > 0) {
+      trimBackupFile(config.maxToolHistoryMB);
+      logger.debug('HOOK', 'Trimmed tool output backup', { maxSizeMB: config.maxToolHistoryMB });
+    }
+  } catch (trimError) {
+    logger.warn('HOOK', 'Failed to trim tool output backup', {}, trimError as Error);
+    // Continue anyway - trim failure shouldn't block hook
+  }
+
+  return { originalTokens, compressedTokens };
 }
 
 /**
@@ -110,15 +336,12 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
   });
 
   try {
-    // Build endpoint URL with synchronous blocking when Endless Mode is enabled
-    let endpoint = `http://127.0.0.1:${port}/sessions/${sessionDbId}/observations`;
+    // Build endpoint URL with conditional query parameter
+    const endpoint = isEndlessModeEnabled
+      ? `http://127.0.0.1:${port}/sessions/${sessionDbId}/observations?wait_until_obs_is_saved=true`
+      : `http://127.0.0.1:${port}/sessions/${sessionDbId}/observations`;
 
-    // In Endless Mode, wait synchronously for observation to complete and transform transcript
-    if (isEndlessModeEnabled) {
-      endpoint += '?wait_until_obs_is_saved=true';
-    }
-
-    // Use 90s timeout for blocking mode, 2s for regular async mode (backward compatible)
+    // Set timeout based on mode (90s for sync, 2s for async)
     const timeoutMs = isEndlessModeEnabled ? 90000 : 2000;
 
     const response = await fetch(endpoint, {
@@ -141,17 +364,22 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
         sessionId: sessionDbId,
         status: response.status
       }, errorText);
+      // Continue anyway - observation failed but don't block the hook
       console.log(createHookResponse('PostToolUse', true));
       return;
     }
 
-    // Parse response
     const result = await response.json() as ObservationEndpointResponse;
 
+    // Phase 3: Handle synchronous mode response - always continue regardless of response
     if (isEndlessModeEnabled) {
-      // Synchronous mode - observation completed (or timed out)
-      if (result.status === 'completed' && result.observation && extractedToolUseId) {
-        // Transform transcript by replacing tool output with compressed observation
+      if (result.status === 'completed' && result.observation) {
+        logger.success('HOOK', 'Observation ready, transforming transcript', {
+          sessionId: sessionDbId,
+          toolUseId: extractedToolUseId,
+          processingTimeMs: result.processing_time_ms
+        });
+
         try {
           const stats = await transformTranscript(transcript_path, extractedToolUseId, result.observation);
 
@@ -161,14 +389,6 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
             statsDb.incrementEndlessModeStats(session_id, stats.originalTokens, stats.compressedTokens);
             statsDb.close();
           }
-
-          logger.success('HOOK', 'Observation completed and transcript transformed', {
-            sessionId: sessionDbId,
-            toolName: tool_name,
-            processingTime: result.processing_time_ms,
-            observationId: result.observation.id,
-            tokensSaved: stats.originalTokens - stats.compressedTokens
-          });
         } catch (transformError: any) {
           logger.failure('HOOK', 'Transcript transformation failed', {
             sessionId: sessionDbId,
@@ -177,14 +397,24 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
           // Continue anyway - observation is saved, just not compressed in transcript
         }
       } else if (result.status === 'timeout') {
-        logger.warn('HOOK', 'Observation timed out - continuing with uncompressed transcript', {
+        logger.warn('HOOK', 'Endless Mode timeout - using full output', {
           sessionId: sessionDbId,
-          toolName: tool_name
+          toolUseId: extractedToolUseId,
+          processingTimeMs: result.processing_time_ms,
+          message: result.message
         });
+        // Fall back to async behavior - observation will complete in background
+      } else {
+        // Handle any other status (queued, error, unexpected response, etc.)
+        logger.debug('HOOK', 'Endless Mode received non-standard response - continuing', {
+          sessionId: sessionDbId,
+          toolUseId: extractedToolUseId,
+          status: result.status || 'unknown'
+        });
+        // Continue anyway - LLM may not always respond as expected
       }
     } else {
-      // Async mode - observation queued
-      logger.debug('HOOK', 'Observation queued (async mode)', {
+      logger.debug('HOOK', 'Observation sent successfully (async mode)', {
         sessionId: sessionDbId,
         toolName: tool_name
       });
@@ -193,7 +423,7 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
     // Worker connection errors - suggest restart
     if (error.cause?.code === 'ECONNREFUSED') {
       logger.failure('HOOK', 'Worker connection refused', { sessionId: sessionDbId }, error);
-      console.log(createHookResponse('PostToolUse', true));
+      console.log(createHookResponse('PostToolUse', true, "Worker connection failed. Try: pm2 restart claude-mem-worker"));
       return;
     }
 

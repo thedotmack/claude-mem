@@ -467,7 +467,7 @@ export class WorkerService {
     sessionDbId: number,
     res: Response
   ): Promise<void> {
-    const TIMEOUT_MS = 90000; // 90 seconds
+    const TIMEOUT_MS = 30000; // 90 seconds
     const startTime = Date.now();
 
     logger.info('WORKER', 'Waiting for observation (synchronous mode)', {
