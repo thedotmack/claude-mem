@@ -118,8 +118,8 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
       endpoint += '?wait_until_obs_is_saved=true';
     }
 
-    // Use 90s timeout for blocking mode, 5s for regular async mode
-    const timeoutMs = isEndlessModeEnabled ? 90000 : 5000;
+    // Use 90s timeout for blocking mode, 2s for regular async mode (backward compatible)
+    const timeoutMs = isEndlessModeEnabled ? 90000 : 2000;
 
     const response = await fetch(endpoint, {
       method: 'POST',
