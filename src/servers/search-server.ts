@@ -17,13 +17,13 @@ import { basename } from 'path';
 import { SessionSearch } from '../services/sqlite/SessionSearch.js';
 import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../services/sqlite/types.js';
-import { VECTOR_DB_DIR } from '../shared/paths.js';
+import { VECTOR_DB_DIR, getCurrentProjectName } from '../shared/paths.js';
 
 // Initialize search instances
 let search: SessionSearch;
 let store: SessionStore;
 let chromaClient: Client | null = null;
-const COLLECTION_NAME = 'cm__claude-mem';
+const COLLECTION_NAME = `cm__${getCurrentProjectName()}`;
 
 try {
   search = new SessionSearch();

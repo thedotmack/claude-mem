@@ -289,17 +289,21 @@
       box-sizing: border-box;
     }
 
+    html {
+      height: 100%;
+    }
+
     body {
+      height: 100%;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica', 'Arial', sans-serif;
       background: var(--color-bg-primary);
       color: var(--color-text-primary);
       font-size: 14px;
-      overflow: hidden;
     }
 
     .full-height-flex-layout {
       display: flex;
-      height: 100%;
+      height: 100vh;
       position: relative;
     }
 
@@ -307,6 +311,7 @@
       flex: 1;
       display: flex;
       flex-direction: column;
+      overflow: hidden;
     }
 
     .sidebar {
