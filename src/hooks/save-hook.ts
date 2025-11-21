@@ -58,6 +58,59 @@ function parseArrayField(field: any, fieldName: string): string[] {
 }
 
 /**
+ * Extract tool_use_ids from transcript that haven't been transformed yet
+ * A tool result is "untransformed" if its content is still structured (object/string)
+ * vs transformed (markdown starting with "# ")
+ */
+function extractPendingToolUseIds(transcriptPath: string): string[] {
+  try {
+    const transcriptContent = readFileSync(transcriptPath, 'utf-8');
+    const lines = transcriptContent.trim().split('\n');
+    const pendingIds: string[] = [];
+
+    for (const line of lines) {
+      if (!line.trim()) continue;
+
+      try {
+        const entry: TranscriptEntry = JSON.parse(line);
+
+        // Look for user messages with tool_result content
+        if (entry.type === 'user') {
+          const userEntry = entry as UserTranscriptEntry;
+          const content = userEntry.message.content;
+
+          if (Array.isArray(content)) {
+            for (const item of content) {
+              if (item.type === 'tool_result') {
+                const toolResult = item as ToolResultContent;
+                const contentStr = typeof toolResult.content === 'string'
+                  ? toolResult.content
+                  : JSON.stringify(toolResult.content);
+
+                // Check if content is already transformed (starts with "# ")
+                const isTransformed = contentStr.trim().startsWith('# ');
+
+                if (!isTransformed && toolResult.tool_use_id) {
+                  pendingIds.push(toolResult.tool_use_id);
+                }
+              }
+            }
+          }
+        }
+      } catch (parseError) {
+        // Skip malformed lines
+        continue;
+      }
+    }
+
+    return pendingIds;
+  } catch (error) {
+    logger.warn('HOOK', 'Failed to extract pending tool_use_ids', { transcriptPath }, error as Error);
+    return [];
+  }
+}
+
+/**
  * Format an observation as markdown for Endless Mode compression
  */
 function formatObservationAsMarkdown(obs: Observation): string {
@@ -335,14 +388,76 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
     allInputKeys: Object.keys(input).join(', ')
   });
 
-  try {
-    // Build endpoint URL with conditional query parameter
-    const endpoint = isEndlessModeEnabled
-      ? `http://127.0.0.1:${port}/sessions/${sessionDbId}/observations?wait_until_obs_is_saved=true`
-      : `http://127.0.0.1:${port}/sessions/${sessionDbId}/observations`;
+  // DEFERRED TRANSFORMATION: Check for ready observations from previous tools (FAST - can block)
+  if (isEndlessModeEnabled && transcript_path) {
+    try {
+      const pendingToolUseIds = extractPendingToolUseIds(transcript_path);
 
-    // Set timeout based on mode (90s for sync, 2s for async)
-    const timeoutMs = isEndlessModeEnabled ? 90000 : 2000;
+      if (pendingToolUseIds.length > 0) {
+        logger.debug('HOOK', 'Found pending tool_use_ids', {
+          count: pendingToolUseIds.length,
+          ids: pendingToolUseIds
+        });
+
+        // Check which observations are ready in database
+        const observationsDb = new SessionStore();
+        const readyObservationsMap = observationsDb.getObservationsByToolUseIds(pendingToolUseIds);
+        observationsDb.close();
+
+        logger.info('HOOK', 'Ready observations for transformation', {
+          pending: pendingToolUseIds.length,
+          ready: readyObservationsMap.size
+        });
+
+        // Transform transcript for each ready observation
+        for (const [toolUseId, obsRow] of readyObservationsMap) {
+          try {
+            // Convert ObservationRow to Observation format for transformation
+            const observation: Observation = {
+              id: obsRow.id,
+              type: obsRow.type as any,
+              title: obsRow.title,
+              subtitle: obsRow.subtitle,
+              narrative: obsRow.narrative,
+              facts: JSON.parse(obsRow.facts),
+              concepts: JSON.parse(obsRow.concepts),
+              files_read: JSON.parse(obsRow.files_read),
+              files_modified: JSON.parse(obsRow.files_modified),
+              created_at_epoch: obsRow.created_at_epoch
+            };
+
+            const stats = await transformTranscript(transcript_path, toolUseId, observation);
+
+            // Update Endless Mode stats in database
+            if (stats.originalTokens > 0) {
+              const statsDb = new SessionStore();
+              statsDb.incrementEndlessModeStats(session_id, stats.originalTokens, stats.compressedTokens);
+              statsDb.close();
+            }
+
+            logger.success('HOOK', 'Deferred transformation complete', {
+              toolUseId,
+              observationId: obsRow.id,
+              savings: `${Math.round((1 - stats.compressedTokens / stats.originalTokens) * 100)}%`
+            });
+          } catch (transformError) {
+            logger.warn('HOOK', 'Deferred transformation failed', { toolUseId }, transformError as Error);
+            // Continue with other transformations
+          }
+        }
+      }
+    } catch (error) {
+      logger.warn('HOOK', 'Deferred transformation check failed', {}, error as Error);
+      // Continue anyway - don't block hook
+    }
+  }
+
+  try {
+    // Build endpoint URL - NO MORE WAITING in Endless Mode
+    const endpoint = `http://127.0.0.1:${port}/sessions/${sessionDbId}/observations`;
+
+    // Use short timeout for all modes (async processing)
+    const timeoutMs = 2000;
 
     const response = await fetch(endpoint, {
       method: 'POST',
@@ -369,56 +484,13 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
       return;
     }
 
-    const result = await response.json() as ObservationEndpointResponse;
-
-    // Phase 3: Handle synchronous mode response - always continue regardless of response
-    if (isEndlessModeEnabled) {
-      if (result.status === 'completed' && result.observation) {
-        logger.success('HOOK', 'Observation ready, transforming transcript', {
-          sessionId: sessionDbId,
-          toolUseId: extractedToolUseId,
-          processingTimeMs: result.processing_time_ms
-        });
-
-        try {
-          const stats = await transformTranscript(transcript_path, extractedToolUseId, result.observation);
-
-          // Update Endless Mode stats in database
-          if (stats.originalTokens > 0) {
-            const statsDb = new SessionStore();
-            statsDb.incrementEndlessModeStats(session_id, stats.originalTokens, stats.compressedTokens);
-            statsDb.close();
-          }
-        } catch (transformError: any) {
-          logger.failure('HOOK', 'Transcript transformation failed', {
-            sessionId: sessionDbId,
-            toolUseId: extractedToolUseId
-          }, transformError);
-          // Continue anyway - observation is saved, just not compressed in transcript
-        }
-      } else if (result.status === 'timeout') {
-        logger.warn('HOOK', 'Endless Mode timeout - using full output', {
-          sessionId: sessionDbId,
-          toolUseId: extractedToolUseId,
-          processingTimeMs: result.processing_time_ms,
-          message: result.message
-        });
-        // Fall back to async behavior - observation will complete in background
-      } else {
-        // Handle any other status (queued, error, unexpected response, etc.)
-        logger.debug('HOOK', 'Endless Mode received non-standard response - continuing', {
-          sessionId: sessionDbId,
-          toolUseId: extractedToolUseId,
-          status: result.status || 'unknown'
-        });
-        // Continue anyway - LLM may not always respond as expected
-      }
-    } else {
-      logger.debug('HOOK', 'Observation sent successfully (async mode)', {
-        sessionId: sessionDbId,
-        toolName: tool_name
-      });
-    }
+    // Observation queued successfully - will be processed asynchronously
+    logger.debug('HOOK', 'Observation queued (async mode)', {
+      sessionId: sessionDbId,
+      toolName: tool_name,
+      toolUseId: extractedToolUseId,
+      endlessMode: isEndlessModeEnabled
+    });
   } catch (error: any) {
     // Worker connection errors - suggest restart
     if (error.cause?.code === 'ECONNREFUSED') {
