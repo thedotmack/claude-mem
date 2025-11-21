@@ -4,6 +4,7 @@
  */
 
 import { stdin } from 'process';
+import { readFileSync } from 'fs';
 import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { createHookResponse } from './hook-response.js';
 import { logger } from '../utils/logger.js';
@@ -11,6 +12,7 @@ import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
 import { EndlessModeConfig } from '../services/worker/EndlessModeConfig.js';
 import { silentDebug } from '../utils/silent-debug.js';
 import { SKIP_TOOLS } from '../shared/skip-tools.js';
+import { transformTranscript } from '../shared/transcript-transformation.js';
 import type { TranscriptEntry, UserTranscriptEntry, ToolResultContent } from '../types/transcript.js';
 import type { Observation } from '../services/worker-types.js';
 
@@ -148,13 +150,32 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
 
     if (isEndlessModeEnabled) {
       // Synchronous mode - observation completed (or timed out)
-      if (result.status === 'completed' && result.observation) {
-        logger.success('HOOK', 'Observation completed and transcript transformed', {
-          sessionId: sessionDbId,
-          toolName: tool_name,
-          processingTime: result.processing_time_ms,
-          observationId: result.observation.id
-        });
+      if (result.status === 'completed' && result.observation && extractedToolUseId) {
+        // Transform transcript by replacing tool output with compressed observation
+        try {
+          const stats = await transformTranscript(transcript_path, extractedToolUseId, result.observation);
+
+          // Update Endless Mode stats in database
+          if (stats.originalTokens > 0) {
+            const statsDb = new SessionStore();
+            statsDb.incrementEndlessModeStats(session_id, stats.originalTokens, stats.compressedTokens);
+            statsDb.close();
+          }
+
+          logger.success('HOOK', 'Observation completed and transcript transformed', {
+            sessionId: sessionDbId,
+            toolName: tool_name,
+            processingTime: result.processing_time_ms,
+            observationId: result.observation.id,
+            tokensSaved: stats.originalTokens - stats.compressedTokens
+          });
+        } catch (transformError: any) {
+          logger.failure('HOOK', 'Transcript transformation failed', {
+            sessionId: sessionDbId,
+            toolUseId: extractedToolUseId
+          }, transformError);
+          // Continue anyway - observation is saved, just not compressed in transcript
+        }
       } else if (result.status === 'timeout') {
         logger.warn('HOOK', 'Observation timed out - continuing with uncompressed transcript', {
           sessionId: sessionDbId,
