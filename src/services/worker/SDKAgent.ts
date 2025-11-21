@@ -116,13 +116,10 @@ export class SDKAgent {
 
           // Only log non-empty responses (filter out noise)
           if (responseSize > 0) {
-            const truncatedResponse = responseSize > 100
-              ? textContent.substring(0, 100) + '...'
-              : textContent;
             logger.dataOut('SDK', `Response received (${responseSize} chars)`, {
               sessionId: session.sessionDbId,
               promptNumber: session.lastPromptNumber
-            }, truncatedResponse);
+            }, textContent);
 
             // Parse and process response with discovery token delta
             try {

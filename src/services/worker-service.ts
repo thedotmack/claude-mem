@@ -399,13 +399,10 @@ export class WorkerService {
           latestPrompt.created_at_epoch
         ).then(() => {
           const chromaDuration = Date.now() - chromaStart;
-          const truncatedPrompt = promptText.length > 60
-            ? promptText.substring(0, 60) + '...'
-            : promptText;
           logger.debug('CHROMA', 'User prompt synced', {
             promptId: latestPrompt.id,
             duration: `${chromaDuration}ms`,
-            prompt: truncatedPrompt
+            prompt: promptText
           });
         }).catch(err => {
           logger.error('CHROMA', 'Failed to sync user_prompt', {

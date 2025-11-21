@@ -43,8 +43,8 @@ export class SessionManager {
         silentDebug('[SessionManager] Updating userPrompt for continuation', {
           sessionDbId,
           promptNumber,
-          oldPrompt: session.userPrompt.substring(0, 80),
-          newPrompt: currentUserPrompt.substring(0, 80)
+          oldPrompt: session.userPrompt,
+          newPrompt: currentUserPrompt
         });
         session.userPrompt = currentUserPrompt;
         session.lastPromptNumber = promptNumber || session.lastPromptNumber;
@@ -52,7 +52,7 @@ export class SessionManager {
         silentDebug('[SessionManager] No currentUserPrompt provided for existing session', {
           sessionDbId,
           promptNumber,
-          usingCachedPrompt: session.userPrompt.substring(0, 80)
+          usingCachedPrompt: session.userPrompt
         });
       }
       return session;
@@ -68,13 +68,13 @@ export class SessionManager {
       silentDebug('[SessionManager] No currentUserPrompt provided for new session, using database', {
         sessionDbId,
         promptNumber,
-        dbPrompt: dbSession.user_prompt.substring(0, 80)
+        dbPrompt: dbSession.user_prompt
       });
     } else {
       silentDebug('[SessionManager] Initializing session with fresh userPrompt', {
         sessionDbId,
         promptNumber,
-        userPrompt: currentUserPrompt.substring(0, 80)
+        userPrompt: currentUserPrompt
       });
     }
 
@@ -211,11 +211,10 @@ export class SessionManager {
     const emitter = this.sessionQueues.get(sessionDbId);
     emitter?.emit('message');
 
-    const truncatedPrompt = userPrompt.length > 80 ? userPrompt.substring(0, 80) + '...' : userPrompt;
     logger.info('SESSION', `Continuation queued (${beforeDepth}→${afterDepth})`, {
       sessionId: sessionDbId,
       promptNumber,
-      prompt: truncatedPrompt,
+      prompt: userPrompt,
       hasGenerator: !!session.generatorPromise
     });
   }
