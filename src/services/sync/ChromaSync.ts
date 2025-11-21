@@ -71,15 +71,13 @@ interface StoredUserPrompt {
 export class ChromaSync {
   private client: Client | null = null;
   private connected: boolean = false;
-  private project: string;
   private collectionName: string;
   private readonly VECTOR_DB_DIR: string;
   private readonly BATCH_SIZE = 100;
 
-  constructor(project: string) {
-    this.project = project;
+  constructor() {
     // Use single collection for all projects, filtered by metadata
-    this.collectionName = `cm__all`;
+    this.collectionName = 'cm__all';
     this.VECTOR_DB_DIR = path.join(os.homedir(), '.claude-mem', 'vector-db');
   }
 
@@ -579,13 +577,13 @@ export class ChromaSync {
       // Build exclusion list for observations
       const existingObsIds = Array.from(existing.observations);
       const obsExclusionClause = existingObsIds.length > 0
-        ? `AND id NOT IN (${existingObsIds.join(',')})`
+        ? `WHERE id NOT IN (${existingObsIds.join(',')})`
         : '';
 
       // Get only observations missing from Chroma (ALL projects)
       const observations = db.db.prepare(`
         SELECT * FROM observations
-        WHERE 1=1 ${obsExclusionClause}
+        ${obsExclusionClause}
         ORDER BY id ASC
       `).all() as StoredObservation[];
 
@@ -618,13 +616,13 @@ export class ChromaSync {
       // Build exclusion list for summaries
       const existingSummaryIds = Array.from(existing.summaries);
       const summaryExclusionClause = existingSummaryIds.length > 0
-        ? `AND id NOT IN (${existingSummaryIds.join(',')})`
+        ? `WHERE id NOT IN (${existingSummaryIds.join(',')})`
         : '';
 
       // Get only summaries missing from Chroma (ALL projects)
       const summaries = db.db.prepare(`
         SELECT * FROM session_summaries
-        WHERE 1=1 ${summaryExclusionClause}
+        ${summaryExclusionClause}
         ORDER BY id ASC
       `).all() as StoredSummary[];
 
@@ -668,7 +666,7 @@ export class ChromaSync {
           s.sdk_session_id
         FROM user_prompts up
         JOIN sdk_sessions s ON up.claude_session_id = s.claude_session_id
-        WHERE 1=1 ${promptExclusionClause}
+        ${promptExclusionClause ? `WHERE ${promptExclusionClause.substring(4)}` : ''}
         ORDER BY up.id ASC
       `).all() as StoredUserPrompt[];
 

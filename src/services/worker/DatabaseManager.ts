@@ -29,7 +29,7 @@ export class DatabaseManager {
 
     // Initialize ChromaSync with a single collection for all projects
     // Projects are filtered via metadata, not collection names
-    this.chromaSync = new ChromaSync('all');
+    this.chromaSync = new ChromaSync();
 
     // Start background backfill (fire-and-forget, with error logging)
     this.chromaSync.ensureBackfilled().catch((error) => {
