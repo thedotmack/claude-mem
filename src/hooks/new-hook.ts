@@ -38,8 +38,6 @@ import { stdin } from 'process';
 import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { createHookResponse } from './hook-response.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
-import { EndlessModeConfig } from '../services/worker/EndlessModeConfig.js';
-import { runDeferredTransformation } from '../shared/deferred-transformation.js';
 
 export interface UserPromptSubmitInput {
   session_id: string;
@@ -76,13 +74,6 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
   console.error(`[new-hook] Session ${sessionDbId}, prompt #${promptNumber}`);
 
   db.close();
-
-  // DEFERRED TRANSFORMATION: Sweep for ready observations before next turn
-  const isEndlessModeEnabled = EndlessModeConfig.getConfig().enabled;
-  const transcript_path = input.transcript_path;
-  if (isEndlessModeEnabled && transcript_path) {
-    await runDeferredTransformation(transcript_path, session_id, 'NEW_HOOK');
-  }
 
   const port = getWorkerPort();
 

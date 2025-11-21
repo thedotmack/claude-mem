@@ -10,12 +10,6 @@ import { createHookResponse } from './hook-response.js';
 import { logger } from '../utils/logger.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
 import { silentDebug } from '../utils/silent-debug.js';
-import { EndlessModeConfig } from '../services/worker/EndlessModeConfig.js';
-import { BACKUPS_DIR, createBackupFilename, ensureDir } from '../shared/paths.js';
-import { appendToolOutput, trimBackupFile } from '../shared/tool-output-backup.js';
-import { runDeferredTransformation } from '../shared/deferred-transformation.js';
-import type { TranscriptEntry, UserTranscriptEntry, ToolResultContent } from '../types/transcript.js';
-import type { Observation } from '../services/worker-types.js';
 
 export interface StopInput {
   session_id: string;
@@ -140,12 +134,6 @@ async function summaryHook(input?: StopInput): Promise<void> {
 
   // Ensure worker is running
   await ensureWorkerRunning();
-
-  // ENDLESS MODE: Final sweep for any remaining untransformed tool results before summarizing
-  const endlessModeConfig = EndlessModeConfig.getConfig();
-  if (endlessModeConfig.enabled && transcript_path && existsSync(transcript_path)) {
-    await runDeferredTransformation(transcript_path, session_id, 'STOP_HOOK');
-  }
 
   const db = new SessionStore();
 

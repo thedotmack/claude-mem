@@ -4,18 +4,14 @@
  */
 
 import { stdin } from 'process';
-import { readFileSync, writeFileSync, renameSync, copyFileSync } from 'fs';
 import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { createHookResponse } from './hook-response.js';
 import { logger } from '../utils/logger.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
 import { EndlessModeConfig } from '../services/worker/EndlessModeConfig.js';
 import { silentDebug } from '../utils/silent-debug.js';
-import { BACKUPS_DIR, createBackupFilename, ensureDir } from '../shared/paths.js';
-import { appendToolOutput, trimBackupFile } from '../shared/tool-output-backup.js';
-import { runDeferredTransformation } from '../shared/deferred-transformation.js';
 import { SKIP_TOOLS } from '../shared/skip-tools.js';
-import type { TranscriptEntry, AssistantTranscriptEntry, ToolUseContent, UserTranscriptEntry, ToolResultContent } from '../types/transcript.js';
+import type { TranscriptEntry, UserTranscriptEntry, ToolResultContent } from '../types/transcript.js';
 import type { Observation } from '../services/worker-types.js';
 
 export interface PostToolUseInput {
@@ -111,17 +107,17 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
     allInputKeys: Object.keys(input).join(', ')
   });
 
-  // DEFERRED TRANSFORMATION: Check for ready observations from previous tools (FAST - can block)
-  if (isEndlessModeEnabled && transcript_path) {
-    await runDeferredTransformation(transcript_path, session_id, 'HOOK');
-  }
-
   try {
-    // Build endpoint URL - NO MORE WAITING in Endless Mode
-    const endpoint = `http://127.0.0.1:${port}/sessions/${sessionDbId}/observations`;
+    // Build endpoint URL with synchronous blocking when Endless Mode is enabled
+    let endpoint = `http://127.0.0.1:${port}/sessions/${sessionDbId}/observations`;
 
-    // Use short timeout for all modes (async processing)
-    const timeoutMs = 2000;
+    // In Endless Mode, wait synchronously for observation to complete and transform transcript
+    if (isEndlessModeEnabled) {
+      endpoint += '?wait_until_obs_is_saved=true';
+    }
+
+    // Use 90s timeout for blocking mode, 5s for regular async mode
+    const timeoutMs = isEndlessModeEnabled ? 90000 : 5000;
 
     const response = await fetch(endpoint, {
       method: 'POST',
@@ -143,23 +139,40 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
         sessionId: sessionDbId,
         status: response.status
       }, errorText);
-      // Continue anyway - observation failed but don't block the hook
       console.log(createHookResponse('PostToolUse', true));
       return;
     }
 
-    // Observation queued successfully - will be processed asynchronously
-    logger.debug('HOOK', 'Observation queued (async mode)', {
-      sessionId: sessionDbId,
-      toolName: tool_name,
-      toolUseId: extractedToolUseId,
-      endlessMode: isEndlessModeEnabled
-    });
+    // Parse response
+    const result = await response.json() as ObservationEndpointResponse;
+
+    if (isEndlessModeEnabled) {
+      // Synchronous mode - observation completed (or timed out)
+      if (result.status === 'completed' && result.observation) {
+        logger.success('HOOK', 'Observation completed and transcript transformed', {
+          sessionId: sessionDbId,
+          toolName: tool_name,
+          processingTime: result.processing_time_ms,
+          observationId: result.observation.id
+        });
+      } else if (result.status === 'timeout') {
+        logger.warn('HOOK', 'Observation timed out - continuing with uncompressed transcript', {
+          sessionId: sessionDbId,
+          toolName: tool_name
+        });
+      }
+    } else {
+      // Async mode - observation queued
+      logger.debug('HOOK', 'Observation queued (async mode)', {
+        sessionId: sessionDbId,
+        toolName: tool_name
+      });
+    }
   } catch (error: any) {
     // Worker connection errors - suggest restart
     if (error.cause?.code === 'ECONNREFUSED') {
       logger.failure('HOOK', 'Worker connection refused', { sessionId: sessionDbId }, error);
-      console.log(createHookResponse('PostToolUse', true, "Worker connection failed. Try: pm2 restart claude-mem-worker"));
+      console.log(createHookResponse('PostToolUse', true));
       return;
     }
 
