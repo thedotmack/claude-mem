@@ -311,11 +311,20 @@ export class SDKAgent {
     }
 
     // Store observations
-    for (const obs of observations) {
-      // Include tool_use_id for Endless Mode linking
+    for (let i = 0; i < observations.length; i++) {
+      const obs = observations[i];
+
+      // Suffix tool_use_id for multi-observation responses (__1, __2, __3, etc.)
+      // This maintains the relationship while satisfying UNIQUE constraint
+      const toolUseIdForThisObs = session.currentToolUseId
+        ? observations.length > 1
+          ? `${session.currentToolUseId}__${i + 1}`
+          : session.currentToolUseId
+        : null;
+
       const obsWithToolUseId = {
         ...obs,
-        tool_use_id: session.currentToolUseId
+        tool_use_id: toolUseIdForThisObs
       };
 
       const { id: obsId, createdAtEpoch } = this.dbManager.getSessionStore().storeObservation(
@@ -337,8 +346,8 @@ export class SDKAgent {
         concepts: obs.concepts?.length ?? (silentDebug('obs.concepts is null/undefined', { obsId }), 0)
       });
 
-      // Endless Mode: Resolve any pending observation promise for this tool_use_id
-      if (session.currentToolUseId) {
+      // Endless Mode: Resolve pending observation promise on first observation only
+      if (i === 0 && session.currentToolUseId) {
         const resolver = session.pendingObservationResolvers.get(session.currentToolUseId);
         if (resolver) {
           session.pendingObservationResolvers.delete(session.currentToolUseId);
@@ -350,9 +359,9 @@ export class SDKAgent {
             narrative: obs.narrative || null,
             facts: obs.facts || [],
             concepts: obs.concepts || [],
-            files_read: obs.files || [],
+            files_read: obs.files_read || [],
             created_at_epoch: createdAtEpoch,
-            tool_use_id: session.currentToolUseId
+            tool_use_id: toolUseIdForThisObs
           });
           logger.debug('SDK', 'Resolved pending observation promise', {
             sessionId: session.sessionDbId,
@@ -402,12 +411,12 @@ export class SDKAgent {
             type: obs.type,
             title: obs.title,
             subtitle: obs.subtitle,
-            text: obs.text || null,
+            text: null,
             narrative: obs.narrative || null,
             facts: JSON.stringify(obs.facts || []),
             concepts: JSON.stringify(obs.concepts || []),
-            files_read: JSON.stringify(obs.files || []),
-            files_modified: JSON.stringify([]),
+            files_read: JSON.stringify(obs.files_read || []),
+            files_modified: JSON.stringify(obs.files_modified || []),
             project: session.project,
             prompt_number: session.lastPromptNumber,
             created_at_epoch: createdAtEpoch

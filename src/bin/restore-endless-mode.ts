@@ -24,6 +24,14 @@ interface RestoreStats {
   restoredSize: number;
 }
 
+/**
+ * Strip suffix from tool_use_id (handles __1, __2, __3 format for multi-observation responses)
+ * Example: toolu_01ABC__2 -> toolu_01ABC
+ */
+function stripToolUseIdSuffix(toolUseId: string): string {
+  return toolUseId.replace(/__\d+$/, '');
+}
+
 function restoreTranscript(transcriptPath: string, outputPath?: string): RestoreStats {
   // Validate input
   if (!existsSync(transcriptPath)) {
@@ -69,8 +77,11 @@ function restoreTranscript(transcriptPath: string, outputPath?: string): Restore
               const currentSize = JSON.stringify(toolResult.content).length;
               stats.originalSize += currentSize;
 
-              // Look up original output in backup
-              const originalOutput = lookupToolOutput(toolResult.tool_use_id);
+              // Strip suffix from tool_use_id before lookup (handles __1, __2, __3 format)
+              const baseToolUseId = stripToolUseIdSuffix(toolResult.tool_use_id);
+
+              // Look up original output in backup using base ID
+              const originalOutput = lookupToolOutput(baseToolUseId);
 
               if (originalOutput !== null) {
                 // Restore original content
@@ -87,7 +98,7 @@ function restoreTranscript(transcriptPath: string, outputPath?: string): Restore
                 stats.missingFromBackup++;
                 stats.restoredSize += currentSize;
 
-                console.log(`  ✗ Original not found for tool_use_id: ${toolResult.tool_use_id}`);
+                console.log(`  ✗ Original not found for tool_use_id: ${toolResult.tool_use_id} (base: ${baseToolUseId})`);
               }
             }
           }
