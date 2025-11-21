@@ -14,6 +14,7 @@ import { silentDebug } from '../utils/silent-debug.js';
 import { BACKUPS_DIR, createBackupFilename, ensureDir } from '../shared/paths.js';
 import { appendToolOutput, trimBackupFile } from '../shared/tool-output-backup.js';
 import { runDeferredTransformation } from '../shared/deferred-transformation.js';
+import { SKIP_TOOLS } from '../shared/skip-tools.js';
 import type { TranscriptEntry, AssistantTranscriptEntry, ToolUseContent, UserTranscriptEntry, ToolResultContent } from '../types/transcript.js';
 import type { Observation } from '../services/worker-types.js';
 
@@ -33,15 +34,6 @@ interface ObservationEndpointResponse {
   processing_time_ms?: number;
   message?: string;
 }
-
-// Tools to skip (low value or too frequent)
-const SKIP_TOOLS = new Set([
-  'ListMcpResourcesTool',  // MCP infrastructure
-  'SlashCommand',          // Command invocation (observe what it produces, not the call)
-  'Skill',                 // Skill invocation (observe what it produces, not the call)
-  'TodoWrite',             // Task management meta-tool
-  'AskUserQuestion'        // User interaction, not substantive work
-]);
 
 /**
  * Save Hook Main Logic

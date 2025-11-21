@@ -5,10 +5,9 @@
  * once observations become available. Can be called from any hook.
  */
 
-import { readFileSync, writeFileSync, renameSync, copyFileSync } from 'fs';
+import { readFileSync, writeFileSync, renameSync } from 'fs';
 import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { logger } from '../utils/logger.js';
-import { BACKUPS_DIR, createBackupFilename, ensureDir } from './paths.js';
 import { appendToolOutput } from './tool-output-backup.js';
 import type { TranscriptEntry, UserTranscriptEntry, ToolResultContent } from '../types/transcript.js';
 import type { Observation } from '../services/worker-types.js';
@@ -85,55 +84,20 @@ export function extractPendingToolUseIds(transcriptPath: string): string[] {
  * Format an observation as markdown for Endless Mode compression
  */
 export function formatObservationAsMarkdown(obs: Observation): string {
-  const parts: string[] = [];
-
-  // Title and subtitle
-  parts.push(`# ${obs.title}`);
-  if (obs.subtitle) {
-    parts.push(`**${obs.subtitle}**`);
-  }
-  parts.push('');
-
-  // Narrative
-  if (obs.narrative) {
-    parts.push(obs.narrative);
-    parts.push('');
-  }
-
-  // Facts
   const factsArray = parseArrayField(obs.facts, 'facts');
-  if (factsArray.length > 0) {
-    parts.push('**Key Facts:**');
-    factsArray.forEach((fact: string) => parts.push(`- ${fact}`));
-    parts.push('');
-  }
-
-  // Concepts
   const conceptsArray = parseArrayField(obs.concepts, 'concepts');
-  if (conceptsArray.length > 0) {
-    parts.push(`**Concepts**: ${conceptsArray.join(', ')}`);
-    parts.push('');
-  }
-
-  // Files read
   const filesRead = parseArrayField(obs.files_read, 'files_read');
-  if (filesRead.length > 0) {
-    parts.push(`**Files Read**: ${filesRead.join(', ')}`);
-    parts.push('');
-  }
-
-  // Files modified
   const filesModified = parseArrayField(obs.files_modified, 'files_modified');
-  if (filesModified.length > 0) {
-    parts.push(`**Files Modified**: ${filesModified.join(', ')}`);
-    parts.push('');
-  }
 
-  // Footer
-  parts.push('---');
-  parts.push('*[Compressed by Endless Mode]*');
-
-  return parts.join('\n');
+  return `# ${obs.title}
+${obs.subtitle ? `**${obs.subtitle}**\n` : ''}
+${obs.narrative ? `${obs.narrative}\n` : ''}
+${factsArray.length > 0 ? `**Key Facts:**\n${factsArray.map(f => `- ${f}`).join('\n')}\n` : ''}
+${conceptsArray.length > 0 ? `**Concepts**: ${conceptsArray.join(', ')}\n` : ''}
+${filesRead.length > 0 ? `**Files Read**: ${filesRead.join(', ')}\n` : ''}
+${filesModified.length > 0 ? `**Files Modified**: ${filesModified.join(', ')}\n` : ''}
+---
+*[Compressed by Endless Mode]*`;
 }
 
 /**
@@ -148,20 +112,6 @@ export async function transformTranscript(
   toolUseId: string,
   observation: Observation
 ): Promise<{ originalTokens: number; compressedTokens: number }> {
-  // ALWAYS create backup before transformation
-  try {
-    ensureDir(BACKUPS_DIR);
-    const backupPath = createBackupFilename(transcriptPath);
-    copyFileSync(transcriptPath, backupPath);
-    logger.info('HOOK', 'Created transcript backup', {
-      original: transcriptPath,
-      backup: backupPath
-    });
-  } catch (error) {
-    logger.error('HOOK', 'Failed to create transcript backup', { transcriptPath }, error as Error);
-    throw new Error('Backup creation failed - aborting transformation for safety');
-  }
-
   // Read transcript
   const transcriptContent = readFileSync(transcriptPath, 'utf-8');
   const lines = transcriptContent.trim().split('\n');
@@ -239,20 +189,9 @@ export async function transformTranscript(
     return { originalTokens: 0, compressedTokens: 0 };
   }
 
-  // Write to temp file
+  // Write to temp file and atomically rename
   const tempPath = `${transcriptPath}.tmp`;
   writeFileSync(tempPath, transformedLines.join('\n') + '\n', 'utf-8');
-
-  // Validate JSONL structure
-  const validatedContent = readFileSync(tempPath, 'utf-8');
-  const validatedLines = validatedContent.trim().split('\n');
-  for (const line of validatedLines) {
-    if (line.trim()) {
-      JSON.parse(line); // Will throw if invalid
-    }
-  }
-
-  // Atomic rename (original untouched until this succeeds)
   renameSync(tempPath, transcriptPath);
 
   return { originalTokens: originalSize, compressedTokens: compressedSize };

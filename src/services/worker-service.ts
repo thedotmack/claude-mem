@@ -28,17 +28,9 @@ import { SessionManager } from './worker/SessionManager.js';
 import { SSEBroadcaster } from './worker/SSEBroadcaster.js';
 import { SDKAgent } from './worker/SDKAgent.js';
 import { PaginationHelper } from './worker/PaginationHelper.js';
-
-// Tools to skip - ALWAYS skipped, even in Endless Mode "observe everything"
-// These tools don't produce compressible output useful for transcript compression
-const SKIP_TOOLS = new Set([
-  'ListMcpResourcesTool',  // MCP infrastructure - no user-facing work
-  'SlashCommand',          // Command invocation (observe what it produces, not the call)
-  'Skill',                 // Skill invocation (observe what it produces, not the call)
-  'TodoWrite',             // Task management meta-tool - internal tracking only
-  'AskUserQuestion'        // User interaction - no substantive work to compress
-]);
 import { SettingsManager } from './worker/SettingsManager.js';
+import { SKIP_TOOLS } from '../shared/skip-tools.js';
+import { getConfig as getEndlessModeConfig } from './worker/EndlessModeConfig.js';
 
 export class WorkerService {
   private app: express.Application;
@@ -195,6 +187,10 @@ export class WorkerService {
 
   /**
    * Cleanup orphaned MCP server processes (uvx/chroma) from previous sessions
+   *
+   * NOTE: This addresses a bug in versions 6.0.3-6 where MCP server processes
+   * weren't properly cleaned up on worker restart, causing process accumulation.
+   * While the bug is fixed, this cleanup ensures smooth upgrades from affected versions.
    */
   private async cleanupOrphanedProcesses(): Promise<void> {
     try {
@@ -451,6 +447,95 @@ export class WorkerService {
   }
 
   /**
+   * Wait for observation to be created (synchronous mode helper)
+   * Returns observation data or throws on timeout
+   */
+  private async waitForObservation(
+    session: any,
+    toolUseId: string,
+    sessionDbId: number,
+    res: Response
+  ): Promise<void> {
+    const TIMEOUT_MS = 90000; // 90 seconds
+    const startTime = Date.now();
+
+    logger.info('WORKER', 'Waiting for observation (synchronous mode)', {
+      sessionId: sessionDbId,
+      toolUseId,
+      timeout: '90s'
+    });
+
+    try {
+      // Create promise that will be resolved when observation is saved
+      const observationPromise = new Promise<any>((resolve, reject) => {
+        session.pendingObservationResolvers.set(toolUseId, resolve);
+
+        // Set timeout to reject after 90s
+        setTimeout(() => {
+          if (session.pendingObservationResolvers.has(toolUseId)) {
+            session.pendingObservationResolvers.delete(toolUseId);
+            logger.warn('WORKER', 'Observation timeout', {
+              sessionId: sessionDbId,
+              tool_use_id: toolUseId,
+              timeoutMs: TIMEOUT_MS
+            });
+            reject(new Error('Observation creation timeout (90s exceeded)'));
+          }
+        }, TIMEOUT_MS);
+      });
+
+      // Wait for observation or timeout
+      const observation = await observationPromise;
+      const processingTimeMs = Date.now() - startTime;
+
+      // Handle skip case (observation is null when SDK Agent skipped)
+      if (observation === null) {
+        logger.debug('WORKER', 'Observation skipped (synchronous mode)', {
+          sessionId: sessionDbId,
+          toolUseId,
+          processingTimeMs
+        });
+
+        res.json({
+          status: 'skipped',
+          observation: null,
+          processing_time_ms: processingTimeMs,
+          message: 'No observation created (routine operation)'
+        });
+        return;
+      }
+
+      logger.success('WORKER', 'Observation ready (synchronous mode)', {
+        sessionId: sessionDbId,
+        toolUseId,
+        obsId: observation.id,
+        processingTimeMs
+      });
+
+      res.json({
+        status: 'completed',
+        observation,
+        processing_time_ms: processingTimeMs
+      });
+    } catch (error) {
+      // Timeout occurred - fall back to async behavior
+      const processingTimeMs = Date.now() - startTime;
+      logger.warn('WORKER', 'Observation timeout (falling back to async)', {
+        sessionId: sessionDbId,
+        toolUseId,
+        processingTimeMs
+      });
+
+      res.json({
+        status: 'timeout',
+        observation: null,
+        processing_time_ms: processingTimeMs,
+        message: 'Observation creation exceeded timeout, processing continues asynchronously'
+      });
+    }
+  }
+
+  /**
    * Queue observations for processing
    * CRITICAL: Ensures SDK agent is running to process the queue (ALWAYS SAVE EVERYTHING)
    *
@@ -513,84 +598,9 @@ export class WorkerService {
       });
 
       // Endless Mode: Synchronous mode - wait for observation to be created
-      if (wait_until_obs_is_saved && tool_use_id && session) {
-        logger.info('WORKER', 'Waiting for observation (synchronous mode)', {
-          sessionId: sessionDbId,
-          toolUseId: tool_use_id,
-          timeout: '90s'
-        });
-
-        const TIMEOUT_MS = 90000; // 90 seconds
-        const startTime = Date.now();
-
-        try {
-          // Create promise that will be resolved when observation is saved
-          const observationPromise = new Promise<any>((resolve, reject) => {
-            session.pendingObservationResolvers.set(tool_use_id, resolve);
-
-            // Set timeout to reject after 90s
-            setTimeout(() => {
-              if (session.pendingObservationResolvers.has(tool_use_id)) {
-                session.pendingObservationResolvers.delete(tool_use_id);
-                logger.warn('WORKER', 'Observation timeout', {
-                  sessionId: sessionDbId,
-                  tool_use_id,
-                  timeoutMs: TIMEOUT_MS
-                });
-                reject(new Error('Observation creation timeout (90s exceeded)'));
-              }
-            }, TIMEOUT_MS);
-          });
-
-          // Wait for observation or timeout
-          const observation = await observationPromise;
-          const processingTimeMs = Date.now() - startTime;
-
-          // Handle skip case (observation is null when SDK Agent skipped)
-          if (observation === null) {
-            logger.debug('WORKER', 'Observation skipped (synchronous mode)', {
-              sessionId: sessionDbId,
-              toolUseId: tool_use_id,
-              processingTimeMs
-            });
-
-            res.json({
-              status: 'skipped',
-              observation: null,
-              processing_time_ms: processingTimeMs,
-              message: 'No observation created (routine operation)'
-            });
-            return;
-          }
-
-          logger.success('WORKER', 'Observation ready (synchronous mode)', {
-            sessionId: sessionDbId,
-            toolUseId: tool_use_id,
-            obsId: observation.id,
-            processingTimeMs
-          });
-
-          res.json({
-            status: 'completed',
-            observation,
-            processing_time_ms: processingTimeMs
-          });
-        } catch (error) {
-          // Timeout occurred - fall back to async behavior
-          const processingTimeMs = Date.now() - startTime;
-          logger.warn('WORKER', 'Observation timeout (falling back to async)', {
-            sessionId: sessionDbId,
-            toolUseId: tool_use_id,
-            processingTimeMs
-          });
-
-          res.json({
-            status: 'timeout',
-            observation: null,
-            processing_time_ms: processingTimeMs,
-            message: 'Observation creation exceeded timeout, processing continues asynchronously'
-          });
-        }
+      const config = getEndlessModeConfig();
+      if (config.enableSynchronousMode && wait_until_obs_is_saved && tool_use_id && session) {
+        await this.waitForObservation(session, tool_use_id, sessionDbId, res);
       } else {
         // Async mode (default behavior)
         res.json({ status: 'queued' });
