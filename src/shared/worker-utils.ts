@@ -55,9 +55,13 @@ async function startWorker(): Promise<boolean> {
       throw new Error(`Ecosystem config not found at ${ecosystemPath}`);
     }
 
+    // Try to use local PM2 from node_modules first, fall back to global PM2
+    const localPm2 = path.join(pluginRoot, 'node_modules', '.bin', 'pm2');
+    const pm2Command = existsSync(localPm2) ? localPm2 : 'pm2';
+
     // Start using PM2 with the ecosystem config
     // CRITICAL: Must set cwd to pluginRoot so PM2 starts from marketplace directory
-    execSync(`pm2 start "${ecosystemPath}"`, {
+    execSync(`"${pm2Command}" start "${ecosystemPath}"`, {
       cwd: pluginRoot,
       stdio: 'pipe',
       encoding: 'utf-8'
@@ -93,10 +97,13 @@ export async function ensureWorkerRunning(): Promise<void> {
 
   if (!started) {
     const port = getWorkerPort();
+    const pluginRoot = getPackageRoot();
     throw new Error(
       `Worker service failed to start on port ${port}.\n\n` +
-      `Try manually running: pm2 start ecosystem.config.cjs\n` +
-      `Or restart: pm2 restart claude-mem-worker`
+      `To start manually, run:\n` +
+      `  cd ${pluginRoot}\n` +
+      `  npx pm2 start ecosystem.config.cjs\n\n` +
+      `If already running, try: npx pm2 restart claude-mem-worker`
     );
   }
 }
