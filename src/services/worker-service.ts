@@ -360,11 +360,6 @@ export class WorkerService {
     try {
       const sessionDbId = parseInt(req.params.sessionDbId, 10);
       const { userPrompt, promptNumber } = req.body;
-
-      // Check if session already exists (prompt #2+)
-      const existingSession = this.sessionManager.getSession(sessionDbId);
-      const isNewSession = !existingSession;
-
       const session = this.sessionManager.initializeSession(sessionDbId, userPrompt, promptNumber);
 
       // Get the latest user_prompt for this session to sync to Chroma
@@ -429,19 +424,8 @@ export class WorkerService {
       // Broadcast processing status (based on queue depth)
       this.broadcastProcessingStatus();
 
-      // For prompt #2+: queue continuation message instead of starting new generator
-      if (!isNewSession) {
-        logger.info('SESSION', 'Queueing continuation (existing session)', {
-          sessionId: sessionDbId,
-          promptNum: promptNumber
-        });
-        this.sessionManager.queueContinuation(sessionDbId, userPrompt, promptNumber);
-        res.json({ status: 'continuation_queued', sessionDbId, port: getWorkerPort() });
-        return;
-      }
-
-      // For prompt #1: Start SDK agent in background (pass worker ref for spinner control)
-      logger.info('SESSION', 'Generator starting (new session)', {
+      // Start SDK agent in background (pass worker ref for spinner control)
+      logger.info('SESSION', 'Generator starting', {
         sessionId: sessionDbId,
         project: session.project,
         promptNum: session.lastPromptNumber

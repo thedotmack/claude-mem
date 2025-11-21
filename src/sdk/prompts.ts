@@ -146,7 +146,7 @@ MEMORY PROCESSING START
 /**
  * Build prompt to send tool observation to SDK agent
  */
-export function buildObservationPrompt(obs: Observation): string {
+export function buildObservationPrompt(obs: Observation, userPrompt?: string): string {
   // Safely parse tool_input and tool_output - they're already JSON strings
   let toolInput: any;
   let toolOutput: any;
@@ -163,7 +163,7 @@ export function buildObservationPrompt(obs: Observation): string {
     toolOutput = obs.tool_output;  // If parse fails, use raw value
   }
 
-  return `<observed_from_primary_session>
+  return `<observed_from_primary_session>${userPrompt ? `\n  <user_request>${userPrompt}</user_request>` : ''}
   <what_happened>${obs.tool_name}</what_happened>
   <occurred_at>${new Date(obs.created_at_epoch).toISOString()}</occurred_at>${obs.cwd ? `\n  <working_directory>${obs.cwd}</working_directory>` : ''}
   <parameters>${JSON.stringify(toolInput, null, 2)}</parameters>

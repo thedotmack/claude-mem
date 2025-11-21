@@ -32,6 +32,7 @@ export class SessionStore {
     this.createUserPromptsTable();
     this.ensureDiscoveryTokensColumn();
     this.addToolUseIdColumn();
+    this.removeToolUseIdUniqueConstraint();
   }
 
   /**
@@ -554,9 +555,9 @@ export class SessionStore {
         this.db.exec('ALTER TABLE observations ADD COLUMN tool_use_id TEXT');
         console.error('[SessionStore] Added tool_use_id column to observations table');
 
-        // Create unique index for efficient lookups
-        this.db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_observations_tool_use_id ON observations(tool_use_id) WHERE tool_use_id IS NOT NULL');
-        console.error('[SessionStore] Created unique index on tool_use_id column');
+        // Create non-unique index for efficient lookups (multiple observations can share tool_use_id)
+        this.db.exec('CREATE INDEX IF NOT EXISTS idx_observations_tool_use_id ON observations(tool_use_id) WHERE tool_use_id IS NOT NULL');
+        console.error('[SessionStore] Created index on tool_use_id column');
       }
 
       // Record migration
@@ -600,6 +601,31 @@ export class SessionStore {
       this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(13, new Date().toISOString());
     } catch (error: any) {
       console.error('[SessionStore] Endless Mode stats migration error:', error.message);
+    }
+  }
+
+  /**
+   * Remove UNIQUE constraint from tool_use_id index (migration 14)
+   * Multiple observations can relate to the same tool use, so UNIQUE constraint is incorrect
+   */
+  private removeToolUseIdUniqueConstraint(): void {
+    try {
+      // Check if migration already applied
+      const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(14) as {version: number} | undefined;
+      if (applied) return;
+
+      // Drop existing UNIQUE index if it exists
+      this.db.exec('DROP INDEX IF EXISTS idx_observations_tool_use_id');
+      console.error('[SessionStore] Dropped UNIQUE index on tool_use_id');
+
+      // Recreate as non-unique index (multiple observations can share tool_use_id)
+      this.db.exec('CREATE INDEX IF NOT EXISTS idx_observations_tool_use_id ON observations(tool_use_id) WHERE tool_use_id IS NOT NULL');
+      console.error('[SessionStore] Recreated tool_use_id index without UNIQUE constraint');
+
+      // Record migration
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(14, new Date().toISOString());
+    } catch (error: any) {
+      console.error('[SessionStore] Remove UNIQUE constraint migration error:', error.message);
     }
   }
 

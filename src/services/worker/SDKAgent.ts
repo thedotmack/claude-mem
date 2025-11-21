@@ -215,31 +215,7 @@ export class SDKAgent {
 
     // Consume pending messages from SessionManager (event-driven, no polling)
     for await (const message of this.sessionManager.getMessageIterator(session.sessionDbId)) {
-      if (message.type === 'continuation') {
-        // Update prompt number and userPrompt for continuation
-        if (message.prompt_number !== undefined) {
-          session.lastPromptNumber = message.prompt_number;
-        }
-        if (message.user_prompt) {
-          session.userPrompt = message.user_prompt;
-        }
-
-        // Yield continuation prompt to inject new user request context
-        yield {
-          type: 'user',
-          message: {
-            role: 'user',
-            content: buildContinuationPrompt(
-              session.userPrompt,
-              session.lastPromptNumber,
-              session.claudeSessionId
-            )
-          },
-          session_id: session.claudeSessionId,
-          parent_tool_use_id: null,
-          isSynthetic: true
-        };
-      } else if (message.type === 'observation') {
+      if (message.type === 'observation') {
         // Update last prompt number
         if (message.prompt_number !== undefined) {
           session.lastPromptNumber = message.prompt_number;
@@ -259,7 +235,7 @@ export class SDKAgent {
               tool_output: JSON.stringify(message.tool_response),
               created_at_epoch: Date.now(),
               cwd: message.cwd
-            })
+            }, session.userPrompt)
           },
           session_id: session.claudeSessionId,
           parent_tool_use_id: null,
