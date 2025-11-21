@@ -26,7 +26,7 @@ export interface ActiveSession {
 }
 
 export interface PendingMessage {
-  type: 'observation' | 'summarize';
+  type: 'observation' | 'summarize' | 'continuation';
   tool_name?: string;
   tool_input?: any;
   tool_response?: any;
@@ -35,6 +35,7 @@ export interface PendingMessage {
   tool_use_id?: string; // Endless Mode: link observation to transcript tool use
   last_user_message?: string;
   last_assistant_message?: string;
+  user_prompt?: string; // For continuation messages
 }
 
 export interface ObservationData {

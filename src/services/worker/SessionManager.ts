@@ -190,6 +190,37 @@ export class SessionManager {
   }
 
   /**
+   * Queue a continuation prompt (for prompt #2+ in same session)
+   */
+  queueContinuation(sessionDbId: number, userPrompt: string, promptNumber: number): void {
+    const session = this.sessions.get(sessionDbId);
+    if (!session) {
+      throw new Error(`Cannot queue continuation for non-existent session ${sessionDbId}`);
+    }
+
+    const beforeDepth = session.pendingMessages.length;
+
+    session.pendingMessages.push({
+      type: 'continuation',
+      user_prompt: userPrompt,
+      prompt_number: promptNumber
+    });
+
+    const afterDepth = session.pendingMessages.length;
+
+    const emitter = this.sessionQueues.get(sessionDbId);
+    emitter?.emit('message');
+
+    const truncatedPrompt = userPrompt.length > 80 ? userPrompt.substring(0, 80) + '...' : userPrompt;
+    logger.info('SESSION', `Continuation queued (${beforeDepth}→${afterDepth})`, {
+      sessionId: sessionDbId,
+      promptNumber,
+      prompt: truncatedPrompt,
+      hasGenerator: !!session.generatorPromise
+    });
+  }
+
+  /**
    * Delete a session (abort SDK agent and cleanup)
    */
   async deleteSession(sessionDbId: number): Promise<void> {

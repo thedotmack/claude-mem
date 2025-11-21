@@ -259,7 +259,15 @@ For routine operations (git status, package.json reads, directory listings), use
 
 For meaningful operations (file modifications, discoveries, fixes), provide full detail as usual.
 
-**Always output an observation - never skip.**` : ''}
+**Always output an observation - never skip.**` : `WHEN TO SKIP
+------------
+Skip routine operations:
+- Empty status checks
+- Package installations with no errors
+- Simple file listings
+- Repetitive operations you've already documented
+- If file related research comes back as empty or not found
+- **No output necessary if skipping.**`}
 
 OUTPUT FORMAT
 -------------
