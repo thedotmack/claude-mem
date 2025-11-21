@@ -1,0 +1,614 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Claude Transcript Viewer - Live JSONL Monitor</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      padding: 20px;
+    }
+
+    .container {
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+
+    h1 {
+      font-size: 24px;
+      margin-bottom: 20px;
+      color: #f1f5f9;
+    }
+
+    .controls {
+      background: #1e293b;
+      padding: 20px;
+      border-radius: 8px;
+      margin-bottom: 20px;
+    }
+
+    .control-row {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+
+    input[type="text"] {
+      flex: 1;
+      padding: 10px;
+      background: #0f172a;
+      border: 1px solid #334155;
+      border-radius: 4px;
+      color: #e2e8f0;
+      font-family: 'Monaco', 'Courier New', monospace;
+      font-size: 12px;
+    }
+
+    button {
+      padding: 10px 20px;
+      background: #3b82f6;
+      border: none;
+      border-radius: 4px;
+      color: white;
+      cursor: pointer;
+      font-weight: 500;
+    }
+
+    button:hover {
+      background: #2563eb;
+    }
+
+    button:disabled {
+      background: #475569;
+      cursor: not-allowed;
+    }
+
+    .status {
+      font-size: 14px;
+      color: #94a3b8;
+    }
+
+    .status.connected {
+      color: #22c55e;
+    }
+
+    .status.error {
+      color: #ef4444;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 15px;
+      margin-bottom: 20px;
+    }
+
+    .stat-card {
+      background: #1e293b;
+      padding: 15px;
+      border-radius: 8px;
+      border: 1px solid #334155;
+    }
+
+    .stat-label {
+      font-size: 12px;
+      color: #94a3b8;
+      margin-bottom: 5px;
+    }
+
+    .stat-value {
+      font-size: 24px;
+      font-weight: 600;
+      color: #f1f5f9;
+    }
+
+    .messages {
+      display: flex;
+      flex-direction: column;
+      gap: 15px;
+    }
+
+    .message {
+      background: #1e293b;
+      border-radius: 8px;
+      padding: 15px;
+      border-left: 4px solid #334155;
+    }
+
+    .message.user {
+      border-left-color: #3b82f6;
+    }
+
+    .message.assistant {
+      border-left-color: #8b5cf6;
+    }
+
+    .message.tool-use {
+      border-left-color: #f59e0b;
+    }
+
+    .message.tool-result {
+      border-left-color: #10b981;
+    }
+
+    .message.transformed {
+      border-left-color: #ec4899;
+      background: #2d1b3d;
+    }
+
+    .message-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+
+    .message-role {
+      font-weight: 600;
+      text-transform: uppercase;
+      font-size: 11px;
+      letter-spacing: 0.5px;
+      color: #94a3b8;
+    }
+
+    .message-tokens {
+      font-size: 12px;
+      color: #64748b;
+      font-family: 'Monaco', 'Courier New', monospace;
+    }
+
+    .message-content {
+      font-family: 'Monaco', 'Courier New', monospace;
+      font-size: 13px;
+      line-height: 1.6;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .tool-name {
+      display: inline-block;
+      background: #0f172a;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      margin-bottom: 8px;
+      color: #fbbf24;
+    }
+
+    .observation-ref {
+      background: #3b0764;
+      border: 1px solid #ec4899;
+      padding: 10px;
+      border-radius: 4px;
+      margin-top: 8px;
+    }
+
+    .observation-ref-label {
+      font-size: 11px;
+      color: #ec4899;
+      font-weight: 600;
+      margin-bottom: 5px;
+    }
+
+    .observation-id {
+      font-family: 'Monaco', 'Courier New', monospace;
+      font-size: 12px;
+      color: #fbbf24;
+    }
+
+    .transformation-badge {
+      display: inline-block;
+      background: #ec4899;
+      color: white;
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      margin-left: 10px;
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: 60px 20px;
+      color: #64748b;
+    }
+
+    .loading {
+      text-align: center;
+      padding: 40px;
+      color: #64748b;
+    }
+
+    .error-message {
+      background: #7f1d1d;
+      border: 1px solid #ef4444;
+      color: #fecaca;
+      padding: 15px;
+      border-radius: 8px;
+      margin-bottom: 20px;
+    }
+
+    .filters {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 15px;
+      flex-wrap: wrap;
+    }
+
+    .filter-btn {
+      padding: 8px 16px;
+      background: #334155;
+      border: 1px solid #475569;
+      border-radius: 4px;
+      color: #e2e8f0;
+      cursor: pointer;
+      font-size: 12px;
+    }
+
+    .filter-btn.active {
+      background: #3b82f6;
+      border-color: #3b82f6;
+    }
+
+    .savings {
+      color: #22c55e;
+      font-weight: 600;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🔍 Claude Transcript Viewer - Live JSONL Monitor</h1>
+
+    <div class="controls">
+      <div class="control-row">
+        <input
+          type="text"
+          id="filePath"
+          placeholder="Enter transcript file path or leave empty to auto-detect current session"
+        />
+        <button id="loadBtn">Load Transcript</button>
+        <button id="watchBtn">Watch Live</button>
+      </div>
+      <div class="control-row">
+        <span class="status" id="status">Disconnected</span>
+      </div>
+    </div>
+
+    <div id="error" style="display: none;" class="error-message"></div>
+
+    <div class="stats" id="stats" style="display: none;">
+      <div class="stat-card">
+        <div class="stat-label">Total Messages</div>
+        <div class="stat-value" id="totalMessages">0</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Original Tokens</div>
+        <div class="stat-value" id="originalTokens">0</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Current Tokens</div>
+        <div class="stat-value" id="currentTokens">0</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Token Savings</div>
+        <div class="stat-value savings" id="tokenSavings">0%</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Transformed Tool Results</div>
+        <div class="stat-value" id="transformedCount">0</div>
+      </div>
+    </div>
+
+    <div class="filters" id="filters" style="display: none;">
+      <button class="filter-btn active" data-filter="all">All Messages</button>
+      <button class="filter-btn" data-filter="transformed">Transformed Only</button>
+      <button class="filter-btn" data-filter="tool-result">Tool Results</button>
+      <button class="filter-btn" data-filter="user">User</button>
+      <button class="filter-btn" data-filter="assistant">Assistant</button>
+    </div>
+
+    <div class="messages" id="messages">
+      <div class="empty-state">
+        Enter a transcript file path above or click "Watch Live" to monitor the current session.
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let eventSource = null;
+    let currentFilter = 'all';
+    let allMessages = [];
+
+    // Estimate tokens (rough approximation)
+    function estimateTokens(text) {
+      if (!text) return 0;
+      return Math.ceil(text.length / 4);
+    }
+
+    // Format message content
+    function formatContent(message) {
+      // Handle nested message structure from Claude Code transcripts
+      const content = message.message?.content || message.content;
+
+      if (!content) {
+        return '(no content)';
+      }
+      if (typeof content === 'string') {
+        return content;
+      }
+      if (Array.isArray(content)) {
+        return content.map(block => {
+          if (block.type === 'text') return block.text;
+          if (block.type === 'tool_use') {
+            return `[Tool: ${block.name}]\n${JSON.stringify(block.input, null, 2)}`;
+          }
+          if (block.type === 'tool_result') {
+            const result = typeof block.content === 'string' ? block.content : JSON.stringify(block.content);
+            return `[Tool Result: ${block.tool_use_id}]\n${result}`;
+          }
+          return JSON.stringify(block, null, 2);
+        }).join('\n\n');
+      }
+      return JSON.stringify(content, null, 2);
+    }
+
+    // Check if message is transformed
+    function isTransformed(message) {
+      // Claude Code transcripts use 'type' field, not 'role'
+      const messageType = message.type || message.role;
+      const content = message.message?.content || message.content;
+
+      if (messageType === 'user' && Array.isArray(content)) {
+        return content.some(block =>
+          block.type === 'tool_result' &&
+          typeof block.content === 'string' &&
+          block.content.includes('OBSERVATION_ID:')
+        );
+      }
+      return false;
+    }
+
+    // Extract observation ID
+    function extractObservationId(content) {
+      const match = content.match(/OBSERVATION_ID:\s*([a-f0-9-]+)/);
+      return match ? match[1] : null;
+    }
+
+    // Calculate stats
+    function calculateStats() {
+      let originalTokens = 0;
+      let currentTokens = 0;
+      let transformedCount = 0;
+
+      allMessages.forEach(msg => {
+        const content = formatContent(msg);
+        currentTokens += estimateTokens(content);
+
+        if (isTransformed(msg)) {
+          transformedCount++;
+          // Estimate original size (transformed content is typically 5-10% of original)
+          originalTokens += estimateTokens(content) * 15; // Conservative estimate
+        } else {
+          originalTokens += estimateTokens(content);
+        }
+      });
+
+      const savings = originalTokens > 0 ? ((originalTokens - currentTokens) / originalTokens * 100).toFixed(1) : 0;
+
+      document.getElementById('totalMessages').textContent = allMessages.length;
+      document.getElementById('originalTokens').textContent = originalTokens.toLocaleString();
+      document.getElementById('currentTokens').textContent = currentTokens.toLocaleString();
+      document.getElementById('tokenSavings').textContent = `${savings}%`;
+      document.getElementById('transformedCount').textContent = transformedCount;
+    }
+
+    // Render message
+    function renderMessage(message, index) {
+      const transformed = isTransformed(message);
+      const messageDiv = document.createElement('div');
+      const messageType = message.type || message.role || 'unknown';
+      messageDiv.className = `message ${messageType}${transformed ? ' transformed' : ''}`;
+      messageDiv.dataset.index = index;
+      messageDiv.dataset.role = messageType;
+      messageDiv.dataset.transformed = transformed;
+
+      const content = formatContent(message);
+      const tokens = estimateTokens(content);
+
+      const messageContent = message.message?.content || message.content;
+      let typeLabel = messageType;
+      if (Array.isArray(messageContent)) {
+        const hasToolUse = messageContent.some(b => b.type === 'tool_use');
+        const hasToolResult = messageContent.some(b => b.type === 'tool_result');
+        if (hasToolUse) typeLabel = 'tool-use';
+        if (hasToolResult) {
+          typeLabel = 'tool-result';
+          messageDiv.classList.add('tool-result');
+        }
+      }
+
+      let observationHTML = '';
+      if (transformed) {
+        const observationId = extractObservationId(content);
+        if (observationId) {
+          observationHTML = `
+            <div class="observation-ref">
+              <div class="observation-ref-label">✨ TRANSFORMED - Observation Reference:</div>
+              <div class="observation-id">${observationId}</div>
+            </div>
+          `;
+        }
+      }
+
+      messageDiv.innerHTML = `
+        <div class="message-header">
+          <span class="message-role">
+            ${typeLabel}
+            ${transformed ? '<span class="transformation-badge">TRANSFORMED</span>' : ''}
+          </span>
+          <span class="message-tokens">~${tokens.toLocaleString()} tokens</span>
+        </div>
+        <div class="message-content">${escapeHtml(content)}</div>
+        ${observationHTML}
+      `;
+
+      return messageDiv;
+    }
+
+    // Escape HTML
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    // Apply filter
+    function applyFilter() {
+      const messagesContainer = document.getElementById('messages');
+      messagesContainer.innerHTML = '';
+
+      const filtered = allMessages.filter((msg, index) => {
+        if (currentFilter === 'all') return true;
+        if (currentFilter === 'transformed') return isTransformed(msg);
+        if (currentFilter === 'tool-result') {
+          const content = msg.message?.content || msg.content;
+          return Array.isArray(content) && content.some(b => b.type === 'tool_result');
+        }
+        const messageType = msg.type || msg.role;
+        return messageType === currentFilter;
+      });
+
+      if (filtered.length === 0) {
+        messagesContainer.innerHTML = '<div class="empty-state">No messages match the current filter.</div>';
+      } else {
+        filtered.forEach((msg, index) => {
+          messagesContainer.appendChild(renderMessage(msg, index));
+        });
+      }
+    }
+
+    // Load transcript
+    async function loadTranscript(filePath, watch = false) {
+      try {
+        showError(null);
+        document.getElementById('messages').innerHTML = '<div class="loading">Loading transcript...</div>';
+
+        const params = new URLSearchParams();
+        if (filePath) params.append('path', filePath);
+        if (watch) params.append('watch', 'true');
+
+        if (watch) {
+          // Close existing connection
+          if (eventSource) {
+            eventSource.close();
+          }
+
+          // Open SSE connection
+          eventSource = new EventSource(`/api/transcript?${params.toString()}`);
+
+          eventSource.onopen = () => {
+            document.getElementById('status').textContent = 'Connected - Watching for changes...';
+            document.getElementById('status').className = 'status connected';
+          };
+
+          eventSource.addEventListener('transcript', (event) => {
+            const data = JSON.parse(event.data);
+            allMessages = data.messages;
+
+            document.getElementById('stats').style.display = 'grid';
+            document.getElementById('filters').style.display = 'flex';
+
+            calculateStats();
+            applyFilter();
+          });
+
+          eventSource.onerror = (error) => {
+            console.error('SSE error:', error);
+            document.getElementById('status').textContent = 'Connection error';
+            document.getElementById('status').className = 'status error';
+            showError('Connection lost. Click "Watch Live" to reconnect.');
+          };
+
+        } else {
+          // One-time load
+          const response = await fetch(`/api/transcript?${params.toString()}`);
+          if (!response.ok) {
+            throw new Error(await response.text());
+          }
+
+          const data = await response.json();
+          allMessages = data.messages;
+
+          document.getElementById('stats').style.display = 'grid';
+          document.getElementById('filters').style.display = 'flex';
+          document.getElementById('status').textContent = 'Loaded';
+          document.getElementById('status').className = 'status';
+
+          calculateStats();
+          applyFilter();
+        }
+
+      } catch (error) {
+        showError(error.message);
+        document.getElementById('messages').innerHTML = '<div class="empty-state">Failed to load transcript.</div>';
+      }
+    }
+
+    // Show error
+    function showError(message) {
+      const errorDiv = document.getElementById('error');
+      if (message) {
+        errorDiv.textContent = message;
+        errorDiv.style.display = 'block';
+      } else {
+        errorDiv.style.display = 'none';
+      }
+    }
+
+    // Event listeners
+    document.getElementById('loadBtn').addEventListener('click', () => {
+      const filePath = document.getElementById('filePath').value.trim();
+      loadTranscript(filePath, false);
+    });
+
+    document.getElementById('watchBtn').addEventListener('click', () => {
+      const filePath = document.getElementById('filePath').value.trim();
+      loadTranscript(filePath, true);
+    });
+
+    document.getElementById('filters').addEventListener('click', (e) => {
+      if (e.target.classList.contains('filter-btn')) {
+        document.querySelectorAll('.filter-btn').forEach(btn => btn.classList.remove('active'));
+        e.target.classList.add('active');
+        currentFilter = e.target.dataset.filter;
+        applyFilter();
+      }
+    });
+
+    // Auto-load on Enter key
+    document.getElementById('filePath').addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') {
+        document.getElementById('loadBtn').click();
+      }
+    });
+
+    // Cleanup on page unload
+    window.addEventListener('beforeunload', () => {
+      if (eventSource) {
+        eventSource.close();
+      }
+    });
+  </script>
+</body>
+</html>

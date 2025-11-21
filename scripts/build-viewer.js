@@ -68,9 +68,19 @@ async function buildViewer() {
       );
     }
 
+    // Copy transcript viewer HTML
+    const transcriptViewerPath = path.join(srcUiDir, 'transcript-viewer.html');
+    if (fs.existsSync(transcriptViewerPath)) {
+      fs.copyFileSync(
+        transcriptViewerPath,
+        path.join(outputUiDir, 'transcript-viewer.html')
+      );
+    }
+
     console.log('✓ React viewer built successfully');
     console.log('  - plugin/ui/viewer-bundle.js');
     console.log('  - plugin/ui/viewer.html (from viewer-template.html)');
+    console.log('  - plugin/ui/transcript-viewer.html');
     console.log('  - plugin/ui/assets/fonts/* (font files)');
     console.log(`  - plugin/ui/icon-thick-*.svg (${iconFiles.length} icon files)`);
   } catch (error) {

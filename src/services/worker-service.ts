@@ -143,7 +143,9 @@ export class WorkerService {
     // Health & Viewer
     this.app.get('/health', this.handleHealth.bind(this));
     this.app.get('/', this.handleViewerUI.bind(this));
+    this.app.get('/transcript', this.handleTranscriptViewerUI.bind(this));
     this.app.get('/stream', this.handleSSEStream.bind(this));
+    this.app.get('/api/transcript', this.handleTranscriptStream.bind(this));
 
     // Session endpoints
     this.app.post('/sessions/:sessionDbId/init', this.handleSessionInit.bind(this));
@@ -324,6 +326,133 @@ export class WorkerService {
   }
 
   /**
+   * Serve transcript viewer UI
+   */
+  private handleTranscriptViewerUI(req: Request, res: Response): void {
+    try {
+      const packageRoot = getPackageRoot();
+      const viewerPath = path.join(packageRoot, 'plugin', 'ui', 'transcript-viewer.html');
+      const html = readFileSync(viewerPath, 'utf-8');
+      res.setHeader('Content-Type', 'text/html');
+      res.send(html);
+    } catch (error) {
+      logger.failure('WORKER', 'Transcript viewer UI error', {}, error as Error);
+      res.status(500).json({ error: 'Failed to load transcript viewer UI' });
+    }
+  }
+
+  /**
+   * Serve transcript data (both one-time and SSE streaming)
+   */
+  private handleTranscriptStream(req: Request, res: Response): void {
+    try {
+      const filePath = req.query.path as string | undefined;
+      const watch = req.query.watch === 'true';
+
+      // Auto-detect current session if no path provided
+      const transcriptPath = filePath || this.findCurrentTranscript();
+
+      if (!transcriptPath) {
+        res.status(400).json({ error: 'No transcript file found. Please provide a path or start a Claude Code session.' });
+        return;
+      }
+
+      if (!existsSync(transcriptPath)) {
+        res.status(404).json({ error: `Transcript file not found: ${transcriptPath}` });
+        return;
+      }
+
+      // Read and parse transcript
+      const parseTranscript = () => {
+        const content = readFileSync(transcriptPath, 'utf-8');
+        const lines = content.trim().split('\n').filter(line => line.trim());
+        const messages = lines.map(line => JSON.parse(line));
+        return { messages, filePath: transcriptPath };
+      };
+
+      if (watch) {
+        // SSE streaming mode
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+
+        let lastSize = 0;
+
+        const sendUpdate = () => {
+          try {
+            const stats = statSync(transcriptPath);
+            if (stats.size !== lastSize) {
+              lastSize = stats.size;
+              const data = parseTranscript();
+              res.write(`event: transcript\ndata: ${JSON.stringify(data)}\n\n`);
+            }
+          } catch (error) {
+            logger.failure('WORKER', 'Transcript watch error', {}, error as Error);
+          }
+        };
+
+        // Send initial data
+        sendUpdate();
+
+        // Poll for changes every 2 seconds
+        const interval = setInterval(sendUpdate, 2000);
+
+        // Cleanup on disconnect
+        req.on('close', () => {
+          clearInterval(interval);
+        });
+
+      } else {
+        // One-time load
+        const data = parseTranscript();
+        res.json(data);
+      }
+
+    } catch (error) {
+      logger.failure('WORKER', 'Transcript stream error', {}, error as Error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  }
+
+  /**
+   * Find the current Claude Code session's transcript file
+   */
+  private findCurrentTranscript(): string | null {
+    try {
+      // Look for the most recently modified transcript file in ~/.claude/projects
+      const claudeDir = path.join(homedir(), '.claude', 'projects');
+      if (!existsSync(claudeDir)) {
+        return null;
+      }
+
+      const fs = require('fs');
+      const projectDirs = fs.readdirSync(claudeDir, { withFileTypes: true })
+        .filter((dirent: any) => dirent.isDirectory())
+        .map((dirent: any) => path.join(claudeDir, dirent.name));
+
+      let mostRecent: { path: string, mtime: number } | null = null;
+
+      for (const projectDir of projectDirs) {
+        const files = fs.readdirSync(projectDir)
+          .filter((f: string) => f.endsWith('.jsonl') && !f.startsWith('agent-'))
+          .map((f: string) => path.join(projectDir, f));
+
+        for (const file of files) {
+          const stats = statSync(file);
+          if (!mostRecent || stats.mtimeMs > mostRecent.mtime) {
+            mostRecent = { path: file, mtime: stats.mtimeMs };
+          }
+        }
+      }
+
+      return mostRecent?.path || null;
+    } catch (error) {
+      logger.failure('WORKER', 'Find current transcript error', {}, error as Error);
+      return null;
+    }
+  }
+
+  /**
    * SSE stream endpoint
    */
   private handleSSEStream(req: Request, res: Response): void {
@@ -467,13 +596,13 @@ export class WorkerService {
     sessionDbId: number,
     res: Response
   ): Promise<void> {
-    const TIMEOUT_MS = 30000; // 90 seconds
+    const TIMEOUT_MS = 30000; // 30 seconds
     const startTime = Date.now();
 
     logger.info('WORKER', 'Waiting for observation (synchronous mode)', {
       sessionId: sessionDbId,
       toolUseId,
-      timeout: '90s'
+      timeout: '30s'
     });
 
     try {
@@ -481,7 +610,7 @@ export class WorkerService {
       const observationPromise = new Promise<any>((resolve, reject) => {
         session.pendingObservationResolvers.set(toolUseId, resolve);
 
-        // Set timeout to reject after 90s
+        // Set timeout to reject after 30s
         setTimeout(() => {
           if (session.pendingObservationResolvers.has(toolUseId)) {
             session.pendingObservationResolvers.delete(toolUseId);
@@ -490,7 +619,7 @@ export class WorkerService {
               tool_use_id: toolUseId,
               timeoutMs: TIMEOUT_MS
             });
-            reject(new Error('Observation creation timeout (90s exceeded)'));
+            reject(new Error('Observation creation timeout (30s exceeded)'));
           }
         }, TIMEOUT_MS);
       });

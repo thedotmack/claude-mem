@@ -1288,6 +1288,21 @@ export class SessionStore {
   }
 
   /**
+   * Get ALL observations for a tool_use_id (for Endless Mode transform layer)
+   * Returns array of observations sorted by creation time (oldest first)
+   * Multiple observations can exist per tool_use_id - this returns them all for concatenation
+   */
+  getAllObservationsForToolUseId(toolUseId: string): ObservationRow[] {
+    const stmt = this.db.prepare(`
+      SELECT * FROM observations
+      WHERE tool_use_id = ?
+      ORDER BY created_at_epoch ASC
+    `);
+
+    return stmt.all(toolUseId) as ObservationRow[];
+  }
+
+  /**
    * Get observations by array of tool_use_ids (for Endless Mode batch transform)
    * Returns map of tool_use_id -> ObservationRow for efficient lookup
    */

@@ -460,7 +460,11 @@ ${e.stack}`:e.message;if(Array.isArray(e))return`[${e.length} items]`;let r=Obje
       SELECT * FROM observations
       WHERE tool_use_id = ?
       LIMIT 1
-    `).get(e)||null}getObservationsByToolUseIds(e){if(e.length===0)return new Map;let r=e.map(()=>"?").join(","),t=this.db.prepare(`
+    `).get(e)||null}getAllObservationsForToolUseId(e){return this.db.prepare(`
+      SELECT * FROM observations
+      WHERE tool_use_id = ?
+      ORDER BY created_at_epoch ASC
+    `).all(e)}getObservationsByToolUseIds(e){if(e.length===0)return new Map;let r=e.map(()=>"?").join(","),t=this.db.prepare(`
       SELECT * FROM observations
       WHERE tool_use_id IN (${r})
     `).all(...e),n=new Map;for(let o of t)o.tool_use_id&&n.set(o.tool_use_id,o);return n}storeSummary(e,r,a,t,n=0){let o=new Date,i=o.getTime();this.db.prepare(`

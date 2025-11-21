@@ -38,7 +38,7 @@
     "sync-marketplace": "rsync -av --delete --exclude=.git ./ ~/.claude/plugins/marketplaces/thedotmack/ && cd ~/.claude/plugins/marketplaces/thedotmack/ && npm install",
     "worker:start": "pm2 start ecosystem.config.cjs",
     "worker:stop": "pm2 stop claude-mem-worker",
-    "worker:restart": "pm2 restart claude-mem-worker",
+    "worker:restart": "pm2 restart claude-mem-worker || pm2 start ecosystem.config.cjs",
     "worker:logs": "pm2 flush claude-mem-worker && pm2 logs claude-mem-worker --lines 100 --nostream",
     "worker:logs:no-flush": "pm2 logs claude-mem-worker --lines 100 --nostream",
     "changelog:generate": "node scripts/generate-changelog.js",
