@@ -198,10 +198,6 @@ export class SDKAgent {
    * - We just use the session_id we're given - simple and reliable
    */
   private async *createMessageGenerator(session: ActiveSession): AsyncIterableIterator<SDKUserMessage> {
-    // Get Endless Mode config to determine if we should observe everything
-    const config = EndlessModeConfig.getConfig();
-    const observeEverything = config.observeEverything;
-
     // Yield initial user prompt with context (or continuation if prompt #2+)
     // CRITICAL: Both paths use session.claudeSessionId from the hook
     yield {
@@ -209,8 +205,8 @@ export class SDKAgent {
       message: {
         role: 'user',
         content: session.lastPromptNumber === 1
-          ? buildInitPrompt(session.project, session.claudeSessionId, session.userPrompt, observeEverything)
-          : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.claudeSessionId, observeEverything)
+          ? buildInitPrompt(session.project, session.claudeSessionId, session.userPrompt)
+          : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.claudeSessionId)
       },
       session_id: session.claudeSessionId,
       parent_tool_use_id: null,
@@ -236,8 +232,7 @@ export class SDKAgent {
             content: buildContinuationPrompt(
               session.userPrompt,
               session.lastPromptNumber,
-              session.claudeSessionId,
-              observeEverything
+              session.claudeSessionId
             )
           },
           session_id: session.claudeSessionId,

@@ -192,7 +192,7 @@ When investigations fail persistently, use Task agents for comprehensive file an
 - `CLAUDE_MEM_MODEL` - Model for observations/summaries (default: claude-haiku-4-5)
 - `CLAUDE_MEM_CONTEXT_OBSERVATIONS` - Observations injected at SessionStart (default: 50)
 - `CLAUDE_MEM_WORKER_PORT` - Worker service port (default: 37777)
-- `CLAUDE_MEM_OBSERVE_EVERYTHING` - Create observations for all tool uses when Endless Mode is enabled (default: same as CLAUDE_MEM_ENDLESS_MODE)
+- `CLAUDE_MEM_ENDLESS_MODE` - Enable Endless Mode for indefinite sessions (default: false)
 
 ## Key Design Decisions
 

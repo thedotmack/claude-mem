@@ -15,7 +15,6 @@ export interface EndlessModeConfigType {
   fallbackToOriginal: boolean;
   maxLookupTime: number;
   keepRecentToolUses: number;
-  observeEverything: boolean;
   maxToolHistoryMB: number;
   enableSynchronousMode: boolean;
 }
@@ -83,12 +82,6 @@ export function getConfig(): EndlessModeConfigType {
     0
   );
 
-  const observeEverything = getBooleanSetting(
-    settings.env?.CLAUDE_MEM_OBSERVE_EVERYTHING,
-    process.env.CLAUDE_MEM_OBSERVE_EVERYTHING,
-    enabled
-  );
-
   const maxToolHistoryMB = getNumberSetting(
     settings.env?.CLAUDE_MEM_ENDLESS_MODE__MAX_TOOL_HISTORY__MB,
     process.env.CLAUDE_MEM_ENDLESS_MODE__MAX_TOOL_HISTORY__MB,
@@ -106,7 +99,6 @@ export function getConfig(): EndlessModeConfigType {
     fallbackToOriginal,
     maxLookupTime,
     keepRecentToolUses,
-    observeEverything,
     maxToolHistoryMB,
     enableSynchronousMode
   };
@@ -116,8 +108,8 @@ export function getConfig(): EndlessModeConfigType {
       fallback: fallbackToOriginal,
       maxLookupTime: `${maxLookupTime}ms`,
       keepRecent: keepRecentToolUses,
-      observeEverything,
-      maxToolHistoryMB: `${maxToolHistoryMB}MB`
+      maxToolHistoryMB: `${maxToolHistoryMB}MB`,
+      syncMode: enableSynchronousMode
     });
   } else {
     logger.debug('CONFIG', 'Endless Mode disabled');
