@@ -155,6 +155,12 @@ export class WorkerService {
     this.app.get('/api/observations', this.handleGetObservations.bind(this));
     this.app.get('/api/summaries', this.handleGetSummaries.bind(this));
     this.app.get('/api/prompts', this.handleGetPrompts.bind(this));
+
+    // Fetch by ID
+    this.app.get('/api/observation/:id', this.handleGetObservationById.bind(this));
+    this.app.get('/api/session/:id', this.handleGetSessionById.bind(this));
+    this.app.get('/api/prompt/:id', this.handleGetPromptById.bind(this));
+
     this.app.get('/api/stats', this.handleGetStats.bind(this));
     this.app.get('/api/processing-status', this.handleGetProcessingStatus.bind(this));
     this.app.post('/api/processing', this.handleSetProcessing.bind(this));
@@ -168,6 +174,14 @@ export class WorkerService {
     this.app.post('/api/mcp/toggle', this.handleToggleMcp.bind(this));
 
     // Search API endpoints (for skill-based search)
+    // Unified endpoints (new consolidated API)
+    this.app.get('/api/search', this.handleUnifiedSearch.bind(this));
+    this.app.get('/api/timeline', this.handleUnifiedTimeline.bind(this));
+    this.app.get('/api/decisions', this.handleDecisions.bind(this));
+    this.app.get('/api/changes', this.handleChanges.bind(this));
+    this.app.get('/api/how-it-works', this.handleHowItWorks.bind(this));
+
+    // Backward compatibility endpoints (use /api/search with type param instead)
     this.app.get('/api/search/observations', this.handleSearchObservations.bind(this));
     this.app.get('/api/search/sessions', this.handleSearchSessions.bind(this));
     this.app.get('/api/search/prompts', this.handleSearchPrompts.bind(this));
@@ -223,7 +237,7 @@ export class WorkerService {
     await this.dbManager.initialize();
 
     // Connect to MCP search server
-    const searchServerPath = path.join(__dirname, '..', '..', 'plugin', 'scripts', 'search-server.mjs');
+    const searchServerPath = path.join(__dirname, '..', '..', 'plugin', 'scripts', 'search-server.cjs');
     const transport = new StdioClientTransport({
       command: 'node',
       args: [searchServerPath],
@@ -660,6 +674,87 @@ export class WorkerService {
   }
 
   /**
+   * Get observation by ID
+   * GET /api/observation/:id
+   */
+  private handleGetObservationById(req: Request, res: Response): void {
+    try {
+      const id = parseInt(req.params.id, 10);
+      if (isNaN(id)) {
+        res.status(400).json({ error: 'Invalid observation ID' });
+        return;
+      }
+
+      const store = this.dbManager.getSessionStore();
+      const observation = store.getObservationById(id);
+
+      if (!observation) {
+        res.status(404).json({ error: `Observation #${id} not found` });
+        return;
+      }
+
+      res.json(observation);
+    } catch (error) {
+      logger.failure('WORKER', 'Get observation by ID failed', {}, error as Error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  }
+
+  /**
+   * Get session by ID
+   * GET /api/session/:id
+   */
+  private handleGetSessionById(req: Request, res: Response): void {
+    try {
+      const id = parseInt(req.params.id, 10);
+      if (isNaN(id)) {
+        res.status(400).json({ error: 'Invalid session ID' });
+        return;
+      }
+
+      const store = this.dbManager.getSessionStore();
+      const sessions = store.getSessionSummariesByIds([id]);
+
+      if (sessions.length === 0) {
+        res.status(404).json({ error: `Session #${id} not found` });
+        return;
+      }
+
+      res.json(sessions[0]);
+    } catch (error) {
+      logger.failure('WORKER', 'Get session by ID failed', {}, error as Error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  }
+
+  /**
+   * Get user prompt by ID
+   * GET /api/prompt/:id
+   */
+  private handleGetPromptById(req: Request, res: Response): void {
+    try {
+      const id = parseInt(req.params.id, 10);
+      if (isNaN(id)) {
+        res.status(400).json({ error: 'Invalid prompt ID' });
+        return;
+      }
+
+      const store = this.dbManager.getSessionStore();
+      const prompts = store.getUserPromptsByIds([id]);
+
+      if (prompts.length === 0) {
+        res.status(404).json({ error: `Prompt #${id} not found` });
+        return;
+      }
+
+      res.json(prompts[0]);
+    } catch (error) {
+      logger.failure('WORKER', 'Get prompt by ID failed', {}, error as Error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  }
+
+  /**
    * Get database statistics (with worker metadata)
    */
   private handleGetStats(req: Request, res: Response): void {
@@ -944,8 +1039,102 @@ export class WorkerService {
   // Search API Handlers (for skill-based search)
   // ============================================================================
 
+  // ============================================================================
+  // Unified Search API Handlers (New Consolidated API)
+  // ============================================================================
+
   /**
-   * Search observations
+   * Unified search across all memory types (observations, sessions, prompts)
+   * GET /api/search?query=...&format=index&limit=20
+   */
+  private async handleUnifiedSearch(req: Request, res: Response): Promise<void> {
+    try {
+      const result = await this.mcpClient.callTool({
+        name: 'search',
+        arguments: req.query
+      });
+      res.json(result.content);
+    } catch (error) {
+      logger.failure('WORKER', 'Unified search failed', {}, error as Error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  }
+
+  /**
+   * Unified timeline (anchor or query-based)
+   * GET /api/timeline?anchor=123 OR GET /api/timeline?query=...
+   */
+  private async handleUnifiedTimeline(req: Request, res: Response): Promise<void> {
+    try {
+      const result = await this.mcpClient.callTool({
+        name: 'timeline',
+        arguments: req.query
+      });
+      res.json(result.content);
+    } catch (error) {
+      logger.failure('WORKER', 'Unified timeline failed', {}, error as Error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  }
+
+  /**
+   * Semantic shortcut for finding decision observations
+   * GET /api/decisions?format=index&limit=20
+   */
+  private async handleDecisions(req: Request, res: Response): Promise<void> {
+    try {
+      const result = await this.mcpClient.callTool({
+        name: 'decisions',
+        arguments: req.query
+      });
+      res.json(result.content);
+    } catch (error) {
+      logger.failure('WORKER', 'Decisions search failed', {}, error as Error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  }
+
+  /**
+   * Semantic shortcut for finding change-related observations
+   * GET /api/changes?format=index&limit=20
+   */
+  private async handleChanges(req: Request, res: Response): Promise<void> {
+    try {
+      const result = await this.mcpClient.callTool({
+        name: 'changes',
+        arguments: req.query
+      });
+      res.json(result.content);
+    } catch (error) {
+      logger.failure('WORKER', 'Changes search failed', {}, error as Error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  }
+
+  /**
+   * Semantic shortcut for finding "how it works" explanations
+   * GET /api/how-it-works?format=index&limit=20
+   */
+  private async handleHowItWorks(req: Request, res: Response): Promise<void> {
+    try {
+      const result = await this.mcpClient.callTool({
+        name: 'how_it_works',
+        arguments: req.query
+      });
+      res.json(result.content);
+    } catch (error) {
+      logger.failure('WORKER', 'How it works search failed', {}, error as Error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  }
+
+  // ============================================================================
+  // Backward Compatibility API Handlers
+  // All functionality available via /api/search with type/obs_type/concepts/files params
+  // ============================================================================
+
+  /**
+   * Search observations (use /api/search?type=observations instead)
    * GET /api/search/observations?query=...&format=index&limit=20&project=...
    */
   private async handleSearchObservations(req: Request, res: Response): Promise<void> {

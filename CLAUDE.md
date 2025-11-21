@@ -10,10 +10,6 @@ Claude-mem is a Claude Code plugin providing persistent memory across sessions. 
 
 **Current Version**: 6.0.9
 
-## IMPORTANT: Skills Are Auto-Invoked
-
-**There is no `/skill` command.** Skills auto-invoke based on description metadata matching user queries. Don't document manual invocation (e.g., "Run `/skill troubleshoot`"). Instead: "The troubleshoot skill auto-activates when issues are detected."
-
 ## Critical Architecture Knowledge
 
 ### The Lifecycle Flow
@@ -25,7 +21,7 @@ Claude-mem is a Claude Code plugin providing persistent memory across sessions. 
 
 2. **UserPromptSubmit** → `new-hook.ts` runs
    - Creates session record in SQLite
-   - Saves raw user prompt for FTS5 search
+   - Saves raw user prompt for vector search
 
 3. **PostToolUse** → `save-hook.ts` runs
    - Captures your tool executions
@@ -55,20 +51,17 @@ Claude-mem is a Claude Code plugin providing persistent memory across sessions. 
 **Database** (`src/services/sqlite/`)
 - SQLite3 with better-sqlite3 (NOT bun:sqlite - that's legacy)
 - Location: `~/.claude-mem/claude-mem.db`
-- FTS5 virtual tables for full-text search
-- `SessionStore` = CRUD, `SessionSearch` = FTS5 queries
+- FTS5 virtual tables maintained for backward compatibility (not used for search)
+- `SessionStore` = CRUD, `SessionSearch` = filter-only queries
 
-**Search Skill** (`plugin/skills/mem-search/SKILL.md`)
+**Mem-Search Skill** (`plugin/skills/mem-search/SKILL.md`)
 - Provides access to all search functionality via HTTP API + skill
-- Auto-invoked when users ask about past work, decisions, or history
-- Uses HTTP endpoints instead of MCP tools (~2,250 token savings per session)
-- 10 search operations: observations, sessions, prompts, by-type, by-file, by-concept, timelines, etc.
 
 **Chroma Vector Database** (`src/services/sync/ChromaSync.ts`)
-- Hybrid semantic + keyword search architecture
+- Vector-first semantic search architecture
 - Automatic vector embedding synchronization
 - 90-day recency filtering for relevant results
-- Combined with SQLite FTS5 for optimal search performance
+- SQLite provides filter-only queries for date ranges and metadata filtering
 
 **Viewer UI** (`src/ui/viewer/`)
 - React + TypeScript web interface accessible at http://localhost:37777
@@ -187,8 +180,8 @@ When investigations fail persistently, use Task agents for comprehensive file an
 ### Why PM2 Instead of Direct Process
 Hooks have strict timeout limits. PM2 manages a persistent background worker, allowing AI processing to continue after hooks complete.
 
-### Why SQLite FTS5
-Enables instant full-text search across thousands of observations without external dependencies. Automatic sync triggers keep FTS5 tables synchronized.
+### Why Vector-First Search (ChromaDB)
+Enables semantic search that understands meaning, not just keywords. ChromaDB handles all text queries. SQLite provides filter-only queries for date ranges and metadata that vector databases can't handle efficiently. FTS5 tables exist for backward compatibility but are no longer used.
 
 ### Why Graceful Cleanup
 Changed from aggressive DELETE requests to marking sessions complete. Prevents interrupting summary generation and other async operations.
