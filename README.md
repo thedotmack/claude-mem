@@ -51,9 +51,9 @@
   Claude-Mem seamlessly preserves context across sessions by automatically capturing tool usage observations, generating semantic summaries, and making them available to future sessions. This enables Claude to maintain continuity of knowledge about projects even after sessions end or reconnect.
 </p>
 
----
 
-> **🚀 NEW: [AI Memory Economics - Full Analysis](https://thedotmack.craft.me/Zv7zBKybchfYre)**  
+
+> **🚀 NEW: [AI Memory Economics - Full Analysis](https://thedotmack.craft.me/2UnsEHuN6GQg4m)**  
 > Solving AI's compute crisis: $73.5M annual savings for 300K users  
 > 83% token reduction | 4-day ROI | 9,092% first-year return  
 > *Published: November 20, 2025*
