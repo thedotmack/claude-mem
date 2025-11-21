@@ -23,7 +23,8 @@ import { VECTOR_DB_DIR } from '../shared/paths.js';
 let search: SessionSearch;
 let store: SessionStore;
 let chromaClient: Client | null = null;
-const COLLECTION_NAME = 'cm__claude-mem';
+// Single collection for all projects, filtered by project metadata
+const COLLECTION_NAME = 'cm__all';
 
 try {
   search = new SessionSearch();
@@ -362,8 +363,14 @@ const tools = [
           try {
             console.error('[search-server] Using hybrid semantic search (Chroma + SQLite)');
 
+            // Build where filter for ChromaDB
+            const whereFilter: Record<string, any> = {};
+            if (options.project) {
+              whereFilter.project = options.project;
+            }
+
             // Step 1: Chroma semantic search (top 100)
-            const chromaResults = await queryChroma(query, 100);
+            const chromaResults = await queryChroma(query, 100, Object.keys(whereFilter).length > 0 ? whereFilter : undefined);
             console.error(`[search-server] Chroma returned ${chromaResults.ids.length} semantic matches`);
 
             if (chromaResults.ids.length > 0) {
@@ -457,8 +464,14 @@ const tools = [
           try {
             console.error('[search-server] Using hybrid semantic search for sessions');
 
+            // Build where filter for ChromaDB
+            const whereFilter: Record<string, any> = { doc_type: 'session_summary' };
+            if (options.project) {
+              whereFilter.project = options.project;
+            }
+
             // Step 1: Chroma semantic search (top 100)
-            const chromaResults = await queryChroma(query, 100, { doc_type: 'session_summary' });
+            const chromaResults = await queryChroma(query, 100, whereFilter);
             console.error(`[search-server] Chroma returned ${chromaResults.ids.length} semantic matches`);
 
             if (chromaResults.ids.length > 0) {
@@ -1023,8 +1036,14 @@ const tools = [
           try {
             console.error('[search-server] Using hybrid semantic search for user prompts');
 
+            // Build where filter for ChromaDB
+            const whereFilter: Record<string, any> = { doc_type: 'user_prompt' };
+            if (options.project) {
+              whereFilter.project = options.project;
+            }
+
             // Step 1: Chroma semantic search (top 100)
-            const chromaResults = await queryChroma(query, 100, { doc_type: 'user_prompt' });
+            const chromaResults = await queryChroma(query, 100, whereFilter);
             console.error(`[search-server] Chroma returned ${chromaResults.ids.length} semantic matches`);
 
             if (chromaResults.ids.length > 0) {
@@ -1397,7 +1416,14 @@ const tools = [
         if (chromaClient) {
           try {
             console.error('[search-server] Using hybrid semantic search for timeline query');
-            const chromaResults = await queryChroma(query, 100);
+            
+            // Build where filter for ChromaDB
+            const whereFilter: Record<string, any> = {};
+            if (project) {
+              whereFilter.project = project;
+            }
+            
+            const chromaResults = await queryChroma(query, 100, Object.keys(whereFilter).length > 0 ? whereFilter : undefined);
             console.error(`[search-server] Chroma returned ${chromaResults.ids.length} semantic matches`);
 
             if (chromaResults.ids.length > 0) {

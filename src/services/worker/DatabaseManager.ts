@@ -27,8 +27,9 @@ export class DatabaseManager {
     this.sessionStore = new SessionStore();
     this.sessionSearch = new SessionSearch();
 
-    // Initialize ChromaSync
-    this.chromaSync = new ChromaSync('claude-mem');
+    // Initialize ChromaSync with a single collection for all projects
+    // Projects are filtered via metadata, not collection names
+    this.chromaSync = new ChromaSync('all');
 
     // Start background backfill (fire-and-forget, with error logging)
     this.chromaSync.ensureBackfilled().catch((error) => {
