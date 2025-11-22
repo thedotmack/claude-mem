@@ -4,6 +4,85 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [6.2.0] - 2025-11-22
+
+## Major Features
+
+### Unified Search API (#145, #133)
+- **Vector-first search architecture**: All text queries now use ChromaDB semantic search
+- **Unified /api/search endpoint**: Single endpoint with filter parameters (type, concepts, files)
+- **ID-based fetch endpoints**: New GET /api/observation/:id, /api/session/:id, /api/prompt/:id
+- **90-day recency filter**: Automatic relevance filtering for search results
+- **Backward compatibility**: Legacy endpoints still functional, routing through unified infrastructure
+
+### Search Architecture Cleanup
+- **Removed FTS5 fallback code**: Eliminated ~300 lines of deprecated full-text search code
+- **Removed experimental contextualize endpoint**: Will be reimplemented as LLM-powered skill (see #132)
+- **Simplified mem-search skill**: Streamlined to prescriptive 3-step workflow (Search → Review IDs → Fetch by ID)
+- **Better error messages**: Clear guidance when ChromaDB/UVX unavailable
+
+## Bug Fixes
+
+### Search Improvements
+- Fixed parameter handling in searchUserPrompts method
+- Improved dual-path logic for filter-only vs text queries
+- Corrected missing debug output in search API
+
+## Documentation
+
+- Updated CLAUDE.md to reflect vector-first architecture
+- Clarified FTS5 tables maintained for backward compatibility only (removal planned for v7.0.0)
+- Enhanced mem-search skill documentation with clearer usage patterns
+- Added comprehensive test results for search functionality
+
+## Breaking Changes
+
+None - all changes maintain backward compatibility.
+
+## Installation
+
+Users with auto-update enabled will receive this update automatically. To manually update:
+
+\`\`\`bash
+# Restart Claude Code or run:
+npm run sync-marketplace
+\`\`\`
+
+## [6.1.1] - 2025-11-21
+
+## Bug Fixes
+
+### Dynamic Project Name Detection (#142)
+- Fixed hardcoded "claude-mem" project name in ChromaSync and search-server
+- Now uses `getCurrentProjectName()` to dynamically detect the project based on working directory
+- Resolves #140 where all observations were incorrectly tagged with "claude-mem"
+
+### Viewer UI Scrolling
+- Simplified overflow CSS to enable proper scrolling in viewer UI
+- Removed overcomplicated nested overflow containers
+- Fixed issue where feed content wouldn't scroll
+
+## Installation
+
+Users with auto-update enabled will receive this patch automatically. To manually update:
+
+\`\`\`bash
+# Restart Claude Code or run:
+npm run sync-marketplace
+\`\`\`
+
+## [6.1.0] - 2025-11-19
+
+## Viewer UI: Responsive Layout Improvements
+
+The viewer UI now handles narrow screens better with responsive breakpoints:
+
+- Community button relocates to sidebar below 600px width
+- Projects dropdown relocates to sidebar below 480px width
+- Sidebar constrained to 400px max width
+
+Makes the viewer usable on phones and narrow browser windows.
+
 ## [6.0.9] - 2025-11-17
 
 ## Queue Depth Indicator Feature
