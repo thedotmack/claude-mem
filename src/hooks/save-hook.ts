@@ -4,7 +4,9 @@
  */
 
 import { stdin } from 'process';
-import { readFileSync, writeFileSync, renameSync, copyFileSync } from 'fs';
+import { readFileSync, writeFileSync, renameSync, copyFileSync, existsSync, createReadStream } from 'fs';
+import { dirname, join, basename } from 'path';
+import { createInterface } from 'readline';
 import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { createHookResponse } from './hook-response.js';
 import { logger } from '../utils/logger.js';
@@ -112,16 +114,99 @@ export function formatObservationAsMarkdown(obs: Observation): string {
   return parts.join('\n');
 }
 
+/**
+ * Auto-discover agent transcript files linked to main session
+ * Parses main transcript for toolUseResult.agentId references
+ */
+async function discoverAgentFiles(mainTranscriptPath: string): Promise<string[]> {
+  const agentIds = new Set<string>();
+
+  try {
+    const fileStream = createReadStream(mainTranscriptPath);
+    const rl = createInterface({
+      input: fileStream,
+      crlfDelay: Infinity
+    });
+
+    for await (const line of rl) {
+      if (!line.includes('agentId')) continue;
+
+      try {
+        const obj = JSON.parse(line);
+
+        // Check for agentId in toolUseResult
+        if (obj.toolUseResult?.agentId) {
+          agentIds.add(obj.toolUseResult.agentId);
+        }
+      } catch (e) {
+        // Skip malformed lines
+      }
+    }
+
+    // Build agent file paths
+    const directory = dirname(mainTranscriptPath);
+    const agentFiles = Array.from(agentIds)
+      .map(id => join(directory, `agent-${id}.jsonl`))
+      .filter(filePath => existsSync(filePath));
+
+    logger.debug('HOOK', 'Discovered agent transcripts', {
+      agentCount: agentIds.size,
+      filesFound: agentFiles.length,
+      agentFiles: agentFiles.map(f => basename(f))
+    });
+
+    return agentFiles;
+  } catch (error) {
+    logger.warn('HOOK', 'Failed to discover agent files', { mainTranscriptPath }, error as Error);
+    return [];
+  }
+}
+
 // Removed: Complex recursive processToolResultContent function replaced with simple direct approach below
 
 /**
- * Transform transcript JSONL file by replacing tool results with compressed observations
+ * Transform main transcript + all linked agent transcripts
+ * Auto-discovers agent files and transforms them all
+ */
+export async function transformTranscriptWithAgents(
+  mainTranscriptPath: string,
+  toolUseId: string
+): Promise<{ originalTokens: number; compressedTokens: number }> {
+  // Discover agent files
+  const agentFiles = await discoverAgentFiles(mainTranscriptPath);
+
+  // Transform main transcript
+  const mainStats = await transformTranscript(mainTranscriptPath, toolUseId);
+
+  // Transform all agent transcripts
+  let agentOriginalTokens = 0;
+  let agentCompressedTokens = 0;
+
+  for (const agentFile of agentFiles) {
+    try {
+      const agentStats = await transformTranscript(agentFile, toolUseId);
+      agentOriginalTokens += agentStats.originalTokens;
+      agentCompressedTokens += agentStats.compressedTokens;
+    } catch (error) {
+      logger.warn('HOOK', 'Failed to transform agent transcript', { agentFile }, error as Error);
+      // Continue with other agents even if one fails
+    }
+  }
+
+  // Return combined stats
+  return {
+    originalTokens: mainStats.originalTokens + agentOriginalTokens,
+    compressedTokens: mainStats.compressedTokens + agentCompressedTokens
+  };
+}
+
+/**
+ * Transform transcript JSONL file by replacing BOTH tool inputs and outputs with compressed observations
  *
- * Simple, direct approach:
- * 1. Find user entries with tool_result items in message.content array
- * 2. For each tool_result, check if observation exists and is shorter
- * 3. Replace tool_result.content if observation is shorter
- * 4. Already-transformed entries skip automatically (observation won't be shorter)
+ * Transforms both directions:
+ * 1. Assistant entries: Replace tool_use.input with observation (if shorter)
+ * 2. User entries: Replace tool_result.content with observation (if shorter)
+ * 3. Already-transformed entries skip automatically (observation won't be shorter)
  *
  * ALWAYS creates timestamped backup before transformation for data safety
  *
@@ -159,75 +244,134 @@ export async function transformTranscript(
   // Open database connection once for all lookups
   const db = new SessionStore();
 
-  // Process each line - simple, direct approach
+  // Process each line - transform BOTH inputs and outputs
   const transformedLines = lines.map((line, i) => {
     if (!line.trim()) return line;
 
     try {
       const entry: TranscriptEntry = JSON.parse(line);
 
-      // ONLY process user entries with tool results
-      if (entry.type !== 'user' || !Array.isArray(entry.message?.content)) {
-        return line; // Return original line unchanged
+      if (!Array.isArray(entry.message?.content)) {
+        return line; // No content array to process
       }
 
       let modified = false;
 
-      // Direct access to known structure - no recursion needed
-      entry.message.content.forEach(item => {
-        if (item.type === 'tool_result') {
-          const toolResult = item as ToolResultContent;
-          const currentToolUseId = toolResult.tool_use_id;
+      // Process assistant entries (tool_use = INPUTs)
+      if (entry.type === 'assistant') {
+        const assistantEntry = entry as AssistantTranscriptEntry;
+        assistantEntry.message.content.forEach(item => {
+          if (item.type === 'tool_use') {
+            const toolUse = item as ToolUseContent;
+            if (!toolUse.id) return;
 
-          if (!currentToolUseId) return;
+            // Query database for observations
+            const observations = db.getAllObservationsForToolUseId(toolUse.id);
 
-          // Query database for observations
-          const observations = db.getAllObservationsForToolUseId(currentToolUseId);
+            if (observations.length > 0) {
+              // Measure original size
+              const originalSize = JSON.stringify(toolUse.input).length;
 
-          if (observations.length > 0) {
-            // Measure original size
-            const originalSize = JSON.stringify(toolResult.content).length;
+              // Concatenate ALL observations for this tool_use_id
+              const concatenatedObservations = observations
+                .map(obs => formatObservationAsMarkdown(obs))
+                .join('\n\n---\n\n');
+              const compressedSize = concatenatedObservations.length;
 
-            // Concatenate ALL observations for this tool_use_id
-            const concatenatedObservations = observations
-              .map(obs => formatObservationAsMarkdown(obs))
-              .join('\n\n---\n\n');
-            const compressedSize = concatenatedObservations.length;
+              // Only replace if observation is shorter
+              if (compressedSize < originalSize) {
+                // Backup original tool input BEFORE compression
+                try {
+                  appendToolOutput(toolUse.id, JSON.stringify(toolUse.input), Date.now());
+                } catch (backupError) {
+                  logger.warn('HOOK', 'Failed to backup original tool input', { toolUseId: toolUse.id }, backupError as Error);
+                }
 
-            // Only replace if observation is shorter
-            if (compressedSize < originalSize) {
-              // Backup original tool output BEFORE compression
-              try {
-                appendToolOutput(currentToolUseId, JSON.stringify(toolResult.content), Date.now());
-              } catch (backupError) {
-                logger.warn('HOOK', 'Failed to backup original tool output', { toolUseId: currentToolUseId }, backupError as Error);
+                // Replace with compressed observation
+                toolUse.input = { _compressed: concatenatedObservations };
+
+                // Track stats
+                stats.totalOriginalSize += originalSize;
+                stats.totalCompressedSize += compressedSize;
+                stats.transformCount++;
+                modified = true;
+
+                logger.success('HOOK', 'Transformed tool_use input', {
+                  toolUseId: toolUse.id,
+                  originalSize,
+                  compressedSize,
+                  savings: `${Math.round((1 - compressedSize / originalSize) * 100)}%`
+                });
+              } else {
+                logger.debug('HOOK', 'Skipped input transformation (observation not shorter)', {
+                  toolUseId: toolUse.id,
+                  originalSize,
+                  compressedSize
+                });
               }
-
-              // Replace with compressed observation
-              toolResult.content = concatenatedObservations;
-
-              // Track stats
-              stats.totalOriginalSize += originalSize;
-              stats.totalCompressedSize += compressedSize;
-              stats.transformCount++;
-              modified = true;
-
-              logger.success('HOOK', 'Transformed tool_result content', {
-                toolUseId: currentToolUseId,
-                originalSize,
-                compressedSize,
-                savings: `${Math.round((1 - compressedSize / originalSize) * 100)}%`
-              });
-            } else {
-              logger.debug('HOOK', 'Skipped transformation (observation not shorter)', {
-                toolUseId: currentToolUseId,
-                originalSize,
-                compressedSize
-              });
             }
           }
-        }
-      });
+        });
+      }
+
+      // Process user entries (tool_result = OUTPUTs)
+      if (entry.type === 'user') {
+        const userEntry = entry as UserTranscriptEntry;
+        userEntry.message.content.forEach(item => {
+          if (item.type === 'tool_result') {
+            const toolResult = item as ToolResultContent;
+            const currentToolUseId = toolResult.tool_use_id;
+
+            if (!currentToolUseId) return;
+
+            // Query database for observations
+            const observations = db.getAllObservationsForToolUseId(currentToolUseId);
+
+            if (observations.length > 0) {
+              // Measure original size
+              const originalSize = JSON.stringify(toolResult.content).length;
+
+              // Concatenate ALL observations for this tool_use_id
+              const concatenatedObservations = observations
+                .map(obs => formatObservationAsMarkdown(obs))
+                .join('\n\n---\n\n');
+              const compressedSize = concatenatedObservations.length;
+
+              // Only replace if observation is shorter
+              if (compressedSize < originalSize) {
+                // Backup original tool output BEFORE compression
+                try {
+                  appendToolOutput(currentToolUseId, JSON.stringify(toolResult.content), Date.now());
+                } catch (backupError) {
+                  logger.warn('HOOK', 'Failed to backup original tool output', { toolUseId: currentToolUseId }, backupError as Error);
+                }
+
+                // Replace with compressed observation
+                toolResult.content = concatenatedObservations;
+
+                // Track stats
+                stats.totalOriginalSize += originalSize;
+                stats.totalCompressedSize += compressedSize;
+                stats.transformCount++;
+                modified = true;
+
+                logger.success('HOOK', 'Transformed tool_result output', {
+                  toolUseId: currentToolUseId,
+                  originalSize,
+                  compressedSize,
+                  savings: `${Math.round((1 - compressedSize / originalSize) * 100)}%`
+                });
+              } else {
+                logger.debug('HOOK', 'Skipped output transformation (observation not shorter)', {
+                  toolUseId: currentToolUseId,
+                  originalSize,
+                  compressedSize
+                });
+              }
+            }
+          }
+        });
+      }
 
       // Return modified JSON or original line
       return modified ? JSON.stringify(entry) : line;

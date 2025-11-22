@@ -6,14 +6,49 @@ import path from 'path';
 
 // Configuration
 const JSONL_PATH = '/Users/alexnewman/.claude/projects/-Users-alexnewman-Scripts-DuhPaper/f11b0170-6157-4324-a479-66c35686eb69.jsonl';
-const AGENT_FILES = [
-  '/Users/alexnewman/.claude/projects/-Users-alexnewman-Scripts-DuhPaper/agent-f50e2819.jsonl'
-];
 const OUTPUT_JSON = '/tmp/tool-use-analysis.json';
 const OUTPUT_REPORT = '/tmp/tool-use-report.txt';
 
 // Regex pattern for toolu_ IDs
 const TOOLU_PATTERN = /toolu_[a-zA-Z0-9]{24}/g;
+
+// Auto-discover agent transcripts linked to main session
+async function discoverAgentFiles(mainTranscriptPath) {
+  console.log('Discovering linked agent transcripts...');
+
+  const agentIds = new Set();
+  const fileStream = fs.createReadStream(mainTranscriptPath);
+  const rl = readline.createInterface({
+    input: fileStream,
+    crlfDelay: Infinity
+  });
+
+  for await (const line of rl) {
+    if (!line.includes('agentId')) continue;
+
+    try {
+      const obj = JSON.parse(line);
+
+      // Check for agentId in toolUseResult
+      if (obj.toolUseResult?.agentId) {
+        agentIds.add(obj.toolUseResult.agentId);
+      }
+    } catch (e) {
+      // Skip malformed lines
+    }
+  }
+
+  // Build agent file paths
+  const directory = path.dirname(mainTranscriptPath);
+  const agentFiles = Array.from(agentIds).map(id =>
+    path.join(directory, `agent-${id}.jsonl`)
+  ).filter(filePath => fs.existsSync(filePath));
+
+  console.log(`  → Found ${agentIds.size} agent IDs`);
+  console.log(`  → ${agentFiles.length} agent files exist on disk\n`);
+
+  return agentFiles;
+}
 
 // Analysis data structure
 const analysis = {
@@ -170,14 +205,16 @@ async function processAllFiles() {
   console.log('='.repeat(80));
   console.log();
 
+  // Auto-discover agent files
+  const agentFiles = await discoverAgentFiles(JSONL_PATH);
+
   // Process main transcript
   await processFile(JSONL_PATH, 'Main transcript');
 
-  // Process agent files
-  for (const agentFile of AGENT_FILES) {
-    if (fs.existsSync(agentFile)) {
-      await processFile(agentFile, 'Agent transcript');
-    }
+  // Process discovered agent files
+  for (const agentFile of agentFiles) {
+    const filename = path.basename(agentFile);
+    await processFile(agentFile, `Agent transcript (${filename})`);
   }
 
   console.log('\nProcessing complete!\n');

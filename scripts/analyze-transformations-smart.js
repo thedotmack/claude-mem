@@ -3,13 +3,11 @@
 import fs from 'fs';
 import Database from 'better-sqlite3';
 import readline from 'readline';
+import path from 'path';
 
 // Configuration
 const ANALYSIS_JSON = '/tmp/tool-use-analysis.json';
-const JSONL_PATH = '/Users/alexnewman/.claude/projects/-Users-alexnewman-Scripts-DuhPaper/f11b0170-6157-4324-a479-66c35686eb69.jsonl';
-const AGENT_FILES = [
-  '/Users/alexnewman/.claude/projects/-Users-alexnewman-Scripts-DuhPaper/agent-f50e2819.jsonl'
-];
+const JSONL_PATH = '/Users/alexnewman/.claude/projects/-Users-alexnewman-Scripts-claude-mem/94794a70-174d-47d1-aef5-dfed2872fd39.jsonl';
 const DB_PATH = '/Users/alexnewman/.claude-mem/claude-mem.db';
 
 // Load analysis data to get tool use IDs
@@ -20,6 +18,44 @@ console.log(`Found ${toolUseIds.length} unique tool use IDs\n`);
 
 // Map to store original content from transcript (both inputs and outputs)
 const originalContent = new Map();
+
+// Auto-discover agent transcripts linked to main session
+async function discoverAgentFiles(mainTranscriptPath) {
+  console.log('Discovering linked agent transcripts...');
+
+  const agentIds = new Set();
+  const fileStream = fs.createReadStream(mainTranscriptPath);
+  const rl = readline.createInterface({
+    input: fileStream,
+    crlfDelay: Infinity
+  });
+
+  for await (const line of rl) {
+    if (!line.includes('agentId')) continue;
+
+    try {
+      const obj = JSON.parse(line);
+
+      // Check for agentId in toolUseResult
+      if (obj.toolUseResult?.agentId) {
+        agentIds.add(obj.toolUseResult.agentId);
+      }
+    } catch (e) {
+      // Skip malformed lines
+    }
+  }
+
+  // Build agent file paths
+  const directory = path.dirname(mainTranscriptPath);
+  const agentFiles = Array.from(agentIds).map(id =>
+    path.join(directory, `agent-${id}.jsonl`)
+  ).filter(filePath => fs.existsSync(filePath));
+
+  console.log(`  → Found ${agentIds.size} agent IDs`);
+  console.log(`  → ${agentFiles.length} agent files exist on disk\n`);
+
+  return agentFiles;
+}
 
 // Parse transcript to get BOTH tool_use (inputs) and tool_result (outputs) content
 async function loadOriginalContentFromFile(filePath, fileLabel) {
@@ -70,14 +106,16 @@ async function loadOriginalContentFromFile(filePath, fileLabel) {
 async function loadOriginalContent() {
   console.log('Loading original content from transcripts...');
 
+  // Auto-discover agent files
+  const agentFiles = await discoverAgentFiles(JSONL_PATH);
+
   // Load from main transcript
   await loadOriginalContentFromFile(JSONL_PATH, 'main transcript');
 
-  // Load from agent files
-  for (const agentFile of AGENT_FILES) {
-    if (fs.existsSync(agentFile)) {
-      await loadOriginalContentFromFile(agentFile, `agent transcript (${agentFile.split('/').pop()})`);
-    }
+  // Load from discovered agent files
+  for (const agentFile of agentFiles) {
+    const filename = path.basename(agentFile);
+    await loadOriginalContentFromFile(agentFile, `agent transcript (${filename})`);
   }
 
   console.log(`\nTotal: Loaded original content for ${originalContent.size} tool uses (inputs + outputs)\n`);
