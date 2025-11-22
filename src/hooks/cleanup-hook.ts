@@ -6,6 +6,7 @@
 import { stdin } from 'process';
 import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { getWorkerPort } from '../shared/worker-utils.js';
+import { silentDebug } from '../utils/silent-debug.js';
 
 export interface SessionEndInput {
   session_id: string;
@@ -72,7 +73,7 @@ async function cleanupHook(input?: SessionEndInput): Promise<void> {
 
   // Tell worker to stop spinner
   try {
-    const workerPort = session.worker_port || getWorkerPort();
+    const workerPort = session.worker_port || silentDebug('cleanup-hook: session.worker_port is null', { sessionId: session.id }, getWorkerPort());
     await fetch(`http://127.0.0.1:${workerPort}/sessions/${session.id}/complete`, {
       method: 'POST',
       signal: AbortSignal.timeout(1000)

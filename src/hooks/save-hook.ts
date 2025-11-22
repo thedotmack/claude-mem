@@ -112,12 +112,16 @@ export function formatObservationAsMarkdown(obs: Observation): string {
   return parts.join('\n');
 }
 
+// Removed: Complex recursive processToolResultContent function replaced with simple direct approach below
+
 /**
- * Transform transcript JSONL file by replacing tool result with compressed observations
- * Phase 2 of Endless Mode implementation
+ * Transform transcript JSONL file by replacing tool results with compressed observations
  *
- * Queries database for ALL observations matching the tool_use_id and concatenates them.
- * Multiple observations can exist per tool_use_id - all are included in the transformation.
+ * Simple, direct approach:
+ * 1. Find user entries with tool_result items in message.content array
+ * 2. For each tool_result, check if observation exists and is shorter
+ * 3. Replace tool_result.content if observation is shorter
+ * 4. Already-transformed entries skip automatically (observation won't be shorter)
  *
  * ALWAYS creates timestamped backup before transformation for data safety
  *
@@ -127,20 +131,6 @@ export async function transformTranscript(
   transcriptPath: string,
   toolUseId: string
 ): Promise<{ originalTokens: number; compressedTokens: number }> {
-  // Query database for ALL observations with this tool_use_id
-  const db = new SessionStore();
-  const observations = db.getAllObservationsForToolUseId(toolUseId);
-  db.close();
-
-  if (observations.length === 0) {
-    logger.warn('HOOK', 'No observations found for tool_use_id', { toolUseId });
-    return { originalTokens: 0, compressedTokens: 0 };
-  }
-
-  logger.debug('HOOK', 'Found observations for concatenation', {
-    toolUseId,
-    count: observations.length
-  });
   // ALWAYS create backup before transformation
   try {
     ensureDir(BACKUPS_DIR);
@@ -159,75 +149,88 @@ export async function transformTranscript(
   const transcriptContent = readFileSync(transcriptPath, 'utf-8');
   const lines = transcriptContent.trim().split('\n');
 
-  // Track transformation
-  let found = false;
-  let originalSize = 0;
-  let compressedSize = 0;
+  // Track transformation stats
+  const stats = {
+    totalOriginalSize: 0,
+    totalCompressedSize: 0,
+    transformCount: 0
+  };
 
-  // Process each line
-  // NOTE: This intentionally processes ALL lines and replaces ALL matches.
-  // When multiple observations exist in the database for the same tool_use_id,
-  // they are concatenated together before replacing the tool_use input.
-  // This ensures all observations are included in the compressed transformation.
+  // Open database connection once for all lookups
+  const db = new SessionStore();
+
+  // Process each line - simple, direct approach
   const transformedLines = lines.map((line, i) => {
     if (!line.trim()) return line;
 
     try {
       const entry: TranscriptEntry = JSON.parse(line);
 
-      // Look for assistant messages with tool_use content (these have the large inputs)
-      if (entry.type === 'assistant') {
-        const assistantEntry = entry as AssistantTranscriptEntry;
-        const content = assistantEntry.message.content;
+      // ONLY process user entries with tool results
+      if (entry.type !== 'user' || !Array.isArray(entry.message?.content)) {
+        return line; // Return original line unchanged
+      }
 
-        // Check if content is an array
-        if (Array.isArray(content)) {
-          // Find and replace matching tool_use
-          for (let j = 0; j < content.length; j++) {
-            const item = content[j];
-            if (item.type === 'tool_use') {
-              const toolUse = item as any; // ToolUseContent type
-              if (toolUse.id === toolUseId) {
-                found = true;
+      let modified = false;
 
-                // Backup original tool input BEFORE compression (for restoration if user disables Endless Mode)
-                try {
-                  appendToolOutput(toolUseId, JSON.stringify(toolUse.input), Date.now());
-                  logger.debug('HOOK', 'Backed up original tool input', { toolUseId });
-                } catch (backupError) {
-                  logger.warn('HOOK', 'Failed to backup original tool input', { toolUseId }, backupError as Error);
-                  // Continue anyway - backup failure shouldn't block compression
-                }
+      // Direct access to known structure - no recursion needed
+      entry.message.content.forEach(item => {
+        if (item.type === 'tool_result') {
+          const toolResult = item as ToolResultContent;
+          const currentToolUseId = toolResult.tool_use_id;
 
-                // Measure original size
-                originalSize = JSON.stringify(toolUse.input).length;
+          if (!currentToolUseId) return;
 
-                // Concatenate ALL observations for this tool_use_id
-                const concatenatedObservations = observations
-                  .map(obs => formatObservationAsMarkdown(obs))
-                  .join('\n\n---\n\n');
-                compressedSize = concatenatedObservations.length;
+          // Query database for observations
+          const observations = db.getAllObservationsForToolUseId(currentToolUseId);
 
-                // Replace the entire input with references to all observations
-                toolUse.input = {
-                  _observation_refs: observations.map(obs => obs.id),
-                  _observation_count: observations.length,
-                  _note: `Original input compressed - ${observations.length} observation(s) for details`
-                };
+          if (observations.length > 0) {
+            // Measure original size
+            const originalSize = JSON.stringify(toolResult.content).length;
 
-                logger.success('HOOK', 'Transformed tool_use input', {
-                  toolUseId,
-                  originalSize,
-                  compressedSize,
-                  savings: `${Math.round((1 - compressedSize / originalSize) * 100)}%`
-                });
+            // Concatenate ALL observations for this tool_use_id
+            const concatenatedObservations = observations
+              .map(obs => formatObservationAsMarkdown(obs))
+              .join('\n\n---\n\n');
+            const compressedSize = concatenatedObservations.length;
+
+            // Only replace if observation is shorter
+            if (compressedSize < originalSize) {
+              // Backup original tool output BEFORE compression
+              try {
+                appendToolOutput(currentToolUseId, JSON.stringify(toolResult.content), Date.now());
+              } catch (backupError) {
+                logger.warn('HOOK', 'Failed to backup original tool output', { toolUseId: currentToolUseId }, backupError as Error);
               }
+
+              // Replace with compressed observation
+              toolResult.content = concatenatedObservations;
+
+              // Track stats
+              stats.totalOriginalSize += originalSize;
+              stats.totalCompressedSize += compressedSize;
+              stats.transformCount++;
+              modified = true;
+
+              logger.success('HOOK', 'Transformed tool_result content', {
+                toolUseId: currentToolUseId,
+                originalSize,
+                compressedSize,
+                savings: `${Math.round((1 - compressedSize / originalSize) * 100)}%`
+              });
+            } else {
+              logger.debug('HOOK', 'Skipped transformation (observation not shorter)', {
+                toolUseId: currentToolUseId,
+                originalSize,
+                compressedSize
+              });
             }
           }
         }
-      }
+      });
 
-      return JSON.stringify(entry);
+      // Return modified JSON or original line
+      return modified ? JSON.stringify(entry) : line;
     } catch (parseError: any) {
       logger.warn('HOOK', 'Malformed JSONL line in transcript', {
         lineIndex: i,
@@ -237,10 +240,8 @@ export async function transformTranscript(
     }
   });
 
-  if (!found) {
-    logger.warn('HOOK', 'Tool result not found in transcript', { toolUseId });
-    return { originalTokens: 0, compressedTokens: 0 };
-  }
+  // Close database connection
+  db.close();
 
   // Write to temp file
   const tempPath = `${transcriptPath}.tmp`;
@@ -260,14 +261,15 @@ export async function transformTranscript(
 
   // Convert character counts to approximate token counts (1 token ≈ 4 chars)
   const CHARS_PER_TOKEN = 4;
-  const originalTokens = Math.ceil(originalSize / CHARS_PER_TOKEN);
-  const compressedTokens = Math.ceil(compressedSize / CHARS_PER_TOKEN);
+  const originalTokens = Math.ceil(stats.totalOriginalSize / CHARS_PER_TOKEN);
+  const compressedTokens = Math.ceil(stats.totalCompressedSize / CHARS_PER_TOKEN);
 
   logger.success('HOOK', 'Transcript transformation complete', {
     toolUseId,
-    originalSize,
-    compressedSize,
-    savings: `${Math.round((1 - compressedSize / originalSize) * 100)}%`
+    transformCount: stats.transformCount,
+    totalOriginalSize: stats.totalOriginalSize,
+    totalCompressedSize: stats.totalCompressedSize,
+    savings: stats.totalOriginalSize > 0 ? `${Math.round((1 - stats.totalCompressedSize / stats.totalOriginalSize) * 100)}%` : '0%'
   });
 
   // Trim backup file to stay under size limit
@@ -308,8 +310,8 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
   const db = new SessionStore();
 
   // Get or create session
-  const sessionDbId = db.createSDKSession(session_id, '', '');
-  const promptNumber = db.getPromptCounter(sessionDbId);
+  const session_id__from_hook = session_id;
+  const promptNumber = db.getPromptCounter(session_id__from_hook);
   db.close();
 
   const toolStr = logger.formatTool(tool_name, tool_input);
@@ -341,14 +343,14 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
   }
 
   logger.dataIn('HOOK', `PostToolUse: ${toolStr}`, {
-    sessionId: sessionDbId,
+    sessionId: session_id__from_hook,
     workerPort: port,
     toolUseId: extractedToolUseId || silentDebug('tool_use_id not found in transcript', { toolName: tool_name }, '(none)')
   });
 
   // Phase 3: Check if Endless Mode is enabled
   const endlessModeConfig = EndlessModeConfig.getConfig();
-  const isEndlessModeEnabled = endlessModeConfig.enabled && extractedToolUseId && transcript_path;
+  const isEndlessModeEnabled = !!(endlessModeConfig.enabled && extractedToolUseId && transcript_path);
 
   // Debug logging for endless mode conditions AND all input fields
   silentDebug('Endless Mode Check', {
@@ -362,16 +364,10 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
   });
 
   try {
-    // Build endpoint URL with conditional query parameter
-    const endpoint = isEndlessModeEnabled
-      ? `http://127.0.0.1:${port}/sessions/${sessionDbId}/observations?wait_until_obs_is_saved=true`
-      : `http://127.0.0.1:${port}/sessions/${sessionDbId}/observations`;
-
-    // Set timeout based on mode (30s for Endless Mode sync, 2s for async)
-    // ANY response from worker means transcript has new data for replacement
+    // Set timeout: 30s for Endless Mode (wait for processing), 2s for async
     const timeoutMs = isEndlessModeEnabled ? 30000 : 2000;
 
-    const response = await fetch(endpoint, {
+    const response = await fetch(`http://127.0.0.1:${port}/sessions/${session_id__from_hook}/observations?wait_until_obs_is_saved=${isEndlessModeEnabled}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -379,8 +375,9 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
         tool_input: tool_input !== undefined ? JSON.stringify(tool_input) : '{}',
         tool_response: tool_response !== undefined ? JSON.stringify(tool_response) : '{}',
         prompt_number: promptNumber,
-        cwd: cwd || '',
-        tool_use_id: extractedToolUseId
+        cwd: cwd || silentDebug('save-hook: cwd missing', { session_id__from_hook, tool_name }),
+        tool_use_id: extractedToolUseId,
+        transcript_path: transcript_path || silentDebug('save-hook: transcript_path missing', { session_id__from_hook, tool_name })
       }),
       signal: AbortSignal.timeout(timeoutMs)
     });
@@ -388,7 +385,7 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
     if (!response.ok) {
       const errorText = await response.text();
       logger.failure('HOOK', 'Failed to send observation', {
-        sessionId: sessionDbId,
+        sessionId: session_id__from_hook,
         status: response.status
       }, errorText);
       // Continue anyway - observation failed but don't block the hook
@@ -396,61 +393,16 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
       return;
     }
 
-    const result = await response.json() as ObservationEndpointResponse;
-
-    // Endless Mode: ANY response (completed, timeout, queued, etc.) means worker has data
-    // The response itself indicates transcript has new compressed content for replacement
-    if (isEndlessModeEnabled) {
-      if (result.status === 'completed' && result.observation) {
-        logger.success('HOOK', 'Observation ready, transforming transcript', {
-          sessionId: sessionDbId,
-          toolUseId: extractedToolUseId,
-          processingTimeMs: result.processing_time_ms
-        });
-
-        try {
-          const stats = await transformTranscript(transcript_path, extractedToolUseId);
-
-          // Update Endless Mode stats in database
-          if (stats.originalTokens > 0) {
-            const statsDb = new SessionStore();
-            statsDb.incrementEndlessModeStats(session_id, stats.originalTokens, stats.compressedTokens);
-            statsDb.close();
-          }
-        } catch (transformError: any) {
-          logger.failure('HOOK', 'Transcript transformation failed', {
-            sessionId: sessionDbId,
-            toolUseId: extractedToolUseId
-          }, transformError);
-          // Continue anyway - observation is saved, just not compressed in transcript
-        }
-      } else if (result.status === 'timeout') {
-        logger.warn('HOOK', 'Endless Mode timeout - using full output', {
-          sessionId: sessionDbId,
-          toolUseId: extractedToolUseId,
-          processingTimeMs: result.processing_time_ms,
-          message: result.message
-        });
-        // Fall back to async behavior - observation will complete in background
-      } else {
-        // Handle any other status (queued, error, unexpected response, etc.)
-        logger.debug('HOOK', 'Endless Mode received non-standard response - continuing', {
-          sessionId: sessionDbId,
-          toolUseId: extractedToolUseId,
-          status: result.status || 'unknown'
-        });
-        // Continue anyway - LLM may not always respond as expected
-      }
-    } else {
-      logger.debug('HOOK', 'Observation sent successfully (async mode)', {
-        sessionId: sessionDbId,
-        toolName: tool_name
-      });
-    }
+    // Transformation now happens in the worker service after observation is saved
+    logger.debug('HOOK', 'Observation sent successfully', {
+      sessionId: session_id__from_hook,
+      toolName: tool_name,
+      mode: isEndlessModeEnabled ? 'synchronous (Endless Mode)' : 'async'
+    });
   } catch (error: any) {
     // Worker connection errors - suggest restart
     if (error.cause?.code === 'ECONNREFUSED') {
-      logger.failure('HOOK', 'Worker connection refused', { sessionId: sessionDbId }, error);
+      logger.failure('HOOK', 'Worker connection refused', { sessionId: session_id__from_hook }, error);
       console.log(createHookResponse('PostToolUse', true, "Worker connection failed. Try: pm2 restart claude-mem-worker"));
       return;
     }
@@ -458,7 +410,7 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
     // Timeout errors - just continue (observation will complete in background)
     if (error.name === 'TimeoutError' || error.message?.includes('timed out')) {
       logger.warn('HOOK', 'Observation request timed out - continuing', {
-        sessionId: sessionDbId,
+        sessionId: session_id__from_hook,
         toolName: tool_name
       });
       console.log(createHookResponse('PostToolUse', true));
@@ -467,7 +419,7 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
 
     // All other errors - log and continue (never block the hook)
     logger.warn('HOOK', 'Observation request failed - continuing anyway', {
-      sessionId: sessionDbId,
+      sessionId: session_id__from_hook,
       toolName: tool_name,
       error: error.message
     });

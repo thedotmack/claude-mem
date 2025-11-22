@@ -14,6 +14,7 @@
 import { readFileSync, writeFileSync, renameSync, unlinkSync, existsSync } from 'fs';
 import { logger } from '../utils/logger.js';
 import { appendToolOutput, trimBackupFile } from '../shared/tool-output-backup.js';
+import { silentDebug } from '../utils/silent-debug.js';
 import type { TranscriptEntry, UserTranscriptEntry, ToolResultContent } from '../types/transcript.js';
 import type { Observation } from './worker-types.js';
 
@@ -109,7 +110,7 @@ export class TranscriptTransformer {
     }
 
     // Write to output path or original path
-    const writePath = outputPath || this.transcriptPath;
+    const writePath = outputPath || silentDebug('transcript-transformer: outputPath is null', { transcriptPath: this.transcriptPath }, this.transcriptPath);
     writeFileSync(writePath, lines.join('\n'));
 
     // Convert character counts to approximate token counts

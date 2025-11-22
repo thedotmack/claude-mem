@@ -1,3 +1,5 @@
+import { silentDebug } from '../utils/silent-debug.js';
+
 export type HookType = 'PreCompact' | 'SessionStart' | 'UserPromptSubmit' | 'PostToolUse' | 'Stop' | string;
 
 export interface HookResponseOptions {
@@ -30,7 +32,7 @@ function buildHookResponse(
 
     return {
       continue: false,
-      stopReason: options.reason || 'Pre-compact operation failed',
+      stopReason: options.reason || silentDebug('hook-response: options.reason is null', {}, 'Pre-compact operation failed'),
       suppressOutput: true
     };
   }

@@ -9,6 +9,7 @@ import { existsSync, readFileSync } from 'fs';
 import { stdin } from 'process';
 import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { EndlessModeConfig } from '../services/worker/EndlessModeConfig.js';
+import { silentDebug } from '../utils/silent-debug.js';
 
 /**
  * Get context depth from settings
@@ -29,7 +30,7 @@ function getContextDepth(): number {
   } catch {
     // Fall through to env var or default
   }
-  return parseInt(process.env.CLAUDE_MEM_CONTEXT_OBSERVATIONS || '50', 10);
+  return parseInt(process.env.CLAUDE_MEM_CONTEXT_OBSERVATIONS || silentDebug('context-hook: CLAUDE_MEM_CONTEXT_OBSERVATIONS not set', {}, '50'), 10);
 }
 
 // Configuration: Read from settings.json or environment
@@ -257,13 +258,13 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
     const totalObservations = observations.length;
     const totalReadTokens = observations.reduce((sum, obs) => {
       // Estimate read tokens from observation size
-      const obsSize = (obs.title?.length || 0) +
-                      (obs.subtitle?.length || 0) +
-                      (obs.narrative?.length || 0) +
-                      JSON.stringify(obs.facts || []).length;
+      const obsSize = (obs.title?.length || silentDebug('context-hook: obs.title.length is null', { obsId: obs.id }, 0)) +
+                      (obs.subtitle?.length || silentDebug('context-hook: obs.subtitle.length is null', { obsId: obs.id }, 0)) +
+                      (obs.narrative?.length || silentDebug('context-hook: obs.narrative.length is null', { obsId: obs.id }, 0)) +
+                      JSON.stringify(obs.facts || silentDebug('context-hook: obs.facts is null', { obsId: obs.id }, [])).length;
       return sum + Math.ceil(obsSize / CHARS_PER_TOKEN_ESTIMATE);
     }, 0);
-    const totalDiscoveryTokens = observations.reduce((sum, obs) => sum + (obs.discovery_tokens || 0), 0);
+    const totalDiscoveryTokens = observations.reduce((sum, obs) => sum + (obs.discovery_tokens || silentDebug('context-hook: obs.discovery_tokens is null', { obsId: obs.id }, 0)), 0);
     const savings = totalDiscoveryTokens - totalReadTokens;
     const savingsPercent = totalDiscoveryTokens > 0
       ? Math.round((savings / totalDiscoveryTokens) * 100)
@@ -374,7 +375,7 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
 
           // Render summary
           const summary = item.data;
-          const summaryTitle = `${summary.request || 'Session started'} (${formatDateTime(summary.displayTime)})`;
+          const summaryTitle = `${summary.request || silentDebug('context-hook: summary.request is null', { summaryId: summary.id }, 'Session started')} (${formatDateTime(summary.displayTime)})`;
           const link = summary.shouldShowLink ? `claude-mem://session-summary/${summary.id}` : '';
 
           if (useColors) {
@@ -417,7 +418,7 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
           }
 
           const time = formatTime(obs.created_at);
-          const title = obs.title || 'Untitled';
+          const title = obs.title || silentDebug('context-hook: obs.title is null', { obsId: obs.id }, 'Untitled');
 
           // Map observation type to emoji icon
           let icon = '•';
@@ -445,14 +446,14 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
           }
 
           // Section 2: Calculate read tokens (estimate from observation size)
-          const obsSize = (obs.title?.length || 0) +
-                          (obs.subtitle?.length || 0) +
-                          (obs.narrative?.length || 0) +
-                          JSON.stringify(obs.facts || []).length;
+          const obsSize = (obs.title?.length || silentDebug('context-hook: obs.title.length is null (timeline)', { obsId: obs.id }, 0)) +
+                          (obs.subtitle?.length || silentDebug('context-hook: obs.subtitle.length is null (timeline)', { obsId: obs.id }, 0)) +
+                          (obs.narrative?.length || silentDebug('context-hook: obs.narrative.length is null (timeline)', { obsId: obs.id }, 0)) +
+                          JSON.stringify(obs.facts || silentDebug('context-hook: obs.facts is null (timeline)', { obsId: obs.id }, [])).length;
           const readTokens = Math.ceil(obsSize / CHARS_PER_TOKEN_ESTIMATE);
 
           // Get discovery tokens (handle old observations without this field)
-          const discoveryTokens = obs.discovery_tokens || 0;
+          const discoveryTokens = obs.discovery_tokens || silentDebug('context-hook: obs.discovery_tokens is null (timeline)', { obsId: obs.id }, 0);
 
           // Map observation type to work emoji
           let workEmoji = '🔍'; // default to research/discovery
@@ -483,7 +484,7 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
             const discoveryPart = discoveryTokens > 0 ? `${colors.dim}(${workEmoji} ${discoveryTokens.toLocaleString()}t)${colors.reset}` : '';
             output.push(`  ${colors.dim}#${obs.id}${colors.reset}  ${timePart}  ${icon}  ${title} ${readPart} ${discoveryPart}`);
           } else {
-            output.push(`| #${obs.id} | ${timeDisplay || '″'} | ${icon} | ${title} | ~${readTokens} | ${discoveryDisplay} |`);
+            output.push(`| #${obs.id} | ${timeDisplay || silentDebug('context-hook: timeDisplay is null', { obsId: obs.id }, '″')} | ${icon} | ${title} | ~${readTokens} | ${discoveryDisplay} |`);
           }
         }
       }

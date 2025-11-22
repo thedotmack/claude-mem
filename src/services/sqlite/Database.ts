@@ -1,5 +1,6 @@
 import { Database as BunDatabase } from 'bun:sqlite';
 import { DATA_DIR, DB_PATH, ensureDir } from '../../shared/paths.js';
+import { silentDebug } from '../../utils/silent-debug.js';
 
 // Type alias for better-sqlite3 compatibility
 type Database = BunDatabase;
@@ -149,7 +150,7 @@ export class DatabaseManager {
     const query = this.db.query('SELECT MAX(version) as version FROM schema_versions');
     const result = query.get() as { version: number } | undefined;
 
-    return result?.version || 0;
+    return result?.version || silentDebug('Database.getCurrentVersion: version is null', {}, 0);
   }
 }
 

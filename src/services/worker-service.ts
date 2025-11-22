@@ -19,6 +19,7 @@ import { homedir } from 'os';
 import { getPackageRoot } from '../shared/paths.js';
 import { getWorkerPort } from '../shared/worker-utils.js';
 import { logger } from '../utils/logger.js';
+import { silentDebug } from '../utils/silent-debug.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
@@ -31,6 +32,7 @@ import { PaginationHelper } from './worker/PaginationHelper.js';
 import { SettingsManager } from './worker/SettingsManager.js';
 import { SKIP_TOOLS } from '../shared/skip-tools.js';
 import { getConfig as getEndlessModeConfig } from './worker/EndlessModeConfig.js';
+import { transformTranscript } from '../hooks/save-hook.js';
 
 export class WorkerService {
   private app: express.Application;
@@ -122,7 +124,7 @@ export class WorkerService {
 
     // Observations
     if (path.includes('/observations')) {
-      const toolName = body.tool_name || '?';
+      const toolName = body.tool_name || silentDebug('worker-service.logRequest: body.tool_name is null', {}, '?');
       const toolInput = body.tool_input;
       const toolSummary = logger.formatTool(toolName, toolInput);
       return `tool=${toolSummary}`;
@@ -350,7 +352,7 @@ export class WorkerService {
       const watch = req.query.watch === 'true';
 
       // Auto-detect current session if no path provided
-      const transcriptPath = filePath || this.findCurrentTranscript();
+      const transcriptPath = filePath || silentDebug('worker-service.handleTranscriptViewer: filePath is null', {}, this.findCurrentTranscript());
 
       if (!transcriptPath) {
         res.status(400).json({ error: 'No transcript file found. Please provide a path or start a Claude Code session.' });
@@ -445,7 +447,7 @@ export class WorkerService {
         }
       }
 
-      return mostRecent?.path || null;
+      return mostRecent?.path || silentDebug('worker-service.findCurrentTranscript: No recent transcript found', {}, null);
     } catch (error) {
       logger.failure('WORKER', 'Find current transcript error', {}, error as Error);
       return null;
@@ -594,7 +596,8 @@ export class WorkerService {
     session: any,
     toolUseId: string,
     sessionDbId: number,
-    res: Response
+    res: Response,
+    transcriptPath?: string
   ): Promise<void> {
     const TIMEOUT_MS = 30000; // 30 seconds
     const startTime = Date.now();
@@ -652,6 +655,15 @@ export class WorkerService {
         processingTimeMs
       });
 
+      // ALWAYS TRANSFORM - just fucking do it, let it fail loud
+      logger.info('WORKER', '🔄 RUNNING TRANSFORM NOW', { transcriptPath, toolUseId });
+      const transformStats = await transformTranscript(transcriptPath, toolUseId);
+      logger.info('WORKER', '✅ Transcript transformed', {
+        sessionId: sessionDbId,
+        toolUseId,
+        ...transformStats
+      });
+
       res.json({
         status: 'completed',
         observation,
@@ -685,8 +697,16 @@ export class WorkerService {
   private async handleObservations(req: Request, res: Response): Promise<void> {
     try {
       const sessionDbId = parseInt(req.params.sessionDbId, 10);
-      const { tool_name, tool_input, tool_response, prompt_number, cwd, tool_use_id } = req.body;
+      const { tool_name, tool_input, tool_response, prompt_number, cwd, tool_use_id, transcript_path } = req.body;
       const wait_until_obs_is_saved = req.query.wait_until_obs_is_saved === 'true';
+
+      logger.info('HTTP', 'handleObservations called', {
+        sessionDbId,
+        tool_name,
+        tool_use_id,
+        transcript_path,
+        wait_until_obs_is_saved
+      });
 
       // Early exit for skipped tools - no need to wait or call Claude API
       if (SKIP_TOOLS.has(tool_name)) {
@@ -740,7 +760,7 @@ export class WorkerService {
       // Endless Mode: Synchronous mode - wait for observation to be created
       const config = getEndlessModeConfig();
       if (config.enableSynchronousMode && wait_until_obs_is_saved && tool_use_id && session) {
-        await this.waitForObservation(session, tool_use_id, sessionDbId, res);
+        await this.waitForObservation(session, tool_use_id, sessionDbId, res, transcript_path);
       } else {
         // Async mode (default behavior)
         res.json({ status: 'queued' });
@@ -1062,7 +1082,7 @@ export class WorkerService {
       if (!existsSync(settingsPath)) {
         // Return defaults if file doesn't exist
         res.json({
-          CLAUDE_MEM_MODEL: 'claude-haiku-4-5',
+          CLAUDE_MEM_MODEL: 'claude-sonnet-4-5',
           CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
           CLAUDE_MEM_WORKER_PORT: '37777'
         });
@@ -1071,12 +1091,12 @@ export class WorkerService {
 
       const settingsData = readFileSync(settingsPath, 'utf-8');
       const settings = JSON.parse(settingsData);
-      const env = settings.env || {};
+      const env = settings.env || silentDebug('worker-service.handleGetSettings: settings.env is missing', { settingsPath }, {});
 
       res.json({
-        CLAUDE_MEM_MODEL: env.CLAUDE_MEM_MODEL || 'claude-haiku-4-5',
-        CLAUDE_MEM_CONTEXT_OBSERVATIONS: env.CLAUDE_MEM_CONTEXT_OBSERVATIONS || '50',
-        CLAUDE_MEM_WORKER_PORT: env.CLAUDE_MEM_WORKER_PORT || '37777'
+        CLAUDE_MEM_MODEL: env.CLAUDE_MEM_MODEL || silentDebug('worker-service.handleGetSettings: env.CLAUDE_MEM_MODEL is null', {}, 'claude-sonnet-4-5'),
+        CLAUDE_MEM_CONTEXT_OBSERVATIONS: env.CLAUDE_MEM_CONTEXT_OBSERVATIONS || silentDebug('worker-service.handleGetSettings: env.CLAUDE_MEM_CONTEXT_OBSERVATIONS is null', {}, '50'),
+        CLAUDE_MEM_WORKER_PORT: env.CLAUDE_MEM_WORKER_PORT || silentDebug('worker-service.handleGetSettings: env.CLAUDE_MEM_WORKER_PORT is null', {}, '37777')
       });
     } catch (error) {
       logger.failure('WORKER', 'Get settings failed', {}, error as Error);
@@ -1690,8 +1710,8 @@ export class WorkerService {
  * Parse pagination parameters from request
  */
 function parsePaginationParams(req: Request): { offset: number; limit: number; project?: string } {
-  const offset = parseInt(req.query.offset as string, 10) || 0;
-  const limit = Math.min(parseInt(req.query.limit as string, 10) || 20, 100); // Max 100
+  const offset = parseInt(req.query.offset as string, 10) || silentDebug('worker-service.parsePaginationParams: offset parse failed', { queryOffset: req.query.offset }, 0);
+  const limit = Math.min(parseInt(req.query.limit as string, 10) || silentDebug('worker-service.parsePaginationParams: limit parse failed', { queryLimit: req.query.limit }, 20), 100); // Max 100
   const project = req.query.project as string | undefined;
 
   return { offset, limit, project };

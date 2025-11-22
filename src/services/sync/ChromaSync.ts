@@ -13,6 +13,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { ParsedObservation, ParsedSummary } from '../../sdk/parser.js';
 import { SessionStore } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
+import { silentDebug } from '../../utils/silent-debug.js';
 import path from 'path';
 import os from 'os';
 
@@ -182,8 +183,8 @@ export class ChromaSync {
       sdk_session_id: obs.sdk_session_id,
       project: obs.project,
       created_at_epoch: obs.created_at_epoch,
-      type: obs.type || 'discovery',
-      title: obs.title || 'Untitled'
+      type: obs.type || silentDebug('ChromaSync.formatObservationDocs: obs.type is null', { obsId: obs.id }, 'discovery'),
+      title: obs.title || silentDebug('ChromaSync.formatObservationDocs: obs.title is null', { obsId: obs.id }, 'Untitled')
     };
 
     // Add optional metadata fields
@@ -243,7 +244,7 @@ export class ChromaSync {
       sdk_session_id: summary.sdk_session_id,
       project: summary.project,
       created_at_epoch: summary.created_at_epoch,
-      prompt_number: summary.prompt_number || 0
+      prompt_number: summary.prompt_number || silentDebug('ChromaSync.formatSummaryDocs: summary.prompt_number is null', { summaryId: summary.id }, 0)
     };
 
     // Each field becomes a separate document
@@ -518,7 +519,7 @@ export class ChromaSync {
         }
 
         const parsed = JSON.parse(data.text);
-        const metadatas = parsed.metadatas || [];
+        const metadatas = parsed.metadatas || silentDebug('ChromaSync.getExistingChromaIds: parsed.metadatas is null', { project: this.project }, []);
 
         if (metadatas.length === 0) {
           break; // No more documents

@@ -47,7 +47,7 @@ export class SessionManager {
           newPrompt: currentUserPrompt
         });
         session.userPrompt = currentUserPrompt;
-        session.lastPromptNumber = promptNumber || session.lastPromptNumber;
+        session.lastPromptNumber = promptNumber || silentDebug('SessionManager.getOrCreateSession: promptNumber is null for existing session', { sessionDbId, currentPromptNumber: session.lastPromptNumber }, session.lastPromptNumber);
       } else {
         silentDebug('[SessionManager] No currentUserPrompt provided for existing session', {
           sessionDbId,
@@ -62,7 +62,7 @@ export class SessionManager {
     const dbSession = this.dbManager.getSessionById(sessionDbId);
 
     // Use currentUserPrompt if provided, otherwise fall back to database (first prompt)
-    const userPrompt = currentUserPrompt || dbSession.user_prompt;
+    const userPrompt = currentUserPrompt || silentDebug('SessionManager.getOrCreateSession: currentUserPrompt is null for new session', { sessionDbId, dbPrompt: dbSession.user_prompt }, dbSession.user_prompt);
 
     if (!currentUserPrompt) {
       silentDebug('[SessionManager] No currentUserPrompt provided for new session, using database', {
@@ -88,7 +88,7 @@ export class SessionManager {
       pendingMessages: [],
       abortController: new AbortController(),
       generatorPromise: null,
-      lastPromptNumber: promptNumber || this.dbManager.getSessionStore().getPromptCounter(sessionDbId),
+      lastPromptNumber: promptNumber || silentDebug('SessionManager.getOrCreateSession: promptNumber is null, fetching from DB', { sessionDbId }, this.dbManager.getSessionStore().getPromptCounter(sessionDbId)),
       startTime: Date.now(),
       cumulativeInputTokens: 0,
       cumulativeOutputTokens: 0,

@@ -92,8 +92,8 @@ export class SDKAgent {
           // Extract and track token usage
           const usage = message.message.usage;
           if (usage) {
-            session.cumulativeInputTokens += usage.input_tokens || 0;
-            session.cumulativeOutputTokens += usage.output_tokens || 0;
+            session.cumulativeInputTokens += usage.input_tokens || silentDebug('SDKAgent: usage.input_tokens is null', { sessionId: session.sessionDbId }, 0);
+            session.cumulativeOutputTokens += usage.output_tokens || silentDebug('SDKAgent: usage.output_tokens is null', { sessionId: session.sessionDbId }, 0);
 
             // Cache creation counts as discovery, cache read doesn't
             if (usage.cache_creation_input_tokens) {
@@ -104,8 +104,8 @@ export class SDKAgent {
               sessionId: session.sessionDbId,
               inputTokens: usage.input_tokens,
               outputTokens: usage.output_tokens,
-              cacheCreation: usage.cache_creation_input_tokens || 0,
-              cacheRead: usage.cache_read_input_tokens || 0,
+              cacheCreation: usage.cache_creation_input_tokens || silentDebug('SDKAgent: usage.cache_creation_input_tokens is null', { sessionId: session.sessionDbId }, 0),
+              cacheRead: usage.cache_read_input_tokens || silentDebug('SDKAgent: usage.cache_read_input_tokens is null', { sessionId: session.sessionDbId }, 0),
               cumulativeInput: session.cumulativeInputTokens,
               cumulativeOutput: session.cumulativeOutputTokens
             });
@@ -222,7 +222,7 @@ export class SDKAgent {
         }
 
         // Track current tool_use_id for Endless Mode (so it can be linked when observation is stored)
-        session.currentToolUseId = message.tool_use_id || null;
+        session.currentToolUseId = message.tool_use_id || silentDebug('SDKAgent: message.tool_use_id is null', { sessionId: session.sessionDbId }, null);
 
         yield {
           type: 'user',
@@ -251,8 +251,8 @@ export class SDKAgent {
               sdk_session_id: session.sdkSessionId,
               project: session.project,
               user_prompt: session.userPrompt,
-              last_user_message: message.last_user_message || '',
-              last_assistant_message: message.last_assistant_message || ''
+              last_user_message: message.last_user_message || silentDebug('SDKAgent: last_user_message missing in summary prompt', { sessionDbId: session.sessionDbId }),
+              last_assistant_message: message.last_assistant_message || silentDebug('SDKAgent: last_assistant_message missing in summary prompt', { sessionDbId: session.sessionDbId })
             })
           },
           session_id: session.claudeSessionId,
@@ -332,10 +332,10 @@ export class SDKAgent {
             type: obs.type,
             title: obs.title,
             subtitle: obs.subtitle,
-            narrative: obs.narrative || null,
-            facts: obs.facts || [],
-            concepts: obs.concepts || [],
-            files_read: obs.files_read || [],
+            narrative: obs.narrative || silentDebug('SDKAgent: obs.narrative is null for resolver', { obsId }, null),
+            facts: obs.facts || silentDebug('SDKAgent: obs.facts is null for resolver', { obsId }, []),
+            concepts: obs.concepts || silentDebug('SDKAgent: obs.concepts is null for resolver', { obsId }, []),
+            files_read: obs.files_read || silentDebug('SDKAgent: obs.files_read is null for resolver', { obsId }, []),
             created_at_epoch: createdAtEpoch,
             tool_use_id: toolUseIdForThisObs
           });
@@ -388,11 +388,11 @@ export class SDKAgent {
             title: obs.title,
             subtitle: obs.subtitle,
             text: null,
-            narrative: obs.narrative || null,
-            facts: JSON.stringify(obs.facts || []),
-            concepts: JSON.stringify(obs.concepts || []),
-            files_read: JSON.stringify(obs.files_read || []),
-            files_modified: JSON.stringify(obs.files_modified || []),
+            narrative: obs.narrative || silentDebug('SDKAgent: obs.narrative is null for SSE broadcast', { obsId }, null),
+            facts: JSON.stringify(obs.facts || silentDebug('SDKAgent: obs.facts is null for SSE broadcast', { obsId }, [])),
+            concepts: JSON.stringify(obs.concepts || silentDebug('SDKAgent: obs.concepts is null for SSE broadcast', { obsId }, [])),
+            files_read: JSON.stringify(obs.files_read || silentDebug('SDKAgent: obs.files_read is null for SSE broadcast', { obsId }, [])),
+            files_modified: JSON.stringify(obs.files_modified || silentDebug('SDKAgent: obs.files_modified is null for SSE broadcast', { obsId }, [])),
             project: session.project,
             prompt_number: session.lastPromptNumber,
             created_at_epoch: createdAtEpoch
@@ -510,6 +510,6 @@ export class SDKAgent {
       // Fall through to env var or default
     }
 
-    return process.env.CLAUDE_MEM_MODEL || 'claude-haiku-4-5';
+    return process.env.CLAUDE_MEM_MODEL || silentDebug('SDKAgent.getModel: CLAUDE_MEM_MODEL not set', {}, 'claude-sonnet-4-5');
   }
 }
