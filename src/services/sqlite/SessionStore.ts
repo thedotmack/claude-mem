@@ -1,6 +1,8 @@
 import Database from 'better-sqlite3';
 import { DATA_DIR, DB_PATH, ensureDir } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
+import { silentDebug } from '../../utils/silent-debug.js';
+import type { ObservationRow } from './types.js';
 
 /**
  * Session data store for SDK sessions, observations, and summaries
@@ -27,8 +29,11 @@ export class SessionStore {
     this.removeSessionSummariesUniqueConstraint();
     this.addObservationHierarchicalFields();
     this.makeObservationsTextNullable();
+    this.addEndlessModeStatsColumns();
     this.createUserPromptsTable();
     this.ensureDiscoveryTokensColumn();
+    this.addToolUseIdColumn();
+    this.removeToolUseIdUniqueConstraint();
   }
 
   /**
@@ -67,7 +72,10 @@ export class SessionStore {
             started_at_epoch INTEGER NOT NULL,
             completed_at TEXT,
             completed_at_epoch INTEGER,
-            status TEXT CHECK(status IN ('active', 'completed', 'failed')) NOT NULL DEFAULT 'active'
+            status TEXT CHECK(status IN ('active', 'completed', 'failed')) NOT NULL DEFAULT 'active',
+            endless_original_tokens INTEGER DEFAULT 0,
+            endless_compressed_tokens INTEGER DEFAULT 0,
+            endless_tokens_saved INTEGER DEFAULT 0
           );
 
           CREATE INDEX IF NOT EXISTS idx_sdk_sessions_claude_id ON sdk_sessions(claude_session_id);
@@ -531,6 +539,98 @@ export class SessionStore {
   }
 
   /**
+   * Add tool_use_id column to observations table (migration 12)
+   * Part of Endless Mode implementation for real-time context compression
+   */
+  private addToolUseIdColumn(): void {
+    try {
+      // Check if migration already applied
+      const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(12) as {version: number} | undefined;
+      if (applied) return;
+
+      // Check if tool_use_id column exists
+      const tableInfo = this.db.pragma('table_info(observations)');
+      const hasToolUseId = (tableInfo as any[]).some((col: any) => col.name === 'tool_use_id');
+
+      if (!hasToolUseId) {
+        this.db.exec('ALTER TABLE observations ADD COLUMN tool_use_id TEXT');
+        console.error('[SessionStore] Added tool_use_id column to observations table');
+
+        // Create non-unique index for efficient lookups (multiple observations can share tool_use_id)
+        this.db.exec('CREATE INDEX IF NOT EXISTS idx_observations_tool_use_id ON observations(tool_use_id) WHERE tool_use_id IS NOT NULL');
+        console.error('[SessionStore] Created index on tool_use_id column');
+      }
+
+      // Record migration
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(12, new Date().toISOString());
+    } catch (error: any) {
+      console.error('[SessionStore] Tool use ID migration error:', error.message);
+    }
+  }
+
+  /**
+   * Add Endless Mode stats columns to sdk_sessions table (migration 13)
+   * Tracks token compression statistics for sessions using Endless Mode
+   */
+  private addEndlessModeStatsColumns(): void {
+    try {
+      // Check if migration already applied
+      const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(13) as {version: number} | undefined;
+      if (applied) return;
+
+      const tableInfo = this.db.pragma('table_info(sdk_sessions)');
+      const hasOriginalTokens = (tableInfo as any[]).some((col: any) => col.name === 'endless_original_tokens');
+      const hasCompressedTokens = (tableInfo as any[]).some((col: any) => col.name === 'endless_compressed_tokens');
+      const hasTokensSaved = (tableInfo as any[]).some((col: any) => col.name === 'endless_tokens_saved');
+
+      if (!hasOriginalTokens) {
+        this.db.exec('ALTER TABLE sdk_sessions ADD COLUMN endless_original_tokens INTEGER DEFAULT 0');
+        console.error('[SessionStore] Added endless_original_tokens column to sdk_sessions table');
+      }
+
+      if (!hasCompressedTokens) {
+        this.db.exec('ALTER TABLE sdk_sessions ADD COLUMN endless_compressed_tokens INTEGER DEFAULT 0');
+        console.error('[SessionStore] Added endless_compressed_tokens column to sdk_sessions table');
+      }
+
+      if (!hasTokensSaved) {
+        this.db.exec('ALTER TABLE sdk_sessions ADD COLUMN endless_tokens_saved INTEGER DEFAULT 0');
+        console.error('[SessionStore] Added endless_tokens_saved column to sdk_sessions table');
+      }
+
+      // Record migration
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(13, new Date().toISOString());
+    } catch (error: any) {
+      console.error('[SessionStore] Endless Mode stats migration error:', error.message);
+    }
+  }
+
+  /**
+   * Remove UNIQUE constraint from tool_use_id index (migration 14)
+   * Multiple observations can relate to the same tool use, so UNIQUE constraint is incorrect
+   */
+  private removeToolUseIdUniqueConstraint(): void {
+    try {
+      // Check if migration already applied
+      const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(14) as {version: number} | undefined;
+      if (applied) return;
+
+      // Drop existing UNIQUE index if it exists
+      this.db.exec('DROP INDEX IF EXISTS idx_observations_tool_use_id');
+      console.error('[SessionStore] Dropped UNIQUE index on tool_use_id');
+
+      // Recreate as non-unique index (multiple observations can share tool_use_id)
+      this.db.exec('CREATE INDEX IF NOT EXISTS idx_observations_tool_use_id ON observations(tool_use_id) WHERE tool_use_id IS NOT NULL');
+      console.error('[SessionStore] Recreated tool_use_id index without UNIQUE constraint');
+
+      // Record migration
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(14, new Date().toISOString());
+    } catch (error: any) {
+      console.error('[SessionStore] Remove UNIQUE constraint migration error:', error.message);
+    }
+  }
+
+  /**
    * Get recent session summaries for a project
    */
   getRecentSummaries(project: string, limit: number = 10): Array<{
@@ -763,7 +863,7 @@ export class SessionStore {
       WHERE id = ?
     `);
 
-    return stmt.get(id) as any || null;
+    return stmt.get(id) as any || silentDebug('SessionStore.getObservationById: No observation found', { id }, null);
   }
 
   /**
@@ -818,7 +918,7 @@ export class SessionStore {
       LIMIT 1
     `);
 
-    return stmt.get(sdkSessionId) as any || null;
+    return stmt.get(sdkSessionId) as any || silentDebug('SessionStore.getSummaryForSession: No summary found', { sdkSessionId }, null);
   }
 
   /**
@@ -891,7 +991,7 @@ export class SessionStore {
       LIMIT 1
     `);
 
-    return stmt.get(id) as any || null;
+    return stmt.get(id) as any || silentDebug('SessionStore.getSessionById: No session found', { id }, null);
   }
 
   /**
@@ -910,7 +1010,7 @@ export class SessionStore {
       LIMIT 1
     `);
 
-    return stmt.get(claudeSessionId) as any || null;
+    return stmt.get(claudeSessionId) as any || silentDebug('SessionStore.findActiveSDKSession: No active session found', { claudeSessionId }, null);
   }
 
   /**
@@ -924,7 +1024,7 @@ export class SessionStore {
       LIMIT 1
     `);
 
-    return stmt.get(claudeSessionId) as any || null;
+    return stmt.get(claudeSessionId) as any || silentDebug('SessionStore.findAnySDKSession: No session found', { claudeSessionId }, null);
   }
 
   /**
@@ -956,7 +1056,7 @@ export class SessionStore {
       SELECT prompt_counter FROM sdk_sessions WHERE id = ?
     `).get(id) as { prompt_counter: number } | undefined;
 
-    return result?.prompt_counter || 1;
+    return result?.prompt_counter || silentDebug('SessionStore.incrementPromptCounter: result or prompt_counter is null', { id }, 1);
   }
 
   /**
@@ -967,7 +1067,7 @@ export class SessionStore {
       SELECT prompt_counter FROM sdk_sessions WHERE id = ?
     `).get(id) as { prompt_counter: number | null } | undefined;
 
-    return result?.prompt_counter || 0;
+    return result?.prompt_counter || silentDebug('SessionStore.getPromptCounter: prompt_counter is null', { id }, 0);
   }
 
   /**
@@ -1075,7 +1175,7 @@ export class SessionStore {
     `);
 
     const result = stmt.get(id) as { worker_port: number | null } | undefined;
-    return result?.worker_port || null;
+    return result?.worker_port || silentDebug('SessionStore.getWorkerPort: worker_port is null', { id }, null);
   }
 
   /**
@@ -1111,6 +1211,7 @@ export class SessionStore {
       concepts: string[];
       files_read: string[];
       files_modified: string[];
+      tool_use_id?: string | null;
     },
     promptNumber?: number,
     discoveryTokens: number = 0
@@ -1144,8 +1245,8 @@ export class SessionStore {
     const stmt = this.db.prepare(`
       INSERT INTO observations
       (sdk_session_id, project, type, title, subtitle, facts, narrative, concepts,
-       files_read, files_modified, prompt_number, discovery_tokens, created_at, created_at_epoch)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       files_read, files_modified, prompt_number, discovery_tokens, tool_use_id, created_at, created_at_epoch)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
@@ -1159,8 +1260,9 @@ export class SessionStore {
       JSON.stringify(observation.concepts),
       JSON.stringify(observation.files_read),
       JSON.stringify(observation.files_modified),
-      promptNumber || null,
+      promptNumber || silentDebug('SessionStore.storeObservation: promptNumber is null', { sdkSessionId }, null),
       discoveryTokens,
+      observation.tool_use_id || silentDebug('SessionStore.storeObservation: tool_use_id is null', { sdkSessionId }, null),
       now.toISOString(),
       nowEpoch
     );
@@ -1169,6 +1271,64 @@ export class SessionStore {
       id: Number(result.lastInsertRowid),
       createdAtEpoch: nowEpoch
     };
+  }
+
+  /**
+   * Get observation by tool_use_id (for Endless Mode transform layer)
+   * Returns the compressed observation data for replacing tool use content
+   */
+  getObservationByToolUseId(toolUseId: string): ObservationRow | null {
+    const stmt = this.db.prepare(`
+      SELECT * FROM observations
+      WHERE tool_use_id = ?
+      LIMIT 1
+    `);
+
+    const result = stmt.get(toolUseId) as ObservationRow | undefined;
+    return result || silentDebug('SessionStore.getObservationByToolUseId: No observation found', { toolUseId }, null);
+  }
+
+  /**
+   * Get ALL observations for a tool_use_id (for Endless Mode transform layer)
+   * Returns array of observations sorted by creation time (oldest first)
+   * Multiple observations can exist per tool_use_id - this returns them all for concatenation
+   */
+  getAllObservationsForToolUseId(toolUseId: string): ObservationRow[] {
+    const stmt = this.db.prepare(`
+      SELECT * FROM observations
+      WHERE tool_use_id = ?
+      ORDER BY created_at_epoch ASC
+    `);
+
+    return stmt.all(toolUseId) as ObservationRow[];
+  }
+
+  /**
+   * Get observations by array of tool_use_ids (for Endless Mode batch transform)
+   * Returns map of tool_use_id -> ObservationRow for efficient lookup
+   */
+  getObservationsByToolUseIds(toolUseIds: string[]): Map<string, ObservationRow> {
+    if (toolUseIds.length === 0) {
+      return new Map();
+    }
+
+    const placeholders = toolUseIds.map(() => '?').join(',');
+    const stmt = this.db.prepare(`
+      SELECT * FROM observations
+      WHERE tool_use_id IN (${placeholders})
+    `);
+
+    const results = stmt.all(...toolUseIds) as ObservationRow[];
+
+    // Build map for O(1) lookup
+    const map = new Map<string, ObservationRow>();
+    for (const row of results) {
+      if (row.tool_use_id) {
+        map.set(row.tool_use_id, row);
+      }
+    }
+
+    return map;
   }
 
   /**
@@ -1231,7 +1391,7 @@ export class SessionStore {
       summary.completed,
       summary.next_steps,
       summary.notes,
-      promptNumber || null,
+      promptNumber || silentDebug('SessionStore.storeSummary: promptNumber is null', { sdkSessionId }, null),
       discoveryTokens,
       now.toISOString(),
       nowEpoch
@@ -1496,6 +1656,49 @@ export class SessionStore {
       console.error('[SessionStore] Error querying timeline records:', err.message);
       return { observations: [], sessions: [], prompts: [] };
     }
+  }
+
+  /**
+   * Increment Endless Mode stats for a session
+   * Updates cumulative token compression statistics
+   */
+  incrementEndlessModeStats(claudeSessionId: string, originalTokens: number, compressedTokens: number): void {
+    const tokensSaved = originalTokens - compressedTokens;
+
+    const stmt = this.db.prepare(`
+      UPDATE sdk_sessions
+      SET
+        endless_original_tokens = COALESCE(endless_original_tokens, 0) + ?,
+        endless_compressed_tokens = COALESCE(endless_compressed_tokens, 0) + ?,
+        endless_tokens_saved = COALESCE(endless_tokens_saved, 0) + ?
+      WHERE claude_session_id = ?
+    `);
+
+    stmt.run(originalTokens, compressedTokens, tokensSaved, claudeSessionId);
+  }
+
+  /**
+   * Get Endless Mode stats for a session
+   */
+  getEndlessModeStats(claudeSessionId: string): { originalTokens: number; compressedTokens: number; tokensSaved: number } | null {
+    const stmt = this.db.prepare(`
+      SELECT
+        endless_original_tokens,
+        endless_compressed_tokens,
+        endless_tokens_saved
+      FROM sdk_sessions
+      WHERE claude_session_id = ?
+    `);
+
+    const result = stmt.get(claudeSessionId) as { endless_original_tokens: number; endless_compressed_tokens: number; endless_tokens_saved: number } | undefined;
+
+    if (!result) return null;
+
+    return {
+      originalTokens: result.endless_original_tokens || silentDebug('SessionStore.getEndlessModeStats: endless_original_tokens is null', { claudeSessionId }, 0),
+      compressedTokens: result.endless_compressed_tokens || silentDebug('SessionStore.getEndlessModeStats: endless_compressed_tokens is null', { claudeSessionId }, 0),
+      tokensSaved: result.endless_tokens_saved || silentDebug('SessionStore.getEndlessModeStats: endless_tokens_saved is null', { claudeSessionId }, 0)
+    };
   }
 
   /**

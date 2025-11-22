@@ -1,0 +1,152 @@
+---
+title: "Endless Mode - Quick Start"
+description: "5-minute setup guide for enabling Endless Mode in Claude-Mem"
+---
+
+# Endless Mode - Quick Start
+
+**5-Minute Setup for Endless Sessions**
+
+---
+
+## TL;DR
+
+Endless Mode compresses tool outputs in real-time, reducing token usage by 80-95% for indefinite Claude Code sessions.
+
+---
+
+## Prerequisites
+
+- Node.js >= 18
+- Claude Code installed
+- Terminal access
+
+---
+
+## Installation
+
+### Mac/Linux (One-Liner)
+
+```bash
+git clone https://github.com/thedotmack/claude-mem.git && \
+cd claude-mem && \
+git checkout feature/endless-mode-beta-release && \
+npm install && \
+npm run build && \
+npm run sync-marketplace && \
+pm2 restart claude-mem-worker
+```
+
+### Windows (PowerShell)
+
+```powershell
+# Clone and build
+git clone https://github.com/thedotmack/claude-mem.git
+cd claude-mem
+git checkout feature/endless-mode-beta-release
+npm install
+npm run build
+
+# Manual sync (rsync not available on Windows)
+$dest = "$env:USERPROFILE\.claude\plugins\marketplaces\thedotmack"
+New-Item -ItemType Directory -Path $dest -Force -ErrorAction SilentlyContinue
+Get-ChildItem $dest -Exclude .git | Remove-Item -Recurse -Force
+Get-ChildItem -Path . -Exclude .git | Copy-Item -Destination $dest -Recurse -Force
+cd $dest
+npm install
+
+# Restart worker
+pm2 restart claude-mem-worker
+```
+
+---
+
+## Enable Endless Mode
+
+1. **Edit settings file**
+   - Mac/Linux: `~/.claude-mem/settings.json`
+   - Windows: `%USERPROFILE%\.claude-mem\settings.json`
+
+2. **Add configuration**
+   ```json
+   {
+     "env": {
+       "CLAUDE_MEM_ENDLESS_MODE": true
+     }
+   }
+   ```
+
+3. **Restart worker**
+   ```bash
+   pm2 restart claude-mem-worker
+   ```
+
+---
+
+## Verify
+
+```bash
+npm run worker:logs
+```
+
+Look for: `[CONFIG] Endless Mode enabled`
+
+---
+
+## Monitor
+
+```bash
+npm run endless-mode:metrics
+```
+
+Shows token savings in real-time.
+
+---
+
+## Disable
+
+Edit `~/.claude-mem/settings.json`:
+```json
+{
+  "env": {
+    "CLAUDE_MEM_ENDLESS_MODE": false
+  }
+}
+```
+
+Then: `pm2 restart claude-mem-worker`
+
+---
+
+## Common Issues
+
+| Issue | Fix |
+|-------|-----|
+| Worker won't start | `pm2 restart claude-mem-worker` |
+| Changes not applied | Restart worker after config changes |
+| Windows sync fails | Use PowerShell script above |
+| Tools timeout | Normal! Falls back gracefully |
+
+---
+
+## Full Guide
+
+For detailed instructions, troubleshooting, and advanced configuration:
+
+👉 **[Endless Mode Setup Guide](./setup)**
+
+---
+
+## Getting Help
+
+- **Issues**: https://github.com/thedotmack/claude-mem/issues
+- **Check logs**: `npm run worker:logs`
+- **Metrics**: `npm run endless-mode:metrics`
+
+---
+
+**Status**: Beta - Safe to use, default is OFF
+
+**Savings**: 80-95% token reduction
+
+**Backups**: Automatic before every compression

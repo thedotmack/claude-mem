@@ -43,16 +43,16 @@ export class SessionManager {
         silentDebug('[SessionManager] Updating userPrompt for continuation', {
           sessionDbId,
           promptNumber,
-          oldPrompt: session.userPrompt.substring(0, 80),
-          newPrompt: currentUserPrompt.substring(0, 80)
+          oldPrompt: session.userPrompt,
+          newPrompt: currentUserPrompt
         });
         session.userPrompt = currentUserPrompt;
-        session.lastPromptNumber = promptNumber || session.lastPromptNumber;
+        session.lastPromptNumber = promptNumber || silentDebug('SessionManager.getOrCreateSession: promptNumber is null for existing session', { sessionDbId, currentPromptNumber: session.lastPromptNumber }, session.lastPromptNumber);
       } else {
         silentDebug('[SessionManager] No currentUserPrompt provided for existing session', {
           sessionDbId,
           promptNumber,
-          usingCachedPrompt: session.userPrompt.substring(0, 80)
+          usingCachedPrompt: session.userPrompt
         });
       }
       return session;
@@ -62,19 +62,19 @@ export class SessionManager {
     const dbSession = this.dbManager.getSessionById(sessionDbId);
 
     // Use currentUserPrompt if provided, otherwise fall back to database (first prompt)
-    const userPrompt = currentUserPrompt || dbSession.user_prompt;
+    const userPrompt = currentUserPrompt || silentDebug('SessionManager.getOrCreateSession: currentUserPrompt is null for new session', { sessionDbId, dbPrompt: dbSession.user_prompt }, dbSession.user_prompt);
 
     if (!currentUserPrompt) {
       silentDebug('[SessionManager] No currentUserPrompt provided for new session, using database', {
         sessionDbId,
         promptNumber,
-        dbPrompt: dbSession.user_prompt.substring(0, 80)
+        dbPrompt: dbSession.user_prompt
       });
     } else {
       silentDebug('[SessionManager] Initializing session with fresh userPrompt', {
         sessionDbId,
         promptNumber,
-        userPrompt: currentUserPrompt.substring(0, 80)
+        userPrompt: currentUserPrompt
       });
     }
 
@@ -88,10 +88,12 @@ export class SessionManager {
       pendingMessages: [],
       abortController: new AbortController(),
       generatorPromise: null,
-      lastPromptNumber: promptNumber || this.dbManager.getSessionStore().getPromptCounter(sessionDbId),
+      lastPromptNumber: promptNumber || silentDebug('SessionManager.getOrCreateSession: promptNumber is null, fetching from DB', { sessionDbId }, this.dbManager.getSessionStore().getPromptCounter(sessionDbId)),
       startTime: Date.now(),
       cumulativeInputTokens: 0,
-      cumulativeOutputTokens: 0
+      cumulativeOutputTokens: 0,
+      currentToolUseId: null,
+      pendingObservationResolvers: new Map()
     };
 
     this.sessions.set(sessionDbId, session);
@@ -137,7 +139,8 @@ export class SessionManager {
       tool_input: data.tool_input,
       tool_response: data.tool_response,
       prompt_number: data.prompt_number,
-      cwd: data.cwd
+      cwd: data.cwd,
+      tool_use_id: data.tool_use_id
     });
 
     const afterDepth = session.pendingMessages.length;
@@ -182,6 +185,36 @@ export class SessionManager {
 
     logger.info('SESSION', `Summarize queued (${beforeDepth}→${afterDepth})`, {
       sessionId: sessionDbId,
+      hasGenerator: !!session.generatorPromise
+    });
+  }
+
+  /**
+   * Queue a continuation prompt (for prompt #2+ in same session)
+   */
+  queueContinuation(sessionDbId: number, userPrompt: string, promptNumber: number): void {
+    const session = this.sessions.get(sessionDbId);
+    if (!session) {
+      throw new Error(`Cannot queue continuation for non-existent session ${sessionDbId}`);
+    }
+
+    const beforeDepth = session.pendingMessages.length;
+
+    session.pendingMessages.push({
+      type: 'continuation',
+      user_prompt: userPrompt,
+      prompt_number: promptNumber
+    });
+
+    const afterDepth = session.pendingMessages.length;
+
+    const emitter = this.sessionQueues.get(sessionDbId);
+    emitter?.emit('message');
+
+    logger.info('SESSION', `Continuation queued (${beforeDepth}→${afterDepth})`, {
+      sessionId: sessionDbId,
+      promptNumber,
+      prompt: userPrompt,
       hasGenerator: !!session.generatorPromise
     });
   }

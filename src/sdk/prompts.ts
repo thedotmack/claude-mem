@@ -3,6 +3,8 @@
  * Generates prompts for the Claude Agent SDK memory worker
  */
 
+import { silentDebug } from '../utils/silent-debug.js';
+
 export interface Observation {
   id: number;
   tool_name: string;
@@ -61,16 +63,6 @@ Use verbs like: implemented, fixed, deployed, configured, migrated, optimized, a
 - "Analyzed authentication implementation and stored findings"
 - "Tracked deployment steps and logged outcomes"
 - "Monitored database performance and recorded metrics"
-
-WHEN TO SKIP
-------------
-Skip routine operations:
-- Empty status checks
-- Package installations with no errors
-- Simple file listings
-- Repetitive operations you've already documented
-- If file related research comes back as empty or not found
-- **No output necessary if skipping.**
 
 OUTPUT FORMAT
 -------------
@@ -135,6 +127,8 @@ Output observations using this XML structure:
 
 IMPORTANT! DO NOT do any work right now other than generating this OBSERVATIONS from tool use messages - and remember that you are a memory agent designed to summarize a DIFFERENT claude code session, not this one. 
 
+If you are tasked with processing a LARGE tool use message, **ALWAYS write at least one observation** (or multiple if you need to). This is critical for when we replace long outputs with summaries in real-time sessions! This saves tons of compute power and allows you to focus on the actual task at hand rather than having to re-synthesize long outputs into observations yourself. The system is designed to help you do your job better by pre-summarizing large outputs into manageable pieces.
+
 Never reference yourself or your own actions. Do not output anything other than the observation content formatted in the XML structure above. All other output is ignored by the system, and the system has been designed to be smart about token usage. Please spend your tokens wisely on useful observations. 
 
 Remember that we record these observations as a way of helping us stay on track with our progress, and to help us keep important decisions and changes at the forefront of our minds! :) Thank you so much for your help!
@@ -146,7 +140,7 @@ MEMORY PROCESSING START
 /**
  * Build prompt to send tool observation to SDK agent
  */
-export function buildObservationPrompt(obs: Observation): string {
+export function buildObservationPrompt(obs: Observation, userPrompt?: string): string {
   // Safely parse tool_input and tool_output - they're already JSON strings
   let toolInput: any;
   let toolOutput: any;
@@ -163,7 +157,7 @@ export function buildObservationPrompt(obs: Observation): string {
     toolOutput = obs.tool_output;  // If parse fails, use raw value
   }
 
-  return `<observed_from_primary_session>
+  return `<observed_from_primary_session>${userPrompt ? `\n  <user_request>${userPrompt}</user_request>` : ''}
   <what_happened>${obs.tool_name}</what_happened>
   <occurred_at>${new Date(obs.created_at_epoch).toISOString()}</occurred_at>${obs.cwd ? `\n  <working_directory>${obs.cwd}</working_directory>` : ''}
   <parameters>${JSON.stringify(toolInput, null, 2)}</parameters>
@@ -175,7 +169,7 @@ export function buildObservationPrompt(obs: Observation): string {
  * Build prompt to generate progress summary
  */
 export function buildSummaryPrompt(session: SDKSession): string {
-  const lastAssistantMessage = session.last_assistant_message || '';
+  const lastAssistantMessage = session.last_assistant_message || silentDebug('buildSummaryPrompt: last_assistant_message missing', { sessionId: session.id });
 
   return `PROGRESS SUMMARY CHECKPOINT
 ===========================
@@ -297,6 +291,8 @@ Output observations using this XML structure:
 \`\`\`
 
 Never reference yourself or your own actions. Do not output anything other than the observation content formatted in the XML structure above. All other output is ignored by the system, and the system has been designed to be smart about token usage. Please spend your tokens wisely on useful observations.
+
+If you are tasked with processing a LARGE tool use message, **ALWAYS write at least one observation** (or multiple if you need to). This is critical for when we replace long outputs with summaries in real-time sessions! This saves tons of compute power and allows you to focus on the actual task at hand rather than having to re-synthesize long outputs into observations yourself. The system is designed to help you do your job better by pre-summarizing large outputs into manageable pieces.
 
 Remember that we record these observations as a way of helping us stay on track with our progress, and to help us keep important decisions and changes at the forefront of our minds! :) Thank you so much for your continued help!
 

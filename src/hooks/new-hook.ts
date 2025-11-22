@@ -38,11 +38,15 @@ import { stdin } from 'process';
 import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { createHookResponse } from './hook-response.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
+import { transformTranscriptWithAgents } from './save-hook.js';
+import { EndlessModeConfig } from '../services/worker/EndlessModeConfig.js';
+import { logger } from '../utils/logger.js';
 
 export interface UserPromptSubmitInput {
   session_id: string;
   cwd: string;
   prompt: string;
+  transcript_path?: string;
   [key: string]: any;
 }
 
@@ -54,7 +58,7 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
     throw new Error('newHook requires input');
   }
 
-  const { session_id, cwd, prompt } = input;
+  const { session_id, cwd, prompt, transcript_path } = input;
   const project = path.basename(cwd);
 
   // Ensure worker is running
@@ -74,6 +78,23 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
   console.error(`[new-hook] Session ${sessionDbId}, prompt #${promptNumber}`);
 
   db.close();
+
+  // Transform transcript BEFORE processing new prompt (if Endless Mode enabled and transcript exists)
+  const config = EndlessModeConfig.getConfig();
+  if (config.enabled && transcript_path) {
+    try {
+      logger.info('HOOK', '🔄 Batch transforming transcript at UserPromptSubmit', { transcriptPath: transcript_path });
+      const stats = await transformTranscriptWithAgents(transcript_path, `user-prompt-${promptNumber}`);
+      logger.success('HOOK', '✅ Batch transformation complete', {
+        originalTokens: stats.originalTokens,
+        compressedTokens: stats.compressedTokens,
+        savings: `${Math.round((1 - stats.compressedTokens / stats.originalTokens) * 100)}%`
+      });
+    } catch (error) {
+      logger.warn('HOOK', 'Batch transformation failed - continuing anyway', { transcriptPath: transcript_path }, error as Error);
+      // Don't block the hook if transformation fails
+    }
+  }
 
   const port = getWorkerPort();
 

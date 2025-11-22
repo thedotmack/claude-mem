@@ -19,6 +19,7 @@ import { homedir } from 'os';
 import { getPackageRoot } from '../shared/paths.js';
 import { getWorkerPort } from '../shared/worker-utils.js';
 import { logger } from '../utils/logger.js';
+import { silentDebug } from '../utils/silent-debug.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
@@ -29,6 +30,9 @@ import { SSEBroadcaster } from './worker/SSEBroadcaster.js';
 import { SDKAgent } from './worker/SDKAgent.js';
 import { PaginationHelper } from './worker/PaginationHelper.js';
 import { SettingsManager } from './worker/SettingsManager.js';
+import { SKIP_TOOLS } from '../shared/skip-tools.js';
+import { getConfig as getEndlessModeConfig } from './worker/EndlessModeConfig.js';
+import { transformTranscriptWithAgents } from '../hooks/save-hook.js';
 
 export class WorkerService {
   private app: express.Application;
@@ -120,7 +124,7 @@ export class WorkerService {
 
     // Observations
     if (path.includes('/observations')) {
-      const toolName = body.tool_name || '?';
+      const toolName = body.tool_name || silentDebug('worker-service.logRequest: body.tool_name is null', {}, '?');
       const toolInput = body.tool_input;
       const toolSummary = logger.formatTool(toolName, toolInput);
       return `tool=${toolSummary}`;
@@ -141,7 +145,9 @@ export class WorkerService {
     // Health & Viewer
     this.app.get('/health', this.handleHealth.bind(this));
     this.app.get('/', this.handleViewerUI.bind(this));
+    this.app.get('/transcript', this.handleTranscriptViewerUI.bind(this));
     this.app.get('/stream', this.handleSSEStream.bind(this));
+    this.app.get('/api/transcript', this.handleTranscriptStream.bind(this));
 
     // Session endpoints
     this.app.post('/sessions/:sessionDbId/init', this.handleSessionInit.bind(this));
@@ -173,6 +179,10 @@ export class WorkerService {
     this.app.get('/api/mcp/status', this.handleGetMcpStatus.bind(this));
     this.app.post('/api/mcp/toggle', this.handleToggleMcp.bind(this));
 
+    // Endless Mode toggle
+    this.app.get('/api/endless-mode/status', this.handleGetEndlessModeStatus.bind(this));
+    this.app.post('/api/endless-mode/toggle', this.handleToggleEndlessMode.bind(this));
+
     // Search API endpoints (for skill-based search)
     // Unified endpoints (new consolidated API)
     this.app.get('/api/search', this.handleUnifiedSearch.bind(this));
@@ -192,10 +202,17 @@ export class WorkerService {
     this.app.get('/api/context/timeline', this.handleGetContextTimeline.bind(this));
     this.app.get('/api/timeline/by-query', this.handleGetTimelineByQuery.bind(this));
     this.app.get('/api/search/help', this.handleSearchHelp.bind(this));
+
+    // Endless Mode: batch lookup observations by tool_use_id
+    this.app.post('/api/observations/batch-lookup', this.handleBatchLookupObservations.bind(this));
   }
 
   /**
    * Cleanup orphaned MCP server processes (uvx/chroma) from previous sessions
+   *
+   * NOTE: This addresses a bug in versions 6.0.3-6 where MCP server processes
+   * weren't properly cleaned up on worker restart, causing process accumulation.
+   * While the bug is fixed, this cleanup ensures smooth upgrades from affected versions.
    */
   private async cleanupOrphanedProcesses(): Promise<void> {
     try {
@@ -315,6 +332,133 @@ export class WorkerService {
   }
 
   /**
+   * Serve transcript viewer UI
+   */
+  private handleTranscriptViewerUI(req: Request, res: Response): void {
+    try {
+      const packageRoot = getPackageRoot();
+      const viewerPath = path.join(packageRoot, 'plugin', 'ui', 'transcript-viewer.html');
+      const html = readFileSync(viewerPath, 'utf-8');
+      res.setHeader('Content-Type', 'text/html');
+      res.send(html);
+    } catch (error) {
+      logger.failure('WORKER', 'Transcript viewer UI error', {}, error as Error);
+      res.status(500).json({ error: 'Failed to load transcript viewer UI' });
+    }
+  }
+
+  /**
+   * Serve transcript data (both one-time and SSE streaming)
+   */
+  private handleTranscriptStream(req: Request, res: Response): void {
+    try {
+      const filePath = req.query.path as string | undefined;
+      const watch = req.query.watch === 'true';
+
+      // Auto-detect current session if no path provided
+      const transcriptPath = filePath || silentDebug('worker-service.handleTranscriptViewer: filePath is null', {}, this.findCurrentTranscript());
+
+      if (!transcriptPath) {
+        res.status(400).json({ error: 'No transcript file found. Please provide a path or start a Claude Code session.' });
+        return;
+      }
+
+      if (!existsSync(transcriptPath)) {
+        res.status(404).json({ error: `Transcript file not found: ${transcriptPath}` });
+        return;
+      }
+
+      // Read and parse transcript
+      const parseTranscript = () => {
+        const content = readFileSync(transcriptPath, 'utf-8');
+        const lines = content.trim().split('\n').filter(line => line.trim());
+        const messages = lines.map(line => JSON.parse(line));
+        return { messages, filePath: transcriptPath };
+      };
+
+      if (watch) {
+        // SSE streaming mode
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+
+        let lastSize = 0;
+
+        const sendUpdate = () => {
+          try {
+            const stats = statSync(transcriptPath);
+            if (stats.size !== lastSize) {
+              lastSize = stats.size;
+              const data = parseTranscript();
+              res.write(`event: transcript\ndata: ${JSON.stringify(data)}\n\n`);
+            }
+          } catch (error) {
+            logger.failure('WORKER', 'Transcript watch error', {}, error as Error);
+          }
+        };
+
+        // Send initial data
+        sendUpdate();
+
+        // Poll for changes every 2 seconds
+        const interval = setInterval(sendUpdate, 2000);
+
+        // Cleanup on disconnect
+        req.on('close', () => {
+          clearInterval(interval);
+        });
+
+      } else {
+        // One-time load
+        const data = parseTranscript();
+        res.json(data);
+      }
+
+    } catch (error) {
+      logger.failure('WORKER', 'Transcript stream error', {}, error as Error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  }
+
+  /**
+   * Find the current Claude Code session's transcript file
+   */
+  private findCurrentTranscript(): string | null {
+    try {
+      // Look for the most recently modified transcript file in ~/.claude/projects
+      const claudeDir = path.join(homedir(), '.claude', 'projects');
+      if (!existsSync(claudeDir)) {
+        return null;
+      }
+
+      const fs = require('fs');
+      const projectDirs = fs.readdirSync(claudeDir, { withFileTypes: true })
+        .filter((dirent: any) => dirent.isDirectory())
+        .map((dirent: any) => path.join(claudeDir, dirent.name));
+
+      let mostRecent: { path: string, mtime: number } | null = null;
+
+      for (const projectDir of projectDirs) {
+        const files = fs.readdirSync(projectDir)
+          .filter((f: string) => f.endsWith('.jsonl') && !f.startsWith('agent-'))
+          .map((f: string) => path.join(projectDir, f));
+
+        for (const file of files) {
+          const stats = statSync(file);
+          if (!mostRecent || stats.mtimeMs > mostRecent.mtime) {
+            mostRecent = { path: file, mtime: stats.mtimeMs };
+          }
+        }
+      }
+
+      return mostRecent?.path || silentDebug('worker-service.findCurrentTranscript: No recent transcript found', {}, null);
+    } catch (error) {
+      logger.failure('WORKER', 'Find current transcript error', {}, error as Error);
+      return null;
+    }
+  }
+
+  /**
    * SSE stream endpoint
    */
   private handleSSEStream(req: Request, res: Response): void {
@@ -345,7 +489,7 @@ export class WorkerService {
   }
 
   /**
-   * Initialize a new session
+   * Initialize a new session OR queue continuation for existing session
    */
   private handleSessionInit(req: Request, res: Response): void {
     try {
@@ -399,13 +543,10 @@ export class WorkerService {
           latestPrompt.created_at_epoch
         ).then(() => {
           const chromaDuration = Date.now() - chromaStart;
-          const truncatedPrompt = promptText.length > 60
-            ? promptText.substring(0, 60) + '...'
-            : promptText;
           logger.debug('CHROMA', 'User prompt synced', {
             promptId: latestPrompt.id,
             duration: `${chromaDuration}ms`,
-            prompt: truncatedPrompt
+            prompt: promptText
           });
         }).catch(err => {
           logger.error('CHROMA', 'Failed to sync user_prompt', {
@@ -452,20 +593,163 @@ export class WorkerService {
   }
 
   /**
+   * Wait for observation to be created (synchronous mode helper)
+   * Returns observation data or throws on timeout
+   */
+  private async waitForObservation(
+    session: any,
+    toolUseId: string,
+    sessionDbId: number,
+    res: Response,
+    transcriptPath?: string
+  ): Promise<void> {
+    const TIMEOUT_MS = 30000; // 30 seconds
+    const startTime = Date.now();
+
+    logger.info('WORKER', 'Waiting for observation (synchronous mode)', {
+      sessionId: sessionDbId,
+      toolUseId,
+      timeout: '30s'
+    });
+
+    try {
+      // Create promise that will be resolved when observation is saved
+      const observationPromise = new Promise<any>((resolve, reject) => {
+        session.pendingObservationResolvers.set(toolUseId, resolve);
+
+        // Set timeout to reject after 30s
+        setTimeout(() => {
+          if (session.pendingObservationResolvers.has(toolUseId)) {
+            session.pendingObservationResolvers.delete(toolUseId);
+            logger.warn('WORKER', 'Observation timeout', {
+              sessionId: sessionDbId,
+              tool_use_id: toolUseId,
+              timeoutMs: TIMEOUT_MS
+            });
+            reject(new Error('Observation creation timeout (30s exceeded)'));
+          }
+        }, TIMEOUT_MS);
+      });
+
+      // Wait for observation or timeout
+      const observation = await observationPromise;
+      const processingTimeMs = Date.now() - startTime;
+
+      // Handle skip case (observation is null when SDK Agent skipped)
+      if (observation === null) {
+        logger.debug('WORKER', 'Observation skipped (synchronous mode)', {
+          sessionId: sessionDbId,
+          toolUseId,
+          processingTimeMs
+        });
+
+        res.json({
+          status: 'skipped',
+          observation: null,
+          processing_time_ms: processingTimeMs,
+          message: 'No observation created (routine operation)'
+        });
+        return;
+      }
+
+      logger.success('WORKER', 'Observation ready (synchronous mode)', {
+        sessionId: sessionDbId,
+        toolUseId,
+        obsId: observation.id,
+        processingTimeMs
+      });
+
+      // ALWAYS TRANSFORM - main + all agent transcripts
+      logger.info('WORKER', '🔄 RUNNING TRANSFORM NOW (main + agents)', { transcriptPath, toolUseId });
+      const transformStats = await transformTranscriptWithAgents(transcriptPath, toolUseId);
+      logger.info('WORKER', '✅ Transcript transformed', {
+        sessionId: sessionDbId,
+        toolUseId,
+        ...transformStats
+      });
+
+      // Persist compression stats to database
+      try {
+        const session = this.dbManager.getSessionStore().getSessionById(sessionDbId);
+        if (session && session.claude_session_id) {
+          this.dbManager.getSessionStore().incrementEndlessModeStats(
+            session.claude_session_id,
+            transformStats.originalTokens,
+            transformStats.compressedTokens
+          );
+          logger.debug('WORKER', 'Endless Mode stats persisted', {
+            claudeSessionId: session.claude_session_id,
+            ...transformStats
+          });
+        } else {
+          logger.warn('WORKER', 'Cannot persist Endless Mode stats - session not found', { sessionDbId });
+        }
+      } catch (statsError) {
+        logger.warn('WORKER', 'Failed to persist Endless Mode stats (non-fatal)', {}, statsError as Error);
+        // Continue anyway - stats persistence failure shouldn't block the hook
+      }
+
+      res.json({
+        status: 'completed',
+        observation,
+        processing_time_ms: processingTimeMs
+      });
+    } catch (error) {
+      // Timeout occurred - fall back to async behavior
+      const processingTimeMs = Date.now() - startTime;
+      logger.warn('WORKER', 'Observation timeout (falling back to async)', {
+        sessionId: sessionDbId,
+        toolUseId,
+        processingTimeMs
+      });
+
+      res.json({
+        status: 'timeout',
+        observation: null,
+        processing_time_ms: processingTimeMs,
+        message: 'Observation creation exceeded timeout, processing continues asynchronously'
+      });
+    }
+  }
+
+  /**
    * Queue observations for processing
    * CRITICAL: Ensures SDK agent is running to process the queue (ALWAYS SAVE EVERYTHING)
+   *
+   * Supports synchronous mode via query parameter: ?wait_until_obs_is_saved=true
+   * In sync mode, waits for observation to be created and returns observation data
    */
-  private handleObservations(req: Request, res: Response): void {
+  private async handleObservations(req: Request, res: Response): Promise<void> {
     try {
       const sessionDbId = parseInt(req.params.sessionDbId, 10);
-      const { tool_name, tool_input, tool_response, prompt_number, cwd } = req.body;
+      const { tool_name, tool_input, tool_response, prompt_number, cwd, tool_use_id, transcript_path } = req.body;
+      const wait_until_obs_is_saved = req.query.wait_until_obs_is_saved === 'true';
+
+      logger.info('HTTP', 'handleObservations called', {
+        sessionDbId,
+        tool_name,
+        tool_use_id,
+        transcript_path,
+        wait_until_obs_is_saved
+      });
+
+      // Early exit for skipped tools - no need to wait or call Claude API
+      if (SKIP_TOOLS.has(tool_name)) {
+        res.json({
+          status: 'skipped',
+          message: `Tool '${tool_name}' is in SKIP_TOOLS list`,
+          processing_time_ms: 0
+        });
+        return;
+      }
 
       this.sessionManager.queueObservation(sessionDbId, {
         tool_name,
         tool_input,
         tool_response,
         prompt_number,
-        cwd
+        cwd,
+        tool_use_id
       });
 
       // CRITICAL: Ensure SDK agent is running to consume the queue
@@ -498,7 +782,14 @@ export class WorkerService {
         sessionDbId
       });
 
-      res.json({ status: 'queued' });
+      // Endless Mode: Synchronous mode - wait for observation to be created
+      const config = getEndlessModeConfig();
+      if (config.enableSynchronousMode && wait_until_obs_is_saved && tool_use_id && session) {
+        await this.waitForObservation(session, tool_use_id, sessionDbId, res, transcript_path);
+      } else {
+        // Async mode (default behavior)
+        res.json({ status: 'queued' });
+      }
     } catch (error) {
       logger.failure('WORKER', 'Observation queuing failed', {}, error as Error);
       res.status(500).json({ error: (error as Error).message });
@@ -816,7 +1107,7 @@ export class WorkerService {
       if (!existsSync(settingsPath)) {
         // Return defaults if file doesn't exist
         res.json({
-          CLAUDE_MEM_MODEL: 'claude-haiku-4-5',
+          CLAUDE_MEM_MODEL: 'claude-sonnet-4-5',
           CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
           CLAUDE_MEM_WORKER_PORT: '37777'
         });
@@ -825,12 +1116,12 @@ export class WorkerService {
 
       const settingsData = readFileSync(settingsPath, 'utf-8');
       const settings = JSON.parse(settingsData);
-      const env = settings.env || {};
+      const env = settings.env || silentDebug('worker-service.handleGetSettings: settings.env is missing', { settingsPath }, {});
 
       res.json({
-        CLAUDE_MEM_MODEL: env.CLAUDE_MEM_MODEL || 'claude-haiku-4-5',
-        CLAUDE_MEM_CONTEXT_OBSERVATIONS: env.CLAUDE_MEM_CONTEXT_OBSERVATIONS || '50',
-        CLAUDE_MEM_WORKER_PORT: env.CLAUDE_MEM_WORKER_PORT || '37777'
+        CLAUDE_MEM_MODEL: env.CLAUDE_MEM_MODEL || silentDebug('worker-service.handleGetSettings: env.CLAUDE_MEM_MODEL is null', {}, 'claude-sonnet-4-5'),
+        CLAUDE_MEM_CONTEXT_OBSERVATIONS: env.CLAUDE_MEM_CONTEXT_OBSERVATIONS || silentDebug('worker-service.handleGetSettings: env.CLAUDE_MEM_CONTEXT_OBSERVATIONS is null', {}, '50'),
+        CLAUDE_MEM_WORKER_PORT: env.CLAUDE_MEM_WORKER_PORT || silentDebug('worker-service.handleGetSettings: env.CLAUDE_MEM_WORKER_PORT is null', {}, '37777')
       });
     } catch (error) {
       logger.failure('WORKER', 'Get settings failed', {}, error as Error);
@@ -1031,6 +1322,98 @@ export class WorkerService {
       }
     } catch (error) {
       logger.failure('WORKER', 'Failed to toggle MCP', { enabled }, error as Error);
+      throw error;
+    }
+  }
+
+  // ============================================================================
+  // Endless Mode Toggle Handlers
+  // ============================================================================
+
+  /**
+   * GET /api/endless-mode/status - Get Endless Mode enabled status
+   */
+  private handleGetEndlessModeStatus(req: Request, res: Response): void {
+    try {
+      const enabled = this.isEndlessModeEnabled();
+      res.json({ enabled });
+    } catch (error) {
+      logger.failure('WORKER', 'Get Endless Mode status failed', {}, error as Error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  }
+
+  /**
+   * POST /api/endless-mode/toggle - Toggle Endless Mode on/off
+   * Body: { enabled: boolean }
+   */
+  private handleToggleEndlessMode(req: Request, res: Response): void {
+    try {
+      const { enabled } = req.body;
+
+      if (typeof enabled !== 'boolean') {
+        res.status(400).json({ error: 'enabled must be a boolean' });
+        return;
+      }
+
+      this.toggleEndlessMode(enabled);
+      res.json({ success: true, enabled: this.isEndlessModeEnabled() });
+    } catch (error) {
+      logger.failure('WORKER', 'Toggle Endless Mode failed', {}, error as Error);
+      res.status(500).json({ success: false, error: (error as Error).message });
+    }
+  }
+
+  // ============================================================================
+  // Endless Mode Toggle Helpers
+  // ============================================================================
+
+  /**
+   * Check if Endless Mode is enabled in ~/.claude-mem/settings.json
+   */
+  private isEndlessModeEnabled(): boolean {
+    const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+
+    if (!existsSync(settingsPath)) {
+      return false;
+    }
+
+    try {
+      const settingsData = readFileSync(settingsPath, 'utf-8');
+      const settings = JSON.parse(settingsData);
+      return settings.env?.CLAUDE_MEM_ENDLESS_MODE === true;
+    } catch (error) {
+      logger.warn('WORKER', 'Failed to read Endless Mode settings', {}, error as Error);
+      return false;
+    }
+  }
+
+  /**
+   * Toggle Endless Mode in ~/.claude-mem/settings.json
+   */
+  private toggleEndlessMode(enabled: boolean): void {
+    try {
+      const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+      let settings: any = { env: {} };
+
+      // Read existing settings if file exists
+      if (existsSync(settingsPath)) {
+        const settingsData = readFileSync(settingsPath, 'utf-8');
+        settings = JSON.parse(settingsData);
+        if (!settings.env) {
+          settings.env = {};
+        }
+      }
+
+      // Update Endless Mode setting
+      settings.env.CLAUDE_MEM_ENDLESS_MODE = enabled;
+
+      // Write back to file
+      writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf-8');
+
+      logger.info('WORKER', `Endless Mode ${enabled ? 'enabled' : 'disabled'}`);
+    } catch (error) {
+      logger.failure('WORKER', 'Failed to toggle Endless Mode', { enabled }, error as Error);
       throw error;
     }
   }
@@ -1406,6 +1789,34 @@ export class WorkerService {
       ]
     });
   }
+
+  /**
+   * Batch lookup observations by tool_use_ids (for Endless Mode transform layer)
+   * Used by hooks to transform transcript JSONL with compressed observations
+   */
+  private handleBatchLookupObservations(req: Request, res: Response): void {
+    try {
+      const { tool_use_ids } = req.body;
+
+      if (!Array.isArray(tool_use_ids)) {
+        res.status(400).json({ error: 'tool_use_ids must be an array' });
+        return;
+      }
+
+      const observationsMap = this.dbManager.getSessionStore().getObservationsByToolUseIds(tool_use_ids);
+
+      // Convert Map to plain object for JSON response
+      const result: Record<string, any> = {};
+      for (const [toolUseId, observation] of observationsMap) {
+        result[toolUseId] = observation;
+      }
+
+      res.json(result);
+    } catch (error: any) {
+      console.error('[WorkerService] Batch lookup error:', error.message);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
 }
 
 // ============================================================================
@@ -1416,8 +1827,8 @@ export class WorkerService {
  * Parse pagination parameters from request
  */
 function parsePaginationParams(req: Request): { offset: number; limit: number; project?: string } {
-  const offset = parseInt(req.query.offset as string, 10) || 0;
-  const limit = Math.min(parseInt(req.query.limit as string, 10) || 20, 100); // Max 100
+  const offset = parseInt(req.query.offset as string, 10) || silentDebug('worker-service.parsePaginationParams: offset parse failed', { queryOffset: req.query.offset }, 0);
+  const limit = Math.min(parseInt(req.query.limit as string, 10) || silentDebug('worker-service.parsePaginationParams: limit parse failed', { queryLimit: req.query.limit }, 20), 100); // Max 100
   const project = req.query.project as string | undefined;
 
   return { offset, limit, project };

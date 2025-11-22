@@ -4,7 +4,7 @@
  */
 
 import { stdin } from 'process';
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync, writeFileSync, renameSync, copyFileSync } from 'fs';
 import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { createHookResponse } from './hook-response.js';
 import { logger } from '../utils/logger.js';
@@ -130,7 +130,7 @@ async function summaryHook(input?: StopInput): Promise<void> {
     throw new Error('summaryHook requires input');
   }
 
-  const { session_id } = input;
+  const { session_id, transcript_path } = input;
 
   // Ensure worker is running
   await ensureWorkerRunning();
@@ -159,7 +159,7 @@ async function summaryHook(input?: StopInput): Promise<void> {
     sdkSessionId: sessionInfo?.sdk_session_id,
     project: sessionInfo?.project,
     promptNumber,
-    observationCount: obsCount?.count || 0,
+    observationCount: obsCount?.count || silentDebug('summary-hook: obsCount.count is null', { sessionDbId }, 0),
     transcriptPath: input.transcript_path
   });
 
@@ -168,8 +168,8 @@ async function summaryHook(input?: StopInput): Promise<void> {
   const port = getWorkerPort();
 
   // Extract last user AND assistant messages from transcript
-  const lastUserMessage = extractLastUserMessage(input.transcript_path || '');
-  const lastAssistantMessage = extractLastAssistantMessage(input.transcript_path || '');
+  const lastUserMessage = extractLastUserMessage(input.transcript_path || silentDebug('summary-hook: transcript_path missing for extractLastUserMessage', { session_id__from_hook }));
+  const lastAssistantMessage = extractLastAssistantMessage(input.transcript_path || silentDebug('summary-hook: transcript_path missing for extractLastAssistantMessage', { session_id__from_hook }));
 
   silentDebug('[summary-hook] Extracted messages', {
     hasLastUserMessage: !!lastUserMessage,

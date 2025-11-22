@@ -1,0 +1,602 @@
+---
+title: "Endless Mode Setup Guide"
+description: "Complete installation and configuration guide for Endless Mode"
+---
+
+# Endless Mode Setup Guide
+
+**Experimental Feature - Beta Release**
+
+Endless Mode enables indefinite Claude Code sessions by compressing tool outputs in real-time, achieving 80-95% token reduction. This guide walks you through installation, configuration, and usage.
+
+---
+
+## Table of Contents
+
+1. [What is Endless Mode?](#what-is-endless-mode)
+2. [Prerequisites](#prerequisites)
+3. [Installation](#installation)
+   - [Mac/Linux](#maclinux)
+   - [Windows](#windows)
+4. [Configuration](#configuration)
+5. [Verification](#verification)
+6. [Usage](#usage)
+7. [Monitoring](#monitoring)
+8. [Troubleshooting](#troubleshooting)
+9. [Disabling/Reverting](#disablingreverting)
+10. [Getting Help](#getting-help)
+
+---
+
+## What is Endless Mode?
+
+Endless Mode is an experimental feature that:
+- **Compresses tool outputs** in real-time using Claude AI
+- **Reduces token usage** by 80-95% in transcripts
+- **Enables extremely long sessions** without hitting context limits
+- **Creates automatic backups** before transformations
+- **Falls back gracefully** on errors or timeouts
+
+**Status**: Beta - Safe to use, but still experimental. Default is OFF.
+
+---
+
+## Prerequisites
+
+Before installing, ensure you have:
+
+- **Node.js** >= 18.0.0 ([Download](https://nodejs.org/))
+- **npm** (comes with Node.js)
+- **Git** ([Download](https://git-scm.com/))
+- **Claude Code** installed and working
+- **Terminal access** (Terminal on Mac/Linux, PowerShell on Windows)
+
+Verify versions:
+```bash
+node --version  # Should show v18.0.0 or higher
+npm --version   # Any recent version
+git --version   # Any recent version
+```
+
+---
+
+## Installation
+
+### Mac/Linux
+
+1. **Clone the repository**
+   ```bash
+   git clone https://github.com/thedotmack/claude-mem.git
+   cd claude-mem
+   ```
+
+2. **Checkout the Endless Mode branch**
+   ```bash
+   git checkout feature/endless-mode-beta-release
+   ```
+
+3. **Install dependencies**
+   ```bash
+   npm install
+   ```
+
+4. **Build the plugin**
+   ```bash
+   npm run build
+   ```
+
+5. **Sync to Claude Code marketplace**
+   ```bash
+   npm run sync-marketplace
+   ```
+
+   This will:
+   - Copy all files to `~/.claude/plugins/marketplaces/thedotmack/`
+   - Install dependencies in the marketplace directory
+
+6. **Restart the worker**
+   ```bash
+   pm2 restart claude-mem-worker
+   ```
+
+✅ **Installation complete!** Proceed to [Configuration](#configuration).
+
+---
+
+### Windows
+
+Windows doesn't have `rsync`, so we'll sync manually.
+
+1. **Clone the repository**
+   ```powershell
+   git clone https://github.com/thedotmack/claude-mem.git
+   cd claude-mem
+   ```
+
+2. **Checkout the Endless Mode branch**
+   ```powershell
+   git checkout feature/endless-mode-beta-release
+   ```
+
+3. **Install dependencies**
+   ```powershell
+   npm install
+   ```
+
+4. **Build the plugin**
+   ```powershell
+   npm run build
+   ```
+
+5. **Sync to Claude Code marketplace (Manual)**
+
+   **Option A: PowerShell Script**
+   ```powershell
+   # Create destination directory if it doesn't exist
+   $dest = "$env:USERPROFILE\.claude\plugins\marketplaces\thedotmack"
+   if (-not (Test-Path $dest)) {
+       New-Item -ItemType Directory -Path $dest -Force
+   }
+
+   # Remove old files (except .git)
+   Get-ChildItem $dest -Exclude .git | Remove-Item -Recurse -Force
+
+   # Copy all files except .git
+   Get-ChildItem -Path . -Exclude .git | Copy-Item -Destination $dest -Recurse -Force
+
+   # Navigate to destination and install dependencies
+   cd $dest
+   npm install
+   ```
+
+   **Option B: Manual Copy**
+   1. Open File Explorer
+   2. Navigate to the `claude-mem` folder you cloned
+   3. Select all files/folders EXCEPT `.git`
+   4. Copy them (Ctrl+C)
+   5. Navigate to `%USERPROFILE%\.claude\plugins\marketplaces\thedotmack\`
+      - Create folders if they don't exist
+   6. Paste and replace all files (Ctrl+V)
+   7. Open PowerShell in that directory
+   8. Run: `npm install`
+
+6. **Restart the worker**
+   ```powershell
+   pm2 restart claude-mem-worker
+   ```
+
+✅ **Installation complete!** Proceed to [Configuration](#configuration).
+
+---
+
+## Configuration
+
+### Enable Endless Mode
+
+1. **Locate settings file**
+   - Mac/Linux: `~/.claude-mem/settings.json`
+   - Windows: `%USERPROFILE%\.claude-mem\settings.json`
+
+2. **Create or edit settings.json**
+   ```json
+   {
+     "env": {
+       "CLAUDE_MEM_ENDLESS_MODE": true
+     }
+   }
+   ```
+
+3. **Restart the worker** for changes to take effect
+   ```bash
+   pm2 restart claude-mem-worker
+   ```
+
+### Optional Settings
+
+You can customize additional settings:
+
+```json
+{
+  "env": {
+    "CLAUDE_MEM_ENDLESS_MODE": true,
+    "CLAUDE_MEM_OBSERVE_EVERYTHING": true,
+    "CLAUDE_MEM_CONTEXT_OBSERVATIONS": "50",
+    "CLAUDE_MEM_MODEL": "claude-sonnet-4-5",
+    "CLAUDE_MEM_ENDLESS_MODE__MAX_TOOL_HISTORY__MB": "50"
+  }
+}
+```
+
+| Setting | Description | Default |
+|---------|-------------|---------|
+| `CLAUDE_MEM_ENDLESS_MODE` | Enable/disable Endless Mode | `false` |
+| `CLAUDE_MEM_OBSERVE_EVERYTHING` | Create observations for all tools | Same as ENDLESS_MODE |
+| `CLAUDE_MEM_CONTEXT_OBSERVATIONS` | Number of observations to inject at session start | `50` |
+| `CLAUDE_MEM_MODEL` | Model to use for compression | `claude-sonnet-4-5` |
+| `CLAUDE_MEM_ENDLESS_MODE__MAX_TOOL_HISTORY__MB` | Max size of rolling backup (MB) | `50` |
+
+---
+
+## Verification
+
+After configuration, verify Endless Mode is working:
+
+### 1. Check Worker Logs
+
+```bash
+npm run worker:logs
+```
+
+Look for:
+```
+[CONFIG] Endless Mode enabled
+```
+
+If you see this, Endless Mode is active! 🎉
+
+### 2. Start a Test Session
+
+1. Open Claude Code
+2. Run a simple command that produces output (e.g., `ls -la`)
+3. Check worker logs for compression messages:
+   ```
+   [HOOK] Observation ready, transforming transcript
+   [HOOK] Transformed tool result (savings: 87%)
+   ```
+
+### 3. Check Backups Directory
+
+Verify backups are being created:
+- Mac/Linux: `ls ~/.claude-mem/backups/`
+- Windows: `dir %USERPROFILE%\.claude-mem\backups\`
+
+You should see timestamped `.jsonl` backup files.
+
+✅ **If all checks pass, Endless Mode is working correctly!**
+
+---
+
+## Usage
+
+### What to Expect
+
+**During Sessions:**
+- Tools may take 1-5 seconds longer to complete (waiting for compression)
+- No visible changes in Claude Code UI
+- Compression happens behind the scenes
+
+**After Sessions:**
+- Check token savings: `npm run endless-mode:metrics`
+- Review backups in `~/.claude-mem/backups/`
+- Sessions can run indefinitely without context limits
+
+### How It Works
+
+1. **Tool executes**: You run a tool (Read, Bash, etc.)
+2. **Hook blocks**: Save hook waits up to 90 seconds for observation
+3. **Claude compresses**: Worker sends tool output to Claude for compression
+4. **Backup created**: Original transcript backed up with timestamp
+5. **Transform applied**: Tool output replaced with compressed observation
+6. **Session continues**: Transcript now 80-95% smaller
+
+### What Gets Compressed
+
+- ✅ Read (large file contents)
+- ✅ Bash (long command outputs)
+- ✅ Grep (many search results)
+- ✅ Glob (file lists)
+- ✅ Edit, Write (file operations)
+- ❌ TodoWrite (meta-tool, not compressed)
+- ❌ AskUserQuestion (user interaction, not compressed)
+- ❌ SlashCommand (invocation only, not compressed)
+
+---
+
+## Monitoring
+
+### View Metrics
+
+See token savings in real-time:
+```bash
+npm run endless-mode:metrics
+```
+
+Example output:
+```
+=== Endless Mode Metrics ===
+Session: claude-mem (ID: S2126)
+Original Tokens: 45,230
+Compressed Tokens: 6,841
+Savings: 84.88%
+Observations Created: 127
+```
+
+### Worker Logs
+
+Monitor compression activity:
+```bash
+npm run worker:logs
+```
+
+Press `Ctrl+C` to stop watching logs.
+
+### Backup Files
+
+Two types of backups are created in `~/.claude-mem/backups/`:
+
+1. **Transcript backups**: `{sessionId}.jsonl.backup.{timestamp}`
+   - Full copies of compressed transcripts
+   - Created before each transformation
+   - For crash recovery
+
+2. **Tool output backup**: `tool-outputs.jsonl`
+   - Rolling backup of original tool outputs (before compression)
+   - Max size configurable (default 50MB)
+   - Enables restoration if you disable Endless Mode
+
+Check backup status:
+```bash
+npm run endless-mode:backup-info
+```
+
+Example output:
+```
+=== Tool Output Backup Info ===
+Size: 12.5 MB
+Entries: 342
+Oldest entry: 2025-11-15T10:30:00.000Z
+Newest entry: 2025-11-20T14:45:00.000Z
+Time span: 5d 4h
+```
+
+---
+
+## Troubleshooting
+
+### Issue: Tools Timing Out
+
+**Symptom**: Logs show "Observation timeout - using full output"
+
+**Cause**: Claude API took > 90 seconds to compress
+
+**Solution**: This is normal! The observation completes in the background, and the full output is used. Your session continues normally.
+
+---
+
+### Issue: Worker Not Starting
+
+**Symptom**: "Connection refused" errors in Claude Code
+
+**Cause**: Worker service not running
+
+**Solution**:
+```bash
+pm2 restart claude-mem-worker
+```
+
+Or if that fails:
+```bash
+pm2 delete claude-mem-worker
+pm2 start ecosystem.config.cjs
+```
+
+---
+
+### Issue: Changes Not Taking Effect
+
+**Symptom**: Settings changed but behavior is the same
+
+**Cause**: Worker not restarted after config change
+
+**Solution**:
+```bash
+pm2 restart claude-mem-worker
+```
+
+Always restart the worker after changing settings.
+
+---
+
+### Issue: Build Errors
+
+**Symptom**: TypeScript compilation failures
+
+**Cause**: Missing dependencies or wrong Node version
+
+**Solution**:
+1. Check Node version: `node --version` (should be >= 18)
+2. Reinstall dependencies: `rm -rf node_modules && npm install`
+3. Rebuild: `npm run build`
+
+---
+
+### Issue: Windows Sync Fails
+
+**Symptom**: `rsync: command not found`
+
+**Cause**: rsync not available on Windows
+
+**Solution**: Use the manual sync method in [Windows Installation](#windows), Option A or B.
+
+---
+
+### Issue: Session Gets Stuck
+
+**Symptom**: Claude Code appears frozen after tool execution
+
+**Cause**: Endless Mode blocking hook waiting for observation
+
+**Solution**:
+1. Wait up to 90 seconds (timeout will trigger)
+2. Check worker logs: `npm run worker:logs`
+3. If consistently stuck, disable Endless Mode temporarily
+
+---
+
+## Disabling/Reverting
+
+### Temporary Disable
+
+Edit `~/.claude-mem/settings.json`:
+```json
+{
+  "env": {
+    "CLAUDE_MEM_ENDLESS_MODE": false
+  }
+}
+```
+
+Restart worker:
+```bash
+pm2 restart claude-mem-worker
+```
+
+### Restore Compressed Transcripts
+
+If you've been using Endless Mode and want to restore your transcripts to their original uncompressed state:
+
+1. **Find your transcript file**
+   - Mac/Linux: `~/.claude/projects/your-project-name/{session-id}.jsonl`
+   - Windows: `%USERPROFILE%\.claude\projects\your-project-name\{session-id}.jsonl`
+
+2. **Restore the transcript**
+   ```bash
+   npm run endless-mode:restore ~/.claude/projects/your-project/{session-id}.jsonl
+   ```
+
+3. **Check output**
+   The script will:
+   - Look up original tool outputs from the backup file
+   - Replace compressed observations with originals
+   - Write restored transcript to `{session-id}.jsonl.restored`
+   - Show stats about what was restored
+
+Example output:
+```
+=== Restore Stats ===
+Total tool results: 45
+Restored from backup: 42
+Missing from backup: 3
+Original size: 12,450 chars
+Restored size: 98,234 chars
+Size change: +689%
+
+✓ Restore complete!
+```
+
+**Note**: Some tool outputs may not be restorable if:
+- The backup file was trimmed (exceeded size limit)
+- The session predates the rolling backup system
+- The backup file was deleted
+
+### Full Revert to Main Branch
+
+1. **Navigate to plugin directory**
+   ```bash
+   cd claude-mem
+   ```
+
+2. **Checkout main branch**
+   ```bash
+   git checkout main
+   ```
+
+3. **Rebuild and sync**
+   ```bash
+   npm run build
+   npm run sync-marketplace  # Mac/Linux
+   # Or manual sync for Windows
+   ```
+
+4. **Restart worker**
+   ```bash
+   pm2 restart claude-mem-worker
+   ```
+
+---
+
+## Getting Help
+
+### Before Reporting Issues
+
+1. **Check worker logs**
+   ```bash
+   npm run worker:logs
+   ```
+
+2. **Verify configuration**
+   - Settings file exists and has correct JSON
+   - Worker restarted after changes
+   - Node version >= 18
+
+3. **Try disabling and re-enabling**
+   - Set `CLAUDE_MEM_ENDLESS_MODE: false`
+   - Restart worker
+   - Set `CLAUDE_MEM_ENDLESS_MODE: true`
+   - Restart worker
+
+### Report Issues
+
+If problems persist:
+
+1. **GitHub Issues**: https://github.com/thedotmack/claude-mem/issues
+2. **Include**:
+   - Operating system and version
+   - Node.js version
+   - Relevant worker log snippets
+   - Settings file content (redact any sensitive info)
+   - Steps to reproduce
+
+### Community
+
+- **Discussions**: Check GitHub Discussions for Q&A
+- **Documentation**: See other guides in `docs/` folder
+
+---
+
+## What's Next?
+
+### Phase 4: User Testing
+
+We're currently in beta testing. Your feedback helps us:
+- Identify edge cases
+- Improve compression quality
+- Optimize performance
+- Refine the user experience
+
+### Future Plans
+
+- Potential to become default in stable release
+- Additional compression strategies
+- Real-time metrics in Claude Code UI
+- Configurable timeout values
+- Batch compression for better performance
+
+---
+
+## Summary
+
+**Quick Start Checklist:**
+
+- ✅ Node.js >= 18 installed
+- ✅ Clone repo and checkout `feature/endless-mode-beta-release`
+- ✅ Run `npm install && npm run build`
+- ✅ Sync to marketplace (platform-specific method)
+- ✅ Edit `~/.claude-mem/settings.json` with `CLAUDE_MEM_ENDLESS_MODE: true`
+- ✅ Restart worker: `pm2 restart claude-mem-worker`
+- ✅ Verify in logs: Look for "Endless Mode enabled"
+- ✅ Test with a session and check metrics
+
+**Key Points:**
+
+- Default is OFF for safety
+- Can be toggled on/off anytime
+- Backups always created automatically
+- Falls back gracefully on errors
+- Monitor with `npm run endless-mode:metrics`
+
+---
+
+**Happy compressing! 🚀**
+
+For questions or issues, visit: https://github.com/thedotmack/claude-mem/issues

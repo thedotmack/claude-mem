@@ -199,6 +199,10 @@ export interface SDKSessionRow {
   status: 'active' | 'completed' | 'failed';
   worker_port?: number;
   prompt_counter?: number;
+  // Endless Mode stats
+  endless_original_tokens?: number;
+  endless_compressed_tokens?: number;
+  endless_tokens_saved?: number;
 }
 
 export interface ObservationRow {
@@ -216,6 +220,7 @@ export interface ObservationRow {
   files_modified: string | null; // JSON array
   prompt_number: number | null;
   discovery_tokens: number; // ROI metrics: tokens spent discovering this observation
+  tool_use_id: string | null; // Endless Mode: Agent SDK tool use ID for context compression
   created_at: string;
   created_at_epoch: number;
 }

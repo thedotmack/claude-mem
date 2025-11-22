@@ -65,7 +65,7 @@ async function queryChroma(
     arguments: arguments_obj
   });
 
-  const resultText = result.content[0]?.text || '';
+  const resultText = result.content[0]?.text || silentDebug('search-server.queryChroma: result.content[0].text is missing', { queryText: query });
   silentDebug('chroma response received', {
     hasContent: !!result.content[0]?.text,
     textLength: resultText.length,
@@ -84,7 +84,7 @@ async function queryChroma(
 
   // Extract unique IDs from document IDs
   const ids: number[] = [];
-  const docIds = parsed.ids?.[0] || [];
+  const docIds = parsed.ids?.[0] || silentDebug('search-server.queryChroma: parsed.ids[0] is missing', { query }, []);
   for (const docId of docIds) {
     // Extract sqlite_id from document ID (supports three formats):
     // - obs_{id}_narrative, obs_{id}_fact_0, etc (observations)
@@ -108,8 +108,8 @@ async function queryChroma(
     }
   }
 
-  const distances = parsed.distances?.[0] || [];
-  const metadatas = parsed.metadatas?.[0] || [];
+  const distances = parsed.distances?.[0] || silentDebug('search-server.queryChroma: parsed.distances[0] is missing', { query }, []);
+  const metadatas = parsed.metadatas?.[0] || silentDebug('search-server.queryChroma: parsed.metadatas[0] is missing', { query }, []);
 
   return { ids, distances, metadatas };
 }
@@ -2563,7 +2563,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   try {
-    return await tool.handler(request.params.arguments || {});
+    return await tool.handler(request.params.arguments || silentDebug('search-server.handleToolCall: request.params.arguments is missing', { toolName: request.params.name }, {}));
   } catch (error: any) {
     return {
       content: [{
