@@ -179,6 +179,10 @@ export class WorkerService {
     this.app.get('/api/mcp/status', this.handleGetMcpStatus.bind(this));
     this.app.post('/api/mcp/toggle', this.handleToggleMcp.bind(this));
 
+    // Endless Mode toggle
+    this.app.get('/api/endless-mode/status', this.handleGetEndlessModeStatus.bind(this));
+    this.app.post('/api/endless-mode/toggle', this.handleToggleEndlessMode.bind(this));
+
     // Search API endpoints (for skill-based search)
     // Unified endpoints (new consolidated API)
     this.app.get('/api/search', this.handleUnifiedSearch.bind(this));
@@ -1318,6 +1322,98 @@ export class WorkerService {
       }
     } catch (error) {
       logger.failure('WORKER', 'Failed to toggle MCP', { enabled }, error as Error);
+      throw error;
+    }
+  }
+
+  // ============================================================================
+  // Endless Mode Toggle Handlers
+  // ============================================================================
+
+  /**
+   * GET /api/endless-mode/status - Get Endless Mode enabled status
+   */
+  private handleGetEndlessModeStatus(req: Request, res: Response): void {
+    try {
+      const enabled = this.isEndlessModeEnabled();
+      res.json({ enabled });
+    } catch (error) {
+      logger.failure('WORKER', 'Get Endless Mode status failed', {}, error as Error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  }
+
+  /**
+   * POST /api/endless-mode/toggle - Toggle Endless Mode on/off
+   * Body: { enabled: boolean }
+   */
+  private handleToggleEndlessMode(req: Request, res: Response): void {
+    try {
+      const { enabled } = req.body;
+
+      if (typeof enabled !== 'boolean') {
+        res.status(400).json({ error: 'enabled must be a boolean' });
+        return;
+      }
+
+      this.toggleEndlessMode(enabled);
+      res.json({ success: true, enabled: this.isEndlessModeEnabled() });
+    } catch (error) {
+      logger.failure('WORKER', 'Toggle Endless Mode failed', {}, error as Error);
+      res.status(500).json({ success: false, error: (error as Error).message });
+    }
+  }
+
+  // ============================================================================
+  // Endless Mode Toggle Helpers
+  // ============================================================================
+
+  /**
+   * Check if Endless Mode is enabled in ~/.claude-mem/settings.json
+   */
+  private isEndlessModeEnabled(): boolean {
+    const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+
+    if (!existsSync(settingsPath)) {
+      return false;
+    }
+
+    try {
+      const settingsData = readFileSync(settingsPath, 'utf-8');
+      const settings = JSON.parse(settingsData);
+      return settings.env?.CLAUDE_MEM_ENDLESS_MODE === true;
+    } catch (error) {
+      logger.warn('WORKER', 'Failed to read Endless Mode settings', {}, error as Error);
+      return false;
+    }
+  }
+
+  /**
+   * Toggle Endless Mode in ~/.claude-mem/settings.json
+   */
+  private toggleEndlessMode(enabled: boolean): void {
+    try {
+      const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+      let settings: any = { env: {} };
+
+      // Read existing settings if file exists
+      if (existsSync(settingsPath)) {
+        const settingsData = readFileSync(settingsPath, 'utf-8');
+        settings = JSON.parse(settingsData);
+        if (!settings.env) {
+          settings.env = {};
+        }
+      }
+
+      // Update Endless Mode setting
+      settings.env.CLAUDE_MEM_ENDLESS_MODE = enabled;
+
+      // Write back to file
+      writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf-8');
+
+      logger.info('WORKER', `Endless Mode ${enabled ? 'enabled' : 'disabled'}`);
+    } catch (error) {
+      logger.failure('WORKER', 'Failed to toggle Endless Mode', { enabled }, error as Error);
       throw error;
     }
   }

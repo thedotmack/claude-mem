@@ -26,6 +26,11 @@ export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, isConne
   const [mcpToggling, setMcpToggling] = useState(false);
   const [mcpStatus, setMcpStatus] = useState('');
 
+  // Endless Mode toggle state (separate from settings)
+  const [endlessModeEnabled, setEndlessModeEnabled] = useState(false);
+  const [endlessModeToggling, setEndlessModeToggling] = useState(false);
+  const [endlessModeStatus, setEndlessModeStatus] = useState('');
+
   // Update settings form state when settings change
   useEffect(() => {
     setModel(settings.CLAUDE_MEM_MODEL || DEFAULT_SETTINGS.CLAUDE_MEM_MODEL);
@@ -39,6 +44,14 @@ export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, isConne
       .then(res => res.json())
       .then(data => setMcpEnabled(data.enabled))
       .catch(error => console.error('Failed to load MCP status:', error));
+  }, []);
+
+  // Fetch Endless Mode status on mount
+  useEffect(() => {
+    fetch('/api/endless-mode/status')
+      .then(res => res.json())
+      .then(data => setEndlessModeEnabled(data.enabled))
+      .catch(error => console.error('Failed to load Endless Mode status:', error));
   }, []);
 
   // Refresh stats when sidebar opens
@@ -82,6 +95,35 @@ export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, isConne
       setTimeout(() => setMcpStatus(''), 3000);
     } finally {
       setMcpToggling(false);
+    }
+  };
+
+  const handleEndlessModeToggle = async (enabled: boolean) => {
+    setEndlessModeToggling(true);
+    setEndlessModeStatus('Toggling...');
+
+    try {
+      const response = await fetch('/api/endless-mode/toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled })
+      });
+
+      const result = await response.json();
+
+      if (result.success) {
+        setEndlessModeEnabled(result.enabled);
+        setEndlessModeStatus('✓ Updated (restart worker to apply)');
+        setTimeout(() => setEndlessModeStatus(''), 5000);
+      } else {
+        setEndlessModeStatus(`✗ Error: ${result.error}`);
+        setTimeout(() => setEndlessModeStatus(''), 5000);
+      }
+    } catch (error) {
+      setEndlessModeStatus(`✗ Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      setTimeout(() => setEndlessModeStatus(''), 5000);
+    } finally {
+      setEndlessModeToggling(false);
     }
   };
 
@@ -189,6 +231,44 @@ export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, isConne
             </div>
             {mcpStatus && (
               <div className="save-status">{mcpStatus}</div>
+            )}
+          </div>
+        </div>
+
+        <div className="settings-section">
+          <h3>Endless Mode (Beta)</h3>
+          <div className="form-group">
+            <label htmlFor="endlessModeEnabled" style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                id="endlessModeEnabled"
+                checked={endlessModeEnabled}
+                onChange={e => handleEndlessModeToggle(e.target.checked)}
+                disabled={endlessModeToggling}
+                style={{ cursor: endlessModeToggling ? 'not-allowed' : 'pointer' }}
+              />
+              Enable Endless Mode
+            </label>
+            <div className="setting-description">
+              Compresses tool outputs in real-time to enable indefinite sessions. Achieves 80-95% token reduction by replacing full outputs with AI-compressed observations.
+              <br /><br />
+              <strong>After toggling, restart the worker:</strong>
+              <br />
+              <code style={{ fontSize: '11px', background: '#1a1a1a', padding: '2px 6px', borderRadius: '3px', display: 'inline-block', marginTop: '4px' }}>
+                npm run worker:restart
+              </code>
+              <br />
+              <a
+                href="https://github.com/thedotmack/claude-mem#-endless-mode-beta"
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ fontSize: '11px', color: '#6b9eff', textDecoration: 'none', marginTop: '4px', display: 'inline-block' }}
+              >
+                Learn more about Endless Mode →
+              </a>
+            </div>
+            {endlessModeStatus && (
+              <div className="save-status">{endlessModeStatus}</div>
             )}
           </div>
         </div>
