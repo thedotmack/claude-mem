@@ -5,7 +5,10 @@ import readline from 'readline';
 import path from 'path';
 
 // Configuration
-const JSONL_PATH = '/Users/alexnewman/.claude/projects/-Users-alexnewman-Scripts-claude-mem/4094399f-bbd7-425b-855a-b985fe9c0dee.jsonl';
+const JSONL_PATH = '/Users/alexnewman/.claude/projects/-Users-alexnewman-Scripts-DuhPaper/f11b0170-6157-4324-a479-66c35686eb69.jsonl';
+const AGENT_FILES = [
+  '/Users/alexnewman/.claude/projects/-Users-alexnewman-Scripts-DuhPaper/agent-f50e2819.jsonl'
+];
 const OUTPUT_JSON = '/tmp/tool-use-analysis.json';
 const OUTPUT_REPORT = '/tmp/tool-use-report.txt';
 
@@ -139,10 +142,10 @@ function extractToolUseIds(jsonLine, lineNumber) {
   }
 }
 
-async function processFile() {
-  console.log(`Analyzing JSONL file: ${JSONL_PATH}\n`);
+async function processFile(filePath, fileLabel) {
+  console.log(`Analyzing ${fileLabel}: ${filePath}`);
 
-  const fileStream = fs.createReadStream(JSONL_PATH);
+  const fileStream = fs.createReadStream(filePath);
   const rl = readline.createInterface({
     input: fileStream,
     crlfDelay: Infinity
@@ -159,8 +162,25 @@ async function processFile() {
       extractToolUseIds(line, lineNumber);
     }
   }
+}
 
-  console.log('Processing complete!\n');
+async function processAllFiles() {
+  console.log('='.repeat(80));
+  console.log('PROCESSING MAIN TRANSCRIPT + AGENT FILES');
+  console.log('='.repeat(80));
+  console.log();
+
+  // Process main transcript
+  await processFile(JSONL_PATH, 'Main transcript');
+
+  // Process agent files
+  for (const agentFile of AGENT_FILES) {
+    if (fs.existsSync(agentFile)) {
+      await processFile(agentFile, 'Agent transcript');
+    }
+  }
+
+  console.log('\nProcessing complete!\n');
   generateOutputs();
 }
 
@@ -285,7 +305,7 @@ function generateReport(data) {
 }
 
 // Run the analysis
-processFile().catch(error => {
+processAllFiles().catch(error => {
   console.error('Fatal error:', error);
   process.exit(1);
 });

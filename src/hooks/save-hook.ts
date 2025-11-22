@@ -309,9 +309,10 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
 
   const db = new SessionStore();
 
-  // Get or create session
-  const session_id__from_hook = session_id;
-  const promptNumber = db.getPromptCounter(session_id__from_hook);
+  // Use createSDKSession for idempotent lookup (same pattern as summary-hook)
+  // This works whether the session is 'active' or not, and matches existing session by UUID
+  const sessionDbId = db.createSDKSession(session_id, '', '');
+  const promptNumber = db.getPromptCounter(sessionDbId);
   db.close();
 
   const toolStr = logger.formatTool(tool_name, tool_input);
@@ -343,7 +344,8 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
   }
 
   logger.dataIn('HOOK', `PostToolUse: ${toolStr}`, {
-    sessionId: session_id__from_hook,
+    sessionDbId,
+    claudeSessionId: session_id,
     workerPort: port,
     toolUseId: extractedToolUseId || silentDebug('tool_use_id not found in transcript', { toolName: tool_name }, '(none)')
   });
@@ -367,7 +369,7 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
     // Set timeout: 30s for Endless Mode (wait for processing), 2s for async
     const timeoutMs = isEndlessModeEnabled ? 30000 : 2000;
 
-    const response = await fetch(`http://127.0.0.1:${port}/sessions/${session_id__from_hook}/observations?wait_until_obs_is_saved=${isEndlessModeEnabled}`, {
+    const response = await fetch(`http://127.0.0.1:${port}/sessions/${sessionDbId}/observations?wait_until_obs_is_saved=${isEndlessModeEnabled}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -375,9 +377,9 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
         tool_input: tool_input !== undefined ? JSON.stringify(tool_input) : '{}',
         tool_response: tool_response !== undefined ? JSON.stringify(tool_response) : '{}',
         prompt_number: promptNumber,
-        cwd: cwd || silentDebug('save-hook: cwd missing', { session_id__from_hook, tool_name }),
+        cwd: cwd || silentDebug('save-hook: cwd missing', { sessionDbId, tool_name }),
         tool_use_id: extractedToolUseId,
-        transcript_path: transcript_path || silentDebug('save-hook: transcript_path missing', { session_id__from_hook, tool_name })
+        transcript_path: transcript_path || silentDebug('save-hook: transcript_path missing', { sessionDbId, tool_name })
       }),
       signal: AbortSignal.timeout(timeoutMs)
     });
@@ -385,7 +387,7 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
     if (!response.ok) {
       const errorText = await response.text();
       logger.failure('HOOK', 'Failed to send observation', {
-        sessionId: session_id__from_hook,
+        sessionDbId,
         status: response.status
       }, errorText);
       // Continue anyway - observation failed but don't block the hook
@@ -395,14 +397,14 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
 
     // Transformation now happens in the worker service after observation is saved
     logger.debug('HOOK', 'Observation sent successfully', {
-      sessionId: session_id__from_hook,
+      sessionDbId,
       toolName: tool_name,
       mode: isEndlessModeEnabled ? 'synchronous (Endless Mode)' : 'async'
     });
   } catch (error: any) {
     // Worker connection errors - suggest restart
     if (error.cause?.code === 'ECONNREFUSED') {
-      logger.failure('HOOK', 'Worker connection refused', { sessionId: session_id__from_hook }, error);
+      logger.failure('HOOK', 'Worker connection refused', { sessionDbId }, error);
       console.log(createHookResponse('PostToolUse', true, "Worker connection failed. Try: pm2 restart claude-mem-worker"));
       return;
     }
@@ -410,7 +412,7 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
     // Timeout errors - just continue (observation will complete in background)
     if (error.name === 'TimeoutError' || error.message?.includes('timed out')) {
       logger.warn('HOOK', 'Observation request timed out - continuing', {
-        sessionId: session_id__from_hook,
+        sessionDbId,
         toolName: tool_name
       });
       console.log(createHookResponse('PostToolUse', true));
@@ -419,7 +421,7 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
 
     // All other errors - log and continue (never block the hook)
     logger.warn('HOOK', 'Observation request failed - continuing anyway', {
-      sessionId: session_id__from_hook,
+      sessionDbId,
       toolName: tool_name,
       error: error.message
     });

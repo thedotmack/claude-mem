@@ -6,7 +6,10 @@ import readline from 'readline';
 
 // Configuration
 const ANALYSIS_JSON = '/tmp/tool-use-analysis.json';
-const JSONL_PATH = '/Users/alexnewman/.claude/projects/-Users-alexnewman-Scripts-claude-mem/4094399f-bbd7-425b-855a-b985fe9c0dee.jsonl';
+const JSONL_PATH = '/Users/alexnewman/.claude/projects/-Users-alexnewman-Scripts-DuhPaper/f11b0170-6157-4324-a479-66c35686eb69.jsonl';
+const AGENT_FILES = [
+  '/Users/alexnewman/.claude/projects/-Users-alexnewman-Scripts-DuhPaper/agent-f50e2819.jsonl'
+];
 const DB_PATH = '/Users/alexnewman/.claude-mem/claude-mem.db';
 
 // Load analysis data to get tool use IDs
@@ -19,14 +22,16 @@ console.log(`Found ${toolUseIds.length} unique tool use IDs\n`);
 const originalContent = new Map();
 
 // Parse transcript to get BOTH tool_use (inputs) and tool_result (outputs) content
-async function loadOriginalContent() {
-  console.log('Loading original content from transcript...');
+async function loadOriginalContentFromFile(filePath, fileLabel) {
+  console.log(`Loading original content from ${fileLabel}...`);
 
-  const fileStream = fs.createReadStream(JSONL_PATH);
+  const fileStream = fs.createReadStream(filePath);
   const rl = readline.createInterface({
     input: fileStream,
     crlfDelay: Infinity
   });
+
+  let count = 0;
 
   for await (const line of rl) {
     if (!line.includes('toolu_')) continue;
@@ -42,6 +47,7 @@ async function loadOriginalContent() {
             existing.input = JSON.stringify(item.input || {});
             existing.name = item.name;
             originalContent.set(item.id, existing);
+            count++;
           }
 
           // Capture tool_result (outputs)
@@ -58,7 +64,23 @@ async function loadOriginalContent() {
     }
   }
 
-  console.log(`Loaded original content for ${originalContent.size} tool uses (inputs + outputs)\n`);
+  console.log(`  → Found ${count} tool uses in ${fileLabel}`);
+}
+
+async function loadOriginalContent() {
+  console.log('Loading original content from transcripts...');
+
+  // Load from main transcript
+  await loadOriginalContentFromFile(JSONL_PATH, 'main transcript');
+
+  // Load from agent files
+  for (const agentFile of AGENT_FILES) {
+    if (fs.existsSync(agentFile)) {
+      await loadOriginalContentFromFile(agentFile, `agent transcript (${agentFile.split('/').pop()})`);
+    }
+  }
+
+  console.log(`\nTotal: Loaded original content for ${originalContent.size} tool uses (inputs + outputs)\n`);
 }
 
 // Query observations from database
