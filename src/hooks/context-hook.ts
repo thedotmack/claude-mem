@@ -523,44 +523,17 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
     }
   }
 
-  // Endless Mode stats section (if enabled)
+  // Endless Mode status
   const endlessModeConfig = EndlessModeConfig.getConfig();
-  if (endlessModeConfig.enabled) {
-    // Get the most recent completed session for this project
-    const lastSession = db.db.prepare(`
-      SELECT claude_session_id, endless_original_tokens, endless_compressed_tokens, endless_tokens_saved
-      FROM sdk_sessions
-      WHERE project = ? AND status = 'completed'
-        AND endless_tokens_saved > 0
-      ORDER BY completed_at_epoch DESC
-      LIMIT 1
-    `).get(project) as {
-      claude_session_id: string;
-      endless_original_tokens: number;
-      endless_compressed_tokens: number;
-      endless_tokens_saved: number;
-    } | undefined;
+  output.push('');
+  output.push('');
 
-    if (lastSession && lastSession.endless_tokens_saved > 0) {
-      output.push('');
-      output.push('');
-
-      if (useColors) {
-        output.push(`${colors.bright}${colors.magenta}🔄 Endless Mode Stats${colors.reset}`);
-        output.push(`${colors.dim}  Tokens saved last session: ${lastSession.endless_tokens_saved.toLocaleString()}${colors.reset}`);
-        output.push(`${colors.dim}  Without compression: ${lastSession.endless_original_tokens.toLocaleString()}t would pile up exponentially${colors.reset}`);
-        output.push(`${colors.dim}  With compression: ${lastSession.endless_compressed_tokens.toLocaleString()}t keeps context manageable${colors.reset}`);
-        const compressionRatio = Math.round((lastSession.endless_tokens_saved / lastSession.endless_original_tokens) * 100);
-        output.push(`${colors.green}  Compression ratio: ${compressionRatio}% reduction${colors.reset}`);
-      } else {
-        output.push(`🔄 **Endless Mode Stats**`);
-        output.push(`- Tokens saved last session: ${lastSession.endless_tokens_saved.toLocaleString()}`);
-        output.push(`- Without compression: ${lastSession.endless_original_tokens.toLocaleString()}t would pile up exponentially`);
-        output.push(`- With compression: ${lastSession.endless_compressed_tokens.toLocaleString()}t keeps context manageable`);
-        const compressionRatio = Math.round((lastSession.endless_tokens_saved / lastSession.endless_original_tokens) * 100);
-        output.push(`- Compression ratio: ${compressionRatio}% reduction`);
-      }
-    }
+  const endlessModeStatus = endlessModeConfig.enabled ? 'On' : 'Off';
+  if (useColors) {
+    const statusColor = endlessModeConfig.enabled ? colors.green : colors.dim;
+    output.push(`${colors.bright}${colors.magenta}🔄 Endless Mode:${colors.reset} ${statusColor}${endlessModeStatus}${colors.reset}`);
+  } else {
+    output.push(`🔄 **Endless Mode:** ${endlessModeStatus}`);
   }
 
   db.close();

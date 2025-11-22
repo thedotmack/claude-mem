@@ -60,58 +60,49 @@ function parseArrayField(field: any, fieldName: string): string[] {
 }
 
 /**
- * Format an observation as markdown for Endless Mode compression
+ * Format observation as plain text (no markdown - AI doesn't need it)
+ * Concatenates only the essential content for maximum compression
  */
 export function formatObservationAsMarkdown(obs: Observation): string {
   const parts: string[] = [];
 
-  // Title and subtitle
-  parts.push(`# ${obs.title}`);
+  // Title and subtitle (plain text, no markdown)
+  parts.push(obs.title);
   if (obs.subtitle) {
-    parts.push(`**${obs.subtitle}**`);
+    parts.push(obs.subtitle);
   }
-  parts.push('');
 
   // Narrative
   if (obs.narrative) {
     parts.push(obs.narrative);
-    parts.push('');
   }
 
-  // Facts
+  // Facts (plain list, no bullets)
   const factsArray = parseArrayField(obs.facts, 'facts');
   if (factsArray.length > 0) {
-    parts.push('**Key Facts:**');
-    factsArray.forEach((fact: string) => parts.push(`- ${fact}`));
-    parts.push('');
+    parts.push(`Facts: ${factsArray.join('; ')}`);
   }
 
   // Concepts
   const conceptsArray = parseArrayField(obs.concepts, 'concepts');
   if (conceptsArray.length > 0) {
-    parts.push(`**Concepts**: ${conceptsArray.join(', ')}`);
-    parts.push('');
+    parts.push(`Concepts: ${conceptsArray.join(', ')}`);
   }
 
   // Files read
   const filesRead = parseArrayField(obs.files_read, 'files_read');
   if (filesRead.length > 0) {
-    parts.push(`**Files Read**: ${filesRead.join(', ')}`);
-    parts.push('');
+    parts.push(`Files read: ${filesRead.join(', ')}`);
   }
 
   // Files modified
   const filesModified = parseArrayField(obs.files_modified, 'files_modified');
   if (filesModified.length > 0) {
-    parts.push(`**Files Modified**: ${filesModified.join(', ')}`);
-    parts.push('');
+    parts.push(`Files modified: ${filesModified.join(', ')}`);
   }
 
-  // Footer
-  parts.push('---');
-  parts.push('*[Compressed by Endless Mode]*');
-
-  return parts.join('\n');
+  // Simple separator between parts (just space, not markdown)
+  return parts.join('. ');
 }
 
 /**
@@ -272,10 +263,10 @@ export async function transformTranscript(
               // Measure original size
               const originalSize = JSON.stringify(toolUse.input).length;
 
-              // Concatenate ALL observations for this tool_use_id
+              // Concatenate ALL observations for this tool_use_id (simple separator, no markdown overhead)
               const concatenatedObservations = observations
                 .map(obs => formatObservationAsMarkdown(obs))
-                .join('\n\n---\n\n');
+                .join(' | ');
               const compressedSize = concatenatedObservations.length;
 
               // Only replace if observation is shorter
@@ -331,10 +322,10 @@ export async function transformTranscript(
               // Measure original size
               const originalSize = JSON.stringify(toolResult.content).length;
 
-              // Concatenate ALL observations for this tool_use_id
+              // Concatenate ALL observations for this tool_use_id (simple separator, no markdown overhead)
               const concatenatedObservations = observations
                 .map(obs => formatObservationAsMarkdown(obs))
-                .join('\n\n---\n\n');
+                .join(' | ');
               const compressedSize = concatenatedObservations.length;
 
               // Only replace if observation is shorter

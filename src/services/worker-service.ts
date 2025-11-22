@@ -32,7 +32,7 @@ import { PaginationHelper } from './worker/PaginationHelper.js';
 import { SettingsManager } from './worker/SettingsManager.js';
 import { SKIP_TOOLS } from '../shared/skip-tools.js';
 import { getConfig as getEndlessModeConfig } from './worker/EndlessModeConfig.js';
-import { transformTranscript } from '../hooks/save-hook.js';
+import { transformTranscriptWithAgents } from '../hooks/save-hook.js';
 
 export class WorkerService {
   private app: express.Application;
@@ -655,14 +655,35 @@ export class WorkerService {
         processingTimeMs
       });
 
-      // ALWAYS TRANSFORM - just fucking do it, let it fail loud
-      logger.info('WORKER', '🔄 RUNNING TRANSFORM NOW', { transcriptPath, toolUseId });
-      const transformStats = await transformTranscript(transcriptPath, toolUseId);
+      // ALWAYS TRANSFORM - main + all agent transcripts
+      logger.info('WORKER', '🔄 RUNNING TRANSFORM NOW (main + agents)', { transcriptPath, toolUseId });
+      const transformStats = await transformTranscriptWithAgents(transcriptPath, toolUseId);
       logger.info('WORKER', '✅ Transcript transformed', {
         sessionId: sessionDbId,
         toolUseId,
         ...transformStats
       });
+
+      // Persist compression stats to database
+      try {
+        const session = this.dbManager.getSessionStore().getSessionById(sessionDbId);
+        if (session && session.claude_session_id) {
+          this.dbManager.getSessionStore().incrementEndlessModeStats(
+            session.claude_session_id,
+            transformStats.originalTokens,
+            transformStats.compressedTokens
+          );
+          logger.debug('WORKER', 'Endless Mode stats persisted', {
+            claudeSessionId: session.claude_session_id,
+            ...transformStats
+          });
+        } else {
+          logger.warn('WORKER', 'Cannot persist Endless Mode stats - session not found', { sessionDbId });
+        }
+      } catch (statsError) {
+        logger.warn('WORKER', 'Failed to persist Endless Mode stats (non-fatal)', {}, statsError as Error);
+        // Continue anyway - stats persistence failure shouldn't block the hook
+      }
 
       res.json({
         status: 'completed',

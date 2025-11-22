@@ -7,7 +7,7 @@ import path from 'path';
 
 // Configuration
 const ANALYSIS_JSON = '/tmp/tool-use-analysis.json';
-const JSONL_PATH = '/Users/alexnewman/.claude/projects/-Users-alexnewman-Scripts-claude-mem/94794a70-174d-47d1-aef5-dfed2872fd39.jsonl';
+const JSONL_PATH = '/Users/alexnewman/.claude/projects/-Users-alexnewman-Scripts-claude-mem/agent-e41f2b47.jsonl';
 const DB_PATH = '/Users/alexnewman/.claude-mem/claude-mem.db';
 
 // Load analysis data to get tool use IDs
