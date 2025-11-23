@@ -38,6 +38,7 @@ import { stdin } from 'process';
 import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { createHookResponse } from './hook-response.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
+import { silentDebug } from '../utils/silent-debug.js';
 
 export interface UserPromptSubmitInput {
   session_id: string;
@@ -55,7 +56,26 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
   }
 
   const { session_id, cwd, prompt } = input;
+
+  // Debug: Log what we received
+  silentDebug('[new-hook] Input received', {
+    session_id,
+    cwd,
+    cwd_type: typeof cwd,
+    cwd_length: cwd?.length,
+    has_cwd: !!cwd,
+    prompt_length: prompt?.length
+  });
+
   const project = path.basename(cwd);
+
+  silentDebug('[new-hook] Project extracted', {
+    project,
+    project_type: typeof project,
+    project_length: project?.length,
+    is_empty: project === '',
+    cwd_was: cwd
+  });
 
   // Ensure worker is running
   await ensureWorkerRunning();

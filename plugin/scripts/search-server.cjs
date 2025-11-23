@@ -423,9 +423,13 @@ ${e.stack}`:e.message;if(Array.isArray(e))return`[${e.length} items]`;let r=Obje
       INSERT OR IGNORE INTO sdk_sessions
       (claude_session_id, sdk_session_id, project, user_prompt, started_at, started_at_epoch, status)
       VALUES (?, ?, ?, ?, ?, ?, 'active')
-    `).run(e,e,r,a,t.toISOString(),n);return i.lastInsertRowid===0||i.changes===0?this.db.prepare(`
+    `).run(e,e,r,a,t.toISOString(),n);return i.lastInsertRowid===0||i.changes===0?(r&&r.trim()!==""&&this.db.prepare(`
+          UPDATE sdk_sessions
+          SET project = ?, user_prompt = ?
+          WHERE claude_session_id = ?
+        `).run(r,a,e),this.db.prepare(`
         SELECT id FROM sdk_sessions WHERE claude_session_id = ? LIMIT 1
-      `).get(e).id:i.lastInsertRowid}updateSDKSessionId(e,r){return this.db.prepare(`
+      `).get(e).id):i.lastInsertRowid}updateSDKSessionId(e,r){return this.db.prepare(`
       UPDATE sdk_sessions
       SET sdk_session_id = ?
       WHERE id = ? AND sdk_session_id IS NULL
