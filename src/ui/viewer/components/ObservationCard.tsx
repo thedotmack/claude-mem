@@ -2,6 +2,12 @@ import React, { useState } from 'react';
 import { Observation } from '../types';
 import { formatDate } from '../utils/formatters';
 
+// Browser-safe fallback helper (uses console.warn instead of file logging)
+const happy_path_error__with_fallback = <T,>(msg: string, context: any, fallback: T): T => {
+  console.warn(`[happy_path_error] ${msg}`, context);
+  return fallback;
+};
+
 interface ObservationCardProps {
   observation: Observation;
 }
@@ -91,7 +97,7 @@ export function ObservationCard({ observation }: ObservationCardProps) {
       </div>
 
       {/* Title */}
-      <div className="card-title">{observation.title || 'Untitled'}</div>
+      <div className="card-title">{observation.title || happy_path_error__with_fallback('observation.title missing', { observation }, 'Untitled')}</div>
 
       {/* Content based on toggle state */}
       <div className="view-mode-content">

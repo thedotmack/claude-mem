@@ -23,6 +23,8 @@ export interface ActiveSession {
   cumulativeOutputTokens: number;  // Track output tokens for discovery cost
   currentToolUseId: string | null; // Endless Mode: currently processing tool_use_id
   pendingObservationResolvers: Map<string, (observation: any) => void>; // Endless Mode: wait for observations
+  lastObservationToolUseId: string | null; // Rolling replacement: tool_use_id of most recent observation
+  toolUsesInCurrentCycle: string[]; // Rolling replacement: tool_use_ids since last observation
 }
 
 export interface PendingMessage {

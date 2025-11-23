@@ -19,7 +19,7 @@ import { homedir } from 'os';
 import { getPackageRoot } from '../shared/paths.js';
 import { getWorkerPort } from '../shared/worker-utils.js';
 import { logger } from '../utils/logger.js';
-import { silentDebug } from '../utils/silent-debug.js';
+import { happy_path_error__with_fallback } from '../utils/silent-debug.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
@@ -124,7 +124,7 @@ export class WorkerService {
 
     // Observations
     if (path.includes('/observations')) {
-      const toolName = body.tool_name || silentDebug('worker-service.logRequest: body.tool_name is null', {}, '?');
+      const toolName = body.tool_name || happy_path_error__with_fallback('worker-service.logRequest: body.tool_name is null', {}, '?');
       const toolInput = body.tool_input;
       const toolSummary = logger.formatTool(toolName, toolInput);
       return `tool=${toolSummary}`;
@@ -356,7 +356,7 @@ export class WorkerService {
       const watch = req.query.watch === 'true';
 
       // Auto-detect current session if no path provided
-      const transcriptPath = filePath || silentDebug('worker-service.handleTranscriptViewer: filePath is null', {}, this.findCurrentTranscript());
+      const transcriptPath = filePath || happy_path_error__with_fallback('worker-service.handleTranscriptViewer: filePath is null', {}, this.findCurrentTranscript());
 
       if (!transcriptPath) {
         res.status(400).json({ error: 'No transcript file found. Please provide a path or start a Claude Code session.' });
@@ -451,7 +451,7 @@ export class WorkerService {
         }
       }
 
-      return mostRecent?.path || silentDebug('worker-service.findCurrentTranscript: No recent transcript found', {}, null);
+      return mostRecent?.path || happy_path_error__with_fallback('worker-service.findCurrentTranscript: No recent transcript found', {}, null);
     } catch (error) {
       logger.failure('WORKER', 'Find current transcript error', {}, error as Error);
       return null;
@@ -656,14 +656,18 @@ export class WorkerService {
       logger.debug('WORKER', 'Observation skipped (synchronous mode)', {
         sessionId: sessionDbId,
         toolUseId,
-        processingTimeMs
+        processingTimeMs,
+        pendingCycleSize: session.toolUsesInCurrentCycle.length
       });
+
+      // Keep tool in pending cycle - will be replaced when next observation arrives
+      session.toolUsesInCurrentCycle.push(toolUseId);
 
       res.json({
         status: 'skipped',
         observation: null,
         processing_time_ms: processingTimeMs,
-        message: 'No observation created (routine operation)'
+        message: 'No observation created (routine operation) - added to pending cycle'
       });
       return;
     }
@@ -676,13 +680,25 @@ export class WorkerService {
       });
 
       // ALWAYS TRANSFORM - main + all agent transcripts
-      logger.info('WORKER', '🔄 RUNNING TRANSFORM NOW (main + agents)', { transcriptPath, toolUseId });
-      const transformStats = await transformTranscriptWithAgents(transcriptPath, toolUseId);
+      logger.info('WORKER', '🔄 RUNNING TRANSFORM NOW (main + agents)', {
+        transcriptPath,
+        toolUseId,
+        cycleToolCount: session.toolUsesInCurrentCycle.length
+      });
+      const transformStats = await transformTranscriptWithAgents(
+        transcriptPath,
+        toolUseId,
+        session.toolUsesInCurrentCycle
+      );
       logger.info('WORKER', '✅ Transcript transformed', {
         sessionId: sessionDbId,
         toolUseId,
         ...transformStats
       });
+
+      // Update timeline state: reset cycle and update last observation point
+      session.lastObservationToolUseId = toolUseId;
+      session.toolUsesInCurrentCycle = [];
 
       // Persist compression stats to database
       try {
@@ -743,6 +759,17 @@ export class WorkerService {
         return;
       }
 
+      // Add tool_use_id to current cycle BEFORE queuing (for rolling replacement)
+      let session = this.sessionManager.getSession(sessionDbId);
+      if (session && tool_use_id) {
+        session.toolUsesInCurrentCycle.push(tool_use_id);
+        logger.debug('WORKER', 'Added tool to current cycle', {
+          sessionId: sessionDbId,
+          toolUseId: tool_use_id,
+          cycleSize: session.toolUsesInCurrentCycle.length
+        });
+      }
+
       this.sessionManager.queueObservation(sessionDbId, {
         tool_name,
         tool_input,
@@ -753,7 +780,7 @@ export class WorkerService {
       });
 
       // CRITICAL: Ensure SDK agent is running to consume the queue
-      const session = this.sessionManager.getSession(sessionDbId);
+      session = this.sessionManager.getSession(sessionDbId);
       if (session && !session.generatorPromise) {
         logger.info('SESSION', 'Generator auto-starting (observation)', {
           sessionId: sessionDbId,
@@ -1116,12 +1143,12 @@ export class WorkerService {
 
       const settingsData = readFileSync(settingsPath, 'utf-8');
       const settings = JSON.parse(settingsData);
-      const env = settings.env || silentDebug('worker-service.handleGetSettings: settings.env is missing', { settingsPath }, {});
+      const env = settings.env || happy_path_error__with_fallback('worker-service.handleGetSettings: settings.env is missing', { settingsPath }, {});
 
       res.json({
-        CLAUDE_MEM_MODEL: env.CLAUDE_MEM_MODEL || silentDebug('worker-service.handleGetSettings: env.CLAUDE_MEM_MODEL is null', {}, 'claude-sonnet-4-5'),
-        CLAUDE_MEM_CONTEXT_OBSERVATIONS: env.CLAUDE_MEM_CONTEXT_OBSERVATIONS || silentDebug('worker-service.handleGetSettings: env.CLAUDE_MEM_CONTEXT_OBSERVATIONS is null', {}, '50'),
-        CLAUDE_MEM_WORKER_PORT: env.CLAUDE_MEM_WORKER_PORT || silentDebug('worker-service.handleGetSettings: env.CLAUDE_MEM_WORKER_PORT is null', {}, '37777')
+        CLAUDE_MEM_MODEL: env.CLAUDE_MEM_MODEL || happy_path_error__with_fallback('worker-service.handleGetSettings: env.CLAUDE_MEM_MODEL is null', {}, 'claude-sonnet-4-5'),
+        CLAUDE_MEM_CONTEXT_OBSERVATIONS: env.CLAUDE_MEM_CONTEXT_OBSERVATIONS || happy_path_error__with_fallback('worker-service.handleGetSettings: env.CLAUDE_MEM_CONTEXT_OBSERVATIONS is null', {}, '50'),
+        CLAUDE_MEM_WORKER_PORT: env.CLAUDE_MEM_WORKER_PORT || happy_path_error__with_fallback('worker-service.handleGetSettings: env.CLAUDE_MEM_WORKER_PORT is null', {}, '37777')
       });
     } catch (error) {
       logger.failure('WORKER', 'Get settings failed', {}, error as Error);
@@ -1827,8 +1854,8 @@ export class WorkerService {
  * Parse pagination parameters from request
  */
 function parsePaginationParams(req: Request): { offset: number; limit: number; project?: string } {
-  const offset = parseInt(req.query.offset as string, 10) || silentDebug('worker-service.parsePaginationParams: offset parse failed', { queryOffset: req.query.offset }, 0);
-  const limit = Math.min(parseInt(req.query.limit as string, 10) || silentDebug('worker-service.parsePaginationParams: limit parse failed', { queryLimit: req.query.limit }, 20), 100); // Max 100
+  const offset = parseInt(req.query.offset as string, 10) || happy_path_error__with_fallback('worker-service.parsePaginationParams: offset parse failed', { queryOffset: req.query.offset }, 0);
+  const limit = Math.min(parseInt(req.query.limit as string, 10) || happy_path_error__with_fallback('worker-service.parsePaginationParams: limit parse failed', { queryLimit: req.query.limit }, 20), 100); // Max 100
   const project = req.query.project as string | undefined;
 
   return { offset, limit, project };

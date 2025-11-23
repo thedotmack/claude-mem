@@ -11,7 +11,7 @@
 import { EventEmitter } from 'events';
 import { DatabaseManager } from './DatabaseManager.js';
 import { logger } from '../../utils/logger.js';
-import { silentDebug } from '../../utils/silent-debug.js';
+import { happy_path_error__with_fallback } from '../../utils/silent-debug.js';
 import type { ActiveSession, PendingMessage, ObservationData } from '../worker-types.js';
 
 export class SessionManager {
@@ -43,7 +43,7 @@ export class SessionManager {
       // in the database but the in-memory session still has the stale empty value
       const dbSession = this.dbManager.getSessionById(sessionDbId);
       if (dbSession.project && dbSession.project !== session.project) {
-        silentDebug('[SessionManager] Updating project from database', {
+        happy_path_error__with_fallback('[SessionManager] Updating project from database', {
           sessionDbId,
           oldProject: session.project,
           newProject: dbSession.project
@@ -53,16 +53,16 @@ export class SessionManager {
 
       // Update userPrompt for continuation prompts
       if (currentUserPrompt) {
-        silentDebug('[SessionManager] Updating userPrompt for continuation', {
+        happy_path_error__with_fallback('[SessionManager] Updating userPrompt for continuation', {
           sessionDbId,
           promptNumber,
           oldPrompt: session.userPrompt,
           newPrompt: currentUserPrompt
         });
         session.userPrompt = currentUserPrompt;
-        session.lastPromptNumber = promptNumber || silentDebug('SessionManager.getOrCreateSession: promptNumber is null for existing session', { sessionDbId, currentPromptNumber: session.lastPromptNumber }, session.lastPromptNumber);
+        session.lastPromptNumber = promptNumber || happy_path_error__with_fallback('SessionManager.getOrCreateSession: promptNumber is null for existing session', { sessionDbId, currentPromptNumber: session.lastPromptNumber }, session.lastPromptNumber);
       } else {
-        silentDebug('[SessionManager] No currentUserPrompt provided for existing session', {
+        happy_path_error__with_fallback('[SessionManager] No currentUserPrompt provided for existing session', {
           sessionDbId,
           promptNumber,
           usingCachedPrompt: session.userPrompt
@@ -75,16 +75,16 @@ export class SessionManager {
     const dbSession = this.dbManager.getSessionById(sessionDbId);
 
     // Use currentUserPrompt if provided, otherwise fall back to database (first prompt)
-    const userPrompt = currentUserPrompt || silentDebug('SessionManager.getOrCreateSession: currentUserPrompt is null for new session', { sessionDbId, dbPrompt: dbSession.user_prompt }, dbSession.user_prompt);
+    const userPrompt = currentUserPrompt || happy_path_error__with_fallback('SessionManager.getOrCreateSession: currentUserPrompt is null for new session', { sessionDbId, dbPrompt: dbSession.user_prompt }, dbSession.user_prompt);
 
     if (!currentUserPrompt) {
-      silentDebug('[SessionManager] No currentUserPrompt provided for new session, using database', {
+      happy_path_error__with_fallback('[SessionManager] No currentUserPrompt provided for new session, using database', {
         sessionDbId,
         promptNumber,
         dbPrompt: dbSession.user_prompt
       });
     } else {
-      silentDebug('[SessionManager] Initializing session with fresh userPrompt', {
+      happy_path_error__with_fallback('[SessionManager] Initializing session with fresh userPrompt', {
         sessionDbId,
         promptNumber,
         userPrompt: currentUserPrompt
@@ -101,12 +101,14 @@ export class SessionManager {
       pendingMessages: [],
       abortController: new AbortController(),
       generatorPromise: null,
-      lastPromptNumber: promptNumber || silentDebug('SessionManager.getOrCreateSession: promptNumber is null, fetching from DB', { sessionDbId }, this.dbManager.getSessionStore().getPromptCounter(sessionDbId)),
+      lastPromptNumber: promptNumber || happy_path_error__with_fallback('SessionManager.getOrCreateSession: promptNumber is null, fetching from DB', { sessionDbId }, this.dbManager.getSessionStore().getPromptCounter(sessionDbId)),
       startTime: Date.now(),
       cumulativeInputTokens: 0,
       cumulativeOutputTokens: 0,
       currentToolUseId: null,
-      pendingObservationResolvers: new Map()
+      pendingObservationResolvers: new Map(),
+      lastObservationToolUseId: null,
+      toolUsesInCurrentCycle: []
     };
 
     this.sessions.set(sessionDbId, session);

@@ -1,4 +1,4 @@
-import { silentDebug } from '../utils/silent-debug.js';
+import { happy_path_error__with_fallback } from '../utils/silent-debug.js';
 
 export type HookType = 'PreCompact' | 'SessionStart' | 'UserPromptSubmit' | 'PostToolUse' | 'Stop' | string;
 
@@ -32,7 +32,7 @@ function buildHookResponse(
 
     return {
       continue: false,
-      stopReason: options.reason || silentDebug('hook-response: options.reason is null', {}, 'Pre-compact operation failed'),
+      stopReason: options.reason || happy_path_error__with_fallback('hook-response: options.reason is null', {}, 'Pre-compact operation failed'),
       suppressOutput: true
     };
   }

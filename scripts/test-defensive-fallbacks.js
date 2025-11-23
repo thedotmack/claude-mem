@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Test to find defensive fallback patterns that hide silent failures
+ * Test to find defensive fallback ("or" logic validation test for silentDebug) patterns that hide silent failures
  * Searches for: || '', || null, || undefined, || {}, || [], etc.
  */
 

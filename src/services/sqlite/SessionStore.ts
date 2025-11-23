@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import { DATA_DIR, DB_PATH, ensureDir } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
-import { silentDebug } from '../../utils/silent-debug.js';
+import { happy_path_error__with_fallback } from '../../utils/silent-debug.js';
 import type { ObservationRow } from './types.js';
 
 /**
@@ -863,7 +863,7 @@ export class SessionStore {
       WHERE id = ?
     `);
 
-    return stmt.get(id) as any || silentDebug('SessionStore.getObservationById: No observation found', { id }, null);
+    return stmt.get(id) as any || happy_path_error__with_fallback('SessionStore.getObservationById: No observation found', { id }, null);
   }
 
   /**
@@ -918,7 +918,7 @@ export class SessionStore {
       LIMIT 1
     `);
 
-    return stmt.get(sdkSessionId) as any || silentDebug('SessionStore.getSummaryForSession: No summary found', { sdkSessionId }, null);
+    return stmt.get(sdkSessionId) as any || happy_path_error__with_fallback('SessionStore.getSummaryForSession: No summary found', { sdkSessionId }, null);
   }
 
   /**
@@ -991,7 +991,7 @@ export class SessionStore {
       LIMIT 1
     `);
 
-    return stmt.get(id) as any || silentDebug('SessionStore.getSessionById: No session found', { id }, null);
+    return stmt.get(id) as any || happy_path_error__with_fallback('SessionStore.getSessionById: No session found', { id }, null);
   }
 
   /**
@@ -1010,7 +1010,7 @@ export class SessionStore {
       LIMIT 1
     `);
 
-    return stmt.get(claudeSessionId) as any || silentDebug('SessionStore.findActiveSDKSession: No active session found', { claudeSessionId }, null);
+    return stmt.get(claudeSessionId) as any || happy_path_error__with_fallback('SessionStore.findActiveSDKSession: No active session found', { claudeSessionId }, null);
   }
 
   /**
@@ -1024,7 +1024,7 @@ export class SessionStore {
       LIMIT 1
     `);
 
-    return stmt.get(claudeSessionId) as any || silentDebug('SessionStore.findAnySDKSession: No session found', { claudeSessionId }, null);
+    return stmt.get(claudeSessionId) as any || happy_path_error__with_fallback('SessionStore.findAnySDKSession: No session found', { claudeSessionId }, null);
   }
 
   /**
@@ -1056,7 +1056,7 @@ export class SessionStore {
       SELECT prompt_counter FROM sdk_sessions WHERE id = ?
     `).get(id) as { prompt_counter: number } | undefined;
 
-    return result?.prompt_counter || silentDebug('SessionStore.incrementPromptCounter: result or prompt_counter is null', { id }, 1);
+    return result?.prompt_counter || happy_path_error__with_fallback('SessionStore.incrementPromptCounter: result or prompt_counter is null', { id }, 1);
   }
 
   /**
@@ -1067,7 +1067,7 @@ export class SessionStore {
       SELECT prompt_counter FROM sdk_sessions WHERE id = ?
     `).get(id) as { prompt_counter: number | null } | undefined;
 
-    return result?.prompt_counter || silentDebug('SessionStore.getPromptCounter: prompt_counter is null', { id }, 0);
+    return result?.prompt_counter || happy_path_error__with_fallback('SessionStore.getPromptCounter: prompt_counter is null', { id }, 0);
   }
 
   /**
@@ -1186,7 +1186,7 @@ export class SessionStore {
     `);
 
     const result = stmt.get(id) as { worker_port: number | null } | undefined;
-    return result?.worker_port || silentDebug('SessionStore.getWorkerPort: worker_port is null', { id }, null);
+    return result?.worker_port || happy_path_error__with_fallback('SessionStore.getWorkerPort: worker_port is null', { id }, null);
   }
 
   /**
@@ -1271,9 +1271,9 @@ export class SessionStore {
       JSON.stringify(observation.concepts),
       JSON.stringify(observation.files_read),
       JSON.stringify(observation.files_modified),
-      promptNumber || silentDebug('SessionStore.storeObservation: promptNumber is null', { sdkSessionId }, null),
+      promptNumber || happy_path_error__with_fallback('SessionStore.storeObservation: promptNumber is null', { sdkSessionId }, null),
       discoveryTokens,
-      observation.tool_use_id || silentDebug('SessionStore.storeObservation: tool_use_id is null', { sdkSessionId }, null),
+      observation.tool_use_id || happy_path_error__with_fallback('SessionStore.storeObservation: tool_use_id is null', { sdkSessionId }, null),
       now.toISOString(),
       nowEpoch
     );
@@ -1296,7 +1296,7 @@ export class SessionStore {
     `);
 
     const result = stmt.get(toolUseId) as ObservationRow | undefined;
-    return result || silentDebug('SessionStore.getObservationByToolUseId: No observation found', { toolUseId }, null);
+    return result || happy_path_error__with_fallback('SessionStore.getObservationByToolUseId: No observation found', { toolUseId }, null);
   }
 
   /**
@@ -1402,7 +1402,7 @@ export class SessionStore {
       summary.completed,
       summary.next_steps,
       summary.notes,
-      promptNumber || silentDebug('SessionStore.storeSummary: promptNumber is null', { sdkSessionId }, null),
+      promptNumber || happy_path_error__with_fallback('SessionStore.storeSummary: promptNumber is null', { sdkSessionId }, null),
       discoveryTokens,
       now.toISOString(),
       nowEpoch
@@ -1706,9 +1706,9 @@ export class SessionStore {
     if (!result) return null;
 
     return {
-      originalTokens: result.endless_original_tokens || silentDebug('SessionStore.getEndlessModeStats: endless_original_tokens is null', { claudeSessionId }, 0),
-      compressedTokens: result.endless_compressed_tokens || silentDebug('SessionStore.getEndlessModeStats: endless_compressed_tokens is null', { claudeSessionId }, 0),
-      tokensSaved: result.endless_tokens_saved || silentDebug('SessionStore.getEndlessModeStats: endless_tokens_saved is null', { claudeSessionId }, 0)
+      originalTokens: result.endless_original_tokens || happy_path_error__with_fallback('SessionStore.getEndlessModeStats: endless_original_tokens is null', { claudeSessionId }, 0),
+      compressedTokens: result.endless_compressed_tokens || happy_path_error__with_fallback('SessionStore.getEndlessModeStats: endless_compressed_tokens is null', { claudeSessionId }, 0),
+      tokensSaved: result.endless_tokens_saved || happy_path_error__with_fallback('SessionStore.getEndlessModeStats: endless_tokens_saved is null', { claudeSessionId }, 0)
     };
   }
 

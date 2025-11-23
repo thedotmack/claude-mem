@@ -3,6 +3,12 @@ import { Settings, Stats } from '../types';
 import { DEFAULT_SETTINGS } from '../constants/settings';
 import { formatUptime, formatBytes } from '../utils/formatters';
 
+// Browser-safe fallback helper (uses console.warn instead of file logging)
+const happy_path_error__with_fallback = <T,>(msg: string, context: any, fallback: T): T => {
+  console.warn(`[happy_path_error] ${msg}`, context);
+  return fallback;
+};
+
 interface SidebarProps {
   isOpen: boolean;
   settings: Settings;
@@ -342,7 +348,7 @@ export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, isConne
           <div className="stats-grid">
             <div className="stat">
               <div className="stat-label">Version</div>
-              <div className="stat-value">{stats.worker?.version || '-'}</div>
+              <div className="stat-value">{stats.worker?.version || happy_path_error__with_fallback('stats.worker.version missing', { stats }, '-')}</div>
             </div>
             <div className="stat">
               <div className="stat-label">Uptime</div>
@@ -350,11 +356,11 @@ export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, isConne
             </div>
             <div className="stat">
               <div className="stat-label">Active Sessions</div>
-              <div className="stat-value">{stats.worker?.activeSessions || '0'}</div>
+              <div className="stat-value">{stats.worker?.activeSessions || happy_path_error__with_fallback('stats.worker.activeSessions missing', { stats }, '0')}</div>
             </div>
             <div className="stat">
               <div className="stat-label">SSE Clients</div>
-              <div className="stat-value">{stats.worker?.sseClients || '0'}</div>
+              <div className="stat-value">{stats.worker?.sseClients || happy_path_error__with_fallback('stats.worker.sseClients missing', { stats }, '0')}</div>
             </div>
           </div>
         </div>
@@ -368,15 +374,15 @@ export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, isConne
             </div>
             <div className="stat">
               <div className="stat-label">Observations</div>
-              <div className="stat-value">{stats.database?.observations || '0'}</div>
+              <div className="stat-value">{stats.database?.observations || happy_path_error__with_fallback('stats.database.observations missing', { stats }, '0')}</div>
             </div>
             <div className="stat">
               <div className="stat-label">Sessions</div>
-              <div className="stat-value">{stats.database?.sessions || '0'}</div>
+              <div className="stat-value">{stats.database?.sessions || happy_path_error__with_fallback('stats.database.sessions missing', { stats }, '0')}</div>
             </div>
             <div className="stat">
               <div className="stat-label">Summaries</div>
-              <div className="stat-value">{stats.database?.summaries || '0'}</div>
+              <div className="stat-value">{stats.database?.summaries || happy_path_error__with_fallback('stats.database.summaries missing', { stats }, '0')}</div>
             </div>
           </div>
         </div>

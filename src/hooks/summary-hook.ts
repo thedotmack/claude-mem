@@ -9,7 +9,7 @@ import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { createHookResponse } from './hook-response.js';
 import { logger } from '../utils/logger.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
-import { silentDebug } from '../utils/silent-debug.js';
+import { happy_path_error__with_fallback } from '../utils/silent-debug.js';
 
 export interface StopInput {
   session_id: string;
@@ -156,13 +156,13 @@ async function summaryHook(input?: StopInput): Promise<void> {
     WHERE sdk_session_id = ?
   `).get(sessionInfo?.sdk_session_id) as { count: number };
 
-  silentDebug('[summary-hook] Session diagnostics', {
+  happy_path_error__with_fallback('[summary-hook] Session diagnostics', {
     claudeSessionId: session_id,
     sessionDbId,
     sdkSessionId: sessionInfo?.sdk_session_id,
     project: sessionInfo?.project,
     promptNumber,
-    observationCount: obsCount?.count || silentDebug('summary-hook: obsCount.count is null', { sessionDbId }, 0),
+    observationCount: obsCount?.count || happy_path_error__with_fallback('summary-hook: obsCount.count is null', { sessionDbId }, 0),
     transcriptPath: input.transcript_path
   });
 
@@ -171,10 +171,10 @@ async function summaryHook(input?: StopInput): Promise<void> {
   const port = getWorkerPort();
 
   // Extract last user AND assistant messages from transcript
-  const lastUserMessage = extractLastUserMessage(input.transcript_path || silentDebug('summary-hook: transcript_path missing for extractLastUserMessage', { session_id__from_hook }));
-  const lastAssistantMessage = extractLastAssistantMessage(input.transcript_path || silentDebug('summary-hook: transcript_path missing for extractLastAssistantMessage', { session_id__from_hook }));
+  const lastUserMessage = extractLastUserMessage(input.transcript_path || happy_path_error__with_fallback('summary-hook: transcript_path missing for extractLastUserMessage', { session_id__from_hook }));
+  const lastAssistantMessage = extractLastAssistantMessage(input.transcript_path || happy_path_error__with_fallback('summary-hook: transcript_path missing for extractLastAssistantMessage', { session_id__from_hook }));
 
-  silentDebug('[summary-hook] Extracted messages', {
+  happy_path_error__with_fallback('[summary-hook] Extracted messages', {
     hasLastUserMessage: !!lastUserMessage,
     hasLastAssistantMessage: !!lastAssistantMessage,
     lastAssistantPreview: lastAssistantMessage.substring(0, 200),
@@ -201,7 +201,7 @@ async function summaryHook(input?: StopInput): Promise<void> {
       signal: AbortSignal.timeout(
         parseInt(
           process.env.CLAUDE_MEM_SUMMARY_TIMEOUT_MS ||
-          (silentDebug('CLAUDE_MEM_SUMMARY_TIMEOUT_MS not set, using default 90000ms'), '90000'),
+          (happy_path_error__with_fallback('CLAUDE_MEM_SUMMARY_TIMEOUT_MS not set, using default 90000ms'), '90000'),
           10
         )
       )

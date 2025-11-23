@@ -41,7 +41,7 @@ import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
 import { transformTranscriptWithAgents } from './save-hook.js';
 import { EndlessModeConfig } from '../services/worker/EndlessModeConfig.js';
 import { logger } from '../utils/logger.js';
-import { silentDebug } from '../utils/silent-debug.js';
+import { happy_path_error__with_fallback } from '../utils/silent-debug.js';
 
 export interface UserPromptSubmitInput {
   session_id: string;
@@ -62,7 +62,7 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
   const { session_id, cwd, prompt, transcript_path } = input;
 
   // Debug: Log what we received
-  silentDebug('[new-hook] Input received', {
+  happy_path_error__with_fallback('[new-hook] Input received', {
     session_id,
     cwd,
     cwd_type: typeof cwd,
@@ -73,7 +73,7 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
 
   const project = path.basename(cwd);
 
-  silentDebug('[new-hook] Project extracted', {
+  happy_path_error__with_fallback('[new-hook] Project extracted', {
     project,
     project_type: typeof project,
     project_length: project?.length,

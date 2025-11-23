@@ -12,7 +12,7 @@ import { createHookResponse } from './hook-response.js';
 import { logger } from '../utils/logger.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
 import { EndlessModeConfig } from '../services/worker/EndlessModeConfig.js';
-import { silentDebug } from '../utils/silent-debug.js';
+import { happy_path_error__with_fallback } from '../utils/silent-debug.js';
 import { BACKUPS_DIR, createBackupFilename, ensureDir } from '../shared/paths.js';
 import { appendToolOutput, trimBackupFile } from '../shared/tool-output-backup.js';
 import type { TranscriptEntry, AssistantTranscriptEntry, ToolUseContent, UserTranscriptEntry, ToolResultContent } from '../types/transcript.js';
@@ -60,14 +60,16 @@ function parseArrayField(field: any, fieldName: string): string[] {
 }
 
 /**
- * Format observation as plain text (no markdown - AI doesn't need it)
- * Concatenates only the essential content for maximum compression
+ * Format observation as markdown section
+ * Creates a structured markdown block with the observation title as heading
  */
 export function formatObservationAsMarkdown(obs: Observation): string {
   const parts: string[] = [];
 
-  // Title and subtitle (plain text, no markdown)
-  parts.push(obs.title);
+  // Title as markdown heading
+  parts.push(`## ${obs.title}`);
+
+  // Subtitle (if present)
   if (obs.subtitle) {
     parts.push(obs.subtitle);
   }
@@ -101,8 +103,8 @@ export function formatObservationAsMarkdown(obs: Observation): string {
     parts.push(`Files modified: ${filesModified.join(', ')}`);
   }
 
-  // Simple separator between parts (just space, not markdown)
-  return parts.join('. ');
+  // Join with double newlines for markdown formatting
+  return parts.join('\n\n');
 }
 
 /**
@@ -161,21 +163,23 @@ async function discoverAgentFiles(mainTranscriptPath: string): Promise<string[]>
  */
 export async function transformTranscriptWithAgents(
   mainTranscriptPath: string,
-  toolUseId: string
+  toolUseId: string,
+  toolUsesInCurrentCycle: string[] = []
 ): Promise<{ originalTokens: number; compressedTokens: number }> {
   // Discover agent files
   const agentFiles = await discoverAgentFiles(mainTranscriptPath);
 
   // Transform main transcript
-  const mainStats = await transformTranscript(mainTranscriptPath, toolUseId);
+  const mainStats = await transformTranscript(mainTranscriptPath, toolUseId, toolUsesInCurrentCycle);
 
-  // Transform all agent transcripts
+  // Transform all agent transcripts (agents maintain separate timeline state)
   let agentOriginalTokens = 0;
   let agentCompressedTokens = 0;
 
   for (const agentFile of agentFiles) {
     try {
-      const agentStats = await transformTranscript(agentFile, toolUseId);
+      // Agents get empty cycle array - they track their own timeline independently
+      const agentStats = await transformTranscript(agentFile, toolUseId, []);
       agentOriginalTokens += agentStats.originalTokens;
       agentCompressedTokens += agentStats.compressedTokens;
     } catch (error) {
@@ -192,20 +196,24 @@ export async function transformTranscriptWithAgents(
 }
 
 /**
- * Transform transcript JSONL file by replacing BOTH tool inputs and outputs with compressed observations
+ * Transform transcript using rolling replacement strategy
  *
- * Transforms both directions:
- * 1. Assistant entries: Replace tool_use.input with observation (if shorter)
- * 2. User entries: Replace tool_result.content with observation (if shorter)
- * 3. Already-transformed entries skip automatically (observation won't be shorter)
+ * Key concept: Replace ALL tool uses between last observation and current observation
+ * with a single assistant message containing all observations in markdown format.
+ *
+ * This creates a "rolling replacement" where:
+ * - User prompt → tools execute → observations arrive
+ * - When observations arrive, ALL preceding tool uses get replaced
+ * - Next user prompt → more tools → more observations arrive
+ * - Process repeats, progressively compressing the transcript
  *
  * ALWAYS creates timestamped backup before transformation for data safety
- *
  * Returns compression stats for tracking
  */
 export async function transformTranscript(
   transcriptPath: string,
-  toolUseId: string
+  toolUseId: string,
+  toolUsesInCurrentCycle: string[] = []
 ): Promise<{ originalTokens: number; compressedTokens: number }> {
   // ALWAYS create backup before transformation
   try {
@@ -235,137 +243,215 @@ export async function transformTranscript(
   // Open database connection once for all lookups
   const db = new SessionStore();
 
-  // Process each line - transform BOTH inputs and outputs
-  const transformedLines = lines.map((line, i) => {
-    if (!line.trim()) return line;
+  // Fetch ALL observations for current tool_use_id (including suffixed ones like toolu_123__1, toolu_123__2)
+  const allObservations = db.getAllObservationsForToolUseId(toolUseId);
+
+  if (allObservations.length === 0) {
+    // No observations to process - return unchanged
+    db.close();
+    logger.debug('HOOK', 'No observations found for rolling replacement', { toolUseId });
+    return { originalTokens: 0, compressedTokens: 0 };
+  }
+
+  // Build the set of tool_use_ids to replace (current cycle)
+  const toolIdsToReplace = new Set(toolUsesInCurrentCycle);
+  toolIdsToReplace.add(toolUseId); // Always include current tool
+
+  logger.info('HOOK', 'Rolling replacement scope', {
+    toolUseId,
+    cycleSize: toolIdsToReplace.size,
+    observationCount: allObservations.length
+  });
+
+  // Format all observations as markdown sections
+  const observationMarkdown = allObservations
+    .map(obs => formatObservationAsMarkdown(obs))
+    .join('\n\n');
+
+  // Build replacement assistant message
+  const assistantMessage: AssistantTranscriptEntry = {
+    type: 'assistant',
+    message: {
+      role: 'assistant',
+      content: [{
+        type: 'text',
+        text: observationMarkdown
+      }]
+    }
+  };
+
+  const compressedSize = observationMarkdown.length;
+
+  // Pre-scan transcript to validate tool_use/tool_result pairs exist
+  // Only remove pairs when BOTH exist to avoid breaking API contract
+  const validatedToolIds = new Set<string>();
+  const toolUseIds = new Set<string>();
+  const toolResultIds = new Set<string>();
+
+  for (const line of lines) {
+    if (!line.trim()) continue;
 
     try {
       const entry: TranscriptEntry = JSON.parse(line);
 
-      if (!Array.isArray(entry.message?.content)) {
-        return line; // No content array to process
-      }
-
-      let modified = false;
-
-      // Process assistant entries (tool_use = INPUTs)
-      if (entry.type === 'assistant') {
-        const assistantEntry = entry as AssistantTranscriptEntry;
-        assistantEntry.message.content.forEach(item => {
+      // Track tool_use blocks
+      if (entry.type === 'assistant' && Array.isArray(entry.message?.content)) {
+        for (const item of entry.message.content) {
           if (item.type === 'tool_use') {
             const toolUse = item as ToolUseContent;
-            if (!toolUse.id) return;
-
-            // Query database for observations
-            const observations = db.getAllObservationsForToolUseId(toolUse.id);
-
-            if (observations.length > 0) {
-              // Measure original size
-              const originalSize = JSON.stringify(toolUse.input).length;
-
-              // Concatenate ALL observations for this tool_use_id (simple separator, no markdown overhead)
-              const concatenatedObservations = observations
-                .map(obs => formatObservationAsMarkdown(obs))
-                .join(' | ');
-              const compressedSize = concatenatedObservations.length;
-
-              // Only replace if observation is shorter
-              if (compressedSize < originalSize) {
-                // Backup original tool input BEFORE compression
-                try {
-                  appendToolOutput(toolUse.id, JSON.stringify(toolUse.input), Date.now());
-                } catch (backupError) {
-                  logger.warn('HOOK', 'Failed to backup original tool input', { toolUseId: toolUse.id }, backupError as Error);
-                }
-
-                // Replace with compressed observation
-                toolUse.input = { _compressed: concatenatedObservations };
-
-                // Track stats
-                stats.totalOriginalSize += originalSize;
-                stats.totalCompressedSize += compressedSize;
-                stats.transformCount++;
-                modified = true;
-
-                logger.success('HOOK', 'Transformed tool_use input', {
-                  toolUseId: toolUse.id,
-                  originalSize,
-                  compressedSize,
-                  savings: `${Math.round((1 - compressedSize / originalSize) * 100)}%`
-                });
-              } else {
-                logger.debug('HOOK', 'Skipped input transformation (observation not shorter)', {
-                  toolUseId: toolUse.id,
-                  originalSize,
-                  compressedSize
-                });
-              }
+            if (toolUse.id && toolIdsToReplace.has(toolUse.id)) {
+              toolUseIds.add(toolUse.id);
             }
           }
-        });
+        }
       }
 
-      // Process user entries (tool_result = OUTPUTs)
-      if (entry.type === 'user') {
-        const userEntry = entry as UserTranscriptEntry;
-        userEntry.message.content.forEach(item => {
+      // Track tool_result blocks
+      if (entry.type === 'user' && Array.isArray(entry.message?.content)) {
+        for (const item of entry.message.content) {
           if (item.type === 'tool_result') {
             const toolResult = item as ToolResultContent;
-            const currentToolUseId = toolResult.tool_use_id;
-
-            if (!currentToolUseId) return;
-
-            // Query database for observations
-            const observations = db.getAllObservationsForToolUseId(currentToolUseId);
-
-            if (observations.length > 0) {
-              // Measure original size
-              const originalSize = JSON.stringify(toolResult.content).length;
-
-              // Concatenate ALL observations for this tool_use_id (simple separator, no markdown overhead)
-              const concatenatedObservations = observations
-                .map(obs => formatObservationAsMarkdown(obs))
-                .join(' | ');
-              const compressedSize = concatenatedObservations.length;
-
-              // Only replace if observation is shorter
-              if (compressedSize < originalSize) {
-                // Backup original tool output BEFORE compression
-                try {
-                  appendToolOutput(currentToolUseId, JSON.stringify(toolResult.content), Date.now());
-                } catch (backupError) {
-                  logger.warn('HOOK', 'Failed to backup original tool output', { toolUseId: currentToolUseId }, backupError as Error);
-                }
-
-                // Replace with compressed observation
-                toolResult.content = concatenatedObservations;
-
-                // Track stats
-                stats.totalOriginalSize += originalSize;
-                stats.totalCompressedSize += compressedSize;
-                stats.transformCount++;
-                modified = true;
-
-                logger.success('HOOK', 'Transformed tool_result output', {
-                  toolUseId: currentToolUseId,
-                  originalSize,
-                  compressedSize,
-                  savings: `${Math.round((1 - compressedSize / originalSize) * 100)}%`
-                });
-              } else {
-                logger.debug('HOOK', 'Skipped output transformation (observation not shorter)', {
-                  toolUseId: currentToolUseId,
-                  originalSize,
-                  compressedSize
-                });
-              }
+            if (toolResult.tool_use_id && toolIdsToReplace.has(toolResult.tool_use_id)) {
+              toolResultIds.add(toolResult.tool_use_id);
             }
           }
-        });
+        }
+      }
+    } catch {
+      // Skip malformed lines during pre-scan
+      continue;
+    }
+  }
+
+  // Only replace tool_use_ids where BOTH blocks exist
+  for (const toolId of toolIdsToReplace) {
+    if (toolUseIds.has(toolId) && toolResultIds.has(toolId)) {
+      validatedToolIds.add(toolId);
+    }
+  }
+
+  logger.info('HOOK', 'Validated tool pairs for replacement', {
+    requestedIds: toolIdsToReplace.size,
+    validatedIds: validatedToolIds.size,
+    toolUseOnly: Array.from(toolUseIds).filter(id => !toolResultIds.has(id)),
+    toolResultOnly: Array.from(toolResultIds).filter(id => !toolUseIds.has(id))
+  });
+
+  // If no validated pairs, skip transformation
+  if (validatedToolIds.size === 0) {
+    db.close();
+    logger.debug('HOOK', 'No complete tool_use/tool_result pairs found for replacement', { toolUseId });
+    return { originalTokens: 0, compressedTokens: 0 };
+  }
+
+  // Parse transcript and identify replacement zone
+  const transformedLines: string[] = [];
+  let inReplacementZone = false;
+  let replacementZoneStart = -1;
+  let replacementZoneOriginalSize = 0;
+  let skipNextUserEntry = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    if (!line.trim()) {
+      transformedLines.push(line);
+      continue;
+    }
+
+    try {
+      const entry: TranscriptEntry = JSON.parse(line);
+
+      // Check if this assistant entry contains a tool_use we need to replace
+      if (entry.type === 'assistant' && Array.isArray(entry.message?.content)) {
+        const assistantEntry = entry as AssistantTranscriptEntry;
+
+        for (const item of assistantEntry.message.content) {
+          if (item.type === 'tool_use') {
+            const toolUse = item as ToolUseContent;
+
+            if (toolUse.id && validatedToolIds.has(toolUse.id)) {
+              // Start replacement zone
+              if (!inReplacementZone) {
+                inReplacementZone = true;
+                replacementZoneStart = i;
+                logger.debug('HOOK', 'Replacement zone start', { toolUseId: toolUse.id, lineIndex: i });
+              }
+
+              // Backup original tool input
+              try {
+                appendToolOutput(toolUse.id, JSON.stringify(toolUse.input), Date.now());
+              } catch (backupError) {
+                logger.warn('HOOK', 'Failed to backup original tool input', { toolUseId: toolUse.id }, backupError as Error);
+              }
+
+              // Measure original size
+              replacementZoneOriginalSize += line.length;
+              skipNextUserEntry = true; // Skip the corresponding tool_result
+              break; // Found a match in this entry
+            }
+          }
+        }
+
+        // If we're in replacement zone, skip this line (will be replaced)
+        if (inReplacementZone && skipNextUserEntry) {
+          continue;
+        }
       }
 
-      // Return modified JSON or original line
-      return modified ? JSON.stringify(entry) : line;
+      // Check if this user entry contains a tool_result we need to replace
+      if (entry.type === 'user' && Array.isArray(entry.message?.content) && skipNextUserEntry) {
+        const userEntry = entry as UserTranscriptEntry;
+
+        for (const item of userEntry.message.content) {
+          if (item.type === 'tool_result') {
+            const toolResult = item as ToolResultContent;
+
+            if (toolResult.tool_use_id && validatedToolIds.has(toolResult.tool_use_id)) {
+              // Backup original tool output
+              try {
+                appendToolOutput(toolResult.tool_use_id, JSON.stringify(toolResult.content), Date.now());
+              } catch (backupError) {
+                logger.warn('HOOK', 'Failed to backup original tool output', { toolUseId: toolResult.tool_use_id }, backupError as Error);
+              }
+
+              // Measure original size
+              replacementZoneOriginalSize += line.length;
+
+              // Check if this is the LAST tool_result in our replacement zone
+              const isLastToolResult = toolResult.tool_use_id === toolUseId;
+
+              if (isLastToolResult) {
+                // End of replacement zone - insert consolidated assistant message
+                transformedLines.push(JSON.stringify(assistantMessage));
+
+                inReplacementZone = false;
+                skipNextUserEntry = false;
+
+                stats.totalOriginalSize += replacementZoneOriginalSize;
+                stats.totalCompressedSize += compressedSize;
+                stats.transformCount++;
+
+                logger.success('HOOK', 'Rolling replacement complete', {
+                  zoneStart: replacementZoneStart,
+                  zoneEnd: i,
+                  toolsReplaced: validatedToolIds.size,
+                  originalSize: replacementZoneOriginalSize,
+                  compressedSize,
+                  savings: `${Math.round((1 - compressedSize / replacementZoneOriginalSize) * 100)}%`
+                });
+              }
+
+              continue; // Skip this tool_result line
+            }
+          }
+        }
+      }
+
+      // Not in replacement zone or not a target - keep original line
+      if (!inReplacementZone || !skipNextUserEntry) {
+        transformedLines.push(line);
+      }
     } catch (parseError: any) {
       logger.warn('HOOK', 'Malformed JSONL line in transcript', {
         lineIndex: i,
@@ -373,7 +459,7 @@ export async function transformTranscript(
       });
       throw new Error(`Malformed JSONL line at index ${i}: ${parseError.message}`);
     }
-  });
+  }
 
   // Close database connection
   db.close();
@@ -474,7 +560,7 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
         }
       }
     } catch (error) {
-      silentDebug('Failed to extract tool_use_id from transcript', { error });
+      happy_path_error__with_fallback('Failed to extract tool_use_id from transcript', { error });
     }
   }
 
@@ -482,7 +568,7 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
     sessionDbId,
     claudeSessionId: session_id,
     workerPort: port,
-    toolUseId: extractedToolUseId || silentDebug('tool_use_id not found in transcript', { toolName: tool_name }, '(none)')
+    toolUseId: extractedToolUseId || happy_path_error__with_fallback('tool_use_id not found in transcript', { toolName: tool_name }, '(none)')
   });
 
   // Phase 3: Check if Endless Mode is enabled
@@ -490,7 +576,7 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
   const isEndlessModeEnabled = !!(endlessModeConfig.enabled && extractedToolUseId && transcript_path);
 
   // Debug logging for endless mode conditions AND all input fields
-  silentDebug('Endless Mode Check', {
+  happy_path_error__with_fallback('Endless Mode Check', {
     configEnabled: endlessModeConfig.enabled,
     hasToolUseId: !!extractedToolUseId,
     hasTranscriptPath: !!transcript_path,
@@ -505,7 +591,7 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
     const timeoutMs = isEndlessModeEnabled ?
       parseInt(
         process.env.CLAUDE_MEM_ENDLESS_WAIT_TIMEOUT_MS ||
-        (silentDebug('CLAUDE_MEM_ENDLESS_WAIT_TIMEOUT_MS not set, using default 90000ms'), '90000'),
+        (happy_path_error__with_fallback('CLAUDE_MEM_ENDLESS_WAIT_TIMEOUT_MS not set, using default 90000ms'), '90000'),
         10
       ) : 2000;
 
@@ -517,9 +603,9 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
         tool_input: tool_input !== undefined ? JSON.stringify(tool_input) : '{}',
         tool_response: tool_response !== undefined ? JSON.stringify(tool_response) : '{}',
         prompt_number: promptNumber,
-        cwd: cwd || silentDebug('save-hook: cwd missing', { sessionDbId, tool_name }),
+        cwd: cwd || happy_path_error__with_fallback('save-hook: cwd missing', { sessionDbId, tool_name }),
         tool_use_id: extractedToolUseId,
-        transcript_path: transcript_path || silentDebug('save-hook: transcript_path missing', { sessionDbId, tool_name })
+        transcript_path: transcript_path || happy_path_error__with_fallback('save-hook: transcript_path missing', { sessionDbId, tool_name })
       }),
       signal: AbortSignal.timeout(timeoutMs)
     });
