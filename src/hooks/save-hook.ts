@@ -15,6 +15,7 @@ import { EndlessModeConfig } from '../services/worker/EndlessModeConfig.js';
 import { happy_path_error__with_fallback } from '../utils/silent-debug.js';
 import { BACKUPS_DIR, createBackupFilename, ensureDir } from '../shared/paths.js';
 import { appendToolOutput, trimBackupFile } from '../shared/tool-output-backup.js';
+import { validateAndLogAssistantEntry, formatValidationError } from '../utils/transcript-validator.js';
 import type { TranscriptEntry, AssistantTranscriptEntry, ToolUseContent, UserTranscriptEntry, ToolResultContent } from '../types/transcript.js';
 import type { Observation } from '../services/worker-types.js';
 
@@ -268,17 +269,49 @@ export async function transformTranscript(
     .map(obs => formatObservationAsMarkdown(obs))
     .join('\n\n');
 
-  // Build replacement assistant message
+  // Find a valid assistant entry from the transcript to use as template
+  // This ensures we have all required metadata fields (id, type, model, usage, BaseEntry fields)
+  let assistantTemplate: AssistantTranscriptEntry | null = null;
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    try {
+      const entry: TranscriptEntry = JSON.parse(line);
+      if (entry.type === 'assistant') {
+        assistantTemplate = entry as AssistantTranscriptEntry;
+        break; // Use the first valid assistant entry as template
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  if (!assistantTemplate) {
+    db.close();
+    logger.error('HOOK', 'No assistant entry found in transcript to use as template', { transcriptPath });
+    throw new Error('Cannot create replacement message without template');
+  }
+
+  // Build replacement assistant message by cloning template and replacing content
   const assistantMessage: AssistantTranscriptEntry = {
-    type: 'assistant',
+    ...assistantTemplate,
     message: {
-      role: 'assistant',
+      ...assistantTemplate.message,
       content: [{
         type: 'text',
         text: observationMarkdown
       }]
     }
   };
+
+  // Validate the assistant message before using it
+  if (!validateAndLogAssistantEntry(assistantMessage, 'Replacement assistant message')) {
+    db.close();
+    logger.error('HOOK', 'Created invalid assistant message - aborting transformation', {
+      toolUseId,
+      transcriptPath
+    });
+    throw new Error('Generated assistant message failed schema validation');
+  }
 
   const compressedSize = observationMarkdown.length;
 
@@ -448,9 +481,24 @@ export async function transformTranscript(
         }
       }
 
+      // Skip entries that reference deleted tool_use_ids
+      const entryReferencesDeletedTool = (entry: any) => {
+        if (entry.toolUseID && validatedToolIds.has(entry.toolUseID)) {
+          return true;
+        }
+        return false;
+      };
+
       // Not in replacement zone or not a target - keep original line
       if (!inReplacementZone || !skipNextUserEntry) {
-        transformedLines.push(line);
+        if (!entryReferencesDeletedTool(entry)) {
+          transformedLines.push(line);
+        } else {
+          logger.debug('HOOK', 'Skipping entry with reference to deleted tool_use_id', {
+            toolUseID: (entry as any).toolUseID,
+            entryType: entry.type
+          });
+        }
       }
     } catch (parseError: any) {
       logger.warn('HOOK', 'Malformed JSONL line in transcript', {
