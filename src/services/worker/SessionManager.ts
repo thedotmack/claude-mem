@@ -38,6 +38,19 @@ export class SessionManager {
     // Check if already active
     let session = this.sessions.get(sessionDbId);
     if (session) {
+      // Refresh project from database in case it was updated by new-hook
+      // This fixes the bug where sessions created with empty project get updated
+      // in the database but the in-memory session still has the stale empty value
+      const dbSession = this.dbManager.getSessionById(sessionDbId);
+      if (dbSession.project && dbSession.project !== session.project) {
+        silentDebug('[SessionManager] Updating project from database', {
+          sessionDbId,
+          oldProject: session.project,
+          newProject: dbSession.project
+        });
+        session.project = dbSession.project;
+      }
+
       // Update userPrompt for continuation prompts
       if (currentUserPrompt) {
         silentDebug('[SessionManager] Updating userPrompt for continuation', {

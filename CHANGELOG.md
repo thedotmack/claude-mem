@@ -4,6 +4,40 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [6.2.1] - 2025-11-23
+
+## 🐛 Bug Fixes
+
+### Critical: Empty Project Names Breaking Context Injection
+
+**Problem:**
+- Observations and summaries created with empty project names
+- Context-hook couldn't find recent context (queries `WHERE project = 'claude-mem'`)
+- Users saw no observations or summaries in SessionStart since Nov 22
+
+**Root Causes:**
+
+1. **Sessions:** `createSDKSession()` used `INSERT OR IGNORE` for idempotency, but never updated project field when session already existed
+2. **In-Memory Cache:** `SessionManager` cached sessions with stale empty project values, even after database was updated
+
+**Fixes:**
+
+- `5d23c60` - fix: Update project name when session already exists in createSDKSession
+- `54ef149` - fix: Refresh in-memory session project when updated in database
+
+**Impact:**
+- ✅ 364 observations backfilled with correct project names
+- ✅ 13 summaries backfilled with correct project names  
+- ✅ Context injection now works (shows recent observations and summaries)
+- ✅ Future sessions will always have correct project names
+
+## 📦 Full Changelog
+
+**Commits since v6.2.0:**
+- `634033b` - chore: Bump version to 6.2.1
+- `54ef149` - fix: Refresh in-memory session project when updated in database
+- `5d23c60` - fix: Update project name when session already exists in createSDKSession
+
 ## [6.2.0] - 2025-11-22
 
 ## Major Features
