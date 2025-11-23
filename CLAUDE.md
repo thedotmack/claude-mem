@@ -82,6 +82,12 @@ Claude-mem is a Claude Code plugin providing persistent memory across sessions. 
 - Status: Implementation complete (Phases 1-3), ready for Phase 4 testing
 - See `docs/endless-mode-status.md` for technical details
 
+**Response Contract:**
+- SDK must ALWAYS respond with either an observation OR `<no_observation>` marker
+- Routine operations (reads, navigation) return `<no_observation>` in ~1-2s
+- Valuable information creates observations in ~5-10s
+- Hooks wait up to 90s (configurable) to guarantee response
+
 ## How to Make Changes
 
 ### When You Modify Hooks
@@ -186,6 +192,8 @@ When investigations fail persistently, use Task agents for comprehensive file an
 - `CLAUDE_MEM_CONTEXT_OBSERVATIONS` - Observations injected at SessionStart (default: 50)
 - `CLAUDE_MEM_WORKER_PORT` - Worker service port (default: 37777)
 - `CLAUDE_MEM_ENDLESS_MODE` - Enable Endless Mode for indefinite sessions (default: false)
+- `CLAUDE_MEM_ENDLESS_WAIT_TIMEOUT_MS` - How long save-hook waits for observations (default: 90000ms / 90s)
+- `CLAUDE_MEM_SUMMARY_TIMEOUT_MS` - How long summary-hook waits for queueing (default: 90000ms / 90s)
 
 ## Key Design Decisions
 

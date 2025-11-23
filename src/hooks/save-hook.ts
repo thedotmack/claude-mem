@@ -429,14 +429,14 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
   if (!input) {
     logger.warn('HOOK', 'PostToolUse called with no input');
     console.log(createHookResponse('PostToolUse', true));
-    return;
+    process.exit(0);
   }
 
   const { session_id, cwd, tool_name, tool_input, tool_response, transcript_path, tool_use_id } = input;
 
   if (SKIP_TOOLS.has(tool_name)) {
     console.log(createHookResponse('PostToolUse', true));
-    return;
+    process.exit(0);
   }
 
   // Ensure worker is running
@@ -501,8 +501,13 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
   });
 
   try {
-    // Set timeout: 30s for Endless Mode (wait for processing), 2s for async
-    const timeoutMs = isEndlessModeEnabled ? 30000 : 2000;
+    // Set timeout: configurable for Endless Mode (wait for processing), 2s for async
+    const timeoutMs = isEndlessModeEnabled ?
+      parseInt(
+        process.env.CLAUDE_MEM_ENDLESS_WAIT_TIMEOUT_MS ||
+        (silentDebug('CLAUDE_MEM_ENDLESS_WAIT_TIMEOUT_MS not set, using default 90000ms'), '90000'),
+        10
+      ) : 2000;
 
     const response = await fetch(`http://127.0.0.1:${port}/sessions/${sessionDbId}/observations?wait_until_obs_is_saved=${isEndlessModeEnabled}`, {
       method: 'POST',
@@ -527,7 +532,17 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
       }, errorText);
       // Continue anyway - observation failed but don't block the hook
       console.log(createHookResponse('PostToolUse', true));
-      return;
+      process.exit(0);
+    }
+
+    const result = await response.json();
+
+    if (result.status === 'completed') {
+      console.log('[save-hook] ✅ Observation created, transcript transformed');
+    } else if (result.status === 'skipped') {
+      console.log('[save-hook] ⏭️  No observation needed, continuing');
+    } else if (result.status === 'timeout') {
+      console.warn(`[save-hook] ⏱️  Timeout after ${timeoutMs}ms - processing async`);
     }
 
     // Transformation now happens in the worker service after observation is saved
@@ -537,40 +552,41 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
       mode: isEndlessModeEnabled ? 'synchronous (Endless Mode)' : 'async'
     });
   } catch (error: any) {
-    // Worker connection errors - suggest restart
+    // Worker connection errors - feed to Claude (exit 2)
     if (error.cause?.code === 'ECONNREFUSED') {
+      const errorMsg = `Worker connection failed. Try: pm2 restart claude-mem-worker`;
       logger.failure('HOOK', 'Worker connection refused', { sessionDbId }, error);
-      console.log(createHookResponse('PostToolUse', true, "Worker connection failed. Try: pm2 restart claude-mem-worker"));
-      return;
-    }
-
-    // Timeout errors - just continue (observation will complete in background)
-    if (error.name === 'TimeoutError' || error.message?.includes('timed out')) {
-      logger.warn('HOOK', 'Observation request timed out - continuing', {
-        sessionDbId,
-        toolName: tool_name
-      });
-      console.log(createHookResponse('PostToolUse', true));
-      return;
+      console.error(`[save-hook] ${errorMsg}`);
+      console.log(createHookResponse('PostToolUse', false, { reason: errorMsg }));
+      process.exit(2); // Exit 2: Feed error to Claude (PostToolUse shows stderr to Claude)
     }
 
     // All other errors - log and continue (never block the hook)
+    console.warn('[save-hook] ❌ Failed to send observation:', error.message);
     logger.warn('HOOK', 'Observation request failed - continuing anyway', {
       sessionDbId,
       toolName: tool_name,
       error: error.message
     });
     console.log(createHookResponse('PostToolUse', true));
-    return;
+    process.exit(0);
   }
 
   console.log(createHookResponse('PostToolUse', true));
+  process.exit(0);
 }
 
 // Entry Point
 let input = '';
 stdin.on('data', (chunk) => input += chunk);
 stdin.on('end', async () => {
-  const parsed = input ? JSON.parse(input) : undefined;
-  await saveHook(parsed);
+  try {
+    const parsed = input ? JSON.parse(input) : undefined;
+    await saveHook(parsed);
+  } catch (error: any) {
+    // Top-level error handler: output JSON + stderr + exit 1 (non-blocking fallback)
+    console.error(`[save-hook] Unhandled error: ${error.message}`);
+    console.log(createHookResponse('PostToolUse', false, { reason: error.message }));
+    process.exit(1);
+  }
 });

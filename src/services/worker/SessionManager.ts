@@ -220,12 +220,13 @@ export class SessionManager {
   }
 
   /**
-   * Delete a session (abort SDK agent and cleanup)
+   * Remove session from active memory (abort SDK agent and cleanup in-memory state)
+   * NOTE: Does NOT delete from database - only removes from active processing
    */
   async deleteSession(sessionDbId: number): Promise<void> {
     const session = this.sessions.get(sessionDbId);
     if (!session) {
-      return; // Already deleted
+      return; // Already removed
     }
 
     const sessionDuration = Date.now() - session.startTime;
@@ -238,11 +239,11 @@ export class SessionManager {
       await session.generatorPromise.catch(() => {});
     }
 
-    // Cleanup
+    // Remove from active memory (does NOT delete from database)
     this.sessions.delete(sessionDbId);
     this.sessionQueues.delete(sessionDbId);
 
-    logger.info('SESSION', 'Session deleted', {
+    logger.info('SESSION', 'Session released from memory', {
       sessionId: sessionDbId,
       duration: `${(sessionDuration / 1000).toFixed(1)}s`,
       project: session.project
@@ -255,7 +256,7 @@ export class SessionManager {
   }
 
   /**
-   * Shutdown all active sessions
+   * Shutdown all active sessions (removes from memory, does not delete from database)
    */
   async shutdownAll(): Promise<void> {
     const sessionIds = Array.from(this.sessions.keys());

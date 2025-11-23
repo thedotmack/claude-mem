@@ -603,54 +603,70 @@ export class WorkerService {
     res: Response,
     transcriptPath?: string
   ): Promise<void> {
-    const TIMEOUT_MS = 30000; // 30 seconds
+    const TIMEOUT_MS = 90000; // 90 seconds
     const startTime = Date.now();
 
     logger.info('WORKER', 'Waiting for observation (synchronous mode)', {
       sessionId: sessionDbId,
       toolUseId,
-      timeout: '30s'
+      timeout: '90s'
     });
 
-    try {
-      // Create promise that will be resolved when observation is saved
-      const observationPromise = new Promise<any>((resolve, reject) => {
-        session.pendingObservationResolvers.set(toolUseId, resolve);
+    // Create promise that will be resolved when observation is saved
+    const observationPromise = new Promise<'timeout' | any>((resolve) => {
+      session.pendingObservationResolvers.set(toolUseId, resolve);
 
-        // Set timeout to reject after 30s
-        setTimeout(() => {
-          if (session.pendingObservationResolvers.has(toolUseId)) {
-            session.pendingObservationResolvers.delete(toolUseId);
-            logger.warn('WORKER', 'Observation timeout', {
-              sessionId: sessionDbId,
-              tool_use_id: toolUseId,
-              timeoutMs: TIMEOUT_MS
-            });
-            reject(new Error('Observation creation timeout (30s exceeded)'));
-          }
-        }, TIMEOUT_MS);
+      // Set timeout to resolve with 'timeout' after 90s
+      setTimeout(() => {
+        if (session.pendingObservationResolvers.has(toolUseId)) {
+          session.pendingObservationResolvers.delete(toolUseId);
+          logger.warn('WORKER', 'Observation timeout', {
+            sessionId: sessionDbId,
+            tool_use_id: toolUseId,
+            timeoutMs: TIMEOUT_MS
+          });
+          resolve('timeout');
+        }
+      }, TIMEOUT_MS);
+    });
+
+    // Wait for observation or timeout
+    const observation = await observationPromise;
+    const processingTimeMs = Date.now() - startTime;
+
+    // Handle timeout case
+    if (observation === 'timeout') {
+      logger.warn('WORKER', 'Observation timeout (falling back to async)', {
+        sessionId: sessionDbId,
+        toolUseId,
+        processingTimeMs
       });
 
-      // Wait for observation or timeout
-      const observation = await observationPromise;
-      const processingTimeMs = Date.now() - startTime;
+      res.json({
+        status: 'timeout',
+        observation: null,
+        processing_time_ms: processingTimeMs,
+        message: 'Observation creation timeout (90s exceeded)'
+      });
+      return;
+    }
 
-      // Handle skip case (observation is null when SDK Agent skipped)
-      if (observation === null) {
-        logger.debug('WORKER', 'Observation skipped (synchronous mode)', {
-          sessionId: sessionDbId,
-          toolUseId,
-          processingTimeMs
-        });
+    // Handle skip case (observation is null when SDK Agent skipped)
+    if (observation === null) {
+      logger.debug('WORKER', 'Observation skipped (synchronous mode)', {
+        sessionId: sessionDbId,
+        toolUseId,
+        processingTimeMs
+      });
 
-        res.json({
-          status: 'skipped',
-          observation: null,
-          processing_time_ms: processingTimeMs,
-          message: 'No observation created (routine operation)'
-        });
-        return;
-      }
+      res.json({
+        status: 'skipped',
+        observation: null,
+        processing_time_ms: processingTimeMs,
+        message: 'No observation created (routine operation)'
+      });
+      return;
+    }
 
       logger.success('WORKER', 'Observation ready (synchronous mode)', {
         sessionId: sessionDbId,
@@ -689,27 +705,11 @@ export class WorkerService {
         // Continue anyway - stats persistence failure shouldn't block the hook
       }
 
-      res.json({
-        status: 'completed',
-        observation,
-        processing_time_ms: processingTimeMs
-      });
-    } catch (error) {
-      // Timeout occurred - fall back to async behavior
-      const processingTimeMs = Date.now() - startTime;
-      logger.warn('WORKER', 'Observation timeout (falling back to async)', {
-        sessionId: sessionDbId,
-        toolUseId,
-        processingTimeMs
-      });
-
-      res.json({
-        status: 'timeout',
-        observation: null,
-        processing_time_ms: processingTimeMs,
-        message: 'Observation creation exceeded timeout, processing continues asynchronously'
-      });
-    }
+    res.json({
+      status: 'completed',
+      observation,
+      processing_time_ms: processingTimeMs
+    });
   }
 
   /**

@@ -127,7 +127,10 @@ function extractLastAssistantMessage(transcriptPath: string): string {
  */
 async function summaryHook(input?: StopInput): Promise<void> {
   if (!input) {
-    throw new Error('summaryHook requires input');
+    const errorMsg = 'summaryHook requires input';
+    console.error(`[summary-hook] ${errorMsg}`);
+    console.log(createHookResponse('Stop', false, { reason: errorMsg }));
+    process.exit(1);
   }
 
   const { session_id, transcript_path } = input;
@@ -195,7 +198,13 @@ async function summaryHook(input?: StopInput): Promise<void> {
         last_user_message: lastUserMessage,
         last_assistant_message: lastAssistantMessage
       }),
-      signal: AbortSignal.timeout(2000)
+      signal: AbortSignal.timeout(
+        parseInt(
+          process.env.CLAUDE_MEM_SUMMARY_TIMEOUT_MS ||
+          (silentDebug('CLAUDE_MEM_SUMMARY_TIMEOUT_MS not set, using default 90000ms'), '90000'),
+          10
+        )
+      )
     });
 
     if (!response.ok) {
@@ -204,17 +213,28 @@ async function summaryHook(input?: StopInput): Promise<void> {
         sessionId: sessionDbId,
         status: response.status
       }, errorText);
-      throw new Error(`Failed to request summary from worker: ${response.status} ${errorText}`);
+      const errorMsg = `Failed to request summary from worker: ${response.status} ${errorText}`;
+      console.error(`[summary-hook] ${errorMsg}`);
+      console.log(createHookResponse('Stop', false, { reason: errorMsg }));
+      process.exit(1);
     }
 
+    const result = await response.json();
+    console.log('[summary-hook] ✅ Summary queued successfully');
     logger.debug('HOOK', 'Summary request sent successfully', { sessionId: sessionDbId });
   } catch (error: any) {
-    // Only show restart message for connection errors, not HTTP errors
+    // Worker connection/timeout errors
     if (error.cause?.code === 'ECONNREFUSED' || error.name === 'TimeoutError' || error.message.includes('fetch failed')) {
-      throw new Error("There's a problem with the worker. If you just updated, type `pm2 restart claude-mem-worker` in your terminal to continue");
+      const errorMsg = "There's a problem with the worker. If you just updated, type `pm2 restart claude-mem-worker` in your terminal to continue";
+      console.error(`[summary-hook] ${errorMsg}`);
+      console.log(createHookResponse('Stop', false, { reason: errorMsg }));
+      process.exit(1);
     }
-    // Re-throw HTTP errors and other errors as-is
-    throw error;
+
+    // Other errors (HTTP, etc.)
+    console.error(`[summary-hook] Failed to trigger summary: ${error.message}`);
+    console.log(createHookResponse('Stop', false, { reason: error.message }));
+    process.exit(1);
   } finally {
     await fetch(`http://127.0.0.1:${port}/api/processing`, {
       method: 'POST',
@@ -224,12 +244,20 @@ async function summaryHook(input?: StopInput): Promise<void> {
   }
 
   console.log(createHookResponse('Stop', true));
+  process.exit(0);
 }
 
 // Entry Point
 let input = '';
 stdin.on('data', (chunk) => input += chunk);
 stdin.on('end', async () => {
-  const parsed = input ? JSON.parse(input) : undefined;
-  await summaryHook(parsed);
+  try {
+    const parsed = input ? JSON.parse(input) : undefined;
+    await summaryHook(parsed);
+  } catch (error: any) {
+    // Top-level error handler: stderr + JSON + exit 1 (non-blocking - allows session to stop)
+    console.error(`[summary-hook] Unhandled error: ${error.message}`);
+    console.log(createHookResponse('Stop', false, { reason: error.message }));
+    process.exit(1);
+  }
 });

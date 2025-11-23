@@ -276,6 +276,7 @@ export class SDKAgent {
     if (observations.length === 0 && session.currentToolUseId) {
       const resolver = session.pendingObservationResolvers.get(session.currentToolUseId);
       if (resolver) {
+        console.log(`[SDKAgent] ⏭️  No observation created for tool_use_id=${session.currentToolUseId} (routine operation)`);
         session.pendingObservationResolvers.delete(session.currentToolUseId);
         resolver(null); // Signal skip to save-hook
         logger.debug('SDK', 'No observation created (skipped)', {
@@ -326,6 +327,7 @@ export class SDKAgent {
       if (i === 0 && session.currentToolUseId) {
         const resolver = session.pendingObservationResolvers.get(session.currentToolUseId);
         if (resolver) {
+          console.log(`[SDKAgent] ✅ Observation created for tool_use_id=${session.currentToolUseId}, resolving promise`);
           session.pendingObservationResolvers.delete(session.currentToolUseId);
           resolver({
             id: obsId,

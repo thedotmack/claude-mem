@@ -161,7 +161,8 @@ export function parseSummary(text: string, sessionId?: number): ParsedSummary | 
  * Returns null for missing or empty/whitespace-only fields
  */
 function extractField(content: string, fieldName: string): string | null {
-  const regex = new RegExp(`<${fieldName}>([^<]*)</${fieldName}>`);
+  // Use [\s\S] to match any character including newlines, not [^<] which breaks on nested content
+  const regex = new RegExp(`<${fieldName}>([\\s\\S]*?)</${fieldName}>`);
   const match = regex.exec(content);
   if (!match) return null;
 
