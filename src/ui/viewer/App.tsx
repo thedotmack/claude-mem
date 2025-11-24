@@ -31,21 +31,27 @@ export function App() {
       return paginatedObservations;
     }
     // No filter: merge SSE + paginated, deduplicate by ID
-    return mergeAndDeduplicateByProject(observations, paginatedObservations);
+    const merged = mergeAndDeduplicateByProject(observations, paginatedObservations);
+    console.log('[App] allObservations merged', { sse: observations.length, paginated: paginatedObservations.length, merged: merged.length });
+    return merged;
   }, [observations, paginatedObservations, currentFilter]);
 
   const allSummaries = useMemo(() => {
     if (currentFilter) {
       return paginatedSummaries;
     }
-    return mergeAndDeduplicateByProject(summaries, paginatedSummaries);
+    const merged = mergeAndDeduplicateByProject(summaries, paginatedSummaries);
+    console.log('[App] allSummaries merged', { sse: summaries.length, paginated: paginatedSummaries.length, merged: merged.length });
+    return merged;
   }, [summaries, paginatedSummaries, currentFilter]);
 
   const allPrompts = useMemo(() => {
     if (currentFilter) {
       return paginatedPrompts;
     }
-    return mergeAndDeduplicateByProject(prompts, paginatedPrompts);
+    const merged = mergeAndDeduplicateByProject(prompts, paginatedPrompts);
+    console.log('[App] allPrompts merged', { sse: prompts.length, paginated: paginatedPrompts.length, merged: merged.length });
+    return merged;
   }, [prompts, paginatedPrompts, currentFilter]);
 
   // Toggle sidebar
@@ -55,12 +61,19 @@ export function App() {
 
   // Handle loading more data
   const handleLoadMore = useCallback(async () => {
+    console.log('[App] handleLoadMore called', { currentFilter });
     try {
       const [newObservations, newSummaries, newPrompts] = await Promise.all([
         pagination.observations.loadMore(),
         pagination.summaries.loadMore(),
         pagination.prompts.loadMore()
       ]);
+
+      console.log('[App] Data loaded', {
+        observations: newObservations.length,
+        summaries: newSummaries.length,
+        prompts: newPrompts.length
+      });
 
       if (newObservations.length > 0) {
         setPaginatedObservations(prev => [...prev, ...newObservations]);
@@ -78,6 +91,7 @@ export function App() {
 
   // Reset paginated data and load first page when filter changes
   useEffect(() => {
+    console.log('[App] Filter changed, resetting and loading data', { currentFilter });
     setPaginatedObservations([]);
     setPaginatedSummaries([]);
     setPaginatedPrompts([]);

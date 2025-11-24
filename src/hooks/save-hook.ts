@@ -26,6 +26,7 @@ export interface PostToolUseInput {
   tool_input: any;
   tool_response: any;
   transcript_path: string;
+  tool_use_id?: string;
   [key: string]: any;
 }
 
@@ -587,51 +588,39 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
   const toolStr = logger.formatTool(tool_name, tool_input);
   const port = getWorkerPort();
 
-  // Phase 3: Extract tool_use_id from transcript if available
-  let extractedToolUseId: string | undefined = tool_use_id;
-  if (!extractedToolUseId && transcript_path) {
-    try {
-      const transcriptContent = readFileSync(transcript_path, 'utf-8');
-      const lines = transcriptContent.trim().split('\n');
+  // tool_use_id is now provided directly by Claude Code hooks API
+  const toolUseId = tool_use_id;
 
-      // Search backwards for the most recent tool_result
-      for (let i = lines.length - 1; i >= 0; i--) {
-        const entry = JSON.parse(lines[i]) as TranscriptEntry;
-        if (entry.type === 'user' && Array.isArray(entry.message.content)) {
-          for (const item of entry.message.content) {
-            if (item.type === 'tool_result' && (item as ToolResultContent).tool_use_id) {
-              extractedToolUseId = (item as ToolResultContent).tool_use_id;
-              break;
-            }
-          }
-          if (extractedToolUseId) break;
-        }
-      }
-    } catch (error) {
-      happy_path_error__with_fallback('Failed to extract tool_use_id from transcript', { error });
-    }
+  if (!toolUseId) {
+    logger.warn('HOOK', 'No tool_use_id provided - skipping observation', { toolName: tool_name });
+    console.log(createHookResponse('PostToolUse', true));
+    process.exit(0);
   }
 
   logger.dataIn('HOOK', `PostToolUse: ${toolStr}`, {
     sessionDbId,
     claudeSessionId: session_id,
     workerPort: port,
-    toolUseId: extractedToolUseId || happy_path_error__with_fallback('tool_use_id not found in transcript', { toolName: tool_name }, '(none)')
+    toolUseId
   });
 
-  // Phase 3: Check if Endless Mode is enabled
+  // Check if Endless Mode is enabled
   const endlessModeConfig = EndlessModeConfig.getConfig();
-  const isEndlessModeEnabled = !!(endlessModeConfig.enabled && extractedToolUseId && transcript_path);
 
-  // Debug logging for endless mode conditions AND all input fields
-  happy_path_error__with_fallback('Endless Mode Check', {
-    configEnabled: endlessModeConfig.enabled,
-    hasToolUseId: !!extractedToolUseId,
-    hasTranscriptPath: !!transcript_path,
-    isEndlessModeEnabled,
-    toolName: tool_name,
-    toolUseId: extractedToolUseId,
-    allInputKeys: Object.keys(input).join(', ')
+  // Detect if we're in a subagent context (agent transcripts use agent-{id}.jsonl naming)
+  const isSubagent = transcript_path?.includes('/agent-') || false;
+
+  // Disable synchronous waiting for subagents to prevent compound delays
+  // Subagents inherit hooks from parent, so each tool use would wait 90s
+  // This creates massive delays when plan mode spawns Plan subagent
+  const isEndlessModeEnabled = !!(endlessModeConfig.enabled && toolUseId && transcript_path && !isSubagent);
+
+  logger.debug('HOOK', 'Endless Mode check', {
+    enabled: endlessModeConfig.enabled,
+    hasToolUseId: !!toolUseId,
+    toolUseId,
+    isSubagent,
+    willWaitSynchronously: isEndlessModeEnabled
   });
 
   try {
@@ -652,7 +641,7 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
         tool_response: tool_response !== undefined ? JSON.stringify(tool_response) : '{}',
         prompt_number: promptNumber,
         cwd: cwd || happy_path_error__with_fallback('save-hook: cwd missing', { sessionDbId, tool_name }),
-        tool_use_id: extractedToolUseId,
+        tool_use_id: toolUseId,
         transcript_path: transcript_path || happy_path_error__with_fallback('save-hook: transcript_path missing', { sessionDbId, tool_name })
       }),
       signal: AbortSignal.timeout(timeoutMs)

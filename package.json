@@ -36,7 +36,6 @@
     "test:context": "echo '{\"session_id\":\"test-'$(date +%s)'\",\"cwd\":\"'$(pwd)'\",\"source\":\"startup\"}' | node plugin/scripts/context-hook.js 2>/dev/null",
     "test:context:verbose": "echo '{\"session_id\":\"test-'$(date +%s)'\",\"cwd\":\"'$(pwd)'\",\"source\":\"startup\"}' | node plugin/scripts/context-hook.js",
     "sync-marketplace": "rsync -av --delete --exclude=.git ./ ~/.claude/plugins/marketplaces/thedotmack/ && cd ~/.claude/plugins/marketplaces/thedotmack/ && npm install",
-    "sync-marketplace:force": "rsync -av --delete --exclude=.git ./ ~/.claude/plugins/marketplaces/thedotmack/ && cd ~/.claude/plugins/marketplaces/thedotmack/ && npm install --force",
     "validate:transcripts": "npx tsx scripts/validate-transcripts.ts",
     "worker:start": "pm2 start ecosystem.config.cjs",
     "worker:stop": "pm2 stop claude-mem-worker",
@@ -60,7 +59,7 @@
     "pm2": "^6.0.13",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "zod": "^4.1.12",
+    "zod": "^3.24.1",
     "zod-to-json-schema": "^3.24.6"
   },
   "devDependencies": {
