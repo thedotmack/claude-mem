@@ -306,7 +306,7 @@ export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, isConne
         </div>
 
         <div className="settings-section">
-          <h3>Endless Mode (Beta)</h3>
+          <h3>Endless Mode (Experimental)</h3>
           <div className="form-group">
             <label htmlFor="endlessModeEnabled" style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
               <input
@@ -320,7 +320,7 @@ export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, isConne
               Enable Endless Mode
             </label>
             <div className="setting-description">
-              Compresses tool outputs in real-time to enable indefinite sessions. Achieves 80-95% token reduction by replacing full outputs with AI-compressed observations.
+              Compresses tool outputs in real-time to enable longer sessions by replacing full outputs with AI-compressed observations.
               <br /><br />
               <strong>After toggling, restart the worker:</strong>
               <br />

@@ -76,11 +76,11 @@ Restart Claude Code. Context from previous sessions will automatically appear in
 
 ---
 
-## 🚀 Endless Mode (Beta)
+## 🚀 Endless Mode (Experimental)
 
 **NEW**: Experimental feature for indefinite sessions through real-time transcript compression.
 
-Endless Mode compresses tool outputs on-the-fly, reducing token usage by **80-95%** to enable unlimited session length without hitting context limits.
+Endless Mode compresses tool outputs on-the-fly to enable longer session lengths without hitting context limits.
 
 **Quick Start:**
 ```bash
@@ -105,7 +105,7 @@ npm run endless-mode:restore <transcript-path>
 ```
 
 **Features:**
-- ✅ 80-95% token reduction in transcripts
+- ✅ Real-time transcript compression
 - ✅ Rolling backup of original tool outputs (configurable size limit)
 - ✅ Restore capability - disable Endless Mode and recover original transcripts
 - ✅ Graceful fallback on errors/timeouts
@@ -117,7 +117,7 @@ npm run endless-mode:restore <transcript-path>
 - ⚡ **[Quick Start](docs/endless-mode-quickstart.md)** - 5-minute setup
 - 📊 **[Technical Details](docs/endless-mode-status.md)** - Architecture & implementation
 
-**Status**: Beta testing - Safe to use, feedback welcome!
+**Status**: Experimental - Testing in progress, use with caution. Feedback welcome!
 
 ---
 
@@ -266,7 +266,7 @@ See [CHANGELOG.md](CHANGELOG.md) for complete version history.
 
 **Problem**: Claude Code's context window fills up after many tool uses, preventing indefinite sessions.
 
-**Solution**: Endless Mode compresses tool outputs in real-time, achieving **80-95% token reduction** by replacing full responses with AI-compressed observations directly in the transcript file.
+**Solution**: Endless Mode compresses tool outputs in real-time by replacing full responses with AI-compressed observations directly in the transcript file.
 
 ### How It Works
 

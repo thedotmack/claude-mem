@@ -73,7 +73,7 @@ Claude-mem is a Claude Code plugin providing persistent memory across sessions. 
 
 **Endless Mode** (`src/hooks/save-hook.ts`, `src/services/worker-service.ts`)
 - Experimental feature that compresses tool outputs in real-time to enable indefinite sessions
-- Achieves 80-95% token reduction by replacing full outputs with AI-compressed observations
+- Replaces full outputs with AI-compressed observations to reduce context usage
 - Creates observations for ALL tool uses (even routine operations) to ensure complete transcript compression
 - save-hook blocks for up to 90s waiting for observation creation (graceful timeout fallback)
 - Transcript transformation happens atomically before hook returns
