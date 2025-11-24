@@ -56,15 +56,19 @@ async function startWorker(): Promise<boolean> {
     }
 
     // Try to use local PM2 from node_modules first, fall back to global PM2
-    const localPm2 = path.join(pluginRoot, 'node_modules', '.bin', 'pm2');
-    const pm2Command = existsSync(localPm2) ? localPm2 : 'pm2';
+    // On Windows, PM2 executable is pm2.cmd, not pm2
+    const localPm2Base = path.join(pluginRoot, 'node_modules', '.bin', 'pm2');
+    const localPm2Cmd = process.platform === 'win32' ? localPm2Base + '.cmd' : localPm2Base;
+    const pm2Command = existsSync(localPm2Cmd) ? localPm2Cmd : 'pm2';
 
     // Start using PM2 with the ecosystem config
     // CRITICAL: Must set cwd to pluginRoot so PM2 starts from marketplace directory
+    // shell: true required for Windows to handle quoted paths correctly
     execSync(`"${pm2Command}" start "${ecosystemPath}"`, {
       cwd: pluginRoot,
       stdio: 'pipe',
-      encoding: 'utf-8'
+      encoding: 'utf-8',
+      shell: true
     });
 
     // Wait for worker to become healthy

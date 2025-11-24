@@ -264,14 +264,18 @@ async function main() {
       // Try to start the PM2 worker after fresh install
       try {
         log('🚀 Starting worker service...', colors.cyan);
-        const localPm2 = join(NODE_MODULES_PATH, '.bin', 'pm2');
-        const pm2Command = existsSync(localPm2) ? localPm2 : 'pm2';
+        // On Windows, PM2 executable is pm2.cmd, not pm2
+        const localPm2Base = join(NODE_MODULES_PATH, '.bin', 'pm2');
+        const localPm2Cmd = process.platform === 'win32' ? localPm2Base + '.cmd' : localPm2Base;
+        const pm2Command = existsSync(localPm2Cmd) ? localPm2Cmd : 'pm2';
         const ecosystemPath = join(PLUGIN_ROOT, 'ecosystem.config.cjs');
 
+        // shell: true required for Windows to handle quoted paths correctly
         execSync(`"${pm2Command}" start "${ecosystemPath}"`, {
           cwd: PLUGIN_ROOT,
           stdio: 'pipe',
-          encoding: 'utf-8'
+          encoding: 'utf-8',
+          shell: true
         });
 
         log('✅ Worker service started', colors.green);
