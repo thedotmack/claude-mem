@@ -51,13 +51,21 @@ export function Feed({ observations, summaries, prompts, onLoadMore, isLoading, 
   }, [hasMore, isLoading]);
 
   const items = useMemo<FeedItem[]>(() => {
+    console.log('[Feed] Computing items', {
+      observations: observations.length,
+      summaries: summaries.length,
+      prompts: prompts.length
+    });
+
     const combined = [
       ...observations.map(o => ({ ...o, itemType: 'observation' as const })),
       ...summaries.map(s => ({ ...s, itemType: 'summary' as const })),
       ...prompts.map(p => ({ ...p, itemType: 'prompt' as const }))
     ];
 
-    return combined.sort((a, b) => b.created_at_epoch - a.created_at_epoch);
+    const sorted = combined.sort((a, b) => b.created_at_epoch - a.created_at_epoch);
+    console.log('[Feed] Items computed', { total: sorted.length });
+    return sorted;
   }, [observations, summaries, prompts]);
 
   return (
