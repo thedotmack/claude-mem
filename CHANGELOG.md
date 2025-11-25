@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [6.3.2] - 2025-11-25
+
+## What's Changed
+
+### Improvements
+- Add search query support to `/api/decisions` endpoint - now supports semantic search within decisions using Chroma with `{ type: 'decision' }` metadata filter
+
+### Usage
+```bash
+# Search within decisions (new)
+curl "http://localhost:37777/api/decisions?query=architecture&format=full&limit=5"
+
+# All decisions (existing behavior preserved)
+curl "http://localhost:37777/api/decisions?format=index&limit=10"
+```
+
 ## [6.3.1] - 2025-11-25
 
 ## What's New
