@@ -930,8 +930,9 @@ const tools = [
   },
   {
     name: 'decisions',
-    description: 'Semantic shortcut to find decision-type observations. Returns observations where important architectural, technical, or process decisions were made. Equivalent to find_by_type with type="decision".',
+    description: 'Semantic shortcut to find decision-type observations. Returns observations where important architectural, technical, or process decisions were made. Supports optional semantic search query to filter decisions by relevance.',
     inputSchema: z.object({
+      query: z.string().optional().describe('Search query to filter decisions semantically'),
       format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default), "full" for complete details'),
       project: z.string().optional().describe('Filter by project name'),
       dateRange: z.object({
@@ -944,33 +945,47 @@ const tools = [
     }),
     handler: async (args: any) => {
       try {
-        const { format = 'index', ...filters } = args;
+        const { query, format = 'index', ...filters } = args;
         let results: ObservationSearchResult[] = [];
 
         // Search for decision-type observations
         if (chromaClient) {
           try {
-            console.error('[search-server] Using metadata-first + semantic ranking for decisions');
-            const metadataResults = search.findByType('decision', filters);
+            if (query) {
+              // Semantic search filtered to decision type
+              console.error('[search-server] Using Chroma semantic search with type=decision filter');
+              const chromaResults = await queryChroma(query, Math.min((filters.limit || 20) * 2, 100), { type: 'decision' });
+              const obsIds = chromaResults.ids;
 
-            if (metadataResults.length > 0) {
-              const ids = metadataResults.map(obs => obs.id);
-              const chromaResults = await queryChroma('decision', Math.min(ids.length, 100));
-
-              const rankedIds: number[] = [];
-              for (const chromaId of chromaResults.ids) {
-                if (ids.includes(chromaId) && !rankedIds.includes(chromaId)) {
-                  rankedIds.push(chromaId);
-                }
+              if (obsIds.length > 0) {
+                results = store.getObservationsByIds(obsIds, { ...filters, type: 'decision' });
+                // Preserve Chroma ranking order
+                results.sort((a, b) => obsIds.indexOf(a.id) - obsIds.indexOf(b.id));
               }
+            } else {
+              // No query: get all decisions, rank by "decision" keyword
+              console.error('[search-server] Using metadata-first + semantic ranking for decisions');
+              const metadataResults = search.findByType('decision', filters);
 
-              if (rankedIds.length > 0) {
-                results = store.getObservationsByIds(rankedIds, { limit: filters.limit || 20 });
-                results.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
+              if (metadataResults.length > 0) {
+                const ids = metadataResults.map(obs => obs.id);
+                const chromaResults = await queryChroma('decision', Math.min(ids.length, 100));
+
+                const rankedIds: number[] = [];
+                for (const chromaId of chromaResults.ids) {
+                  if (ids.includes(chromaId) && !rankedIds.includes(chromaId)) {
+                    rankedIds.push(chromaId);
+                  }
+                }
+
+                if (rankedIds.length > 0) {
+                  results = store.getObservationsByIds(rankedIds, { limit: filters.limit || 20 });
+                  results.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
+                }
               }
             }
           } catch (chromaError: any) {
-            console.error('[search-server] Chroma ranking failed, using SQLite order:', chromaError.message);
+            console.error('[search-server] Chroma search failed, using SQLite fallback:', chromaError.message);
           }
         }
 
