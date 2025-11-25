@@ -33,6 +33,7 @@ import { SettingsManager } from './worker/SettingsManager.js';
 import { SKIP_TOOLS } from '../shared/skip-tools.js';
 import { getConfig as getEndlessModeConfig } from './worker/EndlessModeConfig.js';
 import { transformTranscriptWithAgents } from '../hooks/save-hook.js';
+import { getBranchInfo, switchBranch, pullUpdates, type BranchInfo, type SwitchResult } from './worker/BranchManager.js';
 
 export class WorkerService {
   private app: express.Application;
@@ -182,6 +183,11 @@ export class WorkerService {
     // Endless Mode toggle
     this.app.get('/api/endless-mode/status', this.handleGetEndlessModeStatus.bind(this));
     this.app.post('/api/endless-mode/toggle', this.handleToggleEndlessMode.bind(this));
+
+    // Branch switching (beta/stable toggle)
+    this.app.get('/api/branch/status', this.handleGetBranchStatus.bind(this));
+    this.app.post('/api/branch/switch', this.handleSwitchBranch.bind(this));
+    this.app.post('/api/branch/update', this.handleUpdateBranch.bind(this));
 
     // Search API endpoints (for skill-based search)
     // Unified endpoints (new consolidated API)
@@ -1442,6 +1448,89 @@ export class WorkerService {
     } catch (error) {
       logger.failure('WORKER', 'Failed to toggle Endless Mode', { enabled }, error as Error);
       throw error;
+    }
+  }
+
+  // ============================================================================
+  // Branch Switching Handlers (beta/stable toggle)
+  // ============================================================================
+
+  /**
+   * GET /api/branch/status - Get current branch information
+   */
+  private handleGetBranchStatus(req: Request, res: Response): void {
+    try {
+      const info = getBranchInfo();
+      res.json(info);
+    } catch (error) {
+      logger.failure('WORKER', 'Failed to get branch status', {}, error as Error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  }
+
+  /**
+   * POST /api/branch/switch - Switch to a different branch
+   * Body: { branch: "main" | "beta/7.0" }
+   */
+  private async handleSwitchBranch(req: Request, res: Response): Promise<void> {
+    try {
+      const { branch } = req.body;
+
+      if (!branch) {
+        res.status(400).json({ success: false, error: 'Missing branch parameter' });
+        return;
+      }
+
+      // Validate branch name
+      const allowedBranches = ['main', 'beta/7.0'];
+      if (!allowedBranches.includes(branch)) {
+        res.status(400).json({
+          success: false,
+          error: `Invalid branch. Allowed: ${allowedBranches.join(', ')}`
+        });
+        return;
+      }
+
+      logger.info('WORKER', 'Branch switch requested', { branch });
+
+      const result = await switchBranch(branch);
+
+      if (result.success) {
+        // Schedule worker restart after response is sent
+        setTimeout(() => {
+          logger.info('WORKER', 'Restarting worker after branch switch');
+          process.exit(0); // PM2 will restart the worker
+        }, 1000);
+      }
+
+      res.json(result);
+    } catch (error) {
+      logger.failure('WORKER', 'Branch switch failed', {}, error as Error);
+      res.status(500).json({ success: false, error: (error as Error).message });
+    }
+  }
+
+  /**
+   * POST /api/branch/update - Pull latest updates for current branch
+   */
+  private async handleUpdateBranch(req: Request, res: Response): Promise<void> {
+    try {
+      logger.info('WORKER', 'Branch update requested');
+
+      const result = await pullUpdates();
+
+      if (result.success) {
+        // Schedule worker restart after response is sent
+        setTimeout(() => {
+          logger.info('WORKER', 'Restarting worker after branch update');
+          process.exit(0); // PM2 will restart the worker
+        }, 1000);
+      }
+
+      res.json(result);
+    } catch (error) {
+      logger.failure('WORKER', 'Branch update failed', {}, error as Error);
+      res.status(500).json({ success: false, error: (error as Error).message });
     }
   }
 

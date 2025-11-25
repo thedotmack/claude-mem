@@ -8,7 +8,7 @@ Claude-mem is a Claude Code plugin providing persistent memory across sessions. 
 
 **Your Role**: You are working on the plugin itself. When users interact with Claude Code with this plugin installed, your observations get captured and become their persistent memory.
 
-**Current Version**: 6.0.9
+**Current Version**: 7.0.0-beta.1
 
 ## Critical Architecture Knowledge
 

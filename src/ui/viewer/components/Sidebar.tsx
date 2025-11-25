@@ -40,6 +40,19 @@ export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, isConne
   const [endlessModeToggling, setEndlessModeToggling] = useState(false);
   const [endlessModeStatus, setEndlessModeStatus] = useState('');
 
+  // Branch switching state
+  interface BranchInfo {
+    branch: string | null;
+    isBeta: boolean;
+    isGitRepo: boolean;
+    isDirty: boolean;
+    canSwitch: boolean;
+    error?: string;
+  }
+  const [branchInfo, setBranchInfo] = useState<BranchInfo | null>(null);
+  const [branchSwitching, setBranchSwitching] = useState(false);
+  const [branchStatus, setBranchStatus] = useState('');
+
   // Update settings form state when settings change
   useEffect(() => {
     setModel(settings.CLAUDE_MEM_MODEL || DEFAULT_SETTINGS.CLAUDE_MEM_MODEL);
@@ -61,6 +74,14 @@ export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, isConne
       .then(res => res.json())
       .then(data => setEndlessModeEnabled(data.enabled))
       .catch(error => console.error('Failed to load Endless Mode status:', error));
+  }, []);
+
+  // Fetch branch status on mount
+  useEffect(() => {
+    fetch('/api/branch/status')
+      .then(res => res.json())
+      .then(data => setBranchInfo(data))
+      .catch(error => console.error('Failed to load branch status:', error));
   }, []);
 
   // Refresh stats when sidebar opens
@@ -133,6 +154,67 @@ export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, isConne
       setTimeout(() => setEndlessModeStatus(''), 5000);
     } finally {
       setEndlessModeToggling(false);
+    }
+  };
+
+  const handleBranchSwitch = async (targetBranch: string) => {
+    setBranchSwitching(true);
+    setBranchStatus('Switching branches...');
+
+    try {
+      const response = await fetch('/api/branch/switch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ branch: targetBranch })
+      });
+
+      const result = await response.json();
+
+      if (result.success) {
+        setBranchStatus(`✓ ${result.message}`);
+        // Worker will restart, page will refresh
+        setTimeout(() => {
+          setBranchStatus('Restarting worker...');
+        }, 1000);
+      } else {
+        setBranchStatus(`✗ Error: ${result.error}`);
+        setTimeout(() => setBranchStatus(''), 5000);
+        setBranchSwitching(false);
+      }
+    } catch (error) {
+      setBranchStatus(`✗ Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      setTimeout(() => setBranchStatus(''), 5000);
+      setBranchSwitching(false);
+    }
+  };
+
+  const handleBranchUpdate = async () => {
+    setBranchSwitching(true);
+    setBranchStatus('Checking for updates...');
+
+    try {
+      const response = await fetch('/api/branch/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+
+      const result = await response.json();
+
+      if (result.success) {
+        setBranchStatus(`✓ ${result.message}`);
+        // Worker will restart, page will refresh
+        setTimeout(() => {
+          setBranchStatus('Restarting worker...');
+        }, 1000);
+      } else {
+        setBranchStatus(`✗ Error: ${result.error}`);
+        setTimeout(() => setBranchStatus(''), 5000);
+        setBranchSwitching(false);
+      }
+    } catch (error) {
+      setBranchStatus(`✗ Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      setTimeout(() => setBranchStatus(''), 5000);
+      setBranchSwitching(false);
     }
   };
 
@@ -339,6 +421,94 @@ export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, isConne
             </div>
             {endlessModeStatus && (
               <div className="save-status">{endlessModeStatus}</div>
+            )}
+          </div>
+        </div>
+
+        <div className="settings-section">
+          <h3>Version Channel</h3>
+          <div className="form-group">
+            {branchInfo ? (
+              <>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                  <span style={{
+                    padding: '2px 8px',
+                    borderRadius: '4px',
+                    fontSize: '11px',
+                    fontWeight: 600,
+                    background: branchInfo.isBeta ? '#6b4500' : '#1a4d1a',
+                    color: branchInfo.isBeta ? '#ffb84d' : '#4ade80',
+                    border: `1px solid ${branchInfo.isBeta ? '#ffb84d' : '#4ade80'}`
+                  }}>
+                    {branchInfo.isBeta ? 'Beta' : 'Stable'}
+                  </span>
+                  <span style={{ fontSize: '12px', opacity: 0.7 }}>
+                    {stats.worker?.version || '-'}
+                  </span>
+                </div>
+
+                {branchInfo.isBeta ? (
+                  <>
+                    <div className="setting-description" style={{ marginBottom: '12px' }}>
+                      You're running the beta with Endless Mode. Your memory data is preserved when switching versions.
+                    </div>
+                    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                      <button
+                        onClick={() => handleBranchSwitch('main')}
+                        disabled={branchSwitching}
+                        style={{
+                          background: '#2a2a2a',
+                          border: '1px solid #404040',
+                          padding: '8px 16px',
+                          cursor: branchSwitching ? 'not-allowed' : 'pointer',
+                          opacity: branchSwitching ? 0.5 : 1
+                        }}
+                      >
+                        Switch to Stable
+                      </button>
+                      <button
+                        onClick={handleBranchUpdate}
+                        disabled={branchSwitching}
+                        style={{
+                          background: '#2a2a2a',
+                          border: '1px solid #404040',
+                          padding: '8px 16px',
+                          cursor: branchSwitching ? 'not-allowed' : 'pointer',
+                          opacity: branchSwitching ? 0.5 : 1
+                        }}
+                      >
+                        Check for Updates
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="setting-description" style={{ marginBottom: '12px' }}>
+                      Try the beta to access experimental features like Endless Mode. Your memory data is preserved when switching.
+                    </div>
+                    <button
+                      onClick={() => handleBranchSwitch('beta/7.0')}
+                      disabled={branchSwitching}
+                      style={{
+                        background: '#4a3500',
+                        border: '1px solid #ffb84d',
+                        color: '#ffb84d',
+                        padding: '8px 16px',
+                        cursor: branchSwitching ? 'not-allowed' : 'pointer',
+                        opacity: branchSwitching ? 0.5 : 1
+                      }}
+                    >
+                      Try Beta (Endless Mode)
+                    </button>
+                  </>
+                )}
+
+                {branchStatus && (
+                  <div className="save-status" style={{ marginTop: '8px' }}>{branchStatus}</div>
+                )}
+              </>
+            ) : (
+              <div style={{ fontSize: '12px', opacity: 0.5 }}>Loading branch info...</div>
             )}
           </div>
         </div>
