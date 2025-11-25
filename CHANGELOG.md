@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [6.3.0] - 2025-11-25
+
+## What's New
+
+### Branch-Based Beta Toggle
+Added Version Channel section to Settings sidebar allowing users to switch between stable and beta versions directly from the UI.
+
+**Features:**
+- See current branch (main or beta/7.0) and stability status
+- Switch to beta branch to access Endless Mode features
+- Switch back to stable for production use
+- Pull updates for current branch
+
+**Implementation:**
+- `BranchManager.ts`: Git operations for branch detection/switching
+- `worker-service.ts`: `/api/branch/*` endpoints (status, switch, update)
+- `Sidebar.tsx`: Version Channel UI with branch state and handlers
+
+## Installation
+To update, restart Claude Code or run the plugin installer.
+
 ## [6.2.1] - 2025-11-23
 
 ## 🐛 Bug Fixes
