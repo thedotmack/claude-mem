@@ -151,6 +151,26 @@ Search operations are now provided via:
 - **HTTP API**: 10 endpoints on worker service port 37777
 - **Progressive Disclosure**: Full instructions loaded on-demand only when needed
 
+## Version Channel
+
+Claude-Mem supports switching between stable and beta versions via the web viewer UI.
+
+### Accessing Version Channel
+
+1. Open the viewer at http://localhost:37777
+2. Click the Settings gear icon
+3. Find the **Version Channel** section
+
+### Switching Versions
+
+- **Try Beta**: Click "Try Beta (Endless Mode)" to switch to the beta branch with experimental features
+- **Switch to Stable**: Click "Switch to Stable" to return to the production release
+- **Check for Updates**: Pull the latest changes for your current branch
+
+**Your memory data is preserved** when switching versions. Only the plugin code changes.
+
+See [Beta Features](beta-features) for details on what's available in beta.
+
 ## PM2 Configuration
 
 Worker service is managed by PM2 via `ecosystem.config.cjs`:

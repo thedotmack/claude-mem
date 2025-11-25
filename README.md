@@ -17,7 +17,7 @@
     <img src="https://img.shields.io/badge/License-AGPL%203.0-blue.svg" alt="License">
   </a>
   <a href="package.json">
-    <img src="https://img.shields.io/badge/version-6.0.0-green.svg" alt="Version">
+    <img src="https://img.shields.io/badge/version-6.3.0-green.svg" alt="Version">
   </a>
   <a href="package.json">
     <img src="https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg" alt="Node">
@@ -73,6 +73,7 @@ Restart Claude Code. Context from previous sessions will automatically appear in
 - 🖥️ **Web Viewer UI** - Real-time memory stream at http://localhost:37777
 - 🤖 **Automatic Operation** - No manual intervention required
 - 🔗 **Citations** - Reference past decisions with `claude-mem://` URIs
+- 🧪 **Beta Channel** - Try experimental features like Endless Mode via version switching
 
 ---
 
@@ -92,6 +93,7 @@ npx mintlify dev
 - **[Installation Guide](https://docs.claude-mem.ai/installation)** - Quick start & advanced installation
 - **[Usage Guide](https://docs.claude-mem.ai/usage/getting-started)** - How Claude-Mem works automatically
 - **[Search Tools](https://docs.claude-mem.ai/usage/search-tools)** - Query your project history with natural language
+- **[Beta Features](https://docs.claude-mem.ai/beta-features)** - Try experimental features like Endless Mode
 
 ### Best Practices
 
@@ -186,6 +188,44 @@ Claude-Mem provides intelligent search through the mem-search skill that auto-in
 ```
 
 See [Search Tools Guide](https://docs.claude-mem.ai/usage/search-tools) for detailed examples.
+
+---
+
+## Beta Features & Endless Mode
+
+Claude-Mem offers a **beta channel** with experimental features. Switch between stable and beta versions directly from the web viewer UI.
+
+### How to Try Beta
+
+1. Open http://localhost:37777
+2. Click Settings (gear icon)
+3. In **Version Channel**, click "Try Beta (Endless Mode)"
+4. Wait for the worker to restart
+
+Your memory data is preserved when switching versions.
+
+### Endless Mode (Beta)
+
+The flagship beta feature is **Endless Mode** - a biomimetic memory architecture that dramatically extends session length:
+
+**The Problem**: Standard Claude Code sessions hit context limits after ~50 tool uses. Each tool adds 1-10k+ tokens, and Claude re-synthesizes all previous outputs on every response (O(N²) complexity).
+
+**The Solution**: Endless Mode compresses tool outputs into ~500-token observations and transforms the transcript in real-time:
+
+```
+Working Memory (Context):     Compressed observations (~500 tokens each)
+Archive Memory (Disk):        Full tool outputs preserved for recall
+```
+
+**Expected Results**:
+- ~95% token reduction in context window
+- ~20x more tool uses before context exhaustion
+- Linear O(N) scaling instead of quadratic O(N²)
+- Full transcripts preserved for perfect recall
+
+**Caveats**: Adds latency (60-90s per tool for observation generation), still experimental.
+
+See [Beta Features Documentation](https://docs.claude-mem.ai/beta-features) for details.
 
 ---
 
