@@ -13,7 +13,8 @@ import {
 
 /**
  * Search interface for session-based memory
- * Provides FTS5 full-text search and structured queries for sessions, observations, and summaries
+ * Provides filter-only structured queries for sessions, observations, and user prompts
+ * Vector search is handled by ChromaDB - this class only supports filtering without query text
  */
 export class SessionSearch {
   private db: Database.Database;
@@ -31,7 +32,18 @@ export class SessionSearch {
   }
 
   /**
-   * Ensure FTS5 tables exist (inline migration)
+   * Ensure FTS5 tables exist (backward compatibility only - no longer used for search)
+   *
+   * FTS5 tables are maintained for backward compatibility but not used for search.
+   * Vector search (Chroma) is now the primary search mechanism.
+   *
+   * Retention Rationale:
+   * - Prevents breaking existing installations with FTS5 tables
+   * - Allows graceful migration path for users
+   * - Tables maintained but search paths removed
+   * - Triggers still fire to keep tables synchronized
+   *
+   * TODO: Remove FTS5 infrastructure in future major version (v7.0.0)
    */
   private ensureFTSTables(): void {
     try {
@@ -134,22 +146,6 @@ export class SessionSearch {
     }
   }
 
-  /**
-   * Escape FTS5 special characters in user input
-   * 
-   * FTS5 uses double quotes for phrase searches and treats certain characters
-   * as operators (*, AND, OR, NOT, parentheses, etc.). To prevent injection,
-   * we wrap user input in double quotes and escape internal quotes by doubling them.
-   * This converts any user input into a safe phrase search.
-   * 
-   * @param text - User input to escape for FTS5 MATCH queries
-   * @returns Safely escaped FTS5 query string
-   */
-  private escapeFTS5(text: string): string {
-    // Escape internal double quotes by doubling them (FTS5 standard)
-    // Then wrap the entire string in double quotes for phrase search
-    return `"${text.replace(/"/g, '""')}"`;
-  }
 
   /**
    * Build WHERE clause for structured filters
@@ -243,118 +239,78 @@ export class SessionSearch {
   }
 
   /**
-   * Search observations using FTS5 full-text search
+   * Search observations using filter-only direct SQLite query.
+   * Vector search is handled by ChromaDB - this only supports filtering without query text.
    */
-  searchObservations(query: string, options: SearchOptions = {}): ObservationSearchResult[] {
+  searchObservations(query: string | undefined, options: SearchOptions = {}): ObservationSearchResult[] {
     const params: any[] = [];
     const { limit = 50, offset = 0, orderBy = 'relevance', ...filters } = options;
 
-    // Build FTS5 match query
-    const ftsQuery = this.escapeFTS5(query);
-    params.push(ftsQuery);
+    // FILTER-ONLY PATH: When no query text, query table directly
+    // This enables date filtering which Chroma cannot do (requires direct SQLite access)
+    if (!query) {
+      const filterClause = this.buildFilterClause(filters, params, 'o');
+      if (!filterClause) {
+        throw new Error('Either query or filters required for search');
+      }
 
-    // Build filter conditions
-    const filterClause = this.buildFilterClause(filters, params, 'o');
-    const whereClause = filterClause ? `AND ${filterClause}` : '';
+      const orderClause = this.buildOrderClause(orderBy, false);
 
-    // Build ORDER BY
-    const orderClause = this.buildOrderClause(orderBy, true);
+      const sql = `
+        SELECT o.*, o.discovery_tokens
+        FROM observations o
+        WHERE ${filterClause}
+        ${orderClause}
+        LIMIT ? OFFSET ?
+      `;
 
-    // Main query with FTS5
-    const sql = `
-      SELECT
-        o.*,
-        o.discovery_tokens,
-        observations_fts.rank as rank
-      FROM observations o
-      JOIN observations_fts ON o.id = observations_fts.rowid
-      WHERE observations_fts MATCH ?
-      ${whereClause}
-      ${orderClause}
-      LIMIT ? OFFSET ?
-    `;
-
-    params.push(limit, offset);
-
-    const results = this.db.prepare(sql).all(...params) as ObservationSearchResult[];
-
-    // Normalize rank to score (0-1, higher is better)
-    if (results.length > 0) {
-      const minRank = Math.min(...results.map(r => r.rank || 0));
-      const maxRank = Math.max(...results.map(r => r.rank || 0));
-      const range = maxRank - minRank || 1;
-
-      results.forEach(r => {
-        if (r.rank !== undefined) {
-          // Invert rank (lower rank = better match) and normalize to 0-1
-          r.score = 1 - ((r.rank - minRank) / range);
-        }
-      });
+      params.push(limit, offset);
+      return this.db.prepare(sql).all(...params) as ObservationSearchResult[];
     }
 
-    return results;
+    // Vector search with query text should be handled by ChromaDB
+    // This method only supports filter-only queries (query=undefined)
+    console.warn('[SessionSearch] Text search not supported - use ChromaDB for vector search');
+    return [];
   }
 
   /**
-   * Search session summaries using FTS5 full-text search
+   * Search session summaries using filter-only direct SQLite query.
+   * Vector search is handled by ChromaDB - this only supports filtering without query text.
    */
-  searchSessions(query: string, options: SearchOptions = {}): SessionSummarySearchResult[] {
+  searchSessions(query: string | undefined, options: SearchOptions = {}): SessionSummarySearchResult[] {
     const params: any[] = [];
     const { limit = 50, offset = 0, orderBy = 'relevance', ...filters } = options;
 
-    // Build FTS5 match query
-    const ftsQuery = this.escapeFTS5(query);
-    params.push(ftsQuery);
+    // FILTER-ONLY PATH: When no query text, query session_summaries table directly
+    if (!query) {
+      const filterOptions = { ...filters };
+      delete filterOptions.type;
+      const filterClause = this.buildFilterClause(filterOptions, params, 's');
+      if (!filterClause) {
+        throw new Error('Either query or filters required for search');
+      }
 
-    // Build filter conditions (without type filter - not applicable to summaries)
-    const filterOptions = { ...filters };
-    delete filterOptions.type;
-    const filterClause = this.buildFilterClause(filterOptions, params, 's');
-    const whereClause = filterClause ? `AND ${filterClause}` : '';
+      const orderClause = orderBy === 'date_asc'
+        ? 'ORDER BY s.created_at_epoch ASC'
+        : 'ORDER BY s.created_at_epoch DESC';
 
-    // Note: session_summaries don't have files_read/files_modified in the same way
-    // We'll need to adjust the filter clause
-    const adjustedWhereClause = whereClause.replace(/files_read/g, 'files_read').replace(/files_modified/g, 'files_edited');
+      const sql = `
+        SELECT s.*, s.discovery_tokens
+        FROM session_summaries s
+        WHERE ${filterClause}
+        ${orderClause}
+        LIMIT ? OFFSET ?
+      `;
 
-    // Build ORDER BY
-    const orderClause = orderBy === 'relevance'
-      ? 'ORDER BY session_summaries_fts.rank ASC'
-      : orderBy === 'date_asc'
-      ? 'ORDER BY s.created_at_epoch ASC'
-      : 'ORDER BY s.created_at_epoch DESC';
-
-    // Main query with FTS5
-    const sql = `
-      SELECT
-        s.*,
-        s.discovery_tokens,
-        session_summaries_fts.rank as rank
-      FROM session_summaries s
-      JOIN session_summaries_fts ON s.id = session_summaries_fts.rowid
-      WHERE session_summaries_fts MATCH ?
-      ${adjustedWhereClause}
-      ${orderClause}
-      LIMIT ? OFFSET ?
-    `;
-
-    params.push(limit, offset);
-
-    const results = this.db.prepare(sql).all(...params) as SessionSummarySearchResult[];
-
-    // Normalize rank to score
-    if (results.length > 0) {
-      const minRank = Math.min(...results.map(r => r.rank || 0));
-      const maxRank = Math.max(...results.map(r => r.rank || 0));
-      const range = maxRank - minRank || 1;
-
-      results.forEach(r => {
-        if (r.rank !== undefined) {
-          r.score = 1 - ((r.rank - minRank) / range);
-        }
-      });
+      params.push(limit, offset);
+      return this.db.prepare(sql).all(...params) as SessionSummarySearchResult[];
     }
 
-    return results;
+    // Vector search with query text should be handled by ChromaDB
+    // This method only supports filter-only queries (query=undefined)
+    console.warn('[SessionSearch] Text search not supported - use ChromaDB for vector search');
+    return [];
   }
 
   /**
@@ -485,15 +441,12 @@ export class SessionSearch {
   }
 
   /**
-   * Search user prompts with full-text search
+   * Search user prompts using filter-only direct SQLite query.
+   * Vector search is handled by ChromaDB - this only supports filtering without query text.
    */
-  searchUserPrompts(query: string, options: SearchOptions = {}): UserPromptSearchResult[] {
+  searchUserPrompts(query: string | undefined, options: SearchOptions = {}): UserPromptSearchResult[] {
     const params: any[] = [];
     const { limit = 20, offset = 0, orderBy = 'relevance', ...filters } = options;
-
-    // Build FTS5 match query
-    const ftsQuery = this.escapeFTS5(query);
-    params.push(ftsQuery);
 
     // Build filter conditions (join with sdk_sessions for project filtering)
     const baseConditions: string[] = [];
@@ -516,47 +469,34 @@ export class SessionSearch {
       }
     }
 
-    const whereClause = baseConditions.length > 0 ? `AND ${baseConditions.join(' AND ')}` : '';
+    // FILTER-ONLY PATH: When no query text, query user_prompts table directly
+    if (!query) {
+      if (baseConditions.length === 0) {
+        throw new Error('Either query or filters required for search');
+      }
 
-    // Build ORDER BY
-    const orderClause = orderBy === 'relevance'
-      ? 'ORDER BY user_prompts_fts.rank ASC'
-      : orderBy === 'date_asc'
-      ? 'ORDER BY up.created_at_epoch ASC'
-      : 'ORDER BY up.created_at_epoch DESC';
+      const whereClause = `WHERE ${baseConditions.join(' AND ')}`;
+      const orderClause = orderBy === 'date_asc'
+        ? 'ORDER BY up.created_at_epoch ASC'
+        : 'ORDER BY up.created_at_epoch DESC';
 
-    // Main query with FTS5 (join sdk_sessions for project filtering)
-    const sql = `
-      SELECT
-        up.*,
-        user_prompts_fts.rank as rank
-      FROM user_prompts up
-      JOIN user_prompts_fts ON up.id = user_prompts_fts.rowid
-      JOIN sdk_sessions s ON up.claude_session_id = s.claude_session_id
-      WHERE user_prompts_fts MATCH ?
-      ${whereClause}
-      ${orderClause}
-      LIMIT ? OFFSET ?
-    `;
+      const sql = `
+        SELECT up.*
+        FROM user_prompts up
+        JOIN sdk_sessions s ON up.claude_session_id = s.claude_session_id
+        ${whereClause}
+        ${orderClause}
+        LIMIT ? OFFSET ?
+      `;
 
-    params.push(limit, offset);
-
-    const results = this.db.prepare(sql).all(...params) as UserPromptSearchResult[];
-
-    // Normalize rank to score
-    if (results.length > 0) {
-      const minRank = Math.min(...results.map(r => r.rank || 0));
-      const maxRank = Math.max(...results.map(r => r.rank || 0));
-      const range = maxRank - minRank || 1;
-
-      results.forEach(r => {
-        if (r.rank !== undefined) {
-          r.score = 1 - ((r.rank - minRank) / range);
-        }
-      });
+      params.push(limit, offset);
+      return this.db.prepare(sql).all(...params) as UserPromptSearchResult[];
     }
 
-    return results;
+    // Vector search with query text should be handled by ChromaDB
+    // This method only supports filter-only queries (query=undefined)
+    console.warn('[SessionSearch] Text search not supported - use ChromaDB for vector search');
+    return [];
   }
 
   /**
