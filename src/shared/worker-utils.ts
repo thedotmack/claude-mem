@@ -1,7 +1,7 @@
 import path from "path";
 import { homedir } from "os";
 import { existsSync, readFileSync } from "fs";
-import { execSync } from "child_process";
+import { spawnSync } from "child_process";
 import { getPackageRoot } from "./paths.js";
 
 // Named constants for health checks
@@ -63,13 +63,15 @@ async function startWorker(): Promise<boolean> {
 
     // Start using PM2 with the ecosystem config
     // CRITICAL: Must set cwd to pluginRoot so PM2 starts from marketplace directory
-    // shell: true required for Windows to handle quoted paths correctly
-    execSync(`"${pm2Command}" start "${ecosystemPath}"`, {
+    // Using spawnSync with array args to avoid command injection risks
+    const result = spawnSync(pm2Command, ['start', ecosystemPath], {
       cwd: pluginRoot,
       stdio: 'pipe',
-      encoding: 'utf-8',
-      shell: true
+      encoding: 'utf-8'
     });
+    if (result.status !== 0) {
+      throw new Error(result.stderr || 'PM2 start failed');
+    }
 
     // Wait for worker to become healthy
     for (let i = 0; i < WORKER_STARTUP_RETRIES; i++) {

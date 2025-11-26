@@ -12,7 +12,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync } from 'fs';
-import { execSync } from 'child_process';
+import { execSync, spawnSync } from 'child_process';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -270,13 +270,15 @@ async function main() {
         const pm2Command = existsSync(localPm2Cmd) ? localPm2Cmd : 'pm2';
         const ecosystemPath = join(PLUGIN_ROOT, 'ecosystem.config.cjs');
 
-        // shell: true required for Windows to handle quoted paths correctly
-        execSync(`"${pm2Command}" start "${ecosystemPath}"`, {
+        // Using spawnSync with array args to avoid command injection risks
+        const result = spawnSync(pm2Command, ['start', ecosystemPath], {
           cwd: PLUGIN_ROOT,
           stdio: 'pipe',
-          encoding: 'utf-8',
-          shell: true
+          encoding: 'utf-8'
         });
+        if (result.status !== 0) {
+          throw new Error(result.stderr || 'PM2 start failed');
+        }
 
         log('✅ Worker service started', colors.green);
       } catch (error) {
