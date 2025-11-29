@@ -19,8 +19,9 @@ Use when users ask about PREVIOUS sessions (not current conversation):
 **ALWAYS follow this exact flow:**
 
 1. **Search** - Get an index of results with IDs
-2. **Review** - Look at titles/dates, pick relevant IDs
-3. **Fetch** - Get full details ONLY for those IDs
+2. **Timeline** (optional) - Get context around top results to understand what was happening
+3. **Review** - Look at titles/dates/context, pick relevant IDs
+4. **Fetch** - Get full details ONLY for those IDs
 
 ### Step 1: Search Everything
 
@@ -44,11 +45,30 @@ curl "http://localhost:37777/api/search?query=authentication&format=index&limit=
    ID: 10942
 ```
 
-### Step 2: Pick IDs
+### Step 2: Get Timeline Context (Optional)
 
-Review the index results. Identify which IDs are actually relevant. Discard the rest.
+When you need to understand "what was happening" around a result:
 
-### Step 3: Fetch by ID
+```bash
+# Get timeline around an observation ID
+curl "http://localhost:37777/api/timeline?anchor=11131&depth_before=3&depth_after=3"
+
+# Or use query to find + get timeline in one step
+curl "http://localhost:37777/api/timeline?query=authentication&depth_before=3&depth_after=3"
+```
+
+**Returns exactly `depth_before + 1 + depth_after` items** - observations, sessions, and prompts interleaved chronologically around the anchor.
+
+**When to use:**
+- User asks "what was happening when..."
+- Need to understand sequence of events
+- Want broader context around a specific observation
+
+### Step 3: Pick IDs
+
+Review the index results (and timeline if used). Identify which IDs are actually relevant. Discard the rest.
+
+### Step 4: Fetch by ID
 
 For each relevant ID, fetch full details:
 

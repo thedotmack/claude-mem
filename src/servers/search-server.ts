@@ -136,6 +136,46 @@ Other tips:
 }
 
 /**
+ * Timeline item for unified chronological display
+ */
+interface TimelineItem {
+  type: 'observation' | 'session' | 'prompt';
+  data: any;
+  epoch: number;
+}
+
+/**
+ * Filter timeline items to respect depth_before/depth_after window around anchor
+ */
+function filterTimelineByDepth(
+  items: TimelineItem[],
+  anchorId: number | string,
+  anchorEpoch: number,
+  depth_before: number,
+  depth_after: number
+): TimelineItem[] {
+  if (items.length === 0) return items;
+
+  let anchorIndex = -1;
+  if (typeof anchorId === 'number') {
+    anchorIndex = items.findIndex(item => item.type === 'observation' && item.data.id === anchorId);
+  } else if (typeof anchorId === 'string' && anchorId.startsWith('S')) {
+    const sessionNum = parseInt(anchorId.slice(1), 10);
+    anchorIndex = items.findIndex(item => item.type === 'session' && item.data.id === sessionNum);
+  } else {
+    // Timestamp anchor - find closest item
+    anchorIndex = items.findIndex(item => item.epoch >= anchorEpoch);
+    if (anchorIndex === -1) anchorIndex = items.length - 1;
+  }
+
+  if (anchorIndex === -1) return items;
+
+  const startIndex = Math.max(0, anchorIndex - depth_before);
+  const endIndex = Math.min(items.length, anchorIndex + depth_after + 1);
+  return items.slice(startIndex, endIndex);
+}
+
+/**
  * Format observation as index entry (title, date, ID only)
  */
 function formatObservationIndex(obs: ObservationSearchResult, index: number): string {
@@ -723,22 +763,16 @@ const tools = [
           };
         }
 
-        // Combine and sort all items chronologically
-        interface TimelineItem {
-          type: 'observation' | 'session' | 'prompt';
-          data: any;
-          epoch: number;
-        }
-
+        // Combine, sort, and filter timeline items
         const items: TimelineItem[] = [
           ...timeline.observations.map((obs: any) => ({ type: 'observation' as const, data: obs, epoch: obs.created_at_epoch })),
           ...timeline.sessions.map((sess: any) => ({ type: 'session' as const, data: sess, epoch: sess.created_at_epoch })),
           ...timeline.prompts.map((prompt: any) => ({ type: 'prompt' as const, data: prompt, epoch: prompt.created_at_epoch }))
         ];
-
         items.sort((a, b) => a.epoch - b.epoch);
+        const filteredItems = filterTimelineByDepth(items, anchorId, anchorEpoch, depth_before, depth_after);
 
-        if (items.length === 0) {
+        if (filteredItems.length === 0) {
           return {
             content: [{
               type: 'text' as const,
@@ -789,7 +823,7 @@ const tools = [
 
         // Header
         if (query) {
-          const anchorObs = items.find(item => item.type === 'observation' && item.data.id === anchorId);
+          const anchorObs = filteredItems.find(item => item.type === 'observation' && item.data.id === anchorId);
           const anchorTitle = anchorObs ? (anchorObs.data.title || 'Untitled') : 'Unknown';
           lines.push(`# Timeline for query: "${query}"`);
           lines.push(`**Anchor:** Observation #${anchorId} - ${anchorTitle}`);
@@ -797,7 +831,7 @@ const tools = [
           lines.push(`# Timeline around anchor: ${anchorId}`);
         }
 
-        lines.push(`**Window:** ${depth_before} records before → ${depth_after} records after | **Items:** ${items.length} (${timeline.observations.length} obs, ${timeline.sessions.length} sessions, ${timeline.prompts.length} prompts)`);
+        lines.push(`**Window:** ${depth_before} records before → ${depth_after} records after | **Items:** ${filteredItems.length}`);
         lines.push('');
 
         // Legend
@@ -806,7 +840,7 @@ const tools = [
 
         // Group by day
         const dayMap = new Map<string, TimelineItem[]>();
-        for (const item of items) {
+        for (const item of filteredItems) {
           const day = formatDate(item.epoch);
           if (!dayMap.has(day)) {
             dayMap.set(day, []);
@@ -2029,22 +2063,16 @@ const tools = [
           };
         }
 
-        // Combine and sort all items chronologically
-        interface TimelineItem {
-          type: 'observation' | 'session' | 'prompt';
-          data: any;
-          epoch: number;
-        }
-
+        // Combine, sort, and filter timeline items
         const items: TimelineItem[] = [
           ...timeline.observations.map(obs => ({ type: 'observation' as const, data: obs, epoch: obs.created_at_epoch })),
           ...timeline.sessions.map(sess => ({ type: 'session' as const, data: sess, epoch: sess.created_at_epoch })),
           ...timeline.prompts.map(prompt => ({ type: 'prompt' as const, data: prompt, epoch: prompt.created_at_epoch }))
         ];
-
         items.sort((a, b) => a.epoch - b.epoch);
+        const filteredItems = filterTimelineByDepth(items, anchorId, anchorEpoch, depth_before, depth_after);
 
-        if (items.length === 0) {
+        if (filteredItems.length === 0) {
           const anchorDate = new Date(anchorEpoch).toLocaleString();
           return {
             content: [{
@@ -2094,7 +2122,7 @@ const tools = [
 
         // Header
         lines.push(`# Timeline around anchor: ${anchorId}`);
-        lines.push(`**Window:** ${depth_before} records before → ${depth_after} records after | **Items:** ${items.length} (${timeline.observations.length} obs, ${timeline.sessions.length} sessions, ${timeline.prompts.length} prompts)`);
+        lines.push(`**Window:** ${depth_before} records before → ${depth_after} records after | **Items:** ${filteredItems.length}`);
         lines.push('');
 
         // Legend
@@ -2103,7 +2131,7 @@ const tools = [
 
         // Group by day
         const dayMap = new Map<string, TimelineItem[]>();
-        for (const item of items) {
+        for (const item of filteredItems) {
           const day = formatDate(item.epoch);
           if (!dayMap.has(day)) {
             dayMap.set(day, []);
@@ -2338,22 +2366,16 @@ const tools = [
             project
           );
 
-          // Combine and sort all items chronologically (same logic as get_context_timeline)
-          interface TimelineItem {
-            type: 'observation' | 'session' | 'prompt';
-            data: any;
-            epoch: number;
-          }
-
+          // Combine, sort, and filter timeline items
           const items: TimelineItem[] = [
             ...timeline.observations.map(obs => ({ type: 'observation' as const, data: obs, epoch: obs.created_at_epoch })),
             ...timeline.sessions.map(sess => ({ type: 'session' as const, data: sess, epoch: sess.created_at_epoch })),
             ...timeline.prompts.map(prompt => ({ type: 'prompt' as const, data: prompt, epoch: prompt.created_at_epoch }))
           ];
-
           items.sort((a, b) => a.epoch - b.epoch);
+          const filteredItems = filterTimelineByDepth(items, topResult.id, 0, depth_before, depth_after);
 
-          if (items.length === 0) {
+          if (filteredItems.length === 0) {
             return {
               content: [{
                 type: 'text' as const,
@@ -2403,7 +2425,7 @@ const tools = [
           // Header
           lines.push(`# Timeline for query: "${query}"`);
           lines.push(`**Anchor:** Observation #${topResult.id} - ${topResult.title || 'Untitled'}`);
-          lines.push(`**Window:** ${depth_before} records before → ${depth_after} records after | **Items:** ${items.length} (${timeline.observations.length} obs, ${timeline.sessions.length} sessions, ${timeline.prompts.length} prompts)`);
+          lines.push(`**Window:** ${depth_before} records before → ${depth_after} records after | **Items:** ${filteredItems.length}`);
           lines.push('');
 
           // Legend
@@ -2412,7 +2434,7 @@ const tools = [
 
           // Group by day
           const dayMap = new Map<string, TimelineItem[]>();
-          for (const item of items) {
+          for (const item of filteredItems) {
             const day = formatDate(item.epoch);
             if (!dayMap.has(day)) {
               dayMap.set(day, []);
