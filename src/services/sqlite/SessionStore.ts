@@ -29,6 +29,7 @@ export class SessionStore {
     this.makeObservationsTextNullable();
     this.createUserPromptsTable();
     this.ensureDiscoveryTokensColumn();
+    this.ensureObservationStatusColumns();
   }
 
   /**
@@ -531,6 +532,39 @@ export class SessionStore {
   }
 
   /**
+   * Migration 12: Add status and superseded_by columns to observations table
+   */
+  private ensureObservationStatusColumns(): void {
+    try {
+      const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(12) as {version: number} | undefined;
+      if (applied) return;
+
+      const tableInfo = this.db.pragma('table_info(observations)');
+      const hasStatus = (tableInfo as any[]).some((col: any) => col.name === 'status');
+      const hasSupersededBy = (tableInfo as any[]).some((col: any) => col.name === 'superseded_by');
+
+      if (!hasStatus) {
+        this.db.exec("ALTER TABLE observations ADD COLUMN status TEXT DEFAULT 'active'");
+        console.error('[SessionStore] Added status column to observations table');
+      }
+
+      if (!hasSupersededBy) {
+        this.db.exec('ALTER TABLE observations ADD COLUMN superseded_by INTEGER REFERENCES observations(id)');
+        console.error('[SessionStore] Added superseded_by column to observations table');
+      }
+
+      // Create index for efficient status filtering
+      this.db.exec('CREATE INDEX IF NOT EXISTS idx_observations_status ON observations(status)');
+
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(12, new Date().toISOString());
+      console.error('[SessionStore] Migration 12 (observation status) completed');
+    } catch (error: any) {
+      console.error('[SessionStore] Observation status migration error:', error.message);
+      throw error;
+    }
+  }
+
+  /**
    * Get recent session summaries for a project
    */
   getRecentSummaries(project: string, limit: number = 10): Array<{
@@ -771,21 +805,25 @@ export class SessionStore {
    */
   getObservationsByIds(
     ids: number[],
-    options: { orderBy?: 'date_desc' | 'date_asc'; limit?: number } = {}
+    options: { orderBy?: 'date_desc' | 'date_asc'; limit?: number; include_inactive?: boolean } = {}
   ): any[] {
     if (ids.length === 0) return [];
 
-    const { orderBy = 'date_desc', limit } = options;
+    const { orderBy = 'date_desc', limit, include_inactive = false } = options;
     const orderClause = orderBy === 'date_asc' ? 'ASC' : 'DESC';
     const limitClause = limit ? `LIMIT ${limit}` : '';
 
     // Build placeholders for IN clause
     const placeholders = ids.map(() => '?').join(',');
 
+    // Status filter: exclude non-active unless include_inactive is true
+    const statusFilter = include_inactive ? '' : "AND COALESCE(status, 'active') = 'active'";
+
     const stmt = this.db.prepare(`
       SELECT *
       FROM observations
       WHERE id IN (${placeholders})
+      ${statusFilter}
       ORDER BY created_at_epoch ${orderClause}
       ${limitClause}
     `);
@@ -1180,6 +1218,74 @@ export class SessionStore {
       id: Number(result.lastInsertRowid),
       createdAtEpoch: nowEpoch
     };
+  }
+
+  /**
+   * Update an observation's status (for marking as meta, deprecated, or superseded)
+   */
+  updateObservationStatus(
+    observationId: number,
+    status: 'active' | 'meta' | 'deprecated' | 'superseded',
+    supersededBy?: number
+  ): boolean {
+    const stmt = this.db.prepare(`
+      UPDATE observations
+      SET status = ?, superseded_by = ?
+      WHERE id = ?
+    `);
+
+    const result = stmt.run(status, supersededBy || null, observationId);
+    return result.changes > 0;
+  }
+
+  /**
+   * Batch update observation statuses with transaction support
+   */
+  batchUpdateObservationStatus(
+    updates: Array<{
+      observation_id: number;
+      status: 'active' | 'meta' | 'deprecated' | 'superseded';
+      superseded_by?: number;
+    }>
+  ): { updated: number; failed: number; results: Array<{ observation_id: number; success: boolean; error?: string }> } {
+    const results: Array<{ observation_id: number; success: boolean; error?: string }> = [];
+    let updated = 0;
+    let failed = 0;
+
+    const stmt = this.db.prepare(`
+      UPDATE observations
+      SET status = ?, superseded_by = ?
+      WHERE id = ?
+    `);
+
+    const runUpdates = this.db.transaction(() => {
+      for (const update of updates) {
+        try {
+          // Validate superseded_by requirement
+          if (update.status === 'superseded' && !update.superseded_by) {
+            results.push({ observation_id: update.observation_id, success: false, error: 'superseded_by required' });
+            failed++;
+            continue;
+          }
+
+          const result = stmt.run(update.status, update.superseded_by || null, update.observation_id);
+          if (result.changes > 0) {
+            results.push({ observation_id: update.observation_id, success: true });
+            updated++;
+          } else {
+            results.push({ observation_id: update.observation_id, success: false, error: 'not found' });
+            failed++;
+          }
+        } catch (err) {
+          results.push({ observation_id: update.observation_id, success: false, error: String(err) });
+          failed++;
+        }
+      }
+    });
+
+    runUpdates();
+
+    return { updated, failed, results };
   }
 
   /**

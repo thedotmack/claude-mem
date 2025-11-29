@@ -1,4 +1,5 @@
 /* To @claude: be vigilant about only leaving evergreen context in this file, claude-mem handles working context separately. */
+/* To @claude: Check TEMPORARY NOTES section below. Remove any notes past their expiration date. Today's date is in your <env> context. */
 
 # Claude-Mem: AI Development Instructions
 
@@ -61,3 +62,11 @@ pm2 delete claude-mem-worker  # Force clean start
 ```
 
 **Viewer UI**: http://localhost:37777
+
+---
+
+## Temporary Notes
+
+<!-- Remove notes when past expiration date -->
+
+**[EXPIRES: 2025-11-30]** rad-mem fork is in active development at ~/Scripts/rad-mem. Both projects currently share the same data files (~/.claude-mem/). Running both workers simultaneously causes silent database contention - search returns "No results found" instead of actual errors. Only run one worker at a time until rad-mem has its own data directory (~/.rad-mem/).

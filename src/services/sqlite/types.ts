@@ -201,12 +201,16 @@ export interface SDKSessionRow {
   prompt_counter?: number;
 }
 
+export type ObservationStatus = 'active' | 'meta_observation' | 'deprecated' | 'superseded';
+
 export interface ObservationRow {
   id: number;
   sdk_session_id: string;
   project: string;
   text: string | null;
   type: 'decision' | 'bugfix' | 'feature' | 'refactor' | 'discovery' | 'change';
+  status: ObservationStatus;
+  superseded_by: number | null;
   title: string | null;
   subtitle: string | null;
   facts: string | null; // JSON array
@@ -258,6 +262,8 @@ export interface DateRange {
 export interface SearchFilters {
   project?: string;
   type?: ObservationRow['type'] | ObservationRow['type'][];
+  status?: ObservationStatus | ObservationStatus[];
+  include_inactive?: boolean; // If true, include non-active statuses (default: false)
   concepts?: string | string[];
   files?: string | string[];
   dateRange?: DateRange;

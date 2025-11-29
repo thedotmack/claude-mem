@@ -370,6 +370,7 @@ const tools = [
         z.enum(['decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change']),
         z.array(z.enum(['decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change']))
       ]).optional().describe('Filter observations by type. Only applies when type="observations"'),
+      include_inactive: z.boolean().default(false).describe('Include non-active observations (meta_observation, deprecated, superseded). Default: false - only shows active observations.'),
       concepts: z.union([
         z.string(),
         z.array(z.string())
@@ -389,7 +390,7 @@ const tools = [
     }),
     handler: async (args: any) => {
       try {
-        const { query, format = 'index', type, obs_type, concepts, files, ...options } = args;
+        const { query, format = 'index', type, obs_type, include_inactive, concepts, files, ...options } = args;
         let observations: ObservationSearchResult[] = [];
         let sessions: SessionSummarySearchResult[] = [];
         let prompts: UserPromptSearchResult[] = [];
@@ -403,7 +404,7 @@ const tools = [
         // This path enables date filtering which Chroma cannot do (requires direct SQLite access)
         if (!query) {
           console.error(`[search-server] Filter-only query (no query text), using direct SQLite filtering (enables date filters)`);
-          const obsOptions = { ...options, type: obs_type, concepts, files };
+          const obsOptions = { ...options, type: obs_type, include_inactive, concepts, files };
           if (searchObservations) {
             observations = search.searchObservations(undefined, obsOptions);
           }
@@ -467,7 +468,7 @@ const tools = [
               // Step 4: Hydrate from SQLite with additional filters
               if (obsIds.length > 0) {
                 // Apply obs_type, concepts, files filters if provided
-                const obsOptions = { ...options, type: obs_type, concepts, files };
+                const obsOptions = { ...options, type: obs_type, include_inactive, concepts, files };
                 observations = store.getObservationsByIds(obsIds, obsOptions);
               }
               if (sessionIds.length > 0) {
@@ -2535,6 +2536,119 @@ const tools = [
           content: [{
             type: 'text' as const,
             text: `Timeline query failed: ${error.message}`
+          }],
+          isError: true
+        };
+      }
+    }
+  },
+  {
+    name: 'update_observation_status',
+    description: 'Update the status of an observation (mark as meta_observation, deprecated, or superseded). Use this to tag observations that are self-referential (meta_observation), obsolete (deprecated), or replaced by a newer observation (superseded).',
+    inputSchema: z.object({
+      observation_id: z.number().describe('The ID of the observation to update'),
+      status: z.enum(['active', 'meta_observation', 'deprecated', 'superseded']).describe('New status for the observation'),
+      superseded_by: z.number().optional().describe('If status is "superseded", the ID of the replacement observation')
+    }),
+    handler: async (args: any) => {
+      try {
+        const { observation_id, status, superseded_by } = args;
+
+        // Validate superseded_by is provided when status is superseded
+        if (status === 'superseded' && !superseded_by) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: 'Error: superseded_by is required when status is "superseded"'
+            }],
+            isError: true
+          };
+        }
+
+        const success = store.updateObservationStatus(observation_id, status, superseded_by);
+
+        if (!success) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: `Observation #${observation_id} not found`
+            }],
+            isError: true
+          };
+        }
+
+        const statusMsg = status === 'superseded'
+          ? `superseded by #${superseded_by}`
+          : status;
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `Updated observation #${observation_id} status to: ${statusMsg}`
+          }]
+        };
+      } catch (error: any) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `Failed to update observation status: ${error.message}`
+          }],
+          isError: true
+        };
+      }
+    }
+  },
+  {
+    name: 'batch_update_observation_status',
+    description: 'Batch update the status of multiple observations. Use for efficiently tagging many observations at once (e.g., marking duplicates as superseded, old bugfixes as deprecated).',
+    inputSchema: z.object({
+      updates: z.array(z.object({
+        observation_id: z.number().describe('The ID of the observation to update'),
+        status: z.enum(['active', 'meta_observation', 'deprecated', 'superseded']).describe('New status'),
+        superseded_by: z.number().optional().describe('Required if status is "superseded"')
+      })).max(100).describe('Array of updates (max 100)')
+    }),
+    handler: async (args: any) => {
+      try {
+        const { updates } = args;
+
+        if (!updates || updates.length === 0) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: 'Error: updates array is required and must not be empty'
+            }],
+            isError: true
+          };
+        }
+
+        const result = store.batchUpdateObservationStatus(updates);
+
+        const summary = result.results
+          .filter(r => r.success)
+          .map(r => `#${r.observation_id}`)
+          .join(', ');
+
+        const failures = result.results
+          .filter(r => !r.success)
+          .map(r => `#${r.observation_id}: ${r.error}`)
+          .join(', ');
+
+        let text = `Batch update complete: ${result.updated} updated, ${result.failed} failed`;
+        if (summary) text += `\nUpdated: ${summary}`;
+        if (failures) text += `\nFailed: ${failures}`;
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text
+          }]
+        };
+      } catch (error: any) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `Failed to batch update observation status: ${error.message}`
           }],
           isError: true
         };

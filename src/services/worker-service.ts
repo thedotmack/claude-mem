@@ -162,6 +162,10 @@ export class WorkerService {
     this.app.get('/api/session/:id', this.handleGetSessionById.bind(this));
     this.app.get('/api/prompt/:id', this.handleGetPromptById.bind(this));
 
+    // Status update (delegates to MCP)
+    this.app.patch('/api/observation/:id/status', this.handleUpdateObservationStatus.bind(this));
+    this.app.patch('/api/observations/batch-status', this.handleBatchUpdateObservationStatus.bind(this));
+
     this.app.get('/api/stats', this.handleGetStats.bind(this));
     this.app.get('/api/processing-status', this.handleGetProcessingStatus.bind(this));
     this.app.post('/api/processing', this.handleSetProcessing.bind(this));
@@ -702,6 +706,92 @@ export class WorkerService {
       res.json(observation);
     } catch (error) {
       logger.failure('WORKER', 'Get observation by ID failed', {}, error as Error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  }
+
+  /**
+   * Update observation status (delegates to MCP)
+   * PATCH /api/observation/:id/status
+   */
+  private async handleUpdateObservationStatus(req: Request, res: Response): Promise<void> {
+    try {
+      const id = parseInt(req.params.id, 10);
+      if (isNaN(id)) {
+        res.status(400).json({ error: 'Invalid observation ID' });
+        return;
+      }
+
+      const { status, superseded_by } = req.body;
+      if (!status || !['active', 'meta_observation', 'deprecated', 'superseded'].includes(status)) {
+        res.status(400).json({ error: 'Invalid status. Must be: active, meta_observation, deprecated, or superseded' });
+        return;
+      }
+
+      if (status === 'superseded' && !superseded_by) {
+        res.status(400).json({ error: 'superseded_by is required when status is "superseded"' });
+        return;
+      }
+
+      const result = await this.mcpClient.callTool({
+        name: 'update_observation_status',
+        arguments: {
+          observation_id: id,
+          status,
+          superseded_by
+        }
+      });
+
+      res.json(result.content);
+    } catch (error) {
+      logger.failure('WORKER', 'Update observation status failed', {}, error as Error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  }
+
+  /**
+   * Batch update observation statuses (delegates to MCP)
+   * PATCH /api/observations/batch-status
+   */
+  private async handleBatchUpdateObservationStatus(req: Request, res: Response): Promise<void> {
+    try {
+      const { updates } = req.body;
+
+      if (!updates || !Array.isArray(updates) || updates.length === 0) {
+        res.status(400).json({ error: 'updates array is required and must not be empty' });
+        return;
+      }
+
+      if (updates.length > 100) {
+        res.status(400).json({ error: 'Maximum 100 updates per request' });
+        return;
+      }
+
+      // Validate each update
+      const validStatuses = ['active', 'meta_observation', 'deprecated', 'superseded'];
+      for (const update of updates) {
+        if (typeof update.observation_id !== 'number') {
+          res.status(400).json({ error: 'Each update must have a numeric observation_id' });
+          return;
+        }
+        if (!update.status || !validStatuses.includes(update.status)) {
+          res.status(400).json({ error: `Invalid status for observation #${update.observation_id}. Must be: active, meta_observation, deprecated, or superseded` });
+          return;
+        }
+        if (update.status === 'superseded' && !update.superseded_by) {
+          res.status(400).json({ error: `superseded_by is required for observation #${update.observation_id} when status is "superseded"` });
+          return;
+        }
+      }
+
+      const result = await this.mcpClient.callTool({
+        name: 'batch_update_observation_status',
+        arguments: { updates }
+      });
+
+      res.json(result.content);
+    } catch (error) {
+      logger.failure('WORKER', 'Batch update observation status failed', {}, error as Error);
       res.status(500).json({ error: (error as Error).message });
     }
   }

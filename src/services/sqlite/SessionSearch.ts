@@ -175,6 +175,23 @@ export class SessionSearch {
       }
     }
 
+    // Status filter (default: exclude non-active unless include_inactive is true)
+    if (filters.status) {
+      // Explicit status filter provided
+      if (Array.isArray(filters.status)) {
+        const placeholders = filters.status.map(() => '?').join(',');
+        conditions.push(`COALESCE(${tableAlias}.status, 'active') IN (${placeholders})`);
+        params.push(...filters.status);
+      } else {
+        conditions.push(`COALESCE(${tableAlias}.status, 'active') = ?`);
+        params.push(filters.status);
+      }
+    } else if (!filters.include_inactive) {
+      // Default behavior: only show active observations
+      conditions.push(`COALESCE(${tableAlias}.status, 'active') = 'active'`);
+    }
+    // If include_inactive is true and no status filter, show all statuses
+
     // Date range filter
     if (filters.dateRange) {
       const { start, end } = filters.dateRange;

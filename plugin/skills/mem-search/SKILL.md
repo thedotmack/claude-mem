@@ -68,6 +68,13 @@ curl "http://localhost:37777/api/prompt/5421"
 - Sessions: Just the number (2005) from "S2005"
 - Prompts: Just the number (5421)
 
+### Step 4: Handle Conflicting Results
+
+If search results contain conflicting or redundant observations on the same topic, invoke the **clarity** skill to:
+- Identify which observation is ground truth
+- Mark duplicates as superseded
+- Clean up meta-observations
+
 ## Search Parameters
 
 **Basic:**
@@ -110,6 +117,14 @@ curl "http://localhost:37777/api/search?query=database+migration&format=index&li
 - See everything first
 - Pick what matters
 - Get details only for what you need
+
+## Status Filtering
+
+By default, search excludes non-active observations (meta_observation, deprecated, superseded). To include them:
+
+```bash
+curl "http://localhost:37777/api/search?query=costanza&include_inactive=true&format=index&limit=10"
+```
 
 ## Error Handling
 
