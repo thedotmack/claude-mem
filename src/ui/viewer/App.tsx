@@ -86,29 +86,30 @@ export function App() {
   }, [currentFilter]);
 
   return (
-    <div className="container">
-      <div className="main-col">
-        <Header
-          isConnected={isConnected}
-          projects={projects}
-          currentFilter={currentFilter}
-          onFilterChange={setCurrentFilter}
-          onSettingsToggle={toggleSidebar}
-          sidebarOpen={sidebarOpen}
-          isProcessing={isProcessing}
-          queueDepth={queueDepth}
-          themePreference={preference}
-          onThemeChange={setThemePreference}
-        />
-        <Feed
-          observations={allObservations}
-          summaries={allSummaries}
-          prompts={allPrompts}
-          onLoadMore={handleLoadMore}
-          isLoading={pagination.observations.isLoading || pagination.summaries.isLoading || pagination.prompts.isLoading}
-          hasMore={pagination.observations.hasMore || pagination.summaries.hasMore || pagination.prompts.hasMore}
-        />
-      </div>
+    <>
+      <Header
+        isConnected={isConnected}
+        projects={projects}
+        currentFilter={currentFilter}
+        onFilterChange={setCurrentFilter}
+        onSettingsToggle={toggleSidebar}
+        sidebarOpen={sidebarOpen}
+        isProcessing={isProcessing}
+        queueDepth={queueDepth}
+        themePreference={preference}
+        onThemeChange={setThemePreference}
+      />
+
+
+      <Feed
+        observations={allObservations}
+        summaries={allSummaries}
+        prompts={allPrompts}
+        onLoadMore={handleLoadMore}
+        isLoading={pagination.observations.isLoading || pagination.summaries.isLoading || pagination.prompts.isLoading}
+        hasMore={pagination.observations.hasMore || pagination.summaries.hasMore || pagination.prompts.hasMore}
+      />
+
 
       <Sidebar
         isOpen={sidebarOpen}
@@ -117,10 +118,13 @@ export function App() {
         isSaving={isSaving}
         saveStatus={saveStatus}
         isConnected={isConnected}
+        projects={projects}
+        currentFilter={currentFilter}
+        onFilterChange={setCurrentFilter}
         onSave={saveSettings}
         onClose={toggleSidebar}
         onRefreshStats={refreshStats}
       />
-    </div>
+    </>
   );
 }
