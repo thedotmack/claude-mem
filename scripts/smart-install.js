@@ -12,7 +12,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync } from 'fs';
-import { execSync } from 'child_process';
+import { execSync, spawnSync } from 'child_process';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -260,10 +260,33 @@ async function main() {
         log('', colors.reset);
         process.exit(1);
       }
-    }
 
-    // Worker will be started lazily when needed (e.g., when save-hook sends data)
-    // Context hook only needs database access, not the worker service
+      // Try to start the PM2 worker after fresh install
+      try {
+        log('🚀 Starting worker service...', colors.cyan);
+        // On Windows, PM2 executable is pm2.cmd, not pm2
+        const localPm2Base = join(NODE_MODULES_PATH, '.bin', 'pm2');
+        const localPm2Cmd = process.platform === 'win32' ? localPm2Base + '.cmd' : localPm2Base;
+        const pm2Command = existsSync(localPm2Cmd) ? localPm2Cmd : 'pm2';
+        const ecosystemPath = join(PLUGIN_ROOT, 'ecosystem.config.cjs');
+
+        // Using spawnSync with array args to avoid command injection risks
+        const result = spawnSync(pm2Command, ['start', ecosystemPath], {
+          cwd: PLUGIN_ROOT,
+          stdio: 'pipe',
+          encoding: 'utf-8'
+        });
+        if (result.status !== 0) {
+          throw new Error(result.stderr || 'PM2 start failed');
+        }
+
+        log('✅ Worker service started', colors.green);
+      } catch (error) {
+        // Worker might already be running or PM2 not available - that's okay
+        // The ensureWorkerRunning() function will handle auto-start when needed
+        log('ℹ️  Worker will start automatically when needed', colors.dim);
+      }
+    }
 
     // Success - dependencies installed (if needed)
     process.exit(0);

@@ -1,7 +1,7 @@
 import path from "path";
 import { homedir } from "os";
 import { existsSync, readFileSync } from "fs";
-import { execSync } from "child_process";
+import { spawnSync } from "child_process";
 import { getPackageRoot } from "./paths.js";
 
 // Named constants for health checks
@@ -55,13 +55,23 @@ async function startWorker(): Promise<boolean> {
       throw new Error(`Ecosystem config not found at ${ecosystemPath}`);
     }
 
+    // Try to use local PM2 from node_modules first, fall back to global PM2
+    // On Windows, PM2 executable is pm2.cmd, not pm2
+    const localPm2Base = path.join(pluginRoot, 'node_modules', '.bin', 'pm2');
+    const localPm2Cmd = process.platform === 'win32' ? localPm2Base + '.cmd' : localPm2Base;
+    const pm2Command = existsSync(localPm2Cmd) ? localPm2Cmd : 'pm2';
+
     // Start using PM2 with the ecosystem config
     // CRITICAL: Must set cwd to pluginRoot so PM2 starts from marketplace directory
-    execSync(`pm2 start "${ecosystemPath}"`, {
+    // Using spawnSync with array args to avoid command injection risks
+    const result = spawnSync(pm2Command, ['start', ecosystemPath], {
       cwd: pluginRoot,
       stdio: 'pipe',
       encoding: 'utf-8'
     });
+    if (result.status !== 0) {
+      throw new Error(result.stderr || 'PM2 start failed');
+    }
 
     // Wait for worker to become healthy
     for (let i = 0; i < WORKER_STARTUP_RETRIES; i++) {
@@ -93,10 +103,13 @@ export async function ensureWorkerRunning(): Promise<void> {
 
   if (!started) {
     const port = getWorkerPort();
+    const pluginRoot = getPackageRoot();
     throw new Error(
       `Worker service failed to start on port ${port}.\n\n` +
-      `Try manually running: pm2 start ecosystem.config.cjs\n` +
-      `Or restart: pm2 restart claude-mem-worker`
+      `To start manually, run:\n` +
+      `  cd ${pluginRoot}\n` +
+      `  npx pm2 start ecosystem.config.cjs\n\n` +
+      `If already running, try: npx pm2 restart claude-mem-worker`
     );
   }
 }
