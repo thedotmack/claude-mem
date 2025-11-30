@@ -378,20 +378,62 @@ function formatUserPromptResult(prompt: UserPromptSearchResult): string {
 }
 
 /**
- * Common filter schema
+ * Helper to normalize query parameters from URL-friendly format
+ * Converts comma-separated strings to arrays and flattens date params
+ */
+function normalizeParams(args: any): any {
+  const normalized: any = { ...args };
+
+  // Parse comma-separated concepts into array
+  if (normalized.concepts && typeof normalized.concepts === 'string') {
+    normalized.concepts = normalized.concepts.split(',').map((s: string) => s.trim()).filter(Boolean);
+  }
+
+  // Parse comma-separated files into array
+  if (normalized.files && typeof normalized.files === 'string') {
+    normalized.files = normalized.files.split(',').map((s: string) => s.trim()).filter(Boolean);
+  }
+
+  // Parse comma-separated obs_type into array
+  if (normalized.obs_type && typeof normalized.obs_type === 'string') {
+    normalized.obs_type = normalized.obs_type.split(',').map((s: string) => s.trim()).filter(Boolean);
+  }
+
+  // Parse comma-separated type (for filterSchema) into array
+  if (normalized.type && typeof normalized.type === 'string' && normalized.type.includes(',')) {
+    normalized.type = normalized.type.split(',').map((s: string) => s.trim()).filter(Boolean);
+  }
+
+  // Flatten dateStart/dateEnd into dateRange object
+  if (normalized.dateStart || normalized.dateEnd) {
+    normalized.dateRange = {
+      start: normalized.dateStart,
+      end: normalized.dateEnd
+    };
+    delete normalized.dateStart;
+    delete normalized.dateEnd;
+  }
+
+  return normalized;
+}
+
+/**
+ * Common filter schema (accepts simple strings that get normalized to arrays)
  */
 const filterSchema = z.object({
   project: z.string().optional().describe('Filter by project name'),
   type: z.union([
     z.enum(['decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change']),
     z.array(z.enum(['decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change']))
-  ]).optional().describe('Filter by observation type'),
-  concepts: z.union([z.string(), z.array(z.string())]).optional().describe('Filter by concept tags'),
-  files: z.union([z.string(), z.array(z.string())]).optional().describe('Filter by file paths (partial match)'),
+  ]).optional().describe('Filter by observation type (single value or comma-separated list)'),
+  concepts: z.union([z.string(), z.array(z.string())]).optional().describe('Filter by concept tags (single value or comma-separated list)'),
+  files: z.union([z.string(), z.array(z.string())]).optional().describe('Filter by file paths (single value or comma-separated list for partial match)'),
+  dateStart: z.union([z.string(), z.number()]).optional().describe('Start date (ISO string or epoch)'),
+  dateEnd: z.union([z.string(), z.number()]).optional().describe('End date (ISO string or epoch)'),
   dateRange: z.object({
     start: z.union([z.string(), z.number()]).optional().describe('Start date (ISO string or epoch)'),
     end: z.union([z.string(), z.number()]).optional().describe('End date (ISO string or epoch)')
-  }).optional().describe('Filter by date range'),
+  }).optional().describe('Filter by date range (use dateStart/dateEnd instead for simpler URLs)'),
   limit: z.number().min(1).max(100).default(20).describe('Maximum number of results'),
   offset: z.number().min(0).default(0).describe('Number of results to skip'),
   orderBy: z.enum(['relevance', 'date_desc', 'date_asc']).default('date_desc').describe('Sort order')
@@ -406,30 +448,21 @@ const tools = [
       query: z.string().optional().describe('Natural language search query for semantic ranking via ChromaDB vector search. Optional - omit for date-filtered queries only (Chroma cannot filter by date, requires direct SQLite).'),
       format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default, RECOMMENDED for initial search), "full" for complete details (use only after reviewing index results)'),
       type: z.enum(['observations', 'sessions', 'prompts']).optional().describe('Filter by document type (observations, sessions, or prompts). Omit to search all types.'),
-      obs_type: z.union([
-        z.enum(['decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change']),
-        z.array(z.enum(['decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change']))
-      ]).optional().describe('Filter observations by type. Only applies when type="observations"'),
-      concepts: z.union([
-        z.string(),
-        z.array(z.string())
-      ]).optional().describe('Filter by concept tags. Only applies when type="observations"'),
-      files: z.union([
-        z.string(),
-        z.array(z.string())
-      ]).optional().describe('Filter by file paths (partial match). Only applies when type="observations"'),
+      obs_type: z.string().optional().describe('Filter observations by type (single value or comma-separated list: decision,bugfix,feature,refactor,discovery,change). Only applies when type="observations"'),
+      concepts: z.string().optional().describe('Filter by concept tags (single value or comma-separated list). Only applies when type="observations"'),
+      files: z.string().optional().describe('Filter by file paths (single value or comma-separated list for partial match). Only applies when type="observations"'),
       project: z.string().optional().describe('Filter by project name'),
-      dateRange: z.object({
-        start: z.union([z.string(), z.number()]).optional().describe('Start date (ISO string or epoch)'),
-        end: z.union([z.string(), z.number()]).optional().describe('End date (ISO string or epoch)')
-      }).optional().describe('Filter by date range'),
+      dateStart: z.union([z.string(), z.number()]).optional().describe('Start date for filtering (ISO string or epoch timestamp)'),
+      dateEnd: z.union([z.string(), z.number()]).optional().describe('End date for filtering (ISO string or epoch timestamp)'),
       limit: z.number().min(1).max(100).default(20).describe('Maximum number of results'),
       offset: z.number().min(0).default(0).describe('Number of results to skip'),
       orderBy: z.enum(['relevance', 'date_desc', 'date_asc']).default('date_desc').describe('Sort order')
     }),
     handler: async (args: any) => {
       try {
-        const { query, format = 'index', type, obs_type, concepts, files, ...options } = args;
+        // Normalize URL-friendly params to internal format
+        const normalized = normalizeParams(args);
+        const { query, format = 'index', type, obs_type, concepts, files, ...options } = normalized;
         let observations: ObservationSearchResult[] = [];
         let sessions: SessionSummarySearchResult[] = [];
         let prompts: UserPromptSearchResult[] = [];
@@ -969,17 +1002,16 @@ const tools = [
       query: z.string().optional().describe('Search query to filter decisions semantically'),
       format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default), "full" for complete details'),
       project: z.string().optional().describe('Filter by project name'),
-      dateRange: z.object({
-        start: z.union([z.string(), z.number()]).optional(),
-        end: z.union([z.string(), z.number()]).optional()
-      }).optional().describe('Filter by date range'),
+      dateStart: z.union([z.string(), z.number()]).optional().describe('Start date for filtering (ISO string or epoch timestamp)'),
+      dateEnd: z.union([z.string(), z.number()]).optional().describe('End date for filtering (ISO string or epoch timestamp)'),
       limit: z.number().min(1).max(100).default(20).describe('Maximum number of results'),
       offset: z.number().min(0).default(0).describe('Number of results to skip'),
       orderBy: z.enum(['relevance', 'date_desc', 'date_asc']).default('date_desc').describe('Sort order')
     }),
     handler: async (args: any) => {
       try {
-        const { query, format = 'index', ...filters } = args;
+        const normalized = normalizeParams(args);
+        const { query, format = 'index', ...filters } = normalized;
         let results: ObservationSearchResult[] = [];
 
         // Search for decision-type observations
@@ -1069,17 +1101,16 @@ const tools = [
     inputSchema: z.object({
       format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default), "full" for complete details'),
       project: z.string().optional().describe('Filter by project name'),
-      dateRange: z.object({
-        start: z.union([z.string(), z.number()]).optional(),
-        end: z.union([z.string(), z.number()]).optional()
-      }).optional().describe('Filter by date range'),
+      dateStart: z.union([z.string(), z.number()]).optional().describe('Start date for filtering (ISO string or epoch timestamp)'),
+      dateEnd: z.union([z.string(), z.number()]).optional().describe('End date for filtering (ISO string or epoch timestamp)'),
       limit: z.number().min(1).max(100).default(20).describe('Maximum number of results'),
       offset: z.number().min(0).default(0).describe('Number of results to skip'),
       orderBy: z.enum(['relevance', 'date_desc', 'date_asc']).default('date_desc').describe('Sort order')
     }),
     handler: async (args: any) => {
       try {
-        const { format = 'index', ...filters } = args;
+        const normalized = normalizeParams(args);
+        const { format = 'index', ...filters } = normalized;
         let results: ObservationSearchResult[] = [];
 
         // Search for change-type observations and change-related concepts
@@ -1177,17 +1208,16 @@ const tools = [
     inputSchema: z.object({
       format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default), "full" for complete details'),
       project: z.string().optional().describe('Filter by project name'),
-      dateRange: z.object({
-        start: z.union([z.string(), z.number()]).optional(),
-        end: z.union([z.string(), z.number()]).optional()
-      }).optional().describe('Filter by date range'),
+      dateStart: z.union([z.string(), z.number()]).optional().describe('Start date for filtering (ISO string or epoch timestamp)'),
+      dateEnd: z.union([z.string(), z.number()]).optional().describe('End date for filtering (ISO string or epoch timestamp)'),
       limit: z.number().min(1).max(100).default(20).describe('Maximum number of results'),
       offset: z.number().min(0).default(0).describe('Number of results to skip'),
       orderBy: z.enum(['relevance', 'date_desc', 'date_asc']).default('date_desc').describe('Sort order')
     }),
     handler: async (args: any) => {
       try {
-        const { format = 'index', ...filters } = args;
+        const normalized = normalizeParams(args);
+        const { format = 'index', ...filters } = normalized;
         let results: ObservationSearchResult[] = [];
 
         // Search for how-it-works concept observations
@@ -1267,7 +1297,8 @@ const tools = [
     }),
     handler: async (args: any) => {
       try {
-        const { query, format = 'index', ...options } = args;
+        const normalized = normalizeParams(args);
+        const { query, format = 'index', ...options } = normalized;
         let results: ObservationSearchResult[] = [];
 
         // Vector-first search via ChromaDB
@@ -1345,17 +1376,16 @@ const tools = [
       query: z.string().describe('Natural language search query for semantic ranking via ChromaDB vector search'),
       format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default, RECOMMENDED for initial search), "full" for complete details (use only after reviewing index results)'),
       project: z.string().optional().describe('Filter by project name'),
-      dateRange: z.object({
-        start: z.union([z.string(), z.number()]).optional(),
-        end: z.union([z.string(), z.number()]).optional()
-      }).optional().describe('Filter by date range'),
+      dateStart: z.union([z.string(), z.number()]).optional().describe('Start date for filtering (ISO string or epoch timestamp)'),
+      dateEnd: z.union([z.string(), z.number()]).optional().describe('End date for filtering (ISO string or epoch timestamp)'),
       limit: z.number().min(1).max(100).default(20).describe('Maximum number of results'),
       offset: z.number().min(0).default(0).describe('Number of results to skip'),
       orderBy: z.enum(['relevance', 'date_desc', 'date_asc']).default('date_desc').describe('Sort order')
     }),
     handler: async (args: any) => {
       try {
-        const { query, format = 'index', ...options } = args;
+        const normalized = normalizeParams(args);
+        const { query, format = 'index', ...options } = normalized;
         let results: SessionSummarySearchResult[] = [];
 
         // Vector-first search via ChromaDB
@@ -1433,17 +1463,16 @@ const tools = [
       concept: z.string().describe('Concept tag to search for. Available: discovery, problem-solution, what-changed, how-it-works, pattern, gotcha, change'),
       format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default, RECOMMENDED for initial search), "full" for complete details (use only after reviewing index results)'),
       project: z.string().optional().describe('Filter by project name'),
-      dateRange: z.object({
-        start: z.union([z.string(), z.number()]).optional(),
-        end: z.union([z.string(), z.number()]).optional()
-      }).optional().describe('Filter by date range'),
+      dateStart: z.union([z.string(), z.number()]).optional().describe('Start date for filtering (ISO string or epoch timestamp)'),
+      dateEnd: z.union([z.string(), z.number()]).optional().describe('End date for filtering (ISO string or epoch timestamp)'),
       limit: z.number().min(1).max(100).default(20).describe('Maximum results. IMPORTANT: Start with 3-5 to avoid exceeding MCP token limits, even in index mode.'),
       offset: z.number().min(0).default(0).describe('Number of results to skip'),
       orderBy: z.enum(['relevance', 'date_desc', 'date_asc']).default('date_desc').describe('Sort order')
     }),
     handler: async (args: any) => {
       try {
-        const { concept, format = 'index', ...filters } = args;
+        const normalized = normalizeParams(args);
+        const { concept, format = 'index', ...filters } = normalized;
         let results: ObservationSearchResult[] = [];
 
         // Metadata-first, semantic-enhanced search
@@ -1533,17 +1562,16 @@ const tools = [
       filePath: z.string().describe('File path to search for (supports partial matching)'),
       format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default, RECOMMENDED for initial search), "full" for complete details (use only after reviewing index results)'),
       project: z.string().optional().describe('Filter by project name'),
-      dateRange: z.object({
-        start: z.union([z.string(), z.number()]).optional(),
-        end: z.union([z.string(), z.number()]).optional()
-      }).optional().describe('Filter by date range'),
+      dateStart: z.union([z.string(), z.number()]).optional().describe('Start date for filtering (ISO string or epoch timestamp)'),
+      dateEnd: z.union([z.string(), z.number()]).optional().describe('End date for filtering (ISO string or epoch timestamp)'),
       limit: z.number().min(1).max(100).default(20).describe('Maximum results. IMPORTANT: Start with 3-5 to avoid exceeding MCP token limits, even in index mode.'),
       offset: z.number().min(0).default(0).describe('Number of results to skip'),
       orderBy: z.enum(['relevance', 'date_desc', 'date_asc']).default('date_desc').describe('Sort order')
     }),
     handler: async (args: any) => {
       try {
-        const { filePath, format = 'index', ...filters } = args;
+        const normalized = normalizeParams(args);
+        const { filePath, format = 'index', ...filters } = normalized;
         let observations: ObservationSearchResult[] = [];
         let sessions: SessionSummarySearchResult[] = [];
 
@@ -1660,23 +1688,19 @@ const tools = [
     name: 'find_by_type',
     description: 'Find observations of a specific type (decision, bugfix, feature, refactor, discovery, change). IMPORTANT: Always use index format first (default) to get an overview with minimal token usage, then use format: "full" only for specific items of interest.',
     inputSchema: z.object({
-      type: z.union([
-        z.enum(['decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change']),
-        z.array(z.enum(['decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change']))
-      ]).describe('Observation type(s) to filter by'),
+      type: z.string().describe('Observation type(s) to filter by (single value or comma-separated list: decision,bugfix,feature,refactor,discovery,change)'),
       format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default, RECOMMENDED for initial search), "full" for complete details (use only after reviewing index results)'),
       project: z.string().optional().describe('Filter by project name'),
-      dateRange: z.object({
-        start: z.union([z.string(), z.number()]).optional(),
-        end: z.union([z.string(), z.number()]).optional()
-      }).optional().describe('Filter by date range'),
+      dateStart: z.union([z.string(), z.number()]).optional().describe('Start date for filtering (ISO string or epoch timestamp)'),
+      dateEnd: z.union([z.string(), z.number()]).optional().describe('End date for filtering (ISO string or epoch timestamp)'),
       limit: z.number().min(1).max(100).default(20).describe('Maximum results. IMPORTANT: Start with 3-5 to avoid exceeding MCP token limits, even in index mode.'),
       offset: z.number().min(0).default(0).describe('Number of results to skip'),
       orderBy: z.enum(['relevance', 'date_desc', 'date_asc']).default('date_desc').describe('Sort order')
     }),
     handler: async (args: any) => {
       try {
-        const { type, format = 'index', ...filters } = args;
+        const normalized = normalizeParams(args);
+        const { type, format = 'index', ...filters } = normalized;
         const typeStr = Array.isArray(type) ? type.join(', ') : type;
         let results: ObservationSearchResult[] = [];
 
@@ -1905,17 +1929,16 @@ const tools = [
       query: z.string().describe('Natural language search query for semantic ranking via ChromaDB vector search'),
       format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for truncated prompts/dates (default, RECOMMENDED for initial search), "full" for complete prompt text (use only after reviewing index results)'),
       project: z.string().optional().describe('Filter by project name'),
-      dateRange: z.object({
-        start: z.union([z.string(), z.number()]).optional(),
-        end: z.union([z.string(), z.number()]).optional()
-      }).optional().describe('Filter by date range'),
+      dateStart: z.union([z.string(), z.number()]).optional().describe('Start date for filtering (ISO string or epoch timestamp)'),
+      dateEnd: z.union([z.string(), z.number()]).optional().describe('End date for filtering (ISO string or epoch timestamp)'),
       limit: z.number().min(1).max(100).default(20).describe('Maximum number of results'),
       offset: z.number().min(0).default(0).describe('Number of results to skip'),
       orderBy: z.enum(['relevance', 'date_desc', 'date_asc']).default('date_desc').describe('Sort order')
     }),
     handler: async (args: any) => {
       try {
-        const { query, format = 'index', ...options } = args;
+        const normalized = normalizeParams(args);
+        const { query, format = 'index', ...options } = normalized;
         let results: UserPromptSearchResult[] = [];
 
         // Vector-first search via ChromaDB
