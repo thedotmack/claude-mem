@@ -9,17 +9,14 @@ Get a chronological timeline of observations, sessions, and prompts around a spe
 - User asks: "What happened before and after that change?"
 - Need temporal context around an event
 
-## Command
+## MCP Tool
 
-```bash
-# Using observation ID as anchor
-curl -s "http://localhost:37777/api/timeline/context?anchor=1234&depth_before=10&depth_after=10"
+Use the `get_context_timeline` MCP tool:
 
-# Using session ID as anchor
-curl -s "http://localhost:37777/api/timeline/context?anchor=S545&depth_before=10&depth_after=10"
-
-# Using ISO timestamp as anchor
-curl -s "http://localhost:37777/api/timeline/context?anchor=2024-11-09T12:00:00Z&depth_before=10&depth_after=10"
+```
+get_context_timeline(anchor=1234, depth_before=10, depth_after=10)
+get_context_timeline(anchor="S545", depth_before=10, depth_after=10)
+get_context_timeline(anchor="2024-11-09T12:00:00Z", depth_before=10, depth_after=10)
 ```
 
 ## Parameters

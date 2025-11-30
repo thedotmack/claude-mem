@@ -52,7 +52,7 @@ try {
     "\n\n📝 Claude-Mem Context Loaded\n" +
     "   ℹ️  Note: This appears as stderr but is informational only\n\n" +
     output +
-    "\n\n💬 Feedback & Support\nhttps://github.com/thedotmack/claude-mem/discussions/110\n" +
+    "\n\n💬 Community\nhttps://discord.gg/J4wttp9vDu\n" +
     `\n📺 Watch live in browser http://localhost:${port}/\n`
   );
 

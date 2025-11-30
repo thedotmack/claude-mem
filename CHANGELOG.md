@@ -4,6 +4,53 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [6.3.5] - 2025-11-30
+
+## Changes
+
+- ✨ Restored Discord community button in viewer header
+- 📱 Added responsive mobile navigation menu
+- 🔄 Reorganized Sidebar component for better mobile UX
+- 🐛 Fixed missing props being passed to Sidebar component
+
+## Technical Details
+
+- Community button visible in header on desktop (> 600px width)
+- Mobile menu icon appears on small screens (≤ 600px width)  
+- Sidebar toggles via hamburger menu on mobile
+- Both buttons positioned in header for consistent UX
+
+Full changelog: https://github.com/thedotmack/claude-mem/compare/v6.3.4...v6.3.5
+
+## [6.3.4] - 2025-11-30
+
+## Bug Fixes
+
+### Worker Startup Improvements
+
+Fixed critical issues with worker service startup on fresh installations:
+
+- **Auto-start worker after installation** - The PM2 worker now starts automatically during plugin installation
+- **Local PM2 resolution** - Plugin now uses local PM2 from node_modules/.bin instead of requiring global installation
+- **Improved error messages** - Clear, actionable instructions with full paths when worker fails to start
+- **Cross-platform support** - Proper handling of Windows platform differences (pm2.cmd)
+- **Security enhancement** - Switched from execSync to spawnSync with array arguments to prevent command injection
+
+These changes significantly improve the first-time installation experience, eliminating the need for manual PM2 setup.
+
+**Special thanks to @dreamiurg for identifying and fixing this critical UX issue!** 🙏
+
+## [6.3.3] - 2025-11-30
+
+Bug fixes and improvements to timeline context feature:
+
+- Added session ID validation to filterTimelineByDepth
+- Added timestamp fallback warning
+- Exported filterTimelineByDepth function for unit testing
+- Fixed type breakdown display in timeline item count
+
+Full changes: https://github.com/thedotmack/claude-mem/compare/v6.3.2...v6.3.3
+
 ## [6.3.2] - 2025-11-25
 
 ## What's Changed
