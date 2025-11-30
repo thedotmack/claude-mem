@@ -8,6 +8,7 @@ import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { createHookResponse } from './hook-response.js';
 import { logger } from '../utils/logger.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
+import { silentDebug } from '../utils/silent-debug.js';
 
 export interface PostToolUseInput {
   session_id: string;
@@ -26,6 +27,30 @@ const SKIP_TOOLS = new Set([
   'TodoWrite',             // Task management meta-tool
   'AskUserQuestion'        // User interaction, not substantive work
 ]);
+
+/**
+ * Strip memory tags to prevent recursive storage and enable privacy control
+ *
+ * This implements the dual-tag system:
+ * 1. <claude-mem-context> - System-level tag for auto-injected observations
+ *    (prevents recursive storage when context injection is active)
+ * 2. <private> - User-level tag for manual privacy control
+ *    (allows users to mark content they don't want persisted)
+ *
+ * EDGE PROCESSING PATTERN: Filter at hook layer before sending to worker.
+ * This keeps the worker service simple and follows one-way data stream.
+ */
+function stripMemoryTags(content: string): string {
+  if (typeof content !== 'string') {
+    silentDebug('[save-hook] stripMemoryTags received non-string:', { type: typeof content });
+    return '{}';  // Safe default for JSON context
+  }
+
+  return content
+    .replace(/<claude-mem-context>[\s\S]*?<\/claude-mem-context>/g, '')
+    .replace(/<private>[\s\S]*?<\/private>/g, '')
+    .trim();
+}
 
 /**
  * Save Hook Main Logic
@@ -67,8 +92,12 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         tool_name,
-        tool_input: tool_input !== undefined ? JSON.stringify(tool_input) : '{}',
-        tool_response: tool_response !== undefined ? JSON.stringify(tool_response) : '{}',
+        tool_input: tool_input !== undefined
+          ? stripMemoryTags(JSON.stringify(tool_input))
+          : '{}',
+        tool_response: tool_response !== undefined
+          ? stripMemoryTags(JSON.stringify(tool_response))
+          : '{}',
         prompt_number: promptNumber,
         cwd: cwd || ''
       }),
