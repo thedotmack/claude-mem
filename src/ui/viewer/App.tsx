@@ -117,6 +117,9 @@ export function App() {
         isSaving={isSaving}
         saveStatus={saveStatus}
         isConnected={isConnected}
+        projects={projects}
+        currentFilter={currentFilter}
+        onFilterChange={setCurrentFilter}
         onSave={saveSettings}
         onClose={toggleSidebar}
         onRefreshStats={refreshStats}
