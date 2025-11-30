@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [6.3.3] - 2025-11-30
+
+Bug fixes and improvements to timeline context feature:
+
+- Added session ID validation to filterTimelineByDepth
+- Added timestamp fallback warning
+- Exported filterTimelineByDepth function for unit testing
+- Fixed type breakdown display in timeline item count
+
+Full changes: https://github.com/thedotmack/claude-mem/compare/v6.3.2...v6.3.3
+
 ## [6.3.2] - 2025-11-25
 
 ## What's Changed
