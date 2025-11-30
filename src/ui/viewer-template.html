@@ -738,13 +738,15 @@
 
     .feed {
       flex: 1;
-      overflow-y: auto;
+      overflow-y: scroll;
+      height: 100vh;
       padding: 24px 18px;
       display: flex;
       justify-content: center;
     }
 
     .feed-content {
+      max-width: 650px;
     }
 
     .card {
@@ -1402,15 +1404,10 @@
     /* Utility: Container */
     .container {
       width: 100%;
-      max-width: 42rem;
+      max-width: 600px;
       margin: 0 auto;
     }
 
-    /* Large screen - center content with max-width */
-    @media (min-width: 769px) {
-      .feed-content {
-      }
-    }
 
     /* Tablet Responsive Styles - 481px to 768px */
     @media (max-width: 768px) and (min-width: 481px) {
@@ -1554,11 +1551,6 @@
         padding: 16px 12px;
       }
 
-      .feed-content {
-      }
-
-      .card {
-      }
 
       /* Card adjustments */
       .card {
