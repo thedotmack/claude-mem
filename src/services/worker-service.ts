@@ -196,6 +196,7 @@ export class WorkerService {
     this.app.get('/api/search/by-type', this.handleSearchByType.bind(this));
     this.app.get('/api/context/recent', this.handleGetRecentContext.bind(this));
     this.app.get('/api/context/timeline', this.handleGetContextTimeline.bind(this));
+    this.app.get('/api/context/session-start', this.handleGetContextSessionStart.bind(this));
     this.app.get('/api/timeline/by-query', this.handleGetTimelineByQuery.bind(this));
     this.app.get('/api/search/help', this.handleSearchHelp.bind(this));
   }
@@ -1354,6 +1355,23 @@ export class WorkerService {
       res.json(result.content);
     } catch (error) {
       logger.failure('WORKER', 'Search failed', {}, error as Error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  }
+
+  /**
+   * Get formatted context for SessionStart hook
+   * GET /api/context/session-start?project=...&useColors=false&cwd=...
+   */
+  private async handleGetContextSessionStart(req: Request, res: Response): Promise<void> {
+    try {
+      const result = await this.mcpClient.callTool({
+        name: 'get_context_session_start',
+        arguments: req.query
+      });
+      res.json(result.content);
+    } catch (error) {
+      logger.failure('WORKER', 'Context session start failed', {}, error as Error);
       res.status(500).json({ error: (error as Error).message });
     }
   }

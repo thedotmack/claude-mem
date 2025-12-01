@@ -13,7 +13,9 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
-import { basename } from 'path';
+import { basename, join, relative } from 'path';
+import { homedir } from 'os';
+import { existsSync, readFileSync } from 'fs';
 import { SessionSearch } from '../services/sqlite/SessionSearch.js';
 import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../services/sqlite/types.js';
@@ -438,6 +440,214 @@ const filterSchema = z.object({
   offset: z.number().min(0).default(0).describe('Number of results to skip'),
   orderBy: z.enum(['relevance', 'date_desc', 'date_asc']).default('date_desc').describe('Sort order')
 });
+
+// ============================================================================
+// Helper functions for get_context_session_start tool
+// ============================================================================
+
+const CHARS_PER_TOKEN_ESTIMATE = 4;
+
+/**
+ * Extract last user message from transcript JSONL file
+ */
+function extractLastUserMessage(transcriptPath: string): string {
+  if (!transcriptPath || !existsSync(transcriptPath)) {
+    return '';
+  }
+
+  try {
+    const content = readFileSync(transcriptPath, 'utf-8').trim();
+    if (!content) {
+      return '';
+    }
+
+    const lines = content.split('\n');
+
+    // Parse JSONL and find last user message
+    for (let i = lines.length - 1; i >= 0; i--) {
+      try {
+        const line = JSON.parse(lines[i]);
+
+        // Claude Code transcript format: {type: "user", message: {role: "user", content: [...]}}
+        if (line.type === 'user' && line.message?.content) {
+          const content = line.message.content;
+
+          // Extract text content (handle both string and array formats)
+          if (typeof content === 'string') {
+            return content;
+          } else if (Array.isArray(content)) {
+            const textParts = content
+              .filter((c: any) => c.type === 'text')
+              .map((c: any) => c.text);
+            return textParts.join('\n');
+          }
+        }
+      } catch (parseError) {
+        // Skip malformed lines
+        continue;
+      }
+    }
+  } catch (error) {
+    // Silently fail for transcript read errors
+  }
+
+  return '';
+}
+
+/**
+ * Extract last assistant message from transcript JSONL file
+ * Filters out system-reminder tags to avoid polluting context
+ */
+function extractLastAssistantMessage(transcriptPath: string): string {
+  if (!transcriptPath || !existsSync(transcriptPath)) {
+    return '';
+  }
+
+  try {
+    const content = readFileSync(transcriptPath, 'utf-8').trim();
+    if (!content) {
+      return '';
+    }
+
+    const lines = content.split('\n');
+
+    // Parse JSONL and find last assistant message
+    for (let i = lines.length - 1; i >= 0; i--) {
+      try {
+        const line = JSON.parse(lines[i]);
+
+        // Claude Code transcript format: {type: "assistant", message: {role: "assistant", content: [...]}}
+        if (line.type === 'assistant' && line.message?.content) {
+          let text = '';
+          const content = line.message.content;
+
+          // Extract text content (handle both string and array formats)
+          if (typeof content === 'string') {
+            text = content;
+          } else if (Array.isArray(content)) {
+            const textParts = content
+              .filter((c: any) => c.type === 'text')
+              .map((c: any) => c.text);
+            text = textParts.join('\n');
+          }
+
+          // Filter out system-reminder tags and their content
+          text = text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '');
+
+          // Clean up excessive whitespace
+          text = text.replace(/\n{3,}/g, '\n\n').trim();
+
+          return text;
+        }
+      } catch (parseError) {
+        // Skip malformed lines
+        continue;
+      }
+    }
+  } catch (error) {
+    // Silently fail for transcript read errors
+  }
+
+  return '';
+}
+
+// ANSI color codes for terminal output
+const colors = {
+  reset: '\x1b[0m',
+  bright: '\x1b[1m',
+  dim: '\x1b[2m',
+  cyan: '\x1b[36m',
+  green: '\x1b[32m',
+  yellow: '\x1b[33m',
+  blue: '\x1b[34m',
+  magenta: '\x1b[35m',
+  gray: '\x1b[90m',
+  red: '\x1b[31m',
+};
+
+// Helper: Parse JSON array safely
+function parseJsonArray(json: string | null): string[] {
+  if (!json) return [];
+  try {
+    const parsed = JSON.parse(json);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (err) {
+    return [];
+  }
+}
+
+// Helper: Format date with time
+function formatDateTime(dateStr: string): string {
+  const date = new Date(dateStr);
+  return date.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true
+  });
+}
+
+// Helper: Format just time (no date)
+function formatTime(dateStr: string): string {
+  const date = new Date(dateStr);
+  return date.toLocaleString('en-US', {
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true
+  });
+}
+
+// Helper: Format just date
+function formatDate(dateStr: string): string {
+  const date = new Date(dateStr);
+  return date.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric'
+  });
+}
+
+// Helper: Convert absolute paths to relative paths
+function toRelativePath(filePath: string, cwd: string): string {
+  if (filePath.startsWith('/')) {
+    return relative(cwd, filePath);
+  }
+  return filePath;
+}
+
+// Helper: Render a summary field (investigated, learned, etc.)
+function renderSummaryField(label: string, value: string | null, color: string, useColors: boolean): string[] {
+  if (!value) return [];
+
+  if (useColors) {
+    return [`${color}${label}:${colors.reset} ${value}`, ''];
+  }
+  return [`**${label}**: ${value}`, ''];
+}
+
+// Helper: Get context depth from settings
+function getContextDepth(customCount?: number): number {
+  if (customCount && customCount > 0) {
+    return customCount;
+  }
+
+  try {
+    const settingsPath = join(homedir(), '.claude', 'settings.json');
+    if (existsSync(settingsPath)) {
+      const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+      if (settings.env?.CLAUDE_MEM_CONTEXT_OBSERVATIONS) {
+        const count = parseInt(settings.env.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10);
+        if (!isNaN(count) && count > 0) {
+          return count;
+        }
+      }
+    }
+  } catch {
+    // Fall through to env var or default
+  }
+  return parseInt(process.env.CLAUDE_MEM_CONTEXT_OBSERVATIONS || '50', 10);
+}
 
 // Define tool schemas
 const tools = [
@@ -2580,6 +2790,487 @@ const tools = [
           content: [{
             type: 'text' as const,
             text: `Timeline query failed: ${error.message}`
+          }],
+          isError: true
+        };
+      }
+    }
+  },
+  {
+    name: 'get_context_session_start',
+    description: 'Get formatted context for SessionStart hook including recent observations, summaries, and token economics',
+    inputSchema: z.object({
+      project: z.string().describe('Project name'),
+      useColors: z.boolean().default(false).describe('Use ANSI colors for terminal output (vs markdown)'),
+      observationCount: z.number().optional().describe('Number of observations to retrieve (overrides settings)'),
+      cwd: z.string().optional().describe('Current working directory for relative path conversion')
+    }),
+    handler: async (args: any) => {
+      try {
+        const project = args.project;
+        const useColors = args.useColors === 'true' || args.useColors === true;
+        const cwd = args.cwd || process.cwd();
+        const DISPLAY_OBSERVATION_COUNT = getContextDepth(args.observationCount);
+        const DISPLAY_SESSION_COUNT = 10;
+        const SUMMARY_LOOKAHEAD = 1;
+
+        // Get ALL recent observations for this project
+        const allObservations = store.db.prepare(`
+          SELECT
+            id, sdk_session_id, type, title, subtitle, narrative,
+            facts, concepts, files_read, files_modified, discovery_tokens,
+            created_at, created_at_epoch
+          FROM observations
+          WHERE project = ?
+          ORDER BY created_at_epoch DESC
+          LIMIT ?
+        `).all(project, DISPLAY_OBSERVATION_COUNT) as any[];
+
+        // Get recent summaries
+        const recentSummaries = store.db.prepare(`
+          SELECT id, sdk_session_id, request, investigated, learned, completed, next_steps, created_at, created_at_epoch
+          FROM session_summaries
+          WHERE project = ?
+          ORDER BY created_at_epoch DESC
+          LIMIT ?
+        `).all(project, DISPLAY_SESSION_COUNT + SUMMARY_LOOKAHEAD) as any[];
+
+        // Retrieve prior session's last messages for continuity
+        let priorUserMessage = '';
+        let priorAssistantMessage = '';
+        let priorSessionTime = '';
+
+        if (allObservations.length > 0) {
+          try {
+            // Get most recent observation
+            const mostRecentObs = allObservations[0];
+
+            // Get prior session's Claude session ID
+            const priorSession = store.db.prepare(`
+              SELECT claude_session_id, created_at
+              FROM sdk_sessions
+              WHERE sdk_session_id = ?
+              LIMIT 1
+            `).get(mostRecentObs.sdk_session_id) as any;
+
+            if (priorSession) {
+              // Construct prior session's transcript path
+              // Pattern: ~/.claude/projects/{dashed-cwd}/{session_id}.jsonl
+              const dashedCwd = cwd.replace(/\//g, '-');
+              const priorTranscriptPath = join(
+                homedir(),
+                '.claude/projects',
+                dashedCwd,
+                `${priorSession.claude_session_id}.jsonl`
+              );
+
+              // Extract last messages from prior transcript
+              priorUserMessage = extractLastUserMessage(priorTranscriptPath);
+              priorAssistantMessage = extractLastAssistantMessage(priorTranscriptPath);
+              priorSessionTime = priorSession.created_at;
+            }
+          } catch (error) {
+            // Silently fail if we can't retrieve prior session context
+          }
+        }
+
+        // If we have neither observations nor summaries, show empty state
+        if (allObservations.length === 0 && recentSummaries.length === 0) {
+          const emptyText = useColors
+            ? `\n${colors.bright}${colors.cyan}📝 [${project}] recent context${colors.reset}\n${colors.gray}${'─'.repeat(60)}${colors.reset}\n\n${colors.dim}No previous sessions found for this project yet.${colors.reset}\n`
+            : `# [${project}] recent context\n\nNo previous sessions found for this project yet.`;
+
+          return {
+            content: [{
+              type: 'text' as const,
+              text: emptyText
+            }]
+          };
+        }
+
+        const observations = allObservations;
+        const displaySummaries = recentSummaries.slice(0, DISPLAY_SESSION_COUNT);
+        const timelineObs = observations;
+
+        // Build output
+        const output: string[] = [];
+
+        // Header
+        if (useColors) {
+          output.push('');
+          output.push(`${colors.bright}${colors.cyan}📝 [${project}] recent context${colors.reset}`);
+          output.push(`${colors.gray}${'─'.repeat(60)}${colors.reset}`);
+          output.push('');
+        } else {
+          output.push(`# [${project}] recent context`);
+          output.push('');
+        }
+
+        // Prior Session Context (if available)
+        if (priorUserMessage || priorAssistantMessage) {
+          if (useColors) {
+            output.push(`${colors.bright}${colors.magenta}💬 Previously${colors.reset}`);
+            output.push('');
+
+            if (priorUserMessage) {
+              const truncatedUser = priorUserMessage.length > 200
+                ? priorUserMessage.substring(0, 200) + '...'
+                : priorUserMessage;
+              output.push(`${colors.dim}You said:${colors.reset} ${truncatedUser}`);
+              output.push('');
+            }
+
+            if (priorAssistantMessage) {
+              const truncatedAssistant = priorAssistantMessage.length > 300
+                ? priorAssistantMessage.substring(0, 300) + '...'
+                : priorAssistantMessage;
+              output.push(`${colors.dim}I responded:${colors.reset} ${truncatedAssistant}`);
+              output.push('');
+            }
+          } else {
+            output.push(`## 💬 Previously`);
+            output.push('');
+
+            if (priorUserMessage) {
+              const truncatedUser = priorUserMessage.length > 200
+                ? priorUserMessage.substring(0, 200) + '...'
+                : priorUserMessage;
+              output.push(`**You said:** ${truncatedUser}`);
+              output.push('');
+            }
+
+            if (priorAssistantMessage) {
+              const truncatedAssistant = priorAssistantMessage.length > 300
+                ? priorAssistantMessage.substring(0, 300) + '...'
+                : priorAssistantMessage;
+              output.push(`**I responded:** ${truncatedAssistant}`);
+              output.push('');
+            }
+          }
+        }
+
+        // Chronological Timeline
+        if (timelineObs.length > 0) {
+          // Legend/Key
+          if (useColors) {
+            output.push(`${colors.dim}Legend: 🎯 session-request | 🔴 bugfix | 🟣 feature | 🔄 refactor | ✅ change | 🔵 discovery | ⚖️  decision${colors.reset}`);
+          } else {
+            output.push(`**Legend:** 🎯 session-request | 🔴 bugfix | 🟣 feature | 🔄 refactor | ✅ change | 🔵 discovery | ⚖️  decision`);
+          }
+          output.push('');
+
+          // Column Key
+          if (useColors) {
+            output.push(`${colors.bright}💡 Column Key${colors.reset}`);
+            output.push(`${colors.dim}  Read: Tokens to read this observation (cost to learn it now)${colors.reset}`);
+            output.push(`${colors.dim}  Work: Tokens spent on work that produced this record (🔍 research, 🛠️ building, ⚖️  deciding)${colors.reset}`);
+          } else {
+            output.push(`💡 **Column Key**:`);
+            output.push(`- **Read**: Tokens to read this observation (cost to learn it now)`);
+            output.push(`- **Work**: Tokens spent on work that produced this record (🔍 research, 🛠️ building, ⚖️  deciding)`);
+          }
+          output.push('');
+
+          // Context Index Usage Instructions
+          if (useColors) {
+            output.push(`${colors.dim}💡 Context Index: This semantic index (titles, types, files, tokens) is usually sufficient to understand past work.${colors.reset}`);
+            output.push('');
+            output.push(`${colors.dim}When you need implementation details, rationale, or debugging context:${colors.reset}`);
+            output.push(`${colors.dim}  - Use the mem-search skill to fetch full observations on-demand${colors.reset}`);
+            output.push(`${colors.dim}  - Critical types (🔴 bugfix, ⚖️ decision) often need detailed fetching${colors.reset}`);
+            output.push(`${colors.dim}  - Trust this index over re-reading code for past decisions and learnings${colors.reset}`);
+          } else {
+            output.push(`💡 **Context Index:** This semantic index (titles, types, files, tokens) is usually sufficient to understand past work.`);
+            output.push('');
+            output.push(`When you need implementation details, rationale, or debugging context:`);
+            output.push(`- Use the mem-search skill to fetch full observations on-demand`);
+            output.push(`- Critical types (🔴 bugfix, ⚖️ decision) often need detailed fetching`);
+            output.push(`- Trust this index over re-reading code for past decisions and learnings`);
+          }
+          output.push('');
+
+          // Calculate token economics
+          const totalObservations = observations.length;
+          const totalReadTokens = observations.reduce((sum, obs) => {
+            const obsSize = (obs.title?.length || 0) +
+                            (obs.subtitle?.length || 0) +
+                            (obs.narrative?.length || 0) +
+                            JSON.stringify(obs.facts || []).length;
+            return sum + Math.ceil(obsSize / CHARS_PER_TOKEN_ESTIMATE);
+          }, 0);
+          const totalDiscoveryTokens = observations.reduce((sum, obs) => sum + (obs.discovery_tokens || 0), 0);
+          const savings = totalDiscoveryTokens - totalReadTokens;
+          const savingsPercent = totalDiscoveryTokens > 0
+            ? Math.round((savings / totalDiscoveryTokens) * 100)
+            : 0;
+
+          // Display Context Economics section
+          if (useColors) {
+            output.push(`${colors.bright}${colors.cyan}📊 Context Economics${colors.reset}`);
+            output.push(`${colors.dim}  Loading: ${totalObservations} observations (${totalReadTokens.toLocaleString()} tokens to read)${colors.reset}`);
+            output.push(`${colors.dim}  Work investment: ${totalDiscoveryTokens.toLocaleString()} tokens spent on research, building, and decisions${colors.reset}`);
+            if (totalDiscoveryTokens > 0) {
+              output.push(`${colors.green}  Your savings: ${savings.toLocaleString()} tokens (${savingsPercent}% reduction from reuse)${colors.reset}`);
+            }
+            output.push('');
+          } else {
+            output.push(`📊 **Context Economics**:`);
+            output.push(`- Loading: ${totalObservations} observations (${totalReadTokens.toLocaleString()} tokens to read)`);
+            output.push(`- Work investment: ${totalDiscoveryTokens.toLocaleString()} tokens spent on research, building, and decisions`);
+            if (totalDiscoveryTokens > 0) {
+              output.push(`- Your savings: ${savings.toLocaleString()} tokens (${savingsPercent}% reduction from reuse)`);
+            }
+            output.push('');
+          }
+
+          // Prepare summaries for timeline display
+          const mostRecentSummaryId = recentSummaries[0]?.id;
+
+          interface SummaryTimelineItem {
+            id: number;
+            sdk_session_id: string;
+            request: string | null;
+            investigated: string | null;
+            learned: string | null;
+            completed: string | null;
+            next_steps: string | null;
+            created_at: string;
+            created_at_epoch: number;
+            displayEpoch: number;
+            displayTime: string;
+            shouldShowLink: boolean;
+          }
+
+          const summariesForTimeline: SummaryTimelineItem[] = displaySummaries.map((summary, i) => {
+            const olderSummary = i === 0 ? null : recentSummaries[i + 1];
+            return {
+              ...summary,
+              displayEpoch: olderSummary ? olderSummary.created_at_epoch : summary.created_at_epoch,
+              displayTime: olderSummary ? olderSummary.created_at : summary.created_at,
+              shouldShowLink: summary.id !== mostRecentSummaryId
+            };
+          });
+
+          type TimelineItem =
+            | { type: 'observation'; data: any }
+            | { type: 'summary'; data: SummaryTimelineItem };
+
+          const timeline: TimelineItem[] = [
+            ...timelineObs.map(obs => ({ type: 'observation' as const, data: obs })),
+            ...summariesForTimeline.map(summary => ({ type: 'summary' as const, data: summary }))
+          ];
+
+          // Sort chronologically
+          timeline.sort((a, b) => {
+            const aEpoch = a.type === 'observation' ? a.data.created_at_epoch : a.data.displayEpoch;
+            const bEpoch = b.type === 'observation' ? b.data.created_at_epoch : b.data.displayEpoch;
+            return aEpoch - bEpoch;
+          });
+
+          // Group by day for rendering
+          const itemsByDay = new Map<string, TimelineItem[]>();
+          for (const item of timeline) {
+            const itemDate = item.type === 'observation' ? item.data.created_at : item.data.displayTime;
+            const day = formatDate(itemDate);
+            if (!itemsByDay.has(day)) {
+              itemsByDay.set(day, []);
+            }
+            itemsByDay.get(day)!.push(item);
+          }
+
+          // Sort days chronologically
+          const sortedDays = Array.from(itemsByDay.entries()).sort((a, b) => {
+            const aDate = new Date(a[0]).getTime();
+            const bDate = new Date(b[0]).getTime();
+            return aDate - bDate;
+          });
+
+          // Render each day's timeline
+          for (const [day, dayItems] of sortedDays) {
+            // Day header
+            if (useColors) {
+              output.push(`${colors.bright}${colors.cyan}${day}${colors.reset}`);
+              output.push('');
+            } else {
+              output.push(`### ${day}`);
+              output.push('');
+            }
+
+            // Render items chronologically with visual file grouping
+            let currentFile: string | null = null;
+            let lastTime = '';
+            let tableOpen = false;
+
+            for (const item of dayItems) {
+              if (item.type === 'summary') {
+                // Close any open table
+                if (tableOpen) {
+                  output.push('');
+                  tableOpen = false;
+                  currentFile = null;
+                  lastTime = '';
+                }
+
+                // Render summary
+                const summary = item.data;
+                const summaryTitle = `${summary.request || 'Session started'} (${formatDateTime(summary.displayTime)})`;
+                const link = summary.shouldShowLink ? `claude-mem://session-summary/${summary.id}` : '';
+
+                if (useColors) {
+                  const linkPart = link ? `${colors.dim}[${link}]${colors.reset}` : '';
+                  output.push(`🎯 ${colors.yellow}#S${summary.id}${colors.reset} ${summaryTitle} ${linkPart}`);
+                } else {
+                  const linkPart = link ? ` [→](${link})` : '';
+                  output.push(`**🎯 #S${summary.id}** ${summaryTitle}${linkPart}`);
+                }
+                output.push('');
+              } else {
+                // Render observation
+                const obs = item.data;
+                const files = parseJsonArray(obs.files_modified);
+                const file = files.length > 0 ? toRelativePath(files[0], cwd) : 'General';
+
+                // Check if we need a new file section
+                if (file !== currentFile) {
+                  // Close previous table
+                  if (tableOpen) {
+                    output.push('');
+                  }
+
+                  // File header
+                  if (useColors) {
+                    output.push(`${colors.dim}${file}${colors.reset}`);
+                  } else {
+                    output.push(`**${file}**`);
+                  }
+
+                  // Table header (markdown only)
+                  if (!useColors) {
+                    output.push(`| ID | Time | T | Title | Read | Work |`);
+                    output.push(`|----|------|---|-------|------|------|`);
+                  }
+
+                  currentFile = file;
+                  tableOpen = true;
+                  lastTime = '';
+                }
+
+                const time = formatTime(obs.created_at);
+                const title = obs.title || 'Untitled';
+
+                // Map observation type to emoji icon
+                let icon = '•';
+                switch (obs.type) {
+                  case 'bugfix':
+                    icon = '🔴';
+                    break;
+                  case 'feature':
+                    icon = '🟣';
+                    break;
+                  case 'refactor':
+                    icon = '🔄';
+                    break;
+                  case 'change':
+                    icon = '✅';
+                    break;
+                  case 'discovery':
+                    icon = '🔵';
+                    break;
+                  case 'decision':
+                    icon = '⚖️';
+                    break;
+                  default:
+                    icon = '•';
+                }
+
+                // Calculate read tokens
+                const obsSize = (obs.title?.length || 0) +
+                                (obs.subtitle?.length || 0) +
+                                (obs.narrative?.length || 0) +
+                                JSON.stringify(obs.facts || []).length;
+                const readTokens = Math.ceil(obsSize / CHARS_PER_TOKEN_ESTIMATE);
+
+                // Get discovery tokens
+                const discoveryTokens = obs.discovery_tokens || 0;
+
+                // Map observation type to work emoji
+                let workEmoji = '🔍';
+                switch (obs.type) {
+                  case 'discovery':
+                    workEmoji = '🔍';
+                    break;
+                  case 'change':
+                  case 'feature':
+                  case 'bugfix':
+                  case 'refactor':
+                    workEmoji = '🛠️';
+                    break;
+                  case 'decision':
+                    workEmoji = '⚖️';
+                    break;
+                }
+
+                const discoveryDisplay = discoveryTokens > 0 ? `${workEmoji} ${discoveryTokens.toLocaleString()}` : '-';
+
+                const showTime = time !== lastTime;
+                const timeDisplay = showTime ? time : '';
+                lastTime = time;
+
+                if (useColors) {
+                  const timePart = showTime ? `${colors.dim}${time}${colors.reset}` : ' '.repeat(time.length);
+                  const readPart = readTokens > 0 ? `${colors.dim}(~${readTokens}t)${colors.reset}` : '';
+                  const discoveryPart = discoveryTokens > 0 ? `${colors.dim}(${workEmoji} ${discoveryTokens.toLocaleString()}t)${colors.reset}` : '';
+                  output.push(`  ${colors.dim}#${obs.id}${colors.reset}  ${timePart}  ${icon}  ${title} ${readPart} ${discoveryPart}`);
+                } else {
+                  output.push(`| #${obs.id} | ${timeDisplay || '″'} | ${icon} | ${title} | ~${readTokens} | ${discoveryDisplay} |`);
+                }
+              }
+            }
+
+            // Close final table if open
+            if (tableOpen) {
+              output.push('');
+            }
+          }
+
+          // Add full summary details for most recent session
+          const mostRecentSummary = recentSummaries[0];
+          const mostRecentObservation = observations[0];
+
+          const shouldShowSummary = mostRecentSummary &&
+            (mostRecentSummary.investigated || mostRecentSummary.learned || mostRecentSummary.completed || mostRecentSummary.next_steps) &&
+            (!mostRecentObservation || mostRecentSummary.created_at_epoch > mostRecentObservation.created_at_epoch);
+
+          if (shouldShowSummary) {
+            output.push(...renderSummaryField('Investigated', mostRecentSummary.investigated, colors.blue, useColors));
+            output.push(...renderSummaryField('Learned', mostRecentSummary.learned, colors.yellow, useColors));
+            output.push(...renderSummaryField('Completed', mostRecentSummary.completed, colors.green, useColors));
+            output.push(...renderSummaryField('Next Steps', mostRecentSummary.next_steps, colors.magenta, useColors));
+          }
+
+          // Footer with token savings message
+          if (totalDiscoveryTokens > 0 && savings > 0) {
+            const workTokensK = Math.round(totalDiscoveryTokens / 1000);
+            output.push('');
+            if (useColors) {
+              output.push(`${colors.dim}💰 Access ${workTokensK}k tokens of past research & decisions for just ${totalReadTokens.toLocaleString()}t. Use the mem-search skill to access memories by ID instead of re-reading files.${colors.reset}`);
+            } else {
+              output.push(`💰 Access ${workTokensK}k tokens of past research & decisions for just ${totalReadTokens.toLocaleString()}t. Use the mem-search skill to access memories by ID instead of re-reading files.`);
+            }
+          }
+        }
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: output.join('\n').trimEnd()
+          }]
+        };
+      } catch (error: any) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `Context retrieval failed: ${error.message}`
           }],
           isError: true
         };
