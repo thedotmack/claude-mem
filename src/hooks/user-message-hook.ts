@@ -52,7 +52,8 @@ try {
     "\n\n📝 Claude-Mem Context Loaded\n" +
     "   ℹ️  Note: This appears as stderr but is informational only\n\n" +
     output +
-    "\n\n💬 Community\nhttps://discord.gg/J4wttp9vDu\n" +
+    "\n\n💡 New! Wrap all or part of any message with <private> ... </private> to prevent storing sensitive information in your observation history.\n" +
+    "\n💬 Community https://discord.gg/J4wttp9vDu\n" +
     `\n📺 Watch live in browser http://localhost:${port}/\n`
   );
 
