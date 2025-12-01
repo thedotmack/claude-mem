@@ -98,9 +98,9 @@ curl "http://localhost:37777/api/prompt/5421"
 **Filters (optional):**
 - `type` - Filter to "observations", "sessions", or "prompts"
 - `project` - Filter by project name
-- `dateRange[start]` - Start date (YYYY-MM-DD)
-- `dateRange[end]` - End date (YYYY-MM-DD)
-- `obs_type` - Filter observations by: bugfix, feature, decision, discovery, change
+- `dateStart` - Start date (YYYY-MM-DD or epoch timestamp)
+- `dateEnd` - End date (YYYY-MM-DD or epoch timestamp)
+- `obs_type` - Filter observations by type (comma-separated): bugfix, feature, decision, discovery, change
 
 ## Examples
 
@@ -111,7 +111,7 @@ curl "http://localhost:37777/api/search?query=bug&type=observations&obs_type=bug
 
 **Find what happened last week:**
 ```bash
-curl "http://localhost:37777/api/search?query=&type=observations&dateRange[start]=2025-11-11&format=index&limit=10"
+curl "http://localhost:37777/api/search?query=&type=observations&dateStart=2025-11-11&format=index&limit=10"
 ```
 
 **Search everything:**

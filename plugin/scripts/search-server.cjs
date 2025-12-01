@@ -543,7 +543,7 @@ Search workflow:
 1. Initial search: Use default (index) format to see titles, dates, and sources
 2. Review results: Identify which items are most relevant to your needs
 3. Deep dive: Only then use format: "full" on specific items of interest
-4. Narrow down: Use filters (type, dateRange, concepts, files) to refine results
+4. Narrow down: Use filters (type, dateStart/dateEnd, concepts, files) to refine results
 
 Other tips:
 \u2022 To search by concept: Use find_by_concept tool

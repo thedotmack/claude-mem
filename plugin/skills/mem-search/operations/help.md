@@ -106,9 +106,9 @@ Many endpoints share these parameters:
 - **limit**: Number of results to return
 - **offset**: Number of results to skip (for pagination)
 - **project**: Filter by project name
-- **dateRange**: Filter by date range
-  - `dateRange[start]`: Start date (ISO string or epoch)
-  - `dateRange[end]`: End date (ISO string or epoch)
+- **dateStart/dateEnd**: Filter by date range
+  - `dateStart`: Start date (YYYY-MM-DD or epoch timestamp)
+  - `dateEnd`: End date (YYYY-MM-DD or epoch timestamp)
 
 ## Error Handling
 
