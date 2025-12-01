@@ -1107,6 +1107,22 @@ export class SessionStore {
   }
 
   /**
+   * Get user prompt by session ID and prompt number
+   * Returns the prompt text, or null if not found
+   */
+  getUserPrompt(claudeSessionId: string, promptNumber: number): string | null {
+    const stmt = this.db.prepare(`
+      SELECT prompt_text
+      FROM user_prompts
+      WHERE claude_session_id = ? AND prompt_number = ?
+      LIMIT 1
+    `);
+
+    const result = stmt.get(claudeSessionId, promptNumber) as { prompt_text: string } | undefined;
+    return result?.prompt_text ?? null;
+  }
+
+  /**
    * Store an observation (from SDK parsing)
    * Auto-creates session record if it doesn't exist in the index
    */

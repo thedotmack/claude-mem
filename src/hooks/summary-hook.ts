@@ -141,6 +141,20 @@ async function summaryHook(input?: StopInput): Promise<void> {
   const sessionDbId = db.createSDKSession(session_id, '', '');
   const promptNumber = db.getPromptCounter(sessionDbId);
 
+  // Skip summary if user prompt was entirely private
+  // This respects the user's intent: if they marked the entire prompt as <private>,
+  // they don't want ANY memory operations including summaries
+  const userPrompt = db.getUserPrompt(session_id, promptNumber);
+  if (!userPrompt || userPrompt.trim() === '') {
+    silentDebug('[summary-hook] Skipping summary - user prompt was entirely private', {
+      session_id,
+      promptNumber
+    });
+    db.close();
+    console.log(createHookResponse('Stop', true));
+    return;
+  }
+
   // DIAGNOSTIC: Check session and observations
   const sessionInfo = db.db.prepare(`
     SELECT id, claude_session_id, sdk_session_id, project

@@ -75,6 +75,22 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
   // Get or create session
   const sessionDbId = db.createSDKSession(session_id, '', '');
   const promptNumber = db.getPromptCounter(sessionDbId);
+
+  // Skip observation if user prompt was entirely private
+  // This respects the user's intent: if they marked the entire prompt as <private>,
+  // they don't want ANY observations from that interaction
+  const userPrompt = db.getUserPrompt(session_id, promptNumber);
+  if (!userPrompt || userPrompt.trim() === '') {
+    silentDebug('[save-hook] Skipping observation - user prompt was entirely private', {
+      session_id,
+      promptNumber,
+      tool_name
+    });
+    db.close();
+    console.log(createHookResponse('PostToolUse', true));
+    return;
+  }
+
   db.close();
 
   const toolStr = logger.formatTool(tool_name, tool_input);

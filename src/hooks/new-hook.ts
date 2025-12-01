@@ -48,6 +48,30 @@ export interface UserPromptSubmitInput {
 }
 
 /**
+ * Strip memory tags to prevent recursive storage and enable privacy control
+ *
+ * This implements the dual-tag system:
+ * 1. <claude-mem-context> - System-level tag for auto-injected observations
+ *    (prevents recursive storage when context injection is active)
+ * 2. <private> - User-level tag for manual privacy control
+ *    (allows users to mark content they don't want persisted)
+ *
+ * EDGE PROCESSING PATTERN: Filter at hook layer before sending to storage.
+ * This ensures private content never reaches the database or search indices.
+ */
+function stripMemoryTags(content: string): string {
+  if (typeof content !== 'string') {
+    silentDebug('[new-hook] stripMemoryTags received non-string:', { type: typeof content });
+    return '';  // Safe default for prompt content
+  }
+
+  return content
+    .replace(/<claude-mem-context>[\s\S]*?<\/claude-mem-context>/g, '')
+    .replace(/<private>[\s\S]*?<\/private>/g, '')
+    .trim();
+}
+
+/**
  * New Hook Main Logic
  */
 async function newHook(input?: UserPromptSubmitInput): Promise<void> {
@@ -88,8 +112,25 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
   const sessionDbId = db.createSDKSession(session_id, project, prompt);
   const promptNumber = db.incrementPromptCounter(sessionDbId);
 
-  // Save raw user prompt for full-text search
-  db.saveUserPrompt(session_id, promptNumber, prompt);
+  // Strip memory tags before saving user prompt to prevent privacy leaks
+  // Tags like <private> and <claude-mem-context> should not be stored or searchable
+  const cleanedUserPrompt = stripMemoryTags(prompt);
+
+  // Skip memory operations for fully private prompts
+  // If the entire prompt was wrapped in <private> tags, don't create any observations
+  if (!cleanedUserPrompt || cleanedUserPrompt.trim() === '') {
+    silentDebug('[new-hook] Prompt entirely private, skipping memory operations', {
+      session_id,
+      promptNumber,
+      originalLength: prompt.length
+    });
+    db.close();
+    console.error(`[new-hook] Session ${sessionDbId}, prompt #${promptNumber} (fully private - skipped)`);
+    console.log(createHookResponse('UserPromptSubmit', true));
+    return;
+  }
+
+  db.saveUserPrompt(session_id, promptNumber, cleanedUserPrompt);
 
   console.error(`[new-hook] Session ${sessionDbId}, prompt #${promptNumber}`);
 
