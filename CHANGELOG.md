@@ -4,6 +4,59 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [6.4.1] - 2025-12-01
+
+## Hey there, claude-mem community! 👋
+
+We're doing something new and exciting: **our first-ever Live AMA**! 
+
+### 🔴 When You'll See Us Live
+
+**December 1st-5th, 2025**  
+**Daily from 5-7pm EST**
+
+During these times, you'll see a live indicator (🔴) when you start a new session, letting you know we're available right now to answer questions, discuss ideas, or just chat about what you're building with claude-mem.
+
+### What Changed in This Release
+
+We've added a smart announcement system that:
+- Shows upcoming AMA schedule before/after live hours
+- Displays a live indicator (🔴) when we're actively available
+- Automatically cleans up after the event ends
+
+### Why We're Doing This
+
+We want to hear from **you**! Whether you're:
+- Just getting started with claude-mem
+- A power user with feature ideas
+- Curious about how memory compression works
+- Running into any issues
+- Or just want to say hi 👋
+
+This is your chance to connect directly with the developer (@thedotmack) and fellow community members.
+
+### Join the Community
+
+Can't make the live times? No worries! Join our Discord to stay connected:  
+**https://discord.gg/J4wttp9vDu**
+
+We're excited to meet you and hear what you're building!
+
+---
+
+## Technical Details
+
+**Changed Files:**
+- `src/hooks/user-message-hook.ts` - Added time-aware announcement logic
+- Version bumped across all manifests (6.4.0 → 6.4.1)
+
+**Built Artifacts:**
+- `plugin/scripts/user-message-hook.js` - Updated compiled hook
+
+---
+
+Looking forward to seeing you at the AMA! 🎉
+
 ## [6.4.0] - 2025-12-01
 
 ## 🎯 Highlights
