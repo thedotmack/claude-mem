@@ -41,6 +41,80 @@ function getContextDepth(): number {
   return parseInt(process.env.CLAUDE_MEM_CONTEXT_OBSERVATIONS || '50', 10);
 }
 
+interface ContextConfig {
+  // Display counts
+  totalObservationCount: number;
+  fullObservationCount: number;
+  sessionCount: number;
+
+  // Token display toggles
+  showReadTokens: boolean;
+  showWorkTokens: boolean;
+  showSavingsAmount: boolean;
+  showSavingsPercent: boolean;
+
+  // Filters
+  observationTypes: Set<string>;
+  observationConcepts: Set<string>;
+
+  // Display options
+  fullObservationField: 'narrative' | 'facts';
+  showLastSummary: boolean;
+  showLastMessage: boolean;
+}
+
+/**
+ * Load all context configuration settings
+ * Priority: ~/.claude/settings.json > env var > defaults
+ */
+function loadContextConfig(): ContextConfig {
+  const defaults = {
+    totalObservationCount: parseInt(process.env.CLAUDE_MEM_CONTEXT_OBSERVATIONS || '50', 10),
+    fullObservationCount: 5,
+    sessionCount: 10,
+    showReadTokens: true,
+    showWorkTokens: true,
+    showSavingsAmount: true,
+    showSavingsPercent: true,
+    observationTypes: new Set(['bugfix', 'feature', 'refactor', 'discovery', 'decision', 'change']),
+    observationConcepts: new Set(['how-it-works', 'why-it-exists', 'what-changed', 'problem-solution', 'gotcha', 'pattern', 'trade-off']),
+    fullObservationField: 'narrative' as const,
+    showLastSummary: true,
+    showLastMessage: false,
+  };
+
+  try {
+    const settingsPath = path.join(homedir(), '.claude', 'settings.json');
+    if (!existsSync(settingsPath)) return defaults;
+
+    const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+    const env = settings.env || {};
+
+    return {
+      totalObservationCount: parseInt(env.CLAUDE_MEM_CONTEXT_OBSERVATIONS || '50', 10),
+      fullObservationCount: parseInt(env.CLAUDE_MEM_CONTEXT_FULL_COUNT || '5', 10),
+      sessionCount: parseInt(env.CLAUDE_MEM_CONTEXT_SESSION_COUNT || '10', 10),
+      showReadTokens: env.CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS !== 'false',
+      showWorkTokens: env.CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS !== 'false',
+      showSavingsAmount: env.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT !== 'false',
+      showSavingsPercent: env.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT !== 'false',
+      observationTypes: new Set(
+        (env.CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES || 'bugfix,feature,refactor,discovery,decision,change')
+          .split(',').map((t: string) => t.trim()).filter(Boolean)
+      ),
+      observationConcepts: new Set(
+        (env.CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS || 'how-it-works,why-it-exists,what-changed,problem-solution,gotcha,pattern,trade-off')
+          .split(',').map((c: string) => c.trim()).filter(Boolean)
+      ),
+      fullObservationField: (env.CLAUDE_MEM_CONTEXT_FULL_FIELD || 'narrative') as 'narrative' | 'facts',
+      showLastSummary: env.CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY !== 'false',
+      showLastMessage: env.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE === 'true',
+    };
+  } catch {
+    return defaults;
+  }
+}
+
 // Configuration: Read from settings.json or environment
 const DISPLAY_OBSERVATION_COUNT = getContextDepth();
 const DISPLAY_SESSION_COUNT = 10; // Recent sessions for timeline context
@@ -163,6 +237,7 @@ function renderSummaryField(label: string, value: string | null, color: string, 
  * Context Hook Main Logic
  */
 async function contextHook(input?: SessionStartInput, useColors: boolean = false): Promise<string> {
+  const config = loadContextConfig();
   const cwd = input?.cwd ?? process.cwd();
   const project = cwd ? path.basename(cwd) : 'unknown-project';
 
@@ -190,7 +265,7 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
 
   // Get ALL recent observations for this project (not filtered by summaries)
   // This ensures we show observations even when summaries haven't been generated
-  // Configurable via CLAUDE_MEM_CONTEXT_OBSERVATIONS env var (default: 50)
+  // Configurable via settings (default: 50)
   const allObservations = db.db.prepare(`
     SELECT
       id, sdk_session_id, type, title, subtitle, narrative,
@@ -200,7 +275,7 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
     WHERE project = ?
     ORDER BY created_at_epoch DESC
     LIMIT ?
-  `).all(project, DISPLAY_OBSERVATION_COUNT) as Observation[];
+  `).all(project, config.totalObservationCount) as Observation[];
 
   // Get recent summaries (optional - may not exist for recent sessions)
   // Fetch one extra for offset calculation
@@ -210,7 +285,7 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
     WHERE project = ?
     ORDER BY created_at_epoch DESC
     LIMIT ?
-  `).all(project, DISPLAY_SESSION_COUNT + SUMMARY_LOOKAHEAD) as SessionSummary[];
+  `).all(project, config.sessionCount + SUMMARY_LOOKAHEAD) as SessionSummary[];
 
   // If we have neither observations nor summaries, show empty state
   if (allObservations.length === 0 && recentSummaries.length === 0) {
@@ -221,11 +296,19 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
     return `# [${project}] recent context\n\nNo previous sessions found for this project yet.`;
   }
 
-  // Use observations for display (summaries are supplementary)
-  const observations = allObservations;
-  const displaySummaries = recentSummaries.slice(0, DISPLAY_SESSION_COUNT);
+  // Filter observations by type
+  let observations = allObservations.filter(obs => config.observationTypes.has(obs.type));
 
-  // All observations are shown in timeline (filtered by type, not concepts)
+  // Filter by concepts (include if observation has at least one matching concept)
+  observations = observations.filter(obs => {
+    if (config.observationConcepts.size === 0) return true;
+    const obsConcepts = parseJsonArray(obs.concepts);
+    return obsConcepts.some(c => config.observationConcepts.has(c));
+  });
+
+  const displaySummaries = recentSummaries.slice(0, config.sessionCount);
+
+  // All filtered observations are shown in timeline
   const timelineObs = observations;
 
   // Build output
@@ -301,18 +384,42 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
     // Display Context Economics section
     if (useColors) {
       output.push(`${colors.bright}${colors.cyan}📊 Context Economics${colors.reset}`);
-      output.push(`${colors.dim}  Loading: ${totalObservations} observations (${totalReadTokens.toLocaleString()} tokens to read)${colors.reset}`);
-      output.push(`${colors.dim}  Work investment: ${totalDiscoveryTokens.toLocaleString()} tokens spent on research, building, and decisions${colors.reset}`);
-      if (totalDiscoveryTokens > 0) {
-        output.push(`${colors.green}  Your savings: ${savings.toLocaleString()} tokens (${savingsPercent}% reduction from reuse)${colors.reset}`);
+      if (config.showReadTokens) {
+        output.push(`${colors.dim}  Loading: ${totalObservations} observations (${totalReadTokens.toLocaleString()} tokens to read)${colors.reset}`);
+      }
+      if (config.showWorkTokens) {
+        output.push(`${colors.dim}  Work investment: ${totalDiscoveryTokens.toLocaleString()} tokens spent on research, building, and decisions${colors.reset}`);
+      }
+      if (totalDiscoveryTokens > 0 && (config.showSavingsAmount || config.showSavingsPercent)) {
+        let savingsLine = '  Your savings: ';
+        if (config.showSavingsAmount && config.showSavingsPercent) {
+          savingsLine += `${savings.toLocaleString()} tokens (${savingsPercent}% reduction from reuse)`;
+        } else if (config.showSavingsAmount) {
+          savingsLine += `${savings.toLocaleString()} tokens`;
+        } else {
+          savingsLine += `${savingsPercent}% reduction from reuse`;
+        }
+        output.push(`${colors.green}${savingsLine}${colors.reset}`);
       }
       output.push('');
     } else {
       output.push(`📊 **Context Economics**:`);
-      output.push(`- Loading: ${totalObservations} observations (${totalReadTokens.toLocaleString()} tokens to read)`);
-      output.push(`- Work investment: ${totalDiscoveryTokens.toLocaleString()} tokens spent on research, building, and decisions`);
-      if (totalDiscoveryTokens > 0) {
-        output.push(`- Your savings: ${savings.toLocaleString()} tokens (${savingsPercent}% reduction from reuse)`);
+      if (config.showReadTokens) {
+        output.push(`- Loading: ${totalObservations} observations (${totalReadTokens.toLocaleString()} tokens to read)`);
+      }
+      if (config.showWorkTokens) {
+        output.push(`- Work investment: ${totalDiscoveryTokens.toLocaleString()} tokens spent on research, building, and decisions`);
+      }
+      if (totalDiscoveryTokens > 0 && (config.showSavingsAmount || config.showSavingsPercent)) {
+        let savingsLine = '- Your savings: ';
+        if (config.showSavingsAmount && config.showSavingsPercent) {
+          savingsLine += `${savings.toLocaleString()} tokens (${savingsPercent}% reduction from reuse)`;
+        } else if (config.showSavingsAmount) {
+          savingsLine += `${savings.toLocaleString()} tokens`;
+        } else {
+          savingsLine += `${savingsPercent}% reduction from reuse`;
+        }
+        output.push(savingsLine);
       }
       output.push('');
     }
@@ -340,6 +447,13 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
         shouldShowLink: summary.id !== mostRecentSummaryId
       };
     });
+
+    // Identify which observations should show full details (most recent N)
+    const fullObservationIds = new Set(
+      observations
+        .slice(0, config.fullObservationCount)
+        .map(obs => obs.id)
+    );
 
     type TimelineItem =
       | { type: 'observation'; data: Observation }
@@ -506,13 +620,55 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
           const timeDisplay = showTime ? time : '';
           lastTime = time;
 
-          if (useColors) {
-            const timePart = showTime ? `${colors.dim}${time}${colors.reset}` : ' '.repeat(time.length);
-            const readPart = readTokens > 0 ? `${colors.dim}(~${readTokens}t)${colors.reset}` : '';
-            const discoveryPart = discoveryTokens > 0 ? `${colors.dim}(${workEmoji} ${discoveryTokens.toLocaleString()}t)${colors.reset}` : '';
-            output.push(`  ${colors.dim}#${obs.id}${colors.reset}  ${timePart}  ${icon}  ${title} ${readPart} ${discoveryPart}`);
+          // Check if this observation should show full details
+          const shouldShowFull = fullObservationIds.has(obs.id);
+
+          if (shouldShowFull) {
+            // Render with full details (narrative or facts)
+            const detailField = config.fullObservationField === 'narrative'
+              ? obs.narrative
+              : (obs.facts ? parseJsonArray(obs.facts).join('\n') : null);
+
+            if (useColors) {
+              const timePart = showTime ? `${colors.dim}${time}${colors.reset}` : ' '.repeat(time.length);
+              const readPart = readTokens > 0 ? `${colors.dim}(~${readTokens}t)${colors.reset}` : '';
+              const discoveryPart = discoveryTokens > 0 ? `${colors.dim}(${workEmoji} ${discoveryTokens.toLocaleString()}t)${colors.reset}` : '';
+
+              output.push(`  ${colors.dim}#${obs.id}${colors.reset}  ${timePart}  ${icon}  ${colors.bright}${title}${colors.reset}`);
+              if (detailField) {
+                output.push(`    ${colors.dim}${detailField}${colors.reset}`);
+              }
+              output.push(`    ${readPart} ${discoveryPart}`);
+              output.push('');
+            } else {
+              // Close table for full observation
+              if (tableOpen) {
+                output.push('');
+                tableOpen = false;
+              }
+
+              output.push(`**#${obs.id}** ${timeDisplay || '″'} ${icon} **${title}**`);
+              if (detailField) {
+                output.push('');
+                output.push(detailField);
+                output.push('');
+              }
+              output.push(`Read: ~${readTokens}, Work: ${discoveryDisplay}`);
+              output.push('');
+
+              // Reopen table for next items if in same file
+              currentFile = null;
+            }
           } else {
-            output.push(`| #${obs.id} | ${timeDisplay || '″'} | ${icon} | ${title} | ~${readTokens} | ${discoveryDisplay} |`);
+            // Compact index rendering (existing code)
+            if (useColors) {
+              const timePart = showTime ? `${colors.dim}${time}${colors.reset}` : ' '.repeat(time.length);
+              const readPart = readTokens > 0 ? `${colors.dim}(~${readTokens}t)${colors.reset}` : '';
+              const discoveryPart = discoveryTokens > 0 ? `${colors.dim}(${workEmoji} ${discoveryTokens.toLocaleString()}t)${colors.reset}` : '';
+              output.push(`  ${colors.dim}#${obs.id}${colors.reset}  ${timePart}  ${icon}  ${title} ${readPart} ${discoveryPart}`);
+            } else {
+              output.push(`| #${obs.id} | ${timeDisplay || '″'} | ${icon} | ${title} | ~${readTokens} | ${discoveryDisplay} |`);
+            }
           }
         }
       }
@@ -528,7 +684,8 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
     const mostRecentSummary = recentSummaries[0];
     const mostRecentObservation = observations[0]; // observations are DESC by created_at_epoch
 
-    const shouldShowSummary = mostRecentSummary &&
+    const shouldShowSummary = config.showLastSummary &&
+      mostRecentSummary &&
       (mostRecentSummary.investigated || mostRecentSummary.learned || mostRecentSummary.completed || mostRecentSummary.next_steps) &&
       (!mostRecentObservation || mostRecentSummary.created_at_epoch > mostRecentObservation.created_at_epoch);
 
@@ -537,6 +694,27 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
       output.push(...renderSummaryField('Learned', mostRecentSummary.learned, colors.yellow, useColors));
       output.push(...renderSummaryField('Completed', mostRecentSummary.completed, colors.green, useColors));
       output.push(...renderSummaryField('Next Steps', mostRecentSummary.next_steps, colors.magenta, useColors));
+    }
+
+    // Show last message from previous session if enabled
+    // Note: last_assistant_message field would need to be added to session_summaries table
+    // For now, this is a placeholder for the feature
+    if (config.showLastMessage && mostRecentSummary) {
+      // This would require the last_assistant_message field to be populated
+      // The field exists but may not be populated yet in the current implementation
+      const lastMessage = (mostRecentSummary as any).last_assistant_message;
+      if (lastMessage) {
+        output.push('');
+        if (useColors) {
+          output.push(`${colors.bright}${colors.magenta}💬 Last Message from Previous Session${colors.reset}`);
+          output.push(`${colors.dim}${lastMessage}${colors.reset}`);
+        } else {
+          output.push(`**💬 Last Message from Previous Session**`);
+          output.push('');
+          output.push(lastMessage);
+        }
+        output.push('');
+      }
     }
 
     // Footer with token savings message

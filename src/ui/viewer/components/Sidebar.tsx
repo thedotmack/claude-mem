@@ -24,6 +24,19 @@ export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, isConne
   const [contextObs, setContextObs] = useState(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_OBSERVATIONS);
   const [workerPort, setWorkerPort] = useState(settings.CLAUDE_MEM_WORKER_PORT || DEFAULT_SETTINGS.CLAUDE_MEM_WORKER_PORT);
 
+  // Context settings state
+  const [showReadTokens, setShowReadTokens] = useState(settings.CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS);
+  const [showWorkTokens, setShowWorkTokens] = useState(settings.CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS);
+  const [showSavingsAmount, setShowSavingsAmount] = useState(settings.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT);
+  const [showSavingsPercent, setShowSavingsPercent] = useState(settings.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT);
+  const [obsTypes, setObsTypes] = useState(settings.CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES);
+  const [obsConcepts, setObsConcepts] = useState(settings.CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS);
+  const [fullCount, setFullCount] = useState(settings.CLAUDE_MEM_CONTEXT_FULL_COUNT || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_FULL_COUNT);
+  const [fullField, setFullField] = useState(settings.CLAUDE_MEM_CONTEXT_FULL_FIELD || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_FULL_FIELD);
+  const [sessionCount, setSessionCount] = useState(settings.CLAUDE_MEM_CONTEXT_SESSION_COUNT || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SESSION_COUNT);
+  const [showLastSummary, setShowLastSummary] = useState(settings.CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY);
+  const [showLastMessage, setShowLastMessage] = useState(settings.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE);
+
   // MCP toggle state (separate from settings)
   const [mcpEnabled, setMcpEnabled] = useState(true);
   const [mcpToggling, setMcpToggling] = useState(false);
@@ -34,6 +47,17 @@ export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, isConne
     setModel(settings.CLAUDE_MEM_MODEL || DEFAULT_SETTINGS.CLAUDE_MEM_MODEL);
     setContextObs(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_OBSERVATIONS);
     setWorkerPort(settings.CLAUDE_MEM_WORKER_PORT || DEFAULT_SETTINGS.CLAUDE_MEM_WORKER_PORT);
+    setShowReadTokens(settings.CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS);
+    setShowWorkTokens(settings.CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS);
+    setShowSavingsAmount(settings.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT);
+    setShowSavingsPercent(settings.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT);
+    setObsTypes(settings.CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES);
+    setObsConcepts(settings.CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS);
+    setFullCount(settings.CLAUDE_MEM_CONTEXT_FULL_COUNT || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_FULL_COUNT);
+    setFullField(settings.CLAUDE_MEM_CONTEXT_FULL_FIELD || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_FULL_FIELD);
+    setSessionCount(settings.CLAUDE_MEM_CONTEXT_SESSION_COUNT || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SESSION_COUNT);
+    setShowLastSummary(settings.CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY);
+    setShowLastMessage(settings.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE);
   }, [settings]);
 
   // Fetch MCP status on mount
@@ -55,7 +79,18 @@ export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, isConne
     onSave({
       CLAUDE_MEM_MODEL: model,
       CLAUDE_MEM_CONTEXT_OBSERVATIONS: contextObs,
-      CLAUDE_MEM_WORKER_PORT: workerPort
+      CLAUDE_MEM_WORKER_PORT: workerPort,
+      CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: showReadTokens,
+      CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS: showWorkTokens,
+      CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT: showSavingsAmount,
+      CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT: showSavingsPercent,
+      CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES: obsTypes,
+      CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS: obsConcepts,
+      CLAUDE_MEM_CONTEXT_FULL_COUNT: fullCount,
+      CLAUDE_MEM_CONTEXT_FULL_FIELD: fullField,
+      CLAUDE_MEM_CONTEXT_SESSION_COUNT: sessionCount,
+      CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: showLastSummary,
+      CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: showLastMessage,
     });
   };
 
@@ -229,6 +264,85 @@ export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, isConne
               onChange={e => setWorkerPort(e.target.value)}
             />
           </div>
+
+          {/* Token Economics Display */}
+          <div className="form-group">
+            <label>Token Economics Display</label>
+            <div className="setting-description">
+              Choose which token metrics to show in session start context.
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                <input type="checkbox" checked={showReadTokens === 'true'} onChange={e => setShowReadTokens(e.target.checked ? 'true' : 'false')} />
+                Show read tokens
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                <input type="checkbox" checked={showWorkTokens === 'true'} onChange={e => setShowWorkTokens(e.target.checked ? 'true' : 'false')} />
+                Show work tokens
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                <input type="checkbox" checked={showSavingsAmount === 'true'} onChange={e => setShowSavingsAmount(e.target.checked ? 'true' : 'false')} />
+                Show savings amount
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                <input type="checkbox" checked={showSavingsPercent === 'true'} onChange={e => setShowSavingsPercent(e.target.checked ? 'true' : 'false')} />
+                Show savings percentage
+              </label>
+            </div>
+          </div>
+
+          {/* Display Configuration */}
+          <div className="form-group">
+            <label>Display Configuration</label>
+            <div className="setting-description">
+              Control how observations are displayed in the timeline.
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '8px' }}>
+              <div>
+                <label htmlFor="fullCount" style={{ display: 'block', marginBottom: '4px', fontSize: '13px' }}>
+                  Full observation count (0-20)
+                </label>
+                <input type="number" id="fullCount" min="0" max="20" value={fullCount} onChange={e => setFullCount(e.target.value)} style={{ width: '100%' }} />
+                <div style={{ fontSize: '12px', color: '#999', marginTop: '4px' }}>
+                  Number of most recent observations to show with full details
+                </div>
+              </div>
+              <div>
+                <label htmlFor="fullField" style={{ display: 'block', marginBottom: '4px', fontSize: '13px' }}>
+                  Full observation field
+                </label>
+                <select id="fullField" value={fullField} onChange={e => setFullField(e.target.value)} style={{ width: '100%' }}>
+                  <option value="narrative">Narrative</option>
+                  <option value="facts">Facts</option>
+                </select>
+              </div>
+              <div>
+                <label htmlFor="sessionCount" style={{ display: 'block', marginBottom: '4px', fontSize: '13px' }}>
+                  Session summary count (1-50)
+                </label>
+                <input type="number" id="sessionCount" min="1" max="50" value={sessionCount} onChange={e => setSessionCount(e.target.value)} style={{ width: '100%' }} />
+              </div>
+            </div>
+          </div>
+
+          {/* Feature Toggles */}
+          <div className="form-group">
+            <label>Context Features</label>
+            <div className="setting-description">
+              Toggle additional features in session start context.
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                <input type="checkbox" checked={showLastSummary === 'true'} onChange={e => setShowLastSummary(e.target.checked ? 'true' : 'false')} />
+                Show last session summary
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                <input type="checkbox" checked={showLastMessage === 'true'} onChange={e => setShowLastMessage(e.target.checked ? 'true' : 'false')} />
+                Include last session message
+              </label>
+            </div>
+          </div>
+
           {saveStatus && (
             <div className="save-status">{saveStatus}</div>
           )}

@@ -813,6 +813,74 @@ export class WorkerService {
   }
 
   /**
+   * Validate context settings from request body
+   */
+  private validateContextSettings(settings: any): { valid: boolean; error?: string } {
+    // Validate boolean string values
+    const booleanSettings = [
+      'CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS',
+      'CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS',
+      'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT',
+      'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT',
+      'CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY',
+      'CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE',
+    ];
+
+    for (const key of booleanSettings) {
+      if (settings[key] && !['true', 'false'].includes(settings[key])) {
+        return { valid: false, error: `${key} must be "true" or "false"` };
+      }
+    }
+
+    // Validate FULL_COUNT (0-20)
+    if (settings.CLAUDE_MEM_CONTEXT_FULL_COUNT) {
+      const count = parseInt(settings.CLAUDE_MEM_CONTEXT_FULL_COUNT, 10);
+      if (isNaN(count) || count < 0 || count > 20) {
+        return { valid: false, error: 'CLAUDE_MEM_CONTEXT_FULL_COUNT must be between 0 and 20' };
+      }
+    }
+
+    // Validate SESSION_COUNT (1-50)
+    if (settings.CLAUDE_MEM_CONTEXT_SESSION_COUNT) {
+      const count = parseInt(settings.CLAUDE_MEM_CONTEXT_SESSION_COUNT, 10);
+      if (isNaN(count) || count < 1 || count > 50) {
+        return { valid: false, error: 'CLAUDE_MEM_CONTEXT_SESSION_COUNT must be between 1 and 50' };
+      }
+    }
+
+    // Validate FULL_FIELD
+    if (settings.CLAUDE_MEM_CONTEXT_FULL_FIELD) {
+      if (!['narrative', 'facts'].includes(settings.CLAUDE_MEM_CONTEXT_FULL_FIELD)) {
+        return { valid: false, error: 'CLAUDE_MEM_CONTEXT_FULL_FIELD must be "narrative" or "facts"' };
+      }
+    }
+
+    // Validate observation types
+    const validTypes = ['bugfix', 'feature', 'refactor', 'discovery', 'decision', 'change'];
+    if (settings.CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES) {
+      const types = settings.CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES.split(',').map((t: string) => t.trim());
+      for (const type of types) {
+        if (type && !validTypes.includes(type)) {
+          return { valid: false, error: `Invalid observation type: ${type}` };
+        }
+      }
+    }
+
+    // Validate observation concepts
+    const validConcepts = ['how-it-works', 'why-it-exists', 'what-changed', 'problem-solution', 'gotcha', 'pattern', 'trade-off'];
+    if (settings.CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS) {
+      const concepts = settings.CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS.split(',').map((c: string) => c.trim());
+      for (const concept of concepts) {
+        if (concept && !validConcepts.includes(concept)) {
+          return { valid: false, error: `Invalid observation concept: ${concept}` };
+        }
+      }
+    }
+
+    return { valid: true };
+  }
+
+  /**
    * Get environment settings (from ~/.claude/settings.json)
    */
   private handleGetSettings(req: Request, res: Response): void {
@@ -824,7 +892,22 @@ export class WorkerService {
         res.json({
           CLAUDE_MEM_MODEL: 'claude-haiku-4-5',
           CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
-          CLAUDE_MEM_WORKER_PORT: '37777'
+          CLAUDE_MEM_WORKER_PORT: '37777',
+          // Token Economics
+          CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: 'true',
+          CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS: 'true',
+          CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT: 'true',
+          CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT: 'true',
+          // Observation Filtering
+          CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES: 'bugfix,feature,refactor,discovery,decision,change',
+          CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS: 'how-it-works,why-it-exists,what-changed,problem-solution,gotcha,pattern,trade-off',
+          // Display Configuration
+          CLAUDE_MEM_CONTEXT_FULL_COUNT: '5',
+          CLAUDE_MEM_CONTEXT_FULL_FIELD: 'narrative',
+          CLAUDE_MEM_CONTEXT_SESSION_COUNT: '10',
+          // Feature Toggles
+          CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: 'true',
+          CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: 'false',
         });
         return;
       }
@@ -836,7 +919,22 @@ export class WorkerService {
       res.json({
         CLAUDE_MEM_MODEL: env.CLAUDE_MEM_MODEL || 'claude-haiku-4-5',
         CLAUDE_MEM_CONTEXT_OBSERVATIONS: env.CLAUDE_MEM_CONTEXT_OBSERVATIONS || '50',
-        CLAUDE_MEM_WORKER_PORT: env.CLAUDE_MEM_WORKER_PORT || '37777'
+        CLAUDE_MEM_WORKER_PORT: env.CLAUDE_MEM_WORKER_PORT || '37777',
+        // Token Economics
+        CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: env.CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS || 'true',
+        CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS: env.CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS || 'true',
+        CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT: env.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT || 'true',
+        CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT: env.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT || 'true',
+        // Observation Filtering
+        CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES: env.CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES || 'bugfix,feature,refactor,discovery,decision,change',
+        CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS: env.CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS || 'how-it-works,why-it-exists,what-changed,problem-solution,gotcha,pattern,trade-off',
+        // Display Configuration
+        CLAUDE_MEM_CONTEXT_FULL_COUNT: env.CLAUDE_MEM_CONTEXT_FULL_COUNT || '5',
+        CLAUDE_MEM_CONTEXT_FULL_FIELD: env.CLAUDE_MEM_CONTEXT_FULL_FIELD || 'narrative',
+        CLAUDE_MEM_CONTEXT_SESSION_COUNT: env.CLAUDE_MEM_CONTEXT_SESSION_COUNT || '10',
+        // Feature Toggles
+        CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: env.CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY || 'true',
+        CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: env.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE || 'false',
       });
     } catch (error) {
       logger.failure('WORKER', 'Get settings failed', {}, error as Error);
@@ -849,11 +947,9 @@ export class WorkerService {
    */
   private handleUpdateSettings(req: Request, res: Response): void {
     try {
-      const { CLAUDE_MEM_MODEL, CLAUDE_MEM_CONTEXT_OBSERVATIONS, CLAUDE_MEM_WORKER_PORT } = req.body;
-
-      // Validate inputs
-      if (CLAUDE_MEM_CONTEXT_OBSERVATIONS) {
-        const obsCount = parseInt(CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10);
+      // Validate CLAUDE_MEM_CONTEXT_OBSERVATIONS
+      if (req.body.CLAUDE_MEM_CONTEXT_OBSERVATIONS) {
+        const obsCount = parseInt(req.body.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10);
         if (isNaN(obsCount) || obsCount < 1 || obsCount > 200) {
           res.status(400).json({
             success: false,
@@ -863,8 +959,9 @@ export class WorkerService {
         }
       }
 
-      if (CLAUDE_MEM_WORKER_PORT) {
-        const port = parseInt(CLAUDE_MEM_WORKER_PORT, 10);
+      // Validate CLAUDE_MEM_WORKER_PORT
+      if (req.body.CLAUDE_MEM_WORKER_PORT) {
+        const port = parseInt(req.body.CLAUDE_MEM_WORKER_PORT, 10);
         if (isNaN(port) || port < 1024 || port > 65535) {
           res.status(400).json({
             success: false,
@@ -872,6 +969,16 @@ export class WorkerService {
           });
           return;
         }
+      }
+
+      // Validate context settings
+      const validation = this.validateContextSettings(req.body);
+      if (!validation.valid) {
+        res.status(400).json({
+          success: false,
+          error: validation.error
+        });
+        return;
       }
 
       // Read existing settings
@@ -886,15 +993,28 @@ export class WorkerService {
         }
       }
 
-      // Update settings
-      if (CLAUDE_MEM_MODEL) {
-        settings.env.CLAUDE_MEM_MODEL = CLAUDE_MEM_MODEL;
-      }
-      if (CLAUDE_MEM_CONTEXT_OBSERVATIONS) {
-        settings.env.CLAUDE_MEM_CONTEXT_OBSERVATIONS = CLAUDE_MEM_CONTEXT_OBSERVATIONS;
-      }
-      if (CLAUDE_MEM_WORKER_PORT) {
-        settings.env.CLAUDE_MEM_WORKER_PORT = CLAUDE_MEM_WORKER_PORT;
+      // Update all settings from request body
+      const settingKeys = [
+        'CLAUDE_MEM_MODEL',
+        'CLAUDE_MEM_CONTEXT_OBSERVATIONS',
+        'CLAUDE_MEM_WORKER_PORT',
+        'CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS',
+        'CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS',
+        'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT',
+        'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT',
+        'CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES',
+        'CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS',
+        'CLAUDE_MEM_CONTEXT_FULL_COUNT',
+        'CLAUDE_MEM_CONTEXT_FULL_FIELD',
+        'CLAUDE_MEM_CONTEXT_SESSION_COUNT',
+        'CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY',
+        'CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE',
+      ];
+
+      for (const key of settingKeys) {
+        if (req.body[key] !== undefined) {
+          settings.env[key] = req.body[key];
+        }
       }
 
       // Write back
