@@ -98,7 +98,7 @@ function loadContextConfig(): ContextConfig {
       showLastMessage: env.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE === 'true',
     };
   } catch (error) {
-    logger.warn('CONTEXT', 'Failed to load context settings, using defaults', {}, error as Error);
+    logger.warn('HOOK', 'Failed to load context settings, using defaults', {}, error as Error);
     return defaults;
   }
 }
@@ -370,47 +370,44 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
       ? Math.round((savings / totalDiscoveryTokens) * 100)
       : 0;
 
-    // Display Context Economics section
-    if (useColors) {
-      output.push(`${colors.bright}${colors.cyan}📊 Context Economics${colors.reset}`);
-      if (config.showReadTokens) {
+    // Display Context Economics section only if at least one token setting is enabled
+    const showContextEconomics = config.showReadTokens || config.showWorkTokens ||
+                                   config.showSavingsAmount || config.showSavingsPercent;
+
+    if (showContextEconomics) {
+      if (useColors) {
+        output.push(`${colors.bright}${colors.cyan}📊 Context Economics${colors.reset}`);
         output.push(`${colors.dim}  Loading: ${totalObservations} observations (${totalReadTokens.toLocaleString()} tokens to read)${colors.reset}`);
-      }
-      if (config.showWorkTokens) {
         output.push(`${colors.dim}  Work investment: ${totalDiscoveryTokens.toLocaleString()} tokens spent on research, building, and decisions${colors.reset}`);
-      }
-      if (totalDiscoveryTokens > 0 && (config.showSavingsAmount || config.showSavingsPercent)) {
-        let savingsLine = '  Your savings: ';
-        if (config.showSavingsAmount && config.showSavingsPercent) {
-          savingsLine += `${savings.toLocaleString()} tokens (${savingsPercent}% reduction from reuse)`;
-        } else if (config.showSavingsAmount) {
-          savingsLine += `${savings.toLocaleString()} tokens`;
-        } else {
-          savingsLine += `${savingsPercent}% reduction from reuse`;
+        if (totalDiscoveryTokens > 0 && (config.showSavingsAmount || config.showSavingsPercent)) {
+          let savingsLine = '  Your savings: ';
+          if (config.showSavingsAmount && config.showSavingsPercent) {
+            savingsLine += `${savings.toLocaleString()} tokens (${savingsPercent}% reduction from reuse)`;
+          } else if (config.showSavingsAmount) {
+            savingsLine += `${savings.toLocaleString()} tokens`;
+          } else {
+            savingsLine += `${savingsPercent}% reduction from reuse`;
+          }
+          output.push(`${colors.green}${savingsLine}${colors.reset}`);
         }
-        output.push(`${colors.green}${savingsLine}${colors.reset}`);
-      }
-      output.push('');
-    } else {
-      output.push(`📊 **Context Economics**:`);
-      if (config.showReadTokens) {
+        output.push('');
+      } else {
+        output.push(`📊 **Context Economics**:`);
         output.push(`- Loading: ${totalObservations} observations (${totalReadTokens.toLocaleString()} tokens to read)`);
-      }
-      if (config.showWorkTokens) {
         output.push(`- Work investment: ${totalDiscoveryTokens.toLocaleString()} tokens spent on research, building, and decisions`);
-      }
-      if (totalDiscoveryTokens > 0 && (config.showSavingsAmount || config.showSavingsPercent)) {
-        let savingsLine = '- Your savings: ';
-        if (config.showSavingsAmount && config.showSavingsPercent) {
-          savingsLine += `${savings.toLocaleString()} tokens (${savingsPercent}% reduction from reuse)`;
-        } else if (config.showSavingsAmount) {
-          savingsLine += `${savings.toLocaleString()} tokens`;
-        } else {
-          savingsLine += `${savingsPercent}% reduction from reuse`;
+        if (totalDiscoveryTokens > 0 && (config.showSavingsAmount || config.showSavingsPercent)) {
+          let savingsLine = '- Your savings: ';
+          if (config.showSavingsAmount && config.showSavingsPercent) {
+            savingsLine += `${savings.toLocaleString()} tokens (${savingsPercent}% reduction from reuse)`;
+          } else if (config.showSavingsAmount) {
+            savingsLine += `${savings.toLocaleString()} tokens`;
+          } else {
+            savingsLine += `${savingsPercent}% reduction from reuse`;
+          }
+          output.push(savingsLine);
         }
-        output.push(savingsLine);
+        output.push('');
       }
-      output.push('');
     }
 
     // Prepare summaries for timeline display
@@ -584,14 +581,16 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
 
             if (useColors) {
               const timePart = showTime ? `${colors.dim}${time}${colors.reset}` : ' '.repeat(time.length);
-              const readPart = readTokens > 0 ? `${colors.dim}(~${readTokens}t)${colors.reset}` : '';
-              const discoveryPart = discoveryTokens > 0 ? `${colors.dim}(${workEmoji} ${discoveryTokens.toLocaleString()}t)${colors.reset}` : '';
+              const readPart = (config.showReadTokens && readTokens > 0) ? `${colors.dim}(~${readTokens}t)${colors.reset}` : '';
+              const discoveryPart = (config.showWorkTokens && discoveryTokens > 0) ? `${colors.dim}(${workEmoji} ${discoveryTokens.toLocaleString()}t)${colors.reset}` : '';
 
               output.push(`  ${colors.dim}#${obs.id}${colors.reset}  ${timePart}  ${icon}  ${colors.bright}${title}${colors.reset}`);
               if (detailField) {
                 output.push(`    ${colors.dim}${detailField}${colors.reset}`);
               }
-              output.push(`    ${readPart} ${discoveryPart}`);
+              if (readPart || discoveryPart) {
+                output.push(`    ${readPart} ${discoveryPart}`);
+              }
               output.push('');
             } else {
               // Close table for full observation
@@ -606,7 +605,16 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
                 output.push(detailField);
                 output.push('');
               }
-              output.push(`Read: ~${readTokens}, Work: ${discoveryDisplay}`);
+              const tokenParts: string[] = [];
+              if (config.showReadTokens) {
+                tokenParts.push(`Read: ~${readTokens}`);
+              }
+              if (config.showWorkTokens) {
+                tokenParts.push(`Work: ${discoveryDisplay}`);
+              }
+              if (tokenParts.length > 0) {
+                output.push(tokenParts.join(', '));
+              }
               output.push('');
 
               // Reopen table for next items if in same file
@@ -616,11 +624,13 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
             // Compact index rendering (existing code)
             if (useColors) {
               const timePart = showTime ? `${colors.dim}${time}${colors.reset}` : ' '.repeat(time.length);
-              const readPart = readTokens > 0 ? `${colors.dim}(~${readTokens}t)${colors.reset}` : '';
-              const discoveryPart = discoveryTokens > 0 ? `${colors.dim}(${workEmoji} ${discoveryTokens.toLocaleString()}t)${colors.reset}` : '';
+              const readPart = (config.showReadTokens && readTokens > 0) ? `${colors.dim}(~${readTokens}t)${colors.reset}` : '';
+              const discoveryPart = (config.showWorkTokens && discoveryTokens > 0) ? `${colors.dim}(${workEmoji} ${discoveryTokens.toLocaleString()}t)${colors.reset}` : '';
               output.push(`  ${colors.dim}#${obs.id}${colors.reset}  ${timePart}  ${icon}  ${title} ${readPart} ${discoveryPart}`);
             } else {
-              output.push(`| #${obs.id} | ${timeDisplay || '″'} | ${icon} | ${title} | ~${readTokens} | ${discoveryDisplay} |`);
+              const readCol = config.showReadTokens ? `~${readTokens}` : '';
+              const workCol = config.showWorkTokens ? discoveryDisplay : '';
+              output.push(`| #${obs.id} | ${timeDisplay || '″'} | ${icon} | ${title} | ${readCol} | ${workCol} |`);
             }
           }
         }
@@ -670,8 +680,8 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
       }
     }
 
-    // Footer with token savings message
-    if (totalDiscoveryTokens > 0 && savings > 0) {
+    // Footer with token savings message (only show if token economics is visible)
+    if (showContextEconomics && totalDiscoveryTokens > 0 && savings > 0) {
       const workTokensK = Math.round(totalDiscoveryTokens / 1000);
       output.push('');
       if (useColors) {
