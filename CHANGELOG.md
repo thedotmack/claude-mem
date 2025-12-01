@@ -4,6 +4,227 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [6.4.1] - 2025-12-01
+
+## Hey there, claude-mem community! 👋
+
+We're doing something new and exciting: **our first-ever Live AMA**! 
+
+### 🔴 When You'll See Us Live
+
+**December 1st-5th, 2025**  
+**Daily from 5-7pm EST**
+
+During these times, you'll see a live indicator (🔴) when you start a new session, letting you know we're available right now to answer questions, discuss ideas, or just chat about what you're building with claude-mem.
+
+### What Changed in This Release
+
+We've added a smart announcement system that:
+- Shows upcoming AMA schedule before/after live hours
+- Displays a live indicator (🔴) when we're actively available
+- Automatically cleans up after the event ends
+
+### Why We're Doing This
+
+We want to hear from **you**! Whether you're:
+- Just getting started with claude-mem
+- A power user with feature ideas
+- Curious about how memory compression works
+- Running into any issues
+- Or just want to say hi 👋
+
+This is your chance to connect directly with the developer (@thedotmack) and fellow community members.
+
+### Join the Community
+
+Can't make the live times? No worries! Join our Discord to stay connected:  
+**https://discord.gg/J4wttp9vDu**
+
+We're excited to meet you and hear what you're building!
+
+---
+
+## Technical Details
+
+**Changed Files:**
+- `src/hooks/user-message-hook.ts` - Added time-aware announcement logic
+- Version bumped across all manifests (6.4.0 → 6.4.1)
+
+**Built Artifacts:**
+- `plugin/scripts/user-message-hook.js` - Updated compiled hook
+
+---
+
+Looking forward to seeing you at the AMA! 🎉
+
+## [6.4.0] - 2025-12-01
+
+## 🎯 Highlights
+
+This release introduces a powerful **dual-tag privacy system** that gives you fine-grained control over what gets stored in your observation history, along with significant search API improvements.
+
+## ✨ New Features
+
+### Dual-Tag Privacy System
+- **`<private>` tags**: User-level privacy control - wrap any sensitive content to prevent storage in observation history
+- **`<claude-mem-context>` tags**: System-level tags for auto-injected observations to prevent recursive storage
+- Tag stripping happens at the hook layer (edge processing) before data reaches worker/database
+- Comprehensive documentation in `docs/public/usage/private-tags.mdx`
+
+### User Experience
+- New inline help message in context hook highlighting the `<private>` tag feature
+- Improved Community link formatting in startup messages
+
+## 🔧 Improvements
+
+### Search API
+- Simplified search endpoint parameters to eliminate bracket encoding issues (#154)
+- Cleaner API interface for mem-search skill
+
+### Performance
+- Added composite index for user prompts lookup optimization
+- Shared tag-stripping utilities in `src/utils/tag-stripping.ts`
+
+## 📚 Documentation
+
+- Updated CLAUDE.md with Privacy Tags section
+- Enhanced private-tags.mdx with implementation details
+- Added comprehensive test coverage for tag stripping
+
+## 🔗 Related PRs
+
+- #153: Dual-tag system for meta-observation control
+- #154: Eliminate bracket encoding in search API parameters
+
+---
+
+💡 **Try it now**: Wrap sensitive data with `<private>your-secret-data</private>` in any message to Claude Code!
+
+## [6.3.7] - 2025-12-01
+
+## Bug Fixes
+
+- **fix: Remove orphaned closing brace in smart-install.js** - Fixes SyntaxError "Missing catch or finally after try" that was preventing the plugin from loading correctly
+
+## What Changed
+
+Fixed a syntax error in `scripts/smart-install.js` where an extra closing brace on line 392 caused the SessionStart hook to fail. The PM2 worker startup try/catch block was properly formed but had an orphaned closing brace that didn't match any opening brace.
+
+This bug was introduced in a recent release and prevented the plugin from loading correctly for users.
+
+## [6.3.6] - 2025-11-30
+
+## Auto-detect and rebuild native modules on Node.js version changes
+
+### Bug Fixes
+- **Native Module Compatibility**: Auto-detects Node.js version changes and rebuilds better-sqlite3 when needed
+- **Self-healing Recovery**: Gracefully handles ERR_DLOPEN_FAILED errors with automatic reinstall on next session
+- **Version Tracking**: Enhanced .install-version marker now tracks both package and Node.js versions (JSON format)
+- **Runtime Verification**: Added verifyNativeModules() to catch ABI mismatches and corrupted builds
+
+### Technical Details
+This release fixes a critical issue where upgrading Node.js (e.g., v22 → v25) would cause native module failures that the plugin couldn't auto-recover from. The smart-install script now:
+- Tracks Node.js version in addition to package version
+- Verifies native modules actually load (not just file existence)
+- Triggers rebuild when either version changes
+- Handles runtime failures gracefully with helpful user messaging
+
+### Contributors
+- @dreamiurg - Thank you for the comprehensive fix and thorough testing!
+
+### Merged PRs
+- #149 - feat: Auto-detect and rebuild native modules on Node.js version changes
+
+## [6.3.5] - 2025-11-30
+
+## Changes
+
+- ✨ Restored Discord community button in viewer header
+- 📱 Added responsive mobile navigation menu
+- 🔄 Reorganized Sidebar component for better mobile UX
+- 🐛 Fixed missing props being passed to Sidebar component
+
+## Technical Details
+
+- Community button visible in header on desktop (> 600px width)
+- Mobile menu icon appears on small screens (≤ 600px width)  
+- Sidebar toggles via hamburger menu on mobile
+- Both buttons positioned in header for consistent UX
+
+Full changelog: https://github.com/thedotmack/claude-mem/compare/v6.3.4...v6.3.5
+
+## [6.3.4] - 2025-11-30
+
+## Bug Fixes
+
+### Worker Startup Improvements
+
+Fixed critical issues with worker service startup on fresh installations:
+
+- **Auto-start worker after installation** - The PM2 worker now starts automatically during plugin installation
+- **Local PM2 resolution** - Plugin now uses local PM2 from node_modules/.bin instead of requiring global installation
+- **Improved error messages** - Clear, actionable instructions with full paths when worker fails to start
+- **Cross-platform support** - Proper handling of Windows platform differences (pm2.cmd)
+- **Security enhancement** - Switched from execSync to spawnSync with array arguments to prevent command injection
+
+These changes significantly improve the first-time installation experience, eliminating the need for manual PM2 setup.
+
+**Special thanks to @dreamiurg for identifying and fixing this critical UX issue!** 🙏
+
+## [6.3.3] - 2025-11-30
+
+Bug fixes and improvements to timeline context feature:
+
+- Added session ID validation to filterTimelineByDepth
+- Added timestamp fallback warning
+- Exported filterTimelineByDepth function for unit testing
+- Fixed type breakdown display in timeline item count
+
+Full changes: https://github.com/thedotmack/claude-mem/compare/v6.3.2...v6.3.3
+
+## [6.3.2] - 2025-11-25
+
+## What's Changed
+
+### Improvements
+- Add search query support to `/api/decisions` endpoint - now supports semantic search within decisions using Chroma with `{ type: 'decision' }` metadata filter
+
+### Usage
+```bash
+# Search within decisions (new)
+curl "http://localhost:37777/api/decisions?query=architecture&format=full&limit=5"
+
+# All decisions (existing behavior preserved)
+curl "http://localhost:37777/api/decisions?format=index&limit=10"
+```
+
+## [6.3.1] - 2025-11-25
+
+## What's New
+
+- Add script to help estimate token savings from on-the-fly replacements
+
+## [6.3.0] - 2025-11-25
+
+## What's New
+
+### Branch-Based Beta Toggle
+Added Version Channel section to Settings sidebar allowing users to switch between stable and beta versions directly from the UI.
+
+**Features:**
+- See current branch (main or beta/7.0) and stability status
+- Switch to beta branch to access Endless Mode features
+- Switch back to stable for production use
+- Pull updates for current branch
+
+**Implementation:**
+- `BranchManager.ts`: Git operations for branch detection/switching
+- `worker-service.ts`: `/api/branch/*` endpoints (status, switch, update)
+- `Sidebar.tsx`: Version Channel UI with branch state and handlers
+
+## Installation
+To update, restart Claude Code or run the plugin installer.
+
 ## [6.2.1] - 2025-11-23
 
 ## 🐛 Bug Fixes

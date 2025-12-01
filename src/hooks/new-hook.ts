@@ -41,7 +41,8 @@ import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
 import { transformTranscriptWithAgents } from './save-hook.js';
 import { EndlessModeConfig } from '../services/worker/EndlessModeConfig.js';
 import { logger } from '../utils/logger.js';
-import { happy_path_error__with_fallback } from '../utils/silent-debug.js';
+import { happy_path_error__with_fallback, silentDebug } from '../utils/silent-debug.js';
+import { stripMemoryTagsFromPrompt } from '../utils/tag-stripping.js';
 
 export interface UserPromptSubmitInput {
   session_id: string;
@@ -50,6 +51,7 @@ export interface UserPromptSubmitInput {
   transcript_path?: string;
   [key: string]: any;
 }
+
 
 /**
  * New Hook Main Logic
@@ -92,8 +94,25 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
   const sessionDbId = db.createSDKSession(session_id, project, prompt);
   const promptNumber = db.incrementPromptCounter(sessionDbId);
 
-  // Save raw user prompt for full-text search
-  db.saveUserPrompt(session_id, promptNumber, prompt);
+  // Strip memory tags before saving user prompt to prevent privacy leaks
+  // Tags like <private> and <claude-mem-context> should not be stored or searchable
+  const cleanedUserPrompt = stripMemoryTagsFromPrompt(prompt);
+
+  // Skip memory operations for fully private prompts
+  // If the entire prompt was wrapped in <private> tags, don't create any observations
+  if (!cleanedUserPrompt || cleanedUserPrompt.trim() === '') {
+    silentDebug('[new-hook] Prompt entirely private, skipping memory operations', {
+      session_id,
+      promptNumber,
+      originalLength: prompt.length
+    });
+    db.close();
+    console.error(`[new-hook] Session ${sessionDbId}, prompt #${promptNumber} (fully private - skipped)`);
+    console.log(createHookResponse('UserPromptSubmit', true));
+    return;
+  }
+
+  db.saveUserPrompt(session_id, promptNumber, cleanedUserPrompt);
 
   console.error(`[new-hook] Session ${sessionDbId}, prompt #${promptNumber}`);
 

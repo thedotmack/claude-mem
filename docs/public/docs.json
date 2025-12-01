@@ -36,7 +36,9 @@
           "introduction",
           "installation",
           "usage/getting-started",
-          "usage/search-tools"
+          "usage/search-tools",
+          "usage/private-tags",
+          "beta-features"
         ]
       },
       {

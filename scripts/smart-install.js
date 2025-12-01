@@ -12,7 +12,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync } from 'fs';
-import { execSync } from 'child_process';
+import { execSync, spawnSync } from 'child_process';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -51,10 +51,31 @@ function getPackageVersion() {
   }
 }
 
+function getNodeVersion() {
+  return process.version; // e.g., "v22.21.1"
+}
+
 function getInstalledVersion() {
   try {
     if (existsSync(VERSION_MARKER_PATH)) {
-      return readFileSync(VERSION_MARKER_PATH, 'utf-8').trim();
+      const content = readFileSync(VERSION_MARKER_PATH, 'utf-8').trim();
+
+      // Try parsing as JSON (new format)
+      try {
+        const marker = JSON.parse(content);
+        return {
+          packageVersion: marker.packageVersion,
+          nodeVersion: marker.nodeVersion,
+          installedAt: marker.installedAt
+        };
+      } catch {
+        // Fallback: old format (plain text version string)
+        return {
+          packageVersion: content,
+          nodeVersion: null, // Unknown
+          installedAt: null
+        };
+      }
     }
   } catch (error) {
     // Marker doesn't exist or can't be read
@@ -62,9 +83,14 @@ function getInstalledVersion() {
   return null;
 }
 
-function setInstalledVersion(version) {
+function setInstalledVersion(packageVersion, nodeVersion) {
   try {
-    writeFileSync(VERSION_MARKER_PATH, version, 'utf-8');
+    const marker = {
+      packageVersion,
+      nodeVersion,
+      installedAt: new Date().toISOString()
+    };
+    writeFileSync(VERSION_MARKER_PATH, JSON.stringify(marker, null, 2), 'utf-8');
   } catch (error) {
     log(`⚠️  Failed to write version marker: ${error.message}`, colors.yellow);
   }
@@ -84,22 +110,75 @@ function needsInstall() {
   }
 
   // Check version marker
-  const currentVersion = getPackageVersion();
-  const installedVersion = getInstalledVersion();
+  const currentPackageVersion = getPackageVersion();
+  const currentNodeVersion = getNodeVersion();
+  const installed = getInstalledVersion();
 
-  if (!installedVersion) {
+  if (!installed) {
     log('📦 No version marker found - installing', colors.cyan);
     return true;
   }
 
-  if (currentVersion !== installedVersion) {
-    log(`📦 Version changed (${installedVersion} → ${currentVersion}) - updating`, colors.cyan);
+  // Check package version
+  if (currentPackageVersion !== installed.packageVersion) {
+    log(`📦 Version changed (${installed.packageVersion} → ${currentPackageVersion}) - updating`, colors.cyan);
+    return true;
+  }
+
+  // Check Node.js version
+  if (installed.nodeVersion && currentNodeVersion !== installed.nodeVersion) {
+    log(`📦 Node.js version changed (${installed.nodeVersion} → ${currentNodeVersion}) - rebuilding native modules`, colors.cyan);
+    return true;
+  }
+
+  // If old format (no nodeVersion), assume needs install
+  if (!installed.nodeVersion) {
+    log('📦 Old version marker format - updating', colors.cyan);
     return true;
   }
 
   // All good - no install needed
-  log(`✓ Dependencies already installed (v${currentVersion})`, colors.dim);
+  log(`✓ Dependencies already installed (v${currentPackageVersion})`, colors.dim);
   return false;
+}
+
+/**
+ * Verify that better-sqlite3 native module loads correctly
+ * This catches ABI mismatches and corrupted builds
+ */
+async function verifyNativeModules() {
+  try {
+    log('🔍 Verifying native modules...', colors.dim);
+
+    // Try to actually load better-sqlite3
+    const { default: Database } = await import('better-sqlite3');
+
+    // Try to create a test in-memory database
+    const db = new Database(':memory:');
+
+    // Run a simple query to ensure it works
+    const result = db.prepare('SELECT 1 + 1 as result').get();
+
+    // Clean up
+    db.close();
+
+    if (result.result !== 2) {
+      throw new Error('SQLite math check failed');
+    }
+
+    log('✓ Native modules verified', colors.dim);
+    return true;
+
+  } catch (error) {
+    if (error.code === 'ERR_DLOPEN_FAILED') {
+      log('⚠️  Native module ABI mismatch detected', colors.yellow);
+      return false;
+    }
+
+    // Other errors are unexpected - log and fail
+    log(`❌ Native module verification failed: ${error.message}`, colors.red);
+    return false;
+  }
 }
 
 function getWindowsErrorHelp(errorOutput) {
@@ -157,7 +236,7 @@ function getWindowsErrorHelp(errorOutput) {
   return help.join('\n');
 }
 
-function runNpmInstall() {
+async function runNpmInstall() {
   const isWindows = process.platform === 'win32';
 
   log('', colors.cyan);
@@ -175,7 +254,7 @@ function runNpmInstall() {
   for (const { command, label } of strategies) {
     try {
       log(`Attempting install ${label}...`, colors.dim);
-      
+
       // Run npm install silently
       execSync(command, {
         cwd: PLUGIN_ROOT,
@@ -188,12 +267,20 @@ function runNpmInstall() {
         throw new Error('better-sqlite3 installation verification failed');
       }
 
-      const version = getPackageVersion();
-      setInstalledVersion(version);
+      // NEW: Verify native modules actually work
+      const nativeModulesWork = await verifyNativeModules();
+      if (!nativeModulesWork) {
+        throw new Error('Native modules failed to load after install');
+      }
+
+      const packageVersion = getPackageVersion();
+      const nodeVersion = getNodeVersion();
+      setInstalledVersion(packageVersion, nodeVersion);
 
       log('', colors.green);
       log('✅ Dependencies installed successfully!', colors.bright);
-      log(`   Version: ${version}`, colors.dim);
+      log(`   Package version: ${packageVersion}`, colors.dim);
+      log(`   Node.js version: ${nodeVersion}`, colors.dim);
       log('', colors.reset);
 
       return true;
@@ -251,8 +338,8 @@ async function main() {
     const installNeeded = needsInstall();
 
     if (installNeeded) {
-      // Run installation
-      const installSuccess = runNpmInstall();
+      // Run installation (now async)
+      const installSuccess = await runNpmInstall();
 
       if (!installSuccess) {
         log('', colors.red);
@@ -260,10 +347,48 @@ async function main() {
         log('', colors.reset);
         process.exit(1);
       }
+    } else {
+      // NEW: Even if install not needed, verify native modules work
+      const nativeModulesWork = await verifyNativeModules();
+
+      if (!nativeModulesWork) {
+        log('📦 Native modules need rebuild - reinstalling', colors.cyan);
+        const installSuccess = await runNpmInstall();
+
+        if (!installSuccess) {
+          log('', colors.red);
+          log('⚠️  Native module rebuild failed', colors.yellow);
+          log('', colors.reset);
+          process.exit(1);
+        }
+      }
     }
 
-    // Worker will be started lazily when needed (e.g., when save-hook sends data)
-    // Context hook only needs database access, not the worker service
+      // Try to start the PM2 worker after fresh install
+      try {
+        log('🚀 Starting worker service...', colors.cyan);
+        // On Windows, PM2 executable is pm2.cmd, not pm2
+        const localPm2Base = join(NODE_MODULES_PATH, '.bin', 'pm2');
+        const localPm2Cmd = process.platform === 'win32' ? localPm2Base + '.cmd' : localPm2Base;
+        const pm2Command = existsSync(localPm2Cmd) ? localPm2Cmd : 'pm2';
+        const ecosystemPath = join(PLUGIN_ROOT, 'ecosystem.config.cjs');
+
+        // Using spawnSync with array args to avoid command injection risks
+        const result = spawnSync(pm2Command, ['start', ecosystemPath], {
+          cwd: PLUGIN_ROOT,
+          stdio: 'pipe',
+          encoding: 'utf-8'
+        });
+        if (result.status !== 0) {
+          throw new Error(result.stderr || 'PM2 start failed');
+        }
+
+        log('✅ Worker service started', colors.green);
+      } catch (error) {
+        // Worker might already be running or PM2 not available - that's okay
+        // The ensureWorkerRunning() function will handle auto-start when needed
+        log('ℹ️  Worker will start automatically when needed', colors.dim);
+      }
 
     // Success - dependencies installed (if needed)
     process.exit(0);

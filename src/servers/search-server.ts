@@ -127,12 +127,52 @@ Search workflow:
 1. Initial search: Use default (index) format to see titles, dates, and sources
 2. Review results: Identify which items are most relevant to your needs
 3. Deep dive: Only then use format: "full" on specific items of interest
-4. Narrow down: Use filters (type, dateRange, concepts, files) to refine results
+4. Narrow down: Use filters (type, dateStart/dateEnd, concepts, files) to refine results
 
 Other tips:
 • To search by concept: Use find_by_concept tool
 • To browse by type: Use find_by_type with ["decision", "feature", etc.]
 • To sort by date: Use orderBy: "date_desc" or "date_asc"`;
+}
+
+/**
+ * Timeline item for unified chronological display
+ */
+interface TimelineItem {
+  type: 'observation' | 'session' | 'prompt';
+  data: any;
+  epoch: number;
+}
+
+/**
+ * Filter timeline items to respect depth_before/depth_after window around anchor
+ */
+function filterTimelineByDepth(
+  items: TimelineItem[],
+  anchorId: number | string,
+  anchorEpoch: number,
+  depth_before: number,
+  depth_after: number
+): TimelineItem[] {
+  if (items.length === 0) return items;
+
+  let anchorIndex = -1;
+  if (typeof anchorId === 'number') {
+    anchorIndex = items.findIndex(item => item.type === 'observation' && item.data.id === anchorId);
+  } else if (typeof anchorId === 'string' && anchorId.startsWith('S')) {
+    const sessionNum = parseInt(anchorId.slice(1), 10);
+    anchorIndex = items.findIndex(item => item.type === 'session' && item.data.id === sessionNum);
+  } else {
+    // Timestamp anchor - find closest item
+    anchorIndex = items.findIndex(item => item.epoch >= anchorEpoch);
+    if (anchorIndex === -1) anchorIndex = items.length - 1;
+  }
+
+  if (anchorIndex === -1) return items;
+
+  const startIndex = Math.max(0, anchorIndex - depth_before);
+  const endIndex = Math.min(items.length, anchorIndex + depth_after + 1);
+  return items.slice(startIndex, endIndex);
 }
 
 /**
@@ -338,20 +378,62 @@ function formatUserPromptResult(prompt: UserPromptSearchResult): string {
 }
 
 /**
- * Common filter schema
+ * Helper to normalize query parameters from URL-friendly format
+ * Converts comma-separated strings to arrays and flattens date params
+ */
+function normalizeParams(args: any): any {
+  const normalized: any = { ...args };
+
+  // Parse comma-separated concepts into array
+  if (normalized.concepts && typeof normalized.concepts === 'string') {
+    normalized.concepts = normalized.concepts.split(',').map((s: string) => s.trim()).filter(Boolean);
+  }
+
+  // Parse comma-separated files into array
+  if (normalized.files && typeof normalized.files === 'string') {
+    normalized.files = normalized.files.split(',').map((s: string) => s.trim()).filter(Boolean);
+  }
+
+  // Parse comma-separated obs_type into array
+  if (normalized.obs_type && typeof normalized.obs_type === 'string') {
+    normalized.obs_type = normalized.obs_type.split(',').map((s: string) => s.trim()).filter(Boolean);
+  }
+
+  // Parse comma-separated type (for filterSchema) into array
+  if (normalized.type && typeof normalized.type === 'string' && normalized.type.includes(',')) {
+    normalized.type = normalized.type.split(',').map((s: string) => s.trim()).filter(Boolean);
+  }
+
+  // Flatten dateStart/dateEnd into dateRange object
+  if (normalized.dateStart || normalized.dateEnd) {
+    normalized.dateRange = {
+      start: normalized.dateStart,
+      end: normalized.dateEnd
+    };
+    delete normalized.dateStart;
+    delete normalized.dateEnd;
+  }
+
+  return normalized;
+}
+
+/**
+ * Common filter schema (accepts simple strings that get normalized to arrays)
  */
 const filterSchema = z.object({
   project: z.string().optional().describe('Filter by project name'),
   type: z.union([
     z.enum(['decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change']),
     z.array(z.enum(['decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change']))
-  ]).optional().describe('Filter by observation type'),
-  concepts: z.union([z.string(), z.array(z.string())]).optional().describe('Filter by concept tags'),
-  files: z.union([z.string(), z.array(z.string())]).optional().describe('Filter by file paths (partial match)'),
+  ]).optional().describe('Filter by observation type (single value or comma-separated list)'),
+  concepts: z.union([z.string(), z.array(z.string())]).optional().describe('Filter by concept tags (single value or comma-separated list)'),
+  files: z.union([z.string(), z.array(z.string())]).optional().describe('Filter by file paths (single value or comma-separated list for partial match)'),
+  dateStart: z.union([z.string(), z.number()]).optional().describe('Start date (ISO string or epoch)'),
+  dateEnd: z.union([z.string(), z.number()]).optional().describe('End date (ISO string or epoch)'),
   dateRange: z.object({
     start: z.union([z.string(), z.number()]).optional().describe('Start date (ISO string or epoch)'),
     end: z.union([z.string(), z.number()]).optional().describe('End date (ISO string or epoch)')
-  }).optional().describe('Filter by date range'),
+  }).optional().describe('Filter by date range (use dateStart/dateEnd instead for simpler URLs)'),
   limit: z.number().min(1).max(100).default(20).describe('Maximum number of results'),
   offset: z.number().min(0).default(0).describe('Number of results to skip'),
   orderBy: z.enum(['relevance', 'date_desc', 'date_asc']).default('date_desc').describe('Sort order')
@@ -366,30 +448,21 @@ const tools = [
       query: z.string().optional().describe('Natural language search query for semantic ranking via ChromaDB vector search. Optional - omit for date-filtered queries only (Chroma cannot filter by date, requires direct SQLite).'),
       format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default, RECOMMENDED for initial search), "full" for complete details (use only after reviewing index results)'),
       type: z.enum(['observations', 'sessions', 'prompts']).optional().describe('Filter by document type (observations, sessions, or prompts). Omit to search all types.'),
-      obs_type: z.union([
-        z.enum(['decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change']),
-        z.array(z.enum(['decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change']))
-      ]).optional().describe('Filter observations by type. Only applies when type="observations"'),
-      concepts: z.union([
-        z.string(),
-        z.array(z.string())
-      ]).optional().describe('Filter by concept tags. Only applies when type="observations"'),
-      files: z.union([
-        z.string(),
-        z.array(z.string())
-      ]).optional().describe('Filter by file paths (partial match). Only applies when type="observations"'),
+      obs_type: z.string().optional().describe('Filter observations by type (single value or comma-separated list: decision,bugfix,feature,refactor,discovery,change). Only applies when type="observations"'),
+      concepts: z.string().optional().describe('Filter by concept tags (single value or comma-separated list). Only applies when type="observations"'),
+      files: z.string().optional().describe('Filter by file paths (single value or comma-separated list for partial match). Only applies when type="observations"'),
       project: z.string().optional().describe('Filter by project name'),
-      dateRange: z.object({
-        start: z.union([z.string(), z.number()]).optional().describe('Start date (ISO string or epoch)'),
-        end: z.union([z.string(), z.number()]).optional().describe('End date (ISO string or epoch)')
-      }).optional().describe('Filter by date range'),
+      dateStart: z.union([z.string(), z.number()]).optional().describe('Start date for filtering (ISO string or epoch timestamp)'),
+      dateEnd: z.union([z.string(), z.number()]).optional().describe('End date for filtering (ISO string or epoch timestamp)'),
       limit: z.number().min(1).max(100).default(20).describe('Maximum number of results'),
       offset: z.number().min(0).default(0).describe('Number of results to skip'),
       orderBy: z.enum(['relevance', 'date_desc', 'date_asc']).default('date_desc').describe('Sort order')
     }),
     handler: async (args: any) => {
       try {
-        const { query, format = 'index', type, obs_type, concepts, files, ...options } = args;
+        // Normalize URL-friendly params to internal format
+        const normalized = normalizeParams(args);
+        const { query, format = 'index', type, obs_type, concepts, files, ...options } = normalized;
         let observations: ObservationSearchResult[] = [];
         let sessions: SessionSummarySearchResult[] = [];
         let prompts: UserPromptSearchResult[] = [];
@@ -723,22 +796,16 @@ const tools = [
           };
         }
 
-        // Combine and sort all items chronologically
-        interface TimelineItem {
-          type: 'observation' | 'session' | 'prompt';
-          data: any;
-          epoch: number;
-        }
-
+        // Combine, sort, and filter timeline items
         const items: TimelineItem[] = [
           ...timeline.observations.map((obs: any) => ({ type: 'observation' as const, data: obs, epoch: obs.created_at_epoch })),
           ...timeline.sessions.map((sess: any) => ({ type: 'session' as const, data: sess, epoch: sess.created_at_epoch })),
           ...timeline.prompts.map((prompt: any) => ({ type: 'prompt' as const, data: prompt, epoch: prompt.created_at_epoch }))
         ];
-
         items.sort((a, b) => a.epoch - b.epoch);
+        const filteredItems = filterTimelineByDepth(items, anchorId, anchorEpoch, depth_before, depth_after);
 
-        if (items.length === 0) {
+        if (filteredItems.length === 0) {
           return {
             content: [{
               type: 'text' as const,
@@ -789,7 +856,7 @@ const tools = [
 
         // Header
         if (query) {
-          const anchorObs = items.find(item => item.type === 'observation' && item.data.id === anchorId);
+          const anchorObs = filteredItems.find(item => item.type === 'observation' && item.data.id === anchorId);
           const anchorTitle = anchorObs ? (anchorObs.data.title || 'Untitled') : 'Unknown';
           lines.push(`# Timeline for query: "${query}"`);
           lines.push(`**Anchor:** Observation #${anchorId} - ${anchorTitle}`);
@@ -797,7 +864,7 @@ const tools = [
           lines.push(`# Timeline around anchor: ${anchorId}`);
         }
 
-        lines.push(`**Window:** ${depth_before} records before → ${depth_after} records after | **Items:** ${items.length} (${timeline.observations.length} obs, ${timeline.sessions.length} sessions, ${timeline.prompts.length} prompts)`);
+        lines.push(`**Window:** ${depth_before} records before → ${depth_after} records after | **Items:** ${filteredItems.length}`);
         lines.push('');
 
         // Legend
@@ -806,7 +873,7 @@ const tools = [
 
         // Group by day
         const dayMap = new Map<string, TimelineItem[]>();
-        for (const item of items) {
+        for (const item of filteredItems) {
           const day = formatDate(item.epoch);
           if (!dayMap.has(day)) {
             dayMap.set(day, []);
@@ -930,47 +997,61 @@ const tools = [
   },
   {
     name: 'decisions',
-    description: 'Semantic shortcut to find decision-type observations. Returns observations where important architectural, technical, or process decisions were made. Equivalent to find_by_type with type="decision".',
+    description: 'Semantic shortcut to find decision-type observations. Returns observations where important architectural, technical, or process decisions were made. Supports optional semantic search query to filter decisions by relevance.',
     inputSchema: z.object({
+      query: z.string().optional().describe('Search query to filter decisions semantically'),
       format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default), "full" for complete details'),
       project: z.string().optional().describe('Filter by project name'),
-      dateRange: z.object({
-        start: z.union([z.string(), z.number()]).optional(),
-        end: z.union([z.string(), z.number()]).optional()
-      }).optional().describe('Filter by date range'),
+      dateStart: z.union([z.string(), z.number()]).optional().describe('Start date for filtering (ISO string or epoch timestamp)'),
+      dateEnd: z.union([z.string(), z.number()]).optional().describe('End date for filtering (ISO string or epoch timestamp)'),
       limit: z.number().min(1).max(100).default(20).describe('Maximum number of results'),
       offset: z.number().min(0).default(0).describe('Number of results to skip'),
       orderBy: z.enum(['relevance', 'date_desc', 'date_asc']).default('date_desc').describe('Sort order')
     }),
     handler: async (args: any) => {
       try {
-        const { format = 'index', ...filters } = args;
+        const normalized = normalizeParams(args);
+        const { query, format = 'index', ...filters } = normalized;
         let results: ObservationSearchResult[] = [];
 
         // Search for decision-type observations
         if (chromaClient) {
           try {
-            console.error('[search-server] Using metadata-first + semantic ranking for decisions');
-            const metadataResults = search.findByType('decision', filters);
+            if (query) {
+              // Semantic search filtered to decision type
+              console.error('[search-server] Using Chroma semantic search with type=decision filter');
+              const chromaResults = await queryChroma(query, Math.min((filters.limit || 20) * 2, 100), { type: 'decision' });
+              const obsIds = chromaResults.ids;
 
-            if (metadataResults.length > 0) {
-              const ids = metadataResults.map(obs => obs.id);
-              const chromaResults = await queryChroma('decision', Math.min(ids.length, 100));
-
-              const rankedIds: number[] = [];
-              for (const chromaId of chromaResults.ids) {
-                if (ids.includes(chromaId) && !rankedIds.includes(chromaId)) {
-                  rankedIds.push(chromaId);
-                }
+              if (obsIds.length > 0) {
+                results = store.getObservationsByIds(obsIds, { ...filters, type: 'decision' });
+                // Preserve Chroma ranking order
+                results.sort((a, b) => obsIds.indexOf(a.id) - obsIds.indexOf(b.id));
               }
+            } else {
+              // No query: get all decisions, rank by "decision" keyword
+              console.error('[search-server] Using metadata-first + semantic ranking for decisions');
+              const metadataResults = search.findByType('decision', filters);
 
-              if (rankedIds.length > 0) {
-                results = store.getObservationsByIds(rankedIds, { limit: filters.limit || 20 });
-                results.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
+              if (metadataResults.length > 0) {
+                const ids = metadataResults.map(obs => obs.id);
+                const chromaResults = await queryChroma('decision', Math.min(ids.length, 100));
+
+                const rankedIds: number[] = [];
+                for (const chromaId of chromaResults.ids) {
+                  if (ids.includes(chromaId) && !rankedIds.includes(chromaId)) {
+                    rankedIds.push(chromaId);
+                  }
+                }
+
+                if (rankedIds.length > 0) {
+                  results = store.getObservationsByIds(rankedIds, { limit: filters.limit || 20 });
+                  results.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
+                }
               }
             }
           } catch (chromaError: any) {
-            console.error('[search-server] Chroma ranking failed, using SQLite order:', chromaError.message);
+            console.error('[search-server] Chroma search failed, using SQLite fallback:', chromaError.message);
           }
         }
 
@@ -1020,17 +1101,16 @@ const tools = [
     inputSchema: z.object({
       format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default), "full" for complete details'),
       project: z.string().optional().describe('Filter by project name'),
-      dateRange: z.object({
-        start: z.union([z.string(), z.number()]).optional(),
-        end: z.union([z.string(), z.number()]).optional()
-      }).optional().describe('Filter by date range'),
+      dateStart: z.union([z.string(), z.number()]).optional().describe('Start date for filtering (ISO string or epoch timestamp)'),
+      dateEnd: z.union([z.string(), z.number()]).optional().describe('End date for filtering (ISO string or epoch timestamp)'),
       limit: z.number().min(1).max(100).default(20).describe('Maximum number of results'),
       offset: z.number().min(0).default(0).describe('Number of results to skip'),
       orderBy: z.enum(['relevance', 'date_desc', 'date_asc']).default('date_desc').describe('Sort order')
     }),
     handler: async (args: any) => {
       try {
-        const { format = 'index', ...filters } = args;
+        const normalized = normalizeParams(args);
+        const { format = 'index', ...filters } = normalized;
         let results: ObservationSearchResult[] = [];
 
         // Search for change-type observations and change-related concepts
@@ -1128,17 +1208,16 @@ const tools = [
     inputSchema: z.object({
       format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default), "full" for complete details'),
       project: z.string().optional().describe('Filter by project name'),
-      dateRange: z.object({
-        start: z.union([z.string(), z.number()]).optional(),
-        end: z.union([z.string(), z.number()]).optional()
-      }).optional().describe('Filter by date range'),
+      dateStart: z.union([z.string(), z.number()]).optional().describe('Start date for filtering (ISO string or epoch timestamp)'),
+      dateEnd: z.union([z.string(), z.number()]).optional().describe('End date for filtering (ISO string or epoch timestamp)'),
       limit: z.number().min(1).max(100).default(20).describe('Maximum number of results'),
       offset: z.number().min(0).default(0).describe('Number of results to skip'),
       orderBy: z.enum(['relevance', 'date_desc', 'date_asc']).default('date_desc').describe('Sort order')
     }),
     handler: async (args: any) => {
       try {
-        const { format = 'index', ...filters } = args;
+        const normalized = normalizeParams(args);
+        const { format = 'index', ...filters } = normalized;
         let results: ObservationSearchResult[] = [];
 
         // Search for how-it-works concept observations
@@ -1218,7 +1297,8 @@ const tools = [
     }),
     handler: async (args: any) => {
       try {
-        const { query, format = 'index', ...options } = args;
+        const normalized = normalizeParams(args);
+        const { query, format = 'index', ...options } = normalized;
         let results: ObservationSearchResult[] = [];
 
         // Vector-first search via ChromaDB
@@ -1296,17 +1376,16 @@ const tools = [
       query: z.string().describe('Natural language search query for semantic ranking via ChromaDB vector search'),
       format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default, RECOMMENDED for initial search), "full" for complete details (use only after reviewing index results)'),
       project: z.string().optional().describe('Filter by project name'),
-      dateRange: z.object({
-        start: z.union([z.string(), z.number()]).optional(),
-        end: z.union([z.string(), z.number()]).optional()
-      }).optional().describe('Filter by date range'),
+      dateStart: z.union([z.string(), z.number()]).optional().describe('Start date for filtering (ISO string or epoch timestamp)'),
+      dateEnd: z.union([z.string(), z.number()]).optional().describe('End date for filtering (ISO string or epoch timestamp)'),
       limit: z.number().min(1).max(100).default(20).describe('Maximum number of results'),
       offset: z.number().min(0).default(0).describe('Number of results to skip'),
       orderBy: z.enum(['relevance', 'date_desc', 'date_asc']).default('date_desc').describe('Sort order')
     }),
     handler: async (args: any) => {
       try {
-        const { query, format = 'index', ...options } = args;
+        const normalized = normalizeParams(args);
+        const { query, format = 'index', ...options } = normalized;
         let results: SessionSummarySearchResult[] = [];
 
         // Vector-first search via ChromaDB
@@ -1384,17 +1463,16 @@ const tools = [
       concept: z.string().describe('Concept tag to search for. Available: discovery, problem-solution, what-changed, how-it-works, pattern, gotcha, change'),
       format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default, RECOMMENDED for initial search), "full" for complete details (use only after reviewing index results)'),
       project: z.string().optional().describe('Filter by project name'),
-      dateRange: z.object({
-        start: z.union([z.string(), z.number()]).optional(),
-        end: z.union([z.string(), z.number()]).optional()
-      }).optional().describe('Filter by date range'),
+      dateStart: z.union([z.string(), z.number()]).optional().describe('Start date for filtering (ISO string or epoch timestamp)'),
+      dateEnd: z.union([z.string(), z.number()]).optional().describe('End date for filtering (ISO string or epoch timestamp)'),
       limit: z.number().min(1).max(100).default(20).describe('Maximum results. IMPORTANT: Start with 3-5 to avoid exceeding MCP token limits, even in index mode.'),
       offset: z.number().min(0).default(0).describe('Number of results to skip'),
       orderBy: z.enum(['relevance', 'date_desc', 'date_asc']).default('date_desc').describe('Sort order')
     }),
     handler: async (args: any) => {
       try {
-        const { concept, format = 'index', ...filters } = args;
+        const normalized = normalizeParams(args);
+        const { concept, format = 'index', ...filters } = normalized;
         let results: ObservationSearchResult[] = [];
 
         // Metadata-first, semantic-enhanced search
@@ -1484,17 +1562,16 @@ const tools = [
       filePath: z.string().describe('File path to search for (supports partial matching)'),
       format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default, RECOMMENDED for initial search), "full" for complete details (use only after reviewing index results)'),
       project: z.string().optional().describe('Filter by project name'),
-      dateRange: z.object({
-        start: z.union([z.string(), z.number()]).optional(),
-        end: z.union([z.string(), z.number()]).optional()
-      }).optional().describe('Filter by date range'),
+      dateStart: z.union([z.string(), z.number()]).optional().describe('Start date for filtering (ISO string or epoch timestamp)'),
+      dateEnd: z.union([z.string(), z.number()]).optional().describe('End date for filtering (ISO string or epoch timestamp)'),
       limit: z.number().min(1).max(100).default(20).describe('Maximum results. IMPORTANT: Start with 3-5 to avoid exceeding MCP token limits, even in index mode.'),
       offset: z.number().min(0).default(0).describe('Number of results to skip'),
       orderBy: z.enum(['relevance', 'date_desc', 'date_asc']).default('date_desc').describe('Sort order')
     }),
     handler: async (args: any) => {
       try {
-        const { filePath, format = 'index', ...filters } = args;
+        const normalized = normalizeParams(args);
+        const { filePath, format = 'index', ...filters } = normalized;
         let observations: ObservationSearchResult[] = [];
         let sessions: SessionSummarySearchResult[] = [];
 
@@ -1611,23 +1688,19 @@ const tools = [
     name: 'find_by_type',
     description: 'Find observations of a specific type (decision, bugfix, feature, refactor, discovery, change). IMPORTANT: Always use index format first (default) to get an overview with minimal token usage, then use format: "full" only for specific items of interest.',
     inputSchema: z.object({
-      type: z.union([
-        z.enum(['decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change']),
-        z.array(z.enum(['decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change']))
-      ]).describe('Observation type(s) to filter by'),
+      type: z.string().describe('Observation type(s) to filter by (single value or comma-separated list: decision,bugfix,feature,refactor,discovery,change)'),
       format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default, RECOMMENDED for initial search), "full" for complete details (use only after reviewing index results)'),
       project: z.string().optional().describe('Filter by project name'),
-      dateRange: z.object({
-        start: z.union([z.string(), z.number()]).optional(),
-        end: z.union([z.string(), z.number()]).optional()
-      }).optional().describe('Filter by date range'),
+      dateStart: z.union([z.string(), z.number()]).optional().describe('Start date for filtering (ISO string or epoch timestamp)'),
+      dateEnd: z.union([z.string(), z.number()]).optional().describe('End date for filtering (ISO string or epoch timestamp)'),
       limit: z.number().min(1).max(100).default(20).describe('Maximum results. IMPORTANT: Start with 3-5 to avoid exceeding MCP token limits, even in index mode.'),
       offset: z.number().min(0).default(0).describe('Number of results to skip'),
       orderBy: z.enum(['relevance', 'date_desc', 'date_asc']).default('date_desc').describe('Sort order')
     }),
     handler: async (args: any) => {
       try {
-        const { type, format = 'index', ...filters } = args;
+        const normalized = normalizeParams(args);
+        const { type, format = 'index', ...filters } = normalized;
         const typeStr = Array.isArray(type) ? type.join(', ') : type;
         let results: ObservationSearchResult[] = [];
 
@@ -1856,17 +1929,16 @@ const tools = [
       query: z.string().describe('Natural language search query for semantic ranking via ChromaDB vector search'),
       format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for truncated prompts/dates (default, RECOMMENDED for initial search), "full" for complete prompt text (use only after reviewing index results)'),
       project: z.string().optional().describe('Filter by project name'),
-      dateRange: z.object({
-        start: z.union([z.string(), z.number()]).optional(),
-        end: z.union([z.string(), z.number()]).optional()
-      }).optional().describe('Filter by date range'),
+      dateStart: z.union([z.string(), z.number()]).optional().describe('Start date for filtering (ISO string or epoch timestamp)'),
+      dateEnd: z.union([z.string(), z.number()]).optional().describe('End date for filtering (ISO string or epoch timestamp)'),
       limit: z.number().min(1).max(100).default(20).describe('Maximum number of results'),
       offset: z.number().min(0).default(0).describe('Number of results to skip'),
       orderBy: z.enum(['relevance', 'date_desc', 'date_asc']).default('date_desc').describe('Sort order')
     }),
     handler: async (args: any) => {
       try {
-        const { query, format = 'index', ...options } = args;
+        const normalized = normalizeParams(args);
+        const { query, format = 'index', ...options } = normalized;
         let results: UserPromptSearchResult[] = [];
 
         // Vector-first search via ChromaDB
@@ -2014,22 +2086,16 @@ const tools = [
           };
         }
 
-        // Combine and sort all items chronologically
-        interface TimelineItem {
-          type: 'observation' | 'session' | 'prompt';
-          data: any;
-          epoch: number;
-        }
-
+        // Combine, sort, and filter timeline items
         const items: TimelineItem[] = [
           ...timeline.observations.map(obs => ({ type: 'observation' as const, data: obs, epoch: obs.created_at_epoch })),
           ...timeline.sessions.map(sess => ({ type: 'session' as const, data: sess, epoch: sess.created_at_epoch })),
           ...timeline.prompts.map(prompt => ({ type: 'prompt' as const, data: prompt, epoch: prompt.created_at_epoch }))
         ];
-
         items.sort((a, b) => a.epoch - b.epoch);
+        const filteredItems = filterTimelineByDepth(items, anchorId, anchorEpoch, depth_before, depth_after);
 
-        if (items.length === 0) {
+        if (filteredItems.length === 0) {
           const anchorDate = new Date(anchorEpoch).toLocaleString();
           return {
             content: [{
@@ -2079,7 +2145,7 @@ const tools = [
 
         // Header
         lines.push(`# Timeline around anchor: ${anchorId}`);
-        lines.push(`**Window:** ${depth_before} records before → ${depth_after} records after | **Items:** ${items.length} (${timeline.observations.length} obs, ${timeline.sessions.length} sessions, ${timeline.prompts.length} prompts)`);
+        lines.push(`**Window:** ${depth_before} records before → ${depth_after} records after | **Items:** ${filteredItems.length}`);
         lines.push('');
 
         // Legend
@@ -2088,7 +2154,7 @@ const tools = [
 
         // Group by day
         const dayMap = new Map<string, TimelineItem[]>();
-        for (const item of items) {
+        for (const item of filteredItems) {
           const day = formatDate(item.epoch);
           if (!dayMap.has(day)) {
             dayMap.set(day, []);
@@ -2323,22 +2389,16 @@ const tools = [
             project
           );
 
-          // Combine and sort all items chronologically (same logic as get_context_timeline)
-          interface TimelineItem {
-            type: 'observation' | 'session' | 'prompt';
-            data: any;
-            epoch: number;
-          }
-
+          // Combine, sort, and filter timeline items
           const items: TimelineItem[] = [
             ...timeline.observations.map(obs => ({ type: 'observation' as const, data: obs, epoch: obs.created_at_epoch })),
             ...timeline.sessions.map(sess => ({ type: 'session' as const, data: sess, epoch: sess.created_at_epoch })),
             ...timeline.prompts.map(prompt => ({ type: 'prompt' as const, data: prompt, epoch: prompt.created_at_epoch }))
           ];
-
           items.sort((a, b) => a.epoch - b.epoch);
+          const filteredItems = filterTimelineByDepth(items, topResult.id, 0, depth_before, depth_after);
 
-          if (items.length === 0) {
+          if (filteredItems.length === 0) {
             return {
               content: [{
                 type: 'text' as const,
@@ -2388,7 +2448,7 @@ const tools = [
           // Header
           lines.push(`# Timeline for query: "${query}"`);
           lines.push(`**Anchor:** Observation #${topResult.id} - ${topResult.title || 'Untitled'}`);
-          lines.push(`**Window:** ${depth_before} records before → ${depth_after} records after | **Items:** ${items.length} (${timeline.observations.length} obs, ${timeline.sessions.length} sessions, ${timeline.prompts.length} prompts)`);
+          lines.push(`**Window:** ${depth_before} records before → ${depth_after} records after | **Items:** ${filteredItems.length}`);
           lines.push('');
 
           // Legend
@@ -2397,7 +2457,7 @@ const tools = [
 
           // Group by day
           const dayMap = new Map<string, TimelineItem[]>();
-          for (const item of items) {
+          for (const item of filteredItems) {
             const day = formatDate(item.epoch);
             if (!dayMap.has(day)) {
               dayMap.set(day, []);

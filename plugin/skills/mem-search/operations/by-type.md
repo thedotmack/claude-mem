@@ -27,7 +27,7 @@ curl -s "http://localhost:37777/api/search/by-type?type=bugfix&format=index&limi
 - **format**: "index" (summary) or "full" (complete details). Default: "full"
 - **limit**: Number of results (default: 20, max: 100)
 - **project**: Filter by project name (optional)
-- **dateRange**: Filter by date range (optional)
+- **dateStart/dateEnd**: Filter by date range (optional)
 
 ## When to Use Each Format
 
@@ -114,7 +114,7 @@ Fix: Use one of the valid type values
 
 1. Use format=index first to see overview
 2. Start with limit=5-10 to avoid token overload
-3. Combine with dateRange for recent work: `?type=bugfix&dateRange[start]=2024-11-01`
+3. Combine with dateStart for recent work: `?type=bugfix&dateStart=2024-11-01`
 4. Use project filtering when working on one codebase
 
 **Token Efficiency:**

@@ -5,11 +5,21 @@
 
 import path from 'path';
 import { homedir } from 'os';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, unlinkSync } from 'fs';
 import { stdin } from 'process';
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
 import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { EndlessModeConfig } from '../services/worker/EndlessModeConfig.js';
 import { happy_path_error__with_fallback } from '../utils/silent-debug.js';
+
+// Get __dirname equivalent in ESM
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+// Version marker path (same as smart-install.js)
+// From src/hooks/ we need to go up to plugin root: ../../
+const VERSION_MARKER_PATH = path.join(__dirname, '../../.install-version');
 
 /**
  * Get context depth from settings
@@ -158,7 +168,27 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
   const cwd = input?.cwd ?? process.cwd();
   const project = cwd ? path.basename(cwd) : 'unknown-project';
 
-  const db = new SessionStore();
+  let db: SessionStore;
+  try {
+    db = new SessionStore();
+  } catch (error: any) {
+    if (error.code === 'ERR_DLOPEN_FAILED') {
+      // Native module ABI mismatch - delete version marker to trigger reinstall
+      try {
+        unlinkSync(VERSION_MARKER_PATH);
+      } catch (unlinkError) {
+        // Marker might not exist, that's okay
+      }
+
+      // Log once (not error spam) and exit cleanly
+      console.error('⚠️  Native module rebuild needed - restart Claude Code to auto-fix');
+      console.error('   (This happens after Node.js version upgrades)');
+      process.exit(0); // Exit cleanly to avoid error spam
+    }
+
+    // Other errors should still throw
+    throw error;
+  }
 
   // Get ALL recent observations for this project (not filtered by summaries)
   // This ensures we show observations even when summaries haven't been generated
@@ -516,9 +546,9 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
       const workTokensK = Math.round(totalDiscoveryTokens / 1000);
       output.push('');
       if (useColors) {
-        output.push(`${colors.dim}💰 Access ${workTokensK}k tokens of past research & decisions for just ${totalReadTokens.toLocaleString()}t. Use claude-mem search to access memories by ID instead of re-reading files.${colors.reset}`);
+        output.push(`${colors.dim}💰 Access ${workTokensK}k tokens of past research & decisions for just ${totalReadTokens.toLocaleString()}t. Use the mem-search skill to access memories by ID instead of re-reading files.${colors.reset}`);
       } else {
-        output.push(`💰 Access ${workTokensK}k tokens of past research & decisions for just ${totalReadTokens.toLocaleString()}t. Use claude-mem search to access memories by ID instead of re-reading files.`);
+        output.push(`💰 Access ${workTokensK}k tokens of past research & decisions for just ${totalReadTokens.toLocaleString()}t. Use the mem-search skill to access memories by ID instead of re-reading files.`);
       }
     }
   }

@@ -186,7 +186,7 @@ Then choose anchor manually.
 
 1. **Combine filters** for precision:
 ```bash
-curl -s "http://localhost:37777/api/search/observations?query=authentication&type=feature&dateRange[start]=2024-11-01&format=index&limit=10"
+curl -s "http://localhost:37777/api/search/observations?query=authentication&type=feature&dateStart=2024-11-01&format=index&limit=10"
 ```
 
 2. **Review filtered results**
@@ -207,7 +207,7 @@ Found 10 authentication features added in November:
 
 **Why this workflow:**
 - Multiple filters narrow results before requesting full details
-- Type + query + dateRange = precise targeting
+- Type + query + dateStart/dateEnd = precise targeting
 - Progressive disclosure: index first, full details selectively
 
 ---
@@ -228,7 +228,7 @@ Found 10 authentication features added in November:
 1. **Start with index format** - Always use `format=index` first
 2. **Use specialized tools** - by-type, by-file, by-concept when applicable
 3. **Compose operations** - Combine search + timeline for investigations
-4. **Filter early** - Use type, dateRange, project to narrow before expanding
+4. **Filter early** - Use type, dateStart/dateEnd, project to narrow before expanding
 5. **Progressive disclosure** - Load full details only for relevant items
 
 ## Token Budget Awareness

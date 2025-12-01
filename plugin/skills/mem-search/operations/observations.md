@@ -21,12 +21,12 @@ curl -s "http://localhost:37777/api/search/observations?query=authentication&for
 - **format**: "index" (summary) or "full" (complete details). Default: "full"
 - **limit**: Number of results (default: 20, max: 100)
 - **project**: Filter by project name (optional)
-- **dateRange**: Filter by date range (optional) - `dateRange[start]` and/or `dateRange[end]`
-- **obs_type**: Filter by observation type: bugfix, feature, refactor, decision, discovery, change (optional)
-- **concepts**: Filter by concept tags (optional)
-- **files**: Filter by file paths (optional)
+- **dateStart/dateEnd**: Filter by date range (optional) - `dateStart` and/or `dateEnd` (YYYY-MM-DD format or epoch timestamp)
+- **obs_type**: Filter by observation type (comma-separated): bugfix, feature, refactor, decision, discovery, change (optional)
+- **concepts**: Filter by concept tags (comma-separated, optional)
+- **files**: Filter by file paths (comma-separated, optional)
 
-**Important**: When omitting `query`, you MUST provide at least one filter (project, dateRange, obs_type, concepts, or files)
+**Important**: When omitting `query`, you MUST provide at least one filter (project, dateStart/dateEnd, obs_type, concepts, or files)
 
 ## When to Use Each Format
 
@@ -88,13 +88,13 @@ Search without query text (direct SQLite filtering):
 
 ```bash
 # Get all observations from November 2025
-curl -s "http://localhost:37777/api/search?type=observations&dateRange[start]=2025-11-01&format=index"
+curl -s "http://localhost:37777/api/search?type=observations&dateStart=2025-11-01&format=index"
 
 # Get all bug fixes from a specific project
 curl -s "http://localhost:37777/api/search?type=observations&obs_type=bugfix&project=api-server&format=index"
 
 # Get all observations from last 7 days
-curl -s "http://localhost:37777/api/search?type=observations&dateRange[start]=2025-11-11&format=index"
+curl -s "http://localhost:37777/api/search?type=observations&dateStart=2025-11-11&format=index"
 ```
 
 ## Error Handling
@@ -103,7 +103,7 @@ curl -s "http://localhost:37777/api/search?type=observations&dateRange[start]=20
 ```json
 {"error": "Either query or filters required for search"}
 ```
-Fix: Provide either a query parameter OR at least one filter (project, dateRange, obs_type, concepts, files)
+Fix: Provide either a query parameter OR at least one filter (project, dateStart/dateEnd, obs_type, concepts, files)
 
 **No results found:**
 ```json

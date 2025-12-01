@@ -6,9 +6,9 @@
 
 Claude-mem is a Claude Code plugin providing persistent memory across sessions. It captures tool usage, compresses observations using the Claude Agent SDK, and injects relevant context into future sessions.
 
-**Your Role**: You are working on the plugin itself. When users interact with Claude Code with this plugin installed, your observations get captured and become their persistent memory.
-
 **Current Version**: 7.0.0-beta.1
+
+**Your Role**: You are working on the plugin itself. When users interact with Claude Code with this plugin installed, your observations get captured and become their persistent memory.
 
 ## Critical Architecture Knowledge
 
@@ -34,6 +34,14 @@ Claude-mem is a Claude Code plugin providing persistent memory across sessions. 
    - Skips on `/clear` to preserve ongoing sessions
 
 **Note**: smart-install.js is a pre-hook script (not a lifecycle hook). It's called before context-hook via command chaining in hooks.json and only runs when dependencies need updating.
+
+## Privacy Tags
+
+**Dual-Tag System** for meta-observation control:
+- `<private>content</private>` - User-level privacy control (manual, prevents storage)
+- `<claude-mem-context>content</claude-mem-context>` - System-level tag (auto-injected observations, prevents recursive storage)
+
+**Implementation**: Tag stripping happens at hook layer (edge processing) before data reaches worker/database. See `src/utils/tag-stripping.ts` for shared utilities.
 
 ### Key Components
 

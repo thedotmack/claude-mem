@@ -184,7 +184,7 @@ export class WorkerService {
     this.app.get('/api/endless-mode/status', this.handleGetEndlessModeStatus.bind(this));
     this.app.post('/api/endless-mode/toggle', this.handleToggleEndlessMode.bind(this));
 
-    // Branch switching (beta/stable toggle)
+    // Branch switching (beta toggle)
     this.app.get('/api/branch/status', this.handleGetBranchStatus.bind(this));
     this.app.post('/api/branch/switch', this.handleSwitchBranch.bind(this));
     this.app.post('/api/branch/update', this.handleUpdateBranch.bind(this));
@@ -1452,7 +1452,7 @@ export class WorkerService {
   }
 
   // ============================================================================
-  // Branch Switching Handlers (beta/stable toggle)
+  // Branch Switching Handlers (Beta Toggle)
   // ============================================================================
 
   /**

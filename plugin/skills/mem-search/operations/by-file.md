@@ -24,7 +24,7 @@ curl -s "http://localhost:37777/api/search/by-file?filePath=src/services/worker-
 - **format**: "index" (summary) or "full" (complete details). Default: "full"
 - **limit**: Number of results (default: 20, max: 100)
 - **project**: Filter by project name (optional)
-- **dateRange**: Filter by date range (optional)
+- **dateStart/dateEnd**: Filter by date range (optional)
 
 ## When to Use Each Format
 
@@ -118,7 +118,7 @@ Response: "No observations found for 'nonexistent.ts'. Try a partial path or che
 1. Use format=index first to see overview of all changes
 2. Start with partial paths (e.g., filename only) for broader matches
 3. Use full paths when you need specific file matches
-4. Combine with dateRange to see recent changes: `?filePath=worker.ts&dateRange[start]=2024-11-01`
+4. Combine with dateStart to see recent changes: `?filePath=worker.ts&dateStart=2024-11-01`
 5. Use directory searches to see all work in a module
 
 **Token Efficiency:**
