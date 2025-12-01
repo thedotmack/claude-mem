@@ -273,6 +273,7 @@ ${e.stack}`:e.message;if(Array.isArray(e))return`[${e.length} items]`;let r=Obje
           CREATE INDEX idx_user_prompts_claude_session ON user_prompts(claude_session_id);
           CREATE INDEX idx_user_prompts_created ON user_prompts(created_at_epoch DESC);
           CREATE INDEX idx_user_prompts_prompt_number ON user_prompts(prompt_number);
+          CREATE INDEX idx_user_prompts_lookup ON user_prompts(claude_session_id, prompt_number);
         `),this.db.exec(`
           CREATE VIRTUAL TABLE user_prompts_fts USING fts5(
             prompt_text,
@@ -446,7 +447,12 @@ ${e.stack}`:e.message;if(Array.isArray(e))return`[${e.length} items]`;let r=Obje
       INSERT INTO user_prompts
       (claude_session_id, prompt_number, prompt_text, created_at, created_at_epoch)
       VALUES (?, ?, ?, ?, ?)
-    `).run(e,r,a,t.toISOString(),n).lastInsertRowid}storeObservation(e,r,a,t,n=0){let i=new Date,o=i.getTime();this.db.prepare(`
+    `).run(e,r,a,t.toISOString(),n).lastInsertRowid}getUserPrompt(e,r){return this.db.prepare(`
+      SELECT prompt_text
+      FROM user_prompts
+      WHERE claude_session_id = ? AND prompt_number = ?
+      LIMIT 1
+    `).get(e,r)?.prompt_text??null}storeObservation(e,r,a,t,n=0){let i=new Date,o=i.getTime();this.db.prepare(`
       SELECT id FROM sdk_sessions WHERE sdk_session_id = ?
     `).get(e)||(this.db.prepare(`
         INSERT INTO sdk_sessions

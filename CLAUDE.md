@@ -6,7 +6,7 @@
 
 Claude-mem is a Claude Code plugin providing persistent memory across sessions. It captures tool usage, compresses observations using the Claude Agent SDK, and injects relevant context into future sessions.
 
-**Current Version**: 6.3.6
+**Current Version**: 6.4.1
 
 ## Architecture
 
@@ -23,6 +23,14 @@ Claude-mem is a Claude Code plugin providing persistent memory across sessions. 
 **Chroma** (`src/services/sync/ChromaSync.ts`) - Vector embeddings for semantic search
 
 **Viewer UI** (`src/ui/viewer/`) - React interface at http://localhost:37777, built to `plugin/ui/viewer.html`
+
+## Privacy Tags
+
+**Dual-Tag System** for meta-observation control:
+- `<private>content</private>` - User-level privacy control (manual, prevents storage)
+- `<claude-mem-context>content</claude-mem-context>` - System-level tag (auto-injected observations, prevents recursive storage)
+
+**Implementation**: Tag stripping happens at hook layer (edge processing) before data reaches worker/database. See `src/utils/tag-stripping.ts` for shared utilities.
 
 ## Build Commands
 

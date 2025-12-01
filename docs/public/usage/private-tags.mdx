@@ -1,0 +1,195 @@
+---
+title: "Private Tags"
+description: "Control what gets stored in memory with <private> tags"
+---
+
+# Private Tags
+
+## Overview
+
+Use `<private>` tags to mark content you don't want persisted in claude-mem's observation database. This gives you fine-grained control over what gets remembered across sessions.
+
+## How It Works
+
+Wrap any content in `<private>` tags:
+
+```
+<private>
+This content will not be stored in memory
+</private>
+```
+
+Claude can see and use this content during the current session, but it won't be saved as an observation.
+
+## Use Cases
+
+### 1. Sensitive Information
+
+```
+Please analyze this error:
+
+<private>
+Error: Database connection failed
+Host: internal-db-prod.company.com
+Port: 5432
+User: admin_user
+</private>
+
+What might be causing this?
+```
+
+Claude sees the full error but only the question gets stored.
+
+### 2. Temporary Context
+
+```
+<private>
+Here's some background context just for this session:
+- Project deadline is tomorrow
+- This is a hotfix for production
+- Manager asked for this specifically
+</private>
+
+Help me fix this bug quickly.
+```
+
+### 3. Debugging Information
+
+```
+<private>
+Debug output from previous run:
+[... 500 lines of logs ...]
+</private>
+
+Based on these logs, what's the root cause?
+```
+
+### 4. Exploratory Prompts
+
+```
+<private>
+I'm just brainstorming here, not making a final decision
+</private>
+
+What are some wild approaches to solving this?
+```
+
+## Technical Details
+
+### Tag Behavior
+
+- **Multiline support**: Tags can wrap multiple lines of content
+- **Multiple tags**: You can use multiple `<private>` sections in one message
+- **Nested tags**: Inner tags are included in outer tag removal
+- **Always active**: No configuration needed - works automatically
+
+### What Gets Filtered
+
+The `<private>` tag filters content from storage and memory:
+- **User prompt storage** - Tags are stripped before saving to the user_prompts table
+- **Tool inputs** - Parameters passed to tools are filtered before observation creation
+- **Tool responses** - Output from tools is filtered before observation creation
+- **All searchable content** - Private content never reaches the database or search indices
+
+**Important**: Tags are stripped during storage, not from the live conversation. Claude sees the full content including `<private>` tags during the session, and they only disappear when content is persisted to the database.
+
+### What Doesn't Get Filtered
+
+- Session summaries (generated from non-private observations only)
+- Claude's responses (not captured by claude-mem)
+
+## Examples
+
+### Example 1: API Keys
+
+```
+<private>
+API_KEY=sk-proj-abc123xyz789
+</private>
+
+Test this API connection for me
+```
+
+The API key won't be stored, but Claude can use it during the session.
+
+### Example 2: Personal Notes
+
+```
+<private>
+Note to self: This is for the Smith project - the one we discussed
+last Tuesday. Don't confuse with the Jones project.
+</private>
+
+Review the authentication implementation and suggest improvements.
+```
+
+The personal context helps Claude understand your request without polluting your observation history.
+
+## Best Practices
+
+1. **Don't over-tag**: Only use `<private>` for content you genuinely don't want stored
+2. **Context matters**: Claude's understanding of your project comes from observations - excessive private tagging reduces future context quality
+3. **Secrets belong elsewhere**: While `<private>` prevents storage, sensitive data should still use proper secrets management
+4. **Test it works**: Check `~/.claude-mem/silent.log` if you're unsure whether tags are being stripped
+
+## Verification
+
+To verify tags are working:
+
+1. Submit a prompt with `<private>` tags
+2. Check the database to ensure private content is not stored:
+   ```bash
+   # Check user prompts
+   sqlite3 ~/.claude-mem/claude-mem.db "SELECT prompt_text FROM user_prompts ORDER BY created_at_epoch DESC LIMIT 1;"
+
+   # Check observations
+   sqlite3 ~/.claude-mem/claude-mem.db "SELECT narrative FROM observations ORDER BY created_at_epoch DESC LIMIT 1;"
+   ```
+3. The private content should NOT appear in either user_prompts or observations
+4. The `<private>` tags themselves should also be stripped
+
+## Architecture
+
+The `<private>` tag uses an **edge processing pattern**:
+
+- Content is filtered at the hook layer before any storage
+  - **UserPromptSubmit hook**: Strips tags from user prompts before saving to the user_prompts table (your typed prompts are cleaned before database storage)
+  - **PostToolUse hook**: Strips tags from serialized tool_input and tool_response JSON before observation creation
+- Filtering happens before data reaches the worker service or database
+- This keeps the worker simple and follows a one-way data stream
+- Tags remain visible in the live conversation but are stripped from all persistent storage
+
+**Tag Stripping Scope**: The implementation strips tags from the *serialized JSON representations* of tool inputs and tool responses, not from the original user prompt text in the conversation UI. The user prompt text you type is stored in a separate table (user_prompts) where tags are also stripped before storage.
+
+This design ensures that private content never reaches the database, search indices, or memory agent, maintaining a clean separation between ephemeral and persistent data.
+
+## Related Features
+
+- [Search Tools](search-tools) - How to search past observations
+- [Getting Started](getting-started) - Basic usage guide
+- [Configuration](/configuration) - System settings and environment variables
+
+## Troubleshooting
+
+### Tags Not Being Stripped
+
+1. Verify correct syntax: `<private>content</private>`
+2. Check `~/.claude-mem/silent.log` for errors
+3. Ensure worker is running: `pm2 list`
+4. Restart worker: `npm run worker:restart`
+
+### Partial Content Stored
+
+If content appears partially in observations:
+- Ensure tags are properly closed
+- Check for typos in tag names
+- Verify content is inside tool executions (not just in your prompt text)
+
+### Silent Log Shows Errors
+
+If you see errors in `~/.claude-mem/silent.log`:
+```
+[save-hook] stripMemoryTags received non-string: { type: 'object' }
+```
+
+This is usually harmless - it indicates defensive type checking is working. However, if you see these frequently, it may indicate a bug. Please report it at https://github.com/thedotmack/claude-mem/issues
