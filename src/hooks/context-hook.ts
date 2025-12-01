@@ -10,6 +10,15 @@ import { stdin } from 'process';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import { SessionStore } from '../services/sqlite/SessionStore.js';
+import {
+  OBSERVATION_TYPES,
+  OBSERVATION_CONCEPTS,
+  TYPE_ICON_MAP,
+  TYPE_WORK_EMOJI_MAP,
+  DEFAULT_OBSERVATION_TYPES_STRING,
+  DEFAULT_OBSERVATION_CONCEPTS_STRING
+} from '../constants/observation-metadata.js';
+import { logger } from '../utils/logger.js';
 
 // Get __dirname equivalent in ESM
 const __filename = fileURLToPath(import.meta.url);
@@ -18,28 +27,6 @@ const __dirname = dirname(__filename);
 // Version marker path (same as smart-install.js)
 // From src/hooks/ we need to go up to plugin root: ../../
 const VERSION_MARKER_PATH = path.join(__dirname, '../../.install-version');
-
-/**
- * Get context depth from settings
- * Priority: ~/.claude/settings.json > env var > default
- */
-function getContextDepth(): number {
-  try {
-    const settingsPath = path.join(homedir(), '.claude', 'settings.json');
-    if (existsSync(settingsPath)) {
-      const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
-      if (settings.env?.CLAUDE_MEM_CONTEXT_OBSERVATIONS) {
-        const count = parseInt(settings.env.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10);
-        if (!isNaN(count) && count > 0) {
-          return count;
-        }
-      }
-    }
-  } catch {
-    // Fall through to env var or default
-  }
-  return parseInt(process.env.CLAUDE_MEM_CONTEXT_OBSERVATIONS || '50', 10);
-}
 
 interface ContextConfig {
   // Display counts
@@ -76,8 +63,8 @@ function loadContextConfig(): ContextConfig {
     showWorkTokens: true,
     showSavingsAmount: true,
     showSavingsPercent: true,
-    observationTypes: new Set(['bugfix', 'feature', 'refactor', 'discovery', 'decision', 'change']),
-    observationConcepts: new Set(['how-it-works', 'why-it-exists', 'what-changed', 'problem-solution', 'gotcha', 'pattern', 'trade-off']),
+    observationTypes: new Set(OBSERVATION_TYPES),
+    observationConcepts: new Set(OBSERVATION_CONCEPTS),
     fullObservationField: 'narrative' as const,
     showLastSummary: true,
     showLastMessage: false,
@@ -99,25 +86,24 @@ function loadContextConfig(): ContextConfig {
       showSavingsAmount: env.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT !== 'false',
       showSavingsPercent: env.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT !== 'false',
       observationTypes: new Set(
-        (env.CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES || 'bugfix,feature,refactor,discovery,decision,change')
+        (env.CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES || DEFAULT_OBSERVATION_TYPES_STRING)
           .split(',').map((t: string) => t.trim()).filter(Boolean)
       ),
       observationConcepts: new Set(
-        (env.CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS || 'how-it-works,why-it-exists,what-changed,problem-solution,gotcha,pattern,trade-off')
+        (env.CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS || DEFAULT_OBSERVATION_CONCEPTS_STRING)
           .split(',').map((c: string) => c.trim()).filter(Boolean)
       ),
       fullObservationField: (env.CLAUDE_MEM_CONTEXT_FULL_FIELD || 'narrative') as 'narrative' | 'facts',
       showLastSummary: env.CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY !== 'false',
       showLastMessage: env.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE === 'true',
     };
-  } catch {
+  } catch (error) {
+    logger.warn('CONTEXT', 'Failed to load context settings, using defaults', {}, error as Error);
     return defaults;
   }
 }
 
-// Configuration: Read from settings.json or environment
-const DISPLAY_OBSERVATION_COUNT = getContextDepth();
-const DISPLAY_SESSION_COUNT = 10; // Recent sessions for timeline context
+// Configuration constants
 const CHARS_PER_TOKEN_ESTIMATE = 4; // Rough estimate for token counting
 const SUMMARY_LOOKAHEAD = 1; // Fetch one extra summary for offset calculation
 
@@ -263,19 +249,32 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
     throw error;
   }
 
-  // Get ALL recent observations for this project (not filtered by summaries)
+  // Build SQL WHERE clause for observation types
+  const typeArray = Array.from(config.observationTypes);
+  const typePlaceholders = typeArray.map(() => '?').join(',');
+
+  // Build SQL WHERE clause for concepts
+  const conceptArray = Array.from(config.observationConcepts);
+  const conceptPlaceholders = conceptArray.map(() => '?').join(',');
+
+  // Get recent observations filtered by type and concepts at SQL level
   // This ensures we show observations even when summaries haven't been generated
   // Configurable via settings (default: 50)
-  const allObservations = db.db.prepare(`
+  const observations = db.db.prepare(`
     SELECT
       id, sdk_session_id, type, title, subtitle, narrative,
       facts, concepts, files_read, files_modified, discovery_tokens,
       created_at, created_at_epoch
     FROM observations
     WHERE project = ?
+      AND type IN (${typePlaceholders})
+      AND EXISTS (
+        SELECT 1 FROM json_each(concepts)
+        WHERE value IN (${conceptPlaceholders})
+      )
     ORDER BY created_at_epoch DESC
     LIMIT ?
-  `).all(project, config.totalObservationCount) as Observation[];
+  `).all(project, ...typeArray, ...conceptArray, config.totalObservationCount) as Observation[];
 
   // Get recent summaries (optional - may not exist for recent sessions)
   // Fetch one extra for offset calculation
@@ -288,23 +287,13 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
   `).all(project, config.sessionCount + SUMMARY_LOOKAHEAD) as SessionSummary[];
 
   // If we have neither observations nor summaries, show empty state
-  if (allObservations.length === 0 && recentSummaries.length === 0) {
+  if (observations.length === 0 && recentSummaries.length === 0) {
     db.close();
     if (useColors) {
       return `\n${colors.bright}${colors.cyan}📝 [${project}] recent context${colors.reset}\n${colors.gray}${'─'.repeat(60)}${colors.reset}\n\n${colors.dim}No previous sessions found for this project yet.${colors.reset}\n`;
     }
     return `# [${project}] recent context\n\nNo previous sessions found for this project yet.`;
   }
-
-  // Filter observations by type
-  let observations = allObservations.filter(obs => config.observationTypes.has(obs.type));
-
-  // Filter by concepts (include if observation has at least one matching concept)
-  observations = observations.filter(obs => {
-    if (config.observationConcepts.size === 0) return true;
-    const obsConcepts = parseJsonArray(obs.concepts);
-    return obsConcepts.some(c => config.observationConcepts.has(c));
-  });
 
   const displaySummaries = recentSummaries.slice(0, config.sessionCount);
 
@@ -563,29 +552,7 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
           const title = obs.title || 'Untitled';
 
           // Map observation type to emoji icon
-          let icon = '•';
-          switch (obs.type) {
-            case 'bugfix':
-              icon = '🔴';
-              break;
-            case 'feature':
-              icon = '🟣';
-              break;
-            case 'refactor':
-              icon = '🔄';
-              break;
-            case 'change':
-              icon = '✅';
-              break;
-            case 'discovery':
-              icon = '🔵';
-              break;
-            case 'decision':
-              icon = '⚖️';
-              break;
-            default:
-              icon = '•';
-          }
+          const icon = TYPE_ICON_MAP[obs.type as keyof typeof TYPE_ICON_MAP] || '•';
 
           // Section 2: Calculate read tokens (estimate from observation size)
           const obsSize = (obs.title?.length || 0) +
@@ -598,21 +565,7 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
           const discoveryTokens = obs.discovery_tokens || 0;
 
           // Map observation type to work emoji
-          let workEmoji = '🔍'; // default to research/discovery
-          switch (obs.type) {
-            case 'discovery':
-              workEmoji = '🔍'; // research/exploration
-              break;
-            case 'change':
-            case 'feature':
-            case 'bugfix':
-            case 'refactor':
-              workEmoji = '🛠️'; // building/modifying
-              break;
-            case 'decision':
-              workEmoji = '⚖️'; // decision-making
-              break;
-          }
+          const workEmoji = TYPE_WORK_EMOJI_MAP[obs.type as keyof typeof TYPE_WORK_EMOJI_MAP] || '🔍';
 
           const discoveryDisplay = discoveryTokens > 0 ? `${workEmoji} ${discoveryTokens.toLocaleString()}` : '-';
 

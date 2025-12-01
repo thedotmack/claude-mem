@@ -30,6 +30,12 @@ import { SDKAgent } from './worker/SDKAgent.js';
 import { PaginationHelper } from './worker/PaginationHelper.js';
 import { SettingsManager } from './worker/SettingsManager.js';
 import { getBranchInfo, switchBranch, pullUpdates, type BranchInfo, type SwitchResult } from './worker/BranchManager.js';
+import {
+  OBSERVATION_TYPES,
+  OBSERVATION_CONCEPTS,
+  DEFAULT_OBSERVATION_TYPES_STRING,
+  DEFAULT_OBSERVATION_CONCEPTS_STRING
+} from '../constants/observation-metadata.js';
 
 export class WorkerService {
   private app: express.Application;
@@ -856,23 +862,21 @@ export class WorkerService {
     }
 
     // Validate observation types
-    const validTypes = ['bugfix', 'feature', 'refactor', 'discovery', 'decision', 'change'];
     if (settings.CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES) {
       const types = settings.CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES.split(',').map((t: string) => t.trim());
       for (const type of types) {
-        if (type && !validTypes.includes(type)) {
-          return { valid: false, error: `Invalid observation type: ${type}` };
+        if (type && !OBSERVATION_TYPES.includes(type as any)) {
+          return { valid: false, error: `Invalid observation type: ${type}. Valid types: ${OBSERVATION_TYPES.join(', ')}` };
         }
       }
     }
 
     // Validate observation concepts
-    const validConcepts = ['how-it-works', 'why-it-exists', 'what-changed', 'problem-solution', 'gotcha', 'pattern', 'trade-off'];
     if (settings.CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS) {
       const concepts = settings.CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS.split(',').map((c: string) => c.trim());
       for (const concept of concepts) {
-        if (concept && !validConcepts.includes(concept)) {
-          return { valid: false, error: `Invalid observation concept: ${concept}` };
+        if (concept && !OBSERVATION_CONCEPTS.includes(concept as any)) {
+          return { valid: false, error: `Invalid observation concept: ${concept}. Valid concepts: ${OBSERVATION_CONCEPTS.join(', ')}` };
         }
       }
     }
@@ -899,8 +903,8 @@ export class WorkerService {
           CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT: 'true',
           CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT: 'true',
           // Observation Filtering
-          CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES: 'bugfix,feature,refactor,discovery,decision,change',
-          CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS: 'how-it-works,why-it-exists,what-changed,problem-solution,gotcha,pattern,trade-off',
+          CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES: DEFAULT_OBSERVATION_TYPES_STRING,
+          CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS: DEFAULT_OBSERVATION_CONCEPTS_STRING,
           // Display Configuration
           CLAUDE_MEM_CONTEXT_FULL_COUNT: '5',
           CLAUDE_MEM_CONTEXT_FULL_FIELD: 'narrative',
@@ -926,8 +930,8 @@ export class WorkerService {
         CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT: env.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT || 'true',
         CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT: env.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT || 'true',
         // Observation Filtering
-        CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES: env.CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES || 'bugfix,feature,refactor,discovery,decision,change',
-        CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS: env.CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS || 'how-it-works,why-it-exists,what-changed,problem-solution,gotcha,pattern,trade-off',
+        CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES: env.CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES || DEFAULT_OBSERVATION_TYPES_STRING,
+        CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS: env.CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS || DEFAULT_OBSERVATION_CONCEPTS_STRING,
         // Display Configuration
         CLAUDE_MEM_CONTEXT_FULL_COUNT: env.CLAUDE_MEM_CONTEXT_FULL_COUNT || '5',
         CLAUDE_MEM_CONTEXT_FULL_FIELD: env.CLAUDE_MEM_CONTEXT_FULL_FIELD || 'narrative',
