@@ -1,5 +1,10 @@
-import Database from 'better-sqlite3';
+import { createRequire } from 'node:module';
 import { DATA_DIR, DB_PATH, ensureDir } from '../../shared/paths.js';
+
+// Use createRequire for better-sqlite3 to ensure proper module resolution
+// in ESM contexts, especially with bundlers like esbuild marking it as external
+const require = createRequire(import.meta.url);
+const Database = require('better-sqlite3') as typeof import('better-sqlite3').default;
 import {
   ObservationSearchResult,
   SessionSummarySearchResult,
