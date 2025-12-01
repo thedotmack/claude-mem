@@ -39,6 +39,7 @@ import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { createHookResponse } from './hook-response.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
 import { silentDebug } from '../utils/silent-debug.js';
+import { stripMemoryTagsFromPrompt } from '../utils/tag-stripping.js';
 
 export interface UserPromptSubmitInput {
   session_id: string;
@@ -47,29 +48,6 @@ export interface UserPromptSubmitInput {
   [key: string]: any;
 }
 
-/**
- * Strip memory tags to prevent recursive storage and enable privacy control
- *
- * This implements the dual-tag system:
- * 1. <claude-mem-context> - System-level tag for auto-injected observations
- *    (prevents recursive storage when context injection is active)
- * 2. <private> - User-level tag for manual privacy control
- *    (allows users to mark content they don't want persisted)
- *
- * EDGE PROCESSING PATTERN: Filter at hook layer before sending to storage.
- * This ensures private content never reaches the database or search indices.
- */
-function stripMemoryTags(content: string): string {
-  if (typeof content !== 'string') {
-    silentDebug('[new-hook] stripMemoryTags received non-string:', { type: typeof content });
-    return '';  // Safe default for prompt content
-  }
-
-  return content
-    .replace(/<claude-mem-context>[\s\S]*?<\/claude-mem-context>/g, '')
-    .replace(/<private>[\s\S]*?<\/private>/g, '')
-    .trim();
-}
 
 /**
  * New Hook Main Logic
@@ -114,7 +92,7 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
 
   // Strip memory tags before saving user prompt to prevent privacy leaks
   // Tags like <private> and <claude-mem-context> should not be stored or searchable
-  const cleanedUserPrompt = stripMemoryTags(prompt);
+  const cleanedUserPrompt = stripMemoryTagsFromPrompt(prompt);
 
   // Skip memory operations for fully private prompts
   // If the entire prompt was wrapped in <private> tags, don't create any observations

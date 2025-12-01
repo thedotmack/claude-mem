@@ -9,6 +9,7 @@ import { createHookResponse } from './hook-response.js';
 import { logger } from '../utils/logger.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
 import { silentDebug } from '../utils/silent-debug.js';
+import { stripMemoryTagsFromJson } from '../utils/tag-stripping.js';
 
 export interface PostToolUseInput {
   session_id: string;
@@ -28,29 +29,6 @@ const SKIP_TOOLS = new Set([
   'AskUserQuestion'        // User interaction, not substantive work
 ]);
 
-/**
- * Strip memory tags to prevent recursive storage and enable privacy control
- *
- * This implements the dual-tag system:
- * 1. <claude-mem-context> - System-level tag for auto-injected observations
- *    (prevents recursive storage when context injection is active)
- * 2. <private> - User-level tag for manual privacy control
- *    (allows users to mark content they don't want persisted)
- *
- * EDGE PROCESSING PATTERN: Filter at hook layer before sending to worker.
- * This keeps the worker service simple and follows one-way data stream.
- */
-function stripMemoryTags(content: string): string {
-  if (typeof content !== 'string') {
-    silentDebug('[save-hook] stripMemoryTags received non-string:', { type: typeof content });
-    return '{}';  // Safe default for JSON context
-  }
-
-  return content
-    .replace(/<claude-mem-context>[\s\S]*?<\/claude-mem-context>/g, '')
-    .replace(/<private>[\s\S]*?<\/private>/g, '')
-    .trim();
-}
 
 /**
  * Save Hook Main Logic
@@ -103,17 +81,38 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
   });
 
   try {
+    // Serialize and strip memory tags from tool_input and tool_response
+    // This prevents recursive storage of context and respects <private> tags
+    let cleanedToolInput = '{}';
+    let cleanedToolResponse = '{}';
+
+    try {
+      cleanedToolInput = tool_input !== undefined
+        ? stripMemoryTagsFromJson(JSON.stringify(tool_input))
+        : '{}';
+    } catch (error) {
+      // Handle circular references or other JSON.stringify errors
+      silentDebug('[save-hook] Failed to stringify tool_input:', { error, tool_name });
+      cleanedToolInput = '{"error": "Failed to serialize tool_input"}';
+    }
+
+    try {
+      cleanedToolResponse = tool_response !== undefined
+        ? stripMemoryTagsFromJson(JSON.stringify(tool_response))
+        : '{}';
+    } catch (error) {
+      // Handle circular references or other JSON.stringify errors
+      silentDebug('[save-hook] Failed to stringify tool_response:', { error, tool_name });
+      cleanedToolResponse = '{"error": "Failed to serialize tool_response"}';
+    }
+
     const response = await fetch(`http://127.0.0.1:${port}/sessions/${sessionDbId}/observations`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         tool_name,
-        tool_input: tool_input !== undefined
-          ? stripMemoryTags(JSON.stringify(tool_input))
-          : '{}',
-        tool_response: tool_response !== undefined
-          ? stripMemoryTags(JSON.stringify(tool_response))
-          : '{}',
+        tool_input: cleanedToolInput,
+        tool_response: cleanedToolResponse,
         prompt_number: promptNumber,
         cwd: cwd || ''
       }),

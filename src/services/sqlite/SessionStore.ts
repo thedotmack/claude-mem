@@ -445,6 +445,7 @@ export class SessionStore {
           CREATE INDEX idx_user_prompts_claude_session ON user_prompts(claude_session_id);
           CREATE INDEX idx_user_prompts_created ON user_prompts(created_at_epoch DESC);
           CREATE INDEX idx_user_prompts_prompt_number ON user_prompts(prompt_number);
+          CREATE INDEX idx_user_prompts_lookup ON user_prompts(claude_session_id, prompt_number);
         `);
 
         // Create FTS5 virtual table

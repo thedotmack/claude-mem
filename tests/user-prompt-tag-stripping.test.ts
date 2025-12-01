@@ -6,22 +6,10 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
+import { stripMemoryTagsFromPrompt } from '../dist/utils/tag-stripping.js';
 
-/**
- * Strip memory tags to prevent recursive storage and enable privacy control
- * (Copied from new-hook.ts for testing)
- */
-function stripMemoryTags(content: string): string {
-  if (typeof content !== 'string') {
-    console.error('[new-hook] stripMemoryTags received non-string:', { type: typeof content });
-    return '';  // Safe default for prompt content
-  }
-
-  return content
-    .replace(/<claude-mem-context>[\s\S]*?<\/claude-mem-context>/g, '')
-    .replace(/<private>[\s\S]*?<\/private>/g, '')
-    .trim();
-}
+// Alias for clarity in tests (this tests the prompt context version)
+const stripMemoryTags = stripMemoryTagsFromPrompt;
 
 describe('User Prompt Tag Stripping', () => {
   it('should strip <private> tags from user prompts', () => {

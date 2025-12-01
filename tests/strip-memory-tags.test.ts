@@ -5,22 +5,10 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
+import { stripMemoryTagsFromJson } from '../dist/utils/tag-stripping.js';
 
-/**
- * Strip memory tags to prevent recursive storage and enable privacy control
- * (Copied from save-hook.ts for testing)
- */
-function stripMemoryTags(content: string): string {
-  if (typeof content !== 'string') {
-    console.error('[save-hook] stripMemoryTags received non-string:', { type: typeof content });
-    return '{}';  // Safe default for JSON context
-  }
-
-  return content
-    .replace(/<claude-mem-context>[\s\S]*?<\/claude-mem-context>/g, '')
-    .replace(/<private>[\s\S]*?<\/private>/g, '')
-    .trim();
-}
+// Alias for clarity in tests (this tests the JSON context version)
+const stripMemoryTags = stripMemoryTagsFromJson;
 
 describe('stripMemoryTags', () => {
   // Basic functionality tests - <claude-mem-context>

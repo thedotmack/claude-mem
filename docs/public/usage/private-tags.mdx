@@ -85,11 +85,13 @@ What are some wild approaches to solving this?
 
 ### What Gets Filtered
 
-The `<private>` tag filters content from:
-- **Your original prompts** - Tags are stripped before storage in the user_prompts table
+The `<private>` tag filters content from storage and memory:
+- **User prompt storage** - Tags are stripped before saving to the user_prompts table
 - **Tool inputs** - Parameters passed to tools are filtered before observation creation
 - **Tool responses** - Output from tools is filtered before observation creation
 - **All searchable content** - Private content never reaches the database or search indices
+
+**Important**: Tags are stripped during storage, not from the live conversation. Claude sees the full content including `<private>` tags during the session, and they only disappear when content is persisted to the database.
 
 ### What Doesn't Get Filtered
 
@@ -151,11 +153,13 @@ To verify tags are working:
 The `<private>` tag uses an **edge processing pattern**:
 
 - Content is filtered at the hook layer before any storage
-  - **UserPromptSubmit hook**: Strips tags from user prompts before saving to user_prompts table
-  - **PostToolUse hook**: Strips tags from tool inputs and responses before observation creation
+  - **UserPromptSubmit hook**: Strips tags from user prompts before saving to the user_prompts table (your typed prompts are cleaned before database storage)
+  - **PostToolUse hook**: Strips tags from serialized tool_input and tool_response JSON before observation creation
 - Filtering happens before data reaches the worker service or database
 - This keeps the worker simple and follows a one-way data stream
-- Tags are stripped from all content: user prompts, tool inputs, and tool responses
+- Tags remain visible in the live conversation but are stripped from all persistent storage
+
+**Tag Stripping Scope**: The implementation strips tags from the *serialized JSON representations* of tool inputs and tool responses, not from the original user prompt text in the conversation UI. The user prompt text you type is stored in a separate table (user_prompts) where tags are also stripped before storage.
 
 This design ensures that private content never reaches the database, search indices, or memory agent, maintaining a clean separation between ephemeral and persistent data.
 
