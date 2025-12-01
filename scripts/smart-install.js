@@ -389,7 +389,6 @@ async function main() {
         // The ensureWorkerRunning() function will handle auto-start when needed
         log('ℹ️  Worker will start automatically when needed', colors.dim);
       }
-    }
 
     // Success - dependencies installed (if needed)
     process.exit(0);
