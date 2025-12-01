@@ -28,7 +28,7 @@ curl -s "http://localhost:37777/api/search/by-concept?concept=discovery&format=i
 - **format**: "index" (summary) or "full" (complete details). Default: "full"
 - **limit**: Number of results (default: 20, max: 100)
 - **project**: Filter by project name (optional)
-- **dateRange**: Filter by date range (optional)
+- **dateStart/dateEnd**: Filter by date range (optional)
 
 ## When to Use Each Format
 

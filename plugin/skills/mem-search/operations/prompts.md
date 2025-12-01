@@ -21,7 +21,7 @@ curl -s "http://localhost:37777/api/search/prompts?query=authentication&format=i
 - **format**: "index" (truncated prompts) or "full" (complete prompt text). Default: "full"
 - **limit**: Number of results (default: 20, max: 100)
 - **project**: Filter by project name (optional)
-- **dateRange**: Filter by date range (optional)
+- **dateStart/dateEnd**: Filter by date range (optional)
 
 ## When to Use Each Format
 
@@ -99,7 +99,7 @@ Response: "No user prompts found for 'foobar'. Try different search terms."
 
 1. Use exact phrases in quotes: `?query="how do I"` for precise matches
 2. Start with format=index to see preview, then get full text if needed
-3. Use dateRange to find recent questions: `?query=bug&dateRange[start]=2024-11-01`
+3. Use dateStart to find recent questions: `?query=bug&dateStart=2024-11-01`
 4. Prompts show what was asked, sessions/observations show what was done
 5. Combine with session search to see both question and answer
 

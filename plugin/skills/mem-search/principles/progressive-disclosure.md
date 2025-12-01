@@ -69,7 +69,7 @@ curl -s "http://localhost:37777/api/search/observations?query=authentication&for
 ### Step 4: Refine with Filters (If Needed)
 
 **Techniques:**
-- Use `type`, `dateRange`, `concepts`, `files` filters
+- Use `type`, `dateStart`/`dateEnd`, `concepts`, `files` filters
 - Narrow scope BEFORE requesting more results
 - Use `offset` for pagination instead of large limits
 
