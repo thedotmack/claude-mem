@@ -48,6 +48,7 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.1.27",
     "@modelcontextprotocol/sdk": "^1.20.1",
+    "ansi-to-html": "^0.7.2",
     "better-sqlite3": "^11.0.0",
     "express": "^4.18.2",
     "glob": "^11.0.3",

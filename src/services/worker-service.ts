@@ -1489,26 +1489,21 @@ export class WorkerService {
    */
   private async handleContextPreview(req: Request, res: Response): Promise<void> {
     try {
-      // Dynamic import to use context-hook function
-      const { contextHook } = await import('../hooks/context-hook.js');
+      // Dynamic import to use BUILT context-hook function
+      const packageRoot = getPackageRoot();
+      const contextHookPath = path.join(packageRoot, 'plugin', 'scripts', 'context-hook.js');
+      const { contextHook } = await import(contextHookPath);
 
-      // Get project filter from query params
-      const project = (req.query.project as string) || '';
+      // Use cm_demo_content project to trigger demo data
+      const cwd = '/demo/cm_demo_content';
 
-      // Determine current working directory
-      // Use project name to construct realistic cwd for preview
-      const cwd = project
-        ? path.join(homedir(), 'projects', project)
-        : process.cwd();
-
-      // Generate preview context (markdown, no colors)
+      // Generate preview context (with colors for terminal display)
       const contextText = await contextHook(
         {
           session_id: 'preview-' + Date.now(),
-          cwd: cwd,
-          source: 'startup'
+          cwd: cwd
         },
-        false  // useColors=false for markdown
+        true  // useColors=true for ANSI terminal output
       );
 
       // Return as plain text

@@ -158,6 +158,99 @@ interface SessionSummary {
   created_at_epoch: number;
 }
 
+// Demo data for cm_demo_content project
+const DEMO_OBSERVATIONS: Observation[] = [
+  {
+    id: 1001,
+    sdk_session_id: 'demo-session-1',
+    type: 'bugfix',
+    title: 'Fixed context preview API endpoint path error',
+    subtitle: 'toRelativePath receiving undefined from files_modified array',
+    narrative: 'Found bug where toRelativePath was called with undefined when files[0] existed but was null. Added truthy check before calling toRelativePath.',
+    facts: JSON.stringify(['Added null check: (files.length > 0 && files[0])', 'Error was "path argument must be string, received undefined"', 'Bug occurred in preview mode when using fake cwd']),
+    concepts: JSON.stringify(['debugging', 'error-handling', 'type-safety']),
+    files_read: JSON.stringify(['src/hooks/context-hook.ts']),
+    files_modified: JSON.stringify(['src/hooks/context-hook.ts']),
+    discovery_tokens: 1247,
+    created_at: new Date(Date.now() - 3600000).toISOString(),
+    created_at_epoch: Date.now() - 3600000
+  },
+  {
+    id: 1002,
+    sdk_session_id: 'demo-session-1',
+    type: 'feature',
+    title: 'Implemented Context Injection Settings modal',
+    subtitle: 'Added modal with settings form and live terminal preview',
+    narrative: 'Created ContextSettingsModal component with settings form that auto-saves to backend. Integrated TerminalPreview component to show live preview of how observations appear.',
+    facts: JSON.stringify(['Modal triggered by gear icon in viewer header', 'Settings auto-save with 300ms debounce', 'Preview fetches from /api/context/preview endpoint', 'Built three new React components']),
+    concepts: JSON.stringify(['react', 'ui-components', 'settings', 'preview']),
+    files_read: null,
+    files_modified: JSON.stringify(['src/ui/viewer/components/ContextSettingsModal.tsx', 'src/ui/viewer/components/TerminalPreview.tsx', 'src/ui/viewer/hooks/useContextPreview.ts']),
+    discovery_tokens: 2891,
+    created_at: new Date(Date.now() - 7200000).toISOString(),
+    created_at_epoch: Date.now() - 7200000
+  },
+  {
+    id: 1003,
+    sdk_session_id: 'demo-session-1',
+    type: 'refactor',
+    title: 'Replaced preview endpoint with mock data',
+    subtitle: 'Removed real context-hook call to avoid path errors',
+    narrative: 'Changed /api/context/preview to return static mock markdown instead of calling context-hook with fake cwd. This avoided path errors but was too lazy - needed real formatted preview.',
+    facts: JSON.stringify(['Initially tried calling real context-hook with fake cwd', 'Got path errors from non-existent directories', 'Switched to static mock but lost settings integration']),
+    concepts: JSON.stringify(['api-design', 'mocking', 'prototyping']),
+    files_read: JSON.stringify(['src/services/worker-service.ts']),
+    files_modified: JSON.stringify(['src/services/worker-service.ts']),
+    discovery_tokens: 1653,
+    created_at: new Date(Date.now() - 5400000).toISOString(),
+    created_at_epoch: Date.now() - 5400000
+  },
+  {
+    id: 1004,
+    sdk_session_id: 'demo-session-2',
+    type: 'decision',
+    title: 'Chose demo content approach over static mocks',
+    subtitle: 'cm_demo_content project bypasses DB, uses baked-in observations',
+    narrative: 'Decided to add demo data directly in context-hook. When project="cm_demo_content", skip DB queries and use pre-baked observations but still run through real formatting logic with current settings.',
+    facts: JSON.stringify(['Demo content shows real ANSI-formatted output', 'Settings changes trigger preview refresh with new formatting', 'Avoids fake cwd and missing data issues', 'Tests actual formatting code paths']),
+    concepts: JSON.stringify(['architecture', 'testing', 'ux-design']),
+    files_read: null,
+    files_modified: null,
+    discovery_tokens: 2134,
+    created_at: new Date(Date.now() - 1800000).toISOString(),
+    created_at_epoch: Date.now() - 1800000
+  },
+  {
+    id: 1005,
+    sdk_session_id: 'demo-session-2',
+    type: 'discovery',
+    title: 'Terminal preview needs ANSI rendering, not raw markdown',
+    subtitle: 'Preview should show formatted output as it appears in terminal',
+    narrative: 'Realized preview should display ANSI-colored terminal output matching what users see at session start, not raw markdown text. Purpose is to show what context injection looks like with current settings.',
+    facts: JSON.stringify(['Preview shows visual formatting with colors and spacing', 'Users configure settings and see immediate visual feedback', 'ANSI codes need browser rendering for preview']),
+    concepts: JSON.stringify(['ui-design', 'user-feedback', 'terminal-rendering']),
+    files_read: JSON.stringify(['src/ui/viewer/components/TerminalPreview.tsx']),
+    files_modified: null,
+    discovery_tokens: 1876,
+    created_at: new Date(Date.now() - 900000).toISOString(),
+    created_at_epoch: Date.now() - 900000
+  }
+];
+
+const DEMO_SUMMARIES: SessionSummary[] = [
+  {
+    id: 501,
+    sdk_session_id: 'demo-session-1',
+    request: 'Debug and fix Context Injection Settings modal functionality',
+    investigated: 'Found API endpoint path errors, modal rendering issues, and missing preview data handling',
+    learned: 'Preview endpoint needs real formatted output, not static mocks. Path validation critical when working with dynamic cwds.',
+    completed: 'Fixed toRelativePath bug, replaced static mock with proper endpoint structure',
+    next_steps: 'Implement demo content system for preview, add ANSI rendering to TerminalPreview component',
+    created_at: new Date(Date.now() - 3600000).toISOString(),
+    created_at_epoch: Date.now() - 3600000
+  }
+];
+
 // Helper: Parse JSON array safely
 function parseJsonArray(json: string | null): string[] {
   if (!json) return [];
@@ -289,40 +382,60 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
   const cwd = input?.cwd ?? process.cwd();
   const project = cwd ? path.basename(cwd) : 'unknown-project';
 
-  let db: SessionStore;
-  try {
-    db = new SessionStore();
-  } catch (error: any) {
-    if (error.code === 'ERR_DLOPEN_FAILED') {
-      // Native module ABI mismatch - delete version marker to trigger reinstall
-      try {
-        unlinkSync(VERSION_MARKER_PATH);
-      } catch (unlinkError) {
-        // Marker might not exist, that's okay
+  // Use demo data for cm_demo_content project
+  let observations: Observation[];
+  let recentSummaries: SessionSummary[];
+  let db: SessionStore | null = null;
+
+  if (project === 'cm_demo_content') {
+    // Filter demo observations by configured types and concepts
+    const typeArray = Array.from(config.observationTypes);
+    const conceptArray = Array.from(config.observationConcepts);
+
+    observations = DEMO_OBSERVATIONS
+      .filter(obs => typeArray.includes(obs.type))
+      .filter(obs => {
+        const obsConcepts = parseJsonArray(obs.concepts);
+        return obsConcepts.some(c => conceptArray.includes(c));
+      })
+      .slice(0, config.totalObservationCount);
+
+    recentSummaries = DEMO_SUMMARIES.slice(0, config.sessionCount + 1);
+  } else {
+    // Real data path - query database
+    try {
+      db = new SessionStore();
+    } catch (error: any) {
+      if (error.code === 'ERR_DLOPEN_FAILED') {
+        // Native module ABI mismatch - delete version marker to trigger reinstall
+        try {
+          unlinkSync(VERSION_MARKER_PATH);
+        } catch (unlinkError) {
+          // Marker might not exist, that's okay
+        }
+
+        // Log once (not error spam) and exit cleanly
+        console.error('⚠️  Native module rebuild needed - restart Claude Code to auto-fix');
+        console.error('   (This happens after Node.js version upgrades)');
+        process.exit(0); // Exit cleanly to avoid error spam
       }
 
-      // Log once (not error spam) and exit cleanly
-      console.error('⚠️  Native module rebuild needed - restart Claude Code to auto-fix');
-      console.error('   (This happens after Node.js version upgrades)');
-      process.exit(0); // Exit cleanly to avoid error spam
+      // Other errors should still throw
+      throw error;
     }
 
-    // Other errors should still throw
-    throw error;
-  }
+    // Build SQL WHERE clause for observation types
+    const typeArray = Array.from(config.observationTypes);
+    const typePlaceholders = typeArray.map(() => '?').join(',');
 
-  // Build SQL WHERE clause for observation types
-  const typeArray = Array.from(config.observationTypes);
-  const typePlaceholders = typeArray.map(() => '?').join(',');
+    // Build SQL WHERE clause for concepts
+    const conceptArray = Array.from(config.observationConcepts);
+    const conceptPlaceholders = conceptArray.map(() => '?').join(',');
 
-  // Build SQL WHERE clause for concepts
-  const conceptArray = Array.from(config.observationConcepts);
-  const conceptPlaceholders = conceptArray.map(() => '?').join(',');
-
-  // Get recent observations filtered by type and concepts at SQL level
-  // This ensures we show observations even when summaries haven't been generated
-  // Configurable via settings (default: 50)
-  const observations = db.db.prepare(`
+    // Get recent observations filtered by type and concepts at SQL level
+    // This ensures we show observations even when summaries haven't been generated
+    // Configurable via settings (default: 50)
+    observations = db.db.prepare(`
     SELECT
       id, sdk_session_id, type, title, subtitle, narrative,
       facts, concepts, files_read, files_modified, discovery_tokens,
@@ -338,22 +451,24 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
     LIMIT ?
   `).all(project, ...typeArray, ...conceptArray, config.totalObservationCount) as Observation[];
 
-  // Get recent summaries (optional - may not exist for recent sessions)
-  // Fetch one extra for offset calculation
-  const recentSummaries = db.db.prepare(`
-    SELECT id, sdk_session_id, request, investigated, learned, completed, next_steps, created_at, created_at_epoch
-    FROM session_summaries
-    WHERE project = ?
-    ORDER BY created_at_epoch DESC
-    LIMIT ?
-  `).all(project, config.sessionCount + SUMMARY_LOOKAHEAD) as SessionSummary[];
+    // Get recent summaries (optional - may not exist for recent sessions)
+    // Fetch one extra for offset calculation
+    recentSummaries = db.db.prepare(`
+      SELECT id, sdk_session_id, request, investigated, learned, completed, next_steps, created_at, created_at_epoch
+      FROM session_summaries
+      WHERE project = ?
+      ORDER BY created_at_epoch DESC
+      LIMIT ?
+    `).all(project, config.sessionCount + SUMMARY_LOOKAHEAD) as SessionSummary[];
+  }
 
   // Retrieve prior session messages if enabled
   let priorUserMessage = '';
   let priorAssistantMessage = '';
   // let debugInfo: string[] = [];
 
-  if (config.showLastMessage && observations.length > 0) {
+  // Skip prior message extraction for demo mode
+  if (config.showLastMessage && observations.length > 0 && project !== 'cm_demo_content') {
     try {
       const currentSessionId = input?.session_id;
 
@@ -393,7 +508,7 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
 
   // If we have neither observations nor summaries, show empty state
   if (observations.length === 0 && recentSummaries.length === 0) {
-    db.close();
+    db?.close();
     if (useColors) {
       return `\n${colors.bright}${colors.cyan}📝 [${project}] recent context${colors.reset}\n${colors.gray}${'─'.repeat(60)}${colors.reset}\n\n${colors.dim}No previous sessions found for this project yet.${colors.reset}\n`;
     }
@@ -623,7 +738,7 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
           // Render observation
           const obs = item.data;
           const files = parseJsonArray(obs.files_modified);
-          const file = files.length > 0 ? toRelativePath(files[0], cwd) : 'General';
+          const file = (files.length > 0 && files[0]) ? toRelativePath(files[0], cwd) : 'General';
 
           // Check if we need a new file section
           if (file !== currentFile) {
@@ -793,7 +908,7 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
     }
   }
 
-  db.close();
+  db?.close();
 
   // Add debug info directly to output
   // if (debugInfo.length > 0) {
@@ -805,6 +920,9 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
 
   return output.join('\n').trimEnd();
 }
+
+// Export for use by worker service
+export { contextHook };
 
 // Entry Point - handle stdin/stdout
 const forceColors = process.argv.includes('--colors');
