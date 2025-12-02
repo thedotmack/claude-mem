@@ -13,6 +13,7 @@ interface HeaderProps {
   queueDepth: number;
   themePreference: ThemePreference;
   onThemeChange: (theme: ThemePreference) => void;
+  onContextPreviewToggle: () => void;
 }
 
 export function Header({
@@ -25,7 +26,8 @@ export function Header({
   isProcessing,
   queueDepth,
   themePreference,
-  onThemeChange
+  onThemeChange,
+  onContextPreviewToggle
 }: HeaderProps) {
   return (
     <div className="header">
@@ -96,6 +98,23 @@ export function Header({
             <option key={project} value={project}>{project}</option>
           ))}
         </select>
+        <button
+          className="icon-link"
+          onClick={onContextPreviewToggle}
+          title="Context Preview"
+          style={{
+            background: 'transparent',
+            border: 'none',
+            cursor: 'pointer',
+            padding: '4px'
+          }}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <rect x="2" y="4" width="20" height="16" rx="2" />
+            <path d="M6 8l4 4-4 4" />
+            <line x1="12" y1="16" x2="18" y2="16" />
+          </svg>
+        </button>
         <ThemeToggle
           preference={themePreference}
           onThemeChange={onThemeChange}

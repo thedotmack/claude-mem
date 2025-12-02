@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Header } from './components/Header';
 import { Feed } from './components/Feed';
 import { Sidebar } from './components/Sidebar';
+import { ContextSettingsModal } from './components/ContextSettingsModal';
 import { useSSE } from './hooks/useSSE';
 import { useSettings } from './hooks/useSettings';
 import { useStats } from './hooks/useStats';
@@ -13,6 +14,7 @@ import { mergeAndDeduplicateByProject } from './utils/data';
 export function App() {
   const [currentFilter, setCurrentFilter] = useState('');
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [contextPreviewOpen, setContextPreviewOpen] = useState(false);
   const [paginatedObservations, setPaginatedObservations] = useState<Observation[]>([]);
   const [paginatedSummaries, setPaginatedSummaries] = useState<Summary[]>([]);
   const [paginatedPrompts, setPaginatedPrompts] = useState<UserPrompt[]>([]);
@@ -51,6 +53,11 @@ export function App() {
   // Toggle sidebar
   const toggleSidebar = useCallback(() => {
     setSidebarOpen(prev => !prev);
+  }, []);
+
+  // Toggle context preview modal
+  const toggleContextPreview = useCallback(() => {
+    setContextPreviewOpen(prev => !prev);
   }, []);
 
   // Handle loading more data
@@ -98,6 +105,7 @@ export function App() {
         queueDepth={queueDepth}
         themePreference={preference}
         onThemeChange={setThemePreference}
+        onContextPreviewToggle={toggleContextPreview}
       />
 
 
@@ -124,6 +132,16 @@ export function App() {
         onSave={saveSettings}
         onClose={toggleSidebar}
         onRefreshStats={refreshStats}
+      />
+
+      <ContextSettingsModal
+        isOpen={contextPreviewOpen}
+        onClose={toggleContextPreview}
+        settings={settings}
+        onSave={saveSettings}
+        isSaving={isSaving}
+        saveStatus={saveStatus}
+        currentProject={currentFilter}
       />
     </>
   );

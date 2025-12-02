@@ -202,6 +202,7 @@ export class WorkerService {
     this.app.get('/api/search/by-type', this.handleSearchByType.bind(this));
     this.app.get('/api/context/recent', this.handleGetRecentContext.bind(this));
     this.app.get('/api/context/timeline', this.handleGetContextTimeline.bind(this));
+    this.app.get('/api/context/preview', this.handleContextPreview.bind(this));
     this.app.get('/api/timeline/by-query', this.handleGetTimelineByQuery.bind(this));
     this.app.get('/api/search/help', this.handleSearchHelp.bind(this));
   }
@@ -1479,6 +1480,46 @@ export class WorkerService {
     } catch (error) {
       logger.failure('WORKER', 'Search failed', {}, error as Error);
       res.status(500).json({ error: (error as Error).message });
+    }
+  }
+
+  /**
+   * Generate context preview for settings modal
+   * GET /api/context/preview?project=...
+   */
+  private async handleContextPreview(req: Request, res: Response): Promise<void> {
+    try {
+      // Dynamic import to use context-hook function
+      const { contextHook } = await import('../hooks/context-hook.js');
+
+      // Get project filter from query params
+      const project = (req.query.project as string) || '';
+
+      // Determine current working directory
+      // Use project name to construct realistic cwd for preview
+      const cwd = project
+        ? path.join(homedir(), 'projects', project)
+        : process.cwd();
+
+      // Generate preview context (markdown, no colors)
+      const contextText = await contextHook(
+        {
+          session_id: 'preview-' + Date.now(),
+          cwd: cwd,
+          source: 'startup'
+        },
+        false  // useColors=false for markdown
+      );
+
+      // Return as plain text
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      res.send(contextText);
+    } catch (error) {
+      logger.failure('WORKER', 'Context preview generation failed', {}, error as Error);
+      res.status(500).json({
+        error: 'Failed to generate context preview',
+        message: (error as Error).message
+      });
     }
   }
 
