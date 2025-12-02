@@ -19,21 +19,52 @@ interface SidebarProps {
 }
 
 export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, isConnected, projects, currentFilter, onFilterChange, onSave, onClose, onRefreshStats }: SidebarProps) {
-  // Settings form state
-  const [model, setModel] = useState(settings.CLAUDE_MEM_MODEL || DEFAULT_SETTINGS.CLAUDE_MEM_MODEL);
-  const [contextObs, setContextObs] = useState(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_OBSERVATIONS);
-  const [workerPort, setWorkerPort] = useState(settings.CLAUDE_MEM_WORKER_PORT || DEFAULT_SETTINGS.CLAUDE_MEM_WORKER_PORT);
+  // Consolidated settings form state
+  const [formState, setFormState] = useState<Settings>({
+    CLAUDE_MEM_MODEL: settings.CLAUDE_MEM_MODEL || DEFAULT_SETTINGS.CLAUDE_MEM_MODEL,
+    CLAUDE_MEM_CONTEXT_OBSERVATIONS: settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_OBSERVATIONS,
+    CLAUDE_MEM_WORKER_PORT: settings.CLAUDE_MEM_WORKER_PORT || DEFAULT_SETTINGS.CLAUDE_MEM_WORKER_PORT,
+    CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: settings.CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS,
+    CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS: settings.CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS,
+    CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT: settings.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT,
+    CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT: settings.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT,
+    CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES: settings.CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES,
+    CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS: settings.CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS,
+    CLAUDE_MEM_CONTEXT_FULL_COUNT: settings.CLAUDE_MEM_CONTEXT_FULL_COUNT || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_FULL_COUNT,
+    CLAUDE_MEM_CONTEXT_FULL_FIELD: settings.CLAUDE_MEM_CONTEXT_FULL_FIELD || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_FULL_FIELD,
+    CLAUDE_MEM_CONTEXT_SESSION_COUNT: settings.CLAUDE_MEM_CONTEXT_SESSION_COUNT || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SESSION_COUNT,
+    CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: settings.CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY,
+    CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: settings.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE,
+  });
 
   // MCP toggle state (separate from settings)
   const [mcpEnabled, setMcpEnabled] = useState(true);
   const [mcpToggling, setMcpToggling] = useState(false);
   const [mcpStatus, setMcpStatus] = useState('');
 
-  // Update settings form state when settings change
+  // Helper to update form state
+  const updateFormState = (field: keyof Settings, value: string) => {
+    setFormState(prev => ({ ...prev, [field]: value }));
+  };
+
+  // Update settings form state when settings prop changes
   useEffect(() => {
-    setModel(settings.CLAUDE_MEM_MODEL || DEFAULT_SETTINGS.CLAUDE_MEM_MODEL);
-    setContextObs(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_OBSERVATIONS);
-    setWorkerPort(settings.CLAUDE_MEM_WORKER_PORT || DEFAULT_SETTINGS.CLAUDE_MEM_WORKER_PORT);
+    setFormState({
+      CLAUDE_MEM_MODEL: settings.CLAUDE_MEM_MODEL || DEFAULT_SETTINGS.CLAUDE_MEM_MODEL,
+      CLAUDE_MEM_CONTEXT_OBSERVATIONS: settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_OBSERVATIONS,
+      CLAUDE_MEM_WORKER_PORT: settings.CLAUDE_MEM_WORKER_PORT || DEFAULT_SETTINGS.CLAUDE_MEM_WORKER_PORT,
+      CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: settings.CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS,
+      CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS: settings.CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS,
+      CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT: settings.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT,
+      CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT: settings.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT,
+      CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES: settings.CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES,
+      CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS: settings.CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS,
+      CLAUDE_MEM_CONTEXT_FULL_COUNT: settings.CLAUDE_MEM_CONTEXT_FULL_COUNT || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_FULL_COUNT,
+      CLAUDE_MEM_CONTEXT_FULL_FIELD: settings.CLAUDE_MEM_CONTEXT_FULL_FIELD || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_FULL_FIELD,
+      CLAUDE_MEM_CONTEXT_SESSION_COUNT: settings.CLAUDE_MEM_CONTEXT_SESSION_COUNT || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SESSION_COUNT,
+      CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: settings.CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY,
+      CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: settings.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE,
+    });
   }, [settings]);
 
   // Fetch MCP status on mount
@@ -52,11 +83,7 @@ export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, isConne
   }, [isOpen, onRefreshStats]);
 
   const handleSave = () => {
-    onSave({
-      CLAUDE_MEM_MODEL: model,
-      CLAUDE_MEM_CONTEXT_OBSERVATIONS: contextObs,
-      CLAUDE_MEM_WORKER_PORT: workerPort
-    });
+    onSave(formState);
   };
 
   const handleMcpToggle = async (enabled: boolean) => {
@@ -193,8 +220,8 @@ export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, isConne
             </div>
             <select
               id="model"
-              value={model}
-              onChange={e => setModel(e.target.value)}
+              value={formState.CLAUDE_MEM_MODEL}
+              onChange={e => updateFormState('CLAUDE_MEM_MODEL', e.target.value)}
             >
               <option value="claude-haiku-4-5">claude-haiku-4-5</option>
               <option value="claude-sonnet-4-5">claude-sonnet-4-5</option>
@@ -211,8 +238,8 @@ export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, isConne
               id="contextObs"
               min="1"
               max="200"
-              value={contextObs}
-              onChange={e => setContextObs(e.target.value)}
+              value={formState.CLAUDE_MEM_CONTEXT_OBSERVATIONS}
+              onChange={e => updateFormState('CLAUDE_MEM_CONTEXT_OBSERVATIONS', e.target.value)}
             />
           </div>
           <div className="form-group">
@@ -225,10 +252,89 @@ export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, isConne
               id="workerPort"
               min="1024"
               max="65535"
-              value={workerPort}
-              onChange={e => setWorkerPort(e.target.value)}
+              value={formState.CLAUDE_MEM_WORKER_PORT}
+              onChange={e => updateFormState('CLAUDE_MEM_WORKER_PORT', e.target.value)}
             />
           </div>
+
+          {/* Token Economics Display */}
+          <div className="form-group">
+            <label>Token Economics Display</label>
+            <div className="setting-description">
+              Choose which token metrics to show in session start context.
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                <input type="checkbox" checked={formState.CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS === 'true'} onChange={e => updateFormState('CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS', e.target.checked ? 'true' : 'false')} />
+                Show read tokens
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                <input type="checkbox" checked={formState.CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS === 'true'} onChange={e => updateFormState('CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS', e.target.checked ? 'true' : 'false')} />
+                Show work tokens
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                <input type="checkbox" checked={formState.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT === 'true'} onChange={e => updateFormState('CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT', e.target.checked ? 'true' : 'false')} />
+                Show savings amount
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                <input type="checkbox" checked={formState.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT === 'true'} onChange={e => updateFormState('CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT', e.target.checked ? 'true' : 'false')} />
+                Show savings percentage
+              </label>
+            </div>
+          </div>
+
+          {/* Display Configuration */}
+          <div className="form-group">
+            <label>Display Configuration</label>
+            <div className="setting-description">
+              Control how observations are displayed in the timeline.
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '8px' }}>
+              <div>
+                <label htmlFor="fullCount" style={{ display: 'block', marginBottom: '4px', fontSize: '13px' }}>
+                  Full observation count (0-20)
+                </label>
+                <input type="number" id="fullCount" min="0" max="20" value={formState.CLAUDE_MEM_CONTEXT_FULL_COUNT} onChange={e => updateFormState('CLAUDE_MEM_CONTEXT_FULL_COUNT', e.target.value)} style={{ width: '100%' }} />
+                <div style={{ fontSize: '12px', color: '#999', marginTop: '4px' }}>
+                  Number of most recent observations to show with full details
+                </div>
+              </div>
+              <div>
+                <label htmlFor="fullField" style={{ display: 'block', marginBottom: '4px', fontSize: '13px' }}>
+                  Full observation field
+                </label>
+                <select id="fullField" value={formState.CLAUDE_MEM_CONTEXT_FULL_FIELD} onChange={e => updateFormState('CLAUDE_MEM_CONTEXT_FULL_FIELD', e.target.value)} style={{ width: '100%' }}>
+                  <option value="narrative">Narrative</option>
+                  <option value="facts">Facts</option>
+                </select>
+              </div>
+              <div>
+                <label htmlFor="sessionCount" style={{ display: 'block', marginBottom: '4px', fontSize: '13px' }}>
+                  Session summary count (1-50)
+                </label>
+                <input type="number" id="sessionCount" min="1" max="50" value={formState.CLAUDE_MEM_CONTEXT_SESSION_COUNT} onChange={e => updateFormState('CLAUDE_MEM_CONTEXT_SESSION_COUNT', e.target.value)} style={{ width: '100%' }} />
+              </div>
+            </div>
+          </div>
+
+          {/* Feature Toggles */}
+          <div className="form-group">
+            <label>Context Features</label>
+            <div className="setting-description">
+              Toggle additional features in session start context.
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                <input type="checkbox" checked={formState.CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY === 'true'} onChange={e => updateFormState('CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY', e.target.checked ? 'true' : 'false')} />
+                Show last session summary
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                <input type="checkbox" checked={formState.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE === 'true'} onChange={e => updateFormState('CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE', e.target.checked ? 'true' : 'false')} />
+                Include last session message
+              </label>
+            </div>
+          </div>
+
           {saveStatus && (
             <div className="save-status">{saveStatus}</div>
           )}
