@@ -52,7 +52,7 @@ interface ContextConfig {
 
 /**
  * Load all context configuration settings
- * Priority: ~/.claude/settings.json > env var > defaults
+ * Priority: ~/.claude-mem/settings.json > env var > defaults
  */
 function loadContextConfig(): ContextConfig {
   const defaults = {
@@ -71,7 +71,7 @@ function loadContextConfig(): ContextConfig {
   };
 
   try {
-    const settingsPath = path.join(homedir(), '.claude', 'settings.json');
+    const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
     if (!existsSync(settingsPath)) return defaults;
 
     const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
@@ -221,11 +221,11 @@ function renderSummaryField(label: string, value: string | null, color: string, 
 
 // Helper: Convert cwd path to dashed format for transcript directory name
 function cwdToDashed(cwd: string): string {
-  // Remove leading slash and convert remaining slashes to dashes
-  return cwd.replace(/^\//, '').replace(/\//g, '-');
+  // Convert all slashes to dashes (including leading slash)
+  return cwd.replace(/\//g, '-');
 }
 
-// Helper: Extract last user and assistant messages from transcript file
+// Helper: Extract last assistant message from transcript file
 function extractPriorMessages(transcriptPath: string): { userMessage: string; assistantMessage: string } {
   try {
     if (!existsSync(transcriptPath)) {
@@ -238,16 +238,23 @@ function extractPriorMessages(transcriptPath: string): { userMessage: string; as
     }
 
     const lines = content.split('\n').filter(line => line.trim());
-    let lastUserMessage = '';
+
+    // Find the last assistant message by filtering for assistant type and taking the last one
     let lastAssistantMessage = '';
 
-    // Parse JSONL backwards to find last user and assistant messages
+    // Iterate backwards to find the most recent assistant message with text content
     for (let i = lines.length - 1; i >= 0; i--) {
       try {
-        const entry = JSON.parse(lines[i]);
+        const line = lines[i];
 
-        // Find last assistant message
-        if (!lastAssistantMessage && entry.type === 'assistant' && entry.message?.content) {
+        // Quick check if this line is an assistant message
+        if (!line.includes('"type":"assistant"')) {
+          continue;
+        }
+
+        const entry = JSON.parse(line);
+
+        if (entry.type === 'assistant' && entry.message?.content && Array.isArray(entry.message.content)) {
           let text = '';
           for (const block of entry.message.content) {
             if (block.type === 'text') {
@@ -258,25 +265,8 @@ function extractPriorMessages(transcriptPath: string): { userMessage: string; as
           text = text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '').trim();
           if (text) {
             lastAssistantMessage = text;
+            break; // Found it, stop searching
           }
-        }
-
-        // Find last user message
-        if (!lastUserMessage && entry.type === 'user' && entry.message?.content) {
-          let text = '';
-          for (const block of entry.message.content) {
-            if (block.type === 'text') {
-              text += block.text;
-            }
-          }
-          if (text) {
-            lastUserMessage = text;
-          }
-        }
-
-        // Stop once we have both
-        if (lastUserMessage && lastAssistantMessage) {
-          break;
         }
       } catch (parseError) {
         // Skip malformed lines
@@ -284,9 +274,9 @@ function extractPriorMessages(transcriptPath: string): { userMessage: string; as
       }
     }
 
-    return { userMessage: lastUserMessage, assistantMessage: lastAssistantMessage };
+    return { userMessage: '', assistantMessage: lastAssistantMessage };
   } catch (error) {
-    logger.debug('HOOK', `Failed to extract prior messages from ${transcriptPath}:`, {}, error as Error);
+    logger.failure('HOOK', `Failed to extract prior messages from transcript`, { transcriptPath }, error as Error);
     return { userMessage: '', assistantMessage: '' };
   }
 }
@@ -361,6 +351,8 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
   // Retrieve prior session messages if enabled
   let priorUserMessage = '';
   let priorAssistantMessage = '';
+  // let debugInfo: string[] = [];
+
   if (config.showLastMessage && observations.length > 0) {
     try {
       const currentSessionId = input?.session_id;
@@ -375,13 +367,27 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
         const dashedCwd = cwdToDashed(cwd);
         const transcriptPath = path.join(homedir(), '.claude', 'projects', dashedCwd, `${priorSessionId}.jsonl`);
 
+        // debugInfo.push(`📋 Prior Message Retrieval:`);
+        // debugInfo.push(`  Session ID: ${priorSessionId}`);
+        // debugInfo.push(`  Transcript: ${transcriptPath}`);
+        // debugInfo.push(`  Exists: ${existsSync(transcriptPath)}`);
+
         // Extract messages from transcript
         const messages = extractPriorMessages(transcriptPath);
         priorUserMessage = messages.userMessage;
         priorAssistantMessage = messages.assistantMessage;
-      }
+
+        // if (!priorUserMessage && !priorAssistantMessage) {
+        //   debugInfo.push(`  ⚠️  No messages extracted from transcript`);
+        // } else {
+        //   debugInfo.push(`  ✅ Found user message: ${!!priorUserMessage}`);
+        //   debugInfo.push(`  ✅ Found assistant message: ${!!priorAssistantMessage}`);
+        // }
+      } // else {
+      //   debugInfo.push(`📋 Prior Message Retrieval: No prior session found (all observations from current session)`);
+      // }
     } catch (error) {
-      logger.debug('HOOK', 'Failed to retrieve prior session messages:', {}, error as Error);
+      // debugInfo.push(`📋 Prior Message Retrieval Error: ${(error as Error).message}`);
     }
   }
 
@@ -411,37 +417,6 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
   } else {
     output.push(`# [${project}] recent context`);
     output.push('');
-  }
-
-  // Previously section (last messages from prior session)
-  if (priorUserMessage || priorAssistantMessage) {
-    if (useColors) {
-      output.push(`${colors.bright}${colors.magenta}📋 Previously${colors.reset}`);
-      output.push('');
-      if (priorUserMessage) {
-        output.push(`${colors.dim}User: ${priorUserMessage}${colors.reset}`);
-        output.push('');
-      }
-      if (priorAssistantMessage) {
-        output.push(`${colors.dim}Assistant: ${priorAssistantMessage}${colors.reset}`);
-        output.push('');
-      }
-      output.push(`${colors.gray}${'─'.repeat(60)}${colors.reset}`);
-      output.push('');
-    } else {
-      output.push(`**📋 Previously**`);
-      output.push('');
-      if (priorUserMessage) {
-        output.push(`User: ${priorUserMessage}`);
-        output.push('');
-      }
-      if (priorAssistantMessage) {
-        output.push(`Assistant: ${priorAssistantMessage}`);
-        output.push('');
-      }
-      output.push('---');
-      output.push('');
-    }
   }
 
   // Chronological Timeline
@@ -789,25 +764,21 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
       output.push(...renderSummaryField('Next Steps', mostRecentSummary.next_steps, colors.magenta, useColors));
     }
 
-    // Show last message from previous session if enabled
-    // Note: last_assistant_message field would need to be added to session_summaries table
-    // For now, this is a placeholder for the feature
-    if (config.showLastMessage && mostRecentSummary) {
-      // This would require the last_assistant_message field to be populated
-      // The field exists but may not be populated yet in the current implementation
-      const lastMessage = (mostRecentSummary as any).last_assistant_message;
-      if (lastMessage) {
+    // Previously section (last assistant message from prior session) - positioned at bottom for chronological sense
+    if (priorAssistantMessage) {
+      output.push('');
+      output.push('---');
+      output.push('');
+      if (useColors) {
+        output.push(`${colors.bright}${colors.magenta}📋 Previously${colors.reset}`);
         output.push('');
-        if (useColors) {
-          output.push(`${colors.bright}${colors.magenta}💬 Last Message from Previous Session${colors.reset}`);
-          output.push(`${colors.dim}${lastMessage}${colors.reset}`);
-        } else {
-          output.push(`**💬 Last Message from Previous Session**`);
-          output.push('');
-          output.push(lastMessage);
-        }
+        output.push(`${colors.dim}A: ${priorAssistantMessage}${colors.reset}`);
+      } else {
+        output.push(`**📋 Previously**`);
         output.push('');
+        output.push(`A: ${priorAssistantMessage}`);
       }
+      output.push('');
     }
 
     // Footer with token savings message (only show if token economics is visible)
@@ -823,6 +794,15 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
   }
 
   db.close();
+
+  // Add debug info directly to output
+  // if (debugInfo.length > 0) {
+  //   output.push('');
+  //   output.push('---');
+  //   output.push('');
+  //   output.push(...debugInfo);
+  // }
+
   return output.join('\n').trimEnd();
 }
 

@@ -889,7 +889,7 @@ export class WorkerService {
    */
   private handleGetSettings(req: Request, res: Response): void {
     try {
-      const settingsPath = path.join(homedir(), '.claude', 'settings.json');
+      const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
 
       if (!existsSync(settingsPath)) {
         // Return defaults if file doesn't exist
@@ -986,7 +986,7 @@ export class WorkerService {
       }
 
       // Read existing settings
-      const settingsPath = path.join(homedir(), '.claude', 'settings.json');
+      const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
       let settings: any = { env: {} };
 
       if (existsSync(settingsPath)) {
