@@ -1,4 +1,5 @@
-import React from 'react';
+import React, { useMemo } from 'react';
+import AnsiToHtml from 'ansi-to-html';
 
 interface TerminalPreviewProps {
   content: string;
@@ -6,7 +7,20 @@ interface TerminalPreviewProps {
   className?: string;
 }
 
+const ansiConverter = new AnsiToHtml({
+  fg: '#dcd6cc',
+  bg: '#252320',
+  newline: false,
+  escapeXML: true,
+  stream: false
+});
+
 export function TerminalPreview({ content, isLoading = false, className = '' }: TerminalPreviewProps) {
+  const htmlContent = useMemo(() => {
+    if (!content) return '';
+    return ansiConverter.toHtml(content);
+  }, [content]);
+
   return (
     <div
       className={className}
@@ -40,7 +54,7 @@ export function TerminalPreview({ content, isLoading = false, className = '' }: 
         <div
           style={{
             padding: '16px',
-            fontFamily: 'Monaspace Radon, monospace',
+            fontFamily: 'var(--font-terminal)',
             fontSize: '12px',
             color: 'var(--color-text-secondary)'
           }}
@@ -52,7 +66,7 @@ export function TerminalPreview({ content, isLoading = false, className = '' }: 
           style={{
             padding: '16px',
             margin: 0,
-            fontFamily: 'Monaspace Radon, monospace',
+            fontFamily: 'var(--font-terminal)',
             fontSize: '12px',
             lineHeight: '1.6',
             overflow: 'auto',
@@ -62,9 +76,8 @@ export function TerminalPreview({ content, isLoading = false, className = '' }: 
             whiteSpace: 'pre-wrap',
             wordBreak: 'break-word'
           }}
-        >
-          {content}
-        </pre>
+          dangerouslySetInnerHTML={{ __html: htmlContent }}
+        />
       )}
     </div>
   );

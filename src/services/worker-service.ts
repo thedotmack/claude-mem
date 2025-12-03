@@ -832,7 +832,8 @@ export class WorkerService {
         SELECT DISTINCT project
         FROM observations
         WHERE project IS NOT NULL
-        ORDER BY project
+        GROUP BY project
+        ORDER BY MAX(created_at_epoch) DESC
       `).all() as Array<{ project: string }>;
 
       const projects = rows.map(row => row.project);
