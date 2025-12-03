@@ -141,7 +141,6 @@ export function App() {
         onSave={saveSettings}
         isSaving={isSaving}
         saveStatus={saveStatus}
-        currentProject={currentFilter}
       />
     </>
   );

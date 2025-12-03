@@ -10,7 +10,6 @@ interface ContextSettingsModalProps {
   onSave: (settings: Settings) => void;
   isSaving: boolean;
   saveStatus: string;
-  currentProject: string;
 }
 
 // Simple debounce helper
@@ -28,8 +27,7 @@ export function ContextSettingsModal({
   settings,
   onSave,
   isSaving,
-  saveStatus,
-  currentProject
+  saveStatus
 }: ContextSettingsModalProps) {
   const [formState, setFormState] = useState<Settings>(settings);
 
@@ -47,7 +45,7 @@ export function ContextSettingsModal({
   }, [settings]);
 
   // Get context preview based on current form state
-  const { preview, isLoading, error } = useContextPreview(formState, currentProject);
+  const { preview, isLoading, error, projects, selectedProject, setSelectedProject } = useContextPreview(formState);
 
   const updateSetting = useCallback((key: keyof Settings, value: string) => {
     const newState = { ...formState, [key]: value };
@@ -99,10 +97,29 @@ export function ContextSettingsModal({
         <div className="modal-header">
           <div>
             <h2 style={{ margin: 0, fontSize: '18px', fontWeight: 600 }}>Context Injection Settings</h2>
-            <p style={{ margin: '4px 0 0 0', fontSize: '13px', color: 'var(--color-text-secondary)' }}>
-              {currentProject ? `Preview for: ${currentProject}` : 'Preview for: All Projects'}
-              {isSaving && <span style={{ marginLeft: '12px', color: 'var(--color-text-tertiary)' }}>Saving...</span>}
-            </p>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginTop: '8px' }}>
+              <label style={{ fontSize: '13px', color: 'var(--color-text-secondary)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                Preview for:
+                <select
+                  value={selectedProject || ''}
+                  onChange={(e) => setSelectedProject(e.target.value)}
+                  style={{
+                    padding: '4px 8px',
+                    fontSize: '13px',
+                    border: '1px solid var(--color-border-primary)',
+                    borderRadius: '4px',
+                    backgroundColor: 'var(--color-bg-input)',
+                    color: 'var(--color-text-primary)',
+                    cursor: 'pointer'
+                  }}
+                >
+                  {projects.map(project => (
+                    <option key={project} value={project}>{project}</option>
+                  ))}
+                </select>
+              </label>
+              {isSaving && <span style={{ fontSize: '13px', color: 'var(--color-text-tertiary)' }}>Saving...</span>}
+            </div>
           </div>
           <button
             onClick={onClose}

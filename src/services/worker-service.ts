@@ -169,6 +169,7 @@ export class WorkerService {
     this.app.get('/api/prompt/:id', this.handleGetPromptById.bind(this));
 
     this.app.get('/api/stats', this.handleGetStats.bind(this));
+    this.app.get('/api/projects', this.handleGetProjects.bind(this));
     this.app.get('/api/processing-status', this.handleGetProcessingStatus.bind(this));
     this.app.post('/api/processing', this.handleSetProcessing.bind(this));
 
@@ -815,6 +816,30 @@ export class WorkerService {
       });
     } catch (error) {
       logger.failure('WORKER', 'Get stats failed', {}, error as Error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  }
+
+  /**
+   * Get list of distinct projects from observations
+   * GET /api/projects
+   */
+  private handleGetProjects(req: Request, res: Response): void {
+    try {
+      const db = this.dbManager.getSessionStore().db;
+
+      const rows = db.prepare(`
+        SELECT DISTINCT project
+        FROM observations
+        WHERE project IS NOT NULL
+        ORDER BY project
+      `).all() as Array<{ project: string }>;
+
+      const projects = rows.map(row => row.project);
+
+      res.json({ projects });
+    } catch (error) {
+      logger.failure('WORKER', 'Get projects failed', {}, error as Error);
       res.status(500).json({ error: (error as Error).message });
     }
   }
@@ -1494,8 +1519,15 @@ export class WorkerService {
       const contextHookPath = path.join(packageRoot, 'plugin', 'scripts', 'context-hook.js');
       const { contextHook } = await import(contextHookPath);
 
-      // Use cm_demo_content project to trigger demo data
-      const cwd = '/demo/cm_demo_content';
+      // Get project from query parameter
+      const projectName = req.query.project as string;
+
+      if (!projectName) {
+        return res.status(400).json({ error: 'Project parameter is required' });
+      }
+
+      // Use project name as CWD (contextHook uses path.basename to get project)
+      const cwd = `/preview/${projectName}`;
 
       // Generate preview context (with colors for terminal display)
       const contextText = await contextHook(
