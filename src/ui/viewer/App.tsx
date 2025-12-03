@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Header } from './components/Header';
 import { Feed } from './components/Feed';
-import { Sidebar } from './components/Sidebar';
 import { ContextSettingsModal } from './components/ContextSettingsModal';
 import { useSSE } from './hooks/useSSE';
 import { useSettings } from './hooks/useSettings';
@@ -13,7 +12,6 @@ import { mergeAndDeduplicateByProject } from './utils/data';
 
 export function App() {
   const [currentFilter, setCurrentFilter] = useState('');
-  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [contextPreviewOpen, setContextPreviewOpen] = useState(false);
   const [paginatedObservations, setPaginatedObservations] = useState<Observation[]>([]);
   const [paginatedSummaries, setPaginatedSummaries] = useState<Summary[]>([]);
@@ -49,11 +47,6 @@ export function App() {
     }
     return mergeAndDeduplicateByProject(prompts, paginatedPrompts);
   }, [prompts, paginatedPrompts, currentFilter]);
-
-  // Toggle sidebar
-  const toggleSidebar = useCallback(() => {
-    setSidebarOpen(prev => !prev);
-  }, []);
 
   // Toggle context preview modal
   const toggleContextPreview = useCallback(() => {
@@ -99,15 +92,12 @@ export function App() {
         projects={projects}
         currentFilter={currentFilter}
         onFilterChange={setCurrentFilter}
-        onSettingsToggle={toggleSidebar}
-        sidebarOpen={sidebarOpen}
         isProcessing={isProcessing}
         queueDepth={queueDepth}
         themePreference={preference}
         onThemeChange={setThemePreference}
         onContextPreviewToggle={toggleContextPreview}
       />
-
 
       <Feed
         observations={allObservations}
@@ -116,22 +106,6 @@ export function App() {
         onLoadMore={handleLoadMore}
         isLoading={pagination.observations.isLoading || pagination.summaries.isLoading || pagination.prompts.isLoading}
         hasMore={pagination.observations.hasMore || pagination.summaries.hasMore || pagination.prompts.hasMore}
-      />
-
-
-      <Sidebar
-        isOpen={sidebarOpen}
-        settings={settings}
-        stats={stats}
-        isSaving={isSaving}
-        saveStatus={saveStatus}
-        isConnected={isConnected}
-        projects={projects}
-        currentFilter={currentFilter}
-        onFilterChange={setCurrentFilter}
-        onSave={saveSettings}
-        onClose={toggleSidebar}
-        onRefreshStats={refreshStats}
       />
 
       <ContextSettingsModal

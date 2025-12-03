@@ -1781,6 +1781,33 @@
       transform: scale(0.95);
     }
 
+    .modal-icon-link {
+      background: transparent;
+      border: 1px solid var(--color-border-primary);
+      width: 32px;
+      height: 32px;
+      border-radius: 6px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--color-text-secondary);
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      padding: 0;
+      text-decoration: none;
+    }
+
+    .modal-icon-link:hover {
+      background: var(--color-bg-card-hover);
+      border-color: var(--color-border-focus);
+      color: var(--color-text-primary);
+      transform: scale(1.05);
+    }
+
+    .modal-icon-link:active {
+      transform: scale(0.95);
+    }
+
     .modal-body {
       flex: 1;
       display: grid;
