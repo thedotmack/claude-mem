@@ -1742,7 +1742,7 @@
     .modal-body {
       flex: 1;
       display: grid;
-      grid-template-columns: 45fr 55fr;
+      grid-template-columns: 70fr 30fr;
       gap: 0;
       overflow: hidden;
       min-height: 0;
@@ -1859,9 +1859,9 @@
       background: rgba(255, 255, 255, 0.25);
     }
 
-    /* Settings Groups */
+    /* Settings Groups - Compact */
     .settings-group {
-      padding: 24px 28px;
+      padding: 14px 16px;
       border-bottom: 1px solid var(--color-border-primary);
     }
 
@@ -1870,30 +1870,30 @@
     }
 
     .settings-group h4 {
-      margin: 0 0 16px 0;
-      font-size: 11px;
+      margin: 0 0 10px 0;
+      font-size: 10px;
       font-weight: 600;
       color: var(--color-text-muted);
       text-transform: uppercase;
       letter-spacing: 0.8px;
     }
 
-    /* Filter Chips - Enhanced */
+    /* Filter Chips - Compact */
     .chips-container {
       display: flex;
       flex-wrap: wrap;
-      gap: 8px;
+      gap: 6px;
     }
 
     .chip {
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      padding: 8px 16px;
-      min-height: 36px;
+      padding: 5px 10px;
+      min-height: 28px;
       border: 1px solid var(--color-border-primary);
-      border-radius: 6px;
-      font-size: 13px;
+      border-radius: 4px;
+      font-size: 11px;
       font-weight: 500;
       color: var(--color-text-secondary);
       background: var(--color-bg-card);
@@ -1926,16 +1926,16 @@
       box-shadow: 0 4px 12px rgba(9, 105, 218, 0.35);
     }
 
-    /* Form Controls in Modal */
+    /* Form Controls in Modal - Compact */
     .settings-group input[type="number"],
     .settings-group select {
       width: 100%;
       background: var(--color-bg-input);
       border: 1px solid var(--color-border-primary);
-      border-radius: 6px;
-      padding: 8px 12px;
-      height: 40px;
-      font-size: 13px;
+      border-radius: 4px;
+      padding: 6px 10px;
+      height: 32px;
+      font-size: 12px;
       color: var(--color-text-primary);
       transition: all 0.2s;
       margin-top: 4px;
@@ -1955,39 +1955,39 @@
 
     .settings-group label {
       display: block;
-      font-size: 13px;
+      font-size: 11px;
       font-weight: 500;
       color: var(--color-text-primary);
-      margin-bottom: 8px;
+      margin-bottom: 4px;
     }
 
-    /* Checkboxes */
+    /* Checkboxes - Compact */
     .settings-group input[type="checkbox"] {
-      width: 18px;
-      height: 18px;
+      width: 14px;
+      height: 14px;
       cursor: pointer;
-      margin-right: 8px;
+      margin-right: 6px;
       accent-color: var(--color-accent-primary);
     }
 
     .checkbox-group {
       display: flex;
       flex-direction: column;
-      gap: 12px;
-      margin-top: 8px;
+      gap: 6px;
+      margin-top: 4px;
     }
 
     .checkbox-item {
       display: flex;
       align-items: center;
       cursor: pointer;
-      padding: 8px 0;
+      padding: 4px 0;
     }
 
     .checkbox-item label {
       margin: 0;
       cursor: pointer;
-      font-size: 13px;
+      font-size: 11px;
       font-weight: 500;
       color: var(--color-text-secondary);
     }
@@ -1996,13 +1996,19 @@
       color: var(--color-text-primary);
     }
 
-    /* Number Input Group */
+    /* Number Input Group - Compact */
     .number-input-group {
-      margin-top: 8px;
+      margin-top: 6px;
     }
 
     .select-group {
-      margin-top: 8px;
+      margin-top: 6px;
+    }
+
+    .number-input-group + .number-input-group,
+    .select-group + .number-input-group,
+    .number-input-group + .select-group {
+      margin-top: 10px;
     }
 
     /* Animations */
@@ -2053,7 +2059,7 @@
       }
 
       .settings-group {
-        padding: 20px;
+        padding: 14px 16px;
       }
     }
   </style>

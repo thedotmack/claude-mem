@@ -31,6 +31,11 @@ export function ContextSettingsModal({
 }: ContextSettingsModalProps) {
   const [formState, setFormState] = useState<Settings>(settings);
 
+  // MCP toggle state
+  const [mcpEnabled, setMcpEnabled] = useState(true);
+  const [mcpToggling, setMcpToggling] = useState(false);
+  const [mcpStatus, setMcpStatus] = useState('');
+
   // Create debounced save function
   const debouncedSave = useCallback(
     debounce((newSettings: Settings) => {
@@ -43,6 +48,14 @@ export function ContextSettingsModal({
   useEffect(() => {
     setFormState(settings);
   }, [settings]);
+
+  // Fetch MCP status on mount
+  useEffect(() => {
+    fetch('/api/mcp/status')
+      .then(res => res.json())
+      .then(data => setMcpEnabled(data.enabled))
+      .catch(error => console.error('Failed to load MCP status:', error));
+  }, []);
 
   // Get context preview based on current form state
   const { preview, isLoading, error, projects, selectedProject, setSelectedProject } = useContextPreview(formState);
@@ -73,6 +86,36 @@ export function ContextSettingsModal({
     const currentArray = currentValue ? currentValue.split(',') : [];
     return currentArray.includes(value);
   }, [formState]);
+
+  // Handle MCP toggle
+  const handleMcpToggle = async (enabled: boolean) => {
+    setMcpToggling(true);
+    setMcpStatus('Toggling...');
+
+    try {
+      const response = await fetch('/api/mcp/toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled })
+      });
+
+      const result = await response.json();
+
+      if (result.success) {
+        setMcpEnabled(result.enabled);
+        setMcpStatus('Updated (restart to apply)');
+        setTimeout(() => setMcpStatus(''), 3000);
+      } else {
+        setMcpStatus(`Error: ${result.error}`);
+        setTimeout(() => setMcpStatus(''), 3000);
+      }
+    } catch (err) {
+      setMcpStatus(`Error: ${err instanceof Error ? err.message : 'Unknown error'}`);
+      setTimeout(() => setMcpStatus(''), 3000);
+    } finally {
+      setMcpToggling(false);
+    }
+  };
 
   // Handle ESC key
   useEffect(() => {
@@ -138,50 +181,46 @@ export function ContextSettingsModal({
 
           {/* Right column - Settings Panel */}
           <div className="settings-column">
-            {/* Group 1: Token Economics Display */}
+            {/* Group 1: Core Settings */}
             <div className="settings-group">
-              <h4>Token Economics Display</h4>
-              <div className="checkbox-group">
-                <div className="checkbox-item">
-                  <input
-                    type="checkbox"
-                    id="show-read-tokens"
-                    checked={formState.CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS === 'true'}
-                    onChange={() => toggleBoolean('CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS')}
-                  />
-                  <label htmlFor="show-read-tokens">Show read tokens</label>
-                </div>
-                <div className="checkbox-item">
-                  <input
-                    type="checkbox"
-                    id="show-work-tokens"
-                    checked={formState.CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS === 'true'}
-                    onChange={() => toggleBoolean('CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS')}
-                  />
-                  <label htmlFor="show-work-tokens">Show work tokens</label>
-                </div>
-                <div className="checkbox-item">
-                  <input
-                    type="checkbox"
-                    id="show-savings-amount"
-                    checked={formState.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT === 'true'}
-                    onChange={() => toggleBoolean('CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT')}
-                  />
-                  <label htmlFor="show-savings-amount">Show savings amount</label>
-                </div>
-                <div className="checkbox-item">
-                  <input
-                    type="checkbox"
-                    id="show-savings-percent"
-                    checked={formState.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT === 'true'}
-                    onChange={() => toggleBoolean('CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT')}
-                  />
-                  <label htmlFor="show-savings-percent">Show savings percent</label>
-                </div>
+              <h4>Core Settings</h4>
+              <div className="select-group">
+                <label htmlFor="model">Model</label>
+                <select
+                  id="model"
+                  value={formState.CLAUDE_MEM_MODEL || 'claude-haiku-4-5'}
+                  onChange={(e) => updateSetting('CLAUDE_MEM_MODEL', e.target.value)}
+                >
+                  <option value="claude-haiku-4-5">claude-haiku-4-5</option>
+                  <option value="claude-sonnet-4-5">claude-sonnet-4-5</option>
+                  <option value="claude-opus-4">claude-opus-4</option>
+                </select>
+              </div>
+              <div className="number-input-group">
+                <label htmlFor="context-obs">Observations to load (1-200)</label>
+                <input
+                  type="number"
+                  id="context-obs"
+                  min="1"
+                  max="200"
+                  value={formState.CLAUDE_MEM_CONTEXT_OBSERVATIONS || '50'}
+                  onChange={(e) => updateSetting('CLAUDE_MEM_CONTEXT_OBSERVATIONS', e.target.value)}
+                />
+              </div>
+              <div className="number-input-group">
+                <label htmlFor="session-count">Session count (1-50)</label>
+                <input
+                  type="number"
+                  id="session-count"
+                  min="1"
+                  max="50"
+                  value={formState.CLAUDE_MEM_CONTEXT_SESSION_COUNT || '10'}
+                  onChange={(e) => updateSetting('CLAUDE_MEM_CONTEXT_SESSION_COUNT', e.target.value)}
+                />
               </div>
             </div>
 
-            {/* Group 2: Observation Types */}
+            {/* Group 2: Filters */}
             <div className="settings-group">
               <h4>Observation Types</h4>
               <div className="chips-container">
@@ -197,7 +236,6 @@ export function ContextSettingsModal({
               </div>
             </div>
 
-            {/* Group 3: Observation Concepts */}
             <div className="settings-group">
               <h4>Observation Concepts</h4>
               <div className="chips-container">
@@ -213,11 +251,11 @@ export function ContextSettingsModal({
               </div>
             </div>
 
-            {/* Group 4: Display Configuration */}
+            {/* Group 3: Display */}
             <div className="settings-group">
-              <h4>Display Configuration</h4>
+              <h4>Display</h4>
               <div className="number-input-group">
-                <label htmlFor="full-count">Full observations count (0-20)</label>
+                <label htmlFor="full-count">Full observations (0-20)</label>
                 <input
                   type="number"
                   id="full-count"
@@ -238,23 +276,74 @@ export function ContextSettingsModal({
                   <option value="facts">Facts</option>
                 </select>
               </div>
-              <div className="number-input-group">
-                <label htmlFor="session-count">Session count (1-50)</label>
-                <input
-                  type="number"
-                  id="session-count"
-                  min="1"
-                  max="50"
-                  value={formState.CLAUDE_MEM_CONTEXT_SESSION_COUNT || '10'}
-                  onChange={(e) => updateSetting('CLAUDE_MEM_CONTEXT_SESSION_COUNT', e.target.value)}
-                />
+              <div className="checkbox-group">
+                <div className="checkbox-item">
+                  <input
+                    type="checkbox"
+                    id="show-read-tokens"
+                    checked={formState.CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS === 'true'}
+                    onChange={() => toggleBoolean('CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS')}
+                  />
+                  <label htmlFor="show-read-tokens">Read tokens</label>
+                </div>
+                <div className="checkbox-item">
+                  <input
+                    type="checkbox"
+                    id="show-work-tokens"
+                    checked={formState.CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS === 'true'}
+                    onChange={() => toggleBoolean('CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS')}
+                  />
+                  <label htmlFor="show-work-tokens">Work tokens</label>
+                </div>
+                <div className="checkbox-item">
+                  <input
+                    type="checkbox"
+                    id="show-savings-amount"
+                    checked={formState.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT === 'true'}
+                    onChange={() => toggleBoolean('CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT')}
+                  />
+                  <label htmlFor="show-savings-amount">Savings amount</label>
+                </div>
+                <div className="checkbox-item">
+                  <input
+                    type="checkbox"
+                    id="show-savings-percent"
+                    checked={formState.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT === 'true'}
+                    onChange={() => toggleBoolean('CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT')}
+                  />
+                  <label htmlFor="show-savings-percent">Savings percent</label>
+                </div>
               </div>
             </div>
 
-            {/* Group 5: Feature Toggles */}
+            {/* Group 4: Advanced */}
             <div className="settings-group">
-              <h4>Feature Toggles</h4>
+              <h4>Advanced</h4>
+              <div className="number-input-group">
+                <label htmlFor="worker-port">Worker port</label>
+                <input
+                  type="number"
+                  id="worker-port"
+                  min="1024"
+                  max="65535"
+                  value={formState.CLAUDE_MEM_WORKER_PORT || '37777'}
+                  onChange={(e) => updateSetting('CLAUDE_MEM_WORKER_PORT', e.target.value)}
+                />
+              </div>
               <div className="checkbox-group">
+                <div className="checkbox-item">
+                  <input
+                    type="checkbox"
+                    id="mcp-enabled"
+                    checked={mcpEnabled}
+                    onChange={(e) => handleMcpToggle(e.target.checked)}
+                    disabled={mcpToggling}
+                  />
+                  <label htmlFor="mcp-enabled">MCP search server</label>
+                </div>
+                {mcpStatus && (
+                  <div style={{ fontSize: '10px', color: '#888', marginLeft: '20px' }}>{mcpStatus}</div>
+                )}
                 <div className="checkbox-item">
                   <input
                     type="checkbox"
@@ -262,7 +351,7 @@ export function ContextSettingsModal({
                     checked={formState.CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY === 'true'}
                     onChange={() => toggleBoolean('CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY')}
                   />
-                  <label htmlFor="show-last-summary">Show last summary</label>
+                  <label htmlFor="show-last-summary">Last summary</label>
                 </div>
                 <div className="checkbox-item">
                   <input
@@ -271,7 +360,7 @@ export function ContextSettingsModal({
                     checked={formState.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE === 'true'}
                     onChange={() => toggleBoolean('CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE')}
                   />
-                  <label htmlFor="show-last-message">Show last message</label>
+                  <label htmlFor="show-last-message">Last message</label>
                 </div>
               </div>
             </div>
