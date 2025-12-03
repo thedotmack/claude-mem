@@ -16,10 +16,25 @@ const ansiConverter = new AnsiToHtml({
 });
 
 export function TerminalPreview({ content, isLoading = false, className = '' }: TerminalPreviewProps) {
-  const htmlContent = useMemo(() => {
+  const html = useMemo(() => {
     if (!content) return '';
     return ansiConverter.toHtml(content);
   }, [content]);
+
+  const preStyle: React.CSSProperties = {
+    padding: '16px',
+    margin: 0,
+    fontFamily: 'var(--font-terminal)',
+    fontSize: '12px',
+    lineHeight: '1.6',
+    overflow: 'auto',
+    color: 'var(--color-text-primary)',
+    backgroundColor: 'var(--color-bg-card)',
+    whiteSpace: 'pre-wrap',
+    wordBreak: 'break-word',
+    position: 'absolute',
+    inset: 0,
+  };
 
   return (
     <div
@@ -62,22 +77,12 @@ export function TerminalPreview({ content, isLoading = false, className = '' }: 
           Loading preview...
         </div>
       ) : (
-        <pre
-          style={{
-            padding: '16px',
-            margin: 0,
-            fontFamily: 'var(--font-terminal)',
-            fontSize: '12px',
-            lineHeight: '1.6',
-            overflow: 'auto',
-            flex: 1,
-            color: 'var(--color-text-primary)',
-            backgroundColor: 'var(--color-bg-card)',
-            whiteSpace: 'pre-wrap',
-            wordBreak: 'break-word'
-          }}
-          dangerouslySetInnerHTML={{ __html: htmlContent }}
-        />
+        <div style={{ position: 'relative', flex: 1, overflow: 'hidden' }}>
+          <pre
+            style={preStyle}
+            dangerouslySetInnerHTML={{ __html: html }}
+          />
+        </div>
       )}
     </div>
   );

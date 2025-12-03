@@ -2032,6 +2032,334 @@
       }
     }
 
+    /* ============================================
+       NEW: Collapsible Sections
+       ============================================ */
+    .settings-section-collapsible {
+      border-bottom: 1px solid var(--color-border-primary);
+    }
+
+    .settings-section-collapsible:last-child {
+      border-bottom: none;
+    }
+
+    .section-header-btn {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 16px;
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      text-align: left;
+      transition: background 0.15s ease;
+    }
+
+    .section-header-btn:hover {
+      background: var(--color-bg-card-hover);
+    }
+
+    .section-header-content {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .section-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--color-text-primary);
+      letter-spacing: -0.01em;
+    }
+
+    .section-description {
+      font-size: 11px;
+      color: var(--color-text-muted);
+      font-weight: 400;
+    }
+
+    .chevron-icon {
+      color: var(--color-text-muted);
+      transition: transform 0.2s ease;
+      flex-shrink: 0;
+    }
+
+    .chevron-icon.rotated {
+      transform: rotate(180deg);
+    }
+
+    .section-content {
+      padding: 0 16px 16px 16px;
+    }
+
+    /* ============================================
+       NEW: Chip Groups with All/None
+       ============================================ */
+    .chip-group {
+      margin-bottom: 14px;
+    }
+
+    .chip-group:last-child {
+      margin-bottom: 0;
+    }
+
+    .chip-group-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+
+    .chip-group-label {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--color-text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .chip-group-actions {
+      display: flex;
+      gap: 4px;
+    }
+
+    .chip-action {
+      padding: 2px 8px;
+      font-size: 10px;
+      font-weight: 500;
+      color: var(--color-text-muted);
+      background: transparent;
+      border: 1px solid var(--color-border-primary);
+      border-radius: 3px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .chip-action:hover {
+      color: var(--color-text-primary);
+      border-color: var(--color-border-hover);
+      background: var(--color-bg-card-hover);
+    }
+
+    .chip-action.active {
+      color: var(--color-accent-primary);
+      border-color: var(--color-accent-primary);
+      background: var(--color-type-badge-bg);
+    }
+
+    /* ============================================
+       NEW: Form Fields with Tooltips
+       ============================================ */
+    .form-field {
+      margin-bottom: 12px;
+    }
+
+    .form-field:last-child {
+      margin-bottom: 0;
+    }
+
+    .form-field-label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--color-text-primary);
+      margin-bottom: 6px;
+    }
+
+    .tooltip-trigger {
+      display: inline-flex;
+      align-items: center;
+      color: var(--color-text-muted);
+      cursor: help;
+      transition: color 0.15s ease;
+    }
+
+    .tooltip-trigger:hover {
+      color: var(--color-accent-primary);
+    }
+
+    .form-field input[type="number"],
+    .form-field select {
+      width: 100%;
+      background: var(--color-bg-input);
+      border: 1px solid var(--color-border-primary);
+      border-radius: 6px;
+      padding: 8px 12px;
+      height: 36px;
+      font-size: 13px;
+      color: var(--color-text-primary);
+      transition: all 0.15s ease;
+    }
+
+    .form-field input[type="number"]:hover,
+    .form-field select:hover {
+      border-color: var(--color-border-hover);
+    }
+
+    .form-field input[type="number"]:focus,
+    .form-field select:focus {
+      outline: none;
+      border-color: var(--color-border-focus);
+      box-shadow: 0 0 0 3px rgba(9, 105, 218, 0.1);
+    }
+
+    /* ============================================
+       NEW: Toggle Switches
+       ============================================ */
+    .toggle-group {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--color-border-secondary);
+    }
+
+    .toggle-row:last-child {
+      border-bottom: none;
+    }
+
+    .toggle-info {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      flex: 1;
+      min-width: 0;
+    }
+
+    .toggle-label {
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--color-text-primary);
+      cursor: pointer;
+    }
+
+    .toggle-description {
+      font-size: 11px;
+      color: var(--color-text-muted);
+      line-height: 1.3;
+    }
+
+    .toggle-switch {
+      position: relative;
+      width: 40px;
+      height: 22px;
+      background: var(--color-bg-tertiary);
+      border: 1px solid var(--color-border-primary);
+      border-radius: 11px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      flex-shrink: 0;
+      margin-left: 12px;
+      padding: 0;
+    }
+
+    .toggle-switch:hover:not(.disabled) {
+      border-color: var(--color-border-hover);
+    }
+
+    .toggle-switch.on {
+      background: var(--color-accent-primary);
+      border-color: var(--color-accent-primary);
+    }
+
+    .toggle-switch.disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .toggle-knob {
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 16px;
+      height: 16px;
+      background: white;
+      border-radius: 50%;
+      transition: transform 0.2s ease;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+    }
+
+    .toggle-switch.on .toggle-knob {
+      transform: translateX(18px);
+    }
+
+    /* ============================================
+       NEW: Display Subsections
+       ============================================ */
+    .display-subsection {
+      padding: 12px 0;
+      border-bottom: 1px solid var(--color-border-secondary);
+    }
+
+    .display-subsection:first-child {
+      padding-top: 0;
+    }
+
+    .display-subsection:last-child {
+      border-bottom: none;
+      padding-bottom: 0;
+    }
+
+    .subsection-label {
+      display: block;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--color-text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 10px;
+    }
+
+    /* ============================================
+       Improved Chip Styles
+       ============================================ */
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 6px 12px;
+      min-height: 30px;
+      border: 1px solid var(--color-border-primary);
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--color-text-secondary);
+      background: var(--color-bg-card);
+      cursor: pointer;
+      transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+      user-select: none;
+    }
+
+    .chip:hover {
+      background: var(--color-bg-card-hover);
+      border-color: var(--color-accent-primary);
+      color: var(--color-text-primary);
+    }
+
+    .chip:active {
+      transform: scale(0.98);
+    }
+
+    .chip.selected {
+      background: var(--color-accent-primary);
+      color: white;
+      border-color: var(--color-accent-primary);
+    }
+
+    .chip.selected:hover {
+      background: var(--color-bg-button-hover);
+      border-color: var(--color-bg-button-hover);
+    }
+
     /* Responsive Modal */
     @media (max-width: 900px) {
       .modal-body {
@@ -2060,6 +2388,32 @@
 
       .settings-group {
         padding: 14px 16px;
+      }
+
+      .section-header-btn {
+        padding: 12px 14px;
+      }
+
+      .section-content {
+        padding: 0 14px 14px 14px;
+      }
+
+      .toggle-row {
+        padding: 8px 0;
+      }
+
+      .toggle-switch {
+        width: 36px;
+        height: 20px;
+      }
+
+      .toggle-knob {
+        width: 14px;
+        height: 14px;
+      }
+
+      .toggle-switch.on .toggle-knob {
+        transform: translateX(16px);
       }
     }
   </style>
