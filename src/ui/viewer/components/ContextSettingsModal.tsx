@@ -306,35 +306,35 @@ export function ContextSettingsModal({
         {/* Header */}
         <div className="modal-header">
           <h2>Context Settings</h2>
-          <button
-            onClick={onClose}
-            className="modal-close-btn"
-            title="Close (Esc)"
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <line x1="18" y1="6" x2="6" y2="18" />
-              <line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
-          </button>
+          <div className="header-controls">
+            <label className="preview-selector">
+              Preview for:
+              <select
+                value={selectedProject || ''}
+                onChange={(e) => setSelectedProject(e.target.value)}
+              >
+                {projects.map(project => (
+                  <option key={project} value={project}>{project}</option>
+                ))}
+              </select>
+            </label>
+            <button
+              onClick={onClose}
+              className="modal-close-btn"
+              title="Close (Esc)"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <line x1="18" y1="6" x2="6" y2="18" />
+                <line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+          </div>
         </div>
 
         {/* Body - 2 columns */}
         <div className="modal-body">
           {/* Left column - Terminal Preview */}
           <div className="preview-column">
-            <div className="preview-column-header">
-              <label>
-                Preview for:
-                <select
-                  value={selectedProject || ''}
-                  onChange={(e) => setSelectedProject(e.target.value)}
-                >
-                  {projects.map(project => (
-                    <option key={project} value={project}>{project}</option>
-                  ))}
-                </select>
-              </label>
-            </div>
             <div className="preview-content">
               {error ? (
                 <div style={{ color: '#ff6b6b' }}>
