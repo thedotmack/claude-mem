@@ -26,6 +26,12 @@ export function Header({
   onThemeChange,
   onContextPreviewToggle
 }: HeaderProps) {
+  // Resolve effective theme for Product Hunt badge
+  const isDark = themePreference === 'dark' ||
+    (themePreference === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+  const phBadgeTheme = isDark ? 'dark' : 'light';
+  const phBadgeUrl = `https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1045833&theme=${phBadgeTheme}`;
+
   return (
     <div className="header">
       <h1>
@@ -40,6 +46,20 @@ export function Header({
         <span className="logo-text">claude-mem</span>
       </h1>
       <div className="status">
+        <a
+          href="https://www.producthunt.com/products/claude-mem?embed=true&utm_source=badge-featured&utm_medium=badge&utm_source=badge-claude-mem"
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ display: 'flex', alignItems: 'center' }}
+        >
+          <img
+            src={phBadgeUrl}
+            alt="Claude-Mem on Product Hunt"
+            style={{ width: '180px', height: '40px' }}
+            width="180"
+            height="40"
+          />
+        </a>
         <GitHubStarsButton username="thedotmack" repo="claude-mem" />
         <a
           href="https://discord.gg/J4wttp9vDu"
