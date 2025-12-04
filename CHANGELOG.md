@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [6.5.1] - 2025-12-04
+
+## What's New
+
+- Decorative Product Hunt announcement in terminal with rocket borders
+- Product Hunt badge in viewer header with theme-aware switching (light/dark)
+- Badge uses separate tracking URL for analytics
+
+## Changes
+
+This is a temporary launch day update. The announcement will auto-expire at midnight EST.
+
 ## [6.5.0] - 2025-12-04
 
 ## Documentation Overhaul
