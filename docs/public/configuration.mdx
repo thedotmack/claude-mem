@@ -13,7 +13,7 @@ description: "Environment variables and settings for Claude-Mem"
 | `CLAUDE_MEM_DATA_DIR`         | `~/.claude-mem/`                | Data directory (production default)   |
 | `CLAUDE_CODE_PATH`            | Auto-detected                   | Path to Claude Code CLI (for Windows) |
 | `CLAUDE_MEM_WORKER_PORT`      | `37777`                         | Worker service port                   |
-| `CLAUDE_MEM_MODEL`            | `claude-sonnet-4-5`             | AI model for processing observations  |
+| `CLAUDE_MEM_MODEL`            | `claude-haiku-4-5`              | AI model for processing observations  |
 | `CLAUDE_MEM_CONTEXT_OBSERVATIONS` | `50`                        | Number of observations to inject      |
 | `NODE_ENV`                    | `production`                    | Environment mode                      |
 | `FORCE_COLOR`                 | `1`                             | Enable colored logs                   |
@@ -24,8 +24,8 @@ Configure which AI model processes your observations.
 
 ### Available Models
 
-- `claude-haiku-4-5` - Fast, cost-efficient
-- `claude-sonnet-4-5` - Balanced (default)
+- `claude-haiku-4-5` - Fast, cost-efficient (default)
+- `claude-sonnet-4-5` - Balanced
 - `claude-opus-4` - Most capable
 - `claude-3-7-sonnet` - Alternative version
 
@@ -43,7 +43,7 @@ Edit `~/.claude/settings.json`:
 
 ```json
 {
-  "CLAUDE_MEM_MODEL": "claude-sonnet-4-5"
+  "CLAUDE_MEM_MODEL": "claude-haiku-4-5"
 }
 ```
 
@@ -328,7 +328,7 @@ npm run worker:logs
 
 ### Invalid Model Name
 
-If you specify an invalid model name, the worker will fall back to `claude-sonnet-4-5` and log a warning.
+If you specify an invalid model name, the worker will fall back to `claude-haiku-4-5` and log a warning.
 
 Valid models:
 - claude-haiku-4-5

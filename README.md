@@ -17,7 +17,7 @@
     <img src="https://img.shields.io/badge/License-AGPL%203.0-blue.svg" alt="License">
   </a>
   <a href="package.json">
-    <img src="https://img.shields.io/badge/version-6.3.0-green.svg" alt="Version">
+    <img src="https://img.shields.io/badge/version-6.5.0-green.svg" alt="Version">
   </a>
   <a href="package.json">
     <img src="https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg" alt="Node">
@@ -71,6 +71,8 @@ Restart Claude Code. Context from previous sessions will automatically appear in
 - 📊 **Progressive Disclosure** - Layered memory retrieval with token cost visibility
 - 🔍 **Skill-Based Search** - Query your project history with mem-search skill (~2,250 token savings)
 - 🖥️ **Web Viewer UI** - Real-time memory stream at http://localhost:37777
+- 🔒 **Privacy Control** - Use `<private>` tags to exclude sensitive content from storage
+- ⚙️ **Context Configuration** - Fine-grained control over what context gets injected
 - 🤖 **Automatic Operation** - No manual intervention required
 - 🔗 **Citations** - Reference past decisions with `claude-mem://` URIs
 - 🧪 **Beta Channel** - Try experimental features like Endless Mode via version switching
@@ -144,7 +146,7 @@ npx mintlify dev
 
 **Core Components:**
 
-1. **6 Lifecycle Hooks** - context-hook, user-message-hook, new-hook, save-hook, summary-hook, cleanup-hook
+1. **5 Lifecycle Hooks** - SessionStart, UserPromptSubmit, PostToolUse, Stop, SessionEnd (6 hook scripts)
 2. **Smart Install** - Cached dependency checker (pre-hook script, not a lifecycle hook)
 3. **Worker Service** - HTTP API on port 37777 with web viewer UI and 10 search endpoints, managed by PM2
 4. **SQLite Database** - Stores sessions, observations, summaries with FTS5 full-text search
@@ -229,28 +231,27 @@ See [Beta Features Documentation](https://docs.claude-mem.ai/beta-features) for 
 
 ---
 
-## What's New in v6.0.0
+## What's New
 
-**🚀 Major Session Management & Transcript Processing Improvements:**
+**v6.4.9 - Context Configuration Settings:**
+- 11 new settings for fine-grained control over context injection
+- Configure token economics display, observation filtering by type/concept
+- Control number of observations and which fields to display
 
-- **Enhanced Session Initialization**: Accept userPrompt and promptNumber for better context tracking
-- **Live UserPrompt Updates**: Multi-turn conversation support with real-time prompt tracking
-- **Improved SessionManager**: Better context handling and observation processing
-- **Comprehensive Transcript Processing**: New scripts and utilities for analyzing Claude Code transcripts
-- **Rich Context Extraction**: Advanced parsing utilities for extracting meaningful context from sessions
-- **Refactored Architecture**: Improved hooks and SDKAgent for more reliable observation handling
-- **Silent Debug Logging**: Better debugging capabilities without cluttering output
-- **Enhanced Error Handling**: More robust error recovery and debugging tools
+**v6.4.0 - Dual-Tag Privacy System:**
+- `<private>` tags for user-controlled privacy - wrap sensitive content to exclude from storage
+- System-level `<claude-mem-context>` tags prevent recursive observation storage
+- Edge processing ensures private content never reaches database
 
-**Breaking Changes**: Significant architectural changes in session management and observation handling. Existing sessions continue to work, but internal APIs have evolved.
+**v6.3.0 - Version Channel:**
+- Switch between stable and beta versions from the web viewer UI
+- Try experimental features like Endless Mode without manual git operations
 
 **Previous Highlights:**
-
+- **v6.0.0**: Major session management & transcript processing improvements
 - **v5.5.0**: mem-search skill enhancement with 100% effectiveness rate
 - **v5.4.0**: Skill-based search architecture (~2,250 tokens saved per session)
-- **v5.1.2**: Theme toggle for light/dark mode in viewer UI
 - **v5.1.0**: Web-based viewer UI with real-time updates
-- **v5.0.3**: Smart install caching (2-5s → 10ms)
 - **v5.0.0**: Hybrid search with Chroma vector database
 
 See [CHANGELOG.md](CHANGELOG.md) for complete version history.
@@ -313,7 +314,7 @@ See [CHANGELOG.md](CHANGELOG.md) for complete version history.
 
 **Environment Variables:**
 
-- `CLAUDE_MEM_MODEL` - AI model for processing (default: claude-sonnet-4-5)
+- `CLAUDE_MEM_MODEL` - AI model for processing (default: claude-haiku-4-5)
 - `CLAUDE_MEM_WORKER_PORT` - Worker port (default: 37777)
 - `CLAUDE_MEM_DATA_DIR` - Data directory override (dev only)
 
