@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [6.5.2] - 2025-12-04
+
+## What's Changed
+
+- **Upgraded better-sqlite3** from `^11.0.0` to `^12.5.0` for Node.js 25 compatibility
+
+### Fixes
+- Resolves compilation errors when installing on Node.js 25.x (#164)
+
 ## [6.5.1] - 2025-12-04
 
 ## What's New
