@@ -217,13 +217,13 @@ export class WorkerService {
 
       // Find orphaned uvx processes (which spawn chroma servers)
       try {
-        const processes = execSync('pgrep -fl uvx', { encoding: 'utf-8', stdio: 'pipe' }).trim();
+        const processes = execSync('pgrep -fl uvx', { encoding: 'utf-8', stdio: 'pipe', windowsHide: true }).trim();
         if (processes) {
           const processCount = processes.split('\n').length;
           logger.info('WORKER', 'Cleaning up orphaned MCP processes', { count: processCount });
 
           // Kill the processes
-          execSync('pkill -f uvx', { stdio: 'pipe' });
+          execSync('pkill -f uvx', { stdio: 'pipe', windowsHide: true });
           logger.success('WORKER', `Cleaned up ${processCount} orphaned MCP server processes`);
         }
       } catch (error: any) {
