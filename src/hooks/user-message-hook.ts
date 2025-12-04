@@ -44,7 +44,8 @@ try {
   // Cross-platform path to context-hook.js in the installed plugin
   const contextHookPath = join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack', 'plugin', 'scripts', 'context-hook.js');
   const output = execSync(`node "${contextHookPath}" --colors`, {
-    encoding: 'utf8'
+    encoding: 'utf8',
+    windowsHide: true
   });
 
   const port = getWorkerPort();
