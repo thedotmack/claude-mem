@@ -67,7 +67,8 @@ async function startWorker(): Promise<boolean> {
     const result = spawnSync(pm2Command, ['start', ecosystemPath], {
       cwd: pluginRoot,
       stdio: 'pipe',
-      encoding: 'utf-8'
+      encoding: 'utf-8',
+      windowsHide: true
     });
     if (result.status !== 0) {
       throw new Error(result.stderr || 'PM2 start failed');

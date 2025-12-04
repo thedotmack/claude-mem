@@ -411,7 +411,7 @@ export class SDKAgent {
    */
   private findClaudeExecutable(): string {
     const claudePath = process.env.CLAUDE_CODE_PATH ||
-      execSync(process.platform === 'win32' ? 'where claude' : 'which claude', { encoding: 'utf8' })
+      execSync(process.platform === 'win32' ? 'where claude' : 'which claude', { encoding: 'utf8', windowsHide: true })
         .trim().split('\n')[0].trim();
 
     if (!claudePath) {
