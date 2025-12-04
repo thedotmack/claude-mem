@@ -169,6 +169,7 @@ export class WorkerService {
     this.app.get('/api/prompt/:id', this.handleGetPromptById.bind(this));
 
     this.app.get('/api/stats', this.handleGetStats.bind(this));
+    this.app.get('/api/projects', this.handleGetProjects.bind(this));
     this.app.get('/api/processing-status', this.handleGetProcessingStatus.bind(this));
     this.app.post('/api/processing', this.handleSetProcessing.bind(this));
 
@@ -202,6 +203,7 @@ export class WorkerService {
     this.app.get('/api/search/by-type', this.handleSearchByType.bind(this));
     this.app.get('/api/context/recent', this.handleGetRecentContext.bind(this));
     this.app.get('/api/context/timeline', this.handleGetContextTimeline.bind(this));
+    this.app.get('/api/context/preview', this.handleContextPreview.bind(this));
     this.app.get('/api/timeline/by-query', this.handleGetTimelineByQuery.bind(this));
     this.app.get('/api/search/help', this.handleSearchHelp.bind(this));
   }
@@ -814,6 +816,31 @@ export class WorkerService {
       });
     } catch (error) {
       logger.failure('WORKER', 'Get stats failed', {}, error as Error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  }
+
+  /**
+   * Get list of distinct projects from observations
+   * GET /api/projects
+   */
+  private handleGetProjects(req: Request, res: Response): void {
+    try {
+      const db = this.dbManager.getSessionStore().db;
+
+      const rows = db.prepare(`
+        SELECT DISTINCT project
+        FROM observations
+        WHERE project IS NOT NULL
+        GROUP BY project
+        ORDER BY MAX(created_at_epoch) DESC
+      `).all() as Array<{ project: string }>;
+
+      const projects = rows.map(row => row.project);
+
+      res.json({ projects });
+    } catch (error) {
+      logger.failure('WORKER', 'Get projects failed', {}, error as Error);
       res.status(500).json({ error: (error as Error).message });
     }
   }
@@ -1479,6 +1506,48 @@ export class WorkerService {
     } catch (error) {
       logger.failure('WORKER', 'Search failed', {}, error as Error);
       res.status(500).json({ error: (error as Error).message });
+    }
+  }
+
+  /**
+   * Generate context preview for settings modal
+   * GET /api/context/preview?project=...
+   */
+  private async handleContextPreview(req: Request, res: Response): Promise<void> {
+    try {
+      // Dynamic import to use BUILT context-hook function
+      const packageRoot = getPackageRoot();
+      const contextHookPath = path.join(packageRoot, 'plugin', 'scripts', 'context-hook.js');
+      const { contextHook } = await import(contextHookPath);
+
+      // Get project from query parameter
+      const projectName = req.query.project as string;
+
+      if (!projectName) {
+        return res.status(400).json({ error: 'Project parameter is required' });
+      }
+
+      // Use project name as CWD (contextHook uses path.basename to get project)
+      const cwd = `/preview/${projectName}`;
+
+      // Generate preview context (with colors for terminal display)
+      const contextText = await contextHook(
+        {
+          session_id: 'preview-' + Date.now(),
+          cwd: cwd
+        },
+        true  // useColors=true for ANSI terminal output
+      );
+
+      // Return as plain text
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      res.send(contextText);
+    } catch (error) {
+      logger.failure('WORKER', 'Context preview generation failed', {}, error as Error);
+      res.status(500).json({
+        error: 'Failed to generate context preview',
+        message: (error as Error).message
+      });
     }
   }
 

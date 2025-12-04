@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Header } from './components/Header';
 import { Feed } from './components/Feed';
-import { Sidebar } from './components/Sidebar';
+import { ContextSettingsModal } from './components/ContextSettingsModal';
 import { useSSE } from './hooks/useSSE';
 import { useSettings } from './hooks/useSettings';
 import { useStats } from './hooks/useStats';
@@ -12,7 +12,7 @@ import { mergeAndDeduplicateByProject } from './utils/data';
 
 export function App() {
   const [currentFilter, setCurrentFilter] = useState('');
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [contextPreviewOpen, setContextPreviewOpen] = useState(false);
   const [paginatedObservations, setPaginatedObservations] = useState<Observation[]>([]);
   const [paginatedSummaries, setPaginatedSummaries] = useState<Summary[]>([]);
   const [paginatedPrompts, setPaginatedPrompts] = useState<UserPrompt[]>([]);
@@ -48,9 +48,9 @@ export function App() {
     return mergeAndDeduplicateByProject(prompts, paginatedPrompts);
   }, [prompts, paginatedPrompts, currentFilter]);
 
-  // Toggle sidebar
-  const toggleSidebar = useCallback(() => {
-    setSidebarOpen(prev => !prev);
+  // Toggle context preview modal
+  const toggleContextPreview = useCallback(() => {
+    setContextPreviewOpen(prev => !prev);
   }, []);
 
   // Handle loading more data
@@ -92,14 +92,12 @@ export function App() {
         projects={projects}
         currentFilter={currentFilter}
         onFilterChange={setCurrentFilter}
-        onSettingsToggle={toggleSidebar}
-        sidebarOpen={sidebarOpen}
         isProcessing={isProcessing}
         queueDepth={queueDepth}
         themePreference={preference}
         onThemeChange={setThemePreference}
+        onContextPreviewToggle={toggleContextPreview}
       />
-
 
       <Feed
         observations={allObservations}
@@ -110,20 +108,13 @@ export function App() {
         hasMore={pagination.observations.hasMore || pagination.summaries.hasMore || pagination.prompts.hasMore}
       />
 
-
-      <Sidebar
-        isOpen={sidebarOpen}
+      <ContextSettingsModal
+        isOpen={contextPreviewOpen}
+        onClose={toggleContextPreview}
         settings={settings}
-        stats={stats}
+        onSave={saveSettings}
         isSaving={isSaving}
         saveStatus={saveStatus}
-        isConnected={isConnected}
-        projects={projects}
-        currentFilter={currentFilter}
-        onFilterChange={setCurrentFilter}
-        onSave={saveSettings}
-        onClose={toggleSidebar}
-        onRefreshStats={refreshStats}
       />
     </>
   );

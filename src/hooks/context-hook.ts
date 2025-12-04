@@ -289,7 +289,7 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
   const cwd = input?.cwd ?? process.cwd();
   const project = cwd ? path.basename(cwd) : 'unknown-project';
 
-  let db: SessionStore;
+  let db: SessionStore | null = null;
   try {
     db = new SessionStore();
   } catch (error: any) {
@@ -393,7 +393,7 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
 
   // If we have neither observations nor summaries, show empty state
   if (observations.length === 0 && recentSummaries.length === 0) {
-    db.close();
+    db?.close();
     if (useColors) {
       return `\n${colors.bright}${colors.cyan}📝 [${project}] recent context${colors.reset}\n${colors.gray}${'─'.repeat(60)}${colors.reset}\n\n${colors.dim}No previous sessions found for this project yet.${colors.reset}\n`;
     }
@@ -623,7 +623,7 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
           // Render observation
           const obs = item.data;
           const files = parseJsonArray(obs.files_modified);
-          const file = files.length > 0 ? toRelativePath(files[0], cwd) : 'General';
+          const file = (files.length > 0 && files[0]) ? toRelativePath(files[0], cwd) : 'General';
 
           // Check if we need a new file section
           if (file !== currentFile) {
@@ -793,7 +793,7 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
     }
   }
 
-  db.close();
+  db?.close();
 
   // Add debug info directly to output
   // if (debugInfo.length > 0) {
@@ -805,6 +805,9 @@ async function contextHook(input?: SessionStartInput, useColors: boolean = false
 
   return output.join('\n').trimEnd();
 }
+
+// Export for use by worker service
+export { contextHook };
 
 // Entry Point - handle stdin/stdout
 const forceColors = process.argv.includes('--colors');
