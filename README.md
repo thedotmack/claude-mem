@@ -260,10 +260,48 @@ See [CHANGELOG.md](CHANGELOG.md) for complete version history.
 
 ## System Requirements
 
-- **Node.js**: 18.0.0 or higher
+- **Node.js**: 18.0.0 or higher (or **Bun** as alternative runtime)
 - **Claude Code**: Latest version with plugin support
 - **PM2**: Process manager (bundled - no global install required)
 - **SQLite 3**: For persistent storage (bundled)
+
+### Using Bun Runtime (Optional)
+
+Claude-mem supports [Bun](https://bun.sh/) as an alternative runtime to Node.js. Bun offers:
+- **Faster startup and execution**
+- **Built-in SQLite** (no native module compilation needed)
+- **Better memory efficiency**
+
+To use Bun instead of Node.js:
+
+1. **Install Bun** (if not already installed):
+   ```bash
+   curl -fsSL https://bun.sh/install | bash
+   ```
+
+2. **Configure claude-mem to use Bun** (choose one method):
+
+   **Option A: Environment variable**
+   ```bash
+   export CLAUDE_MEM_RUNTIME=bun
+   ```
+
+   **Option B: Settings file**
+   Add to `~/.claude-mem/settings.json`:
+   ```json
+   {
+     "env": {
+       "CLAUDE_MEM_RUNTIME": "bun"
+     }
+   }
+   ```
+
+3. **Restart the worker**:
+   ```bash
+   npm run worker:restart
+   ```
+
+Claude-mem will automatically detect and use Bun when configured, falling back to Node.js if Bun is unavailable.
 
 ---
 
@@ -316,6 +354,7 @@ See [CHANGELOG.md](CHANGELOG.md) for complete version history.
 
 - `CLAUDE_MEM_MODEL` - AI model for processing (default: claude-haiku-4-5)
 - `CLAUDE_MEM_WORKER_PORT` - Worker port (default: 37777)
+- `CLAUDE_MEM_RUNTIME` - Runtime to use: `node` or `bun` (default: node, auto-detects bun if available)
 - `CLAUDE_MEM_DATA_DIR` - Data directory override (dev only)
 
 See [Configuration Guide](https://docs.claude-mem.ai/configuration) for details.

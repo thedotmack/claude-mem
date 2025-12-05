@@ -924,6 +924,7 @@ export class WorkerService {
           CLAUDE_MEM_MODEL: 'claude-haiku-4-5',
           CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
           CLAUDE_MEM_WORKER_PORT: '37777',
+          CLAUDE_MEM_RUNTIME: 'node',
           // Token Economics
           CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: 'true',
           CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS: 'true',
@@ -951,6 +952,7 @@ export class WorkerService {
         CLAUDE_MEM_MODEL: env.CLAUDE_MEM_MODEL || 'claude-haiku-4-5',
         CLAUDE_MEM_CONTEXT_OBSERVATIONS: env.CLAUDE_MEM_CONTEXT_OBSERVATIONS || '50',
         CLAUDE_MEM_WORKER_PORT: env.CLAUDE_MEM_WORKER_PORT || '37777',
+        CLAUDE_MEM_RUNTIME: env.CLAUDE_MEM_RUNTIME || 'node',
         // Token Economics
         CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: env.CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS || 'true',
         CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS: env.CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS || 'true',
@@ -1002,6 +1004,17 @@ export class WorkerService {
         }
       }
 
+      // Validate CLAUDE_MEM_RUNTIME
+      if (req.body.CLAUDE_MEM_RUNTIME) {
+        if (!['node', 'bun'].includes(req.body.CLAUDE_MEM_RUNTIME)) {
+          res.status(400).json({
+            success: false,
+            error: 'CLAUDE_MEM_RUNTIME must be "node" or "bun"'
+          });
+          return;
+        }
+      }
+
       // Validate context settings
       const validation = this.validateContextSettings(req.body);
       if (!validation.valid) {
@@ -1029,6 +1042,7 @@ export class WorkerService {
         'CLAUDE_MEM_MODEL',
         'CLAUDE_MEM_CONTEXT_OBSERVATIONS',
         'CLAUDE_MEM_WORKER_PORT',
+        'CLAUDE_MEM_RUNTIME',
         'CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS',
         'CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS',
         'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT',
