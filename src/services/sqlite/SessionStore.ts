@@ -1,5 +1,26 @@
-import Database from 'better-sqlite3';
 import { DATA_DIR, DB_PATH, ensureDir } from '../../shared/paths.js';
+
+// Runtime detection
+const isBun = typeof (globalThis as any).Bun !== 'undefined';
+
+// Get SQLite database class based on runtime
+// Uses dynamic loading to prevent esbuild from statically analyzing imports
+let _sqliteDb: any = null;
+function getSqliteDatabase(): any {
+  if (_sqliteDb) return _sqliteDb;
+
+  if (isBun) {
+    // Bun has native bun:sqlite - access via globalThis.Bun
+    _sqliteDb = (globalThis as any).Bun.require('bun:sqlite').Database;
+  } else {
+    // Node.js - use indirect require to hide from esbuild
+    const dynamicRequire = new Function('m', 'return require(m)');
+    _sqliteDb = dynamicRequire('better-sqlite3');
+  }
+  return _sqliteDb;
+}
+
+const Database = getSqliteDatabase();
 import { logger } from '../../utils/logger.js';
 
 /**

@@ -36,6 +36,7 @@ import {
   DEFAULT_OBSERVATION_TYPES_STRING,
   DEFAULT_OBSERVATION_CONCEPTS_STRING
 } from '../constants/observation-metadata.js';
+import { stripMemoryTagsFromPrompt, stripMemoryTagsFromJson } from '../utils/tag-stripping.js';
 
 export class WorkerService {
   private app: express.Application;
@@ -150,13 +151,20 @@ export class WorkerService {
     this.app.get('/', this.handleViewerUI.bind(this));
     this.app.get('/stream', this.handleSSEStream.bind(this));
 
-    // Session endpoints
+    // Session endpoints (legacy - using sessionDbId in URL for backward compatibility with web UI)
     this.app.post('/sessions/:sessionDbId/init', this.handleSessionInit.bind(this));
     this.app.post('/sessions/:sessionDbId/observations', this.handleObservations.bind(this));
     this.app.post('/sessions/:sessionDbId/summarize', this.handleSummarize.bind(this));
     this.app.get('/sessions/:sessionDbId/status', this.handleSessionStatus.bind(this));
     this.app.delete('/sessions/:sessionDbId', this.handleSessionDelete.bind(this));
     this.app.post('/sessions/:sessionDbId/complete', this.handleSessionComplete.bind(this));
+
+    // New session endpoints (using claudeSessionId in body - hooks use these)
+    this.app.post('/api/sessions/init', this.handleSessionInitByClaudeId.bind(this));
+    this.app.post('/api/sessions/observations', this.handleObservationsByClaudeId.bind(this));
+    this.app.post('/api/sessions/summarize', this.handleSummarizeByClaudeId.bind(this));
+    this.app.post('/api/sessions/complete', this.handleSessionCompleteByClaudeId.bind(this));
+    this.app.get('/api/context/inject', this.handleContextInject.bind(this));
 
     // Data retrieval
     this.app.get('/api/observations', this.handleGetObservations.bind(this));
@@ -642,6 +650,394 @@ export class WorkerService {
     } catch (error) {
       logger.failure('WORKER', 'Session complete failed', {}, error as Error);
       res.status(500).json({ success: false, error: String(error) });
+    }
+  }
+
+  // ============================================================================
+  // New Hook API Endpoints (using claudeSessionId - hooks become pure HTTP clients)
+  // ============================================================================
+
+  /**
+   * Initialize session by claudeSessionId (new-hook uses this)
+   * POST /api/sessions/init
+   * Body: { claudeSessionId, project, userPrompt }
+   *
+   * Creates session, increments prompt counter, saves user prompt, initializes SDK agent
+   */
+  private handleSessionInitByClaudeId(req: Request, res: Response): void {
+    try {
+      const { claudeSessionId, project, userPrompt } = req.body;
+
+      if (!claudeSessionId) {
+        res.status(400).json({ error: 'Missing claudeSessionId' });
+        return;
+      }
+
+      const store = this.dbManager.getSessionStore();
+
+      // Create or get existing session (idempotent)
+      const sessionDbId = store.createSDKSession(claudeSessionId, project || '', userPrompt || '');
+      const promptNumber = store.incrementPromptCounter(sessionDbId);
+
+      // Strip memory tags before saving user prompt
+      const cleanedUserPrompt = stripMemoryTagsFromPrompt(userPrompt || '');
+
+      // Skip memory operations for fully private prompts
+      if (!cleanedUserPrompt || cleanedUserPrompt.trim() === '') {
+        logger.debug('HOOK', 'Prompt entirely private, skipping memory operations', {
+          sessionId: sessionDbId,
+          promptNumber
+        });
+        res.json({ status: 'skipped', sessionDbId, promptNumber, reason: 'private' });
+        return;
+      }
+
+      // Save the cleaned user prompt
+      store.saveUserPrompt(claudeSessionId, promptNumber, cleanedUserPrompt);
+
+      // Strip leading slash from commands for memory agent
+      const cleanedPrompt = userPrompt?.startsWith('/') ? userPrompt.substring(1) : userPrompt;
+
+      // Initialize in-memory session and start SDK agent
+      const session = this.sessionManager.initializeSession(sessionDbId, cleanedPrompt, promptNumber);
+
+      // Get the latest user_prompt for Chroma sync
+      const latestPrompt = store.db.prepare(`
+        SELECT
+          up.*,
+          s.sdk_session_id,
+          s.project
+        FROM user_prompts up
+        JOIN sdk_sessions s ON up.claude_session_id = s.claude_session_id
+        WHERE up.claude_session_id = ?
+        ORDER BY up.created_at_epoch DESC
+        LIMIT 1
+      `).get(claudeSessionId) as any;
+
+      // Broadcast new prompt to SSE clients
+      if (latestPrompt) {
+        this.sseBroadcaster.broadcast({
+          type: 'new_prompt',
+          prompt: {
+            id: latestPrompt.id,
+            claude_session_id: latestPrompt.claude_session_id,
+            project: latestPrompt.project,
+            prompt_number: latestPrompt.prompt_number,
+            prompt_text: latestPrompt.prompt_text,
+            created_at_epoch: latestPrompt.created_at_epoch
+          }
+        });
+
+        // Start activity indicator
+        this.sseBroadcaster.broadcast({
+          type: 'processing_status',
+          isProcessing: true
+        });
+
+        // Sync user prompt to Chroma
+        const chromaStart = Date.now();
+        const promptText = latestPrompt.prompt_text;
+        this.dbManager.getChromaSync().syncUserPrompt(
+          latestPrompt.id,
+          latestPrompt.sdk_session_id,
+          latestPrompt.project,
+          promptText,
+          latestPrompt.prompt_number,
+          latestPrompt.created_at_epoch
+        ).catch(err => {
+          logger.error('CHROMA', 'Failed to sync user_prompt', {
+            promptId: latestPrompt.id,
+            sessionId: sessionDbId
+          }, err);
+        });
+      }
+
+      // Broadcast processing status
+      this.broadcastProcessingStatus();
+
+      // Start SDK agent in background
+      logger.info('SESSION', 'Generator starting', {
+        sessionId: sessionDbId,
+        project: session.project,
+        promptNum: session.lastPromptNumber
+      });
+
+      session.generatorPromise = this.sdkAgent.startSession(session, this)
+        .catch(err => {
+          logger.failure('SDK', 'SDK agent error', { sessionId: sessionDbId }, err);
+        })
+        .finally(() => {
+          logger.info('SESSION', `Generator finished`, { sessionId: sessionDbId });
+          session.generatorPromise = null;
+          this.broadcastProcessingStatus();
+        });
+
+      // Broadcast SSE event
+      this.sseBroadcaster.broadcast({
+        type: 'session_started',
+        sessionDbId,
+        project: session.project
+      });
+
+      res.json({ status: 'initialized', sessionDbId, promptNumber, port: getWorkerPort() });
+    } catch (error) {
+      logger.failure('WORKER', 'Session init by claudeId failed', {}, error as Error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  }
+
+  /**
+   * Queue observation by claudeSessionId (save-hook uses this)
+   * POST /api/sessions/observations
+   * Body: { claudeSessionId, tool_name, tool_input, tool_response, cwd }
+   *
+   * Checks privacy, queues observation for SDK agent processing
+   */
+  private handleObservationsByClaudeId(req: Request, res: Response): void {
+    try {
+      const { claudeSessionId, tool_name, tool_input, tool_response, cwd } = req.body;
+
+      if (!claudeSessionId) {
+        res.status(400).json({ error: 'Missing claudeSessionId' });
+        return;
+      }
+
+      const store = this.dbManager.getSessionStore();
+
+      // Get or create session
+      const sessionDbId = store.createSDKSession(claudeSessionId, '', '');
+      const promptNumber = store.getPromptCounter(sessionDbId);
+
+      // Privacy check: skip if user prompt was entirely private
+      const userPrompt = store.getUserPrompt(claudeSessionId, promptNumber);
+      if (!userPrompt || userPrompt.trim() === '') {
+        logger.debug('HOOK', 'Skipping observation - user prompt was entirely private', {
+          sessionId: sessionDbId,
+          promptNumber,
+          tool_name
+        });
+        res.json({ status: 'skipped', reason: 'private' });
+        return;
+      }
+
+      // Strip memory tags from tool_input and tool_response
+      let cleanedToolInput = '{}';
+      let cleanedToolResponse = '{}';
+
+      try {
+        cleanedToolInput = tool_input !== undefined
+          ? stripMemoryTagsFromJson(JSON.stringify(tool_input))
+          : '{}';
+      } catch (error) {
+        cleanedToolInput = '{"error": "Failed to serialize tool_input"}';
+      }
+
+      try {
+        cleanedToolResponse = tool_response !== undefined
+          ? stripMemoryTagsFromJson(JSON.stringify(tool_response))
+          : '{}';
+      } catch (error) {
+        cleanedToolResponse = '{"error": "Failed to serialize tool_response"}';
+      }
+
+      // Queue observation
+      this.sessionManager.queueObservation(sessionDbId, {
+        tool_name,
+        tool_input: cleanedToolInput,
+        tool_response: cleanedToolResponse,
+        prompt_number: promptNumber,
+        cwd: cwd || ''
+      });
+
+      // Ensure SDK agent is running
+      const session = this.sessionManager.getSession(sessionDbId);
+      if (session && !session.generatorPromise) {
+        logger.info('SESSION', 'Generator auto-starting (observation)', {
+          sessionId: sessionDbId,
+          queueDepth: session.pendingMessages.length
+        });
+
+        session.generatorPromise = this.sdkAgent.startSession(session, this)
+          .catch(err => {
+            logger.failure('SDK', 'SDK agent error', { sessionId: sessionDbId }, err);
+          })
+          .finally(() => {
+            logger.info('SESSION', `Generator finished`, { sessionId: sessionDbId });
+            session.generatorPromise = null;
+            this.broadcastProcessingStatus();
+          });
+      }
+
+      // Broadcast activity status
+      this.broadcastProcessingStatus();
+
+      // Broadcast SSE event
+      this.sseBroadcaster.broadcast({
+        type: 'observation_queued',
+        sessionDbId
+      });
+
+      res.json({ status: 'queued' });
+    } catch (error) {
+      logger.failure('WORKER', 'Observation by claudeId failed', {}, error as Error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  }
+
+  /**
+   * Queue summarize by claudeSessionId (summary-hook uses this)
+   * POST /api/sessions/summarize
+   * Body: { claudeSessionId, last_user_message, last_assistant_message }
+   *
+   * Checks privacy, queues summarize request for SDK agent
+   */
+  private handleSummarizeByClaudeId(req: Request, res: Response): void {
+    try {
+      const { claudeSessionId, last_user_message, last_assistant_message } = req.body;
+
+      if (!claudeSessionId) {
+        res.status(400).json({ error: 'Missing claudeSessionId' });
+        return;
+      }
+
+      const store = this.dbManager.getSessionStore();
+
+      // Get or create session
+      const sessionDbId = store.createSDKSession(claudeSessionId, '', '');
+      const promptNumber = store.getPromptCounter(sessionDbId);
+
+      // Privacy check: skip if user prompt was entirely private
+      const userPrompt = store.getUserPrompt(claudeSessionId, promptNumber);
+      if (!userPrompt || userPrompt.trim() === '') {
+        logger.debug('HOOK', 'Skipping summary - user prompt was entirely private', {
+          sessionId: sessionDbId,
+          promptNumber
+        });
+        res.json({ status: 'skipped', reason: 'private' });
+        return;
+      }
+
+      // Queue summarize
+      this.sessionManager.queueSummarize(sessionDbId, last_user_message || '', last_assistant_message);
+
+      // Ensure SDK agent is running
+      const session = this.sessionManager.getSession(sessionDbId);
+      if (session && !session.generatorPromise) {
+        logger.info('SESSION', 'Generator auto-starting (summarize)', {
+          sessionId: sessionDbId,
+          queueDepth: session.pendingMessages.length
+        });
+
+        session.generatorPromise = this.sdkAgent.startSession(session, this)
+          .catch(err => {
+            logger.failure('SDK', 'SDK agent error', { sessionId: sessionDbId }, err);
+          })
+          .finally(() => {
+            logger.info('SESSION', `Generator finished`, { sessionId: sessionDbId });
+            session.generatorPromise = null;
+            this.broadcastProcessingStatus();
+          });
+      }
+
+      // Broadcast activity status
+      this.broadcastProcessingStatus();
+
+      res.json({ status: 'queued' });
+    } catch (error) {
+      logger.failure('WORKER', 'Summarize by claudeId failed', {}, error as Error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  }
+
+  /**
+   * Complete session by claudeSessionId (cleanup-hook uses this)
+   * POST /api/sessions/complete
+   * Body: { claudeSessionId }
+   *
+   * Marks session complete, stops SDK agent, broadcasts status
+   */
+  private async handleSessionCompleteByClaudeId(req: Request, res: Response): Promise<void> {
+    try {
+      const { claudeSessionId } = req.body;
+
+      if (!claudeSessionId) {
+        res.status(400).json({ success: false, error: 'Missing claudeSessionId' });
+        return;
+      }
+
+      const store = this.dbManager.getSessionStore();
+
+      // Find session by claudeSessionId
+      const session = store.findActiveSDKSession(claudeSessionId);
+      if (!session) {
+        // No active session - nothing to clean up (may have already been completed)
+        res.json({ success: true, message: 'No active session found' });
+        return;
+      }
+
+      const sessionDbId = session.id;
+
+      // Delete from session manager (aborts SDK agent)
+      await this.sessionManager.deleteSession(sessionDbId);
+
+      // Mark session complete in database
+      this.dbManager.markSessionComplete(sessionDbId);
+
+      // Broadcast processing status
+      this.broadcastProcessingStatus();
+
+      // Broadcast SSE event
+      this.sseBroadcaster.broadcast({
+        type: 'session_completed',
+        timestamp: Date.now(),
+        sessionDbId
+      });
+
+      res.json({ success: true });
+    } catch (error) {
+      logger.failure('WORKER', 'Session complete by claudeId failed', {}, error as Error);
+      res.status(500).json({ success: false, error: String(error) });
+    }
+  }
+
+  /**
+   * Get context injection for SessionStart hook (context-hook uses this)
+   * GET /api/context/inject?project=...&colors=true
+   *
+   * Returns pre-formatted context string ready for display.
+   * Use colors=true for ANSI-colored terminal output.
+   */
+  private async handleContextInject(req: Request, res: Response): Promise<void> {
+    try {
+      const projectName = req.query.project as string;
+      const useColors = req.query.colors === 'true';
+
+      if (!projectName) {
+        res.status(400).json({ error: 'Project parameter is required' });
+        return;
+      }
+
+      // Import context generator (runs in worker, has access to database)
+      const { generateContext } = await import('./context-generator.js');
+
+      // Use project name as CWD (generateContext uses path.basename to get project)
+      const cwd = `/context/${projectName}`;
+
+      // Generate context
+      const contextText = await generateContext(
+        {
+          session_id: 'context-inject-' + Date.now(),
+          cwd: cwd
+        },
+        useColors
+      );
+
+      // Return as plain text
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      res.send(contextText);
+    } catch (error) {
+      logger.failure('WORKER', 'Context inject failed', {}, error as Error);
+      res.status(500).json({ error: (error as Error).message });
     }
   }
 

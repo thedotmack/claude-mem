@@ -1,5 +1,7 @@
-import { Database } from 'bun:sqlite';
 import { Migration } from './Database.js';
+
+// Database type - just needs run() method for migrations
+type Database = { run(sql: string, ...params: any[]): any };
 
 /**
  * Initial schema migration - creates all core tables

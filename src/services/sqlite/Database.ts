@@ -1,8 +1,70 @@
-import { Database as BunDatabase } from 'bun:sqlite';
 import { DATA_DIR, DB_PATH, ensureDir } from '../../shared/paths.js';
 
-// Type alias for better-sqlite3 compatibility
-type Database = BunDatabase;
+// Runtime detection
+const isBun = typeof (globalThis as any).Bun !== 'undefined';
+
+// Unified database interface matching bun:sqlite API
+interface UnifiedDatabase {
+  run(sql: string, ...params: any[]): any;
+  query(sql: string): { all(...params: any[]): any[]; get(...params: any[]): any; run(...params: any[]): any };
+  transaction<T>(fn: (db: any) => T): (db: any) => T;
+  close(): void;
+}
+
+// Wrapper to normalize better-sqlite3 API to match bun:sqlite
+function wrapBetterSqlite(BetterSqlite3: any): any {
+  return class WrappedDatabase {
+    private db: any;
+
+    constructor(path: string, options?: { create?: boolean; readwrite?: boolean; readonly?: boolean }) {
+      // Convert bun:sqlite options to better-sqlite3 options
+      const betterOptions: any = {};
+      if (options?.readonly) betterOptions.readonly = true;
+      if (options?.create === false) betterOptions.fileMustExist = true;
+      this.db = new BetterSqlite3(path, betterOptions);
+    }
+
+    run(sql: string, ...params: any[]) {
+      return this.db.prepare(sql).run(...params);
+    }
+
+    query(sql: string) {
+      const stmt = this.db.prepare(sql);
+      return {
+        all: (...params: any[]) => stmt.all(...params),
+        get: (...params: any[]) => stmt.get(...params),
+        run: (...params: any[]) => stmt.run(...params)
+      };
+    }
+
+    transaction<T>(fn: (db: any) => T): (db: any) => T {
+      return this.db.transaction(fn);
+    }
+
+    close() {
+      this.db.close();
+    }
+  };
+}
+
+// Lazy-loaded SQLite implementation (avoids loading better-sqlite3 under Bun)
+let DatabaseImpl: any = null;
+
+async function getSqliteImpl(): Promise<any> {
+  if (!DatabaseImpl) {
+    // Use indirect require to prevent esbuild from statically analyzing imports
+    const dynamicRequire = new Function('m', 'return require(m)');
+    if (isBun) {
+      DatabaseImpl = dynamicRequire('bun:sqlite').Database;
+    } else {
+      const BetterSqlite3 = dynamicRequire('better-sqlite3');
+      DatabaseImpl = wrapBetterSqlite(BetterSqlite3);
+    }
+  }
+  return DatabaseImpl;
+}
+
+type Database = UnifiedDatabase;
 
 export interface Migration {
   version: number;
@@ -47,7 +109,9 @@ export class DatabaseManager {
     // Ensure the data directory exists
     ensureDir(DATA_DIR);
 
-    this.db = new BunDatabase(DB_PATH, { create: true, readwrite: true });
+    // Lazy load the right SQLite implementation
+    const SqliteDb = await getSqliteImpl();
+    this.db = new SqliteDb(DB_PATH, { create: true, readwrite: true });
 
     // Apply optimized SQLite settings
     this.db.run('PRAGMA journal_mode = WAL');
@@ -171,4 +235,4 @@ export async function initializeDatabase(): Promise<Database> {
   return await manager.initialize();
 }
 
-export { BunDatabase as Database };
+export { getSqliteImpl };
