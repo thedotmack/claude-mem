@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [6.5.3] - 2025-12-05
+
+## Bug Fixes
+
+- **Windows**: Hide console window when spawning child processes (#166)
+  - Adds `windowsHide: true` to `spawnSync` and `execSync` calls
+  - Prevents empty terminal windows from appearing on Windows when hooks execute
+
+Reference: https://nodejs.org/api/child_process.html (windowsHide option)
+
 ## [6.5.2] - 2025-12-04
 
 ## What's Changed
