@@ -1,16 +1,19 @@
 /**
  * Runtime Launcher Script
- * 
+ *
  * This script selects the appropriate runtime (Bun or Node.js) and
  * executes the target script with it. It's used by hooks.json to
  * dynamically choose the runtime.
- * 
+ *
  * Usage: node run.js <script-path> [args...]
- * 
+ *
  * Runtime selection priority:
  * 1. CLAUDE_MEM_RUNTIME environment variable
  * 2. Settings file at ~/.claude-mem/settings.json
- * 3. Auto-detect: prefer Bun if available, fallback to Node
+ * 3. Default to Node.js (user must explicitly configure Bun)
+ *
+ * Note: This logic is intentionally duplicated from src/shared/runtime.ts
+ * because this launcher must execute before TypeScript utilities are compiled.
  */
 
 import { execSync, spawn } from 'child_process';
@@ -23,7 +26,7 @@ import { homedir } from 'os';
  */
 function isBunAvailable() {
   try {
-    execSync('bun --version', { stdio: 'ignore' });
+    execSync('bun --version', { stdio: 'ignore', windowsHide: true });
     return true;
   } catch {
     return false;
@@ -62,20 +65,17 @@ function getConfiguredRuntime() {
  */
 function selectRuntime() {
   const configured = getConfiguredRuntime();
-  
+
   if (configured === 'bun' && isBunAvailable()) {
     return 'bun';
   }
-  
+
   if (configured === 'node') {
     return 'node';
   }
 
-  // Auto-detect: prefer bun if available
-  if (isBunAvailable()) {
-    return 'bun';
-  }
-
+  // Default to Node.js (no auto-detection)
+  // This ensures consistency with ecosystem.config.cjs and src/shared/runtime.ts
   return 'node';
 }
 

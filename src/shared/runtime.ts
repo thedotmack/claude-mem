@@ -24,7 +24,7 @@ export type Runtime = 'node' | 'bun';
  */
 export function isBunAvailable(): boolean {
   try {
-    execSync('bun --version', { stdio: 'ignore', encoding: 'utf8' });
+    execSync('bun --version', { stdio: 'ignore', encoding: 'utf8', windowsHide: true });
     return true;
   } catch {
     return false;
@@ -36,7 +36,7 @@ export function isBunAvailable(): boolean {
  */
 export function isNodeAvailable(): boolean {
   try {
-    execSync('node --version', { stdio: 'ignore', encoding: 'utf8' });
+    execSync('node --version', { stdio: 'ignore', encoding: 'utf8', windowsHide: true });
     return true;
   } catch {
     return false;
@@ -84,11 +84,11 @@ export function detectCurrentRuntime(): Runtime {
 
 /**
  * Get the runtime command to use for executing scripts
- * 
+ *
  * Priority:
  * 1. CLAUDE_MEM_RUNTIME environment variable
  * 2. Settings file configuration
- * 3. Auto-detect: prefer Bun if available, fallback to Node
+ * 3. Default to Node.js (user must explicitly configure Bun)
  */
 export function getRuntime(): Runtime {
   // Check configured preference
@@ -104,12 +104,8 @@ export function getRuntime(): Runtime {
     // Fall through if configured runtime not available
   }
 
-  // Auto-detect: prefer bun if available
-  if (isBunAvailable()) {
-    return 'bun';
-  }
-
-  // Fallback to node
+  // Default to Node.js (no auto-detection)
+  // This ensures consistency with ecosystem.config.cjs and matches the documented behavior
   return 'node';
 }
 
