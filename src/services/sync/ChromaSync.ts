@@ -95,7 +95,7 @@ export class ChromaSync {
 
     try {
       // Use Python 3.13 by default to avoid onnxruntime compatibility issues with Python 3.14+
-      // See: https://github.com/thedotmack/claude-mem/issues/XX (Python 3.14 incompatibility)
+      // See: https://github.com/thedotmack/claude-mem/issues/170 (Python 3.14 incompatibility)
       const pythonVersion = process.env.CLAUDE_MEM_PYTHON_VERSION || '3.13';
       const transport = new StdioClientTransport({
         command: 'uvx',
