@@ -1,4 +1,4 @@
-import { existsSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { execSync } from 'child_process';
@@ -57,8 +57,7 @@ export function getConfiguredRuntime(): Runtime | undefined {
   const settingsPath = join(homedir(), '.claude-mem', 'settings.json');
   if (existsSync(settingsPath)) {
     try {
-      const fs = require('fs');
-      const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
+      const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
       const runtime = settings.env?.CLAUDE_MEM_RUNTIME;
       if (runtime === 'bun' || runtime === 'node') {
         return runtime;

@@ -54,7 +54,7 @@ function getConfiguredRuntime() {
     }
   }
 
-  return null;
+  return undefined;
 }
 
 /**
