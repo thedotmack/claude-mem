@@ -31,6 +31,11 @@ const SEARCH_SERVER = {
   source: 'src/servers/search-server.ts'
 };
 
+const RUNTIME_LAUNCHER = {
+  name: 'run',
+  source: 'src/bin/run.ts'
+};
+
 async function buildHooks() {
   console.log('🔨 Building claude-mem hooks and worker service...\n');
 
@@ -117,6 +122,29 @@ async function buildHooks() {
     const searchServerStats = fs.statSync(`${hooksDir}/${SEARCH_SERVER.name}.cjs`);
     console.log(`✓ search-server built (${(searchServerStats.size / 1024).toFixed(2)} KB)`);
 
+    // Build runtime launcher
+    console.log(`\n🔧 Building runtime launcher...`);
+    await build({
+      entryPoints: [RUNTIME_LAUNCHER.source],
+      bundle: true,
+      platform: 'node',
+      target: 'node18',
+      format: 'esm',
+      outfile: `${hooksDir}/${RUNTIME_LAUNCHER.name}.js`,
+      minify: true,
+      define: {
+        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
+      },
+      banner: {
+        js: '#!/usr/bin/env node'
+      }
+    });
+
+    // Make runtime launcher executable
+    fs.chmodSync(`${hooksDir}/${RUNTIME_LAUNCHER.name}.js`, 0o755);
+    const runStats = fs.statSync(`${hooksDir}/${RUNTIME_LAUNCHER.name}.js`);
+    console.log(`✓ runtime launcher built (${(runStats.size / 1024).toFixed(2)} KB)`);
+
     // Build each hook
     for (const hook of HOOKS) {
       console.log(`\n🔧 Building ${hook.name}...`);
@@ -154,8 +182,10 @@ async function buildHooks() {
     console.log(`   - Hooks: *-hook.js`);
     console.log(`   - Worker: worker-service.cjs`);
     console.log(`   - Search Server: search-server.cjs`);
+    console.log(`   - Runtime: run.js`);
     console.log(`   - Skills: plugin/skills/`);
     console.log('\n💡 Note: Dependencies will be auto-installed on first hook execution');
+    console.log('💡 Note: Set CLAUDE_MEM_RUNTIME=bun to use Bun instead of Node.js');
 
   } catch (error) {
     console.error('\n❌ Build failed:', error.message);
