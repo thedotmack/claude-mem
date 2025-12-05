@@ -317,6 +317,7 @@ See [CHANGELOG.md](CHANGELOG.md) for complete version history.
 - `CLAUDE_MEM_MODEL` - AI model for processing (default: claude-haiku-4-5)
 - `CLAUDE_MEM_WORKER_PORT` - Worker port (default: 37777)
 - `CLAUDE_MEM_DATA_DIR` - Data directory override (dev only)
+- `CLAUDE_MEM_PYTHON_VERSION` - Python version for uvx/chroma-mcp (default: 3.13)
 
 See [Configuration Guide](https://docs.claude-mem.ai/configuration) for details.
 
