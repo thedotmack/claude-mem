@@ -2687,9 +2687,11 @@ async function main() {
   setTimeout(async () => {
     try {
       console.error('[search-server] Initializing Chroma client...');
+      // Use Python 3.13 by default to avoid onnxruntime compatibility issues with Python 3.14+
+      const pythonVersion = process.env.CLAUDE_MEM_PYTHON_VERSION || '3.13';
       const chromaTransport = new StdioClientTransport({
         command: 'uvx',
-        args: ['chroma-mcp', '--client-type', 'persistent', '--data-dir', VECTOR_DB_DIR],
+        args: ['--python', pythonVersion, 'chroma-mcp', '--client-type', 'persistent', '--data-dir', VECTOR_DB_DIR],
         stderr: 'ignore'
       });
 
