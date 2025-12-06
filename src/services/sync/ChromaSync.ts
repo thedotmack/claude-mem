@@ -94,9 +94,13 @@ export class ChromaSync {
     logger.info('CHROMA_SYNC', 'Connecting to Chroma MCP server...', { project: this.project });
 
     try {
+      // Use Python 3.13 by default to avoid onnxruntime compatibility issues with Python 3.14+
+      // See: https://github.com/thedotmack/claude-mem/issues/170 (Python 3.14 incompatibility)
+      const pythonVersion = process.env.CLAUDE_MEM_PYTHON_VERSION || '3.13';
       const transport = new StdioClientTransport({
         command: 'uvx',
         args: [
+          '--python', pythonVersion,
           'chroma-mcp',
           '--client-type', 'persistent',
           '--data-dir', this.VECTOR_DB_DIR
