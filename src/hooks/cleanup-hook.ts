@@ -1,11 +1,14 @@
 /**
  * Cleanup Hook - SessionEnd
- * Consolidated entry point + logic
+ *
+ * Pure HTTP client - sends data to worker, worker handles all database operations.
+ * This allows the hook to run under any runtime (Node.js or Bun) since it has no
+ * native module dependencies.
  */
 
 import { stdin } from 'process';
-import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { getWorkerPort } from '../shared/worker-utils.js';
+import { silentDebug } from '../utils/silent-debug.js';
 
 export interface SessionEndInput {
   session_id: string;
@@ -16,16 +19,13 @@ export interface SessionEndInput {
 }
 
 /**
- * Cleanup Hook Main Logic
+ * Cleanup Hook Main Logic - Fire-and-forget HTTP client
  */
 async function cleanupHook(input?: SessionEndInput): Promise<void> {
-  // Log hook entry point
-  console.error('[claude-mem cleanup] Hook fired', {
-    input: input ? {
-      session_id: input.session_id,
-      cwd: input.cwd,
-      reason: input.reason
-    } : null
+  silentDebug('[cleanup-hook] Hook fired', {
+    session_id: input?.session_id,
+    cwd: input?.cwd,
+    reason: input?.reason
   });
 
   // Handle standalone execution (no input provided)
@@ -43,47 +43,35 @@ async function cleanupHook(input?: SessionEndInput): Promise<void> {
   }
 
   const { session_id, reason } = input;
-  console.error('[claude-mem cleanup] Searching for active SDK session', { session_id, reason });
 
-  // Find active SDK session
-  const db = new SessionStore();
-  const session = db.findActiveSDKSession(session_id);
+  const port = getWorkerPort();
 
-  if (!session) {
-    // No active session - nothing to clean up
-    console.error('[claude-mem cleanup] No active SDK session found', { session_id });
-    db.close();
-    console.log('{"continue": true, "suppressOutput": true}');
-    process.exit(0);
-  }
-
-  console.error('[claude-mem cleanup] Active SDK session found', {
-    session_id: session.id,
-    sdk_session_id: session.sdk_session_id,
-    project: session.project,
-    worker_port: session.worker_port
-  });
-
-  // Mark session as completed in DB
-  db.markSessionCompleted(session.id);
-  console.error('[claude-mem cleanup] Session marked as completed in database');
-
-  db.close();
-
-  // Tell worker to stop spinner
   try {
-    const workerPort = session.worker_port || getWorkerPort();
-    await fetch(`http://127.0.0.1:${workerPort}/sessions/${session.id}/complete`, {
+    // Send to worker - worker handles finding session, marking complete, and stopping spinner
+    const response = await fetch(`http://127.0.0.1:${port}/api/sessions/complete`, {
       method: 'POST',
-      signal: AbortSignal.timeout(1000)
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        claudeSessionId: session_id,
+        reason
+      }),
+      signal: AbortSignal.timeout(2000)
     });
-    console.error('[claude-mem cleanup] Worker notified to stop processing indicator');
-  } catch (err) {
-    // Non-critical - worker might be down
-    console.error('[claude-mem cleanup] Failed to notify worker (non-critical):', err);
+
+    if (response.ok) {
+      const result = await response.json();
+      silentDebug('[cleanup-hook] Session cleanup completed', result);
+    } else {
+      // Non-fatal - session might not exist
+      silentDebug('[cleanup-hook] Session not found or already cleaned up');
+    }
+  } catch (error: any) {
+    // Worker might not be running - that's okay
+    silentDebug('[cleanup-hook] Worker not reachable (non-critical)', {
+      error: error.message
+    });
   }
 
-  console.error('[claude-mem cleanup] Cleanup completed successfully');
   console.log('{"continue": true, "suppressOutput": true}');
   process.exit(0);
 }
