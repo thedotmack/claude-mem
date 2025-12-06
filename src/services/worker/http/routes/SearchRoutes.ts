@@ -324,8 +324,7 @@ export class SearchRoutes {
       }
 
       // Import context generator (runs in worker, has access to database)
-      // Note: After bundling, context-generator.cjs is in the same directory as worker-service.cjs
-      const { generateContext } = await import('./context-generator.cjs');
+      const { generateContext } = await import('../../../context-generator.js');
 
       // Use project name as CWD (generateContext uses path.basename to get project)
       const cwd = `/context/${projectName}`;
