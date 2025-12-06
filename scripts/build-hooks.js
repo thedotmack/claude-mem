@@ -31,6 +31,11 @@ const SEARCH_SERVER = {
   source: 'src/servers/search-server.ts'
 };
 
+const CONTEXT_GENERATOR = {
+  name: 'context-generator',
+  source: 'src/services/context-generator.ts'
+};
+
 async function buildHooks() {
   console.log('🔨 Building claude-mem hooks and worker service...\n');
 
@@ -116,6 +121,26 @@ async function buildHooks() {
     fs.chmodSync(`${hooksDir}/${SEARCH_SERVER.name}.cjs`, 0o755);
     const searchServerStats = fs.statSync(`${hooksDir}/${SEARCH_SERVER.name}.cjs`);
     console.log(`✓ search-server built (${(searchServerStats.size / 1024).toFixed(2)} KB)`);
+
+    // Build context generator
+    console.log(`\n🔧 Building context generator...`);
+    await build({
+      entryPoints: [CONTEXT_GENERATOR.source],
+      bundle: true,
+      platform: 'node',
+      target: 'node18',
+      format: 'cjs',
+      outfile: `${hooksDir}/${CONTEXT_GENERATOR.name}.cjs`,
+      minify: true,
+      logLevel: 'error',
+      external: ['better-sqlite3'],
+      define: {
+        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
+      }
+    });
+
+    const contextGenStats = fs.statSync(`${hooksDir}/${CONTEXT_GENERATOR.name}.cjs`);
+    console.log(`✓ context-generator built (${(contextGenStats.size / 1024).toFixed(2)} KB)`);
 
     // Build each hook
     for (const hook of HOOKS) {
