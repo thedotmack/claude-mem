@@ -19,402 +19,31 @@ import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../services/sqlite/types.js';
 import { VECTOR_DB_DIR } from '../shared/paths.js';
 import { silentDebug } from '../utils/silent-debug.js';
+import {
+  formatObservationIndex,
+  formatObservationResult,
+  formatSessionIndex,
+  formatSessionResult,
+  formatUserPromptIndex,
+  formatUserPromptResult,
+  formatSearchTips,
+  filterTimelineByDepth,
+  type TimelineItem
+} from './search-server/formatters/index.js';
+import { normalizeParams } from './search-server/utils/normalize-params.js';
+import { queryChroma } from './search-server/utils/query-chroma.js';
 
 // Initialize search instances
 let search: SessionSearch;
 let store: SessionStore;
 let chromaClient: Client | null = null;
-const COLLECTION_NAME = 'cm__claude-mem';
 
 try {
   search = new SessionSearch();
   store = new SessionStore();
 } catch (error: any) {
-  console.error('[search-server] Failed to initialize search:', error.message);
+  silentDebug('[search-server] Failed to initialize search', { error: error.message });
   process.exit(1);
-}
-
-/**
- * Query Chroma vector database via MCP
- */
-async function queryChroma(
-  query: string,
-  limit: number,
-  whereFilter?: Record<string, any>
-): Promise<{ ids: number[]; distances: number[]; metadatas: any[] }> {
-  if (!chromaClient) {
-    throw new Error('Chroma client not initialized');
-  }
-
-  silentDebug('queryChroma called', { query, limit, whereFilter });
-
-  const whereStringified = whereFilter ? JSON.stringify(whereFilter) : undefined;
-  silentDebug('where filter stringified', { whereFilter, whereStringified });
-
-  const arguments_obj = {
-    collection_name: COLLECTION_NAME,
-    query_texts: [query],
-    n_results: limit,
-    include: ['documents', 'metadatas', 'distances'],
-    where: whereStringified
-  };
-  silentDebug('calling chroma_query_documents', arguments_obj);
-
-  const result = await chromaClient.callTool({
-    name: 'chroma_query_documents',
-    arguments: arguments_obj
-  });
-
-  const resultText = result.content[0]?.text || '';
-  silentDebug('chroma response received', {
-    hasContent: !!result.content[0]?.text,
-    textLength: resultText.length,
-    textPreview: resultText.substring(0, 200)
-  });
-
-  // Parse JSON response
-  let parsed: any;
-  try {
-    parsed = JSON.parse(resultText);
-  } catch (error) {
-    console.error('[search-server] Failed to parse Chroma response as JSON:', error);
-    console.error('[search-server] Raw Chroma response:', resultText);
-    return { ids: [], distances: [], metadatas: [] };
-  }
-
-  // Extract unique IDs from document IDs
-  const ids: number[] = [];
-  const docIds = parsed.ids?.[0] || [];
-  for (const docId of docIds) {
-    // Extract sqlite_id from document ID (supports three formats):
-    // - obs_{id}_narrative, obs_{id}_fact_0, etc (observations)
-    // - summary_{id}_request, summary_{id}_learned, etc (session summaries)
-    // - prompt_{id} (user prompts)
-    const obsMatch = docId.match(/obs_(\d+)_/);
-    const summaryMatch = docId.match(/summary_(\d+)_/);
-    const promptMatch = docId.match(/prompt_(\d+)/);
-
-    let sqliteId: number | null = null;
-    if (obsMatch) {
-      sqliteId = parseInt(obsMatch[1], 10);
-    } else if (summaryMatch) {
-      sqliteId = parseInt(summaryMatch[1], 10);
-    } else if (promptMatch) {
-      sqliteId = parseInt(promptMatch[1], 10);
-    }
-
-    if (sqliteId !== null && !ids.includes(sqliteId)) {
-      ids.push(sqliteId);
-    }
-  }
-
-  const distances = parsed.distances?.[0] || [];
-  const metadatas = parsed.metadatas?.[0] || [];
-
-  return { ids, distances, metadatas };
-}
-
-/**
- * Format search tips footer
- */
-function formatSearchTips(): string {
-  return `\n---
-💡 Search Strategy:
-ALWAYS search with index format FIRST to get an overview and identify relevant results.
-This is critical for token efficiency - index format uses ~10x fewer tokens than full format.
-
-Search workflow:
-1. Initial search: Use default (index) format to see titles, dates, and sources
-2. Review results: Identify which items are most relevant to your needs
-3. Deep dive: Only then use format: "full" on specific items of interest
-4. Narrow down: Use filters (type, dateStart/dateEnd, concepts, files) to refine results
-
-Other tips:
-• To search by concept: Use find_by_concept tool
-• To browse by type: Use find_by_type with ["decision", "feature", etc.]
-• To sort by date: Use orderBy: "date_desc" or "date_asc"`;
-}
-
-/**
- * Timeline item for unified chronological display
- */
-interface TimelineItem {
-  type: 'observation' | 'session' | 'prompt';
-  data: any;
-  epoch: number;
-}
-
-/**
- * Filter timeline items to respect depth_before/depth_after window around anchor
- */
-function filterTimelineByDepth(
-  items: TimelineItem[],
-  anchorId: number | string,
-  anchorEpoch: number,
-  depth_before: number,
-  depth_after: number
-): TimelineItem[] {
-  if (items.length === 0) return items;
-
-  let anchorIndex = -1;
-  if (typeof anchorId === 'number') {
-    anchorIndex = items.findIndex(item => item.type === 'observation' && item.data.id === anchorId);
-  } else if (typeof anchorId === 'string' && anchorId.startsWith('S')) {
-    const sessionNum = parseInt(anchorId.slice(1), 10);
-    anchorIndex = items.findIndex(item => item.type === 'session' && item.data.id === sessionNum);
-  } else {
-    // Timestamp anchor - find closest item
-    anchorIndex = items.findIndex(item => item.epoch >= anchorEpoch);
-    if (anchorIndex === -1) anchorIndex = items.length - 1;
-  }
-
-  if (anchorIndex === -1) return items;
-
-  const startIndex = Math.max(0, anchorIndex - depth_before);
-  const endIndex = Math.min(items.length, anchorIndex + depth_after + 1);
-  return items.slice(startIndex, endIndex);
-}
-
-/**
- * Format observation as index entry (title, date, ID only)
- */
-function formatObservationIndex(obs: ObservationSearchResult, index: number): string {
-  const title = obs.title || `Observation #${obs.id}`;
-  const date = new Date(obs.created_at_epoch).toLocaleString();
-  const type = obs.type ? `[${obs.type}]` : '';
-
-  return `${index + 1}. ${type} ${title}
-   Date: ${date}
-   Source: claude-mem://observation/${obs.id}`;
-}
-
-/**
- * Format session summary as index entry (title, date, ID only)
- */
-function formatSessionIndex(session: SessionSummarySearchResult, index: number): string {
-  const title = session.request || `Session ${session.sdk_session_id?.substring(0, 8) || 'unknown'}`;
-  const date = new Date(session.created_at_epoch).toLocaleString();
-
-  return `${index + 1}. ${title}
-   Date: ${date}
-   Source: claude-mem://session/${session.sdk_session_id}`;
-}
-
-/**
- * Format observation as text content with metadata
- */
-function formatObservationResult(obs: ObservationSearchResult): string {
-  const title = obs.title || `Observation #${obs.id}`;
-
-  // Build content from available fields
-  const contentParts: string[] = [];
-  contentParts.push(`## ${title}`);
-  contentParts.push(`*Source: claude-mem://observation/${obs.id}*`);
-  contentParts.push('');
-
-  if (obs.subtitle) {
-    contentParts.push(`**${obs.subtitle}**`);
-    contentParts.push('');
-  }
-
-  if (obs.narrative) {
-    contentParts.push(obs.narrative);
-    contentParts.push('');
-  }
-
-  if (obs.text) {
-    contentParts.push(obs.text);
-    contentParts.push('');
-  }
-
-  // Add metadata
-  const metadata: string[] = [];
-  metadata.push(`Type: ${obs.type}`);
-
-  if (obs.facts) {
-    try {
-      const facts = JSON.parse(obs.facts);
-      if (facts.length > 0) {
-        metadata.push(`Facts: ${facts.join('; ')}`);
-      }
-    } catch {}
-  }
-
-  if (obs.concepts) {
-    try {
-      const concepts = JSON.parse(obs.concepts);
-      if (concepts.length > 0) {
-        metadata.push(`Concepts: ${concepts.join(', ')}`);
-      }
-    } catch {}
-  }
-
-  if (obs.files_read || obs.files_modified) {
-    const files: string[] = [];
-    if (obs.files_read) {
-      try {
-        files.push(...JSON.parse(obs.files_read));
-      } catch {}
-    }
-    if (obs.files_modified) {
-      try {
-        files.push(...JSON.parse(obs.files_modified));
-      } catch {}
-    }
-    if (files.length > 0) {
-      metadata.push(`Files: ${[...new Set(files)].join(', ')}`);
-    }
-  }
-
-  if (metadata.length > 0) {
-    contentParts.push('---');
-    contentParts.push(metadata.join(' | '));
-  }
-
-  // Add date
-  const date = new Date(obs.created_at_epoch).toLocaleString();
-  contentParts.push('');
-  contentParts.push(`---`);
-  contentParts.push(`Date: ${date}`);
-
-  return contentParts.join('\n');
-}
-
-/**
- * Format session summary as text content with metadata
- */
-function formatSessionResult(session: SessionSummarySearchResult): string {
-  const title = session.request || `Session ${session.sdk_session_id?.substring(0, 8) || 'unknown'}`;
-
-  // Build content from available fields
-  const contentParts: string[] = [];
-  contentParts.push(`## ${title}`);
-  contentParts.push(`*Source: claude-mem://session/${session.sdk_session_id}*`);
-  contentParts.push('');
-
-  if (session.completed) {
-    contentParts.push(`**Completed:** ${session.completed}`);
-    contentParts.push('');
-  }
-
-  if (session.learned) {
-    contentParts.push(`**Learned:** ${session.learned}`);
-    contentParts.push('');
-  }
-
-  if (session.investigated) {
-    contentParts.push(`**Investigated:** ${session.investigated}`);
-    contentParts.push('');
-  }
-
-  if (session.next_steps) {
-    contentParts.push(`**Next Steps:** ${session.next_steps}`);
-    contentParts.push('');
-  }
-
-  if (session.notes) {
-    contentParts.push(`**Notes:** ${session.notes}`);
-    contentParts.push('');
-  }
-
-  // Add metadata
-  const metadata: string[] = [];
-
-  if (session.files_read || session.files_edited) {
-    const files: string[] = [];
-    if (session.files_read) {
-      try {
-        files.push(...JSON.parse(session.files_read));
-      } catch {}
-    }
-    if (session.files_edited) {
-      try {
-        files.push(...JSON.parse(session.files_edited));
-      } catch {}
-    }
-    if (files.length > 0) {
-      metadata.push(`Files: ${[...new Set(files)].join(', ')}`);
-    }
-  }
-
-  const date = new Date(session.created_at_epoch).toLocaleDateString();
-  metadata.push(`Date: ${date}`);
-
-  if (metadata.length > 0) {
-    contentParts.push('---');
-    contentParts.push(metadata.join(' | '));
-  }
-
-  return contentParts.join('\n');
-}
-
-/**
- * Format user prompt as index entry (full text - don't truncate context!)
- */
-function formatUserPromptIndex(prompt: UserPromptSearchResult, index: number): string {
-  const date = new Date(prompt.created_at_epoch).toLocaleString();
-
-  return `${index + 1}. "${prompt.prompt_text}"
-   Date: ${date} | Prompt #${prompt.prompt_number}
-   Source: claude-mem://user-prompt/${prompt.id}`;
-}
-
-/**
- * Format user prompt as text content with metadata
- */
-function formatUserPromptResult(prompt: UserPromptSearchResult): string {
-  const contentParts: string[] = [];
-  contentParts.push(`## User Prompt #${prompt.prompt_number}`);
-  contentParts.push(`*Source: claude-mem://user-prompt/${prompt.id}*`);
-  contentParts.push('');
-  contentParts.push(prompt.prompt_text);
-  contentParts.push('');
-  contentParts.push('---');
-
-  const date = new Date(prompt.created_at_epoch).toLocaleString();
-  contentParts.push(`Date: ${date}`);
-
-  return contentParts.join('\n');
-}
-
-/**
- * Helper to normalize query parameters from URL-friendly format
- * Converts comma-separated strings to arrays and flattens date params
- */
-function normalizeParams(args: any): any {
-  const normalized: any = { ...args };
-
-  // Parse comma-separated concepts into array
-  if (normalized.concepts && typeof normalized.concepts === 'string') {
-    normalized.concepts = normalized.concepts.split(',').map((s: string) => s.trim()).filter(Boolean);
-  }
-
-  // Parse comma-separated files into array
-  if (normalized.files && typeof normalized.files === 'string') {
-    normalized.files = normalized.files.split(',').map((s: string) => s.trim()).filter(Boolean);
-  }
-
-  // Parse comma-separated obs_type into array
-  if (normalized.obs_type && typeof normalized.obs_type === 'string') {
-    normalized.obs_type = normalized.obs_type.split(',').map((s: string) => s.trim()).filter(Boolean);
-  }
-
-  // Parse comma-separated type (for filterSchema) into array
-  if (normalized.type && typeof normalized.type === 'string' && normalized.type.includes(',')) {
-    normalized.type = normalized.type.split(',').map((s: string) => s.trim()).filter(Boolean);
-  }
-
-  // Flatten dateStart/dateEnd into dateRange object
-  if (normalized.dateStart || normalized.dateEnd) {
-    normalized.dateRange = {
-      start: normalized.dateStart,
-      end: normalized.dateEnd
-    };
-    delete normalized.dateStart;
-    delete normalized.dateEnd;
-  }
-
-  return normalized;
 }
 
 /**
@@ -475,7 +104,7 @@ const tools = [
         // PATH 1: FILTER-ONLY (no query text) - Skip Chroma/FTS5, use direct SQLite filtering
         // This path enables date filtering which Chroma cannot do (requires direct SQLite access)
         if (!query) {
-          console.error(`[search-server] Filter-only query (no query text), using direct SQLite filtering (enables date filters)`);
+          silentDebug(`[search-server] Filter-only query (no query text), using direct SQLite filtering (enables date filters)`);
           const obsOptions = { ...options, type: obs_type, concepts, files };
           if (searchObservations) {
             observations = search.searchObservations(undefined, obsOptions);
@@ -491,7 +120,7 @@ const tools = [
         else if (chromaClient) {
           let chromaSucceeded = false;
           try {
-            console.error(`[search-server] Using ChromaDB semantic search (type filter: ${type || 'all'})`);
+            silentDebug(`[search-server] Using ChromaDB semantic search (type filter: ${type || 'all'})`);
 
             // Build Chroma where filter for doc_type
             let whereFilter: Record<string, any> | undefined;
@@ -504,9 +133,9 @@ const tools = [
             }
 
             // Step 1: Chroma semantic search with optional type filter
-            const chromaResults = await queryChroma(query, 100, whereFilter);
+            const chromaResults = await queryChroma(chromaClient, query, 100, whereFilter);
             chromaSucceeded = true; // Chroma didn't throw error
-            console.error(`[search-server] ChromaDB returned ${chromaResults.ids.length} semantic matches`);
+            silentDebug(`[search-server] ChromaDB returned ${chromaResults.ids.length} semantic matches`);
 
             if (chromaResults.ids.length > 0) {
               // Step 2: Filter by recency (90 days)
@@ -517,7 +146,7 @@ const tools = [
                 isRecent: meta && meta.created_at_epoch > ninetyDaysAgo
               })).filter(item => item.isRecent);
 
-              console.error(`[search-server] ${recentMetadata.length} results within 90-day window`);
+              silentDebug(`[search-server] ${recentMetadata.length} results within 90-day window`);
 
               // Step 3: Categorize IDs by document type
               const obsIds: number[] = [];
@@ -535,7 +164,7 @@ const tools = [
                 }
               }
 
-              console.error(`[search-server] Categorized: ${obsIds.length} obs, ${sessionIds.length} sessions, ${promptIds.length} prompts`);
+              silentDebug(`[search-server] Categorized: ${obsIds.length} obs, ${sessionIds.length} sessions, ${promptIds.length} prompts`);
 
               // Step 4: Hydrate from SQLite with additional filters
               if (obsIds.length > 0) {
@@ -550,14 +179,14 @@ const tools = [
                 prompts = store.getUserPromptsByIds(promptIds, { orderBy: 'date_desc', limit: options.limit });
               }
 
-              console.error(`[search-server] Hydrated ${observations.length} obs, ${sessions.length} sessions, ${prompts.length} prompts from SQLite`);
+              silentDebug(`[search-server] Hydrated ${observations.length} obs, ${sessions.length} sessions, ${prompts.length} prompts from SQLite`);
             } else {
               // Chroma returned 0 results - this is the correct answer, don't fall back to FTS5
-              console.error(`[search-server] ChromaDB found no matches (this is final - NOT falling back to FTS5)`);
+              silentDebug(`[search-server] ChromaDB found no matches (this is final - NOT falling back to FTS5)`);
             }
           } catch (chromaError: any) {
-            console.error('[search-server] ChromaDB failed - returning empty results (FTS5 fallback removed):', chromaError.message);
-            console.error('[search-server] Install UVX/Python to enable vector search: https://docs.astral.sh/uv/getting-started/installation/');
+            silentDebug('[search-server] ChromaDB failed - returning empty results (FTS5 fallback removed):', chromaError.message);
+            silentDebug('[search-server] Install UVX/Python to enable vector search: https://docs.astral.sh/uv/getting-started/installation/');
             // Return empty results - no fallback
             observations = [];
             sessions = [];
@@ -566,8 +195,8 @@ const tools = [
         }
         // ChromaDB not initialized - return empty results (no fallback)
         else {
-          console.error(`[search-server] ChromaDB not initialized - returning empty results (FTS5 fallback removed)`);
-          console.error(`[search-server] Install UVX/Python to enable vector search: https://docs.astral.sh/uv/getting-started/installation/`);
+          silentDebug(`[search-server] ChromaDB not initialized - returning empty results (FTS5 fallback removed)`);
+          silentDebug(`[search-server] Install UVX/Python to enable vector search: https://docs.astral.sh/uv/getting-started/installation/`);
           observations = [];
           sessions = [];
           prompts = [];
@@ -700,9 +329,9 @@ const tools = [
 
           if (chromaClient) {
             try {
-              console.error('[search-server] Using hybrid semantic search for timeline query');
-              const chromaResults = await queryChroma(query, 100);
-              console.error(`[search-server] Chroma returned ${chromaResults.ids.length} semantic matches`);
+              silentDebug('[search-server] Using hybrid semantic search for timeline query');
+              const chromaResults = await queryChroma(chromaClient, query, 100);
+              silentDebug(`[search-server] Chroma returned ${chromaResults.ids.length} semantic matches`);
 
               if (chromaResults.ids.length > 0) {
                 const ninetyDaysAgo = Date.now() - (90 * 24 * 60 * 60 * 1000);
@@ -716,7 +345,7 @@ const tools = [
                 }
               }
             } catch (chromaError: any) {
-              console.error('[search-server] Chroma query failed - no results (FTS5 fallback removed):', chromaError.message);
+              silentDebug('[search-server] Chroma query failed - no results (FTS5 fallback removed):', chromaError.message);
             }
           }
 
@@ -733,7 +362,7 @@ const tools = [
           const topResult = results[0];
           anchorId = topResult.id;
           anchorEpoch = topResult.created_at_epoch;
-          console.error(`[search-server] Query mode: Using observation #${topResult.id} as timeline anchor`);
+          silentDebug(`[search-server] Query mode: Using observation #${topResult.id} as timeline anchor`);
           timeline = store.getTimelineAroundObservation(topResult.id, topResult.created_at_epoch, depth_before, depth_after, project);
         }
         // MODE 2: Anchor-based timeline
@@ -1019,8 +648,8 @@ const tools = [
           try {
             if (query) {
               // Semantic search filtered to decision type
-              console.error('[search-server] Using Chroma semantic search with type=decision filter');
-              const chromaResults = await queryChroma(query, Math.min((filters.limit || 20) * 2, 100), { type: 'decision' });
+              silentDebug('[search-server] Using Chroma semantic search with type=decision filter');
+              const chromaResults = await queryChroma(chromaClient, query, Math.min((filters.limit || 20) * 2, 100), { type: 'decision' });
               const obsIds = chromaResults.ids;
 
               if (obsIds.length > 0) {
@@ -1030,12 +659,12 @@ const tools = [
               }
             } else {
               // No query: get all decisions, rank by "decision" keyword
-              console.error('[search-server] Using metadata-first + semantic ranking for decisions');
+              silentDebug('[search-server] Using metadata-first + semantic ranking for decisions');
               const metadataResults = search.findByType('decision', filters);
 
               if (metadataResults.length > 0) {
                 const ids = metadataResults.map(obs => obs.id);
-                const chromaResults = await queryChroma('decision', Math.min(ids.length, 100));
+                const chromaResults = await queryChroma(chromaClient, 'decision', Math.min(ids.length, 100));
 
                 const rankedIds: number[] = [];
                 for (const chromaId of chromaResults.ids) {
@@ -1051,7 +680,7 @@ const tools = [
               }
             }
           } catch (chromaError: any) {
-            console.error('[search-server] Chroma search failed, using SQLite fallback:', chromaError.message);
+            silentDebug('[search-server] Chroma search failed, using SQLite fallback:', chromaError.message);
           }
         }
 
@@ -1116,7 +745,7 @@ const tools = [
         // Search for change-type observations and change-related concepts
         if (chromaClient) {
           try {
-            console.error('[search-server] Using hybrid search for change-related observations');
+            silentDebug('[search-server] Using hybrid search for change-related observations');
 
             // Get all observations with type="change" or concepts containing change
             const typeResults = search.findByType('change', filters);
@@ -1129,7 +758,7 @@ const tools = [
 
             if (allIds.size > 0) {
               const idsArray = Array.from(allIds);
-              const chromaResults = await queryChroma('what changed', Math.min(idsArray.length, 100));
+              const chromaResults = await queryChroma(chromaClient, 'what changed', Math.min(idsArray.length, 100));
 
               const rankedIds: number[] = [];
               for (const chromaId of chromaResults.ids) {
@@ -1144,7 +773,7 @@ const tools = [
               }
             }
           } catch (chromaError: any) {
-            console.error('[search-server] Chroma ranking failed, using SQLite order:', chromaError.message);
+            silentDebug('[search-server] Chroma ranking failed, using SQLite order:', chromaError.message);
           }
         }
 
@@ -1223,12 +852,12 @@ const tools = [
         // Search for how-it-works concept observations
         if (chromaClient) {
           try {
-            console.error('[search-server] Using metadata-first + semantic ranking for how-it-works');
+            silentDebug('[search-server] Using metadata-first + semantic ranking for how-it-works');
             const metadataResults = search.findByConcept('how-it-works', filters);
 
             if (metadataResults.length > 0) {
               const ids = metadataResults.map(obs => obs.id);
-              const chromaResults = await queryChroma('how it works architecture', Math.min(ids.length, 100));
+              const chromaResults = await queryChroma(chromaClient, 'how it works architecture', Math.min(ids.length, 100));
 
               const rankedIds: number[] = [];
               for (const chromaId of chromaResults.ids) {
@@ -1243,7 +872,7 @@ const tools = [
               }
             }
           } catch (chromaError: any) {
-            console.error('[search-server] Chroma ranking failed, using SQLite order:', chromaError.message);
+            silentDebug('[search-server] Chroma ranking failed, using SQLite order:', chromaError.message);
           }
         }
 
@@ -1304,11 +933,11 @@ const tools = [
         // Vector-first search via ChromaDB
         if (chromaClient) {
           try {
-            console.error('[search-server] Using hybrid semantic search (Chroma + SQLite)');
+            silentDebug('[search-server] Using hybrid semantic search (Chroma + SQLite)');
 
             // Step 1: Chroma semantic search (top 100)
-            const chromaResults = await queryChroma(query, 100);
-            console.error(`[search-server] Chroma returned ${chromaResults.ids.length} semantic matches`);
+            const chromaResults = await queryChroma(chromaClient, query, 100);
+            silentDebug(`[search-server] Chroma returned ${chromaResults.ids.length} semantic matches`);
 
             if (chromaResults.ids.length > 0) {
               // Step 2: Filter by recency (90 days)
@@ -1318,17 +947,17 @@ const tools = [
                 return meta && meta.created_at_epoch > ninetyDaysAgo;
               });
 
-              console.error(`[search-server] ${recentIds.length} results within 90-day window`);
+              silentDebug(`[search-server] ${recentIds.length} results within 90-day window`);
 
               // Step 3: Hydrate from SQLite in temporal order
               if (recentIds.length > 0) {
                 const limit = options.limit || 20;
                 results = store.getObservationsByIds(recentIds, { orderBy: 'date_desc', limit });
-                console.error(`[search-server] Hydrated ${results.length} observations from SQLite`);
+                silentDebug(`[search-server] Hydrated ${results.length} observations from SQLite`);
               }
             }
           } catch (chromaError: any) {
-            console.error('[search-server] Chroma query failed - no results (FTS5 fallback removed):', chromaError.message);
+            silentDebug('[search-server] Chroma query failed - no results (FTS5 fallback removed):', chromaError.message);
           }
         }
 
@@ -1391,11 +1020,11 @@ const tools = [
         // Vector-first search via ChromaDB
         if (chromaClient) {
           try {
-            console.error('[search-server] Using hybrid semantic search for sessions');
+            silentDebug('[search-server] Using hybrid semantic search for sessions');
 
             // Step 1: Chroma semantic search (top 100)
-            const chromaResults = await queryChroma(query, 100, { doc_type: 'session_summary' });
-            console.error(`[search-server] Chroma returned ${chromaResults.ids.length} semantic matches`);
+            const chromaResults = await queryChroma(chromaClient, query, 100, { doc_type: 'session_summary' });
+            silentDebug(`[search-server] Chroma returned ${chromaResults.ids.length} semantic matches`);
 
             if (chromaResults.ids.length > 0) {
               // Step 2: Filter by recency (90 days)
@@ -1405,17 +1034,17 @@ const tools = [
                 return meta && meta.created_at_epoch > ninetyDaysAgo;
               });
 
-              console.error(`[search-server] ${recentIds.length} results within 90-day window`);
+              silentDebug(`[search-server] ${recentIds.length} results within 90-day window`);
 
               // Step 3: Hydrate from SQLite in temporal order
               if (recentIds.length > 0) {
                 const limit = options.limit || 20;
                 results = store.getSessionSummariesByIds(recentIds, { orderBy: 'date_desc', limit });
-                console.error(`[search-server] Hydrated ${results.length} sessions from SQLite`);
+                silentDebug(`[search-server] Hydrated ${results.length} sessions from SQLite`);
               }
             }
           } catch (chromaError: any) {
-            console.error('[search-server] Chroma query failed - no results (FTS5 fallback removed):', chromaError.message);
+            silentDebug('[search-server] Chroma query failed - no results (FTS5 fallback removed):', chromaError.message);
           }
         }
 
@@ -1478,16 +1107,16 @@ const tools = [
         // Metadata-first, semantic-enhanced search
         if (chromaClient) {
           try {
-            console.error('[search-server] Using metadata-first + semantic ranking for concept search');
+            silentDebug('[search-server] Using metadata-first + semantic ranking for concept search');
 
             // Step 1: SQLite metadata filter (get all IDs with this concept)
             const metadataResults = search.findByConcept(concept, filters);
-            console.error(`[search-server] Found ${metadataResults.length} observations with concept "${concept}"`);
+            silentDebug(`[search-server] Found ${metadataResults.length} observations with concept "${concept}"`);
 
             if (metadataResults.length > 0) {
               // Step 2: Chroma semantic ranking (rank by relevance to concept)
               const ids = metadataResults.map(obs => obs.id);
-              const chromaResults = await queryChroma(concept, Math.min(ids.length, 100));
+              const chromaResults = await queryChroma(chromaClient, concept, Math.min(ids.length, 100));
 
               // Intersect: Keep only IDs that passed metadata filter, in semantic rank order
               const rankedIds: number[] = [];
@@ -1497,7 +1126,7 @@ const tools = [
                 }
               }
 
-              console.error(`[search-server] Chroma ranked ${rankedIds.length} results by semantic relevance`);
+              silentDebug(`[search-server] Chroma ranked ${rankedIds.length} results by semantic relevance`);
 
               // Step 3: Hydrate in semantic rank order
               if (rankedIds.length > 0) {
@@ -1507,14 +1136,14 @@ const tools = [
               }
             }
           } catch (chromaError: any) {
-            console.error('[search-server] Chroma ranking failed, using SQLite order:', chromaError.message);
+            silentDebug('[search-server] Chroma ranking failed, using SQLite order:', chromaError.message);
             // Fall through to SQLite fallback
           }
         }
 
         // Fall back to SQLite-only if Chroma unavailable or failed
         if (results.length === 0) {
-          console.error('[search-server] Using SQLite-only concept search');
+          silentDebug('[search-server] Using SQLite-only concept search');
           results = search.findByConcept(concept, filters);
         }
 
@@ -1578,11 +1207,11 @@ const tools = [
         // Metadata-first, semantic-enhanced search for observations
         if (chromaClient) {
           try {
-            console.error('[search-server] Using metadata-first + semantic ranking for file search');
+            silentDebug('[search-server] Using metadata-first + semantic ranking for file search');
 
             // Step 1: SQLite metadata filter (get all results with this file)
             const metadataResults = search.findByFile(filePath, filters);
-            console.error(`[search-server] Found ${metadataResults.observations.length} observations, ${metadataResults.sessions.length} sessions for file "${filePath}"`);
+            silentDebug(`[search-server] Found ${metadataResults.observations.length} observations, ${metadataResults.sessions.length} sessions for file "${filePath}"`);
 
             // Sessions: Keep as-is (already summarized, no semantic ranking needed)
             sessions = metadataResults.sessions;
@@ -1591,7 +1220,7 @@ const tools = [
             if (metadataResults.observations.length > 0) {
               // Step 2: Chroma semantic ranking (rank by relevance to file path)
               const ids = metadataResults.observations.map(obs => obs.id);
-              const chromaResults = await queryChroma(filePath, Math.min(ids.length, 100));
+              const chromaResults = await queryChroma(chromaClient, filePath, Math.min(ids.length, 100));
 
               // Intersect: Keep only IDs that passed metadata filter, in semantic rank order
               const rankedIds: number[] = [];
@@ -1601,7 +1230,7 @@ const tools = [
                 }
               }
 
-              console.error(`[search-server] Chroma ranked ${rankedIds.length} observations by semantic relevance`);
+              silentDebug(`[search-server] Chroma ranked ${rankedIds.length} observations by semantic relevance`);
 
               // Step 3: Hydrate in semantic rank order
               if (rankedIds.length > 0) {
@@ -1611,14 +1240,14 @@ const tools = [
               }
             }
           } catch (chromaError: any) {
-            console.error('[search-server] Chroma ranking failed, using SQLite order:', chromaError.message);
+            silentDebug('[search-server] Chroma ranking failed, using SQLite order:', chromaError.message);
             // Fall through to SQLite fallback
           }
         }
 
         // Fall back to SQLite-only if Chroma unavailable or failed
         if (observations.length === 0 && sessions.length === 0) {
-          console.error('[search-server] Using SQLite-only file search');
+          silentDebug('[search-server] Using SQLite-only file search');
           const results = search.findByFile(filePath, filters);
           observations = results.observations;
           sessions = results.sessions;
@@ -1707,11 +1336,11 @@ const tools = [
         // Metadata-first, semantic-enhanced search
         if (chromaClient) {
           try {
-            console.error('[search-server] Using metadata-first + semantic ranking for type search');
+            silentDebug('[search-server] Using metadata-first + semantic ranking for type search');
 
             // Step 1: SQLite metadata filter (get all IDs with this type)
             const metadataResults = search.findByType(type, filters);
-            console.error(`[search-server] Found ${metadataResults.length} observations with type "${typeStr}"`);
+            silentDebug(`[search-server] Found ${metadataResults.length} observations with type "${typeStr}"`);
 
             if (metadataResults.length > 0) {
               // Step 2: Chroma semantic ranking (rank by relevance to type)
@@ -1726,7 +1355,7 @@ const tools = [
                 }
               }
 
-              console.error(`[search-server] Chroma ranked ${rankedIds.length} results by semantic relevance`);
+              silentDebug(`[search-server] Chroma ranked ${rankedIds.length} results by semantic relevance`);
 
               // Step 3: Hydrate in semantic rank order
               if (rankedIds.length > 0) {
@@ -1736,14 +1365,14 @@ const tools = [
               }
             }
           } catch (chromaError: any) {
-            console.error('[search-server] Chroma ranking failed, using SQLite order:', chromaError.message);
+            silentDebug('[search-server] Chroma ranking failed, using SQLite order:', chromaError.message);
             // Fall through to SQLite fallback
           }
         }
 
         // Fall back to SQLite-only if Chroma unavailable or failed
         if (results.length === 0) {
-          console.error('[search-server] Using SQLite-only type search');
+          silentDebug('[search-server] Using SQLite-only type search');
           results = search.findByType(type, filters);
         }
 
@@ -1944,11 +1573,11 @@ const tools = [
         // Vector-first search via ChromaDB
         if (chromaClient) {
           try {
-            console.error('[search-server] Using hybrid semantic search for user prompts');
+            silentDebug('[search-server] Using hybrid semantic search for user prompts');
 
             // Step 1: Chroma semantic search (top 100)
-            const chromaResults = await queryChroma(query, 100, { doc_type: 'user_prompt' });
-            console.error(`[search-server] Chroma returned ${chromaResults.ids.length} semantic matches`);
+            const chromaResults = await queryChroma(chromaClient, query, 100, { doc_type: 'user_prompt' });
+            silentDebug(`[search-server] Chroma returned ${chromaResults.ids.length} semantic matches`);
 
             if (chromaResults.ids.length > 0) {
               // Step 2: Filter by recency (90 days)
@@ -1958,17 +1587,17 @@ const tools = [
                 return meta && meta.created_at_epoch > ninetyDaysAgo;
               });
 
-              console.error(`[search-server] ${recentIds.length} results within 90-day window`);
+              silentDebug(`[search-server] ${recentIds.length} results within 90-day window`);
 
               // Step 3: Hydrate from SQLite in temporal order
               if (recentIds.length > 0) {
                 const limit = options.limit || 20;
                 results = store.getUserPromptsByIds(recentIds, { orderBy: 'date_desc', limit });
-                console.error(`[search-server] Hydrated ${results.length} user prompts from SQLite`);
+                silentDebug(`[search-server] Hydrated ${results.length} user prompts from SQLite`);
               }
             }
           } catch (chromaError: any) {
-            console.error('[search-server] Chroma query failed - no results (FTS5 fallback removed):', chromaError.message);
+            silentDebug('[search-server] Chroma query failed - no results (FTS5 fallback removed):', chromaError.message);
           }
         }
 
@@ -2307,9 +1936,9 @@ const tools = [
         // Use hybrid search if available
         if (chromaClient) {
           try {
-            console.error('[search-server] Using hybrid semantic search for timeline query');
-            const chromaResults = await queryChroma(query, 100);
-            console.error(`[search-server] Chroma returned ${chromaResults.ids.length} semantic matches`);
+            silentDebug('[search-server] Using hybrid semantic search for timeline query');
+            const chromaResults = await queryChroma(chromaClient, query, 100);
+            silentDebug(`[search-server] Chroma returned ${chromaResults.ids.length} semantic matches`);
 
             if (chromaResults.ids.length > 0) {
               // Filter by recency (90 days)
@@ -2319,15 +1948,15 @@ const tools = [
                 return meta && meta.created_at_epoch > ninetyDaysAgo;
               });
 
-              console.error(`[search-server] ${recentIds.length} results within 90-day window`);
+              silentDebug(`[search-server] ${recentIds.length} results within 90-day window`);
 
               if (recentIds.length > 0) {
                 results = store.getObservationsByIds(recentIds, { orderBy: 'date_desc', limit: mode === 'auto' ? 1 : limit });
-                console.error(`[search-server] Hydrated ${results.length} observations from SQLite`);
+                silentDebug(`[search-server] Hydrated ${results.length} observations from SQLite`);
               }
             }
           } catch (chromaError: any) {
-            console.error('[search-server] Chroma query failed - no results (FTS5 fallback removed):', chromaError.message);
+            silentDebug('[search-server] Chroma query failed - no results (FTS5 fallback removed):', chromaError.message);
           }
         }
 
@@ -2378,7 +2007,7 @@ const tools = [
         } else {
           // Auto mode: Use top result as timeline anchor
           const topResult = results[0];
-          console.error(`[search-server] Auto mode: Using observation #${topResult.id} as timeline anchor`);
+          silentDebug(`[search-server] Auto mode: Using observation #${topResult.id} as timeline anchor`);
 
           // Get timeline around this observation
           const timeline = store.getTimelineAroundObservation(
@@ -2637,15 +2266,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
 // Cleanup function to properly terminate all child processes
 async function cleanup() {
-  console.error('[search-server] Shutting down...');
+  silentDebug('[search-server] Shutting down...');
   
   // Close Chroma client (terminates uvx/python processes)
   if (chromaClient) {
     try {
       await chromaClient.close();
-      console.error('[search-server] Chroma client closed');
+      silentDebug('[search-server] Chroma client closed');
     } catch (error: any) {
-      console.error('[search-server] Error closing Chroma client:', error.message);
+      silentDebug('[search-server] Error closing Chroma client:', error.message);
     }
   }
   
@@ -2653,22 +2282,22 @@ async function cleanup() {
   if (search) {
     try {
       search.close();
-      console.error('[search-server] SessionSearch closed');
+      silentDebug('[search-server] SessionSearch closed');
     } catch (error: any) {
-      console.error('[search-server] Error closing SessionSearch:', error.message);
+      silentDebug('[search-server] Error closing SessionSearch:', error.message);
     }
   }
   
   if (store) {
     try {
       store.close();
-      console.error('[search-server] SessionStore closed');
+      silentDebug('[search-server] SessionStore closed');
     } catch (error: any) {
-      console.error('[search-server] Error closing SessionStore:', error.message);
+      silentDebug('[search-server] Error closing SessionStore:', error.message);
     }
   }
   
-  console.error('[search-server] Shutdown complete');
+  silentDebug('[search-server] Shutdown complete');
   process.exit(0);
 }
 
@@ -2681,12 +2310,12 @@ async function main() {
   // Start the MCP server FIRST (critical - must start before blocking operations)
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error('[search-server] Claude-mem search server started');
+  silentDebug('[search-server] Claude-mem search server started');
 
   // Initialize Chroma client in background (non-blocking)
   setTimeout(async () => {
     try {
-      console.error('[search-server] Initializing Chroma client...');
+      silentDebug('[search-server] Initializing Chroma client...');
       const chromaTransport = new StdioClientTransport({
         command: 'uvx',
         args: ['chroma-mcp', '--client-type', 'persistent', '--data-dir', VECTOR_DB_DIR],
@@ -2702,17 +2331,17 @@ async function main() {
 
       await client.connect(chromaTransport);
       chromaClient = client;
-      console.error('[search-server] Chroma client connected successfully');
+      silentDebug('[search-server] Chroma client connected successfully');
     } catch (error: any) {
-      console.error('[search-server] Failed to initialize Chroma client:', error.message);
-      console.error('[search-server] Vector search unavailable - text queries will return empty results (FTS5 fallback removed)');
-      console.error('[search-server] Install UVX/Python to enable vector search: https://docs.astral.sh/uv/getting-started/installation/');
+      silentDebug('[search-server] Failed to initialize Chroma client:', error.message);
+      silentDebug('[search-server] Vector search unavailable - text queries will return empty results (FTS5 fallback removed)');
+      silentDebug('[search-server] Install UVX/Python to enable vector search: https://docs.astral.sh/uv/getting-started/installation/');
       chromaClient = null;
     }
   }, 0);
 }
 
 main().catch((error) => {
-  console.error('[search-server] Fatal error:', error);
+  silentDebug('[search-server] Fatal error:', error);
   process.exit(1);
 });
