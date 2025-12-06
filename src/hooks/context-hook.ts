@@ -74,24 +74,23 @@ async function contextHook(input?: SessionStartInput): Promise<{ unformatted: st
 export { contextHook };
 
 // Entry Point - handle stdin/stdout
-if (stdin.isTTY) {
+const forceColors = process.argv.includes('--colors');
+
+if (stdin.isTTY || forceColors) {
   // Running manually from terminal - show formatted output
   contextHook(undefined).then(({ formatted }) => {
     console.log(formatted);
     process.exit(0);
   });
 } else {
-  // Running from hook - formatted to stderr (user display), unformatted to stdout (model context)
+  // Running from hook - output only JSON to stdout (no stderr)
   let input = '';
   stdin.on('data', (chunk) => input += chunk);
   stdin.on('end', async () => {
     const parsed = input.trim() ? JSON.parse(input) : undefined;
-    const { unformatted, formatted } = await contextHook(parsed);
+    const { unformatted } = await contextHook(parsed);
 
-    // Write formatted version to stderr for user display
-    process.stderr.write(formatted + '\n');
-
-    // Write unformatted version to stdout as JSON for model context
+    // Output JSON result to stdout - no stderr output
     const result = {
       hookSpecificOutput: {
         hookEventName: "SessionStart",
