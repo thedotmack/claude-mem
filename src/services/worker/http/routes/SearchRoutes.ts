@@ -6,9 +6,7 @@
  */
 
 import express, { Request, Response } from 'express';
-import path from 'path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { getPackageRoot } from '../../../../shared/paths.js';
 import { logger } from '../../../../utils/logger.js';
 
 export class SearchRoutes {
@@ -270,23 +268,21 @@ export class SearchRoutes {
    */
   private async handleContextPreview(req: Request, res: Response): Promise<void> {
     try {
-      // Dynamic import to use BUILT context-hook function
-      const packageRoot = getPackageRoot();
-      const contextHookPath = path.join(packageRoot, 'plugin', 'scripts', 'context-hook.js');
-      const { contextHook } = await import(contextHookPath);
-
-      // Get project from query parameter
       const projectName = req.query.project as string;
 
       if (!projectName) {
-        return res.status(400).json({ error: 'Project parameter is required' });
+        res.status(400).json({ error: 'Project parameter is required' });
+        return;
       }
 
-      // Use project name as CWD (contextHook uses path.basename to get project)
+      // Import context generator (runs in worker, has access to database)
+      const { generateContext } = await import('../../../context-generator.js');
+
+      // Use project name as CWD (generateContext uses path.basename to get project)
       const cwd = `/preview/${projectName}`;
 
-      // Generate preview context (with colors for terminal display)
-      const contextText = await contextHook(
+      // Generate context with colors for terminal display
+      const contextText = await generateContext(
         {
           session_id: 'preview-' + Date.now(),
           cwd: cwd

@@ -6,10 +6,10 @@
  * native module dependencies.
  */
 
-import path from 'path';
-import { stdin } from 'process';
-import { getWorkerPort } from '../shared/worker-utils.js';
-import { silentDebug } from '../utils/silent-debug.js';
+import path from "path";
+import { stdin } from "process";
+import { execSync } from "child_process";
+import { getWorkerPort } from "../shared/worker-utils.js";
 
 export interface SessionStartInput {
   session_id?: string;
@@ -20,84 +20,38 @@ export interface SessionStartInput {
   [key: string]: any;
 }
 
-/**
- * Fetch context from worker
- */
-async function fetchContext(project: string, port: number, useFormatting: boolean): Promise<string> {
-  const formatParam = useFormatting ? '&colors=true' : '';
-  const response = await fetch(
-    `http://127.0.0.1:${port}/api/context/inject?project=${encodeURIComponent(project)}${formatParam}`,
-    { method: 'GET', signal: AbortSignal.timeout(5000) }
-  );
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Worker error ${response.status}: ${errorText}`);
-  }
-
-  return response.text();
-}
-
-/**
- * Context Hook Main Logic - Fire-and-forget HTTP client
- * Returns { unformatted, formatted } for dual output (stderr for user, stdout for model)
- */
-async function contextHook(input?: SessionStartInput): Promise<{ unformatted: string; formatted: string }> {
+async function contextHook(input?: SessionStartInput): Promise<string> {
   const cwd = input?.cwd ?? process.cwd();
-  const project = cwd ? path.basename(cwd) : 'unknown-project';
-
+  const project = cwd ? path.basename(cwd) : "unknown-project";
   const port = getWorkerPort();
-
-  silentDebug('[context-hook] Requesting context from worker', {
-    project,
-    workerPort: port
-  });
-
-  try {
-    // Fetch both versions in parallel
-    const [unformatted, formatted] = await Promise.all([
-      fetchContext(project, port, false),
-      fetchContext(project, port, true)
-    ]);
-
-    silentDebug('[context-hook] Context received', { unformattedLength: unformatted.length, formattedLength: formatted.length });
-    return { unformatted, formatted };
-  } catch (error: any) {
-    // Worker might not be running
-    silentDebug('[context-hook] Worker not reachable', { error: error.message });
-    const fallback = `# [${project}] recent context\n\nWorker not available. Start with: pm2 start claude-mem-worker`;
-    return { unformatted: fallback, formatted: fallback };
-  }
+  const url = `http://127.0.0.1:${port}/api/context/inject?project=${encodeURIComponent(project)}`;
+  const result = execSync(`curl -s "${url}"`, { encoding: "utf-8", timeout: 5000 });
+  return result;
 }
-
-// Export for use by worker service (compatibility)
-export { contextHook };
 
 // Entry Point - handle stdin/stdout
-const forceColors = process.argv.includes('--colors');
+const forceColors = process.argv.includes("--colors");
 
 if (stdin.isTTY || forceColors) {
-  // Running manually from terminal - show formatted output
-  contextHook(undefined).then(({ formatted }) => {
-    console.log(formatted);
+  contextHook(undefined).then((text) => {
+    console.log(text);
     process.exit(0);
   });
 } else {
-  // Running from hook - output only JSON to stdout (no stderr)
-  let input = '';
-  stdin.on('data', (chunk) => input += chunk);
-  stdin.on('end', async () => {
+  let input = "";
+  stdin.on("data", (chunk) => (input += chunk));
+  stdin.on("end", async () => {
     const parsed = input.trim() ? JSON.parse(input) : undefined;
-    const { unformatted } = await contextHook(parsed);
+    const text = await contextHook(parsed);
 
-    // Output JSON result to stdout - no stderr output
-    const result = {
-      hookSpecificOutput: {
-        hookEventName: "SessionStart",
-        additionalContext: unformatted
-      }
-    };
-    console.log(JSON.stringify(result));
+    console.log(
+      JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "SessionStart",
+          additionalContext: text,
+        },
+      })
+    );
     process.exit(0);
   });
 }
