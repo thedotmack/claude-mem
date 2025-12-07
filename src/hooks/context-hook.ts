@@ -26,7 +26,8 @@ async function contextHook(input?: SessionStartInput): Promise<string> {
   const port = getWorkerPort();
   const url = `http://127.0.0.1:${port}/api/context/inject?project=${encodeURIComponent(project)}`;
   const result = execSync(`curl -s "${url}"`, { encoding: "utf-8", timeout: 5000 });
-  return result;
+  const runtime = process.title.includes('bun') ? 'bun' : 'node';
+  return result + "\n\n [Executed with " + runtime + " runtime]";
 }
 
 // Entry Point - handle stdin/stdout
