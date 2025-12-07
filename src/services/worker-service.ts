@@ -710,17 +710,19 @@ export class WorkerService {
       });
 
       // NOTE: Transformation now happens in save-hook using new context injection strategy
+      // See: docs/context/new-context-injection-architecture.md
       // The old transformTranscriptWithAgents() approach has been replaced with:
-      // 1. Clearing tool input from transcript
-      // 2. Injecting observation fetch as a natural tool_use
-      // This makes observations appear naturally in the transcript flow
+      // 1. Clearing tool input from transcript (save tokens)
+      // 2. Injecting observation fetch as a natural tool_use (natural flow)
+      // This makes observations appear naturally in the transcript as tool results
 
       // Update timeline state: reset cycle and update last observation point
       session.lastObservationToolUseId = toolUseId;
       session.toolUsesInCurrentCycle = [];
 
-      // Note: Stats tracking can be added back if needed for the new approach
-      // For now, we're not tracking token savings in the same way
+      // Note: Token stats tracking can be added back if needed for the new approach
+      // For now, we're not tracking compression stats in the same way since
+      // the new approach clears inputs (not outputs) and injects observations differently
 
     res.json({
       status: 'completed',

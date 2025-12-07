@@ -20,6 +20,9 @@ export interface PreToolUseInput {
   [key: string]: any;
 }
 
+// Constants
+const PRE_TOOL_USE_TIMEOUT_MS = 2000;
+
 /**
  * PreToolUse Hook Main Logic
  */
@@ -59,7 +62,7 @@ async function preToolUseHook(input?: PreToolUseInput): Promise<void> {
         tool_name,
         timestamp: Date.now()
       }),
-      signal: AbortSignal.timeout(2000)
+      signal: AbortSignal.timeout(PRE_TOOL_USE_TIMEOUT_MS)
     });
   } catch (error) {
     // Non-critical - just tracking, don't block the hook

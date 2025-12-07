@@ -19,12 +19,15 @@ import { randomUUID } from 'crypto';
 /**
  * Clear tool input from transcript and replace with placeholder
  * This saves tokens by removing large tool inputs
+ * 
+ * Note: Backups are created using the existing backup system which includes
+ * automatic cleanup (trimBackupFile) to prevent disk space issues
  */
 export async function clearToolInputInTranscript(
   transcriptPath: string,
   toolUseId: string
 ): Promise<number> {
-  // Create backup
+  // Create backup (managed by existing backup system with size limits)
   try {
     ensureDir(BACKUPS_DIR);
     const backupPath = createBackupFilename(transcriptPath);
@@ -64,7 +67,9 @@ export async function clearToolInputInTranscript(
             const toolUse = item as ToolUseContent;
             
             if (toolUse.id === toolUseId) {
-              // Calculate tokens saved (approximate: 1 token ≈ 4 chars)
+              // Calculate tokens saved
+              // Note: Using simplified estimate of 4 chars per token
+              // This is an approximation - actual tokenization varies by content
               const originalSize = JSON.stringify(toolUse.input).length;
               tokensSaved = Math.ceil(originalSize / 4);
               
@@ -150,8 +155,8 @@ export async function injectObservationFetchInTranscript(
     timestamp: new Date().toISOString()
   };
   
-  // Generate unique tool_use_id
-  const toolUseId = `toolu_mem_${Date.now()}`;
+  // Generate unique tool_use_id using UUID
+  const toolUseId = `toolu_mem_${randomUUID().replace(/-/g, '').substring(0, 20)}`;
   
   // Create assistant message with tool_use for fetching observations
   const assistantEntry: AssistantTranscriptEntry = {
