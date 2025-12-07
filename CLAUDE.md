@@ -23,13 +23,18 @@ Claude-mem is a Claude Code plugin providing persistent memory across sessions. 
    - Creates session record in SQLite
    - Saves raw user prompt for vector search
 
-3. **PostToolUse** → `save-hook.ts` runs
+3. **PreToolUse** → `pre-tool-use-hook.ts` runs
+   - Tracks when tool execution starts
+   - Notifies worker service for timing metrics
+
+4. **PostToolUse** → `save-hook.ts` runs
    - Captures your tool executions
    - Sends to worker service for AI compression
+   - In Endless Mode: Clears tool input, waits for observation, then injects observation fetch as natural tool_use
 
-4. **Summary** → Summary hook generates session summaries
+5. **Summary** → Summary hook generates session summaries
 
-5. **SessionEnd** → `cleanup-hook.ts` runs
+6. **SessionEnd** → `cleanup-hook.ts` runs
    - Marks session complete (graceful, not DELETE)
    - Skips on `/clear` to preserve ongoing sessions
 
@@ -79,16 +84,22 @@ Claude-mem is a Claude Code plugin providing persistent memory across sessions. 
 - Built to `plugin/ui/viewer.html` (self-contained bundle via esbuild)
 - Auto-reconnection and error recovery
 
-**Endless Mode** (`src/hooks/save-hook.ts`, `src/services/worker-service.ts`)
-- Experimental feature that compresses tool outputs in real-time to enable indefinite sessions
-- Replaces full outputs with AI-compressed observations to reduce context usage
-- Creates observations for ALL tool uses (even routine operations) to ensure complete transcript compression
-- save-hook blocks for up to 90s waiting for observation creation (graceful timeout fallback)
-- Transcript transformation happens atomically before hook returns
+**Endless Mode** (`src/hooks/save-hook.ts`, `src/hooks/context-injection.ts`, `src/services/worker-service.ts`)
+- Experimental feature that enables indefinite sessions through natural context injection
+- **New Architecture (v7.1+)**:
+  - PreToolUse hook tracks tool execution start times
+  - PostToolUse clears tool inputs from transcript, replacing with token savings message
+  - Waits for observation creation (up to 90s)
+  - Injects observations as natural tool_use entries in transcript
+  - Observations appear as tool results, maintaining natural conversation flow
+- **Benefits**:
+  - More natural context injection (observations as tool results vs manual replacement)
+  - Less complex transcript manipulation
+  - Sequential injection maintains itself automatically
+  - Only blocking happens in PostToolUse waiting for observation queue
 - Enable via `~/.claude-mem/settings.json`: `{ "env": { "CLAUDE_MEM_ENDLESS_MODE": true } }`
 - Monitor with: `npm run endless-mode:metrics`
-- Status: Implementation complete (Phases 1-3), ready for Phase 4 testing
-- See `docs/endless-mode-status.md` for technical details
+- Status: New architecture implemented, ready for testing
 
 **Response Contract:**
 - SDK must ALWAYS respond with either an observation OR `<no_observation>` marker
