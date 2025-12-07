@@ -66,7 +66,8 @@ async function preToolUseHook(input?: PreToolUseInput): Promise<void> {
     });
   } catch (error) {
     // Non-critical - just tracking, don't block the hook
-    logger.debug('HOOK', 'PreToolUse notification failed (non-fatal)', { error });
+    // Log as info for visibility in troubleshooting
+    logger.info('HOOK', 'PreToolUse notification failed (non-fatal)', { error });
   }
 
   console.log(createHookResponse('PreToolUse', true));

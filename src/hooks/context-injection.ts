@@ -69,7 +69,8 @@ export async function clearToolInputInTranscript(
             if (toolUse.id === toolUseId) {
               // Calculate tokens saved
               // Note: Using simplified estimate of 4 chars per token
-              // This is an approximation - actual tokenization varies by content
+              // This is intentionally approximate for simplicity - actual tokenization
+              // varies by content type and tokenizer. Good enough for user display.
               const originalSize = JSON.stringify(toolUse.input).length;
               tokensSaved = Math.ceil(originalSize / 4);
               
@@ -155,7 +156,8 @@ export async function injectObservationFetchInTranscript(
     timestamp: new Date().toISOString()
   };
   
-  // Generate unique tool_use_id using UUID
+  // Generate unique tool_use_id using UUID (truncated for readability while maintaining uniqueness)
+  // Note: 20 chars from UUID provides 16^20 = ~1.2e24 possible IDs, collision risk is negligible
   const toolUseId = `toolu_mem_${randomUUID().replace(/-/g, '').substring(0, 20)}`;
   
   // Create assistant message with tool_use for fetching observations
