@@ -15,6 +15,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const HOOKS = [
   { name: 'context-hook', source: 'src/hooks/context-hook.ts' },
   { name: 'new-hook', source: 'src/hooks/new-hook.ts' },
+  { name: 'pre-tool-use-hook', source: 'src/hooks/pre-tool-use-hook.ts' },
   { name: 'save-hook', source: 'src/hooks/save-hook.ts' },
   { name: 'summary-hook', source: 'src/hooks/summary-hook.ts' },
   { name: 'cleanup-hook', source: 'src/hooks/cleanup-hook.ts' },

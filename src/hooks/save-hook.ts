@@ -18,6 +18,7 @@ import { appendToolOutput, trimBackupFile } from '../shared/tool-output-backup.j
 import type { TranscriptEntry, AssistantTranscriptEntry, ToolUseContent, UserTranscriptEntry, ToolResultContent } from '../types/transcript.js';
 import type { Observation } from '../services/worker-types.js';
 import { stripMemoryTagsFromJson } from '../utils/tag-stripping.js';
+import { clearToolInputInTranscript, injectObservationFetchInTranscript } from './context-injection.js';
 
 export interface PostToolUseInput {
   session_id: string;
@@ -666,8 +667,38 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
 
     const result = await response.json();
 
-    if (result.status === 'completed') {
-      console.log('[save-hook] ✅ Observation created, transcript transformed');
+    if (result.status === 'completed' && isEndlessModeEnabled) {
+      // NEW APPROACH: Clear tool input and inject observation fetch
+      try {
+        // Step 1: Clear tool input from transcript
+        if (extractedToolUseId && transcript_path) {
+          const tokensSaved = await clearToolInputInTranscript(transcript_path, extractedToolUseId);
+          logger.info('HOOK', 'Cleared tool input from transcript', {
+            toolUseId: extractedToolUseId,
+            tokensSaved
+          });
+        }
+
+        // Step 2: Inject observation fetch as a tool_use in transcript
+        if (result.observation && transcript_path) {
+          await injectObservationFetchInTranscript(
+            transcript_path,
+            session_id,
+            cwd,
+            [result.observation]
+          );
+          logger.success('HOOK', 'Injected observation fetch in transcript', {
+            observationId: result.observation.id
+          });
+        }
+
+        console.log('[save-hook] ✅ Observation created, context injected naturally');
+      } catch (transformError) {
+        logger.error('HOOK', 'Failed to inject context', {}, transformError as Error);
+        // Continue anyway - don't block the hook
+      }
+    } else if (result.status === 'completed') {
+      console.log('[save-hook] ✅ Observation created');
     } else if (result.status === 'skipped') {
       console.log('[save-hook] ⏭️  No observation needed, continuing');
     } else if (result.status === 'timeout') {

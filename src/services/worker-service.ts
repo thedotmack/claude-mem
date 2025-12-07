@@ -32,7 +32,6 @@ import { PaginationHelper } from './worker/PaginationHelper.js';
 import { SettingsManager } from './worker/SettingsManager.js';
 import { SKIP_TOOLS } from '../shared/skip-tools.js';
 import { getConfig as getEndlessModeConfig } from './worker/EndlessModeConfig.js';
-import { transformTranscriptWithAgents } from '../hooks/save-hook.js';
 import { getBranchInfo, switchBranch, pullUpdates, type BranchInfo, type SwitchResult } from './worker/BranchManager.js';
 
 export class WorkerService {
@@ -152,6 +151,7 @@ export class WorkerService {
 
     // Session endpoints
     this.app.post('/sessions/:sessionDbId/init', this.handleSessionInit.bind(this));
+    this.app.post('/sessions/:sessionDbId/pre-tool-use', this.handlePreToolUse.bind(this));
     this.app.post('/sessions/:sessionDbId/observations', this.handleObservations.bind(this));
     this.app.post('/sessions/:sessionDbId/summarize', this.handleSummarize.bind(this));
     this.app.get('/sessions/:sessionDbId/status', this.handleSessionStatus.bind(this));
@@ -599,6 +599,30 @@ export class WorkerService {
   }
 
   /**
+   * Handle PreToolUse notification
+   * Tracks when tool execution starts (for timing and debugging)
+   */
+  private handlePreToolUse(req: Request, res: Response): void {
+    try {
+      const sessionDbId = parseInt(req.params.sessionDbId, 10);
+      const { tool_name, timestamp } = req.body;
+
+      logger.debug('WORKER', 'PreToolUse notification', {
+        sessionDbId,
+        tool_name,
+        timestamp
+      });
+
+      // For now, just acknowledge receipt
+      // In the future, this could track timing metrics or prepare resources
+      res.json({ status: 'acknowledged' });
+    } catch (error) {
+      logger.failure('WORKER', 'PreToolUse handling failed', {}, error as Error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  }
+
+  /**
    * Wait for observation to be created (synchronous mode helper)
    * Returns observation data or throws on timeout
    */
@@ -685,47 +709,18 @@ export class WorkerService {
         processingTimeMs
       });
 
-      // ALWAYS TRANSFORM - main + all agent transcripts
-      logger.info('WORKER', '🔄 RUNNING TRANSFORM NOW (main + agents)', {
-        transcriptPath,
-        toolUseId,
-        cycleToolCount: session.toolUsesInCurrentCycle.length
-      });
-      const transformStats = await transformTranscriptWithAgents(
-        transcriptPath,
-        toolUseId,
-        session.toolUsesInCurrentCycle
-      );
-      logger.info('WORKER', '✅ Transcript transformed', {
-        sessionId: sessionDbId,
-        toolUseId,
-        ...transformStats
-      });
+      // NOTE: Transformation now happens in save-hook using new context injection strategy
+      // The old transformTranscriptWithAgents() approach has been replaced with:
+      // 1. Clearing tool input from transcript
+      // 2. Injecting observation fetch as a natural tool_use
+      // This makes observations appear naturally in the transcript flow
 
       // Update timeline state: reset cycle and update last observation point
       session.lastObservationToolUseId = toolUseId;
       session.toolUsesInCurrentCycle = [];
 
-      // Persist compression stats to database
-      try {
-        const session = this.dbManager.getSessionStore().getSessionById(sessionDbId);
-        if (session && session.claude_session_id) {
-          this.dbManager.getSessionStore().incrementEndlessModeStats(
-            session.claude_session_id,
-            transformStats.originalTokens,
-            transformStats.compressedTokens
-          );
-          logger.debug('WORKER', 'Endless Mode stats persisted', {
-            claudeSessionId: session.claude_session_id,
-            ...transformStats
-          });
-        } else {
-          logger.warn('WORKER', 'Cannot persist Endless Mode stats - session not found', { sessionDbId });
-        }
-      } catch (statsError) {
-        logger.warn('WORKER', 'Failed to persist Endless Mode stats (non-fatal)', {}, statsError as Error);
-        // Continue anyway - stats persistence failure shouldn't block the hook
-      }
+      // Note: Stats tracking can be added back if needed for the new approach
+      // For now, we're not tracking token savings in the same way
 
     res.json({
       status: 'completed',
