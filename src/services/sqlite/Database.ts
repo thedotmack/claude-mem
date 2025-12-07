@@ -44,7 +44,7 @@ export class DatabaseManager {
     // Ensure the data directory exists
     ensureDir(DATA_DIR);
 
-    this.db = new BunDatabase(DB_PATH, { create: true, readwrite: true });
+    this.db = new Database(DB_PATH, { create: true, readwrite: true });
 
     // Apply optimized SQLite settings
     this.db.run('PRAGMA journal_mode = WAL');
@@ -168,4 +168,4 @@ export async function initializeDatabase(): Promise<Database> {
   return await manager.initialize();
 }
 
-export { BunDatabase as Database };
+export { Database };

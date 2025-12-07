@@ -96,6 +96,11 @@ export class WorkerService {
    * Setup HTTP routes (delegate to route classes)
    */
   private setupRoutes(): void {
+    // Health check endpoint
+    this.app.get('/api/health', (_req, res) => {
+      res.status(200).json({ status: 'ok' });
+    });
+
     this.viewerRoutes.setupRoutes(this.app);
     this.sessionRoutes.setupRoutes(this.app);
     this.dataRoutes.setupRoutes(this.app);
@@ -139,6 +144,25 @@ export class WorkerService {
    * Start the worker service
    */
   async start(): Promise<void> {
+    // Start HTTP server FIRST - make port available immediately
+    const port = getWorkerPort();
+    this.server = await new Promise<http.Server>((resolve, reject) => {
+      const srv = this.app.listen(port, () => resolve(srv));
+      srv.on('error', reject);
+    });
+
+    logger.info('SYSTEM', 'Worker started', { port, pid: process.pid });
+
+    // Do slow initialization in background (non-blocking)
+    this.initializeBackground().catch((error) => {
+      logger.error('SYSTEM', 'Background initialization failed', {}, error as Error);
+    });
+  }
+
+  /**
+   * Background initialization - runs after HTTP server is listening
+   */
+  private async initializeBackground(): Promise<void> {
     // Cleanup orphaned processes from previous sessions
     await this.cleanupOrphanedProcesses();
 
@@ -155,15 +179,6 @@ export class WorkerService {
 
     await this.mcpClient.connect(transport);
     logger.success('WORKER', 'Connected to MCP search server');
-
-    // Start HTTP server
-    const port = getWorkerPort();
-    this.server = await new Promise<http.Server>((resolve, reject) => {
-      const srv = this.app.listen(port, () => resolve(srv));
-      srv.on('error', reject);
-    });
-
-    logger.info('SYSTEM', 'Worker started', { port, pid: process.pid });
   }
 
   /**

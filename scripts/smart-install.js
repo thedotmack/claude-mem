@@ -387,7 +387,7 @@ async function main() {
       } catch (error) {
         // Worker might already be running or PM2 not available - that's okay
         // The ensureWorkerRunning() function will handle auto-start when needed
-        log('ℹ️  Worker will start automatically when needed', colors.dim);
+        log('ℹ️ Worker startup error', colors.dim);
       }
 
     // Success - dependencies installed (if needed)

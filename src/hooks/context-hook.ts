@@ -20,14 +20,39 @@ export interface SessionStartInput {
   [key: string]: any;
 }
 
+async function waitForPort(port: number, maxWaitMs: number = 10000): Promise<boolean> {
+  const startTime = Date.now();
+  const pollInterval = 100;
+
+  while (Date.now() - startTime < maxWaitMs) {
+    try {
+      execSync(`curl -s -f -m 1 "http://localhost:${port}/api/health" > /dev/null 2>&1`, {
+        timeout: 1000,
+      });
+      return true;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, pollInterval));
+    }
+  }
+  return false;
+}
+
 async function contextHook(input?: SessionStartInput): Promise<string> {
   const cwd = input?.cwd ?? process.cwd();
   const project = cwd ? path.basename(cwd) : "unknown-project";
   const port = getWorkerPort();
-  const url = `http://127.0.0.1:${port}/api/context/inject?project=${encodeURIComponent(project)}`;
+
+  // Wait for worker to be available
+  const isAvailable = await waitForPort(port);
+  if (!isAvailable) {
+    throw new Error(
+      `Worker service not available on port ${port} after 10s. Try: npm run worker:restart`
+    );
+  }
+
+  const url = `http://localhost:${port}/api/context/inject?project=${encodeURIComponent(project)}`;
   const result = execSync(`curl -s "${url}"`, { encoding: "utf-8", timeout: 5000 });
-  const runtime = process.title.includes('bun') ? 'bun' : 'node';
-  return result + "\n\n [Executed with " + runtime + " runtime]";
+  return result.trim();
 }
 
 // Entry Point - handle stdin/stdout
