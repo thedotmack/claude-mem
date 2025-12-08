@@ -26,9 +26,9 @@ const WORKER_SERVICE = {
   source: 'src/services/worker-service.ts'
 };
 
-const SEARCH_SERVER = {
-  name: 'search-server',
-  source: 'src/servers/search-server.ts'
+const MCP_SERVER = {
+  name: 'mcp-server',
+  source: 'src/servers/mcp-server.ts'
 };
 
 const CONTEXT_GENERATOR = {
@@ -97,15 +97,15 @@ async function buildHooks() {
     const workerStats = fs.statSync(`${hooksDir}/${WORKER_SERVICE.name}.cjs`);
     console.log(`✓ worker-service built (${(workerStats.size / 1024).toFixed(2)} KB)`);
 
-    // Build search server
-    console.log(`\n🔧 Building search server...`);
+    // Build MCP server
+    console.log(`\n🔧 Building MCP server...`);
     await build({
-      entryPoints: [SEARCH_SERVER.source],
+      entryPoints: [MCP_SERVER.source],
       bundle: true,
       platform: 'node',
       target: 'node18',
       format: 'cjs',
-      outfile: `${hooksDir}/${SEARCH_SERVER.name}.cjs`,
+      outfile: `${hooksDir}/${MCP_SERVER.name}.cjs`,
       minify: true,
       logLevel: 'error',
       external: ['better-sqlite3'],
@@ -117,10 +117,10 @@ async function buildHooks() {
       }
     });
 
-    // Make search server executable
-    fs.chmodSync(`${hooksDir}/${SEARCH_SERVER.name}.cjs`, 0o755);
-    const searchServerStats = fs.statSync(`${hooksDir}/${SEARCH_SERVER.name}.cjs`);
-    console.log(`✓ search-server built (${(searchServerStats.size / 1024).toFixed(2)} KB)`);
+    // Make MCP server executable
+    fs.chmodSync(`${hooksDir}/${MCP_SERVER.name}.cjs`, 0o755);
+    const mcpServerStats = fs.statSync(`${hooksDir}/${MCP_SERVER.name}.cjs`);
+    console.log(`✓ mcp-server built (${(mcpServerStats.size / 1024).toFixed(2)} KB)`);
 
     // Build context generator
     console.log(`\n🔧 Building context generator...`);
@@ -174,11 +174,11 @@ async function buildHooks() {
       console.log(`✓ ${hook.name} built (${sizeInKB} KB)`);
     }
 
-    console.log('\n✅ All hooks, worker service, and search server built successfully!');
+    console.log('\n✅ All hooks, worker service, and MCP server built successfully!');
     console.log(`   Output: ${hooksDir}/`);
     console.log(`   - Hooks: *-hook.js`);
     console.log(`   - Worker: worker-service.cjs`);
-    console.log(`   - Search Server: search-server.cjs`);
+    console.log(`   - MCP Server: mcp-server.cjs`);
     console.log(`   - Skills: plugin/skills/`);
     console.log('\n💡 Note: Dependencies will be auto-installed on first hook execution');
 

@@ -169,16 +169,16 @@ export class WorkerService {
     // Initialize database (once, stays open)
     await this.dbManager.initialize();
 
-    // Connect to MCP search server
-    const searchServerPath = path.join(__dirname, '..', '..', 'plugin', 'scripts', 'search-server.cjs');
+    // Connect to MCP server
+    const mcpServerPath = path.join(__dirname, '..', '..', 'plugin', 'scripts', 'mcp-server.cjs');
     const transport = new StdioClientTransport({
       command: 'node',
-      args: [searchServerPath],
+      args: [mcpServerPath],
       env: process.env
     });
 
     await this.mcpClient.connect(transport);
-    logger.success('WORKER', 'Connected to MCP search server');
+    logger.success('WORKER', 'Connected to MCP server');
   }
 
   /**
@@ -188,7 +188,7 @@ export class WorkerService {
     // Shutdown all active sessions
     await this.sessionManager.shutdownAll();
 
-    // Close MCP client connection (terminates search server process)
+    // Close MCP client connection (terminates MCP server process)
     if (this.mcpClient) {
       try {
         await this.mcpClient.close();

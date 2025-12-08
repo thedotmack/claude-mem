@@ -730,6 +730,79 @@ export class ChromaSync {
   }
 
   /**
+   * Query Chroma collection for semantic search
+   * Used by SearchManager for vector-based search
+   */
+  async queryChroma(
+    query: string,
+    limit: number,
+    whereFilter?: Record<string, any>
+  ): Promise<{ ids: number[]; distances: number[]; metadatas: any[] }> {
+    await this.ensureConnection();
+
+    if (!this.client) {
+      throw new Error('Chroma client not initialized');
+    }
+
+    const whereStringified = whereFilter ? JSON.stringify(whereFilter) : undefined;
+
+    const arguments_obj = {
+      collection_name: this.collectionName,
+      query_texts: [query],
+      n_results: limit,
+      include: ['documents', 'metadatas', 'distances'],
+      where: whereStringified
+    };
+
+    const result = await this.client.callTool({
+      name: 'chroma_query_documents',
+      arguments: arguments_obj
+    });
+
+    const resultText = result.content[0]?.text || '';
+
+    // Parse JSON response
+    let parsed: any;
+    try {
+      parsed = JSON.parse(resultText);
+    } catch (error) {
+      logger.error('CHROMA_SYNC', 'Failed to parse Chroma response', { project: this.project }, error as Error);
+      return { ids: [], distances: [], metadatas: [] };
+    }
+
+    // Extract unique IDs from document IDs
+    const ids: number[] = [];
+    const docIds = parsed.ids?.[0] || [];
+    for (const docId of docIds) {
+      // Extract sqlite_id from document ID (supports three formats):
+      // - obs_{id}_narrative, obs_{id}_fact_0, etc (observations)
+      // - summary_{id}_request, summary_{id}_learned, etc (session summaries)
+      // - prompt_{id} (user prompts)
+      const obsMatch = docId.match(/obs_(\d+)_/);
+      const summaryMatch = docId.match(/summary_(\d+)_/);
+      const promptMatch = docId.match(/prompt_(\d+)/);
+
+      let sqliteId: number | null = null;
+      if (obsMatch) {
+        sqliteId = parseInt(obsMatch[1], 10);
+      } else if (summaryMatch) {
+        sqliteId = parseInt(summaryMatch[1], 10);
+      } else if (promptMatch) {
+        sqliteId = parseInt(promptMatch[1], 10);
+      }
+
+      if (sqliteId !== null && !ids.includes(sqliteId)) {
+        ids.push(sqliteId);
+      }
+    }
+
+    const distances = parsed.distances?.[0] || [];
+    const metadatas = parsed.metadatas?.[0] || [];
+
+    return { ids, distances, metadatas };
+  }
+
+  /**
    * Close the Chroma client connection
    */
   async close(): Promise<void> {
