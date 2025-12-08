@@ -13,11 +13,10 @@ import {
   OBSERVATION_TYPES,
   OBSERVATION_CONCEPTS,
   TYPE_ICON_MAP,
-  TYPE_WORK_EMOJI_MAP,
-  DEFAULT_OBSERVATION_TYPES_STRING,
-  DEFAULT_OBSERVATION_CONCEPTS_STRING
+  TYPE_WORK_EMOJI_MAP
 } from '../constants/observation-metadata.js';
 import { logger } from '../utils/logger.js';
+import { SettingsDefaultsManager } from './worker/settings/SettingsDefaultsManager.js';
 
 // Version marker path - use homedir-based path that works in both CJS and ESM contexts
 const VERSION_MARKER_PATH = path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack', 'plugin', '.install-version');
@@ -49,51 +48,45 @@ interface ContextConfig {
  * Priority: ~/.claude-mem/settings.json > env var > defaults
  */
 function loadContextConfig(): ContextConfig {
-  const defaults = {
-    totalObservationCount: parseInt(process.env.CLAUDE_MEM_CONTEXT_OBSERVATIONS || '50', 10),
-    fullObservationCount: 5,
-    sessionCount: 10,
-    showReadTokens: true,
-    showWorkTokens: true,
-    showSavingsAmount: true,
-    showSavingsPercent: true,
-    observationTypes: new Set(OBSERVATION_TYPES),
-    observationConcepts: new Set(OBSERVATION_CONCEPTS),
-    fullObservationField: 'narrative' as const,
-    showLastSummary: true,
-    showLastMessage: false,
-  };
+  const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+  const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
 
   try {
-    const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
-    if (!existsSync(settingsPath)) return defaults;
-
-    const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
-    const env = settings.env || {};
-
     return {
-      totalObservationCount: parseInt(env.CLAUDE_MEM_CONTEXT_OBSERVATIONS || '50', 10),
-      fullObservationCount: parseInt(env.CLAUDE_MEM_CONTEXT_FULL_COUNT || '5', 10),
-      sessionCount: parseInt(env.CLAUDE_MEM_CONTEXT_SESSION_COUNT || '10', 10),
-      showReadTokens: env.CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS !== 'false',
-      showWorkTokens: env.CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS !== 'false',
-      showSavingsAmount: env.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT !== 'false',
-      showSavingsPercent: env.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT !== 'false',
+      totalObservationCount: parseInt(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10),
+      fullObservationCount: parseInt(settings.CLAUDE_MEM_CONTEXT_FULL_COUNT, 10),
+      sessionCount: parseInt(settings.CLAUDE_MEM_CONTEXT_SESSION_COUNT, 10),
+      showReadTokens: settings.CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS === 'true',
+      showWorkTokens: settings.CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS === 'true',
+      showSavingsAmount: settings.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT === 'true',
+      showSavingsPercent: settings.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT === 'true',
       observationTypes: new Set(
-        (env.CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES || DEFAULT_OBSERVATION_TYPES_STRING)
-          .split(',').map((t: string) => t.trim()).filter(Boolean)
+        settings.CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES.split(',').map((t: string) => t.trim()).filter(Boolean)
       ),
       observationConcepts: new Set(
-        (env.CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS || DEFAULT_OBSERVATION_CONCEPTS_STRING)
-          .split(',').map((c: string) => c.trim()).filter(Boolean)
+        settings.CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS.split(',').map((c: string) => c.trim()).filter(Boolean)
       ),
-      fullObservationField: (env.CLAUDE_MEM_CONTEXT_FULL_FIELD || 'narrative') as 'narrative' | 'facts',
-      showLastSummary: env.CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY !== 'false',
-      showLastMessage: env.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE === 'true',
+      fullObservationField: settings.CLAUDE_MEM_CONTEXT_FULL_FIELD as 'narrative' | 'facts',
+      showLastSummary: settings.CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY === 'true',
+      showLastMessage: settings.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE === 'true',
     };
   } catch (error) {
     logger.warn('WORKER', 'Failed to load context settings, using defaults', {}, error as Error);
-    return defaults;
+    // Return defaults on error
+    return {
+      totalObservationCount: 50,
+      fullObservationCount: 5,
+      sessionCount: 10,
+      showReadTokens: true,
+      showWorkTokens: true,
+      showSavingsAmount: true,
+      showSavingsPercent: true,
+      observationTypes: new Set(OBSERVATION_TYPES),
+      observationConcepts: new Set(OBSERVATION_CONCEPTS),
+      fullObservationField: 'narrative' as const,
+      showLastSummary: true,
+      showLastMessage: false,
+    };
   }
 }
 

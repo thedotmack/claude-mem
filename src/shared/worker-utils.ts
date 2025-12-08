@@ -1,8 +1,8 @@
 import path from "path";
 import { homedir } from "os";
-import { existsSync, readFileSync } from "fs";
 import { spawnSync } from "child_process";
 import { getPackageRoot } from "./paths.js";
+import { SettingsDefaultsManager } from "../services/worker/settings/SettingsDefaultsManager.js";
 
 // Named constants for health checks
 const HEALTH_CHECK_TIMEOUT_MS = 100;
@@ -14,17 +14,9 @@ const WORKER_STARTUP_RETRIES = 10;
  * Priority: ~/.claude-mem/settings.json > env var > default
  */
 export function getWorkerPort(): number {
-  try {
-    const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
-    if (existsSync(settingsPath)) {
-      const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
-      const port = parseInt(settings.env?.CLAUDE_MEM_WORKER_PORT, 10);
-      if (!isNaN(port)) return port;
-    }
-  } catch {
-    // Fall through to env var or default
-  }
-  return parseInt(process.env.CLAUDE_MEM_WORKER_PORT || '37777', 10);
+  const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+  const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+  return parseInt(settings.CLAUDE_MEM_WORKER_PORT, 10);
 }
 
 /**

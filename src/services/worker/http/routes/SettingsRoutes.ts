@@ -16,12 +16,11 @@ import { getBranchInfo, switchBranch, pullUpdates } from '../../BranchManager.js
 import {
   OBSERVATION_TYPES,
   OBSERVATION_CONCEPTS,
-  DEFAULT_OBSERVATION_TYPES_STRING,
-  DEFAULT_OBSERVATION_CONCEPTS_STRING,
   ObservationType,
   ObservationConcept
 } from '../../../../constants/observation-metadata.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
+import { SettingsDefaultsManager } from '../../settings/SettingsDefaultsManager.js';
 
 export class SettingsRoutes extends BaseRouteHandler {
   constructor(
@@ -50,56 +49,8 @@ export class SettingsRoutes extends BaseRouteHandler {
    */
   private handleGetSettings = this.wrapHandler((req: Request, res: Response): void => {
     const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
-
-    if (!existsSync(settingsPath)) {
-      // Return defaults if file doesn't exist
-      res.json({
-        CLAUDE_MEM_MODEL: 'claude-haiku-4-5',
-        CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
-        CLAUDE_MEM_WORKER_PORT: '37777',
-        // Token Economics
-        CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: 'true',
-        CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS: 'true',
-        CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT: 'true',
-        CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT: 'true',
-        // Observation Filtering
-        CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES: DEFAULT_OBSERVATION_TYPES_STRING,
-        CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS: DEFAULT_OBSERVATION_CONCEPTS_STRING,
-        // Display Configuration
-        CLAUDE_MEM_CONTEXT_FULL_COUNT: '5',
-        CLAUDE_MEM_CONTEXT_FULL_FIELD: 'narrative',
-        CLAUDE_MEM_CONTEXT_SESSION_COUNT: '10',
-        // Feature Toggles
-        CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: 'true',
-        CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: 'false',
-      });
-      return;
-    }
-
-    const settingsData = readFileSync(settingsPath, 'utf-8');
-    const settings = JSON.parse(settingsData);
-    const env = settings.env || {};
-
-    res.json({
-      CLAUDE_MEM_MODEL: env.CLAUDE_MEM_MODEL || 'claude-haiku-4-5',
-      CLAUDE_MEM_CONTEXT_OBSERVATIONS: env.CLAUDE_MEM_CONTEXT_OBSERVATIONS || '50',
-      CLAUDE_MEM_WORKER_PORT: env.CLAUDE_MEM_WORKER_PORT || '37777',
-      // Token Economics
-      CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: env.CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS || 'true',
-      CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS: env.CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS || 'true',
-      CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT: env.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT || 'true',
-      CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT: env.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT || 'true',
-      // Observation Filtering
-      CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES: env.CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES || DEFAULT_OBSERVATION_TYPES_STRING,
-      CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS: env.CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS || DEFAULT_OBSERVATION_CONCEPTS_STRING,
-      // Display Configuration
-      CLAUDE_MEM_CONTEXT_FULL_COUNT: env.CLAUDE_MEM_CONTEXT_FULL_COUNT || '5',
-      CLAUDE_MEM_CONTEXT_FULL_FIELD: env.CLAUDE_MEM_CONTEXT_FULL_FIELD || 'narrative',
-      CLAUDE_MEM_CONTEXT_SESSION_COUNT: env.CLAUDE_MEM_CONTEXT_SESSION_COUNT || '10',
-      // Feature Toggles
-      CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: env.CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY || 'true',
-      CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: env.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE || 'false',
-    });
+    const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+    res.json(settings);
   });
 
   /**

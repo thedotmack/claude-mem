@@ -11,13 +11,13 @@
 import { execSync } from 'child_process';
 import { homedir } from 'os';
 import path from 'path';
-import { existsSync, readFileSync } from 'fs';
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
 import { silentDebug } from '../../utils/silent-debug.js';
 import { parseObservations, parseSummary } from '../../sdk/parser.js';
 import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
+import { SettingsDefaultsManager } from './settings/SettingsDefaultsManager.js';
 import type { ActiveSession, SDKUserMessage, PendingMessage } from '../worker-types.js';
 
 // Import Agent SDK (assumes it's installed)
@@ -425,17 +425,8 @@ export class SDKAgent {
    * Get model ID from settings or environment
    */
   private getModelId(): string {
-    try {
-      const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
-      if (existsSync(settingsPath)) {
-        const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
-        const modelId = settings.env?.CLAUDE_MEM_MODEL;
-        if (modelId) return modelId;
-      }
-    } catch {
-      // Fall through to env var or default
-    }
-
-    return process.env.CLAUDE_MEM_MODEL || 'claude-haiku-4-5';
+    const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+    const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+    return settings.CLAUDE_MEM_MODEL;
   }
 }
