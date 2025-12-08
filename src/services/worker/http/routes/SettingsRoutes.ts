@@ -17,7 +17,9 @@ import {
   OBSERVATION_TYPES,
   OBSERVATION_CONCEPTS,
   DEFAULT_OBSERVATION_TYPES_STRING,
-  DEFAULT_OBSERVATION_CONCEPTS_STRING
+  DEFAULT_OBSERVATION_CONCEPTS_STRING,
+  ObservationType,
+  ObservationConcept
 } from '../../../../constants/observation-metadata.js';
 
 export class SettingsRoutes {
@@ -348,7 +350,7 @@ export class SettingsRoutes {
     if (settings.CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES) {
       const types = settings.CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES.split(',').map((t: string) => t.trim());
       for (const type of types) {
-        if (type && !OBSERVATION_TYPES.includes(type as any)) {
+        if (type && !OBSERVATION_TYPES.includes(type as ObservationType)) {
           return { valid: false, error: `Invalid observation type: ${type}. Valid types: ${OBSERVATION_TYPES.join(', ')}` };
         }
       }
@@ -358,7 +360,7 @@ export class SettingsRoutes {
     if (settings.CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS) {
       const concepts = settings.CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS.split(',').map((c: string) => c.trim());
       for (const concept of concepts) {
-        if (concept && !OBSERVATION_CONCEPTS.includes(concept as any)) {
+        if (concept && !OBSERVATION_CONCEPTS.includes(concept as ObservationConcept)) {
           return { valid: false, error: `Invalid observation concept: ${concept}. Valid concepts: ${OBSERVATION_CONCEPTS.join(', ')}` };
         }
       }

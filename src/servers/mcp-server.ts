@@ -383,7 +383,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     tools: tools.map(tool => ({
       name: tool.name,
       description: tool.description,
-      inputSchema: zodToJsonSchema(tool.inputSchema) as any
+      inputSchema: zodToJsonSchema(tool.inputSchema) as Record<string, unknown>
     }))
   };
 });
