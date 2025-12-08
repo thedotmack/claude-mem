@@ -51,7 +51,7 @@ export class WorkerService {
   private viewerRoutes: ViewerRoutes;
   private sessionRoutes: SessionRoutes;
   private dataRoutes: DataRoutes;
-  private searchRoutes: SearchRoutes;
+  private searchRoutes: SearchRoutes | null;
   private settingsRoutes: SettingsRoutes;
 
   constructor() {
@@ -81,7 +81,7 @@ export class WorkerService {
     this.sessionRoutes = new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.sseBroadcaster, this);
     this.dataRoutes = new DataRoutes(this.paginationHelper, this.dbManager, this.sessionManager, this.sseBroadcaster, this, this.startTime);
     // SearchRoutes needs SearchManager which requires initialized DB - will be created in initializeBackground()
-    this.searchRoutes = null as any; // Temporary - will be set in initializeBackground()
+    this.searchRoutes = null;
     this.settingsRoutes = new SettingsRoutes(this.settingsManager);
 
     this.setupMiddleware();
@@ -109,9 +109,6 @@ export class WorkerService {
     this.sessionRoutes.setupRoutes(this.app);
     this.dataRoutes.setupRoutes(this.app);
     // searchRoutes is set up after database initialization in initializeBackground()
-    if (this.searchRoutes) {
-      this.searchRoutes.setupRoutes(this.app);
-    }
     this.settingsRoutes.setupRoutes(this.app);
   }
 
