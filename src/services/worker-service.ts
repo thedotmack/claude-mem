@@ -24,6 +24,7 @@ import { SettingsManager } from './worker/SettingsManager.js';
 import { SearchManager } from './worker/SearchManager.js';
 import { FormattingService } from './worker/FormattingService.js';
 import { TimelineService } from './worker/TimelineService.js';
+import { SessionEventBroadcaster } from './worker/events/SessionEventBroadcaster.js';
 
 // Import HTTP layer
 import { createMiddleware, summarizeRequestBody as summarizeBody } from './worker/http/middleware.js';
@@ -46,6 +47,7 @@ export class WorkerService {
   private sdkAgent: SDKAgent;
   private paginationHelper: PaginationHelper;
   private settingsManager: SettingsManager;
+  private sessionEventBroadcaster: SessionEventBroadcaster;
 
   // Route handlers
   private viewerRoutes: ViewerRoutes;
@@ -64,6 +66,7 @@ export class WorkerService {
     this.sdkAgent = new SDKAgent(this.dbManager, this.sessionManager);
     this.paginationHelper = new PaginationHelper(this.dbManager);
     this.settingsManager = new SettingsManager(this.dbManager);
+    this.sessionEventBroadcaster = new SessionEventBroadcaster(this.sseBroadcaster, this);
 
     // Set callback for when sessions are deleted (to update activity indicator)
     this.sessionManager.setOnSessionDeleted(() => {
@@ -78,7 +81,7 @@ export class WorkerService {
 
     // Initialize route handlers (SearchRoutes will use MCP client initially, then switch to SearchManager after DB init)
     this.viewerRoutes = new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager);
-    this.sessionRoutes = new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.sseBroadcaster, this);
+    this.sessionRoutes = new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.sessionEventBroadcaster, this);
     this.dataRoutes = new DataRoutes(this.paginationHelper, this.dbManager, this.sessionManager, this.sseBroadcaster, this, this.startTime);
     // SearchRoutes needs SearchManager which requires initialized DB - will be created in initializeBackground()
     this.searchRoutes = null;
