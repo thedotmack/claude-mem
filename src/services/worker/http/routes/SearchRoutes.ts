@@ -6,13 +6,15 @@
  */
 
 import express, { Request, Response } from 'express';
-import { logger } from '../../../../utils/logger.js';
 import { SearchManager } from '../../SearchManager.js';
+import { BaseRouteHandler } from '../BaseRouteHandler.js';
 
-export class SearchRoutes {
+export class SearchRoutes extends BaseRouteHandler {
   constructor(
     private searchManager: SearchManager
-  ) {}
+  ) {
+    super();
+  }
 
   setupRoutes(app: express.Application): void {
     // Unified endpoints (new consolidated API)
@@ -45,223 +47,150 @@ export class SearchRoutes {
    * Unified search (observations + sessions + prompts)
    * GET /api/search?query=...&type=observations&format=index&limit=20
    */
-  private async handleUnifiedSearch(req: Request, res: Response): Promise<void> {
-    try {
-      const result = await this.searchManager.search(req.query);
-      res.json(result.content);
-    } catch (error) {
-      logger.failure('WORKER', 'Unified search failed', {}, error as Error);
-      res.status(500).json({ error: (error as Error).message });
-    }
-  }
+  private handleUnifiedSearch = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const result = await this.searchManager.search(req.query);
+    res.json(result.content);
+  });
 
   /**
    * Unified timeline (anchor or query-based)
    * GET /api/timeline?anchor=123 OR GET /api/timeline?query=...
    */
-  private async handleUnifiedTimeline(req: Request, res: Response): Promise<void> {
-    try {
-      const result = await this.searchManager.timeline(req.query);
-      res.json(result.content);
-    } catch (error) {
-      logger.failure('WORKER', 'Unified timeline failed', {}, error as Error);
-      res.status(500).json({ error: (error as Error).message });
-    }
-  }
+  private handleUnifiedTimeline = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const result = await this.searchManager.timeline(req.query);
+    res.json(result.content);
+  });
 
   /**
    * Semantic shortcut for finding decision observations
    * GET /api/decisions?format=index&limit=20
    */
-  private async handleDecisions(req: Request, res: Response): Promise<void> {
-    try {
-      const result = await this.searchManager.decisions(req.query);
-      res.json(result.content);
-    } catch (error) {
-      logger.failure('WORKER', 'Decisions search failed', {}, error as Error);
-      res.status(500).json({ error: (error as Error).message });
-    }
-  }
+  private handleDecisions = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const result = await this.searchManager.decisions(req.query);
+    res.json(result.content);
+  });
 
   /**
    * Semantic shortcut for finding change-related observations
    * GET /api/changes?format=index&limit=20
    */
-  private async handleChanges(req: Request, res: Response): Promise<void> {
-    try {
-      const result = await this.searchManager.changes(req.query);
-      res.json(result.content);
-    } catch (error) {
-      logger.failure('WORKER', 'Changes search failed', {}, error as Error);
-      res.status(500).json({ error: (error as Error).message });
-    }
-  }
+  private handleChanges = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const result = await this.searchManager.changes(req.query);
+    res.json(result.content);
+  });
 
   /**
    * Semantic shortcut for finding "how it works" explanations
    * GET /api/how-it-works?format=index&limit=20
    */
-  private async handleHowItWorks(req: Request, res: Response): Promise<void> {
-    try {
-      const result = await this.searchManager.howItWorks(req.query);
-      res.json(result.content);
-    } catch (error) {
-      logger.failure('WORKER', 'How it works search failed', {}, error as Error);
-      res.status(500).json({ error: (error as Error).message });
-    }
-  }
+  private handleHowItWorks = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const result = await this.searchManager.howItWorks(req.query);
+    res.json(result.content);
+  });
 
   /**
    * Search observations (use /api/search?type=observations instead)
    * GET /api/search/observations?query=...&format=index&limit=20&project=...
    */
-  private async handleSearchObservations(req: Request, res: Response): Promise<void> {
-    try {
-      const result = await this.searchManager.searchObservations(req.query);
-      res.json(result.content);
-    } catch (error) {
-      logger.failure('WORKER', 'Search failed', {}, error as Error);
-      res.status(500).json({ error: (error as Error).message });
-    }
-  }
+  private handleSearchObservations = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const result = await this.searchManager.searchObservations(req.query);
+    res.json(result.content);
+  });
 
   /**
    * Search session summaries
    * GET /api/search/sessions?query=...&format=index&limit=20
    */
-  private async handleSearchSessions(req: Request, res: Response): Promise<void> {
-    try {
-      const result = await this.searchManager.searchSessions(req.query);
-      res.json(result.content);
-    } catch (error) {
-      logger.failure('WORKER', 'Search failed', {}, error as Error);
-      res.status(500).json({ error: (error as Error).message });
-    }
-  }
+  private handleSearchSessions = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const result = await this.searchManager.searchSessions(req.query);
+    res.json(result.content);
+  });
 
   /**
    * Search user prompts
    * GET /api/search/prompts?query=...&format=index&limit=20
    */
-  private async handleSearchPrompts(req: Request, res: Response): Promise<void> {
-    try {
-      const result = await this.searchManager.searchUserPrompts(req.query);
-      res.json(result.content);
-    } catch (error) {
-      logger.failure('WORKER', 'Search failed', {}, error as Error);
-      res.status(500).json({ error: (error as Error).message });
-    }
-  }
+  private handleSearchPrompts = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const result = await this.searchManager.searchUserPrompts(req.query);
+    res.json(result.content);
+  });
 
   /**
    * Search observations by concept
    * GET /api/search/by-concept?concept=discovery&format=index&limit=5
    */
-  private async handleSearchByConcept(req: Request, res: Response): Promise<void> {
-    try {
-      const result = await this.searchManager.findByConcept(req.query);
-      res.json(result.content);
-    } catch (error) {
-      logger.failure('WORKER', 'Search failed', {}, error as Error);
-      res.status(500).json({ error: (error as Error).message });
-    }
-  }
+  private handleSearchByConcept = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const result = await this.searchManager.findByConcept(req.query);
+    res.json(result.content);
+  });
 
   /**
    * Search by file path
    * GET /api/search/by-file?filePath=...&format=index&limit=10
    */
-  private async handleSearchByFile(req: Request, res: Response): Promise<void> {
-    try {
-      const result = await this.searchManager.findByFile(req.query);
-      res.json(result.content);
-    } catch (error) {
-      logger.failure('WORKER', 'Search failed', {}, error as Error);
-      res.status(500).json({ error: (error as Error).message });
-    }
-  }
+  private handleSearchByFile = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const result = await this.searchManager.findByFile(req.query);
+    res.json(result.content);
+  });
 
   /**
    * Search observations by type
    * GET /api/search/by-type?type=bugfix&format=index&limit=10
    */
-  private async handleSearchByType(req: Request, res: Response): Promise<void> {
-    try {
-      const result = await this.searchManager.findByType(req.query);
-      res.json(result.content);
-    } catch (error) {
-      logger.failure('WORKER', 'Search failed', {}, error as Error);
-      res.status(500).json({ error: (error as Error).message });
-    }
-  }
+  private handleSearchByType = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const result = await this.searchManager.findByType(req.query);
+    res.json(result.content);
+  });
 
   /**
    * Get recent context (summaries and observations for a project)
    * GET /api/context/recent?project=...&limit=3
    */
-  private async handleGetRecentContext(req: Request, res: Response): Promise<void> {
-    try {
-      const result = await this.searchManager.getRecentContext(req.query);
-      res.json(result.content);
-    } catch (error) {
-      logger.failure('WORKER', 'Search failed', {}, error as Error);
-      res.status(500).json({ error: (error as Error).message });
-    }
-  }
+  private handleGetRecentContext = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const result = await this.searchManager.getRecentContext(req.query);
+    res.json(result.content);
+  });
 
   /**
    * Get context timeline around an anchor point
    * GET /api/context/timeline?anchor=123&depth_before=10&depth_after=10&project=...
    */
-  private async handleGetContextTimeline(req: Request, res: Response): Promise<void> {
-    try {
-      const result = await this.searchManager.getContextTimeline(req.query);
-      res.json(result.content);
-    } catch (error) {
-      logger.failure('WORKER', 'Search failed', {}, error as Error);
-      res.status(500).json({ error: (error as Error).message });
-    }
-  }
+  private handleGetContextTimeline = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const result = await this.searchManager.getContextTimeline(req.query);
+    res.json(result.content);
+  });
 
   /**
    * Generate context preview for settings modal
    * GET /api/context/preview?project=...
    */
-  private async handleContextPreview(req: Request, res: Response): Promise<void> {
-    try {
-      const projectName = req.query.project as string;
+  private handleContextPreview = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const projectName = req.query.project as string;
 
-      if (!projectName) {
-        res.status(400).json({ error: 'Project parameter is required' });
-        return;
-      }
-
-      // Import context generator (runs in worker, has access to database)
-      const { generateContext } = await import('../../../context-generator.js');
-
-      // Use project name as CWD (generateContext uses path.basename to get project)
-      const cwd = `/preview/${projectName}`;
-
-      // Generate context with colors for terminal display
-      const contextText = await generateContext(
-        {
-          session_id: 'preview-' + Date.now(),
-          cwd: cwd
-        },
-        true  // useColors=true for ANSI terminal output
-      );
-
-      // Return as plain text
-      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-      res.send(contextText);
-    } catch (error) {
-      logger.failure('WORKER', 'Context preview generation failed', {}, error as Error);
-      res.status(500).json({
-        error: 'Failed to generate context preview',
-        message: (error as Error).message
-      });
+    if (!projectName) {
+      this.badRequest(res, 'Project parameter is required');
+      return;
     }
-  }
+
+    // Import context generator (runs in worker, has access to database)
+    const { generateContext } = await import('../../../context-generator.js');
+
+    // Use project name as CWD (generateContext uses path.basename to get project)
+    const cwd = `/preview/${projectName}`;
+
+    // Generate context with colors for terminal display
+    const contextText = await generateContext(
+      {
+        session_id: 'preview-' + Date.now(),
+        cwd: cwd
+      },
+      true  // useColors=true for ANSI terminal output
+    );
+
+    // Return as plain text
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.send(contextText);
+  });
 
   /**
    * Context injection endpoint for hooks
@@ -270,62 +199,49 @@ export class SearchRoutes {
    * Returns pre-formatted context string ready for display.
    * Use colors=true for ANSI-colored terminal output.
    */
-  private async handleContextInject(req: Request, res: Response): Promise<void> {
-    try {
-      const projectName = req.query.project as string;
-      const useColors = req.query.colors === 'true';
+  private handleContextInject = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const projectName = req.query.project as string;
+    const useColors = req.query.colors === 'true';
 
-      if (!projectName) {
-        res.status(400).json({ error: 'Project parameter is required' });
-        return;
-      }
-
-      // Import context generator (runs in worker, has access to database)
-      const { generateContext } = await import('../../../context-generator.js');
-
-      // Use project name as CWD (generateContext uses path.basename to get project)
-      const cwd = `/context/${projectName}`;
-
-      // Generate context
-      const contextText = await generateContext(
-        {
-          session_id: 'context-inject-' + Date.now(),
-          cwd: cwd
-        },
-        useColors
-      );
-
-      // Return as plain text
-      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-      res.send(contextText);
-    } catch (error) {
-      logger.failure('WORKER', 'Context injection failed', {}, error as Error);
-      res.status(500).json({
-        error: 'Failed to generate context',
-        message: (error as Error).message
-      });
+    if (!projectName) {
+      this.badRequest(res, 'Project parameter is required');
+      return;
     }
-  }
+
+    // Import context generator (runs in worker, has access to database)
+    const { generateContext } = await import('../../../context-generator.js');
+
+    // Use project name as CWD (generateContext uses path.basename to get project)
+    const cwd = `/context/${projectName}`;
+
+    // Generate context
+    const contextText = await generateContext(
+      {
+        session_id: 'context-inject-' + Date.now(),
+        cwd: cwd
+      },
+      useColors
+    );
+
+    // Return as plain text
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.send(contextText);
+  });
 
   /**
    * Get timeline by query (search first, then get timeline around best match)
    * GET /api/timeline/by-query?query=...&mode=auto&depth_before=10&depth_after=10
    */
-  private async handleGetTimelineByQuery(req: Request, res: Response): Promise<void> {
-    try {
-      const result = await this.searchManager.getTimelineByQuery(req.query);
-      res.json(result.content);
-    } catch (error) {
-      logger.failure('WORKER', 'Search failed', {}, error as Error);
-      res.status(500).json({ error: (error as Error).message });
-    }
-  }
+  private handleGetTimelineByQuery = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const result = await this.searchManager.getTimelineByQuery(req.query);
+    res.json(result.content);
+  });
 
   /**
    * Get search help documentation
    * GET /api/search/help
    */
-  private handleSearchHelp(req: Request, res: Response): void {
+  private handleSearchHelp = this.wrapHandler((req: Request, res: Response): void => {
     res.json({
       title: 'Claude-Mem Search API',
       description: 'HTTP API for searching persistent memory',
@@ -440,5 +356,5 @@ export class SearchRoutes {
         'curl "http://localhost:37777/api/context/timeline?anchor=123&depth_before=5&depth_after=5"'
       ]
     });
-  }
+  });
 }

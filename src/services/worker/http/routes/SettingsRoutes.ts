@@ -21,11 +21,14 @@ import {
   ObservationType,
   ObservationConcept
 } from '../../../../constants/observation-metadata.js';
+import { BaseRouteHandler } from '../BaseRouteHandler.js';
 
-export class SettingsRoutes {
+export class SettingsRoutes extends BaseRouteHandler {
   constructor(
     private settingsManager: SettingsManager
-  ) {}
+  ) {
+    super();
+  }
 
   setupRoutes(app: express.Application): void {
     // Settings endpoints
@@ -45,263 +48,228 @@ export class SettingsRoutes {
   /**
    * Get environment settings (from ~/.claude/settings.json)
    */
-  private handleGetSettings(req: Request, res: Response): void {
-    try {
-      const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+  private handleGetSettings = this.wrapHandler((req: Request, res: Response): void => {
+    const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
 
-      if (!existsSync(settingsPath)) {
-        // Return defaults if file doesn't exist
-        res.json({
-          CLAUDE_MEM_MODEL: 'claude-haiku-4-5',
-          CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
-          CLAUDE_MEM_WORKER_PORT: '37777',
-          // Token Economics
-          CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: 'true',
-          CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS: 'true',
-          CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT: 'true',
-          CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT: 'true',
-          // Observation Filtering
-          CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES: DEFAULT_OBSERVATION_TYPES_STRING,
-          CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS: DEFAULT_OBSERVATION_CONCEPTS_STRING,
-          // Display Configuration
-          CLAUDE_MEM_CONTEXT_FULL_COUNT: '5',
-          CLAUDE_MEM_CONTEXT_FULL_FIELD: 'narrative',
-          CLAUDE_MEM_CONTEXT_SESSION_COUNT: '10',
-          // Feature Toggles
-          CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: 'true',
-          CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: 'false',
-        });
-        return;
-      }
-
-      const settingsData = readFileSync(settingsPath, 'utf-8');
-      const settings = JSON.parse(settingsData);
-      const env = settings.env || {};
-
+    if (!existsSync(settingsPath)) {
+      // Return defaults if file doesn't exist
       res.json({
-        CLAUDE_MEM_MODEL: env.CLAUDE_MEM_MODEL || 'claude-haiku-4-5',
-        CLAUDE_MEM_CONTEXT_OBSERVATIONS: env.CLAUDE_MEM_CONTEXT_OBSERVATIONS || '50',
-        CLAUDE_MEM_WORKER_PORT: env.CLAUDE_MEM_WORKER_PORT || '37777',
+        CLAUDE_MEM_MODEL: 'claude-haiku-4-5',
+        CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
+        CLAUDE_MEM_WORKER_PORT: '37777',
         // Token Economics
-        CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: env.CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS || 'true',
-        CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS: env.CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS || 'true',
-        CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT: env.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT || 'true',
-        CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT: env.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT || 'true',
+        CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: 'true',
+        CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS: 'true',
+        CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT: 'true',
+        CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT: 'true',
         // Observation Filtering
-        CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES: env.CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES || DEFAULT_OBSERVATION_TYPES_STRING,
-        CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS: env.CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS || DEFAULT_OBSERVATION_CONCEPTS_STRING,
+        CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES: DEFAULT_OBSERVATION_TYPES_STRING,
+        CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS: DEFAULT_OBSERVATION_CONCEPTS_STRING,
         // Display Configuration
-        CLAUDE_MEM_CONTEXT_FULL_COUNT: env.CLAUDE_MEM_CONTEXT_FULL_COUNT || '5',
-        CLAUDE_MEM_CONTEXT_FULL_FIELD: env.CLAUDE_MEM_CONTEXT_FULL_FIELD || 'narrative',
-        CLAUDE_MEM_CONTEXT_SESSION_COUNT: env.CLAUDE_MEM_CONTEXT_SESSION_COUNT || '10',
+        CLAUDE_MEM_CONTEXT_FULL_COUNT: '5',
+        CLAUDE_MEM_CONTEXT_FULL_FIELD: 'narrative',
+        CLAUDE_MEM_CONTEXT_SESSION_COUNT: '10',
         // Feature Toggles
-        CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: env.CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY || 'true',
-        CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: env.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE || 'false',
+        CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: 'true',
+        CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: 'false',
       });
-    } catch (error) {
-      logger.failure('WORKER', 'Get settings failed', {}, error as Error);
-      res.status(500).json({ error: (error as Error).message });
+      return;
     }
-  }
+
+    const settingsData = readFileSync(settingsPath, 'utf-8');
+    const settings = JSON.parse(settingsData);
+    const env = settings.env || {};
+
+    res.json({
+      CLAUDE_MEM_MODEL: env.CLAUDE_MEM_MODEL || 'claude-haiku-4-5',
+      CLAUDE_MEM_CONTEXT_OBSERVATIONS: env.CLAUDE_MEM_CONTEXT_OBSERVATIONS || '50',
+      CLAUDE_MEM_WORKER_PORT: env.CLAUDE_MEM_WORKER_PORT || '37777',
+      // Token Economics
+      CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: env.CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS || 'true',
+      CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS: env.CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS || 'true',
+      CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT: env.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT || 'true',
+      CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT: env.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT || 'true',
+      // Observation Filtering
+      CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES: env.CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES || DEFAULT_OBSERVATION_TYPES_STRING,
+      CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS: env.CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS || DEFAULT_OBSERVATION_CONCEPTS_STRING,
+      // Display Configuration
+      CLAUDE_MEM_CONTEXT_FULL_COUNT: env.CLAUDE_MEM_CONTEXT_FULL_COUNT || '5',
+      CLAUDE_MEM_CONTEXT_FULL_FIELD: env.CLAUDE_MEM_CONTEXT_FULL_FIELD || 'narrative',
+      CLAUDE_MEM_CONTEXT_SESSION_COUNT: env.CLAUDE_MEM_CONTEXT_SESSION_COUNT || '10',
+      // Feature Toggles
+      CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: env.CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY || 'true',
+      CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: env.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE || 'false',
+    });
+  });
 
   /**
    * Update environment settings (in ~/.claude/settings.json) with validation
    */
-  private handleUpdateSettings(req: Request, res: Response): void {
-    try {
-      // Validate CLAUDE_MEM_CONTEXT_OBSERVATIONS
-      if (req.body.CLAUDE_MEM_CONTEXT_OBSERVATIONS) {
-        const obsCount = parseInt(req.body.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10);
-        if (isNaN(obsCount) || obsCount < 1 || obsCount > 200) {
-          res.status(400).json({
-            success: false,
-            error: 'CLAUDE_MEM_CONTEXT_OBSERVATIONS must be between 1 and 200'
-          });
-          return;
-        }
-      }
-
-      // Validate CLAUDE_MEM_WORKER_PORT
-      if (req.body.CLAUDE_MEM_WORKER_PORT) {
-        const port = parseInt(req.body.CLAUDE_MEM_WORKER_PORT, 10);
-        if (isNaN(port) || port < 1024 || port > 65535) {
-          res.status(400).json({
-            success: false,
-            error: 'CLAUDE_MEM_WORKER_PORT must be between 1024 and 65535'
-          });
-          return;
-        }
-      }
-
-      // Validate context settings
-      const validation = this.validateContextSettings(req.body);
-      if (!validation.valid) {
+  private handleUpdateSettings = this.wrapHandler((req: Request, res: Response): void => {
+    // Validate CLAUDE_MEM_CONTEXT_OBSERVATIONS
+    if (req.body.CLAUDE_MEM_CONTEXT_OBSERVATIONS) {
+      const obsCount = parseInt(req.body.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10);
+      if (isNaN(obsCount) || obsCount < 1 || obsCount > 200) {
         res.status(400).json({
           success: false,
-          error: validation.error
+          error: 'CLAUDE_MEM_CONTEXT_OBSERVATIONS must be between 1 and 200'
         });
         return;
       }
-
-      // Read existing settings
-      const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
-      let settings: any = { env: {} };
-
-      if (existsSync(settingsPath)) {
-        const settingsData = readFileSync(settingsPath, 'utf-8');
-        settings = JSON.parse(settingsData);
-        if (!settings.env) {
-          settings.env = {};
-        }
-      }
-
-      // Update all settings from request body
-      const settingKeys = [
-        'CLAUDE_MEM_MODEL',
-        'CLAUDE_MEM_CONTEXT_OBSERVATIONS',
-        'CLAUDE_MEM_WORKER_PORT',
-        'CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS',
-        'CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS',
-        'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT',
-        'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT',
-        'CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES',
-        'CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS',
-        'CLAUDE_MEM_CONTEXT_FULL_COUNT',
-        'CLAUDE_MEM_CONTEXT_FULL_FIELD',
-        'CLAUDE_MEM_CONTEXT_SESSION_COUNT',
-        'CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY',
-        'CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE',
-      ];
-
-      for (const key of settingKeys) {
-        if (req.body[key] !== undefined) {
-          settings.env[key] = req.body[key];
-        }
-      }
-
-      // Write back
-      writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf-8');
-
-      logger.info('WORKER', 'Settings updated');
-      res.json({ success: true, message: 'Settings updated successfully' });
-    } catch (error) {
-      logger.failure('WORKER', 'Update settings failed', {}, error as Error);
-      res.status(500).json({ success: false, error: String(error) });
     }
-  }
+
+    // Validate CLAUDE_MEM_WORKER_PORT
+    if (req.body.CLAUDE_MEM_WORKER_PORT) {
+      const port = parseInt(req.body.CLAUDE_MEM_WORKER_PORT, 10);
+      if (isNaN(port) || port < 1024 || port > 65535) {
+        res.status(400).json({
+          success: false,
+          error: 'CLAUDE_MEM_WORKER_PORT must be between 1024 and 65535'
+        });
+        return;
+      }
+    }
+
+    // Validate context settings
+    const validation = this.validateContextSettings(req.body);
+    if (!validation.valid) {
+      res.status(400).json({
+        success: false,
+        error: validation.error
+      });
+      return;
+    }
+
+    // Read existing settings
+    const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+    let settings: any = { env: {} };
+
+    if (existsSync(settingsPath)) {
+      const settingsData = readFileSync(settingsPath, 'utf-8');
+      settings = JSON.parse(settingsData);
+      if (!settings.env) {
+        settings.env = {};
+      }
+    }
+
+    // Update all settings from request body
+    const settingKeys = [
+      'CLAUDE_MEM_MODEL',
+      'CLAUDE_MEM_CONTEXT_OBSERVATIONS',
+      'CLAUDE_MEM_WORKER_PORT',
+      'CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS',
+      'CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS',
+      'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT',
+      'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT',
+      'CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES',
+      'CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS',
+      'CLAUDE_MEM_CONTEXT_FULL_COUNT',
+      'CLAUDE_MEM_CONTEXT_FULL_FIELD',
+      'CLAUDE_MEM_CONTEXT_SESSION_COUNT',
+      'CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY',
+      'CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE',
+    ];
+
+    for (const key of settingKeys) {
+      if (req.body[key] !== undefined) {
+        settings.env[key] = req.body[key];
+      }
+    }
+
+    // Write back
+    writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf-8');
+
+    logger.info('WORKER', 'Settings updated');
+    res.json({ success: true, message: 'Settings updated successfully' });
+  });
 
   /**
    * GET /api/mcp/status - Check if MCP search server is enabled
    */
-  private handleGetMcpStatus(req: Request, res: Response): void {
-    try {
-      const enabled = this.isMcpEnabled();
-      res.json({ enabled });
-    } catch (error) {
-      logger.failure('WORKER', 'Get MCP status failed', {}, error as Error);
-      res.status(500).json({ error: (error as Error).message });
-    }
-  }
+  private handleGetMcpStatus = this.wrapHandler((req: Request, res: Response): void => {
+    const enabled = this.isMcpEnabled();
+    res.json({ enabled });
+  });
 
   /**
    * POST /api/mcp/toggle - Toggle MCP search server on/off
    * Body: { enabled: boolean }
    */
-  private handleToggleMcp(req: Request, res: Response): void {
-    try {
-      const { enabled } = req.body;
+  private handleToggleMcp = this.wrapHandler((req: Request, res: Response): void => {
+    const { enabled } = req.body;
 
-      if (typeof enabled !== 'boolean') {
-        res.status(400).json({ error: 'enabled must be a boolean' });
-        return;
-      }
-
-      this.toggleMcp(enabled);
-      res.json({ success: true, enabled: this.isMcpEnabled() });
-    } catch (error) {
-      logger.failure('WORKER', 'Toggle MCP failed', {}, error as Error);
-      res.status(500).json({ success: false, error: (error as Error).message });
+    if (typeof enabled !== 'boolean') {
+      this.badRequest(res, 'enabled must be a boolean');
+      return;
     }
-  }
+
+    this.toggleMcp(enabled);
+    res.json({ success: true, enabled: this.isMcpEnabled() });
+  });
 
   /**
    * GET /api/branch/status - Get current branch information
    */
-  private handleGetBranchStatus(req: Request, res: Response): void {
-    try {
-      const info = getBranchInfo();
-      res.json(info);
-    } catch (error) {
-      logger.failure('WORKER', 'Failed to get branch status', {}, error as Error);
-      res.status(500).json({ error: (error as Error).message });
-    }
-  }
+  private handleGetBranchStatus = this.wrapHandler((req: Request, res: Response): void => {
+    const info = getBranchInfo();
+    res.json(info);
+  });
 
   /**
    * POST /api/branch/switch - Switch to a different branch
    * Body: { branch: "main" | "beta/7.0" }
    */
-  private async handleSwitchBranch(req: Request, res: Response): Promise<void> {
-    try {
-      const { branch } = req.body;
+  private handleSwitchBranch = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const { branch } = req.body;
 
-      if (!branch) {
-        res.status(400).json({ success: false, error: 'Missing branch parameter' });
-        return;
-      }
-
-      // Validate branch name
-      const allowedBranches = ['main', 'beta/7.0'];
-      if (!allowedBranches.includes(branch)) {
-        res.status(400).json({
-          success: false,
-          error: `Invalid branch. Allowed: ${allowedBranches.join(', ')}`
-        });
-        return;
-      }
-
-      logger.info('WORKER', 'Branch switch requested', { branch });
-
-      const result = await switchBranch(branch);
-
-      if (result.success) {
-        // Schedule worker restart after response is sent
-        setTimeout(() => {
-          logger.info('WORKER', 'Restarting worker after branch switch');
-          process.exit(0); // PM2 will restart the worker
-        }, 1000);
-      }
-
-      res.json(result);
-    } catch (error) {
-      logger.failure('WORKER', 'Branch switch failed', {}, error as Error);
-      res.status(500).json({ success: false, error: (error as Error).message });
+    if (!branch) {
+      res.status(400).json({ success: false, error: 'Missing branch parameter' });
+      return;
     }
-  }
+
+    // Validate branch name
+    const allowedBranches = ['main', 'beta/7.0'];
+    if (!allowedBranches.includes(branch)) {
+      res.status(400).json({
+        success: false,
+        error: `Invalid branch. Allowed: ${allowedBranches.join(', ')}`
+      });
+      return;
+    }
+
+    logger.info('WORKER', 'Branch switch requested', { branch });
+
+    const result = await switchBranch(branch);
+
+    if (result.success) {
+      // Schedule worker restart after response is sent
+      setTimeout(() => {
+        logger.info('WORKER', 'Restarting worker after branch switch');
+        process.exit(0); // PM2 will restart the worker
+      }, 1000);
+    }
+
+    res.json(result);
+  });
 
   /**
    * POST /api/branch/update - Pull latest updates for current branch
    */
-  private async handleUpdateBranch(req: Request, res: Response): Promise<void> {
-    try {
-      logger.info('WORKER', 'Branch update requested');
+  private handleUpdateBranch = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    logger.info('WORKER', 'Branch update requested');
 
-      const result = await pullUpdates();
+    const result = await pullUpdates();
 
-      if (result.success) {
-        // Schedule worker restart after response is sent
-        setTimeout(() => {
-          logger.info('WORKER', 'Restarting worker after branch update');
-          process.exit(0); // PM2 will restart the worker
-        }, 1000);
-      }
-
-      res.json(result);
-    } catch (error) {
-      logger.failure('WORKER', 'Branch update failed', {}, error as Error);
-      res.status(500).json({ success: false, error: (error as Error).message });
+    if (result.success) {
+      // Schedule worker restart after response is sent
+      setTimeout(() => {
+        logger.info('WORKER', 'Restarting worker after branch update');
+        process.exit(0); // PM2 will restart the worker
+      }, 1000);
     }
-  }
+
+    res.json(result);
+  });
 
   /**
    * Validate context settings from request body

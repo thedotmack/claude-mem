@@ -9,17 +9,19 @@ import express, { Request, Response } from 'express';
 import path from 'path';
 import { readFileSync } from 'fs';
 import { getPackageRoot } from '../../../../shared/paths.js';
-import { logger } from '../../../../utils/logger.js';
 import { SSEBroadcaster } from '../../SSEBroadcaster.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
 import { SessionManager } from '../../SessionManager.js';
+import { BaseRouteHandler } from '../BaseRouteHandler.js';
 
-export class ViewerRoutes {
+export class ViewerRoutes extends BaseRouteHandler {
   constructor(
     private sseBroadcaster: SSEBroadcaster,
     private dbManager: DatabaseManager,
     private sessionManager: SessionManager
-  ) {}
+  ) {
+    super();
+  }
 
   setupRoutes(app: express.Application): void {
     app.get('/health', this.handleHealth.bind(this));
@@ -30,30 +32,25 @@ export class ViewerRoutes {
   /**
    * Health check endpoint
    */
-  private handleHealth(req: Request, res: Response): void {
+  private handleHealth = this.wrapHandler((req: Request, res: Response): void => {
     res.json({ status: 'ok', timestamp: Date.now() });
-  }
+  });
 
   /**
    * Serve viewer UI
    */
-  private handleViewerUI(req: Request, res: Response): void {
-    try {
-      const packageRoot = getPackageRoot();
-      const viewerPath = path.join(packageRoot, 'plugin', 'ui', 'viewer.html');
-      const html = readFileSync(viewerPath, 'utf-8');
-      res.setHeader('Content-Type', 'text/html');
-      res.send(html);
-    } catch (error) {
-      logger.failure('WORKER', 'Viewer UI error', {}, error as Error);
-      res.status(500).json({ error: 'Failed to load viewer UI' });
-    }
-  }
+  private handleViewerUI = this.wrapHandler((req: Request, res: Response): void => {
+    const packageRoot = getPackageRoot();
+    const viewerPath = path.join(packageRoot, 'plugin', 'ui', 'viewer.html');
+    const html = readFileSync(viewerPath, 'utf-8');
+    res.setHeader('Content-Type', 'text/html');
+    res.send(html);
+  });
 
   /**
    * SSE stream endpoint
    */
-  private handleSSEStream(req: Request, res: Response): void {
+  private handleSSEStream = this.wrapHandler((req: Request, res: Response): void => {
     // Setup SSE headers
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
@@ -78,5 +75,5 @@ export class ViewerRoutes {
       isProcessing,
       queueDepth
     });
-  }
+  });
 }
