@@ -21,7 +21,7 @@ Returns complete API documentation:
 
 ```json
 {
-  "version": "5.4.0",
+  "version": "6.5.0",
   "base_url": "http://localhost:37777/api",
   "endpoints": [
     {
@@ -55,7 +55,7 @@ Returns complete API documentation:
 Present as reference documentation:
 
 ```markdown
-## claude-mem Search API Reference (v5.4.0)
+## claude-mem Search API Reference
 
 Base URL: `http://localhost:37777/api`
 
@@ -164,11 +164,7 @@ The help response includes version information:
 
 ```json
 {
-  "version": "5.4.0",
-  "skill_migration": true,
-  "deprecated": {
-    "mcp_tools": "Replaced by HTTP API in v5.4.0"
-  }
+  "version": "6.5.0"
 }
 ```
 

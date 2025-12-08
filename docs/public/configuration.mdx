@@ -13,7 +13,7 @@ description: "Environment variables and settings for Claude-Mem"
 | `CLAUDE_MEM_DATA_DIR`         | `~/.claude-mem/`                | Data directory (production default)   |
 | `CLAUDE_CODE_PATH`            | Auto-detected                   | Path to Claude Code CLI (for Windows) |
 | `CLAUDE_MEM_WORKER_PORT`      | `37777`                         | Worker service port                   |
-| `CLAUDE_MEM_MODEL`            | `claude-sonnet-4-5`             | AI model for processing observations  |
+| `CLAUDE_MEM_MODEL`            | `claude-haiku-4-5`              | AI model for processing observations  |
 | `CLAUDE_MEM_CONTEXT_OBSERVATIONS` | `50`                        | Number of observations to inject      |
 | `NODE_ENV`                    | `production`                    | Environment mode                      |
 | `FORCE_COLOR`                 | `1`                             | Enable colored logs                   |
@@ -24,8 +24,8 @@ Configure which AI model processes your observations.
 
 ### Available Models
 
-- `claude-haiku-4-5` - Fast, cost-efficient
-- `claude-sonnet-4-5` - Balanced (default)
+- `claude-haiku-4-5` - Fast, cost-efficient (default)
+- `claude-sonnet-4-5` - Balanced
 - `claude-opus-4` - Most capable
 - `claude-3-7-sonnet` - Alternative version
 
@@ -43,7 +43,7 @@ Edit `~/.claude/settings.json`:
 
 ```json
 {
-  "CLAUDE_MEM_MODEL": "claude-sonnet-4-5"
+  "CLAUDE_MEM_MODEL": "claude-haiku-4-5"
 }
 ```
 
@@ -82,7 +82,7 @@ ${CLAUDE_PLUGIN_ROOT}/
 │   ├── summary-hook.js     # Summary generation hook
 │   ├── cleanup-hook.js     # Session cleanup hook
 │   ├── worker-service.cjs  # Worker service (CJS)
-│   └── search-server.mjs   # MCP search server (ESM)
+│   └── search-server.cjs   # MCP search server (CJS)
 └── ui/
     └── viewer.html         # Web viewer UI bundle
 ```
@@ -201,33 +201,110 @@ module.exports = {
 
 ## Context Injection Configuration
 
-### CLAUDE_MEM_CONTEXT_OBSERVATIONS
+Claude-Mem injects past observations into each new session, giving Claude awareness of recent work. You can configure exactly what gets injected using the **Context Settings Modal**.
 
-Controls how many observations are injected into each new session for context continuity.
+### Context Settings Modal
 
-**Default**: 50 observations
+Access the settings modal from the web viewer at http://localhost:37777:
 
-**What it does**:
-- Fetches the most recent N observations from the database
-- Injects them as context at SessionStart
-- Allows Claude to maintain awareness of recent work across sessions
+1. Click the **gear icon** in the header
+2. Adjust settings in the right panel
+3. See changes reflected live in the **Terminal Preview** on the left
+4. Settings auto-save as you change them
 
-**Configuration** in `~/.claude/settings.json`:
+The Terminal Preview shows exactly what will be injected at the start of your next Claude Code session for the selected project.
 
-```json
-{
-  "env": {
-    "CLAUDE_MEM_CONTEXT_OBSERVATIONS": "100"
-  }
-}
-```
+### Loading Settings
+
+Control how many observations are injected:
+
+| Setting | Default | Range | Description |
+|---------|---------|-------|-------------|
+| **Observations** | 50 | 1-200 | Total number of recent observations to include |
+| **Sessions** | 10 | 1-50 | Number of recent sessions to pull observations from |
 
 **Considerations**:
 - **Higher values** = More context but slower SessionStart and more tokens used
 - **Lower values** = Faster SessionStart but less historical awareness
-- Default of 50 balances context richness with performance
+- Default of 50 observations from 10 sessions balances context richness with performance
 
-**Note**: This injects individual observations, not entire sessions. Each observation represents a single tool execution (Read, Write, Edit, etc.) that was compressed into a semantic learning.
+### Filter Settings
+
+Control which observation types and concepts are included:
+
+**Types** (select any combination):
+- `bugfix` - Bug fixes and error resolutions
+- `feature` - New functionality additions
+- `refactor` - Code restructuring
+- `discovery` - Learnings about how code works
+- `decision` - Architectural or design decisions
+- `change` - General code changes
+
+**Concepts** (select any combination):
+- `how-it-works` - System behavior explanations
+- `why-it-exists` - Rationale for code/design
+- `what-changed` - Change summaries
+- `problem-solution` - Problem/solution pairs
+- `gotcha` - Edge cases and pitfalls
+- `pattern` - Recurring patterns
+- `trade-off` - Design trade-offs
+
+Use "All" or "None" buttons to quickly select/deselect all options.
+
+### Display Settings
+
+Control how observations appear in the context:
+
+**Full Observations**:
+| Setting | Default | Options | Description |
+|---------|---------|---------|-------------|
+| **Count** | 5 | 0-20 | How many observations show expanded details |
+| **Field** | narrative | narrative, facts | Which field to expand |
+
+The most recent N observations (set by Count) show their full narrative or facts. Remaining observations show only title, type, and token counts in a compact table format.
+
+**Token Economics** (toggles):
+| Setting | Default | Description |
+|---------|---------|-------------|
+| **Read cost** | true | Show tokens to read each observation |
+| **Work investment** | true | Show tokens spent creating the observation |
+| **Savings** | true | Show total tokens saved by reusing context |
+
+Token economics help you understand the value of cached observations vs. re-reading files.
+
+### Advanced Settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| **Model** | claude-haiku-4-5 | AI model for generating observations |
+| **Worker Port** | 37777 | Port for background worker service |
+| **MCP search server** | true | Enable Model Context Protocol search tools |
+| **Include last summary** | false | Add previous session's summary to context |
+| **Include last message** | false | Add previous session's final message |
+
+### Manual Configuration
+
+Settings are stored in `~/.claude-mem/settings.json`. You can also configure via environment variables in `~/.claude/settings.json`:
+
+```json
+{
+  "env": {
+    "CLAUDE_MEM_CONTEXT_OBSERVATIONS": "100",
+    "CLAUDE_MEM_CONTEXT_SESSION_COUNT": "20",
+    "CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES": "bugfix,decision,discovery",
+    "CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS": "how-it-works,gotcha",
+    "CLAUDE_MEM_CONTEXT_FULL_COUNT": "10",
+    "CLAUDE_MEM_CONTEXT_FULL_FIELD": "narrative",
+    "CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS": "true",
+    "CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS": "true",
+    "CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT": "true",
+    "CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY": "false",
+    "CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE": "false"
+  }
+}
+```
+
+**Note**: The Context Settings Modal is the recommended way to configure these settings, as it provides live preview of changes.
 
 ## Customization
 
@@ -328,7 +405,7 @@ npm run worker:logs
 
 ### Invalid Model Name
 
-If you specify an invalid model name, the worker will fall back to `claude-sonnet-4-5` and log a warning.
+If you specify an invalid model name, the worker will fall back to `claude-haiku-4-5` and log a warning.
 
 Valid models:
 - claude-haiku-4-5

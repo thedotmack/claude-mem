@@ -1,6 +1,6 @@
 {
   "name": "claude-mem",
-  "version": "7.0.0-beta.1",
+  "version": "7.0.0",
   "description": "Memory compression system for Claude Code - persist context across sessions",
   "keywords": [
     "claude",
@@ -31,27 +31,25 @@
   },
   "scripts": {
     "build": "node scripts/build-hooks.js",
-    "test": "node --test tests/",
+    "test": "vitest",
     "test:parser": "npx tsx src/sdk/parser.test.ts",
     "test:context": "echo '{\"session_id\":\"test-'$(date +%s)'\",\"cwd\":\"'$(pwd)'\",\"source\":\"startup\"}' | node plugin/scripts/context-hook.js 2>/dev/null",
     "test:context:verbose": "echo '{\"session_id\":\"test-'$(date +%s)'\",\"cwd\":\"'$(pwd)'\",\"source\":\"startup\"}' | node plugin/scripts/context-hook.js",
     "sync-marketplace": "rsync -av --delete --exclude=.git ./ ~/.claude/plugins/marketplaces/thedotmack/ && cd ~/.claude/plugins/marketplaces/thedotmack/ && npm install",
     "worker:start": "pm2 start ecosystem.config.cjs",
     "worker:stop": "pm2 stop claude-mem-worker",
-    "worker:restart": "pm2 restart claude-mem-worker || pm2 start ecosystem.config.cjs",
+    "worker:restart": "pm2 restart claude-mem-worker",
     "worker:logs": "pm2 flush claude-mem-worker && pm2 logs claude-mem-worker --lines 100 --nostream",
     "worker:logs:no-flush": "pm2 logs claude-mem-worker --lines 100 --nostream",
     "changelog:generate": "node scripts/generate-changelog.js",
     "usage:analyze": "node scripts/analyze-usage.js",
-    "usage:today": "node scripts/analyze-usage.js $(date +%Y-%m-%d)",
-    "endless-mode:metrics": "node scripts/endless-mode-metrics.js",
-    "endless-mode:restore": "npx tsx src/bin/restore-endless-mode.ts",
-    "endless-mode:backup-info": "npx tsx src/bin/restore-endless-mode.ts -- --info"
+    "usage:today": "node scripts/analyze-usage.js $(date +%Y-%m-%d)"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.1.27",
     "@modelcontextprotocol/sdk": "^1.20.1",
-    "better-sqlite3": "^11.0.0",
+    "ansi-to-html": "^0.7.2",
+    "better-sqlite3": "^12.5.0",
     "express": "^4.18.2",
     "glob": "^11.0.3",
     "handlebars": "^4.7.8",
@@ -69,6 +67,7 @@
     "@types/react-dom": "^18.3.0",
     "esbuild": "^0.25.12",
     "tsx": "^4.20.6",
-    "typescript": "^5.3.0"
+    "typescript": "^5.3.0",
+    "vitest": "^4.0.15"
   }
 }

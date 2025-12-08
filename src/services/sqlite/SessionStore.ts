@@ -1,8 +1,17 @@
 import Database from 'better-sqlite3';
 import { DATA_DIR, DB_PATH, ensureDir } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
-import { happy_path_error__with_fallback } from '../../utils/silent-debug.js';
-import type { ObservationRow } from './types.js';
+import {
+  TableColumnInfo,
+  IndexInfo,
+  TableNameRow,
+  SchemaVersion,
+  SdkSessionRecord,
+  ObservationRecord,
+  SessionSummaryRecord,
+  UserPromptRecord,
+  LatestPromptResult
+} from '../../types/database.js';
 
 /**
  * Session data store for SDK sessions, observations, and summaries
@@ -29,11 +38,8 @@ export class SessionStore {
     this.removeSessionSummariesUniqueConstraint();
     this.addObservationHierarchicalFields();
     this.makeObservationsTextNullable();
-    this.addEndlessModeStatsColumns();
     this.createUserPromptsTable();
     this.ensureDiscoveryTokensColumn();
-    this.addToolUseIdColumn();
-    this.removeToolUseIdUniqueConstraint();
   }
 
   /**
@@ -52,7 +58,7 @@ export class SessionStore {
       `);
 
       // Get applied migrations
-      const appliedVersions = this.db.prepare('SELECT version FROM schema_versions ORDER BY version').all() as Array<{version: number}>;
+      const appliedVersions = this.db.prepare('SELECT version FROM schema_versions ORDER BY version').all() as SchemaVersion[];
       const maxApplied = appliedVersions.length > 0 ? Math.max(...appliedVersions.map(v => v.version)) : 0;
 
       // Only run migration004 if no migrations have been applied
@@ -72,10 +78,7 @@ export class SessionStore {
             started_at_epoch INTEGER NOT NULL,
             completed_at TEXT,
             completed_at_epoch INTEGER,
-            status TEXT CHECK(status IN ('active', 'completed', 'failed')) NOT NULL DEFAULT 'active',
-            endless_original_tokens INTEGER DEFAULT 0,
-            endless_compressed_tokens INTEGER DEFAULT 0,
-            endless_tokens_saved INTEGER DEFAULT 0
+            status TEXT CHECK(status IN ('active', 'completed', 'failed')) NOT NULL DEFAULT 'active'
           );
 
           CREATE INDEX IF NOT EXISTS idx_sdk_sessions_claude_id ON sdk_sessions(claude_session_id);
@@ -139,12 +142,12 @@ export class SessionStore {
   private ensureWorkerPortColumn(): void {
     try {
       // Check if migration already applied
-      const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(5) as {version: number} | undefined;
+      const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(5) as SchemaVersion | undefined;
       if (applied) return;
 
       // Check if column exists
-      const tableInfo = this.db.pragma('table_info(sdk_sessions)');
-      const hasWorkerPort = (tableInfo as any[]).some((col: any) => col.name === 'worker_port');
+      const tableInfo = this.db.pragma('table_info(sdk_sessions)') as TableColumnInfo[];
+      const hasWorkerPort = tableInfo.some(col => col.name === 'worker_port');
 
       if (!hasWorkerPort) {
         this.db.exec('ALTER TABLE sdk_sessions ADD COLUMN worker_port INTEGER');
@@ -164,12 +167,12 @@ export class SessionStore {
   private ensurePromptTrackingColumns(): void {
     try {
       // Check if migration already applied
-      const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(6) as {version: number} | undefined;
+      const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(6) as SchemaVersion | undefined;
       if (applied) return;
 
       // Check sdk_sessions for prompt_counter
-      const sessionsInfo = this.db.pragma('table_info(sdk_sessions)');
-      const hasPromptCounter = (sessionsInfo as any[]).some((col: any) => col.name === 'prompt_counter');
+      const sessionsInfo = this.db.pragma('table_info(sdk_sessions)') as TableColumnInfo[];
+      const hasPromptCounter = sessionsInfo.some(col => col.name === 'prompt_counter');
 
       if (!hasPromptCounter) {
         this.db.exec('ALTER TABLE sdk_sessions ADD COLUMN prompt_counter INTEGER DEFAULT 0');
@@ -177,8 +180,8 @@ export class SessionStore {
       }
 
       // Check observations for prompt_number
-      const observationsInfo = this.db.pragma('table_info(observations)');
-      const obsHasPromptNumber = (observationsInfo as any[]).some((col: any) => col.name === 'prompt_number');
+      const observationsInfo = this.db.pragma('table_info(observations)') as TableColumnInfo[];
+      const obsHasPromptNumber = observationsInfo.some(col => col.name === 'prompt_number');
 
       if (!obsHasPromptNumber) {
         this.db.exec('ALTER TABLE observations ADD COLUMN prompt_number INTEGER');
@@ -186,8 +189,8 @@ export class SessionStore {
       }
 
       // Check session_summaries for prompt_number
-      const summariesInfo = this.db.pragma('table_info(session_summaries)');
-      const sumHasPromptNumber = (summariesInfo as any[]).some((col: any) => col.name === 'prompt_number');
+      const summariesInfo = this.db.pragma('table_info(session_summaries)') as TableColumnInfo[];
+      const sumHasPromptNumber = summariesInfo.some(col => col.name === 'prompt_number');
 
       if (!sumHasPromptNumber) {
         this.db.exec('ALTER TABLE session_summaries ADD COLUMN prompt_number INTEGER');
@@ -207,12 +210,12 @@ export class SessionStore {
   private removeSessionSummariesUniqueConstraint(): void {
     try {
       // Check if migration already applied
-      const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(7) as {version: number} | undefined;
+      const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(7) as SchemaVersion | undefined;
       if (applied) return;
 
       // Check if UNIQUE constraint exists
-      const summariesIndexes = this.db.pragma('index_list(session_summaries)');
-      const hasUniqueConstraint = (summariesIndexes as any[]).some((idx: any) => idx.unique === 1);
+      const summariesIndexes = this.db.pragma('index_list(session_summaries)') as IndexInfo[];
+      const hasUniqueConstraint = summariesIndexes.some(idx => idx.unique === 1);
 
       if (!hasUniqueConstraint) {
         // Already migrated (no constraint exists)
@@ -292,12 +295,12 @@ export class SessionStore {
   private addObservationHierarchicalFields(): void {
     try {
       // Check if migration already applied
-      const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(8) as {version: number} | undefined;
+      const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(8) as SchemaVersion | undefined;
       if (applied) return;
 
       // Check if new fields already exist
-      const tableInfo = this.db.pragma('table_info(observations)');
-      const hasTitle = (tableInfo as any[]).some((col: any) => col.name === 'title');
+      const tableInfo = this.db.pragma('table_info(observations)') as TableColumnInfo[];
+      const hasTitle = tableInfo.some(col => col.name === 'title');
 
       if (hasTitle) {
         // Already migrated
@@ -334,12 +337,12 @@ export class SessionStore {
   private makeObservationsTextNullable(): void {
     try {
       // Check if migration already applied
-      const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(9) as {version: number} | undefined;
+      const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(9) as SchemaVersion | undefined;
       if (applied) return;
 
       // Check if text column is already nullable
-      const tableInfo = this.db.pragma('table_info(observations)');
-      const textColumn = (tableInfo as any[]).find((col: any) => col.name === 'text');
+      const tableInfo = this.db.pragma('table_info(observations)') as TableColumnInfo[];
+      const textColumn = tableInfo.find(col => col.name === 'text');
 
       if (!textColumn || textColumn.notnull === 0) {
         // Already migrated or text column doesn't exist
@@ -421,12 +424,12 @@ export class SessionStore {
   private createUserPromptsTable(): void {
     try {
       // Check if migration already applied
-      const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(10) as {version: number} | undefined;
+      const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(10) as SchemaVersion | undefined;
       if (applied) return;
 
       // Check if table already exists
-      const tableInfo = this.db.pragma('table_info(user_prompts)');
-      if ((tableInfo as any[]).length > 0) {
+      const tableInfo = this.db.pragma('table_info(user_prompts)') as TableColumnInfo[];
+      if (tableInfo.length > 0) {
         // Already migrated
         this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(10, new Date().toISOString());
         return;
@@ -510,12 +513,12 @@ export class SessionStore {
   private ensureDiscoveryTokensColumn(): void {
     try {
       // Check if migration already applied to avoid unnecessary re-runs
-      const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(11) as {version: number} | undefined;
+      const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(11) as SchemaVersion | undefined;
       if (applied) return;
 
       // Check if discovery_tokens column exists in observations table
-      const observationsInfo = this.db.pragma('table_info(observations)');
-      const obsHasDiscoveryTokens = (observationsInfo as any[]).some((col: any) => col.name === 'discovery_tokens');
+      const observationsInfo = this.db.pragma('table_info(observations)') as TableColumnInfo[];
+      const obsHasDiscoveryTokens = observationsInfo.some(col => col.name === 'discovery_tokens');
 
       if (!obsHasDiscoveryTokens) {
         this.db.exec('ALTER TABLE observations ADD COLUMN discovery_tokens INTEGER DEFAULT 0');
@@ -523,8 +526,8 @@ export class SessionStore {
       }
 
       // Check if discovery_tokens column exists in session_summaries table
-      const summariesInfo = this.db.pragma('table_info(session_summaries)');
-      const sumHasDiscoveryTokens = (summariesInfo as any[]).some((col: any) => col.name === 'discovery_tokens');
+      const summariesInfo = this.db.pragma('table_info(session_summaries)') as TableColumnInfo[];
+      const sumHasDiscoveryTokens = summariesInfo.some(col => col.name === 'discovery_tokens');
 
       if (!sumHasDiscoveryTokens) {
         this.db.exec('ALTER TABLE session_summaries ADD COLUMN discovery_tokens INTEGER DEFAULT 0');
@@ -536,98 +539,6 @@ export class SessionStore {
     } catch (error: any) {
       console.error('[SessionStore] Discovery tokens migration error:', error.message);
       throw error; // Re-throw to prevent silent failures
-    }
-  }
-
-  /**
-   * Add tool_use_id column to observations table (migration 12)
-   * Part of Endless Mode implementation for real-time context compression
-   */
-  private addToolUseIdColumn(): void {
-    try {
-      // Check if migration already applied
-      const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(12) as {version: number} | undefined;
-      if (applied) return;
-
-      // Check if tool_use_id column exists
-      const tableInfo = this.db.pragma('table_info(observations)');
-      const hasToolUseId = (tableInfo as any[]).some((col: any) => col.name === 'tool_use_id');
-
-      if (!hasToolUseId) {
-        this.db.exec('ALTER TABLE observations ADD COLUMN tool_use_id TEXT');
-        console.error('[SessionStore] Added tool_use_id column to observations table');
-
-        // Create non-unique index for efficient lookups (multiple observations can share tool_use_id)
-        this.db.exec('CREATE INDEX IF NOT EXISTS idx_observations_tool_use_id ON observations(tool_use_id) WHERE tool_use_id IS NOT NULL');
-        console.error('[SessionStore] Created index on tool_use_id column');
-      }
-
-      // Record migration
-      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(12, new Date().toISOString());
-    } catch (error: any) {
-      console.error('[SessionStore] Tool use ID migration error:', error.message);
-    }
-  }
-
-  /**
-   * Add Endless Mode stats columns to sdk_sessions table (migration 13)
-   * Tracks token compression statistics for sessions using Endless Mode
-   */
-  private addEndlessModeStatsColumns(): void {
-    try {
-      // Check if migration already applied
-      const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(13) as {version: number} | undefined;
-      if (applied) return;
-
-      const tableInfo = this.db.pragma('table_info(sdk_sessions)');
-      const hasOriginalTokens = (tableInfo as any[]).some((col: any) => col.name === 'endless_original_tokens');
-      const hasCompressedTokens = (tableInfo as any[]).some((col: any) => col.name === 'endless_compressed_tokens');
-      const hasTokensSaved = (tableInfo as any[]).some((col: any) => col.name === 'endless_tokens_saved');
-
-      if (!hasOriginalTokens) {
-        this.db.exec('ALTER TABLE sdk_sessions ADD COLUMN endless_original_tokens INTEGER DEFAULT 0');
-        console.error('[SessionStore] Added endless_original_tokens column to sdk_sessions table');
-      }
-
-      if (!hasCompressedTokens) {
-        this.db.exec('ALTER TABLE sdk_sessions ADD COLUMN endless_compressed_tokens INTEGER DEFAULT 0');
-        console.error('[SessionStore] Added endless_compressed_tokens column to sdk_sessions table');
-      }
-
-      if (!hasTokensSaved) {
-        this.db.exec('ALTER TABLE sdk_sessions ADD COLUMN endless_tokens_saved INTEGER DEFAULT 0');
-        console.error('[SessionStore] Added endless_tokens_saved column to sdk_sessions table');
-      }
-
-      // Record migration
-      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(13, new Date().toISOString());
-    } catch (error: any) {
-      console.error('[SessionStore] Endless Mode stats migration error:', error.message);
-    }
-  }
-
-  /**
-   * Remove UNIQUE constraint from tool_use_id index (migration 14)
-   * Multiple observations can relate to the same tool use, so UNIQUE constraint is incorrect
-   */
-  private removeToolUseIdUniqueConstraint(): void {
-    try {
-      // Check if migration already applied
-      const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(14) as {version: number} | undefined;
-      if (applied) return;
-
-      // Drop existing UNIQUE index if it exists
-      this.db.exec('DROP INDEX IF EXISTS idx_observations_tool_use_id');
-      console.error('[SessionStore] Dropped UNIQUE index on tool_use_id');
-
-      // Recreate as non-unique index (multiple observations can share tool_use_id)
-      this.db.exec('CREATE INDEX IF NOT EXISTS idx_observations_tool_use_id ON observations(tool_use_id) WHERE tool_use_id IS NOT NULL');
-      console.error('[SessionStore] Recreated tool_use_id index without UNIQUE constraint');
-
-      // Record migration
-      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(14, new Date().toISOString());
-    } catch (error: any) {
-      console.error('[SessionStore] Remove UNIQUE constraint migration error:', error.message);
     }
   }
 
@@ -656,7 +567,7 @@ export class SessionStore {
       LIMIT ?
     `);
 
-    return stmt.all(project, limit) as any[];
+    return stmt.all(project, limit);
   }
 
   /**
@@ -681,7 +592,7 @@ export class SessionStore {
       LIMIT ?
     `);
 
-    return stmt.all(project, limit) as any[];
+    return stmt.all(project, limit);
   }
 
   /**
@@ -701,7 +612,7 @@ export class SessionStore {
       LIMIT ?
     `);
 
-    return stmt.all(project, limit) as any[];
+    return stmt.all(project, limit);
   }
 
   /**
@@ -725,7 +636,7 @@ export class SessionStore {
       LIMIT ?
     `);
 
-    return stmt.all(limit) as any[];
+    return stmt.all(limit);
   }
 
   /**
@@ -755,7 +666,7 @@ export class SessionStore {
       LIMIT ?
     `);
 
-    return stmt.all(limit) as any[];
+    return stmt.all(limit);
   }
 
   /**
@@ -785,7 +696,7 @@ export class SessionStore {
       LIMIT ?
     `);
 
-    return stmt.all(limit) as any[];
+    return stmt.all(limit);
   }
 
   /**
@@ -801,6 +712,34 @@ export class SessionStore {
 
     const rows = stmt.all() as Array<{ project: string }>;
     return rows.map(row => row.project);
+  }
+
+  /**
+   * Get latest user prompt with session info for a Claude session
+   * Used for syncing prompts to Chroma during session initialization
+   */
+  getLatestUserPrompt(claudeSessionId: string): {
+    id: number;
+    claude_session_id: string;
+    sdk_session_id: string;
+    project: string;
+    prompt_number: number;
+    prompt_text: string;
+    created_at_epoch: number;
+  } | undefined {
+    const stmt = this.db.prepare(`
+      SELECT
+        up.*,
+        s.sdk_session_id,
+        s.project
+      FROM user_prompts up
+      JOIN sdk_sessions s ON up.claude_session_id = s.claude_session_id
+      WHERE up.claude_session_id = ?
+      ORDER BY up.created_at_epoch DESC
+      LIMIT 1
+    `);
+
+    return stmt.get(claudeSessionId) as LatestPromptResult | undefined;
   }
 
   /**
@@ -832,7 +771,7 @@ export class SessionStore {
       ORDER BY started_at_epoch ASC
     `);
 
-    return stmt.all(project, limit) as any[];
+    return stmt.all(project, limit);
   }
 
   /**
@@ -851,20 +790,20 @@ export class SessionStore {
       ORDER BY created_at_epoch ASC
     `);
 
-    return stmt.all(sdkSessionId) as any[];
+    return stmt.all(sdkSessionId);
   }
 
   /**
    * Get a single observation by ID
    */
-  getObservationById(id: number): any | null {
+  getObservationById(id: number): ObservationRecord | null {
     const stmt = this.db.prepare(`
       SELECT *
       FROM observations
       WHERE id = ?
     `);
 
-    return stmt.get(id) as any || happy_path_error__with_fallback('SessionStore.getObservationById: No observation found', { id }, null);
+    return stmt.get(id) as ObservationRecord | undefined || null;
   }
 
   /**
@@ -873,7 +812,7 @@ export class SessionStore {
   getObservationsByIds(
     ids: number[],
     options: { orderBy?: 'date_desc' | 'date_asc'; limit?: number } = {}
-  ): any[] {
+  ): ObservationRecord[] {
     if (ids.length === 0) return [];
 
     const { orderBy = 'date_desc', limit } = options;
@@ -891,7 +830,7 @@ export class SessionStore {
       ${limitClause}
     `);
 
-    return stmt.all(...ids) as any[];
+    return stmt.all(...ids) as ObservationRecord[];
   }
 
   /**
@@ -919,7 +858,7 @@ export class SessionStore {
       LIMIT 1
     `);
 
-    return stmt.get(sdkSessionId) as any || happy_path_error__with_fallback('SessionStore.getSummaryForSession: No summary found', { sdkSessionId }, null);
+    return stmt.get(sdkSessionId) || null;
   }
 
   /**
@@ -992,7 +931,7 @@ export class SessionStore {
       LIMIT 1
     `);
 
-    return stmt.get(id) as any || happy_path_error__with_fallback('SessionStore.getSessionById: No session found', { id }, null);
+    return stmt.get(id) || null;
   }
 
   /**
@@ -1011,7 +950,7 @@ export class SessionStore {
       LIMIT 1
     `);
 
-    return stmt.get(claudeSessionId) as any || happy_path_error__with_fallback('SessionStore.findActiveSDKSession: No active session found', { claudeSessionId }, null);
+    return stmt.get(claudeSessionId) || null;
   }
 
   /**
@@ -1025,7 +964,7 @@ export class SessionStore {
       LIMIT 1
     `);
 
-    return stmt.get(claudeSessionId) as any || happy_path_error__with_fallback('SessionStore.findAnySDKSession: No session found', { claudeSessionId }, null);
+    return stmt.get(claudeSessionId) || null;
   }
 
   /**
@@ -1057,7 +996,7 @@ export class SessionStore {
       SELECT prompt_counter FROM sdk_sessions WHERE id = ?
     `).get(id) as { prompt_counter: number } | undefined;
 
-    return result?.prompt_counter || happy_path_error__with_fallback('SessionStore.incrementPromptCounter: result or prompt_counter is null', { id }, 1);
+    return result?.prompt_counter || 1;
   }
 
   /**
@@ -1068,7 +1007,7 @@ export class SessionStore {
       SELECT prompt_counter FROM sdk_sessions WHERE id = ?
     `).get(id) as { prompt_counter: number | null } | undefined;
 
-    return result?.prompt_counter || happy_path_error__with_fallback('SessionStore.getPromptCounter: prompt_counter is null', { id }, 0);
+    return result?.prompt_counter || 0;
   }
 
   /**
@@ -1187,7 +1126,7 @@ export class SessionStore {
     `);
 
     const result = stmt.get(id) as { worker_port: number | null } | undefined;
-    return result?.worker_port || happy_path_error__with_fallback('SessionStore.getWorkerPort: worker_port is null', { id }, null);
+    return result?.worker_port || null;
   }
 
   /**
@@ -1239,7 +1178,6 @@ export class SessionStore {
       concepts: string[];
       files_read: string[];
       files_modified: string[];
-      tool_use_id?: string | null;
     },
     promptNumber?: number,
     discoveryTokens: number = 0
@@ -1273,8 +1211,8 @@ export class SessionStore {
     const stmt = this.db.prepare(`
       INSERT INTO observations
       (sdk_session_id, project, type, title, subtitle, facts, narrative, concepts,
-       files_read, files_modified, prompt_number, discovery_tokens, tool_use_id, created_at, created_at_epoch)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       files_read, files_modified, prompt_number, discovery_tokens, created_at, created_at_epoch)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
@@ -1288,9 +1226,8 @@ export class SessionStore {
       JSON.stringify(observation.concepts),
       JSON.stringify(observation.files_read),
       JSON.stringify(observation.files_modified),
-      promptNumber || happy_path_error__with_fallback('SessionStore.storeObservation: promptNumber is null', { sdkSessionId }, null),
+      promptNumber || null,
       discoveryTokens,
-      observation.tool_use_id || happy_path_error__with_fallback('SessionStore.storeObservation: tool_use_id is null', { sdkSessionId }, null),
       now.toISOString(),
       nowEpoch
     );
@@ -1299,64 +1236,6 @@ export class SessionStore {
       id: Number(result.lastInsertRowid),
       createdAtEpoch: nowEpoch
     };
-  }
-
-  /**
-   * Get observation by tool_use_id (for Endless Mode transform layer)
-   * Returns the compressed observation data for replacing tool use content
-   */
-  getObservationByToolUseId(toolUseId: string): ObservationRow | null {
-    const stmt = this.db.prepare(`
-      SELECT * FROM observations
-      WHERE tool_use_id = ?
-      LIMIT 1
-    `);
-
-    const result = stmt.get(toolUseId) as ObservationRow | undefined;
-    return result || happy_path_error__with_fallback('SessionStore.getObservationByToolUseId: No observation found', { toolUseId }, null);
-  }
-
-  /**
-   * Get ALL observations for a tool_use_id (for Endless Mode transform layer)
-   * Returns array of observations sorted by creation time (oldest first)
-   * Multiple observations can exist per tool_use_id - this returns them all for concatenation
-   */
-  getAllObservationsForToolUseId(toolUseId: string): ObservationRow[] {
-    const stmt = this.db.prepare(`
-      SELECT * FROM observations
-      WHERE tool_use_id = ?
-      ORDER BY created_at_epoch ASC
-    `);
-
-    return stmt.all(toolUseId) as ObservationRow[];
-  }
-
-  /**
-   * Get observations by array of tool_use_ids (for Endless Mode batch transform)
-   * Returns map of tool_use_id -> ObservationRow for efficient lookup
-   */
-  getObservationsByToolUseIds(toolUseIds: string[]): Map<string, ObservationRow> {
-    if (toolUseIds.length === 0) {
-      return new Map();
-    }
-
-    const placeholders = toolUseIds.map(() => '?').join(',');
-    const stmt = this.db.prepare(`
-      SELECT * FROM observations
-      WHERE tool_use_id IN (${placeholders})
-    `);
-
-    const results = stmt.all(...toolUseIds) as ObservationRow[];
-
-    // Build map for O(1) lookup
-    const map = new Map<string, ObservationRow>();
-    for (const row of results) {
-      if (row.tool_use_id) {
-        map.set(row.tool_use_id, row);
-      }
-    }
-
-    return map;
   }
 
   /**
@@ -1419,7 +1298,7 @@ export class SessionStore {
       summary.completed,
       summary.next_steps,
       summary.notes,
-      promptNumber || happy_path_error__with_fallback('SessionStore.storeSummary: promptNumber is null', { sdkSessionId }, null),
+      promptNumber || null,
       discoveryTokens,
       now.toISOString(),
       nowEpoch
@@ -1475,7 +1354,7 @@ export class SessionStore {
   getSessionSummariesByIds(
     ids: number[],
     options: { orderBy?: 'date_desc' | 'date_asc'; limit?: number } = {}
-  ): any[] {
+  ): SessionSummaryRecord[] {
     if (ids.length === 0) return [];
 
     const { orderBy = 'date_desc', limit } = options;
@@ -1490,7 +1369,7 @@ export class SessionStore {
       ${limitClause}
     `);
 
-    return stmt.all(...ids) as any[];
+    return stmt.all(...ids) as SessionSummaryRecord[];
   }
 
   /**
@@ -1500,7 +1379,7 @@ export class SessionStore {
   getUserPromptsByIds(
     ids: number[],
     options: { orderBy?: 'date_desc' | 'date_asc'; limit?: number } = {}
-  ): any[] {
+  ): UserPromptRecord[] {
     if (ids.length === 0) return [];
 
     const { orderBy = 'date_desc', limit } = options;
@@ -1520,7 +1399,7 @@ export class SessionStore {
       ${limitClause}
     `);
 
-    return stmt.all(...ids) as any[];
+    return stmt.all(...ids) as UserPromptRecord[];
   }
 
   /**
@@ -1583,8 +1462,8 @@ export class SessionStore {
       `;
 
       try {
-        const beforeRecords = this.db.prepare(beforeQuery).all(anchorObservationId, ...projectParams, depthBefore + 1) as any[];
-        const afterRecords = this.db.prepare(afterQuery).all(anchorObservationId, ...projectParams, depthAfter + 1) as any[];
+        const beforeRecords = this.db.prepare(beforeQuery).all(anchorObservationId, ...projectParams, depthBefore + 1) as Array<{id: number; created_at_epoch: number}>;
+        const afterRecords = this.db.prepare(afterQuery).all(anchorObservationId, ...projectParams, depthAfter + 1) as Array<{id: number; created_at_epoch: number}>;
 
         // Get the earliest and latest timestamps from boundary observations
         if (beforeRecords.length === 0 && afterRecords.length === 0) {
@@ -1616,8 +1495,8 @@ export class SessionStore {
       `;
 
       try {
-        const beforeRecords = this.db.prepare(beforeQuery).all(anchorEpoch, ...projectParams, depthBefore) as any[];
-        const afterRecords = this.db.prepare(afterQuery).all(anchorEpoch, ...projectParams, depthAfter + 1) as any[];
+        const beforeRecords = this.db.prepare(beforeQuery).all(anchorEpoch, ...projectParams, depthBefore) as Array<{created_at_epoch: number}>;
+        const afterRecords = this.db.prepare(afterQuery).all(anchorEpoch, ...projectParams, depthAfter + 1) as Array<{created_at_epoch: number}>;
 
         if (beforeRecords.length === 0 && afterRecords.length === 0) {
           return { observations: [], sessions: [], prompts: [] };
@@ -1655,9 +1534,9 @@ export class SessionStore {
     `;
 
     try {
-      const observations = this.db.prepare(obsQuery).all(startEpoch, endEpoch, ...projectParams) as any[];
-      const sessions = this.db.prepare(sessQuery).all(startEpoch, endEpoch, ...projectParams) as any[];
-      const prompts = this.db.prepare(promptQuery).all(startEpoch, endEpoch, ...projectParams) as any[];
+      const observations = this.db.prepare(obsQuery).all(startEpoch, endEpoch, ...projectParams) as ObservationRecord[];
+      const sessions = this.db.prepare(sessQuery).all(startEpoch, endEpoch, ...projectParams) as SessionSummaryRecord[];
+      const prompts = this.db.prepare(promptQuery).all(startEpoch, endEpoch, ...projectParams) as UserPromptRecord[];
 
       return {
         observations,
@@ -1684,49 +1563,6 @@ export class SessionStore {
       console.error('[SessionStore] Error querying timeline records:', err.message);
       return { observations: [], sessions: [], prompts: [] };
     }
-  }
-
-  /**
-   * Increment Endless Mode stats for a session
-   * Updates cumulative token compression statistics
-   */
-  incrementEndlessModeStats(claudeSessionId: string, originalTokens: number, compressedTokens: number): void {
-    const tokensSaved = originalTokens - compressedTokens;
-
-    const stmt = this.db.prepare(`
-      UPDATE sdk_sessions
-      SET
-        endless_original_tokens = COALESCE(endless_original_tokens, 0) + ?,
-        endless_compressed_tokens = COALESCE(endless_compressed_tokens, 0) + ?,
-        endless_tokens_saved = COALESCE(endless_tokens_saved, 0) + ?
-      WHERE claude_session_id = ?
-    `);
-
-    stmt.run(originalTokens, compressedTokens, tokensSaved, claudeSessionId);
-  }
-
-  /**
-   * Get Endless Mode stats for a session
-   */
-  getEndlessModeStats(claudeSessionId: string): { originalTokens: number; compressedTokens: number; tokensSaved: number } | null {
-    const stmt = this.db.prepare(`
-      SELECT
-        endless_original_tokens,
-        endless_compressed_tokens,
-        endless_tokens_saved
-      FROM sdk_sessions
-      WHERE claude_session_id = ?
-    `);
-
-    const result = stmt.get(claudeSessionId) as { endless_original_tokens: number; endless_compressed_tokens: number; endless_tokens_saved: number } | undefined;
-
-    if (!result) return null;
-
-    return {
-      originalTokens: result.endless_original_tokens || happy_path_error__with_fallback('SessionStore.getEndlessModeStats: endless_original_tokens is null', { claudeSessionId }, 0),
-      compressedTokens: result.endless_compressed_tokens || happy_path_error__with_fallback('SessionStore.getEndlessModeStats: endless_compressed_tokens is null', { claudeSessionId }, 0),
-      tokensSaved: result.endless_tokens_saved || happy_path_error__with_fallback('SessionStore.getEndlessModeStats: endless_tokens_saved is null', { claudeSessionId }, 0)
-    };
   }
 
   /**

@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { TableNameRow } from '../../types/database.js';
 import { DATA_DIR, DB_PATH, ensureDir } from '../../shared/paths.js';
 import {
   ObservationSearchResult,
@@ -48,8 +49,8 @@ export class SessionSearch {
   private ensureFTSTables(): void {
     try {
       // Check if FTS tables already exist
-      const tables = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%_fts'").all() as any[];
-      const hasFTS = tables.some((t: any) => t.name === 'observations_fts' || t.name === 'session_summaries_fts');
+      const tables = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%_fts'").all() as TableNameRow[];
+      const hasFTS = tables.some(t => t.name === 'observations_fts' || t.name === 'session_summaries_fts');
 
       if (hasFTS) {
         // Already migrated

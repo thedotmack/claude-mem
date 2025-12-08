@@ -3,12 +3,6 @@ import { Settings, Stats } from '../types';
 import { DEFAULT_SETTINGS } from '../constants/settings';
 import { formatUptime, formatBytes } from '../utils/formatters';
 
-// Browser-safe fallback helper (uses console.warn instead of file logging)
-const happy_path_error__with_fallback = <T,>(msg: string, context: any, fallback: T): T => {
-  console.warn(`[happy_path_error] ${msg}`, context);
-  return fallback;
-};
-
 interface SidebarProps {
   isOpen: boolean;
   settings: Settings;
@@ -25,39 +19,52 @@ interface SidebarProps {
 }
 
 export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, isConnected, projects, currentFilter, onFilterChange, onSave, onClose, onRefreshStats }: SidebarProps) {
-  // Settings form state
-  const [model, setModel] = useState(settings.CLAUDE_MEM_MODEL || DEFAULT_SETTINGS.CLAUDE_MEM_MODEL);
-  const [contextObs, setContextObs] = useState(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_OBSERVATIONS);
-  const [workerPort, setWorkerPort] = useState(settings.CLAUDE_MEM_WORKER_PORT || DEFAULT_SETTINGS.CLAUDE_MEM_WORKER_PORT);
+  // Consolidated settings form state
+  const [formState, setFormState] = useState<Settings>({
+    CLAUDE_MEM_MODEL: settings.CLAUDE_MEM_MODEL || DEFAULT_SETTINGS.CLAUDE_MEM_MODEL,
+    CLAUDE_MEM_CONTEXT_OBSERVATIONS: settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_OBSERVATIONS,
+    CLAUDE_MEM_WORKER_PORT: settings.CLAUDE_MEM_WORKER_PORT || DEFAULT_SETTINGS.CLAUDE_MEM_WORKER_PORT,
+    CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: settings.CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS,
+    CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS: settings.CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS,
+    CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT: settings.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT,
+    CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT: settings.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT,
+    CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES: settings.CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES,
+    CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS: settings.CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS,
+    CLAUDE_MEM_CONTEXT_FULL_COUNT: settings.CLAUDE_MEM_CONTEXT_FULL_COUNT || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_FULL_COUNT,
+    CLAUDE_MEM_CONTEXT_FULL_FIELD: settings.CLAUDE_MEM_CONTEXT_FULL_FIELD || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_FULL_FIELD,
+    CLAUDE_MEM_CONTEXT_SESSION_COUNT: settings.CLAUDE_MEM_CONTEXT_SESSION_COUNT || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SESSION_COUNT,
+    CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: settings.CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY,
+    CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: settings.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE,
+  });
 
   // MCP toggle state (separate from settings)
   const [mcpEnabled, setMcpEnabled] = useState(true);
   const [mcpToggling, setMcpToggling] = useState(false);
   const [mcpStatus, setMcpStatus] = useState('');
 
-  // Endless Mode toggle state (separate from settings)
-  const [endlessModeEnabled, setEndlessModeEnabled] = useState(false);
-  const [endlessModeToggling, setEndlessModeToggling] = useState(false);
-  const [endlessModeStatus, setEndlessModeStatus] = useState('');
+  // Helper to update form state
+  const updateFormState = (field: keyof Settings, value: string) => {
+    setFormState(prev => ({ ...prev, [field]: value }));
+  };
 
-  // Branch switching state
-  interface BranchInfo {
-    branch: string | null;
-    isBeta: boolean;
-    isGitRepo: boolean;
-    isDirty: boolean;
-    canSwitch: boolean;
-    error?: string;
-  }
-  const [branchInfo, setBranchInfo] = useState<BranchInfo | null>(null);
-  const [branchSwitching, setBranchSwitching] = useState(false);
-  const [branchStatus, setBranchStatus] = useState('');
-
-  // Update settings form state when settings change
+  // Update settings form state when settings prop changes
   useEffect(() => {
-    setModel(settings.CLAUDE_MEM_MODEL || DEFAULT_SETTINGS.CLAUDE_MEM_MODEL);
-    setContextObs(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_OBSERVATIONS);
-    setWorkerPort(settings.CLAUDE_MEM_WORKER_PORT || DEFAULT_SETTINGS.CLAUDE_MEM_WORKER_PORT);
+    setFormState({
+      CLAUDE_MEM_MODEL: settings.CLAUDE_MEM_MODEL || DEFAULT_SETTINGS.CLAUDE_MEM_MODEL,
+      CLAUDE_MEM_CONTEXT_OBSERVATIONS: settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_OBSERVATIONS,
+      CLAUDE_MEM_WORKER_PORT: settings.CLAUDE_MEM_WORKER_PORT || DEFAULT_SETTINGS.CLAUDE_MEM_WORKER_PORT,
+      CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: settings.CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS,
+      CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS: settings.CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS,
+      CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT: settings.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT,
+      CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT: settings.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT,
+      CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES: settings.CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES,
+      CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS: settings.CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS,
+      CLAUDE_MEM_CONTEXT_FULL_COUNT: settings.CLAUDE_MEM_CONTEXT_FULL_COUNT || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_FULL_COUNT,
+      CLAUDE_MEM_CONTEXT_FULL_FIELD: settings.CLAUDE_MEM_CONTEXT_FULL_FIELD || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_FULL_FIELD,
+      CLAUDE_MEM_CONTEXT_SESSION_COUNT: settings.CLAUDE_MEM_CONTEXT_SESSION_COUNT || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SESSION_COUNT,
+      CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: settings.CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY,
+      CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: settings.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE,
+    });
   }, [settings]);
 
   // Fetch MCP status on mount
@@ -68,22 +75,6 @@ export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, isConne
       .catch(error => console.error('Failed to load MCP status:', error));
   }, []);
 
-  // Fetch Endless Mode status on mount
-  useEffect(() => {
-    fetch('/api/endless-mode/status')
-      .then(res => res.json())
-      .then(data => setEndlessModeEnabled(data.enabled))
-      .catch(error => console.error('Failed to load Endless Mode status:', error));
-  }, []);
-
-  // Fetch branch status on mount
-  useEffect(() => {
-    fetch('/api/branch/status')
-      .then(res => res.json())
-      .then(data => setBranchInfo(data))
-      .catch(error => console.error('Failed to load branch status:', error));
-  }, []);
-
   // Refresh stats when sidebar opens
   useEffect(() => {
     if (isOpen) {
@@ -92,11 +83,7 @@ export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, isConne
   }, [isOpen, onRefreshStats]);
 
   const handleSave = () => {
-    onSave({
-      CLAUDE_MEM_MODEL: model,
-      CLAUDE_MEM_CONTEXT_OBSERVATIONS: contextObs,
-      CLAUDE_MEM_WORKER_PORT: workerPort
-    });
+    onSave(formState);
   };
 
   const handleMcpToggle = async (enabled: boolean) => {
@@ -125,96 +112,6 @@ export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, isConne
       setTimeout(() => setMcpStatus(''), 3000);
     } finally {
       setMcpToggling(false);
-    }
-  };
-
-  const handleEndlessModeToggle = async (enabled: boolean) => {
-    setEndlessModeToggling(true);
-    setEndlessModeStatus('Toggling...');
-
-    try {
-      const response = await fetch('/api/endless-mode/toggle', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled })
-      });
-
-      const result = await response.json();
-
-      if (result.success) {
-        setEndlessModeEnabled(result.enabled);
-        setEndlessModeStatus('✓ Updated (restart worker to apply)');
-        setTimeout(() => setEndlessModeStatus(''), 5000);
-      } else {
-        setEndlessModeStatus(`✗ Error: ${result.error}`);
-        setTimeout(() => setEndlessModeStatus(''), 5000);
-      }
-    } catch (error) {
-      setEndlessModeStatus(`✗ Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
-      setTimeout(() => setEndlessModeStatus(''), 5000);
-    } finally {
-      setEndlessModeToggling(false);
-    }
-  };
-
-  const handleBranchSwitch = async (targetBranch: string) => {
-    setBranchSwitching(true);
-    setBranchStatus('Switching branches...');
-
-    try {
-      const response = await fetch('/api/branch/switch', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ branch: targetBranch })
-      });
-
-      const result = await response.json();
-
-      if (result.success) {
-        setBranchStatus(`✓ ${result.message}`);
-        // Worker will restart, page will refresh
-        setTimeout(() => {
-          setBranchStatus('Restarting worker...');
-        }, 1000);
-      } else {
-        setBranchStatus(`✗ Error: ${result.error}`);
-        setTimeout(() => setBranchStatus(''), 5000);
-        setBranchSwitching(false);
-      }
-    } catch (error) {
-      setBranchStatus(`✗ Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
-      setTimeout(() => setBranchStatus(''), 5000);
-      setBranchSwitching(false);
-    }
-  };
-
-  const handleBranchUpdate = async () => {
-    setBranchSwitching(true);
-    setBranchStatus('Checking for updates...');
-
-    try {
-      const response = await fetch('/api/branch/update', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
-      });
-
-      const result = await response.json();
-
-      if (result.success) {
-        setBranchStatus(`✓ ${result.message}`);
-        // Worker will restart, page will refresh
-        setTimeout(() => {
-          setBranchStatus('Restarting worker...');
-        }, 1000);
-      } else {
-        setBranchStatus(`✗ Error: ${result.error}`);
-        setTimeout(() => setBranchStatus(''), 5000);
-        setBranchSwitching(false);
-      }
-    } catch (error) {
-      setBranchStatus(`✗ Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
-      setTimeout(() => setBranchStatus(''), 5000);
-      setBranchSwitching(false);
     }
   };
 
@@ -323,8 +220,8 @@ export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, isConne
             </div>
             <select
               id="model"
-              value={model}
-              onChange={e => setModel(e.target.value)}
+              value={formState.CLAUDE_MEM_MODEL}
+              onChange={e => updateFormState('CLAUDE_MEM_MODEL', e.target.value)}
             >
               <option value="claude-haiku-4-5">claude-haiku-4-5</option>
               <option value="claude-sonnet-4-5">claude-sonnet-4-5</option>
@@ -341,8 +238,8 @@ export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, isConne
               id="contextObs"
               min="1"
               max="200"
-              value={contextObs}
-              onChange={e => setContextObs(e.target.value)}
+              value={formState.CLAUDE_MEM_CONTEXT_OBSERVATIONS}
+              onChange={e => updateFormState('CLAUDE_MEM_CONTEXT_OBSERVATIONS', e.target.value)}
             />
           </div>
           <div className="form-group">
@@ -355,10 +252,89 @@ export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, isConne
               id="workerPort"
               min="1024"
               max="65535"
-              value={workerPort}
-              onChange={e => setWorkerPort(e.target.value)}
+              value={formState.CLAUDE_MEM_WORKER_PORT}
+              onChange={e => updateFormState('CLAUDE_MEM_WORKER_PORT', e.target.value)}
             />
           </div>
+
+          {/* Token Economics Display */}
+          <div className="form-group">
+            <label>Token Economics Display</label>
+            <div className="setting-description">
+              Choose which token metrics to show in session start context.
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                <input type="checkbox" checked={formState.CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS === 'true'} onChange={e => updateFormState('CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS', e.target.checked ? 'true' : 'false')} />
+                Show read tokens
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                <input type="checkbox" checked={formState.CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS === 'true'} onChange={e => updateFormState('CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS', e.target.checked ? 'true' : 'false')} />
+                Show work tokens
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                <input type="checkbox" checked={formState.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT === 'true'} onChange={e => updateFormState('CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT', e.target.checked ? 'true' : 'false')} />
+                Show savings amount
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                <input type="checkbox" checked={formState.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT === 'true'} onChange={e => updateFormState('CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT', e.target.checked ? 'true' : 'false')} />
+                Show savings percentage
+              </label>
+            </div>
+          </div>
+
+          {/* Display Configuration */}
+          <div className="form-group">
+            <label>Display Configuration</label>
+            <div className="setting-description">
+              Control how observations are displayed in the timeline.
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '8px' }}>
+              <div>
+                <label htmlFor="fullCount" style={{ display: 'block', marginBottom: '4px', fontSize: '13px' }}>
+                  Full observation count (0-20)
+                </label>
+                <input type="number" id="fullCount" min="0" max="20" value={formState.CLAUDE_MEM_CONTEXT_FULL_COUNT} onChange={e => updateFormState('CLAUDE_MEM_CONTEXT_FULL_COUNT', e.target.value)} style={{ width: '100%' }} />
+                <div style={{ fontSize: '12px', color: '#999', marginTop: '4px' }}>
+                  Number of most recent observations to show with full details
+                </div>
+              </div>
+              <div>
+                <label htmlFor="fullField" style={{ display: 'block', marginBottom: '4px', fontSize: '13px' }}>
+                  Full observation field
+                </label>
+                <select id="fullField" value={formState.CLAUDE_MEM_CONTEXT_FULL_FIELD} onChange={e => updateFormState('CLAUDE_MEM_CONTEXT_FULL_FIELD', e.target.value)} style={{ width: '100%' }}>
+                  <option value="narrative">Narrative</option>
+                  <option value="facts">Facts</option>
+                </select>
+              </div>
+              <div>
+                <label htmlFor="sessionCount" style={{ display: 'block', marginBottom: '4px', fontSize: '13px' }}>
+                  Session summary count (1-50)
+                </label>
+                <input type="number" id="sessionCount" min="1" max="50" value={formState.CLAUDE_MEM_CONTEXT_SESSION_COUNT} onChange={e => updateFormState('CLAUDE_MEM_CONTEXT_SESSION_COUNT', e.target.value)} style={{ width: '100%' }} />
+              </div>
+            </div>
+          </div>
+
+          {/* Feature Toggles */}
+          <div className="form-group">
+            <label>Context Features</label>
+            <div className="setting-description">
+              Toggle additional features in session start context.
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                <input type="checkbox" checked={formState.CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY === 'true'} onChange={e => updateFormState('CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY', e.target.checked ? 'true' : 'false')} />
+                Show last session summary
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                <input type="checkbox" checked={formState.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE === 'true'} onChange={e => updateFormState('CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE', e.target.checked ? 'true' : 'false')} />
+                Include last session message
+              </label>
+            </div>
+          </div>
+
           {saveStatus && (
             <div className="save-status">{saveStatus}</div>
           )}
@@ -388,137 +364,11 @@ export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, isConne
         </div>
 
         <div className="settings-section">
-          <h3>Endless Mode (Experimental)</h3>
-          <div className="form-group">
-            <label htmlFor="endlessModeEnabled" style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-              <input
-                type="checkbox"
-                id="endlessModeEnabled"
-                checked={endlessModeEnabled}
-                onChange={e => handleEndlessModeToggle(e.target.checked)}
-                disabled={endlessModeToggling}
-                style={{ cursor: endlessModeToggling ? 'not-allowed' : 'pointer' }}
-              />
-              Enable Endless Mode
-            </label>
-            <div className="setting-description">
-              Compresses tool outputs in real-time to enable longer sessions by replacing full outputs with AI-compressed observations.
-              <br /><br />
-              <strong>After toggling, restart the worker:</strong>
-              <br />
-              <code style={{ fontSize: '11px', background: '#1a1a1a', padding: '2px 6px', borderRadius: '3px', display: 'inline-block', marginTop: '4px' }}>
-                npm run worker:restart
-              </code>
-              <br />
-              <a
-                href="https://github.com/thedotmack/claude-mem#-endless-mode-beta"
-                target="_blank"
-                rel="noopener noreferrer"
-                style={{ fontSize: '11px', color: '#6b9eff', textDecoration: 'none', marginTop: '4px', display: 'inline-block' }}
-              >
-                Learn more about Endless Mode →
-              </a>
-            </div>
-            {endlessModeStatus && (
-              <div className="save-status">{endlessModeStatus}</div>
-            )}
-          </div>
-        </div>
-
-        <div className="settings-section">
-          <h3>Version Channel</h3>
-          <div className="form-group">
-            {branchInfo ? (
-              <>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
-                  <span style={{
-                    padding: '2px 8px',
-                    borderRadius: '4px',
-                    fontSize: '11px',
-                    fontWeight: 600,
-                    background: branchInfo.isBeta ? '#6b4500' : '#1a4d1a',
-                    color: branchInfo.isBeta ? '#ffb84d' : '#4ade80',
-                    border: `1px solid ${branchInfo.isBeta ? '#ffb84d' : '#4ade80'}`
-                  }}>
-                    {branchInfo.isBeta ? 'Beta' : 'Stable'}
-                  </span>
-                  <span style={{ fontSize: '12px', opacity: 0.7 }}>
-                    {stats.worker?.version || '-'}
-                  </span>
-                </div>
-
-                {branchInfo.isBeta ? (
-                  <>
-                    <div className="setting-description" style={{ marginBottom: '12px' }}>
-                      You're running the beta with Endless Mode. Your memory data is preserved when switching versions.
-                    </div>
-                    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                      <button
-                        onClick={() => handleBranchSwitch('main')}
-                        disabled={branchSwitching}
-                        style={{
-                          background: '#2a2a2a',
-                          border: '1px solid #404040',
-                          padding: '8px 16px',
-                          cursor: branchSwitching ? 'not-allowed' : 'pointer',
-                          opacity: branchSwitching ? 0.5 : 1
-                        }}
-                      >
-                        Switch to Stable
-                      </button>
-                      <button
-                        onClick={handleBranchUpdate}
-                        disabled={branchSwitching}
-                        style={{
-                          background: '#2a2a2a',
-                          border: '1px solid #404040',
-                          padding: '8px 16px',
-                          cursor: branchSwitching ? 'not-allowed' : 'pointer',
-                          opacity: branchSwitching ? 0.5 : 1
-                        }}
-                      >
-                        Check for Updates
-                      </button>
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div className="setting-description" style={{ marginBottom: '12px' }}>
-                      Try the beta to access experimental features like Endless Mode. Your memory data is preserved when switching.
-                    </div>
-                    <button
-                      onClick={() => handleBranchSwitch('beta/7.0')}
-                      disabled={branchSwitching}
-                      style={{
-                        background: '#4a3500',
-                        border: '1px solid #ffb84d',
-                        color: '#ffb84d',
-                        padding: '8px 16px',
-                        cursor: branchSwitching ? 'not-allowed' : 'pointer',
-                        opacity: branchSwitching ? 0.5 : 1
-                      }}
-                    >
-                      Try Beta (Endless Mode)
-                    </button>
-                  </>
-                )}
-
-                {branchStatus && (
-                  <div className="save-status" style={{ marginTop: '8px' }}>{branchStatus}</div>
-                )}
-              </>
-            ) : (
-              <div style={{ fontSize: '12px', opacity: 0.5 }}>Loading branch info...</div>
-            )}
-          </div>
-        </div>
-
-        <div className="settings-section">
           <h3>Worker Stats</h3>
           <div className="stats-grid">
             <div className="stat">
               <div className="stat-label">Version</div>
-              <div className="stat-value">{stats.worker?.version || happy_path_error__with_fallback('stats.worker.version missing', { stats }, '-')}</div>
+              <div className="stat-value">{stats.worker?.version || '-'}</div>
             </div>
             <div className="stat">
               <div className="stat-label">Uptime</div>
@@ -526,11 +376,11 @@ export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, isConne
             </div>
             <div className="stat">
               <div className="stat-label">Active Sessions</div>
-              <div className="stat-value">{stats.worker?.activeSessions || happy_path_error__with_fallback('stats.worker.activeSessions missing', { stats }, '0')}</div>
+              <div className="stat-value">{stats.worker?.activeSessions || '0'}</div>
             </div>
             <div className="stat">
               <div className="stat-label">SSE Clients</div>
-              <div className="stat-value">{stats.worker?.sseClients || happy_path_error__with_fallback('stats.worker.sseClients missing', { stats }, '0')}</div>
+              <div className="stat-value">{stats.worker?.sseClients || '0'}</div>
             </div>
           </div>
         </div>
@@ -544,15 +394,15 @@ export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, isConne
             </div>
             <div className="stat">
               <div className="stat-label">Observations</div>
-              <div className="stat-value">{stats.database?.observations || happy_path_error__with_fallback('stats.database.observations missing', { stats }, '0')}</div>
+              <div className="stat-value">{stats.database?.observations || '0'}</div>
             </div>
             <div className="stat">
               <div className="stat-label">Sessions</div>
-              <div className="stat-value">{stats.database?.sessions || happy_path_error__with_fallback('stats.database.sessions missing', { stats }, '0')}</div>
+              <div className="stat-value">{stats.database?.sessions || '0'}</div>
             </div>
             <div className="stat">
               <div className="stat-label">Summaries</div>
-              <div className="stat-value">{stats.database?.summaries || happy_path_error__with_fallback('stats.database.summaries missing', { stats }, '0')}</div>
+              <div className="stat-value">{stats.database?.summaries || '0'}</div>
             </div>
           </div>
         </div>

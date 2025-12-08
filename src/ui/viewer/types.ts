@@ -58,6 +58,25 @@ export interface Settings {
   CLAUDE_MEM_MODEL: string;
   CLAUDE_MEM_CONTEXT_OBSERVATIONS: string;
   CLAUDE_MEM_WORKER_PORT: string;
+
+  // Token Economics Display
+  CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS?: string;
+  CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS?: string;
+  CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT?: string;
+  CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT?: string;
+
+  // Observation Filtering
+  CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES?: string;
+  CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS?: string;
+
+  // Display Configuration
+  CLAUDE_MEM_CONTEXT_FULL_COUNT?: string;
+  CLAUDE_MEM_CONTEXT_FULL_FIELD?: string;
+  CLAUDE_MEM_CONTEXT_SESSION_COUNT?: string;
+
+  // Feature Toggles
+  CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY?: string;
+  CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE?: string;
 }
 
 export interface WorkerStats {

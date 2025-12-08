@@ -11,14 +11,13 @@
 import { execSync } from 'child_process';
 import { homedir } from 'os';
 import path from 'path';
-import { existsSync, readFileSync } from 'fs';
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
-import { EndlessModeConfig } from './EndlessModeConfig.js';
 import { logger } from '../../utils/logger.js';
 import { silentDebug } from '../../utils/silent-debug.js';
 import { parseObservations, parseSummary } from '../../sdk/parser.js';
 import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
+import { SettingsDefaultsManager } from './settings/SettingsDefaultsManager.js';
 import type { ActiveSession, SDKUserMessage, PendingMessage } from '../worker-types.js';
 
 // Import Agent SDK (assumes it's installed)
@@ -92,8 +91,8 @@ export class SDKAgent {
           // Extract and track token usage
           const usage = message.message.usage;
           if (usage) {
-            session.cumulativeInputTokens += usage.input_tokens || silentDebug('SDKAgent: usage.input_tokens is null', { sessionId: session.sessionDbId }, 0);
-            session.cumulativeOutputTokens += usage.output_tokens || silentDebug('SDKAgent: usage.output_tokens is null', { sessionId: session.sessionDbId }, 0);
+            session.cumulativeInputTokens += usage.input_tokens || 0;
+            session.cumulativeOutputTokens += usage.output_tokens || 0;
 
             // Cache creation counts as discovery, cache read doesn't
             if (usage.cache_creation_input_tokens) {
@@ -104,8 +103,8 @@ export class SDKAgent {
               sessionId: session.sessionDbId,
               inputTokens: usage.input_tokens,
               outputTokens: usage.output_tokens,
-              cacheCreation: usage.cache_creation_input_tokens || silentDebug('SDKAgent: usage.cache_creation_input_tokens is null', { sessionId: session.sessionDbId }, 0),
-              cacheRead: usage.cache_read_input_tokens || silentDebug('SDKAgent: usage.cache_read_input_tokens is null', { sessionId: session.sessionDbId }, 0),
+              cacheCreation: usage.cache_creation_input_tokens || 0,
+              cacheRead: usage.cache_read_input_tokens || 0,
               cumulativeInput: session.cumulativeInputTokens,
               cumulativeOutput: session.cumulativeOutputTokens
             });
@@ -116,31 +115,16 @@ export class SDKAgent {
 
           // Only log non-empty responses (filter out noise)
           if (responseSize > 0) {
+            const truncatedResponse = responseSize > 100
+              ? textContent.substring(0, 100) + '...'
+              : textContent;
             logger.dataOut('SDK', `Response received (${responseSize} chars)`, {
               sessionId: session.sessionDbId,
               promptNumber: session.lastPromptNumber
-            }, textContent);
+            }, truncatedResponse);
 
             // Parse and process response with discovery token delta
-            try {
-              await this.processSDKResponse(session, textContent, worker, discoveryTokens);
-            } catch (error) {
-              // If processing fails, resolve any pending Endless Mode resolvers to prevent 90s hang
-              if (session.currentToolUseId) {
-                const resolver = session.pendingObservationResolvers.get(session.currentToolUseId);
-                if (resolver) {
-                  session.pendingObservationResolvers.delete(session.currentToolUseId);
-                  resolver(null); // Fail fast - signal skip to prevent hanging
-                  logger.warn('SDK', 'Observation processing failed - resolved as skip to prevent hang', {
-                    sessionId: session.sessionDbId,
-                    toolUseId: session.currentToolUseId,
-                    error: error instanceof Error ? error.message : String(error)
-                  });
-                }
-              }
-              // Re-throw to maintain existing error handling behavior
-              throw error;
-            }
+            await this.processSDKResponse(session, textContent, worker, discoveryTokens);
           }
         }
 
@@ -221,9 +205,6 @@ export class SDKAgent {
           session.lastPromptNumber = message.prompt_number;
         }
 
-        // Track current tool_use_id for Endless Mode (so it can be linked when observation is stored)
-        session.currentToolUseId = message.tool_use_id || silentDebug('SDKAgent: message.tool_use_id is null', { sessionId: session.sessionDbId }, null);
-
         yield {
           type: 'user',
           message: {
@@ -235,7 +216,7 @@ export class SDKAgent {
               tool_output: JSON.stringify(message.tool_response),
               created_at_epoch: Date.now(),
               cwd: message.cwd
-            }, session.userPrompt)
+            })
           },
           session_id: session.claudeSessionId,
           parent_tool_use_id: null,
@@ -251,8 +232,8 @@ export class SDKAgent {
               sdk_session_id: session.sdkSessionId,
               project: session.project,
               user_prompt: session.userPrompt,
-              last_user_message: message.last_user_message || silentDebug('SDKAgent: last_user_message missing in summary prompt', { sessionDbId: session.sessionDbId }),
-              last_assistant_message: message.last_assistant_message || silentDebug('SDKAgent: last_assistant_message missing in summary prompt', { sessionDbId: session.sessionDbId })
+              last_user_message: message.last_user_message || '',
+              last_assistant_message: message.last_assistant_message || ''
             })
           },
           session_id: session.claudeSessionId,
@@ -271,43 +252,12 @@ export class SDKAgent {
     // Parse observations
     const observations = parseObservations(text, session.claudeSessionId);
 
-    // Handle skip case: If no observations found AND there's a pending Endless Mode resolver
-    // Resolve immediately to prevent 90s timeout
-    if (observations.length === 0 && session.currentToolUseId) {
-      const resolver = session.pendingObservationResolvers.get(session.currentToolUseId);
-      if (resolver) {
-        console.log(`[SDKAgent] ⏭️  No observation created for tool_use_id=${session.currentToolUseId} (routine operation)`);
-        session.pendingObservationResolvers.delete(session.currentToolUseId);
-        resolver(null); // Signal skip to save-hook
-        logger.debug('SDK', 'No observation created (skipped)', {
-          sessionId: session.sessionDbId,
-          toolUseId: session.currentToolUseId
-        });
-      }
-      return; // Exit early, nothing to store
-    }
-
     // Store observations
-    for (let i = 0; i < observations.length; i++) {
-      const obs = observations[i];
-
-      // Suffix tool_use_id for multi-observation responses (__1, __2, __3, etc.)
-      // This maintains the relationship while satisfying UNIQUE constraint
-      const toolUseIdForThisObs = session.currentToolUseId
-        ? observations.length > 1
-          ? `${session.currentToolUseId}__${i + 1}`
-          : session.currentToolUseId
-        : null;
-
-      const obsWithToolUseId = {
-        ...obs,
-        tool_use_id: toolUseIdForThisObs
-      };
-
+    for (const obs of observations) {
       const { id: obsId, createdAtEpoch } = this.dbManager.getSessionStore().storeObservation(
         session.claudeSessionId,
         session.project,
-        obsWithToolUseId,
+        obs,
         session.lastPromptNumber,
         discoveryTokens
       );
@@ -322,32 +272,6 @@ export class SDKAgent {
         filesModified: obs.files_modified?.length ?? (silentDebug('obs.files_modified is null/undefined', { obsId }), 0),
         concepts: obs.concepts?.length ?? (silentDebug('obs.concepts is null/undefined', { obsId }), 0)
       });
-
-      // Endless Mode: Resolve pending observation promise on first observation only
-      if (i === 0 && session.currentToolUseId) {
-        const resolver = session.pendingObservationResolvers.get(session.currentToolUseId);
-        if (resolver) {
-          console.log(`[SDKAgent] ✅ Observation created for tool_use_id=${session.currentToolUseId}, resolving promise`);
-          session.pendingObservationResolvers.delete(session.currentToolUseId);
-          resolver({
-            id: obsId,
-            type: obs.type,
-            title: obs.title,
-            subtitle: obs.subtitle,
-            narrative: obs.narrative || silentDebug('SDKAgent: obs.narrative is null for resolver', { obsId }, null),
-            facts: obs.facts || silentDebug('SDKAgent: obs.facts is null for resolver', { obsId }, []),
-            concepts: obs.concepts || silentDebug('SDKAgent: obs.concepts is null for resolver', { obsId }, []),
-            files_read: obs.files_read || silentDebug('SDKAgent: obs.files_read is null for resolver', { obsId }, []),
-            created_at_epoch: createdAtEpoch,
-            tool_use_id: toolUseIdForThisObs
-          });
-          logger.debug('SDK', 'Resolved pending observation promise', {
-            sessionId: session.sessionDbId,
-            obsId,
-            toolUseId: session.currentToolUseId
-          });
-        }
-      }
 
       // Sync to Chroma with error logging
       const chromaStart = Date.now();
@@ -389,12 +313,12 @@ export class SDKAgent {
             type: obs.type,
             title: obs.title,
             subtitle: obs.subtitle,
-            text: null,
-            narrative: obs.narrative || silentDebug('SDKAgent: obs.narrative is null for SSE broadcast', { obsId }, null),
-            facts: JSON.stringify(obs.facts || silentDebug('SDKAgent: obs.facts is null for SSE broadcast', { obsId }, [])),
-            concepts: JSON.stringify(obs.concepts || silentDebug('SDKAgent: obs.concepts is null for SSE broadcast', { obsId }, [])),
-            files_read: JSON.stringify(obs.files_read || silentDebug('SDKAgent: obs.files_read is null for SSE broadcast', { obsId }, [])),
-            files_modified: JSON.stringify(obs.files_modified || silentDebug('SDKAgent: obs.files_modified is null for SSE broadcast', { obsId }, [])),
+            text: obs.text || null,
+            narrative: obs.narrative || null,
+            facts: JSON.stringify(obs.facts || []),
+            concepts: JSON.stringify(obs.concepts || []),
+            files_read: JSON.stringify(obs.files || []),
+            files_modified: JSON.stringify([]),
             project: session.project,
             prompt_number: session.lastPromptNumber,
             created_at_epoch: createdAtEpoch
@@ -487,7 +411,7 @@ export class SDKAgent {
    */
   private findClaudeExecutable(): string {
     const claudePath = process.env.CLAUDE_CODE_PATH ||
-      execSync(process.platform === 'win32' ? 'where claude' : 'which claude', { encoding: 'utf8' })
+      execSync(process.platform === 'win32' ? 'where claude' : 'which claude', { encoding: 'utf8', windowsHide: true })
         .trim().split('\n')[0].trim();
 
     if (!claudePath) {
@@ -501,17 +425,8 @@ export class SDKAgent {
    * Get model ID from settings or environment
    */
   private getModelId(): string {
-    try {
-      const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
-      if (existsSync(settingsPath)) {
-        const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
-        const modelId = settings.env?.CLAUDE_MEM_MODEL;
-        if (modelId) return modelId;
-      }
-    } catch {
-      // Fall through to env var or default
-    }
-
-    return process.env.CLAUDE_MEM_MODEL || silentDebug('SDKAgent.getModel: CLAUDE_MEM_MODEL not set', {}, 'claude-sonnet-4-5');
+    const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+    const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+    return settings.CLAUDE_MEM_MODEL;
   }
 }

@@ -25,7 +25,8 @@ Restart Claude Code. Context from previous sessions will automatically appear in
 - 🧠 **Persistent Memory** - Context survives across sessions
 - 🔍 **mem-search Skill** - Query your project history with natural language (~2,250 token savings)
 - 🌐 **Web Viewer UI** - Real-time memory stream visualization at http://localhost:37777
-- 🎨 **Theme Toggle** - Light, dark, and system preference themes
+- 🔒 **Privacy Control** - Use `<private>` tags to exclude sensitive content from storage
+- ⚙️ **Context Configuration** - Fine-grained control over what context gets injected
 - 🤖 **Automatic Operation** - No manual intervention required
 - 📊 **FTS5 Search** - Fast full-text search across observations
 - 🔗 **Citations** - Reference past decisions with `claude-mem://` URIs
@@ -55,7 +56,7 @@ Restart Claude Code. Context from previous sessions will automatically appear in
 ```
 
 **Core Components:**
-1. **6 Lifecycle Hooks** - SessionStart, UserPromptSubmit, PostToolUse, Stop, SessionEnd, UserMessage
+1. **5 Lifecycle Hooks** - SessionStart, UserPromptSubmit, PostToolUse, Stop, SessionEnd (6 hook scripts)
 2. **Smart Install** - Cached dependency checker (pre-hook script)
 3. **Worker Service** - HTTP API on port 37777 managed by PM2
 4. **SQLite Database** - Stores sessions, observations, summaries with FTS5 search
@@ -71,25 +72,23 @@ See [Architecture Overview](architecture/overview) for details.
 - **PM2**: Process manager (bundled - no global install required)
 - **SQLite 3**: For persistent storage (bundled)
 
-## What's New in v6.0.0
+## What's New
 
-**🚀 Major Session Management & Transcript Processing Improvements:**
+**v6.4.9 - Context Configuration Settings:**
+- 11 new settings for fine-grained control over context injection
+- Configure token economics display, observation filtering by type/concept
 
-- **Enhanced Session Initialization**: Accept userPrompt and promptNumber for better context tracking
-- **Live UserPrompt Updates**: Multi-turn conversation support with real-time prompt tracking
-- **Improved SessionManager**: Better context handling and observation processing
-- **Comprehensive Transcript Processing**: New scripts and utilities for analyzing Claude Code transcripts
-- **Rich Context Extraction**: Advanced parsing utilities for extracting meaningful context from sessions
-- **Refactored Architecture**: Improved hooks and SDKAgent for more reliable observation handling
-- **Silent Debug Logging**: Better debugging capabilities without cluttering output
-- **Enhanced Error Handling**: More robust error recovery and debugging tools
+**v6.4.0 - Dual-Tag Privacy System:**
+- `<private>` tags for user-controlled privacy - wrap sensitive content to exclude from storage
+- Edge processing ensures private content never reaches database
 
-**Breaking Changes**: Significant architectural changes in session management and observation handling. Existing sessions continue to work, but internal APIs have evolved.
+**v6.3.0 - Version Channel:**
+- Switch between stable and beta versions from the web viewer UI
 
 **Previous Highlights:**
+- **v6.0.0**: Major session management & transcript processing improvements
 - **v5.5.0**: mem-search skill enhancement with 100% effectiveness rate
 - **v5.4.0**: Skill-based search architecture (~2,250 tokens saved per session)
-- **v5.1.2**: Theme toggle for light/dark mode in viewer UI
 
 ## Next Steps
 

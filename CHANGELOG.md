@@ -4,6 +4,169 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [7.0.0] - 2025-12-08
+
+# Major Architectural Refactor
+
+This major release represents a complete architectural transformation of claude-mem from a monolithic design to a clean, modular HTTP-based architecture.
+
+## Breaking Changes
+
+**None** - Despite being a major version bump due to the scope of changes, this release maintains full backward compatibility. All existing functionality works exactly as before.
+
+## What Changed
+
+### Hooks → HTTP Clients
+- All 5 lifecycle hooks converted from direct database access to lightweight HTTP clients
+- Each hook reduced from 400-800 lines to ~75 lines
+- Hooks now make simple HTTP calls to the worker service
+- Eliminates SQL duplication across hooks - single source of truth in worker
+
+### Worker Service Modularization
+- `worker-service.ts` reduced from 1600+ lines to clean orchestration layer
+- New route-based HTTP architecture:
+  - `SessionRoutes` - Session lifecycle management
+  - `DataRoutes` - Database queries (observations, sessions, timeline)
+  - `SearchRoutes` - Full-text and semantic search
+  - `SettingsRoutes` - Configuration management
+  - `ViewerRoutes` - UI endpoints
+
+### New Service Layer
+- `BaseRouteHandler` - Centralized error handling, response formatting (used 46x)
+- `SessionEventBroadcaster` - Semantic SSE event broadcasting
+- `SessionCompletionHandler` - Consolidated session completion logic
+- `SettingsDefaultsManager` - Single source of truth for configuration defaults
+- `PrivacyCheckValidator` - Centralized privacy tag validation
+- `FormattingService` - Dual-format result rendering
+- `TimelineService` - Complex markdown timeline formatting
+- `SearchManager` - Extracted search logic from context generation
+
+### Database Improvements
+- Migrated from \`bun:sqlite\` to \`better-sqlite3\` for broader compatibility
+- SQL queries moved from route handlers to \`SessionStore\` for separation of concerns
+- \`PaginationHelper\` centralizes paginated queries with LIMIT+1 optimization
+
+### Testing Infrastructure
+- New comprehensive happy path tests for full session lifecycle
+- Integration tests covering session init, observation capture, search, summaries, cleanup
+- Test helpers and mocks for consistent testing patterns
+
+### Type Safety
+- Removed 'as any' casts throughout codebase
+- New \`src/types/database.ts\` with proper type definitions
+- Enhanced null safety in SearchManager
+
+## Stats
+- **60 files changed**
+- **8,671 insertions, 5,585 deletions**
+- Net: ~3,000 lines of new code (mostly tests and new modular services)
+
+## Migration Notes
+
+No migration required! Update and continue using claude-mem as before.
+
+## [6.5.3] - 2025-12-05
+
+## Bug Fixes
+
+- **Windows**: Hide console window when spawning child processes (#166)
+  - Adds `windowsHide: true` to `spawnSync` and `execSync` calls
+  - Prevents empty terminal windows from appearing on Windows when hooks execute
+
+Reference: https://nodejs.org/api/child_process.html (windowsHide option)
+
+## [6.5.2] - 2025-12-04
+
+## What's Changed
+
+- **Upgraded better-sqlite3** from `^11.0.0` to `^12.5.0` for Node.js 25 compatibility
+
+### Fixes
+- Resolves compilation errors when installing on Node.js 25.x (#164)
+
+## [6.5.1] - 2025-12-04
+
+## What's New
+
+- Decorative Product Hunt announcement in terminal with rocket borders
+- Product Hunt badge in viewer header with theme-aware switching (light/dark)
+- Badge uses separate tracking URL for analytics
+
+## Changes
+
+This is a temporary launch day update. The announcement will auto-expire at midnight EST.
+
+## [6.5.0] - 2025-12-04
+
+## Documentation Overhaul
+
+This release brings comprehensive documentation updates to reflect all features added in v6.4.x and standardize version references across the codebase.
+
+### Changes
+
+**Updated "What's New" Sections:**
+- Highlights v6.4.9 Context Configuration Settings (11 new settings)
+- Highlights v6.4.0 Dual-Tag Privacy System (`<private>` tags)
+- Highlights v6.3.0 Version Channel (beta toggle in UI)
+
+**Key Features Updated:**
+- Added 🔒 Privacy Control (`<private>` tags)
+- Added ⚙️ Context Configuration settings
+
+**Clarifications:**
+- Fixed lifecycle hook count: 5 lifecycle events with 6 hook scripts
+- Fixed default model: `claude-haiku-4-5` (not sonnet)
+- Removed outdated MCP search server references (replaced by skills in v5.4.0)
+
+**Files Updated:**
+- README.md - version badge, features, What's New, default model
+- docs/public/introduction.mdx - features, hook count, What's New
+- docs/public/installation.mdx - removed MCP reference
+- docs/public/configuration.mdx - default model corrections
+- plugin/skills/mem-search/operations/help.md - version references
+
+---
+
+📚 Full documentation available at [docs.claude-mem.ai](https://docs.claude-mem.ai)
+
+## [6.4.9] - 2025-12-02
+
+## New Features
+
+This release adds comprehensive context configuration settings, giving users fine-grained control over how memory context is injected at session start.
+
+### Context Configuration (11 new settings)
+
+**Token Economics Display:**
+- Control visibility of read tokens, work tokens, savings amount, and savings percentage
+
+**Observation Filtering:**
+- Filter by observation types (bugfix, feature, refactor, discovery, decision, change)
+- Filter by observation concepts (how-it-works, why-it-exists, what-changed, problem-solution, gotcha, pattern, trade-off)
+
+**Display Configuration:**
+- Configure number of full observations to include
+- Choose which field to show in full (narrative/facts)
+- Set number of recent sessions to include
+
+**Feature Toggles:**
+- Control inclusion of last session summary
+- Control inclusion of final messages from prior session
+
+All settings have sensible defaults and are fully backwards compatible.
+
+### What's Next
+
+**Settings UI enhancements coming very shortly in the next release!** We're working on improving the settings interface for even better user experience.
+
+## Technical Details
+
+- 10 files changed (+825, -212)
+- New centralized observation metadata constants
+- Enhanced context hook with SQL-based filtering
+- Worker service settings validation
+- Viewer UI controls for all settings
+
 ## [6.4.1] - 2025-12-01
 
 ## Hey there, claude-mem community! 👋

@@ -1,15 +1,19 @@
 /**
  * Summary Hook - Stop
- * Consolidated entry point + logic
+ *
+ * Pure HTTP client - sends data to worker, worker handles all database operations
+ * including privacy checks. This allows the hook to run under any runtime
+ * (Node.js or Bun) since it has no native module dependencies.
+ *
+ * Transcript parsing stays in the hook because only the hook has access to
+ * the transcript file path.
  */
 
 import { stdin } from 'process';
-import { readFileSync, existsSync, writeFileSync, renameSync, copyFileSync } from 'fs';
-import { SessionStore } from '../services/sqlite/SessionStore.js';
+import { readFileSync, existsSync } from 'fs';
 import { createHookResponse } from './hook-response.js';
 import { logger } from '../utils/logger.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
-import { happy_path_error__with_fallback } from '../utils/silent-debug.js';
 
 export interface StopInput {
   session_id: string;
@@ -123,155 +127,74 @@ function extractLastAssistantMessage(transcriptPath: string): string {
 }
 
 /**
- * Summary Hook Main Logic
+ * Summary Hook Main Logic - Fire-and-forget HTTP client
  */
 async function summaryHook(input?: StopInput): Promise<void> {
   if (!input) {
-    const errorMsg = 'summaryHook requires input';
-    console.error(`[summary-hook] ${errorMsg}`);
-    console.log(createHookResponse('Stop', false, { reason: errorMsg }));
-    process.exit(1);
+    throw new Error('summaryHook requires input');
   }
 
-  const { session_id, transcript_path } = input;
+  const { session_id } = input;
 
   // Ensure worker is running
   await ensureWorkerRunning();
 
-  const db = new SessionStore();
-
-  // Get or create session
-  const sessionDbId = db.createSDKSession(session_id, '', '');
-  const promptNumber = db.getPromptCounter(sessionDbId);
-
-  // Skip summary if user prompt was entirely private
-  // This respects the user's intent: if they marked the entire prompt as <private>,
-  // they don't want ANY memory operations including summaries
-  const userPrompt = db.getUserPrompt(session_id, promptNumber);
-  if (!userPrompt || userPrompt.trim() === '') {
-    silentDebug('[summary-hook] Skipping summary - user prompt was entirely private', {
-      session_id,
-      promptNumber
-    });
-    db.close();
-    console.log(createHookResponse('Stop', true));
-    return;
-  }
-
-  // DIAGNOSTIC: Check session and observations
-  const sessionInfo = db.db.prepare(`
-    SELECT id, claude_session_id, sdk_session_id, project
-    FROM sdk_sessions WHERE id = ?
-  `).get(sessionDbId) as any;
-
-  const obsCount = db.db.prepare(`
-    SELECT COUNT(*) as count
-    FROM observations
-    WHERE sdk_session_id = ?
-  `).get(sessionInfo?.sdk_session_id) as { count: number };
-
-  happy_path_error__with_fallback('[summary-hook] Session diagnostics', {
-    claudeSessionId: session_id,
-    sessionDbId,
-    sdkSessionId: sessionInfo?.sdk_session_id,
-    project: sessionInfo?.project,
-    promptNumber,
-    observationCount: obsCount?.count || happy_path_error__with_fallback('summary-hook: obsCount.count is null', { sessionDbId }, 0),
-    transcriptPath: input.transcript_path
-  });
-
-  db.close();
-
   const port = getWorkerPort();
 
   // Extract last user AND assistant messages from transcript
-  const lastUserMessage = extractLastUserMessage(input.transcript_path || happy_path_error__with_fallback('summary-hook: transcript_path missing for extractLastUserMessage', { session_id__from_hook }));
-  const lastAssistantMessage = extractLastAssistantMessage(input.transcript_path || happy_path_error__with_fallback('summary-hook: transcript_path missing for extractLastAssistantMessage', { session_id__from_hook }));
-
-  happy_path_error__with_fallback('[summary-hook] Extracted messages', {
-    hasLastUserMessage: !!lastUserMessage,
-    hasLastAssistantMessage: !!lastAssistantMessage,
-    lastAssistantPreview: lastAssistantMessage.substring(0, 200),
-    lastAssistantLength: lastAssistantMessage.length
-  });
+  const lastUserMessage = extractLastUserMessage(input.transcript_path || '');
+  const lastAssistantMessage = extractLastAssistantMessage(input.transcript_path || '');
 
   logger.dataIn('HOOK', 'Stop: Requesting summary', {
-    sessionId: sessionDbId,
     workerPort: port,
-    promptNumber,
     hasLastUserMessage: !!lastUserMessage,
     hasLastAssistantMessage: !!lastAssistantMessage
   });
 
   try {
-    const response = await fetch(`http://127.0.0.1:${port}/sessions/${sessionDbId}/summarize`, {
+    // Send to worker - worker handles privacy check and database operations
+    const response = await fetch(`http://127.0.0.1:${port}/api/sessions/summarize`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        prompt_number: promptNumber,
+        claudeSessionId: session_id,
         last_user_message: lastUserMessage,
         last_assistant_message: lastAssistantMessage
       }),
-      signal: AbortSignal.timeout(
-        parseInt(
-          process.env.CLAUDE_MEM_SUMMARY_TIMEOUT_MS ||
-          (happy_path_error__with_fallback('CLAUDE_MEM_SUMMARY_TIMEOUT_MS not set, using default 90000ms'), '90000'),
-          10
-        )
-      )
+      signal: AbortSignal.timeout(2000)
     });
 
     if (!response.ok) {
       const errorText = await response.text();
       logger.failure('HOOK', 'Failed to generate summary', {
-        sessionId: sessionDbId,
         status: response.status
       }, errorText);
-      const errorMsg = `Failed to request summary from worker: ${response.status} ${errorText}`;
-      console.error(`[summary-hook] ${errorMsg}`);
-      console.log(createHookResponse('Stop', false, { reason: errorMsg }));
-      process.exit(1);
+      throw new Error(`Failed to request summary from worker: ${response.status} ${errorText}`);
     }
 
-    const result = await response.json();
-    console.log('[summary-hook] ✅ Summary queued successfully');
-    logger.debug('HOOK', 'Summary request sent successfully', { sessionId: sessionDbId });
+    logger.debug('HOOK', 'Summary request sent successfully');
   } catch (error: any) {
-    // Worker connection/timeout errors
+    // Only show restart message for connection errors, not HTTP errors
     if (error.cause?.code === 'ECONNREFUSED' || error.name === 'TimeoutError' || error.message.includes('fetch failed')) {
-      const errorMsg = "There's a problem with the worker. If you just updated, type `pm2 restart claude-mem-worker` in your terminal to continue";
-      console.error(`[summary-hook] ${errorMsg}`);
-      console.log(createHookResponse('Stop', false, { reason: errorMsg }));
-      process.exit(1);
+      throw new Error("There's a problem with the worker. If you just updated, type `pm2 restart claude-mem-worker` in your terminal to continue");
     }
-
-    // Other errors (HTTP, etc.)
-    console.error(`[summary-hook] Failed to trigger summary: ${error.message}`);
-    console.log(createHookResponse('Stop', false, { reason: error.message }));
-    process.exit(1);
+    throw error;
   } finally {
-    await fetch(`http://127.0.0.1:${port}/api/processing`, {
+    // Notify worker to stop spinner (fire-and-forget)
+    fetch(`http://127.0.0.1:${port}/api/processing`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ isProcessing: false })
-    });
+    }).catch(() => {});
   }
 
   console.log(createHookResponse('Stop', true));
-  process.exit(0);
 }
 
 // Entry Point
 let input = '';
 stdin.on('data', (chunk) => input += chunk);
 stdin.on('end', async () => {
-  try {
-    const parsed = input ? JSON.parse(input) : undefined;
-    await summaryHook(parsed);
-  } catch (error: any) {
-    // Top-level error handler: stderr + JSON + exit 1 (non-blocking - allows session to stop)
-    console.error(`[summary-hook] Unhandled error: ${error.message}`);
-    console.log(createHookResponse('Stop', false, { reason: error.message }));
-    process.exit(1);
-  }
+  const parsed = input ? JSON.parse(input) : undefined;
+  await summaryHook(parsed);
 });

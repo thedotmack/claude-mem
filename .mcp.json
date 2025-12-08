@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "old-claude-mem": {
+      "command": "uvx",
+      "args": [
+        "chroma-mcp",
+        "--client-type",
+        "persistent",
+        "--data-dir",
+        "/Users/alexnewman/.claude-mem/backups/chroma-backup-20251005-222403"
+      ]
+    }
+  }
+}

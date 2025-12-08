@@ -6,8 +6,7 @@
  * has been loaded into their session. Uses stderr as the communication channel
  * since it's currently the only way to display messages in Claude Code UI.
  */
-import { execSync } from "child_process";
-import { join } from "path";
+import { join, basename } from "path";
 import { homedir } from "os";
 import { existsSync } from "fs";
 import { getWorkerPort } from "../shared/worker-utils.js";
@@ -20,7 +19,7 @@ if (!existsSync(nodeModulesPath)) {
   // First-time installation - dependencies not yet installed
   console.error(`
 ---
-🎉  Note: This appears under Plugin Hook Error, but it's not an error. That's the only option for 
+🎉  Note: This appears under Plugin Hook Error, but it's not an error. That's the only option for
    user messages in Claude Code UI until a better method is provided.
 ---
 
@@ -41,17 +40,41 @@ This message was not added to your startup context, so you can continue working 
 }
 
 try {
-  // Cross-platform path to context-hook.js in the installed plugin
-  const contextHookPath = join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack', 'plugin', 'scripts', 'context-hook.js');
-  const output = execSync(`node "${contextHookPath}" --colors`, {
-    encoding: 'utf8'
-  });
-
   const port = getWorkerPort();
+  const project = basename(process.cwd());
+
+  // Fetch formatted context directly from worker API
+  const response = await fetch(
+    `http://127.0.0.1:${port}/api/context/inject?project=${encodeURIComponent(project)}&colors=true`,
+    { method: 'GET', signal: AbortSignal.timeout(5000) }
+  );
+
+  if (!response.ok) {
+    throw new Error(`Worker error ${response.status}`);
+  }
+
+  const output = await response.text();
 
   // If it's after Dec 5, 2025 7pm EST, patch this out
   const now = new Date();
   const amaEndDate = new Date('2025-12-06T00:00:00Z'); // Dec 5, 2025 7pm EST
+
+  // Product Hunt launch announcement - expires Dec 5, 2025 12am EST (05:00 UTC)
+  const phLaunchEndDate = new Date('2025-12-05T05:00:00Z');
+  let productHuntAnnouncement = "";
+  if (now < phLaunchEndDate) {
+    productHuntAnnouncement = `
+
+🚀 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 🚀
+
+   We launched on Product Hunt!
+   https://tinyurl.com/claude-mem-ph
+
+   ⭐ Your upvote means the world - thank you!
+
+🚀 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 🚀
+`;
+  }
 
   let amaAnnouncement = "";
   if (now < amaEndDate) {
@@ -79,6 +102,7 @@ try {
     output +
     "\n\n💡 New! Wrap all or part of any message with <private> ... </private> to prevent storing sensitive information in your observation history.\n" +
     "\n💬 Community https://discord.gg/J4wttp9vDu" +
+    productHuntAnnouncement +
     amaAnnouncement +
     `\n📺 Watch live in browser http://localhost:${port}/\n`
   );
