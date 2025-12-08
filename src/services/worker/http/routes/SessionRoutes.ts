@@ -24,6 +24,30 @@ export class SessionRoutes {
     private workerService: WorkerService
   ) {}
 
+  /**
+   * Ensures SDK agent generator is running for a session
+   * Auto-starts if not already running to process pending queue
+   */
+  private ensureGeneratorRunning(sessionDbId: number, source: string): void {
+    const session = this.sessionManager.getSession(sessionDbId);
+    if (session && !session.generatorPromise) {
+      logger.info('SESSION', `Generator auto-starting (${source})`, {
+        sessionId: sessionDbId,
+        queueDepth: session.pendingMessages.length
+      });
+
+      session.generatorPromise = this.sdkAgent.startSession(session, this.workerService)
+        .catch(err => {
+          logger.failure('SDK', 'SDK agent error', { sessionId: sessionDbId }, err);
+        })
+        .finally(() => {
+          logger.info('SESSION', `Generator finished`, { sessionId: sessionDbId });
+          session.generatorPromise = null;
+          this.workerService.broadcastProcessingStatus();
+        });
+    }
+  }
+
   setupRoutes(app: express.Application): void {
     // Legacy session endpoints (use sessionDbId)
     app.post('/sessions/:sessionDbId/init', this.handleSessionInit.bind(this));
@@ -164,25 +188,7 @@ export class SessionRoutes {
       });
 
       // CRITICAL: Ensure SDK agent is running to consume the queue
-      const session = this.sessionManager.getSession(sessionDbId);
-      if (session && !session.generatorPromise) {
-        logger.info('SESSION', 'Generator auto-starting (observation)', {
-          sessionId: sessionDbId,
-          queueDepth: session.pendingMessages.length
-        });
-
-        session.generatorPromise = this.sdkAgent.startSession(session, this.workerService)
-          .catch(err => {
-            logger.failure('SDK', 'SDK agent error', { sessionId: sessionDbId }, err);
-          })
-          .finally(() => {
-            // Clear generator reference when completed
-            logger.info('SESSION', `Generator finished`, { sessionId: sessionDbId });
-            session.generatorPromise = null;
-            // Broadcast status change (generator finished, may stop spinner)
-            this.workerService.broadcastProcessingStatus();
-          });
-      }
+      this.ensureGeneratorRunning(sessionDbId, 'observation');
 
       // Broadcast activity status (queue depth changed)
       this.workerService.broadcastProcessingStatus();
@@ -212,25 +218,7 @@ export class SessionRoutes {
       this.sessionManager.queueSummarize(sessionDbId, last_user_message, last_assistant_message);
 
       // CRITICAL: Ensure SDK agent is running to consume the queue
-      const session = this.sessionManager.getSession(sessionDbId);
-      if (session && !session.generatorPromise) {
-        logger.info('SESSION', 'Generator auto-starting (summarize)', {
-          sessionId: sessionDbId,
-          queueDepth: session.pendingMessages.length
-        });
-
-        session.generatorPromise = this.sdkAgent.startSession(session, this.workerService)
-          .catch(err => {
-            logger.failure('SDK', 'SDK agent error', { sessionId: sessionDbId }, err);
-          })
-          .finally(() => {
-            // Clear generator reference when completed
-            logger.info('SESSION', `Generator finished`, { sessionId: sessionDbId });
-            session.generatorPromise = null;
-            // Broadcast status change (generator finished, may stop spinner)
-            this.workerService.broadcastProcessingStatus();
-          });
-      }
+      this.ensureGeneratorRunning(sessionDbId, 'summarize');
 
       // Broadcast activity status (queue depth changed)
       this.workerService.broadcastProcessingStatus();
@@ -388,23 +376,7 @@ export class SessionRoutes {
       });
 
       // Ensure SDK agent is running
-      const session = this.sessionManager.getSession(sessionDbId);
-      if (session && !session.generatorPromise) {
-        logger.info('SESSION', 'Generator auto-starting (observation)', {
-          sessionId: sessionDbId,
-          queueDepth: session.pendingMessages.length
-        });
-
-        session.generatorPromise = this.sdkAgent.startSession(session, this.workerService)
-          .catch(err => {
-            logger.failure('SDK', 'SDK agent error', { sessionId: sessionDbId }, err);
-          })
-          .finally(() => {
-            logger.info('SESSION', `Generator finished`, { sessionId: sessionDbId });
-            session.generatorPromise = null;
-            this.workerService.broadcastProcessingStatus();
-          });
-      }
+      this.ensureGeneratorRunning(sessionDbId, 'observation');
 
       // Broadcast activity status
       this.workerService.broadcastProcessingStatus();
@@ -459,23 +431,7 @@ export class SessionRoutes {
       this.sessionManager.queueSummarize(sessionDbId, last_user_message || '', last_assistant_message);
 
       // Ensure SDK agent is running
-      const session = this.sessionManager.getSession(sessionDbId);
-      if (session && !session.generatorPromise) {
-        logger.info('SESSION', 'Generator auto-starting (summarize)', {
-          sessionId: sessionDbId,
-          queueDepth: session.pendingMessages.length
-        });
-
-        session.generatorPromise = this.sdkAgent.startSession(session, this.workerService)
-          .catch(err => {
-            logger.failure('SDK', 'SDK agent error', { sessionId: sessionDbId }, err);
-          })
-          .finally(() => {
-            logger.info('SESSION', `Generator finished`, { sessionId: sessionDbId });
-            session.generatorPromise = null;
-            this.workerService.broadcastProcessingStatus();
-          });
-      }
+      this.ensureGeneratorRunning(sessionDbId, 'summarize');
 
       // Broadcast activity status
       this.workerService.broadcastProcessingStatus();
