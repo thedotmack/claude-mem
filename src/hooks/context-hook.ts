@@ -26,7 +26,7 @@ async function waitForPort(port: number, maxWaitMs: number = 10000): Promise<boo
 
   while (Date.now() - startTime < maxWaitMs) {
     try {
-      execSync(`curl -s -f -m 1 "http://localhost:${port}/api/health" > /dev/null 2>&1`, {
+      execSync(`curl -s -f -m 1 "http://127.0.0.1:${port}/api/health" > /dev/null 2>&1`, {
         timeout: 1000,
       });
       return true;
@@ -50,7 +50,7 @@ async function contextHook(input?: SessionStartInput): Promise<string> {
     );
   }
 
-  const url = `http://localhost:${port}/api/context/inject?project=${encodeURIComponent(project)}`;
+  const url = `http://127.0.0.1:${port}/api/context/inject?project=${encodeURIComponent(project)}`;
   const result = execSync(`curl -s "${url}"`, { encoding: "utf-8", timeout: 5000 });
   return result.trim();
 }
