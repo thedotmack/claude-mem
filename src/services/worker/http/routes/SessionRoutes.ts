@@ -70,6 +70,7 @@ export class SessionRoutes extends BaseRouteHandler {
     app.post('/sessions/:sessionDbId/complete', this.handleSessionComplete.bind(this));
 
     // New session endpoints (use claudeSessionId)
+    app.post('/api/sessions/pre-tool-use', this.handlePreToolUse.bind(this));
     app.post('/api/sessions/observations', this.handleObservationsByClaudeId.bind(this));
     app.post('/api/sessions/summarize', this.handleSummarizeByClaudeId.bind(this));
     app.post('/api/sessions/complete', this.handleSessionCompleteByClaudeId.bind(this));
@@ -246,6 +247,30 @@ export class SessionRoutes extends BaseRouteHandler {
     await this.completionHandler.completeByDbId(sessionDbId);
 
     res.json({ success: true });
+  });
+
+  /**
+   * Track tool execution start timestamp (pre-tool-use-hook uses this)
+   * POST /api/sessions/pre-tool-use
+   * Body: { claudeSessionId, toolUseId, timestamp }
+   *
+   * Phase 1: Just log for now - will be used in Phase 2 for observation correlation
+   */
+  private handlePreToolUse = this.wrapHandler((req: Request, res: Response): void => {
+    const { claudeSessionId, toolUseId, timestamp } = req.body;
+
+    if (!claudeSessionId || !toolUseId) {
+      return this.badRequest(res, 'Missing claudeSessionId or toolUseId');
+    }
+
+    logger.debug('HOOK', 'PreToolUse tracking received', {
+      claudeSessionId,
+      toolUseId,
+      timestamp
+    });
+
+    // Phase 1: Just acknowledge - Phase 2 will store this for observation correlation
+    res.json({ status: 'tracked' });
   });
 
   /**
