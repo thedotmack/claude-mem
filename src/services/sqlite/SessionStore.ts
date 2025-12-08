@@ -704,6 +704,34 @@ export class SessionStore {
   }
 
   /**
+   * Get latest user prompt with session info for a Claude session
+   * Used for syncing prompts to Chroma during session initialization
+   */
+  getLatestUserPrompt(claudeSessionId: string): {
+    id: number;
+    claude_session_id: string;
+    sdk_session_id: string;
+    project: string;
+    prompt_number: number;
+    prompt_text: string;
+    created_at_epoch: number;
+  } | undefined {
+    const stmt = this.db.prepare(`
+      SELECT
+        up.*,
+        s.sdk_session_id,
+        s.project
+      FROM user_prompts up
+      JOIN sdk_sessions s ON up.claude_session_id = s.claude_session_id
+      WHERE up.claude_session_id = ?
+      ORDER BY up.created_at_epoch DESC
+      LIMIT 1
+    `);
+
+    return stmt.get(claudeSessionId) as any;
+  }
+
+  /**
    * Get recent sessions with their status and summary info
    */
   getRecentSessionsWithStatus(project: string, limit: number = 3): Array<{

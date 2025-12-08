@@ -73,18 +73,7 @@ export class SessionRoutes {
       const session = this.sessionManager.initializeSession(sessionDbId, userPrompt, promptNumber);
 
       // Get the latest user_prompt for this session to sync to Chroma
-      const db = this.dbManager.getSessionStore().db;
-      const latestPrompt = db.prepare(`
-        SELECT
-          up.*,
-          s.sdk_session_id,
-          s.project
-        FROM user_prompts up
-        JOIN sdk_sessions s ON up.claude_session_id = s.claude_session_id
-        WHERE up.claude_session_id = ?
-        ORDER BY up.created_at_epoch DESC
-        LIMIT 1
-      `).get(session.claudeSessionId) as any;
+      const latestPrompt = this.dbManager.getSessionStore().getLatestUserPrompt(session.claudeSessionId);
 
       // Broadcast new prompt to SSE clients (for web UI)
       if (latestPrompt) {
