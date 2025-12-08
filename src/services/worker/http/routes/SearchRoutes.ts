@@ -1,17 +1,17 @@
 /**
  * Search Routes
  *
- * Handles all search operations by proxying to the MCP search server.
- * All endpoints call MCP tools via the client connection.
+ * Handles all search operations via SearchManager.
+ * All endpoints call SearchManager methods directly.
  */
 
 import express, { Request, Response } from 'express';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { logger } from '../../../../utils/logger.js';
+import { SearchManager } from '../../SearchManager.js';
 
 export class SearchRoutes {
   constructor(
-    private mcpClient: Client
+    private searchManager: SearchManager
   ) {}
 
   setupRoutes(app: express.Application): void {
@@ -47,10 +47,7 @@ export class SearchRoutes {
    */
   private async handleUnifiedSearch(req: Request, res: Response): Promise<void> {
     try {
-      const result = await this.mcpClient.callTool({
-        name: 'search',
-        arguments: req.query
-      });
+      const result = await this.searchManager.search(req.query);
       res.json(result.content);
     } catch (error) {
       logger.failure('WORKER', 'Unified search failed', {}, error as Error);
@@ -64,10 +61,7 @@ export class SearchRoutes {
    */
   private async handleUnifiedTimeline(req: Request, res: Response): Promise<void> {
     try {
-      const result = await this.mcpClient.callTool({
-        name: 'timeline',
-        arguments: req.query
-      });
+      const result = await this.searchManager.timeline(req.query);
       res.json(result.content);
     } catch (error) {
       logger.failure('WORKER', 'Unified timeline failed', {}, error as Error);
@@ -81,10 +75,7 @@ export class SearchRoutes {
    */
   private async handleDecisions(req: Request, res: Response): Promise<void> {
     try {
-      const result = await this.mcpClient.callTool({
-        name: 'decisions',
-        arguments: req.query
-      });
+      const result = await this.searchManager.decisions(req.query);
       res.json(result.content);
     } catch (error) {
       logger.failure('WORKER', 'Decisions search failed', {}, error as Error);
@@ -98,10 +89,7 @@ export class SearchRoutes {
    */
   private async handleChanges(req: Request, res: Response): Promise<void> {
     try {
-      const result = await this.mcpClient.callTool({
-        name: 'changes',
-        arguments: req.query
-      });
+      const result = await this.searchManager.changes(req.query);
       res.json(result.content);
     } catch (error) {
       logger.failure('WORKER', 'Changes search failed', {}, error as Error);
@@ -115,10 +103,7 @@ export class SearchRoutes {
    */
   private async handleHowItWorks(req: Request, res: Response): Promise<void> {
     try {
-      const result = await this.mcpClient.callTool({
-        name: 'how_it_works',
-        arguments: req.query
-      });
+      const result = await this.searchManager.howItWorks(req.query);
       res.json(result.content);
     } catch (error) {
       logger.failure('WORKER', 'How it works search failed', {}, error as Error);
@@ -132,10 +117,7 @@ export class SearchRoutes {
    */
   private async handleSearchObservations(req: Request, res: Response): Promise<void> {
     try {
-      const result = await this.mcpClient.callTool({
-        name: 'search_observations',
-        arguments: req.query
-      });
+      const result = await this.searchManager.searchObservations(req.query);
       res.json(result.content);
     } catch (error) {
       logger.failure('WORKER', 'Search failed', {}, error as Error);
@@ -149,10 +131,7 @@ export class SearchRoutes {
    */
   private async handleSearchSessions(req: Request, res: Response): Promise<void> {
     try {
-      const result = await this.mcpClient.callTool({
-        name: 'search_sessions',
-        arguments: req.query
-      });
+      const result = await this.searchManager.searchSessions(req.query);
       res.json(result.content);
     } catch (error) {
       logger.failure('WORKER', 'Search failed', {}, error as Error);
@@ -166,10 +145,7 @@ export class SearchRoutes {
    */
   private async handleSearchPrompts(req: Request, res: Response): Promise<void> {
     try {
-      const result = await this.mcpClient.callTool({
-        name: 'search_user_prompts',
-        arguments: req.query
-      });
+      const result = await this.searchManager.searchUserPrompts(req.query);
       res.json(result.content);
     } catch (error) {
       logger.failure('WORKER', 'Search failed', {}, error as Error);
@@ -183,10 +159,7 @@ export class SearchRoutes {
    */
   private async handleSearchByConcept(req: Request, res: Response): Promise<void> {
     try {
-      const result = await this.mcpClient.callTool({
-        name: 'find_by_concept',
-        arguments: req.query
-      });
+      const result = await this.searchManager.findByConcept(req.query);
       res.json(result.content);
     } catch (error) {
       logger.failure('WORKER', 'Search failed', {}, error as Error);
@@ -200,10 +173,7 @@ export class SearchRoutes {
    */
   private async handleSearchByFile(req: Request, res: Response): Promise<void> {
     try {
-      const result = await this.mcpClient.callTool({
-        name: 'find_by_file',
-        arguments: req.query
-      });
+      const result = await this.searchManager.findByFile(req.query);
       res.json(result.content);
     } catch (error) {
       logger.failure('WORKER', 'Search failed', {}, error as Error);
@@ -217,10 +187,7 @@ export class SearchRoutes {
    */
   private async handleSearchByType(req: Request, res: Response): Promise<void> {
     try {
-      const result = await this.mcpClient.callTool({
-        name: 'find_by_type',
-        arguments: req.query
-      });
+      const result = await this.searchManager.findByType(req.query);
       res.json(result.content);
     } catch (error) {
       logger.failure('WORKER', 'Search failed', {}, error as Error);
@@ -234,10 +201,7 @@ export class SearchRoutes {
    */
   private async handleGetRecentContext(req: Request, res: Response): Promise<void> {
     try {
-      const result = await this.mcpClient.callTool({
-        name: 'get_recent_context',
-        arguments: req.query
-      });
+      const result = await this.searchManager.getRecentContext(req.query);
       res.json(result.content);
     } catch (error) {
       logger.failure('WORKER', 'Search failed', {}, error as Error);
@@ -251,10 +215,7 @@ export class SearchRoutes {
    */
   private async handleGetContextTimeline(req: Request, res: Response): Promise<void> {
     try {
-      const result = await this.mcpClient.callTool({
-        name: 'get_context_timeline',
-        arguments: req.query
-      });
+      const result = await this.searchManager.getContextTimeline(req.query);
       res.json(result.content);
     } catch (error) {
       logger.failure('WORKER', 'Search failed', {}, error as Error);
@@ -352,10 +313,7 @@ export class SearchRoutes {
    */
   private async handleGetTimelineByQuery(req: Request, res: Response): Promise<void> {
     try {
-      const result = await this.mcpClient.callTool({
-        name: 'get_timeline_by_query',
-        arguments: req.query
-      });
+      const result = await this.searchManager.getTimelineByQuery(req.query);
       res.json(result.content);
     } catch (error) {
       logger.failure('WORKER', 'Search failed', {}, error as Error);

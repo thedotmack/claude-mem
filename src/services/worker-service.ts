@@ -21,6 +21,9 @@ import { SSEBroadcaster } from './worker/SSEBroadcaster.js';
 import { SDKAgent } from './worker/SDKAgent.js';
 import { PaginationHelper } from './worker/PaginationHelper.js';
 import { SettingsManager } from './worker/SettingsManager.js';
+import { SearchManager } from './worker/SearchManager.js';
+import { FormattingService } from './worker/FormattingService.js';
+import { TimelineService } from './worker/TimelineService.js';
 
 // Import HTTP layer
 import { createMiddleware, summarizeRequestBody as summarizeBody } from './worker/http/middleware.js';
@@ -73,11 +76,12 @@ export class WorkerService {
       version: '1.0.0'
     }, { capabilities: {} });
 
-    // Initialize route handlers
+    // Initialize route handlers (SearchRoutes will use MCP client initially, then switch to SearchManager after DB init)
     this.viewerRoutes = new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager);
     this.sessionRoutes = new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.sseBroadcaster, this);
     this.dataRoutes = new DataRoutes(this.paginationHelper, this.dbManager, this.sessionManager, this.sseBroadcaster, this, this.startTime);
-    this.searchRoutes = new SearchRoutes(this.mcpClient);
+    // SearchRoutes needs SearchManager which requires initialized DB - will be created in initializeBackground()
+    this.searchRoutes = null as any; // Temporary - will be set in initializeBackground()
     this.settingsRoutes = new SettingsRoutes(this.settingsManager);
 
     this.setupMiddleware();
@@ -104,7 +108,10 @@ export class WorkerService {
     this.viewerRoutes.setupRoutes(this.app);
     this.sessionRoutes.setupRoutes(this.app);
     this.dataRoutes.setupRoutes(this.app);
-    this.searchRoutes.setupRoutes(this.app);
+    // searchRoutes is set up after database initialization in initializeBackground()
+    if (this.searchRoutes) {
+      this.searchRoutes.setupRoutes(this.app);
+    }
     this.settingsRoutes.setupRoutes(this.app);
   }
 
@@ -168,6 +175,20 @@ export class WorkerService {
 
     // Initialize database (once, stays open)
     await this.dbManager.initialize();
+
+    // Initialize search services (requires initialized database)
+    const formattingService = new FormattingService();
+    const timelineService = new TimelineService();
+    const searchManager = new SearchManager(
+      this.dbManager.getSessionSearch(),
+      this.dbManager.getSessionStore(),
+      this.dbManager.getChromaSync(),
+      formattingService,
+      timelineService
+    );
+    this.searchRoutes = new SearchRoutes(searchManager);
+    this.searchRoutes.setupRoutes(this.app); // Setup search routes now that SearchManager is ready
+    logger.info('WORKER', 'SearchManager initialized and search routes registered');
 
     // Connect to MCP server
     const mcpServerPath = path.join(__dirname, '..', '..', 'plugin', 'scripts', 'mcp-server.cjs');

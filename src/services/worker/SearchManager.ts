@@ -6,6 +6,7 @@
  * The MCP server now acts as a thin HTTP wrapper that calls these methods via HTTP.
  */
 
+import { basename } from 'path';
 import { SessionSearch } from '../sqlite/SessionSearch.js';
 import { SessionStore } from '../sqlite/SessionStore.js';
 import { ChromaSync } from '../sync/ChromaSync.js';
@@ -22,7 +23,7 @@ export class SearchManager {
     private sessionStore: SessionStore,
     private chromaSync: ChromaSync,
     private formatter: FormattingService,
-    private timeline: TimelineService
+    private timelineService: TimelineService
   ) {}
 
   /**
@@ -302,7 +303,7 @@ export class SearchManager {
 
         let anchorId: string | number;
         let anchorEpoch: number;
-        let timeline: any;
+        let timelineData: any;
 
         // MODE 1: Query-based timeline
         if (query) {
@@ -345,7 +346,7 @@ export class SearchManager {
           anchorId = topResult.id;
           anchorEpoch = topResult.created_at_epoch;
           silentDebug(`[search-server] Query mode: Using observation #${topResult.id} as timeline anchor`);
-          timeline = this.sessionStore.getTimelineAroundObservation(topResult.id, topResult.created_at_epoch, depth_before, depth_after, project);
+          timelineData = this.sessionStore.getTimelineAroundObservation(topResult.id, topResult.created_at_epoch, depth_before, depth_after, project);
         }
         // MODE 2: Anchor-based timeline
         else if (typeof anchor === 'number') {
@@ -362,7 +363,7 @@ export class SearchManager {
           }
           anchorId = anchor;
           anchorEpoch = obs.created_at_epoch;
-          timeline = this.sessionStore.getTimelineAroundObservation(anchor, anchorEpoch, depth_before, depth_after, project);
+          timelineData = this.sessionStore.getTimelineAroundObservation(anchor, anchorEpoch, depth_before, depth_after, project);
         } else if (typeof anchor === 'string') {
           // Session ID or ISO timestamp
           if (anchor.startsWith('S') || anchor.startsWith('#S')) {
@@ -380,7 +381,7 @@ export class SearchManager {
             }
             anchorEpoch = sessions[0].created_at_epoch;
             anchorId = `S${sessionNum}`;
-            timeline = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depth_before, depth_after, project);
+            timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depth_before, depth_after, project);
           } else {
             // ISO timestamp
             const date = new Date(anchor);
@@ -395,7 +396,7 @@ export class SearchManager {
             }
             anchorEpoch = date.getTime();
             anchorId = anchor;
-            timeline = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depth_before, depth_after, project);
+            timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depth_before, depth_after, project);
           }
         } else {
           return {
@@ -409,12 +410,12 @@ export class SearchManager {
 
         // Combine, sort, and filter timeline items
         const items: TimelineItem[] = [
-          ...timeline.observations.map((obs: any) => ({ type: 'observation' as const, data: obs, epoch: obs.created_at_epoch })),
-          ...timeline.sessions.map((sess: any) => ({ type: 'session' as const, data: sess, epoch: sess.created_at_epoch })),
-          ...timeline.prompts.map((prompt: any) => ({ type: 'prompt' as const, data: prompt, epoch: prompt.created_at_epoch }))
+          ...timelineData.observations.map((obs: any) => ({ type: 'observation' as const, data: obs, epoch: obs.created_at_epoch })),
+          ...timelineData.sessions.map((sess: any) => ({ type: 'session' as const, data: sess, epoch: sess.created_at_epoch })),
+          ...timelineData.prompts.map((prompt: any) => ({ type: 'prompt' as const, data: prompt, epoch: prompt.created_at_epoch }))
         ];
         items.sort((a, b) => a.epoch - b.epoch);
-        const filteredItems = this.timeline.filterByDepth(items, anchorId, anchorEpoch, depth_before, depth_after);
+        const filteredItems = this.timelineService.filterByDepth(items, anchorId, anchorEpoch, depth_before, depth_after);
 
         if (filteredItems.length === 0) {
           return {
@@ -428,25 +429,25 @@ export class SearchManager {
         }
 
         // Format timeline (helper functions)
-        function formatDate(epochMs: number): string {
+        const formatDate = (epochMs: number): string => {
           const date = new Date(epochMs);
           return date.toLocaleString('en-US', {
             month: 'short',
             day: 'numeric',
             year: 'numeric'
           });
-        }
+        };
 
-        function formatTime(epochMs: number): string {
+        const formatTime = (epochMs: number): string => {
           const date = new Date(epochMs);
           return date.toLocaleString('en-US', {
             hour: 'numeric',
             minute: '2-digit',
             hour12: true
           });
-        }
+        };
 
-        function formatDateTime(epochMs: number): string {
+        const formatDateTime = (epochMs: number): string => {
           const date = new Date(epochMs);
           return date.toLocaleString('en-US', {
             month: 'short',
@@ -455,12 +456,12 @@ export class SearchManager {
             minute: '2-digit',
             hour12: true
           });
-        }
+        };
 
-        function estimateTokens(text: string | null): number {
+        const estimateTokens = (text: string | null): number => {
           if (!text) return 0;
           return Math.ceil(text.length / 4);
-        }
+        };
 
         // Format results
         const lines: string[] = [];
@@ -468,7 +469,7 @@ export class SearchManager {
         // Header
         if (query) {
           const anchorObs = filteredItems.find(item => item.type === 'observation' && item.data.id === anchorId);
-          const anchorTitle = anchorObs ? (anchorObs.data.title || 'Untitled') : 'Unknown';
+          const anchorTitle = anchorObs && anchorObs.type === 'observation' ? ((anchorObs.data as ObservationSearchResult).title || 'Untitled') : 'Unknown';
           lines.push(`# Timeline for query: "${query}"`);
           lines.push(`**Anchor:** Observation #${anchorId} - ${anchorTitle}`);
         } else {
@@ -522,7 +523,7 @@ export class SearchManager {
                 lastTime = '';
               }
 
-              const sess = item.data;
+              const sess = item.data as SessionSummarySearchResult;
               const title = sess.request || 'Session summary';
               const link = `claude-mem://session-summary/${sess.id}`;
               const marker = isAnchor ? ' ← **ANCHOR**' : '';
@@ -537,14 +538,14 @@ export class SearchManager {
                 lastTime = '';
               }
 
-              const prompt = item.data;
-              const truncated = prompt.prompt.length > 100 ? prompt.prompt.substring(0, 100) + '...' : prompt.prompt;
+              const prompt = item.data as UserPromptSearchResult;
+              const truncated = prompt.prompt_text.length > 100 ? prompt.prompt_text.substring(0, 100) + '...' : prompt.prompt_text;
 
               lines.push(`**💬 User Prompt #${prompt.prompt_number}** (${formatDateTime(item.epoch)})`);
               lines.push(`> ${truncated}`);
               lines.push('');
             } else if (item.type === 'observation') {
-              const obs = item.data;
+              const obs = item.data as ObservationSearchResult;
               const file = 'General';
 
               if (file !== currentFile) {
@@ -1543,7 +1544,7 @@ export class SearchManager {
         let anchorId: string | number = anchor;
 
         // Resolve anchor and get timeline data
-        let timeline;
+        let timelineData;
         if (typeof anchor === 'number') {
           // Observation ID - use ID-based boundary detection
           const obs = this.sessionStore.getObservationById(anchor);
@@ -1557,7 +1558,7 @@ export class SearchManager {
             };
           }
           anchorEpoch = obs.created_at_epoch;
-          timeline = this.sessionStore.getTimelineAroundObservation(anchor, anchorEpoch, depth_before, depth_after, project);
+          timelineData = this.sessionStore.getTimelineAroundObservation(anchor, anchorEpoch, depth_before, depth_after, project);
         } else if (typeof anchor === 'string') {
           // Session ID or ISO timestamp
           if (anchor.startsWith('S') || anchor.startsWith('#S')) {
@@ -1575,7 +1576,7 @@ export class SearchManager {
             }
             anchorEpoch = sessions[0].created_at_epoch;
             anchorId = `S${sessionNum}`;
-            timeline = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depth_before, depth_after, project);
+            timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depth_before, depth_after, project);
           } else {
             // ISO timestamp
             const date = new Date(anchor);
@@ -1589,7 +1590,7 @@ export class SearchManager {
               };
             }
             anchorEpoch = date.getTime(); // Keep as milliseconds
-            timeline = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depth_before, depth_after, project);
+            timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depth_before, depth_after, project);
           }
         } else {
           return {
@@ -1603,12 +1604,12 @@ export class SearchManager {
 
         // Combine, sort, and filter timeline items
         const items: TimelineItem[] = [
-          ...timeline.observations.map(obs => ({ type: 'observation' as const, data: obs, epoch: obs.created_at_epoch })),
-          ...timeline.sessions.map(sess => ({ type: 'session' as const, data: sess, epoch: sess.created_at_epoch })),
-          ...timeline.prompts.map(prompt => ({ type: 'prompt' as const, data: prompt, epoch: prompt.created_at_epoch }))
+          ...timelineData.observations.map(obs => ({ type: 'observation' as const, data: obs, epoch: obs.created_at_epoch })),
+          ...timelineData.sessions.map(sess => ({ type: 'session' as const, data: sess, epoch: sess.created_at_epoch })),
+          ...timelineData.prompts.map(prompt => ({ type: 'prompt' as const, data: prompt, epoch: prompt.created_at_epoch }))
         ];
         items.sort((a, b) => a.epoch - b.epoch);
-        const filteredItems = this.timeline.filterByDepth(items, anchorId, anchorEpoch, depth_before, depth_after);
+        const filteredItems = this.timelineService.filterByDepth(items, anchorId, anchorEpoch, depth_before, depth_after);
 
         if (filteredItems.length === 0) {
           const anchorDate = new Date(anchorEpoch).toLocaleString();
@@ -1621,25 +1622,25 @@ export class SearchManager {
         }
 
         // Helper functions matching context-hook.ts
-        function formatDate(epochMs: number): string {
+        const formatDate = (epochMs: number): string => {
           const date = new Date(epochMs);
           return date.toLocaleString('en-US', {
             month: 'short',
             day: 'numeric',
             year: 'numeric'
           });
-        }
+        };
 
-        function formatTime(epochMs: number): string {
+        const formatTime = (epochMs: number): string => {
           const date = new Date(epochMs);
           return date.toLocaleString('en-US', {
             hour: 'numeric',
             minute: '2-digit',
             hour12: true
           });
-        }
+        };
 
-        function formatDateTime(epochMs: number): string {
+        const formatDateTime = (epochMs: number): string => {
           const date = new Date(epochMs);
           return date.toLocaleString('en-US', {
             month: 'short',
@@ -1648,12 +1649,12 @@ export class SearchManager {
             minute: '2-digit',
             hour12: true
           });
-        }
+        };
 
-        function estimateTokens(text: string | null): number {
+        const estimateTokens = (text: string | null): number => {
           if (!text) return 0;
           return Math.ceil(text.length / 4);
-        }
+        };
 
         // Format results matching context-hook.ts exactly
         const lines: string[] = [];
@@ -1709,7 +1710,7 @@ export class SearchManager {
               }
 
               // Render session
-              const sess = item.data;
+              const sess = item.data as SessionSummarySearchResult;
               const title = sess.request || 'Session summary';
               const link = `claude-mem://session-summary/${sess.id}`;
               const marker = isAnchor ? ' ← **ANCHOR**' : '';
@@ -1726,15 +1727,15 @@ export class SearchManager {
               }
 
               // Render prompt
-              const prompt = item.data;
-              const truncated = prompt.prompt.length > 100 ? prompt.prompt.substring(0, 100) + '...' : prompt.prompt;
+              const prompt = item.data as UserPromptSearchResult;
+              const truncated = prompt.prompt_text.length > 100 ? prompt.prompt_text.substring(0, 100) + '...' : prompt.prompt_text;
 
               lines.push(`**💬 User Prompt #${prompt.prompt_number}** (${formatDateTime(item.epoch)})`);
               lines.push(`> ${truncated}`);
               lines.push('');
             } else if (item.type === 'observation') {
               // Render observation in table
-              const obs = item.data;
+              const obs = item.data as ObservationSearchResult;
               const file = 'General'; // Simplified for timeline view
 
               // Check if we need a new file section
@@ -1888,7 +1889,7 @@ export class SearchManager {
           silentDebug(`[search-server] Auto mode: Using observation #${topResult.id} as timeline anchor`);
 
           // Get timeline around this observation
-          const timeline = this.sessionStore.getTimelineAroundObservation(
+          const timelineData = this.sessionStore.getTimelineAroundObservation(
             topResult.id,
             topResult.created_at_epoch,
             depth_before,
@@ -1898,12 +1899,12 @@ export class SearchManager {
 
           // Combine, sort, and filter timeline items
           const items: TimelineItem[] = [
-            ...timeline.observations.map(obs => ({ type: 'observation' as const, data: obs, epoch: obs.created_at_epoch })),
-            ...timeline.sessions.map(sess => ({ type: 'session' as const, data: sess, epoch: sess.created_at_epoch })),
-            ...timeline.prompts.map(prompt => ({ type: 'prompt' as const, data: prompt, epoch: prompt.created_at_epoch }))
+            ...timelineData.observations.map(obs => ({ type: 'observation' as const, data: obs, epoch: obs.created_at_epoch })),
+            ...timelineData.sessions.map(sess => ({ type: 'session' as const, data: sess, epoch: sess.created_at_epoch })),
+            ...timelineData.prompts.map(prompt => ({ type: 'prompt' as const, data: prompt, epoch: prompt.created_at_epoch }))
           ];
           items.sort((a, b) => a.epoch - b.epoch);
-          const filteredItems = this.timeline.filterByDepth(items, topResult.id, 0, depth_before, depth_after);
+          const filteredItems = this.timelineService.filterByDepth(items, topResult.id, 0, depth_before, depth_after);
 
           if (filteredItems.length === 0) {
             return {
@@ -1915,25 +1916,25 @@ export class SearchManager {
           }
 
           // Helper functions (reused from get_context_timeline)
-          function formatDate(epochMs: number): string {
+          const formatDate = (epochMs: number): string => {
             const date = new Date(epochMs);
             return date.toLocaleString('en-US', {
               month: 'short',
               day: 'numeric',
               year: 'numeric'
             });
-          }
+          };
 
-          function formatTime(epochMs: number): string {
+          const formatTime = (epochMs: number): string => {
             const date = new Date(epochMs);
             return date.toLocaleString('en-US', {
               hour: 'numeric',
               minute: '2-digit',
               hour12: true
             });
-          }
+          };
 
-          function formatDateTime(epochMs: number): string {
+          const formatDateTime = (epochMs: number): string => {
             const date = new Date(epochMs);
             return date.toLocaleString('en-US', {
               month: 'short',
@@ -1942,12 +1943,12 @@ export class SearchManager {
               minute: '2-digit',
               hour12: true
             });
-          }
+          };
 
-          function estimateTokens(text: string | null): number {
+          const estimateTokens = (text: string | null): number => {
             if (!text) return 0;
             return Math.ceil(text.length / 4);
-          }
+          };
 
           // Format timeline (reused from get_context_timeline)
           const lines: string[] = [];
@@ -2001,7 +2002,7 @@ export class SearchManager {
                 }
 
                 // Render session
-                const sess = item.data;
+                const sess = item.data as SessionSummarySearchResult;
                 const title = sess.request || 'Session summary';
                 const link = `claude-mem://session-summary/${sess.id}`;
 
@@ -2017,15 +2018,15 @@ export class SearchManager {
                 }
 
                 // Render prompt
-                const prompt = item.data;
-                const truncated = prompt.prompt.length > 100 ? prompt.prompt.substring(0, 100) + '...' : prompt.prompt;
+                const prompt = item.data as UserPromptSearchResult;
+                const truncated = prompt.prompt_text.length > 100 ? prompt.prompt_text.substring(0, 100) + '...' : prompt.prompt_text;
 
                 lines.push(`**💬 User Prompt #${prompt.prompt_number}** (${formatDateTime(item.epoch)})`);
                 lines.push(`> ${truncated}`);
                 lines.push('');
               } else if (item.type === 'observation') {
                 // Render observation in table
-                const obs = item.data;
+                const obs = item.data as ObservationSearchResult;
                 const file = 'General'; // Simplified for timeline view
 
                 // Check if we need a new file section
