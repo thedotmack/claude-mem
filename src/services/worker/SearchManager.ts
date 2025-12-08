@@ -314,9 +314,9 @@ export class SearchManager {
             try {
               silentDebug('[search-server] Using hybrid semantic search for timeline query');
               const chromaResults = await this.queryChroma(query, 100);
-              silentDebug(`[search-server] Chroma returned ${chromaResults.ids.length} semantic matches`);
+              silentDebug(`[search-server] Chroma returned ${chromaResults?.ids?.length ?? 0} semantic matches`);
 
-              if (chromaResults.ids.length > 0) {
+              if (chromaResults?.ids && chromaResults.ids.length > 0) {
                 const ninetyDaysAgo = Date.now() - (90 * 24 * 60 * 60 * 1000);
                 const recentIds = chromaResults.ids.filter((_id, idx) => {
                   const meta = chromaResults.metadatas[idx];
@@ -410,14 +410,14 @@ export class SearchManager {
 
         // Combine, sort, and filter timeline items
         const items: TimelineItem[] = [
-          ...timelineData.observations.map((obs: any) => ({ type: 'observation' as const, data: obs, epoch: obs.created_at_epoch })),
-          ...timelineData.sessions.map((sess: any) => ({ type: 'session' as const, data: sess, epoch: sess.created_at_epoch })),
-          ...timelineData.prompts.map((prompt: any) => ({ type: 'prompt' as const, data: prompt, epoch: prompt.created_at_epoch }))
+          ...(timelineData.observations || []).map((obs: any) => ({ type: 'observation' as const, data: obs, epoch: obs.created_at_epoch })),
+          ...(timelineData.sessions || []).map((sess: any) => ({ type: 'session' as const, data: sess, epoch: sess.created_at_epoch })),
+          ...(timelineData.prompts || []).map((prompt: any) => ({ type: 'prompt' as const, data: prompt, epoch: prompt.created_at_epoch }))
         ];
         items.sort((a, b) => a.epoch - b.epoch);
         const filteredItems = this.timelineService.filterByDepth(items, anchorId, anchorEpoch, depth_before, depth_after);
 
-        if (filteredItems.length === 0) {
+        if (!filteredItems || filteredItems.length === 0) {
           return {
             content: [{
               type: 'text' as const,
@@ -476,7 +476,7 @@ export class SearchManager {
           lines.push(`# Timeline around anchor: ${anchorId}`);
         }
 
-        lines.push(`**Window:** ${depth_before} records before → ${depth_after} records after | **Items:** ${filteredItems.length}`);
+        lines.push(`**Window:** ${depth_before} records before → ${depth_after} records after | **Items:** ${filteredItems?.length ?? 0}`);
         lines.push('');
 
         // Legend
@@ -1069,7 +1069,7 @@ export class SearchManager {
           return {
             content: [{
               type: 'text' as const,
-              text: `No user prompts found matching "${query}"`
+              text: query ? `No user prompts found matching "${query}"` : 'No user prompts found'
             }]
           };
         }
@@ -1108,7 +1108,7 @@ export class SearchManager {
   async findByConcept(args: any): Promise<any> {
       try {
         const normalized = this.normalizeParams(args);
-        const { concept, format = 'index', ...filters } = normalized;
+        const { concepts: concept, format = 'index', ...filters } = normalized;
         let results: ObservationSearchResult[] = [];
 
         // Metadata-first, semantic-enhanced search
@@ -1197,7 +1197,7 @@ export class SearchManager {
   async findByFile(args: any): Promise<any> {
       try {
         const normalized = this.normalizeParams(args);
-        const { filePath, format = 'index', ...filters } = normalized;
+        const { files: filePath, format = 'index', ...filters } = normalized;
         let observations: ObservationSearchResult[] = [];
         let sessions: SessionSummarySearchResult[] = [];
 
@@ -1611,7 +1611,7 @@ export class SearchManager {
         items.sort((a, b) => a.epoch - b.epoch);
         const filteredItems = this.timelineService.filterByDepth(items, anchorId, anchorEpoch, depth_before, depth_after);
 
-        if (filteredItems.length === 0) {
+        if (!filteredItems || filteredItems.length === 0) {
           const anchorDate = new Date(anchorEpoch).toLocaleString();
           return {
             content: [{
@@ -1661,7 +1661,7 @@ export class SearchManager {
 
         // Header
         lines.push(`# Timeline around anchor: ${anchorId}`);
-        lines.push(`**Window:** ${depth_before} records before → ${depth_after} records after | **Items:** ${filteredItems.length}`);
+        lines.push(`**Window:** ${depth_before} records before → ${depth_after} records after | **Items:** ${filteredItems?.length ?? 0}`);
         lines.push('');
 
         // Legend
@@ -1899,14 +1899,14 @@ export class SearchManager {
 
           // Combine, sort, and filter timeline items
           const items: TimelineItem[] = [
-            ...timelineData.observations.map(obs => ({ type: 'observation' as const, data: obs, epoch: obs.created_at_epoch })),
-            ...timelineData.sessions.map(sess => ({ type: 'session' as const, data: sess, epoch: sess.created_at_epoch })),
-            ...timelineData.prompts.map(prompt => ({ type: 'prompt' as const, data: prompt, epoch: prompt.created_at_epoch }))
+            ...(timelineData.observations || []).map(obs => ({ type: 'observation' as const, data: obs, epoch: obs.created_at_epoch })),
+            ...(timelineData.sessions || []).map(sess => ({ type: 'session' as const, data: sess, epoch: sess.created_at_epoch })),
+            ...(timelineData.prompts || []).map(prompt => ({ type: 'prompt' as const, data: prompt, epoch: prompt.created_at_epoch }))
           ];
           items.sort((a, b) => a.epoch - b.epoch);
           const filteredItems = this.timelineService.filterByDepth(items, topResult.id, 0, depth_before, depth_after);
 
-          if (filteredItems.length === 0) {
+          if (!filteredItems || filteredItems.length === 0) {
             return {
               content: [{
                 type: 'text' as const,
@@ -1956,7 +1956,7 @@ export class SearchManager {
           // Header
           lines.push(`# Timeline for query: "${query}"`);
           lines.push(`**Anchor:** Observation #${topResult.id} - ${topResult.title || 'Untitled'}`);
-          lines.push(`**Window:** ${depth_before} records before → ${depth_after} records after | **Items:** ${filteredItems.length}`);
+          lines.push(`**Window:** ${depth_before} records before → ${depth_after} records after | **Items:** ${filteredItems?.length ?? 0}`);
           lines.push('');
 
           // Legend
