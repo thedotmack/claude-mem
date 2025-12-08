@@ -8,12 +8,12 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/../scripts/smart-install.js\" && node ${CLAUDE_PLUGIN_ROOT}/scripts/context-hook.js",
-            "timeout": 300
+            "timeout": 5
           },
           {
             "type": "command",
             "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/user-message-hook.js",
-            "timeout": 10
+            "timeout": 5
           }
         ]
       }

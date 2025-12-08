@@ -1,8 +1,5 @@
-import { Database as BunDatabase } from 'bun:sqlite';
+import { Database } from 'better-sqlite3';
 import { DATA_DIR, DB_PATH, ensureDir } from '../../shared/paths.js';
-
-// Type alias for better-sqlite3 compatibility
-type Database = BunDatabase;
 
 export interface Migration {
   version: number;
@@ -47,7 +44,7 @@ export class DatabaseManager {
     // Ensure the data directory exists
     ensureDir(DATA_DIR);
 
-    this.db = new BunDatabase(DB_PATH, { create: true, readwrite: true });
+    this.db = new Database(DB_PATH, { create: true, readwrite: true });
 
     // Apply optimized SQLite settings
     this.db.run('PRAGMA journal_mode = WAL');
@@ -171,4 +168,4 @@ export async function initializeDatabase(): Promise<Database> {
   return await manager.initialize();
 }
 
-export { BunDatabase as Database };
+export { Database };
