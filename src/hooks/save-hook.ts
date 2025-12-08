@@ -12,6 +12,7 @@ import { stdin } from 'process';
 import { readFileSync } from 'fs';
 import { homedir } from 'os';
 import path from 'path';
+import { EventSource } from 'eventsource';
 import { createHookResponse } from './hook-response.js';
 import { logger } from '../utils/logger.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
@@ -58,39 +59,55 @@ function loadEndlessModeConfig(): { enabled: boolean; waitTimeoutMs: number } {
 }
 
 /**
- * Wait for observations to be created and fetch them
- * Polls the worker endpoint until observations appear or timeout occurs
+ * Endless Mode configuration (loaded once at startup)
  */
-async function waitAndFetchObservations(
+const ENDLESS_MODE_CONFIG = loadEndlessModeConfig();
+
+/**
+ * Subscribe to SSE processing status and wait for queue to empty
+ * Returns when "Queue depth: 0" broadcast is received
+ */
+async function waitForProcessingComplete(
   port: number,
-  toolUseId: string,
   timeoutMs: number
-): Promise<any[]> {
-  const startTime = Date.now();
-  const pollInterval = 500; // Poll every 500ms
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    const timeoutId = setTimeout(() => {
+      eventSource?.close();
+      resolve(false); // Timeout
+    }, timeoutMs);
 
-  while (Date.now() - startTime < timeoutMs) {
+    let eventSource: EventSource | null = null;
+
     try {
-      const response = await fetch(
-        `http://127.0.0.1:${port}/api/sessions/observations-for-tool-use/${toolUseId}`,
-        { signal: AbortSignal.timeout(2000) }
-      );
+      // Connect to SSE endpoint
+      eventSource = new EventSource(`http://127.0.0.1:${port}/events`);
 
-      if (response.ok) {
-        const data = await response.json();
-        if (data.observations && data.observations.length > 0) {
-          return data.observations;
+      eventSource.addEventListener('processing_status', (event: MessageEvent) => {
+        try {
+          const data = JSON.parse(event.data);
+
+          // Check if queue is empty (all observations processed)
+          if (data.queueDepth === 0) {
+            clearTimeout(timeoutId);
+            eventSource?.close();
+            resolve(true); // Success
+          }
+        } catch (error) {
+          // Invalid JSON, ignore
         }
-      }
+      });
+
+      eventSource.onerror = () => {
+        clearTimeout(timeoutId);
+        eventSource?.close();
+        resolve(false); // Connection error
+      };
     } catch (error) {
-      // Ignore errors and continue polling
+      clearTimeout(timeoutId);
+      resolve(false);
     }
-
-    // Wait before next poll
-    await new Promise(resolve => setTimeout(resolve, pollInterval));
-  }
-
-  return []; // Timeout - return empty array
+  });
 }
 
 /**
@@ -152,27 +169,54 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
     throw error;
   }
 
-  // Check if Endless Mode is enabled
-  const config = loadEndlessModeConfig();
-  if (!config.enabled || !tool_use_id || !transcript_path) {
-    // Endless Mode disabled or missing required fields - return normally
+  // If missing required fields for observation correlation, return normally
+  if (!tool_use_id || !transcript_path) {
     console.log(createHookResponse('PostToolUse', true));
     return;
   }
 
-  // Endless Mode v7.1: Wait for observations and inject via additionalContext
+  // ALWAYS wait for observations to be processed (no conditional flag)
   try {
-    logger.debug('HOOK', 'Endless Mode: waiting for observations', {
+    logger.debug('HOOK', 'Waiting for observations to be processed', {
       toolUseId: tool_use_id,
-      timeoutMs: config.waitTimeoutMs
+      timeoutMs: ENDLESS_MODE_CONFIG.waitTimeoutMs
     });
 
-    const observations = await waitAndFetchObservations(port, tool_use_id, config.waitTimeoutMs);
+    // Wait for worker queue to empty (SSE subscription)
+    const completed = await waitForProcessingComplete(port, ENDLESS_MODE_CONFIG.waitTimeoutMs);
 
-    if (observations.length === 0) {
-      logger.debug('HOOK', 'Endless Mode: no observations found (timeout)', {
+    if (!completed) {
+      logger.debug('HOOK', 'Timeout waiting for observations', {
         toolUseId: tool_use_id
       });
+      console.log(createHookResponse('PostToolUse', true));
+      return;
+    }
+
+    // Fetch observations created for this tool_use_id
+    const response = await fetch(
+      `http://127.0.0.1:${port}/api/sessions/observations-for-tool-use/${tool_use_id}`,
+      { signal: AbortSignal.timeout(2000) }
+    );
+
+    if (!response.ok) {
+      console.log(createHookResponse('PostToolUse', true));
+      return;
+    }
+
+    const data = await response.json();
+    const observations = data.observations || [];
+
+    if (observations.length === 0) {
+      logger.debug('HOOK', 'No observations found for tool_use_id', {
+        toolUseId: tool_use_id
+      });
+      console.log(createHookResponse('PostToolUse', true));
+      return;
+    }
+
+    // Only inject if Endless Mode is enabled
+    if (!ENDLESS_MODE_CONFIG.enabled) {
       console.log(createHookResponse('PostToolUse', true));
       return;
     }
@@ -198,8 +242,8 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
       }
     }));
   } catch (error: any) {
-    // Endless Mode error - log but don't fail the hook
-    logger.failure('HOOK', 'Endless Mode error (falling back to normal)', {
+    // Error - log but don't fail the hook
+    logger.failure('HOOK', 'Error waiting for observations (falling back to normal)', {
       toolUseId: tool_use_id
     }, error.message);
     console.log(createHookResponse('PostToolUse', true));
