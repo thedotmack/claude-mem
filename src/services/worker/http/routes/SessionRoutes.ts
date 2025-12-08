@@ -16,6 +16,7 @@ import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { SessionEventBroadcaster } from '../../events/SessionEventBroadcaster.js';
 import { SessionCompletionHandler } from '../../session/SessionCompletionHandler.js';
+import { PrivacyCheckValidator } from '../../validation/PrivacyCheckValidator.js';
 
 export class SessionRoutes extends BaseRouteHandler {
   private completionHandler: SessionCompletionHandler;
@@ -266,13 +267,15 @@ export class SessionRoutes extends BaseRouteHandler {
     const promptNumber = store.getPromptCounter(sessionDbId);
 
     // Privacy check: skip if user prompt was entirely private
-    const userPrompt = store.getUserPrompt(claudeSessionId, promptNumber);
-    if (!userPrompt || userPrompt.trim() === '') {
-      logger.debug('HOOK', 'Skipping observation - user prompt was entirely private', {
-        sessionId: sessionDbId,
-        promptNumber,
-        tool_name
-      });
+    const userPrompt = PrivacyCheckValidator.checkUserPromptPrivacy(
+      store,
+      claudeSessionId,
+      promptNumber,
+      'observation',
+      sessionDbId,
+      { tool_name }
+    );
+    if (!userPrompt) {
       res.json({ status: 'skipped', reason: 'private' });
       return;
     }
@@ -336,12 +339,14 @@ export class SessionRoutes extends BaseRouteHandler {
     const promptNumber = store.getPromptCounter(sessionDbId);
 
     // Privacy check: skip if user prompt was entirely private
-    const userPrompt = store.getUserPrompt(claudeSessionId, promptNumber);
-    if (!userPrompt || userPrompt.trim() === '') {
-      logger.debug('HOOK', 'Skipping summary - user prompt was entirely private', {
-        sessionId: sessionDbId,
-        promptNumber
-      });
+    const userPrompt = PrivacyCheckValidator.checkUserPromptPrivacy(
+      store,
+      claudeSessionId,
+      promptNumber,
+      'summarize',
+      sessionDbId
+    );
+    if (!userPrompt) {
       res.json({ status: 'skipped', reason: 'private' });
       return;
     }
