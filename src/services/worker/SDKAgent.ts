@@ -205,6 +205,9 @@ export class SDKAgent {
           session.lastPromptNumber = message.prompt_number;
         }
 
+        // Track current tool_use_id for Endless Mode observation correlation
+        session.currentToolUseId = message.tool_use_id || null;
+
         yield {
           type: 'user',
           message: {
@@ -259,7 +262,8 @@ export class SDKAgent {
         session.project,
         obs,
         session.lastPromptNumber,
-        discoveryTokens
+        discoveryTokens,
+        session.currentToolUseId  // Pass tool_use_id for Endless Mode correlation
       );
 
       // Log observation details
@@ -326,6 +330,9 @@ export class SDKAgent {
         });
       }
     }
+
+    // Clear current tool_use_id after processing (prevent leaking to next message)
+    session.currentToolUseId = null;
 
     // Parse summary
     const summary = parseSummary(text, session.sessionDbId);

@@ -1180,7 +1180,8 @@ export class SessionStore {
       files_modified: string[];
     },
     promptNumber?: number,
-    discoveryTokens: number = 0
+    discoveryTokens: number = 0,
+    toolUseId?: string | null
   ): { id: number; createdAtEpoch: number } {
     const now = new Date();
     const nowEpoch = now.getTime();
@@ -1211,8 +1212,8 @@ export class SessionStore {
     const stmt = this.db.prepare(`
       INSERT INTO observations
       (sdk_session_id, project, type, title, subtitle, facts, narrative, concepts,
-       files_read, files_modified, prompt_number, discovery_tokens, created_at, created_at_epoch)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       files_read, files_modified, prompt_number, discovery_tokens, created_at, created_at_epoch, tool_use_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
@@ -1229,7 +1230,8 @@ export class SessionStore {
       promptNumber || null,
       discoveryTokens,
       now.toISOString(),
-      nowEpoch
+      nowEpoch,
+      toolUseId || null
     );
 
     return {
@@ -1563,6 +1565,20 @@ export class SessionStore {
       console.error('[SessionStore] Error querying timeline records:', err.message);
       return { observations: [], sessions: [], prompts: [] };
     }
+  }
+
+  /**
+   * Get observations by tool_use_id (for Endless Mode v7.1)
+   * Returns all observations created for a specific tool execution
+   */
+  getObservationsByToolUseId(toolUseId: string): any[] {
+    const stmt = this.db.prepare(`
+      SELECT * FROM observations
+      WHERE tool_use_id = ?
+      ORDER BY created_at_epoch ASC
+    `);
+
+    return stmt.all(toolUseId);
   }
 
   /**

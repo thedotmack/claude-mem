@@ -218,6 +218,7 @@ export interface ObservationRow {
   discovery_tokens: number; // ROI metrics: tokens spent discovering this observation
   created_at: string;
   created_at_epoch: number;
+  tool_use_id: string | null;
 }
 
 export interface SessionSummaryRow {

@@ -71,6 +71,7 @@ export class SessionRoutes extends BaseRouteHandler {
 
     // New session endpoints (use claudeSessionId)
     app.post('/api/sessions/pre-tool-use', this.handlePreToolUse.bind(this));
+    app.get('/api/sessions/observations-for-tool-use/:toolUseId', this.handleGetObservationsForToolUse.bind(this));
     app.post('/api/sessions/observations', this.handleObservationsByClaudeId.bind(this));
     app.post('/api/sessions/summarize', this.handleSummarizeByClaudeId.bind(this));
     app.post('/api/sessions/complete', this.handleSessionCompleteByClaudeId.bind(this));
@@ -274,12 +275,36 @@ export class SessionRoutes extends BaseRouteHandler {
   });
 
   /**
+   * Get observations for a specific tool_use_id (Endless Mode v7.1)
+   * GET /api/sessions/observations-for-tool-use/:toolUseId
+   *
+   * Returns all observations created for this tool execution
+   */
+  private handleGetObservationsForToolUse = this.wrapHandler((req: Request, res: Response): void => {
+    const { toolUseId } = req.params;
+
+    if (!toolUseId) {
+      return this.badRequest(res, 'Missing toolUseId');
+    }
+
+    const store = this.dbManager.getSessionStore();
+    const observations = store.getObservationsByToolUseId(toolUseId);
+
+    logger.debug('HOOK', 'Observations retrieved for tool_use_id', {
+      toolUseId,
+      count: observations.length
+    });
+
+    res.json({ observations });
+  });
+
+  /**
    * Queue observations by claudeSessionId (post-tool-use-hook uses this)
    * POST /api/sessions/observations
-   * Body: { claudeSessionId, tool_name, tool_input, tool_response, cwd }
+   * Body: { claudeSessionId, tool_name, tool_input, tool_response, cwd, toolUseId }
    */
   private handleObservationsByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
-    const { claudeSessionId, tool_name, tool_input, tool_response, cwd } = req.body;
+    const { claudeSessionId, tool_name, tool_input, tool_response, cwd, toolUseId } = req.body;
 
     if (!claudeSessionId) {
       return this.badRequest(res, 'Missing claudeSessionId');
@@ -331,7 +356,8 @@ export class SessionRoutes extends BaseRouteHandler {
       tool_input: cleanedToolInput,
       tool_response: cleanedToolResponse,
       prompt_number: promptNumber,
-      cwd: cwd || ''
+      cwd: cwd || '',
+      tool_use_id: toolUseId  // Pass tool_use_id for Endless Mode correlation
     });
 
     // Ensure SDK agent is running

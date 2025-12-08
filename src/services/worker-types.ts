@@ -21,6 +21,7 @@ export interface ActiveSession {
   startTime: number;
   cumulativeInputTokens: number;   // Track input tokens for discovery cost
   cumulativeOutputTokens: number;  // Track output tokens for discovery cost
+  currentToolUseId: string | null; // For Endless Mode v7.1: track tool_use_id for current observation
 }
 
 export interface PendingMessage {
@@ -30,6 +31,7 @@ export interface PendingMessage {
   tool_response?: any;
   prompt_number?: number;
   cwd?: string;
+  tool_use_id?: string;  // For Endless Mode v7.1 observation correlation
   last_user_message?: string;
   last_assistant_message?: string;
 }
@@ -40,6 +42,7 @@ export interface ObservationData {
   tool_response: any;
   prompt_number: number;
   cwd?: string;
+  tool_use_id?: string;  // For Endless Mode v7.1 observation correlation
 }
 
 // ============================================================================
