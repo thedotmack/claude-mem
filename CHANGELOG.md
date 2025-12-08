@@ -4,6 +4,67 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [7.0.0] - 2025-12-08
+
+# Major Architectural Refactor
+
+This major release represents a complete architectural transformation of claude-mem from a monolithic design to a clean, modular HTTP-based architecture.
+
+## Breaking Changes
+
+**None** - Despite being a major version bump due to the scope of changes, this release maintains full backward compatibility. All existing functionality works exactly as before.
+
+## What Changed
+
+### Hooks → HTTP Clients
+- All 5 lifecycle hooks converted from direct database access to lightweight HTTP clients
+- Each hook reduced from 400-800 lines to ~75 lines
+- Hooks now make simple HTTP calls to the worker service
+- Eliminates SQL duplication across hooks - single source of truth in worker
+
+### Worker Service Modularization
+- `worker-service.ts` reduced from 1600+ lines to clean orchestration layer
+- New route-based HTTP architecture:
+  - `SessionRoutes` - Session lifecycle management
+  - `DataRoutes` - Database queries (observations, sessions, timeline)
+  - `SearchRoutes` - Full-text and semantic search
+  - `SettingsRoutes` - Configuration management
+  - `ViewerRoutes` - UI endpoints
+
+### New Service Layer
+- `BaseRouteHandler` - Centralized error handling, response formatting (used 46x)
+- `SessionEventBroadcaster` - Semantic SSE event broadcasting
+- `SessionCompletionHandler` - Consolidated session completion logic
+- `SettingsDefaultsManager` - Single source of truth for configuration defaults
+- `PrivacyCheckValidator` - Centralized privacy tag validation
+- `FormattingService` - Dual-format result rendering
+- `TimelineService` - Complex markdown timeline formatting
+- `SearchManager` - Extracted search logic from context generation
+
+### Database Improvements
+- Migrated from \`bun:sqlite\` to \`better-sqlite3\` for broader compatibility
+- SQL queries moved from route handlers to \`SessionStore\` for separation of concerns
+- \`PaginationHelper\` centralizes paginated queries with LIMIT+1 optimization
+
+### Testing Infrastructure
+- New comprehensive happy path tests for full session lifecycle
+- Integration tests covering session init, observation capture, search, summaries, cleanup
+- Test helpers and mocks for consistent testing patterns
+
+### Type Safety
+- Removed 'as any' casts throughout codebase
+- New \`src/types/database.ts\` with proper type definitions
+- Enhanced null safety in SearchManager
+
+## Stats
+- **60 files changed**
+- **8,671 insertions, 5,585 deletions**
+- Net: ~3,000 lines of new code (mostly tests and new modular services)
+
+## Migration Notes
+
+No migration required! Update and continue using claude-mem as before.
+
 ## [6.5.3] - 2025-12-05
 
 ## Bug Fixes
