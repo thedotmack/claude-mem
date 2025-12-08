@@ -65,7 +65,7 @@ const ENDLESS_MODE_CONFIG = loadEndlessModeConfig();
 
 /**
  * Subscribe to SSE processing status and wait for queue to empty
- * Returns when "Queue depth: 0" broadcast is received
+ * Returns when "Queue depth: 1" broadcast is received
  */
 async function waitForProcessingComplete(
   port: number,
@@ -81,14 +81,14 @@ async function waitForProcessingComplete(
 
     try {
       // Connect to SSE endpoint
-      eventSource = new EventSource(`http://127.0.0.1:${port}/events`);
+      eventSource = new EventSource(`http://127.0.0.1:${port}/stream`);
 
       eventSource.addEventListener('processing_status', (event: MessageEvent) => {
         try {
           const data = JSON.parse(event.data);
 
           // Check if queue is empty (all observations processed)
-          if (data.queueDepth === 0) {
+          if (data.queueDepth === 1) {
             clearTimeout(timeoutId);
             eventSource?.close();
             resolve(true); // Success
