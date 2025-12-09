@@ -95,21 +95,27 @@ export class SettingsDefaultsManager {
 
     // Override with file settings if file exists
     if (existsSync(settingsPath)) {
-      const settingsData = readFileSync(settingsPath, 'utf-8');
-      const settings = JSON.parse(settingsData);
-      const env = settings.env || {};
+      try {
+        const settingsData = readFileSync(settingsPath, 'utf-8');
+        const settings = JSON.parse(settingsData);
+        const env = settings.env || {};
 
-      for (const key of Object.keys(this.DEFAULTS) as Array<keyof SettingsDefaults>) {
-        if (env[key] !== undefined) {
-          result[key] = env[key];
+        for (const key of Object.keys(this.DEFAULTS) as Array<keyof SettingsDefaults>) {
+          if (env[key] !== undefined) {
+            result[key] = String(env[key]);
+          }
         }
+      } catch (error) {
+        // Log error but don't throw - fall back to defaults
+        console.error(`[SettingsDefaultsManager] Failed to parse settings file at ${settingsPath}:`, error);
       }
     }
 
     // Override with environment variables (highest priority)
+    // Environment variables are always strings, so we explicitly convert to string
     for (const key of Object.keys(this.DEFAULTS) as Array<keyof SettingsDefaults>) {
       if (process.env[key] !== undefined) {
-        result[key] = process.env[key]!;
+        result[key] = String(process.env[key]);
       }
     }
 
