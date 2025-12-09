@@ -1,4 +1,5 @@
 import path from "path";
+import { existsSync } from "fs";
 import { homedir } from "os";
 import { spawnSync } from "child_process";
 import { getPackageRoot } from "./paths.js";
