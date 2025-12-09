@@ -9,9 +9,10 @@ import { SettingsDefaultsManager } from "../services/worker/settings/SettingsDef
 const MARKETPLACE_ROOT = path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
 
 // Named constants for health checks
-const HEALTH_CHECK_TIMEOUT_MS = 100;
-const WORKER_STARTUP_WAIT_MS = 500;
-const WORKER_STARTUP_RETRIES = 10;
+// Windows needs longer timeouts due to startup overhead
+const HEALTH_CHECK_TIMEOUT_MS = 500;
+const WORKER_STARTUP_WAIT_MS = 1000;
+const WORKER_STARTUP_RETRIES = 15;
 
 /**
  * Get the worker port number
@@ -39,35 +40,56 @@ async function isWorkerHealthy(): Promise<boolean> {
 }
 
 /**
- * Start the worker using PM2
+ * Start the worker service
+ * On Windows: Uses PowerShell Start-Process with hidden window to avoid console flash
+ * On Unix: Uses PM2 for process management
  */
 async function startWorker(): Promise<boolean> {
   try {
-    // CRITICAL: Always use marketplace directory for ecosystem.config.cjs
-    // This ensures PM2 starts from the correct location regardless of where hooks run from
-    const ecosystemPath = path.join(MARKETPLACE_ROOT, 'ecosystem.config.cjs');
+    const workerScript = path.join(MARKETPLACE_ROOT, 'plugin', 'scripts', 'worker-service.cjs');
 
-    if (!existsSync(ecosystemPath)) {
-      throw new Error(`Ecosystem config not found at ${ecosystemPath}`);
+    if (!existsSync(workerScript)) {
+      throw new Error(`Worker script not found at ${workerScript}`);
     }
 
-    // Try to use local PM2 from node_modules first, fall back to global PM2
-    // On Windows, PM2 executable is pm2.cmd, not pm2
-    const localPm2Base = path.join(MARKETPLACE_ROOT, 'node_modules', '.bin', 'pm2');
-    const localPm2Cmd = process.platform === 'win32' ? localPm2Base + '.cmd' : localPm2Base;
-    const pm2Command = existsSync(localPm2Cmd) ? localPm2Cmd : 'pm2';
+    if (process.platform === 'win32') {
+      // On Windows, use PowerShell Start-Process with -WindowStyle Hidden
+      // This avoids visible console windows that PM2 creates on Windows
+      const result = spawnSync('powershell.exe', [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        `Start-Process -FilePath 'node' -ArgumentList '${workerScript}' -WorkingDirectory '${MARKETPLACE_ROOT}' -WindowStyle Hidden`
+      ], {
+        cwd: MARKETPLACE_ROOT,
+        stdio: 'pipe',
+        encoding: 'utf-8',
+        windowsHide: true
+      });
 
-    // Start using PM2 with the ecosystem config
-    // CRITICAL: Must set cwd to MARKETPLACE_ROOT so PM2 starts from marketplace directory
-    // Using spawnSync with array args to avoid command injection risks
-    const result = spawnSync(pm2Command, ['start', ecosystemPath], {
-      cwd: MARKETPLACE_ROOT,
-      stdio: 'pipe',
-      encoding: 'utf-8',
-      windowsHide: true
-    });
-    if (result.status !== 0) {
-      throw new Error(result.stderr || 'PM2 start failed');
+      if (result.status !== 0) {
+        throw new Error(result.stderr || 'PowerShell Start-Process failed');
+      }
+    } else {
+      // On Unix, use PM2 for process management
+      const ecosystemPath = path.join(MARKETPLACE_ROOT, 'ecosystem.config.cjs');
+
+      if (!existsSync(ecosystemPath)) {
+        throw new Error(`Ecosystem config not found at ${ecosystemPath}`);
+      }
+
+      const localPm2Base = path.join(MARKETPLACE_ROOT, 'node_modules', '.bin', 'pm2');
+      const pm2Command = existsSync(localPm2Base) ? localPm2Base : 'pm2';
+
+      const result = spawnSync(pm2Command, ['start', ecosystemPath], {
+        cwd: MARKETPLACE_ROOT,
+        stdio: 'pipe',
+        encoding: 'utf-8'
+      });
+
+      if (result.status !== 0) {
+        throw new Error(result.stderr || 'PM2 start failed');
+      }
     }
 
     // Wait for worker to become healthy
