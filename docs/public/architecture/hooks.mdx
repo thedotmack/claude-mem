@@ -9,30 +9,27 @@ Claude-Mem implements a **5-stage hook system** that captures development work a
 
 ## Architecture Overview
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         Claude Code IDE                             │
-├─────────────────────────────────────────────────────────────────────┤
-│  SessionStart → UserPromptSubmit → PostToolUse → Stop → SessionEnd  │
-│       ↓              ↓                 ↓          ↓         ↓       │
-│  [context]       [new]             [save]    [summary] [cleanup]    │
-│       ↓              ↓                 ↓          ↓         ↓       │
-│       └──────────────┴────────┬────────┴──────────┴─────────┘       │
-│                               ↓                                      │
-│                    HTTP (fire-and-forget)                           │
-│                               ↓                                      │
-├─────────────────────────────────────────────────────────────────────┤
-│                      Worker Service (PM2)                           │
-│  ┌─────────────┐  ┌──────────────┐  ┌────────────────┐             │
-│  │ SessionMgr  │  │  SDK Agent   │  │ DatabaseMgr    │             │
-│  └─────────────┘  └──────────────┘  └────────────────┘             │
-│                               ↓                                      │
-│                    Claude Agent SDK                                  │
-│                               ↓                                      │
-│              ┌────────────────┴────────────────┐                    │
-│              ↓                                 ↓                    │
-│         SQLite DB                        Chroma Vector DB           │
-└─────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph IDE["Claude Code IDE"]
+        SS[SessionStart] --> UPS[UserPromptSubmit] --> PTU[PostToolUse] --> ST[Stop] --> SE[SessionEnd]
+        SS --> ctx["context"]
+        UPS --> new["new"]
+        PTU --> save["save"]
+        ST --> sum["summary"]
+        SE --> clean["cleanup"]
+    end
+
+    ctx & new & save & sum & clean --> HTTP["HTTP (fire-and-forget)"]
+
+    subgraph Worker["Worker Service (PM2)"]
+        SM[SessionMgr] ~~~ SA[SDK Agent] ~~~ DM[DatabaseMgr]
+        SA --> SDK["Claude Agent SDK"]
+    end
+
+    HTTP --> Worker
+    SDK --> SQLite[(SQLite DB)]
+    SDK --> Chroma[(Chroma Vector DB)]
 ```
 
 ## The 5 Lifecycle Stages
@@ -373,58 +370,59 @@ Timeout: 2000ms
 
 ## Data Flow Diagram
 
-```
-1. USER SUBMITS PROMPT
-   ↓
-   Claude Code → SessionStart hook
-   ├─ context-hook.js
-   │  └─ GET /api/context/inject → returns context markdown
-   └─ user-message-hook.js
-      └─ displays context info to user
-   ↓
-   Claude Code → UserPromptSubmit hook
-   ├─ new-hook.js
-   │  ├─ db.createSDKSession(session_id, project, prompt)
-   │  ├─ db.incrementPromptCounter(sessionDbId)
-   │  ├─ stripMemoryTagsFromPrompt(prompt)
-   │  ├─ db.saveUserPrompt(session_id, promptNumber, cleaned)
-   │  └─ POST /sessions/{sessionDbId}/init → Worker
-   │        ↓
-   │        Worker → SessionManager → SDK Agent
-   │        ↓
-   │        Claude SDK processes init prompt
-   │
-2. CLAUDE USES A TOOL
-   ↓
-   Claude Code → PostToolUse hook
-   ├─ save-hook.js
-   │  ├─ Skip if tool in SKIP_TOOLS
-   │  └─ POST /api/sessions/observations → Worker
-   │        ↓
-   │        Worker → SDK Agent → Claude compresses observation
-   │        ↓
-   │        Store in SQLite + Sync to Chroma
-   │        ↓
-   │        Broadcast to SSE clients (viewer UI)
-   │
-3. USER STOPS ASKING QUESTIONS
-   ↓
-   Claude Code → Stop hook
-   ├─ summary-hook.js
-   │  ├─ Extract last messages from transcript
-   │  └─ POST /api/sessions/summarize → Worker
-   │        ↓
-   │        Worker → SDK Agent → Claude generates summary
-   │        ↓
-   │        Store in SQLite + Sync to Chroma
-   │
-4. SESSION CLOSES
-   ↓
-   Claude Code → SessionEnd hook
-   └─ cleanup-hook.js
-      └─ POST /api/sessions/complete → Worker
-            ↓
-            Mark session as 'completed' in database
+```mermaid
+flowchart TD
+    subgraph step1["1. USER SUBMITS PROMPT"]
+        CC1[Claude Code] --> SS1[SessionStart hook]
+        SS1 --> CH[context-hook.js]
+        SS1 --> UMH[user-message-hook.js]
+        CH --> |"GET /api/context/inject"| CTX[returns context markdown]
+        UMH --> DISP[displays context info to user]
+
+        CC1 --> UPS1[UserPromptSubmit hook]
+        UPS1 --> NH[new-hook.js]
+        NH --> |1| CREATE["db.createSDKSession()"]
+        NH --> |2| INC["db.incrementPromptCounter()"]
+        NH --> |3| STRIP["stripMemoryTagsFromPrompt()"]
+        NH --> |4| SAVE["db.saveUserPrompt()"]
+        NH --> |5| INIT["POST /sessions/{id}/init"]
+        INIT --> W1[Worker]
+        W1 --> SM1[SessionManager]
+        SM1 --> SA1[SDK Agent]
+    end
+
+    subgraph step2["2. CLAUDE USES A TOOL"]
+        CC2[Claude Code] --> PTU1[PostToolUse hook]
+        PTU1 --> SH[save-hook.js]
+        SH --> |"Skip if in SKIP_TOOLS"| CHECK{Check tool}
+        CHECK --> |allowed| OBS["POST /api/sessions/observations"]
+        OBS --> W2[Worker]
+        W2 --> SA2["SDK Agent → Claude compresses"]
+        SA2 --> STORE1["Store in SQLite + Chroma"]
+        STORE1 --> SSE[Broadcast to SSE clients]
+    end
+
+    subgraph step3["3. USER STOPS ASKING QUESTIONS"]
+        CC3[Claude Code] --> STOP1[Stop hook]
+        STOP1 --> SUMH[summary-hook.js]
+        SUMH --> EXT[Extract last messages from transcript]
+        EXT --> SUM["POST /api/sessions/summarize"]
+        SUM --> W3[Worker]
+        W3 --> SA3["SDK Agent → Claude generates summary"]
+        SA3 --> STORE2["Store in SQLite + Chroma"]
+    end
+
+    subgraph step4["4. SESSION CLOSES"]
+        CC4[Claude Code] --> SE1[SessionEnd hook]
+        SE1 --> CLN[cleanup-hook.js]
+        CLN --> COMP["POST /api/sessions/complete"]
+        COMP --> W4[Worker]
+        W4 --> MARK["Mark session as 'completed'"]
+    end
+
+    step1 --> step2
+    step2 --> step3
+    step3 --> step4
 ```
 
 ---
@@ -433,23 +431,42 @@ Timeout: 2000ms
 
 The same `session_id` flows through ALL hooks in a conversation:
 
-```
-SessionStart:     session_id (from Claude Code)
-  ↓
-UserPromptSubmit: session_id (same)
-  ├─ new-hook creates: sdk_sessions.claude_session_id = session_id
-  ├─ returns: sessionDbId (primary key)
-  └─ All subsequent operations use sessionDbId
+```mermaid
+flowchart TD
+    SID["session_id (from Claude Code)"]
 
-PostToolUse:      session_id (same)
-  ├─ createSDKSession(session_id, '', '') returns sessionDbId
-  └─ All observations tagged with this sessionDbId
+    subgraph SS["SessionStart"]
+        SS_ID["session_id"]
+    end
 
-Stop:             session_id (same)
-  └─ Summary tagged with same sessionDbId
+    subgraph UPS["UserPromptSubmit"]
+        UPS_ID["session_id (same)"]
+        UPS_CREATE["new-hook creates:<br/>sdk_sessions.claude_session_id = session_id"]
+        UPS_RET["returns: sessionDbId (primary key)"]
+        UPS_ALL["All subsequent operations use sessionDbId"]
+        UPS_ID --> UPS_CREATE --> UPS_RET --> UPS_ALL
+    end
 
-SessionEnd:       session_id (same)
-  └─ Mark sessionDbId as completed
+    subgraph PTU["PostToolUse"]
+        PTU_ID["session_id (same)"]
+        PTU_GET["createSDKSession() returns sessionDbId"]
+        PTU_OBS["All observations tagged with sessionDbId"]
+        PTU_ID --> PTU_GET --> PTU_OBS
+    end
+
+    subgraph STOP["Stop"]
+        STOP_ID["session_id (same)"]
+        STOP_SUM["Summary tagged with sessionDbId"]
+        STOP_ID --> STOP_SUM
+    end
+
+    subgraph SEND["SessionEnd"]
+        SEND_ID["session_id (same)"]
+        SEND_MARK["Mark sessionDbId as completed"]
+        SEND_ID --> SEND_MARK
+    end
+
+    SID --> SS --> UPS --> PTU --> STOP --> SEND
 ```
 
 <Warning>
