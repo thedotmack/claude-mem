@@ -263,6 +263,7 @@ async function runNpmInstall() {
         cwd: MARKETPLACE_ROOT,
         stdio: 'pipe', // Silent output unless error
         encoding: 'utf-8',
+        windowsHide: true,
       });
 
       // Verify better-sqlite3 was installed
