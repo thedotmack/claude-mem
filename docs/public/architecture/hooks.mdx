@@ -1,25 +1,49 @@
 ---
-title: "Plugin Hooks"
-description: "6 lifecycle hooks that power Claude-Mem"
+title: "Hook Lifecycle"
+description: "Complete guide to the 5-stage memory agent lifecycle for platform implementers"
 ---
 
-# Plugin Hooks
+# Hook Lifecycle
 
-Claude-Mem integrates with Claude Code through 6 hook scripts across 5 lifecycle events that capture events and inject context. Additionally, a smart-install pre-hook script manages dependencies.
+Claude-Mem implements a **5-stage hook system** that captures development work across Claude Code sessions. This document provides a complete technical reference for developers implementing this pattern on other platforms.
 
-## Hook Overview
+## Architecture Overview
 
-| Hook Type           | Purpose                              | Timeout | Script                  |
-|---------------------|--------------------------------------|---------|-------------------------|
-| Pre-Hook            | Smart dependency installation        | 300s    | smart-install.js*       |
-| SessionStart        | Inject context from previous sessions| 300s    | context-hook.js         |
-| SessionStart        | Display first-time setup message     | 10s     | user-message-hook.js    |
-| UserPromptSubmit    | Create/track new sessions            | 120s    | new-hook.js             |
-| PostToolUse         | Capture tool execution observations  | 120s    | save-hook.js            |
-| Stop                | Generate session summaries           | 120s    | summary-hook.js         |
-| SessionEnd          | Mark sessions complete               | 120s    | cleanup-hook.js         |
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                         Claude Code IDE                             │
+├─────────────────────────────────────────────────────────────────────┤
+│  SessionStart → UserPromptSubmit → PostToolUse → Stop → SessionEnd  │
+│       ↓              ↓                 ↓          ↓         ↓       │
+│  [context]       [new]             [save]    [summary] [cleanup]    │
+│       ↓              ↓                 ↓          ↓         ↓       │
+│       └──────────────┴────────┬────────┴──────────┴─────────┘       │
+│                               ↓                                      │
+│                    HTTP (fire-and-forget)                           │
+│                               ↓                                      │
+├─────────────────────────────────────────────────────────────────────┤
+│                      Worker Service (PM2)                           │
+│  ┌─────────────┐  ┌──────────────┐  ┌────────────────┐             │
+│  │ SessionMgr  │  │  SDK Agent   │  │ DatabaseMgr    │             │
+│  └─────────────┘  └──────────────┘  └────────────────┘             │
+│                               ↓                                      │
+│                    Claude Agent SDK                                  │
+│                               ↓                                      │
+│              ┌────────────────┴────────────────┐                    │
+│              ↓                                 ↓                    │
+│         SQLite DB                        Chroma Vector DB           │
+└─────────────────────────────────────────────────────────────────────┘
+```
 
-*smart-install.js is a pre-hook script (not a lifecycle hook). It's called before context-hook via command chaining in hooks.json.
+## The 5 Lifecycle Stages
+
+| Stage | Hook | Trigger | Purpose |
+|-------|------|---------|---------|
+| **1. SessionStart** | `context-hook.js` + `user-message-hook.js` | User opens Claude Code | Inject prior context, show UI messages |
+| **2. UserPromptSubmit** | `new-hook.js` | User submits a prompt | Create/get session, save prompt, init worker |
+| **3. PostToolUse** | `save-hook.js` | Claude uses any tool | Queue observation for AI compression |
+| **4. Stop** | `summary-hook.js` | User stops asking questions | Generate session summary |
+| **5. SessionEnd** | `cleanup-hook.js` | Session closes | Mark session completed |
 
 ## Hook Configuration
 
@@ -27,13 +51,12 @@ Hooks are configured in `plugin/hooks/hooks.json`:
 
 ```json
 {
-  "description": "Claude-mem memory system hooks",
   "hooks": {
     "SessionStart": [{
       "matcher": "startup|clear|compact",
       "hooks": [{
         "type": "command",
-        "command": "node \"${CLAUDE_PLUGIN_ROOT}/../scripts/smart-install.js\" && node ${CLAUDE_PLUGIN_ROOT}/scripts/context-hook.js",
+        "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/context-hook.js",
         "timeout": 300
       }, {
         "type": "command",
@@ -74,51 +97,20 @@ Hooks are configured in `plugin/hooks/hooks.json`:
 }
 ```
 
-## 1. Pre-Hook Script - Smart Install (`smart-install.js`)
+---
 
-**Purpose**: Intelligently manage dependencies and ensure worker service is running.
+## Stage 1: SessionStart
 
-**Note**: This is NOT a lifecycle hook - it's a pre-hook script executed via command chaining before context-hook.js runs.
+**Timing**: When user opens Claude Code or resumes session
 
-**Behavior**:
-- Checks if dependencies need installation using version marker (`.install-version`)
-- Only runs npm install when:
-  - First-time installation (no node_modules)
-  - Version changed in package.json
-  - Critical dependency missing (e.g., better-sqlite3)
-- Provides Windows-specific error messages for build tool issues
-- Auto-starts PM2 worker service after installation
-- Fast when already installed (~10ms vs 2-5 seconds)
+**Hooks Triggered** (in order):
+1. `context-hook.js` - Fetches and injects prior session context
+2. `user-message-hook.js` - Displays context info to user via stderr
 
-**Input** (via stdin):
-```json
-{
-  "session_id": "claude-session-123",
-  "cwd": "/path/to/project",
-  "source": "startup"
-}
-```
-
-**Implementation**: `scripts/smart-install.js` (standalone script, not in src/hooks/)
-
-**Key Features**:
-- Version caching prevents redundant installs
-- Cross-platform compatible (Windows, macOS, Linux)
-- Helpful error messages with troubleshooting steps
-- Non-blocking worker startup
-
-**v5.0.3 Enhancement**: Smart caching eliminates 2-5 second npm install on every SessionStart, reducing to ~10ms for already-installed dependencies.
-
-## 2. SessionStart Hook - Context Injection (`context-hook.js`)
+### Context Hook (`context-hook.js`)
 
 **Purpose**: Inject context from previous sessions into Claude's initial context.
 
-**Behavior**:
-- Retrieves last 10 session summaries with three-tier verbosity (v4.2.0)
-- Retrieves last 50 observations (configurable via `CLAUDE_MEM_CONTEXT_OBSERVATIONS`)
-- Returns context via `hookSpecificOutput` in JSON format (fixed in v4.1.0)
-- Formats results as progressive disclosure index
-
 **Input** (via stdin):
 ```json
 {
@@ -127,54 +119,44 @@ Hooks are configured in `plugin/hooks/hooks.json`:
   "source": "startup"
 }
 ```
+
+**Processing**:
+1. Wait for worker to be available (health check, max 10 seconds)
+2. Call: `GET http://127.0.0.1:37777/api/context/inject?project={project}`
+3. Return formatted context as `additionalContext` in `hookSpecificOutput`
 
 **Output** (via stdout):
 ```json
 {
-  "hookSpecificOutput": "# Recent Sessions\n\n## Session 1...\n"
+  "hookSpecificOutput": {
+    "hookEventName": "SessionStart",
+    "additionalContext": "<<formatted context markdown>>"
+  }
 }
 ```
 
 **Implementation**: `src/hooks/context-hook.ts`
 
-## 3. SessionStart Hook - User Message (`user-message-hook.js`)
+### User Message Hook (`user-message-hook.js`)
 
 **Purpose**: Display helpful user messages during first-time setup or when viewing context.
 
 **Behavior**:
-- Shows first-time setup message when node_modules is missing
+- Shows first-time setup message when `node_modules` is missing
 - Displays formatted context information with colors
 - Provides tips for using claude-mem effectively
-- Shows link to web viewer UI (http://localhost:37777)
-- Exits with code 3 (informational, not error)
+- Shows link to viewer UI (`http://localhost:37777`)
+- Uses stderr as communication channel (only output available in Claude Code UI)
 
-**Output Example**:
-```
-📝 Claude-Mem Context Loaded
-   ℹ️  Note: This appears as stderr but is informational only
+**Implementation**: `src/hooks/user-message-hook.ts`
 
-[Context details...]
+---
 
-📺 Watch live in browser http://localhost:37777/ (New! v5.1)
-```
+## Stage 2: UserPromptSubmit
 
-**Implementation**: `plugin/scripts/user-message-hook.js` (minified)
+**Timing**: When user submits any prompt in a session
 
-**Key Features**:
-- User-friendly first-time setup experience
-- Visual context display with colors
-- Links to new features (viewer UI)
-- Non-intrusive messaging
-
-## 4. UserPromptSubmit Hook (`new-hook.js`)
-
-**Purpose**: Create new session records and initialize session tracking.
-
-**Behavior**:
-- Creates new session in database
-- Initializes session tracking
-- Saves raw user prompts for full-text search (as of v4.2.0)
-- Sends init signal to worker service
+**Hook**: `new-hook.js`
 
 **Input** (via stdin):
 ```json
@@ -185,17 +167,55 @@ Hooks are configured in `plugin/hooks/hooks.json`:
 }
 ```
 
+**Processing Steps**:
+
+```typescript
+// 1. Extract project name from working directory
+project = path.basename(cwd)
+
+// 2. Create or get database session (IDEMPOTENT)
+sessionDbId = db.createSDKSession(session_id, project, prompt)
+// INSERT OR IGNORE: Creates new row if first prompt, returns existing if continuation
+
+// 3. Increment prompt counter
+promptNumber = db.incrementPromptCounter(sessionDbId)
+// Returns 1 for first prompt, 2 for continuation, etc.
+
+// 4. Strip privacy tags
+cleanedPrompt = stripMemoryTagsFromPrompt(prompt)
+// Removes <private>...</private> and <claude-mem-context>...</claude-mem-context>
+
+// 5. Skip if fully private
+if (!cleanedPrompt || cleanedPrompt.trim() === '') {
+  return  // Don't save, don't call worker
+}
+
+// 6. Save user prompt to database
+db.saveUserPrompt(session_id, promptNumber, cleanedPrompt)
+
+// 7. Initialize session via worker HTTP
+POST http://127.0.0.1:37777/sessions/{sessionDbId}/init
+Body: { project, userPrompt, promptNumber }
+```
+
+**Output**:
+```json
+{ "continue": true, "suppressOutput": true }
+```
+
 **Implementation**: `src/hooks/new-hook.ts`
 
-## 5. PostToolUse Hook (`save-hook.js`)
+<Note>
+The same `session_id` flows through ALL hooks in a conversation. The `createSDKSession` call is idempotent - it returns the existing session for continuation prompts.
+</Note>
 
-**Purpose**: Capture tool execution observations.
+---
 
-**Behavior**:
-- Fires after EVERY tool execution (Read, Write, Edit, Bash, etc.)
-- Sends observations to worker service for processing
-- Includes correlation IDs for tracing
-- Filters low-value observations
+## Stage 3: PostToolUse
+
+**Timing**: After Claude uses any tool (Read, Bash, Grep, Write, etc.)
+
+**Hook**: `save-hook.js`
 
 **Input** (via stdin):
 ```json
@@ -203,71 +223,377 @@ Hooks are configured in `plugin/hooks/hooks.json`:
   "session_id": "claude-session-123",
   "cwd": "/path/to/project",
   "tool_name": "Read",
-  "tool_input": {...},
-  "tool_result": "...",
-  "correlation_id": "abc-123"
+  "tool_input": { "file_path": "/src/index.ts" },
+  "tool_response": "file contents..."
 }
+```
+
+**Processing Steps**:
+
+```typescript
+// 1. Check blocklist - skip low-value tools
+const SKIP_TOOLS = {
+  'ListMcpResourcesTool',  // MCP infrastructure noise
+  'SlashCommand',          // Command invocation
+  'Skill',                 // Skill invocation
+  'TodoWrite',             // Task management meta-tool
+  'AskUserQuestion'        // User interaction
+}
+
+if (SKIP_TOOLS[tool_name]) return
+
+// 2. Ensure worker is running
+await ensureWorkerRunning()
+
+// 3. Send to worker (fire-and-forget HTTP)
+POST http://127.0.0.1:37777/api/sessions/observations
+Body: {
+  claudeSessionId: session_id,
+  tool_name,
+  tool_input,
+  tool_response,
+  cwd
+}
+Timeout: 2000ms
+```
+
+**Worker Processing**:
+1. Looks up or creates session: `createSDKSession(claudeSessionId, '', '')`
+2. Gets prompt counter
+3. Checks privacy (skips if user prompt was entirely private)
+4. Strips memory tags from `tool_input` and `tool_response`
+5. Queues observation for SDK agent processing
+6. SDK agent calls Claude to compress into structured observation
+7. Stores observation in database and syncs to Chroma
+
+**Output**:
+```json
+{ "continue": true, "suppressOutput": true }
 ```
 
 **Implementation**: `src/hooks/save-hook.ts`
 
-## 6. Stop Hook (`summary-hook.js`)
+---
 
-**Purpose**: Generate session summaries when Claude stops.
+## Stage 4: Stop
 
-**Behavior**:
-- Triggers final summary generation
-- Sends summarize request to worker service
-- Summary includes: request, completed, learned, next_steps
+**Timing**: When user stops or pauses asking questions
+
+**Hook**: `summary-hook.js`
 
 **Input** (via stdin):
 ```json
 {
   "session_id": "claude-session-123",
   "cwd": "/path/to/project",
-  "source": "user_stop"
+  "transcript_path": "/path/to/transcript.jsonl"
 }
+```
+
+**Processing Steps**:
+
+```typescript
+// 1. Extract last messages from transcript JSONL
+const lines = fs.readFileSync(transcript_path, 'utf-8').split('\n')
+// Find last user message (type: "user")
+// Find last assistant message (type: "assistant", filter <system-reminder> tags)
+
+// 2. Ensure worker is running
+await ensureWorkerRunning()
+
+// 3. Send summarization request (fire-and-forget HTTP)
+POST http://127.0.0.1:37777/api/sessions/summarize
+Body: {
+  claudeSessionId: session_id,
+  last_user_message: string,
+  last_assistant_message: string
+}
+Timeout: 2000ms
+
+// 4. Stop processing spinner
+POST http://127.0.0.1:37777/api/processing
+Body: { isProcessing: false }
+```
+
+**Worker Processing**:
+1. Queues summarization for SDK agent
+2. Agent calls Claude to generate structured summary
+3. Summary stored in database with fields: `request`, `investigated`, `learned`, `completed`, `next_steps`
+
+**Output**:
+```json
+{ "continue": true, "suppressOutput": true }
 ```
 
 **Implementation**: `src/hooks/summary-hook.ts`
 
-## 7. SessionEnd Hook (`cleanup-hook.js`)
+---
 
-**Purpose**: Mark sessions as completed (graceful cleanup as of v4.1.0).
+## Stage 5: SessionEnd
 
-**Behavior**:
-- Marks sessions as completed
-- Skips cleanup on `/clear` commands to preserve ongoing sessions
-- Allows workers to finish pending operations naturally
-- Previously sent DELETE requests; now uses graceful completion
+**Timing**: When Claude Code session closes (exit, clear, logout, etc.)
+
+**Hook**: `cleanup-hook.js`
 
 **Input** (via stdin):
 ```json
 {
   "session_id": "claude-session-123",
   "cwd": "/path/to/project",
-  "source": "normal"
+  "transcript_path": "/path/to/transcript.jsonl",
+  "reason": "exit"
 }
+```
+
+**Processing Steps**:
+
+```typescript
+// Send session complete (fire-and-forget HTTP)
+POST http://127.0.0.1:37777/api/sessions/complete
+Body: {
+  claudeSessionId: session_id,
+  reason: string  // 'exit' | 'clear' | 'logout' | 'prompt_input_exit' | 'other'
+}
+Timeout: 2000ms
+```
+
+**Worker Processing**:
+1. Finds session by `claudeSessionId`
+2. Marks session as 'completed' in database
+3. Broadcasts session completion event to SSE clients
+
+**Output**:
+```json
+{ "continue": true, "suppressOutput": true }
 ```
 
 **Implementation**: `src/hooks/cleanup-hook.ts`
 
-## Hook Development
+---
 
-### Adding a New Hook
+## Data Flow Diagram
 
-1. Create hook implementation in `src/hooks/your-hook.ts`
-2. Add to `plugin/hooks/hooks.json`
-3. Rebuild with `npm run build`
+```
+1. USER SUBMITS PROMPT
+   ↓
+   Claude Code → SessionStart hook
+   ├─ context-hook.js
+   │  └─ GET /api/context/inject → returns context markdown
+   └─ user-message-hook.js
+      └─ displays context info to user
+   ↓
+   Claude Code → UserPromptSubmit hook
+   ├─ new-hook.js
+   │  ├─ db.createSDKSession(session_id, project, prompt)
+   │  ├─ db.incrementPromptCounter(sessionDbId)
+   │  ├─ stripMemoryTagsFromPrompt(prompt)
+   │  ├─ db.saveUserPrompt(session_id, promptNumber, cleaned)
+   │  └─ POST /sessions/{sessionDbId}/init → Worker
+   │        ↓
+   │        Worker → SessionManager → SDK Agent
+   │        ↓
+   │        Claude SDK processes init prompt
+   │
+2. CLAUDE USES A TOOL
+   ↓
+   Claude Code → PostToolUse hook
+   ├─ save-hook.js
+   │  ├─ Skip if tool in SKIP_TOOLS
+   │  └─ POST /api/sessions/observations → Worker
+   │        ↓
+   │        Worker → SDK Agent → Claude compresses observation
+   │        ↓
+   │        Store in SQLite + Sync to Chroma
+   │        ↓
+   │        Broadcast to SSE clients (viewer UI)
+   │
+3. USER STOPS ASKING QUESTIONS
+   ↓
+   Claude Code → Stop hook
+   ├─ summary-hook.js
+   │  ├─ Extract last messages from transcript
+   │  └─ POST /api/sessions/summarize → Worker
+   │        ↓
+   │        Worker → SDK Agent → Claude generates summary
+   │        ↓
+   │        Store in SQLite + Sync to Chroma
+   │
+4. SESSION CLOSES
+   ↓
+   Claude Code → SessionEnd hook
+   └─ cleanup-hook.js
+      └─ POST /api/sessions/complete → Worker
+            ↓
+            Mark session as 'completed' in database
+```
 
-### Hook Best Practices
+---
 
-- **Fast execution**: Hooks should complete quickly (< 1s ideal)
-- **Graceful degradation**: Don't block Claude if worker is down
-- **Structured logging**: Use logger for debugging
-- **Error handling**: Catch and log errors, don't crash
-- **JSON output**: Use `hookSpecificOutput` for context injection
+## Session ID Threading
 
-## Troubleshooting
+The same `session_id` flows through ALL hooks in a conversation:
 
-See [Troubleshooting - Hook Issues](../troubleshooting.md#hook-issues) for common problems and solutions.
+```
+SessionStart:     session_id (from Claude Code)
+  ↓
+UserPromptSubmit: session_id (same)
+  ├─ new-hook creates: sdk_sessions.claude_session_id = session_id
+  ├─ returns: sessionDbId (primary key)
+  └─ All subsequent operations use sessionDbId
+
+PostToolUse:      session_id (same)
+  ├─ createSDKSession(session_id, '', '') returns sessionDbId
+  └─ All observations tagged with this sessionDbId
+
+Stop:             session_id (same)
+  └─ Summary tagged with same sessionDbId
+
+SessionEnd:       session_id (same)
+  └─ Mark sessionDbId as completed
+```
+
+<Warning>
+Never generate your own session IDs. Always use the `session_id` provided by the IDE - this is the source of truth for linking all data together.
+</Warning>
+
+---
+
+## Privacy & Tag Stripping
+
+### Dual-Tag System
+
+```typescript
+// User-Level Privacy Control (manual)
+<private>sensitive data</private>
+
+// System-Level Recursion Prevention (auto-injected)
+<claude-mem-context>...</claude-mem-context>
+```
+
+### Processing Pipeline
+
+**Location**: `src/utils/tag-stripping.ts`
+
+```typescript
+// Called by: new-hook.js (user prompts)
+stripMemoryTagsFromPrompt(prompt: string): string
+
+// Called by: save-hook.js (tool_input, tool_response)
+stripMemoryTagsFromJson(jsonString: string): string
+```
+
+**Execution Order** (Edge Processing):
+1. `new-hook.js` strips tags from user prompt before saving
+2. `save-hook.js` strips tags from tool data before sending to worker
+3. Worker strips tags again (defense in depth) before storing
+
+---
+
+## SDK Agent Processing
+
+### Query Loop (Event-Driven)
+
+**Location**: `src/services/worker/SDKAgent.ts`
+
+```typescript
+async startSession(session: ActiveSession, worker?: any) {
+  // 1. Create event-driven message generator
+  const messageGenerator = this.createMessageGenerator(session)
+
+  // 2. Run Agent SDK query loop
+  const queryResult = query({
+    prompt: messageGenerator,
+    options: {
+      model: 'claude-haiku-4-5',
+      disallowedTools: ['Bash', 'Read', 'Write', ...],  // Observer-only
+      abortController: session.abortController
+    }
+  })
+
+  // 3. Process responses
+  for await (const message of queryResult) {
+    if (message.type === 'assistant') {
+      await this.processSDKResponse(session, text, worker)
+    }
+  }
+}
+```
+
+### Message Types
+
+The message generator yields three types of prompts:
+
+1. **Initial Prompt** (prompt #1): Full instructions for starting observation
+2. **Continuation Prompt** (prompt #2+): Context-only for continuing work
+3. **Observation Prompts**: Tool use data to compress into observations
+4. **Summary Prompts**: Session data to summarize
+
+---
+
+## Implementation Checklist
+
+For developers implementing this pattern on other platforms:
+
+### Hook Registration
+- [ ] Define hook entry points in platform config
+- [ ] 5 hook types: SessionStart (2 hooks), UserPromptSubmit, PostToolUse, Stop, SessionEnd
+- [ ] Pass `session_id`, `cwd`, and context-specific data
+
+### Database Schema
+- [ ] SQLite with WAL mode
+- [ ] 4 main tables: `sdk_sessions`, `user_prompts`, `observations`, `session_summaries`
+- [ ] Indices for common queries
+
+### Worker Service
+- [ ] HTTP server on configurable port (default 37777)
+- [ ] PM2 or equivalent process management
+- [ ] 3 core services: SessionManager, SDKAgent, DatabaseManager
+
+### Hook Implementation
+- [ ] context-hook: `GET /api/context/inject` (with health check)
+- [ ] new-hook: createSDKSession, saveUserPrompt, `POST /sessions/{id}/init`
+- [ ] save-hook: Skip low-value tools, `POST /api/sessions/observations`
+- [ ] summary-hook: Parse transcript, `POST /api/sessions/summarize`
+- [ ] cleanup-hook: `POST /api/sessions/complete`
+
+### Privacy & Tags
+- [ ] Implement `stripMemoryTagsFromPrompt()` and `stripMemoryTagsFromJson()`
+- [ ] Process tags at hook layer (edge processing)
+- [ ] Max tag count = 100 (ReDoS protection)
+
+### SDK Integration
+- [ ] Call Claude Agent SDK to process observations/summaries
+- [ ] Parse XML responses for structured data
+- [ ] Store to database + sync to vector DB
+
+---
+
+## Key Design Principles
+
+1. **Session ID is Source of Truth**: Never generate your own session IDs
+2. **Idempotent Database Operations**: Use `INSERT OR IGNORE` for session creation
+3. **Edge Processing for Privacy**: Strip tags at hook layer before data reaches worker
+4. **Fire-and-Forget for Non-Blocking**: HTTP timeouts prevent IDE blocking
+5. **Event-Driven, Not Polling**: Zero-latency queue notification to SDK agent
+6. **Everything Saves Always**: No "orphaned" sessions
+
+---
+
+## Common Pitfalls
+
+| Problem | Root Cause | Solution |
+|---------|-----------|----------|
+| Session ID mismatch | Different `session_id` used in different hooks | Always use ID from hook input |
+| Duplicate sessions | Creating new session instead of using existing | Use `INSERT OR IGNORE` with `session_id` as key |
+| Blocking IDE | Waiting for full response | Use fire-and-forget with short timeouts |
+| Memory tags in DB | Stripping tags in wrong layer | Strip at hook layer, before HTTP send |
+| Worker not found | Health check too fast | Add retry loop with exponential backoff |
+
+---
+
+## Related Documentation
+
+- [Worker Service](/architecture/worker-service) - HTTP API and async processing
+- [Database Schema](/architecture/database) - SQLite tables and FTS5 search
+- [Privacy Tags](/usage/private-tags) - Using `<private>` tags
+- [Troubleshooting](/troubleshooting) - Common hook issues
