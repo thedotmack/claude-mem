@@ -14,7 +14,7 @@ import path from 'path';
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
-import { silentDebug } from '../../utils/silent-debug.js';
+import { happy_path_error__with_fallback } from '../../utils/silent-debug.js';
 import { parseObservations, parseSummary } from '../../sdk/parser.js';
 import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
 import { SettingsDefaultsManager } from './settings/SettingsDefaultsManager.js';
@@ -233,8 +233,16 @@ export class SDKAgent {
               sdk_session_id: session.sdkSessionId,
               project: session.project,
               user_prompt: session.userPrompt,
-              last_user_message: message.last_user_message || '',
-              last_assistant_message: message.last_assistant_message || ''
+              last_user_message: happy_path_error__with_fallback(
+                'Missing last_user_message for summary in SDKAgent',
+                { sessionDbId: session.sessionDbId, sdkSessionId: session.sdkSessionId },
+                message.last_user_message || ''
+              ),
+              last_assistant_message: happy_path_error__with_fallback(
+                'Missing last_assistant_message for summary in SDKAgent',
+                { sessionDbId: session.sessionDbId, sdkSessionId: session.sdkSessionId },
+                message.last_assistant_message || ''
+              )
             })
           },
           session_id: session.claudeSessionId,
@@ -268,16 +276,16 @@ export class SDKAgent {
         sessionId: session.sessionDbId,
         obsId,
         type: obs.type,
-        title: obs.title || silentDebug('obs.title is null', { obsId, type: obs.type }, '(untitled)'),
-        filesRead: obs.files_read?.length ?? (silentDebug('obs.files_read is null/undefined', { obsId }), 0),
-        filesModified: obs.files_modified?.length ?? (silentDebug('obs.files_modified is null/undefined', { obsId }), 0),
-        concepts: obs.concepts?.length ?? (silentDebug('obs.concepts is null/undefined', { obsId }), 0)
+        title: obs.title || happy_path_error__with_fallback('obs.title is null', { obsId, type: obs.type }, '(untitled)'),
+        filesRead: obs.files_read?.length ?? (happy_path_error__with_fallback('obs.files_read is null/undefined', { obsId }), 0),
+        filesModified: obs.files_modified?.length ?? (happy_path_error__with_fallback('obs.files_modified is null/undefined', { obsId }), 0),
+        concepts: obs.concepts?.length ?? (happy_path_error__with_fallback('obs.concepts is null/undefined', { obsId }), 0)
       });
 
       // Sync to Chroma with error logging
       const chromaStart = Date.now();
       const obsType = obs.type;
-      const obsTitle = obs.title || silentDebug('obs.title is null for Chroma sync', { obsId, type: obs.type }, '(untitled)');
+      const obsTitle = obs.title || happy_path_error__with_fallback('obs.title is null for Chroma sync', { obsId, type: obs.type }, '(untitled)');
       this.dbManager.getChromaSync().syncObservation(
         obsId,
         session.claudeSessionId,
@@ -345,14 +353,14 @@ export class SDKAgent {
       logger.info('SDK', 'Summary saved', {
         sessionId: session.sessionDbId,
         summaryId,
-        request: summary.request || silentDebug('summary.request is null', { summaryId }, '(no request)'),
+        request: summary.request || happy_path_error__with_fallback('summary.request is null', { summaryId }, '(no request)'),
         hasCompleted: !!summary.completed,
         hasNextSteps: !!summary.next_steps
       });
 
       // Sync to Chroma with error logging
       const chromaStart = Date.now();
-      const summaryRequest = summary.request || silentDebug('summary.request is null for Chroma sync', { summaryId }, '(no request)');
+      const summaryRequest = summary.request || happy_path_error__with_fallback('summary.request is null for Chroma sync', { summaryId }, '(no request)');
       this.dbManager.getChromaSync().syncSummary(
         summaryId,
         session.claudeSessionId,

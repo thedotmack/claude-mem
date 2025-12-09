@@ -9,6 +9,7 @@ import express, { Request, Response } from 'express';
 import { getWorkerPort } from '../../../../shared/worker-utils.js';
 import { logger } from '../../../../utils/logger.js';
 import { stripMemoryTagsFromJson, stripMemoryTagsFromPrompt } from '../../../../utils/tag-stripping.js';
+import { happy_path_error__with_fallback } from '../../../../utils/silent-debug.js';
 import { SessionManager } from '../../SessionManager.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
 import { SDKAgent } from '../../SDKAgent.js';
@@ -307,7 +308,11 @@ export class SessionRoutes extends BaseRouteHandler {
       tool_input: cleanedToolInput,
       tool_response: cleanedToolResponse,
       prompt_number: promptNumber,
-      cwd: cwd || ''
+      cwd: happy_path_error__with_fallback(
+        'Missing cwd when queueing observation in SessionRoutes',
+        { sessionDbId, tool_name },
+        cwd || ''
+      )
     });
 
     // Ensure SDK agent is running
@@ -353,7 +358,15 @@ export class SessionRoutes extends BaseRouteHandler {
     }
 
     // Queue summarize
-    this.sessionManager.queueSummarize(sessionDbId, last_user_message || '', last_assistant_message);
+    this.sessionManager.queueSummarize(
+      sessionDbId,
+      happy_path_error__with_fallback(
+        'Missing last_user_message when queueing summary in SessionRoutes',
+        { sessionDbId },
+        last_user_message || ''
+      ),
+      last_assistant_message
+    );
 
     // Ensure SDK agent is running
     this.ensureGeneratorRunning(sessionDbId, 'summarize');

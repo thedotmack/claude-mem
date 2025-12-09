@@ -15,6 +15,7 @@ import { SessionStore } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../worker/settings/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { happy_path_error__with_fallback } from '../../utils/silent-debug.js';
 import path from 'path';
 import os from 'os';
 
@@ -766,7 +767,11 @@ export class ChromaSync {
       arguments: arguments_obj
     });
 
-    const resultText = result.content[0]?.text || '';
+    const resultText = happy_path_error__with_fallback(
+      'Missing text in MCP chroma_query_documents result',
+      { project: this.project, query_text: query },
+      result.content[0]?.text || ''
+    );
 
     // Parse JSON response
     let parsed: any;

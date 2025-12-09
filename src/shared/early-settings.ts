@@ -1,7 +1,7 @@
 import { join } from 'path';
 import { homedir } from 'os';
 import { existsSync, readFileSync } from 'fs';
-import { silentDebug } from '../utils/silent-debug.js';
+import { happy_path_error__with_fallback } from '../utils/silent-debug.js';
 
 const SETTINGS_PATH = join(homedir(), '.claude-mem', 'settings.json');
 
@@ -25,7 +25,7 @@ export function loadEarlySetting(key: keyof EarlySettings, defaultValue: string)
       if (fileValue !== undefined) return fileValue;
     }
   } catch (error) {
-    silentDebug('Failed to load settings file', { error, settingsPath: SETTINGS_PATH, key });
+    happy_path_error__with_fallback('Failed to load settings file', { error, settingsPath: SETTINGS_PATH, key });
   }
 
   return process.env[key] || defaultValue;

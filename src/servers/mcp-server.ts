@@ -14,7 +14,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
-import { silentDebug } from '../utils/silent-debug.js';
+import { happy_path_error__with_fallback } from '../utils/silent-debug.js';
 import { getWorkerPort } from '../shared/worker-utils.js';
 
 /**
@@ -50,7 +50,7 @@ async function callWorkerAPI(
   endpoint: string,
   params: Record<string, any>
 ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
-  silentDebug('[mcp-server] → Worker API', { endpoint, params });
+  happy_path_error__with_fallback('[mcp-server] → Worker API', { endpoint, params });
 
   try {
     const searchParams = new URLSearchParams();
@@ -72,12 +72,12 @@ async function callWorkerAPI(
 
     const data = await response.json() as { content: Array<{ type: 'text'; text: string }>; isError?: boolean };
 
-    silentDebug('[mcp-server] ← Worker API success', { endpoint });
+    happy_path_error__with_fallback('[mcp-server] ← Worker API success', { endpoint });
 
     // Worker returns { content: [...] } format directly
     return data;
   } catch (error: any) {
-    silentDebug('[mcp-server] ← Worker API error', { endpoint, error: error.message });
+    happy_path_error__with_fallback('[mcp-server] ← Worker API error', { endpoint, error: error.message });
     return {
       content: [{
         type: 'text' as const,
@@ -412,7 +412,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
 // Cleanup function
 async function cleanup() {
-  silentDebug('[mcp-server] Shutting down...');
+  happy_path_error__with_fallback('[mcp-server] Shutting down...');
   process.exit(0);
 }
 
@@ -425,22 +425,22 @@ async function main() {
   // Start the MCP server
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  silentDebug('[mcp-server] Claude-mem search server started');
+  happy_path_error__with_fallback('[mcp-server] Claude-mem search server started');
 
   // Check Worker availability in background
   setTimeout(async () => {
     const workerAvailable = await verifyWorkerConnection();
     if (!workerAvailable) {
-      silentDebug('[mcp-server] WARNING: Worker not available at', WORKER_BASE_URL);
-      silentDebug('[mcp-server] Tools will fail until Worker is started');
-      silentDebug('[mcp-server] Start Worker with: npm run worker:restart');
+      happy_path_error__with_fallback('[mcp-server] WARNING: Worker not available at', WORKER_BASE_URL);
+      happy_path_error__with_fallback('[mcp-server] Tools will fail until Worker is started');
+      happy_path_error__with_fallback('[mcp-server] Start Worker with: npm run worker:restart');
     } else {
-      silentDebug('[mcp-server] Worker available at', WORKER_BASE_URL);
+      happy_path_error__with_fallback('[mcp-server] Worker available at', WORKER_BASE_URL);
     }
   }, 0);
 }
 
 main().catch((error) => {
-  silentDebug('[mcp-server] Fatal error:', error);
+  happy_path_error__with_fallback('[mcp-server] Fatal error:', error);
   process.exit(1);
 });
