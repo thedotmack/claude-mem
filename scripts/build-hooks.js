@@ -174,6 +174,13 @@ async function buildHooks() {
       console.log(`✓ ${hook.name} built (${sizeInKB} KB)`);
     }
 
+    // Copy smart-install.js to plugin/scripts for cross-platform path compatibility
+    console.log('\n📋 Copying smart-install.js...');
+    const smartInstallSource = path.join(__dirname, 'smart-install.js');
+    const smartInstallDest = path.join(hooksDir, 'smart-install.js');
+    fs.copyFileSync(smartInstallSource, smartInstallDest);
+    console.log('✓ smart-install.js copied to plugin/scripts/');
+
     console.log('\n✅ All hooks, worker service, and MCP server built successfully!');
     console.log(`   Output: ${hooksDir}/`);
     console.log(`   - Hooks: *-hook.js`);
