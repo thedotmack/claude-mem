@@ -58,8 +58,8 @@ The data directory location depends on the environment:
 ```
 ~/.claude-mem/
 ├── claude-mem.db           # SQLite database
+├── settings.json           # User settings (env overrides)
 ├── .install-version        # Cached version for smart installer
-├── worker.port             # Current worker port file
 └── logs/
     ├── worker-out.log      # Worker stdout logs
     └── worker-error.log    # Worker stderr logs
@@ -318,12 +318,31 @@ export CLAUDE_MEM_DATA_DIR=/custom/path
 
 ### Custom Worker Port
 
-If port 37777 is in use:
+If port 37777 is in use, you can change it using environment variables or settings file.
 
+**Option 1: Environment Variable (Recommended)**
 ```bash
 export CLAUDE_MEM_WORKER_PORT=38000
 npm run worker:restart
 ```
+
+**Option 2: Settings File**
+
+Edit `~/.claude-mem/settings.json`:
+```json
+{
+  "env": {
+    "CLAUDE_MEM_WORKER_PORT": "38000"
+  }
+}
+```
+
+Then restart the worker:
+```bash
+npm run worker:restart
+```
+
+**Configuration Priority:** Environment variables take precedence over settings file, which takes precedence over defaults.
 
 ### Custom Model
 
@@ -417,20 +436,27 @@ Valid models:
 
 If port 37777 is already in use:
 
-1. Set custom port:
+1. Set custom port via environment variable:
    ```bash
    export CLAUDE_MEM_WORKER_PORT=38000
-   ```
-
-2. Restart worker:
-   ```bash
    npm run worker:restart
    ```
 
-3. Verify new port:
-   ```bash
-   cat ~/.claude-mem/worker.port
+   Or via settings file (`~/.claude-mem/settings.json`):
+   ```json
+   {
+     "env": {
+       "CLAUDE_MEM_WORKER_PORT": "38000"
+     }
+   }
    ```
+
+2. Verify the worker is running on the new port:
+   ```bash
+   curl http://localhost:38000/api/health
+   ```
+
+**Configuration Priority:** Environment variables > Settings file > Defaults (37777)
 
 ## Next Steps
 

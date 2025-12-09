@@ -86,22 +86,30 @@ export class SettingsDefaultsManager {
 
   /**
    * Load settings from file with fallback to defaults
-   * Returns merged settings with defaults as fallback
+   * Priority: process.env > file settings > defaults
+   * Returns merged settings with highest priority source winning
    */
   static loadFromFile(settingsPath: string): SettingsDefaults {
-    if (!existsSync(settingsPath)) {
-      return this.getAllDefaults();
+    // Start with defaults
+    const result: SettingsDefaults = { ...this.DEFAULTS };
+
+    // Override with file settings if file exists
+    if (existsSync(settingsPath)) {
+      const settingsData = readFileSync(settingsPath, 'utf-8');
+      const settings = JSON.parse(settingsData);
+      const env = settings.env || {};
+
+      for (const key of Object.keys(this.DEFAULTS) as Array<keyof SettingsDefaults>) {
+        if (env[key] !== undefined) {
+          result[key] = env[key];
+        }
+      }
     }
 
-    const settingsData = readFileSync(settingsPath, 'utf-8');
-    const settings = JSON.parse(settingsData);
-    const env = settings.env || {};
-
-    // Merge file settings with defaults
-    const result: SettingsDefaults = { ...this.DEFAULTS };
+    // Override with environment variables (highest priority)
     for (const key of Object.keys(this.DEFAULTS) as Array<keyof SettingsDefaults>) {
-      if (env[key] !== undefined) {
-        result[key] = env[key];
+      if (process.env[key] !== undefined) {
+        result[key] = process.env[key]!;
       }
     }
 
