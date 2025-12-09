@@ -11,12 +11,12 @@ import { homedir } from "os";
 import { existsSync } from "fs";
 import { ensureWorkerRunning, getWorkerPort } from "../shared/worker-utils.js";
 
-// Check if node_modules exists - if not, this is first run
+// Check if first-run marker exists - if not, this is first run
 const pluginDir = join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
-const nodeModulesPath = join(pluginDir, 'node_modules');
+const firstRunMarker = join(pluginDir, '.first-run-complete');
 
-if (!existsSync(nodeModulesPath)) {
-  // First-time installation - dependencies not yet installed
+if (!existsSync(firstRunMarker)) {
+  // First-time installation - setup not yet complete
   console.error(`
 ---
 🎉  Note: This appears under Plugin Hook Error, but it's not an error. That's the only option for

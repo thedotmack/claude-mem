@@ -112,13 +112,7 @@ export function getPackageRoot(): string {
  */
 export function getPackageCommandsDir(): string {
   const packageRoot = getPackageRoot();
-  const commandsDir = join(packageRoot, 'commands');
-
-  if (!existsSync(join(commandsDir, 'save.md'))) {
-    throw new Error('Package commands directory missing required files');
-  }
-
-  return commandsDir;
+  return join(packageRoot, 'commands');
 }
 
 /**

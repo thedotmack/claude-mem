@@ -95,11 +95,11 @@ export class SettingsRoutes extends BaseRouteHandler {
 
     // Validate CLAUDE_MEM_PYTHON_VERSION (must be valid Python version format)
     if (req.body.CLAUDE_MEM_PYTHON_VERSION) {
-      const pythonVersionRegex = /^3\.\d+$/;
+      const pythonVersionRegex = /^3\.\d{1,2}$/;
       if (!pythonVersionRegex.test(req.body.CLAUDE_MEM_PYTHON_VERSION)) {
         res.status(400).json({
           success: false,
-          error: 'CLAUDE_MEM_PYTHON_VERSION must be in format "3.X" (e.g., "3.13")'
+          error: 'CLAUDE_MEM_PYTHON_VERSION must be in format "3.X" or "3.XX" (e.g., "3.13")'
         });
         return;
       }
