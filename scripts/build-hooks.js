@@ -67,8 +67,12 @@ async function buildHooks() {
       throw new Error(`Source file not found: ${smartInstallSource}`);
     }
     
-    fs.copyFileSync(smartInstallSource, smartInstallDest);
-    console.log('✓ smart-install.js copied');
+    try {
+      fs.copyFileSync(smartInstallSource, smartInstallDest);
+      console.log('✓ smart-install.js copied');
+    } catch (error) {
+      throw new Error(`Failed to copy smart-install.js: ${error.message}`);
+    }
 
     // Build React viewer
     console.log('\n📋 Building React viewer...');
