@@ -58,6 +58,13 @@ async function buildHooks() {
     }
     console.log('✓ Output directories ready');
 
+    // Copy smart-install.js to plugin/scripts
+    console.log('\n📋 Copying smart-install.js...');
+    const smartInstallSource = 'scripts/smart-install.js';
+    const smartInstallDest = `${hooksDir}/smart-install.js`;
+    fs.copyFileSync(smartInstallSource, smartInstallDest);
+    console.log('✓ smart-install.js copied');
+
     // Build React viewer
     console.log('\n📋 Building React viewer...');
     const { spawn } = await import('child_process');
