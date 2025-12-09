@@ -328,18 +328,36 @@ export class SessionManager {
     return new Promise((resolve, reject) => {
       const emitter = this.sessionQueues.get(sessionDbId);
       if (!emitter) {
+        logger.error('SESSION', 'No emitter found - cannot wait for observation', {
+          sessionId: sessionDbId
+        });
         reject(new Error('Session not found'));
         return;
       }
 
+      logger.debug('SESSION', 'Waiting for sdk_response_complete event', {
+        sessionId: sessionDbId,
+        timeoutMs
+      });
+
       const timeoutId = setTimeout(() => {
         emitter.off('sdk_response_complete', handler);
+        logger.warn('SESSION', 'Timeout waiting for SDK response', {
+          sessionId: sessionDbId,
+          timeoutMs
+        });
         reject(new Error('Timeout waiting for SDK response'));
       }, timeoutMs);
 
       const handler = (observation: any) => {
         clearTimeout(timeoutId);
         emitter.off('sdk_response_complete', handler);
+        logger.debug('SESSION', 'Received sdk_response_complete event', {
+          sessionId: sessionDbId,
+          hasObservation: observation !== null,
+          obsId: observation?.id,
+          type: observation?.type
+        });
         resolve(observation);
       };
 

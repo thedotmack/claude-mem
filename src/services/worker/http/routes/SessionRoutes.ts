@@ -308,6 +308,13 @@ export class SessionRoutes extends BaseRouteHandler {
     const { claudeSessionId, tool_name, tool_input, tool_response, cwd, toolUseId } = req.body;
     const waitForCompletion = req.query.wait_until_obs_is_saved === 'true';
 
+    logger.info('HTTP', 'Observation request received', {
+      claudeSessionId,
+      tool_name,
+      waitForCompletion,
+      queryParam: req.query.wait_until_obs_is_saved
+    });
+
     if (!claudeSessionId) {
       return this.badRequest(res, 'Missing claudeSessionId');
     }
@@ -367,17 +374,27 @@ export class SessionRoutes extends BaseRouteHandler {
 
     if (!waitForCompletion) {
       // Async mode (current behavior)
+      logger.info('HTTP', 'Using async mode (not waiting)', {
+        sessionId: sessionDbId
+      });
       this.eventBroadcaster.broadcastObservationQueued(sessionDbId);
       res.json({ status: 'queued' });
       return;
     }
 
     // SYNCHRONOUS MODE: Wait for SDK response to be processed (Endless Mode v7.1)
+    logger.info('HTTP', 'Entering synchronous wait mode', {
+      sessionId: sessionDbId
+    });
     try {
       const observation = await this.sessionManager.waitForNextObservation(
         sessionDbId,
         90000  // 90 second timeout (safety margin within 120s hook timeout)
       );
+      logger.info('HTTP', 'Wait completed, sending response', {
+        sessionId: sessionDbId,
+        hasObservation: observation !== null
+      });
 
       // Handle both observation and no-observation responses
       if (observation === null) {

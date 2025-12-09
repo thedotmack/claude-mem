@@ -70,6 +70,9 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
     throw new Error('saveHook requires input');
   }
 
+  // Log all available parameters
+  console.error(`[SAVE-HOOK] Parameters received: ${JSON.stringify(Object.keys(input))}`);
+
   const { session_id, cwd, tool_name, tool_input, tool_response } = input;
 
   if (SKIP_TOOLS.has(tool_name)) {
@@ -143,17 +146,22 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
       const markdown = formatObservationAsMarkdown(data.observation);
 
       // Clear tool input from transcript to save tokens
+      console.error(`[SAVE-HOOK] Checking transcript clear: toolUseId=${input.tool_use_id}, transcriptPath=${input.transcript_path}`);
       if (input.tool_use_id && input.transcript_path) {
+        console.error(`[SAVE-HOOK] Clearing transcript for tool_use_id=${input.tool_use_id}`);
         const tokensSaved = await clearToolInputInTranscript(
           input.transcript_path,
           input.tool_use_id
         );
+        console.error(`[SAVE-HOOK] Cleared ${tokensSaved} tokens from transcript`);
         if (tokensSaved > 0) {
           logger.debug('HOOK', 'Cleared tool input from transcript', {
             toolUseId: input.tool_use_id,
             tokensSaved
           });
         }
+      } else {
+        console.error(`[SAVE-HOOK] Skipping transcript clear - missing parameters`);
       }
 
       // Inject via additionalContext

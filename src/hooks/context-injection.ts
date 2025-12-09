@@ -25,30 +25,47 @@ export async function clearToolInputInTranscript(
 
   try {
     const transcriptContent = await readFile(transcriptPath, 'utf-8');
-    const transcript = JSON.parse(transcriptContent);
+    const lines = transcriptContent.trim().split('\n');
 
-    // Find the tool_use content block with matching id
+    // Parse each JSONL line
     let modified = false;
-    for (const message of transcript) {
-      if (!message.content || !Array.isArray(message.content)) continue;
+    const updatedLines: string[] = [];
 
-      for (const block of message.content) {
-        if (block.type === 'tool_use' && block.id === toolUseId) {
-          if (block.input && Object.keys(block.input).length > 0) {
-            // Estimate tokens saved (rough: 1 token ≈ 4 chars)
-            const inputStr = JSON.stringify(block.input);
-            tokensSaved = Math.floor(inputStr.length / 4);
+    for (const line of lines) {
+      if (!line.trim()) {
+        updatedLines.push(line);
+        continue;
+      }
 
-            // Clear the input
-            block.input = {};
-            modified = true;
+      try {
+        const message = JSON.parse(line);
+
+        // Check if this message has tool_use content
+        if (message.message?.content && Array.isArray(message.message.content)) {
+          for (const block of message.message.content) {
+            if (block.type === 'tool_use' && block.id === toolUseId) {
+              if (block.input && Object.keys(block.input).length > 0) {
+                // Estimate tokens saved (rough: 1 token ≈ 4 chars)
+                const inputStr = JSON.stringify(block.input);
+                tokensSaved = Math.floor(inputStr.length / 4);
+
+                // Clear the input
+                block.input = {};
+                modified = true;
+              }
+            }
           }
         }
+
+        updatedLines.push(JSON.stringify(message));
+      } catch (parseError) {
+        // Keep malformed lines as-is
+        updatedLines.push(line);
       }
     }
 
     if (modified) {
-      await writeFile(transcriptPath, JSON.stringify(transcript, null, 2), 'utf-8');
+      await writeFile(transcriptPath, updatedLines.join('\n') + '\n', 'utf-8');
     }
   } catch (error: any) {
     // Don't throw - this is a token optimization, not critical
