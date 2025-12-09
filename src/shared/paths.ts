@@ -89,7 +89,8 @@ export function getCurrentProjectName(): string {
     const gitRoot = execSync('git rev-parse --show-toplevel', {
       cwd: process.cwd(),
       encoding: 'utf8',
-      stdio: ['pipe', 'pipe', 'ignore']
+      stdio: ['pipe', 'pipe', 'ignore'],
+      windowsHide: true
     }).trim();
     return basename(gitRoot);
   } catch {

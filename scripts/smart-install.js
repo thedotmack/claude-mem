@@ -17,18 +17,14 @@ import { join } from 'path';
 import { homedir } from 'os';
 import { createRequire } from 'module';
 
-// CRITICAL: Always use marketplace directory for ALL operations
-// This script may run from the cache directory (plugin/scripts/) but must
-// operate on the marketplace directory where package.json and node_modules live.
-// This ensures cross-platform compatibility and avoids cache directory confusion.
-const MARKETPLACE_ROOT = join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
 
-// Use MARKETPLACE_ROOT for all paths - this script can be deployed anywhere
-// but always operates on the marketplace directory
-const PLUGIN_ROOT = MARKETPLACE_ROOT;
-const PACKAGE_JSON_PATH = join(PLUGIN_ROOT, 'package.json');
-const VERSION_MARKER_PATH = join(PLUGIN_ROOT, '.install-version');
-const NODE_MODULES_PATH = join(PLUGIN_ROOT, 'node_modules');
+// CRITICAL: Always use marketplace directory for npm install and PM2/ecosystem
+// This script may run from cache directory (plugin/) which has no package.json
+// The marketplace root is the canonical location with package.json and node_modules
+const MARKETPLACE_ROOT = join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
+const PACKAGE_JSON_PATH = join(MARKETPLACE_ROOT, 'package.json');
+const VERSION_MARKER_PATH = join(MARKETPLACE_ROOT, '.install-version');
+const NODE_MODULES_PATH = join(MARKETPLACE_ROOT, 'node_modules');
 const BETTER_SQLITE3_PATH = join(NODE_MODULES_PATH, 'better-sqlite3');
 
 // Colors for output
@@ -264,7 +260,7 @@ async function runNpmInstall() {
 
       // Run npm install silently
       execSync(command, {
-        cwd: PLUGIN_ROOT,
+        cwd: MARKETPLACE_ROOT,
         stdio: 'pipe', // Silent output unless error
         encoding: 'utf-8',
       });

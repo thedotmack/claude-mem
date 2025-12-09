@@ -6,6 +6,15 @@
  * See src/services/worker/README.md for architecture details.
  */
 
+// Windows terminal window fix: Set process.type to trick MCP SDK into enabling windowsHide
+// The SDK checks `process.type === 'renderer'` (Electron detection) before setting windowsHide.
+// By setting process.type, the SDK's isElectron() check becomes truthy on Windows, hiding
+// terminal windows when spawning uvx/python processes for Chroma MCP server.
+// The type is sometimes not present resulting in the check being false. Setting it like this fixes it
+if (process.platform === 'win32' && !process.type) {
+  (process as any).type = 'renderer';
+}
+
 import express from 'express';
 import http from 'http';
 import path from 'path';
