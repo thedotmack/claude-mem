@@ -5,10 +5,11 @@
  * Provides methods to get defaults with optional environment variable overrides.
  */
 
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { DEFAULT_OBSERVATION_TYPES_STRING, DEFAULT_OBSERVATION_CONCEPTS_STRING } from '../constants/observation-metadata.js';
+import { logger } from '../utils/logger.js';
 
 export interface SettingsDefaults {
   CLAUDE_MEM_MODEL: string;
@@ -108,11 +109,27 @@ export class SettingsDefaultsManager {
     const settingsData = readFileSync(settingsPath, 'utf-8');
     const settings = JSON.parse(settingsData);
 
-    // Merge file settings with defaults (flat schema, no env wrapper)
+    // MIGRATION: Handle old nested schema { env: {...} }
+    let flatSettings = settings;
+    if (settings.env && typeof settings.env === 'object') {
+      // Migrate from nested to flat schema
+      flatSettings = settings.env;
+
+      // Auto-migrate the file to flat schema
+      try {
+        writeFileSync(settingsPath, JSON.stringify(flatSettings, null, 2), 'utf-8');
+        logger.info('SETTINGS', 'Migrated settings file from nested to flat schema', { settingsPath });
+      } catch (error) {
+        logger.warn('SETTINGS', 'Failed to auto-migrate settings file', { settingsPath }, error);
+        // Continue with in-memory migration even if write fails
+      }
+    }
+
+    // Merge file settings with defaults (flat schema)
     const result: SettingsDefaults = { ...this.DEFAULTS };
     for (const key of Object.keys(this.DEFAULTS) as Array<keyof SettingsDefaults>) {
-      if (settings[key] !== undefined) {
-        result[key] = settings[key];
+      if (flatSettings[key] !== undefined) {
+        result[key] = flatSettings[key];
       }
     }
 

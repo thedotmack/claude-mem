@@ -291,6 +291,7 @@ export class SessionRoutes extends BaseRouteHandler {
         ? stripMemoryTagsFromJson(JSON.stringify(tool_input))
         : '{}';
     } catch (error) {
+      logger.debug('SESSION', 'Failed to serialize tool_input', { sessionDbId }, error);
       cleanedToolInput = '{"error": "Failed to serialize tool_input"}';
     }
 
@@ -299,6 +300,7 @@ export class SessionRoutes extends BaseRouteHandler {
         ? stripMemoryTagsFromJson(JSON.stringify(tool_response))
         : '{}';
     } catch (error) {
+      logger.debug('SESSION', 'Failed to serialize tool_result', { sessionDbId }, error);
       cleanedToolResponse = '{"error": "Failed to serialize tool_response"}';
     }
 

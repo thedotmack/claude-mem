@@ -7,7 +7,7 @@
 
 import express, { Request, Response } from 'express';
 import path from 'path';
-import { readFileSync, writeFileSync, existsSync, renameSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, renameSync, mkdirSync } from 'fs';
 import { homedir } from 'os';
 import { getPackageRoot } from '../../../../shared/paths.js';
 import { logger } from '../../../../utils/logger.js';
@@ -49,6 +49,7 @@ export class SettingsRoutes extends BaseRouteHandler {
    */
   private handleGetSettings = this.wrapHandler((req: Request, res: Response): void => {
     const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+    this.ensureSettingsFile(settingsPath);
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
     res.json(settings);
   });
@@ -117,14 +118,12 @@ export class SettingsRoutes extends BaseRouteHandler {
 
     // Read existing settings
     const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
-    let settings: any = { env: {} };
+    this.ensureSettingsFile(settingsPath);
+    let settings: any = {};
 
     if (existsSync(settingsPath)) {
       const settingsData = readFileSync(settingsPath, 'utf-8');
       settings = JSON.parse(settingsData);
-      if (!settings.env) {
-        settings.env = {};
-      }
     }
 
     // Update all settings from request body
@@ -156,7 +155,7 @@ export class SettingsRoutes extends BaseRouteHandler {
 
     for (const key of settingKeys) {
       if (req.body[key] !== undefined) {
-        settings.env[key] = req.body[key];
+        settings[key] = req.body[key];
       }
     }
 
@@ -353,6 +352,24 @@ export class SettingsRoutes extends BaseRouteHandler {
     } catch (error) {
       logger.failure('WORKER', 'Failed to toggle MCP', { enabled }, error as Error);
       throw error;
+    }
+  }
+
+  /**
+   * Ensure settings file exists, creating with defaults if missing
+   */
+  private ensureSettingsFile(settingsPath: string): void {
+    if (!existsSync(settingsPath)) {
+      const defaults = SettingsDefaultsManager.getAllDefaults();
+
+      // Ensure directory exists
+      const dir = path.dirname(settingsPath);
+      if (!existsSync(dir)) {
+        mkdirSync(dir, { recursive: true });
+      }
+
+      writeFileSync(settingsPath, JSON.stringify(defaults, null, 2), 'utf-8');
+      logger.info('SETTINGS', 'Created settings file with defaults', { settingsPath });
     }
   }
 }
