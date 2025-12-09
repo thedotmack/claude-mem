@@ -178,8 +178,17 @@ async function buildHooks() {
     console.log('\n📋 Copying smart-install.js...');
     const smartInstallSource = path.join(__dirname, 'smart-install.js');
     const smartInstallDest = path.join(hooksDir, 'smart-install.js');
-    fs.copyFileSync(smartInstallSource, smartInstallDest);
-    console.log('✓ smart-install.js copied to plugin/scripts/');
+    
+    if (!fs.existsSync(smartInstallSource)) {
+      throw new Error(`smart-install.js not found at ${smartInstallSource}`);
+    }
+    
+    try {
+      fs.copyFileSync(smartInstallSource, smartInstallDest);
+      console.log('✓ smart-install.js copied to plugin/scripts/');
+    } catch (error) {
+      throw new Error(`Failed to copy smart-install.js: ${error.message}`);
+    }
 
     console.log('\n✅ All hooks, worker service, and MCP server built successfully!');
     console.log(`   Output: ${hooksDir}/`);
