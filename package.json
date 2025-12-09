@@ -31,7 +31,7 @@
   },
   "scripts": {
     "build": "node scripts/build-hooks.js",
-    "postinstall": "touch plugin/.first-run-complete || true",
+    "postinstall": "touch .first-run-complete || true",
     "test": "vitest",
     "test:parser": "npx tsx src/sdk/parser.test.ts",
     "test:context": "echo '{\"session_id\":\"test-'$(date +%s)'\",\"cwd\":\"'$(pwd)'\",\"source\":\"startup\"}' | node plugin/scripts/context-hook.js 2>/dev/null",
