@@ -22,15 +22,6 @@ export interface PostToolUseInput {
   tool_response: any;
 }
 
-// Tools to skip (low value or too frequent)
-const SKIP_TOOLS = new Set([
-  'ListMcpResourcesTool',  // MCP infrastructure
-  'SlashCommand',          // Command invocation (observe what it produces, not the call)
-  'Skill',                 // Skill invocation (observe what it produces, not the call)
-  'TodoWrite',             // Task management meta-tool
-  'AskUserQuestion'        // User interaction, not substantive work
-]);
-
 /**
  * Save Hook Main Logic - Fire-and-forget HTTP client
  */
@@ -43,11 +34,6 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
   }
 
   const { session_id, cwd, tool_name, tool_input, tool_response } = input;
-
-  if (SKIP_TOOLS.has(tool_name)) {
-    console.log(createHookResponse('PostToolUse', true));
-    return;
-  }
 
   const port = getWorkerPort();
 
