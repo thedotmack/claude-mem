@@ -9,28 +9,169 @@ Claude-Mem implements a **5-stage hook system** that captures development work a
 
 ## Architecture Overview
 
+### System Architecture
+
+This two-process architecture works in both Claude Code and VS Code:
+
 ```mermaid
-flowchart TB
-    subgraph IDE["Claude Code IDE"]
-        SS[SessionStart] --> UPS[UserPromptSubmit] --> PTU[PostToolUse] --> ST[Stop] --> SE[SessionEnd]
-        SS --> ctx["context"]
-        UPS --> new["new"]
-        PTU --> save["save"]
-        ST --> sum["summary"]
-        SE --> clean["cleanup"]
+graph TB
+    subgraph EXT["Extension Process (runs in IDE)"]
+        direction TB
+        ACT[Extension Activation]
+        HOOKS[Hook Event Handlers]
+        ACT --> HOOKS
+
+        subgraph HOOK_HANDLERS["5 Lifecycle Hooks"]
+            H1[SessionStart<br/>activate function]
+            H2[UserPromptSubmit<br/>command handler]
+            H3[PostToolUse<br/>middleware]
+            H4[Stop<br/>idle timeout]
+            H5[SessionEnd<br/>deactivate function]
+        end
+
+        HOOKS --> HOOK_HANDLERS
     end
 
-    ctx & new & save & sum & clean --> HTTP["HTTP (fire-and-forget)"]
+    HOOK_HANDLERS -->|"HTTP<br/>(fire-and-forget<br/>2s timeout)"| HTTP[Worker HTTP API<br/>Port 37777]
 
-    subgraph Worker["Worker Service (PM2)"]
-        SM[SessionMgr] ~~~ SA[SDK Agent] ~~~ DM[DatabaseMgr]
-        SA --> SDK["Claude Agent SDK"]
+    subgraph WORKER["Worker Process (separate Node.js)"]
+        direction TB
+        HTTP --> API[Express Server]
+        API --> SESS[Session Manager]
+        API --> AGENT[SDK Agent]
+        API --> DB[Database Manager]
+
+        AGENT -->|Event-Driven| CLAUDE[Claude Agent SDK]
+        CLAUDE --> SQLITE[(SQLite + FTS5)]
+        CLAUDE --> CHROMA[(Chroma Vectors)]
     end
 
-    HTTP --> Worker
-    SDK --> SQLite[(SQLite DB)]
-    SDK --> Chroma[(Chroma Vector DB)]
+    style EXT fill:#e1f5ff
+    style WORKER fill:#fff4e1
+    style HOOK_HANDLERS fill:#f0f0f0
 ```
+
+**Key Principles:**
+- Extension process never blocks (fire-and-forget HTTP)
+- Worker processes observations asynchronously
+- Session state persists across IDE restarts
+
+### VS Code Extension API Integration Points
+
+For developers porting to VS Code, here's where to hook into the VS Code Extension API:
+
+```mermaid
+graph LR
+    subgraph VSCODE["VS Code Extension API"]
+        direction TB
+        A["activate(context)"]
+        B["commands.registerCommand()"]
+        C["chat.createChatParticipant()"]
+        D["workspace.onDidSaveTextDocument()"]
+        E["window.onDidChangeActiveTextEditor()"]
+        F["deactivate()"]
+    end
+
+    subgraph HOOKS["Hook Equivalents"]
+        direction TB
+        G[SessionStart]
+        H[UserPromptSubmit]
+        I[PostToolUse]
+        J[Stop/Summary]
+        K[SessionEnd]
+    end
+
+    subgraph WORKER_API["Worker HTTP Endpoints"]
+        direction TB
+        L[GET /api/context/inject]
+        M[POST /sessions/init]
+        N[POST /sessions/observations]
+        O[POST /sessions/summarize]
+        P[POST /sessions/complete]
+    end
+
+    A --> G
+    B --> H
+    C --> H
+    D --> I
+    E --> I
+    F --> K
+
+    G --> L
+    H --> M
+    I --> N
+    J --> O
+    K --> P
+
+    style VSCODE fill:#007acc,color:#fff
+    style HOOKS fill:#f0f0f0
+    style WORKER_API fill:#4caf50,color:#fff
+```
+
+**Implementation Examples:**
+
+```typescript
+// VS Code Extension - SessionStart Hook
+export async function activate(context: vscode.ExtensionContext) {
+  const sessionId = generateSessionId()
+  const project = workspace.name || 'default'
+
+  // Fetch context from worker
+  const response = await fetch(`http://localhost:37777/api/context/inject?project=${project}`)
+  const context = await response.text()
+
+  // Inject into chat or UI panel
+  injectContextToChat(context)
+}
+
+// VS Code Extension - UserPromptSubmit Hook
+const command = vscode.commands.registerCommand('extension.command', async (prompt) => {
+  await fetch('http://localhost:37777/sessions/init', {
+    method: 'POST',
+    body: JSON.stringify({ sessionId, project, userPrompt: prompt })
+  })
+})
+
+// VS Code Extension - PostToolUse Hook (middleware pattern)
+workspace.onDidSaveTextDocument(async (document) => {
+  await fetch('http://localhost:37777/api/sessions/observations', {
+    method: 'POST',
+    body: JSON.stringify({
+      claudeSessionId: sessionId,
+      tool_name: 'FileSave',
+      tool_input: { path: document.uri.path },
+      tool_response: 'File saved successfully'
+    })
+  })
+})
+```
+
+### Async Processing Pipeline
+
+How observations flow from extension to database without blocking the IDE:
+
+```mermaid
+graph TB
+    A["Extension: Tool Use Event"] --> B{"Skip List?<br/>(TodoWrite, AskUserQuestion, etc.)"}
+    B -->|"Skip"| X["Discard"]
+    B -->|"Keep"| C["Strip Privacy Tags<br/>&lt;private&gt;...&lt;/private&gt;"]
+    C --> D["HTTP POST to Worker<br/>Port 37777"]
+    D --> E["2s timeout<br/>fire-and-forget"]
+    E --> F["Extension continues<br/>(non-blocking)"]
+
+    D -.Async Path.-> G["Worker: Queue Observation"]
+    G --> H["SDK Agent picks up<br/>(event-driven)"]
+    H --> I["Call Claude API<br/>(compress observation)"]
+    I --> J["Parse XML response"]
+    J --> K["Save to SQLite<br/>(sdk_sessions table)"]
+    K --> L["Sync to Chroma<br/>(vector embeddings)"]
+
+    style F fill:#90EE90,stroke:#2d6b2d,stroke-width:3px
+    style L fill:#87CEEB,stroke:#2d5f8d,stroke-width:3px
+    style E fill:#ffeb3b,stroke:#c6a700,stroke-width:2px
+```
+
+**Critical Pattern:** The extension's HTTP call has a 2-second timeout and doesn't wait for AI processing. The worker handles compression asynchronously using an event-driven queue.
 
 ## The 5 Lifecycle Stages
 
@@ -104,6 +245,37 @@ Hooks are configured in `plugin/hooks/hooks.json`:
 1. `context-hook.js` - Fetches and injects prior session context
 2. `user-message-hook.js` - Displays context info to user via stderr
 
+### Sequence Diagram
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant IDE as IDE/Extension
+    participant ContextHook as context-hook.js
+    participant Worker as Worker Service
+    participant DB as SQLite Database
+
+    User->>IDE: Opens workspace / resumes session
+    IDE->>ContextHook: Trigger SessionStart hook
+    ContextHook->>ContextHook: Generate/reuse session_id
+    ContextHook->>Worker: Health check (max 10s retry)
+
+    alt Worker Ready
+        ContextHook->>Worker: GET /api/context/inject?project=X
+        Worker->>DB: SELECT * FROM observations<br/>WHERE project=X<br/>ORDER BY created_at DESC<br/>LIMIT 50
+        DB-->>Worker: Last 50 observations
+        Worker-->>ContextHook: Context markdown
+        ContextHook-->>IDE: hookSpecificOutput.additionalContext
+        IDE->>IDE: Inject context to Claude's prompt
+        IDE-->>User: Session ready with context
+    else Worker Not Ready
+        ContextHook-->>IDE: Empty context (graceful degradation)
+        IDE-->>User: Session ready without context
+    end
+
+    Note over User,DB: Total time: <300ms (with health check)
+```
+
 ### Context Hook (`context-hook.js`)
 
 **Purpose**: Inject context from previous sessions into Claude's initial context.
@@ -154,6 +326,45 @@ Hooks are configured in `plugin/hooks/hooks.json`:
 **Timing**: When user submits any prompt in a session
 
 **Hook**: `new-hook.js`
+
+### Sequence Diagram
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant IDE as IDE/Extension
+    participant NewHook as new-hook.js
+    participant DB as Direct SQLite Access
+    participant Worker as Worker Service
+
+    User->>IDE: Submits prompt: "Add login feature"
+    IDE->>NewHook: Trigger UserPromptSubmit<br/>{ session_id, cwd, prompt }
+
+    NewHook->>NewHook: Extract project = basename(cwd)
+    NewHook->>NewHook: Strip privacy tags<br/>&lt;private&gt;...&lt;/private&gt;
+
+    alt Prompt fully private (empty after stripping)
+        NewHook-->>IDE: Skip (don't save)
+    else Prompt has content
+        NewHook->>DB: INSERT OR IGNORE INTO sdk_sessions<br/>(claude_session_id, project, first_user_prompt)
+        DB-->>NewHook: sessionDbId (new or existing)
+
+        NewHook->>DB: UPDATE sdk_sessions<br/>SET prompt_counter = prompt_counter + 1<br/>WHERE id = sessionDbId
+        DB-->>NewHook: promptNumber (e.g., 1 for first, 2 for continuation)
+
+        NewHook->>DB: INSERT INTO user_prompts<br/>(session_id, prompt_number, prompt)
+
+        NewHook->>Worker: POST /sessions/{sessionDbId}/init<br/>{ project, userPrompt, promptNumber }<br/>(fire-and-forget, 2s timeout)
+        Worker-->>NewHook: 200 OK (or timeout)
+
+        NewHook-->>IDE: { continue: true, suppressOutput: true }
+        IDE-->>User: Prompt accepted
+    end
+
+    Note over NewHook,DB: Idempotent: Same session_id → same sessionDbId
+```
+
+**Key Pattern:** The `INSERT OR IGNORE` ensures the same `session_id` always maps to the same `sessionDbId`, enabling conversation continuations.
 
 **Input** (via stdin):
 ```json
@@ -213,6 +424,49 @@ The same `session_id` flows through ALL hooks in a conversation. The `createSDKS
 **Timing**: After Claude uses any tool (Read, Bash, Grep, Write, etc.)
 
 **Hook**: `save-hook.js`
+
+### Sequence Diagram
+
+```mermaid
+sequenceDiagram
+    participant Claude as Claude AI
+    participant IDE as IDE/Extension
+    participant SaveHook as save-hook.js
+    participant Worker as Worker Service
+    participant Agent as SDK Agent
+    participant DB as SQLite + Chroma
+
+    Claude->>IDE: Uses tool: Read("/src/auth.ts")
+    IDE->>SaveHook: PostToolUse hook triggered<br/>{ session_id, tool_name, tool_input, tool_response }
+
+    SaveHook->>SaveHook: Check skip list<br/>(TodoWrite, AskUserQuestion, etc.)
+
+    alt Tool in skip list
+        SaveHook-->>IDE: Discard (low-value tool)
+    else Tool allowed
+        SaveHook->>SaveHook: Strip privacy tags from input/response
+
+        SaveHook->>SaveHook: Ensure worker running<br/>(PM2 health check)
+
+        SaveHook->>Worker: POST /api/sessions/observations<br/>{ claudeSessionId, tool_name, tool_input, tool_response, cwd }<br/>(fire-and-forget, 2s timeout)
+
+        SaveHook-->>IDE: { continue: true, suppressOutput: true }
+        IDE-->>Claude: Tool execution complete
+
+        Note over Worker,DB: Async path (doesn't block IDE)
+
+        Worker->>Worker: createSDKSession(claudeSessionId)<br/>→ returns sessionDbId
+        Worker->>Worker: Check if prompt was private<br/>(skip if fully private)
+        Worker->>Agent: Queue observation for processing
+        Agent->>Agent: Call Claude SDK to compress<br/>observation into structured format
+        Agent->>DB: Save compressed observation<br/>to sdk_sessions table
+        Agent->>DB: Sync to Chroma vector DB
+    end
+
+    Note over SaveHook,DB: Total sync time: ~2ms<br/>AI processing: 1-3s (async)
+```
+
+**Key Pattern:** The hook returns immediately after HTTP POST. AI compression happens asynchronously in the worker without blocking Claude's tool execution.
 
 **Input** (via stdin):
 ```json
@@ -278,6 +532,45 @@ Timeout: 2000ms
 
 **Hook**: `summary-hook.js`
 
+### Sequence Diagram
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant IDE as IDE/Extension
+    participant SummaryHook as summary-hook.js
+    participant Worker as Worker Service
+    participant Agent as SDK Agent
+    participant DB as SQLite Database
+
+    User->>IDE: Stops asking questions<br/>(pause, idle, or explicit stop)
+    IDE->>SummaryHook: Stop hook triggered<br/>{ session_id, cwd, transcript_path }
+
+    SummaryHook->>SummaryHook: Read transcript JSONL file
+    SummaryHook->>SummaryHook: Extract last user message<br/>(type: "user")
+    SummaryHook->>SummaryHook: Extract last assistant message<br/>(type: "assistant", filter &lt;system-reminder&gt;)
+
+    SummaryHook->>Worker: POST /api/sessions/summarize<br/>{ claudeSessionId, last_user_message, last_assistant_message }<br/>(fire-and-forget, 2s timeout)
+
+    SummaryHook->>Worker: POST /api/processing<br/>{ isProcessing: false }<br/>(stop spinner)
+
+    SummaryHook-->>IDE: { continue: true, suppressOutput: true }
+    IDE-->>User: Session paused/stopped
+
+    Note over Worker,DB: Async path
+
+    Worker->>Worker: Lookup sessionDbId from claudeSessionId
+    Worker->>Agent: Queue summarization request
+    Agent->>Agent: Call Claude SDK with prompt:<br/>"Summarize: request, investigated, learned, completed, next_steps"
+    Agent->>Agent: Parse XML response
+    Agent->>DB: INSERT INTO session_summaries<br/>{ session_id, request, investigated, learned, completed, next_steps }
+    Agent->>DB: Sync to Chroma (for semantic search)
+
+    Note over SummaryHook,DB: Total sync time: ~2ms<br/>AI summarization: 2-5s (async)
+```
+
+**Key Pattern:** The summary is generated asynchronously and doesn't block the user from resuming work or closing the session.
+
 **Input** (via stdin):
 ```json
 {
@@ -332,6 +625,38 @@ Body: { isProcessing: false }
 
 **Hook**: `cleanup-hook.js`
 
+### Sequence Diagram
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant IDE as IDE/Extension
+    participant CleanupHook as cleanup-hook.js
+    participant Worker as Worker Service
+    participant DB as SQLite Database
+    participant SSE as SSE Clients (Viewer UI)
+
+    User->>IDE: Closes session<br/>(exit, clear, logout)
+    IDE->>CleanupHook: SessionEnd hook triggered<br/>{ session_id, cwd, transcript_path, reason }
+
+    CleanupHook->>Worker: POST /api/sessions/complete<br/>{ claudeSessionId, reason }<br/>(fire-and-forget, 2s timeout)
+
+    CleanupHook-->>IDE: { continue: true, suppressOutput: true }
+    IDE-->>User: Session closed
+
+    Note over Worker,SSE: Async path
+
+    Worker->>Worker: Lookup sessionDbId from claudeSessionId
+    Worker->>DB: UPDATE sdk_sessions<br/>SET status = 'completed', completed_at = NOW()<br/>WHERE claude_session_id = claudeSessionId
+    Worker->>SSE: Broadcast session completion event<br/>(for live viewer UI updates)
+
+    SSE-->>SSE: Update UI to show session as completed
+
+    Note over CleanupHook,SSE: Total sync time: ~2ms
+```
+
+**Key Pattern:** Session completion is tracked for analytics and UI updates, but doesn't prevent the user from closing the IDE.
+
 **Input** (via stdin):
 ```json
 {
@@ -368,106 +693,124 @@ Timeout: 2000ms
 
 ---
 
-## Data Flow Diagram
+## Session State Machine
+
+Understanding session lifecycle and state transitions:
 
 ```mermaid
-flowchart TD
-    subgraph step1["1. USER SUBMITS PROMPT"]
-        CC1[Claude Code] --> SS1[SessionStart hook]
-        SS1 --> CH[context-hook.js]
-        SS1 --> UMH[user-message-hook.js]
-        CH --> |"GET /api/context/inject"| CTX[returns context markdown]
-        UMH --> DISP[displays context info to user]
+stateDiagram-v2
+    [*] --> Initialized: SessionStart hook<br/>(generate session_id)
 
-        CC1 --> UPS1[UserPromptSubmit hook]
-        UPS1 --> NH[new-hook.js]
-        NH --> |1| CREATE["db.createSDKSession()"]
-        NH --> |2| INC["db.incrementPromptCounter()"]
-        NH --> |3| STRIP["stripMemoryTagsFromPrompt()"]
-        NH --> |4| SAVE["db.saveUserPrompt()"]
-        NH --> |5| INIT["POST /sessions/{id}/init"]
-        INIT --> W1[Worker]
-        W1 --> SM1[SessionManager]
-        SM1 --> SA1[SDK Agent]
-    end
+    Initialized --> Active: UserPromptSubmit<br/>(first prompt)
 
-    subgraph step2["2. CLAUDE USES A TOOL"]
-        CC2[Claude Code] --> PTU1[PostToolUse hook]
-        PTU1 --> SH[save-hook.js]
-        SH --> |"Skip if in SKIP_TOOLS"| CHECK{Check tool}
-        CHECK --> |allowed| OBS["POST /api/sessions/observations"]
-        OBS --> W2[Worker]
-        W2 --> SA2["SDK Agent → Claude compresses"]
-        SA2 --> STORE1["Store in SQLite + Chroma"]
-        STORE1 --> SSE[Broadcast to SSE clients]
-    end
+    Active --> Active: UserPromptSubmit<br/>(continuation prompts)<br/>promptNumber++
 
-    subgraph step3["3. USER STOPS ASKING QUESTIONS"]
-        CC3[Claude Code] --> STOP1[Stop hook]
-        STOP1 --> SUMH[summary-hook.js]
-        SUMH --> EXT[Extract last messages from transcript]
-        EXT --> SUM["POST /api/sessions/summarize"]
-        SUM --> W3[Worker]
-        W3 --> SA3["SDK Agent → Claude generates summary"]
-        SA3 --> STORE2["Store in SQLite + Chroma"]
-    end
+    Active --> ObservationQueued: PostToolUse hook<br/>(tool execution captured)
 
-    subgraph step4["4. SESSION CLOSES"]
-        CC4[Claude Code] --> SE1[SessionEnd hook]
-        SE1 --> CLN[cleanup-hook.js]
-        CLN --> COMP["POST /api/sessions/complete"]
-        COMP --> W4[Worker]
-        W4 --> MARK["Mark session as 'completed'"]
-    end
+    ObservationQueued --> Active: Observation processed<br/>(async, non-blocking)
 
-    step1 --> step2
-    step2 --> step3
-    step3 --> step4
+    Active --> Summarizing: Stop hook<br/>(user pauses/stops)
+
+    Summarizing --> Active: User resumes<br/>(new prompt submitted)
+
+    Summarizing --> Completed: SessionEnd hook<br/>(session closes)
+
+    Active --> Completed: SessionEnd hook<br/>(session closes)
+
+    Completed --> [*]
+
+    note right of Active
+        session_id: constant (e.g., "claude-session-abc123")
+        sessionDbId: constant (e.g., 42)
+        promptNumber: increments (1, 2, 3, ...)
+        All operations use same sessionDbId
+    end note
+
+    note right of ObservationQueued
+        Fire-and-forget HTTP
+        AI compression happens async
+        IDE never blocks
+    end note
 ```
+
+**Key Insights:**
+- `session_id` never changes during a conversation
+- `sessionDbId` is the database primary key for the session
+- `promptNumber` increments with each user prompt
+- State transitions are non-blocking (fire-and-forget pattern)
 
 ---
 
-## Session ID Threading
+## Database Schema
 
-The same `session_id` flows through ALL hooks in a conversation:
+The session-centric data model that enables cross-session memory:
 
 ```mermaid
-flowchart TD
-    SID["session_id (from Claude Code)"]
+erDiagram
+    SDK_SESSIONS ||--o{ USER_PROMPTS : "has many"
+    SDK_SESSIONS ||--o{ OBSERVATIONS : "has many"
+    SDK_SESSIONS ||--o{ SESSION_SUMMARIES : "has many"
 
-    subgraph SS["SessionStart"]
-        SS_ID["session_id"]
-    end
+    SDK_SESSIONS {
+        integer id PK "Auto-increment primary key"
+        text claude_session_id UK "From IDE (e.g., 'claude-session-123')"
+        text project "Project name from cwd basename"
+        text first_user_prompt "Initial prompt that started session"
+        integer prompt_counter "Increments with each UserPromptSubmit"
+        text status "initialized | active | completed"
+        datetime created_at
+        datetime completed_at
+    }
 
-    subgraph UPS["UserPromptSubmit"]
-        UPS_ID["session_id (same)"]
-        UPS_CREATE["new-hook creates:<br/>sdk_sessions.claude_session_id = session_id"]
-        UPS_RET["returns: sessionDbId (primary key)"]
-        UPS_ALL["All subsequent operations use sessionDbId"]
-        UPS_ID --> UPS_CREATE --> UPS_RET --> UPS_ALL
-    end
+    USER_PROMPTS {
+        integer id PK
+        integer session_id FK "References SDK_SESSIONS.id"
+        integer prompt_number "1, 2, 3, ... matches prompt_counter"
+        text prompt "User's actual prompt (tags stripped)"
+        datetime created_at
+    }
 
-    subgraph PTU["PostToolUse"]
-        PTU_ID["session_id (same)"]
-        PTU_GET["createSDKSession() returns sessionDbId"]
-        PTU_OBS["All observations tagged with sessionDbId"]
-        PTU_ID --> PTU_GET --> PTU_OBS
-    end
+    OBSERVATIONS {
+        integer id PK
+        integer session_id FK "References SDK_SESSIONS.id"
+        integer prompt_number "Which prompt this observation belongs to"
+        text tool_name "Read, Bash, Grep, Write, etc."
+        text tool_input_json "Stripped of privacy tags"
+        text tool_response_text "Stripped of privacy tags"
+        text compressed_observation "AI-generated structured observation"
+        datetime created_at
+    }
 
-    subgraph STOP["Stop"]
-        STOP_ID["session_id (same)"]
-        STOP_SUM["Summary tagged with sessionDbId"]
-        STOP_ID --> STOP_SUM
-    end
-
-    subgraph SEND["SessionEnd"]
-        SEND_ID["session_id (same)"]
-        SEND_MARK["Mark sessionDbId as completed"]
-        SEND_ID --> SEND_MARK
-    end
-
-    SID --> SS --> UPS --> PTU --> STOP --> SEND
+    SESSION_SUMMARIES {
+        integer id PK
+        integer session_id FK "References SDK_SESSIONS.id"
+        text request "What user requested"
+        text investigated "What was explored"
+        text learned "What was discovered"
+        text completed "What was accomplished"
+        text next_steps "What remains to be done"
+        datetime created_at
+    }
 ```
+
+**Idempotency Pattern:**
+
+```sql
+-- This ensures same session_id always maps to same sessionDbId
+INSERT OR IGNORE INTO sdk_sessions (claude_session_id, project, first_user_prompt)
+VALUES (?, ?, ?)
+RETURNING id;
+
+-- If already exists, returns existing row
+-- If new, creates and returns new row
+```
+
+**Foreign Key Cascade:**
+
+All child tables (user_prompts, observations, session_summaries) use `session_id` foreign key referencing `SDK_SESSIONS.id`. This ensures:
+- All data for a session is queryable by sessionDbId
+- Session deletions cascade to child tables
+- Efficient joins for context injection
 
 <Warning>
 Never generate your own session IDs. Always use the `session_id` provided by the IDE - this is the source of truth for linking all data together.
