@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [7.0.4] - 2025-12-09
+
+## What's Changed
+
+### Bug Fixes
+- **Windows**: Comprehensive fixes for Windows plugin installation
+- **Cache**: Add package.json to plugin directory for cache dependency resolution
+
+Thanks to @kat-bell for the excellent contributions!
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.0.3...v7.0.4
+
 ## [7.0.3] - 2025-12-09
 
 ## What's Changed
