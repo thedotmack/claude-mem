@@ -15,6 +15,7 @@ import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { execSync, spawnSync } from 'child_process';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { homedir } from 'os';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -25,6 +26,10 @@ const PACKAGE_JSON_PATH = join(PLUGIN_ROOT, 'package.json');
 const VERSION_MARKER_PATH = join(PLUGIN_ROOT, '.install-version');
 const NODE_MODULES_PATH = join(PLUGIN_ROOT, 'node_modules');
 const BETTER_SQLITE3_PATH = join(NODE_MODULES_PATH, 'better-sqlite3');
+
+// CRITICAL: Always use marketplace directory for PM2/ecosystem
+// This ensures cross-platform compatibility and avoids cache directory confusion
+const MARKETPLACE_ROOT = join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
 
 // Colors for output
 const colors = {
@@ -367,15 +372,16 @@ async function main() {
       // Try to start the PM2 worker after fresh install
       try {
         log('🚀 Starting worker service...', colors.cyan);
-        // On Windows, PM2 executable is pm2.cmd, not pm2
-        const localPm2Base = join(NODE_MODULES_PATH, '.bin', 'pm2');
+        // CRITICAL: Always use marketplace directory for PM2/ecosystem
+        // This ensures PM2 starts from the correct location regardless of where this script runs from
+        const localPm2Base = join(MARKETPLACE_ROOT, 'node_modules', '.bin', 'pm2');
         const localPm2Cmd = process.platform === 'win32' ? localPm2Base + '.cmd' : localPm2Base;
         const pm2Command = existsSync(localPm2Cmd) ? localPm2Cmd : 'pm2';
-        const ecosystemPath = join(PLUGIN_ROOT, 'ecosystem.config.cjs');
+        const ecosystemPath = join(MARKETPLACE_ROOT, 'ecosystem.config.cjs');
 
         // Using spawnSync with array args to avoid command injection risks
         const result = spawnSync(pm2Command, ['start', ecosystemPath], {
-          cwd: PLUGIN_ROOT,
+          cwd: MARKETPLACE_ROOT,
           stdio: 'pipe',
           encoding: 'utf-8'
         });

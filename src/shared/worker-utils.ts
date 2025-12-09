@@ -2,8 +2,11 @@ import path from "path";
 import { existsSync } from "fs";
 import { homedir } from "os";
 import { spawnSync } from "child_process";
-import { getPackageRoot } from "./paths.js";
 import { SettingsDefaultsManager } from "../services/worker/settings/SettingsDefaultsManager.js";
+
+// CRITICAL: Always use marketplace directory for PM2/ecosystem
+// This ensures cross-platform compatibility and avoids cache directory confusion
+const MARKETPLACE_ROOT = path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
 
 // Named constants for health checks
 const HEALTH_CHECK_TIMEOUT_MS = 100;
@@ -40,9 +43,9 @@ async function isWorkerHealthy(): Promise<boolean> {
  */
 async function startWorker(): Promise<boolean> {
   try {
-    // Find the ecosystem config file (built version in plugin/)
-    const pluginRoot = getPackageRoot();
-    const ecosystemPath = path.join(pluginRoot, 'ecosystem.config.cjs');
+    // CRITICAL: Always use marketplace directory for ecosystem.config.cjs
+    // This ensures PM2 starts from the correct location regardless of where hooks run from
+    const ecosystemPath = path.join(MARKETPLACE_ROOT, 'ecosystem.config.cjs');
 
     if (!existsSync(ecosystemPath)) {
       throw new Error(`Ecosystem config not found at ${ecosystemPath}`);
@@ -50,15 +53,15 @@ async function startWorker(): Promise<boolean> {
 
     // Try to use local PM2 from node_modules first, fall back to global PM2
     // On Windows, PM2 executable is pm2.cmd, not pm2
-    const localPm2Base = path.join(pluginRoot, 'node_modules', '.bin', 'pm2');
+    const localPm2Base = path.join(MARKETPLACE_ROOT, 'node_modules', '.bin', 'pm2');
     const localPm2Cmd = process.platform === 'win32' ? localPm2Base + '.cmd' : localPm2Base;
     const pm2Command = existsSync(localPm2Cmd) ? localPm2Cmd : 'pm2';
 
     // Start using PM2 with the ecosystem config
-    // CRITICAL: Must set cwd to pluginRoot so PM2 starts from marketplace directory
+    // CRITICAL: Must set cwd to MARKETPLACE_ROOT so PM2 starts from marketplace directory
     // Using spawnSync with array args to avoid command injection risks
     const result = spawnSync(pm2Command, ['start', ecosystemPath], {
-      cwd: pluginRoot,
+      cwd: MARKETPLACE_ROOT,
       stdio: 'pipe',
       encoding: 'utf-8',
       windowsHide: true
@@ -97,11 +100,10 @@ export async function ensureWorkerRunning(): Promise<void> {
 
   if (!started) {
     const port = getWorkerPort();
-    const pluginRoot = getPackageRoot();
     throw new Error(
       `Worker service failed to start on port ${port}.\n\n` +
       `To start manually, run:\n` +
-      `  cd ${pluginRoot}\n` +
+      `  cd ${MARKETPLACE_ROOT}\n` +
       `  npx pm2 start ecosystem.config.cjs\n\n` +
       `If already running, try: npx pm2 restart claude-mem-worker`
     );
