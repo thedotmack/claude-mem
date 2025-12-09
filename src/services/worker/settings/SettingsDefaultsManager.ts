@@ -86,22 +86,35 @@ export class SettingsDefaultsManager {
 
   /**
    * Load settings from file with fallback to defaults
-   * Returns merged settings with defaults as fallback
+   * Returns merged settings with proper priority: env > file > defaults
    */
   static loadFromFile(settingsPath: string): SettingsDefaults {
-    if (!existsSync(settingsPath)) {
-      return this.getAllDefaults();
+    // Start with defaults
+    const result: SettingsDefaults = { ...this.DEFAULTS };
+
+    // Load from settings file if it exists
+    if (existsSync(settingsPath)) {
+      try {
+        const settingsData = readFileSync(settingsPath, 'utf-8');
+        const settings = JSON.parse(settingsData);
+        const fileEnv = settings.env || {};
+
+        // Merge file settings with defaults
+        for (const key of Object.keys(this.DEFAULTS) as Array<keyof SettingsDefaults>) {
+          if (fileEnv[key] !== undefined) {
+            result[key] = String(fileEnv[key]);
+          }
+        }
+      } catch (error) {
+        console.error(`[SettingsDefaultsManager] Failed to parse settings file at ${settingsPath}:`, error);
+        // Continue with defaults on parse error
+      }
     }
 
-    const settingsData = readFileSync(settingsPath, 'utf-8');
-    const settings = JSON.parse(settingsData);
-    const env = settings.env || {};
-
-    // Merge file settings with defaults
-    const result: SettingsDefaults = { ...this.DEFAULTS };
+    // Environment variables take highest priority
     for (const key of Object.keys(this.DEFAULTS) as Array<keyof SettingsDefaults>) {
-      if (env[key] !== undefined) {
-        result[key] = env[key];
+      if (process.env[key] !== undefined) {
+        result[key] = String(process.env[key]);
       }
     }
 
