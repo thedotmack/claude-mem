@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [7.0.5] - 2025-12-09
+
+## What's Changed
+
+### Bug Fixes
+- Fixed settings schema inconsistency between write and read operations
+- Fixed PowerShell command injection vulnerability in worker-utils.ts
+- Enhanced PM2 existence check with clear error messages
+- Added error logging to silent tool serialization handlers
+
+### Improvements
+- Settings centralization: Migrated to SettingsDefaultsManager across codebase
+- Auto-creation of settings.json file with defaults on first run
+- Settings schema migration from nested to flat format
+- Refactored HTTP-only new-hook implementation
+- Cross-platform worker service improvements
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.0.4...v7.0.5
+
 ## [7.0.4] - 2025-12-09
 
 ## What's Changed
