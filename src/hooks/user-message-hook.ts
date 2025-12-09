@@ -8,6 +8,7 @@
  */
 import { basename } from "path";
 import { ensureWorkerRunning, getWorkerPort } from "../shared/worker-utils.js";
+import { HOOK_EXIT_CODES } from "../shared/hook-constants.js";
 
 try {
   // Ensure worker is running
@@ -60,5 +61,4 @@ This message was not added to your startup context, so you can continue working 
 `);
 }
 
-// exit code 3 = show user message that Claude does NOT receive as context
-process.exit(3);
+process.exit(HOOK_EXIT_CODES.USER_MESSAGE_ONLY);
