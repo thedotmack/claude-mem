@@ -123,32 +123,6 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
     throw error;
   }
 
-  // Strip leading slash from commands for memory agent
-  // /review 101 → review 101 (more semantic for observations)
-  const cleanedPrompt = prompt.startsWith('/') ? prompt.substring(1) : prompt;
-
-  try {
-    // Initialize session via HTTP
-    const response = await fetch(`http://127.0.0.1:${port}/sessions/${sessionDbId}/init`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ project, userPrompt: cleanedPrompt, promptNumber }),
-      signal: AbortSignal.timeout(5000)
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Failed to initialize session: ${response.status} ${errorText}`);
-    }
-  } catch (error: any) {
-    // Only show restart message for connection errors, not HTTP errors
-    if (error.cause?.code === 'ECONNREFUSED' || error.name === 'TimeoutError' || error.message.includes('fetch failed')) {
-      throw new Error("There's a problem with the worker. If you just updated, type `pm2 restart claude-mem-worker` in your terminal to continue");
-    }
-    // Re-throw HTTP errors and other errors as-is
-    throw error;
-  }
-
   console.log(createHookResponse('UserPromptSubmit', true));
 }
 

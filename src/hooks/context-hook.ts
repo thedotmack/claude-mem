@@ -8,7 +8,6 @@
 
 import path from "path";
 import { stdin } from "process";
-import { execSync } from "child_process";
 import { ensureWorkerRunning, getWorkerPort } from "../shared/worker-utils.js";
 
 export interface SessionStartInput {
@@ -29,8 +28,24 @@ async function contextHook(input?: SessionStartInput): Promise<string> {
   const port = getWorkerPort();
 
   const url = `http://127.0.0.1:${port}/api/context/inject?project=${encodeURIComponent(project)}`;
-  const result = execSync(`curl -s "${url}"`, { encoding: "utf-8", timeout: 5000 });
-  return result.trim();
+
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(5000) });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Failed to fetch context: ${response.status} ${errorText}`);
+    }
+
+    const result = await response.text();
+    return result.trim();
+  } catch (error: any) {
+    // Only show restart message for connection errors, not HTTP errors
+    if (error.cause?.code === 'ECONNREFUSED' || error.name === 'TimeoutError' || error.message.includes('fetch failed')) {
+      throw new Error("There's a problem with the worker. If you just updated, type `pm2 restart claude-mem-worker` in your terminal to continue");
+    }
+    throw error;
+  }
 }
 
 // Entry Point - handle stdin/stdout
