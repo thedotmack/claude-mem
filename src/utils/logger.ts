@@ -3,7 +3,7 @@
  * Provides readable, traceable logging with correlation IDs and data flow tracking
  */
 
-import { loadEarlySetting } from '../shared/early-settings.js';
+import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 
 export enum LogLevel {
   DEBUG = 0,
@@ -27,8 +27,8 @@ class Logger {
   private useColor: boolean;
 
   constructor() {
-    // Parse log level from environment
-    const envLevel = loadEarlySetting('CLAUDE_MEM_LOG_LEVEL', 'INFO').toUpperCase();
+    // Parse log level from settings
+    const envLevel = SettingsDefaultsManager.get('CLAUDE_MEM_LOG_LEVEL').toUpperCase();
     this.level = LogLevel[envLevel as keyof typeof LogLevel] ?? LogLevel.INFO;
 
     // Disable colors when output is not a TTY (e.g., PM2 logs)

@@ -20,7 +20,7 @@ import {
   ObservationConcept
 } from '../../../../constants/observation-metadata.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
-import { SettingsDefaultsManager } from '../../settings/SettingsDefaultsManager.js';
+import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 
 export class SettingsRoutes extends BaseRouteHandler {
   constructor(

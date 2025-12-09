@@ -57,7 +57,13 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 - `CLAUDE_MEM_PYTHON_VERSION` - Python version for uvx/chroma-mcp (default: 3.13, avoids onnxruntime compatibility issues with Python 3.14+)
 - `CLAUDE_CODE_PATH` - Path to Claude executable (default: auto-detect via 'which claude')
 
-**Note:** Environment variables can be used to temporarily override settings from the file.
+**Settings File Format:**
+```json
+{
+  "CLAUDE_MEM_MODEL": "claude-haiku-4-5",
+  "CLAUDE_MEM_WORKER_PORT": "37777"
+}
+```
 
 ## File Locations
 

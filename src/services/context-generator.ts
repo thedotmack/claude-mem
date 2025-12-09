@@ -16,7 +16,7 @@ import {
   TYPE_WORK_EMOJI_MAP
 } from '../constants/observation-metadata.js';
 import { logger } from '../utils/logger.js';
-import { SettingsDefaultsManager } from './worker/settings/SettingsDefaultsManager.js';
+import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 
 // Version marker path - use homedir-based path that works in both CJS and ESM contexts
 const VERSION_MARKER_PATH = path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack', 'plugin', '.install-version');

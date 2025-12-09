@@ -8,7 +8,7 @@
 import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
-import { DEFAULT_OBSERVATION_TYPES_STRING, DEFAULT_OBSERVATION_CONCEPTS_STRING } from '../../../constants/observation-metadata.js';
+import { DEFAULT_OBSERVATION_TYPES_STRING, DEFAULT_OBSERVATION_CONCEPTS_STRING } from '../constants/observation-metadata.js';
 
 export interface SettingsDefaults {
   CLAUDE_MEM_MODEL: string;
@@ -74,14 +74,14 @@ export class SettingsDefaultsManager {
   }
 
   /**
-   * Get a default value with optional environment variable override
+   * Get a default value from defaults (no environment variable override)
    */
   static get(key: keyof SettingsDefaults): string {
-    return process.env[key] || this.DEFAULTS[key];
+    return this.DEFAULTS[key];
   }
 
   /**
-   * Get an integer default value with optional environment variable override
+   * Get an integer default value
    */
   static getInt(key: keyof SettingsDefaults): number {
     const value = this.get(key);
@@ -89,7 +89,7 @@ export class SettingsDefaultsManager {
   }
 
   /**
-   * Get a boolean default value with optional environment variable override
+   * Get a boolean default value
    */
   static getBool(key: keyof SettingsDefaults): boolean {
     const value = this.get(key);
@@ -107,13 +107,12 @@ export class SettingsDefaultsManager {
 
     const settingsData = readFileSync(settingsPath, 'utf-8');
     const settings = JSON.parse(settingsData);
-    const env = settings.env || {};
 
-    // Merge file settings with defaults
+    // Merge file settings with defaults (flat schema, no env wrapper)
     const result: SettingsDefaults = { ...this.DEFAULTS };
     for (const key of Object.keys(this.DEFAULTS) as Array<keyof SettingsDefaults>) {
-      if (env[key] !== undefined) {
-        result[key] = env[key];
+      if (settings[key] !== undefined) {
+        result[key] = settings[key];
       }
     }
 

@@ -17,7 +17,7 @@ import { logger } from '../../utils/logger.js';
 import { happy_path_error__with_fallback } from '../../utils/silent-debug.js';
 import { parseObservations, parseSummary } from '../../sdk/parser.js';
 import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
-import { SettingsDefaultsManager } from './settings/SettingsDefaultsManager.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import type { ActiveSession, SDKUserMessage, PendingMessage } from '../worker-types.js';
 

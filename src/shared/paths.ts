@@ -3,7 +3,7 @@ import { homedir } from 'os';
 import { existsSync, mkdirSync } from 'fs';
 import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
-import { loadEarlySetting } from './early-settings.js';
+import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
 
 // Get __dirname that works in both ESM (hooks) and CJS (worker) contexts
 function getDirname(): string {
@@ -23,7 +23,7 @@ const _dirname = getDirname();
  */
 
 // Base directories
-export const DATA_DIR = loadEarlySetting('CLAUDE_MEM_DATA_DIR', join(homedir(), '.claude-mem'));
+export const DATA_DIR = SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR');
 // Note: CLAUDE_CONFIG_DIR is a Claude Code setting, not claude-mem, so leave as env var
 export const CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
 

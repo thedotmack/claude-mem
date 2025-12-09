@@ -333,15 +333,15 @@ nano ~/.claude-mem/settings.json
 curl http://localhost:37777/api/settings
 ```
 
-**Advanced: Environment Variable Overrides**
+**Settings File Format:**
 
-For advanced users, settings can be temporarily overridden using environment variables:
-
-```bash
-CLAUDE_MEM_WORKER_PORT=38000 claude
+```json
+{
+  "CLAUDE_MEM_MODEL": "claude-haiku-4-5",
+  "CLAUDE_MEM_WORKER_PORT": "37777",
+  "CLAUDE_MEM_CONTEXT_OBSERVATIONS": "50"
+}
 ```
-
-**Note**: The settings file takes priority. Environment variables only apply when a setting is not present in the file.
 
 See [Configuration Guide](https://docs.claude-mem.ai/configuration) for details.
 

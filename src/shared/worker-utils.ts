@@ -2,7 +2,7 @@ import path from "path";
 import { existsSync } from "fs";
 import { homedir } from "os";
 import { spawnSync } from "child_process";
-import { SettingsDefaultsManager } from "../services/worker/settings/SettingsDefaultsManager.js";
+import { SettingsDefaultsManager } from "./SettingsDefaultsManager.js";
 import { logger } from "../utils/logger.js";
 import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
 

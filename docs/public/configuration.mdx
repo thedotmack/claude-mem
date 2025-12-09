@@ -26,18 +26,6 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 | `CLAUDE_MEM_PYTHON_VERSION`   | `3.13`                          | Python version for chroma-mcp         |
 | `CLAUDE_CODE_PATH`            | _(auto-detect)_                 | Path to Claude Code CLI (for Windows) |
 
-### Environment Variables (Override Only)
-
-Environment variables can temporarily override settings from the file for advanced use cases:
-
-| Variable                      | Description                           |
-|-------------------------------|---------------------------------------|
-| `CLAUDE_PLUGIN_ROOT`          | Set by Claude Code (plugin installation directory) |
-| `NODE_ENV`                    | Environment mode (set by PM2)         |
-| `FORCE_COLOR`                 | Enable colored logs (set by PM2)      |
-
-**Note**: Settings file values take priority. Environment variables only apply when a setting is not present in the file.
-
 ## Model Configuration
 
 Configure which AI model processes your observations.
@@ -63,9 +51,7 @@ Edit `~/.claude-mem/settings.json`:
 
 ```json
 {
-  "env": {
-    "CLAUDE_MEM_MODEL": "claude-haiku-4-5"
-  }
+  "CLAUDE_MEM_MODEL": "claude-haiku-4-5"
 }
 ```
 
@@ -310,19 +296,17 @@ Settings are stored in `~/.claude-mem/settings.json`:
 
 ```json
 {
-  "env": {
-    "CLAUDE_MEM_CONTEXT_OBSERVATIONS": "100",
-    "CLAUDE_MEM_CONTEXT_SESSION_COUNT": "20",
-    "CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES": "bugfix,decision,discovery",
-    "CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS": "how-it-works,gotcha",
-    "CLAUDE_MEM_CONTEXT_FULL_COUNT": "10",
-    "CLAUDE_MEM_CONTEXT_FULL_FIELD": "narrative",
-    "CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS": "true",
-    "CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS": "true",
-    "CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT": "true",
-    "CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY": "false",
-    "CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE": "false"
-  }
+  "CLAUDE_MEM_CONTEXT_OBSERVATIONS": "100",
+  "CLAUDE_MEM_CONTEXT_SESSION_COUNT": "20",
+  "CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES": "bugfix,decision,discovery",
+  "CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS": "how-it-works,gotcha",
+  "CLAUDE_MEM_CONTEXT_FULL_COUNT": "10",
+  "CLAUDE_MEM_CONTEXT_FULL_FIELD": "narrative",
+  "CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS": "true",
+  "CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS": "true",
+  "CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT": "true",
+  "CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY": "false",
+  "CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE": "false"
 }
 ```
 
@@ -330,64 +314,43 @@ Settings are stored in `~/.claude-mem/settings.json`:
 
 ## Customization
 
-Settings can be customized in `~/.claude-mem/settings.json` or temporarily overridden via environment variables.
+Settings can be customized in `~/.claude-mem/settings.json`.
 
 ### Custom Data Directory
 
-**Recommended**: Edit `~/.claude-mem/settings.json`:
+Edit `~/.claude-mem/settings.json`:
 ```json
 {
-  "env": {
-    "CLAUDE_MEM_DATA_DIR": "/custom/path"
-  }
+  "CLAUDE_MEM_DATA_DIR": "/custom/path"
 }
-```
-
-**Or** temporarily override via environment variable:
-```bash
-CLAUDE_MEM_DATA_DIR=/custom/path claude
 ```
 
 ### Custom Worker Port
 
-**Recommended**: Edit `~/.claude-mem/settings.json`:
+Edit `~/.claude-mem/settings.json`:
 ```json
 {
-  "env": {
-    "CLAUDE_MEM_WORKER_PORT": "38000"
-  }
+  "CLAUDE_MEM_WORKER_PORT": "38000"
 }
 ```
 
 Then restart the worker:
 ```bash
 npm run worker:restart
-```
-
-**Or** temporarily override via environment variable:
-```bash
-CLAUDE_MEM_WORKER_PORT=38000 npm run worker:restart
 ```
 
 ### Custom Model
 
-**Recommended**: Edit `~/.claude-mem/settings.json`:
+Edit `~/.claude-mem/settings.json`:
 ```json
 {
-  "env": {
-    "CLAUDE_MEM_MODEL": "claude-opus-4"
-  }
+  "CLAUDE_MEM_MODEL": "claude-opus-4"
 }
 ```
 
 Then restart the worker:
 ```bash
 npm run worker:restart
-```
-
-**Or** temporarily override via environment variable:
-```bash
-CLAUDE_MEM_MODEL=claude-opus-4 npm run worker:restart
 ```
 
 ## Advanced Configuration
