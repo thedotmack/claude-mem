@@ -2,6 +2,15 @@
   "env": {},
   "permissions": {
     "deny": [
+      "Read(./plugin/scripts/*.js)",
+      "Read(./plugin/scripts/*.cjs)",
+      "Read(./plugin/scripts/node_modules/**)",
+      "Read(./plugin/ui/viewer-bundle.js)",
+      "Read(./plugin/ui/viewer.html)",
+      "Read(./plugin/ui/assets/**)",
+      "Read(./plugin/ui/icon-thick-*.svg)",
+      "Read(./plugin/package.json)",
+      "Read(./plugin/ecosystem.config.cjs)",
       "Read(./package-lock.json)",
       "Read(./node_modules/**)",
       "Read(./.DS_Store)"
