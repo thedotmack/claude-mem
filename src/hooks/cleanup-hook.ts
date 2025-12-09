@@ -13,9 +13,6 @@ import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 
 export interface SessionEndInput {
   session_id: string;
-  cwd: string;
-  transcript_path?: string;
-  hook_event_name: string;
   reason: 'exit' | 'clear' | 'logout' | 'prompt_input_exit' | 'other';
 }
 
@@ -28,22 +25,11 @@ async function cleanupHook(input?: SessionEndInput): Promise<void> {
 
   happy_path_error__with_fallback('[cleanup-hook] Hook fired', {
     session_id: input?.session_id,
-    cwd: input?.cwd,
     reason: input?.reason
   });
 
-  // Handle standalone execution (no input provided)
   if (!input) {
-    console.log('No input provided - this script is designed to run as a Claude Code SessionEnd hook');
-    console.log('\nExpected input format:');
-    console.log(JSON.stringify({
-      session_id: "string",
-      cwd: "string",
-      transcript_path: "string",
-      hook_event_name: "SessionEnd",
-      reason: "exit"
-    }, null, 2));
-    process.exit(0);
+    throw new Error('cleanup-hook requires input from Claude Code');
   }
 
   const { session_id, reason } = input;
