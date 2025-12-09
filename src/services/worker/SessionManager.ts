@@ -307,6 +307,47 @@ export class SessionManager {
   }
 
   /**
+   * Get session emitter for event listening
+   */
+  getSessionEmitter(sessionDbId: number): EventEmitter | undefined {
+    return this.sessionQueues.get(sessionDbId);
+  }
+
+  /**
+   * Wait for the next observation to be processed and saved
+   * Returns the observation or throws on timeout
+   *
+   * Note: Accepts ANY response including <no_observation>, "ok", or other text
+   * to prevent blocking when SDK ignores instructions
+   */
+  async waitForNextObservation(
+    sessionDbId: number,
+    timeoutMs: number
+  ): Promise<any> {
+    return new Promise((resolve, reject) => {
+      const timeoutId = setTimeout(() => {
+        emitter.off('observation_saved', handler);
+        reject(new Error('Timeout waiting for observation'));
+      }, timeoutMs);
+
+      const emitter = this.sessionQueues.get(sessionDbId);
+      if (!emitter) {
+        clearTimeout(timeoutId);
+        reject(new Error('Session not found'));
+        return;
+      }
+
+      const handler = (observation: any) => {
+        clearTimeout(timeoutId);
+        emitter.off('observation_saved', handler);
+        resolve(observation);
+      };
+
+      emitter.once('observation_saved', handler);
+    });
+  }
+
+  /**
    * Get message iterator for SDKAgent to consume (event-driven, no polling)
    * Auto-initializes session if not in memory but exists in database
    */

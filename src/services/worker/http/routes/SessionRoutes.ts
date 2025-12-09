@@ -302,9 +302,11 @@ export class SessionRoutes extends BaseRouteHandler {
    * Queue observations by claudeSessionId (post-tool-use-hook uses this)
    * POST /api/sessions/observations
    * Body: { claudeSessionId, tool_name, tool_input, tool_response, cwd, toolUseId }
+   * Query: ?wait_until_obs_is_saved=true (optional, for Endless Mode v7.1)
    */
-  private handleObservationsByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
+  private handleObservationsByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const { claudeSessionId, tool_name, tool_input, tool_response, cwd, toolUseId } = req.body;
+    const waitForCompletion = req.query.wait_until_obs_is_saved === 'true';
 
     if (!claudeSessionId) {
       return this.badRequest(res, 'Missing claudeSessionId');
@@ -363,10 +365,41 @@ export class SessionRoutes extends BaseRouteHandler {
     // Ensure SDK agent is running
     this.ensureGeneratorRunning(sessionDbId, 'observation');
 
-    // Broadcast observation queued event
-    this.eventBroadcaster.broadcastObservationQueued(sessionDbId);
+    if (!waitForCompletion) {
+      // Async mode (current behavior)
+      this.eventBroadcaster.broadcastObservationQueued(sessionDbId);
+      res.json({ status: 'queued' });
+      return;
+    }
 
-    res.json({ status: 'queued' });
+    // SYNCHRONOUS MODE: Wait for observation to be processed (Endless Mode v7.1)
+    try {
+      const observation = await this.sessionManager.waitForNextObservation(
+        sessionDbId,
+        90000  // 90 second timeout (safety margin within 120s hook timeout)
+      );
+
+      res.json({
+        status: 'completed',
+        observation: {
+          id: observation.id,
+          type: observation.type,
+          title: observation.title,
+          subtitle: observation.subtitle,
+          narrative: observation.narrative,
+          concepts: observation.concepts,
+          files_read: observation.files_read,
+          files_modified: observation.files_modified,
+          created_at_epoch: observation.created_at_epoch
+        }
+      });
+    } catch (error: any) {
+      // Timeout or processing error
+      res.status(408).json({
+        status: 'timeout',
+        error: error.message
+      });
+    }
   });
 
   /**

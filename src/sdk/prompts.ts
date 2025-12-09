@@ -70,7 +70,10 @@ Skip routine operations:
 - Simple file listings
 - Repetitive operations you've already documented
 - If file related research comes back as empty or not found
-- **No output necessary if skipping.**
+
+IMPORTANT: ALWAYS output either an <observation> or <no_observation> and nothing else.
+If skipping, output ONLY the literal text: <no_observation>
+Do NOT output "ok", explanations, or any other text.
 
 OUTPUT FORMAT
 -------------
@@ -243,7 +246,10 @@ Skip routine operations:
 - Simple file listings
 - Repetitive operations you've already documented
 - If file related research comes back as empty or not found
-- **No output necessary if skipping.**
+
+IMPORTANT: ALWAYS output either an <observation> or <no_observation> and nothing else.
+If skipping, output ONLY the literal text: <no_observation>
+Do NOT output "ok", explanations, or any other text.
 
 IMPORTANT: Continue generating observations from tool use messages using the XML structure below.
 

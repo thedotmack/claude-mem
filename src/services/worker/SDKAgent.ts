@@ -277,6 +277,22 @@ export class SDKAgent {
         concepts: obs.concepts?.length ?? (silentDebug('obs.concepts is null/undefined', { obsId }), 0)
       });
 
+      // Emit event for synchronous waiting (Endless Mode v7.1)
+      const emitter = this.sessionManager.getSessionEmitter(session.sessionDbId);
+      if (emitter) {
+        emitter.emit('observation_saved', {
+          id: obsId,
+          type: obs.type,
+          title: obs.title,
+          subtitle: obs.subtitle,
+          narrative: obs.narrative,
+          concepts: obs.concepts,
+          files_read: obs.files_read,
+          files_modified: obs.files_modified,
+          created_at_epoch: createdAtEpoch
+        });
+      }
+
       // Sync to Chroma with error logging
       const chromaStart = Date.now();
       const obsType = obs.type;
