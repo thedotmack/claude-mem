@@ -16,6 +16,7 @@ import { createHookResponse } from './hook-response.js';
 import { logger } from '../utils/logger.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
 import { formatObservationAsMarkdown } from './observation-formatter.js';
+import { clearToolInputInTranscript } from './context-injection.js';
 
 export interface PostToolUseInput {
   session_id: string;
@@ -140,6 +141,20 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
     if (data.status === 'completed' && data.observation) {
       // Format observation as markdown
       const markdown = formatObservationAsMarkdown(data.observation);
+
+      // Clear tool input from transcript to save tokens
+      if (input.tool_use_id && input.transcript_path) {
+        const tokensSaved = await clearToolInputInTranscript(
+          input.transcript_path,
+          input.tool_use_id
+        );
+        if (tokensSaved > 0) {
+          logger.debug('HOOK', 'Cleared tool input from transcript', {
+            toolUseId: input.tool_use_id,
+            tokensSaved
+          });
+        }
+      }
 
       // Inject via additionalContext
       console.log(createHookResponse('PostToolUse', true, { context: markdown }));

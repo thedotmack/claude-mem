@@ -314,36 +314,36 @@ export class SessionManager {
   }
 
   /**
-   * Wait for the next observation to be processed and saved
-   * Returns the observation or throws on timeout
+   * Wait for the next SDK response to be processed
+   * Returns the observation (or null if no observation was created)
+   * Throws on timeout
    *
-   * Note: Accepts ANY response including <no_observation>, "ok", or other text
-   * to prevent blocking when SDK ignores instructions
+   * CRITICAL: Waits for 'sdk_response_complete' event which fires for ALL responses,
+   * including <no_observation> responses. This prevents blocking when SDK skips storage.
    */
   async waitForNextObservation(
     sessionDbId: number,
     timeoutMs: number
   ): Promise<any> {
     return new Promise((resolve, reject) => {
-      const timeoutId = setTimeout(() => {
-        emitter.off('observation_saved', handler);
-        reject(new Error('Timeout waiting for observation'));
-      }, timeoutMs);
-
       const emitter = this.sessionQueues.get(sessionDbId);
       if (!emitter) {
-        clearTimeout(timeoutId);
         reject(new Error('Session not found'));
         return;
       }
 
+      const timeoutId = setTimeout(() => {
+        emitter.off('sdk_response_complete', handler);
+        reject(new Error('Timeout waiting for SDK response'));
+      }, timeoutMs);
+
       const handler = (observation: any) => {
         clearTimeout(timeoutId);
-        emitter.off('observation_saved', handler);
+        emitter.off('sdk_response_complete', handler);
         resolve(observation);
       };
 
-      emitter.once('observation_saved', handler);
+      emitter.once('sdk_response_complete', handler);
     });
   }
 

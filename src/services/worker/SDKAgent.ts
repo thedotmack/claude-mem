@@ -255,6 +255,9 @@ export class SDKAgent {
     // Parse observations
     const observations = parseObservations(text, session.claudeSessionId);
 
+    // Track saved observations for Endless Mode event
+    const savedObservations: any[] = [];
+
     // Store observations
     for (const obs of observations) {
       const { id: obsId, createdAtEpoch } = this.dbManager.getSessionStore().storeObservation(
@@ -277,21 +280,18 @@ export class SDKAgent {
         concepts: obs.concepts?.length ?? (silentDebug('obs.concepts is null/undefined', { obsId }), 0)
       });
 
-      // Emit event for synchronous waiting (Endless Mode v7.1)
-      const emitter = this.sessionManager.getSessionEmitter(session.sessionDbId);
-      if (emitter) {
-        emitter.emit('observation_saved', {
-          id: obsId,
-          type: obs.type,
-          title: obs.title,
-          subtitle: obs.subtitle,
-          narrative: obs.narrative,
-          concepts: obs.concepts,
-          files_read: obs.files_read,
-          files_modified: obs.files_modified,
-          created_at_epoch: createdAtEpoch
-        });
-      }
+      // Track for Endless Mode event
+      savedObservations.push({
+        id: obsId,
+        type: obs.type,
+        title: obs.title,
+        subtitle: obs.subtitle,
+        narrative: obs.narrative,
+        concepts: obs.concepts,
+        files_read: obs.files_read,
+        files_modified: obs.files_modified,
+        created_at_epoch: createdAtEpoch
+      });
 
       // Sync to Chroma with error logging
       const chromaStart = Date.now();
@@ -422,6 +422,25 @@ export class SDKAgent {
     // Broadcast activity status after processing (queue may have changed)
     if (worker && typeof worker.broadcastProcessingStatus === 'function') {
       worker.broadcastProcessingStatus();
+    }
+
+    // CRITICAL: Always emit SDK response completion event for Endless Mode v7.1
+    // This unblocks synchronous waiting even when no observations were created
+    const emitter = this.sessionManager.getSessionEmitter(session.sessionDbId);
+    if (emitter) {
+      if (savedObservations.length > 0) {
+        // Emit saved observations
+        for (const obs of savedObservations) {
+          emitter.emit('sdk_response_complete', obs);
+        }
+      } else {
+        // No observations - emit null to signal completion without data
+        emitter.emit('sdk_response_complete', null);
+        logger.debug('SDK', 'SDK response complete (no observations)', {
+          sessionId: session.sessionDbId,
+          responsePreview: text.substring(0, 100)
+        });
+      }
     }
   }
 

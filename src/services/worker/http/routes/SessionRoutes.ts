@@ -372,27 +372,38 @@ export class SessionRoutes extends BaseRouteHandler {
       return;
     }
 
-    // SYNCHRONOUS MODE: Wait for observation to be processed (Endless Mode v7.1)
+    // SYNCHRONOUS MODE: Wait for SDK response to be processed (Endless Mode v7.1)
     try {
       const observation = await this.sessionManager.waitForNextObservation(
         sessionDbId,
         90000  // 90 second timeout (safety margin within 120s hook timeout)
       );
 
-      res.json({
-        status: 'completed',
-        observation: {
-          id: observation.id,
-          type: observation.type,
-          title: observation.title,
-          subtitle: observation.subtitle,
-          narrative: observation.narrative,
-          concepts: observation.concepts,
-          files_read: observation.files_read,
-          files_modified: observation.files_modified,
-          created_at_epoch: observation.created_at_epoch
-        }
-      });
+      // Handle both observation and no-observation responses
+      if (observation === null) {
+        // SDK returned <no_observation> or plain text - not stored
+        res.json({
+          status: 'completed',
+          observation: null,
+          message: 'SDK response received but no observation was created'
+        });
+      } else {
+        // Observation was created and stored
+        res.json({
+          status: 'completed',
+          observation: {
+            id: observation.id,
+            type: observation.type,
+            title: observation.title,
+            subtitle: observation.subtitle,
+            narrative: observation.narrative,
+            concepts: observation.concepts,
+            files_read: observation.files_read,
+            files_modified: observation.files_modified,
+            created_at_epoch: observation.created_at_epoch
+          }
+        });
+      }
     } catch (error: any) {
       // Timeout or processing error
       res.status(408).json({
