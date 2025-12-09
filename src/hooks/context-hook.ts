@@ -13,12 +13,10 @@ import { HOOK_TIMEOUTS } from "../shared/hook-constants.js";
 import { handleWorkerError } from "../shared/hook-error-handler.js";
 
 export interface SessionStartInput {
-  session_id?: string;
-  transcript_path?: string;
-  cwd?: string;
+  session_id: string;
+  transcript_path: string;
+  cwd: string;
   hook_event_name?: string;
-  source?: "startup" | "resume" | "clear" | "compact";
-  [key: string]: any;
 }
 
 async function contextHook(input?: SessionStartInput): Promise<string> {

@@ -20,7 +20,6 @@ export interface PostToolUseInput {
   tool_name: string;
   tool_input: any;
   tool_response: any;
-  [key: string]: any;
 }
 
 // Tools to skip (low value or too frequent)

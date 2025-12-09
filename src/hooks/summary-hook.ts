@@ -21,8 +21,7 @@ import { extractLastMessage } from '../shared/transcript-parser.js';
 export interface StopInput {
   session_id: string;
   cwd: string;
-  transcript_path?: string;
-  [key: string]: any;
+  transcript_path: string;
 }
 
 /**

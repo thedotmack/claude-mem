@@ -9,7 +9,6 @@ export interface UserPromptSubmitInput {
   session_id: string;
   cwd: string;
   prompt: string;
-  [key: string]: any;
 }
 
 
