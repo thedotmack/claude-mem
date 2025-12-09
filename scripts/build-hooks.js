@@ -58,22 +58,6 @@ async function buildHooks() {
     }
     console.log('✓ Output directories ready');
 
-    // Copy smart-install.js to plugin/scripts
-    console.log('\n📋 Copying smart-install.js...');
-    const smartInstallSource = path.join(__dirname, '..', 'scripts', 'smart-install.js');
-    const smartInstallDest = path.join(hooksDir, 'smart-install.js');
-    
-    if (!fs.existsSync(smartInstallSource)) {
-      throw new Error(`Source file not found: ${smartInstallSource}`);
-    }
-    
-    try {
-      fs.copyFileSync(smartInstallSource, smartInstallDest);
-      console.log('✓ smart-install.js copied');
-    } catch (error) {
-      throw new Error(`Failed to copy smart-install.js: ${error.message}`);
-    }
-
     // Build React viewer
     console.log('\n📋 Building React viewer...');
     const { spawn } = await import('child_process');
