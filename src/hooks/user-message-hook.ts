@@ -9,7 +9,7 @@
 import { join, basename } from "path";
 import { homedir } from "os";
 import { existsSync } from "fs";
-import { getWorkerPort } from "../shared/worker-utils.js";
+import { ensureWorkerRunning, getWorkerPort } from "../shared/worker-utils.js";
 
 // Check if node_modules exists - if not, this is first run
 const pluginDir = join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
@@ -40,6 +40,9 @@ This message was not added to your startup context, so you can continue working 
 }
 
 try {
+  // Ensure worker is running
+  await ensureWorkerRunning();
+
   const port = getWorkerPort();
   const project = basename(process.cwd());
 

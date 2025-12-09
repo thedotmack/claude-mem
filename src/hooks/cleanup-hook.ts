@@ -7,7 +7,7 @@
  */
 
 import { stdin } from 'process';
-import { getWorkerPort } from '../shared/worker-utils.js';
+import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
 import { silentDebug } from '../utils/silent-debug.js';
 
 export interface SessionEndInput {
@@ -43,6 +43,9 @@ async function cleanupHook(input?: SessionEndInput): Promise<void> {
   }
 
   const { session_id, reason } = input;
+
+  // Ensure worker is running
+  await ensureWorkerRunning();
 
   const port = getWorkerPort();
 
