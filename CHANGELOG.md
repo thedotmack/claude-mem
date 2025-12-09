@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [7.0.1] - 2025-12-09
+
+## Bug Fixes
+
+- **Hook Execution**: Ensure worker is running at the beginning of all hook files
+- **Context Hook**: Replace waitForPort with ensureWorkerRunning for better error handling
+- **Reliability**: Move ensureWorkerRunning to start of all hook functions to ensure worker is started before any logic executes
+
+## Technical Changes
+
+- context-hook.ts: Replace waitForPort logic with ensureWorkerRunning
+- summary-hook.ts: Move ensureWorkerRunning before input validation
+- new-hook.ts: Move ensureWorkerRunning before debug logging
+- save-hook.ts: Move ensureWorkerRunning before SKIP_TOOLS check
+- cleanup-hook.ts: Move ensureWorkerRunning before silentDebug calls
+
+This ensures more reliable worker startup and clearer error messages when the worker fails to start.
+
 ## [7.0.0] - 2025-12-08
 
 # Major Architectural Refactor
