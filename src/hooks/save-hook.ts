@@ -10,6 +10,7 @@ import { stdin } from 'process';
 import { createHookResponse } from './hook-response.js';
 import { logger } from '../utils/logger.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
+import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 
 export interface PostToolUseInput {
   session_id: string;
@@ -67,7 +68,7 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
         tool_response,
         cwd: cwd || ''
       }),
-      signal: AbortSignal.timeout(2000)
+      signal: AbortSignal.timeout(HOOK_TIMEOUTS.DEFAULT)
     });
 
     if (!response.ok) {

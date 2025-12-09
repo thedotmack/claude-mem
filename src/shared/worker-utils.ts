@@ -4,6 +4,7 @@ import { homedir } from "os";
 import { spawnSync } from "child_process";
 import { SettingsDefaultsManager } from "../services/worker/settings/SettingsDefaultsManager.js";
 import { logger } from "../utils/logger.js";
+import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
 
 // CRITICAL: Always use marketplace directory for PM2/ecosystem
 // This ensures cross-platform compatibility and avoids cache directory confusion
@@ -11,9 +12,9 @@ const MARKETPLACE_ROOT = path.join(homedir(), '.claude', 'plugins', 'marketplace
 
 // Named constants for health checks
 // Windows needs longer timeouts due to startup overhead
-const HEALTH_CHECK_TIMEOUT_MS = 500;
-const WORKER_STARTUP_WAIT_MS = 1000;
-const WORKER_STARTUP_RETRIES = 15;
+const HEALTH_CHECK_TIMEOUT_MS = getTimeout(HOOK_TIMEOUTS.HEALTH_CHECK);
+const WORKER_STARTUP_WAIT_MS = HOOK_TIMEOUTS.WORKER_STARTUP_WAIT;
+const WORKER_STARTUP_RETRIES = HOOK_TIMEOUTS.WORKER_STARTUP_RETRIES;
 
 /**
  * Get the worker port number

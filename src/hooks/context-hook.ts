@@ -9,6 +9,7 @@
 import path from "path";
 import { stdin } from "process";
 import { ensureWorkerRunning, getWorkerPort } from "../shared/worker-utils.js";
+import { HOOK_TIMEOUTS } from "../shared/hook-constants.js";
 
 export interface SessionStartInput {
   session_id?: string;
@@ -30,7 +31,7 @@ async function contextHook(input?: SessionStartInput): Promise<string> {
   const url = `http://127.0.0.1:${port}/api/context/inject?project=${encodeURIComponent(project)}`;
 
   try {
-    const response = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    const response = await fetch(url, { signal: AbortSignal.timeout(HOOK_TIMEOUTS.DEFAULT) });
 
     if (!response.ok) {
       const errorText = await response.text();

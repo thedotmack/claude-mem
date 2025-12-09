@@ -14,6 +14,7 @@ import { readFileSync, existsSync } from 'fs';
 import { createHookResponse } from './hook-response.js';
 import { logger } from '../utils/logger.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
+import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 
 export interface StopInput {
   session_id: string;
@@ -161,7 +162,7 @@ async function summaryHook(input?: StopInput): Promise<void> {
         last_user_message: lastUserMessage,
         last_assistant_message: lastAssistantMessage
       }),
-      signal: AbortSignal.timeout(2000)
+      signal: AbortSignal.timeout(HOOK_TIMEOUTS.DEFAULT)
     });
 
     if (!response.ok) {

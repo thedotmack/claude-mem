@@ -9,6 +9,7 @@
 import { stdin } from 'process';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
 import { silentDebug } from '../utils/silent-debug.js';
+import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 
 export interface SessionEndInput {
   session_id: string;
@@ -58,7 +59,7 @@ async function cleanupHook(input?: SessionEndInput): Promise<void> {
         claudeSessionId: session_id,
         reason
       }),
-      signal: AbortSignal.timeout(2000)
+      signal: AbortSignal.timeout(HOOK_TIMEOUTS.DEFAULT)
     });
 
     if (response.ok) {
