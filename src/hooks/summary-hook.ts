@@ -16,6 +16,7 @@ import { logger } from '../utils/logger.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { happy_path_error__with_fallback } from '../utils/silent-debug.js';
+import { handleWorkerError } from '../shared/hook-error-handler.js';
 
 export interface StopInput {
   session_id: string;
@@ -181,11 +182,7 @@ async function summaryHook(input?: StopInput): Promise<void> {
 
     logger.debug('HOOK', 'Summary request sent successfully');
   } catch (error: any) {
-    // Only show restart message for connection errors, not HTTP errors
-    if (error.cause?.code === 'ECONNREFUSED' || error.name === 'TimeoutError' || error.message.includes('fetch failed')) {
-      throw new Error("There's a problem with the worker. If you just updated, type `pm2 restart claude-mem-worker` in your terminal to continue");
-    }
-    throw error;
+    handleWorkerError(error);
   } finally {
     // Notify worker to stop spinner (fire-and-forget)
     fetch(`http://127.0.0.1:${port}/api/processing`, {

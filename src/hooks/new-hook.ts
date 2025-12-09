@@ -3,6 +3,7 @@ import { stdin } from 'process';
 import { createHookResponse } from './hook-response.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
 import { happy_path_error__with_fallback } from '../utils/silent-debug.js';
+import { handleWorkerError } from '../shared/hook-error-handler.js';
 
 export interface UserPromptSubmitInput {
   session_id: string;
@@ -68,11 +69,7 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
 
     console.error(`[new-hook] Session ${sessionDbId}, prompt #${promptNumber}`);
   } catch (error: any) {
-    // Only show restart message for connection errors, not HTTP errors
-    if (error.cause?.code === 'ECONNREFUSED' || error.name === 'TimeoutError' || error.message.includes('fetch failed')) {
-      throw new Error("There's a problem with the worker. If you just updated, type `pm2 restart claude-mem-worker` in your terminal to continue");
-    }
-    throw error;
+    handleWorkerError(error);
   }
 
   console.log(createHookResponse('UserPromptSubmit', true));

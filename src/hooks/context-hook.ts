@@ -10,6 +10,7 @@ import path from "path";
 import { stdin } from "process";
 import { ensureWorkerRunning, getWorkerPort } from "../shared/worker-utils.js";
 import { HOOK_TIMEOUTS } from "../shared/hook-constants.js";
+import { handleWorkerError } from "../shared/hook-error-handler.js";
 
 export interface SessionStartInput {
   session_id?: string;
@@ -41,11 +42,7 @@ async function contextHook(input?: SessionStartInput): Promise<string> {
     const result = await response.text();
     return result.trim();
   } catch (error: any) {
-    // Only show restart message for connection errors, not HTTP errors
-    if (error.cause?.code === 'ECONNREFUSED' || error.name === 'TimeoutError' || error.message.includes('fetch failed')) {
-      throw new Error("There's a problem with the worker. If you just updated, type `pm2 restart claude-mem-worker` in your terminal to continue");
-    }
-    throw error;
+    handleWorkerError(error);
   }
 }
 
