@@ -15,11 +15,12 @@ import {
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { silentDebug } from '../utils/silent-debug.js';
+import { getWorkerPort } from '../shared/worker-utils.js';
 
 /**
  * Worker HTTP API configuration
  */
-const WORKER_PORT = parseInt(process.env.CLAUDE_MEM_WORKER_PORT || '37777', 10);
+const WORKER_PORT = getWorkerPort();
 const WORKER_BASE_URL = `http://localhost:${WORKER_PORT}`;
 
 /**

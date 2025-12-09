@@ -13,6 +13,8 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { ParsedObservation, ParsedSummary } from '../../sdk/parser.js';
 import { SessionStore } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
+import { SettingsDefaultsManager } from '../worker/settings/SettingsDefaultsManager.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import path from 'path';
 import os from 'os';
 
@@ -96,7 +98,8 @@ export class ChromaSync {
     try {
       // Use Python 3.13 by default to avoid onnxruntime compatibility issues with Python 3.14+
       // See: https://github.com/thedotmack/claude-mem/issues/170 (Python 3.14 incompatibility)
-      const pythonVersion = process.env.CLAUDE_MEM_PYTHON_VERSION || '3.13';
+      const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+      const pythonVersion = settings.CLAUDE_MEM_PYTHON_VERSION;
       const transport = new StdioClientTransport({
         command: 'uvx',
         args: [

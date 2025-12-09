@@ -18,6 +18,7 @@ import { silentDebug } from '../../utils/silent-debug.js';
 import { parseObservations, parseSummary } from '../../sdk/parser.js';
 import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
 import { SettingsDefaultsManager } from './settings/SettingsDefaultsManager.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import type { ActiveSession, SDKUserMessage, PendingMessage } from '../worker-types.js';
 
 // Import Agent SDK (assumes it's installed)
@@ -410,7 +411,8 @@ export class SDKAgent {
    * Find Claude executable (inline, called once per session)
    */
   private findClaudeExecutable(): string {
-    const claudePath = process.env.CLAUDE_CODE_PATH ||
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const claudePath = settings.CLAUDE_CODE_PATH ||
       execSync(process.platform === 'win32' ? 'where claude' : 'which claude', { encoding: 'utf8', windowsHide: true })
         .trim().split('\n')[0].trim();
 

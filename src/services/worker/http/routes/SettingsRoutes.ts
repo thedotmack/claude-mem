@@ -45,7 +45,7 @@ export class SettingsRoutes extends BaseRouteHandler {
   }
 
   /**
-   * Get environment settings (from ~/.claude/settings.json)
+   * Get environment settings (from ~/.claude-mem/settings.json)
    */
   private handleGetSettings = this.wrapHandler((req: Request, res: Response): void => {
     const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
@@ -54,7 +54,7 @@ export class SettingsRoutes extends BaseRouteHandler {
   });
 
   /**
-   * Update environment settings (in ~/.claude/settings.json) with validation
+   * Update environment settings (in ~/.claude-mem/settings.json) with validation
    */
   private handleUpdateSettings = this.wrapHandler((req: Request, res: Response): void => {
     // Validate CLAUDE_MEM_CONTEXT_OBSERVATIONS
@@ -76,6 +76,30 @@ export class SettingsRoutes extends BaseRouteHandler {
         res.status(400).json({
           success: false,
           error: 'CLAUDE_MEM_WORKER_PORT must be between 1024 and 65535'
+        });
+        return;
+      }
+    }
+
+    // Validate CLAUDE_MEM_LOG_LEVEL
+    if (req.body.CLAUDE_MEM_LOG_LEVEL) {
+      const validLevels = ['DEBUG', 'INFO', 'WARN', 'ERROR', 'SILENT'];
+      if (!validLevels.includes(req.body.CLAUDE_MEM_LOG_LEVEL.toUpperCase())) {
+        res.status(400).json({
+          success: false,
+          error: 'CLAUDE_MEM_LOG_LEVEL must be one of: DEBUG, INFO, WARN, ERROR, SILENT'
+        });
+        return;
+      }
+    }
+
+    // Validate CLAUDE_MEM_PYTHON_VERSION (must be valid Python version format)
+    if (req.body.CLAUDE_MEM_PYTHON_VERSION) {
+      const pythonVersionRegex = /^3\.\d+$/;
+      if (!pythonVersionRegex.test(req.body.CLAUDE_MEM_PYTHON_VERSION)) {
+        res.status(400).json({
+          success: false,
+          error: 'CLAUDE_MEM_PYTHON_VERSION must be in format "3.X" (e.g., "3.13")'
         });
         return;
       }
@@ -108,15 +132,24 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_MODEL',
       'CLAUDE_MEM_CONTEXT_OBSERVATIONS',
       'CLAUDE_MEM_WORKER_PORT',
+      // System Configuration
+      'CLAUDE_MEM_DATA_DIR',
+      'CLAUDE_MEM_LOG_LEVEL',
+      'CLAUDE_MEM_PYTHON_VERSION',
+      'CLAUDE_CODE_PATH',
+      // Token Economics
       'CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS',
       'CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS',
       'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT',
       'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT',
+      // Observation Filtering
       'CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES',
       'CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS',
+      // Display Configuration
       'CLAUDE_MEM_CONTEXT_FULL_COUNT',
       'CLAUDE_MEM_CONTEXT_FULL_FIELD',
       'CLAUDE_MEM_CONTEXT_SESSION_COUNT',
+      // Feature Toggles
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY',
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE',
     ];

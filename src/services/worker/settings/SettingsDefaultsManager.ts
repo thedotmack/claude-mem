@@ -6,12 +6,19 @@
  */
 
 import { readFileSync, existsSync } from 'fs';
+import { join } from 'path';
+import { homedir } from 'os';
 import { DEFAULT_OBSERVATION_TYPES_STRING, DEFAULT_OBSERVATION_CONCEPTS_STRING } from '../../../constants/observation-metadata.js';
 
 export interface SettingsDefaults {
   CLAUDE_MEM_MODEL: string;
   CLAUDE_MEM_CONTEXT_OBSERVATIONS: string;
   CLAUDE_MEM_WORKER_PORT: string;
+  // System Configuration
+  CLAUDE_MEM_DATA_DIR: string;
+  CLAUDE_MEM_LOG_LEVEL: string;
+  CLAUDE_MEM_PYTHON_VERSION: string;
+  CLAUDE_CODE_PATH: string;
   // Token Economics
   CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: string;
   CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS: string;
@@ -37,6 +44,11 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_MODEL: 'claude-haiku-4-5',
     CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
     CLAUDE_MEM_WORKER_PORT: '37777',
+    // System Configuration
+    CLAUDE_MEM_DATA_DIR: join(homedir(), '.claude-mem'),
+    CLAUDE_MEM_LOG_LEVEL: 'INFO',
+    CLAUDE_MEM_PYTHON_VERSION: '3.13',
+    CLAUDE_CODE_PATH: '', // Empty means auto-detect via 'which claude'
     // Token Economics
     CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: 'true',
     CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS: 'true',

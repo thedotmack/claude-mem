@@ -3,6 +3,8 @@
  * Provides readable, traceable logging with correlation IDs and data flow tracking
  */
 
+import { loadEarlySetting } from '../shared/early-settings.js';
+
 export enum LogLevel {
   DEBUG = 0,
   INFO = 1,
@@ -26,7 +28,7 @@ class Logger {
 
   constructor() {
     // Parse log level from environment
-    const envLevel = process.env.CLAUDE_MEM_LOG_LEVEL?.toUpperCase() || 'INFO';
+    const envLevel = loadEarlySetting('CLAUDE_MEM_LOG_LEVEL', 'INFO').toUpperCase();
     this.level = LogLevel[envLevel as keyof typeof LogLevel] ?? LogLevel.INFO;
 
     // Disable colors when output is not a TTY (e.g., PM2 logs)
