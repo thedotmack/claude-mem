@@ -157,7 +157,7 @@ export class WorkerService {
     logger.info('WORKER', 'SearchManager initialized and search routes registered');
 
     // Connect to MCP server
-    const mcpServerPath = path.join(__dirname, '..', '..', 'plugin', 'scripts', 'mcp-server.cjs');
+    const mcpServerPath = path.join(__dirname, 'mcp-server.cjs');
     const transport = new StdioClientTransport({
       command: 'node',
       args: [mcpServerPath],
