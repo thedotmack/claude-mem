@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [7.0.2] - 2025-12-09
+
+## What's Changed
+
+**Bug Fixes:**
+- Improved auto-start worker functionality for better reliability
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.0.1...v7.0.2
+
 ## [7.0.1] - 2025-12-09
 
 ## Bug Fixes
