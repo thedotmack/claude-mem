@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [7.0.3] - 2025-12-09
+
+## What's Changed
+
+**Refactoring:**
+- Completed rename of `search-server` to `mcp-server` throughout codebase
+- Updated all documentation references from search-server to mcp-server
+- Updated debug log messages to use `[mcp-server]` prefix
+- Removed legacy `search-server.cjs` file
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.0.2...v7.0.3
+
 ## [7.0.2] - 2025-12-09
 
 ## What's Changed
