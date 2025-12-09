@@ -22,6 +22,9 @@ export interface SessionEndInput {
  * Cleanup Hook Main Logic - Fire-and-forget HTTP client
  */
 async function cleanupHook(input?: SessionEndInput): Promise<void> {
+  // Ensure worker is running before any other logic
+  await ensureWorkerRunning();
+
   silentDebug('[cleanup-hook] Hook fired', {
     session_id: input?.session_id,
     cwd: input?.cwd,
@@ -43,9 +46,6 @@ async function cleanupHook(input?: SessionEndInput): Promise<void> {
   }
 
   const { session_id, reason } = input;
-
-  // Ensure worker is running
-  await ensureWorkerRunning();
 
   const port = getWorkerPort();
 

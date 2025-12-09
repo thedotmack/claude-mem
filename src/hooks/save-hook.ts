@@ -33,6 +33,9 @@ const SKIP_TOOLS = new Set([
  * Save Hook Main Logic - Fire-and-forget HTTP client
  */
 async function saveHook(input?: PostToolUseInput): Promise<void> {
+  // Ensure worker is running before any other logic
+  await ensureWorkerRunning();
+
   if (!input) {
     throw new Error('saveHook requires input');
   }
@@ -43,9 +46,6 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
     console.log(createHookResponse('PostToolUse', true));
     return;
   }
-
-  // Ensure worker is running
-  await ensureWorkerRunning();
 
   const port = getWorkerPort();
 

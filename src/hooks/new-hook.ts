@@ -53,6 +53,9 @@ export interface UserPromptSubmitInput {
  * New Hook Main Logic
  */
 async function newHook(input?: UserPromptSubmitInput): Promise<void> {
+  // Ensure worker is running before any other logic
+  await ensureWorkerRunning();
+
   if (!input) {
     throw new Error('newHook requires input');
   }
@@ -78,9 +81,6 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
     is_empty: project === '',
     cwd_was: cwd
   });
-
-  // Ensure worker is running
-  await ensureWorkerRunning();
 
   const db = new SessionStore();
 

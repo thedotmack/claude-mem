@@ -130,14 +130,14 @@ function extractLastAssistantMessage(transcriptPath: string): string {
  * Summary Hook Main Logic - Fire-and-forget HTTP client
  */
 async function summaryHook(input?: StopInput): Promise<void> {
+  // Ensure worker is running before any other logic
+  await ensureWorkerRunning();
+
   if (!input) {
     throw new Error('summaryHook requires input');
   }
 
   const { session_id } = input;
-
-  // Ensure worker is running
-  await ensureWorkerRunning();
 
   const port = getWorkerPort();
 
