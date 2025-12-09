@@ -141,5 +141,5 @@ export function formatObservationAsMarkdown(obs: ObservationRow): string {
 
   markdown += `Read: ~${Math.ceil((obs.text?.length || 0) / 4)}, Work: 🔍 ${obs.discovery_tokens}`;
 
-  return markdown.trim();
+  return `<claude-mem-context>\n${markdown.trim()}\n</claude-mem-context>`;
 }

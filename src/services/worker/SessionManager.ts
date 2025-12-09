@@ -349,9 +349,13 @@ export class SessionManager {
         reject(new Error('Timeout waiting for SDK response'));
       }, timeoutMs);
 
-      const handler = (observation: any) => {
+      const handler = (response: any) => {
         clearTimeout(timeoutId);
         emitter.off('sdk_response_complete', handler);
+
+        // Response format: { observations: [...], isEmpty: boolean }
+        const observation = response?.observations?.[0] ?? null;
+
         logger.debug('SESSION', 'Received sdk_response_complete event', {
           sessionId: sessionDbId,
           hasObservation: observation !== null,

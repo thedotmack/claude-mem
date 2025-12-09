@@ -428,25 +428,16 @@ export class SDKAgent {
     // This unblocks synchronous waiting even when no observations were created
     const emitter = this.sessionManager.getSessionEmitter(session.sessionDbId);
     if (emitter) {
-      if (savedObservations.length > 0) {
-        // Emit saved observations
-        for (const obs of savedObservations) {
-          logger.debug('SDK', 'Emitting sdk_response_complete', {
-            sessionId: session.sessionDbId,
-            obsId: obs.id,
-            type: obs.type,
-            title: obs.title
-          });
-          emitter.emit('sdk_response_complete', obs);
-        }
-      } else {
-        // No observations - emit null to signal completion without data
-        logger.debug('SDK', 'Emitting sdk_response_complete (no observations)', {
-          sessionId: session.sessionDbId,
-          responsePreview: text.substring(0, 100)
-        });
-        emitter.emit('sdk_response_complete', null);
-      }
+      logger.debug('SDK', 'Emitting sdk_response_complete', {
+        sessionId: session.sessionDbId,
+        observationCount: savedObservations.length
+      });
+
+      // Emit once per SDK response with all observations (or empty array)
+      emitter.emit('sdk_response_complete', {
+        observations: savedObservations,
+        isEmpty: savedObservations.length === 0
+      });
     } else {
       logger.error('SDK', 'No emitter found for session - cannot emit sdk_response_complete', {
         sessionId: session.sessionDbId

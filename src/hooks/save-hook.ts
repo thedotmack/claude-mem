@@ -15,7 +15,7 @@ import path from 'path';
 import { createHookResponse } from './hook-response.js';
 import { logger } from '../utils/logger.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
-import { formatObservationAsMarkdown } from './observation-formatter.js';
+import { formatObservationAsMarkdown } from './context-injection.js';
 import { clearToolInputInTranscript } from './context-injection.js';
 
 export interface PostToolUseInput {
@@ -56,11 +56,6 @@ function loadEndlessModeConfig(): { enabled: boolean } {
     return { enabled: false };
   }
 }
-
-/**
- * Endless Mode configuration (loaded once at startup)
- */
-const ENDLESS_MODE_CONFIG = loadEndlessModeConfig();
 
 /**
  * Save Hook Main Logic - Synchronous observation processing for Endless Mode
