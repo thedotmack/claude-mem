@@ -26,7 +26,7 @@ Configure which AI model processes your observations.
 
 - `claude-haiku-4-5` - Fast, cost-efficient (default)
 - `claude-sonnet-4-5` - Balanced
-- `claude-opus-4` - Most capable
+- `claude-opus-4-5` - Most capable
 - `claude-3-7-sonnet` - Alternative version
 
 ### Using the Interactive Script
@@ -330,7 +330,7 @@ npm run worker:restart
 Use a different AI model:
 
 ```bash
-export CLAUDE_MEM_MODEL=claude-opus-4
+export CLAUDE_MEM_MODEL=claude-opus-4-5
 npm run worker:restart
 ```
 
@@ -410,7 +410,7 @@ If you specify an invalid model name, the worker will fall back to `claude-haiku
 Valid models:
 - claude-haiku-4-5
 - claude-sonnet-4-5
-- claude-opus-4
+- claude-opus-4-5
 - claude-3-7-sonnet
 
 ### Port Already in Use
