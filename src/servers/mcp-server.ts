@@ -49,7 +49,7 @@ async function callWorkerAPI(
   endpoint: string,
   params: Record<string, any>
 ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
-  silentDebug('[search-server] → Worker API', { endpoint, params });
+  silentDebug('[mcp-server] → Worker API', { endpoint, params });
 
   try {
     const searchParams = new URLSearchParams();
@@ -71,12 +71,12 @@ async function callWorkerAPI(
 
     const data = await response.json() as { content: Array<{ type: 'text'; text: string }>; isError?: boolean };
 
-    silentDebug('[search-server] ← Worker API success', { endpoint });
+    silentDebug('[mcp-server] ← Worker API success', { endpoint });
 
     // Worker returns { content: [...] } format directly
     return data;
   } catch (error: any) {
-    silentDebug('[search-server] ← Worker API error', { endpoint, error: error.message });
+    silentDebug('[mcp-server] ← Worker API error', { endpoint, error: error.message });
     return {
       content: [{
         type: 'text' as const,
@@ -411,7 +411,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
 // Cleanup function
 async function cleanup() {
-  silentDebug('[search-server] Shutting down...');
+  silentDebug('[mcp-server] Shutting down...');
   process.exit(0);
 }
 
@@ -424,22 +424,22 @@ async function main() {
   // Start the MCP server
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  silentDebug('[search-server] Claude-mem search server started');
+  silentDebug('[mcp-server] Claude-mem search server started');
 
   // Check Worker availability in background
   setTimeout(async () => {
     const workerAvailable = await verifyWorkerConnection();
     if (!workerAvailable) {
-      silentDebug('[search-server] WARNING: Worker not available at', WORKER_BASE_URL);
-      silentDebug('[search-server] Tools will fail until Worker is started');
-      silentDebug('[search-server] Start Worker with: npm run worker:restart');
+      silentDebug('[mcp-server] WARNING: Worker not available at', WORKER_BASE_URL);
+      silentDebug('[mcp-server] Tools will fail until Worker is started');
+      silentDebug('[mcp-server] Start Worker with: npm run worker:restart');
     } else {
-      silentDebug('[search-server] Worker available at', WORKER_BASE_URL);
+      silentDebug('[mcp-server] Worker available at', WORKER_BASE_URL);
     }
   }, 0);
 }
 
 main().catch((error) => {
-  silentDebug('[search-server] Fatal error:', error);
+  silentDebug('[mcp-server] Fatal error:', error);
   process.exit(1);
 });

@@ -33,7 +33,7 @@ The build process uses esbuild to compile TypeScript:
 
 1. Compiles TypeScript to JavaScript
 2. Creates standalone executables for each hook in `plugin/scripts/`
-3. Bundles MCP search server to `plugin/scripts/search-server.cjs`
+3. Bundles MCP search server to `plugin/scripts/mcp-server.cjs`
 4. Bundles worker service to `plugin/scripts/worker-service.cjs`
 5. Bundles web viewer UI to `plugin/ui/viewer.html`
 
@@ -41,7 +41,7 @@ The build process uses esbuild to compile TypeScript:
 - Hook executables: `*-hook.js` (ESM format)
 - Smart installer: `smart-install.js` (ESM format)
 - Worker service: `worker-service.cjs` (CJS format)
-- Search server: `search-server.cjs` (CJS format)
+- MCP server: `mcp-server.cjs` (CJS format)
 - Viewer UI: `viewer.html` (self-contained HTML bundle)
 
 ### Build Scripts
@@ -342,7 +342,7 @@ npm test
 
 ### Adding MCP Search Tools
 
-1. Add tool definition in `src/servers/search-server.ts`:
+1. Add tool definition in `src/servers/mcp-server.ts`:
 
 ```typescript
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
