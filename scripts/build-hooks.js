@@ -60,8 +60,13 @@ async function buildHooks() {
 
     // Copy smart-install.js to plugin/scripts
     console.log('\n📋 Copying smart-install.js...');
-    const smartInstallSource = 'scripts/smart-install.js';
-    const smartInstallDest = `${hooksDir}/smart-install.js`;
+    const smartInstallSource = path.join(__dirname, '..', 'scripts', 'smart-install.js');
+    const smartInstallDest = path.join(hooksDir, 'smart-install.js');
+    
+    if (!fs.existsSync(smartInstallSource)) {
+      throw new Error(`Source file not found: ${smartInstallSource}`);
+    }
+    
     fs.copyFileSync(smartInstallSource, smartInstallDest);
     console.log('✓ smart-install.js copied');
 
