@@ -42,12 +42,28 @@ Claude-mem is a Claude Code plugin providing persistent memory across sessions. 
 
 **Viewer UI**: `npm run build && npm run sync-marketplace && npm run worker:restart`
 
-## Environment Variables
+## Configuration
 
+Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created with defaults on first run.
+
+**Core Settings:**
 - `CLAUDE_MEM_MODEL` - Model for observations/summaries (default: claude-haiku-4-5)
 - `CLAUDE_MEM_CONTEXT_OBSERVATIONS` - Observations injected at SessionStart (default: 50)
 - `CLAUDE_MEM_WORKER_PORT` - Worker service port (default: 37777)
+
+**System Configuration:**
+- `CLAUDE_MEM_DATA_DIR` - Data directory location (default: ~/.claude-mem)
+- `CLAUDE_MEM_LOG_LEVEL` - Log verbosity: DEBUG, INFO, WARN, ERROR, SILENT (default: INFO)
 - `CLAUDE_MEM_PYTHON_VERSION` - Python version for uvx/chroma-mcp (default: 3.13, avoids onnxruntime compatibility issues with Python 3.14+)
+- `CLAUDE_CODE_PATH` - Path to Claude executable (default: auto-detect via 'which claude')
+
+**Settings File Format:**
+```json
+{
+  "CLAUDE_MEM_MODEL": "claude-haiku-4-5",
+  "CLAUDE_MEM_WORKER_PORT": "37777"
+}
+```
 
 ## File Locations
 

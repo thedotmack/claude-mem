@@ -5,13 +5,21 @@
  * Provides methods to get defaults with optional environment variable overrides.
  */
 
-import { readFileSync, existsSync } from 'fs';
-import { DEFAULT_OBSERVATION_TYPES_STRING, DEFAULT_OBSERVATION_CONCEPTS_STRING } from '../../../constants/observation-metadata.js';
+import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { join } from 'path';
+import { homedir } from 'os';
+import { DEFAULT_OBSERVATION_TYPES_STRING, DEFAULT_OBSERVATION_CONCEPTS_STRING } from '../constants/observation-metadata.js';
+import { logger } from '../utils/logger.js';
 
 export interface SettingsDefaults {
   CLAUDE_MEM_MODEL: string;
   CLAUDE_MEM_CONTEXT_OBSERVATIONS: string;
   CLAUDE_MEM_WORKER_PORT: string;
+  // System Configuration
+  CLAUDE_MEM_DATA_DIR: string;
+  CLAUDE_MEM_LOG_LEVEL: string;
+  CLAUDE_MEM_PYTHON_VERSION: string;
+  CLAUDE_CODE_PATH: string;
   // Token Economics
   CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: string;
   CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS: string;
@@ -37,6 +45,11 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_MODEL: 'claude-haiku-4-5',
     CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
     CLAUDE_MEM_WORKER_PORT: '37777',
+    // System Configuration
+    CLAUDE_MEM_DATA_DIR: join(homedir(), '.claude-mem'),
+    CLAUDE_MEM_LOG_LEVEL: 'INFO',
+    CLAUDE_MEM_PYTHON_VERSION: '3.13',
+    CLAUDE_CODE_PATH: '', // Empty means auto-detect via 'which claude'
     // Token Economics
     CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: 'true',
     CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS: 'true',
@@ -62,14 +75,14 @@ export class SettingsDefaultsManager {
   }
 
   /**
-   * Get a default value with optional environment variable override
+   * Get a default value from defaults (no environment variable override)
    */
   static get(key: keyof SettingsDefaults): string {
-    return process.env[key] || this.DEFAULTS[key];
+    return this.DEFAULTS[key];
   }
 
   /**
-   * Get an integer default value with optional environment variable override
+   * Get an integer default value
    */
   static getInt(key: keyof SettingsDefaults): number {
     const value = this.get(key);
@@ -77,7 +90,7 @@ export class SettingsDefaultsManager {
   }
 
   /**
-   * Get a boolean default value with optional environment variable override
+   * Get a boolean default value
    */
   static getBool(key: keyof SettingsDefaults): boolean {
     const value = this.get(key);
@@ -95,13 +108,28 @@ export class SettingsDefaultsManager {
 
     const settingsData = readFileSync(settingsPath, 'utf-8');
     const settings = JSON.parse(settingsData);
-    const env = settings.env || {};
 
-    // Merge file settings with defaults
+    // MIGRATION: Handle old nested schema { env: {...} }
+    let flatSettings = settings;
+    if (settings.env && typeof settings.env === 'object') {
+      // Migrate from nested to flat schema
+      flatSettings = settings.env;
+
+      // Auto-migrate the file to flat schema
+      try {
+        writeFileSync(settingsPath, JSON.stringify(flatSettings, null, 2), 'utf-8');
+        logger.info('SETTINGS', 'Migrated settings file from nested to flat schema', { settingsPath });
+      } catch (error) {
+        logger.warn('SETTINGS', 'Failed to auto-migrate settings file', { settingsPath }, error);
+        // Continue with in-memory migration even if write fails
+      }
+    }
+
+    // Merge file settings with defaults (flat schema)
     const result: SettingsDefaults = { ...this.DEFAULTS };
     for (const key of Object.keys(this.DEFAULTS) as Array<keyof SettingsDefaults>) {
-      if (env[key] !== undefined) {
-        result[key] = env[key];
+      if (flatSettings[key] !== undefined) {
+        result[key] = flatSettings[key];
       }
     }
 

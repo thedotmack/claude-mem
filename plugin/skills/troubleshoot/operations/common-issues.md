@@ -87,7 +87,7 @@ Quick fixes for frequently encountered claude-mem problems.
 **Fix:**
 1. Check the observation count setting:
    ```bash
-   grep CLAUDE_MEM_CONTEXT_OBSERVATIONS ~/.claude/settings.json
+   grep CLAUDE_MEM_CONTEXT_OBSERVATIONS ~/.claude-mem/settings.json
    ```
 
 2. Default is 50 observations - you can adjust this:

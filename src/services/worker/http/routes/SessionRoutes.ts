@@ -8,7 +8,8 @@
 import express, { Request, Response } from 'express';
 import { getWorkerPort } from '../../../../shared/worker-utils.js';
 import { logger } from '../../../../utils/logger.js';
-import { stripMemoryTagsFromJson } from '../../../../utils/tag-stripping.js';
+import { stripMemoryTagsFromJson, stripMemoryTagsFromPrompt } from '../../../../utils/tag-stripping.js';
+import { happy_path_error__with_fallback } from '../../../../utils/silent-debug.js';
 import { SessionManager } from '../../SessionManager.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
 import { SDKAgent } from '../../SDKAgent.js';
@@ -70,6 +71,7 @@ export class SessionRoutes extends BaseRouteHandler {
     app.post('/sessions/:sessionDbId/complete', this.handleSessionComplete.bind(this));
 
     // New session endpoints (use claudeSessionId)
+    app.post('/api/sessions/init', this.handleSessionInitByClaudeId.bind(this));
     app.post('/api/sessions/observations', this.handleObservationsByClaudeId.bind(this));
     app.post('/api/sessions/summarize', this.handleSummarizeByClaudeId.bind(this));
     app.post('/api/sessions/complete', this.handleSessionCompleteByClaudeId.bind(this));
@@ -289,6 +291,7 @@ export class SessionRoutes extends BaseRouteHandler {
         ? stripMemoryTagsFromJson(JSON.stringify(tool_input))
         : '{}';
     } catch (error) {
+      logger.debug('SESSION', 'Failed to serialize tool_input', { sessionDbId }, error);
       cleanedToolInput = '{"error": "Failed to serialize tool_input"}';
     }
 
@@ -297,6 +300,7 @@ export class SessionRoutes extends BaseRouteHandler {
         ? stripMemoryTagsFromJson(JSON.stringify(tool_response))
         : '{}';
     } catch (error) {
+      logger.debug('SESSION', 'Failed to serialize tool_result', { sessionDbId }, error);
       cleanedToolResponse = '{"error": "Failed to serialize tool_response"}';
     }
 
@@ -306,7 +310,11 @@ export class SessionRoutes extends BaseRouteHandler {
       tool_input: cleanedToolInput,
       tool_response: cleanedToolResponse,
       prompt_number: promptNumber,
-      cwd: cwd || ''
+      cwd: happy_path_error__with_fallback(
+        'Missing cwd when queueing observation in SessionRoutes',
+        { sessionDbId, tool_name },
+        cwd || ''
+      )
     });
 
     // Ensure SDK agent is running
@@ -352,7 +360,15 @@ export class SessionRoutes extends BaseRouteHandler {
     }
 
     // Queue summarize
-    this.sessionManager.queueSummarize(sessionDbId, last_user_message || '', last_assistant_message);
+    this.sessionManager.queueSummarize(
+      sessionDbId,
+      happy_path_error__with_fallback(
+        'Missing last_user_message when queueing summary in SessionRoutes',
+        { sessionDbId },
+        last_user_message || ''
+      ),
+      last_assistant_message
+    );
 
     // Ensure SDK agent is running
     this.ensureGeneratorRunning(sessionDbId, 'summarize');
@@ -386,5 +402,69 @@ export class SessionRoutes extends BaseRouteHandler {
     }
 
     res.json({ success: true });
+  });
+
+  /**
+   * Initialize session by claudeSessionId (new-hook uses this)
+   * POST /api/sessions/init
+   * Body: { claudeSessionId, project, prompt }
+   *
+   * Performs all session initialization DB operations:
+   * - Creates/gets SDK session (idempotent)
+   * - Increments prompt counter
+   * - Saves user prompt (with privacy tag stripping)
+   *
+   * Returns: { sessionDbId, promptNumber, skipped: boolean, reason?: string }
+   */
+  private handleSessionInitByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
+    const { claudeSessionId, project, prompt } = req.body;
+
+    // Validate required parameters
+    if (!this.validateRequired(req, res, ['claudeSessionId', 'project', 'prompt'])) {
+      return;
+    }
+
+    const store = this.dbManager.getSessionStore();
+
+    // Step 1: Create/get SDK session (idempotent INSERT OR IGNORE)
+    const sessionDbId = store.createSDKSession(claudeSessionId, project, prompt);
+
+    // Step 2: Increment prompt counter
+    const promptNumber = store.incrementPromptCounter(sessionDbId);
+
+    // Step 3: Strip privacy tags from prompt
+    const cleanedPrompt = stripMemoryTagsFromPrompt(prompt);
+
+    // Step 4: Check if prompt is entirely private
+    if (!cleanedPrompt || cleanedPrompt.trim() === '') {
+      logger.debug('HOOK', 'Session init - prompt entirely private', {
+        sessionId: sessionDbId,
+        promptNumber,
+        originalLength: prompt.length
+      });
+
+      res.json({
+        sessionDbId,
+        promptNumber,
+        skipped: true,
+        reason: 'private'
+      });
+      return;
+    }
+
+    // Step 5: Save cleaned user prompt
+    store.saveUserPrompt(claudeSessionId, promptNumber, cleanedPrompt);
+
+    logger.info('SESSION', 'Session initialized via HTTP', {
+      sessionId: sessionDbId,
+      promptNumber,
+      project
+    });
+
+    res.json({
+      sessionDbId,
+      promptNumber,
+      skipped: false
+    });
   });
 }

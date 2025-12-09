@@ -11,7 +11,7 @@
  * This keeps the worker service simple and follows one-way data stream.
  */
 
-import { silentDebug } from './silent-debug.js';
+import { happy_path_error__with_fallback } from './silent-debug.js';
 
 /**
  * Maximum number of tags allowed in a single content block
@@ -41,14 +41,14 @@ function countTags(content: string): number {
  */
 export function stripMemoryTagsFromJson(content: string): string {
   if (typeof content !== 'string') {
-    silentDebug('[tag-stripping] received non-string for JSON context:', { type: typeof content });
+    happy_path_error__with_fallback('[tag-stripping] received non-string for JSON context:', { type: typeof content });
     return '{}';  // Safe default for JSON context
   }
 
   // ReDoS protection: limit tag count before regex processing
   const tagCount = countTags(content);
   if (tagCount > MAX_TAG_COUNT) {
-    silentDebug('[tag-stripping] tag count exceeds limit, truncating:', {
+    happy_path_error__with_fallback('[tag-stripping] tag count exceeds limit, truncating:', {
       tagCount,
       maxAllowed: MAX_TAG_COUNT,
       contentLength: content.length
@@ -73,14 +73,14 @@ export function stripMemoryTagsFromJson(content: string): string {
  */
 export function stripMemoryTagsFromPrompt(content: string): string {
   if (typeof content !== 'string') {
-    silentDebug('[tag-stripping] received non-string for prompt context:', { type: typeof content });
+    happy_path_error__with_fallback('[tag-stripping] received non-string for prompt context:', { type: typeof content });
     return '';  // Safe default for prompt content
   }
 
   // ReDoS protection: limit tag count before regex processing
   const tagCount = countTags(content);
   if (tagCount > MAX_TAG_COUNT) {
-    silentDebug('[tag-stripping] tag count exceeds limit, truncating:', {
+    happy_path_error__with_fallback('[tag-stripping] tag count exceeds limit, truncating:', {
       tagCount,
       maxAllowed: MAX_TAG_COUNT,
       contentLength: content.length

@@ -2,7 +2,9 @@ import path from "path";
 import { existsSync } from "fs";
 import { homedir } from "os";
 import { spawnSync } from "child_process";
-import { SettingsDefaultsManager } from "../services/worker/settings/SettingsDefaultsManager.js";
+import { SettingsDefaultsManager } from "./SettingsDefaultsManager.js";
+import { logger } from "../utils/logger.js";
+import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
 
 // CRITICAL: Always use marketplace directory for PM2/ecosystem
 // This ensures cross-platform compatibility and avoids cache directory confusion
@@ -10,9 +12,9 @@ const MARKETPLACE_ROOT = path.join(homedir(), '.claude', 'plugins', 'marketplace
 
 // Named constants for health checks
 // Windows needs longer timeouts due to startup overhead
-const HEALTH_CHECK_TIMEOUT_MS = 500;
-const WORKER_STARTUP_WAIT_MS = 1000;
-const WORKER_STARTUP_RETRIES = 15;
+const HEALTH_CHECK_TIMEOUT_MS = getTimeout(HOOK_TIMEOUTS.HEALTH_CHECK);
+const WORKER_STARTUP_WAIT_MS = HOOK_TIMEOUTS.WORKER_STARTUP_WAIT;
+const WORKER_STARTUP_RETRIES = HOOK_TIMEOUTS.WORKER_STARTUP_RETRIES;
 
 /**
  * Get the worker port number
@@ -34,7 +36,11 @@ async function isWorkerHealthy(): Promise<boolean> {
       signal: AbortSignal.timeout(HEALTH_CHECK_TIMEOUT_MS)
     });
     return response.ok;
-  } catch {
+  } catch (error) {
+    logger.debug('SYSTEM', 'Worker health check failed', {
+      error: error instanceof Error ? error.message : String(error),
+      errorType: error?.constructor?.name
+    });
     return false;
   }
 }
@@ -55,11 +61,15 @@ async function startWorker(): Promise<boolean> {
     if (process.platform === 'win32') {
       // On Windows, use PowerShell Start-Process with -WindowStyle Hidden
       // This avoids visible console windows that PM2 creates on Windows
+      // Escape single quotes for PowerShell by doubling them
+      const escapedScript = workerScript.replace(/'/g, "''");
+      const escapedWorkingDir = MARKETPLACE_ROOT.replace(/'/g, "''");
+
       const result = spawnSync('powershell.exe', [
         '-NoProfile',
         '-NonInteractive',
         '-Command',
-        `Start-Process -FilePath 'node' -ArgumentList '${workerScript}' -WorkingDirectory '${MARKETPLACE_ROOT}' -WindowStyle Hidden`
+        `Start-Process -FilePath 'node' -ArgumentList '${escapedScript}' -WorkingDirectory '${escapedWorkingDir}' -WindowStyle Hidden`
       ], {
         cwd: MARKETPLACE_ROOT,
         stdio: 'pipe',
@@ -79,7 +89,28 @@ async function startWorker(): Promise<boolean> {
       }
 
       const localPm2Base = path.join(MARKETPLACE_ROOT, 'node_modules', '.bin', 'pm2');
-      const pm2Command = existsSync(localPm2Base) ? localPm2Base : 'pm2';
+      let pm2Command: string;
+
+      if (existsSync(localPm2Base)) {
+        pm2Command = localPm2Base;
+      } else {
+        // Check if global pm2 exists
+        const globalPm2Check = spawnSync('which', ['pm2'], {
+          encoding: 'utf-8',
+          stdio: 'pipe'
+        });
+
+        if (globalPm2Check.status !== 0) {
+          throw new Error(
+            'PM2 not found. Install it locally with:\n' +
+            `  cd ${MARKETPLACE_ROOT}\n` +
+            '  npm install\n\n' +
+            'Or install globally with: npm install -g pm2'
+          );
+        }
+
+        pm2Command = 'pm2';
+      }
 
       const result = spawnSync(pm2Command, ['start', ecosystemPath], {
         cwd: MARKETPLACE_ROOT,
@@ -102,7 +133,12 @@ async function startWorker(): Promise<boolean> {
 
     return false;
   } catch (error) {
-    // Failed to start worker
+    logger.error('SYSTEM', 'Failed to start worker', {
+      platform: process.platform,
+      workerScript: path.join(MARKETPLACE_ROOT, 'plugin', 'scripts', 'worker-service.cjs'),
+      error: error instanceof Error ? error.message : String(error),
+      marketplaceRoot: MARKETPLACE_ROOT
+    });
     return false;
   }
 }

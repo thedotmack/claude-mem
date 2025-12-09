@@ -5,18 +5,26 @@ description: "Environment variables and settings for Claude-Mem"
 
 # Configuration
 
-## Environment Variables
+## Settings File
 
-| Variable                      | Default                         | Description                           |
+Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created with defaults on first run.
+
+### Core Settings
+
+| Setting                       | Default                         | Description                           |
 |-------------------------------|---------------------------------|---------------------------------------|
-| `CLAUDE_PLUGIN_ROOT`          | Set by Claude Code              | Plugin installation directory         |
-| `CLAUDE_MEM_DATA_DIR`         | `~/.claude-mem/`                | Data directory (production default)   |
-| `CLAUDE_CODE_PATH`            | Auto-detected                   | Path to Claude Code CLI (for Windows) |
-| `CLAUDE_MEM_WORKER_PORT`      | `37777`                         | Worker service port                   |
 | `CLAUDE_MEM_MODEL`            | `claude-haiku-4-5`              | AI model for processing observations  |
 | `CLAUDE_MEM_CONTEXT_OBSERVATIONS` | `50`                        | Number of observations to inject      |
-| `NODE_ENV`                    | `production`                    | Environment mode                      |
-| `FORCE_COLOR`                 | `1`                             | Enable colored logs                   |
+| `CLAUDE_MEM_WORKER_PORT`      | `37777`                         | Worker service port                   |
+
+### System Configuration
+
+| Setting                       | Default                         | Description                           |
+|-------------------------------|---------------------------------|---------------------------------------|
+| `CLAUDE_MEM_DATA_DIR`         | `~/.claude-mem`                 | Data directory location               |
+| `CLAUDE_MEM_LOG_LEVEL`        | `INFO`                          | Log verbosity (DEBUG, INFO, WARN, ERROR, SILENT) |
+| `CLAUDE_MEM_PYTHON_VERSION`   | `3.13`                          | Python version for chroma-mcp         |
+| `CLAUDE_CODE_PATH`            | _(auto-detect)_                 | Path to Claude Code CLI (for Windows) |
 
 ## Model Configuration
 
@@ -35,11 +43,11 @@ Configure which AI model processes your observations.
 ./claude-mem-settings.sh
 ```
 
-This script manages `CLAUDE_MEM_MODEL` in `~/.claude/settings.json`.
+This script manages settings in `~/.claude-mem/settings.json`.
 
 ### Manual Configuration
 
-Edit `~/.claude/settings.json`:
+Edit `~/.claude-mem/settings.json`:
 
 ```json
 {
@@ -284,53 +292,64 @@ Token economics help you understand the value of cached observations vs. re-read
 
 ### Manual Configuration
 
-Settings are stored in `~/.claude-mem/settings.json`. You can also configure via environment variables in `~/.claude/settings.json`:
+Settings are stored in `~/.claude-mem/settings.json`:
 
 ```json
 {
-  "env": {
-    "CLAUDE_MEM_CONTEXT_OBSERVATIONS": "100",
-    "CLAUDE_MEM_CONTEXT_SESSION_COUNT": "20",
-    "CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES": "bugfix,decision,discovery",
-    "CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS": "how-it-works,gotcha",
-    "CLAUDE_MEM_CONTEXT_FULL_COUNT": "10",
-    "CLAUDE_MEM_CONTEXT_FULL_FIELD": "narrative",
-    "CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS": "true",
-    "CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS": "true",
-    "CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT": "true",
-    "CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY": "false",
-    "CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE": "false"
-  }
+  "CLAUDE_MEM_CONTEXT_OBSERVATIONS": "100",
+  "CLAUDE_MEM_CONTEXT_SESSION_COUNT": "20",
+  "CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES": "bugfix,decision,discovery",
+  "CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS": "how-it-works,gotcha",
+  "CLAUDE_MEM_CONTEXT_FULL_COUNT": "10",
+  "CLAUDE_MEM_CONTEXT_FULL_FIELD": "narrative",
+  "CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS": "true",
+  "CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS": "true",
+  "CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT": "true",
+  "CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY": "false",
+  "CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE": "false"
 }
 ```
 
-**Note**: The Context Settings Modal is the recommended way to configure these settings, as it provides live preview of changes.
+**Note**: The Context Settings Modal (at http://localhost:37777) is the recommended way to configure these settings, as it provides live preview of changes.
 
 ## Customization
 
+Settings can be customized in `~/.claude-mem/settings.json`.
+
 ### Custom Data Directory
 
-For development or testing, override the data directory:
-
-```bash
-export CLAUDE_MEM_DATA_DIR=/custom/path
+Edit `~/.claude-mem/settings.json`:
+```json
+{
+  "CLAUDE_MEM_DATA_DIR": "/custom/path"
+}
 ```
 
 ### Custom Worker Port
 
-If port 37777 is in use:
+Edit `~/.claude-mem/settings.json`:
+```json
+{
+  "CLAUDE_MEM_WORKER_PORT": "38000"
+}
+```
 
+Then restart the worker:
 ```bash
-export CLAUDE_MEM_WORKER_PORT=38000
 npm run worker:restart
 ```
 
 ### Custom Model
 
-Use a different AI model:
+Edit `~/.claude-mem/settings.json`:
+```json
+{
+  "CLAUDE_MEM_MODEL": "claude-opus-4"
+}
+```
 
+Then restart the worker:
 ```bash
-export CLAUDE_MEM_MODEL=claude-opus-4
 npm run worker:restart
 ```
 

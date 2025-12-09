@@ -1,29 +1,17 @@
 #!/usr/bin/env node
-import{join as M,basename as W}from"path";import{homedir as v}from"os";import{existsSync as x}from"fs";import i from"path";import{existsSync as u}from"fs";import{homedir as f}from"os";import{spawnSync as d}from"child_process";import{readFileSync as y,existsSync as w}from"fs";var L=["bugfix","feature","refactor","discovery","decision","change"],U=["how-it-works","why-it-exists","what-changed","problem-solution","gotcha","pattern","trade-off"];var S=L.join(","),m=U.join(",");var E=class{static DEFAULTS={CLAUDE_MEM_MODEL:"claude-haiku-4-5",CLAUDE_MEM_CONTEXT_OBSERVATIONS:"50",CLAUDE_MEM_WORKER_PORT:"37777",CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS:"true",CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS:"true",CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT:"true",CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT:"true",CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES:S,CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS:m,CLAUDE_MEM_CONTEXT_FULL_COUNT:"5",CLAUDE_MEM_CONTEXT_FULL_FIELD:"narrative",CLAUDE_MEM_CONTEXT_SESSION_COUNT:"10",CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY:"true",CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE:"false"};static getAllDefaults(){return{...this.DEFAULTS}}static get(t){return process.env[t]||this.DEFAULTS[t]}static getInt(t){let o=this.get(t);return parseInt(o,10)}static getBool(t){return this.get(t)==="true"}static loadFromFile(t){if(!w(t))return this.getAllDefaults();let o=y(t,"utf-8"),r=JSON.parse(o).env||{},c={...this.DEFAULTS};for(let s of Object.keys(this.DEFAULTS))r[s]!==void 0&&(c[s]=r[s]);return c}};var n=i.join(f(),".claude","plugins","marketplaces","thedotmack"),R=500,P=1e3,I=15;function _(){let e=i.join(f(),".claude-mem","settings.json"),t=E.loadFromFile(e);return parseInt(t.CLAUDE_MEM_WORKER_PORT,10)}async function C(){try{let e=_();return(await fetch(`http://127.0.0.1:${e}/health`,{signal:AbortSignal.timeout(R)})).ok}catch{return!1}}async function k(){try{let e=i.join(n,"plugin","scripts","worker-service.cjs");if(!u(e))throw new Error(`Worker script not found at ${e}`);if(process.platform==="win32"){let t=d("powershell.exe",["-NoProfile","-NonInteractive","-Command",`Start-Process -FilePath 'node' -ArgumentList '${e}' -WorkingDirectory '${n}' -WindowStyle Hidden`],{cwd:n,stdio:"pipe",encoding:"utf-8",windowsHide:!0});if(t.status!==0)throw new Error(t.stderr||"PowerShell Start-Process failed")}else{let t=i.join(n,"ecosystem.config.cjs");if(!u(t))throw new Error(`Ecosystem config not found at ${t}`);let o=i.join(n,"node_modules",".bin","pm2"),a=u(o)?o:"pm2",r=d(a,["start",t],{cwd:n,stdio:"pipe",encoding:"utf-8"});if(r.status!==0)throw new Error(r.stderr||"PM2 start failed")}for(let t=0;t<I;t++)if(await new Promise(o=>setTimeout(o,P)),await C())return!0;return!1}catch{return!1}}async function A(){if(await C())return;if(!await k()){let t=_();throw new Error(`Worker service failed to start on port ${t}.
+import{basename as B}from"path";import l from"path";import{existsSync as h}from"fs";import{homedir as U}from"os";import{spawnSync as A}from"child_process";import{readFileSync as b,writeFileSync as $,existsSync as x}from"fs";import{join as H}from"path";import{homedir as F}from"os";var P=["bugfix","feature","refactor","discovery","decision","change"],W=["how-it-works","why-it-exists","what-changed","problem-solution","gotcha","pattern","trade-off"];var D=P.join(","),y=W.join(",");var C=(s=>(s[s.DEBUG=0]="DEBUG",s[s.INFO=1]="INFO",s[s.WARN=2]="WARN",s[s.ERROR=3]="ERROR",s[s.SILENT=4]="SILENT",s))(C||{}),d=class{level=null;useColor;constructor(){this.useColor=process.stdout.isTTY??!1}getLevel(){if(this.level===null){let t=E.get("CLAUDE_MEM_LOG_LEVEL").toUpperCase();this.level=C[t]??1}return this.level}correlationId(t,r){return`obs-${t}-${r}`}sessionId(t){return`session-${t}`}formatData(t){if(t==null)return"";if(typeof t=="string")return t;if(typeof t=="number"||typeof t=="boolean")return t.toString();if(typeof t=="object"){if(t instanceof Error)return this.getLevel()===0?`${t.message}
+${t.stack}`:t.message;if(Array.isArray(t))return`[${t.length} items]`;let r=Object.keys(t);return r.length===0?"{}":r.length<=3?JSON.stringify(t):`{${r.length} keys: ${r.slice(0,3).join(", ")}...}`}return String(t)}formatTool(t,r){if(!r)return t;try{let n=typeof r=="string"?JSON.parse(r):r;if(t==="Bash"&&n.command){let e=n.command.length>50?n.command.substring(0,50)+"...":n.command;return`${t}(${e})`}if(t==="Read"&&n.file_path){let e=n.file_path.split("/").pop()||n.file_path;return`${t}(${e})`}if(t==="Edit"&&n.file_path){let e=n.file_path.split("/").pop()||n.file_path;return`${t}(${e})`}if(t==="Write"&&n.file_path){let e=n.file_path.split("/").pop()||n.file_path;return`${t}(${e})`}return t}catch{return t}}log(t,r,n,e,s){if(t<this.getLevel())return;let a=new Date().toISOString().replace("T"," ").substring(0,23),g=C[t].padEnd(5),_=r.padEnd(6),S="";e?.correlationId?S=`[${e.correlationId}] `:e?.sessionId&&(S=`[session-${e.sessionId}] `);let u="";s!=null&&(this.getLevel()===0&&typeof s=="object"?u=`
+`+JSON.stringify(s,null,2):u=" "+this.formatData(s));let p="";if(e){let{sessionId:M,sdkSessionId:w,correlationId:L,...m}=e;Object.keys(m).length>0&&(p=` {${Object.entries(m).map(([v,k])=>`${v}=${k}`).join(", ")}}`)}let T=`[${a}] [${g}] [${_}] ${S}${n}${p}${u}`;t===3?console.error(T):console.log(T)}debug(t,r,n,e){this.log(0,t,r,n,e)}info(t,r,n,e){this.log(1,t,r,n,e)}warn(t,r,n,e){this.log(2,t,r,n,e)}error(t,r,n,e){this.log(3,t,r,n,e)}dataIn(t,r,n,e){this.info(t,`\u2192 ${r}`,n,e)}dataOut(t,r,n,e){this.info(t,`\u2190 ${r}`,n,e)}success(t,r,n,e){this.info(t,`\u2713 ${r}`,n,e)}failure(t,r,n,e){this.error(t,`\u2717 ${r}`,n,e)}timing(t,r,n,e){this.info(t,`\u23F1 ${r}`,e,{duration:`${n}ms`})}},c=new d;var E=class{static DEFAULTS={CLAUDE_MEM_MODEL:"claude-haiku-4-5",CLAUDE_MEM_CONTEXT_OBSERVATIONS:"50",CLAUDE_MEM_WORKER_PORT:"37777",CLAUDE_MEM_DATA_DIR:H(F(),".claude-mem"),CLAUDE_MEM_LOG_LEVEL:"INFO",CLAUDE_MEM_PYTHON_VERSION:"3.13",CLAUDE_CODE_PATH:"",CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS:"true",CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS:"true",CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT:"true",CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT:"true",CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES:D,CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS:y,CLAUDE_MEM_CONTEXT_FULL_COUNT:"5",CLAUDE_MEM_CONTEXT_FULL_FIELD:"narrative",CLAUDE_MEM_CONTEXT_SESSION_COUNT:"10",CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY:"true",CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE:"false"};static getAllDefaults(){return{...this.DEFAULTS}}static get(t){return this.DEFAULTS[t]}static getInt(t){let r=this.get(t);return parseInt(r,10)}static getBool(t){return this.get(t)==="true"}static loadFromFile(t){if(!x(t))return this.getAllDefaults();let r=b(t,"utf-8"),n=JSON.parse(r),e=n;if(n.env&&typeof n.env=="object"){e=n.env;try{$(t,JSON.stringify(e,null,2),"utf-8"),c.info("SETTINGS","Migrated settings file from nested to flat schema",{settingsPath:t})}catch(a){c.warn("SETTINGS","Failed to auto-migrate settings file",{settingsPath:t},a)}}let s={...this.DEFAULTS};for(let a of Object.keys(this.DEFAULTS))e[a]!==void 0&&(s[a]=e[a]);return s}};var f={DEFAULT:5e3,HEALTH_CHECK:1e3,WORKER_STARTUP_WAIT:1e3,WORKER_STARTUP_RETRIES:15,WINDOWS_MULTIPLIER:1.5};function R(o){return process.platform==="win32"?Math.round(o*f.WINDOWS_MULTIPLIER):o}var i=l.join(U(),".claude","plugins","marketplaces","thedotmack"),j=R(f.HEALTH_CHECK),K=f.WORKER_STARTUP_WAIT,V=f.WORKER_STARTUP_RETRIES;function O(){let o=l.join(U(),".claude-mem","settings.json"),t=E.loadFromFile(o);return parseInt(t.CLAUDE_MEM_WORKER_PORT,10)}async function N(){try{let o=O();return(await fetch(`http://127.0.0.1:${o}/health`,{signal:AbortSignal.timeout(j)})).ok}catch(o){return c.debug("SYSTEM","Worker health check failed",{error:o instanceof Error?o.message:String(o),errorType:o?.constructor?.name}),!1}}async function X(){try{let o=l.join(i,"plugin","scripts","worker-service.cjs");if(!h(o))throw new Error(`Worker script not found at ${o}`);if(process.platform==="win32"){let t=o.replace(/'/g,"''"),r=i.replace(/'/g,"''"),n=A("powershell.exe",["-NoProfile","-NonInteractive","-Command",`Start-Process -FilePath 'node' -ArgumentList '${t}' -WorkingDirectory '${r}' -WindowStyle Hidden`],{cwd:i,stdio:"pipe",encoding:"utf-8",windowsHide:!0});if(n.status!==0)throw new Error(n.stderr||"PowerShell Start-Process failed")}else{let t=l.join(i,"ecosystem.config.cjs");if(!h(t))throw new Error(`Ecosystem config not found at ${t}`);let r=l.join(i,"node_modules",".bin","pm2"),n;if(h(r))n=r;else{if(A("which",["pm2"],{encoding:"utf-8",stdio:"pipe"}).status!==0)throw new Error(`PM2 not found. Install it locally with:
+  cd ${i}
+  npm install
+
+Or install globally with: npm install -g pm2`);n="pm2"}let e=A(n,["start",t],{cwd:i,stdio:"pipe",encoding:"utf-8"});if(e.status!==0)throw new Error(e.stderr||"PM2 start failed")}for(let t=0;t<V;t++)if(await new Promise(r=>setTimeout(r,K)),await N())return!0;return!1}catch(o){return c.error("SYSTEM","Failed to start worker",{platform:process.platform,workerScript:l.join(i,"plugin","scripts","worker-service.cjs"),error:o instanceof Error?o.message:String(o),marketplaceRoot:i}),!1}}async function I(){if(await N())return;if(!await X()){let t=O();throw new Error(`Worker service failed to start on port ${t}.
 
 To start manually, run:
-  cd ${n}
+  cd ${i}
   npx pm2 start ecosystem.config.cjs
 
-If already running, try: npx pm2 restart claude-mem-worker`)}}var b=M(v(),".claude","plugins","marketplaces","thedotmack"),F=M(b,"node_modules");x(F)||(console.error(`
----
-\u{1F389}  Note: This appears under Plugin Hook Error, but it's not an error. That's the only option for
-   user messages in Claude Code UI until a better method is provided.
----
-
-\u26A0\uFE0F  Claude-Mem: First-Time Setup
-
-Dependencies have been installed in the background. This only happens once.
-
-\u{1F4A1} TIPS:
-   \u2022 Memories will start generating while you work
-   \u2022 Use /init to write or update your CLAUDE.md for better project context
-   \u2022 Try /clear after one session to see what context looks like
-
-Thank you for installing Claude-Mem!
-
-This message was not added to your startup context, so you can continue working as normal.
-`),process.exit(3));try{await A();let e=_(),t=W(process.cwd()),o=await fetch(`http://127.0.0.1:${e}/api/context/inject?project=${encodeURIComponent(t)}&colors=true`,{method:"GET",signal:AbortSignal.timeout(5e3)});if(!o.ok)throw new Error(`Worker error ${o.status}`);let a=await o.text(),r=new Date,c=new Date("2025-12-06T00:00:00Z"),s=new Date("2025-12-05T05:00:00Z"),l="";r<s&&(l=`
+If already running, try: npx pm2 restart claude-mem-worker`)}}try{await I();let o=O(),t=B(process.cwd()),r=await fetch(`http://127.0.0.1:${o}/api/context/inject?project=${encodeURIComponent(t)}&colors=true`,{method:"GET",signal:AbortSignal.timeout(5e3)});if(!r.ok)throw new Error(`Worker error ${r.status}`);let n=await r.text(),e=new Date,s=new Date("2025-12-06T00:00:00Z"),a=new Date("2025-12-05T05:00:00Z"),g="";e<a&&(g=`
 
 \u{1F680} \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 \u{1F680}
 
@@ -33,19 +21,37 @@ This message was not added to your startup context, so you can continue working 
    \u2B50 Your upvote means the world - thank you!
 
 \u{1F680} \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 \u{1F680}
-`);let T="";if(r<c){let g=r.getUTCHours()*60+r.getUTCMinutes(),p=Math.floor((g-300+1440)%1440/60),O=r.getUTCDate(),h=r.getUTCMonth(),N=r.getUTCFullYear()===2025&&h===11&&O>=1&&O<=5,D=p>=17&&p<19;N&&D?T=`
+`);let _="";if(e<s){let u=e.getUTCHours()*60+e.getUTCMinutes(),p=Math.floor((u-300+1440)%1440/60),T=e.getUTCDate(),M=e.getUTCMonth(),L=e.getUTCFullYear()===2025&&M===11&&T>=1&&T<=5,m=p>=17&&p<19;L&&m?_=`
    \u{1F534} LIVE NOW: AMA w/ Dev (@thedotmack) until 7pm EST
-`:T=`
+`:_=`
    \u2013 LIVE AMA w/ Dev (@thedotmack) Dec 1st\u20135th, 5pm to 7pm EST
 `}console.error(`
 
 \u{1F4DD} Claude-Mem Context Loaded
    \u2139\uFE0F  Note: This appears as stderr but is informational only
 
-`+a+`
+`+n+`
 
 \u{1F4A1} New! Wrap all or part of any message with <private> ... </private> to prevent storing sensitive information in your observation history.
 
-\u{1F4AC} Community https://discord.gg/J4wttp9vDu`+l+T+`
-\u{1F4FA} Watch live in browser http://localhost:${e}/
-`)}catch(e){console.error(`\u274C Failed to load context display: ${e}`)}process.exit(3);
+\u{1F4AC} Community https://discord.gg/J4wttp9vDu`+g+_+`
+\u{1F4FA} Watch live in browser http://localhost:${o}/
+`)}catch{console.error(`
+---
+\u{1F389}  Note: This appears under Plugin Hook Error, but it's not an error. That's the only option for
+   user messages in Claude Code UI until a better method is provided.
+---
+
+\u26A0\uFE0F  Claude-Mem: First-Time Setup
+
+Dependencies are installing in the background. This only happens once.
+
+\u{1F4A1} TIPS:
+   \u2022 Memories will start generating while you work
+   \u2022 Use /init to write or update your CLAUDE.md for better project context
+   \u2022 Try /clear after one session to see what context looks like
+
+Thank you for installing Claude-Mem!
+
+This message was not added to your startup context, so you can continue working as normal.
+`)}process.exit(3);

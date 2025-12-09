@@ -35,11 +35,9 @@
 
 import path from 'path';
 import { stdin } from 'process';
-import { SessionStore } from '../services/sqlite/SessionStore.js';
 import { createHookResponse } from './hook-response.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
-import { silentDebug } from '../utils/silent-debug.js';
-import { stripMemoryTagsFromPrompt } from '../utils/tag-stripping.js';
+import { happy_path_error__with_fallback } from '../utils/silent-debug.js';
 
 export interface UserPromptSubmitInput {
   session_id: string;
@@ -63,7 +61,7 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
   const { session_id, cwd, prompt } = input;
 
   // Debug: Log what we received
-  silentDebug('[new-hook] Input received', {
+  happy_path_error__with_fallback('[new-hook] Input received', {
     session_id,
     cwd,
     cwd_type: typeof cwd,
@@ -74,7 +72,7 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
 
   const project = path.basename(cwd);
 
-  silentDebug('[new-hook] Project extracted', {
+  happy_path_error__with_fallback('[new-hook] Project extracted', {
     project,
     project_type: typeof project,
     project_length: project?.length,
@@ -82,63 +80,46 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
     cwd_was: cwd
   });
 
-  const db = new SessionStore();
-
-  // CRITICAL: Use session_id from hook as THE source of truth
-  // createSDKSession is idempotent - creates new or returns existing
-  // This is how ALL hooks stay connected to the same session
-  const sessionDbId = db.createSDKSession(session_id, project, prompt);
-  const promptNumber = db.incrementPromptCounter(sessionDbId);
-
-  // Strip memory tags before saving user prompt to prevent privacy leaks
-  // Tags like <private> and <claude-mem-context> should not be stored or searchable
-  const cleanedUserPrompt = stripMemoryTagsFromPrompt(prompt);
-
-  // Skip memory operations for fully private prompts
-  // If the entire prompt was wrapped in <private> tags, don't create any observations
-  if (!cleanedUserPrompt || cleanedUserPrompt.trim() === '') {
-    silentDebug('[new-hook] Prompt entirely private, skipping memory operations', {
-      session_id,
-      promptNumber,
-      originalLength: prompt.length
-    });
-    db.close();
-    console.error(`[new-hook] Session ${sessionDbId}, prompt #${promptNumber} (fully private - skipped)`);
-    console.log(createHookResponse('UserPromptSubmit', true));
-    return;
-  }
-
-  db.saveUserPrompt(session_id, promptNumber, cleanedUserPrompt);
-
-  console.error(`[new-hook] Session ${sessionDbId}, prompt #${promptNumber}`);
-
-  db.close();
-
   const port = getWorkerPort();
 
-  // Strip leading slash from commands for memory agent
-  // /review 101 → review 101 (more semantic for observations)
-  const cleanedPrompt = prompt.startsWith('/') ? prompt.substring(1) : prompt;
+  // Initialize session via HTTP - handles DB operations and privacy checks
+  let sessionDbId: number;
+  let promptNumber: number;
 
   try {
-    // Initialize session via HTTP
-    const response = await fetch(`http://127.0.0.1:${port}/sessions/${sessionDbId}/init`, {
+    const initResponse = await fetch(`http://127.0.0.1:${port}/api/sessions/init`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ project, userPrompt: cleanedPrompt, promptNumber }),
+      body: JSON.stringify({
+        claudeSessionId: session_id,
+        project,
+        prompt
+      }),
       signal: AbortSignal.timeout(5000)
     });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Failed to initialize session: ${response.status} ${errorText}`);
+    if (!initResponse.ok) {
+      const errorText = await initResponse.text();
+      throw new Error(`Failed to initialize session: ${initResponse.status} ${errorText}`);
     }
+
+    const initResult = await initResponse.json();
+    sessionDbId = initResult.sessionDbId;
+    promptNumber = initResult.promptNumber;
+
+    // Check if prompt was entirely private (worker performs privacy check)
+    if (initResult.skipped && initResult.reason === 'private') {
+      console.error(`[new-hook] Session ${sessionDbId}, prompt #${promptNumber} (fully private - skipped)`);
+      console.log(createHookResponse('UserPromptSubmit', true));
+      return;
+    }
+
+    console.error(`[new-hook] Session ${sessionDbId}, prompt #${promptNumber}`);
   } catch (error: any) {
     // Only show restart message for connection errors, not HTTP errors
     if (error.cause?.code === 'ECONNREFUSED' || error.name === 'TimeoutError' || error.message.includes('fetch failed')) {
       throw new Error("There's a problem with the worker. If you just updated, type `pm2 restart claude-mem-worker` in your terminal to continue");
     }
-    // Re-throw HTTP errors and other errors as-is
     throw error;
   }
 

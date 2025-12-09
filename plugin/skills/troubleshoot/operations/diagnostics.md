@@ -188,7 +188,7 @@ echo "   Health check: $(curl -s http://127.0.0.1:37777/health 2>/dev/null || ec
 echo ""
 echo "5. Configuration"
 echo "   Port setting: $(cat ~/.claude-mem/settings.json 2>/dev/null | grep CLAUDE_MEM_WORKER_PORT || echo 'default (37777)')"
-echo "   Observation count: $(cat ~/.claude/settings.json 2>/dev/null | grep CLAUDE_MEM_CONTEXT_OBSERVATIONS || echo 'default (50)')"
+echo "   Observation count: $(cat ~/.claude-mem/settings.json 2>/dev/null | grep CLAUDE_MEM_CONTEXT_OBSERVATIONS || echo 'default (50)')"
 echo ""
 echo "6. Recent Activity"
 echo "   Latest observation: $(sqlite3 ~/.claude-mem/claude-mem.db 'SELECT created_at FROM observations ORDER BY created_at DESC LIMIT 1;' 2>/dev/null || echo 'N/A')"

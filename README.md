@@ -306,18 +306,42 @@ See [CHANGELOG.md](CHANGELOG.md) for complete version history.
 
 ## Configuration
 
-**Model Selection:**
+Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created with defaults on first run.
+
+**Available Settings:**
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CLAUDE_MEM_MODEL` | `claude-haiku-4-5` | AI model for observations |
+| `CLAUDE_MEM_WORKER_PORT` | `37777` | Worker service port |
+| `CLAUDE_MEM_DATA_DIR` | `~/.claude-mem` | Data directory location |
+| `CLAUDE_MEM_LOG_LEVEL` | `INFO` | Log verbosity (DEBUG, INFO, WARN, ERROR, SILENT) |
+| `CLAUDE_MEM_PYTHON_VERSION` | `3.13` | Python version for chroma-mcp |
+| `CLAUDE_CODE_PATH` | _(auto-detect)_ | Path to Claude executable |
+| `CLAUDE_MEM_CONTEXT_OBSERVATIONS` | `50` | Number of observations to inject at SessionStart |
+
+**Settings Management:**
 
 ```bash
+# Edit settings via CLI helper
 ./claude-mem-settings.sh
+
+# Or edit directly
+nano ~/.claude-mem/settings.json
+
+# View current settings
+curl http://localhost:37777/api/settings
 ```
 
-**Environment Variables:**
+**Settings File Format:**
 
-- `CLAUDE_MEM_MODEL` - AI model for processing (default: claude-haiku-4-5)
-- `CLAUDE_MEM_WORKER_PORT` - Worker port (default: 37777)
-- `CLAUDE_MEM_DATA_DIR` - Data directory override (dev only)
-- `CLAUDE_MEM_PYTHON_VERSION` - Python version for uvx/chroma-mcp (default: 3.13)
+```json
+{
+  "CLAUDE_MEM_MODEL": "claude-haiku-4-5",
+  "CLAUDE_MEM_WORKER_PORT": "37777",
+  "CLAUDE_MEM_CONTEXT_OBSERVATIONS": "50"
+}
+```
 
 See [Configuration Guide](https://docs.claude-mem.ai/configuration) for details.
 

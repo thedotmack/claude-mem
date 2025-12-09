@@ -85,7 +85,7 @@ cat ~/.claude/settings.json
 echo '{"env":{"CLAUDE_MEM_WORKER_PORT":"37778"}}' > ~/.claude-mem/settings.json
 
 # Change context observation count
-# Edit ~/.claude/settings.json and add:
+# Edit ~/.claude-mem/settings.json and add:
 {
   "env": {
     "CLAUDE_MEM_CONTEXT_OBSERVATIONS": "25"

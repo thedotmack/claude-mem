@@ -14,6 +14,8 @@ import { readFileSync, existsSync } from 'fs';
 import { createHookResponse } from './hook-response.js';
 import { logger } from '../utils/logger.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
+import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
+import { happy_path_error__with_fallback } from '../utils/silent-debug.js';
 
 export interface StopInput {
   session_id: string;
@@ -142,8 +144,13 @@ async function summaryHook(input?: StopInput): Promise<void> {
   const port = getWorkerPort();
 
   // Extract last user AND assistant messages from transcript
-  const lastUserMessage = extractLastUserMessage(input.transcript_path || '');
-  const lastAssistantMessage = extractLastAssistantMessage(input.transcript_path || '');
+  const transcriptPath = happy_path_error__with_fallback(
+    'Missing transcript_path in Stop hook input',
+    { session_id },
+    input.transcript_path || ''
+  );
+  const lastUserMessage = extractLastUserMessage(transcriptPath);
+  const lastAssistantMessage = extractLastAssistantMessage(transcriptPath);
 
   logger.dataIn('HOOK', 'Stop: Requesting summary', {
     workerPort: port,
@@ -161,7 +168,7 @@ async function summaryHook(input?: StopInput): Promise<void> {
         last_user_message: lastUserMessage,
         last_assistant_message: lastAssistantMessage
       }),
-      signal: AbortSignal.timeout(2000)
+      signal: AbortSignal.timeout(HOOK_TIMEOUTS.DEFAULT)
     });
 
     if (!response.ok) {

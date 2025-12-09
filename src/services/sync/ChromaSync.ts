@@ -13,6 +13,9 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { ParsedObservation, ParsedSummary } from '../../sdk/parser.js';
 import { SessionStore } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { happy_path_error__with_fallback } from '../../utils/silent-debug.js';
 import path from 'path';
 import os from 'os';
 
@@ -96,7 +99,8 @@ export class ChromaSync {
     try {
       // Use Python 3.13 by default to avoid onnxruntime compatibility issues with Python 3.14+
       // See: https://github.com/thedotmack/claude-mem/issues/170 (Python 3.14 incompatibility)
-      const pythonVersion = process.env.CLAUDE_MEM_PYTHON_VERSION || '3.13';
+      const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+      const pythonVersion = settings.CLAUDE_MEM_PYTHON_VERSION;
       const transport = new StdioClientTransport({
         command: 'uvx',
         args: [
@@ -763,7 +767,11 @@ export class ChromaSync {
       arguments: arguments_obj
     });
 
-    const resultText = result.content[0]?.text || '';
+    const resultText = happy_path_error__with_fallback(
+      'Missing text in MCP chroma_query_documents result',
+      { project: this.project, query_text: query },
+      result.content[0]?.text || ''
+    );
 
     // Parse JSON response
     let parsed: any;

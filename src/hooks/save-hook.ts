@@ -10,6 +10,8 @@ import { stdin } from 'process';
 import { createHookResponse } from './hook-response.js';
 import { logger } from '../utils/logger.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
+import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
+import { happy_path_error__with_fallback } from '../utils/silent-debug.js';
 
 export interface PostToolUseInput {
   session_id: string;
@@ -65,9 +67,13 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
         tool_name,
         tool_input,
         tool_response,
-        cwd: cwd || ''
+        cwd: happy_path_error__with_fallback(
+          'Missing cwd in PostToolUse hook input',
+          { session_id, tool_name },
+          cwd || ''
+        )
       }),
-      signal: AbortSignal.timeout(2000)
+      signal: AbortSignal.timeout(HOOK_TIMEOUTS.DEFAULT)
     });
 
     if (!response.ok) {
