@@ -61,11 +61,15 @@ async function startWorker(): Promise<boolean> {
     if (process.platform === 'win32') {
       // On Windows, use PowerShell Start-Process with -WindowStyle Hidden
       // This avoids visible console windows that PM2 creates on Windows
+      // Escape single quotes for PowerShell by doubling them
+      const escapedScript = workerScript.replace(/'/g, "''");
+      const escapedWorkingDir = MARKETPLACE_ROOT.replace(/'/g, "''");
+
       const result = spawnSync('powershell.exe', [
         '-NoProfile',
         '-NonInteractive',
         '-Command',
-        `Start-Process -FilePath 'node' -ArgumentList '${workerScript}' -WorkingDirectory '${MARKETPLACE_ROOT}' -WindowStyle Hidden`
+        `Start-Process -FilePath 'node' -ArgumentList '${escapedScript}' -WorkingDirectory '${escapedWorkingDir}' -WindowStyle Hidden`
       ], {
         cwd: MARKETPLACE_ROOT,
         stdio: 'pipe',
@@ -85,7 +89,28 @@ async function startWorker(): Promise<boolean> {
       }
 
       const localPm2Base = path.join(MARKETPLACE_ROOT, 'node_modules', '.bin', 'pm2');
-      const pm2Command = existsSync(localPm2Base) ? localPm2Base : 'pm2';
+      let pm2Command: string;
+
+      if (existsSync(localPm2Base)) {
+        pm2Command = localPm2Base;
+      } else {
+        // Check if global pm2 exists
+        const globalPm2Check = spawnSync('which', ['pm2'], {
+          encoding: 'utf-8',
+          stdio: 'pipe'
+        });
+
+        if (globalPm2Check.status !== 0) {
+          throw new Error(
+            'PM2 not found. Install it locally with:\n' +
+            `  cd ${MARKETPLACE_ROOT}\n` +
+            '  npm install\n\n' +
+            'Or install globally with: npm install -g pm2'
+          );
+        }
+
+        pm2Command = 'pm2';
+      }
 
       const result = spawnSync(pm2Command, ['start', ecosystemPath], {
         cwd: MARKETPLACE_ROOT,
