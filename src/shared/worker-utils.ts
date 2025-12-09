@@ -3,6 +3,7 @@ import { existsSync } from "fs";
 import { homedir } from "os";
 import { spawnSync } from "child_process";
 import { SettingsDefaultsManager } from "../services/worker/settings/SettingsDefaultsManager.js";
+import { logger } from "../utils/logger.js";
 
 // CRITICAL: Always use marketplace directory for PM2/ecosystem
 // This ensures cross-platform compatibility and avoids cache directory confusion
@@ -34,7 +35,11 @@ async function isWorkerHealthy(): Promise<boolean> {
       signal: AbortSignal.timeout(HEALTH_CHECK_TIMEOUT_MS)
     });
     return response.ok;
-  } catch {
+  } catch (error) {
+    logger.debug('SYSTEM', 'Worker health check failed', {
+      error: error instanceof Error ? error.message : String(error),
+      errorType: error?.constructor?.name
+    });
     return false;
   }
 }
@@ -102,7 +107,12 @@ async function startWorker(): Promise<boolean> {
 
     return false;
   } catch (error) {
-    // Failed to start worker
+    logger.error('SYSTEM', 'Failed to start worker', {
+      platform: process.platform,
+      workerScript: path.join(MARKETPLACE_ROOT, 'plugin', 'scripts', 'worker-service.cjs'),
+      error: error instanceof Error ? error.message : String(error),
+      marketplaceRoot: MARKETPLACE_ROOT
+    });
     return false;
   }
 }

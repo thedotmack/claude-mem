@@ -1,6 +1,7 @@
 import { join } from 'path';
 import { homedir } from 'os';
 import { existsSync, readFileSync } from 'fs';
+import { silentDebug } from '../utils/silent-debug.js';
 
 const SETTINGS_PATH = join(homedir(), '.claude-mem', 'settings.json');
 
@@ -23,8 +24,8 @@ export function loadEarlySetting(key: keyof EarlySettings, defaultValue: string)
       const fileValue = data.env?.[key];
       if (fileValue !== undefined) return fileValue;
     }
-  } catch {
-    // Fail silently - fall through to env var
+  } catch (error) {
+    silentDebug('Failed to load settings file', { error, settingsPath: SETTINGS_PATH, key });
   }
 
   return process.env[key] || defaultValue;
