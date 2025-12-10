@@ -162,7 +162,8 @@ See [Architecture Overview](https://docs.claude-mem.ai/architecture/overview) fo
 Claude-Mem provides intelligent search through the mem-search skill that auto-invokes when you ask about past work:
 
 **How It Works:**
-- Just ask naturally: *"What did we do last session?"* or *"Did we fix this bug before?"*
+
+- Just ask naturally: _"What did we do last session?"_ or _"Did we fix this bug before?"_
 - Claude automatically invokes the mem-search skill to find relevant context
 - ~2,250 token savings per session start vs MCP approach
 
@@ -220,6 +221,7 @@ Archive Memory (Disk):        Full tool outputs preserved for recall
 ```
 
 **Expected Results**:
+
 - ~95% token reduction in context window
 - ~20x more tool uses before context exhaustion
 - Linear O(N) scaling instead of quadratic O(N²)
@@ -234,20 +236,24 @@ See [Beta Features Documentation](https://docs.claude-mem.ai/beta-features) for 
 ## What's New
 
 **v6.4.9 - Context Configuration Settings:**
+
 - 11 new settings for fine-grained control over context injection
 - Configure token economics display, observation filtering by type/concept
 - Control number of observations and which fields to display
 
 **v6.4.0 - Dual-Tag Privacy System:**
+
 - `<private>` tags for user-controlled privacy - wrap sensitive content to exclude from storage
 - System-level `<claude-mem-context>` tags prevent recursive observation storage
 - Edge processing ensures private content never reaches database
 
 **v6.3.0 - Version Channel:**
+
 - Switch between stable and beta versions from the web viewer UI
 - Try experimental features like Endless Mode without manual git operations
 
 **Previous Highlights:**
+
 - **v6.0.0**: Major session management & transcript processing improvements
 - **v5.5.0**: mem-search skill enhancement with 100% effectiveness rate
 - **v5.4.0**: Skill-based search architecture (~2,250 tokens saved per session)
@@ -310,15 +316,15 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 
 **Available Settings:**
 
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `CLAUDE_MEM_MODEL` | `claude-haiku-4-5` | AI model for observations |
-| `CLAUDE_MEM_WORKER_PORT` | `37777` | Worker service port |
-| `CLAUDE_MEM_DATA_DIR` | `~/.claude-mem` | Data directory location |
-| `CLAUDE_MEM_LOG_LEVEL` | `INFO` | Log verbosity (DEBUG, INFO, WARN, ERROR, SILENT) |
-| `CLAUDE_MEM_PYTHON_VERSION` | `3.13` | Python version for chroma-mcp |
-| `CLAUDE_CODE_PATH` | _(auto-detect)_ | Path to Claude executable |
-| `CLAUDE_MEM_CONTEXT_OBSERVATIONS` | `50` | Number of observations to inject at SessionStart |
+| Setting                           | Default            | Description                                      |
+| --------------------------------- | ------------------ | ------------------------------------------------ |
+| `CLAUDE_MEM_MODEL`                | `claude-haiku-4-5` | AI model for observations                        |
+| `CLAUDE_MEM_WORKER_PORT`          | `37777`            | Worker service port                              |
+| `CLAUDE_MEM_DATA_DIR`             | `~/.claude-mem`    | Data directory location                          |
+| `CLAUDE_MEM_LOG_LEVEL`            | `INFO`             | Log verbosity (DEBUG, INFO, WARN, ERROR, SILENT) |
+| `CLAUDE_MEM_PYTHON_VERSION`       | `3.13`             | Python version for chroma-mcp                    |
+| `CLAUDE_CODE_PATH`                | _(auto-detect)_    | Path to Claude executable                        |
+| `CLAUDE_MEM_CONTEXT_OBSERVATIONS` | `50`               | Number of observations to inject at SessionStart |
 
 **Settings Management:**
 
@@ -365,6 +371,16 @@ npm run worker:start
 # View logs
 npm run worker:logs
 ```
+
+For shorter local workflows, a `Makefile` mirrors these scripts:
+
+- `make help` — list available shortcuts
+- `make install` — install dependencies
+- `make build` — build hooks
+- `make test` — run vitest suite
+- `make worker-start` / `make worker-stop` / `make worker-restart` — control the PM2 worker
+- `make worker-logs` — tail worker logs (flushes cache)
+- Defaults to `bun`; override with `NPM=npm make <target>` if needed
 
 See [Development Guide](https://docs.claude-mem.ai/development) for detailed instructions.
 
