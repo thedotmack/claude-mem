@@ -223,9 +223,10 @@ export function Sidebar({ isOpen, settings, stats, isSaving, saveStatus, isConne
               value={formState.CLAUDE_MEM_MODEL}
               onChange={e => updateFormState('CLAUDE_MEM_MODEL', e.target.value)}
             >
-              <option value="claude-haiku-4-5">claude-haiku-4-5</option>
-              <option value="claude-sonnet-4-5">claude-sonnet-4-5</option>
-              <option value="claude-opus-4">claude-opus-4</option>
+              {/* Shorthand names forward to latest model version */}
+              <option value="haiku">haiku</option>
+              <option value="sonnet">sonnet</option>
+              <option value="opus">opus</option>
             </select>
           </div>
           <div className="form-group">

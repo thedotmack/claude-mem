@@ -13,7 +13,7 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 
 | Setting                       | Default                         | Description                           |
 |-------------------------------|---------------------------------|---------------------------------------|
-| `CLAUDE_MEM_MODEL`            | `claude-haiku-4-5`              | AI model for processing observations  |
+| `CLAUDE_MEM_MODEL`            | `haiku`                         | AI model for processing observations  |
 | `CLAUDE_MEM_CONTEXT_OBSERVATIONS` | `50`                        | Number of observations to inject      |
 | `CLAUDE_MEM_WORKER_PORT`      | `37777`                         | Worker service port                   |
 | `CLAUDE_MEM_SKIP_TOOLS`       | `ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion` | Comma-separated tools to exclude from observations |
@@ -33,10 +33,11 @@ Configure which AI model processes your observations.
 
 ### Available Models
 
-- `claude-haiku-4-5` - Fast, cost-efficient (default)
-- `claude-sonnet-4-5` - Balanced
-- `claude-opus-4-5` - Most capable
-- `claude-3-7-sonnet` - Alternative version
+Shorthand model names automatically forward to the latest version:
+
+- `haiku` - Fast, cost-efficient (default)
+- `sonnet` - Balanced
+- `opus` - Most capable
 
 ### Using the Interactive Script
 
@@ -52,7 +53,7 @@ Edit `~/.claude-mem/settings.json`:
 
 ```json
 {
-  "CLAUDE_MEM_MODEL": "claude-haiku-4-5"
+  "CLAUDE_MEM_MODEL": "haiku"
 }
 ```
 
@@ -285,7 +286,7 @@ Token economics help you understand the value of cached observations vs. re-read
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| **Model** | claude-haiku-4-5 | AI model for generating observations |
+| **Model** | haiku | AI model for generating observations |
 | **Worker Port** | 37777 | Port for background worker service |
 | **MCP search server** | true | Enable Model Context Protocol search tools |
 | **Include last summary** | false | Add previous session's summary to context |
@@ -345,13 +346,13 @@ npm run worker:restart
 Edit `~/.claude-mem/settings.json`:
 ```json
 {
-  "CLAUDE_MEM_MODEL": "claude-opus-4-5"
+  "CLAUDE_MEM_MODEL": "opus"
 }
 ```
 
 Then restart the worker:
 ```bash
-export CLAUDE_MEM_MODEL=claude-opus-4-5
+export CLAUDE_MEM_MODEL=opus
 npm run worker:restart
 ```
 
@@ -449,13 +450,12 @@ npm run worker:logs
 
 ### Invalid Model Name
 
-If you specify an invalid model name, the worker will fall back to `claude-haiku-4-5` and log a warning.
+If you specify an invalid model name, the worker will fall back to `haiku` and log a warning.
 
-Valid models:
-- claude-haiku-4-5
-- claude-sonnet-4-5
-- claude-opus-4-5
-- claude-3-7-sonnet
+Valid shorthand models (forward to latest version):
+- haiku
+- sonnet
+- opus
 
 ### Port Already in Use
 
