@@ -17,6 +17,8 @@ curl -s http://127.0.0.1:37777/health
 
 **Expected output:** `{"status":"ok"}`
 
+**Note:** If you see `{"status":"initializing"}` (HTTP 503), wait 1-2 seconds and retry - this is normal during startup.
+
 **What it does:**
 1. Stops the worker (if running)
 2. Ensures dependencies are installed
@@ -46,6 +48,27 @@ cd ~/.claude/plugins/marketplaces/thedotmack/ && \
 npm install && \
 pm2 restart claude-mem-worker
 ```
+
+## Fix: ABI Mismatch
+
+**Use when:** Worker crashes with `ERR_DLOPEN_FAILED` or `NODE_MODULE_VERSION` errors after Node.js update
+
+```bash
+cd ~/.claude/plugins/marketplaces/thedotmack/ && \
+npm rebuild better-sqlite3 && \
+pm2 delete claude-mem-worker 2>/dev/null; \
+node_modules/.bin/pm2 start ecosystem.config.cjs && \
+sleep 3 && \
+curl -s http://127.0.0.1:37777/health
+```
+
+**Expected output:** `{"status":"ok"}`
+
+**What it does:**
+1. Rebuilds native modules for current Node.js version
+2. Removes stale worker process
+3. Starts fresh worker
+4. Verifies health
 
 ## Fix: Port Conflict
 

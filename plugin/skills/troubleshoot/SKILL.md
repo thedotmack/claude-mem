@@ -61,7 +61,7 @@ sleep 3 && \
 curl -s http://127.0.0.1:37777/health
 ```
 
-Expected output: `{"status":"ok"}`
+Expected output: `{"status":"ok"}` (503 with `{"status":"initializing"}` is normal during startup, simply wait a few more seconds to allow initialization to complete)
 
 If that doesn't work, proceed to detailed diagnostics.
 
