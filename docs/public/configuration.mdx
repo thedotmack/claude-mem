@@ -16,6 +16,7 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 | `CLAUDE_MEM_MODEL`            | `claude-haiku-4-5`              | AI model for processing observations  |
 | `CLAUDE_MEM_CONTEXT_OBSERVATIONS` | `50`                        | Number of observations to inject      |
 | `CLAUDE_MEM_WORKER_PORT`      | `37777`                         | Worker service port                   |
+| `CLAUDE_MEM_SKIP_TOOLS`       | `ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion` | Comma-separated tools to exclude from observations |
 
 ### System Configuration
 
@@ -352,6 +353,29 @@ Then restart the worker:
 ```bash
 npm run worker:restart
 ```
+
+### Custom Skip Tools
+
+Control which tools are excluded from observations. Edit `~/.claude-mem/settings.json`:
+```json
+{
+  "CLAUDE_MEM_SKIP_TOOLS": "ListMcpResourcesTool,SlashCommand,Skill"
+}
+```
+
+**Default excluded tools:**
+- `ListMcpResourcesTool`
+- `SlashCommand`
+- `Skill`
+- `TodoWrite`
+- `AskUserQuestion`
+
+**Common customizations:**
+- Include TodoWrite: Remove from skip list to track task planning
+- Include AskUserQuestion: Remove to capture decision-making conversations
+- Skip additional tools: Add tool names to reduce observation noise
+
+Changes take effect on the next tool execution (no worker restart needed).
 
 ## Advanced Configuration
 
