@@ -10,140 +10,43 @@
  */
 
 import { stdin } from 'process';
-import { readFileSync, existsSync } from 'fs';
 import { createHookResponse } from './hook-response.js';
 import { logger } from '../utils/logger.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
+import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
+import { happy_path_error__with_fallback } from '../utils/silent-debug.js';
+import { handleWorkerError } from '../shared/hook-error-handler.js';
+import { extractLastMessage } from '../shared/transcript-parser.js';
 
 export interface StopInput {
   session_id: string;
   cwd: string;
-  transcript_path?: string;
-  [key: string]: any;
-}
-
-/**
- * Extract last user message from transcript JSONL file
- */
-function extractLastUserMessage(transcriptPath: string): string {
-  if (!transcriptPath || !existsSync(transcriptPath)) {
-    return '';
-  }
-
-  try {
-    const content = readFileSync(transcriptPath, 'utf-8').trim();
-    if (!content) {
-      return '';
-    }
-
-    const lines = content.split('\n');
-
-    // Parse JSONL and find last user message
-    for (let i = lines.length - 1; i >= 0; i--) {
-      try {
-        const line = JSON.parse(lines[i]);
-
-        // Claude Code transcript format: {type: "user", message: {role: "user", content: [...]}}
-        if (line.type === 'user' && line.message?.content) {
-          const content = line.message.content;
-
-          // Extract text content (handle both string and array formats)
-          if (typeof content === 'string') {
-            return content;
-          } else if (Array.isArray(content)) {
-            const textParts = content
-              .filter((c: any) => c.type === 'text')
-              .map((c: any) => c.text);
-            return textParts.join('\n');
-          }
-        }
-      } catch (parseError) {
-        // Skip malformed lines
-        continue;
-      }
-    }
-  } catch (error) {
-    logger.error('HOOK', 'Failed to read transcript', { transcriptPath }, error as Error);
-  }
-
-  return '';
-}
-
-/**
- * Extract last assistant message from transcript JSONL file
- * Filters out system-reminder tags to avoid polluting summaries
- */
-function extractLastAssistantMessage(transcriptPath: string): string {
-  if (!transcriptPath || !existsSync(transcriptPath)) {
-    return '';
-  }
-
-  try {
-    const content = readFileSync(transcriptPath, 'utf-8').trim();
-    if (!content) {
-      return '';
-    }
-
-    const lines = content.split('\n');
-
-    // Parse JSONL and find last assistant message
-    for (let i = lines.length - 1; i >= 0; i--) {
-      try {
-        const line = JSON.parse(lines[i]);
-
-        // Claude Code transcript format: {type: "assistant", message: {role: "assistant", content: [...]}}
-        if (line.type === 'assistant' && line.message?.content) {
-          let text = '';
-          const content = line.message.content;
-
-          // Extract text content (handle both string and array formats)
-          if (typeof content === 'string') {
-            text = content;
-          } else if (Array.isArray(content)) {
-            const textParts = content
-              .filter((c: any) => c.type === 'text')
-              .map((c: any) => c.text);
-            text = textParts.join('\n');
-          }
-
-          // Filter out system-reminder tags and their content
-          text = text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '');
-
-          // Clean up excessive whitespace
-          text = text.replace(/\n{3,}/g, '\n\n').trim();
-
-          return text;
-        }
-      } catch (parseError) {
-        // Skip malformed lines
-        continue;
-      }
-    }
-  } catch (error) {
-    logger.error('HOOK', 'Failed to read transcript', { transcriptPath }, error as Error);
-  }
-
-  return '';
+  transcript_path: string;
 }
 
 /**
  * Summary Hook Main Logic - Fire-and-forget HTTP client
  */
 async function summaryHook(input?: StopInput): Promise<void> {
+  // Ensure worker is running before any other logic
+  await ensureWorkerRunning();
+
   if (!input) {
     throw new Error('summaryHook requires input');
   }
 
   const { session_id } = input;
 
-  // Ensure worker is running
-  await ensureWorkerRunning();
-
   const port = getWorkerPort();
 
   // Extract last user AND assistant messages from transcript
-  const lastUserMessage = extractLastUserMessage(input.transcript_path || '');
-  const lastAssistantMessage = extractLastAssistantMessage(input.transcript_path || '');
+  const transcriptPath = happy_path_error__with_fallback(
+    'Missing transcript_path in Stop hook input',
+    { session_id },
+    input.transcript_path || ''
+  );
+  const lastUserMessage = extractLastMessage(transcriptPath, 'user');
+  const lastAssistantMessage = extractLastMessage(transcriptPath, 'assistant', true);
 
   logger.dataIn('HOOK', 'Stop: Requesting summary', {
     workerPort: port,
@@ -161,7 +64,7 @@ async function summaryHook(input?: StopInput): Promise<void> {
         last_user_message: lastUserMessage,
         last_assistant_message: lastAssistantMessage
       }),
-      signal: AbortSignal.timeout(2000)
+      signal: AbortSignal.timeout(HOOK_TIMEOUTS.DEFAULT)
     });
 
     if (!response.ok) {
@@ -174,18 +77,22 @@ async function summaryHook(input?: StopInput): Promise<void> {
 
     logger.debug('HOOK', 'Summary request sent successfully');
   } catch (error: any) {
-    // Only show restart message for connection errors, not HTTP errors
-    if (error.cause?.code === 'ECONNREFUSED' || error.name === 'TimeoutError' || error.message.includes('fetch failed')) {
-      throw new Error("There's a problem with the worker. If you just updated, type `pm2 restart claude-mem-worker` in your terminal to continue");
-    }
-    throw error;
+    handleWorkerError(error);
   } finally {
-    // Notify worker to stop spinner (fire-and-forget)
-    fetch(`http://127.0.0.1:${port}/api/processing`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ isProcessing: false })
-    }).catch(() => {});
+    // Stop processing spinner
+    try {
+      const spinnerResponse = await fetch(`http://127.0.0.1:${port}/api/processing`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ isProcessing: false }),
+        signal: AbortSignal.timeout(2000)
+      });
+      if (!spinnerResponse.ok) {
+        logger.warn('HOOK', 'Failed to stop spinner', { status: spinnerResponse.status });
+      }
+    } catch (error: any) {
+      logger.warn('HOOK', 'Could not stop spinner', { error: error.message });
+    }
   }
 
   console.log(createHookResponse('Stop', true));

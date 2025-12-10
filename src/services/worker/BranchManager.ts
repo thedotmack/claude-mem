@@ -36,7 +36,8 @@ function execGit(command: string): string {
   return execSync(`git ${command}`, {
     cwd: INSTALLED_PLUGIN_PATH,
     encoding: 'utf-8',
-    timeout: 30000
+    timeout: 30000,
+    windowsHide: true
   }).trim();
 }
 
@@ -47,7 +48,8 @@ function execShell(command: string, timeoutMs: number = 60000): string {
   return execSync(command, {
     cwd: INSTALLED_PLUGIN_PATH,
     encoding: 'utf-8',
-    timeout: timeoutMs
+    timeout: timeoutMs,
+    windowsHide: true
   }).trim();
 }
 

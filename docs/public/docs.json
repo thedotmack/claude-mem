@@ -55,7 +55,8 @@
         "pages": [
           "configuration",
           "development",
-          "troubleshooting"
+          "troubleshooting",
+          "platform-integration"
         ]
       },
       {

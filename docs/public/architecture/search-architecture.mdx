@@ -379,7 +379,7 @@ Claude translates to appropriate API call.
 
 ### 4. Performance
 
-**Fast Queries**: FTS5 full-text search <10ms for typical queries
+**Fast Queries**: FTS5 full-text search under 10ms for typical queries
 
 **Caching**: HTTP layer allows response caching
 
@@ -397,7 +397,7 @@ Claude translates to appropriate API call.
 
 ### For Developers
 
-**Deprecated**: MCP search server (`src/servers/search-server.ts`)
+**Renamed**: MCP server (formerly `search-server.ts`, now `src/servers/mcp-server.ts`)
 - Source file kept for reference
 - No longer built or registered
 - MCP configuration removed from `plugin/.mcp.json`

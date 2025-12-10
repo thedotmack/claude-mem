@@ -4,6 +4,8 @@
  * Smart Install Script for claude-mem
  *
  * Features:
+ * - Detects execution context (cache vs marketplace directory)
+ * - Installs dependencies where the hooks actually run (cache directory)
  * - Only runs npm install when necessary (version change or missing deps)
  * - Caches installation state with version marker
  * - Provides helpful Windows-specific error messages
@@ -12,19 +14,33 @@
  */
 
 import { existsSync, readFileSync, writeFileSync } from 'fs';
-import { execSync, spawnSync, spawn } from 'child_process';
-import { join } from 'path';
+import { execSync } from 'child_process';
+import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { createRequire } from 'module';
+import { fileURLToPath } from 'url';
 
+// Determine the directory where THIS script is running from
+// This could be either:
+// 1. Cache: ~/.claude/plugins/cache/thedotmack/claude-mem/X.X.X/scripts/
+// 2. Marketplace: ~/.claude/plugins/marketplaces/thedotmack/plugin/scripts/
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const SCRIPT_ROOT = dirname(__dirname); // Parent of scripts/ directory
 
-// CRITICAL: Always use marketplace directory for npm install and PM2/ecosystem
-// This script may run from cache directory (plugin/) which has no package.json
-// The marketplace root is the canonical location with package.json and node_modules
-const MARKETPLACE_ROOT = join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
-const PACKAGE_JSON_PATH = join(MARKETPLACE_ROOT, 'package.json');
-const VERSION_MARKER_PATH = join(MARKETPLACE_ROOT, '.install-version');
-const NODE_MODULES_PATH = join(MARKETPLACE_ROOT, 'node_modules');
+// Detect if running from cache directory (has version number in path)
+const CACHE_PATTERN = /[/\\]cache[/\\]thedotmack[/\\]claude-mem[/\\]\d+\.\d+\.\d+/;
+const IS_RUNNING_FROM_CACHE = CACHE_PATTERN.test(__dirname);
+
+// Set PLUGIN_ROOT based on where we're running
+// If from cache, install dependencies IN the cache directory (where hooks run)
+// If from marketplace, use marketplace directory
+const PLUGIN_ROOT = IS_RUNNING_FROM_CACHE
+  ? SCRIPT_ROOT  // Cache directory (e.g., ~/.claude/plugins/cache/thedotmack/claude-mem/7.0.3/)
+  : join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
+
+const PACKAGE_JSON_PATH = join(PLUGIN_ROOT, 'package.json');
+const VERSION_MARKER_PATH = join(PLUGIN_ROOT, '.install-version');
+const NODE_MODULES_PATH = join(PLUGIN_ROOT, 'node_modules');
 const BETTER_SQLITE3_PATH = join(NODE_MODULES_PATH, 'better-sqlite3');
 
 // Colors for output
@@ -98,6 +114,12 @@ function setInstalledVersion(packageVersion, nodeVersion) {
 }
 
 function needsInstall() {
+  // Check if package.json exists (required for npm install)
+  if (!existsSync(PACKAGE_JSON_PATH)) {
+    log(`⚠️  No package.json found at ${PLUGIN_ROOT}`, colors.yellow);
+    return false; // Can't install without package.json
+  }
+
   // Check if node_modules exists
   if (!existsSync(NODE_MODULES_PATH)) {
     log('📦 Dependencies not found - first time setup', colors.cyan);
@@ -151,9 +173,8 @@ async function verifyNativeModules() {
   try {
     log('🔍 Verifying native modules...', colors.dim);
 
-    // CRITICAL: Use createRequire() to resolve from MARKETPLACE_ROOT
-    // This script may run from cache but must load modules from marketplace's node_modules
-    const require = createRequire(join(MARKETPLACE_ROOT, 'package.json'));
+    // Use createRequire() to resolve from PLUGIN_ROOT's node_modules
+    const require = createRequire(join(PLUGIN_ROOT, 'package.json'));
     const Database = require('better-sqlite3');
 
     // Try to create a test in-memory database
@@ -243,7 +264,8 @@ async function runNpmInstall() {
   const isWindows = process.platform === 'win32';
 
   log('', colors.cyan);
-  log('🔨 Installing dependencies...', colors.bright);
+  log(`🔨 Installing dependencies in ${IS_RUNNING_FROM_CACHE ? 'cache' : 'marketplace'}...`, colors.bright);
+  log(`   ${PLUGIN_ROOT}`, colors.dim);
   log('', colors.reset);
 
   // Try normal install first, then retry with force if it fails
@@ -260,10 +282,9 @@ async function runNpmInstall() {
 
       // Run npm install silently
       execSync(command, {
-        cwd: MARKETPLACE_ROOT,
+        cwd: PLUGIN_ROOT,
         stdio: 'pipe', // Silent output unless error
         encoding: 'utf-8',
-        windowsHide: true,
       });
 
       // Verify better-sqlite3 was installed
@@ -271,7 +292,7 @@ async function runNpmInstall() {
         throw new Error('better-sqlite3 installation verification failed');
       }
 
-      // NEW: Verify native modules actually work
+      // Verify native modules actually work
       const nativeModulesWork = await verifyNativeModules();
       if (!nativeModulesWork) {
         throw new Error('Native modules failed to load after install');
@@ -328,16 +349,15 @@ async function runNpmInstall() {
   return false;
 }
 
-/**
- * Check if we should fail when worker startup fails
- * Returns true if worker failed AND dependencies are missing
- */
-function shouldFailOnWorkerStartup(workerStarted) {
-  return !workerStarted && !existsSync(NODE_MODULES_PATH);
-}
-
 async function main() {
   try {
+    // Log execution context for debugging
+    if (IS_RUNNING_FROM_CACHE) {
+      log('📍 Running from cache directory', colors.dim);
+    } else {
+      log('📍 Running from marketplace directory', colors.dim);
+    }
+
     // Check if we need to install dependencies
     const installNeeded = needsInstall();
 
@@ -352,7 +372,7 @@ async function main() {
         process.exit(1);
       }
     } else {
-      // NEW: Even if install not needed, verify native modules work
+      // Even if install not needed, verify native modules work
       const nativeModulesWork = await verifyNativeModules();
 
       if (!nativeModulesWork) {
@@ -368,10 +388,10 @@ async function main() {
       }
     }
 
-      // NOTE: Worker auto-start disabled in smart-install.js
-      // The context-hook.js calls ensureWorkerRunning() which handles worker startup
-      // This avoids potential process management conflicts during plugin initialization
-      log('✅ Installation complete', colors.green);
+    // NOTE: Worker auto-start disabled in smart-install.js
+    // The context-hook.js calls ensureWorkerRunning() which handles worker startup
+    // This avoids potential process management conflicts during plugin initialization
+    log('✅ Installation complete', colors.green);
 
     // Success - dependencies installed (if needed)
     process.exit(0);

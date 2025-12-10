@@ -7,14 +7,12 @@
  */
 
 import { stdin } from 'process';
-import { getWorkerPort } from '../shared/worker-utils.js';
-import { silentDebug } from '../utils/silent-debug.js';
+import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
+import { happy_path_error__with_fallback } from '../utils/silent-debug.js';
+import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 
 export interface SessionEndInput {
   session_id: string;
-  cwd: string;
-  transcript_path?: string;
-  hook_event_name: string;
   reason: 'exit' | 'clear' | 'logout' | 'prompt_input_exit' | 'other';
 }
 
@@ -22,24 +20,16 @@ export interface SessionEndInput {
  * Cleanup Hook Main Logic - Fire-and-forget HTTP client
  */
 async function cleanupHook(input?: SessionEndInput): Promise<void> {
-  silentDebug('[cleanup-hook] Hook fired', {
+  // Ensure worker is running before any other logic
+  await ensureWorkerRunning();
+
+  happy_path_error__with_fallback('[cleanup-hook] Hook fired', {
     session_id: input?.session_id,
-    cwd: input?.cwd,
     reason: input?.reason
   });
 
-  // Handle standalone execution (no input provided)
   if (!input) {
-    console.log('No input provided - this script is designed to run as a Claude Code SessionEnd hook');
-    console.log('\nExpected input format:');
-    console.log(JSON.stringify({
-      session_id: "string",
-      cwd: "string",
-      transcript_path: "string",
-      hook_event_name: "SessionEnd",
-      reason: "exit"
-    }, null, 2));
-    process.exit(0);
+    throw new Error('cleanup-hook requires input from Claude Code');
   }
 
   const { session_id, reason } = input;
@@ -55,19 +45,19 @@ async function cleanupHook(input?: SessionEndInput): Promise<void> {
         claudeSessionId: session_id,
         reason
       }),
-      signal: AbortSignal.timeout(2000)
+      signal: AbortSignal.timeout(HOOK_TIMEOUTS.DEFAULT)
     });
 
     if (response.ok) {
       const result = await response.json();
-      silentDebug('[cleanup-hook] Session cleanup completed', result);
+      happy_path_error__with_fallback('[cleanup-hook] Session cleanup completed', result);
     } else {
       // Non-fatal - session might not exist
-      silentDebug('[cleanup-hook] Session not found or already cleaned up');
+      happy_path_error__with_fallback('[cleanup-hook] Session not found or already cleaned up');
     }
   } catch (error: any) {
     // Worker might not be running - that's okay
-    silentDebug('[cleanup-hook] Worker not reachable (non-critical)', {
+    happy_path_error__with_fallback('[cleanup-hook] Worker not reachable (non-critical)', {
       error: error.message
     });
   }

@@ -1,5 +1,8 @@
 /**
- * PM2 Ecosystem Configuration for claude-mem Worker Service
+ * PM2 Ecosystem Configuration for claude-mem Worker Service (Packaged Plugin)
+ *
+ * NOTE: This config is for the packaged/cache version of the plugin.
+ * The script path is relative to the cache directory structure.
  *
  * Usage:
  *   pm2 start ecosystem.config.cjs
@@ -13,14 +16,14 @@ module.exports = {
   apps: [
     {
       name: 'claude-mem-worker',
-      script: './plugin/scripts/worker-service.cjs',
+      // Packaged structure: cache/thedotmack/claude-mem/X.X.X/scripts/worker-service.cjs
+      script: './scripts/worker-service.cjs',
       // Windows: prevent visible console windows
       windowsHide: true,
       // INTENTIONAL: Watch mode enables auto-restart on plugin updates
       //
       // Why this is enabled:
-      // - When you run `npm run sync-marketplace` or rebuild the plugin,
-      //   files in ~/.claude/plugins/marketplaces/thedotmack/ change
+      // - When plugin updates, files change
       // - Watch mode detects these changes and auto-restarts the worker
       // - Users get the latest code without manually running `pm2 restart`
       //

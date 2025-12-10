@@ -58,6 +58,26 @@ async function buildHooks() {
     }
     console.log('✓ Output directories ready');
 
+    // Generate plugin/package.json for cache directory dependency installation
+    // The bundled hooks use `external: ['better-sqlite3']` so dependencies must be
+    // installed at runtime. This package.json enables npm install in the cache directory.
+    console.log('\n📦 Generating plugin package.json...');
+    const pluginPackageJson = {
+      name: 'claude-mem-plugin',
+      version: version,
+      private: true,
+      description: 'Runtime dependencies for claude-mem bundled hooks',
+      type: 'module',
+      dependencies: {
+        'better-sqlite3': packageJson.dependencies['better-sqlite3']
+      },
+      engines: {
+        node: '>=18.0.0'
+      }
+    };
+    fs.writeFileSync('plugin/package.json', JSON.stringify(pluginPackageJson, null, 2) + '\n');
+    console.log('✓ plugin/package.json generated');
+
     // Build React viewer
     console.log('\n📋 Building React viewer...');
     const { spawn } = await import('child_process');

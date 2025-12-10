@@ -4,6 +4,108 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [7.0.7] - 2025-12-10
+
+## What's Changed
+
+### Code Quality Improvements
+- Refactored hooks codebase to reduce complexity and improve maintainability (#204)
+- Net reduction of 78 lines while adding new functionality
+- Improved type safety across all hook input interfaces
+
+### New Features
+- Added `CLAUDE_MEM_SKIP_TOOLS` configuration setting for controlling which tools are excluded from observations
+- Default skip tools: `ListMcpResourcesTool`, `SlashCommand`, `Skill`, `TodoWrite`, `AskUserQuestion`
+
+### Technical Improvements
+- Created shared utilities: `transcript-parser.ts`, `hook-constants.ts`, `hook-error-handler.ts`
+- Migrated business logic from hooks to worker service for better separation of concerns
+- Enhanced error handling and spinner management
+- Removed dead code and unnecessary abstractions
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.0.6...v7.0.7
+
+## [7.0.6] - 2025-12-10
+
+## Bug Fixes
+
+- Fixed Windows terminal spawning to hide terminal windows when spawning child processes (#203, thanks @CrystallDEV)
+- Improved worker service process management on Windows
+
+## Contributors
+
+Thanks to @CrystallDEV for this contribution!
+
+## [7.0.5] - 2025-12-09
+
+## What's Changed
+
+### Bug Fixes
+- Fixed settings schema inconsistency between write and read operations
+- Fixed PowerShell command injection vulnerability in worker-utils.ts
+- Enhanced PM2 existence check with clear error messages
+- Added error logging to silent tool serialization handlers
+
+### Improvements
+- Settings centralization: Migrated to SettingsDefaultsManager across codebase
+- Auto-creation of settings.json file with defaults on first run
+- Settings schema migration from nested to flat format
+- Refactored HTTP-only new-hook implementation
+- Cross-platform worker service improvements
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.0.4...v7.0.5
+
+## [7.0.4] - 2025-12-09
+
+## What's Changed
+
+### Bug Fixes
+- **Windows**: Comprehensive fixes for Windows plugin installation
+- **Cache**: Add package.json to plugin directory for cache dependency resolution
+
+Thanks to @kat-bell for the excellent contributions!
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.0.3...v7.0.4
+
+## [7.0.3] - 2025-12-09
+
+## What's Changed
+
+**Refactoring:**
+- Completed rename of `search-server` to `mcp-server` throughout codebase
+- Updated all documentation references from search-server to mcp-server
+- Updated debug log messages to use `[mcp-server]` prefix
+- Removed legacy `search-server.cjs` file
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.0.2...v7.0.3
+
+## [7.0.2] - 2025-12-09
+
+## What's Changed
+
+**Bug Fixes:**
+- Improved auto-start worker functionality for better reliability
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.0.1...v7.0.2
+
+## [7.0.1] - 2025-12-09
+
+## Bug Fixes
+
+- **Hook Execution**: Ensure worker is running at the beginning of all hook files
+- **Context Hook**: Replace waitForPort with ensureWorkerRunning for better error handling
+- **Reliability**: Move ensureWorkerRunning to start of all hook functions to ensure worker is started before any logic executes
+
+## Technical Changes
+
+- context-hook.ts: Replace waitForPort logic with ensureWorkerRunning
+- summary-hook.ts: Move ensureWorkerRunning before input validation
+- new-hook.ts: Move ensureWorkerRunning before debug logging
+- save-hook.ts: Move ensureWorkerRunning before SKIP_TOOLS check
+- cleanup-hook.ts: Move ensureWorkerRunning before silentDebug calls
+
+This ensures more reliable worker startup and clearer error messages when the worker fails to start.
+
 ## [7.0.0] - 2025-12-08
 
 # Major Architectural Refactor

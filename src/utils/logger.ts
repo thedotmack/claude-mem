@@ -3,6 +3,8 @@
  * Provides readable, traceable logging with correlation IDs and data flow tracking
  */
 
+import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
+
 export enum LogLevel {
   DEBUG = 0,
   INFO = 1,
@@ -21,16 +23,23 @@ interface LogContext {
 }
 
 class Logger {
-  private level: LogLevel;
+  private level: LogLevel | null = null;
   private useColor: boolean;
 
   constructor() {
-    // Parse log level from environment
-    const envLevel = process.env.CLAUDE_MEM_LOG_LEVEL?.toUpperCase() || 'INFO';
-    this.level = LogLevel[envLevel as keyof typeof LogLevel] ?? LogLevel.INFO;
-
     // Disable colors when output is not a TTY (e.g., PM2 logs)
     this.useColor = process.stdout.isTTY ?? false;
+  }
+
+  /**
+   * Lazy-load log level from settings (breaks circular dependency with SettingsDefaultsManager)
+   */
+  private getLevel(): LogLevel {
+    if (this.level === null) {
+      const envLevel = SettingsDefaultsManager.get('CLAUDE_MEM_LOG_LEVEL').toUpperCase();
+      this.level = LogLevel[envLevel as keyof typeof LogLevel] ?? LogLevel.INFO;
+    }
+    return this.level;
   }
 
   /**
@@ -60,7 +69,7 @@ class Logger {
     if (typeof data === 'object') {
       // If it's an error, show message and stack in debug mode
       if (data instanceof Error) {
-        return this.level === LogLevel.DEBUG
+        return this.getLevel() === LogLevel.DEBUG
           ? `${data.message}\n${data.stack}`
           : data.message;
       }
@@ -132,7 +141,7 @@ class Logger {
     context?: LogContext,
     data?: any
   ): void {
-    if (level < this.level) return;
+    if (level < this.getLevel()) return;
 
     const timestamp = new Date().toISOString().replace('T', ' ').substring(0, 23);
     const levelStr = LogLevel[level].padEnd(5);
@@ -149,7 +158,7 @@ class Logger {
     // Build data part
     let dataStr = '';
     if (data !== undefined && data !== null) {
-      if (this.level === LogLevel.DEBUG && typeof data === 'object') {
+      if (this.getLevel() === LogLevel.DEBUG && typeof data === 'object') {
         // In debug mode, show full JSON for objects
         dataStr = '\n' + JSON.stringify(data, null, 2);
       } else {

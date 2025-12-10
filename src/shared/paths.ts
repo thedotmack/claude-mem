@@ -3,6 +3,7 @@ import { homedir } from 'os';
 import { existsSync, mkdirSync } from 'fs';
 import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
+import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
 
 // Get __dirname that works in both ESM (hooks) and CJS (worker) contexts
 function getDirname(): string {
@@ -22,7 +23,8 @@ const _dirname = getDirname();
  */
 
 // Base directories
-export const DATA_DIR = process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem');
+export const DATA_DIR = SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR');
+// Note: CLAUDE_CONFIG_DIR is a Claude Code setting, not claude-mem, so leave as env var
 export const CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
 
 // Data subdirectories
@@ -87,7 +89,8 @@ export function getCurrentProjectName(): string {
     const gitRoot = execSync('git rev-parse --show-toplevel', {
       cwd: process.cwd(),
       encoding: 'utf8',
-      stdio: ['pipe', 'pipe', 'ignore']
+      stdio: ['pipe', 'pipe', 'ignore'],
+      windowsHide: true
     }).trim();
     return basename(gitRoot);
   } catch {
@@ -110,13 +113,7 @@ export function getPackageRoot(): string {
  */
 export function getPackageCommandsDir(): string {
   const packageRoot = getPackageRoot();
-  const commandsDir = join(packageRoot, 'commands');
-
-  if (!existsSync(join(commandsDir, 'save.md'))) {
-    throw new Error('Package commands directory missing required files');
-  }
-
-  return commandsDir;
+  return join(packageRoot, 'commands');
 }
 
 /**

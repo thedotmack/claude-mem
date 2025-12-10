@@ -7,13 +7,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../scripts/smart-install.js\" && node ${CLAUDE_PLUGIN_ROOT}/scripts/context-hook.js",
-            "timeout": 5
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/smart-install.js\" && node ${CLAUDE_PLUGIN_ROOT}/scripts/context-hook.js",
+            "timeout": 300
           },
           {
             "type": "command",
             "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/user-message-hook.js",
-            "timeout": 5
+            "timeout": 10
           }
         ]
       }

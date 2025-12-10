@@ -7,11 +7,12 @@
  */
 
 const { execSync } = require('child_process');
-const { existsSync } = require('fs');
+const { existsSync, readFileSync } = require('fs');
 const path = require('path');
 const os = require('os');
 
 const INSTALLED_PATH = path.join(os.homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
+const CACHE_BASE_PATH = path.join(os.homedir(), '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem');
 
 function getCurrentBranch() {
   try {
@@ -29,8 +30,9 @@ function getCurrentBranch() {
 }
 
 const branch = getCurrentBranch();
+const isForce = process.argv.includes('--force');
 
-if (branch && branch !== 'main') {
+if (branch && branch !== 'main' && !isForce) {
   console.log('');
   console.log('\x1b[33m%s\x1b[0m', `WARNING: Installed plugin is on beta branch: ${branch}`);
   console.log('\x1b[33m%s\x1b[0m', 'Running rsync would overwrite beta code.');
@@ -41,6 +43,18 @@ if (branch && branch !== 'main') {
   console.log('  3. Force rsync: npm run sync-marketplace:force');
   console.log('');
   process.exit(1);
+}
+
+// Get version from plugin.json
+function getPluginVersion() {
+  try {
+    const pluginJsonPath = path.join(__dirname, '..', 'plugin', '.claude-plugin', 'plugin.json');
+    const pluginJson = JSON.parse(readFileSync(pluginJsonPath, 'utf-8'));
+    return pluginJson.version;
+  } catch (error) {
+    console.error('\x1b[31m%s\x1b[0m', 'Failed to read plugin version:', error.message);
+    process.exit(1);
+  }
 }
 
 // Normal rsync for main branch or fresh install
@@ -54,6 +68,16 @@ try {
   console.log('Running npm install in marketplace...');
   execSync(
     'cd ~/.claude/plugins/marketplaces/thedotmack/ && npm install',
+    { stdio: 'inherit' }
+  );
+
+  // Sync to cache folder with version
+  const version = getPluginVersion();
+  const CACHE_VERSION_PATH = path.join(CACHE_BASE_PATH, version);
+
+  console.log(`Syncing to cache folder (version ${version})...`);
+  execSync(
+    `rsync -av --delete --exclude=.git plugin/ "${CACHE_VERSION_PATH}/"`,
     { stdio: 'inherit' }
   );
 
