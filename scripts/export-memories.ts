@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
  * Export memories matching a search query to a portable JSON format
- * Usage: npx tsx scripts/export-memories.ts <query> <output-file>
- * Example: npx tsx scripts/export-memories.ts "windows" windows-memories.json
+ * Usage: npx tsx scripts/export-memories.ts <query> <output-file> [--project=name]
+ * Example: npx tsx scripts/export-memories.ts "windows" windows-memories.json --project=claude-mem
  */
 
 import Database from 'better-sqlite3';
@@ -14,6 +14,7 @@ interface ExportData {
   exportedAt: string;
   exportedAtEpoch: number;
   query: string;
+  project?: string;
   totalObservations: number;
   totalSessions: number;
   totalSummaries: number;
@@ -24,77 +25,75 @@ interface ExportData {
   prompts: any[];
 }
 
-function exportMemories(query: string, outputFile: string) {
-  const dbPath = join(homedir(), '.claude-mem', 'claude-mem.db');
-
-  if (!existsSync(dbPath)) {
-    console.error(`❌ Database not found at: ${dbPath}`);
-    process.exit(1);
-  }
-
-  const db = new Database(dbPath, { readonly: true });
-
+async function exportMemories(query: string, outputFile: string, project?: string, port: number = 37777) {
   try {
-    console.log(`🔍 Searching for: "${query}"`);
+    const baseUrl = `http://localhost:${port}`;
 
-    // Build FTS5 query (escape special characters)
-    const ftsQuery = query.replace(/[^a-zA-Z0-9\s]/g, ' ').trim() + '*';
+    console.log(`🔍 Searching for: "${query}"${project ? ` (project: ${project})` : ' (all projects)'}`);
 
-    // Get all observations matching the query
-    const observations = db.prepare(`
-      SELECT o.*
-      FROM observations o
-      INNER JOIN observations_fts fts ON o.id = fts.rowid
-      WHERE observations_fts MATCH ?
-      ORDER BY o.created_at_epoch DESC
-    `).all(ftsQuery);
+    // Build query params - use format=json for raw data
+    const params = new URLSearchParams({
+      query,
+      format: 'json',
+      limit: '999999'
+    });
+    if (project) params.set('project', project);
+
+    // Unified search - gets all result types using hybrid search
+    console.log('📡 Fetching all memories via hybrid search...');
+    const searchResponse = await fetch(`${baseUrl}/api/search?${params.toString()}`);
+    if (!searchResponse.ok) {
+      throw new Error(`Failed to search: ${searchResponse.status} ${searchResponse.statusText}`);
+    }
+    const searchData = await searchResponse.json();
+
+    const observations = searchData.observations || [];
+    const summaries = searchData.sessions || [];
+    const prompts = searchData.prompts || [];
 
     console.log(`✅ Found ${observations.length} observations`);
+    console.log(`✅ Found ${summaries.length} session summaries`);
+    console.log(`✅ Found ${prompts.length} user prompts`);
 
-    // Get unique SDK session IDs from observations
-    const sdkSessionIds = [...new Set(observations.map((o: any) => o.sdk_session_id))];
+    // Get unique SDK session IDs from observations and summaries
+    const sdkSessionIds = new Set<string>();
+    observations.forEach((o: any) => {
+      if (o.sdk_session_id) sdkSessionIds.add(o.sdk_session_id);
+    });
+    summaries.forEach((s: any) => {
+      if (s.sdk_session_id) sdkSessionIds.add(s.sdk_session_id);
+    });
 
-    // Get all sessions for these SDK sessions
-    const sessions = sdkSessionIds.length > 0
-      ? db.prepare(`
+    // Get SDK sessions metadata from database
+    // (We need this because the API doesn't expose sdk_sessions table directly)
+    console.log('📡 Fetching SDK sessions metadata...');
+    const sessions: any[] = [];
+    if (sdkSessionIds.size > 0) {
+      // Read directly from database for sdk_sessions table
+      const Database = (await import('better-sqlite3')).default;
+      const dbPath = join(homedir(), '.claude-mem', 'claude-mem.db');
+      const db = new Database(dbPath, { readonly: true });
+
+      try {
+        const placeholders = Array.from(sdkSessionIds).map(() => '?').join(',');
+        const query = `
           SELECT * FROM sdk_sessions
-          WHERE sdk_session_id IN (${sdkSessionIds.map(() => '?').join(',')})
+          WHERE sdk_session_id IN (${placeholders})
           ORDER BY started_at_epoch DESC
-        `).all(...sdkSessionIds)
-      : [];
-
-    console.log(`✅ Found ${sessions.length} sessions`);
-
-    // Get all summaries for these SDK sessions
-    const summaries = sdkSessionIds.length > 0
-      ? db.prepare(`
-          SELECT * FROM session_summaries
-          WHERE sdk_session_id IN (${sdkSessionIds.map(() => '?').join(',')})
-          ORDER BY created_at_epoch DESC
-        `).all(...sdkSessionIds)
-      : [];
-
-    console.log(`✅ Found ${summaries.length} summaries`);
-
-    // Get unique Claude session IDs
-    const claudeSessionIds = [...new Set(sessions.map((s: any) => s.claude_session_id))];
-
-    // Get all prompts for these Claude sessions
-    const prompts = claudeSessionIds.length > 0
-      ? db.prepare(`
-          SELECT * FROM user_prompts
-          WHERE claude_session_id IN (${claudeSessionIds.map(() => '?').join(',')})
-          ORDER BY created_at_epoch DESC
-        `).all(...claudeSessionIds)
-      : [];
-
-    console.log(`✅ Found ${prompts.length} prompts`);
+        `;
+        sessions.push(...db.prepare(query).all(...Array.from(sdkSessionIds)));
+      } finally {
+        db.close();
+      }
+    }
+    console.log(`✅ Found ${sessions.length} SDK sessions`);
 
     // Create export data
     const exportData: ExportData = {
       exportedAt: new Date().toISOString(),
       exportedAtEpoch: Date.now(),
       query,
+      project,
       totalObservations: observations.length,
       totalSessions: sessions.length,
       totalSummaries: summaries.length,
@@ -116,18 +115,23 @@ function exportMemories(query: string, outputFile: string) {
     console.log(`   • ${exportData.totalSummaries} summaries`);
     console.log(`   • ${exportData.totalPrompts} prompts`);
 
-  } finally {
-    db.close();
+  } catch (error) {
+    console.error('❌ Export failed:', error);
+    process.exit(1);
   }
 }
 
 // CLI interface
 const args = process.argv.slice(2);
 if (args.length < 2) {
-  console.error('Usage: npx tsx scripts/export-memories.ts <query> <output-file>');
-  console.error('Example: npx tsx scripts/export-memories.ts "windows" windows-memories.json');
+  console.error('Usage: npx tsx scripts/export-memories.ts <query> <output-file> [--project=name]');
+  console.error('Example: npx tsx scripts/export-memories.ts "windows" windows-memories.json --project=claude-mem');
+  console.error('         npx tsx scripts/export-memories.ts "authentication" auth.json');
   process.exit(1);
 }
 
-const [query, outputFile] = args;
-exportMemories(query, outputFile);
+// Parse arguments
+const [query, outputFile, ...flags] = args;
+const project = flags.find(f => f.startsWith('--project='))?.split('=')[1];
+
+exportMemories(query, outputFile, project);
