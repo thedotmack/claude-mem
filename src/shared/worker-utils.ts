@@ -156,6 +156,12 @@ export async function ensureWorkerRunning(): Promise<void> {
   // Try to start the worker
   const started = await startWorker();
 
+  // Final health check before throwing error
+  // Worker might be already running but was temporarily unresponsive
+  if (!started && await isWorkerHealthy()) {
+    return;
+  }
+
   if (!started) {
     const port = getWorkerPort();
     throw new Error(

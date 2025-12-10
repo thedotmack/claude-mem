@@ -18,6 +18,8 @@ import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { SessionEventBroadcaster } from '../../events/SessionEventBroadcaster.js';
 import { SessionCompletionHandler } from '../../session/SessionCompletionHandler.js';
 import { PrivacyCheckValidator } from '../../validation/PrivacyCheckValidator.js';
+import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
+import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 
 export class SessionRoutes extends BaseRouteHandler {
   private completionHandler: SessionCompletionHandler;
@@ -260,6 +262,17 @@ export class SessionRoutes extends BaseRouteHandler {
 
     if (!claudeSessionId) {
       return this.badRequest(res, 'Missing claudeSessionId');
+    }
+
+    // Load skip tools from settings
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const skipTools = new Set(settings.CLAUDE_MEM_SKIP_TOOLS.split(',').map(t => t.trim()).filter(Boolean));
+
+    // Skip low-value or meta tools
+    if (skipTools.has(tool_name)) {
+      logger.debug('SESSION', 'Skipping observation for tool', { tool_name });
+      res.json({ status: 'skipped', reason: 'tool_excluded' });
+      return;
     }
 
     const store = this.dbManager.getSessionStore();

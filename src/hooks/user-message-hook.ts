@@ -8,6 +8,7 @@
  */
 import { basename } from "path";
 import { ensureWorkerRunning, getWorkerPort } from "../shared/worker-utils.js";
+import { HOOK_EXIT_CODES } from "../shared/hook-constants.js";
 
 try {
   // Ensure worker is running
@@ -28,55 +29,12 @@ try {
 
   const output = await response.text();
 
-  // If it's after Dec 5, 2025 7pm EST, patch this out
-  const now = new Date();
-  const amaEndDate = new Date('2025-12-06T00:00:00Z'); // Dec 5, 2025 7pm EST
-
-  // Product Hunt launch announcement - expires Dec 5, 2025 12am EST (05:00 UTC)
-  const phLaunchEndDate = new Date('2025-12-05T05:00:00Z');
-  let productHuntAnnouncement = "";
-  if (now < phLaunchEndDate) {
-    productHuntAnnouncement = `
-
-🚀 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 🚀
-
-   We launched on Product Hunt!
-   https://tinyurl.com/claude-mem-ph
-
-   ⭐ Your upvote means the world - thank you!
-
-🚀 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 🚀
-`;
-  }
-
-  let amaAnnouncement = "";
-  if (now < amaEndDate) {
-    // Check if we're during the live event (Dec 1-5, 5pm-7pm EST daily)
-    const estOffset = 5 * 60; // EST is UTC-5
-    const nowUtcMinutes = now.getUTCHours() * 60 + now.getUTCMinutes();
-    const estHour = Math.floor((nowUtcMinutes - estOffset + 1440) % 1440 / 60);
-    const day = now.getUTCDate();
-    const month = now.getUTCMonth();
-    const year = now.getUTCFullYear();
-
-    const isDec1to5 = year === 2025 && month === 11 && day >= 1 && day <= 5;
-    const isDuringLiveHours = estHour >= 17 && estHour < 19; // 5pm-7pm EST
-
-    if (isDec1to5 && isDuringLiveHours) {
-      amaAnnouncement = "\n   🔴 LIVE NOW: AMA w/ Dev (@thedotmack) until 7pm EST\n";
-    } else {
-      amaAnnouncement = "\n   – LIVE AMA w/ Dev (@thedotmack) Dec 1st–5th, 5pm to 7pm EST\n";
-    }
-  }
-
   console.error(
     "\n\n📝 Claude-Mem Context Loaded\n" +
     "   ℹ️  Note: This appears as stderr but is informational only\n\n" +
     output +
     "\n\n💡 New! Wrap all or part of any message with <private> ... </private> to prevent storing sensitive information in your observation history.\n" +
     "\n💬 Community https://discord.gg/J4wttp9vDu" +
-    productHuntAnnouncement +
-    amaAnnouncement +
     `\n📺 Watch live in browser http://localhost:${port}/\n`
   );
 
@@ -103,4 +61,4 @@ This message was not added to your startup context, so you can continue working 
 `);
 }
 
-process.exit(3);
+process.exit(HOOK_EXIT_CODES.USER_MESSAGE_ONLY);

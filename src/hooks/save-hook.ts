@@ -12,6 +12,7 @@ import { logger } from '../utils/logger.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { happy_path_error__with_fallback } from '../utils/silent-debug.js';
+import { handleWorkerError } from '../shared/hook-error-handler.js';
 
 export interface PostToolUseInput {
   session_id: string;
@@ -19,17 +20,7 @@ export interface PostToolUseInput {
   tool_name: string;
   tool_input: any;
   tool_response: any;
-  [key: string]: any;
 }
-
-// Tools to skip (low value or too frequent)
-const SKIP_TOOLS = new Set([
-  'ListMcpResourcesTool',  // MCP infrastructure
-  'SlashCommand',          // Command invocation (observe what it produces, not the call)
-  'Skill',                 // Skill invocation (observe what it produces, not the call)
-  'TodoWrite',             // Task management meta-tool
-  'AskUserQuestion'        // User interaction, not substantive work
-]);
 
 /**
  * Save Hook Main Logic - Fire-and-forget HTTP client
@@ -43,11 +34,6 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
   }
 
   const { session_id, cwd, tool_name, tool_input, tool_response } = input;
-
-  if (SKIP_TOOLS.has(tool_name)) {
-    console.log(createHookResponse('PostToolUse', true));
-    return;
-  }
 
   const port = getWorkerPort();
 
@@ -86,11 +72,7 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
 
     logger.debug('HOOK', 'Observation sent successfully', { toolName: tool_name });
   } catch (error: any) {
-    // Only show restart message for connection errors, not HTTP errors
-    if (error.cause?.code === 'ECONNREFUSED' || error.name === 'TimeoutError' || error.message.includes('fetch failed')) {
-      throw new Error("There's a problem with the worker. If you just updated, type `pm2 restart claude-mem-worker` in your terminal to continue");
-    }
-    throw error;
+    handleWorkerError(error);
   }
 
   console.log(createHookResponse('PostToolUse', true));
