@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [7.0.8] - 2025-12-10
+
+## Bug Fixes
+
+- **Critical**: Filter out meta-observations for session-memory files to prevent recursive timeline pollution
+  - Memory agent was creating observations about editing Agent SDK's session-memory/summary.md files
+  - This created a recursive loop where investigating timeline pollution caused more pollution
+  - Filter now skips Edit/Write/Read/NotebookEdit operations on any file path containing 'session-memory'
+  - Eliminates 91+ meta-observations that were polluting the timeline
+
+## Technical Details
+
+Added filtering logic in SessionRoutes.ts to detect and skip file operations on session-memory files before observations are queued to the SDK agent. This prevents the memory agent from observing its own observation metadata files.
+
 ## [7.0.7] - 2025-12-10
 
 ## What's Changed
