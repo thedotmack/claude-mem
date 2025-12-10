@@ -71,6 +71,27 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
     handleWorkerError(error);
   }
 
+  // Strip leading slash from commands for memory agent
+  // /review 101 → review 101 (more semantic for observations)
+  const cleanedPrompt = prompt.startsWith('/') ? prompt.substring(1) : prompt;
+
+  try {
+    // Initialize SDK agent session via HTTP (starts the agent!)
+    const response = await fetch(`http://127.0.0.1:${port}/sessions/${sessionDbId}/init`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userPrompt: cleanedPrompt, promptNumber }),
+      signal: AbortSignal.timeout(5000)
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Failed to start SDK agent: ${response.status} ${errorText}`);
+    }
+  } catch (error: any) {
+    handleWorkerError(error);
+  }
+
   console.log(createHookResponse('UserPromptSubmit', true));
 }
 

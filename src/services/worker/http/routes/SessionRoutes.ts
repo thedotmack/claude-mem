@@ -275,6 +275,25 @@ export class SessionRoutes extends BaseRouteHandler {
       return;
     }
 
+    // Skip meta-observations: file operations on session-memory files
+    const fileOperationTools = new Set(['Edit', 'Write', 'Read', 'NotebookEdit']);
+    if (fileOperationTools.has(tool_name) && tool_input) {
+      try {
+        const filePath = tool_input.file_path || tool_input.notebook_path;
+        if (filePath && filePath.includes('session-memory')) {
+          logger.debug('SESSION', 'Skipping meta-observation for session-memory file', {
+            tool_name,
+            file_path: filePath
+          });
+          res.json({ status: 'skipped', reason: 'session_memory_meta' });
+          return;
+        }
+      } catch (error) {
+        // If we can't parse tool_input, continue normally
+        logger.debug('SESSION', 'Could not check file_path for session-memory filter', { tool_name }, error);
+      }
+    }
+
     const store = this.dbManager.getSessionStore();
 
     // Get or create session
