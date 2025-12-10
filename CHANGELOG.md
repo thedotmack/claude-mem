@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [7.0.6] - 2025-12-10
+
+## Bug Fixes
+
+- Fixed Windows terminal spawning to hide terminal windows when spawning child processes (#203, thanks @CrystallDEV)
+- Improved worker service process management on Windows
+
+## Contributors
+
+Thanks to @CrystallDEV for this contribution!
+
 ## [7.0.5] - 2025-12-09
 
 ## What's Changed
