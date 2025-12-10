@@ -155,7 +155,8 @@ export class WorkerService {
 
     // Do slow initialization in background (non-blocking)
     this.initializeBackground().catch((error) => {
-      logger.error('SYSTEM', 'Background initialization failed', {}, error as Error);
+      logger.failure('SYSTEM', 'Background initialization failed', {}, error as Error);
+      process.exit(1);
     });
   }
 
