@@ -76,6 +76,11 @@ export abstract class BaseRouteHandler {
    * Centralized error logging and response
    */
   protected handleError(res: Response, error: Error, context?: string): void {
+    if (error.message.endsWith('not initialized')) {
+      res.status(503).json({ error: 'Service initializing, try again shortly' });
+      return;
+    }
+
     logger.failure('WORKER', context || 'Request failed', {}, error);
     res.status(500).json({ error: error.message });
   }
