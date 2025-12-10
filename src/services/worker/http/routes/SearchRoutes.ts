@@ -49,7 +49,7 @@ export class SearchRoutes extends BaseRouteHandler {
    */
   private handleUnifiedSearch = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const result = await this.searchManager.search(req.query);
-    res.json(result.content);
+    res.json(result);
   });
 
   /**
@@ -58,7 +58,7 @@ export class SearchRoutes extends BaseRouteHandler {
    */
   private handleUnifiedTimeline = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const result = await this.searchManager.timeline(req.query);
-    res.json(result.content);
+    res.json(result);
   });
 
   /**
@@ -67,7 +67,7 @@ export class SearchRoutes extends BaseRouteHandler {
    */
   private handleDecisions = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const result = await this.searchManager.decisions(req.query);
-    res.json(result.content);
+    res.json(result);
   });
 
   /**
@@ -76,7 +76,7 @@ export class SearchRoutes extends BaseRouteHandler {
    */
   private handleChanges = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const result = await this.searchManager.changes(req.query);
-    res.json(result.content);
+    res.json(result);
   });
 
   /**
@@ -85,7 +85,7 @@ export class SearchRoutes extends BaseRouteHandler {
    */
   private handleHowItWorks = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const result = await this.searchManager.howItWorks(req.query);
-    res.json(result.content);
+    res.json(result);
   });
 
   /**
@@ -94,7 +94,7 @@ export class SearchRoutes extends BaseRouteHandler {
    */
   private handleSearchObservations = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const result = await this.searchManager.searchObservations(req.query);
-    res.json(result.content);
+    res.json(result);
   });
 
   /**
@@ -103,7 +103,7 @@ export class SearchRoutes extends BaseRouteHandler {
    */
   private handleSearchSessions = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const result = await this.searchManager.searchSessions(req.query);
-    res.json(result.content);
+    res.json(result);
   });
 
   /**
@@ -112,7 +112,7 @@ export class SearchRoutes extends BaseRouteHandler {
    */
   private handleSearchPrompts = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const result = await this.searchManager.searchUserPrompts(req.query);
-    res.json(result.content);
+    res.json(result);
   });
 
   /**
@@ -121,7 +121,7 @@ export class SearchRoutes extends BaseRouteHandler {
    */
   private handleSearchByConcept = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const result = await this.searchManager.findByConcept(req.query);
-    res.json(result.content);
+    res.json(result);
   });
 
   /**
@@ -130,7 +130,7 @@ export class SearchRoutes extends BaseRouteHandler {
    */
   private handleSearchByFile = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const result = await this.searchManager.findByFile(req.query);
-    res.json(result.content);
+    res.json(result);
   });
 
   /**
@@ -139,7 +139,7 @@ export class SearchRoutes extends BaseRouteHandler {
    */
   private handleSearchByType = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const result = await this.searchManager.findByType(req.query);
-    res.json(result.content);
+    res.json(result);
   });
 
   /**
@@ -148,7 +148,7 @@ export class SearchRoutes extends BaseRouteHandler {
    */
   private handleGetRecentContext = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const result = await this.searchManager.getRecentContext(req.query);
-    res.json(result.content);
+    res.json(result);
   });
 
   /**
@@ -157,7 +157,7 @@ export class SearchRoutes extends BaseRouteHandler {
    */
   private handleGetContextTimeline = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const result = await this.searchManager.getContextTimeline(req.query);
-    res.json(result.content);
+    res.json(result);
   });
 
   /**
@@ -234,7 +234,7 @@ export class SearchRoutes extends BaseRouteHandler {
    */
   private handleGetTimelineByQuery = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const result = await this.searchManager.getTimelineByQuery(req.query);
-    res.json(result.content);
+    res.json(result);
   });
 
   /**
