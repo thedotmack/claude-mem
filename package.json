@@ -47,7 +47,7 @@
     "usage:today": "node scripts/analyze-usage.js $(date +%Y-%m-%d)"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.1.27",
+    "@anthropic-ai/claude-agent-sdk": "^0.1.62",
     "@modelcontextprotocol/sdk": "^1.20.1",
     "ansi-to-html": "^0.7.2",
     "better-sqlite3": "^12.5.0",
