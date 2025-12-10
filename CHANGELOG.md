@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [7.0.7] - 2025-12-10
+
+## What's Changed
+
+### Code Quality Improvements
+- Refactored hooks codebase to reduce complexity and improve maintainability (#204)
+- Net reduction of 78 lines while adding new functionality
+- Improved type safety across all hook input interfaces
+
+### New Features
+- Added `CLAUDE_MEM_SKIP_TOOLS` configuration setting for controlling which tools are excluded from observations
+- Default skip tools: `ListMcpResourcesTool`, `SlashCommand`, `Skill`, `TodoWrite`, `AskUserQuestion`
+
+### Technical Improvements
+- Created shared utilities: `transcript-parser.ts`, `hook-constants.ts`, `hook-error-handler.ts`
+- Migrated business logic from hooks to worker service for better separation of concerns
+- Enhanced error handling and spinner management
+- Removed dead code and unnecessary abstractions
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.0.6...v7.0.7
+
 ## [7.0.6] - 2025-12-10
 
 ## Bug Fixes
