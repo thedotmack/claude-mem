@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [7.0.9] - 2025-12-10
+
+## Bug Fixes
+
+- Fixed MCP response format in search route handlers - all 14 search endpoints now return complete response objects with error status instead of just content arrays, restoring MCP protocol compatibility
+
+## Changes
+
+- `SearchRoutes.ts`: Updated all route handlers to return full result object instead of extracted content property
+
 ## [7.0.8] - 2025-12-10
 
 ## Bug Fixes
