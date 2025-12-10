@@ -14,7 +14,7 @@ The worker service is a long-running HTTP API built with Express.js and managed 
 - **Port**: Fixed port 37777 (configurable via `CLAUDE_MEM_WORKER_PORT`)
 - **Location**: `src/services/worker-service.ts`
 - **Built Output**: `plugin/scripts/worker-service.cjs`
-- **Model**: Configurable via `CLAUDE_MEM_MODEL` environment variable (default: claude-sonnet-4-5)
+- **Model**: Configurable via `CLAUDE_MEM_MODEL` environment variable (default: sonnet)
 
 ## REST API Endpoints
 
@@ -390,14 +390,13 @@ The worker service routes observations to the Claude Agent SDK for AI-powered pr
 Set the AI model used for processing via environment variable:
 
 ```bash
-export CLAUDE_MEM_MODEL=claude-sonnet-4-5
+export CLAUDE_MEM_MODEL=sonnet
 ```
 
-Available models:
-- `claude-haiku-4-5` - Fast, cost-efficient
-- `claude-sonnet-4-5` - Balanced (default)
-- `claude-opus-4` - Most capable
-- `claude-3-7-sonnet` - Alternative version
+Available shorthand models (forward to latest version):
+- `haiku` - Fast, cost-efficient
+- `sonnet` - Balanced (default)
+- `opus` - Most capable
 
 ## Port Allocation
 
