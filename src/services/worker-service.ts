@@ -35,7 +35,7 @@ import http from 'http';
 import path from 'path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { getWorkerPort } from '../shared/worker-utils.js';
+import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
 import { logger } from '../utils/logger.js';
 
 // Import composed domain services
@@ -146,12 +146,13 @@ export class WorkerService {
   async start(): Promise<void> {
     // Start HTTP server FIRST - make port available immediately
     const port = getWorkerPort();
+    const host = getWorkerHost();
     this.server = await new Promise<http.Server>((resolve, reject) => {
-      const srv = this.app.listen(port, () => resolve(srv));
+      const srv = this.app.listen(port, host, () => resolve(srv));
       srv.on('error', reject);
     });
 
-    logger.info('SYSTEM', 'Worker started', { port, pid: process.pid });
+    logger.info('SYSTEM', 'Worker started', { host, port, pid: process.pid });
 
     // Do slow initialization in background (non-blocking)
     this.initializeBackground().catch((error) => {

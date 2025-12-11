@@ -314,6 +314,7 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 |---------|---------|-------------|
 | `CLAUDE_MEM_MODEL` | `claude-haiku-4-5` | AI model for observations |
 | `CLAUDE_MEM_WORKER_PORT` | `37777` | Worker service port |
+| `CLAUDE_MEM_WORKER_HOST` | `127.0.0.1` | Worker bind address (use `0.0.0.0` for remote access) |
 | `CLAUDE_MEM_DATA_DIR` | `~/.claude-mem` | Data directory location |
 | `CLAUDE_MEM_LOG_LEVEL` | `INFO` | Log verbosity (DEBUG, INFO, WARN, ERROR, SILENT) |
 | `CLAUDE_MEM_PYTHON_VERSION` | `3.13` | Python version for chroma-mcp |

@@ -82,6 +82,20 @@ export class SettingsRoutes extends BaseRouteHandler {
       }
     }
 
+    // Validate CLAUDE_MEM_WORKER_HOST (IP address or 0.0.0.0)
+    if (req.body.CLAUDE_MEM_WORKER_HOST) {
+      const host = req.body.CLAUDE_MEM_WORKER_HOST;
+      // Allow localhost variants and valid IP patterns
+      const validHostPattern = /^(127\.0\.0\.1|0\.0\.0\.0|localhost|\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/;
+      if (!validHostPattern.test(host)) {
+        res.status(400).json({
+          success: false,
+          error: 'CLAUDE_MEM_WORKER_HOST must be a valid IP address (e.g., 127.0.0.1, 0.0.0.0)'
+        });
+        return;
+      }
+    }
+
     // Validate CLAUDE_MEM_LOG_LEVEL
     if (req.body.CLAUDE_MEM_LOG_LEVEL) {
       const validLevels = ['DEBUG', 'INFO', 'WARN', 'ERROR', 'SILENT'];
@@ -131,6 +145,7 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_MODEL',
       'CLAUDE_MEM_CONTEXT_OBSERVATIONS',
       'CLAUDE_MEM_WORKER_PORT',
+      'CLAUDE_MEM_WORKER_HOST',
       // System Configuration
       'CLAUDE_MEM_DATA_DIR',
       'CLAUDE_MEM_LOG_LEVEL',

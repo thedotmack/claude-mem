@@ -27,6 +27,16 @@ export function getWorkerPort(): number {
 }
 
 /**
+ * Get the worker host address
+ * Priority: ~/.claude-mem/settings.json > env var > default (127.0.0.1)
+ */
+export function getWorkerHost(): string {
+  const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+  const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+  return settings.CLAUDE_MEM_WORKER_HOST;
+}
+
+/**
  * Check if worker is responsive by trying the health endpoint
  */
 async function isWorkerHealthy(): Promise<boolean> {
