@@ -1,5 +1,5 @@
 {
-  "name": "claude-mem",
+  "name": "claude-meme",
   "version": "7.0.10",
   "description": "Memory compression system for Claude Code - persist context across sessions",
   "keywords": [
