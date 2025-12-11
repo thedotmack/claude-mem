@@ -4,22 +4,45 @@ import { spawnSync } from "child_process";
 import { logger } from "../utils/logger.js";
 import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
 import { ProcessManager } from "../services/process/ProcessManager.js";
+import { SettingsDefaultsManager } from "./SettingsDefaultsManager.js";
 
 const MARKETPLACE_ROOT = path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
 
 // Named constants for health checks
 const HEALTH_CHECK_TIMEOUT_MS = getTimeout(HOOK_TIMEOUTS.HEALTH_CHECK);
 
-// MIGRATION: Hardcoded port to avoid conflicts with PM2 worker on 37777
-// TODO: Switch to settings-based port after PM2 is fully removed
-const MIGRATION_PORT = 38888;
+// Port cache to avoid repeated settings file reads
+let cachedPort: number | null = null;
 
 /**
- * Get the worker port number
- * Currently hardcoded for migration; will use settings after PM2 removal
+ * Get the worker port number from settings
+ * Uses CLAUDE_MEM_WORKER_PORT from settings file or default (37777)
+ * Caches the port value to avoid repeated file reads
  */
 export function getWorkerPort(): number {
-  return MIGRATION_PORT;
+  if (cachedPort !== null) {
+    return cachedPort;
+  }
+
+  try {
+    const settingsPath = path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), 'settings.json');
+    const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+    cachedPort = parseInt(settings.CLAUDE_MEM_WORKER_PORT, 10);
+    return cachedPort;
+  } catch (error) {
+    // Fallback to default if settings load fails
+    logger.debug('SYSTEM', 'Failed to load port from settings, using default', { error });
+    cachedPort = parseInt(SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_PORT'), 10);
+    return cachedPort;
+  }
+}
+
+/**
+ * Clear the cached port value
+ * Call this when settings are updated to force re-reading from file
+ */
+export function clearPortCache(): void {
+  cachedPort = null;
 }
 
 /**

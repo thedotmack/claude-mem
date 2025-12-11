@@ -1,11 +1,8 @@
 import { ProcessManager } from '../services/process/ProcessManager.js';
-
-// During migration, use port 38888 to run alongside the PM2-managed worker on 37777
-// Once migration is complete (Phase 3+), this will switch to using settings
-const MIGRATION_PORT = 38888;
+import { getWorkerPort } from '../shared/worker-utils.js';
 
 const command = process.argv[2];
-const port = MIGRATION_PORT;
+const port = getWorkerPort();
 
 async function main() {
   switch (command) {

@@ -9,6 +9,13 @@ const PID_FILE = join(DATA_DIR, 'worker.pid');
 const LOG_DIR = join(DATA_DIR, 'logs');
 const MARKETPLACE_ROOT = join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
 
+// Timeout constants
+const PROCESS_STOP_TIMEOUT_MS = 5000;
+const HEALTH_CHECK_TIMEOUT_MS = 10000;
+const HEALTH_CHECK_INTERVAL_MS = 200;
+const HEALTH_CHECK_FETCH_TIMEOUT_MS = 1000;
+const PROCESS_EXIT_CHECK_INTERVAL_MS = 100;
+
 interface PidInfo {
   pid: number;
   port: number;
@@ -124,7 +131,7 @@ export class ProcessManager {
     }
   }
 
-  static async stop(timeout: number = 5000): Promise<boolean> {
+  static async stop(timeout: number = PROCESS_STOP_TIMEOUT_MS): Promise<boolean> {
     const info = this.getPidInfo();
     if (!info) return true;
 
@@ -202,9 +209,8 @@ export class ProcessManager {
     }
   }
 
-  private static async waitForHealth(pid: number, port: number, timeoutMs: number = 10000): Promise<{ success: boolean; pid?: number; error?: string }> {
+  private static async waitForHealth(pid: number, port: number, timeoutMs: number = HEALTH_CHECK_TIMEOUT_MS): Promise<{ success: boolean; pid?: number; error?: string }> {
     const startTime = Date.now();
-    const checkInterval = 200;
 
     while (Date.now() - startTime < timeoutMs) {
       // Check if process is still alive
@@ -215,7 +221,7 @@ export class ProcessManager {
       // Try health check
       try {
         const response = await fetch(`http://127.0.0.1:${port}/health`, {
-          signal: AbortSignal.timeout(1000)
+          signal: AbortSignal.timeout(HEALTH_CHECK_FETCH_TIMEOUT_MS)
         });
         if (response.ok) {
           return { success: true, pid };
@@ -224,7 +230,7 @@ export class ProcessManager {
         // Not ready yet
       }
 
-      await new Promise(resolve => setTimeout(resolve, checkInterval));
+      await new Promise(resolve => setTimeout(resolve, HEALTH_CHECK_INTERVAL_MS));
     }
 
     return { success: false, error: 'Health check timed out' };
@@ -232,13 +238,12 @@ export class ProcessManager {
 
   private static async waitForExit(pid: number, timeout: number): Promise<void> {
     const startTime = Date.now();
-    const checkInterval = 100;
 
     while (Date.now() - startTime < timeout) {
       if (!this.isProcessAlive(pid)) {
         return;
       }
-      await new Promise(resolve => setTimeout(resolve, checkInterval));
+      await new Promise(resolve => setTimeout(resolve, PROCESS_EXIT_CHECK_INTERVAL_MS));
     }
 
     throw new Error('Process did not exit within timeout');

@@ -11,7 +11,6 @@
 import { EventEmitter } from 'events';
 import { DatabaseManager } from './DatabaseManager.js';
 import { logger } from '../../utils/logger.js';
-import { happy_path_error__with_fallback } from '../../utils/silent-debug.js';
 import type { ActiveSession, PendingMessage, ObservationData } from '../worker-types.js';
 
 export class SessionManager {
@@ -43,7 +42,7 @@ export class SessionManager {
       // in the database but the in-memory session still has the stale empty value
       const dbSession = this.dbManager.getSessionById(sessionDbId);
       if (dbSession.project && dbSession.project !== session.project) {
-        happy_path_error__with_fallback('[SessionManager] Updating project from database', {
+        logger.debug('SESSION', 'Updating project from database', {
           sessionDbId,
           oldProject: session.project,
           newProject: dbSession.project
@@ -53,7 +52,7 @@ export class SessionManager {
 
       // Update userPrompt for continuation prompts
       if (currentUserPrompt) {
-        happy_path_error__with_fallback('[SessionManager] Updating userPrompt for continuation', {
+        logger.debug('SESSION', 'Updating userPrompt for continuation', {
           sessionDbId,
           promptNumber,
           oldPrompt: session.userPrompt.substring(0, 80),
@@ -62,7 +61,7 @@ export class SessionManager {
         session.userPrompt = currentUserPrompt;
         session.lastPromptNumber = promptNumber || session.lastPromptNumber;
       } else {
-        happy_path_error__with_fallback('[SessionManager] No currentUserPrompt provided for existing session', {
+        logger.debug('SESSION', 'No currentUserPrompt provided for existing session', {
           sessionDbId,
           promptNumber,
           usingCachedPrompt: session.userPrompt.substring(0, 80)
@@ -78,13 +77,13 @@ export class SessionManager {
     const userPrompt = currentUserPrompt || dbSession.user_prompt;
 
     if (!currentUserPrompt) {
-      happy_path_error__with_fallback('[SessionManager] No currentUserPrompt provided for new session, using database', {
+      logger.debug('SESSION', 'No currentUserPrompt provided for new session, using database', {
         sessionDbId,
         promptNumber,
         dbPrompt: dbSession.user_prompt.substring(0, 80)
       });
     } else {
-      happy_path_error__with_fallback('[SessionManager] Initializing session with fresh userPrompt', {
+      logger.debug('SESSION', 'Initializing session with fresh userPrompt', {
         sessionDbId,
         promptNumber,
         userPrompt: currentUserPrompt.substring(0, 80)

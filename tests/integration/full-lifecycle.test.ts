@@ -11,9 +11,10 @@ import {
   sessionScenario,
   sampleObservation
 } from '../helpers/scenarios.js';
+import { getWorkerPort } from '../../src/shared/worker-utils.js';
 
 describe('Full Observation Lifecycle', () => {
-  const WORKER_PORT = 37777;
+  const WORKER_PORT = getWorkerPort();
   let sessionId: string;
 
   beforeEach(() => {
