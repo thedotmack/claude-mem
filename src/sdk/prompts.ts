@@ -24,9 +24,9 @@ const LANGUAGE_INSTRUCTIONS: Record<string, string> = {
 };
 
 /**
- * List of supported language codes for external validation
+ * List of supported language codes
  */
-export const SUPPORTED_LANGUAGES = Object.keys(LANGUAGE_INSTRUCTIONS);
+const SUPPORTED_LANGUAGES = Object.keys(LANGUAGE_INSTRUCTIONS);
 
 /**
  * Get language instruction for a given language code
