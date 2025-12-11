@@ -1,0 +1,295 @@
+---
+title: "Memory Export/Import"
+description: "Share knowledge across claude-mem installations with duplicate prevention"
+---
+
+# Memory Export/Import Scripts
+
+Share your claude-mem knowledge with other users! These scripts allow you to export specific memories (observations, sessions, summaries, and prompts) and import them into another claude-mem installation.
+
+## Use Cases
+
+- **Share Windows compatibility knowledge** with Windows users
+- **Share bug fix patterns** with contributors
+- **Share project-specific learnings** across teams
+- **Backup specific memory sets** for safekeeping
+
+## How It Works
+
+### Export Script
+
+Searches the database using **hybrid search** (combines ChromaDB vector embeddings with FTS5 full-text search) and exports all matching:
+- **Observations** - Individual learnings and discoveries
+- **Sessions** - Session metadata
+- **Summaries** - Session summaries
+- **Prompts** - User prompts that led to the work
+
+Output is a portable JSON file that can be shared.
+
+> **Privacy Note:** Export files contain all matching memory data in plain text. Review exports before sharing to ensure no sensitive information (API keys, passwords, private paths) is included.
+
+### Import Script
+
+Imports memories with **duplicate prevention**:
+- Checks if each record already exists before inserting
+- Skips duplicates automatically
+- Maintains data integrity with transactional imports
+- Reports what was imported vs. skipped
+
+**Duplicate Detection Strategy:**
+- **Sessions**: By `claude_session_id` (unique)
+- **Summaries**: By `sdk_session_id` (unique)
+- **Observations**: By `sdk_session_id` + `title` + `created_at_epoch` (composite)
+- **Prompts**: By `claude_session_id` + `prompt_number` (composite)
+
+## Usage
+
+### Export Memories
+
+```bash
+# Export all Windows-related memories
+npx tsx scripts/export-memories.ts "windows" windows-memories.json
+
+# Export bug fixes
+npx tsx scripts/export-memories.ts "bugfix" bugfixes.json
+
+# Export specific feature work
+npx tsx scripts/export-memories.ts "progressive disclosure" progressive-disclosure.json
+```
+
+**Parameters:**
+1. `<query>` - Search query (uses hybrid semantic + full-text search)
+2. `<output-file>` - Output JSON file path
+3. `--project=name` - Optional: filter results to a specific project
+
+**Example Output:**
+```
+🔍 Searching for: "windows"
+✅ Found 54 observations
+✅ Found 12 sessions
+✅ Found 12 summaries
+✅ Found 7 prompts
+
+📦 Export complete!
+📄 Output: windows-memories.json
+📊 Stats:
+   • 54 observations
+   • 12 sessions
+   • 12 summaries
+   • 7 prompts
+```
+
+### Import Memories
+
+```bash
+# Import from an export file
+npx tsx scripts/import-memories.ts windows-memories.json
+```
+
+**Parameters:**
+1. `<input-file>` - Input JSON file (from export script)
+
+**Example Output:**
+```
+📦 Import file: windows-memories.json
+📅 Exported: 2025-12-10T23:45:00.000Z
+🔍 Query: "windows"
+📊 Contains:
+   • 54 observations
+   • 12 sessions
+   • 12 summaries
+   • 7 prompts
+
+🔄 Importing sessions...
+   ✅ Imported: 12, Skipped: 0
+🔄 Importing summaries...
+   ✅ Imported: 12, Skipped: 0
+🔄 Importing observations...
+   ✅ Imported: 54, Skipped: 0
+🔄 Importing prompts...
+   ✅ Imported: 7, Skipped: 0
+
+✅ Import complete!
+📊 Summary:
+   Sessions:     12 imported, 0 skipped
+   Summaries:    12 imported, 0 skipped
+   Observations: 54 imported, 0 skipped
+   Prompts:      7 imported, 0 skipped
+```
+
+### Re-importing (Duplicate Prevention)
+
+If you run the import again on the same file, duplicates are automatically skipped:
+
+```
+🔄 Importing sessions...
+   ✅ Imported: 0, Skipped: 12  ← All skipped (already exist)
+🔄 Importing summaries...
+   ✅ Imported: 0, Skipped: 12
+🔄 Importing observations...
+   ✅ Imported: 0, Skipped: 54
+🔄 Importing prompts...
+   ✅ Imported: 0, Skipped: 7
+```
+
+## Sharing Memories
+
+### For Export Authors
+
+1. **Export your memories:**
+   ```bash
+   npx tsx scripts/export-memories.ts "windows" windows-memories.json
+   ```
+
+2. **Share the JSON file** via:
+   - GitHub gist
+   - Project repository (`shared-memories/`)
+   - Direct file transfer
+   - Package in releases
+
+3. **Document what's included:**
+   - What query was used
+   - What knowledge is contained
+   - Who might benefit from it
+
+### For Import Users
+
+1. **Download the export file** to your local machine
+
+2. **Review what's in it** (optional):
+   ```bash
+   cat windows-memories.json | jq '.totalObservations, .totalSessions'
+   ```
+
+3. **Import into your database:**
+   ```bash
+   npx tsx scripts/import-memories.ts windows-memories.json
+   ```
+
+4. **Verify import** by searching:
+   ```bash
+   curl "http://localhost:37777/api/search?query=windows&format=index&limit=10"
+   ```
+
+## JSON Export Format
+
+```json
+{
+  "exportedAt": "2025-12-10T23:45:00.000Z",
+  "exportedAtEpoch": 1733876700000,
+  "query": "windows",
+  "totalObservations": 54,
+  "totalSessions": 12,
+  "totalSummaries": 12,
+  "totalPrompts": 7,
+  "observations": [ /* array of observation objects */ ],
+  "sessions": [ /* array of session objects */ ],
+  "summaries": [ /* array of summary objects */ ],
+  "prompts": [ /* array of prompt objects */ ]
+}
+```
+
+## Safety Features
+
+✅ **Duplicate Prevention** - Won't re-import existing records
+✅ **Transactional** - All-or-nothing imports (database stays consistent)
+✅ **Read-only Export** - Export script opens database in read-only mode
+✅ **Dependency Ordering** - Sessions imported before observations/summaries
+✅ **Validation** - Checks database exists before starting
+
+## Advanced Usage
+
+### Export by Project
+
+```bash
+# Export only claude-mem project memories
+npx tsx scripts/export-memories.ts "bugfix" bugfixes.json --project=claude-mem
+
+# Export all memories for a specific project
+npx tsx scripts/export-memories.ts "" all-project.json --project=my-app
+```
+
+### Export by Type
+
+```bash
+# Export only discoveries
+npx tsx scripts/export-memories.ts "type:discovery" discoveries.json
+
+# Export only bug fixes
+npx tsx scripts/export-memories.ts "type:bugfix" bugfixes.json
+```
+
+### Export by Date Range
+
+You can filter the export after exporting:
+
+```bash
+# Export all memories, then filter manually with jq
+npx tsx scripts/export-memories.ts "" all-memories.json
+cat all-memories.json | jq '.observations |= map(select(.created_at_epoch > 1700000000000))' > recent-memories.json
+```
+
+### Combine Multiple Exports
+
+```bash
+# Export different topics
+npx tsx scripts/export-memories.ts "windows" windows.json
+npx tsx scripts/export-memories.ts "linux" linux.json
+
+# Import both
+npx tsx scripts/import-memories.ts windows.json
+npx tsx scripts/import-memories.ts linux.json
+```
+
+## Troubleshooting
+
+### Database Not Found
+
+```
+❌ Database not found at: /Users/you/.claude-mem/claude-mem.db
+```
+
+**Solution:** Make sure claude-mem is installed and has been run at least once.
+
+### Import File Not Found
+
+```
+❌ Input file not found: windows-memories.json
+```
+
+**Solution:** Check the file path. Use absolute paths if needed.
+
+### Partial Import
+
+If import fails mid-way, the transaction is rolled back - your database remains unchanged. Fix the issue and try again.
+
+## Contributing Memory Sets
+
+If you've exported valuable knowledge that others might benefit from:
+
+1. Create a PR to the `shared-memories/` directory
+2. Include a README describing what's in the export
+3. Tag with relevant keywords (windows, linux, bugfix, etc.)
+4. Community members can then import your knowledge!
+
+## Examples of Useful Exports
+
+**Windows Compatibility Knowledge:**
+```bash
+npx tsx scripts/export-memories.ts "windows compatibility installation" windows-fixes.json
+```
+
+**Progressive Disclosure Architecture:**
+```bash
+npx tsx scripts/export-memories.ts "progressive disclosure architecture token" pd-patterns.json
+```
+
+**Bug Fix Patterns:**
+```bash
+npx tsx scripts/export-memories.ts "bugfix error handling" bugfix-patterns.json
+```
+
+**Performance Optimization:**
+```bash
+npx tsx scripts/export-memories.ts "performance optimization caching" perf-tips.json
+```
