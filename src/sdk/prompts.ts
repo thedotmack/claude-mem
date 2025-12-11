@@ -5,6 +5,44 @@
 
 import { happy_path_error__with_fallback } from '../utils/silent-debug.js';
 
+/**
+ * Language instructions for multi-language support
+ * Maps language codes to instructions for the AI
+ */
+const LANGUAGE_INSTRUCTIONS: Record<string, string> = {
+  en: '', // English is default, no additional instruction needed
+  ko: 'LANGUAGE: Write ALL outputs (titles, subtitles, facts, narratives, summaries) in Korean (한국어).',
+  zh: 'LANGUAGE: Write ALL outputs (titles, subtitles, facts, narratives, summaries) in Chinese (中文).',
+  ja: 'LANGUAGE: Write ALL outputs (titles, subtitles, facts, narratives, summaries) in Japanese (日本語).',
+  es: 'LANGUAGE: Write ALL outputs (titles, subtitles, facts, narratives, summaries) in Spanish (Español).',
+  fr: 'LANGUAGE: Write ALL outputs (titles, subtitles, facts, narratives, summaries) in French (Français).',
+  de: 'LANGUAGE: Write ALL outputs (titles, subtitles, facts, narratives, summaries) in German (Deutsch).',
+  pt: 'LANGUAGE: Write ALL outputs (titles, subtitles, facts, narratives, summaries) in Portuguese (Português).',
+  ru: 'LANGUAGE: Write ALL outputs (titles, subtitles, facts, narratives, summaries) in Russian (Русский).',
+  vi: 'LANGUAGE: Write ALL outputs (titles, subtitles, facts, narratives, summaries) in Vietnamese (Tiếng Việt).',
+  th: 'LANGUAGE: Write ALL outputs (titles, subtitles, facts, narratives, summaries) in Thai (ภาษาไทย).',
+};
+
+/**
+ * List of supported language codes for external validation
+ */
+export const SUPPORTED_LANGUAGES = Object.keys(LANGUAGE_INSTRUCTIONS);
+
+/**
+ * Get language instruction for a given language code
+ * Logs warning for unsupported languages and falls back to English
+ */
+function getLanguageInstruction(language: string): string {
+  if (language !== 'en' && !LANGUAGE_INSTRUCTIONS[language]) {
+    happy_path_error__with_fallback(
+      `Unsupported language code: "${language}", falling back to English`,
+      { language, supported: SUPPORTED_LANGUAGES },
+      ''
+    );
+  }
+  return LANGUAGE_INSTRUCTIONS[language] || '';
+}
+
 export interface Observation {
   id: number;
   tool_name: string;
@@ -25,9 +63,13 @@ export interface SDKSession {
 
 /**
  * Build initial prompt to initialize the SDK agent
+ * @param language - Language code for output (e.g., 'en', 'ko', 'zh', 'ja')
  */
-export function buildInitPrompt(project: string, sessionId: string, userPrompt: string): string {
+export function buildInitPrompt(project: string, sessionId: string, userPrompt: string, language: string = 'en'): string {
+  const langInstruction = getLanguageInstruction(language);
+
   return `You are a Claude-Mem, a specialized observer tool for creating searchable memory FOR FUTURE SESSIONS.
+${langInstruction ? `\n${langInstruction}\n` : ''}
 
 CRITICAL: Record what was LEARNED/BUILT/FIXED/DEPLOYED/CONFIGURED, not what you (the observer) are doing.
 
@@ -175,15 +217,18 @@ export function buildObservationPrompt(obs: Observation): string {
 
 /**
  * Build prompt to generate progress summary
+ * @param language - Language code for output (e.g., 'en', 'ko', 'zh', 'ja')
  */
-export function buildSummaryPrompt(session: SDKSession): string {
+export function buildSummaryPrompt(session: SDKSession, language: string = 'en'): string {
   const lastAssistantMessage = happy_path_error__with_fallback(
     'Missing last_assistant_message in session for summary prompt',
     session,
     session.last_assistant_message || ''
   );
+  const langInstruction = getLanguageInstruction(language);
 
   return `PROGRESS SUMMARY CHECKPOINT
+${langInstruction ? `\n${langInstruction}\n` : ''}
 ===========================
 Write progress notes of what was done, what was learned, and what's next. This is a checkpoint to capture progress so far. The session is ongoing - you may receive more requests and tool executions after this summary. Write "next_steps" as the current trajectory of work (what's actively being worked on or coming up next), not as post-session future work. Always write at least a minimal summary explaining current progress, even if work is still in early stages, so that users see a summary output tied to each request.
 
@@ -227,11 +272,14 @@ Thank you, this summary will be very useful for keeping track of our progress!`;
  *
  * Called when: promptNumber > 1 (see SDKAgent.ts line 150)
  * First prompt: Uses buildInitPrompt instead (promptNumber === 1)
+ * @param language - Language code for output (e.g., 'en', 'ko', 'zh', 'ja')
  */
-export function buildContinuationPrompt(userPrompt: string, promptNumber: number, claudeSessionId: string): string {
+export function buildContinuationPrompt(userPrompt: string, promptNumber: number, claudeSessionId: string, language: string = 'en'): string {
+  const langInstruction = getLanguageInstruction(language);
+
   return `
 Hello memory agent, you are continuing to observe the primary Claude session.
-
+${langInstruction ? `\n${langInstruction}\n` : ''}
 <observed_from_primary_session>
   <user_request>${userPrompt}</user_request>
   <requested_at>${new Date().toISOString().split('T')[0]}</requested_at>
