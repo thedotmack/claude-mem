@@ -13,7 +13,7 @@ module.exports = {
   apps: [
     {
       name: 'claude-mem-worker',
-      script: './plugin/scripts/worker-service.cjs',
+      script: 'bun ./plugin/scripts/worker-service.cjs',
       // Windows: prevent visible console windows
       windowsHide: true,
       // INTENTIONAL: Watch mode enables auto-restart on plugin updates

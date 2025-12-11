@@ -59,8 +59,7 @@ async function buildHooks() {
     console.log('✓ Output directories ready');
 
     // Generate plugin/package.json for cache directory dependency installation
-    // The bundled hooks use `external: ['better-sqlite3']` so dependencies must be
-    // installed at runtime. This package.json enables npm install in the cache directory.
+    // Note: bun:sqlite is a Bun built-in, no external dependencies needed for SQLite
     console.log('\n📦 Generating plugin package.json...');
     const pluginPackageJson = {
       name: 'claude-mem-plugin',
@@ -68,11 +67,10 @@ async function buildHooks() {
       private: true,
       description: 'Runtime dependencies for claude-mem bundled hooks',
       type: 'module',
-      dependencies: {
-        'better-sqlite3': packageJson.dependencies['better-sqlite3']
-      },
+      dependencies: {},
       engines: {
-        node: '>=18.0.0'
+        node: '>=18.0.0',
+        bun: '>=1.0.0'
       }
     };
     fs.writeFileSync('plugin/package.json', JSON.stringify(pluginPackageJson, null, 2) + '\n');
@@ -103,7 +101,7 @@ async function buildHooks() {
       outfile: `${hooksDir}/${WORKER_SERVICE.name}.cjs`,
       minify: true,
       logLevel: 'error', // Suppress warnings (import.meta warning is benign)
-      external: ['better-sqlite3'],
+      external: ['bun:sqlite'],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
       },
@@ -128,7 +126,7 @@ async function buildHooks() {
       outfile: `${hooksDir}/${MCP_SERVER.name}.cjs`,
       minify: true,
       logLevel: 'error',
-      external: ['better-sqlite3'],
+      external: ['bun:sqlite'],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
       },
@@ -153,7 +151,7 @@ async function buildHooks() {
       outfile: `${hooksDir}/${CONTEXT_GENERATOR.name}.cjs`,
       minify: true,
       logLevel: 'error',
-      external: ['better-sqlite3'],
+      external: ['bun:sqlite'],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
       }
@@ -176,7 +174,7 @@ async function buildHooks() {
         format: 'esm',
         outfile,
         minify: true,
-        external: ['better-sqlite3'],
+        external: ['bun:sqlite'],
         define: {
           '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
         },

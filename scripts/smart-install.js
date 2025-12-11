@@ -25,7 +25,6 @@ const MARKETPLACE_ROOT = join(homedir(), '.claude', 'plugins', 'marketplaces', '
 const PACKAGE_JSON_PATH = join(MARKETPLACE_ROOT, 'package.json');
 const VERSION_MARKER_PATH = join(MARKETPLACE_ROOT, '.install-version');
 const NODE_MODULES_PATH = join(MARKETPLACE_ROOT, 'node_modules');
-const BETTER_SQLITE3_PATH = join(NODE_MODULES_PATH, 'better-sqlite3');
 
 // Colors for output
 const colors = {
@@ -104,11 +103,6 @@ function needsInstall() {
     return true;
   }
 
-  // Check if better-sqlite3 is installed
-  if (!existsSync(BETTER_SQLITE3_PATH)) {
-    log('📦 better-sqlite3 missing - reinstalling', colors.cyan);
-    return true;
-  }
 
   // Check version marker
   const currentPackageVersion = getPackageVersion();
@@ -143,46 +137,6 @@ function needsInstall() {
   return false;
 }
 
-/**
- * Verify that better-sqlite3 native module loads correctly
- * This catches ABI mismatches and corrupted builds
- */
-async function verifyNativeModules() {
-  try {
-    log('🔍 Verifying native modules...', colors.dim);
-
-    // CRITICAL: Use createRequire() to resolve from MARKETPLACE_ROOT
-    // This script may run from cache but must load modules from marketplace's node_modules
-    const require = createRequire(join(MARKETPLACE_ROOT, 'package.json'));
-    const Database = require('better-sqlite3');
-
-    // Try to create a test in-memory database
-    const db = new Database(':memory:');
-
-    // Run a simple query to ensure it works
-    const result = db.prepare('SELECT 1 + 1 as result').get();
-
-    // Clean up
-    db.close();
-
-    if (result.result !== 2) {
-      throw new Error('SQLite math check failed');
-    }
-
-    log('✓ Native modules verified', colors.dim);
-    return true;
-
-  } catch (error) {
-    if (error.code === 'ERR_DLOPEN_FAILED') {
-      log('⚠️  Native module ABI mismatch detected', colors.yellow);
-      return false;
-    }
-
-    // Other errors are unexpected - log and fail
-    log(`❌ Native module verification failed: ${error.message}`, colors.red);
-    return false;
-  }
-}
 
 function getWindowsErrorHelp(errorOutput) {
   // Detect Python version at runtime
@@ -203,7 +157,7 @@ function getWindowsErrorHelp(errorOutput) {
     '║                    Windows Installation Help                        ║',
     '╚══════════════════════════════════════════════════════════════════════╝',
     '',
-    '📋 better-sqlite3 requires build tools to compile native modules.',
+    '',
     '',
     '🔧 Option 1: Install Visual Studio Build Tools (Recommended)',
     '   1. Download: https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022',
@@ -232,9 +186,6 @@ function getWindowsErrorHelp(errorOutput) {
     help.push('❌ Permission denied - try running as Administrator');
   }
 
-  help.push('');
-  help.push('📖 Full documentation: https://github.com/WiseLibs/better-sqlite3/blob/master/docs/troubleshooting.md');
-  help.push('');
 
   return help.join('\n');
 }
@@ -266,10 +217,7 @@ async function runNpmInstall() {
         windowsHide: true,
       });
 
-      // Verify better-sqlite3 was installed
-      if (!existsSync(BETTER_SQLITE3_PATH)) {
-        throw new Error('better-sqlite3 installation verification failed');
-      }
+  
 
       // NEW: Verify native modules actually work
       const nativeModulesWork = await verifyNativeModules();
@@ -299,11 +247,6 @@ async function runNpmInstall() {
   log('', colors.red);
   log('❌ Installation failed after retrying!', colors.bright);
   log('', colors.reset);
-
-  // Provide Windows-specific help
-  if (isWindows && lastError && lastError.message && lastError.message.includes('better-sqlite3')) {
-    log(getWindowsErrorHelp(lastError.message), colors.yellow);
-  }
 
   // Show generic error info with troubleshooting steps
   if (lastError) {

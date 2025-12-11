@@ -287,17 +287,6 @@ async function runNpmInstall() {
         encoding: 'utf-8',
       });
 
-      // Verify better-sqlite3 was installed
-      if (!existsSync(BETTER_SQLITE3_PATH)) {
-        throw new Error('better-sqlite3 installation verification failed');
-      }
-
-      // Verify native modules actually work
-      const nativeModulesWork = await verifyNativeModules();
-      if (!nativeModulesWork) {
-        throw new Error('Native modules failed to load after install');
-      }
-
       const packageVersion = getPackageVersion();
       const nodeVersion = getNodeVersion();
       setInstalledVersion(packageVersion, nodeVersion);
