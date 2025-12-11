@@ -36,6 +36,11 @@ const CONTEXT_GENERATOR = {
   source: 'src/services/context-generator.ts'
 };
 
+const WORKER_CLI = {
+  name: 'worker-cli',
+  source: 'src/cli/worker-cli.ts'
+};
+
 async function buildHooks() {
   console.log('🔨 Building claude-mem hooks and worker service...\n');
 
@@ -159,6 +164,31 @@ async function buildHooks() {
 
     const contextGenStats = fs.statSync(`${hooksDir}/${CONTEXT_GENERATOR.name}.cjs`);
     console.log(`✓ context-generator built (${(contextGenStats.size / 1024).toFixed(2)} KB)`);
+
+    // Build worker CLI
+    console.log(`\n🔧 Building worker CLI...`);
+    await build({
+      entryPoints: [WORKER_CLI.source],
+      bundle: true,
+      platform: 'node',
+      target: 'node18',
+      format: 'esm',
+      outfile: `${hooksDir}/${WORKER_CLI.name}.js`,
+      minify: true,
+      logLevel: 'error',
+      external: ['bun:sqlite'],
+      define: {
+        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
+      },
+      banner: {
+        js: '#!/usr/bin/env bun'
+      }
+    });
+
+    // Make worker CLI executable
+    fs.chmodSync(`${hooksDir}/${WORKER_CLI.name}.js`, 0o755);
+    const workerCliStats = fs.statSync(`${hooksDir}/${WORKER_CLI.name}.js`);
+    console.log(`✓ worker-cli built (${(workerCliStats.size / 1024).toFixed(2)} KB)`);
 
     // Build each hook
     for (const hook of HOOKS) {
