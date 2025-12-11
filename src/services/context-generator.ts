@@ -6,7 +6,6 @@
  */
 
 import path from 'path';
-import { homedir } from 'os';
 import { existsSync, readFileSync, unlinkSync } from 'fs';
 import { SessionStore } from './sqlite/SessionStore.js';
 import {
@@ -17,9 +16,10 @@ import {
 } from '../constants/observation-metadata.js';
 import { logger } from '../utils/logger.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
+import { MARKETPLACE_ROOT } from '../shared/paths.js';
 
-// Version marker path - use homedir-based path that works in both CJS and ESM contexts
-const VERSION_MARKER_PATH = path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack', 'plugin', '.install-version');
+// Version marker path - respects CLAUDE_CONFIG_DIR for users with custom Claude locations
+const VERSION_MARKER_PATH = path.join(MARKETPLACE_ROOT, 'plugin', '.install-version');
 
 interface ContextConfig {
   // Display counts
