@@ -183,6 +183,10 @@ export class SDKAgent {
    * - We just use the session_id we're given - simple and reliable
    */
   private async *createMessageGenerator(session: ActiveSession): AsyncIterableIterator<SDKUserMessage> {
+    // Load language setting
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const language = settings.CLAUDE_MEM_LANGUAGE || 'en';
+
     // Yield initial user prompt with context (or continuation if prompt #2+)
     // CRITICAL: Both paths use session.claudeSessionId from the hook
     yield {
@@ -190,8 +194,8 @@ export class SDKAgent {
       message: {
         role: 'user',
         content: session.lastPromptNumber === 1
-          ? buildInitPrompt(session.project, session.claudeSessionId, session.userPrompt)
-          : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.claudeSessionId)
+          ? buildInitPrompt(session.project, session.claudeSessionId, session.userPrompt, language)
+          : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.claudeSessionId, language)
       },
       session_id: session.claudeSessionId,
       parent_tool_use_id: null,
@@ -243,7 +247,7 @@ export class SDKAgent {
                 { sessionDbId: session.sessionDbId, sdkSessionId: session.sdkSessionId },
                 message.last_assistant_message || ''
               )
-            })
+            }, language)
           },
           session_id: session.claudeSessionId,
           parent_tool_use_id: null,
