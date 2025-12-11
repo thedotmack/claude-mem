@@ -211,7 +211,7 @@ export class SettingsRoutes extends BaseRouteHandler {
     }
 
     // Validate branch name
-    const allowedBranches = ['main', 'beta/7.0'];
+    const allowedBranches = ['main', 'beta/7.0', 'feature/bun-executable'];
     if (!allowedBranches.includes(branch)) {
       res.status(400).json({
         success: false,
