@@ -80,8 +80,8 @@ function importMemories(inputFile: string) {
       INSERT INTO sdk_sessions (
         claude_session_id, sdk_session_id, project, user_prompt,
         started_at, started_at_epoch, completed_at, completed_at_epoch,
-        status, worker_port, prompt_counter
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const insertSummary = db.prepare(`
@@ -127,9 +127,7 @@ function importMemories(inputFile: string) {
           session.started_at_epoch,
           session.completed_at,
           session.completed_at_epoch,
-          session.status,
-          session.worker_port || null,
-          session.prompt_counter || null
+          session.status
         );
         stats.sessionsImported++;
       }

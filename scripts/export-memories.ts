@@ -9,6 +9,66 @@ import Database from 'better-sqlite3';
 import { existsSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
+import { SettingsDefaultsManager } from '../src/shared/SettingsDefaultsManager';
+
+interface ObservationRecord {
+  id: number;
+  sdk_session_id: string;
+  project: string;
+  text: string | null;
+  type: string;
+  title: string;
+  subtitle: string | null;
+  facts: string | null;
+  narrative: string | null;
+  concepts: string | null;
+  files_read: string | null;
+  files_modified: string | null;
+  prompt_number: number;
+  discovery_tokens: number | null;
+  created_at: string;
+  created_at_epoch: number;
+}
+
+interface SdkSessionRecord {
+  id: number;
+  claude_session_id: string;
+  sdk_session_id: string;
+  project: string;
+  user_prompt: string;
+  started_at: string;
+  started_at_epoch: number;
+  completed_at: string | null;
+  completed_at_epoch: number | null;
+  status: string;
+}
+
+interface SessionSummaryRecord {
+  id: number;
+  sdk_session_id: string;
+  project: string;
+  request: string | null;
+  investigated: string | null;
+  learned: string | null;
+  completed: string | null;
+  next_steps: string | null;
+  files_read: string | null;
+  files_edited: string | null;
+  notes: string | null;
+  prompt_number: number;
+  discovery_tokens: number | null;
+  created_at: string;
+  created_at_epoch: number;
+}
+
+interface UserPromptRecord {
+  id: number;
+  claude_session_id: string;
+  prompt_number: number;
+  prompt_text: string;
+  created_at: string;
+  created_at_epoch: number;
+}
 
 interface ExportData {
   exportedAt: string;
@@ -19,14 +79,17 @@ interface ExportData {
   totalSessions: number;
   totalSummaries: number;
   totalPrompts: number;
-  observations: any[];
-  sessions: any[];
-  summaries: any[];
-  prompts: any[];
+  observations: ObservationRecord[];
+  sessions: SdkSessionRecord[];
+  summaries: SessionSummaryRecord[];
+  prompts: UserPromptRecord[];
 }
 
-async function exportMemories(query: string, outputFile: string, project?: string, port: number = 37777) {
+async function exportMemories(query: string, outputFile: string, project?: string) {
   try {
+    // Read port from settings
+    const settings = SettingsDefaultsManager.loadFromFile(join(homedir(), '.claude-mem', 'settings.json'));
+    const port = parseInt(settings.CLAUDE_MEM_WORKER_PORT, 10);
     const baseUrl = `http://localhost:${port}`;
 
     console.log(`🔍 Searching for: "${query}"${project ? ` (project: ${project})` : ' (all projects)'}`);
@@ -47,9 +110,9 @@ async function exportMemories(query: string, outputFile: string, project?: strin
     }
     const searchData = await searchResponse.json();
 
-    const observations = searchData.observations || [];
-    const summaries = searchData.sessions || [];
-    const prompts = searchData.prompts || [];
+    const observations: ObservationRecord[] = searchData.observations || [];
+    const summaries: SessionSummaryRecord[] = searchData.sessions || [];
+    const prompts: UserPromptRecord[] = searchData.prompts || [];
 
     console.log(`✅ Found ${observations.length} observations`);
     console.log(`✅ Found ${summaries.length} session summaries`);
@@ -57,31 +120,38 @@ async function exportMemories(query: string, outputFile: string, project?: strin
 
     // Get unique SDK session IDs from observations and summaries
     const sdkSessionIds = new Set<string>();
-    observations.forEach((o: any) => {
+    observations.forEach((o) => {
       if (o.sdk_session_id) sdkSessionIds.add(o.sdk_session_id);
     });
-    summaries.forEach((s: any) => {
+    summaries.forEach((s) => {
       if (s.sdk_session_id) sdkSessionIds.add(s.sdk_session_id);
     });
 
     // Get SDK sessions metadata from database
     // (We need this because the API doesn't expose sdk_sessions table directly)
     console.log('📡 Fetching SDK sessions metadata...');
-    const sessions: any[] = [];
+    const sessions: SdkSessionRecord[] = [];
     if (sdkSessionIds.size > 0) {
       // Read directly from database for sdk_sessions table
       const Database = (await import('better-sqlite3')).default;
       const dbPath = join(homedir(), '.claude-mem', 'claude-mem.db');
+
+      if (!existsSync(dbPath)) {
+        console.error(`❌ Database not found at: ${dbPath}`);
+        console.error('💡 Has claude-mem been initialized? Try running a session first.');
+        process.exit(1);
+      }
+
       const db = new Database(dbPath, { readonly: true });
 
       try {
         const placeholders = Array.from(sdkSessionIds).map(() => '?').join(',');
-        const query = `
+        const sessionQuery = `
           SELECT * FROM sdk_sessions
           WHERE sdk_session_id IN (${placeholders})
           ORDER BY started_at_epoch DESC
         `;
-        sessions.push(...db.prepare(query).all(...Array.from(sdkSessionIds)));
+        sessions.push(...db.prepare(sessionQuery).all(...Array.from(sdkSessionIds)));
       } finally {
         db.close();
       }

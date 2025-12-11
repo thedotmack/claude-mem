@@ -845,10 +845,9 @@ export class SessionStore {
     // Apply concepts filter
     if (concepts) {
       const conceptsList = Array.isArray(concepts) ? concepts : [concepts];
-      const conceptConditions = conceptsList.map(() => {
-        params.push();
-        return 'EXISTS (SELECT 1 FROM json_each(concepts) WHERE value = ?)';
-      });
+      const conceptConditions = conceptsList.map(() =>
+        'EXISTS (SELECT 1 FROM json_each(concepts) WHERE value = ?)'
+      );
       params.push(...conceptsList);
       additionalConditions.push(`(${conceptConditions.join(' OR ')})`);
     }
