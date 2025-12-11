@@ -12,6 +12,7 @@ async function main() {
         console.log(`Worker started (PID: ${result.pid})`);
         const date = new Date().toISOString().slice(0, 10);
         console.log(`Logs: ~/.claude-mem/logs/worker-${date}.log`);
+        process.exit(0);
       } else {
         console.error(`Failed to start: ${result.error}`);
         process.exit(1);
@@ -22,18 +23,18 @@ async function main() {
     case 'stop': {
       await ProcessManager.stop();
       console.log('Worker stopped');
-      break;
+      process.exit(0);
     }
 
     case 'restart': {
       const result = await ProcessManager.restart(port);
       if (result.success) {
         console.log(`Worker restarted (PID: ${result.pid})`);
+        process.exit(0);
       } else {
         console.error(`Failed to restart: ${result.error}`);
         process.exit(1);
       }
-      break;
     }
 
     case 'status': {
@@ -46,7 +47,7 @@ async function main() {
       } else {
         console.log('Worker is not running');
       }
-      break;
+      process.exit(0);
     }
 
     default:

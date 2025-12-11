@@ -111,7 +111,7 @@ async function buildHooks() {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
       },
       banner: {
-        js: '#!/usr/bin/env node'
+        js: '#!/usr/bin/env bun'
       }
     });
 
@@ -136,7 +136,7 @@ async function buildHooks() {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
       },
       banner: {
-        js: '#!/usr/bin/env node'
+        js: '#!/usr/bin/env bun'
       }
     });
 
@@ -209,7 +209,7 @@ async function buildHooks() {
           '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
         },
         banner: {
-          js: '#!/usr/bin/env node'
+          js: '#!/usr/bin/env bun'
         }
       });
 

@@ -27,7 +27,8 @@
   },
   "type": "module",
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=18.0.0",
+    "bun": ">=1.0.0"
   },
   "scripts": {
     "build": "node scripts/build-hooks.js",
@@ -37,11 +38,12 @@
     "test:context:verbose": "echo '{\"session_id\":\"test-'$(date +%s)'\",\"cwd\":\"'$(pwd)'\",\"source\":\"startup\"}' | node plugin/scripts/context-hook.js",
     "sync-marketplace": "node scripts/sync-marketplace.cjs",
     "sync-marketplace:force": "node scripts/sync-marketplace.cjs --force",
-    "worker:start": "pm2 start ecosystem.config.cjs",
-    "worker:stop": "pm2 stop claude-mem-worker",
-    "worker:restart": "pm2 restart claude-mem-worker",
-    "worker:logs": "pm2 flush claude-mem-worker && pm2 logs claude-mem-worker --lines 100 --nostream",
-    "worker:logs:no-flush": "pm2 logs claude-mem-worker --lines 100 --nostream",
+    "build:binaries": "node scripts/build-worker-binary.js",
+    "worker:start": "bun plugin/scripts/worker-cli.js start",
+    "worker:stop": "bun plugin/scripts/worker-cli.js stop",
+    "worker:restart": "bun plugin/scripts/worker-cli.js restart",
+    "worker:status": "bun plugin/scripts/worker-cli.js status",
+    "worker:logs": "tail -f ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log",
     "changelog:generate": "node scripts/generate-changelog.js",
     "usage:analyze": "node scripts/analyze-usage.js",
     "usage:today": "node scripts/analyze-usage.js $(date +%Y-%m-%d)"
@@ -53,7 +55,6 @@
     "express": "^4.18.2",
     "glob": "^11.0.3",
     "handlebars": "^4.7.8",
-    "pm2": "^6.0.13",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "zod-to-json-schema": "^3.24.6"
