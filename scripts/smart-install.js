@@ -1,329 +1,40 @@
 #!/usr/bin/env node
-
-/**
- * Smart Install Script for claude-mem
- *
- * Features:
- * - Only runs npm install when necessary (version change or missing deps)
- * - Caches installation state with version marker
- * - Provides helpful Windows-specific error messages
- * - Cross-platform compatible (pure Node.js)
- * - Fast when already installed (just version check)
- */
-
 import { existsSync, readFileSync, writeFileSync } from 'fs';
-import { execSync, spawnSync, spawn } from 'child_process';
+import { execSync } from 'child_process';
 import { join } from 'path';
 import { homedir } from 'os';
-import { createRequire } from 'module';
 
-
-// CRITICAL: Always use marketplace directory for npm install and PM2/ecosystem
-// This script may run from cache directory (plugin/) which has no package.json
-// The marketplace root is the canonical location with package.json and node_modules
-const MARKETPLACE_ROOT = join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
-const PACKAGE_JSON_PATH = join(MARKETPLACE_ROOT, 'package.json');
-const VERSION_MARKER_PATH = join(MARKETPLACE_ROOT, '.install-version');
-const NODE_MODULES_PATH = join(MARKETPLACE_ROOT, 'node_modules');
-
-// Colors for output
-const colors = {
-  reset: '\x1b[0m',
-  bright: '\x1b[1m',
-  green: '\x1b[32m',
-  yellow: '\x1b[33m',
-  red: '\x1b[31m',
-  cyan: '\x1b[36m',
-  dim: '\x1b[2m',
-};
-
-function log(message, color = colors.reset) {
-  console.error(`${color}${message}${colors.reset}`);
-}
-
-function getPackageVersion() {
-  try {
-    const packageJson = JSON.parse(readFileSync(PACKAGE_JSON_PATH, 'utf-8'));
-    return packageJson.version;
-  } catch (error) {
-    log(`⚠️  Failed to read package.json: ${error.message}`, colors.yellow);
-    return null;
-  }
-}
-
-function getNodeVersion() {
-  return process.version; // e.g., "v22.21.1"
-}
-
-function getInstalledVersion() {
-  try {
-    if (existsSync(VERSION_MARKER_PATH)) {
-      const content = readFileSync(VERSION_MARKER_PATH, 'utf-8').trim();
-
-      // Try parsing as JSON (new format)
-      try {
-        const marker = JSON.parse(content);
-        return {
-          packageVersion: marker.packageVersion,
-          nodeVersion: marker.nodeVersion,
-          installedAt: marker.installedAt
-        };
-      } catch {
-        // Fallback: old format (plain text version string)
-        return {
-          packageVersion: content,
-          nodeVersion: null, // Unknown
-          installedAt: null
-        };
-      }
-    }
-  } catch (error) {
-    // Marker doesn't exist or can't be read
-  }
-  return null;
-}
-
-function setInstalledVersion(packageVersion, nodeVersion) {
-  try {
-    const marker = {
-      packageVersion,
-      nodeVersion,
-      installedAt: new Date().toISOString()
-    };
-    writeFileSync(VERSION_MARKER_PATH, JSON.stringify(marker, null, 2), 'utf-8');
-  } catch (error) {
-    log(`⚠️  Failed to write version marker: ${error.message}`, colors.yellow);
-  }
-}
+const ROOT = join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
+const MARKER = join(ROOT, '.install-version');
 
 function needsInstall() {
-  // Check if node_modules exists
-  if (!existsSync(NODE_MODULES_PATH)) {
-    log('📦 Dependencies not found - first time setup', colors.cyan);
-    return true;
-  }
-
-
-  // Check version marker
-  const currentPackageVersion = getPackageVersion();
-  const currentNodeVersion = getNodeVersion();
-  const installed = getInstalledVersion();
-
-  if (!installed) {
-    log('📦 No version marker found - installing', colors.cyan);
-    return true;
-  }
-
-  // Check package version
-  if (currentPackageVersion !== installed.packageVersion) {
-    log(`📦 Version changed (${installed.packageVersion} → ${currentPackageVersion}) - updating`, colors.cyan);
-    return true;
-  }
-
-  // Check Node.js version
-  if (installed.nodeVersion && currentNodeVersion !== installed.nodeVersion) {
-    log(`📦 Node.js version changed (${installed.nodeVersion} → ${currentNodeVersion}) - rebuilding native modules`, colors.cyan);
-    return true;
-  }
-
-  // If old format (no nodeVersion), assume needs install
-  if (!installed.nodeVersion) {
-    log('📦 Old version marker format - updating', colors.cyan);
-    return true;
-  }
-
-  // All good - no install needed
-  log(`✓ Dependencies already installed (v${currentPackageVersion})`, colors.dim);
-  return false;
-}
-
-
-function getWindowsErrorHelp(errorOutput) {
-  // Detect Python version at runtime
-  let pythonStatus = '   Python not detected or version unknown';
+  if (!existsSync(join(ROOT, 'node_modules'))) return true;
   try {
-    const pythonVersion = execSync('python --version', { encoding: 'utf-8', stdio: 'pipe' }).trim();
-    const versionMatch = pythonVersion.match(/Python\s+([\d.]+)/);
-    if (versionMatch) {
-      pythonStatus = `   You have ${versionMatch[0]} installed ✓`;
-    }
-  } catch (error) {
-    // Python not available or failed to detect - use default message
+    const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8'));
+    const marker = JSON.parse(readFileSync(MARKER, 'utf-8'));
+    return pkg.version !== marker.version || process.version !== marker.node;
+  } catch {
+    return true;
   }
-
-  const help = [
-    '',
-    '╔══════════════════════════════════════════════════════════════════════╗',
-    '║                    Windows Installation Help                        ║',
-    '╚══════════════════════════════════════════════════════════════════════╝',
-    '',
-    '',
-    '',
-    '🔧 Option 1: Install Visual Studio Build Tools (Recommended)',
-    '   1. Download: https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022',
-    '   2. Install "Desktop development with C++"',
-    '   3. Restart your terminal',
-    '   4. Try again',
-    '',
-    '🔧 Option 2: Install via npm (automated)',
-    '   Run as Administrator:',
-    '   npm install --global windows-build-tools',
-    '',
-    '🐍 Python Requirement:',
-    '   Python 3.6+ is required.',
-    pythonStatus,
-    '',
-  ];
-
-  // Check for specific error patterns
-  if (errorOutput.includes('MSBuild.exe')) {
-    help.push('❌ MSBuild not found - install Visual Studio Build Tools');
-  }
-  if (errorOutput.includes('MSVS')) {
-    help.push('❌ Visual Studio not detected - install Build Tools');
-  }
-  if (errorOutput.includes('permission') || errorOutput.includes('EPERM')) {
-    help.push('❌ Permission denied - try running as Administrator');
-  }
-
-
-  return help.join('\n');
 }
 
-async function runNpmInstall() {
-  const isWindows = process.platform === 'win32';
-
-  log('', colors.cyan);
-  log('🔨 Installing dependencies...', colors.bright);
-  log('', colors.reset);
-
-  // Try normal install first, then retry with force if it fails
-  const strategies = [
-    { command: 'npm install', label: 'normal' },
-    { command: 'npm install --force', label: 'with force flag' },
-  ];
-
-  let lastError = null;
-
-  for (const { command, label } of strategies) {
-    try {
-      log(`Attempting install ${label}...`, colors.dim);
-
-      // Run npm install silently
-      execSync(command, {
-        cwd: MARKETPLACE_ROOT,
-        stdio: 'pipe', // Silent output unless error
-        encoding: 'utf-8',
-        windowsHide: true,
-      });
-
-  
-
-      // NEW: Verify native modules actually work
-      const nativeModulesWork = await verifyNativeModules();
-      if (!nativeModulesWork) {
-        throw new Error('Native modules failed to load after install');
-      }
-
-      const packageVersion = getPackageVersion();
-      const nodeVersion = getNodeVersion();
-      setInstalledVersion(packageVersion, nodeVersion);
-
-      log('', colors.green);
-      log('✅ Dependencies installed successfully!', colors.bright);
-      log(`   Package version: ${packageVersion}`, colors.dim);
-      log(`   Node.js version: ${nodeVersion}`, colors.dim);
-      log('', colors.reset);
-
-      return true;
-
-    } catch (error) {
-      lastError = error;
-      // Continue to next strategy
-    }
-  }
-
-  // All strategies failed - show error
-  log('', colors.red);
-  log('❌ Installation failed after retrying!', colors.bright);
-  log('', colors.reset);
-
-  // Show generic error info with troubleshooting steps
-  if (lastError) {
-    if (lastError.stderr) {
-      log('Error output:', colors.dim);
-      log(lastError.stderr.toString(), colors.red);
-    } else if (lastError.message) {
-      log(lastError.message, colors.red);
-    }
-
-    log('', colors.yellow);
-    log('📋 Troubleshooting Steps:', colors.bright);
-    log('', colors.reset);
-    log('1. Check your internet connection', colors.yellow);
-    log('2. Try running: npm cache clean --force', colors.yellow);
-    log('3. Try running: npm install (in plugin directory)', colors.yellow);
-    log('4. Check npm version: npm --version (requires npm 7+)', colors.yellow);
-    log('5. Try updating npm: npm install -g npm@latest', colors.yellow);
-    log('', colors.reset);
-  }
-
-  return false;
-}
-
-/**
- * Check if we should fail when worker startup fails
- * Returns true if worker failed AND dependencies are missing
- */
-function shouldFailOnWorkerStartup(workerStarted) {
-  return !workerStarted && !existsSync(NODE_MODULES_PATH);
-}
-
-async function main() {
+function install() {
+  console.error('Installing dependencies...');
   try {
-    // Check if we need to install dependencies
-    const installNeeded = needsInstall();
+    execSync('npm install', { cwd: ROOT, stdio: 'inherit' });
+  } catch {
+    execSync('npm install --force', { cwd: ROOT, stdio: 'inherit' });
+  }
+  const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8'));
+  writeFileSync(MARKER, JSON.stringify({ version: pkg.version, node: process.version }));
+}
 
-    if (installNeeded) {
-      // Run installation (now async)
-      const installSuccess = await runNpmInstall();
-
-      if (!installSuccess) {
-        log('', colors.red);
-        log('⚠️  Installation failed', colors.yellow);
-        log('', colors.reset);
-        process.exit(1);
-      }
-    } else {
-      // NEW: Even if install not needed, verify native modules work
-      const nativeModulesWork = await verifyNativeModules();
-
-      if (!nativeModulesWork) {
-        log('📦 Native modules need rebuild - reinstalling', colors.cyan);
-        const installSuccess = await runNpmInstall();
-
-        if (!installSuccess) {
-          log('', colors.red);
-          log('⚠️  Native module rebuild failed', colors.yellow);
-          log('', colors.reset);
-          process.exit(1);
-        }
-      }
-    }
-
-      // NOTE: Worker auto-start disabled in smart-install.js
-      // The context-hook.js calls ensureWorkerRunning() which handles worker startup
-      // This avoids potential process management conflicts during plugin initialization
-      log('✅ Installation complete', colors.green);
-
-    // Success - dependencies installed (if needed)
-    process.exit(0);
-
-  } catch (error) {
-    log(`❌ Unexpected error: ${error.message}`, colors.red);
-    log('', colors.reset);
+if (needsInstall()) {
+  try {
+    install();
+    console.error('✅ Dependencies installed');
+  } catch (e) {
+    console.error('❌ npm install failed:', e.message);
     process.exit(1);
   }
 }
-
-main();
