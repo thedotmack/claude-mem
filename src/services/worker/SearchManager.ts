@@ -166,10 +166,10 @@ export class SearchManager {
                 observations = this.sessionStore.getObservationsByIds(obsIds, obsOptions);
               }
               if (sessionIds.length > 0) {
-                sessions = this.sessionStore.getSessionSummariesByIds(sessionIds, { orderBy: 'date_desc', limit: options.limit });
+                sessions = this.sessionStore.getSessionSummariesByIds(sessionIds, { orderBy: 'date_desc', limit: options.limit, project: options.project });
               }
               if (promptIds.length > 0) {
-                prompts = this.sessionStore.getUserPromptsByIds(promptIds, { orderBy: 'date_desc', limit: options.limit });
+                prompts = this.sessionStore.getUserPromptsByIds(promptIds, { orderBy: 'date_desc', limit: options.limit, project: options.project });
               }
 
               happy_path_error__with_fallback(`[mcp-server] Hydrated ${observations.length} obs, ${sessions.length} sessions, ${prompts.length} prompts from SQLite`);

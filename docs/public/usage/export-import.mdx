@@ -18,13 +18,15 @@ Share your claude-mem knowledge with other users! These scripts allow you to exp
 
 ### Export Script
 
-Searches the database using FTS5 full-text search and exports all matching:
+Searches the database using **hybrid search** (combines ChromaDB vector embeddings with FTS5 full-text search) and exports all matching:
 - **Observations** - Individual learnings and discoveries
 - **Sessions** - Session metadata
 - **Summaries** - Session summaries
 - **Prompts** - User prompts that led to the work
 
 Output is a portable JSON file that can be shared.
+
+> **Privacy Note:** Export files contain all matching memory data in plain text. Review exports before sharing to ensure no sensitive information (API keys, passwords, private paths) is included.
 
 ### Import Script
 
@@ -56,8 +58,9 @@ npx tsx scripts/export-memories.ts "progressive disclosure" progressive-disclosu
 ```
 
 **Parameters:**
-1. `<query>` - Search query (uses FTS5 full-text search)
+1. `<query>` - Search query (uses hybrid semantic + full-text search)
 2. `<output-file>` - Output JSON file path
+3. `--project=name` - Optional: filter results to a specific project
 
 **Example Output:**
 ```
@@ -196,6 +199,16 @@ If you run the import again on the same file, duplicates are automatically skipp
 
 ## Advanced Usage
 
+### Export by Project
+
+```bash
+# Export only claude-mem project memories
+npx tsx scripts/export-memories.ts "bugfix" bugfixes.json --project=claude-mem
+
+# Export all memories for a specific project
+npx tsx scripts/export-memories.ts "" all-project.json --project=my-app
+```
+
 ### Export by Type
 
 ```bash
@@ -208,7 +221,7 @@ npx tsx scripts/export-memories.ts "type:bugfix" bugfixes.json
 
 ### Export by Date Range
 
-FTS5 doesn't support date filtering directly, but you can filter the export after:
+You can filter the export after exporting:
 
 ```bash
 # Export all memories, then filter manually with jq
