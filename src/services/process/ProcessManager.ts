@@ -43,21 +43,21 @@ export class ProcessManager {
 
     const logFile = this.getLogFilePath();
 
-    // Platform-specific spawn
-    if (process.platform === 'win32') {
-      return this.startWindows(port);
-    } else {
-      return this.startUnix(workerScript, logFile, port);
-    }
+    // Use Bun on all platforms
+    return this.startWithBun(workerScript, logFile, port);
   }
 
-  private static async startUnix(script: string, logFile: string, port: number): Promise<{ success: boolean; pid?: number; error?: string }> {
+  private static async startWithBun(script: string, logFile: string, port: number): Promise<{ success: boolean; pid?: number; error?: string }> {
     try {
+      const isWindows = process.platform === 'win32';
+
       const child = spawn('bun', [script], {
         detached: true,
         stdio: ['ignore', 'pipe', 'pipe'],
         env: { ...process.env, CLAUDE_MEM_WORKER_PORT: String(port) },
-        cwd: MARKETPLACE_ROOT
+        cwd: MARKETPLACE_ROOT,
+        // Hide console window on Windows
+        ...(isWindows && { windowsHide: true })
       });
 
       // Write logs
@@ -80,48 +80,6 @@ export class ProcessManager {
       });
 
       // Wait for health
-      return this.waitForHealth(child.pid, port);
-    } catch (error) {
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : String(error)
-      };
-    }
-  }
-
-  private static async startWindows(port: number): Promise<{ success: boolean; pid?: number; error?: string }> {
-    // Windows: Use compiled exe from ~/.claude-mem/bin/
-    // Import dynamically to avoid loading on non-Windows platforms
-    const { BinaryManager } = await import('./BinaryManager.js');
-
-    try {
-      const exePath = await BinaryManager.getExecutablePath();
-
-      const child = spawn(exePath, [], {
-        detached: true,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env, CLAUDE_MEM_WORKER_PORT: String(port) },
-        windowsHide: true
-      });
-
-      const logFile = this.getLogFilePath();
-      const logStream = createWriteStream(logFile, { flags: 'a' });
-      child.stdout?.pipe(logStream);
-      child.stderr?.pipe(logStream);
-
-      child.unref();
-
-      if (!child.pid) {
-        return { success: false, error: 'Failed to get PID from spawned process' };
-      }
-
-      this.writePidFile({
-        pid: child.pid,
-        port,
-        startedAt: new Date().toISOString(),
-        version: process.env.npm_package_version || 'unknown'
-      });
-
       return this.waitForHealth(child.pid, port);
     } catch (error) {
       return {

@@ -76,8 +76,8 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 
 ## Requirements
 
-- **Bun** >= 1.0 (Mac/Linux runtime)
-- Node.js >= 18 (build tools)
+- **Bun** >= 1.0 (all platforms - auto-installed if missing)
+- Node.js >= 18 (build tools only)
 
 ## Quick Reference
 
