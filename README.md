@@ -28,7 +28,10 @@
 </p>
 
 <p align="center">
-  <a href="https://trendshift.io/repositories/15496" target="_blank"><img src="https://trendshift.io/api/badge/repositories/15496" alt="thedotmack%2Fclaude-mem | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+  <a href="https://trendshift.io/repositories/15496" target="_blank">
+    <img src="https://trendshift.io/api/badge/repositories/15496#gh-light-mode-only" alt="thedotmack%2Fclaude-mem | Trendshift" width="250" height="55"/>
+    <img src="https://trendshift.io/api/badge/repositories/15496#gh-dark-mode-only" alt="thedotmack%2Fclaude-mem | Trendshift" width="250" height="55" style="filter: invert(1)"/>
+  </a>
 </p>
 
 <br>
