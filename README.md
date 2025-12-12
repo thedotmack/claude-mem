@@ -55,6 +55,9 @@
 
 ## Quick Start
 
+[![Run in Smithery](https://smithery.ai/badge/skills/thedotmack)](https://smithery.ai/skills?ns=thedotmack&utm_source=github&utm_medium=badge)
+
+
 Start a new Claude Code session in the terminal and enter the following commands:
 
 ```
