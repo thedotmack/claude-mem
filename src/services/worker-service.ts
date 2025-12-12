@@ -266,6 +266,14 @@ export class WorkerService {
       queueDepth
     });
   }
+
+  /**
+   * Get TraceManager for recording execution traces
+   * PUBLIC: Called by route handlers (SessionRoutes)
+   */
+  getTraceManager(): TraceManager | null {
+    return this.traceManager;
+  }
 }
 
 // ============================================================================
