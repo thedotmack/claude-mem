@@ -17,7 +17,6 @@ import { join } from 'path';
 import { homedir } from 'os';
 import { createRequire } from 'module';
 
-
 // CRITICAL: Always use marketplace directory for npm install and PM2/ecosystem
 // This script may run from cache directory (plugin/) which has no package.json
 // The marketplace root is the canonical location with package.json and node_modules
@@ -37,6 +36,27 @@ const colors = {
   cyan: '\x1b[36m',
   dim: '\x1b[2m',
 };
+
+function getPm2Command() {
+  const localPm2 = join(MARKETPLACE_ROOT, 'node_modules', '.bin', 'pm2');
+  return existsSync(localPm2) ? localPm2 : 'pm2';
+}
+
+/**
+ * Called after successful rebuild to prevent ABI mismatch (due to stale worker process)
+ * 
+ * Kills stale worker so next session starts fresh with recompiled native module binaries
+ * (worker will be spawned using context hook when the startup flow runs)
+ */
+function killStaleWorker() {
+  try {
+    const pm2Command = getPm2Command();
+    execSync(`"${pm2Command}" delete claude-mem-worker 2>/dev/null || true`, { stdio: 'pipe' });
+    log('♻️  Killed stale worker (to be restarted by startup flow)', colors.dim);
+  } catch (e) {
+    // Gracefully catch in case worker wasn't already running
+  }
+}
 
 function log(message, color = colors.reset) {
   console.error(`${color}${message}${colors.reset}`);
@@ -351,6 +371,10 @@ async function main() {
         log('', colors.reset);
         process.exit(1);
       }
+      
+      // Kill the stale worker in case Node version change caused reinstall,
+      // meaning worker is now stale
+      killStaleWorker();
     } else {
       // NEW: Even if install not needed, verify native modules work
       const nativeModulesWork = await verifyNativeModules();
@@ -365,6 +389,9 @@ async function main() {
           log('', colors.reset);
           process.exit(1);
         }
+
+        // Kill stale worker after successful rebuild
+        killStaleWorker();
       }
     }
 

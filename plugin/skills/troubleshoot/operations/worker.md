@@ -60,12 +60,18 @@ PORT=$(grep CLAUDE_MEM_WORKER_PORT ~/.claude-mem/settings.json | grep -o '[0-9]\
 curl -s http://127.0.0.1:$PORT/health
 ```
 
-**Expected response:** `{"status":"ok"}`
+**Expected responses:**
+
+| Status | Response | Meaning |
+|--------|----------|---------|
+| 200 | `{"status":"ok"}` | Worker fully ready |
+| 503 | `{"status":"initializing"}` | Worker starting up (normal, wait 1-2s) |
 
 **Error responses:**
 - Connection refused - Worker not running
 - Timeout - Worker hung (restart needed)
 - Empty response - Worker crashed mid-request
+- Repeated 503 after 10+ seconds - Initialization stuck (check logs)
 
 ## Worker Logs
 
@@ -119,6 +125,13 @@ Database locked
 Error: listen EADDRINUSE
 Port 37777 already in use
 ```
+
+**Initialization failures:**
+```
+Background initialization failed
+App [claude-mem-worker] exited with code [1]
+```
+Worker exits immediately if database or native modules fail to initialize. This is intentional - check logs for the specific error.
 
 **Crashes:**
 ```
@@ -289,7 +302,7 @@ npm install -g pm2
 Once worker is running, test all endpoints:
 
 ```bash
-# Health check
+# Health check (should return {"status":"ok"} when ready)
 curl -s http://127.0.0.1:37777/health
 
 # Viewer HTML

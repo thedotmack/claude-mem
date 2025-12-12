@@ -112,11 +112,13 @@ Quick fixes for frequently encountered claude-mem problems.
 - PM2 shows worker as "stopped" or "errored"
 - Health check fails
 - Viewer not accessible
+- Worker exits immediately after starting
 
 **Root cause:**
 - Port already in use
 - PM2 not installed or not in PATH
 - Missing dependencies
+- Database or native module initialization failure (fail-fast behavior)
 
 **Fix:**
 1. Try manual worker start to see error:
@@ -126,17 +128,58 @@ Quick fixes for frequently encountered claude-mem problems.
    # Should start server on port 37777 or show error
    ```
 
-2. If port in use, change it:
+2. If worker exits immediately with initialization error, see [ABI Mismatch](#abi-mismatch) below
+
+3. If port in use, change it:
    ```bash
    mkdir -p ~/.claude-mem
    echo '{"env":{"CLAUDE_MEM_WORKER_PORT":"37778"}}' > ~/.claude-mem/settings.json
    ```
 
-3. If dependencies missing:
+4. If dependencies missing:
    ```bash
    cd ~/.claude/plugins/marketplaces/thedotmack/
    npm install
    pm2 start ecosystem.config.cjs
+   ```
+
+## Issue: ABI Mismatch / Native Module Error {#abi-mismatch}
+
+**Symptoms:**
+- Worker crashes immediately on startup
+- Logs show `ERR_DLOPEN_FAILED` or `NODE_MODULE_VERSION` errors
+- Error mentions "was compiled against a different Node.js version"
+- Worker worked before, stopped after Node.js update
+
+**Root cause:**
+Native modules (better-sqlite3) are compiled for a specific Node.js version. When Node.js is updated, the compiled binaries become incompatible. This commonly happens with:
+- nvm/fnm version switches
+- System Node.js updates
+- PM2 daemon running different Node than shell
+
+**Fix:**
+1. The `smart-install.js` script automatically detects and fixes this on session start. Simply start a new Claude session.
+
+2. If automatic fix doesn't work, manually rebuild:
+   ```bash
+   cd ~/.claude/plugins/marketplaces/thedotmack/
+   npm rebuild better-sqlite3
+   pm2 restart claude-mem-worker
+   ```
+
+3. If still failing, do a clean reinstall:
+   ```bash
+   cd ~/.claude/plugins/marketplaces/thedotmack/
+   rm -rf node_modules
+   npm install
+   pm2 delete claude-mem-worker
+   pm2 start ecosystem.config.cjs
+   ```
+
+4. Verify fix worked:
+   ```bash
+   curl -s http://127.0.0.1:37777/health
+   # Should return {"status":"ok"}
    ```
 
 ## Issue: Search Results Empty

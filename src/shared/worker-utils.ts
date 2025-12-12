@@ -112,7 +112,11 @@ async function startWorker(): Promise<boolean> {
         pm2Command = 'pm2';
       }
 
-      const result = spawnSync(pm2Command, ['start', ecosystemPath], {
+      // Pin interpreter to current Node to prevent ABI mismatch
+      // PM2 daemon may use different Node than shell; --interpreter ensures worker uses shell's Node
+      const nodePath = process.execPath;
+
+      const result = spawnSync(pm2Command, ['start', ecosystemPath, '--interpreter', nodePath], {
         cwd: MARKETPLACE_ROOT,
         stdio: 'pipe',
         encoding: 'utf-8'

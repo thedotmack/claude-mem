@@ -63,6 +63,7 @@ export class WorkerService {
   private server: http.Server | null = null;
   private startTime: number = Date.now();
   private mcpClient: Client;
+  private bgInitialized: boolean = false;
 
   // Domain services
   private dbManager: DatabaseManager;
@@ -129,7 +130,8 @@ export class WorkerService {
   private setupRoutes(): void {
     // Health check endpoint
     this.app.get('/api/health', (_req, res) => {
-      res.status(200).json({ status: 'ok' });
+      const status = this.bgInitialized ? 'ok' : 'initializing';
+      res.status(this.bgInitialized ? 200 : 503).json({ status });
     });
 
     this.viewerRoutes.setupRoutes(this.app);
@@ -155,7 +157,8 @@ export class WorkerService {
 
     // Do slow initialization in background (non-blocking)
     this.initializeBackground().catch((error) => {
-      logger.error('SYSTEM', 'Background initialization failed', {}, error as Error);
+      logger.failure('SYSTEM', 'Background initialization failed', {}, error as Error);
+      process.exit(1);
     });
   }
 
@@ -165,6 +168,7 @@ export class WorkerService {
   private async initializeBackground(): Promise<void> {
     // Initialize database (once, stays open)
     await this.dbManager.initialize();
+    this.bgInitialized = true;
 
     // Initialize search services (requires initialized database)
     const formattingService = new FormattingService();
