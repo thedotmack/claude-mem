@@ -45,7 +45,7 @@
     "changelog:generate": "node scripts/generate-changelog.js",
     "usage:analyze": "node scripts/analyze-usage.js",
     "usage:today": "node scripts/analyze-usage.js $(date +%Y-%m-%d)",
-    "translate-readme": "npx tsx scripts/translate-readme/cli.ts -v README.md",
+    "translate-readme": "bun scripts/translate-readme/cli.ts -v -o docs/i18n README.md",
     "translate:tier1": "npm run translate-readme -- zh ja pt-br ko es de fr",
     "translate:tier2": "npm run translate-readme -- he ar ru pl cs nl tr uk",
     "translate:tier3": "npm run translate-readme -- vi id th hi bn ro sv",

@@ -49,6 +49,8 @@ export interface TranslationOptions {
   verbose?: boolean;
   /** Force re-translation even if cached */
   force?: boolean;
+  /** Number of concurrent translations (default: 1) */
+  parallel?: number;
 }
 
 export interface TranslationResult {
@@ -153,7 +155,12 @@ Here is the README content to translate:
 ${content}
 ---
 
-Output ONLY the translated README content, nothing else. Do not include any preamble or explanation.`;
+CRITICAL OUTPUT RULES:
+- Output ONLY the raw translated markdown content
+- Do NOT wrap output in \`\`\`markdown code fences
+- Do NOT add any preamble, explanation, or commentary
+- Start directly with the translation note, then the content
+- The output will be saved directly to a .md file`;
 
   let translation = "";
   let costUsd = 0;
@@ -221,7 +228,21 @@ Always output only the translated content without any surrounding explanation.`,
     process.stdout.write("\r" + " ".repeat(60) + "\r");
   }
 
-  return { translation: translation.trim(), costUsd };
+  // Strip markdown code fences if Claude wrapped the output
+  let cleaned = translation.trim();
+  if (cleaned.startsWith("```markdown")) {
+    cleaned = cleaned.slice("```markdown".length);
+  } else if (cleaned.startsWith("```md")) {
+    cleaned = cleaned.slice("```md".length);
+  } else if (cleaned.startsWith("```")) {
+    cleaned = cleaned.slice(3);
+  }
+  if (cleaned.endsWith("```")) {
+    cleaned = cleaned.slice(0, -3);
+  }
+  cleaned = cleaned.trim();
+
+  return { translation: cleaned, costUsd };
 }
 
 export async function translateReadme(
@@ -237,6 +258,7 @@ export async function translateReadme(
     maxBudgetUsd,
     verbose = false,
     force = false,
+    parallel = 1,
   } = options;
 
   // Read source file
@@ -260,21 +282,14 @@ export async function translateReadme(
     console.log(`📖 Source: ${sourcePath}`);
     console.log(`📂 Output: ${outDir}`);
     console.log(`🌍 Languages: ${languages.join(", ")}`);
+    if (parallel > 1) {
+      console.log(`⚡ Parallel: ${parallel} concurrent translations`);
+    }
     console.log("");
   }
 
-  for (const lang of languages) {
-    // Check budget
-    if (maxBudgetUsd && totalCostUsd >= maxBudgetUsd) {
-      results.push({
-        language: lang,
-        outputPath: "",
-        success: false,
-        error: "Budget exceeded",
-      });
-      continue;
-    }
-
+  // Worker function for a single language
+  async function translateLang(lang: string): Promise<TranslationResult> {
     const outputFilename = pattern.replace("{lang}", lang);
     const outputPath = path.join(outDir, outputFilename);
 
@@ -282,17 +297,10 @@ export async function translateReadme(
     if (!force && isHashMatch && cache?.translations[lang]) {
       const outputExists = await fs.access(outputPath).then(() => true).catch(() => false);
       if (outputExists) {
-        results.push({
-          language: lang,
-          outputPath,
-          success: true,
-          cached: true,
-          costUsd: 0,
-        });
         if (verbose) {
           console.log(`   ✅ ${outputFilename} (cached, unchanged)`);
         }
-        continue;
+        return { language: lang, outputPath, success: true, cached: true, costUsd: 0 };
       }
     }
 
@@ -304,36 +312,64 @@ export async function translateReadme(
       const { translation, costUsd } = await translateToLanguage(content, lang, {
         preserveCode,
         model,
-        verbose,
+        verbose: verbose && parallel === 1, // Only show progress spinner for sequential
       });
 
       await fs.writeFile(outputPath, translation, "utf-8");
-      totalCostUsd += costUsd;
-
-      results.push({
-        language: lang,
-        outputPath,
-        success: true,
-        costUsd,
-      });
 
       if (verbose) {
         console.log(`   ✅ Saved to ${outputFilename} ($${costUsd.toFixed(4)})`);
       }
+
+      return { language: lang, outputPath, success: true, costUsd };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      results.push({
-        language: lang,
-        outputPath,
-        success: false,
-        error: errorMessage,
-      });
-
       if (verbose) {
-        console.log(`   ❌ Failed: ${errorMessage}`);
+        console.log(`   ❌ ${lang} failed: ${errorMessage}`);
       }
+      return { language: lang, outputPath, success: false, error: errorMessage };
     }
   }
+
+  // Run with concurrency limit
+  async function runWithConcurrency<T>(items: T[], limit: number, fn: (item: T) => Promise<TranslationResult>): Promise<TranslationResult[]> {
+    const results: TranslationResult[] = [];
+    const executing: Promise<void>[] = [];
+
+    for (const item of items) {
+      // Check budget before starting new translation
+      if (maxBudgetUsd && totalCostUsd >= maxBudgetUsd) {
+        results.push({
+          language: String(item),
+          outputPath: "",
+          success: false,
+          error: "Budget exceeded",
+        });
+        continue;
+      }
+
+      const p = fn(item).then((result) => {
+        results.push(result);
+        if (result.costUsd) {
+          totalCostUsd += result.costUsd;
+        }
+      });
+
+      executing.push(p.then(() => {
+        executing.splice(executing.indexOf(p.then(() => {})), 1);
+      }));
+
+      if (executing.length >= limit) {
+        await Promise.race(executing);
+      }
+    }
+
+    await Promise.all(executing);
+    return results;
+  }
+
+  const translationResults = await runWithConcurrency(languages, parallel, translateLang);
+  results.push(...translationResults);
 
   // Save updated cache
   const newCache: TranslationCache = {
