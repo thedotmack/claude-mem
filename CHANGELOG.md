@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [7.0.11] - 2025-12-12
+
+Patch release adding feature/bun-executable to experimental branch selector for testing Bun runtime integration.
+
 ## [7.0.9] - 2025-12-10
 
 ## Bug Fixes
