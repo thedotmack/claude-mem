@@ -7,7 +7,7 @@
 
 import path from 'path';
 import { homedir } from 'os';
-import { existsSync, readFileSync, unlinkSync } from 'fs';
+import { existsSync, readFileSync, unlinkSync, readdirSync, statSync } from 'fs';
 import { SessionStore } from './sqlite/SessionStore.js';
 import {
   OBSERVATION_TYPES,
@@ -41,6 +41,7 @@ interface ContextConfig {
   fullObservationField: 'narrative' | 'facts';
   showLastSummary: boolean;
   showLastMessage: boolean;
+  showLastPlan: boolean;
 }
 
 /**
@@ -69,6 +70,7 @@ function loadContextConfig(): ContextConfig {
       fullObservationField: settings.CLAUDE_MEM_CONTEXT_FULL_FIELD as 'narrative' | 'facts',
       showLastSummary: settings.CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY === 'true',
       showLastMessage: settings.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE === 'true',
+      showLastPlan: settings.CLAUDE_MEM_CONTEXT_SHOW_LAST_PLAN === 'true',
     };
   } catch (error) {
     logger.warn('WORKER', 'Failed to load context settings, using defaults', {}, error as Error);
@@ -86,6 +88,7 @@ function loadContextConfig(): ContextConfig {
       fullObservationField: 'narrative' as const,
       showLastSummary: true,
       showLastMessage: false,
+      showLastPlan: false,
     };
   }
 }
@@ -260,6 +263,49 @@ function extractPriorMessages(transcriptPath: string): { userMessage: string; as
 }
 
 /**
+ * Get the most recent plan file from ~/.claude/plans/
+ * Returns { filePath, content, title } or null if no plans exist
+ */
+function getMostRecentPlanFile(): { filePath: string; content: string; title: string } | null {
+  try {
+    const plansDir = path.join(homedir(), '.claude', 'plans');
+
+    if (!existsSync(plansDir)) {
+      return null;
+    }
+
+    const files = readdirSync(plansDir)
+      .filter((f: string) => f.endsWith('.md'))
+      .map((f: string) => ({
+        name: f,
+        path: path.join(plansDir, f),
+        mtime: statSync(path.join(plansDir, f)).mtime.getTime()
+      }))
+      .sort((a: { mtime: number }, b: { mtime: number }) => b.mtime - a.mtime);
+
+    if (files.length === 0) {
+      return null;
+    }
+
+    const mostRecent = files[0];
+    const content = readFileSync(mostRecent.path, 'utf-8');
+
+    // Extract title from H1 heading
+    const titleMatch = content.match(/^#\s+(.+)$/m);
+    const title = titleMatch?.[1] || mostRecent.name.replace('.md', '');
+
+    return {
+      filePath: mostRecent.path,
+      content: content.trim(),
+      title
+    };
+  } catch (error) {
+    logger.warn('WORKER', 'Failed to read plan files', {}, error as Error);
+    return null;
+  }
+}
+
+/**
  * Generate context for a project
  */
 export async function generateContext(input?: ContextInput, useColors: boolean = false): Promise<string> {
@@ -409,9 +455,9 @@ export async function generateContext(input?: ContextInput, useColors: boolean =
     const totalObservations = observations.length;
     const totalReadTokens = observations.reduce((sum, obs) => {
       const obsSize = (obs.title?.length || 0) +
-                      (obs.subtitle?.length || 0) +
-                      (obs.narrative?.length || 0) +
-                      JSON.stringify(obs.facts || []).length;
+        (obs.subtitle?.length || 0) +
+        (obs.narrative?.length || 0) +
+        JSON.stringify(obs.facts || []).length;
       return sum + Math.ceil(obsSize / CHARS_PER_TOKEN_ESTIMATE);
     }, 0);
     const totalDiscoveryTokens = observations.reduce((sum, obs) => sum + (obs.discovery_tokens || 0), 0);
@@ -421,7 +467,7 @@ export async function generateContext(input?: ContextInput, useColors: boolean =
       : 0;
 
     const showContextEconomics = config.showReadTokens || config.showWorkTokens ||
-                                   config.showSavingsAmount || config.showSavingsPercent;
+      config.showSavingsAmount || config.showSavingsPercent;
 
     if (showContextEconomics) {
       if (useColors) {
@@ -585,9 +631,9 @@ export async function generateContext(input?: ContextInput, useColors: boolean =
           const icon = TYPE_ICON_MAP[obs.type as keyof typeof TYPE_ICON_MAP] || '•';
 
           const obsSize = (obs.title?.length || 0) +
-                          (obs.subtitle?.length || 0) +
-                          (obs.narrative?.length || 0) +
-                          JSON.stringify(obs.facts || []).length;
+            (obs.subtitle?.length || 0) +
+            (obs.narrative?.length || 0) +
+            JSON.stringify(obs.facts || []).length;
           const readTokens = Math.ceil(obsSize / CHARS_PER_TOKEN_ESTIMATE);
           const discoveryTokens = obs.discovery_tokens || 0;
           const workEmoji = TYPE_WORK_EMOJI_MAP[obs.type as keyof typeof TYPE_WORK_EMOJI_MAP] || '🔍';
@@ -693,6 +739,28 @@ export async function generateContext(input?: ContextInput, useColors: boolean =
         output.push(`A: ${priorAssistantMessage}`);
       }
       output.push('');
+    }
+
+    // Include last plan if enabled
+    if (config.showLastPlan) {
+      const plan = getMostRecentPlanFile();
+      if (plan) {
+        output.push('');
+        output.push('---');
+        output.push('');
+        if (useColors) {
+          output.push(`${colors.bright}${colors.cyan}📋 Last Plan: ${plan.title}${colors.reset}`);
+          output.push(`${colors.dim}File: ${plan.filePath}${colors.reset}`);
+          output.push('');
+          output.push(plan.content);
+        } else {
+          output.push(`**📋 Last Plan: ${plan.title}**`);
+          output.push(`_File: ${plan.filePath}_`);
+          output.push('');
+          output.push(plan.content);
+        }
+        output.push('');
+      }
     }
 
     // Footer
