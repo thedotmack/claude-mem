@@ -27,6 +27,10 @@
   </a>
 </p>
 
+<p align="center">
+  <a href="https://trendshift.io/repositories/15496" target="_blank"><img src="https://trendshift.io/api/badge/repositories/15496" alt="thedotmack%2Fclaude-mem | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+</p>
+
 <br>
 
 <p align="center">
