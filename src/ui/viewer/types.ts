@@ -16,6 +16,24 @@ export interface Observation {
   created_at_epoch: number;
 }
 
+/**
+ * Execution trace - tracks tool/skill/MCP usage during responses
+ */
+export interface ExecutionTrace {
+  id: number;
+  sdk_session_id: string;
+  prompt_number: number | null;
+  step_order: number;
+  trace_type: 'tool' | 'skill' | 'mcp' | 'hook';
+  name: string;
+  source: string | null;
+  input_summary: string | null;
+  output_summary: string | null;
+  duration_ms: number | null;
+  created_at: string;
+  created_at_epoch: number;
+}
+
 export interface Summary {
   id: number;
   session_id: string;

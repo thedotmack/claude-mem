@@ -57,6 +57,8 @@ import { SessionRoutes } from './worker/http/routes/SessionRoutes.js';
 import { DataRoutes } from './worker/http/routes/DataRoutes.js';
 import { SearchRoutes } from './worker/http/routes/SearchRoutes.js';
 import { SettingsRoutes } from './worker/http/routes/SettingsRoutes.js';
+import { TraceRoutes } from './worker/http/routes/TraceRoutes.js';
+import { TraceManager } from './worker/TraceManager.js';
 
 export class WorkerService {
   private app: express.Application;
@@ -79,6 +81,10 @@ export class WorkerService {
   private dataRoutes: DataRoutes;
   private searchRoutes: SearchRoutes | null;
   private settingsRoutes: SettingsRoutes;
+  private traceRoutes: TraceRoutes | null;
+
+  // Additional services
+  private traceManager: TraceManager | null = null;
 
   constructor() {
     this.app = express();
@@ -110,6 +116,7 @@ export class WorkerService {
     // SearchRoutes needs SearchManager which requires initialized DB - will be created in initializeBackground()
     this.searchRoutes = null;
     this.settingsRoutes = new SettingsRoutes(this.settingsManager);
+    this.traceRoutes = null; // Will be created after DB init
 
     this.setupMiddleware();
     this.setupRoutes();
@@ -179,6 +186,12 @@ export class WorkerService {
     this.searchRoutes = new SearchRoutes(searchManager);
     this.searchRoutes.setupRoutes(this.app); // Setup search routes now that SearchManager is ready
     logger.info('WORKER', 'SearchManager initialized and search routes registered');
+
+    // Initialize TraceManager and routes
+    this.traceManager = new TraceManager(this.dbManager.getSessionStore());
+    this.traceRoutes = new TraceRoutes(this.traceManager);
+    this.traceRoutes.setupRoutes(this.app);
+    logger.info('WORKER', 'TraceManager initialized and trace routes registered');
 
     // Connect to MCP server
     const mcpServerPath = path.join(__dirname, 'mcp-server.cjs');
