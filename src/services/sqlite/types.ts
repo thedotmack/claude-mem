@@ -148,7 +148,7 @@ export interface TranscriptEventInput {
  */
 export function normalizeTimestamp(timestamp: string | Date | number | undefined): { isoString: string; epoch: number } {
   let date: Date;
-  
+
   if (!timestamp) {
     date = new Date();
   } else if (timestamp instanceof Date) {
@@ -166,7 +166,7 @@ export function normalizeTimestamp(timestamp: string | Date | number | undefined
         // Try common formats
         const cleaned = timestamp.replace(/\s+/g, 'T').replace(/T+/g, 'T');
         date = new Date(cleaned);
-        
+
         // Still invalid? Use current time
         if (isNaN(date.getTime())) {
           date = new Date();
@@ -176,7 +176,7 @@ export function normalizeTimestamp(timestamp: string | Date | number | undefined
   } else {
     date = new Date();
   }
-  
+
   return {
     isoString: date.toISOString(),
     epoch: date.getTime()
@@ -245,6 +245,36 @@ export interface UserPromptRow {
   prompt_text: string;
   created_at: string;
   created_at_epoch: number;
+}
+
+/**
+ * Execution Trace Types - for tracking tool/skill/MCP execution
+ */
+export interface ExecutionTraceRow {
+  id: number;
+  sdk_session_id: string;
+  prompt_number: number | null;
+  step_order: number;
+  trace_type: 'tool' | 'skill' | 'mcp' | 'hook';
+  name: string;
+  source: string | null;
+  input_summary: string | null;
+  output_summary: string | null;
+  duration_ms: number | null;
+  created_at: string;
+  created_at_epoch: number;
+}
+
+export interface ExecutionTraceInput {
+  sdk_session_id: string;
+  prompt_number?: number;
+  step_order: number;
+  trace_type: 'tool' | 'skill' | 'mcp' | 'hook';
+  name: string;
+  source?: string;
+  input_summary?: string;
+  output_summary?: string;
+  duration_ms?: number;
 }
 
 /**

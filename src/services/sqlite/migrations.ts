@@ -496,6 +496,44 @@ export const migration007: Migration = {
 };
 
 /**
+ * Migration 008 - Add execution_traces table for tool/skill/MCP tracking
+ * Tracks what tools, skills, MCPs, and hooks ran during each response
+ */
+export const migration008: Migration = {
+  version: 8,
+  up: (db: Database) => {
+    db.run(`
+      CREATE TABLE IF NOT EXISTS execution_traces (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sdk_session_id TEXT NOT NULL,
+        prompt_number INTEGER,
+        step_order INTEGER NOT NULL,
+        trace_type TEXT CHECK(trace_type IN ('tool', 'skill', 'mcp', 'hook')) NOT NULL,
+        name TEXT NOT NULL,
+        source TEXT,
+        input_summary TEXT,
+        output_summary TEXT,
+        duration_ms INTEGER,
+        created_at TEXT NOT NULL,
+        created_at_epoch INTEGER NOT NULL,
+        FOREIGN KEY(sdk_session_id) REFERENCES sdk_sessions(sdk_session_id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_traces_session ON execution_traces(sdk_session_id);
+      CREATE INDEX IF NOT EXISTS idx_traces_prompt ON execution_traces(sdk_session_id, prompt_number);
+      CREATE INDEX IF NOT EXISTS idx_traces_type ON execution_traces(trace_type);
+      CREATE INDEX IF NOT EXISTS idx_traces_created ON execution_traces(created_at_epoch DESC);
+    `);
+
+    console.log('✅ Created execution_traces table for tool/skill/MCP tracking');
+  },
+
+  down: (db: Database) => {
+    db.run(`DROP TABLE IF EXISTS execution_traces`);
+  }
+};
+
+/**
  * All migrations in order
  */
 export const migrations: Migration[] = [
@@ -505,5 +543,6 @@ export const migrations: Migration[] = [
   migration004,
   migration005,
   migration006,
-  migration007
+  migration007,
+  migration008
 ];
