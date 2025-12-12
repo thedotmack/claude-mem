@@ -276,11 +276,15 @@ function getMostRecentPlanFile(): { filePath: string; content: string; title: st
 
     const files = readdirSync(plansDir)
       .filter((f: string) => f.endsWith('.md'))
-      .map((f: string) => ({
-        name: f,
-        path: path.join(plansDir, f),
-        mtime: statSync(path.join(plansDir, f)).mtime.getTime()
-      }))
+      .map((f: string) => {
+        const fullPath = path.join(plansDir, f);
+        const stat = statSync(fullPath);
+        return {
+          name: f,
+          path: fullPath,
+          mtime: stat.mtime.getTime()
+        };
+      })
       .sort((a: { mtime: number }, b: { mtime: number }) => b.mtime - a.mtime);
 
     if (files.length === 0) {
