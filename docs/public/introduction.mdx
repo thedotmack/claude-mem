@@ -58,7 +58,7 @@ Restart Claude Code. Context from previous sessions will automatically appear in
 **Core Components:**
 1. **5 Lifecycle Hooks** - SessionStart, UserPromptSubmit, PostToolUse, Stop, SessionEnd (6 hook scripts)
 2. **Smart Install** - Cached dependency checker (pre-hook script)
-3. **Worker Service** - HTTP API on port 37777 managed by PM2
+3. **Worker Service** - HTTP API on port 37777 managed by Bun
 4. **SQLite Database** - Stores sessions, observations, summaries with FTS5 search
 5. **mem-search Skill** - Query historical context with natural language
 6. **Web Viewer UI** - Real-time visualization with SSE and infinite scroll
@@ -69,7 +69,7 @@ See [Architecture Overview](architecture/overview) for details.
 
 - **Node.js**: 18.0.0 or higher
 - **Claude Code**: Latest version with plugin support
-- **PM2**: Process manager (bundled - no global install required)
+- **Bun**: JavaScript runtime and process manager (auto-installed if missing)
 - **SQLite 3**: For persistent storage (bundled)
 
 ## What's New

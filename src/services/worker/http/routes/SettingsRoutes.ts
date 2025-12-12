@@ -21,6 +21,7 @@ import {
 } from '../../../../constants/observation-metadata.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
+import { clearPortCache } from '../../../../shared/worker-utils.js';
 
 export class SettingsRoutes extends BaseRouteHandler {
   constructor(
@@ -161,6 +162,9 @@ export class SettingsRoutes extends BaseRouteHandler {
 
     // Write back
     writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf-8');
+
+    // Clear port cache to force re-reading from updated settings
+    clearPortCache();
 
     logger.info('WORKER', 'Settings updated');
     res.json({ success: true, message: 'Settings updated successfully' });

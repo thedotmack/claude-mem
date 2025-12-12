@@ -68,9 +68,9 @@ CLAUDE_MEM_PYTHON_VERSION=3.13              # Python version for chroma-mcp
 ```bash
 npm run build                 # Compile TypeScript (hooks + worker)
 npm run sync-marketplace      # Copy to ~/.claude/plugins
-npm run worker:restart        # Restart PM2 worker
+npm run worker:restart        # Restart Bun worker
 npm run worker:logs           # View worker logs
-pm2 list                      # Check worker status
+bun list                      # Check worker status
 ```
 
 ---
@@ -918,8 +918,8 @@ esbuild.build({
 npm run watch
 
 # Terminal 2: Check worker status
-pm2 list
-pm2 logs claude-mem-worker
+bun list
+bun logs claude-mem-worker
 
 # Terminal 3: Test API manually
 curl http://localhost:37777/api/health
@@ -1020,7 +1020,7 @@ describe('Worker Integration', () => {
 ### Manual Testing Checklist
 
 **Phase 1: Connection & Health**
-- [ ] Worker starts successfully (`pm2 list`)
+- [ ] Worker starts successfully (`bun list`)
 - [ ] Health endpoint responds (`curl http://localhost:37777/api/health`)
 - [ ] SSE stream connects (`curl http://localhost:37777/stream`)
 

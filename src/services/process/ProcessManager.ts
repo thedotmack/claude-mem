@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from 'fs';
 import { createWriteStream } from 'fs';
 import { join } from 'path';
-import { spawn } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import { homedir } from 'os';
 import { DATA_DIR } from '../../shared/paths.js';
 
@@ -47,7 +47,23 @@ export class ProcessManager {
     return this.startWithBun(workerScript, logFile, port);
   }
 
+  private static isBunAvailable(): boolean {
+    try {
+      const result = spawnSync('bun', ['--version'], { stdio: 'pipe', timeout: 5000 });
+      return result.status === 0;
+    } catch {
+      return false;
+    }
+  }
+
   private static async startWithBun(script: string, logFile: string, port: number): Promise<{ success: boolean; pid?: number; error?: string }> {
+    if (!this.isBunAvailable()) {
+      return {
+        success: false,
+        error: 'Bun is required but not found in PATH. Install from https://bun.sh'
+      };
+    }
+
     try {
       const isWindows = process.platform === 'win32';
 
@@ -129,7 +145,11 @@ export class ProcessManager {
   static async isRunning(): Promise<boolean> {
     const info = this.getPidInfo();
     if (!info) return false;
-    return this.isProcessAlive(info.pid);
+    const alive = this.isProcessAlive(info.pid);
+    if (!alive) {
+      this.removePidFile(); // Clean up stale PID file
+    }
+    return alive;
   }
 
   // Helper methods
@@ -137,7 +157,12 @@ export class ProcessManager {
     try {
       if (!existsSync(PID_FILE)) return null;
       const content = readFileSync(PID_FILE, 'utf-8');
-      return JSON.parse(content) as PidInfo;
+      const parsed = JSON.parse(content);
+      // Validate required fields have correct types
+      if (typeof parsed.pid !== 'number' || typeof parsed.port !== 'number') {
+        return null;
+      }
+      return parsed as PidInfo;
     } catch {
       return null;
     }

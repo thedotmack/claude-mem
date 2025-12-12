@@ -10,7 +10,7 @@ description: "Common issues and solutions for Claude-Mem"
 Describe any issues you're experiencing to Claude, and the troubleshoot skill will automatically activate to provide diagnosis and fixes.
 
 The troubleshoot skill will:
-- ✅ Check PM2 worker status and health
+- ✅ Check worker status and health
 - ✅ Verify database existence and integrity
 - ✅ Test worker service connectivity
 - ✅ Validate dependencies installation
@@ -170,39 +170,18 @@ The skill includes comprehensive diagnostics, automated repair sequences, and de
 
 4. Restart Claude Code after manual install
 
-### PM2 ENOENT Error on Windows (v5.1.1 Fix)
-
-**Symptoms**: Worker fails to start with "ENOENT" error on Windows.
-
-**Solutions**:
-
-1. This was fixed in v5.1.1 - update to latest version:
-   ```bash
-   /plugin update claude-mem
-   ```
-
-2. If still experiencing issues, verify PM2 path:
-   ```bash
-   cd ~/.claude/plugins/marketplaces/thedotmack
-   dir node_modules\.bin\pm2.cmd
-   ```
-
-3. Manual PM2 install if needed:
-   ```bash
-   npm install pm2@latest
-   ```
 
 ## Worker Service Issues
 
 ### Worker Service Not Starting
 
-**Symptoms**: Worker doesn't start, or `pm2 status` shows no processes.
+**Symptoms**: Worker doesn't start, or worker status shows it's not running.
 
 **Solutions**:
 
-1. Check if PM2 is running:
+1. Check worker status:
    ```bash
-   pm2 status
+   npm run worker:status
    ```
 
 2. Try starting manually:
@@ -217,14 +196,14 @@ The skill includes comprehensive diagnostics, automated repair sequences, and de
 
 4. Full reset:
    ```bash
-   pm2 delete claude-mem-worker
+   npm run worker:stop
    npm run worker:start
    ```
 
-5. Verify PM2 is installed:
+5. Verify Bun is installed:
    ```bash
-   which pm2
-   npm list pm2
+   which bun
+   bun --version
    ```
 
 ### Port Allocation Failed
@@ -256,7 +235,7 @@ The skill includes comprehensive diagnostics, automated repair sequences, and de
 
 ### Worker Keeps Crashing
 
-**Symptoms**: Worker restarts repeatedly, PM2 shows high restart count.
+**Symptoms**: Worker restarts repeatedly or fails to stay running.
 
 **Solutions**:
 
@@ -265,21 +244,19 @@ The skill includes comprehensive diagnostics, automated repair sequences, and de
    npm run worker:logs
    ```
 
-2. Check memory usage:
+2. Check worker status:
    ```bash
-   pm2 status
+   npm run worker:status
    ```
 
-3. Increase memory limit in `ecosystem.config.cjs`:
-   ```javascript
-   {
-     max_memory_restart: '2G'  // Increase if needed
-   }
-   ```
-
-4. Check database for corruption:
+3. Check database for corruption:
    ```bash
    sqlite3 ~/.claude-mem/claude-mem.db "PRAGMA integrity_check;"
+   ```
+
+4. Verify Bun installation:
+   ```bash
+   bun --version
    ```
 
 ### Worker Not Processing Observations
@@ -424,7 +401,7 @@ The skill includes comprehensive diagnostics, automated repair sequences, and de
 
 1. Close all connections:
    ```bash
-   pm2 stop claude-mem-worker
+   npm run worker:stop
    ```
 
 2. Check for stale locks:
@@ -656,29 +633,21 @@ The skill includes comprehensive diagnostics, automated repair sequences, and de
 
 ### High Memory Usage
 
-**Symptoms**: Worker uses too much memory, frequent restarts.
+**Symptoms**: Worker uses too much memory.
 
 **Solutions**:
 
 1. Check current usage:
    ```bash
-   pm2 status
+   npm run worker:status
    ```
 
-2. Increase memory limit:
-   ```javascript
-   // In ecosystem.config.cjs
-   {
-     max_memory_restart: '2G'
-   }
-   ```
-
-3. Restart worker:
+2. Restart worker:
    ```bash
    npm run worker:restart
    ```
 
-4. Clean up old data (see "Database Too Large" above)
+3. Clean up old data (see "Database Too Large" above)
 
 ## Installation Issues
 
@@ -773,10 +742,10 @@ sqlite3 ~/.claude-mem/claude-mem.db "
 
 ```bash
 # Check if worker is running
-pm2 status
+npm run worker:status
 
 # View logs
-pm2 logs claude-mem-worker
+npm run worker:logs
 
 # Check port file
 cat ~/.claude-mem/worker.port
