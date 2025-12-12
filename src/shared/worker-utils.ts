@@ -1,14 +1,10 @@
 import path from "path";
 import { existsSync } from "fs";
-import { homedir } from "os";
 import { spawnSync } from "child_process";
 import { SettingsDefaultsManager } from "./SettingsDefaultsManager.js";
 import { logger } from "../utils/logger.js";
 import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
-
-// CRITICAL: Always use marketplace directory for PM2/ecosystem
-// This ensures cross-platform compatibility and avoids cache directory confusion
-const MARKETPLACE_ROOT = path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
+import { MARKETPLACE_ROOT } from "./paths.js";
 
 // Named constants for health checks
 // Windows needs longer timeouts due to startup overhead
