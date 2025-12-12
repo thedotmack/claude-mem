@@ -39,7 +39,7 @@ export class TraceRoutes extends BaseRouteHandler {
         const promptNum = parseInt(prompt_number, 10);
 
         if (isNaN(promptNum)) {
-            this.badRequest(res, 'prompt_number must be a number');
+            this.badRequest(res, `prompt_number must be a valid integer, received: ${prompt_number}`);
             return;
         }
 
