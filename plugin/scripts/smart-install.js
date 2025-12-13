@@ -268,7 +268,11 @@ function needsInstall() {
 }
 
 /**
- * Install dependencies using Bun
+ * Install dependencies using Bun with npm fallback
+ *
+ * Bun has issues with npm alias packages (e.g., string-width-cjs, strip-ansi-cjs)
+ * that are defined in package-lock.json. When bun fails with 404 errors for these
+ * packages, we fall back to npm which handles aliases correctly.
  */
 function installDeps() {
   const bunPath = getBunPath();
@@ -281,11 +285,29 @@ function installDeps() {
   // Quote path for Windows paths with spaces
   const bunCmd = IS_WINDOWS && bunPath.includes(' ') ? `"${bunPath}"` : bunPath;
 
+  let bunSucceeded = false;
   try {
     execSync(`${bunCmd} install`, { cwd: ROOT, stdio: 'inherit', shell: IS_WINDOWS });
+    bunSucceeded = true;
   } catch {
-    // Retry with force flag
-    execSync(`${bunCmd} install --force`, { cwd: ROOT, stdio: 'inherit', shell: IS_WINDOWS });
+    // First attempt failed, try with force flag
+    try {
+      execSync(`${bunCmd} install --force`, { cwd: ROOT, stdio: 'inherit', shell: IS_WINDOWS });
+      bunSucceeded = true;
+    } catch {
+      // Bun failed completely, will try npm fallback
+    }
+  }
+
+  // Fallback to npm if bun failed (handles npm alias packages correctly)
+  if (!bunSucceeded) {
+    console.error('⚠️  Bun install failed, falling back to npm...');
+    console.error('   (This can happen with npm alias packages like *-cjs)');
+    try {
+      execSync('npm install', { cwd: ROOT, stdio: 'inherit', shell: IS_WINDOWS });
+    } catch (npmError) {
+      throw new Error('Both bun and npm install failed: ' + npmError.message);
+    }
   }
 
   // Write version marker
