@@ -34,7 +34,7 @@ isWorkerHealthy() → fetch /health endpoint
     └─ [UNHEALTHY] → startWorker()
         ↓
         ├─ [Windows] → PowerShell Start-Process (hidden window)
-        └─ [Unix] → PM2 start ecosystem.config.cjs
+        └─ [Unix] → Bun start ecosystem.config.cjs
             ↓
         Wait for health check (15 retries × 1000ms)
             ↓
@@ -116,7 +116,7 @@ spawnSync('powershell.exe', [
 **Issues:**
 1. **PowerShell Dependency:** Assumes PowerShell is available and in PATH
 2. **Command Injection Risk:** Worker script path inserted directly into command string without escaping
-3. **Process Monitoring:** Windows approach launches detached process with no PM2 monitoring - harder to debug/restart
+3. **Process Monitoring:** Windows approach launches detached process with no Bun monitoring - harder to debug/restart
 4. **Health Check Timeout:** Comment says "Windows needs longer timeouts" but timeout is same for all platforms (500ms)
 
 **Edge Cases:**
@@ -127,16 +127,16 @@ spawnSync('powershell.exe', [
 
 **Unix Implementation:**
 ```typescript
-const localPm2Base = path.join(MARKETPLACE_ROOT, 'node_modules', '.bin', 'pm2');
-const pm2Command = existsSync(localPm2Base) ? localPm2Base : 'pm2';
+const localBunBase = path.join(MARKETPLACE_ROOT, 'node_modules', '.bin', 'bun');
+const bunCommand = existsSync(localBunBase) ? localBunBase : 'bun';
 ```
 
 **Issues:**
-1. **PM2 Dependency:** Falls back to global pm2 if local not found, but doesn't verify it exists
-2. **Silent Failure:** If PM2 not installed globally, spawnSync will fail with cryptic ENOENT error
+1. **Bun Dependency:** Falls back to global bun if local not found, but doesn't verify it exists
+2. **Silent Failure:** If Bun not installed globally, spawnSync will fail with cryptic ENOENT error
 
 **Recommendation:**
-- Add pm2 existence check before spawn
+- Add bun existence check before spawn
 - Implement consistent process monitoring across platforms
 - Add path escaping for Windows command construction
 - Actually implement longer timeout for Windows if needed
@@ -414,7 +414,7 @@ if (!existsSync(join(commandsDir, 'save.md'))) {
 ### Missing Edge Case Handling ⚠️
 
 1. **curl Failure:** context-hook.ts has no error handling for curl failures
-2. **PM2 Not Installed:** worker-utils.ts assumes pm2 exists globally
+2. **Bun Not Installed:** worker-utils.ts assumes bun exists globally
 3. **PowerShell Restrictions:** worker-utils.ts doesn't check execution policy
 4. **Concurrent Worker Starts:** No locking to prevent multiple hooks from starting worker simultaneously
 5. **Port Already In Use:** No detection or recovery if worker port is taken
@@ -442,7 +442,7 @@ if (!existsSync(join(commandsDir, 'save.md'))) {
 
 ### Medium Priority 🟡
 
-4. **Verify PM2 availability** before attempting to use it
+4. **Verify Bun availability** before attempting to use it
    - Check existence before spawn
    - Provide clear error message if missing
 
@@ -494,7 +494,7 @@ if (!existsSync(join(commandsDir, 'save.md'))) {
 
 1. **Cold Start:** First run with no existing data
 2. **Corrupt Settings:** Invalid JSON in settings.json
-3. **Missing Dependencies:** No PM2, no git, no curl
+3. **Missing Dependencies:** No Bun, no git, no curl
 4. **Port Conflicts:** Worker port already in use
 5. **Rapid Hook Invocations:** Multiple hooks trying to start worker simultaneously
 6. **Permission Issues:** Read-only filesystem, restricted execution
@@ -525,7 +525,7 @@ if (!existsSync(join(commandsDir, 'save.md'))) {
 
 - Duplicate health endpoints
 - curl dependency when fetch available
-- PM2 dependency on Unix but not Windows (inconsistent monitoring)
+- Bun dependency on Unix but not Windows (inconsistent monitoring)
 - First-run detection using node_modules existence
 - Hardcoded timeout values
 

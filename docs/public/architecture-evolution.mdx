@@ -46,22 +46,15 @@ const ThemeProvider = ({ children }) => {
 
 **Why It Matters**: Users working in different lighting conditions can now customize the viewer for comfort.
 
-### v5.1.1: PM2 Windows Fix (November 2025)
+### v5.1.1: Worker Startup Fix (November 2025) - Now Deprecated
 
-**The Problem**: PM2 startup failed on Windows with ENOENT error
+**Note**: This section describes a historical PM2-based approach that has been replaced with Bun in later versions.
 
-**Root Cause**:
-```typescript
-// ❌ Failed on Windows - PM2 not in PATH
-execSync('pm2 start ecosystem.config.cjs');
-```
+**The Problem**: Worker startup failed on Windows with ENOENT error when using PM2
 
-**The Fix**:
-```typescript
-// ✅ Use full path to PM2 binary
-const PM2_PATH = join(PLUGIN_ROOT, 'node_modules', '.bin', 'pm2');
-execSync(`"${PM2_PATH}" start "${ECOSYSTEM_CONFIG}"`);
-```
+**Historical Solution**: Used full path to PM2 binary instead of relying on PATH
+
+**Current Approach**: The project now uses Bun for process management, which provides better cross-platform compatibility and eliminates these PATH-related issues.
 
 **Impact**: Cross-platform compatibility restored, Windows users can now use claude-mem without issues.
 
@@ -158,7 +151,7 @@ if (currentVersion !== installedVersion) {
 **Cached Check Logic**:
 1. Does `node_modules` exist?
 2. Does `.install-version` match `package.json` version?
-3. Is `better-sqlite3` present?
+3. Is `better-sqlite3` present? (Legacy: now uses bun:sqlite which requires no installation)
 
 **Impact**:
 - SessionStart hook: 2-5 seconds → 10ms (99.5% faster)
@@ -203,7 +196,7 @@ async function ensureWorkerHealthy() {
 **Key Fixes**:
 - Fixed race conditions in observation queue processing
 - Improved error handling in SDK worker
-- Better cleanup of stale PM2 processes
+- Better cleanup of stale worker processes
 - Enhanced logging for debugging
 
 ### v5.0.0: Hybrid Search Architecture (October 2025)
@@ -520,7 +513,7 @@ const response = query({
 
     **Key change from v3:**
     - ✅ Stores raw prompts for search
-    - ✅ Auto-starts PM2 worker
+    - ✅ Auto-starts worker service
   </Tab>
 
   <Tab title="PostToolUse">

@@ -1,4 +1,4 @@
-import Database from 'better-sqlite3';
+import { Database } from 'bun:sqlite';
 import { DATA_DIR, DB_PATH, ensureDir } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import {
@@ -18,16 +18,16 @@ import {
  * Provides simple, synchronous CRUD operations for session-based memory
  */
 export class SessionStore {
-  public db: Database.Database;
+  public db: Database;
 
   constructor() {
     ensureDir(DATA_DIR);
     this.db = new Database(DB_PATH);
 
     // Ensure optimized settings
-    this.db.pragma('journal_mode = WAL');
-    this.db.pragma('synchronous = NORMAL');
-    this.db.pragma('foreign_keys = ON');
+    this.db.run('PRAGMA journal_mode = WAL');
+    this.db.run('PRAGMA synchronous = NORMAL');
+    this.db.run('PRAGMA foreign_keys = ON');
 
     // Initialize schema if needed (fresh database)
     this.initializeSchema();
@@ -49,7 +49,7 @@ export class SessionStore {
   private initializeSchema(): void {
     try {
       // Create schema_versions table if it doesn't exist
-      this.db.exec(`
+      this.db.run(`
         CREATE TABLE IF NOT EXISTS schema_versions (
           id INTEGER PRIMARY KEY,
           version INTEGER UNIQUE NOT NULL,
@@ -67,7 +67,7 @@ export class SessionStore {
         console.error('[SessionStore] Initializing fresh database with migration004...');
 
         // Migration004: SDK agent architecture tables
-        this.db.exec(`
+        this.db.run(`
           CREATE TABLE IF NOT EXISTS sdk_sessions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             claude_session_id TEXT UNIQUE NOT NULL,
@@ -146,11 +146,11 @@ export class SessionStore {
       if (applied) return;
 
       // Check if column exists
-      const tableInfo = this.db.pragma('table_info(sdk_sessions)') as TableColumnInfo[];
+      const tableInfo = this.db.query('PRAGMA table_info(sdk_sessions)').all() as TableColumnInfo[];
       const hasWorkerPort = tableInfo.some(col => col.name === 'worker_port');
 
       if (!hasWorkerPort) {
-        this.db.exec('ALTER TABLE sdk_sessions ADD COLUMN worker_port INTEGER');
+        this.db.run('ALTER TABLE sdk_sessions ADD COLUMN worker_port INTEGER');
         console.error('[SessionStore] Added worker_port column to sdk_sessions table');
       }
 
@@ -171,29 +171,29 @@ export class SessionStore {
       if (applied) return;
 
       // Check sdk_sessions for prompt_counter
-      const sessionsInfo = this.db.pragma('table_info(sdk_sessions)') as TableColumnInfo[];
+      const sessionsInfo = this.db.query('PRAGMA table_info(sdk_sessions)').all() as TableColumnInfo[];
       const hasPromptCounter = sessionsInfo.some(col => col.name === 'prompt_counter');
 
       if (!hasPromptCounter) {
-        this.db.exec('ALTER TABLE sdk_sessions ADD COLUMN prompt_counter INTEGER DEFAULT 0');
+        this.db.run('ALTER TABLE sdk_sessions ADD COLUMN prompt_counter INTEGER DEFAULT 0');
         console.error('[SessionStore] Added prompt_counter column to sdk_sessions table');
       }
 
       // Check observations for prompt_number
-      const observationsInfo = this.db.pragma('table_info(observations)') as TableColumnInfo[];
+      const observationsInfo = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
       const obsHasPromptNumber = observationsInfo.some(col => col.name === 'prompt_number');
 
       if (!obsHasPromptNumber) {
-        this.db.exec('ALTER TABLE observations ADD COLUMN prompt_number INTEGER');
+        this.db.run('ALTER TABLE observations ADD COLUMN prompt_number INTEGER');
         console.error('[SessionStore] Added prompt_number column to observations table');
       }
 
       // Check session_summaries for prompt_number
-      const summariesInfo = this.db.pragma('table_info(session_summaries)') as TableColumnInfo[];
+      const summariesInfo = this.db.query('PRAGMA table_info(session_summaries)').all() as TableColumnInfo[];
       const sumHasPromptNumber = summariesInfo.some(col => col.name === 'prompt_number');
 
       if (!sumHasPromptNumber) {
-        this.db.exec('ALTER TABLE session_summaries ADD COLUMN prompt_number INTEGER');
+        this.db.run('ALTER TABLE session_summaries ADD COLUMN prompt_number INTEGER');
         console.error('[SessionStore] Added prompt_number column to session_summaries table');
       }
 
@@ -214,7 +214,7 @@ export class SessionStore {
       if (applied) return;
 
       // Check if UNIQUE constraint exists
-      const summariesIndexes = this.db.pragma('index_list(session_summaries)') as IndexInfo[];
+      const summariesIndexes = this.db.query('PRAGMA index_list(session_summaries)').all() as IndexInfo[];
       const hasUniqueConstraint = summariesIndexes.some(idx => idx.unique === 1);
 
       if (!hasUniqueConstraint) {
@@ -226,11 +226,11 @@ export class SessionStore {
       console.error('[SessionStore] Removing UNIQUE constraint from session_summaries.sdk_session_id...');
 
       // Begin transaction
-      this.db.exec('BEGIN TRANSACTION');
+      this.db.run('BEGIN TRANSACTION');
 
       try {
         // Create new table without UNIQUE constraint
-        this.db.exec(`
+        this.db.run(`
           CREATE TABLE session_summaries_new (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             sdk_session_id TEXT NOT NULL,
@@ -251,7 +251,7 @@ export class SessionStore {
         `);
 
         // Copy data from old table
-        this.db.exec(`
+        this.db.run(`
           INSERT INTO session_summaries_new
           SELECT id, sdk_session_id, project, request, investigated, learned,
                  completed, next_steps, files_read, files_edited, notes,
@@ -260,20 +260,20 @@ export class SessionStore {
         `);
 
         // Drop old table
-        this.db.exec('DROP TABLE session_summaries');
+        this.db.run('DROP TABLE session_summaries');
 
         // Rename new table
-        this.db.exec('ALTER TABLE session_summaries_new RENAME TO session_summaries');
+        this.db.run('ALTER TABLE session_summaries_new RENAME TO session_summaries');
 
         // Recreate indexes
-        this.db.exec(`
+        this.db.run(`
           CREATE INDEX idx_session_summaries_sdk_session ON session_summaries(sdk_session_id);
           CREATE INDEX idx_session_summaries_project ON session_summaries(project);
           CREATE INDEX idx_session_summaries_created ON session_summaries(created_at_epoch DESC);
         `);
 
         // Commit transaction
-        this.db.exec('COMMIT');
+        this.db.run('COMMIT');
 
         // Record migration
         this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(7, new Date().toISOString());
@@ -281,7 +281,7 @@ export class SessionStore {
         console.error('[SessionStore] Successfully removed UNIQUE constraint from session_summaries.sdk_session_id');
       } catch (error: any) {
         // Rollback on error
-        this.db.exec('ROLLBACK');
+        this.db.run('ROLLBACK');
         throw error;
       }
     } catch (error: any) {
@@ -299,7 +299,7 @@ export class SessionStore {
       if (applied) return;
 
       // Check if new fields already exist
-      const tableInfo = this.db.pragma('table_info(observations)') as TableColumnInfo[];
+      const tableInfo = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
       const hasTitle = tableInfo.some(col => col.name === 'title');
 
       if (hasTitle) {
@@ -311,7 +311,7 @@ export class SessionStore {
       console.error('[SessionStore] Adding hierarchical fields to observations table...');
 
       // Add new columns
-      this.db.exec(`
+      this.db.run(`
         ALTER TABLE observations ADD COLUMN title TEXT;
         ALTER TABLE observations ADD COLUMN subtitle TEXT;
         ALTER TABLE observations ADD COLUMN facts TEXT;
@@ -341,7 +341,7 @@ export class SessionStore {
       if (applied) return;
 
       // Check if text column is already nullable
-      const tableInfo = this.db.pragma('table_info(observations)') as TableColumnInfo[];
+      const tableInfo = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
       const textColumn = tableInfo.find(col => col.name === 'text');
 
       if (!textColumn || textColumn.notnull === 0) {
@@ -353,11 +353,11 @@ export class SessionStore {
       console.error('[SessionStore] Making observations.text nullable...');
 
       // Begin transaction
-      this.db.exec('BEGIN TRANSACTION');
+      this.db.run('BEGIN TRANSACTION');
 
       try {
         // Create new table with text as nullable
-        this.db.exec(`
+        this.db.run(`
           CREATE TABLE observations_new (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             sdk_session_id TEXT NOT NULL,
@@ -379,7 +379,7 @@ export class SessionStore {
         `);
 
         // Copy data from old table (all existing columns)
-        this.db.exec(`
+        this.db.run(`
           INSERT INTO observations_new
           SELECT id, sdk_session_id, project, text, type, title, subtitle, facts,
                  narrative, concepts, files_read, files_modified, prompt_number,
@@ -388,13 +388,13 @@ export class SessionStore {
         `);
 
         // Drop old table
-        this.db.exec('DROP TABLE observations');
+        this.db.run('DROP TABLE observations');
 
         // Rename new table
-        this.db.exec('ALTER TABLE observations_new RENAME TO observations');
+        this.db.run('ALTER TABLE observations_new RENAME TO observations');
 
         // Recreate indexes
-        this.db.exec(`
+        this.db.run(`
           CREATE INDEX idx_observations_sdk_session ON observations(sdk_session_id);
           CREATE INDEX idx_observations_project ON observations(project);
           CREATE INDEX idx_observations_type ON observations(type);
@@ -402,7 +402,7 @@ export class SessionStore {
         `);
 
         // Commit transaction
-        this.db.exec('COMMIT');
+        this.db.run('COMMIT');
 
         // Record migration
         this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(9, new Date().toISOString());
@@ -410,7 +410,7 @@ export class SessionStore {
         console.error('[SessionStore] Successfully made observations.text nullable');
       } catch (error: any) {
         // Rollback on error
-        this.db.exec('ROLLBACK');
+        this.db.run('ROLLBACK');
         throw error;
       }
     } catch (error: any) {
@@ -428,7 +428,7 @@ export class SessionStore {
       if (applied) return;
 
       // Check if table already exists
-      const tableInfo = this.db.pragma('table_info(user_prompts)') as TableColumnInfo[];
+      const tableInfo = this.db.query('PRAGMA table_info(user_prompts)').all() as TableColumnInfo[];
       if (tableInfo.length > 0) {
         // Already migrated
         this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(10, new Date().toISOString());
@@ -438,11 +438,11 @@ export class SessionStore {
       console.error('[SessionStore] Creating user_prompts table with FTS5 support...');
 
       // Begin transaction
-      this.db.exec('BEGIN TRANSACTION');
+      this.db.run('BEGIN TRANSACTION');
 
       try {
         // Create main table (using claude_session_id since sdk_session_id is set asynchronously by worker)
-        this.db.exec(`
+        this.db.run(`
           CREATE TABLE user_prompts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             claude_session_id TEXT NOT NULL,
@@ -460,7 +460,7 @@ export class SessionStore {
         `);
 
         // Create FTS5 virtual table
-        this.db.exec(`
+        this.db.run(`
           CREATE VIRTUAL TABLE user_prompts_fts USING fts5(
             prompt_text,
             content='user_prompts',
@@ -469,7 +469,7 @@ export class SessionStore {
         `);
 
         // Create triggers to sync FTS5
-        this.db.exec(`
+        this.db.run(`
           CREATE TRIGGER user_prompts_ai AFTER INSERT ON user_prompts BEGIN
             INSERT INTO user_prompts_fts(rowid, prompt_text)
             VALUES (new.id, new.prompt_text);
@@ -489,7 +489,7 @@ export class SessionStore {
         `);
 
         // Commit transaction
-        this.db.exec('COMMIT');
+        this.db.run('COMMIT');
 
         // Record migration
         this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(10, new Date().toISOString());
@@ -497,7 +497,7 @@ export class SessionStore {
         console.error('[SessionStore] Successfully created user_prompts table with FTS5 support');
       } catch (error: any) {
         // Rollback on error
-        this.db.exec('ROLLBACK');
+        this.db.run('ROLLBACK');
         throw error;
       }
     } catch (error: any) {
@@ -517,20 +517,20 @@ export class SessionStore {
       if (applied) return;
 
       // Check if discovery_tokens column exists in observations table
-      const observationsInfo = this.db.pragma('table_info(observations)') as TableColumnInfo[];
+      const observationsInfo = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
       const obsHasDiscoveryTokens = observationsInfo.some(col => col.name === 'discovery_tokens');
 
       if (!obsHasDiscoveryTokens) {
-        this.db.exec('ALTER TABLE observations ADD COLUMN discovery_tokens INTEGER DEFAULT 0');
+        this.db.run('ALTER TABLE observations ADD COLUMN discovery_tokens INTEGER DEFAULT 0');
         console.error('[SessionStore] Added discovery_tokens column to observations table');
       }
 
       // Check if discovery_tokens column exists in session_summaries table
-      const summariesInfo = this.db.pragma('table_info(session_summaries)') as TableColumnInfo[];
+      const summariesInfo = this.db.query('PRAGMA table_info(session_summaries)').all() as TableColumnInfo[];
       const sumHasDiscoveryTokens = summariesInfo.some(col => col.name === 'discovery_tokens');
 
       if (!sumHasDiscoveryTokens) {
-        this.db.exec('ALTER TABLE session_summaries ADD COLUMN discovery_tokens INTEGER DEFAULT 0');
+        this.db.run('ALTER TABLE session_summaries ADD COLUMN discovery_tokens INTEGER DEFAULT 0');
         console.error('[SessionStore] Added discovery_tokens column to session_summaries table');
       }
 

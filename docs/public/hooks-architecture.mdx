@@ -85,9 +85,8 @@ Claude-Mem uses 6 lifecycle hook scripts across 5 lifecycle events, plus 1 pre-h
 2. Only runs `npm install` when necessary:
    - First-time installation
    - Version changed in package.json
-   - Critical dependency missing (better-sqlite3)
 3. Provides Windows-specific error messages
-4. Starts PM2 worker service
+4. Starts Bun worker service
 
 **Configuration:**
 ```json
@@ -215,7 +214,7 @@ Claude-Mem uses 6 lifecycle hook scripts across 5 lifecycle events, plus 1 pre-h
 1. Reads user prompt and session ID from stdin
 2. Creates new session record in SQLite
 3. Saves raw user prompt for full-text search (v4.2.0+)
-4. Starts PM2 worker service if not running
+4. Starts Bun worker service if not running
 5. Returns immediately (non-blocking)
 
 **Configuration:**
@@ -512,49 +511,33 @@ sequenceDiagram
 └─────────────────────────────────────────────────────────┘
 ```
 
-### PM2 Process Management
+### Bun Process Management
 
-**Technology:** PM2 (process manager for Node.js)
+**Technology:** Bun (JavaScript runtime and process manager)
 
-**Why PM2:**
+**Why Bun:**
 - Auto-restart on failure
-- Log management
-- Process monitoring
+- Fast startup and low memory footprint
+- Built-in TypeScript support
 - Cross-platform (works on macOS, Linux, Windows)
-- No systemd/launchd needed
-
-**Configuration:**
-```javascript
-// ecosystem.config.cjs
-module.exports = {
-  apps: [{
-    name: 'claude-mem-worker',
-    script: './plugin/scripts/worker-service.cjs',
-    instances: 1,
-    autorestart: true,
-    watch: false,
-    max_memory_restart: '500M',
-    env: {
-      NODE_ENV: 'production',
-      CLAUDE_MEM_WORKER_PORT: 37777
-    }
-  }]
-};
-```
+- No separate process manager needed
 
 **Worker lifecycle:**
 ```bash
-# Started by new-hook (if not running)
-pm2 start ecosystem.config.cjs
+# Started by hooks automatically (if not running)
+npm run worker:start
 
 # Status check
-pm2 status claude-mem-worker
+npm run worker:status
 
 # View logs
-pm2 logs claude-mem-worker
+npm run worker:logs
 
 # Restart
-pm2 restart claude-mem-worker
+npm run worker:restart
+
+# Stop
+npm run worker:stop
 ```
 
 ### Worker HTTP API
@@ -632,7 +615,7 @@ try {
 
 **Failure modes:**
 - Database locked → Skip observation, log error
-- Worker crashed → Auto-restart via PM2
+- Worker crashed → Auto-restart via Bun
 - Network issue → Retry with exponential backoff
 - Disk full → Warn user, disable memory
 
@@ -708,8 +691,8 @@ claude --debug
     **Debugging:**
     1. Check database: `sqlite3 ~/.claude-mem/claude-mem.db "SELECT * FROM observation_queue"`
     2. Verify session exists: `SELECT * FROM sdk_sessions`
-    3. Check worker status: `pm2 status`
-    4. View worker logs: `pm2 logs claude-mem-worker`
+    3. Check worker status: `npm run worker:status`
+    4. View worker logs: `npm run worker:logs`
   </Accordion>
 </AccordionGroup>
 
@@ -761,7 +744,7 @@ claude --debug
 **Why smart-install is sometimes slow:**
 - First-time: Full npm install (2-5 seconds)
 - Cached: Version check only (~10ms)
-- Version change: Full npm install + PM2 restart
+- Version change: Full npm install + worker restart
 
 **Optimization (v5.0.3):**
 - Version caching with `.install-version` marker

@@ -6,9 +6,10 @@
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { sessionSummaryScenario, sessionScenario } from '../helpers/scenarios.js';
+import { getWorkerPort } from '../../src/shared/worker-utils.js';
 
 describe('Session Summary (Stop)', () => {
-  const WORKER_PORT = 37777;
+  const WORKER_PORT = getWorkerPort();
 
   beforeEach(() => {
     vi.clearAllMocks();

@@ -335,7 +335,7 @@ export async function generateContext(input?: ContextInput, useColors: boolean =
         priorAssistantMessage = messages.assistantMessage;
       }
     } catch (error) {
-      // Ignore
+      // Expected: Transcript file may not exist or be readable
     }
   }
 

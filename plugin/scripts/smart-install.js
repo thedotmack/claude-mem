@@ -17,7 +17,6 @@ import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { execSync } from 'child_process';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
-import { createRequire } from 'module';
 import { fileURLToPath } from 'url';
 
 // Determine the directory where THIS script is running from
@@ -41,7 +40,6 @@ const PLUGIN_ROOT = IS_RUNNING_FROM_CACHE
 const PACKAGE_JSON_PATH = join(PLUGIN_ROOT, 'package.json');
 const VERSION_MARKER_PATH = join(PLUGIN_ROOT, '.install-version');
 const NODE_MODULES_PATH = join(PLUGIN_ROOT, 'node_modules');
-const BETTER_SQLITE3_PATH = join(NODE_MODULES_PATH, 'better-sqlite3');
 
 // Colors for output
 const colors = {
@@ -126,12 +124,6 @@ function needsInstall() {
     return true;
   }
 
-  // Check if better-sqlite3 is installed
-  if (!existsSync(BETTER_SQLITE3_PATH)) {
-    log('📦 better-sqlite3 missing - reinstalling', colors.cyan);
-    return true;
-  }
-
   // Check version marker
   const currentPackageVersion = getPackageVersion();
   const currentNodeVersion = getNodeVersion();
@@ -165,101 +157,6 @@ function needsInstall() {
   return false;
 }
 
-/**
- * Verify that better-sqlite3 native module loads correctly
- * This catches ABI mismatches and corrupted builds
- */
-async function verifyNativeModules() {
-  try {
-    log('🔍 Verifying native modules...', colors.dim);
-
-    // Use createRequire() to resolve from PLUGIN_ROOT's node_modules
-    const require = createRequire(join(PLUGIN_ROOT, 'package.json'));
-    const Database = require('better-sqlite3');
-
-    // Try to create a test in-memory database
-    const db = new Database(':memory:');
-
-    // Run a simple query to ensure it works
-    const result = db.prepare('SELECT 1 + 1 as result').get();
-
-    // Clean up
-    db.close();
-
-    if (result.result !== 2) {
-      throw new Error('SQLite math check failed');
-    }
-
-    log('✓ Native modules verified', colors.dim);
-    return true;
-
-  } catch (error) {
-    if (error.code === 'ERR_DLOPEN_FAILED') {
-      log('⚠️  Native module ABI mismatch detected', colors.yellow);
-      return false;
-    }
-
-    // Other errors are unexpected - log and fail
-    log(`❌ Native module verification failed: ${error.message}`, colors.red);
-    return false;
-  }
-}
-
-function getWindowsErrorHelp(errorOutput) {
-  // Detect Python version at runtime
-  let pythonStatus = '   Python not detected or version unknown';
-  try {
-    const pythonVersion = execSync('python --version', { encoding: 'utf-8', stdio: 'pipe' }).trim();
-    const versionMatch = pythonVersion.match(/Python\s+([\d.]+)/);
-    if (versionMatch) {
-      pythonStatus = `   You have ${versionMatch[0]} installed ✓`;
-    }
-  } catch (error) {
-    // Python not available or failed to detect - use default message
-  }
-
-  const help = [
-    '',
-    '╔══════════════════════════════════════════════════════════════════════╗',
-    '║                    Windows Installation Help                        ║',
-    '╚══════════════════════════════════════════════════════════════════════╝',
-    '',
-    '📋 better-sqlite3 requires build tools to compile native modules.',
-    '',
-    '🔧 Option 1: Install Visual Studio Build Tools (Recommended)',
-    '   1. Download: https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022',
-    '   2. Install "Desktop development with C++"',
-    '   3. Restart your terminal',
-    '   4. Try again',
-    '',
-    '🔧 Option 2: Install via npm (automated)',
-    '   Run as Administrator:',
-    '   npm install --global windows-build-tools',
-    '',
-    '🐍 Python Requirement:',
-    '   Python 3.6+ is required.',
-    pythonStatus,
-    '',
-  ];
-
-  // Check for specific error patterns
-  if (errorOutput.includes('MSBuild.exe')) {
-    help.push('❌ MSBuild not found - install Visual Studio Build Tools');
-  }
-  if (errorOutput.includes('MSVS')) {
-    help.push('❌ Visual Studio not detected - install Build Tools');
-  }
-  if (errorOutput.includes('permission') || errorOutput.includes('EPERM')) {
-    help.push('❌ Permission denied - try running as Administrator');
-  }
-
-  help.push('');
-  help.push('📖 Full documentation: https://github.com/WiseLibs/better-sqlite3/blob/master/docs/troubleshooting.md');
-  help.push('');
-
-  return help.join('\n');
-}
-
 async function runNpmInstall() {
   const isWindows = process.platform === 'win32';
 
@@ -287,17 +184,6 @@ async function runNpmInstall() {
         encoding: 'utf-8',
       });
 
-      // Verify better-sqlite3 was installed
-      if (!existsSync(BETTER_SQLITE3_PATH)) {
-        throw new Error('better-sqlite3 installation verification failed');
-      }
-
-      // Verify native modules actually work
-      const nativeModulesWork = await verifyNativeModules();
-      if (!nativeModulesWork) {
-        throw new Error('Native modules failed to load after install');
-      }
-
       const packageVersion = getPackageVersion();
       const nodeVersion = getNodeVersion();
       setInstalledVersion(packageVersion, nodeVersion);
@@ -320,11 +206,6 @@ async function runNpmInstall() {
   log('', colors.red);
   log('❌ Installation failed after retrying!', colors.bright);
   log('', colors.reset);
-
-  // Provide Windows-specific help
-  if (isWindows && lastError && lastError.message && lastError.message.includes('better-sqlite3')) {
-    log(getWindowsErrorHelp(lastError.message), colors.yellow);
-  }
 
   // Show generic error info with troubleshooting steps
   if (lastError) {
@@ -370,21 +251,6 @@ async function main() {
         log('⚠️  Installation failed', colors.yellow);
         log('', colors.reset);
         process.exit(1);
-      }
-    } else {
-      // Even if install not needed, verify native modules work
-      const nativeModulesWork = await verifyNativeModules();
-
-      if (!nativeModulesWork) {
-        log('📦 Native modules need rebuild - reinstalling', colors.cyan);
-        const installSuccess = await runNpmInstall();
-
-        if (!installSuccess) {
-          log('', colors.red);
-          log('⚠️  Native module rebuild failed', colors.yellow);
-          log('', colors.reset);
-          process.exit(1);
-        }
       }
     }
 
