@@ -24,18 +24,56 @@ function isBunInstalled() {
       stdio: ['pipe', 'pipe', 'pipe'],
       shell: IS_WINDOWS
     });
-    return result.status === 0;
+    if (result.status === 0) return true;
   } catch {
-    return false;
+    // PATH check failed, try common installation paths
   }
+
+  // Check common installation paths (handles fresh installs before PATH reload)
+  const bunPaths = IS_WINDOWS
+    ? [join(homedir(), '.bun', 'bin', 'bun.exe')]
+    : [join(homedir(), '.bun', 'bin', 'bun'), '/usr/local/bin/bun'];
+
+  return bunPaths.some(existsSync);
+}
+
+/**
+ * Get the Bun executable path (from PATH or common install locations)
+ */
+function getBunPath() {
+  // Try PATH first
+  try {
+    const result = spawnSync('bun', ['--version'], {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      shell: IS_WINDOWS
+    });
+    if (result.status === 0) return 'bun';
+  } catch {
+    // Not in PATH
+  }
+
+  // Check common installation paths
+  const bunPaths = IS_WINDOWS
+    ? [join(homedir(), '.bun', 'bin', 'bun.exe')]
+    : [join(homedir(), '.bun', 'bin', 'bun'), '/usr/local/bin/bun'];
+
+  for (const bunPath of bunPaths) {
+    if (existsSync(bunPath)) return bunPath;
+  }
+
+  return null;
 }
 
 /**
  * Get Bun version if installed
  */
 function getBunVersion() {
+  const bunPath = getBunPath();
+  if (!bunPath) return null;
+
   try {
-    const result = spawnSync('bun', ['--version'], {
+    const result = spawnSync(bunPath, ['--version'], {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
       shell: IS_WINDOWS
@@ -56,10 +94,17 @@ function isUvInstalled() {
       stdio: ['pipe', 'pipe', 'pipe'],
       shell: IS_WINDOWS
     });
-    return result.status === 0;
+    if (result.status === 0) return true;
   } catch {
-    return false;
+    // PATH check failed, try common installation paths
   }
+
+  // Check common installation paths (handles fresh installs before PATH reload)
+  const uvPaths = IS_WINDOWS
+    ? [join(homedir(), '.local', 'bin', 'uv.exe'), join(homedir(), '.cargo', 'bin', 'uv.exe')]
+    : [join(homedir(), '.local', 'bin', 'uv'), join(homedir(), '.cargo', 'bin', 'uv'), '/usr/local/bin/uv'];
+
+  return uvPaths.some(existsSync);
 }
 
 /**
@@ -226,12 +271,21 @@ function needsInstall() {
  * Install dependencies using Bun
  */
 function installDeps() {
+  const bunPath = getBunPath();
+  if (!bunPath) {
+    throw new Error('Bun executable not found');
+  }
+
   console.error('📦 Installing dependencies with Bun...');
+
+  // Quote path for Windows paths with spaces
+  const bunCmd = IS_WINDOWS && bunPath.includes(' ') ? `"${bunPath}"` : bunPath;
+
   try {
-    execSync('bun install', { cwd: ROOT, stdio: 'inherit', shell: IS_WINDOWS });
+    execSync(`${bunCmd} install`, { cwd: ROOT, stdio: 'inherit', shell: IS_WINDOWS });
   } catch {
     // Retry with force flag
-    execSync('bun install --force', { cwd: ROOT, stdio: 'inherit', shell: IS_WINDOWS });
+    execSync(`${bunCmd} install --force`, { cwd: ROOT, stdio: 'inherit', shell: IS_WINDOWS });
   }
 
   // Write version marker
