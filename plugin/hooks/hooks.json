@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/scripts/smart-install.js\" && bun \"${CLAUDE_PLUGIN_ROOT}/scripts/context-hook.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/smart-install.js\" && bun \"${CLAUDE_PLUGIN_ROOT}/scripts/context-hook.js\"",
             "timeout": 300
           },
           {

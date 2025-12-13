@@ -1,272 +1,281 @@
 #!/usr/bin/env node
-
 /**
  * Smart Install Script for claude-mem
  *
- * Features:
- * - Detects execution context (cache vs marketplace directory)
- * - Installs dependencies where the hooks actually run (cache directory)
- * - Only runs npm install when necessary (version change or missing deps)
- * - Caches installation state with version marker
- * - Provides helpful Windows-specific error messages
- * - Cross-platform compatible (pure Node.js)
- * - Fast when already installed (just version check)
+ * Ensures Bun runtime and uv (Python package manager) are installed
+ * (auto-installs if missing) and handles dependency installation when needed.
  */
-
 import { existsSync, readFileSync, writeFileSync } from 'fs';
-import { execSync } from 'child_process';
-import { join, dirname } from 'path';
+import { execSync, spawnSync } from 'child_process';
+import { join } from 'path';
 import { homedir } from 'os';
-import { fileURLToPath } from 'url';
 
-// Determine the directory where THIS script is running from
-// This could be either:
-// 1. Cache: ~/.claude/plugins/cache/thedotmack/claude-mem/X.X.X/scripts/
-// 2. Marketplace: ~/.claude/plugins/marketplaces/thedotmack/plugin/scripts/
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const SCRIPT_ROOT = dirname(__dirname); // Parent of scripts/ directory
+const ROOT = join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
+const MARKER = join(ROOT, '.install-version');
+const IS_WINDOWS = process.platform === 'win32';
 
-// Detect if running from cache directory (has version number in path)
-const CACHE_PATTERN = /[/\\]cache[/\\]thedotmack[/\\]claude-mem[/\\]\d+\.\d+\.\d+/;
-const IS_RUNNING_FROM_CACHE = CACHE_PATTERN.test(__dirname);
-
-// Set PLUGIN_ROOT based on where we're running
-// If from cache, install dependencies IN the cache directory (where hooks run)
-// If from marketplace, use marketplace directory
-const PLUGIN_ROOT = IS_RUNNING_FROM_CACHE
-  ? SCRIPT_ROOT  // Cache directory (e.g., ~/.claude/plugins/cache/thedotmack/claude-mem/7.0.3/)
-  : join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
-
-const PACKAGE_JSON_PATH = join(PLUGIN_ROOT, 'package.json');
-const VERSION_MARKER_PATH = join(PLUGIN_ROOT, '.install-version');
-const NODE_MODULES_PATH = join(PLUGIN_ROOT, 'node_modules');
-
-// Colors for output
-const colors = {
-  reset: '\x1b[0m',
-  bright: '\x1b[1m',
-  green: '\x1b[32m',
-  yellow: '\x1b[33m',
-  red: '\x1b[31m',
-  cyan: '\x1b[36m',
-  dim: '\x1b[2m',
-};
-
-function log(message, color = colors.reset) {
-  console.error(`${color}${message}${colors.reset}`);
+/**
+ * Check if Bun is installed and accessible
+ */
+function isBunInstalled() {
+  try {
+    const result = spawnSync('bun', ['--version'], {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      shell: IS_WINDOWS
+    });
+    return result.status === 0;
+  } catch {
+    return false;
+  }
 }
 
-function getPackageVersion() {
+/**
+ * Get Bun version if installed
+ */
+function getBunVersion() {
   try {
-    const packageJson = JSON.parse(readFileSync(PACKAGE_JSON_PATH, 'utf-8'));
-    return packageJson.version;
-  } catch (error) {
-    log(`⚠️  Failed to read package.json: ${error.message}`, colors.yellow);
+    const result = spawnSync('bun', ['--version'], {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      shell: IS_WINDOWS
+    });
+    return result.status === 0 ? result.stdout.trim() : null;
+  } catch {
     return null;
   }
 }
 
-function getNodeVersion() {
-  return process.version; // e.g., "v22.21.1"
-}
-
-function getInstalledVersion() {
+/**
+ * Check if uv is installed and accessible
+ */
+function isUvInstalled() {
   try {
-    if (existsSync(VERSION_MARKER_PATH)) {
-      const content = readFileSync(VERSION_MARKER_PATH, 'utf-8').trim();
-
-      // Try parsing as JSON (new format)
-      try {
-        const marker = JSON.parse(content);
-        return {
-          packageVersion: marker.packageVersion,
-          nodeVersion: marker.nodeVersion,
-          installedAt: marker.installedAt
-        };
-      } catch {
-        // Fallback: old format (plain text version string)
-        return {
-          packageVersion: content,
-          nodeVersion: null, // Unknown
-          installedAt: null
-        };
-      }
-    }
-  } catch (error) {
-    // Marker doesn't exist or can't be read
+    const result = spawnSync('uv', ['--version'], {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      shell: IS_WINDOWS
+    });
+    return result.status === 0;
+  } catch {
+    return false;
   }
-  return null;
 }
 
-function setInstalledVersion(packageVersion, nodeVersion) {
+/**
+ * Get uv version if installed
+ */
+function getUvVersion() {
   try {
-    const marker = {
-      packageVersion,
-      nodeVersion,
-      installedAt: new Date().toISOString()
-    };
-    writeFileSync(VERSION_MARKER_PATH, JSON.stringify(marker, null, 2), 'utf-8');
-  } catch (error) {
-    log(`⚠️  Failed to write version marker: ${error.message}`, colors.yellow);
+    const result = spawnSync('uv', ['--version'], {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      shell: IS_WINDOWS
+    });
+    return result.status === 0 ? result.stdout.trim() : null;
+  } catch {
+    return null;
   }
 }
 
-function needsInstall() {
-  // Check if package.json exists (required for npm install)
-  if (!existsSync(PACKAGE_JSON_PATH)) {
-    log(`⚠️  No package.json found at ${PLUGIN_ROOT}`, colors.yellow);
-    return false; // Can't install without package.json
-  }
+/**
+ * Install Bun automatically based on platform
+ */
+function installBun() {
+  console.error('🔧 Bun not found. Installing Bun runtime...');
 
-  // Check if node_modules exists
-  if (!existsSync(NODE_MODULES_PATH)) {
-    log('📦 Dependencies not found - first time setup', colors.cyan);
-    return true;
-  }
-
-  // Check version marker
-  const currentPackageVersion = getPackageVersion();
-  const currentNodeVersion = getNodeVersion();
-  const installed = getInstalledVersion();
-
-  if (!installed) {
-    log('📦 No version marker found - installing', colors.cyan);
-    return true;
-  }
-
-  // Check package version
-  if (currentPackageVersion !== installed.packageVersion) {
-    log(`📦 Version changed (${installed.packageVersion} → ${currentPackageVersion}) - updating`, colors.cyan);
-    return true;
-  }
-
-  // Check Node.js version
-  if (installed.nodeVersion && currentNodeVersion !== installed.nodeVersion) {
-    log(`📦 Node.js version changed (${installed.nodeVersion} → ${currentNodeVersion}) - rebuilding native modules`, colors.cyan);
-    return true;
-  }
-
-  // If old format (no nodeVersion), assume needs install
-  if (!installed.nodeVersion) {
-    log('📦 Old version marker format - updating', colors.cyan);
-    return true;
-  }
-
-  // All good - no install needed
-  log(`✓ Dependencies already installed (v${currentPackageVersion})`, colors.dim);
-  return false;
-}
-
-async function runNpmInstall() {
-  const isWindows = process.platform === 'win32';
-
-  log('', colors.cyan);
-  log(`🔨 Installing dependencies in ${IS_RUNNING_FROM_CACHE ? 'cache' : 'marketplace'}...`, colors.bright);
-  log(`   ${PLUGIN_ROOT}`, colors.dim);
-  log('', colors.reset);
-
-  // Try normal install first, then retry with force if it fails
-  const strategies = [
-    { command: 'npm install', label: 'normal' },
-    { command: 'npm install --force', label: 'with force flag' },
-  ];
-
-  let lastError = null;
-
-  for (const { command, label } of strategies) {
-    try {
-      log(`Attempting install ${label}...`, colors.dim);
-
-      // Run npm install silently
-      execSync(command, {
-        cwd: PLUGIN_ROOT,
-        stdio: 'pipe', // Silent output unless error
-        encoding: 'utf-8',
+  try {
+    if (IS_WINDOWS) {
+      // Windows: Use PowerShell installer
+      console.error('   Installing via PowerShell...');
+      execSync('powershell -c "irm bun.sh/install.ps1 | iex"', {
+        stdio: 'inherit',
+        shell: true
       });
-
-      const packageVersion = getPackageVersion();
-      const nodeVersion = getNodeVersion();
-      setInstalledVersion(packageVersion, nodeVersion);
-
-      log('', colors.green);
-      log('✅ Dependencies installed successfully!', colors.bright);
-      log(`   Package version: ${packageVersion}`, colors.dim);
-      log(`   Node.js version: ${nodeVersion}`, colors.dim);
-      log('', colors.reset);
-
-      return true;
-
-    } catch (error) {
-      lastError = error;
-      // Continue to next strategy
-    }
-  }
-
-  // All strategies failed - show error
-  log('', colors.red);
-  log('❌ Installation failed after retrying!', colors.bright);
-  log('', colors.reset);
-
-  // Show generic error info with troubleshooting steps
-  if (lastError) {
-    if (lastError.stderr) {
-      log('Error output:', colors.dim);
-      log(lastError.stderr.toString(), colors.red);
-    } else if (lastError.message) {
-      log(lastError.message, colors.red);
-    }
-
-    log('', colors.yellow);
-    log('📋 Troubleshooting Steps:', colors.bright);
-    log('', colors.reset);
-    log('1. Check your internet connection', colors.yellow);
-    log('2. Try running: npm cache clean --force', colors.yellow);
-    log('3. Try running: npm install (in plugin directory)', colors.yellow);
-    log('4. Check npm version: npm --version (requires npm 7+)', colors.yellow);
-    log('5. Try updating npm: npm install -g npm@latest', colors.yellow);
-    log('', colors.reset);
-  }
-
-  return false;
-}
-
-async function main() {
-  try {
-    // Log execution context for debugging
-    if (IS_RUNNING_FROM_CACHE) {
-      log('📍 Running from cache directory', colors.dim);
     } else {
-      log('📍 Running from marketplace directory', colors.dim);
+      // Unix/macOS: Use curl installer
+      console.error('   Installing via curl...');
+      execSync('curl -fsSL https://bun.sh/install | bash', {
+        stdio: 'inherit',
+        shell: true
+      });
     }
 
-    // Check if we need to install dependencies
-    const installNeeded = needsInstall();
+    // Verify installation
+    if (isBunInstalled()) {
+      const version = getBunVersion();
+      console.error(`✅ Bun ${version} installed successfully`);
+      return true;
+    } else {
+      // Bun may be installed but not in PATH yet for this session
+      // Try common installation paths
+      const bunPaths = IS_WINDOWS
+        ? [join(homedir(), '.bun', 'bin', 'bun.exe')]
+        : [join(homedir(), '.bun', 'bin', 'bun'), '/usr/local/bin/bun'];
 
-    if (installNeeded) {
-      // Run installation (now async)
-      const installSuccess = await runNpmInstall();
-
-      if (!installSuccess) {
-        log('', colors.red);
-        log('⚠️  Installation failed', colors.yellow);
-        log('', colors.reset);
-        process.exit(1);
+      for (const bunPath of bunPaths) {
+        if (existsSync(bunPath)) {
+          console.error(`✅ Bun installed at ${bunPath}`);
+          console.error('⚠️  Please restart your terminal or add Bun to PATH:');
+          if (IS_WINDOWS) {
+            console.error(`   $env:Path += ";${join(homedir(), '.bun', 'bin')}"`);
+          } else {
+            console.error(`   export PATH="$HOME/.bun/bin:$PATH"`);
+          }
+          return true;
+        }
       }
+
+      throw new Error('Bun installation completed but binary not found');
     }
-
-    // NOTE: Worker auto-start disabled in smart-install.js
-    // The context-hook.js calls ensureWorkerRunning() which handles worker startup
-    // This avoids potential process management conflicts during plugin initialization
-    log('✅ Installation complete', colors.green);
-
-    // Success - dependencies installed (if needed)
-    process.exit(0);
-
   } catch (error) {
-    log(`❌ Unexpected error: ${error.message}`, colors.red);
-    log('', colors.reset);
-    process.exit(1);
+    console.error('❌ Failed to install Bun automatically');
+    console.error('   Please install manually:');
+    if (IS_WINDOWS) {
+      console.error('   - winget install Oven-sh.Bun');
+      console.error('   - Or: powershell -c "irm bun.sh/install.ps1 | iex"');
+    } else {
+      console.error('   - curl -fsSL https://bun.sh/install | bash');
+      console.error('   - Or: brew install oven-sh/bun/bun');
+    }
+    console.error('   Then restart your terminal and try again.');
+    throw error;
   }
 }
 
-main();
+/**
+ * Install uv automatically based on platform
+ */
+function installUv() {
+  console.error('🐍 Installing uv for Python/Chroma support...');
+
+  try {
+    if (IS_WINDOWS) {
+      // Windows: Use PowerShell installer
+      console.error('   Installing via PowerShell...');
+      execSync('powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"', {
+        stdio: 'inherit',
+        shell: true
+      });
+    } else {
+      // Unix/macOS: Use curl installer
+      console.error('   Installing via curl...');
+      execSync('curl -LsSf https://astral.sh/uv/install.sh | sh', {
+        stdio: 'inherit',
+        shell: true
+      });
+    }
+
+    // Verify installation
+    if (isUvInstalled()) {
+      const version = getUvVersion();
+      console.error(`✅ uv ${version} installed successfully`);
+      return true;
+    } else {
+      // uv may be installed but not in PATH yet for this session
+      // Try common installation paths
+      const uvPaths = IS_WINDOWS
+        ? [join(homedir(), '.local', 'bin', 'uv.exe'), join(homedir(), '.cargo', 'bin', 'uv.exe')]
+        : [join(homedir(), '.local', 'bin', 'uv'), join(homedir(), '.cargo', 'bin', 'uv'), '/usr/local/bin/uv'];
+
+      for (const uvPath of uvPaths) {
+        if (existsSync(uvPath)) {
+          console.error(`✅ uv installed at ${uvPath}`);
+          console.error('⚠️  Please restart your terminal or add uv to PATH:');
+          if (IS_WINDOWS) {
+            console.error(`   $env:Path += ";${join(homedir(), '.local', 'bin')}"`);
+          } else {
+            console.error(`   export PATH="$HOME/.local/bin:$PATH"`);
+          }
+          return true;
+        }
+      }
+
+      throw new Error('uv installation completed but binary not found');
+    }
+  } catch (error) {
+    console.error('❌ Failed to install uv automatically');
+    console.error('   Please install manually:');
+    if (IS_WINDOWS) {
+      console.error('   - winget install astral-sh.uv');
+      console.error('   - Or: powershell -c "irm https://astral.sh/uv/install.ps1 | iex"');
+    } else {
+      console.error('   - curl -LsSf https://astral.sh/uv/install.sh | sh');
+      console.error('   - Or: brew install uv (macOS)');
+    }
+    console.error('   Then restart your terminal and try again.');
+    throw error;
+  }
+}
+
+/**
+ * Check if dependencies need to be installed
+ */
+function needsInstall() {
+  if (!existsSync(join(ROOT, 'node_modules'))) return true;
+  try {
+    const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8'));
+    const marker = JSON.parse(readFileSync(MARKER, 'utf-8'));
+    return pkg.version !== marker.version || getBunVersion() !== marker.bun;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Install dependencies using Bun
+ */
+function installDeps() {
+  console.error('📦 Installing dependencies with Bun...');
+  try {
+    execSync('bun install', { cwd: ROOT, stdio: 'inherit', shell: IS_WINDOWS });
+  } catch {
+    // Retry with force flag
+    execSync('bun install --force', { cwd: ROOT, stdio: 'inherit', shell: IS_WINDOWS });
+  }
+
+  // Write version marker
+  const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8'));
+  writeFileSync(MARKER, JSON.stringify({
+    version: pkg.version,
+    bun: getBunVersion(),
+    uv: getUvVersion(),
+    installedAt: new Date().toISOString()
+  }));
+}
+
+// Main execution
+try {
+  // Step 1: Ensure Bun is installed (REQUIRED)
+  if (!isBunInstalled()) {
+    installBun();
+
+    // Re-check after installation
+    if (!isBunInstalled()) {
+      console.error('❌ Bun is required but not available in PATH');
+      console.error('   Please restart your terminal after installation');
+      process.exit(1);
+    }
+  }
+
+  // Step 2: Ensure uv is installed (REQUIRED for vector search)
+  if (!isUvInstalled()) {
+    installUv();
+
+    // Re-check after installation
+    if (!isUvInstalled()) {
+      console.error('❌ uv is required but not available in PATH');
+      console.error('   Please restart your terminal after installation');
+      process.exit(1);
+    }
+  }
+
+  // Step 3: Install dependencies if needed
+  if (needsInstall()) {
+    installDeps();
+    console.error('✅ Dependencies installed');
+  }
+} catch (e) {
+  console.error('❌ Installation failed:', e.message);
+  process.exit(1);
+}
