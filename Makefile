@@ -17,9 +17,9 @@ help:
 	@echo "  test-context-verbose     Context hook with verbose logs"
 	@echo "  sync                     Sync plugin to marketplace"
 	@echo "  sync-force               Force sync to marketplace"
-	@echo "  worker-start             Start PM2 worker"
-	@echo "  worker-stop              Stop PM2 worker"
-	@echo "  worker-restart           Restart PM2 worker"
+	@echo "  worker-start             Start Bun worker"
+	@echo "  worker-stop              Stop Bun worker"
+	@echo "  worker-restart           Restart Bun worker"
 	@echo "  worker-logs              Tail worker logs (flush cache)"
 	@echo "  worker-logs-no-flush     Tail worker logs (no flush)"
 	@echo "  viewer                   Show viewer URL"
@@ -61,7 +61,7 @@ worker-logs:
 	$(NPM) run worker:logs
 
 worker-logs-no-flush:
-	$(NPM) run worker:logs:no-flush
+	tail -f ~/.claude-mem/logs/worker-$(shell date +%Y-%m-%d).log
 
 viewer:
 	@echo "Viewer UI: http://localhost:$(PORT)"

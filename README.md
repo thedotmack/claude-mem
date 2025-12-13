@@ -17,7 +17,7 @@
     <img src="https://img.shields.io/badge/License-AGPL%203.0-blue.svg" alt="License">
   </a>
   <a href="package.json">
-    <img src="https://img.shields.io/badge/version-6.5.0-green.svg" alt="Version">
+    <img src="https://img.shields.io/badge/version-7.1.0-green.svg" alt="Version">
   </a>
   <a href="package.json">
     <img src="https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg" alt="Node">
@@ -246,30 +246,27 @@ See [Beta Features Documentation](https://docs.claude-mem.ai/beta-features) for 
 
 ## What's New
 
-**v6.4.9 - Context Configuration Settings:**
+**v7.1.0 - Major Architectural Migration:**
 
-- 11 new settings for fine-grained control over context injection
-- Configure token economics display, observation filtering by type/concept
-- Control number of observations and which fields to display
+- Complete replacement of PM2 with native Bun-based process management
+- Migration from better-sqlite3 npm package to bun:sqlite runtime module
+- Zero native compilation required - auto-installs Bun and uv if missing
+- Automatic legacy PM2 cleanup on all platforms
 
-**v6.4.0 - Dual-Tag Privacy System:**
+**v7.0.0 - HTTP-Based Architecture Refactor:**
 
-- `<private>` tags for user-controlled privacy - wrap sensitive content to exclude from storage
-- System-level `<claude-mem-context>` tags prevent recursive observation storage
-- Edge processing ensures private content never reaches database
+- All lifecycle hooks converted from direct database access to lightweight HTTP clients
+- New modular worker service with route-based architecture
+- Centralized error handling and service layer abstractions
+- Comprehensive test infrastructure for session lifecycle
 
-**v6.3.0 - Version Channel:**
+**Recent Highlights:**
 
-- Switch between stable and beta versions from the web viewer UI
-- Try experimental features like Endless Mode without manual git operations
-
-**Previous Highlights:**
-
+- **v6.4.9**: Context Configuration Settings for fine-grained control
+- **v6.4.0**: Dual-Tag Privacy System with `<private>` and `<claude-mem-context>` tags
+- **v6.3.0**: Version Channel for switching between stable and beta versions
 - **v6.0.0**: Major session management & transcript processing improvements
 - **v5.5.0**: mem-search skill enhancement with 100% effectiveness rate
-- **v5.4.0**: Skill-based search architecture (~2,250 tokens saved per session)
-- **v5.1.0**: Web-based viewer UI with real-time updates
-- **v5.0.0**: Hybrid search with Chroma vector database
 
 See [CHANGELOG.md](CHANGELOG.md) for complete version history.
 
@@ -390,7 +387,7 @@ For shorter local workflows, a `Makefile` mirrors these scripts:
 - `make install` — install dependencies
 - `make build` — build hooks
 - `make test` — run vitest suite
-- `make worker-start` / `make worker-stop` / `make worker-restart` — control the PM2 worker
+- `make worker-start` / `make worker-stop` / `make worker-restart` — control the Bun worker
 - `make worker-logs` — tail worker logs (flushes cache)
 - Defaults to `bun`; override with `NPM=npm make <target>` if needed
 
