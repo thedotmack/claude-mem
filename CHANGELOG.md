@@ -4,92 +4,38 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [7.1.1] - 2025-12-12
+## [7.1.1] - 2025-12-13
 
-### Fixed
+## 🚨 Critical Fixes
 
-**CRITICAL: Windows 11 Bun Auto-Install Broken**
+### Windows 11 Bun Auto-Install Fixed
+- **Problem**: v7.1.0 had a chicken-and-egg bug where `bun smart-install.js` failed if Bun wasn't installed
+- **Solution**: SessionStart hook now uses `node` (always available) for smart-install.js
+- **Impact**: Fresh Windows installations now work out-of-box
 
-- **Chicken-and-Egg Problem**: v7.1.0 hooks called `bun smart-install.js`, but if Bun wasn't installed, the command failed with "bun is not recognized" before smart-install.js could run to install Bun
-- **Root Cause**: v7.1.0 migration removed Bun/uv auto-installation logic from smart-install.js
-- **Solution**:
-  - Changed SessionStart hook to use `node` (always available) for smart-install.js
-  - Restored Bun auto-installation logic: isBunInstalled(), installBun()
-  - Restored uv auto-installation for Chroma support
-  - Fresh Windows installations now work correctly
+### Path Quoting for Windows
+- Fixed `hooks.json` to quote all paths
+- Prevents SyntaxError for usernames with spaces (e.g., "C:\Users\John Doe\")
 
-**Path Quoting for Windows Usernames with Spaces**
+## ✨ New Feature
 
-- Fixed `hooks.json` to quote all `${CLAUDE_PLUGIN_ROOT}` paths
-- Prevents SyntaxError for Windows users with spaces in usernames (e.g., "C:\Users\John Doe\...")
+### Automatic Worker Restart on Version Updates
+- Worker now automatically restarts when plugin version changes
+- No more manual `npm run worker:restart` needed after upgrades
+- Eliminates connection errors from running old worker code
 
-### Added
+## 📝 Notes
 
-**Automatic Worker Restart on Version Updates**
+- **No manual actions required** - worker auto-restarts on next session start
+- All future upgrades will automatically restart the worker
+- Fresh installs on Windows 11 work correctly
 
-- Added `/api/version` endpoint to worker service
-- Added version checking in `ensureWorkerRunning()`:
-  - Compares plugin version with running worker version
-  - Automatically restarts worker when version mismatch detected
-  - Logs version mismatch for debugging
-- **Impact**: Users no longer need to manually restart worker after upgrades
-- **Critical for**: All future releases - eliminates connection errors from running old worker code
+## 🔗 Links
 
-### Notes
-
-- No manual actions required - worker auto-restarts on next session start
-- Fresh installs on Windows 11 now work out-of-box
-- All hooks now run with correct runtime (node for install, bun for execution)
+- [Full Changelog](https://github.com/thedotmack/claude-mem/blob/main/CHANGELOG.md#711---2025-12-12)
+- [Documentation](https://docs.claude-mem.ai)
 
 ## [7.1.0] - 2025-12-13
-
-## Security Fix: Localhost-Only Binding
-
-**BREAKING CHANGE**: Worker service now binds to `127.0.0.1` (localhost) by default instead of `0.0.0.0` (all interfaces).
-
-### Security Issue Fixed
-
-The worker service was previously binding to `0.0.0.0:37777` by default, exposing all API endpoints to the network without authentication. This posed security risks:
-- Unauthorized access to memory data from any network device
-- Potential data injection into the database
-- Settings modification from remote devices
-- Full access to Web Viewer UI from the network
-
-### Solution
-
-Default worker binding changed to `127.0.0.1` (localhost-only), with a new configurable setting `CLAUDE_MEM_WORKER_HOST` for users who need remote access.
-
-### Changes
-
-- **Core**: Added `CLAUDE_MEM_WORKER_HOST` setting with default value `127.0.0.1`
-- **Worker**: Modified `worker-service.ts` to bind to configured host address
-- **API**: Added host validation in `SettingsRoutes.ts` (IP address format check)
-- **UI**: Added host configuration field in Settings panel
-- **Docs**: Updated README.md and CLAUDE.md with new setting
-
-### Configuration
-
-**Default (secure):** localhost only
-```bash
-CLAUDE_MEM_WORKER_HOST=127.0.0.1
-```
-
-**Remote access (server deployments):**
-```bash
-CLAUDE_MEM_WORKER_HOST=0.0.0.0
-```
-
-Can be configured via:
-- `~/.claude-mem/settings.json`
-- Web Viewer UI Settings panel
-
-### Migration
-
-**Automatic**: Existing installations will use `127.0.0.1` on next worker restart. If you need remote access, set `CLAUDE_MEM_WORKER_HOST=0.0.0.0` in `~/.claude-mem/settings.json`.
-
-### Contributors
-
-Thanks to @7Sageer for identifying and fixing this security issue!
 
 ## Major Architectural Migration
 
