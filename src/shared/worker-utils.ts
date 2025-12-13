@@ -73,7 +73,7 @@ async function startWorker(): Promise<boolean> {
   // Clean up legacy PM2 (one-time migration)
   const pm2MigratedMarker = path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), '.pm2-migrated');
 
-  if (process.platform !== 'win32' && !existsSync(pm2MigratedMarker)) {
+  if (!existsSync(pm2MigratedMarker)) {
     try {
       spawnSync('pm2', ['delete', 'claude-mem-worker'], { stdio: 'ignore' });
       // Mark migration as complete
