@@ -4,6 +4,40 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [7.1.8] - 2025-12-13
+
+## Memory Export/Import Scripts
+
+Added portable memory export and import functionality with automatic duplicate prevention.
+
+### New Features
+- **Export memories** to JSON format with search filtering and project-based filtering
+- **Import memories** with automatic duplicate detection via composite keys
+- Complete documentation in docs/public/usage/export-import.mdx
+
+### Use Cases
+- Share memory sets between developers working on the same project
+- Backup and restore specific project memories
+- Collaborate on domain knowledge across teams
+- Migrate memories between different claude-mem installations
+
+### Example Usage
+```bash
+# Export Windows-related memories
+npx tsx scripts/export-memories.ts "windows" windows-work.json
+
+# Export only claude-mem project memories
+npx tsx scripts/export-memories.ts "bugfix" fixes.json --project=claude-mem
+
+# Import memories (with automatic duplicate prevention)
+npx tsx scripts/import-memories.ts windows-work.json
+```
+
+### Technical Improvements
+- Fixed JSON format response in /api/search endpoint for consistent structure
+- Enhanced project filtering in ChromaDB hybrid search result hydration
+- Duplicate detection using composite keys (session ID + title + timestamp)
+
 ## [7.1.7] - 2025-12-13
 
 ## Fixed
