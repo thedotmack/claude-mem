@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [7.1.2] - 2025-12-13
+
+## 🐛 Bug Fixes
+
+### Windows Installation
+- Fixed Bun PATH detection on Windows after fresh install
+- Added fallback to check common install paths before PATH reload  
+- Improved smart-install.js to use full Bun path when not in PATH
+- Added proper path quoting for Windows usernames with spaces
+
+### Worker Startup
+- Fixed worker connection failures in Stop hook
+- Added health check retry loop (5 attempts, 500ms intervals)
+- Worker now waits up to 2.5s for responsiveness before returning
+- Improved error detection for Bun's ConnectionRefused error format
+
+---
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.1.1...v7.1.2
+
 ## [7.1.1] - 2025-12-13
 
 ## 🚨 Critical Fixes
