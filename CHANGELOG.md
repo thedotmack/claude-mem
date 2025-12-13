@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [7.1.3] - 2025-12-13
+
+## Bug Fixes
+
+### Smart Install Script Refactoring
+
+Refactored the smart-install.js script to improve code quality and maintainability:
+- Extracted common installation paths as top-level constants (BUN_COMMON_PATHS, UV_COMMON_PATHS)
+- Simplified installation check functions to delegate to dedicated path-finding helpers
+- Streamlined installation verification logic with clearer error messages
+- Removed redundant post-installation verification checks
+- Improved error propagation by removing unnecessary retry logic
+
+This refactoring reduces code duplication and makes the installation process more maintainable while preserving the same functionality for detecting Bun and uv binaries across platforms.
+
 ## [7.1.2] - 2025-12-13
 
 ## 🐛 Bug Fixes
