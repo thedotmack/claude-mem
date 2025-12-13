@@ -4,6 +4,65 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [7.1.0] - 2025-12-13
+
+## Major Architectural Migration
+
+This release completely replaces PM2 with native Bun-based process management and migrates from better-sqlite3 to bun:sqlite.
+
+### Key Changes
+
+**Process Management**
+- Replace PM2 with custom Bun-based ProcessManager
+- PID file-based process tracking
+- Automatic legacy PM2 process cleanup on all platforms
+
+**Database Driver**
+- Migrate from better-sqlite3 npm package to bun:sqlite runtime module
+- Zero native compilation required
+- Same API compatibility
+
+**Auto-Installation**
+- Bun runtime auto-installed if missing
+- uv (Python package manager) auto-installed for Chroma vector search
+- Smart installer with platform-specific methods (curl/PowerShell)
+
+### Migration
+
+**Automatic**: First hook trigger after update performs one-time PM2 cleanup and transitions to new architecture. No user action required.
+
+### Documentation
+
+Complete technical documentation in `docs/PM2-TO-BUN-MIGRATION.md`
+
+## [7.0.11] - 2025-12-12
+
+Patch release adding feature/bun-executable to experimental branch selector for testing Bun runtime integration.
+
+## [7.0.9] - 2025-12-10
+
+## Bug Fixes
+
+- Fixed MCP response format in search route handlers - all 14 search endpoints now return complete response objects with error status instead of just content arrays, restoring MCP protocol compatibility
+
+## Changes
+
+- `SearchRoutes.ts`: Updated all route handlers to return full result object instead of extracted content property
+
+## [7.0.8] - 2025-12-10
+
+## Bug Fixes
+
+- **Critical**: Filter out meta-observations for session-memory files to prevent recursive timeline pollution
+  - Memory agent was creating observations about editing Agent SDK's session-memory/summary.md files
+  - This created a recursive loop where investigating timeline pollution caused more pollution
+  - Filter now skips Edit/Write/Read/NotebookEdit operations on any file path containing 'session-memory'
+  - Eliminates 91+ meta-observations that were polluting the timeline
+
+## Technical Details
+
+Added filtering logic in SessionRoutes.ts to detect and skip file operations on session-memory files before observations are queued to the SDK agent. This prevents the memory agent from observing its own observation metadata files.
+
 ## [7.0.7] - 2025-12-10
 
 ## What's Changed

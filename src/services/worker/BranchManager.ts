@@ -13,6 +13,11 @@ import { logger } from '../../utils/logger.js';
 
 const INSTALLED_PLUGIN_PATH = join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
 
+// Timeout constants
+const GIT_COMMAND_TIMEOUT_MS = 30_000;
+const NPM_INSTALL_TIMEOUT_MS = 120_000;
+const DEFAULT_SHELL_TIMEOUT_MS = 60_000;
+
 export interface BranchInfo {
   branch: string | null;
   isBeta: boolean;
@@ -36,7 +41,7 @@ function execGit(command: string): string {
   return execSync(`git ${command}`, {
     cwd: INSTALLED_PLUGIN_PATH,
     encoding: 'utf-8',
-    timeout: 30000,
+    timeout: GIT_COMMAND_TIMEOUT_MS,
     windowsHide: true
   }).trim();
 }
@@ -44,7 +49,7 @@ function execGit(command: string): string {
 /**
  * Execute shell command in installed plugin directory
  */
-function execShell(command: string, timeoutMs: number = 60000): string {
+function execShell(command: string, timeoutMs: number = DEFAULT_SHELL_TIMEOUT_MS): string {
   return execSync(command, {
     cwd: INSTALLED_PLUGIN_PATH,
     encoding: 'utf-8',
@@ -165,7 +170,7 @@ export async function switchBranch(targetBranch: string): Promise<SwitchResult> 
     }
 
     logger.debug('BRANCH', 'Running npm install');
-    execShell('npm install', 120000); // 2 minute timeout for npm
+    execShell('npm install', NPM_INSTALL_TIMEOUT_MS);
 
     logger.success('BRANCH', 'Branch switch complete', {
       branch: targetBranch
@@ -223,7 +228,7 @@ export async function pullUpdates(): Promise<SwitchResult> {
     if (existsSync(installMarker)) {
       unlinkSync(installMarker);
     }
-    execShell('npm install', 120000);
+    execShell('npm install', NPM_INSTALL_TIMEOUT_MS);
 
     logger.success('BRANCH', 'Updates pulled', { branch: info.branch });
 

@@ -22,14 +22,14 @@ Claude-Mem operates as a Claude Code plugin with five core components:
 |------------------------|-------------------------------------------|
 | **Language**           | TypeScript (ES2022, ESNext modules)       |
 | **Runtime**            | Node.js 18+                               |
-| **Database**           | SQLite 3 with better-sqlite3 driver       |
+| **Database**           | SQLite 3 with bun:sqlite driver           |
 | **Vector Store**       | ChromaDB (optional, for semantic search)  |
 | **HTTP Server**        | Express.js 4.18                           |
 | **Real-time**          | Server-Sent Events (SSE)                  |
 | **UI Framework**       | React + TypeScript                        |
 | **AI SDK**             | @anthropic-ai/claude-agent-sdk            |
 | **Build Tool**         | esbuild (bundles TypeScript)              |
-| **Process Manager**    | PM2                                       |
+| **Process Manager**    | Bun                                       |
 | **Testing**            | Node.js built-in test runner              |
 
 ## Data Flow
@@ -70,7 +70,7 @@ User Query → mem-search Skill Invoked → HTTP API → SessionSearch Service �
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
 │ 1. Session Starts → Context Hook Fires                          │
-│    Starts PM2 worker if needed, injects context from previous   │
+│    Starts Bun worker if needed, injects context from previous   │
 │    sessions (configurable observation count)                    │
 └─────────────────────────────────────────────────────────────────┘
                               ↓
@@ -177,13 +177,13 @@ claude-mem/
 │
 ├── tests/                      # Test suite
 ├── docs/                       # Documentation
-└── ecosystem.config.cjs        # PM2 configuration
+└── ecosystem.config.cjs        # Process configuration (deprecated)
 ```
 
 ## Component Details
 
 ### 1. Plugin Hooks (6 Hooks)
-- **context-hook.js** - SessionStart: Starts PM2 worker, injects context
+- **context-hook.js** - SessionStart: Starts Bun worker, injects context
 - **user-message-hook.js** - UserMessage: Debugging hook
 - **new-hook.js** - UserPromptSubmit: Creates session, saves prompt
 - **save-hook.js** - PostToolUse: Captures tool executions
@@ -200,12 +200,12 @@ Express.js HTTP server on port 37777 (configurable) with:
 - 8 viewer UI HTTP/SSE endpoints
 - Async observation processing via Claude Agent SDK
 - Real-time updates via Server-Sent Events
-- Auto-managed by PM2 process manager
+- Auto-managed by Bun
 
 See [Worker Service](/architecture/worker-service) for HTTP API and endpoints.
 
 ### 3. Database Layer
-SQLite3 with better-sqlite3 driver featuring:
+SQLite3 with bun:sqlite driver featuring:
 - FTS5 virtual tables for full-text search
 - SessionStore for CRUD operations
 - SessionSearch for FTS5 queries

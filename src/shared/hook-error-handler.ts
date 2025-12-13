@@ -7,7 +7,7 @@ export function handleWorkerError(error: any): never {
       error.name === 'TimeoutError' ||
       error.message?.includes('fetch failed')) {
     throw new Error(
-      "There's a problem with the worker. If you just updated, type `pm2 restart claude-mem-worker` in your terminal to continue"
+      "There's a problem with the worker. Try: npm run worker:restart"
     );
   }
   throw error;

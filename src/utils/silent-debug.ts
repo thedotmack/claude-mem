@@ -83,12 +83,7 @@ export function clearSilentLog(): void {
   try {
     appendFileSync(LOG_FILE, `\n${'='.repeat(80)}\n[${new Date().toISOString()}] Log cleared\n${'='.repeat(80)}\n\n`);
   } catch (error) {
-    // Ignore errors
+    // Expected: Log file may not be writable
   }
 }
 
-/**
- * @deprecated Use happy_path_error__with_fallback instead
- * Backward compatibility alias for silentDebug
- */
-export const silentDebug = happy_path_error__with_fallback;

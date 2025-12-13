@@ -6,7 +6,7 @@ SQLite database troubleshooting for claude-mem.
 
 Claude-mem uses SQLite3 for persistent storage:
 - **Location:** `~/.claude-mem/claude-mem.db`
-- **Library:** better-sqlite3 (synchronous, not bun:sqlite)
+- **Library:** bun:sqlite (native Bun SQLite, synchronous)
 - **Features:** FTS5 full-text search, triggers, indexes
 - **Tables:** observations, sessions, user_prompts, observations_fts, sessions_fts, prompts_fts
 

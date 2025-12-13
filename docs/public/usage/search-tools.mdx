@@ -364,7 +364,7 @@ search_sessions with query="[YOUR PROJECT NAME]" and orderBy="date_desc"
 If search isn't working, check the worker service:
 
 ```bash
-pm2 list                    # Check worker status
+npm run worker:status       # Check worker status
 npm run worker:restart      # Restart if needed
 npm run worker:logs         # View logs
 ```

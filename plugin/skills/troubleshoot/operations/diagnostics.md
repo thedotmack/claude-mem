@@ -97,7 +97,6 @@ cd ~/.claude/plugins/marketplaces/thedotmack/
 
 # Check for critical packages
 ls node_modules/@anthropic-ai/claude-agent-sdk 2>&1 | head -1
-ls node_modules/better-sqlite3 2>&1 | head -1
 ls node_modules/express 2>&1 | head -1
 ls node_modules/pm2 2>&1 | head -1
 ```

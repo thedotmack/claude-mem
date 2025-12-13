@@ -4,6 +4,7 @@
  */
 
 import { ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../sqlite/types.js';
+import { logger } from '../../utils/logger.js';
 
 export type FormatType = 'index' | 'full';
 
@@ -102,7 +103,9 @@ Other tips:
         if (facts.length > 0) {
           metadata.push(`Facts: ${facts.join('; ')}`);
         }
-      } catch {}
+      } catch (e) {
+        logger.warn('FORMAT', 'Invalid JSON in facts field', { obsId: obs.id });
+      }
     }
 
     if (obs.concepts) {
@@ -111,7 +114,9 @@ Other tips:
         if (concepts.length > 0) {
           metadata.push(`Concepts: ${concepts.join(', ')}`);
         }
-      } catch {}
+      } catch (e) {
+        logger.warn('FORMAT', 'Invalid JSON in concepts field', { obsId: obs.id });
+      }
     }
 
     if (obs.files_read || obs.files_modified) {
@@ -119,12 +124,16 @@ Other tips:
       if (obs.files_read) {
         try {
           files.push(...JSON.parse(obs.files_read));
-        } catch {}
+        } catch (e) {
+          logger.warn('FORMAT', 'Invalid JSON in files_read field', { obsId: obs.id });
+        }
       }
       if (obs.files_modified) {
         try {
           files.push(...JSON.parse(obs.files_modified));
-        } catch {}
+        } catch (e) {
+          logger.warn('FORMAT', 'Invalid JSON in files_modified field', { obsId: obs.id });
+        }
       }
       if (files.length > 0) {
         metadata.push(`Files: ${[...new Set(files)].join(', ')}`);
@@ -190,12 +199,16 @@ Other tips:
       if (session.files_read) {
         try {
           files.push(...JSON.parse(session.files_read));
-        } catch {}
+        } catch (e) {
+          logger.warn('FORMAT', 'Invalid JSON in session files_read field', { sessionId: session.sdk_session_id });
+        }
       }
       if (session.files_edited) {
         try {
           files.push(...JSON.parse(session.files_edited));
-        } catch {}
+        } catch (e) {
+          logger.warn('FORMAT', 'Invalid JSON in session files_edited field', { sessionId: session.sdk_session_id });
+        }
       }
       if (files.length > 0) {
         metadata.push(`Files: ${[...new Set(files)].join(', ')}`);
