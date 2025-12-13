@@ -1,29 +1,49 @@
 import path from "path";
-import { existsSync } from "fs";
 import { homedir } from "os";
 import { spawnSync } from "child_process";
-import { SettingsDefaultsManager } from "./SettingsDefaultsManager.js";
+import { existsSync, writeFileSync } from "fs";
 import { logger } from "../utils/logger.js";
 import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
+import { ProcessManager } from "../services/process/ProcessManager.js";
+import { SettingsDefaultsManager } from "./SettingsDefaultsManager.js";
 
-// CRITICAL: Always use marketplace directory for PM2/ecosystem
-// This ensures cross-platform compatibility and avoids cache directory confusion
 const MARKETPLACE_ROOT = path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
 
 // Named constants for health checks
-// Windows needs longer timeouts due to startup overhead
 const HEALTH_CHECK_TIMEOUT_MS = getTimeout(HOOK_TIMEOUTS.HEALTH_CHECK);
-const WORKER_STARTUP_WAIT_MS = HOOK_TIMEOUTS.WORKER_STARTUP_WAIT;
-const WORKER_STARTUP_RETRIES = HOOK_TIMEOUTS.WORKER_STARTUP_RETRIES;
+
+// Port cache to avoid repeated settings file reads
+let cachedPort: number | null = null;
 
 /**
- * Get the worker port number
- * Priority: ~/.claude-mem/settings.json > env var > default
+ * Get the worker port number from settings
+ * Uses CLAUDE_MEM_WORKER_PORT from settings file or default (37777)
+ * Caches the port value to avoid repeated file reads
  */
 export function getWorkerPort(): number {
-  const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
-  const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-  return parseInt(settings.CLAUDE_MEM_WORKER_PORT, 10);
+  if (cachedPort !== null) {
+    return cachedPort;
+  }
+
+  try {
+    const settingsPath = path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), 'settings.json');
+    const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+    cachedPort = parseInt(settings.CLAUDE_MEM_WORKER_PORT, 10);
+    return cachedPort;
+  } catch (error) {
+    // Fallback to default if settings load fails
+    logger.debug('SYSTEM', 'Failed to load port from settings, using default', { error });
+    cachedPort = parseInt(SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_PORT'), 10);
+    return cachedPort;
+  }
+}
+
+/**
+ * Clear the cached port value
+ * Call this when settings are updated to force re-reading from file
+ */
+export function clearPortCache(): void {
+  cachedPort = null;
 }
 
 /**
@@ -56,101 +76,38 @@ async function isWorkerHealthy(): Promise<boolean> {
 }
 
 /**
- * Start the worker service
- * On Windows: Uses PowerShell Start-Process with hidden window to avoid console flash
- * On Unix: Uses PM2 for process management
+ * Start the worker service using ProcessManager
+ * Handles both Unix (Bun) and Windows (compiled exe) platforms
  */
 async function startWorker(): Promise<boolean> {
-  try {
-    const workerScript = path.join(MARKETPLACE_ROOT, 'plugin', 'scripts', 'worker-service.cjs');
+  // Clean up legacy PM2 (one-time migration)
+  const pm2MigratedMarker = path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), '.pm2-migrated');
 
-    if (!existsSync(workerScript)) {
-      throw new Error(`Worker script not found at ${workerScript}`);
+  if (!existsSync(pm2MigratedMarker)) {
+    try {
+      spawnSync('pm2', ['delete', 'claude-mem-worker'], { stdio: 'ignore' });
+      // Mark migration as complete
+      writeFileSync(pm2MigratedMarker, new Date().toISOString(), 'utf-8');
+      logger.debug('SYSTEM', 'PM2 cleanup completed and marked');
+    } catch {
+      // PM2 not installed or process doesn't exist - still mark as migrated
+      writeFileSync(pm2MigratedMarker, new Date().toISOString(), 'utf-8');
     }
+  }
 
-    if (process.platform === 'win32') {
-      // On Windows, use PowerShell Start-Process with -WindowStyle Hidden
-      // This avoids visible console windows that PM2 creates on Windows
-      // Escape single quotes for PowerShell by doubling them
-      const escapedScript = workerScript.replace(/'/g, "''");
-      const escapedWorkingDir = MARKETPLACE_ROOT.replace(/'/g, "''");
+  const port = getWorkerPort();
+  const result = await ProcessManager.start(port);
 
-      const result = spawnSync('powershell.exe', [
-        '-NoProfile',
-        '-NonInteractive',
-        '-Command',
-        `Start-Process -FilePath 'node' -ArgumentList '${escapedScript}' -WorkingDirectory '${escapedWorkingDir}' -WindowStyle Hidden`
-      ], {
-        cwd: MARKETPLACE_ROOT,
-        stdio: 'pipe',
-        encoding: 'utf-8',
-        windowsHide: true
-      });
-
-      if (result.status !== 0) {
-        throw new Error(result.stderr || 'PowerShell Start-Process failed');
-      }
-    } else {
-      // On Unix, use PM2 for process management
-      const ecosystemPath = path.join(MARKETPLACE_ROOT, 'ecosystem.config.cjs');
-
-      if (!existsSync(ecosystemPath)) {
-        throw new Error(`Ecosystem config not found at ${ecosystemPath}`);
-      }
-
-      const localPm2Base = path.join(MARKETPLACE_ROOT, 'node_modules', '.bin', 'pm2');
-      let pm2Command: string;
-
-      if (existsSync(localPm2Base)) {
-        pm2Command = localPm2Base;
-      } else {
-        // Check if global pm2 exists
-        const globalPm2Check = spawnSync('which', ['pm2'], {
-          encoding: 'utf-8',
-          stdio: 'pipe'
-        });
-
-        if (globalPm2Check.status !== 0) {
-          throw new Error(
-            'PM2 not found. Install it locally with:\n' +
-            `  cd ${MARKETPLACE_ROOT}\n` +
-            '  npm install\n\n' +
-            'Or install globally with: npm install -g pm2'
-          );
-        }
-
-        pm2Command = 'pm2';
-      }
-
-      const result = spawnSync(pm2Command, ['start', ecosystemPath], {
-        cwd: MARKETPLACE_ROOT,
-        stdio: 'pipe',
-        encoding: 'utf-8'
-      });
-
-      if (result.status !== 0) {
-        throw new Error(result.stderr || 'PM2 start failed');
-      }
-    }
-
-    // Wait for worker to become healthy
-    for (let i = 0; i < WORKER_STARTUP_RETRIES; i++) {
-      await new Promise(resolve => setTimeout(resolve, WORKER_STARTUP_WAIT_MS));
-      if (await isWorkerHealthy()) {
-        return true;
-      }
-    }
-
-    return false;
-  } catch (error) {
+  if (!result.success) {
     logger.error('SYSTEM', 'Failed to start worker', {
       platform: process.platform,
-      workerScript: path.join(MARKETPLACE_ROOT, 'plugin', 'scripts', 'worker-service.cjs'),
-      error: error instanceof Error ? error.message : String(error),
+      port,
+      error: result.error,
       marketplaceRoot: MARKETPLACE_ROOT
     });
-    return false;
   }
+
+  return result.success;
 }
 
 /**
@@ -176,10 +133,8 @@ export async function ensureWorkerRunning(): Promise<void> {
     const port = getWorkerPort();
     throw new Error(
       `Worker service failed to start on port ${port}.\n\n` +
-      `To start manually, run:\n` +
-      `  cd ${MARKETPLACE_ROOT}\n` +
-      `  npx pm2 start ecosystem.config.cjs\n\n` +
-      `If already running, try: npx pm2 restart claude-mem-worker`
+      `To start manually, run: npm run worker:start\n` +
+      `If already running, try: npm run worker:restart`
     );
   }
 }

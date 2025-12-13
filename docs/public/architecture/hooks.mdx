@@ -446,7 +446,7 @@ sequenceDiagram
     else Tool allowed
         SaveHook->>SaveHook: Strip privacy tags from input/response
 
-        SaveHook->>SaveHook: Ensure worker running<br/>(PM2 health check)
+        SaveHook->>SaveHook: Ensure worker running<br/>(health check)
 
         SaveHook->>Worker: POST /api/sessions/observations<br/>{ claudeSessionId, tool_name, tool_input, tool_response, cwd }<br/>(fire-and-forget, 2s timeout)
 
@@ -906,7 +906,7 @@ For developers implementing this pattern on other platforms:
 
 ### Worker Service
 - [ ] HTTP server on configurable port (default 37777)
-- [ ] PM2 or equivalent process management
+- [ ] Bun runtime for process management
 - [ ] 3 core services: SessionManager, SDKAgent, DatabaseManager
 
 ### Hook Implementation

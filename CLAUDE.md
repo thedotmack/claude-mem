@@ -6,7 +6,7 @@
 
 Claude-mem is a Claude Code plugin providing persistent memory across sessions. It captures tool usage, compresses observations using the Claude Agent SDK, and injects relevant context into future sessions.
 
-**Current Version**: 7.0.10
+**Current Version**: 7.1.0
 
 ## Architecture
 
@@ -14,7 +14,7 @@ Claude-mem is a Claude Code plugin providing persistent memory across sessions. 
 
 **Hooks** (`src/hooks/*.ts`) - TypeScript → ESM, built to `plugin/scripts/*-hook.js`
 
-**Worker Service** (`src/services/worker-service.ts`) - Express API on port 37777, PM2-managed, handles AI processing asynchronously
+**Worker Service** (`src/services/worker-service.ts`) - Express API on port 37777, Bun-managed, handles AI processing asynchronously
 
 **Database** (`src/services/sqlite/`) - SQLite3 at `~/.claude-mem/claude-mem.db` with FTS5 full-text search
 
@@ -75,15 +75,28 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 - **Chroma**: `~/.claude-mem/chroma/`
 - **Usage Logs**: `~/.claude-mem/usage-logs/usage-YYYY-MM-DD.jsonl`
 
+## Requirements
+
+- **Bun** >= 1.0 (all platforms - auto-installed if missing)
+- **uv** (all platforms - auto-installed if missing, provides Python for Chroma)
+- Node.js >= 18 (build tools only)
+
 ## Quick Reference
 
 ```bash
 npm run build                 # Compile TypeScript
 npm run sync-marketplace      # Copy to ~/.claude/plugins
-npm run worker:restart        # Restart PM2 worker
+npm run worker:restart        # Restart worker service
+npm run worker:status         # Check worker status
 npm run worker:logs           # View worker logs
-pm2 list                      # Check worker status
-pm2 delete claude-mem-worker  # Force clean start
 ```
 
 **Viewer UI**: http://localhost:37777
+**Worker Logs**: `~/.claude-mem/logs/worker-YYYY-MM-DD.log`
+
+## Documentation
+
+**Public Docs**: https://docs.claude-mem.ai (Mintlify)
+**Source**: `docs/public/` - MDX files, edit `docs.json` for navigation
+**Deploy**: Auto-deploys from GitHub on push to main
+**Local Dev**: `cd docs/public && npx mintlify dev`

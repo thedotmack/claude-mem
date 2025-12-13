@@ -132,6 +132,23 @@ export class WorkerService {
       res.status(200).json({ status: 'ok' });
     });
 
+    // Admin endpoints for process management
+    this.app.post('/api/admin/restart', async (_req, res) => {
+      res.json({ status: 'restarting' });
+      setTimeout(async () => {
+        await this.shutdown();
+        process.exit(0);
+      }, 100);
+    });
+
+    this.app.post('/api/admin/shutdown', async (_req, res) => {
+      res.json({ status: 'shutting_down' });
+      setTimeout(async () => {
+        await this.shutdown();
+        process.exit(0);
+      }, 100);
+    });
+
     this.viewerRoutes.setupRoutes(this.app);
     this.sessionRoutes.setupRoutes(this.app);
     this.dataRoutes.setupRoutes(this.app);

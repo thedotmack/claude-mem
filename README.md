@@ -27,6 +27,16 @@
   </a>
 </p>
 
+<p align="center">
+  <a href="https://trendshift.io/repositories/15496" target="_blank">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/trendshift-badge-dark.svg">
+      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/trendshift-badge.svg">
+      <img src="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/trendshift-badge.svg" alt="thedotmack/claude-mem | Trendshift" width="250" height="55"/>
+    </picture>
+  </a>
+</p>
+
 <br>
 
 <p align="center">
@@ -71,6 +81,7 @@ Restart Claude Code. Context from previous sessions will automatically appear in
 - 📊 **Progressive Disclosure** - Layered memory retrieval with token cost visibility
 - 🔍 **Skill-Based Search** - Query your project history with mem-search skill (~2,250 token savings)
 - 🖥️ **Web Viewer UI** - Real-time memory stream at http://localhost:37777
+- 💻 **Claude Desktop Skill** - Search memory from Claude Desktop conversations
 - 🔒 **Privacy Control** - Use `<private>` tags to exclude sensitive content from storage
 - ⚙️ **Context Configuration** - Fine-grained control over what context gets injected
 - 🤖 **Automatic Operation** - No manual intervention required
@@ -108,7 +119,7 @@ npx mintlify dev
 - **[Architecture Evolution](https://docs.claude-mem.ai/architecture-evolution)** - The journey from v3 to v5
 - **[Hooks Architecture](https://docs.claude-mem.ai/hooks-architecture)** - How Claude-Mem uses lifecycle hooks
 - **[Hooks Reference](https://docs.claude-mem.ai/architecture/hooks)** - 7 hook scripts explained
-- **[Worker Service](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API & PM2 management
+- **[Worker Service](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API & Bun management
 - **[Database](https://docs.claude-mem.ai/architecture/database)** - SQLite schema & FTS5 search
 - **[Search Architecture](https://docs.claude-mem.ai/architecture/search-architecture)** - Hybrid search with Chroma vector database
 
@@ -148,7 +159,7 @@ npx mintlify dev
 
 1. **5 Lifecycle Hooks** - SessionStart, UserPromptSubmit, PostToolUse, Stop, SessionEnd (6 hook scripts)
 2. **Smart Install** - Cached dependency checker (pre-hook script, not a lifecycle hook)
-3. **Worker Service** - HTTP API on port 37777 with web viewer UI and 10 search endpoints, managed by PM2
+3. **Worker Service** - HTTP API on port 37777 with web viewer UI and 10 search endpoints, managed by Bun
 4. **SQLite Database** - Stores sessions, observations, summaries with FTS5 full-text search
 5. **mem-search Skill** - Natural language queries with progressive disclosure (~2,250 token savings vs MCP)
 6. **Chroma Vector Database** - Hybrid semantic + keyword search for intelligent context retrieval
@@ -262,7 +273,8 @@ See [CHANGELOG.md](CHANGELOG.md) for complete version history.
 
 - **Node.js**: 18.0.0 or higher
 - **Claude Code**: Latest version with plugin support
-- **PM2**: Process manager (bundled - no global install required)
+- **Bun**: JavaScript runtime and process manager (auto-installed if missing)
+- **uv**: Python package manager for vector search (auto-installed if missing)
 - **SQLite 3**: For persistent storage (bundled)
 
 ---

@@ -181,33 +181,9 @@ Claude-Mem supports switching between stable and beta versions via the web viewe
 
 See [Beta Features](beta-features) for details on what's available in beta.
 
-## PM2 Configuration
+## Worker Service Management
 
-Worker service is managed by PM2 via `ecosystem.config.cjs`:
-
-```javascript
-module.exports = {
-  apps: [{
-    name: 'claude-mem-worker',
-    script: './plugin/scripts/worker-service.cjs',
-    instances: 1,
-    autorestart: true,
-    watch: false,
-    max_memory_restart: '1G',
-    env: {
-      NODE_ENV: 'production',
-      FORCE_COLOR: '1'
-    }
-  }]
-};
-```
-
-### PM2 Settings
-
-- **instances**: 1 (single instance)
-- **autorestart**: true (auto-restart on crash)
-- **watch**: false (no file watching)
-- **max_memory_restart**: 1G (restart if memory exceeds 1GB)
+Worker service is managed by Bun as a background process. The worker auto-starts on first session and runs continuously in the background.
 
 ## Context Injection Configuration
 
@@ -402,13 +378,7 @@ Recommended values:
 
 ### Worker Memory Limit
 
-Modify PM2 memory limit in `ecosystem.config.cjs`:
-
-```javascript
-{
-  max_memory_restart: '2G'  // Increase if needed
-}
-```
+The worker service is managed by Bun and will automatically restart if it encounters issues. Memory usage is typically low (~100-200MB).
 
 ### Logging Verbosity
 
