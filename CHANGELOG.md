@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [7.1.4] - 2025-12-13
+
+## What's Changed
+
+* fix: add npm fallback when bun install fails with alias packages (#265)
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.1.3...v7.1.4
+
 ## [7.1.3] - 2025-12-13
 
 ## Bug Fixes
