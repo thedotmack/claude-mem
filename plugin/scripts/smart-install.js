@@ -5,24 +5,30 @@
  * Ensures Bun runtime and uv (Python package manager) are installed
  * (auto-installs if missing) and handles dependency installation when needed.
  */
-import { existsSync, readFileSync, writeFileSync } from 'fs';
-import { execSync, spawnSync } from 'child_process';
-import { join } from 'path';
-import { homedir } from 'os';
+import { existsSync, readFileSync, writeFileSync } from "fs";
+import { execSync, spawnSync } from "child_process";
+import { join } from "path";
+import { homedir } from "os";
 
-const ROOT = join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
-const MARKER = join(ROOT, '.install-version');
-const IS_WINDOWS = process.platform === 'win32';
+const ROOT = join(
+  homedir(),
+  ".claude",
+  "plugins",
+  "marketplaces",
+  "thedotmack",
+);
+const MARKER = join(ROOT, ".install-version");
+const IS_WINDOWS = process.platform === "win32";
 
 /**
  * Check if Bun is installed and accessible
  */
 function isBunInstalled() {
   try {
-    const result = spawnSync('bun', ['--version'], {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      shell: IS_WINDOWS
+    const result = spawnSync("bun", ["--version"], {
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+      shell: IS_WINDOWS,
     });
     if (result.status === 0) return true;
   } catch {
@@ -31,8 +37,8 @@ function isBunInstalled() {
 
   // Check common installation paths (handles fresh installs before PATH reload)
   const bunPaths = IS_WINDOWS
-    ? [join(homedir(), '.bun', 'bin', 'bun.exe')]
-    : [join(homedir(), '.bun', 'bin', 'bun'), '/usr/local/bin/bun'];
+    ? [join(homedir(), ".bun", "bin", "bun.exe")]
+    : [join(homedir(), ".bun", "bin", "bun"), "/usr/local/bin/bun"];
 
   return bunPaths.some(existsSync);
 }
@@ -43,20 +49,20 @@ function isBunInstalled() {
 function getBunPath() {
   // Try PATH first
   try {
-    const result = spawnSync('bun', ['--version'], {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      shell: IS_WINDOWS
+    const result = spawnSync("bun", ["--version"], {
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+      shell: IS_WINDOWS,
     });
-    if (result.status === 0) return 'bun';
+    if (result.status === 0) return "bun";
   } catch {
     // Not in PATH
   }
 
   // Check common installation paths
   const bunPaths = IS_WINDOWS
-    ? [join(homedir(), '.bun', 'bin', 'bun.exe')]
-    : [join(homedir(), '.bun', 'bin', 'bun'), '/usr/local/bin/bun'];
+    ? [join(homedir(), ".bun", "bin", "bun.exe")]
+    : [join(homedir(), ".bun", "bin", "bun"), "/usr/local/bin/bun"];
 
   for (const bunPath of bunPaths) {
     if (existsSync(bunPath)) return bunPath;
@@ -73,10 +79,10 @@ function getBunVersion() {
   if (!bunPath) return null;
 
   try {
-    const result = spawnSync(bunPath, ['--version'], {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      shell: IS_WINDOWS
+    const result = spawnSync(bunPath, ["--version"], {
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+      shell: IS_WINDOWS,
     });
     return result.status === 0 ? result.stdout.trim() : null;
   } catch {
@@ -89,10 +95,10 @@ function getBunVersion() {
  */
 function isUvInstalled() {
   try {
-    const result = spawnSync('uv', ['--version'], {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      shell: IS_WINDOWS
+    const result = spawnSync("uv", ["--version"], {
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+      shell: IS_WINDOWS,
     });
     if (result.status === 0) return true;
   } catch {
@@ -101,8 +107,15 @@ function isUvInstalled() {
 
   // Check common installation paths (handles fresh installs before PATH reload)
   const uvPaths = IS_WINDOWS
-    ? [join(homedir(), '.local', 'bin', 'uv.exe'), join(homedir(), '.cargo', 'bin', 'uv.exe')]
-    : [join(homedir(), '.local', 'bin', 'uv'), join(homedir(), '.cargo', 'bin', 'uv'), '/usr/local/bin/uv'];
+    ? [
+        join(homedir(), ".local", "bin", "uv.exe"),
+        join(homedir(), ".cargo", "bin", "uv.exe"),
+      ]
+    : [
+        join(homedir(), ".local", "bin", "uv"),
+        join(homedir(), ".cargo", "bin", "uv"),
+        "/usr/local/bin/uv",
+      ];
 
   return uvPaths.some(existsSync);
 }
@@ -112,10 +125,10 @@ function isUvInstalled() {
  */
 function getUvVersion() {
   try {
-    const result = spawnSync('uv', ['--version'], {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      shell: IS_WINDOWS
+    const result = spawnSync("uv", ["--version"], {
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+      shell: IS_WINDOWS,
     });
     return result.status === 0 ? result.stdout.trim() : null;
   } catch {
@@ -127,22 +140,22 @@ function getUvVersion() {
  * Install Bun automatically based on platform
  */
 function installBun() {
-  console.error('🔧 Bun not found. Installing Bun runtime...');
+  console.error("🔧 Bun not found. Installing Bun runtime...");
 
   try {
     if (IS_WINDOWS) {
       // Windows: Use PowerShell installer
-      console.error('   Installing via PowerShell...');
+      console.error("   Installing via PowerShell...");
       execSync('powershell -c "irm bun.sh/install.ps1 | iex"', {
-        stdio: 'inherit',
-        shell: true
+        stdio: "inherit",
+        shell: true,
       });
     } else {
       // Unix/macOS: Use curl installer
-      console.error('   Installing via curl...');
-      execSync('curl -fsSL https://bun.sh/install | bash', {
-        stdio: 'inherit',
-        shell: true
+      console.error("   Installing via curl...");
+      execSync("curl -fsSL https://bun.sh/install | bash", {
+        stdio: "inherit",
+        shell: true,
       });
     }
 
@@ -155,15 +168,17 @@ function installBun() {
       // Bun may be installed but not in PATH yet for this session
       // Try common installation paths
       const bunPaths = IS_WINDOWS
-        ? [join(homedir(), '.bun', 'bin', 'bun.exe')]
-        : [join(homedir(), '.bun', 'bin', 'bun'), '/usr/local/bin/bun'];
+        ? [join(homedir(), ".bun", "bin", "bun.exe")]
+        : [join(homedir(), ".bun", "bin", "bun"), "/usr/local/bin/bun"];
 
       for (const bunPath of bunPaths) {
         if (existsSync(bunPath)) {
           console.error(`✅ Bun installed at ${bunPath}`);
-          console.error('⚠️  Please restart your terminal or add Bun to PATH:');
+          console.error("⚠️  Please restart your terminal or add Bun to PATH:");
           if (IS_WINDOWS) {
-            console.error(`   $env:Path += ";${join(homedir(), '.bun', 'bin')}"`);
+            console.error(
+              `   $env:Path += ";${join(homedir(), ".bun", "bin")}"`,
+            );
           } else {
             console.error(`   export PATH="$HOME/.bun/bin:$PATH"`);
           }
@@ -171,19 +186,19 @@ function installBun() {
         }
       }
 
-      throw new Error('Bun installation completed but binary not found');
+      throw new Error("Bun installation completed but binary not found");
     }
   } catch (error) {
-    console.error('❌ Failed to install Bun automatically');
-    console.error('   Please install manually:');
+    console.error("❌ Failed to install Bun automatically");
+    console.error("   Please install manually:");
     if (IS_WINDOWS) {
-      console.error('   - winget install Oven-sh.Bun');
+      console.error("   - winget install Oven-sh.Bun");
       console.error('   - Or: powershell -c "irm bun.sh/install.ps1 | iex"');
     } else {
-      console.error('   - curl -fsSL https://bun.sh/install | bash');
-      console.error('   - Or: brew install oven-sh/bun/bun');
+      console.error("   - curl -fsSL https://bun.sh/install | bash");
+      console.error("   - Or: brew install oven-sh/bun/bun");
     }
-    console.error('   Then restart your terminal and try again.');
+    console.error("   Then restart your terminal and try again.");
     throw error;
   }
 }
@@ -192,22 +207,25 @@ function installBun() {
  * Install uv automatically based on platform
  */
 function installUv() {
-  console.error('🐍 Installing uv for Python/Chroma support...');
+  console.error("🐍 Installing uv for Python/Chroma support...");
 
   try {
     if (IS_WINDOWS) {
       // Windows: Use PowerShell installer
-      console.error('   Installing via PowerShell...');
-      execSync('powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"', {
-        stdio: 'inherit',
-        shell: true
-      });
+      console.error("   Installing via PowerShell...");
+      execSync(
+        'powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"',
+        {
+          stdio: "inherit",
+          shell: true,
+        },
+      );
     } else {
       // Unix/macOS: Use curl installer
-      console.error('   Installing via curl...');
-      execSync('curl -LsSf https://astral.sh/uv/install.sh | sh', {
-        stdio: 'inherit',
-        shell: true
+      console.error("   Installing via curl...");
+      execSync("curl -LsSf https://astral.sh/uv/install.sh | sh", {
+        stdio: "inherit",
+        shell: true,
       });
     }
 
@@ -220,15 +238,24 @@ function installUv() {
       // uv may be installed but not in PATH yet for this session
       // Try common installation paths
       const uvPaths = IS_WINDOWS
-        ? [join(homedir(), '.local', 'bin', 'uv.exe'), join(homedir(), '.cargo', 'bin', 'uv.exe')]
-        : [join(homedir(), '.local', 'bin', 'uv'), join(homedir(), '.cargo', 'bin', 'uv'), '/usr/local/bin/uv'];
+        ? [
+            join(homedir(), ".local", "bin", "uv.exe"),
+            join(homedir(), ".cargo", "bin", "uv.exe"),
+          ]
+        : [
+            join(homedir(), ".local", "bin", "uv"),
+            join(homedir(), ".cargo", "bin", "uv"),
+            "/usr/local/bin/uv",
+          ];
 
       for (const uvPath of uvPaths) {
         if (existsSync(uvPath)) {
           console.error(`✅ uv installed at ${uvPath}`);
-          console.error('⚠️  Please restart your terminal or add uv to PATH:');
+          console.error("⚠️  Please restart your terminal or add uv to PATH:");
           if (IS_WINDOWS) {
-            console.error(`   $env:Path += ";${join(homedir(), '.local', 'bin')}"`);
+            console.error(
+              `   $env:Path += ";${join(homedir(), ".local", "bin")}"`,
+            );
           } else {
             console.error(`   export PATH="$HOME/.local/bin:$PATH"`);
           }
@@ -236,19 +263,21 @@ function installUv() {
         }
       }
 
-      throw new Error('uv installation completed but binary not found');
+      throw new Error("uv installation completed but binary not found");
     }
   } catch (error) {
-    console.error('❌ Failed to install uv automatically');
-    console.error('   Please install manually:');
+    console.error("❌ Failed to install uv automatically");
+    console.error("   Please install manually:");
     if (IS_WINDOWS) {
-      console.error('   - winget install astral-sh.uv');
-      console.error('   - Or: powershell -c "irm https://astral.sh/uv/install.ps1 | iex"');
+      console.error("   - winget install astral-sh.uv");
+      console.error(
+        '   - Or: powershell -c "irm https://astral.sh/uv/install.ps1 | iex"',
+      );
     } else {
-      console.error('   - curl -LsSf https://astral.sh/uv/install.sh | sh');
-      console.error('   - Or: brew install uv (macOS)');
+      console.error("   - curl -LsSf https://astral.sh/uv/install.sh | sh");
+      console.error("   - Or: brew install uv (macOS)");
     }
-    console.error('   Then restart your terminal and try again.');
+    console.error("   Then restart your terminal and try again.");
     throw error;
   }
 }
@@ -257,10 +286,10 @@ function installUv() {
  * Check if dependencies need to be installed
  */
 function needsInstall() {
-  if (!existsSync(join(ROOT, 'node_modules'))) return true;
+  if (!existsSync(join(ROOT, "node_modules"))) return true;
   try {
-    const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8'));
-    const marker = JSON.parse(readFileSync(MARKER, 'utf-8'));
+    const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf-8"));
+    const marker = JSON.parse(readFileSync(MARKER, "utf-8"));
     return pkg.version !== marker.version || getBunVersion() !== marker.bun;
   } catch {
     return true;
@@ -268,34 +297,71 @@ function needsInstall() {
 }
 
 /**
- * Install dependencies using Bun
+ * Install dependencies using Bun with npm fallback
+ *
+ * Bun has issues with npm alias packages (e.g., string-width-cjs, strip-ansi-cjs)
+ * that are defined in package-lock.json. When bun fails with 404 errors for these
+ * packages, we fall back to npm which handles aliases correctly.
  */
 function installDeps() {
   const bunPath = getBunPath();
   if (!bunPath) {
-    throw new Error('Bun executable not found');
+    throw new Error("Bun executable not found");
   }
 
-  console.error('📦 Installing dependencies with Bun...');
+  console.error("📦 Installing dependencies with Bun...");
 
   // Quote path for Windows paths with spaces
-  const bunCmd = IS_WINDOWS && bunPath.includes(' ') ? `"${bunPath}"` : bunPath;
+  const bunCmd = IS_WINDOWS && bunPath.includes(" ") ? `"${bunPath}"` : bunPath;
 
+  let bunSucceeded = false;
   try {
-    execSync(`${bunCmd} install`, { cwd: ROOT, stdio: 'inherit', shell: IS_WINDOWS });
+    execSync(`${bunCmd} install`, {
+      cwd: ROOT,
+      stdio: "inherit",
+      shell: IS_WINDOWS,
+    });
+    bunSucceeded = true;
   } catch {
-    // Retry with force flag
-    execSync(`${bunCmd} install --force`, { cwd: ROOT, stdio: 'inherit', shell: IS_WINDOWS });
+    // First attempt failed, try with force flag
+    try {
+      execSync(`${bunCmd} install --force`, {
+        cwd: ROOT,
+        stdio: "inherit",
+        shell: IS_WINDOWS,
+      });
+      bunSucceeded = true;
+    } catch {
+      // Bun failed completely, will try npm fallback
+    }
+  }
+
+  // Fallback to npm if bun failed (handles npm alias packages correctly)
+  if (!bunSucceeded) {
+    console.error("⚠️  Bun install failed, falling back to npm...");
+    console.error("   (This can happen with npm alias packages like *-cjs)");
+    try {
+      execSync("npm install", {
+        cwd: ROOT,
+        stdio: "inherit",
+        shell: IS_WINDOWS,
+      });
+    } catch (npmError) {
+      throw new Error(`Both bun and npm install failed: ${npmError.message}`);
+    }
   }
 
   // Write version marker
-  const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8'));
-  writeFileSync(MARKER, JSON.stringify({
-    version: pkg.version,
-    bun: getBunVersion(),
-    uv: getUvVersion(),
-    installedAt: new Date().toISOString()
-  }));
+  const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf-8"));
+  writeFileSync(
+    MARKER,
+    JSON.stringify({
+      version: pkg.version,
+      bun: getBunVersion(),
+      uv: getUvVersion(),
+      installedAt: new Date().toISOString(),
+    }),
+  );
 }
 
 // Main execution
@@ -306,8 +372,8 @@ try {
 
     // Re-check after installation
     if (!isBunInstalled()) {
-      console.error('❌ Bun is required but not available in PATH');
-      console.error('   Please restart your terminal after installation');
+      console.error("❌ Bun is required but not available in PATH");
+      console.error("   Please restart your terminal after installation");
       process.exit(1);
     }
   }
@@ -318,8 +384,8 @@ try {
 
     // Re-check after installation
     if (!isUvInstalled()) {
-      console.error('❌ uv is required but not available in PATH');
-      console.error('   Please restart your terminal after installation');
+      console.error("❌ uv is required but not available in PATH");
+      console.error("   Please restart your terminal after installation");
       process.exit(1);
     }
   }
@@ -327,9 +393,9 @@ try {
   // Step 3: Install dependencies if needed
   if (needsInstall()) {
     installDeps();
-    console.error('✅ Dependencies installed');
+    console.error("✅ Dependencies installed");
   }
 } catch (e) {
-  console.error('❌ Installation failed:', e.message);
+  console.error("❌ Installation failed:", e.message);
   process.exit(1);
 }
