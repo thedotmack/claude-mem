@@ -35,6 +35,7 @@ async function main() {
         console.error(`Failed to restart: ${result.error}`);
         process.exit(1);
       }
+      break;
     }
 
     case 'status': {

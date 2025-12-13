@@ -22,7 +22,7 @@ Claude-Mem operates as a Claude Code plugin with five core components:
 |------------------------|-------------------------------------------|
 | **Language**           | TypeScript (ES2022, ESNext modules)       |
 | **Runtime**            | Node.js 18+                               |
-| **Database**           | SQLite 3 with better-sqlite3 driver       |
+| **Database**           | SQLite 3 with bun:sqlite driver           |
 | **Vector Store**       | ChromaDB (optional, for semantic search)  |
 | **HTTP Server**        | Express.js 4.18                           |
 | **Real-time**          | Server-Sent Events (SSE)                  |
@@ -205,7 +205,7 @@ Express.js HTTP server on port 37777 (configurable) with:
 See [Worker Service](/architecture/worker-service) for HTTP API and endpoints.
 
 ### 3. Database Layer
-SQLite3 with better-sqlite3 driver featuring:
+SQLite3 with bun:sqlite driver featuring:
 - FTS5 virtual tables for full-text search
 - SessionStore for CRUD operations
 - SessionSearch for FTS5 queries

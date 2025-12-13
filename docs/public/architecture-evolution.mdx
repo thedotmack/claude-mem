@@ -151,7 +151,7 @@ if (currentVersion !== installedVersion) {
 **Cached Check Logic**:
 1. Does `node_modules` exist?
 2. Does `.install-version` match `package.json` version?
-3. Is `better-sqlite3` present?
+3. Is `better-sqlite3` present? (Legacy: now uses bun:sqlite which requires no installation)
 
 **Impact**:
 - SessionStart hook: 2-5 seconds → 10ms (99.5% faster)

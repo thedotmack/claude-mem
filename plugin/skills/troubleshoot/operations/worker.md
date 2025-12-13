@@ -187,7 +187,6 @@ pm2 delete claude-mem-worker
    ```bash
    cd ~/.claude/plugins/marketplaces/thedotmack/
    ls node_modules/@anthropic-ai/claude-agent-sdk
-   ls node_modules/better-sqlite3
    ls node_modules/express
    ls node_modules/pm2
    ```

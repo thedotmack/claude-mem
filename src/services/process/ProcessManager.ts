@@ -25,6 +25,14 @@ interface PidInfo {
 
 export class ProcessManager {
   static async start(port: number): Promise<{ success: boolean; pid?: number; error?: string }> {
+    // Validate port range
+    if (isNaN(port) || port < 1024 || port > 65535) {
+      return {
+        success: false,
+        error: `Invalid port ${port}. Must be between 1024 and 65535`
+      };
+    }
+
     // Check if already running
     if (await this.isRunning()) {
       const info = this.getPidInfo();

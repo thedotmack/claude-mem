@@ -1,6 +1,7 @@
 import path from "path";
 import { homedir } from "os";
 import { spawnSync } from "child_process";
+import { existsSync, writeFileSync } from "fs";
 import { logger } from "../utils/logger.js";
 import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
 import { ProcessManager } from "../services/process/ProcessManager.js";
@@ -70,11 +71,17 @@ async function isWorkerHealthy(): Promise<boolean> {
  */
 async function startWorker(): Promise<boolean> {
   // Clean up legacy PM2 (one-time migration)
-  if (process.platform !== 'win32') {
+  const pm2MigratedMarker = path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), '.pm2-migrated');
+
+  if (process.platform !== 'win32' && !existsSync(pm2MigratedMarker)) {
     try {
       spawnSync('pm2', ['delete', 'claude-mem-worker'], { stdio: 'ignore' });
+      // Mark migration as complete
+      writeFileSync(pm2MigratedMarker, new Date().toISOString(), 'utf-8');
+      logger.debug('SYSTEM', 'PM2 cleanup completed and marked');
     } catch {
-      // PM2 not installed or process doesn't exist - ignore
+      // PM2 not installed or process doesn't exist - still mark as migrated
+      writeFileSync(pm2MigratedMarker, new Date().toISOString(), 'utf-8');
     }
   }
 

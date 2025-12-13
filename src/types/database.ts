@@ -1,6 +1,6 @@
 /**
  * TypeScript types for database query results
- * Provides type safety for better-sqlite3 query results
+ * Provides type safety for bun:sqlite query results
  */
 
 /**
