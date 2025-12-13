@@ -6,6 +6,54 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [7.1.0] - 2025-12-13
 
+## Security Fix: Localhost-Only Binding
+
+**BREAKING CHANGE**: Worker service now binds to `127.0.0.1` (localhost) by default instead of `0.0.0.0` (all interfaces).
+
+### Security Issue Fixed
+
+The worker service was previously binding to `0.0.0.0:37777` by default, exposing all API endpoints to the network without authentication. This posed security risks:
+- Unauthorized access to memory data from any network device
+- Potential data injection into the database
+- Settings modification from remote devices
+- Full access to Web Viewer UI from the network
+
+### Solution
+
+Default worker binding changed to `127.0.0.1` (localhost-only), with a new configurable setting `CLAUDE_MEM_WORKER_HOST` for users who need remote access.
+
+### Changes
+
+- **Core**: Added `CLAUDE_MEM_WORKER_HOST` setting with default value `127.0.0.1`
+- **Worker**: Modified `worker-service.ts` to bind to configured host address
+- **API**: Added host validation in `SettingsRoutes.ts` (IP address format check)
+- **UI**: Added host configuration field in Settings panel
+- **Docs**: Updated README.md and CLAUDE.md with new setting
+
+### Configuration
+
+**Default (secure):** localhost only
+```bash
+CLAUDE_MEM_WORKER_HOST=127.0.0.1
+```
+
+**Remote access (server deployments):**
+```bash
+CLAUDE_MEM_WORKER_HOST=0.0.0.0
+```
+
+Can be configured via:
+- `~/.claude-mem/settings.json`
+- Web Viewer UI Settings panel
+
+### Migration
+
+**Automatic**: Existing installations will use `127.0.0.1` on next worker restart. If you need remote access, set `CLAUDE_MEM_WORKER_HOST=0.0.0.0` in `~/.claude-mem/settings.json`.
+
+### Contributors
+
+Thanks to @7Sageer for identifying and fixing this security issue!
+
 ## Major Architectural Migration
 
 This release completely replaces PM2 with native Bun-based process management and migrates from better-sqlite3 to bun:sqlite.
