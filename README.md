@@ -398,6 +398,10 @@ If you're experiencing issues, describe the problem to Claude and the troublesho
 
 See [Troubleshooting Guide](https://docs.claude-mem.ai/troubleshooting) for complete solutions.
 
+### Windows Known Issues
+
+**Console Window Visibility**: On Windows, a console window may briefly appear when the worker service starts. This is a cosmetic issue that we're working to resolve. We've prioritized stability by removing a workaround that was causing libuv crashes. The window does not affect functionality and will be addressed in a future release when the MCP SDK provides proper window hiding support.
+
 ---
 
 ## Contributing
