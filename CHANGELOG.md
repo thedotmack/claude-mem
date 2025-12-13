@@ -4,6 +4,43 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [7.1.1] - 2025-12-12
+
+### Fixed
+
+**CRITICAL: Windows 11 Bun Auto-Install Broken**
+
+- **Chicken-and-Egg Problem**: v7.1.0 hooks called `bun smart-install.js`, but if Bun wasn't installed, the command failed with "bun is not recognized" before smart-install.js could run to install Bun
+- **Root Cause**: v7.1.0 migration removed Bun/uv auto-installation logic from smart-install.js
+- **Solution**:
+  - Changed SessionStart hook to use `node` (always available) for smart-install.js
+  - Restored Bun auto-installation logic: isBunInstalled(), installBun()
+  - Restored uv auto-installation for Chroma support
+  - Fresh Windows installations now work correctly
+
+**Path Quoting for Windows Usernames with Spaces**
+
+- Fixed `hooks.json` to quote all `${CLAUDE_PLUGIN_ROOT}` paths
+- Prevents SyntaxError for Windows users with spaces in usernames (e.g., "C:\Users\John Doe\...")
+
+### Added
+
+**Automatic Worker Restart on Version Updates**
+
+- Added `/api/version` endpoint to worker service
+- Added version checking in `ensureWorkerRunning()`:
+  - Compares plugin version with running worker version
+  - Automatically restarts worker when version mismatch detected
+  - Logs version mismatch for debugging
+- **Impact**: Users no longer need to manually restart worker after upgrades
+- **Critical for**: All future releases - eliminates connection errors from running old worker code
+
+### Notes
+
+- No manual actions required - worker auto-restarts on next session start
+- Fresh installs on Windows 11 now work out-of-box
+- All hooks now run with correct runtime (node for install, bun for execution)
+
 ## [7.1.0] - 2025-12-13
 
 ## Security Fix: Localhost-Only Binding
