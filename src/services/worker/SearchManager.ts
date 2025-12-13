@@ -166,10 +166,10 @@ export class SearchManager {
                 observations = this.sessionStore.getObservationsByIds(obsIds, obsOptions);
               }
               if (sessionIds.length > 0) {
-                sessions = this.sessionStore.getSessionSummariesByIds(sessionIds, { orderBy: 'date_desc', limit: options.limit });
+                sessions = this.sessionStore.getSessionSummariesByIds(sessionIds, { orderBy: 'date_desc', limit: options.limit, project: options.project });
               }
               if (promptIds.length > 0) {
-                prompts = this.sessionStore.getUserPromptsByIds(promptIds, { orderBy: 'date_desc', limit: options.limit });
+                prompts = this.sessionStore.getUserPromptsByIds(promptIds, { orderBy: 'date_desc', limit: options.limit, project: options.project });
               }
 
               logger.debug('SEARCH', 'Hydrated results from SQLite', { observations: observations.length, sessions: sessions.length, prompts: prompts.length });
@@ -198,6 +198,13 @@ export class SearchManager {
         const totalResults = observations.length + sessions.length + prompts.length;
 
         if (totalResults === 0) {
+          if (format === 'json') {
+            return {
+              observations: [],
+              sessions: [],
+              prompts: []
+            };
+          }
           return {
             content: [{
               type: 'text' as const,
@@ -230,6 +237,15 @@ export class SearchManager {
         const limitedResults = allResults.slice(0, options.limit || 20);
 
         // Format based on requested format
+        if (format === 'json') {
+          // Raw JSON format for exports
+          return {
+            observations,
+            sessions,
+            prompts
+          };
+        }
+
         let combinedText: string;
         if (format === 'index') {
           const header = `Found ${totalResults} result(s) matching "${query}" (${observations.length} obs, ${sessions.length} sessions, ${prompts.length} prompts):\n\n`;

@@ -39,6 +39,7 @@
           "usage/search-tools",
           "usage/claude-desktop",
           "usage/private-tags",
+          "usage/export-import",
           "beta-features"
         ]
       },

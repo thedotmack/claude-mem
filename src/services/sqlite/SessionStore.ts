@@ -811,26 +811,72 @@ export class SessionStore {
    */
   getObservationsByIds(
     ids: number[],
-    options: { orderBy?: 'date_desc' | 'date_asc'; limit?: number } = {}
+    options: { orderBy?: 'date_desc' | 'date_asc'; limit?: number; project?: string; type?: string | string[]; concepts?: string | string[]; files?: string | string[] } = {}
   ): ObservationRecord[] {
     if (ids.length === 0) return [];
 
-    const { orderBy = 'date_desc', limit } = options;
+    const { orderBy = 'date_desc', limit, project, type, concepts, files } = options;
     const orderClause = orderBy === 'date_asc' ? 'ASC' : 'DESC';
     const limitClause = limit ? `LIMIT ${limit}` : '';
 
     // Build placeholders for IN clause
     const placeholders = ids.map(() => '?').join(',');
+    const params: any[] = [...ids];
+    const additionalConditions: string[] = [];
+
+    // Apply project filter
+    if (project) {
+      additionalConditions.push('project = ?');
+      params.push(project);
+    }
+
+    // Apply type filter
+    if (type) {
+      if (Array.isArray(type)) {
+        const typePlaceholders = type.map(() => '?').join(',');
+        additionalConditions.push(`type IN (${typePlaceholders})`);
+        params.push(...type);
+      } else {
+        additionalConditions.push('type = ?');
+        params.push(type);
+      }
+    }
+
+    // Apply concepts filter
+    if (concepts) {
+      const conceptsList = Array.isArray(concepts) ? concepts : [concepts];
+      const conceptConditions = conceptsList.map(() =>
+        'EXISTS (SELECT 1 FROM json_each(concepts) WHERE value = ?)'
+      );
+      params.push(...conceptsList);
+      additionalConditions.push(`(${conceptConditions.join(' OR ')})`);
+    }
+
+    // Apply files filter
+    if (files) {
+      const filesList = Array.isArray(files) ? files : [files];
+      const fileConditions = filesList.map(() => {
+        return '(EXISTS (SELECT 1 FROM json_each(files_read) WHERE value LIKE ?) OR EXISTS (SELECT 1 FROM json_each(files_modified) WHERE value LIKE ?))';
+      });
+      filesList.forEach(file => {
+        params.push(`%${file}%`, `%${file}%`);
+      });
+      additionalConditions.push(`(${fileConditions.join(' OR ')})`);
+    }
+
+    const whereClause = additionalConditions.length > 0
+      ? `WHERE id IN (${placeholders}) AND ${additionalConditions.join(' AND ')}`
+      : `WHERE id IN (${placeholders})`;
 
     const stmt = this.db.prepare(`
       SELECT *
       FROM observations
-      WHERE id IN (${placeholders})
+      ${whereClause}
       ORDER BY created_at_epoch ${orderClause}
       ${limitClause}
     `);
 
-    return stmt.all(...ids) as ObservationRecord[];
+    return stmt.all(...params) as ObservationRecord[];
   }
 
   /**
@@ -1353,23 +1399,30 @@ export class SessionStore {
    */
   getSessionSummariesByIds(
     ids: number[],
-    options: { orderBy?: 'date_desc' | 'date_asc'; limit?: number } = {}
+    options: { orderBy?: 'date_desc' | 'date_asc'; limit?: number; project?: string } = {}
   ): SessionSummaryRecord[] {
     if (ids.length === 0) return [];
 
-    const { orderBy = 'date_desc', limit } = options;
+    const { orderBy = 'date_desc', limit, project } = options;
     const orderClause = orderBy === 'date_asc' ? 'ASC' : 'DESC';
     const limitClause = limit ? `LIMIT ${limit}` : '';
     const placeholders = ids.map(() => '?').join(',');
+    const params: any[] = [...ids];
+
+    // Apply project filter
+    const whereClause = project
+      ? `WHERE id IN (${placeholders}) AND project = ?`
+      : `WHERE id IN (${placeholders})`;
+    if (project) params.push(project);
 
     const stmt = this.db.prepare(`
       SELECT * FROM session_summaries
-      WHERE id IN (${placeholders})
+      ${whereClause}
       ORDER BY created_at_epoch ${orderClause}
       ${limitClause}
     `);
 
-    return stmt.all(...ids) as SessionSummaryRecord[];
+    return stmt.all(...params) as SessionSummaryRecord[];
   }
 
   /**
@@ -1378,14 +1431,19 @@ export class SessionStore {
    */
   getUserPromptsByIds(
     ids: number[],
-    options: { orderBy?: 'date_desc' | 'date_asc'; limit?: number } = {}
+    options: { orderBy?: 'date_desc' | 'date_asc'; limit?: number; project?: string } = {}
   ): UserPromptRecord[] {
     if (ids.length === 0) return [];
 
-    const { orderBy = 'date_desc', limit } = options;
+    const { orderBy = 'date_desc', limit, project } = options;
     const orderClause = orderBy === 'date_asc' ? 'ASC' : 'DESC';
     const limitClause = limit ? `LIMIT ${limit}` : '';
     const placeholders = ids.map(() => '?').join(',');
+    const params: any[] = [...ids];
+
+    // Apply project filter
+    const projectFilter = project ? 'AND s.project = ?' : '';
+    if (project) params.push(project);
 
     const stmt = this.db.prepare(`
       SELECT
@@ -1394,12 +1452,12 @@ export class SessionStore {
         s.sdk_session_id
       FROM user_prompts up
       JOIN sdk_sessions s ON up.claude_session_id = s.claude_session_id
-      WHERE up.id IN (${placeholders})
+      WHERE up.id IN (${placeholders}) ${projectFilter}
       ORDER BY up.created_at_epoch ${orderClause}
       ${limitClause}
     `);
 
-    return stmt.all(...ids) as UserPromptRecord[];
+    return stmt.all(...params) as UserPromptRecord[];
   }
 
   /**
