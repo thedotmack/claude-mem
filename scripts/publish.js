@@ -94,14 +94,14 @@ async function publish() {
 
     // Run build
     console.log('\n🔨 Building hooks...');
-    await execAsync('npm run build');
+    await execAsync('bun run build');
     console.log('✓ Build complete');
 
     // Run tests if they exist
     if (packageJson.scripts?.test) {
       console.log('\n🧪 Running tests...');
       try {
-        await execAsync('npm test');
+        await execAsync('bun test');
         console.log('✓ Tests passed');
       } catch (error) {
         console.error('❌ Tests failed:', error.message);

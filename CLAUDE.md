@@ -34,13 +34,13 @@ Claude-mem is a Claude Code plugin providing persistent memory across sessions. 
 
 ## Build Commands
 
-**Hooks only**: `npm run build && npm run sync-marketplace`
+**Hooks only**: `bun run build && bun run sync-marketplace`
 
-**Worker changes**: `npm run build && npm run sync-marketplace && npm run worker:restart`
+**Worker changes**: `bun run build && bun run sync-marketplace && bun run worker:restart`
 
-**Skills only**: `npm run sync-marketplace`
+**Skills only**: `bun run sync-marketplace`
 
-**Viewer UI**: `npm run build && npm run sync-marketplace && npm run worker:restart`
+**Viewer UI**: `bun run build && bun run sync-marketplace && bun run worker:restart`
 
 ## Configuration
 
@@ -83,11 +83,11 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 ## Quick Reference
 
 ```bash
-npm run build                 # Compile TypeScript
-npm run sync-marketplace      # Copy to ~/.claude/plugins
-npm run worker:restart        # Restart worker service
-npm run worker:status         # Check worker status
-npm run worker:logs           # View worker logs
+bun run build                 # Compile TypeScript
+bun run sync-marketplace      # Copy to ~/.claude/plugins
+bun run worker:restart        # Restart worker service
+bun run worker:status         # Check worker status
+bun run worker:logs           # View worker logs
 ```
 
 **Viewer UI**: http://localhost:37777

@@ -40,7 +40,7 @@ if (branch && branch !== 'main' && !isForce) {
   console.log('Options:');
   console.log('  1. Use UI at http://localhost:37777 to update beta');
   console.log('  2. Switch to stable in UI first, then run sync');
-  console.log('  3. Force rsync: npm run sync-marketplace:force');
+  console.log('  3. Force rsync: bun run sync-marketplace:force');
   console.log('');
   process.exit(1);
 }

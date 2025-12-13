@@ -433,7 +433,7 @@ async function main() {
     if (!workerAvailable) {
       happy_path_error__with_fallback('[mcp-server] WARNING: Worker not available at', WORKER_BASE_URL);
       happy_path_error__with_fallback('[mcp-server] Tools will fail until Worker is started');
-      happy_path_error__with_fallback('[mcp-server] Start Worker with: npm run worker:restart');
+      happy_path_error__with_fallback('[mcp-server] Start Worker with: bun run worker:restart');
     } else {
       happy_path_error__with_fallback('[mcp-server] Worker available at', WORKER_BASE_URL);
     }

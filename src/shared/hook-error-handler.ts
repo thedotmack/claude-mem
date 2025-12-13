@@ -7,7 +7,7 @@ export function handleWorkerError(error: any): never {
       error.name === 'TimeoutError' ||
       error.message?.includes('fetch failed')) {
     throw new Error(
-      "There's a problem with the worker. Try: npm run worker:restart"
+      "There's a problem with the worker. Try: bun run worker:restart"
     );
   }
   throw error;

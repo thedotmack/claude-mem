@@ -123,8 +123,8 @@ export async function ensureWorkerRunning(): Promise<void> {
     const port = getWorkerPort();
     throw new Error(
       `Worker service failed to start on port ${port}.\n\n` +
-      `To start manually, run: npm run worker:start\n` +
-      `If already running, try: npm run worker:restart`
+      `To start manually, run: bun run worker:start\n` +
+      `If already running, try: bun run worker:restart`
     );
   }
 }

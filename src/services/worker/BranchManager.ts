@@ -163,14 +163,14 @@ export async function switchBranch(targetBranch: string): Promise<SwitchResult> 
     logger.debug('BRANCH', 'Pulling latest');
     execGit(`pull origin ${targetBranch}`);
 
-    // 5. Clear install marker and run npm install
+    // 5. Clear install marker and run bun install
     const installMarker = join(INSTALLED_PLUGIN_PATH, '.install-version');
     if (existsSync(installMarker)) {
       unlinkSync(installMarker);
     }
 
-    logger.debug('BRANCH', 'Running npm install');
-    execShell('npm install', NPM_INSTALL_TIMEOUT_MS);
+    logger.debug('BRANCH', 'Running bun install');
+    execShell('bun install', NPM_INSTALL_TIMEOUT_MS);
 
     logger.success('BRANCH', 'Branch switch complete', {
       branch: targetBranch
@@ -228,7 +228,7 @@ export async function pullUpdates(): Promise<SwitchResult> {
     if (existsSync(installMarker)) {
       unlinkSync(installMarker);
     }
-    execShell('npm install', NPM_INSTALL_TIMEOUT_MS);
+    execShell('bun install', NPM_INSTALL_TIMEOUT_MS);
 
     logger.success('BRANCH', 'Updates pulled', { branch: info.branch });
 

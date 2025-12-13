@@ -368,17 +368,17 @@ See [Configuration Guide](https://docs.claude-mem.ai/configuration) for details.
 # Clone and build
 git clone https://github.com/thedotmack/claude-mem.git
 cd claude-mem
-npm install
-npm run build
+bun install
+bun run build
 
 # Run tests
-npm test
+bun test
 
 # Start worker
-npm run worker:start
+bun run worker:start
 
 # View logs
-npm run worker:logs
+bun run worker:logs
 ```
 
 For shorter local workflows, a `Makefile` mirrors these scripts:
@@ -403,8 +403,8 @@ If you're experiencing issues, describe the problem to Claude and the troublesho
 
 **Common Issues:**
 
-- Worker not starting → `npm run worker:restart`
-- No context appearing → `npm run test:context`
+- Worker not starting → `bun run worker:restart`
+- No context appearing → `bun run test:context`
 - Database issues → `sqlite3 ~/.claude-mem/claude-mem.db "PRAGMA integrity_check;"`
 - Search not working → Check FTS5 tables exist
 
