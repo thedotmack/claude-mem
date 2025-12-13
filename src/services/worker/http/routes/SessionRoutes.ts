@@ -349,6 +349,24 @@ export class SessionRoutes extends BaseRouteHandler {
       )
     });
 
+    // Record execution trace for this tool use
+    const traceManager = this.workerService.getTraceManager();
+    if (traceManager) {
+      const session = this.dbManager.getSessionStore().getSessionById(sessionDbId);
+      if (session?.sdk_session_id) {
+        traceManager.recordTrace({
+          sdk_session_id: session.sdk_session_id,
+          prompt_number: promptNumber,
+          step_order: 0, // Auto-incremented by TraceManager
+          trace_type: 'tool',
+          name: tool_name,
+          source: cwd || undefined,
+          input_summary: cleanedToolInput.substring(0, 200),
+          output_summary: cleanedToolResponse.substring(0, 200)
+        });
+      }
+    }
+
     // Ensure SDK agent is running
     this.ensureGeneratorRunning(sessionDbId, 'observation');
 

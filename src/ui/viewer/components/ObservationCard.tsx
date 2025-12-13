@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Observation } from '../types';
+import React, { useState, useEffect } from 'react';
+import { Observation, ExecutionTrace } from '../types';
 import { formatDate } from '../utils/formatters';
 
 interface ObservationCardProps {
@@ -33,6 +33,9 @@ function stripProjectRoot(filePath: string): string {
 export function ObservationCard({ observation }: ObservationCardProps) {
   const [showFacts, setShowFacts] = useState(false);
   const [showNarrative, setShowNarrative] = useState(false);
+  const [showTraces, setShowTraces] = useState(false);
+  const [traces, setTraces] = useState<ExecutionTrace[]>([]);
+  const [tracesLoading, setTracesLoading] = useState(false);
   const date = formatDate(observation.created_at_epoch);
 
   // Parse JSON fields
@@ -43,6 +46,23 @@ export function ObservationCard({ observation }: ObservationCardProps) {
 
   // Show facts toggle if there are facts, concepts, or files
   const hasFactsContent = facts.length > 0 || concepts.length > 0 || filesRead.length > 0 || filesModified.length > 0;
+
+  // Fetch traces when toggle is enabled
+  useEffect(() => {
+    if (showTraces && traces.length === 0 && !tracesLoading) {
+      setTracesLoading(true);
+      const promptNum = observation.prompt_number || 1;
+      fetch(`/api/traces/${observation.sdk_session_id}/${promptNum}`)
+        .then(res => res.json())
+        .then(data => {
+          setTraces(data.traces || []);
+          setTracesLoading(false);
+        })
+        .catch(() => {
+          setTracesLoading(false);
+        });
+    }
+  }, [showTraces, observation.sdk_session_id, observation.prompt_number, traces.length, tracesLoading]);
 
   return (
     <div className="card">
@@ -60,7 +80,7 @@ export function ObservationCard({ observation }: ObservationCardProps) {
               className={`view-mode-toggle ${showFacts ? 'active' : ''}`}
               onClick={() => {
                 setShowFacts(!showFacts);
-                if (!showFacts) setShowNarrative(false); // Turn off narrative when turning on facts
+                if (!showFacts) { setShowNarrative(false); setShowTraces(false); }
               }}
             >
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -75,7 +95,7 @@ export function ObservationCard({ observation }: ObservationCardProps) {
               className={`view-mode-toggle ${showNarrative ? 'active' : ''}`}
               onClick={() => {
                 setShowNarrative(!showNarrative);
-                if (!showNarrative) setShowFacts(false); // Turn off facts when turning on narrative
+                if (!showNarrative) { setShowFacts(false); setShowTraces(false); }
               }}
             >
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -87,6 +107,21 @@ export function ObservationCard({ observation }: ObservationCardProps) {
               <span>narrative</span>
             </button>
           )}
+          {/* Traces toggle */}
+          <button
+            className={`view-mode-toggle ${showTraces ? 'active' : ''}`}
+            onClick={() => {
+              setShowTraces(!showTraces);
+              if (!showTraces) { setShowFacts(false); setShowNarrative(false); }
+            }}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 20V10"></path>
+              <path d="M18 20V4"></path>
+              <path d="M6 20v-4"></path>
+            </svg>
+            <span>traces</span>
+          </button>
         </div>
       </div>
 
@@ -95,7 +130,7 @@ export function ObservationCard({ observation }: ObservationCardProps) {
 
       {/* Content based on toggle state */}
       <div className="view-mode-content">
-        {!showFacts && !showNarrative && observation.subtitle && (
+        {!showFacts && !showNarrative && !showTraces && observation.subtitle && (
           <div className="card-subtitle">{observation.subtitle}</div>
         )}
         {showFacts && facts.length > 0 && (
@@ -108,6 +143,27 @@ export function ObservationCard({ observation }: ObservationCardProps) {
         {showNarrative && observation.narrative && (
           <div className="narrative">
             {observation.narrative}
+          </div>
+        )}
+        {showTraces && (
+          <div className="traces-container">
+            {tracesLoading && <div className="traces-loading">Loading traces...</div>}
+            {!tracesLoading && traces.length === 0 && (
+              <div className="traces-empty">No traces recorded for this prompt</div>
+            )}
+            {!tracesLoading && traces.length > 0 && (
+              <ul className="traces-list">
+                {traces.map((trace) => (
+                  <li key={trace.id} className={`trace-item trace-type-${trace.trace_type}`}>
+                    <span className="trace-badge">{trace.trace_type}</span>
+                    <span className="trace-name">{trace.name}</span>
+                    {trace.duration_ms && (
+                      <span className="trace-duration">{trace.duration_ms}ms</span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         )}
       </div>
@@ -145,3 +201,4 @@ export function ObservationCard({ observation }: ObservationCardProps) {
     </div>
   );
 }
+
