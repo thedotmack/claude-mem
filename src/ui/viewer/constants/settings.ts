@@ -6,6 +6,7 @@ export const DEFAULT_SETTINGS = {
   CLAUDE_MEM_MODEL: 'claude-haiku-4-5',
   CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
   CLAUDE_MEM_WORKER_PORT: '37777',
+  CLAUDE_MEM_WORKER_HOST: '127.0.0.1',
 
   // Token Economics (all true for backwards compatibility)
   CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: 'true',

@@ -58,6 +58,7 @@ export interface Settings {
   CLAUDE_MEM_MODEL: string;
   CLAUDE_MEM_CONTEXT_OBSERVATIONS: string;
   CLAUDE_MEM_WORKER_PORT: string;
+  CLAUDE_MEM_WORKER_HOST: string;
 
   // Token Economics Display
   CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS?: string;
