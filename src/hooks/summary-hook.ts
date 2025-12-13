@@ -17,6 +17,7 @@ import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { happy_path_error__with_fallback } from '../utils/silent-debug.js';
 import { handleWorkerError } from '../shared/hook-error-handler.js';
 import { extractLastMessage } from '../shared/transcript-parser.js';
+import { getWorkerRestartInstructions } from '../utils/error-messages.js';
 
 export interface StopInput {
   session_id: string;
@@ -72,7 +73,7 @@ async function summaryHook(input?: StopInput): Promise<void> {
       logger.failure('HOOK', 'Failed to generate summary', {
         status: response.status
       }, errorText);
-      throw new Error(`Failed to request summary from worker: ${response.status} ${errorText}`);
+      throw new Error(getWorkerRestartInstructions({ includeSkillFallback: true }));
     }
 
     logger.debug('HOOK', 'Summary request sent successfully');

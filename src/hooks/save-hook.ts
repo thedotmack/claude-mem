@@ -13,6 +13,7 @@ import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { happy_path_error__with_fallback } from '../utils/silent-debug.js';
 import { handleWorkerError } from '../shared/hook-error-handler.js';
+import { getWorkerRestartInstructions } from '../utils/error-messages.js';
 
 export interface PostToolUseInput {
   session_id: string;
@@ -67,7 +68,7 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
       logger.failure('HOOK', 'Failed to send observation', {
         status: response.status
       }, errorText);
-      throw new Error(`Failed to send observation to worker: ${response.status} ${errorText}`);
+      throw new Error(getWorkerRestartInstructions({ includeSkillFallback: true }));
     }
 
     logger.debug('HOOK', 'Observation sent successfully', { toolName: tool_name });

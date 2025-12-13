@@ -9,6 +9,7 @@
 import { basename } from "path";
 import { ensureWorkerRunning, getWorkerPort } from "../shared/worker-utils.js";
 import { HOOK_EXIT_CODES } from "../shared/hook-constants.js";
+import { getWorkerRestartInstructions } from "../utils/error-messages.js";
 
 try {
   // Ensure worker is running
@@ -24,7 +25,7 @@ try {
   );
 
   if (!response.ok) {
-    throw new Error(`Worker error ${response.status}`);
+    throw new Error(getWorkerRestartInstructions({ includeSkillFallback: true }));
   }
 
   const output = await response.text();

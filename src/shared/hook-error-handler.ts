@@ -1,3 +1,5 @@
+import { getWorkerRestartInstructions } from '../utils/error-messages.js';
+
 /**
  * Handles fetch errors by providing user-friendly messages for connection issues
  * @throws Error with helpful message if worker is unreachable, re-throws original otherwise
@@ -8,9 +10,7 @@ export function handleWorkerError(error: any): never {
       error.name === 'TimeoutError' ||
       error.message?.includes('fetch failed') ||
       error.message?.includes('Unable to connect')) {
-    throw new Error(
-      "There's a problem with the worker. Try: npm run worker:restart"
-    );
+    throw new Error(getWorkerRestartInstructions());
   }
   throw error;
 }

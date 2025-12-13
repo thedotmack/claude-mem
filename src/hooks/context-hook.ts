@@ -11,6 +11,7 @@ import { stdin } from "process";
 import { ensureWorkerRunning, getWorkerPort } from "../shared/worker-utils.js";
 import { HOOK_TIMEOUTS } from "../shared/hook-constants.js";
 import { handleWorkerError } from "../shared/hook-error-handler.js";
+import { getWorkerRestartInstructions } from "../utils/error-messages.js";
 
 export interface SessionStartInput {
   session_id: string;
@@ -34,7 +35,7 @@ async function contextHook(input?: SessionStartInput): Promise<string> {
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`Failed to fetch context: ${response.status} ${errorText}`);
+      throw new Error(getWorkerRestartInstructions({ includeSkillFallback: true }));
     }
 
     const result = await response.text();
