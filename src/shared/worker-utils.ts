@@ -1,7 +1,7 @@
 import path from "path";
 import { homedir } from "os";
 import { spawnSync } from "child_process";
-import { existsSync, writeFileSync } from "fs";
+import { existsSync, writeFileSync, readFileSync } from "fs";
 import { logger } from "../utils/logger.js";
 import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
 import { ProcessManager } from "../services/process/ProcessManager.js";
@@ -76,6 +76,74 @@ async function isWorkerHealthy(): Promise<boolean> {
 }
 
 /**
+ * Get the current plugin version from package.json
+ */
+function getPluginVersion(): string | null {
+  try {
+    const packageJsonPath = path.join(MARKETPLACE_ROOT, 'package.json');
+    const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
+    return packageJson.version;
+  } catch (error) {
+    logger.debug('SYSTEM', 'Failed to read plugin version', {
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return null;
+  }
+}
+
+/**
+ * Get the running worker's version from the API
+ */
+async function getWorkerVersion(): Promise<string | null> {
+  try {
+    const port = getWorkerPort();
+    const response = await fetch(`http://127.0.0.1:${port}/api/version`, {
+      signal: AbortSignal.timeout(HEALTH_CHECK_TIMEOUT_MS)
+    });
+    if (!response.ok) return null;
+    const data = await response.json() as { version: string };
+    return data.version;
+  } catch (error) {
+    logger.debug('SYSTEM', 'Failed to get worker version', {
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return null;
+  }
+}
+
+/**
+ * Check if worker version matches plugin version
+ * If mismatch detected, restart the worker automatically
+ */
+async function ensureWorkerVersionMatches(): Promise<void> {
+  const pluginVersion = getPluginVersion();
+  const workerVersion = await getWorkerVersion();
+
+  if (!pluginVersion || !workerVersion) {
+    // Can't determine versions, skip check
+    return;
+  }
+
+  if (pluginVersion !== workerVersion) {
+    logger.info('SYSTEM', 'Worker version mismatch detected - restarting worker', {
+      pluginVersion,
+      workerVersion
+    });
+
+    // Restart the worker
+    await ProcessManager.restart(getWorkerPort());
+
+    // Give it a moment to start
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
+    // Verify it's healthy
+    if (!await isWorkerHealthy()) {
+      logger.error('SYSTEM', 'Worker failed to restart after version mismatch');
+    }
+  }
+}
+
+/**
  * Start the worker service using ProcessManager
  * Handles both Unix (Bun) and Windows (compiled exe) platforms
  */
@@ -113,10 +181,13 @@ async function startWorker(): Promise<boolean> {
 /**
  * Ensure worker service is running
  * Checks health and auto-starts if not running
+ * Also ensures worker version matches plugin version
  */
 export async function ensureWorkerRunning(): Promise<void> {
   // Check if already healthy
   if (await isWorkerHealthy()) {
+    // Worker is healthy, but check if version matches
+    await ensureWorkerVersionMatches();
     return;
   }
 
@@ -126,6 +197,7 @@ export async function ensureWorkerRunning(): Promise<void> {
   // Final health check before throwing error
   // Worker might be already running but was temporarily unresponsive
   if (!started && await isWorkerHealthy()) {
+    await ensureWorkerVersionMatches();
     return;
   }
 

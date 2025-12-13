@@ -132,6 +132,22 @@ export class WorkerService {
       res.status(200).json({ status: 'ok' });
     });
 
+    // Version endpoint - returns the worker's current version
+    this.app.get('/api/version', (_req, res) => {
+      try {
+        // Read version from marketplace package.json
+        const { homedir } = require('os');
+        const { readFileSync } = require('fs');
+        const marketplaceRoot = path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
+        const packageJsonPath = path.join(marketplaceRoot, 'package.json');
+        const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
+        res.status(200).json({ version: packageJson.version });
+      } catch (error) {
+        logger.error('SYSTEM', 'Failed to read version', {}, error as Error);
+        res.status(500).json({ error: 'Failed to read version' });
+      }
+    });
+
     // Admin endpoints for process management
     this.app.post('/api/admin/restart', async (_req, res) => {
       res.json({ status: 'restarting' });
