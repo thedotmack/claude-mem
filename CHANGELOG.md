@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [7.1.5] - 2025-12-13
+
+## What's Changed
+
+* fix: Use getWorkerHost() instead of hardcoded localhost in MCP server (#276)
+
+### Bug Fix
+Fixes Windows IPv6 issue where `localhost` resolves to `::1` (IPv6) but worker binds to `127.0.0.1` (IPv4), causing MCP tool connections to fail.
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.1.4...v7.1.5
+
 ## [7.1.4] - 2025-12-13
 
 ## What's Changed
