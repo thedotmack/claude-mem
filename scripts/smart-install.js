@@ -2,8 +2,8 @@
 /**
  * Smart Install Script for claude-mem
  *
- * Ensures Bun runtime is installed (auto-installs if missing)
- * and handles dependency installation when needed.
+ * Ensures Bun runtime and uv (Python package manager) are installed
+ * (auto-installs if missing) and handles dependency installation when needed.
  */
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { execSync, spawnSync } from 'child_process';
@@ -36,6 +36,38 @@ function isBunInstalled() {
 function getBunVersion() {
   try {
     const result = spawnSync('bun', ['--version'], {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      shell: IS_WINDOWS
+    });
+    return result.status === 0 ? result.stdout.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Check if uv is installed and accessible
+ */
+function isUvInstalled() {
+  try {
+    const result = spawnSync('uv', ['--version'], {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      shell: IS_WINDOWS
+    });
+    return result.status === 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Get uv version if installed
+ */
+function getUvVersion() {
+  try {
+    const result = spawnSync('uv', ['--version'], {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
       shell: IS_WINDOWS
@@ -112,6 +144,71 @@ function installBun() {
 }
 
 /**
+ * Install uv automatically based on platform
+ */
+function installUv() {
+  console.error('🐍 Installing uv for Python/Chroma support...');
+
+  try {
+    if (IS_WINDOWS) {
+      // Windows: Use PowerShell installer
+      console.error('   Installing via PowerShell...');
+      execSync('powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"', {
+        stdio: 'inherit',
+        shell: true
+      });
+    } else {
+      // Unix/macOS: Use curl installer
+      console.error('   Installing via curl...');
+      execSync('curl -LsSf https://astral.sh/uv/install.sh | sh', {
+        stdio: 'inherit',
+        shell: true
+      });
+    }
+
+    // Verify installation
+    if (isUvInstalled()) {
+      const version = getUvVersion();
+      console.error(`✅ uv ${version} installed successfully`);
+      return true;
+    } else {
+      // uv may be installed but not in PATH yet for this session
+      // Try common installation paths
+      const uvPaths = IS_WINDOWS
+        ? [join(homedir(), '.local', 'bin', 'uv.exe'), join(homedir(), '.cargo', 'bin', 'uv.exe')]
+        : [join(homedir(), '.local', 'bin', 'uv'), join(homedir(), '.cargo', 'bin', 'uv'), '/usr/local/bin/uv'];
+
+      for (const uvPath of uvPaths) {
+        if (existsSync(uvPath)) {
+          console.error(`✅ uv installed at ${uvPath}`);
+          console.error('⚠️  Please restart your terminal or add uv to PATH:');
+          if (IS_WINDOWS) {
+            console.error(`   $env:Path += ";${join(homedir(), '.local', 'bin')}"`);
+          } else {
+            console.error(`   export PATH="$HOME/.local/bin:$PATH"`);
+          }
+          return true;
+        }
+      }
+
+      throw new Error('uv installation completed but binary not found');
+    }
+  } catch (error) {
+    console.error('❌ Failed to install uv automatically');
+    console.error('   Please install manually:');
+    if (IS_WINDOWS) {
+      console.error('   - winget install astral-sh.uv');
+      console.error('   - Or: powershell -c "irm https://astral.sh/uv/install.ps1 | iex"');
+    } else {
+      console.error('   - curl -LsSf https://astral.sh/uv/install.sh | sh');
+      console.error('   - Or: brew install uv (macOS)');
+    }
+    console.error('   Then restart your terminal and try again.');
+    throw error;
+  }
+}
+
+/**
  * Check if dependencies need to be installed
  */
 function needsInstall() {
@@ -142,13 +239,14 @@ function installDeps() {
   writeFileSync(MARKER, JSON.stringify({
     version: pkg.version,
     bun: getBunVersion(),
+    uv: getUvVersion(),
     installedAt: new Date().toISOString()
   }));
 }
 
 // Main execution
 try {
-  // Step 1: Ensure Bun is installed
+  // Step 1: Ensure Bun is installed (REQUIRED)
   if (!isBunInstalled()) {
     installBun();
 
@@ -160,7 +258,19 @@ try {
     }
   }
 
-  // Step 2: Install dependencies if needed
+  // Step 2: Ensure uv is installed (REQUIRED for vector search)
+  if (!isUvInstalled()) {
+    installUv();
+
+    // Re-check after installation
+    if (!isUvInstalled()) {
+      console.error('❌ uv is required but not available in PATH');
+      console.error('   Please restart your terminal after installation');
+      process.exit(1);
+    }
+  }
+
+  // Step 3: Install dependencies if needed
   if (needsInstall()) {
     installDeps();
     console.error('✅ Dependencies installed');

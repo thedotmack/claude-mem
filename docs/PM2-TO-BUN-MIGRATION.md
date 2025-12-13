@@ -179,7 +179,7 @@ npm run worker:logs     # View logs
 
 The migration system uses a marker-based approach to perform PM2 cleanup exactly once.
 
-**Implementation**: `src/shared/worker-utils.ts:72-86`
+**Implementation**: `src/shared/worker-utils.ts:73-86`
 
 ```typescript
 // Clean up legacy PM2 (one-time migration)
@@ -352,7 +352,6 @@ npm run sync-marketplace
 4. **Migration Check**:
    ```
    startWorker() checks:
-   - Platform: Mac/Linux/Windows?
    - Marker: ~/.claude-mem/.pm2-migrated exists? NO
    ```
 
@@ -462,15 +461,7 @@ npm run worker:logs     # tail -f logs/worker-YYYY-MM-DD.log
    Exists: NO
    ```
 
-2. **Platform Check**:
-   ```
-   Platform: darwin
-   Condition: process.platform !== 'win32'
-   Result: TRUE (not Windows)
-   Action: Proceed to PM2 cleanup
-   ```
-
-3. **PM2 Cleanup**:
+2. **PM2 Cleanup**:
    ```bash
    Command: pm2 delete claude-mem-worker
 
@@ -487,14 +478,14 @@ npm run worker:logs     # tail -f logs/worker-YYYY-MM-DD.log
       → Error ignored (catch block)
    ```
 
-4. **Marker Creation**:
+3. **Marker Creation**:
    ```
    File: ~/.claude-mem/.pm2-migrated
    Content: 2025-12-13T00:18:39.673Z
    Created: Regardless of PM2 cleanup success/failure
    ```
 
-5. **New Worker**:
+4. **New Worker**:
    ```bash
    Spawn: bun plugin/scripts/worker-cli.js start 37777
    Detached: true (process runs independently)
@@ -517,7 +508,6 @@ npm run worker:logs     # tail -f logs/worker-YYYY-MM-DD.log
 
 **First Session**:
 - Marker check → Missing
-- Platform check → Pass (not Windows)
 - PM2 cleanup → Attempted
 - Marker created → `~/.claude-mem/.pm2-migrated`
 
@@ -1187,39 +1177,7 @@ if (isRunning) {
 // Prevents double-start
 ```
 
-### Scenario 5: Windows Platform Detection Fails
-
-**Symptoms**:
-- Windows system attempts PM2 cleanup
-- Errors in logs about PM2 not found
-- Migration marker created on Windows
-
-**Diagnosis**:
-```bash
-# Check platform detection
-node -e "console.log(process.platform)"
-# Should output: win32
-
-# Check marker file (shouldn't exist on Windows)
-dir %USERPROFILE%\.claude-mem\.pm2-migrated
-```
-
-**Cause**:
-- `process.platform` returns unexpected value
-- Code running in WSL (reports 'linux' not 'win32')
-- Environment misconfiguration
-
-**Resolution**:
-```bash
-# If running in WSL, this is expected
-# WSL reports 'linux' → PM2 cleanup runs
-# This is correct behavior (treat WSL as Linux)
-
-# If native Windows reporting wrong platform:
-# File bug report (platform detection broken)
-```
-
-### Scenario 6: Health Check Fails (Worker Running but Unhealthy)
+### Scenario 5: Health Check Fails (Worker Running but Unhealthy)
 
 **Symptoms**:
 - Worker process exists
@@ -1271,7 +1229,7 @@ curl http://localhost:37777/health
 # Should return: {"status":"healthy"}
 ```
 
-### Scenario 7: Fresh Install (Never Had PM2)
+### Scenario 6: Fresh Install (Never Had PM2)
 
 **Symptoms**:
 - User installs claude-mem 7.0.10+ for first time
@@ -1293,19 +1251,18 @@ cat ~/.claude-mem/.pm2-migrated
 ```
 First hook trigger:
 1. Marker check: Missing
-2. Platform check: Mac/Linux
-3. PM2 cleanup: Attempted
-4. Error: "command not found: pm2"
-5. Catch block: Error ignored
-6. Marker creation: Success
-7. Worker start: Success
+2. PM2 cleanup: Attempted
+3. Error: "command not found: pm2"
+4. Catch block: Error ignored
+5. Marker creation: Success
+6. Worker start: Success
 
 Result: Normal startup, marker created, no issues
 ```
 
 **No Action Needed**: This is expected and correct behavior.
 
-### Scenario 8: Manual Marker Deletion
+### Scenario 7: Manual Marker Deletion
 
 **Symptoms**:
 - User deletes `.pm2-migrated` file
@@ -1322,13 +1279,12 @@ ls ~/.claude-mem/.pm2-migrated
 ```
 Next hook trigger:
 1. Marker check: Missing
-2. Platform check: Mac/Linux
-3. PM2 cleanup: Attempted
-4. Result: No PM2 worker exists (already cleaned)
-5. Error: "process claude-mem-worker not found"
-6. Catch block: Ignored
-7. Marker recreation: Success
-8. Worker start: Normal
+2. PM2 cleanup: Attempted
+3. Result: No PM2 worker exists (already cleaned)
+4. Error: "process claude-mem-worker not found"
+5. Catch block: Ignored
+6. Marker recreation: Success
+7. Worker start: Normal
 
 Result: No harm done, marker recreated
 ```
@@ -1487,7 +1443,7 @@ npm test -- src/services/process/ProcessManager.test.ts
 
 **Migration Marker Logic**:
 ```typescript
-// src/shared/worker-utils.ts:76-86
+// src/shared/worker-utils.ts:74-86
 const pm2MigratedMarker = join(DATA_DIR, '.pm2-migrated');
 
 if (!existsSync(pm2MigratedMarker)) {

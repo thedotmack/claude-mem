@@ -77,6 +77,7 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 ## Requirements
 
 - **Bun** >= 1.0 (all platforms - auto-installed if missing)
+- **uv** (all platforms - auto-installed if missing, provides Python for Chroma)
 - Node.js >= 18 (build tools only)
 
 ## Quick Reference
