@@ -92,3 +92,10 @@ npm run worker:logs           # View worker logs
 
 **Viewer UI**: http://localhost:37777
 **Worker Logs**: `~/.claude-mem/logs/worker-YYYY-MM-DD.log`
+
+## Documentation
+
+**Public Docs**: https://docs.claude-mem.ai (Mintlify)
+**Source**: `docs/public/` - MDX files, edit `docs.json` for navigation
+**Deploy**: Auto-deploys from GitHub on push to main
+**Local Dev**: `cd docs/public && npx mintlify dev`
