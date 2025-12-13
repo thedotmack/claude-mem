@@ -1,6 +1,6 @@
 # PM2 to Bun Migration: Complete Technical Documentation
 
-**Version**: 7.0.10+
+**Version**: 7.1.0
 **Date**: December 2025
 **Migration Type**: Process Management (PM2 → Bun) + Database Driver (better-sqlite3 → bun:sqlite)
 
