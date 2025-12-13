@@ -4,8 +4,10 @@
  */
 export function handleWorkerError(error: any): never {
   if (error.cause?.code === 'ECONNREFUSED' ||
+      error.code === 'ConnectionRefused' ||  // Bun-specific error format
       error.name === 'TimeoutError' ||
-      error.message?.includes('fetch failed')) {
+      error.message?.includes('fetch failed') ||
+      error.message?.includes('Unable to connect')) {
     throw new Error(
       "There's a problem with the worker. Try: npm run worker:restart"
     );

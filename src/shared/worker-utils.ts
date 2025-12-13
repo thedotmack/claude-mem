@@ -194,13 +194,6 @@ export async function ensureWorkerRunning(): Promise<void> {
   // Try to start the worker
   const started = await startWorker();
 
-  // Final health check before throwing error
-  // Worker might be already running but was temporarily unresponsive
-  if (!started && await isWorkerHealthy()) {
-    await ensureWorkerVersionMatches();
-    return;
-  }
-
   if (!started) {
     const port = getWorkerPort();
     throw new Error(
@@ -209,4 +202,22 @@ export async function ensureWorkerRunning(): Promise<void> {
       `If already running, try: npm run worker:restart`
     );
   }
+
+  // Wait for worker to become responsive after starting
+  // Try up to 5 times with 500ms delays (2.5 seconds total)
+  for (let i = 0; i < 5; i++) {
+    await new Promise(resolve => setTimeout(resolve, 500));
+    if (await isWorkerHealthy()) {
+      await ensureWorkerVersionMatches();
+      return;
+    }
+  }
+
+  // Worker started but isn't responding
+  const port = getWorkerPort();
+  logger.error('SYSTEM', 'Worker started but not responding to health checks');
+  throw new Error(
+    `Worker service started but is not responding on port ${port}.\n\n` +
+    `Try: npm run worker:restart`
+  );
 }
