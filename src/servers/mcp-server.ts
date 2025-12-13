@@ -15,13 +15,14 @@ import {
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { happy_path_error__with_fallback } from '../utils/silent-debug.js';
-import { getWorkerPort } from '../shared/worker-utils.js';
+import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
 
 /**
  * Worker HTTP API configuration
  */
 const WORKER_PORT = getWorkerPort();
-const WORKER_BASE_URL = `http://localhost:${WORKER_PORT}`;
+const WORKER_HOST = getWorkerHost();
+const WORKER_BASE_URL = `http://${WORKER_HOST}:${WORKER_PORT}`;
 
 /**
  * Map tool names to Worker HTTP endpoints
