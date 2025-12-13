@@ -69,12 +69,14 @@ cat plugin/hooks/hooks.json
 
 #### 3. Data Directory Location
 
-v4.0.0+ stores data in `${CLAUDE_PLUGIN_ROOT}/data/`:
-- Database: `${CLAUDE_PLUGIN_ROOT}/data/claude-mem.db`
-- Worker port file: `${CLAUDE_PLUGIN_ROOT}/data/worker.port`
-- Logs: `${CLAUDE_PLUGIN_ROOT}/data/logs/`
+Data is stored in `~/.claude-mem/`:
+- Database: `~/.claude-mem/claude-mem.db`
+- PID file: `~/.claude-mem/.worker.pid`
+- Port file: `~/.claude-mem/.worker.port`
+- Logs: `~/.claude-mem/logs/worker-YYYY-MM-DD.log`
+- Settings: `~/.claude-mem/settings.json`
 
-For development/testing, you can override:
+Override with environment variable:
 ```bash
 export CLAUDE_MEM_DATA_DIR=/custom/path
 ```
@@ -91,19 +93,17 @@ npm run worker:logs
 npm run test:context
 ```
 
-## Upgrading from v3.x
+## Upgrading
 
-**BREAKING CHANGES - Please Read:**
+Upgrades are automatic when updating via the plugin marketplace. Key changes in recent versions:
 
-v4.0.0 introduces breaking changes:
+**v7.1.0**: PM2 replaced with native Bun process management. Migration is automatic on first hook trigger.
 
-- **Data Location Changed**: Database moved from `~/.claude-mem/` to `${CLAUDE_PLUGIN_ROOT}/data/` (inside plugin directory)
-- **Fresh Start Required**: No automatic migration from v3.x. You must start with a clean database
-- **Worker Auto-Starts**: Worker service now starts automatically - no manual `npm run worker:start` needed
-- **MCP Search Server**: 7 new search tools with full-text search and citations
-- **Enhanced Architecture**: Improved plugin integration and data organization
+**v7.0.0+**: 11 configuration settings, dual-tag privacy system.
 
-See [CHANGELOG](https://github.com/thedotmack/claude-mem/blob/main/CHANGELOG.md) for complete details.
+**v5.4.0+**: Skill-based search replaces MCP tools, saving ~2,250 tokens per session.
+
+See [CHANGELOG](https://github.com/thedotmack/claude-mem/blob/main/CHANGELOG.md) for complete version history.
 
 ## Next Steps
 

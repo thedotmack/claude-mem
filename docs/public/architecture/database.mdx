@@ -9,9 +9,9 @@ Claude-Mem uses SQLite 3 with the bun:sqlite native module for persistent storag
 
 ## Database Location
 
-- **Current**: `~/.claude-mem/claude-mem.db`
+**Path**: `~/.claude-mem/claude-mem.db`
 
-**Note**: Despite the README claiming v4.0.0+ moved the database to `${CLAUDE_PLUGIN_ROOT}/data/`, the actual implementation still uses `~/.claude-mem/`.
+The database uses SQLite's WAL (Write-Ahead Logging) mode for concurrent reads/writes.
 
 ## Database Implementation
 

@@ -74,21 +74,20 @@ See [Architecture Overview](architecture/overview) for details.
 
 ## What's New
 
-**v6.4.9 - Context Configuration Settings:**
-- 11 new settings for fine-grained control over context injection
-- Configure token economics display, observation filtering by type/concept
+**v7.1.0 - Bun Migration:**
+- Replaced PM2 with native Bun process management
+- Switched from better-sqlite3 to bun:sqlite for faster database access
+- Automatic one-time migration on first hook trigger
+- Simplified cross-platform support
 
-**v6.4.0 - Dual-Tag Privacy System:**
-- `<private>` tags for user-controlled privacy - wrap sensitive content to exclude from storage
-- Edge processing ensures private content never reaches database
-
-**v6.3.0 - Version Channel:**
-- Switch between stable and beta versions from the web viewer UI
+**v7.0.0 - Context Configuration:**
+- 11 settings for fine-grained control over context injection
+- Dual-tag privacy system (`<private>` tags)
 
 **Previous Highlights:**
-- **v6.0.0**: Major session management & transcript processing improvements
-- **v5.5.0**: mem-search skill enhancement with 100% effectiveness rate
-- **v5.4.0**: Skill-based search architecture (~2,250 tokens saved per session)
+- **v5.5.0**: mem-search skill with 100% effectiveness rate
+- **v5.4.0**: Skill-based search (~2,250 tokens saved per session)
+- **v5.1.0**: Web viewer UI at http://localhost:37777
 
 ## Next Steps
 
