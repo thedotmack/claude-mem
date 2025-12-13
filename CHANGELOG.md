@@ -4,6 +4,37 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [7.1.0] - 2025-12-13
+
+## Major Architectural Migration
+
+This release completely replaces PM2 with native Bun-based process management and migrates from better-sqlite3 to bun:sqlite.
+
+### Key Changes
+
+**Process Management**
+- Replace PM2 with custom Bun-based ProcessManager
+- PID file-based process tracking
+- Automatic legacy PM2 process cleanup on all platforms
+
+**Database Driver**
+- Migrate from better-sqlite3 npm package to bun:sqlite runtime module
+- Zero native compilation required
+- Same API compatibility
+
+**Auto-Installation**
+- Bun runtime auto-installed if missing
+- uv (Python package manager) auto-installed for Chroma vector search
+- Smart installer with platform-specific methods (curl/PowerShell)
+
+### Migration
+
+**Automatic**: First hook trigger after update performs one-time PM2 cleanup and transitions to new architecture. No user action required.
+
+### Documentation
+
+Complete technical documentation in `docs/PM2-TO-BUN-MIGRATION.md`
+
 ## [7.0.11] - 2025-12-12
 
 Patch release adding feature/bun-executable to experimental branch selector for testing Bun runtime integration.
