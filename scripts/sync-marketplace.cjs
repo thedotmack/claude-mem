@@ -61,7 +61,7 @@ function getPluginVersion() {
 console.log('Syncing to marketplace...');
 try {
   execSync(
-    'rsync -av --delete --exclude=.git ./ ~/.claude/plugins/marketplaces/thedotmack/',
+    'rsync -av --delete --exclude=.git --exclude=.mcp.json ./ ~/.claude/plugins/marketplaces/thedotmack/',
     { stdio: 'inherit' }
   );
 
