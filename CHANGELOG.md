@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [7.1.7] - 2025-12-13
+
+## Fixed
+- Removed Windows workaround that was causing libuv assertion failures
+- Prioritized stability over cosmetic console window issue
+
+## Known Issue
+- On Windows, a console window may briefly appear when the worker starts (cosmetic only, does not affect functionality)
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.1.6...v7.1.7
+
 ## [7.1.6] - 2025-12-13
 
 ## What's Changed
