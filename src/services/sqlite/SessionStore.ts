@@ -1534,7 +1534,7 @@ export class SessionStore {
         startEpoch = beforeRecords.length > 0 ? beforeRecords[beforeRecords.length - 1].created_at_epoch : anchorEpoch;
         endEpoch = afterRecords.length > 0 ? afterRecords[afterRecords.length - 1].created_at_epoch : anchorEpoch;
       } catch (err: any) {
-        console.error('[SessionStore] Error getting boundary observations:', err.message);
+        console.error('[SessionStore] Error getting boundary observations:', err.message, project ? `(project: ${project})` : '(all projects)');
         return { observations: [], sessions: [], prompts: [] };
       }
     } else {
@@ -1566,7 +1566,7 @@ export class SessionStore {
         startEpoch = beforeRecords.length > 0 ? beforeRecords[beforeRecords.length - 1].created_at_epoch : anchorEpoch;
         endEpoch = afterRecords.length > 0 ? afterRecords[afterRecords.length - 1].created_at_epoch : anchorEpoch;
       } catch (err: any) {
-        console.error('[SessionStore] Error getting boundary timestamps:', err.message);
+        console.error('[SessionStore] Error getting boundary timestamps:', err.message, project ? `(project: ${project})` : '(all projects)');
         return { observations: [], sessions: [], prompts: [] };
       }
     }
@@ -1621,7 +1621,7 @@ export class SessionStore {
         }))
       };
     } catch (err: any) {
-      console.error('[SessionStore] Error querying timeline records:', err.message);
+      console.error('[SessionStore] Error querying timeline records:', err.message, project ? `(project: ${project})` : '(all projects)');
       return { observations: [], sessions: [], prompts: [] };
     }
   }

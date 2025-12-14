@@ -138,7 +138,10 @@ export class ChromaSync {
     await this.ensureConnection();
 
     if (!this.client) {
-      throw new Error('Chroma client not initialized');
+      throw new Error(
+        'Chroma client not initialized. Call ensureConnection() before using client methods.' +
+        ` Project: ${this.project}`
+      );
     }
 
     try {
@@ -319,7 +322,10 @@ export class ChromaSync {
     await this.ensureCollection();
 
     if (!this.client) {
-      throw new Error('Chroma client not initialized');
+      throw new Error(
+        'Chroma client not initialized. Call ensureConnection() before using client methods.' +
+        ` Project: ${this.project}`
+      );
     }
 
     try {
@@ -496,7 +502,10 @@ export class ChromaSync {
     await this.ensureConnection();
 
     if (!this.client) {
-      throw new Error('Chroma client not initialized');
+      throw new Error(
+        'Chroma client not initialized. Call ensureConnection() before using client methods.' +
+        ` Project: ${this.project}`
+      );
     }
 
     const observationIds = new Set<number>();
@@ -750,7 +759,10 @@ export class ChromaSync {
     await this.ensureConnection();
 
     if (!this.client) {
-      throw new Error('Chroma client not initialized');
+      throw new Error(
+        'Chroma client not initialized. Call ensureConnection() before using client methods.' +
+        ` Project: ${this.project}`
+      );
     }
 
     const whereStringified = whereFilter ? JSON.stringify(whereFilter) : undefined;
