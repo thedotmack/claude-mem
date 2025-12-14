@@ -4,6 +4,71 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [7.1.10] - 2025-12-14
+
+## Enhancement
+
+This release adds automatic orphan cleanup to complement the process leak fix from v7.1.9.
+
+### Added
+
+- **Auto-Cleanup on Startup**: Worker now automatically detects and kills orphaned chroma-mcp processes before starting
+  - Scans for existing chroma-mcp processes on worker startup
+  - Kills all found processes before creating new ones
+  - Logs cleanup activity (process count and PIDs)
+  - Non-fatal error handling (continues on cleanup failure)
+
+### Benefits
+
+- Automatically recovers from pre-7.1.9 process leaks without manual intervention
+- Ensures clean slate on every worker restart
+- Prevents accumulation even if v7.1.9's close() method fails
+- No user action required - works transparently
+
+### Example Logs
+
+```
+[INFO] [SYSTEM] Cleaning up orphaned chroma-mcp processes {count=2, pids=33753,33750}
+[INFO] [SYSTEM] Orphaned processes cleaned up {count=2}
+```
+
+### Recommendation
+
+Upgrade from v7.1.9 to get automatic orphan cleanup. Combined with v7.1.9's proper subprocess cleanup, this provides comprehensive protection against process leaks.
+
+---
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.1.9...v7.1.10
+
+## [7.1.9] - 2025-12-14
+
+## Critical Bugfix
+
+This patch release fixes a critical memory leak that caused chroma-mcp processes to accumulate with each worker restart, leading to memory exhaustion and silent backfill failures.
+
+### Fixed
+
+- **Process Leak Prevention**: ChromaSync now properly cleans up chroma-mcp subprocesses when the worker is restarted
+  - Store reference to StdioClientTransport subprocess
+  - Explicitly close transport to kill subprocess on shutdown
+  - Add error handling to ensure cleanup even on failures
+  - Reset all state in finally block
+
+### Impact
+
+- Eliminates process accumulation (16+ orphaned processes seen in production)
+- Prevents memory exhaustion from leaked subprocesses (900MB+ RAM usage)
+- Fixes silent backfill failures caused by OOM kills
+- Ensures graceful cleanup on worker shutdown
+
+### Recommendation
+
+**All users should upgrade immediately** to prevent memory leaks and ensure reliable backfill operation.
+
+---
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.1.8...v7.1.9
+
 ## [7.1.8] - 2025-12-13
 
 ## Memory Export/Import Scripts

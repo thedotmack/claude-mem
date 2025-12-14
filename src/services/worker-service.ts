@@ -13,6 +13,10 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
 import { logger } from '../utils/logger.js';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+
+const execAsync = promisify(exec);
 
 // Import composed domain services
 import { DatabaseManager } from './worker/DatabaseManager.js';
@@ -150,6 +154,52 @@ export class WorkerService {
 
 
   /**
+   * Clean up orphaned chroma-mcp processes from previous worker sessions
+   * Prevents process accumulation and memory leaks
+   */
+  private async cleanupOrphanedProcesses(): Promise<void> {
+    try {
+      // Find all chroma-mcp processes
+      const { stdout } = await execAsync('ps aux | grep "chroma-mcp" | grep -v grep || true');
+
+      if (!stdout.trim()) {
+        logger.debug('SYSTEM', 'No orphaned chroma-mcp processes found');
+        return;
+      }
+
+      const lines = stdout.trim().split('\n');
+      const pids: number[] = [];
+
+      for (const line of lines) {
+        const parts = line.trim().split(/\s+/);
+        if (parts.length > 1) {
+          const pid = parseInt(parts[1], 10);
+          if (!isNaN(pid)) {
+            pids.push(pid);
+          }
+        }
+      }
+
+      if (pids.length === 0) {
+        return;
+      }
+
+      logger.info('SYSTEM', 'Cleaning up orphaned chroma-mcp processes', {
+        count: pids.length,
+        pids
+      });
+
+      // Kill all found processes
+      await execAsync(`kill ${pids.join(' ')}`);
+
+      logger.info('SYSTEM', 'Orphaned processes cleaned up', { count: pids.length });
+    } catch (error) {
+      // Non-fatal - log and continue
+      logger.warn('SYSTEM', 'Failed to cleanup orphaned processes', {}, error as Error);
+    }
+  }
+
+  /**
    * Start the worker service
    */
   async start(): Promise<void> {
@@ -173,6 +223,9 @@ export class WorkerService {
    * Background initialization - runs after HTTP server is listening
    */
   private async initializeBackground(): Promise<void> {
+    // Clean up any orphaned chroma-mcp processes BEFORE starting our own
+    await this.cleanupOrphanedProcesses();
+
     // Initialize database (once, stays open)
     await this.dbManager.initialize();
 

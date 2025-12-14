@@ -73,6 +73,7 @@ interface StoredUserPrompt {
 
 export class ChromaSync {
   private client: Client | null = null;
+  private transport: StdioClientTransport | null = null;
   private connected: boolean = false;
   private project: string;
   private collectionName: string;
@@ -101,7 +102,7 @@ export class ChromaSync {
       // See: https://github.com/thedotmack/claude-mem/issues/170 (Python 3.14 incompatibility)
       const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
       const pythonVersion = settings.CLAUDE_MEM_PYTHON_VERSION;
-      const transport = new StdioClientTransport({
+      this.transport = new StdioClientTransport({
         command: 'uvx',
         args: [
           '--python', pythonVersion,
@@ -119,7 +120,7 @@ export class ChromaSync {
         capabilities: {}
       });
 
-      await this.client.connect(transport);
+      await this.client.connect(this.transport);
       this.connected = true;
 
       logger.info('CHROMA_SYNC', 'Connected to Chroma MCP server', { project: this.project });
@@ -815,14 +816,38 @@ export class ChromaSync {
   }
 
   /**
-   * Close the Chroma client connection
+   * Close the Chroma client connection and cleanup subprocess
    */
   async close(): Promise<void> {
-    if (this.client && this.connected) {
-      await this.client.close();
+    if (!this.connected && !this.client && !this.transport) {
+      return;
+    }
+
+    try {
+      // Close client first
+      if (this.client) {
+        try {
+          await this.client.close();
+        } catch (error) {
+          logger.warn('CHROMA_SYNC', 'Error closing Chroma client', { project: this.project }, error as Error);
+        }
+      }
+
+      // Explicitly close transport to kill subprocess
+      if (this.transport) {
+        try {
+          await this.transport.close();
+        } catch (error) {
+          logger.warn('CHROMA_SYNC', 'Error closing transport', { project: this.project }, error as Error);
+        }
+      }
+
+      logger.info('CHROMA_SYNC', 'Chroma client and subprocess closed', { project: this.project });
+    } finally {
+      // Always reset state, even if errors occurred
       this.connected = false;
       this.client = null;
-      logger.info('CHROMA_SYNC', 'Chroma client closed', { project: this.project });
+      this.transport = null;
     }
   }
 }
