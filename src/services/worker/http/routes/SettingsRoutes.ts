@@ -167,6 +167,8 @@ export class SettingsRoutes extends BaseRouteHandler {
       // Feature Toggles
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY',
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE',
+      // Project Management
+      'CLAUDE_MEM_IGNORED_PROJECTS',
     ];
 
     for (const key of settingKeys) {

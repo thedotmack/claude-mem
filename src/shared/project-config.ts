@@ -1,103 +1,53 @@
 /**
- * Project-level configuration support via .claude-mem.json
+ * Project-level memory control via global settings
  *
- * Supports disabling memory capture at the project level for:
- * - Projects with sensitive data
- * - Temporary experiments
- * - Any project where memory capture should be disabled
+ * Supports disabling memory capture at the project level through
+ * CLAUDE_MEM_IGNORED_PROJECTS setting in ~/.claude-mem/settings.json
  */
 
-import { existsSync, readFileSync } from 'fs';
-import { join } from 'path';
 import { logger } from '../utils/logger.js';
+import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
+import { USER_SETTINGS_PATH } from './paths.js';
+import path from 'path';
 
 /**
- * Project-level configuration schema
- */
-export interface ProjectConfig {
-  enabled: boolean;
-  reason?: string;
-  captureObservations?: boolean;
-  captureSessions?: boolean;
-  capturePrompts?: boolean;
-}
-
-/**
- * Default configuration when .claude-mem.json doesn't exist
- */
-const DEFAULT_CONFIG: ProjectConfig = {
-  enabled: true,
-  captureObservations: true,
-  captureSessions: true,
-  capturePrompts: true
-};
-
-/**
- * Cache for project configurations to avoid repeated file reads
- */
-const configCache = new Map<string, ProjectConfig>();
-
-/**
- * Load project configuration from .claude-mem.json in project root
+ * Check if a project is in the ignored projects list
  *
  * @param cwd - Current working directory (project root)
- * @returns Project configuration with defaults
+ * @returns true if the project should be ignored (memory disabled)
  */
-export function loadProjectConfig(cwd: string): ProjectConfig {
-  // Check cache first
-  if (configCache.has(cwd)) {
-    return configCache.get(cwd)!;
-  }
-
-  const configPath = join(cwd, '.claude-mem.json');
-
-  // If no config file, return defaults without caching
-  // (no need to cache since file existence check is fast)
-  if (!existsSync(configPath)) {
-    return DEFAULT_CONFIG;
-  }
-
+export function isProjectIgnored(cwd: string): boolean {
   try {
-    const configData = readFileSync(configPath, 'utf-8');
-    const rawConfig = JSON.parse(configData);
-
-    // Determine default capture value based on enabled flag
-    const defaultCaptureValue = rawConfig.enabled !== false;
-
-    // Validate and merge with defaults
-    const config: ProjectConfig = {
-      enabled: rawConfig.enabled !== undefined ? Boolean(rawConfig.enabled) : true,
-      reason: rawConfig.reason,
-      captureObservations: rawConfig.captureObservations !== undefined
-        ? Boolean(rawConfig.captureObservations)
-        : defaultCaptureValue,
-      captureSessions: rawConfig.captureSessions !== undefined
-        ? Boolean(rawConfig.captureSessions)
-        : defaultCaptureValue,
-      capturePrompts: rawConfig.capturePrompts !== undefined
-        ? Boolean(rawConfig.capturePrompts)
-        : defaultCaptureValue
-    };
-
-    // If enabled is false, override all capture settings
-    if (!config.enabled) {
-      config.captureObservations = false;
-      config.captureSessions = false;
-      config.capturePrompts = false;
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const ignoredProjects = settings.CLAUDE_MEM_IGNORED_PROJECTS || '';
+    
+    if (!ignoredProjects || ignoredProjects.trim() === '') {
+      return false;
     }
 
-    configCache.set(cwd, config);
-
-    logger.debug('PROJECT', 'Loaded project configuration', {
-      cwd,
-      config: JSON.stringify(config)
-    });
-
-    return config;
+    // Get project name from cwd (basename of directory)
+    const projectName = path.basename(cwd);
+    
+    // Parse comma-separated list of ignored projects
+    const ignoredList = ignoredProjects
+      .split(',')
+      .map(p => p.trim())
+      .filter(p => p.length > 0);
+    
+    const ignored = ignoredList.includes(projectName);
+    
+    if (ignored) {
+      logger.debug('PROJECT', 'Project is in ignored list', {
+        project: projectName,
+        cwd,
+        ignoredProjects: ignoredList
+      });
+    }
+    
+    return ignored;
   } catch (error) {
-    logger.warn('PROJECT', 'Failed to parse .claude-mem.json, using defaults', { cwd }, error);
-    // Don't cache error cases - allow retry on next call
-    return DEFAULT_CONFIG;
+    logger.warn('PROJECT', 'Failed to check if project is ignored', { cwd }, error);
+    return false; // Default to not ignored if there's an error
   }
 }
 
@@ -108,8 +58,7 @@ export function loadProjectConfig(cwd: string): ProjectConfig {
  * @returns true if memory capture is enabled
  */
 export function isMemoryEnabled(cwd: string): boolean {
-  const config = loadProjectConfig(cwd);
-  return config.enabled;
+  return !isProjectIgnored(cwd);
 }
 
 /**
@@ -119,8 +68,7 @@ export function isMemoryEnabled(cwd: string): boolean {
  * @returns true if observation capture is enabled
  */
 export function canCaptureObservations(cwd: string): boolean {
-  const config = loadProjectConfig(cwd);
-  return config.enabled && config.captureObservations !== false;
+  return !isProjectIgnored(cwd);
 }
 
 /**
@@ -130,8 +78,7 @@ export function canCaptureObservations(cwd: string): boolean {
  * @returns true if session capture is enabled
  */
 export function canCaptureSessions(cwd: string): boolean {
-  const config = loadProjectConfig(cwd);
-  return config.enabled && config.captureSessions !== false;
+  return !isProjectIgnored(cwd);
 }
 
 /**
@@ -141,13 +88,14 @@ export function canCaptureSessions(cwd: string): boolean {
  * @returns true if prompt capture is enabled
  */
 export function canCapturePrompts(cwd: string): boolean {
-  const config = loadProjectConfig(cwd);
-  return config.enabled && config.capturePrompts !== false;
+  return !isProjectIgnored(cwd);
 }
 
 /**
  * Clear the configuration cache (useful for testing)
+ * Note: No-op since we load settings on each check
  */
 export function clearConfigCache(): void {
-  configCache.clear();
+  // No cache to clear - settings are loaded fresh each time
 }
+

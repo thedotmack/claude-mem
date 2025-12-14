@@ -37,6 +37,8 @@ export interface SettingsDefaults {
   // Feature Toggles
   CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: string;
   CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: string;
+  // Project Management
+  CLAUDE_MEM_IGNORED_PROJECTS: string;
 }
 
 export class SettingsDefaultsManager {
@@ -69,6 +71,8 @@ export class SettingsDefaultsManager {
     // Feature Toggles
     CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: 'true',
     CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: 'false',
+    // Project Management
+    CLAUDE_MEM_IGNORED_PROJECTS: '',
   };
 
   /**

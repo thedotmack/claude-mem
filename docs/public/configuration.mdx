@@ -9,67 +9,40 @@ description: "Environment variables and settings for Claude-Mem"
 
 Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created with defaults on first run.
 
-## Project-Level Configuration
+## Ignoring Projects
 
-You can disable or configure memory capture on a per-project basis using a `.claude-mem.json` file in your project root.
+You can disable memory capture for specific projects by adding them to the `CLAUDE_MEM_IGNORED_PROJECTS` setting in `~/.claude-mem/settings.json`.
 
-### Disabling Memory for a Project
+### Disabling Memory for Projects
 
-Create `.claude-mem.json` in your project root:
+Edit `~/.claude-mem/settings.json` and add a comma-separated list of project names:
 
 ```json
 {
-  "enabled": false,
-  "reason": "Project contains sensitive client data"
+  "CLAUDE_MEM_IGNORED_PROJECTS": "SensitiveProject,TemporaryExperiment,ClientWork"
 }
 ```
 
-When `enabled: false`, claude-mem will skip all memory capture for that project:
+When a project is in the ignored list, claude-mem will skip all memory capture for that project:
 - No observations will be saved
 - No prompts will be stored
 - No sessions will be tracked
 
-The `reason` field is optional but recommended for documentation purposes.
+Project names are matched against the basename of the current working directory.
 
-### Granular Control
-
-For more fine-grained control, you can enable/disable specific capture types:
-
-```json
-{
-  "enabled": true,
-  "captureObservations": false,
-  "captureSessions": true,
-  "capturePrompts": true
-}
-```
-
-**Capture Options:**
-- `captureObservations` - Tool usage and observations (PostToolUse hook)
-- `captureSessions` - Session summaries and metadata (Stop hook)
-- `capturePrompts` - User prompts (UserPromptSubmit hook)
-
-**Use Cases:**
+### Use Cases
 - **Sensitive Projects**: Disable entirely for projects with confidential data
 - **Temporary Experiments**: Disable for throwaway projects or prototypes
-- **Observation-Heavy Projects**: Disable observations but keep prompts/sessions for high-frequency tool usage
-- **Client Work**: Disable prompts but keep observations for compliance requirements
+- **Client Work**: Disable for projects with compliance requirements
 
-### Configuration Priority
+### Viewing Current Settings
 
-Project-level configuration (`.claude-mem.json`) takes precedence over global settings (`~/.claude-mem/settings.json`).
-
-If `.claude-mem.json` doesn't exist, all memory capture defaults to enabled.
-
-### Example: Adding to .gitignore
-
-To ensure `.claude-mem.json` doesn't get committed to version control:
-
+You can view your current settings:
 ```bash
-echo ".claude-mem.json" >> .gitignore
+cat ~/.claude-mem/settings.json
 ```
 
-Alternatively, commit the file if you want the entire team to share the same memory configuration.
+Or via the web viewer at http://localhost:37777 (Settings > Environment Settings).
 
 ### Core Settings
 

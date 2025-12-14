@@ -1,6 +1,0 @@
-{
-  "enabled": true,
-  "captureObservations": false,
-  "captureSessions": true,
-  "capturePrompts": true
-}
