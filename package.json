@@ -47,7 +47,12 @@
     "changelog:generate": "node scripts/generate-changelog.js",
     "usage:analyze": "node scripts/analyze-usage.js",
     "usage:today": "node scripts/analyze-usage.js $(date +%Y-%m-%d)",
-    "translate-readme": "npx tsx scripts/translate-readme/cli.ts -v README.md zh ko ja",
+    "translate-readme": "bun scripts/translate-readme/cli.ts -v -o docs/i18n README.md",
+    "translate:tier1": "npm run translate-readme -- zh ja pt-br ko es de fr",
+    "translate:tier2": "npm run translate-readme -- he ar ru pl cs nl tr uk",
+    "translate:tier3": "npm run translate-readme -- vi id th hi bn ro sv",
+    "translate:tier4": "npm run translate-readme -- it el hu fi da no",
+    "translate:all": "npm run translate:tier1 && npm run translate:tier2 && npm run translate:tier3 && npm run translate:tier4",
     "bug-report": "npx tsx scripts/bug-report/cli.ts"
   },
   "dependencies": {
