@@ -60,8 +60,17 @@ export class WorkerService {
   private searchRoutes: SearchRoutes | null;
   private settingsRoutes: SettingsRoutes;
 
+  // Initialization tracking
+  private initializationComplete: Promise<void>;
+  private resolveInitialization!: () => void;
+
   constructor() {
     this.app = express();
+
+    // Initialize the promise that will resolve when background initialization completes
+    this.initializationComplete = new Promise((resolve) => {
+      this.resolveInitialization = resolve;
+    });
 
     // Initialize domain services
     this.dbManager = new DatabaseManager();
@@ -155,6 +164,60 @@ export class WorkerService {
     this.dataRoutes.setupRoutes(this.app);
     // searchRoutes is set up after database initialization in initializeBackground()
     this.settingsRoutes.setupRoutes(this.app);
+
+    // Register early handler for /api/context/inject to avoid 404 during startup
+    // This handler waits for initialization to complete before delegating to SearchRoutes
+    // NOTE: This duplicates logic from SearchRoutes.handleContextInject by design,
+    // as we need the route available immediately before SearchRoutes is initialized
+    this.app.get('/api/context/inject', async (req, res, next) => {
+      try {
+        // Wait for initialization to complete (with timeout)
+        const timeoutMs = 30000; // 30 second timeout
+        const timeoutPromise = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Initialization timeout')), timeoutMs)
+        );
+        
+        await Promise.race([this.initializationComplete, timeoutPromise]);
+
+        // If searchRoutes is still null after initialization, something went wrong
+        if (!this.searchRoutes) {
+          res.status(503).json({ error: 'Search routes not initialized' });
+          return;
+        }
+
+        // Delegate to the proper handler by re-processing the request
+        // Since we're already in the middleware chain, we need to call the handler directly
+        const projectName = req.query.project as string;
+        const useColors = req.query.colors === 'true';
+
+        if (!projectName) {
+          res.status(400).json({ error: 'Project parameter is required' });
+          return;
+        }
+
+        // Import context generator (runs in worker, has access to database)
+        const { generateContext } = await import('./context-generator.js');
+
+        // Use project name as CWD (generateContext uses path.basename to get project)
+        const cwd = `/context/${projectName}`;
+
+        // Generate context
+        const contextText = await generateContext(
+          {
+            session_id: 'context-inject-' + Date.now(),
+            cwd: cwd
+          },
+          useColors
+        );
+
+        // Return as plain text
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+        res.send(contextText);
+      } catch (error) {
+        logger.error('WORKER', 'Context inject handler failed', {}, error as Error);
+        res.status(500).json({ error: error instanceof Error ? error.message : 'Internal server error' });
+      }
+    });
   }
 
 
@@ -228,36 +291,47 @@ export class WorkerService {
    * Background initialization - runs after HTTP server is listening
    */
   private async initializeBackground(): Promise<void> {
-    // Clean up any orphaned chroma-mcp processes BEFORE starting our own
-    await this.cleanupOrphanedProcesses();
+    try {
+      // Clean up any orphaned chroma-mcp processes BEFORE starting our own
+      await this.cleanupOrphanedProcesses();
 
-    // Initialize database (once, stays open)
-    await this.dbManager.initialize();
+      // Initialize database (once, stays open)
+      await this.dbManager.initialize();
 
-    // Initialize search services (requires initialized database)
-    const formattingService = new FormattingService();
-    const timelineService = new TimelineService();
-    const searchManager = new SearchManager(
-      this.dbManager.getSessionSearch(),
-      this.dbManager.getSessionStore(),
-      this.dbManager.getChromaSync(),
-      formattingService,
-      timelineService
-    );
-    this.searchRoutes = new SearchRoutes(searchManager);
-    this.searchRoutes.setupRoutes(this.app); // Setup search routes now that SearchManager is ready
-    logger.info('WORKER', 'SearchManager initialized and search routes registered');
+      // Initialize search services (requires initialized database)
+      const formattingService = new FormattingService();
+      const timelineService = new TimelineService();
+      const searchManager = new SearchManager(
+        this.dbManager.getSessionSearch(),
+        this.dbManager.getSessionStore(),
+        this.dbManager.getChromaSync(),
+        formattingService,
+        timelineService
+      );
+      this.searchRoutes = new SearchRoutes(searchManager);
+      this.searchRoutes.setupRoutes(this.app); // Setup search routes now that SearchManager is ready
+      logger.info('WORKER', 'SearchManager initialized and search routes registered');
 
-    // Connect to MCP server
-    const mcpServerPath = path.join(__dirname, 'mcp-server.cjs');
-    const transport = new StdioClientTransport({
-      command: 'node',
-      args: [mcpServerPath],
-      env: process.env
-    });
+      // Connect to MCP server
+      const mcpServerPath = path.join(__dirname, 'mcp-server.cjs');
+      const transport = new StdioClientTransport({
+        command: 'node',
+        args: [mcpServerPath],
+        env: process.env
+      });
 
-    await this.mcpClient.connect(transport);
-    logger.success('WORKER', 'Connected to MCP server');
+      await this.mcpClient.connect(transport);
+      logger.success('WORKER', 'Connected to MCP server');
+
+      // Signal that initialization is complete
+      this.resolveInitialization();
+      logger.info('SYSTEM', 'Background initialization complete');
+    } catch (error) {
+      logger.error('SYSTEM', 'Background initialization failed', {}, error as Error);
+      // Still resolve to prevent hanging requests, but they'll see searchRoutes is null
+      this.resolveInitialization();
+      throw error;
+    }
   }
 
   /**
