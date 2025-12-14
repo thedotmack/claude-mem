@@ -13,7 +13,7 @@ import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { happy_path_error__with_fallback } from '../utils/silent-debug.js';
 import { handleWorkerError } from '../shared/hook-error-handler.js';
-import { getWorkerRestartInstructions } from '../utils/error-messages.js';
+import { handleFetchError } from './shared/error-handler.js';
 
 export interface PostToolUseInput {
   session_id: string;
@@ -65,13 +65,13 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
 
     if (!response.ok) {
       const errorText = await response.text();
-      logger.failure('HOOK', 'Failed to send observation', {
-        status: response.status,
+      handleFetchError(response, errorText, {
+        hookName: 'save',
+        operation: 'Observation storage',
         toolName: tool_name,
         sessionId: session_id,
         port
-      }, errorText);
-      throw new Error(`Failed to store observation for ${tool_name}: ${getWorkerRestartInstructions()}`);
+      });
     }
 
     logger.debug('HOOK', 'Observation sent successfully', { toolName: tool_name });

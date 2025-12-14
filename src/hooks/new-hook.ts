@@ -4,8 +4,7 @@ import { createHookResponse } from './hook-response.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
 import { happy_path_error__with_fallback } from '../utils/silent-debug.js';
 import { handleWorkerError } from '../shared/hook-error-handler.js';
-import { getWorkerRestartInstructions } from '../utils/error-messages.js';
-import { logger } from '../utils/logger.js';
+import { handleFetchError } from './shared/error-handler.js';
 
 export interface UserPromptSubmitInput {
   session_id: string;
@@ -54,12 +53,12 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
 
     if (!initResponse.ok) {
       const errorText = await initResponse.text();
-      logger.error('HOOK', 'Session initialization failed', {
-        status: initResponse.status,
+      handleFetchError(initResponse, errorText, {
+        hookName: 'new',
+        operation: 'Session initialization',
         project,
         port
-      }, errorText);
-      throw new Error(getWorkerRestartInstructions({ includeSkillFallback: true }));
+      });
     }
 
     const initResult = await initResponse.json();
@@ -93,13 +92,13 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
 
     if (!response.ok) {
       const errorText = await response.text();
-      logger.error('HOOK', 'SDK agent start failed', {
-        status: response.status,
+      handleFetchError(response, errorText, {
+        hookName: 'new',
+        operation: 'SDK agent start',
         project,
         port,
-        sessionDbId
-      }, errorText);
-      throw new Error(getWorkerRestartInstructions({ includeSkillFallback: true }));
+        sessionId: String(sessionDbId)
+      });
     }
   } catch (error: any) {
     handleWorkerError(error);
