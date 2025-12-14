@@ -4,6 +4,50 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [7.2.1] - 2025-12-14
+
+## Translation Script Enhancements
+
+This release adds powerful enhancements to the README translation system, supporting 35 languages with improved efficiency and caching.
+
+### What's New
+
+**Translation Script Improvements:**
+- **Caching System**: Smart `.translation-cache.json` tracks content hashes to skip re-translating unchanged content
+- **Parallel Processing**: `--parallel <n>` flag enables concurrent translations for faster execution
+- **Force Re-translation**: `--force` flag to override cache when needed
+- **Tier-Based Scripts**: Organized translation workflows by language priority
+  - `npm run translate:tier1` - 7 major languages (Chinese, Japanese, Korean, etc.)
+  - `npm run translate:tier2` - 8 strong tech scene languages (Hebrew, Arabic, Russian, etc.)
+  - `npm run translate:tier3` - 7 emerging markets (Vietnamese, Indonesian, Thai, etc.)
+  - `npm run translate:tier4` - 6 additional languages (Italian, Greek, Hungarian, etc.)
+  - `npm run translate:all` - All 35 languages sequentially
+- **Better Output Handling**: Automatically strips markdown code fences if Claude wraps output
+- **Translation Disclaimer**: Adds community correction notice at top of translated files
+- **Performance**: Uses Bun runtime for faster execution
+
+### Supported Languages (35 Total)
+
+Arabic, Bengali, Brazilian Portuguese, Bulgarian, Chinese (Simplified), Chinese (Traditional), Czech, Danish, Dutch, Estonian, Finnish, French, German, Greek, Hebrew, Hindi, Hungarian, Indonesian, Italian, Japanese, Korean, Latvian, Lithuanian, Norwegian, Polish, Portuguese, Romanian, Russian, Slovak, Slovenian, Spanish, Swedish, Thai, Turkish, Ukrainian, Vietnamese
+
+### Breaking Changes
+
+None - fully backward compatible.
+
+### Installation
+
+```bash
+# Update via npm
+npm install -g claude-mem@7.2.1
+
+# Or reinstall plugin
+claude plugin install thedotmack/claude-mem
+```
+
+---
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.2.0...v7.2.1
+
 ## [7.2.0] - 2025-12-14
 
 ## 🎉 New Features
