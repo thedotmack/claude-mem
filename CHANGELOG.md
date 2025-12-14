@@ -4,6 +4,32 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [7.1.15] - 2025-12-14
+
+## 🐛 Bug Fixes
+
+**Worker Service Initialization**
+- Fixed 404 error on `/api/context/inject` during worker startup
+- Route is now registered immediately instead of after database initialization
+- Prevents race condition on fresh installs and restarts
+- Added integration test for early context inject route access
+
+## Technical Details
+
+The context hook was failing with `Cannot GET /api/context/inject` because the route was registered only after database initialization completed. This created a race condition where the hook could attempt to access the endpoint before it existed.
+
+**Implementation:**
+- Added `initializationComplete` Promise to track async background initialization
+- Register `/api/context/inject` route immediately in `setupRoutes()`
+- Early handler blocks requests until initialization resolves (30s timeout)
+- Route handler duplicates logic from `SearchRoutes.handleContextInject` by design to prevent 404s
+
+**Testing:**
+- Added integration test verifying route registration and timeout handling
+
+Fixes #305
+Related: PR #310
+
 ## [7.1.14] - 2025-12-14
 
 ## Enhanced Error Handling & Logging
