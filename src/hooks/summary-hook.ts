@@ -105,6 +105,11 @@ async function summaryHook(input?: StopInput): Promise<void> {
 let input = '';
 stdin.on('data', (chunk) => input += chunk);
 stdin.on('end', async () => {
-  const parsed = input ? JSON.parse(input) : undefined;
-  await summaryHook(parsed);
+  try {
+    const parsed = input ? JSON.parse(input) : undefined;
+    await summaryHook(parsed);
+  } catch (error: any) {
+    console.error(error.message || String(error));
+    process.exit(1);
+  }
 });

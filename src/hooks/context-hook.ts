@@ -54,25 +54,35 @@ async function contextHook(input?: SessionStartInput): Promise<string> {
 const forceColors = process.argv.includes("--colors");
 
 if (stdin.isTTY || forceColors) {
-  contextHook(undefined).then((text) => {
-    console.log(text);
-    process.exit(0);
-  });
+  contextHook(undefined)
+    .then((text) => {
+      console.log(text);
+      process.exit(0);
+    })
+    .catch((error) => {
+      console.error(error.message || String(error));
+      process.exit(1);
+    });
 } else {
   let input = "";
   stdin.on("data", (chunk) => (input += chunk));
   stdin.on("end", async () => {
-    const parsed = input.trim() ? JSON.parse(input) : undefined;
-    const text = await contextHook(parsed);
+    try {
+      const parsed = input.trim() ? JSON.parse(input) : undefined;
+      const text = await contextHook(parsed);
 
-    console.log(
-      JSON.stringify({
-        hookSpecificOutput: {
-          hookEventName: "SessionStart",
-          additionalContext: text,
-        },
-      })
-    );
-    process.exit(0);
+      console.log(
+        JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: "SessionStart",
+            additionalContext: text,
+          },
+        })
+      );
+      process.exit(0);
+    } catch (error: any) {
+      console.error(error.message || String(error));
+      process.exit(1);
+    }
   });
 }
