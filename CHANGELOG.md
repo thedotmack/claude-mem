@@ -4,6 +4,35 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [7.1.9] - 2025-12-14
+
+## Critical Bugfix
+
+This patch release fixes a critical memory leak that caused chroma-mcp processes to accumulate with each worker restart, leading to memory exhaustion and silent backfill failures.
+
+### Fixed
+
+- **Process Leak Prevention**: ChromaSync now properly cleans up chroma-mcp subprocesses when the worker is restarted
+  - Store reference to StdioClientTransport subprocess
+  - Explicitly close transport to kill subprocess on shutdown
+  - Add error handling to ensure cleanup even on failures
+  - Reset all state in finally block
+
+### Impact
+
+- Eliminates process accumulation (16+ orphaned processes seen in production)
+- Prevents memory exhaustion from leaked subprocesses (900MB+ RAM usage)
+- Fixes silent backfill failures caused by OOM kills
+- Ensures graceful cleanup on worker shutdown
+
+### Recommendation
+
+**All users should upgrade immediately** to prevent memory leaks and ensure reliable backfill operation.
+
+---
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.1.8...v7.1.9
+
 ## [7.1.8] - 2025-12-13
 
 ## Memory Export/Import Scripts
