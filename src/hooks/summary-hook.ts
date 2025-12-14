@@ -71,9 +71,11 @@ async function summaryHook(input?: StopInput): Promise<void> {
     if (!response.ok) {
       const errorText = await response.text();
       logger.failure('HOOK', 'Failed to generate summary', {
-        status: response.status
+        status: response.status,
+        sessionId: session_id,
+        port
       }, errorText);
-      throw new Error(getWorkerRestartInstructions({ includeSkillFallback: true }));
+      throw new Error(`Failed to generate summary for session: ${getWorkerRestartInstructions()}`);
     }
 
     logger.debug('HOOK', 'Summary request sent successfully');

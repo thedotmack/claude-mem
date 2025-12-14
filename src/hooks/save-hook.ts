@@ -66,9 +66,12 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
     if (!response.ok) {
       const errorText = await response.text();
       logger.failure('HOOK', 'Failed to send observation', {
-        status: response.status
+        status: response.status,
+        toolName: tool_name,
+        sessionId: session_id,
+        port
       }, errorText);
-      throw new Error(getWorkerRestartInstructions({ includeSkillFallback: true }));
+      throw new Error(`Failed to store observation for ${tool_name}: ${getWorkerRestartInstructions()}`);
     }
 
     logger.debug('HOOK', 'Observation sent successfully', { toolName: tool_name });
