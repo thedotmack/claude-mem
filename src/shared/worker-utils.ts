@@ -1,7 +1,7 @@
 import path from "path";
 import { homedir } from "os";
 import { spawnSync } from "child_process";
-import { existsSync, writeFileSync, readFileSync } from "fs";
+import { existsSync, writeFileSync, readFileSync, mkdirSync } from "fs";
 import { logger } from "../utils/logger.js";
 import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
 import { ProcessManager } from "../services/process/ProcessManager.js";
@@ -154,7 +154,11 @@ async function ensureWorkerVersionMatches(): Promise<void> {
  */
 async function startWorker(): Promise<boolean> {
   // Clean up legacy PM2 (one-time migration)
-  const pm2MigratedMarker = path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), '.pm2-migrated');
+  const dataDir = SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR');
+  const pm2MigratedMarker = path.join(dataDir, '.pm2-migrated');
+
+  // Ensure data directory exists (may not exist on fresh install)
+  mkdirSync(dataDir, { recursive: true });
 
   if (!existsSync(pm2MigratedMarker)) {
     try {
