@@ -41,10 +41,10 @@ async function summaryHook(input?: StopInput): Promise<void> {
   const port = getWorkerPort();
 
   // Extract last user AND assistant messages from transcript
-  const transcriptPath = happy_path_error__with_fallback(
+  const transcriptPath = input.transcript_path || happy_path_error__with_fallback(
     'Missing transcript_path in Stop hook input',
     { session_id },
-    input.transcript_path || ''
+    ''
   );
   const lastUserMessage = extractLastMessage(transcriptPath, 'user');
   const lastAssistantMessage = extractLastMessage(transcriptPath, 'assistant', true);

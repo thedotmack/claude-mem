@@ -342,10 +342,10 @@ export class SessionRoutes extends BaseRouteHandler {
       tool_input: cleanedToolInput,
       tool_response: cleanedToolResponse,
       prompt_number: promptNumber,
-      cwd: happy_path_error__with_fallback(
+      cwd: cwd || happy_path_error__with_fallback(
         'Missing cwd when queueing observation in SessionRoutes',
         { sessionDbId, tool_name },
-        cwd || ''
+        ''
       )
     });
 
@@ -394,10 +394,10 @@ export class SessionRoutes extends BaseRouteHandler {
     // Queue summarize
     this.sessionManager.queueSummarize(
       sessionDbId,
-      happy_path_error__with_fallback(
+      last_user_message || happy_path_error__with_fallback(
         'Missing last_user_message when queueing summary in SessionRoutes',
         { sessionDbId },
-        last_user_message || ''
+        ''
       ),
       last_assistant_message
     );

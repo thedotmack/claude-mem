@@ -54,10 +54,10 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
         tool_name,
         tool_input,
         tool_response,
-        cwd: happy_path_error__with_fallback(
+        cwd: cwd || happy_path_error__with_fallback(
           'Missing cwd in PostToolUse hook input',
           { session_id, tool_name },
-          cwd || ''
+          ''
         )
       }),
       signal: AbortSignal.timeout(HOOK_TIMEOUTS.DEFAULT)
