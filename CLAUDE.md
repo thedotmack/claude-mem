@@ -6,7 +6,7 @@
 
 Claude-mem is a Claude Code plugin providing persistent memory across sessions. It captures tool usage, compresses observations using the Claude Agent SDK, and injects relevant context into future sessions.
 
-**Current Version**: 7.1.12
+**Current Version**: 7.1.13
 
 ## Architecture
 
