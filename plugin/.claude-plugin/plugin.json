@@ -3,7 +3,7 @@
   "displayName": "Claude-Mem",
   "version": "7.1.14",
   "description": "Persistent memory system for Claude Code - seamlessly preserve context across sessions",
-  "icon": "ui/claude-mem-logomark.webp",
+  "icon": "../ui/claude-mem-logomark.webp",
   "author": {
     "name": "Alex Newman"
   },
