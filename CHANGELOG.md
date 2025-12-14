@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [7.1.11] - 2025-12-14
+
+## What's Changed
+
+**Refactor: Simplified hook execution by removing bun-wrapper indirection**
+
+Hooks are compiled to standard JavaScript and work perfectly with Node. The bun-wrapper was solving a problem that doesn't exist - hooks don't use Bun-specific APIs, they're just HTTP clients to the worker service.
+
+**Benefits:**
+- Removes ~100 lines of code
+- Simpler cross-platform support (especially Windows)
+- No PATH resolution needed for hooks
+- Worker still uses Bun where performance matters
+- Follows YAGNI and Simple First principles
+
+**Fixes:**
+- Fish shell compatibility issue (#264)
+
+**Full Changelog:** https://github.com/thedotmack/claude-mem/compare/v7.1.10...v7.1.11
+
 ## [7.1.10] - 2025-12-14
 
 ## Enhancement
