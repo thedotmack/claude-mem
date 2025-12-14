@@ -11,7 +11,7 @@ import { stdin } from "process";
 import { ensureWorkerRunning, getWorkerPort } from "../shared/worker-utils.js";
 import { HOOK_TIMEOUTS } from "../shared/hook-constants.js";
 import { handleWorkerError } from "../shared/hook-error-handler.js";
-import { getWorkerRestartInstructions } from "../utils/error-messages.js";
+import { handleFetchError } from "./shared/error-handler.js";
 
 export interface SessionStartInput {
   session_id: string;
@@ -35,7 +35,12 @@ async function contextHook(input?: SessionStartInput): Promise<string> {
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(getWorkerRestartInstructions({ includeSkillFallback: true }));
+      handleFetchError(response, errorText, {
+        hookName: 'context',
+        operation: 'Context generation',
+        project,
+        port
+      });
     }
 
     const result = await response.text();

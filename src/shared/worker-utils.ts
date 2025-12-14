@@ -139,7 +139,11 @@ async function ensureWorkerVersionMatches(): Promise<void> {
 
     // Verify it's healthy
     if (!await isWorkerHealthy()) {
-      logger.error('SYSTEM', 'Worker failed to restart after version mismatch');
+      logger.error('SYSTEM', 'Worker failed to restart after version mismatch', {
+        expectedVersion: pluginVersion,
+        runningVersion: workerVersion,
+        port
+      });
     }
   }
 }

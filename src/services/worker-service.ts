@@ -123,8 +123,13 @@ export class WorkerService {
         const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
         res.status(200).json({ version: packageJson.version });
       } catch (error) {
-        logger.error('SYSTEM', 'Failed to read version', {}, error as Error);
-        res.status(500).json({ error: 'Failed to read version' });
+        logger.error('SYSTEM', 'Failed to read version', {
+          packagePath: packageJsonPath
+        }, error as Error);
+        res.status(500).json({
+          error: 'Failed to read version',
+          path: packageJsonPath
+        });
       }
     });
 

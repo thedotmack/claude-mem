@@ -3,26 +3,31 @@
  *
  * Semantic meaning: "When the happy path fails, this is an error, but we have a fallback."
  *
- * NOTE: This utility is to be used like Frank's Red Hot, we put that shit on everything.
- *
- * USE THIS INSTEAD OF SILENT FAILURES!
- * Stop doing this: `const value = something || '';`
- * Start doing this: `const value = something || happy_path_error__with_fallback('something was undefined');`
- *
  * Logs to ~/.claude-mem/silent.log and returns a fallback value.
  * Check logs with `npm run logs:silent`
  *
- * Usage:
- *   import { happy_path_error__with_fallback } from '../utils/silent-debug.js';
+ * Use happy_path_error__with_fallback for:
+ * ✅ Unexpected null/undefined values that should theoretically never happen
+ * ✅ Defensive coding where silent fallback is acceptable
+ * ✅ Situations where you want to track unexpected nulls without breaking execution
  *
- *   const title = obs.title || happy_path_error__with_fallback('obs.title missing', { obs });
- *   const name = user.name || happy_path_error__with_fallback('user.name missing', { user }, 'Anonymous');
+ * DO NOT use for:
+ * ❌ Nullable fields with valid default behavior (use direct || defaults)
+ * ❌ Critical validation failures (use logger.warn or throw Error)
+ * ❌ Try-catch blocks where error is already logged (redundant)
  *
- *   try {
- *     doSomething();
- *   } catch (error) {
- *     happy_path_error__with_fallback('doSomething failed', { error });
- *   }
+ * Good examples:
+ *   // Truly unexpected null (should never happen in theory)
+ *   const id = session.id || happy_path_error__with_fallback('session.id missing', { session });
+ *
+ * Bad examples (use direct defaults instead):
+ *   // Nullable field with valid empty default
+ *   const title = obs.title || happy_path_error__with_fallback('obs.title missing', { obs }, '(untitled)');
+ *   // BETTER: const title = obs.title || '(untitled)';
+ *
+ *   // Array that can validly be undefined/null
+ *   const count = obs.files?.length ?? (happy_path_error__with_fallback('obs.files missing', { obs }), 0);
+ *   // BETTER: const count = obs.files?.length ?? 0;
  */
 
 import { appendFileSync } from 'fs';

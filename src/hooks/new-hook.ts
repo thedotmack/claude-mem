@@ -4,7 +4,7 @@ import { createHookResponse } from './hook-response.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
 import { happy_path_error__with_fallback } from '../utils/silent-debug.js';
 import { handleWorkerError } from '../shared/hook-error-handler.js';
-import { getWorkerRestartInstructions } from '../utils/error-messages.js';
+import { handleFetchError } from './shared/error-handler.js';
 
 export interface UserPromptSubmitInput {
   session_id: string;
@@ -53,7 +53,12 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
 
     if (!initResponse.ok) {
       const errorText = await initResponse.text();
-      throw new Error(getWorkerRestartInstructions({ includeSkillFallback: true }));
+      handleFetchError(initResponse, errorText, {
+        hookName: 'new',
+        operation: 'Session initialization',
+        project,
+        port
+      });
     }
 
     const initResult = await initResponse.json();
@@ -87,7 +92,13 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(getWorkerRestartInstructions({ includeSkillFallback: true }));
+      handleFetchError(response, errorText, {
+        hookName: 'new',
+        operation: 'SDK agent start',
+        project,
+        port,
+        sessionId: String(sessionDbId)
+      });
     }
   } catch (error: any) {
     handleWorkerError(error);

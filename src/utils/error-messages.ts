@@ -6,6 +6,7 @@ export interface WorkerErrorMessageOptions {
   port?: number;
   includeSkillFallback?: boolean;
   customPrefix?: string;
+  actualError?: string;
 }
 
 /**
@@ -19,7 +20,8 @@ export function getWorkerRestartInstructions(
   const {
     port,
     includeSkillFallback = false,
-    customPrefix
+    customPrefix,
+    actualError
   } = options;
 
   const isWindows = process.platform === 'win32';
@@ -47,6 +49,11 @@ export function getWorkerRestartInstructions(
 
   if (includeSkillFallback) {
     message += `\n\nIf that doesn't work, try: /troubleshoot`;
+  }
+
+  // Prepend actual error if provided
+  if (actualError) {
+    message = `Worker Error: ${actualError}\n\n${message}`;
   }
 
   return message;
