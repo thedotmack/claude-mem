@@ -4,6 +4,42 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [7.1.10] - 2025-12-14
+
+## Enhancement
+
+This release adds automatic orphan cleanup to complement the process leak fix from v7.1.9.
+
+### Added
+
+- **Auto-Cleanup on Startup**: Worker now automatically detects and kills orphaned chroma-mcp processes before starting
+  - Scans for existing chroma-mcp processes on worker startup
+  - Kills all found processes before creating new ones
+  - Logs cleanup activity (process count and PIDs)
+  - Non-fatal error handling (continues on cleanup failure)
+
+### Benefits
+
+- Automatically recovers from pre-7.1.9 process leaks without manual intervention
+- Ensures clean slate on every worker restart
+- Prevents accumulation even if v7.1.9's close() method fails
+- No user action required - works transparently
+
+### Example Logs
+
+```
+[INFO] [SYSTEM] Cleaning up orphaned chroma-mcp processes {count=2, pids=33753,33750}
+[INFO] [SYSTEM] Orphaned processes cleaned up {count=2}
+```
+
+### Recommendation
+
+Upgrade from v7.1.9 to get automatic orphan cleanup. Combined with v7.1.9's proper subprocess cleanup, this provides comprehensive protection against process leaks.
+
+---
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.1.9...v7.1.10
+
 ## [7.1.9] - 2025-12-14
 
 ## Critical Bugfix
