@@ -51,9 +51,9 @@ export function loadProjectConfig(cwd: string): ProjectConfig {
 
   const configPath = join(cwd, '.claude-mem.json');
 
-  // If no config file, use defaults
+  // If no config file, return defaults without caching
+  // (no need to cache since file existence check is fast)
   if (!existsSync(configPath)) {
-    configCache.set(cwd, DEFAULT_CONFIG);
     return DEFAULT_CONFIG;
   }
 
@@ -61,19 +61,22 @@ export function loadProjectConfig(cwd: string): ProjectConfig {
     const configData = readFileSync(configPath, 'utf-8');
     const rawConfig = JSON.parse(configData);
 
+    // Determine default capture value based on enabled flag
+    const defaultCaptureValue = rawConfig.enabled !== false;
+
     // Validate and merge with defaults
     const config: ProjectConfig = {
       enabled: rawConfig.enabled !== undefined ? Boolean(rawConfig.enabled) : true,
       reason: rawConfig.reason,
       captureObservations: rawConfig.captureObservations !== undefined
         ? Boolean(rawConfig.captureObservations)
-        : (rawConfig.enabled !== false),
+        : defaultCaptureValue,
       captureSessions: rawConfig.captureSessions !== undefined
         ? Boolean(rawConfig.captureSessions)
-        : (rawConfig.enabled !== false),
+        : defaultCaptureValue,
       capturePrompts: rawConfig.capturePrompts !== undefined
         ? Boolean(rawConfig.capturePrompts)
-        : (rawConfig.enabled !== false)
+        : defaultCaptureValue
     };
 
     // If enabled is false, override all capture settings
@@ -93,7 +96,7 @@ export function loadProjectConfig(cwd: string): ProjectConfig {
     return config;
   } catch (error) {
     logger.warn('PROJECT', 'Failed to parse .claude-mem.json, using defaults', { cwd }, error);
-    configCache.set(cwd, DEFAULT_CONFIG);
+    // Don't cache error cases - allow retry on next call
     return DEFAULT_CONFIG;
   }
 }
