@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [7.1.12] - 2025-12-14
+
+## What's Fixed
+
+- **Fix data directory creation**: Ensure `~/.claude-mem/` directory exists before writing PM2 migration marker file
+  - Fixes ENOENT errors on first-time installation (issue #259)
+  - Adds `mkdirSync(dataDir, { recursive: true })` in `startWorker()` before marker file write
+  - Resolves Windows installation failures introduced in f923c0c and exposed in 5d4e71d
+
+## Changes
+
+- Added directory creation check in `src/shared/worker-utils.ts`
+- All 52 tests passing
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.1.11...v7.1.12
+
 ## [7.1.11] - 2025-12-14
 
 ## What's Changed
