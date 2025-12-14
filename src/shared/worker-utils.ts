@@ -162,7 +162,7 @@ async function startWorker(): Promise<boolean> {
 
   if (!existsSync(pm2MigratedMarker)) {
     try {
-      spawnSync('pm2', ['delete', 'claude-mem-worker'], { stdio: 'ignore' });
+      spawnSync('pm2', ['delete', 'claude-mem-worker'], { stdio: 'ignore', windowsHide: true });
       // Mark migration as complete
       writeFileSync(pm2MigratedMarker, new Date().toISOString(), 'utf-8');
       logger.debug('SYSTEM', 'PM2 cleanup completed and marked');
