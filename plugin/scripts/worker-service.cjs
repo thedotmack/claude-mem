@@ -781,7 +781,7 @@ MEMORY PROCESSING START
 Write progress notes of what was done, what was learned, and what's next. This is a checkpoint to capture progress so far. The session is ongoing - you may receive more requests and tool executions after this summary. Write "next_steps" as the current trajectory of work (what's actively being worked on or coming up next), not as post-session future work. Always write at least a minimal summary explaining current progress, even if work is still in early stages, so that users see a summary output tied to each request.
 
 Claude's Full Response to User:
-${vr("Missing last_assistant_message in session for summary prompt",a,a.last_assistant_message||"")}
+${a.last_assistant_message||vr("Missing last_assistant_message in session for summary prompt",a,"")}
 
 Respond in this XML format:
 <summary>

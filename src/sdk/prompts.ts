@@ -177,10 +177,10 @@ export function buildObservationPrompt(obs: Observation): string {
  * Build prompt to generate progress summary
  */
 export function buildSummaryPrompt(session: SDKSession): string {
-  const lastAssistantMessage = happy_path_error__with_fallback(
+  const lastAssistantMessage = session.last_assistant_message || happy_path_error__with_fallback(
     'Missing last_assistant_message in session for summary prompt',
     session,
-    session.last_assistant_message || ''
+    ''
   );
 
   return `PROGRESS SUMMARY CHECKPOINT
