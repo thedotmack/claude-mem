@@ -45,6 +45,9 @@ export class SessionStore {
   /**
    * Initialize database schema using migrations (migration004)
    * This runs the core SDK tables migration if no tables exist
+   *
+   * Note: Using console.log for migration messages since they run during constructor
+   * before structured logger is available. Actual errors use console.error.
    */
   private initializeSchema(): void {
     try {
@@ -64,7 +67,7 @@ export class SessionStore {
       // Only run migration004 if no migrations have been applied
       // This creates the sdk_sessions, observations, and session_summaries tables
       if (maxApplied === 0) {
-        console.error('[SessionStore] Initializing fresh database with migration004...');
+        console.log('[SessionStore] Initializing fresh database with migration004...');
 
         // Migration004: SDK agent architecture tables
         this.db.run(`
@@ -128,7 +131,7 @@ export class SessionStore {
         // Record migration004 as applied
         this.db.prepare('INSERT INTO schema_versions (version, applied_at) VALUES (?, ?)').run(4, new Date().toISOString());
 
-        console.error('[SessionStore] Migration004 applied successfully');
+        console.log('[SessionStore] Migration004 applied successfully');
       }
     } catch (error: any) {
       console.error('[SessionStore] Schema initialization error:', error.message);
@@ -151,7 +154,7 @@ export class SessionStore {
 
       if (!hasWorkerPort) {
         this.db.run('ALTER TABLE sdk_sessions ADD COLUMN worker_port INTEGER');
-        console.error('[SessionStore] Added worker_port column to sdk_sessions table');
+        console.log('[SessionStore] Added worker_port column to sdk_sessions table');
       }
 
       // Record migration
@@ -176,7 +179,7 @@ export class SessionStore {
 
       if (!hasPromptCounter) {
         this.db.run('ALTER TABLE sdk_sessions ADD COLUMN prompt_counter INTEGER DEFAULT 0');
-        console.error('[SessionStore] Added prompt_counter column to sdk_sessions table');
+        console.log('[SessionStore] Added prompt_counter column to sdk_sessions table');
       }
 
       // Check observations for prompt_number
@@ -185,7 +188,7 @@ export class SessionStore {
 
       if (!obsHasPromptNumber) {
         this.db.run('ALTER TABLE observations ADD COLUMN prompt_number INTEGER');
-        console.error('[SessionStore] Added prompt_number column to observations table');
+        console.log('[SessionStore] Added prompt_number column to observations table');
       }
 
       // Check session_summaries for prompt_number
@@ -194,7 +197,7 @@ export class SessionStore {
 
       if (!sumHasPromptNumber) {
         this.db.run('ALTER TABLE session_summaries ADD COLUMN prompt_number INTEGER');
-        console.error('[SessionStore] Added prompt_number column to session_summaries table');
+        console.log('[SessionStore] Added prompt_number column to session_summaries table');
       }
 
       // Record migration
@@ -223,7 +226,7 @@ export class SessionStore {
         return;
       }
 
-      console.error('[SessionStore] Removing UNIQUE constraint from session_summaries.sdk_session_id...');
+      console.log('[SessionStore] Removing UNIQUE constraint from session_summaries.sdk_session_id...');
 
       // Begin transaction
       this.db.run('BEGIN TRANSACTION');
@@ -278,7 +281,7 @@ export class SessionStore {
         // Record migration
         this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(7, new Date().toISOString());
 
-        console.error('[SessionStore] Successfully removed UNIQUE constraint from session_summaries.sdk_session_id');
+        console.log('[SessionStore] Successfully removed UNIQUE constraint from session_summaries.sdk_session_id');
       } catch (error: any) {
         // Rollback on error
         this.db.run('ROLLBACK');
@@ -308,7 +311,7 @@ export class SessionStore {
         return;
       }
 
-      console.error('[SessionStore] Adding hierarchical fields to observations table...');
+      console.log('[SessionStore] Adding hierarchical fields to observations table...');
 
       // Add new columns
       this.db.run(`
@@ -324,7 +327,7 @@ export class SessionStore {
       // Record migration
       this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(8, new Date().toISOString());
 
-      console.error('[SessionStore] Successfully added hierarchical fields to observations table');
+      console.log('[SessionStore] Successfully added hierarchical fields to observations table');
     } catch (error: any) {
       console.error('[SessionStore] Migration error (add hierarchical fields):', error.message);
     }
@@ -350,7 +353,7 @@ export class SessionStore {
         return;
       }
 
-      console.error('[SessionStore] Making observations.text nullable...');
+      console.log('[SessionStore] Making observations.text nullable...');
 
       // Begin transaction
       this.db.run('BEGIN TRANSACTION');
@@ -407,7 +410,7 @@ export class SessionStore {
         // Record migration
         this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(9, new Date().toISOString());
 
-        console.error('[SessionStore] Successfully made observations.text nullable');
+        console.log('[SessionStore] Successfully made observations.text nullable');
       } catch (error: any) {
         // Rollback on error
         this.db.run('ROLLBACK');
@@ -435,7 +438,7 @@ export class SessionStore {
         return;
       }
 
-      console.error('[SessionStore] Creating user_prompts table with FTS5 support...');
+      console.log('[SessionStore] Creating user_prompts table with FTS5 support...');
 
       // Begin transaction
       this.db.run('BEGIN TRANSACTION');
@@ -494,7 +497,7 @@ export class SessionStore {
         // Record migration
         this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(10, new Date().toISOString());
 
-        console.error('[SessionStore] Successfully created user_prompts table with FTS5 support');
+        console.log('[SessionStore] Successfully created user_prompts table with FTS5 support');
       } catch (error: any) {
         // Rollback on error
         this.db.run('ROLLBACK');
@@ -522,7 +525,7 @@ export class SessionStore {
 
       if (!obsHasDiscoveryTokens) {
         this.db.run('ALTER TABLE observations ADD COLUMN discovery_tokens INTEGER DEFAULT 0');
-        console.error('[SessionStore] Added discovery_tokens column to observations table');
+        console.log('[SessionStore] Added discovery_tokens column to observations table');
       }
 
       // Check if discovery_tokens column exists in session_summaries table
@@ -531,7 +534,7 @@ export class SessionStore {
 
       if (!sumHasDiscoveryTokens) {
         this.db.run('ALTER TABLE session_summaries ADD COLUMN discovery_tokens INTEGER DEFAULT 0');
-        console.error('[SessionStore] Added discovery_tokens column to session_summaries table');
+        console.log('[SessionStore] Added discovery_tokens column to session_summaries table');
       }
 
       // Record migration only after successful column verification/addition
@@ -1251,7 +1254,7 @@ export class SessionStore {
         now.toISOString(),
         nowEpoch
       );
-      console.error(`[SessionStore] Auto-created session record for session_id: ${sdkSessionId}`);
+      console.log(`[SessionStore] Auto-created session record for session_id: ${sdkSessionId}`);
     }
 
     const stmt = this.db.prepare(`
@@ -1325,7 +1328,7 @@ export class SessionStore {
         now.toISOString(),
         nowEpoch
       );
-      console.error(`[SessionStore] Auto-created session record for session_id: ${sdkSessionId}`);
+      console.log(`[SessionStore] Auto-created session record for session_id: ${sdkSessionId}`);
     }
 
     const stmt = this.db.prepare(`
