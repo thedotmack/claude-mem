@@ -3,7 +3,7 @@
  * Generates prompts for the Claude Agent SDK memory worker
  */
 
-import { happy_path_error__with_fallback } from '../utils/silent-debug.js';
+import { logger } from '../utils/logger.js';
 
 export interface Observation {
   id: number;
@@ -177,9 +177,11 @@ export function buildObservationPrompt(obs: Observation): string {
  * Build prompt to generate progress summary
  */
 export function buildSummaryPrompt(session: SDKSession): string {
-  const lastAssistantMessage = session.last_assistant_message || happy_path_error__with_fallback(
+  const lastAssistantMessage = session.last_assistant_message || logger.happyPathError(
+    'SDK',
     'Missing last_assistant_message in session for summary prompt',
-    session,
+    { sessionId: session.id },
+    undefined,
     ''
   );
 

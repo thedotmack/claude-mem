@@ -1,6 +1,5 @@
 import { readFileSync, existsSync } from 'fs';
 import { logger } from '../utils/logger.js';
-import { happy_path_error__with_fallback } from '../utils/silent-debug.js';
 
 /**
  * Extract last message of specified role from transcript JSONL file
@@ -14,9 +13,12 @@ export function extractLastMessage(
   stripSystemReminders: boolean = false
 ): string {
   if (!transcriptPath || !existsSync(transcriptPath)) {
-    happy_path_error__with_fallback(
+    logger.happyPathError(
+      'PARSER',
       'Transcript path missing or file does not exist',
-      { transcriptPath, role }
+      undefined,
+      { transcriptPath, role },
+      ''
     );
     return '';
   }
@@ -24,9 +26,12 @@ export function extractLastMessage(
   try {
     const content = readFileSync(transcriptPath, 'utf-8').trim();
     if (!content) {
-      happy_path_error__with_fallback(
+      logger.happyPathError(
+        'PARSER',
         'Transcript file exists but is empty',
-        { transcriptPath, role }
+        undefined,
+        { transcriptPath, role },
+        ''
       );
       return '';
     }
@@ -60,9 +65,12 @@ export function extractLastMessage(
 
             // Log if we found the role but the text is empty after processing
             if (!text || text.trim() === '') {
-              happy_path_error__with_fallback(
+              logger.happyPathError(
+                'PARSER',
                 'Found message but content is empty after processing',
-                { role, transcriptPath, msgContentType: typeof msgContent, stripSystemReminders }
+                undefined,
+                { role, transcriptPath, msgContentType: typeof msgContent, stripSystemReminders },
+                ''
               );
             }
 
@@ -76,9 +84,12 @@ export function extractLastMessage(
 
     // If we searched the whole transcript and didn't find any message of this role
     if (!foundMatchingRole) {
-      happy_path_error__with_fallback(
+      logger.happyPathError(
+        'PARSER',
         'No message found for role in transcript',
-        { role, transcriptPath, totalLines: lines.length }
+        undefined,
+        { role, transcriptPath, totalLines: lines.length },
+        ''
       );
     }
   } catch (error) {

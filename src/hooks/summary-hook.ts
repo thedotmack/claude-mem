@@ -14,7 +14,6 @@ import { createHookResponse } from './hook-response.js';
 import { logger } from '../utils/logger.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
-import { happy_path_error__with_fallback } from '../utils/silent-debug.js';
 import { handleWorkerError } from '../shared/hook-error-handler.js';
 import { handleFetchError } from './shared/error-handler.js';
 import { extractLastMessage } from '../shared/transcript-parser.js';
@@ -41,8 +40,10 @@ async function summaryHook(input?: StopInput): Promise<void> {
   const port = getWorkerPort();
 
   // Extract last user AND assistant messages from transcript
-  const transcriptPath = input.transcript_path || happy_path_error__with_fallback(
+  const transcriptPath = input.transcript_path || logger.happyPathError(
+    'HOOK',
     'Missing transcript_path in Stop hook input',
+    undefined,
     { session_id },
     ''
   );

@@ -251,6 +251,58 @@ class Logger {
   timing(component: Component, message: string, durationMs: number, context?: LogContext): void {
     this.info(component, `⏱ ${message}`, context, { duration: `${durationMs}ms` });
   }
+
+  /**
+   * Happy Path Error - logs when the expected "happy path" fails but we have a fallback
+   *
+   * Semantic meaning: "When the happy path fails, this is an error, but we have a fallback."
+   *
+   * Use for:
+   * ✅ Unexpected null/undefined values that should theoretically never happen
+   * ✅ Defensive coding where silent fallback is acceptable
+   * ✅ Situations where you want to track unexpected nulls without breaking execution
+   *
+   * DO NOT use for:
+   * ❌ Nullable fields with valid default behavior (use direct || defaults)
+   * ❌ Critical validation failures (use logger.warn or throw Error)
+   * ❌ Try-catch blocks where error is already logged (redundant)
+   *
+   * @param component - Component where error occurred
+   * @param message - Error message describing what went wrong
+   * @param context - Optional context (sessionId, correlationId, etc)
+   * @param data - Optional data to include
+   * @param fallback - Value to return (defaults to empty string)
+   * @returns The fallback value
+   */
+  happyPathError<T = string>(
+    component: Component,
+    message: string,
+    context?: LogContext,
+    data?: any,
+    fallback: T = '' as T
+  ): T {
+    // Capture stack trace to get caller location
+    const stack = new Error().stack || '';
+    const stackLines = stack.split('\n');
+    // Line 0: "Error"
+    // Line 1: "at happyPathError ..."
+    // Line 2: "at <CALLER> ..." <- We want this one
+    const callerLine = stackLines[2] || '';
+    const callerMatch = callerLine.match(/at\s+(?:.*\s+)?\(?([^:]+):(\d+):(\d+)\)?/);
+    const location = callerMatch
+      ? `${callerMatch[1].split('/').pop()}:${callerMatch[2]}`
+      : 'unknown';
+
+    // Log as a warning with location info
+    const enhancedContext = {
+      ...context,
+      location
+    };
+
+    this.warn(component, `[HAPPY-PATH] ${message}`, enhancedContext, data);
+
+    return fallback;
+  }
 }
 
 // Export singleton instance
