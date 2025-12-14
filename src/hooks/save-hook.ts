@@ -11,7 +11,6 @@ import { createHookResponse } from './hook-response.js';
 import { logger } from '../utils/logger.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
-import { happy_path_error__with_fallback } from '../utils/silent-debug.js';
 import { handleWorkerError } from '../shared/hook-error-handler.js';
 import { handleFetchError } from './shared/error-handler.js';
 
@@ -54,8 +53,10 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
         tool_name,
         tool_input,
         tool_response,
-        cwd: cwd || happy_path_error__with_fallback(
+        cwd: cwd || logger.happyPathError(
+          'HOOK',
           'Missing cwd in PostToolUse hook input',
+          undefined,
           { session_id, tool_name },
           ''
         )

@@ -9,7 +9,6 @@ import express, { Request, Response } from 'express';
 import { getWorkerPort } from '../../../../shared/worker-utils.js';
 import { logger } from '../../../../utils/logger.js';
 import { stripMemoryTagsFromJson, stripMemoryTagsFromPrompt } from '../../../../utils/tag-stripping.js';
-import { happy_path_error__with_fallback } from '../../../../utils/silent-debug.js';
 import { SessionManager } from '../../SessionManager.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
 import { SDKAgent } from '../../SDKAgent.js';
@@ -342,9 +341,11 @@ export class SessionRoutes extends BaseRouteHandler {
       tool_input: cleanedToolInput,
       tool_response: cleanedToolResponse,
       prompt_number: promptNumber,
-      cwd: cwd || happy_path_error__with_fallback(
+      cwd: cwd || logger.happyPathError(
+        'SESSION',
         'Missing cwd when queueing observation in SessionRoutes',
-        { sessionDbId, tool_name },
+        { sessionId: sessionDbId },
+        { tool_name },
         ''
       )
     });
@@ -394,9 +395,11 @@ export class SessionRoutes extends BaseRouteHandler {
     // Queue summarize
     this.sessionManager.queueSummarize(
       sessionDbId,
-      last_user_message || happy_path_error__with_fallback(
+      last_user_message || logger.happyPathError(
+        'SESSION',
         'Missing last_user_message when queueing summary in SessionRoutes',
-        { sessionDbId },
+        { sessionId: sessionDbId },
+        undefined,
         ''
       ),
       last_assistant_message
