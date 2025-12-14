@@ -167,6 +167,8 @@ export class WorkerService {
 
     // Register early handler for /api/context/inject to avoid 404 during startup
     // This handler waits for initialization to complete before delegating to SearchRoutes
+    // NOTE: This duplicates logic from SearchRoutes.handleContextInject by design,
+    // as we need the route available immediately before SearchRoutes is initialized
     this.app.get('/api/context/inject', async (req, res, next) => {
       try {
         // Wait for initialization to complete (with timeout)
