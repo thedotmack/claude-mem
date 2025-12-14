@@ -8,7 +8,7 @@
  * - Sync to database and Chroma
  */
 
-import { execSync } from 'child_process';
+import { execSync, spawn } from 'child_process';
 import { homedir } from 'os';
 import path from 'path';
 import { DatabaseManager } from './DatabaseManager.js';
@@ -70,7 +70,10 @@ export class SDKAgent {
           model: modelId,
           disallowedTools,
           abortController: session.abortController,
-          pathToClaudeCodeExecutable: claudePath
+          pathToClaudeCodeExecutable: claudePath,
+          // Hide console window on Windows - SDK's internal spawn doesn't set windowsHide
+          // See: @anthropic-ai/claude-agent-sdk/entrypoints/agentSdkTypes.d.ts (spawnClaudeCodeProcess)
+          spawnClaudeCodeProcess: (opts) => spawn(opts.command, opts.args, { ...opts, windowsHide: true })
         }
       });
 
