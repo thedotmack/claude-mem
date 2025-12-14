@@ -20,6 +20,7 @@ import { SessionCompletionHandler } from '../../session/SessionCompletionHandler
 import { PrivacyCheckValidator } from '../../validation/PrivacyCheckValidator.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
+import { canCaptureObservations, canCapturePrompts } from '../../../../shared/project-config.js';
 
 export class SessionRoutes extends BaseRouteHandler {
   private completionHandler: SessionCompletionHandler;
@@ -264,6 +265,13 @@ export class SessionRoutes extends BaseRouteHandler {
       return this.badRequest(res, 'Missing claudeSessionId');
     }
 
+    // Check project-level configuration
+    if (cwd && !canCaptureObservations(cwd)) {
+      logger.debug('SESSION', 'Skipping observation for disabled project', { cwd, tool_name });
+      res.json({ status: 'skipped', reason: 'project_disabled' });
+      return;
+    }
+
     // Load skip tools from settings
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     const skipTools = new Set(settings.CLAUDE_MEM_SKIP_TOOLS.split(',').map(t => t.trim()).filter(Boolean));
@@ -366,10 +374,17 @@ export class SessionRoutes extends BaseRouteHandler {
    * Checks privacy, queues summarize request for SDK agent
    */
   private handleSummarizeByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
-    const { claudeSessionId, last_user_message, last_assistant_message } = req.body;
+    const { claudeSessionId, last_user_message, last_assistant_message, cwd } = req.body;
 
     if (!claudeSessionId) {
       return this.badRequest(res, 'Missing claudeSessionId');
+    }
+
+    // Check project-level configuration
+    if (cwd && !canCaptureSessions(cwd)) {
+      logger.debug('SESSION', 'Skipping summarize for disabled project', { cwd });
+      res.json({ status: 'skipped', reason: 'project_disabled' });
+      return;
     }
 
     const store = this.dbManager.getSessionStore();
@@ -449,10 +464,26 @@ export class SessionRoutes extends BaseRouteHandler {
    * Returns: { sessionDbId, promptNumber, skipped: boolean, reason?: string }
    */
   private handleSessionInitByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
-    const { claudeSessionId, project, prompt } = req.body;
+    const { claudeSessionId, project, prompt, cwd } = req.body;
 
     // Validate required parameters
     if (!this.validateRequired(req, res, ['claudeSessionId', 'project', 'prompt'])) {
+      return;
+    }
+
+    // Check project-level configuration
+    if (cwd && !canCapturePrompts(cwd)) {
+      logger.debug('HOOK', 'Session init - project memory disabled', {
+        project,
+        cwd
+      });
+
+      res.json({
+        sessionDbId: 0,
+        promptNumber: 0,
+        skipped: true,
+        reason: 'project_disabled'
+      });
       return;
     }
 

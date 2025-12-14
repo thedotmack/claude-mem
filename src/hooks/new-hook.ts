@@ -46,7 +46,8 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
       body: JSON.stringify({
         claudeSessionId: session_id,
         project,
-        prompt
+        prompt,
+        cwd
       }),
       signal: AbortSignal.timeout(5000)
     });
@@ -63,6 +64,13 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
     // Check if prompt was entirely private (worker performs privacy check)
     if (initResult.skipped && initResult.reason === 'private') {
       console.error(`[new-hook] Session ${sessionDbId}, prompt #${promptNumber} (fully private - skipped)`);
+      console.log(createHookResponse('UserPromptSubmit', true));
+      return;
+    }
+
+    // Check if project has memory disabled
+    if (initResult.skipped && initResult.reason === 'project_disabled') {
+      console.error(`[new-hook] Project memory disabled via .claude-mem.json - skipping`);
       console.log(createHookResponse('UserPromptSubmit', true));
       return;
     }

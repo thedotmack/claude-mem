@@ -63,7 +63,8 @@ async function summaryHook(input?: StopInput): Promise<void> {
       body: JSON.stringify({
         claudeSessionId: session_id,
         last_user_message: lastUserMessage,
-        last_assistant_message: lastAssistantMessage
+        last_assistant_message: lastAssistantMessage,
+        cwd: input.cwd
       }),
       signal: AbortSignal.timeout(HOOK_TIMEOUTS.DEFAULT)
     });
