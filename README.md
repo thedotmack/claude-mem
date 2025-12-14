@@ -404,6 +404,37 @@ See [Troubleshooting Guide](https://docs.claude-mem.ai/troubleshooting) for comp
 
 ---
 
+## Bug Reports
+
+**Automated Bug Report Generator** - Create comprehensive bug reports with one command:
+
+```bash
+# From the plugin directory
+cd ~/.claude/plugins/marketplaces/thedotmack
+npm run bug-report
+```
+
+The bug report tool will:
+- 🌎 **Auto-translate** - Write in ANY language, automatically translates to English
+- 📊 **Collect diagnostics** - Gathers versions, platform info, worker status, logs, and configuration
+- 📝 **Interactive prompts** - Guides you through describing the issue with multiline support
+- 🤖 **AI formatting** - Uses Claude Agent SDK to generate professional GitHub issues
+- 🔒 **Privacy-safe** - Auto-sanitizes paths, optional `--no-logs` flag
+- 🌐 **Auto-submit** - Opens GitHub with pre-filled title and body
+
+**Plugin Directory Paths:**
+- **macOS/Linux**: `~/.claude/plugins/marketplaces/thedotmack`
+- **Windows**: `%USERPROFILE%\.claude\plugins\marketplaces\thedotmack`
+
+**Options:**
+```bash
+npm run bug-report --no-logs    # Skip logs for privacy
+npm run bug-report --verbose    # Show all diagnostics
+npm run bug-report --help       # Show help
+```
+
+---
+
 ## Contributing
 
 Contributions are welcome! Please:
