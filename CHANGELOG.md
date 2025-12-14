@@ -6,32 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [8.0.0] - 2025-12-14
 
-### BREAKING CHANGES
+### Fixed
 
-**Timeline MCP Tools Parameter Rename**
+**Timeline MCP Tools Parameter Bug**
 
-Timeline MCP tools now use parameter names matching SearchManager:
-- `anchor_id` → `anchor`
-- `before` → `depth_before`
-- `after` → `depth_after`
-- `obs_type` → `type` (timeline tool only)
-
-**Migration Example:**
-```typescript
-// Old:
-timeline(anchor_id=123, before=10, after=10)
-
-// New:
-timeline(anchor=123, depth_before=10, depth_after=10)
-```
+Fixed critical bug where timeline tools were completely non-functional due to parameter name mismatch between MCP layer and SearchManager. The tools now use correct parameter names:
+- `anchor` (was incorrectly `anchor_id`)
+- `depth_before` (was incorrectly `before`)
+- `depth_after` (was incorrectly `after`)
+- `type` (was incorrectly `obs_type` in timeline tool only)
 
 **Affected Tools:** `timeline`, `get_context_timeline`, `get_timeline_by_query`
 
-**Rationale:** Fixes parameter passing bug where timeline tools failed due to name mismatch between MCP layer and SearchManager.
+**Impact:** These tools were previously broken and would fail with "Cannot read properties of undefined (reading 'length')" errors. They now work correctly with the proper parameter names that match the underlying SearchManager implementation.
 
-### Fixed
-- Timeline tools now work correctly with proper parameter passing
-- Resolved "Cannot read properties of undefined (reading 'length')" errors in timeline endpoints
+### Added
+- New `get_batch_observations` MCP tool for efficiently fetching multiple observations in a single request
+- Enhanced SessionStore methods for fetching prompts and session summaries by ID
 
 ---
 
