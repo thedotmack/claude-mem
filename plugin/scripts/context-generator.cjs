@@ -218,7 +218,13 @@ ${e.stack}`:e.message;if(Array.isArray(e))return`[${e.length} items]`;let s=Obje
       FROM sdk_sessions
       WHERE project IS NOT NULL AND project != ''
       ORDER BY project ASC
-    `).all().map(r=>r.project)}getLatestUserPrompt(e){return this.db.prepare(`
+    `).all().map(r=>r.project)}getMostRecentProject(){return this.db.prepare(`
+      SELECT project
+      FROM sdk_sessions
+      WHERE project IS NOT NULL AND project != ''
+      ORDER BY started_at_epoch DESC
+      LIMIT 1
+    `).get()?.project||null}getLatestUserPrompt(e){return this.db.prepare(`
       SELECT
         up.*,
         s.sdk_session_id,
