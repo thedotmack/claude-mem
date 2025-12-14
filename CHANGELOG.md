@@ -4,6 +4,61 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [7.1.13] - 2025-12-14
+
+## Enhanced Error Handling & Logging
+
+This patch release improves error message quality and logging across the claude-mem system.
+
+### Error Message Improvements
+
+**Standardized Hook Error Handling**
+- Created shared error handlers (`handleFetchError`, `handleWorkerError`) for consistent error messages
+- Platform-aware restart instructions (macOS, Linux, Windows) with correct commands
+- Migrated all hooks (context, new, save, summary) to use standardized handlers
+- Enhanced error logging with actionable context before throwing restart instructions
+
+**ChromaSync Error Standardization**
+- Consistent client initialization checks across all methods
+- Enhanced error messages with troubleshooting steps and restart instructions
+- Better context about which operation failed
+
+**Worker Service Improvements**
+- Enhanced version endpoint error logging with status codes and response text
+- Improved worker restart error messages with PM2 commands
+- Better context in all worker-related error scenarios
+
+### Bug Fixes
+
+- **Issue #260**: Fixed `happy_path_error__with_fallback` misuse in save-hook causing false "Missing cwd" errors
+- Removed unnecessary `happy_path_error` calls from SDKAgent that were masking real error messages
+- Cleaned up migration logging to use `console.log` instead of `console.error` for non-error events
+
+### Logging Improvements
+
+**Timezone-Aware Timestamps**
+- Worker logs now use local machine timezone instead of UTC
+- Maintains same format (`YYYY-MM-DD HH:MM:SS.mmm`) but reflects local time
+- Easier debugging and log correlation with system events
+
+### Test Coverage
+
+Added comprehensive test suites:
+- `tests/error-handling/hook-error-logging.test.ts` - 12 tests for hook error handler behavior
+- `tests/services/chroma-sync-errors.test.ts` - ChromaSync error message consistency
+- `tests/integration/hook-execution-environments.test.ts` - Bun PATH resolution across shells
+- `docs/context/TEST_AUDIT_2025-12-13.md` - Comprehensive audit report
+
+### Files Changed
+
+27 files changed: 1,435 additions, 200 deletions
+
+**What's Changed**
+* Standardize and enhance error handling across hooks and worker service by @thedotmack in #295
+* Timezone-aware logging for worker service
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.1.12...v7.1.13
+
 ## [7.1.12] - 2025-12-14
 
 ## What's Fixed
