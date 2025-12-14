@@ -19,20 +19,20 @@ Use when users ask about PREVIOUS sessions (not current conversation):
 **ALWAYS follow this exact flow:**
 
 1. **Search** - Get an index of results with IDs
-2. **Timeline** (optional) - Get context around top results to understand what was happening
+2. **Timeline** - Get context around top results to understand what was happening
 3. **Review** - Look at titles/dates/context, pick relevant IDs
 4. **Fetch** - Get full details ONLY for those IDs
 
 ### Step 1: Search Everything
 
 ```bash
-curl "http://localhost:37777/api/search?query=authentication&format=index&limit=5"
+curl "http://localhost:37777/api/search?query=authentication&format=index&limit=40"
 ```
 
 **Required parameters:**
 - `query` - Search term
 - `format=index` - ALWAYS start with index (lightweight)
-- `limit=5` - Start small (3-5 results)
+- `limit=40` - You can request large indexes as necessary
 
 **Returns:**
 ```
@@ -45,9 +45,9 @@ curl "http://localhost:37777/api/search?query=authentication&format=index&limit=
    ID: 10942
 ```
 
-### Step 2: Get Timeline Context (Optional)
+### Step 2: Get Timeline Context
 
-When you need to understand "what was happening" around a result:
+You MUST understand "what was happening" around a result:
 
 ```bash
 # Get timeline around an observation ID
@@ -73,8 +73,13 @@ Review the index results (and timeline if used). Identify which IDs are actually
 For each relevant ID, fetch full details:
 
 ```bash
-# Fetch observation
+# Fetch single observation
 curl "http://localhost:37777/api/observation/11131"
+
+# Fetch multiple observations in one request (more efficient)
+curl -X POST "http://localhost:37777/api/observations/batch" \
+  -H "Content-Type: application/json" \
+  -d '{"ids": [11131, 10942, 10855]}'
 
 # Fetch session
 curl "http://localhost:37777/api/session/2005"
@@ -83,10 +88,23 @@ curl "http://localhost:37777/api/session/2005"
 curl "http://localhost:37777/api/prompt/5421"
 ```
 
+**Batch fetch options:**
+```bash
+# With ordering and limit
+curl -X POST "http://localhost:37777/api/observations/batch" \
+  -H "Content-Type: application/json" \
+  -d '{"ids": [11131, 10942], "orderBy": "date_desc", "limit": 10}'
+```
+
 **ID formats:**
 - Observations: Just the number (11131)
 - Sessions: Just the number (2005) from "S2005"
 - Prompts: Just the number (5421)
+
+**When to use batch:**
+- Always use batch when fetching 2+ observations
+- More efficient: one request vs multiple
+- Returns all observations in a single response
 
 ## Search Parameters
 
