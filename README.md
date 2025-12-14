@@ -83,6 +83,7 @@ Restart Claude Code. Context from previous sessions will automatically appear in
 - 🖥️ **Web Viewer UI** - Real-time memory stream at http://localhost:37777
 - 💻 **Claude Desktop Skill** - Search memory from Claude Desktop conversations
 - 🔒 **Privacy Control** - Use `<private>` tags to exclude sensitive content from storage
+- 📁 **Project-Level Config** - Disable memory per-project with `.claude-mem.json`
 - ⚙️ **Context Configuration** - Fine-grained control over what context gets injected
 - 🤖 **Automatic Operation** - No manual intervention required
 - 🔗 **Citations** - Reference past decisions with `claude-mem://` URIs
@@ -320,7 +321,29 @@ See [CHANGELOG.md](CHANGELOG.md) for complete version history.
 
 Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created with defaults on first run.
 
-**Available Settings:**
+**Project-Level Configuration:**
+
+Disable or configure memory capture per-project with `.claude-mem.json` in your project root:
+
+```json
+{
+  "enabled": false,
+  "reason": "Project contains sensitive client data"
+}
+```
+
+Or with granular control:
+
+```json
+{
+  "enabled": true,
+  "captureObservations": false,
+  "captureSessions": true,
+  "capturePrompts": true
+}
+```
+
+**Global Settings:**
 
 | Setting | Default | Description |
 |---------|---------|-------------|

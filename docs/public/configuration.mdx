@@ -9,6 +9,68 @@ description: "Environment variables and settings for Claude-Mem"
 
 Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created with defaults on first run.
 
+## Project-Level Configuration
+
+You can disable or configure memory capture on a per-project basis using a `.claude-mem.json` file in your project root.
+
+### Disabling Memory for a Project
+
+Create `.claude-mem.json` in your project root:
+
+```json
+{
+  "enabled": false,
+  "reason": "Project contains sensitive client data"
+}
+```
+
+When `enabled: false`, claude-mem will skip all memory capture for that project:
+- No observations will be saved
+- No prompts will be stored
+- No sessions will be tracked
+
+The `reason` field is optional but recommended for documentation purposes.
+
+### Granular Control
+
+For more fine-grained control, you can enable/disable specific capture types:
+
+```json
+{
+  "enabled": true,
+  "captureObservations": false,
+  "captureSessions": true,
+  "capturePrompts": true
+}
+```
+
+**Capture Options:**
+- `captureObservations` - Tool usage and observations (PostToolUse hook)
+- `captureSessions` - Session summaries and metadata (Stop hook)
+- `capturePrompts` - User prompts (UserPromptSubmit hook)
+
+**Use Cases:**
+- **Sensitive Projects**: Disable entirely for projects with confidential data
+- **Temporary Experiments**: Disable for throwaway projects or prototypes
+- **Observation-Heavy Projects**: Disable observations but keep prompts/sessions for high-frequency tool usage
+- **Client Work**: Disable prompts but keep observations for compliance requirements
+
+### Configuration Priority
+
+Project-level configuration (`.claude-mem.json`) takes precedence over global settings (`~/.claude-mem/settings.json`).
+
+If `.claude-mem.json` doesn't exist, all memory capture defaults to enabled.
+
+### Example: Adding to .gitignore
+
+To ensure `.claude-mem.json` doesn't get committed to version control:
+
+```bash
+echo ".claude-mem.json" >> .gitignore
+```
+
+Alternatively, commit the file if you want the entire team to share the same memory configuration.
+
 ### Core Settings
 
 | Setting                       | Default                         | Description                           |
