@@ -720,6 +720,8 @@ export class SessionStore {
   /**
    * Get the most recently active project from the database
    * Used as a fallback when project context is not provided
+   * Note: Synchronous by design - SessionStore uses Bun's synchronous SQLite API
+   * Performance: Uses idx_sdk_sessions_started index for efficient querying
    * @returns The project name of the most recent session, or null if no sessions exist
    */
   getMostRecentProject(): string | null {
