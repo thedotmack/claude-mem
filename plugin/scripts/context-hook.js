@@ -7,7 +7,8 @@ ${t.stack}`:t.message;if(Array.isArray(t))return`[${t.length} items]`;let e=Obje
 `,u+=`1. Exit Claude Code completely
 `,u+=`2. Open ${a}
 `,u+=`3. Navigate to: ${i}
-`,u+="4. Run: npm run worker:restart",e&&(u+=`
+`,u+=`4. Run: npm run worker:restart
+`,u+="5. Restart Claude Code",e&&(u+=`
 
 If that doesn't work, try: /troubleshoot`),o&&(u=`Worker Error: ${o}
 

@@ -45,7 +45,8 @@ export function getWorkerRestartInstructions(
   message += `1. Exit Claude Code completely\n`;
   message += `2. Open ${terminal}\n`;
   message += `3. Navigate to: ${pluginDir}\n`;
-  message += `4. Run: npm run worker:restart`;
+  message += `4. Run: npm run worker:restart\n`;
+  message += `5. Restart Claude Code`;
 
   if (includeSkillFallback) {
     message += `\n\nIf that doesn't work, try: /troubleshoot`;
