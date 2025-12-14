@@ -7,12 +7,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/smart-install.js\" && node \"${CLAUDE_PLUGIN_ROOT}/scripts/bun-wrapper.cjs\" \"${CLAUDE_PLUGIN_ROOT}/scripts/context-hook.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/smart-install.js\" && node \"${CLAUDE_PLUGIN_ROOT}/scripts/context-hook.js\"",
             "timeout": 300
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/bun-wrapper.cjs\" \"${CLAUDE_PLUGIN_ROOT}/scripts/user-message-hook.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/user-message-hook.js\"",
             "timeout": 10
           }
         ]
@@ -23,7 +23,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/bun-wrapper.cjs\" \"${CLAUDE_PLUGIN_ROOT}/scripts/new-hook.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/new-hook.js\"",
             "timeout": 120
           }
         ]
@@ -35,7 +35,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/bun-wrapper.cjs\" \"${CLAUDE_PLUGIN_ROOT}/scripts/save-hook.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/save-hook.js\"",
             "timeout": 120
           }
         ]
@@ -46,7 +46,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/bun-wrapper.cjs\" \"${CLAUDE_PLUGIN_ROOT}/scripts/summary-hook.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/summary-hook.js\"",
             "timeout": 120
           }
         ]
@@ -57,7 +57,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/bun-wrapper.cjs\" \"${CLAUDE_PLUGIN_ROOT}/scripts/cleanup-hook.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/cleanup-hook.js\"",
             "timeout": 120
           }
         ]
