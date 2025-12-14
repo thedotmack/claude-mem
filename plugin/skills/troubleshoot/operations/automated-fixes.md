@@ -8,9 +8,9 @@ One-command fix sequences for common claude-mem issues.
 
 ```bash
 cd ~/.claude/plugins/marketplaces/thedotmack/ && \
-pm2 delete claude-mem-worker 2>/dev/null; \
+npm run worker:stop 2>/dev/null; \
 npm install && \
-node_modules/.bin/pm2 start ecosystem.config.cjs && \
+npm run worker:start && \
 sleep 3 && \
 curl -s http://127.0.0.1:37777/health
 ```
@@ -20,22 +20,22 @@ curl -s http://127.0.0.1:37777/health
 **What it does:**
 1. Stops the worker (if running)
 2. Ensures dependencies are installed
-3. Starts worker with local PM2
+3. Starts worker with Bun
 4. Waits for startup
 5. Verifies health
 
 ## Fix: Worker Not Running
 
-**Use when:** PM2 shows worker as stopped or not listed
+**Use when:** Worker status shows not running
 
 ```bash
 cd ~/.claude/plugins/marketplaces/thedotmack/ && \
-node_modules/.bin/pm2 start ecosystem.config.cjs && \
+npm run worker:start && \
 sleep 2 && \
-pm2 status
+npm run worker:status
 ```
 
-**Expected output:** Worker shows as "online"
+**Expected output:** Worker shows as "running" with PID and uptime
 
 ## Fix: Dependencies Missing
 
@@ -44,7 +44,7 @@ pm2 status
 ```bash
 cd ~/.claude/plugins/marketplaces/thedotmack/ && \
 npm install && \
-pm2 restart claude-mem-worker
+npm run worker:restart
 ```
 
 ## Fix: Port Conflict
@@ -54,8 +54,8 @@ pm2 restart claude-mem-worker
 ```bash
 # Change to port 37778
 mkdir -p ~/.claude-mem && \
-echo '{"env":{"CLAUDE_MEM_WORKER_PORT":"37778"}}' > ~/.claude-mem/settings.json && \
-pm2 restart claude-mem-worker && \
+echo '{"CLAUDE_MEM_WORKER_PORT":"37778"}' > ~/.claude-mem/settings.json && \
+npm run worker:restart && \
 sleep 2 && \
 curl -s http://127.0.0.1:37778/health
 ```
@@ -70,14 +70,14 @@ curl -s http://127.0.0.1:37778/health
 # Backup and test integrity
 cp ~/.claude-mem/claude-mem.db ~/.claude-mem/claude-mem.db.backup && \
 sqlite3 ~/.claude-mem/claude-mem.db "PRAGMA integrity_check;" && \
-pm2 restart claude-mem-worker
+npm run worker:restart
 ```
 
 **If integrity check fails, recreate database:**
 ```bash
 # WARNING: This deletes all memory data
 mv ~/.claude-mem/claude-mem.db ~/.claude-mem/claude-mem.db.old && \
-pm2 restart claude-mem-worker
+npm run worker:restart
 ```
 
 ## Fix: Clean Reinstall
@@ -88,8 +88,8 @@ pm2 restart claude-mem-worker
 # Backup data first
 cp ~/.claude-mem/claude-mem.db ~/.claude-mem/claude-mem.db.backup 2>/dev/null
 
-# Stop and remove worker
-pm2 delete claude-mem-worker 2>/dev/null
+# Stop worker
+npm run worker:stop 2>/dev/null
 
 # Reinstall dependencies
 cd ~/.claude/plugins/marketplaces/thedotmack/ && \
@@ -97,18 +97,22 @@ rm -rf node_modules && \
 npm install
 
 # Start worker
-node_modules/.bin/pm2 start ecosystem.config.cjs && \
+npm run worker:start && \
 sleep 3 && \
 curl -s http://127.0.0.1:37777/health
 ```
 
-## Fix: Clear PM2 Logs
+## Fix: Clear Worker Logs
 
 **Use when:** Logs are too large, want fresh start
 
 ```bash
-pm2 flush claude-mem-worker && \
-pm2 restart claude-mem-worker
+# Archive old logs
+mkdir -p ~/.claude-mem/logs/archive
+mv ~/.claude-mem/logs/worker-*.log ~/.claude-mem/logs/archive/ 2>/dev/null
+
+# Restart worker to create new log file
+npm run worker:restart
 ```
 
 ## Verification Commands
@@ -117,7 +121,7 @@ pm2 restart claude-mem-worker
 
 ```bash
 # Check worker status
-pm2 status | grep claude-mem-worker
+npm run worker:status
 
 # Check health
 curl -s http://127.0.0.1:37777/health
@@ -129,11 +133,11 @@ sqlite3 ~/.claude-mem/claude-mem.db "SELECT COUNT(*) FROM observations;"
 curl -s http://127.0.0.1:37777/api/stats
 
 # Check logs for errors
-pm2 logs claude-mem-worker --lines 20 --nostream | grep -i error
+tail -20 ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log | grep -i error
 ```
 
 **All checks should pass:**
-- Worker status: "online"
+- Worker status: "running"
 - Health: `{"status":"ok"}`
 - Database: Shows count (may be 0 if new)
 - Stats: Returns JSON with counts
@@ -143,9 +147,9 @@ pm2 logs claude-mem-worker --lines 20 --nostream | grep -i error
 
 **If automated fix fails:**
 1. Run the diagnostic script from [diagnostics.md](diagnostics.md)
-2. Check specific error in PM2 logs
+2. Check specific error in worker logs
 3. Try manual worker start to see detailed error:
    ```bash
    cd ~/.claude/plugins/marketplaces/thedotmack/
-   node plugin/scripts/worker-service.cjs
+   bun plugin/scripts/worker-service.cjs
    ```

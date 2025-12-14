@@ -6,29 +6,32 @@ Comprehensive step-by-step diagnostic workflow for claude-mem issues.
 
 Run these checks systematically to identify the root cause:
 
-### 1. Check PM2 Worker Status
+### 1. Check Worker Status
 
 First, verify if the worker service is running:
 
 ```bash
-# Check if PM2 is available
-which pm2 || echo "PM2 not found in PATH"
+# Check worker status using npm script
+npm run worker:status
 
-# List PM2 processes
-pm2 jlist 2>&1
+# Or check PID file directly
+cat ~/.claude-mem/worker.pid
 
-# If pm2 is not found, try the local installation
-~/.claude/plugins/marketplaces/thedotmack/node_modules/.bin/pm2 jlist 2>&1
+# Check if Bun is available
+which bun || echo "Bun not found in PATH"
+bun --version
 ```
 
-**Expected output:** JSON array with `claude-mem-worker` process showing `"status": "online"`
+**Expected output:** Worker status shows running with PID, port, and uptime
 
-**If worker not running or status is not "online":**
+**If worker not running:**
 ```bash
+# Start the worker
+npm run worker:start
+
+# Or manually with bun
 cd ~/.claude/plugins/marketplaces/thedotmack/
-pm2 start ecosystem.config.cjs
-# Or use local pm2:
-node_modules/.bin/pm2 start ecosystem.config.cjs
+bun plugin/scripts/worker-cli.js start
 ```
 
 ### 2. Check Worker Service Health
@@ -98,10 +101,13 @@ cd ~/.claude/plugins/marketplaces/thedotmack/
 # Check for critical packages
 ls node_modules/@anthropic-ai/claude-agent-sdk 2>&1 | head -1
 ls node_modules/express 2>&1 | head -1
-ls node_modules/pm2 2>&1 | head -1
+
+# Check Bun is installed
+which bun
+bun --version
 ```
 
-**Expected:** All critical packages present
+**Expected:** All critical packages present and Bun available
 
 **If dependencies missing:**
 ```bash
@@ -109,20 +115,25 @@ cd ~/.claude/plugins/marketplaces/thedotmack/
 npm install
 ```
 
+**If Bun missing:**
+```bash
+# Install Bun
+curl -fsSL https://bun.sh/install | bash
+```
+
 ### 5. Check Worker Logs
 
 Review recent worker logs for errors:
 
 ```bash
-# View last 50 lines of worker logs
-pm2 logs claude-mem-worker --lines 50 --nostream
+# View last 50 lines of today's worker logs
+tail -50 ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log
 
-# Or use local pm2:
-cd ~/.claude/plugins/marketplaces/thedotmack/
-node_modules/.bin/pm2 logs claude-mem-worker --lines 50 --nostream
+# Follow logs in real-time
+npm run worker:logs
 
 # Check for specific errors
-pm2 logs claude-mem-worker --lines 100 --nostream | grep -i "error\|exception\|failed"
+grep -i "error\|exception\|failed" ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log
 ```
 
 ### 6. Test Viewer UI
@@ -167,6 +178,7 @@ echo "=== Claude-Mem Troubleshooting Report ==="
 echo ""
 echo "1. Environment"
 echo "   OS: $(uname -s)"
+echo "   Bun version: $(bun --version 2>/dev/null || echo 'NOT INSTALLED')"
 echo ""
 echo "2. Plugin Installation"
 echo "   Plugin directory exists: $([ -d ~/.claude/plugins/marketplaces/thedotmack ] && echo 'YES' || echo 'NO')"
@@ -179,10 +191,13 @@ echo "   Observation count: $(sqlite3 ~/.claude-mem/claude-mem.db 'SELECT COUNT(
 echo "   Session count: $(sqlite3 ~/.claude-mem/claude-mem.db 'SELECT COUNT(*) FROM sessions;' 2>/dev/null || echo 'N/A')"
 echo ""
 echo "4. Worker Service"
-PM2_PATH=$(which pm2 2>/dev/null || echo "~/.claude/plugins/marketplaces/thedotmack/node_modules/.bin/pm2")
-echo "   PM2 path: $PM2_PATH"
-WORKER_STATUS=$($PM2_PATH jlist 2>/dev/null | grep -o '"name":"claude-mem-worker".*"status":"[^"]*"' | grep -o 'status":"[^"]*"' | cut -d'"' -f3 || echo 'not running')
-echo "   Worker status: $WORKER_STATUS"
+WORKER_PID=$(cat ~/.claude-mem/worker.pid 2>/dev/null | grep -o '"pid":[0-9]*' | grep -o '[0-9]*')
+if [ -n "$WORKER_PID" ] && ps -p $WORKER_PID > /dev/null 2>&1; then
+  echo "   Worker status: running"
+  echo "   Worker PID: $WORKER_PID"
+else
+  echo "   Worker status: not running"
+fi
 echo "   Health check: $(curl -s http://127.0.0.1:37777/health 2>/dev/null || echo 'FAILED')"
 echo ""
 echo "5. Configuration"
@@ -206,11 +221,12 @@ bash /tmp/claude-mem-diagnostics.sh
 If troubleshooting doesn't resolve the issue, collect this information for a bug report:
 
 1. Full diagnostic report (run script above)
-2. Worker logs: `pm2 logs claude-mem-worker --lines 100 --nostream`
+2. Worker logs: `tail -200 ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log`
 3. Your setup:
    - Claude version: Check with Claude
    - OS: `uname -a`
    - Node version: `node --version`
+   - Bun version: `bun --version`
    - Plugin version: In package.json
 4. Steps to reproduce the issue
 5. Expected vs actual behavior
