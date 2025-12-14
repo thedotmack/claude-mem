@@ -194,7 +194,7 @@ export class WorkerService {
         }
 
         // Import context generator (runs in worker, has access to database)
-        const { generateContext } = await import('../context-generator.js');
+        const { generateContext } = await import('./context-generator.js');
 
         // Use project name as CWD (generateContext uses path.basename to get project)
         const cwd = `/context/${projectName}`;

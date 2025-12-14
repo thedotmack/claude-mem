@@ -8,8 +8,12 @@
  * tries to access the endpoint before SearchRoutes are registered.
  */
 import { describe, it, expect } from 'vitest';
+import fs from 'fs';
+import path from 'path';
 
 describe('Context Inject Early Access', () => {
+  const workerPath = path.join(__dirname, '../../plugin/scripts/worker-service.cjs');
+  
   it('should have /api/context/inject route available immediately on startup', async () => {
     // This test verifies the fix by checking that:
     // 1. The route exists immediately (no 404)
@@ -25,10 +29,6 @@ describe('Context Inject Early Access', () => {
     // we verify the code structure is correct by checking
     // the compiled output contains the necessary pieces
 
-    const fs = require('fs');
-    const path = require('path');
-    
-    const workerPath = path.join(__dirname, '../../plugin/scripts/worker-service.cjs');
     const workerCode = fs.readFileSync(workerPath, 'utf-8');
 
     // Verify initialization promise exists
@@ -44,10 +44,6 @@ describe('Context Inject Early Access', () => {
   });
 
   it('should handle timeout if initialization takes too long', () => {
-    const fs = require('fs');
-    const path = require('path');
-    
-    const workerPath = path.join(__dirname, '../../plugin/scripts/worker-service.cjs');
     const workerCode = fs.readFileSync(workerPath, 'utf-8');
 
     // Verify timeout protection (30 seconds)
