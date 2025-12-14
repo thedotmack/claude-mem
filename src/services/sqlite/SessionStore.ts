@@ -718,6 +718,24 @@ export class SessionStore {
   }
 
   /**
+   * Get the most recently active project from the database
+   * Used as a fallback when project context is not provided
+   * @returns The project name of the most recent session, or null if no sessions exist
+   */
+  getMostRecentProject(): string | null {
+    const stmt = this.db.prepare(`
+      SELECT project
+      FROM sdk_sessions
+      WHERE project IS NOT NULL AND project != ''
+      ORDER BY started_at_epoch DESC
+      LIMIT 1
+    `);
+
+    const row = stmt.get() as { project: string } | undefined;
+    return row?.project || null;
+  }
+
+  /**
    * Get latest user prompt with session info for a Claude session
    * Used for syncing prompts to Chroma during session initialization
    */

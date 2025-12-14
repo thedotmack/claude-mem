@@ -1421,7 +1421,9 @@ export class SearchManager {
    */
   async getRecentContext(args: any): Promise<any> {
       try {
-        const project = args.project || basename(process.cwd());
+        // Use provided project, or fall back to most recent project in database
+        // This prevents defaulting to plugin directory when project is not specified
+        const project = args.project || this.sessionStore.getMostRecentProject() || basename(process.cwd());
         const limit = args.limit || 3;
 
         const sessions = this.sessionStore.getRecentSessionsWithStatus(project, limit);
