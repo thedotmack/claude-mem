@@ -19,6 +19,20 @@ import { happy_path_error__with_fallback } from '../../utils/silent-debug.js';
 import path from 'path';
 import os from 'os';
 
+/**
+ * Supported local embedding models (no API keys required)
+ * - default: all-MiniLM-L6-v2 (English, fast, 384 dimensions)
+ * - paraphrase-multilingual-MiniLM-L12-v2: Multilingual (50+ languages, 384 dimensions)
+ * - all-mpnet-base-v2: English (better quality, 768 dimensions)
+ * - distiluse-base-multilingual-cased-v2: Multilingual (15 languages, 512 dimensions)
+ */
+const LOCAL_EMBEDDING_MODELS = [
+  'default',
+  'paraphrase-multilingual-MiniLM-L12-v2',
+  'all-mpnet-base-v2',
+  'distiluse-base-multilingual-cased-v2'
+] as const;
+
 interface ChromaDocument {
   id: string;
   document: string;
@@ -154,16 +168,35 @@ export class ChromaSync {
       // Collection doesn't exist, create it
       logger.info('CHROMA_SYNC', 'Creating collection', { collection: this.collectionName });
 
+      // Load embedding function from settings
+      const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+      const embeddingFunction = settings.CLAUDE_MEM_EMBEDDING_FUNCTION;
+
+      // Validate embedding function
+      if (!LOCAL_EMBEDDING_MODELS.includes(embeddingFunction as any)) {
+        logger.error('CHROMA_SYNC', 'Unsupported embedding function', {
+          embeddingFunction,
+          supported: LOCAL_EMBEDDING_MODELS
+        });
+        throw new Error(
+          `Unsupported embedding function: ${embeddingFunction}. ` +
+          `Supported models: ${LOCAL_EMBEDDING_MODELS.join(', ')}`
+        );
+      }
+
       try {
         await this.client.callTool({
           name: 'chroma_create_collection',
           arguments: {
             collection_name: this.collectionName,
-            embedding_function_name: 'default'
+            embedding_function_name: embeddingFunction
           }
         });
 
-        logger.info('CHROMA_SYNC', 'Collection created', { collection: this.collectionName });
+        logger.info('CHROMA_SYNC', 'Collection created', {
+          collection: this.collectionName,
+          embeddingFunction
+        });
       } catch (createError) {
         logger.error('CHROMA_SYNC', 'Failed to create collection', { collection: this.collectionName }, createError as Error);
         throw new Error(`Collection creation failed: ${createError instanceof Error ? createError.message : String(createError)}`);

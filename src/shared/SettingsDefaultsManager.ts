@@ -22,6 +22,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_LOG_LEVEL: string;
   CLAUDE_MEM_PYTHON_VERSION: string;
   CLAUDE_CODE_PATH: string;
+  CLAUDE_MEM_EMBEDDING_FUNCTION: string;
   // Token Economics
   CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: string;
   CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS: string;
@@ -54,6 +55,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_LOG_LEVEL: 'INFO',
     CLAUDE_MEM_PYTHON_VERSION: '3.13',
     CLAUDE_CODE_PATH: '', // Empty means auto-detect via 'which claude'
+    CLAUDE_MEM_EMBEDDING_FUNCTION: 'default', // Local models: default, paraphrase-multilingual-MiniLM-L12-v2, all-mpnet-base-v2, distiluse-base-multilingual-cased-v2
     // Token Economics
     CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: 'true',
     CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS: 'true',
