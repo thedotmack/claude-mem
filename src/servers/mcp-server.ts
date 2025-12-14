@@ -41,7 +41,8 @@ const TOOL_ENDPOINT_MAP: Record<string, string> = {
   'find_by_type': '/api/search/by-type',
   'get_recent_context': '/api/context/recent',
   'get_context_timeline': '/api/context/timeline',
-  'get_timeline_by_query': '/api/timeline/by-query'
+  'get_timeline_by_query': '/api/timeline/by-query',
+  'progressive_ix': '/api/instructions'
 };
 
 /**
@@ -90,6 +91,94 @@ async function callWorkerAPI(
 }
 
 /**
+ * Call Worker HTTP API with path parameter (GET)
+ */
+async function callWorkerAPIWithPath(
+  endpoint: string,
+  id: number
+): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
+  happy_path_error__with_fallback('[mcp-server] → Worker API (path)', { endpoint, id });
+
+  try {
+    const url = `${WORKER_BASE_URL}${endpoint}/${id}`;
+    const response = await fetch(url);
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Worker API error (${response.status}): ${errorText}`);
+    }
+
+    const data = await response.json();
+
+    happy_path_error__with_fallback('[mcp-server] ← Worker API success (path)', { endpoint, id });
+
+    // Wrap raw data in MCP format
+    return {
+      content: [{
+        type: 'text' as const,
+        text: JSON.stringify(data, null, 2)
+      }]
+    };
+  } catch (error: any) {
+    happy_path_error__with_fallback('[mcp-server] ← Worker API error (path)', { endpoint, id, error: error.message });
+    return {
+      content: [{
+        type: 'text' as const,
+        text: `Error calling Worker API: ${error.message}`
+      }],
+      isError: true
+    };
+  }
+}
+
+/**
+ * Call Worker HTTP API with POST body
+ */
+async function callWorkerAPIPost(
+  endpoint: string,
+  body: Record<string, any>
+): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
+  happy_path_error__with_fallback('[mcp-server] → Worker API (POST)', { endpoint, body });
+
+  try {
+    const url = `${WORKER_BASE_URL}${endpoint}`;
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(body)
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Worker API error (${response.status}): ${errorText}`);
+    }
+
+    const data = await response.json();
+
+    happy_path_error__with_fallback('[mcp-server] ← Worker API success (POST)', { endpoint });
+
+    // Wrap raw data in MCP format
+    return {
+      content: [{
+        type: 'text' as const,
+        text: JSON.stringify(data, null, 2)
+      }]
+    };
+  } catch (error: any) {
+    happy_path_error__with_fallback('[mcp-server] ← Worker API error (POST)', { endpoint, error: error.message });
+    return {
+      content: [{
+        type: 'text' as const,
+        text: `Error calling Worker API: ${error.message}`
+      }],
+      isError: true
+    };
+  }
+}
+
+/**
  * Verify Worker is accessible
  */
 async function verifyWorkerConnection(): Promise<boolean> {
@@ -107,7 +196,7 @@ async function verifyWorkerConnection(): Promise<boolean> {
 const tools = [
   {
     name: 'search',
-    description: 'Unified search across all memory types (observations, sessions, and user prompts) using vector-first semantic search (ChromaDB). Returns combined results from all document types. IMPORTANT: Always use index format first (default) to get an overview with minimal token usage, then use format: "full" only for specific items of interest.',
+    description: 'Search observations, sessions, and prompts',
     inputSchema: z.object({
       query: z.string().optional().describe('Natural language search query for semantic ranking via ChromaDB vector search. Optional - omit for date-filtered queries only (Chroma cannot filter by date, requires direct SQLite).'),
       format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default, RECOMMENDED for initial search), "full" for complete details (use only after reviewing index results)'),
@@ -129,14 +218,14 @@ const tools = [
   },
   {
     name: 'timeline',
-    description: 'Fetch timeline of observations around a specific point in time. Supports two modes: anchor-based (fetch observations before/after a specific observation ID) and query-based (semantic search for anchor point). IMPORTANT: Use anchor_id when you know the specific observation, or query to find an anchor point first.',
+    description: 'Get timeline around observation ID or query',
     inputSchema: z.object({
-      query: z.string().optional().describe('Natural language query to find anchor observation (query-based mode). Mutually exclusive with anchor_id.'),
-      anchor_id: z.number().optional().describe('Observation ID to use as anchor (anchor-based mode). Mutually exclusive with query.'),
-      before: z.number().min(0).max(100).default(10).describe('Number of observations to fetch before anchor'),
-      after: z.number().min(0).max(100).default(10).describe('Number of observations to fetch after anchor'),
+      query: z.string().optional().describe('Natural language query to find anchor observation (query-based mode). Mutually exclusive with anchor.'),
+      anchor: z.number().optional().describe('Observation ID to use as anchor (anchor-based mode). Mutually exclusive with query.'),
+      depth_before: z.number().min(0).max(100).default(10).describe('Number of observations to fetch before anchor'),
+      depth_after: z.number().min(0).max(100).default(10).describe('Number of observations to fetch after anchor'),
       format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default, RECOMMENDED), "full" for complete details'),
-      obs_type: z.string().optional().describe('Filter observations by type (single value or comma-separated list: decision,bugfix,feature,refactor,discovery,change)'),
+      type: z.string().optional().describe('Filter observations by type (single value or comma-separated list: decision,bugfix,feature,refactor,discovery,change)'),
       concepts: z.string().optional().describe('Filter by concept tags (single value or comma-separated list)'),
       files: z.string().optional().describe('Filter by file paths (single value or comma-separated list for partial match)'),
       project: z.string().optional().describe('Filter by project name')
@@ -148,7 +237,7 @@ const tools = [
   },
   {
     name: 'decisions',
-    description: 'Semantic shortcut for finding architectural, design, and implementation decisions. Optimized for decision-type observations with relevant keyword boosting.',
+    description: 'Find architectural and design decisions',
     inputSchema: z.object({
       query: z.string().describe('Natural language query for finding decisions'),
       format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default, RECOMMENDED), "full" for complete details'),
@@ -163,7 +252,7 @@ const tools = [
   },
   {
     name: 'changes',
-    description: 'Semantic shortcut for finding code changes, refactorings, and modifications. Optimized for change-type observations with relevant keyword boosting.',
+    description: 'Find code changes and refactorings',
     inputSchema: z.object({
       query: z.string().describe('Natural language query for finding changes'),
       format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default, RECOMMENDED), "full" for complete details'),
@@ -178,7 +267,7 @@ const tools = [
   },
   {
     name: 'how_it_works',
-    description: 'Semantic shortcut for understanding system architecture, design patterns, and implementation details. Optimized for discovery-type observations with architecture/design keyword boosting.',
+    description: 'Understand system architecture',
     inputSchema: z.object({
       query: z.string().describe('Natural language query for understanding how something works'),
       format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default, RECOMMENDED), "full" for complete details'),
@@ -193,7 +282,7 @@ const tools = [
   },
   {
     name: 'search_observations',
-    description: '[DEPRECATED - Use "search" with type="observations" instead] Search observations (facts/narratives) using FTS5 full-text search. Supports filtering by type, concepts, files, and date range.',
+    description: '[DEPRECATED] Search observations only',
     inputSchema: z.object({
       query: z.string().optional().describe('Full-text search query (FTS5)'),
       format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default, RECOMMENDED), "full" for complete details'),
@@ -214,7 +303,7 @@ const tools = [
   },
   {
     name: 'search_sessions',
-    description: '[DEPRECATED - Use "search" with type="sessions" instead] Search session summaries using FTS5 full-text search. Returns both request_summary and learned_summary fields.',
+    description: '[DEPRECATED] Search sessions only',
     inputSchema: z.object({
       query: z.string().optional().describe('Full-text search query (FTS5)'),
       format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default, RECOMMENDED), "full" for complete details'),
@@ -232,7 +321,7 @@ const tools = [
   },
   {
     name: 'search_user_prompts',
-    description: '[DEPRECATED - Use "search" with type="prompts" instead] Search user prompts using FTS5 full-text search. Searches prompt text only.',
+    description: '[DEPRECATED] Search prompts only',
     inputSchema: z.object({
       query: z.string().optional().describe('Full-text search query (FTS5)'),
       format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default, RECOMMENDED), "full" for complete details'),
@@ -250,7 +339,7 @@ const tools = [
   },
   {
     name: 'find_by_concept',
-    description: 'Find observations tagged with specific concepts. Returns observations that match any of the provided concept tags.',
+    description: 'Find observations by concept tags',
     inputSchema: z.object({
       concepts: z.string().describe('Concept tag(s) to filter by (single value or comma-separated list)'),
       format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default, RECOMMENDED), "full" for complete details'),
@@ -270,7 +359,7 @@ const tools = [
   },
   {
     name: 'find_by_file',
-    description: 'Find observations related to specific file paths. Uses partial matching - searches for file paths containing the provided string.',
+    description: 'Find observations by file paths',
     inputSchema: z.object({
       files: z.string().describe('File path(s) to filter by (single value or comma-separated list for partial match)'),
       format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default, RECOMMENDED), "full" for complete details'),
@@ -290,7 +379,7 @@ const tools = [
   },
   {
     name: 'find_by_type',
-    description: 'Find observations of specific types. Returns observations matching any of the provided observation types.',
+    description: 'Find observations by type',
     inputSchema: z.object({
       type: z.string().describe('Observation type(s) to filter by (single value or comma-separated list: decision,bugfix,feature,refactor,discovery,change)'),
       format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default, RECOMMENDED), "full" for complete details'),
@@ -310,7 +399,7 @@ const tools = [
   },
   {
     name: 'get_recent_context',
-    description: 'Get recent session context for timeline display. Returns recent observations, sessions, and user prompts with metadata for building timeline UI.',
+    description: 'Get recent timeline items',
     inputSchema: z.object({
       limit: z.number().min(1).max(100).default(30).describe('Maximum number of timeline items to return'),
       format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default, RECOMMENDED), "full" for complete details'),
@@ -328,11 +417,11 @@ const tools = [
   },
   {
     name: 'get_context_timeline',
-    description: 'Get timeline of observations around a specific observation ID. Returns observations before and after the anchor point with metadata for timeline display.',
+    description: 'Get timeline around specific observation',
     inputSchema: z.object({
-      anchor_id: z.number().describe('Observation ID to use as anchor point'),
-      before: z.number().min(0).max(100).default(10).describe('Number of observations to fetch before anchor'),
-      after: z.number().min(0).max(100).default(10).describe('Number of observations to fetch after anchor'),
+      anchor: z.number().describe('Observation ID to use as anchor point'),
+      depth_before: z.number().min(0).max(100).default(10).describe('Number of observations to fetch before anchor'),
+      depth_after: z.number().min(0).max(100).default(10).describe('Number of observations to fetch after anchor'),
       format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default, RECOMMENDED), "full" for complete details'),
       type: z.string().optional().describe('Filter by observation type (single value or comma-separated list: decision,bugfix,feature,refactor,discovery,change)'),
       concepts: z.string().optional().describe('Filter by concept tags (single value or comma-separated list)'),
@@ -346,11 +435,11 @@ const tools = [
   },
   {
     name: 'get_timeline_by_query',
-    description: 'Combined search + timeline tool. First searches for observations matching the query, then returns timeline around the best match. Useful for finding specific observations and viewing their context.',
+    description: 'Search and get timeline in one call',
     inputSchema: z.object({
       query: z.string().describe('Natural language query to find anchor observation'),
-      before: z.number().min(0).max(100).default(10).describe('Number of observations to fetch before anchor'),
-      after: z.number().min(0).max(100).default(10).describe('Number of observations to fetch after anchor'),
+      depth_before: z.number().min(0).max(100).default(10).describe('Number of observations to fetch before anchor'),
+      depth_after: z.number().min(0).max(100).default(10).describe('Number of observations to fetch after anchor'),
       format: z.enum(['index', 'full']).default('index').describe('Output format: "index" for titles/dates only (default, RECOMMENDED), "full" for complete details'),
       type: z.string().optional().describe('Filter by observation type (single value or comma-separated list: decision,bugfix,feature,refactor,discovery,change)'),
       concepts: z.string().optional().describe('Filter by concept tags (single value or comma-separated list)'),
@@ -362,6 +451,62 @@ const tools = [
     handler: async (args: any) => {
       const endpoint = TOOL_ENDPOINT_MAP['get_timeline_by_query'];
       return await callWorkerAPI(endpoint, args);
+    }
+  },
+  {
+    name: 'progressive_ix',
+    description: 'Load detailed instructions for mem-search tools',
+    inputSchema: z.object({
+      topic: z.enum(['workflow', 'search_params', 'examples', 'all'])
+        .default('all')
+        .describe('Which instruction section to load: workflow (4-step process), search_params (parameters reference), examples (usage examples), all (complete guide)')
+    }),
+    handler: async (args: any) => {
+      const endpoint = TOOL_ENDPOINT_MAP['progressive_ix'];
+      return await callWorkerAPI(endpoint, args);
+    }
+  },
+  {
+    name: 'get_observation',
+    description: 'Get full details for a single observation by ID',
+    inputSchema: z.object({
+      id: z.number().describe('Observation ID from search/timeline results')
+    }),
+    handler: async (args: any) => {
+      return await callWorkerAPIWithPath('/api/observation', args.id);
+    }
+  },
+  {
+    name: 'get_batch_observations',
+    description: 'Get full details for multiple observations by IDs in one request',
+    inputSchema: z.object({
+      ids: z.array(z.number()).describe('Array of observation IDs to fetch'),
+      orderBy: z.enum(['date_desc', 'date_asc']).optional().describe('Sort order for results'),
+      limit: z.number().optional().describe('Maximum number of results to return'),
+      project: z.string().optional().describe('Filter by project name')
+    }),
+    handler: async (args: any) => {
+      return await callWorkerAPIPost('/api/observations/batch', args);
+    }
+  },
+  {
+    name: 'get_session',
+    description: 'Get full session summary by ID',
+    inputSchema: z.object({
+      id: z.number().describe('Session ID (just the number from S1234)')
+    }),
+    handler: async (args: any) => {
+      return await callWorkerAPIWithPath('/api/session', args.id);
+    }
+  },
+  {
+    name: 'get_prompt',
+    description: 'Get user prompt by ID',
+    inputSchema: z.object({
+      id: z.number().describe('Prompt ID from search results')
+    }),
+    handler: async (args: any) => {
+      return await callWorkerAPIWithPath('/api/prompt', args.id);
     }
   }
 ];

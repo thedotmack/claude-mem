@@ -10,6 +10,7 @@ Search past work across all sessions. Simple workflow: search → get IDs → fe
 ## When to Use
 
 Use when users ask about PREVIOUS sessions (not current conversation):
+
 - "Did we already fix this?"
 - "How did we solve X last time?"
 - "What happened last week?"
@@ -25,16 +26,23 @@ Use when users ask about PREVIOUS sessions (not current conversation):
 
 ### Step 1: Search Everything
 
-```bash
-curl "http://localhost:37777/api/search?query=authentication&format=index&limit=40"
-```
+Use the `search` MCP tool:
 
 **Required parameters:**
+
 - `query` - Search term
-- `format=index` - ALWAYS start with index (lightweight)
-- `limit=40` - You can request large indexes as necessary
+- `format: "index"` - ALWAYS start with index (lightweight)
+- `limit: 30` - You can request large indexes as necessary
+- `project` - Project name (required)
+
+**Example:**
+
+```
+search(query="authentication", format="index", limit=30, project="my-project")
+```
 
 **Returns:**
+
 ```
 1. [feature] Added JWT authentication
    Date: 11/17/2025, 3:48:45 PM
@@ -47,19 +55,26 @@ curl "http://localhost:37777/api/search?query=authentication&format=index&limit=
 
 ### Step 2: Get Timeline Context
 
-You MUST understand "what was happening" around a result:
+You MUST understand "what was happening" around a result.
 
-```bash
-# Get timeline around an observation ID
-curl "http://localhost:37777/api/timeline?anchor=11131&depth_before=3&depth_after=3"
+Use the `timeline` MCP tool:
 
-# Or use query to find + get timeline in one step
-curl "http://localhost:37777/api/timeline?query=authentication&depth_before=3&depth_after=3"
+**Example with observation ID:**
+
+```
+timeline(anchor=11131, depth_before=3, depth_after=3, project="my-project")
+```
+
+**Example with query (finds anchor automatically):**
+
+```
+timeline(query="authentication", depth_before=3, depth_after=3, project="my-project")
 ```
 
 **Returns exactly `depth_before + 1 + depth_after` items** - observations, sessions, and prompts interleaved chronologically around the anchor.
 
 **When to use:**
+
 - User asks "what was happening when..."
 - Need to understand sequence of events
 - Want broader context around a specific observation
@@ -70,52 +85,66 @@ Review the index results (and timeline if used). Identify which IDs are actually
 
 ### Step 4: Fetch by ID
 
-For each relevant ID, fetch full details:
+For each relevant ID, fetch full details using MCP tools:
 
-```bash
-# Fetch single observation
-curl "http://localhost:37777/api/observation/11131"
+**Fetch single observation:**
 
-# Fetch multiple observations in one request (more efficient)
-curl -X POST "http://localhost:37777/api/observations/batch" \
-  -H "Content-Type: application/json" \
-  -d '{"ids": [11131, 10942, 10855]}'
-
-# Fetch session
-curl "http://localhost:37777/api/session/2005"
-
-# Fetch prompt
-curl "http://localhost:37777/api/prompt/5421"
+```
+get_observation(id=11131)
 ```
 
-**Batch fetch options:**
-```bash
-# With ordering and limit
-curl -X POST "http://localhost:37777/api/observations/batch" \
-  -H "Content-Type: application/json" \
-  -d '{"ids": [11131, 10942], "orderBy": "date_desc", "limit": 10}'
+**Fetch multiple observations (recommended for 2+ IDs):**
+
+```
+get_batch_observations(ids=[11131, 10942, 10855])
+```
+
+**With ordering and limit:**
+
+```
+get_batch_observations(
+  ids=[11131, 10942, 10855],
+  orderBy="date_desc",
+  limit=10
+)
+```
+
+**Fetch session:**
+
+```
+get_session(id=2005)  # Just the number from S2005
+```
+
+**Fetch prompt:**
+
+```
+get_prompt(id=5421)
 ```
 
 **ID formats:**
+
 - Observations: Just the number (11131)
 - Sessions: Just the number (2005) from "S2005"
 - Prompts: Just the number (5421)
 
 **When to use batch:**
-- Always use batch when fetching 2+ observations
+
+- Always use `get_batch_observations` when fetching 2+ observations
 - More efficient: one request vs multiple
 - Returns all observations in a single response
 
 ## Search Parameters
 
 **Basic:**
+
 - `query` - What to search for (required)
 - `format` - "index" or "full" (always use "index" first)
-- `limit` - How many results (default 5, max 100)
+- `limit` - How many results (default 30)
+- `project` - Filter by project name (required)
 
 **Filters (optional):**
+
 - `type` - Filter to "observations", "sessions", or "prompts"
-- `project` - Filter by project name
 - `dateStart` - Start date (YYYY-MM-DD or epoch timestamp)
 - `dateEnd` - End date (YYYY-MM-DD or epoch timestamp)
 - `obs_type` - Filter observations by type (comma-separated): bugfix, feature, decision, discovery, change
@@ -123,39 +152,54 @@ curl -X POST "http://localhost:37777/api/observations/batch" \
 ## Examples
 
 **Find recent bug fixes:**
-```bash
-curl "http://localhost:37777/api/search?query=bug&type=observations&obs_type=bugfix&format=index&limit=5"
+
+Use the `search` MCP tool with filters:
+
+```
+search(query="bug", type="observations", obs_type="bugfix", format="index", limit=30, project="my-project")
 ```
 
 **Find what happened last week:**
-```bash
-curl "http://localhost:37777/api/search?query=&type=observations&dateStart=2025-11-11&format=index&limit=10"
+
+Use date filters:
+
+```
+search(type="observations", dateStart="2025-11-11", format="index", limit=30, project="my-project")
 ```
 
 **Search everything:**
-```bash
-curl "http://localhost:37777/api/search?query=database+migration&format=index&limit=5"
+
+Simple query search:
+
+```
+search(query="database migration", format="index", limit=30, project="my-project")
+```
+
+**Get detailed instructions:**
+
+Use the `progressive_ix` tool to load full instructions on-demand:
+
+```
+progressive_ix(topic="workflow")  # Get 4-step workflow
+progressive_ix(topic="search_params")  # Get parameters reference
+progressive_ix(topic="examples")  # Get usage examples
+progressive_ix(topic="all")  # Get complete guide
 ```
 
 ## Why This Workflow?
 
 **Token efficiency:**
+
 - Index format: ~50-100 tokens per result
 - Full format: ~500-1000 tokens per result
 - **10x difference** - only fetch full when you know it's relevant
 
 **Clarity:**
+
 - See everything first
 - Pick what matters
 - Get details only for what you need
 
-## Error Handling
-
-If search fails, tell the user the worker isn't available and suggest:
-```bash
-pm2 list  # Check if worker is running
-```
-
 ---
 
-**Remember:** ALWAYS search with format=index first. ALWAYS fetch by ID for details. The IDs are there for a reason - USE THEM.
+**Remember:** ALWAYS search with format=index first. ALWAYS get timeline context for observations you're interested in. ALWAYS fetch by ID for details. The IDs are there for a reason - use them.

@@ -4,6 +4,37 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [8.0.0] - 2025-12-14
+
+### BREAKING CHANGES
+
+**Timeline MCP Tools Parameter Rename**
+
+Timeline MCP tools now use parameter names matching SearchManager:
+- `anchor_id` → `anchor`
+- `before` → `depth_before`
+- `after` → `depth_after`
+- `obs_type` → `type` (timeline tool only)
+
+**Migration Example:**
+```typescript
+// Old:
+timeline(anchor_id=123, before=10, after=10)
+
+// New:
+timeline(anchor=123, depth_before=10, depth_after=10)
+```
+
+**Affected Tools:** `timeline`, `get_context_timeline`, `get_timeline_by_query`
+
+**Rationale:** Fixes parameter passing bug where timeline tools failed due to name mismatch between MCP layer and SearchManager.
+
+### Fixed
+- Timeline tools now work correctly with proper parameter passing
+- Resolved "Cannot read properties of undefined (reading 'length')" errors in timeline endpoints
+
+---
+
 ## [7.2.1] - 2025-12-14
 
 ## Translation Script Enhancements

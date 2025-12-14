@@ -9,6 +9,7 @@
 import express from 'express';
 import http from 'http';
 import path from 'path';
+import * as fs from 'fs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
@@ -138,6 +139,39 @@ export class WorkerService {
         res.status(500).json({
           error: 'Failed to read version',
           path: packageJsonPath
+        });
+      }
+    });
+
+    // Instructions endpoint - loads SKILL.md sections on-demand for progressive instruction loading
+    this.app.get('/api/instructions', async (req, res) => {
+      const topic = (req.query.topic as string) || 'all';
+
+      try {
+        // Read SKILL.md from plugin directory
+        // Path resolution: __dirname is build output directory (plugin/scripts/)
+        // SKILL.md is at plugin/skills/mem-search/SKILL.md
+        const skillPath = path.join(__dirname, '../skills/mem-search/SKILL.md');
+        const fullContent = await fs.promises.readFile(skillPath, 'utf-8');
+
+        // Extract section based on topic
+        const section = this.extractInstructionSection(fullContent, topic);
+
+        // Return in MCP format
+        res.json({
+          content: [{
+            type: 'text',
+            text: section
+          }]
+        });
+      } catch (error) {
+        logger.error('WORKER', 'Failed to load instructions', { topic, skillPath }, error as Error);
+        res.status(500).json({
+          content: [{
+            type: 'text',
+            text: `Error loading instructions: ${error instanceof Error ? error.message : 'Unknown error'}`
+          }],
+          isError: true
         });
       }
     });
@@ -332,6 +366,35 @@ export class WorkerService {
       this.resolveInitialization();
       throw error;
     }
+  }
+
+  /**
+   * Extract a specific section from instruction content
+   * Used by /api/instructions endpoint for progressive instruction loading
+   */
+  private extractInstructionSection(content: string, topic: string): string {
+    const sections: Record<string, string> = {
+      'workflow': this.extractBetween(content, '## The Workflow', '## Search Parameters'),
+      'search_params': this.extractBetween(content, '## Search Parameters', '## Examples'),
+      'examples': this.extractBetween(content, '## Examples', '## Why This Workflow'),
+      'all': content
+    };
+
+    return sections[topic] || sections['all'];
+  }
+
+  /**
+   * Extract text between two markers
+   * Helper for extractInstructionSection
+   */
+  private extractBetween(content: string, startMarker: string, endMarker: string): string {
+    const startIdx = content.indexOf(startMarker);
+    const endIdx = content.indexOf(endMarker);
+
+    if (startIdx === -1) return content;
+    if (endIdx === -1) return content.substring(startIdx);
+
+    return content.substring(startIdx, endIdx).trim();
   }
 
   /**
