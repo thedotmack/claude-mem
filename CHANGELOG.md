@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+### Bug Fixes
+
+- **MCP Search Tools Default Project**: Fixed issue where MCP search tools (e.g., `search`, `get_recent_context`, `decisions`) defaulted to plugin directory name ("thedotmack") instead of the user's actual project when the `project` parameter was not provided. Now falls back to the most recently active project from the database.
+  - Added `getMostRecentProject()` method to SessionStore
+  - Updated SearchManager's `getRecentContext()` to use most recent project as fallback
+  - Resolves incorrect "No previous sessions found for project 'thedotmack'" errors
+
 ## [7.1.14] - 2025-12-14
 
 ## Enhanced Error Handling & Logging
