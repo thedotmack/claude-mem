@@ -1,6 +1,6 @@
 ---
 name: version-bump
-description: Manage semantic version updates for claude-mem project. Handles patch, minor, and major version increments following semantic versioning. Updates package.json, marketplace.json, plugin.json, and CLAUDE.md version number (NOT version history). Creates git tags and GitHub releases. Auto-generates CHANGELOG.md from releases.
+description: Manage semantic version updates for claude-mem project. Handles patch, minor, and major version increments following semantic versioning. Updates package.json, marketplace.json, and plugin.json. Creates git tags and GitHub releases. Auto-generates CHANGELOG.md from releases.
 ---
 
 # Version Bump Skill
@@ -9,11 +9,10 @@ Manage semantic versioning across the claude-mem project with consistent updates
 
 ## Quick Reference
 
-**Files requiring updates (ALL FOUR):**
+**Files requiring updates (ALL THREE):**
 1. `package.json` (line 3)
 2. `.claude-plugin/marketplace.json` (line 13)
 3. `plugin/.claude-plugin/plugin.json` (line 3)
-4. `CLAUDE.md` (line 9 ONLY - version number, NOT version history)
 
 **Semantic versioning:**
 - **PATCH** (x.y.Z): Bugfixes only
@@ -37,7 +36,7 @@ See [operations/workflow.md](operations/workflow.md) for detailed step-by-step p
 1. Determine version type (PATCH/MINOR/MAJOR)
 2. Calculate new version from current
 3. Preview changes to user
-4. Update ALL FOUR files
+4. Update ALL THREE files
 5. Verify consistency
 6. Build and test
 7. Commit and create git tag
@@ -54,29 +53,27 @@ See [operations/scenarios.md](operations/scenarios.md) for examples:
 ## Critical Rules
 
 **ALWAYS:**
-- Update ALL FOUR files with matching version numbers
+- Update ALL THREE files with matching version numbers
 - Create git tag with format `vX.Y.Z`
 - Create GitHub release from the tag
 - Generate CHANGELOG.md from releases after creating release
 - Ask user if version type is unclear
 
 **NEVER:**
-- Update only one, two, or three files
+- Update only one or two files
 - Skip the verification step
 - Forget to create git tag or GitHub release
-- Add version history entries to CLAUDE.md (that's managed separately)
 
 ## Verification Checklist
 
 Before considering the task complete:
-- [ ] All FOUR files have matching version numbers
+- [ ] All THREE files have matching version numbers
 - [ ] `npm run build` succeeds
 - [ ] Git commit created with all version files
 - [ ] Git tag created (format: vX.Y.Z)
 - [ ] Commit and tags pushed to remote
 - [ ] GitHub release created from the tag
 - [ ] CHANGELOG.md generated and committed
-- [ ] CLAUDE.md: ONLY line 9 updated (version number), NOT version history
 
 ## Reference Commands
 
@@ -92,7 +89,7 @@ git tag -l -n1
 
 # Check what will be committed
 git status
-git diff package.json .claude-plugin/marketplace.json plugin/.claude-plugin/plugin.json CLAUDE.md
+git diff package.json .claude-plugin/marketplace.json plugin/.claude-plugin/plugin.json
 ```
 
 For more commands, see [operations/reference.md](operations/reference.md).

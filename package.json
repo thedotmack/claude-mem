@@ -32,6 +32,7 @@
   },
   "scripts": {
     "build": "node scripts/build-hooks.js",
+    "build-and-sync": "npm run build && npm run sync-marketplace && sleep 1 && cd ~/.claude/plugins/marketplaces/thedotmack && npm run worker:restart",
     "test": "vitest",
     "test:parser": "npx tsx src/sdk/parser.test.ts",
     "test:context": "echo '{\"session_id\":\"test-'$(date +%s)'\",\"cwd\":\"'$(pwd)'\",\"source\":\"startup\"}' | node plugin/scripts/context-hook.js 2>/dev/null",

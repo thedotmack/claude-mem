@@ -45,7 +45,7 @@ export class SearchRoutes extends BaseRouteHandler {
 
   /**
    * Unified search (observations + sessions + prompts)
-   * GET /api/search?query=...&type=observations&format=index&limit=20
+   * GET /api/search?query=...&type=observations&limit=20
    */
   private handleUnifiedSearch = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const result = await this.searchManager.search(req.query);
@@ -63,7 +63,7 @@ export class SearchRoutes extends BaseRouteHandler {
 
   /**
    * Semantic shortcut for finding decision observations
-   * GET /api/decisions?format=index&limit=20
+   * GET /api/decisions?limit=20
    */
   private handleDecisions = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const result = await this.searchManager.decisions(req.query);
@@ -72,7 +72,7 @@ export class SearchRoutes extends BaseRouteHandler {
 
   /**
    * Semantic shortcut for finding change-related observations
-   * GET /api/changes?format=index&limit=20
+   * GET /api/changes?limit=20
    */
   private handleChanges = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const result = await this.searchManager.changes(req.query);
@@ -81,7 +81,7 @@ export class SearchRoutes extends BaseRouteHandler {
 
   /**
    * Semantic shortcut for finding "how it works" explanations
-   * GET /api/how-it-works?format=index&limit=20
+   * GET /api/how-it-works?limit=20
    */
   private handleHowItWorks = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const result = await this.searchManager.howItWorks(req.query);
@@ -90,7 +90,7 @@ export class SearchRoutes extends BaseRouteHandler {
 
   /**
    * Search observations (use /api/search?type=observations instead)
-   * GET /api/search/observations?query=...&format=index&limit=20&project=...
+   * GET /api/search/observations?query=...&limit=20&project=...
    */
   private handleSearchObservations = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const result = await this.searchManager.searchObservations(req.query);
@@ -99,7 +99,7 @@ export class SearchRoutes extends BaseRouteHandler {
 
   /**
    * Search session summaries
-   * GET /api/search/sessions?query=...&format=index&limit=20
+   * GET /api/search/sessions?query=...&limit=20
    */
   private handleSearchSessions = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const result = await this.searchManager.searchSessions(req.query);
@@ -108,7 +108,7 @@ export class SearchRoutes extends BaseRouteHandler {
 
   /**
    * Search user prompts
-   * GET /api/search/prompts?query=...&format=index&limit=20
+   * GET /api/search/prompts?query=...&limit=20
    */
   private handleSearchPrompts = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const result = await this.searchManager.searchUserPrompts(req.query);
@@ -117,7 +117,7 @@ export class SearchRoutes extends BaseRouteHandler {
 
   /**
    * Search observations by concept
-   * GET /api/search/by-concept?concept=discovery&format=index&limit=5
+   * GET /api/search/by-concept?concept=discovery&limit=5
    */
   private handleSearchByConcept = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const result = await this.searchManager.findByConcept(req.query);
@@ -126,7 +126,7 @@ export class SearchRoutes extends BaseRouteHandler {
 
   /**
    * Search by file path
-   * GET /api/search/by-file?filePath=...&format=index&limit=10
+   * GET /api/search/by-file?filePath=...&limit=10
    */
   private handleSearchByFile = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const result = await this.searchManager.findByFile(req.query);
@@ -135,7 +135,7 @@ export class SearchRoutes extends BaseRouteHandler {
 
   /**
    * Search observations by type
-   * GET /api/search/by-type?type=bugfix&format=index&limit=10
+   * GET /api/search/by-type?type=bugfix&limit=10
    */
   private handleSearchByType = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const result = await this.searchManager.findByType(req.query);
@@ -252,7 +252,6 @@ export class SearchRoutes extends BaseRouteHandler {
           description: 'Search observations using full-text search',
           parameters: {
             query: 'Search query (required)',
-            format: 'Response format: "index" or "full" (default: "full")',
             limit: 'Number of results (default: 20)',
             project: 'Filter by project name (optional)'
           }
@@ -263,7 +262,6 @@ export class SearchRoutes extends BaseRouteHandler {
           description: 'Search session summaries using full-text search',
           parameters: {
             query: 'Search query (required)',
-            format: 'Response format: "index" or "full" (default: "full")',
             limit: 'Number of results (default: 20)'
           }
         },
@@ -273,7 +271,6 @@ export class SearchRoutes extends BaseRouteHandler {
           description: 'Search user prompts using full-text search',
           parameters: {
             query: 'Search query (required)',
-            format: 'Response format: "index" or "full" (default: "full")',
             limit: 'Number of results (default: 20)',
             project: 'Filter by project name (optional)'
           }
@@ -284,7 +281,6 @@ export class SearchRoutes extends BaseRouteHandler {
           description: 'Find observations by concept tag',
           parameters: {
             concept: 'Concept tag (required): discovery, decision, bugfix, feature, refactor',
-            format: 'Response format: "index" or "full" (default: "full")',
             limit: 'Number of results (default: 10)',
             project: 'Filter by project name (optional)'
           }
@@ -295,7 +291,6 @@ export class SearchRoutes extends BaseRouteHandler {
           description: 'Find observations and sessions by file path',
           parameters: {
             filePath: 'File path or partial path (required)',
-            format: 'Response format: "index" or "full" (default: "full")',
             limit: 'Number of results per type (default: 10)',
             project: 'Filter by project name (optional)'
           }
@@ -306,7 +301,6 @@ export class SearchRoutes extends BaseRouteHandler {
           description: 'Find observations by type',
           parameters: {
             type: 'Observation type (required): discovery, decision, bugfix, feature, refactor',
-            format: 'Response format: "index" or "full" (default: "full")',
             limit: 'Number of results (default: 10)',
             project: 'Filter by project name (optional)'
           }
@@ -350,7 +344,7 @@ export class SearchRoutes extends BaseRouteHandler {
         }
       ],
       examples: [
-        'curl "http://localhost:37777/api/search/observations?query=authentication&format=index&limit=5"',
+        'curl "http://localhost:37777/api/search/observations?query=authentication&limit=5"',
         'curl "http://localhost:37777/api/search/by-type?type=bugfix&limit=10"',
         'curl "http://localhost:37777/api/context/recent?project=claude-mem&limit=3"',
         'curl "http://localhost:37777/api/context/timeline?anchor=123&depth_before=5&depth_after=5"'

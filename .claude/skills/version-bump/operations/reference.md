@@ -4,7 +4,7 @@ Quick reference for version bump commands and file locations.
 
 ## File Locations
 
-### Version-Tracked Files (ALL FOUR)
+### Version-Tracked Files (ALL THREE)
 
 1. **package.json**
    - Path: `package.json`
@@ -21,11 +21,6 @@ Quick reference for version bump commands and file locations.
    - Line: 3
    - Format: `"version": "X.Y.Z",`
 
-4. **CLAUDE.md**
-   - Path: `CLAUDE.md`
-   - Line: 9
-   - Format: `**Current Version**: X.Y.Z`
-
 ## Essential Commands
 
 ### View Current Version
@@ -39,7 +34,6 @@ grep '"version"' package.json | head -1 | sed 's/.*"version": "\(.*\)".*/\1/'
 
 # From all version files
 grep '"version"' package.json .claude-plugin/marketplace.json plugin/.claude-plugin/plugin.json
-grep "Current Version" CLAUDE.md
 ```
 
 ### Verify Version Consistency
@@ -52,10 +46,6 @@ grep '"version"' package.json .claude-plugin/marketplace.json plugin/.claude-plu
 # package.json:3:  "version": "5.3.0",
 # .claude-plugin/marketplace.json:13:  "version": "5.3.0",
 # plugin/.claude-plugin/plugin.json:3:  "version": "5.3.0",
-
-# Check CLAUDE.md
-grep "Current Version" CLAUDE.md
-# Should output: **Current Version**: 5.3.0
 ```
 
 ### Git Commands
@@ -96,7 +86,7 @@ npm test
 
 ```bash
 # Stage version files
-git add package.json .claude-plugin/marketplace.json plugin/.claude-plugin/plugin.json CLAUDE.md plugin/scripts/
+git add package.json .claude-plugin/marketplace.json plugin/.claude-plugin/plugin.json plugin/scripts/
 
 # Commit
 git commit -m "Release vX.Y.Z: [Description]"
@@ -163,11 +153,11 @@ MAJOR: 5.3.2 → 6.0.0 (resets minor and patch)
 
 ```bash
 # Example: 5.3.0 → 5.3.1
-# 1. Update all four files to 5.3.1
+# 1. Update all three files to 5.3.1
 # 2. Build and test
 npm run build
 # 3. Commit and tag
-git add package.json .claude-plugin/marketplace.json plugin/.claude-plugin/plugin.json CLAUDE.md plugin/scripts/
+git add package.json .claude-plugin/marketplace.json plugin/.claude-plugin/plugin.json plugin/scripts/
 git commit -m "Release v5.3.1: Fixed observer crash"
 git tag v5.3.1 -m "Release v5.3.1: Fixed observer crash"
 git push && git push --tags
@@ -179,11 +169,11 @@ gh release create v5.3.1 --title "v5.3.1" --notes "Fixed observer crash on empty
 
 ```bash
 # Example: 5.3.0 → 5.4.0
-# 1. Update all four files to 5.4.0
+# 1. Update all three files to 5.4.0
 # 2. Build and test
 npm run build
 # 3. Commit and tag
-git add package.json .claude-plugin/marketplace.json plugin/.claude-plugin/plugin.json CLAUDE.md plugin/scripts/
+git add package.json .claude-plugin/marketplace.json plugin/.claude-plugin/plugin.json plugin/scripts/
 git commit -m "Release v5.4.0: Added dark mode support"
 git tag v5.4.0 -m "Release v5.4.0: Added dark mode support"
 git push && git push --tags
@@ -195,11 +185,11 @@ gh release create v5.4.0 --title "v5.4.0" --generate-notes
 
 ```bash
 # Example: 5.3.0 → 6.0.0
-# 1. Update all four files to 6.0.0
+# 1. Update all three files to 6.0.0
 # 2. Build and test
 npm run build
 # 3. Commit and tag
-git add package.json .claude-plugin/marketplace.json plugin/.claude-plugin/plugin.json CLAUDE.md plugin/scripts/
+git add package.json .claude-plugin/marketplace.json plugin/.claude-plugin/plugin.json plugin/scripts/
 git commit -m "Release v6.0.0: Storage layer redesign"
 git tag v6.0.0 -m "Release v6.0.0: Storage layer redesign"
 git push && git push --tags

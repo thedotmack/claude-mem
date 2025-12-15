@@ -85,7 +85,7 @@ Restart Claude Code. Context from previous sessions will automatically appear in
 - 🔒 **Privacy Control** - Use `<private>` tags to exclude sensitive content from storage
 - ⚙️ **Context Configuration** - Fine-grained control over what context gets injected
 - 🤖 **Automatic Operation** - No manual intervention required
-- 🔗 **Citations** - Reference past decisions with `claude-mem://` URIs
+- 🔗 **Citations** - Reference past observations with IDs (access via http://localhost:37777/api/observation/{id} or view all in the web viewer at http://localhost:37777)
 - 🧪 **Beta Channel** - Try experimental features like Endless Mode via version switching
 
 ---
@@ -324,7 +324,7 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `CLAUDE_MEM_MODEL` | `claude-haiku-4-5` | AI model for observations |
+| `CLAUDE_MEM_MODEL` | `claude-sonnet-4-5` | AI model for observations |
 | `CLAUDE_MEM_WORKER_PORT` | `37777` | Worker service port |
 | `CLAUDE_MEM_WORKER_HOST` | `127.0.0.1` | Worker bind address (use `0.0.0.0` for remote access) |
 | `CLAUDE_MEM_DATA_DIR` | `~/.claude-mem` | Data directory location |
@@ -350,7 +350,7 @@ curl http://localhost:37777/api/settings
 
 ```json
 {
-  "CLAUDE_MEM_MODEL": "claude-haiku-4-5",
+  "CLAUDE_MEM_MODEL": "claude-sonnet-4-5",
   "CLAUDE_MEM_WORKER_PORT": "37777",
   "CLAUDE_MEM_CONTEXT_OBSERVATIONS": "50"
 }

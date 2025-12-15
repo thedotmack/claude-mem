@@ -1614,8 +1614,9 @@ export class SessionStore {
         prompts: prompts.map(p => ({
           id: p.id,
           claude_session_id: p.claude_session_id,
+          prompt_number: p.prompt_number,
+          prompt_text: p.prompt_text,
           project: p.project,
-          prompt: p.prompt_text,
           created_at: p.created_at,
           created_at_epoch: p.created_at_epoch
         }))
@@ -1624,6 +1625,112 @@ export class SessionStore {
       console.error('[SessionStore] Error querying timeline records:', err.message, project ? `(project: ${project})` : '(all projects)');
       return { observations: [], sessions: [], prompts: [] };
     }
+  }
+
+  /**
+   * Get a single user prompt by ID
+   */
+  getPromptById(id: number): {
+    id: number;
+    claude_session_id: string;
+    prompt_number: number;
+    prompt_text: string;
+    project: string;
+    created_at: string;
+    created_at_epoch: number;
+  } | null {
+    const stmt = this.db.prepare(`
+      SELECT
+        p.id,
+        p.claude_session_id,
+        p.prompt_number,
+        p.prompt_text,
+        s.project,
+        p.created_at,
+        p.created_at_epoch
+      FROM user_prompts p
+      LEFT JOIN sdk_sessions s ON p.claude_session_id = s.claude_session_id
+      WHERE p.id = ?
+      LIMIT 1
+    `);
+
+    return stmt.get(id) || null;
+  }
+
+  /**
+   * Get multiple user prompts by IDs
+   */
+  getPromptsByIds(ids: number[]): Array<{
+    id: number;
+    claude_session_id: string;
+    prompt_number: number;
+    prompt_text: string;
+    project: string;
+    created_at: string;
+    created_at_epoch: number;
+  }> {
+    if (ids.length === 0) return [];
+
+    const placeholders = ids.map(() => '?').join(',');
+    const stmt = this.db.prepare(`
+      SELECT
+        p.id,
+        p.claude_session_id,
+        p.prompt_number,
+        p.prompt_text,
+        s.project,
+        p.created_at,
+        p.created_at_epoch
+      FROM user_prompts p
+      LEFT JOIN sdk_sessions s ON p.claude_session_id = s.claude_session_id
+      WHERE p.id IN (${placeholders})
+      ORDER BY p.created_at_epoch DESC
+    `);
+
+    return stmt.all(...ids) as Array<{
+      id: number;
+      claude_session_id: string;
+      prompt_number: number;
+      prompt_text: string;
+      project: string;
+      created_at: string;
+      created_at_epoch: number;
+    }>;
+  }
+
+  /**
+   * Get full session summary by ID (includes request_summary and learned_summary)
+   */
+  getSessionSummaryById(id: number): {
+    id: number;
+    sdk_session_id: string | null;
+    claude_session_id: string;
+    project: string;
+    user_prompt: string;
+    request_summary: string | null;
+    learned_summary: string | null;
+    status: string;
+    created_at: string;
+    created_at_epoch: number;
+  } | null {
+    const stmt = this.db.prepare(`
+      SELECT
+        id,
+        sdk_session_id,
+        claude_session_id,
+        project,
+        user_prompt,
+        request_summary,
+        learned_summary,
+        status,
+        created_at,
+        created_at_epoch
+      FROM sdk_sessions
+      WHERE id = ?
+      LIMIT 1
+    `);
+
+    return stmt.get(id) || null;
   }
 
   /**
