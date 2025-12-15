@@ -522,9 +522,6 @@ export class SearchManager {
         lines.push(`**Window:** ${depth_before} records before → ${depth_after} records after | **Items:** ${filteredItems?.length ?? 0}`);
         lines.push('');
 
-        // Legend
-        lines.push(`**Legend:** 🎯 session-request | 🔴 bugfix | 🟣 feature | 🔄 refactor | ✅ change | 🔵 discovery | 🧠 decision`);
-        lines.push('');
 
         // Group by day
         const dayMap = new Map<string, TimelineItem[]>();
@@ -1637,9 +1634,6 @@ export class SearchManager {
         lines.push(`**Window:** ${depth_before} records before → ${depth_after} records after | **Items:** ${filteredItems?.length ?? 0}`);
         lines.push('');
 
-        // Legend
-        lines.push(`**Legend:** 🎯 session-request | 🔴 bugfix | 🟣 feature | 🔄 refactor | ✅ change | 🔵 discovery | 🧠 decision`);
-        lines.push('');
 
         // Group by day
         const dayMap = new Map<string, TimelineItem[]>();
@@ -1933,9 +1927,6 @@ export class SearchManager {
           lines.push(`**Window:** ${depth_before} records before → ${depth_after} records after | **Items:** ${filteredItems?.length ?? 0}`);
           lines.push('');
 
-          // Legend
-          lines.push(`**Legend:** 🎯 session-request | 🔴 bugfix | 🟣 feature | 🔄 refactor | ✅ change | 🔵 discovery | 🧠 decision`);
-          lines.push('');
 
           // Group by day
           const dayMap = new Map<string, TimelineItem[]>();
