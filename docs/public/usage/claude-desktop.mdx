@@ -32,15 +32,14 @@ curl http://localhost:37777/api/health
 
 Download the skill package from the repository:
 
-<Card title="mem-search.zip" icon="download" href="https://github.com/thedotmack/claude-mem/raw/main/desktop-skill/mem-search.zip">
+<Card title="mem-search.zip" icon="download" href="https://github.com/thedotmack/claude-mem/raw/main/plugin/skills/mem-search.zip">
   Download the mem-search skill for Claude Desktop
 </Card>
 
 Or build from source:
 
 ```bash
-cd desktop-skill
-zip -r mem-search.zip Skill.md
+npm run build  # Generates plugin/skills/mem-search.zip
 ```
 
 ### Step 2: Install in Claude Desktop
@@ -110,20 +109,21 @@ Once installed, the skill auto-activates when you ask about past work:
 "Show me changes to worker-service.ts"
 ```
 
-## Available Search Tools
+## Available MCP Tools
 
 The skill provides access to these MCP tools:
 
 | Tool | Description |
 |------|-------------|
-| `search` | Unified search across all memory types |
-| `decisions` | Find architectural/design decisions |
-| `changes` | Find code changes and refactorings |
-| `timeline` | Get observations around a specific point in time |
-| `find_by_file` | Find observations for specific files |
-| `find_by_type` | Filter by type (decision, bugfix, feature, refactor, discovery, change) |
-| `find_by_concept` | Find by concept tags |
-| `how_it_works` | Understand system architecture and design patterns |
+| `search` | Unified search across observations, sessions, and prompts |
+| `timeline` | Get chronological context around a query or observation ID |
+| `get_observation` | Fetch a single observation by ID |
+| `get_batch_observations` | Fetch multiple observations efficiently |
+| `get_session` | Fetch session summary by ID |
+| `get_prompt` | Fetch user prompt by ID |
+| `get_recent_context` | Get recent timeline items |
+| `get_context_timeline` | Get timeline around a specific observation |
+| `progressive_description` | Load detailed usage instructions |
 
 ## Troubleshooting
 
