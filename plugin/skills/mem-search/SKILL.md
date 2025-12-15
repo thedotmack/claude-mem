@@ -31,26 +31,22 @@ Use the `search` MCP tool:
 **Required parameters:**
 
 - `query` - Search term
-- `format: "index"` - ALWAYS start with index (lightweight)
-- `limit: 30` - You can request large indexes as necessary
+- `limit: 20` - You can request large indexes as necessary
 - `project` - Project name (required)
 
 **Example:**
 
 ```
-search(query="authentication", format="index", limit=30, project="my-project")
+search(query="authentication", limit=20, project="my-project")
 ```
 
 **Returns:**
 
 ```
-1. [feature] Added JWT authentication
-   Date: 11/17/2025, 3:48:45 PM
-   ID: 11131
-
-2. [bugfix] Fixed auth token expiration
-   Date: 11/16/2025, 2:15:22 PM
-   ID: 10942
+| ID | Time | T | Title | Read | Work |
+|----|------|---|-------|------|------|
+| #11131 | 3:48 PM | 🟣 | Added JWT authentication | ~75 | 🛠️ 450 |
+| #10942 | 2:15 PM | 🔴 | Fixed auth token expiration | ~50 | 🛠️ 200 |
 ```
 
 ### Step 2: Get Timeline Context
@@ -141,8 +137,7 @@ get_prompt(id=5421)
 **Basic:**
 
 - `query` - What to search for (required)
-- `format` - "index" (NEVER USE FULL)
-- `limit` - How many results (default 30)
+- `limit` - How many results (default 20)
 - `project` - Filter by project name (required)
 
 **Filters (optional):**
@@ -159,7 +154,7 @@ get_prompt(id=5421)
 Use the `search` MCP tool with filters:
 
 ```
-search(query="bug", type="observations", obs_type="bugfix", format="index", limit=30, project="my-project")
+search(query="bug", type="observations", obs_type="bugfix", limit=20, project="my-project")
 ```
 
 **Find what happened last week:**
@@ -167,7 +162,7 @@ search(query="bug", type="observations", obs_type="bugfix", format="index", limi
 Use date filters:
 
 ```
-search(type="observations", dateStart="2025-11-11", format="index", limit=30, project="my-project")
+search(type="observations", dateStart="2025-11-11", limit=20, project="my-project")
 ```
 
 **Search everything:**
@@ -175,37 +170,37 @@ search(type="observations", dateStart="2025-11-11", format="index", limit=30, pr
 Simple query search:
 
 ```
-search(query="database migration", format="index", limit=30, project="my-project")
+search(query="database migration", limit=20, project="my-project")
 ```
 
 **Get detailed instructions:**
 
-Use the `progressive_ix` tool to load full instructions on-demand:
+Use the `progressive_description` tool to load full instructions on-demand:
 
 ```
-progressive_ix(topic="workflow")  # Get 4-step workflow
-progressive_ix(topic="search_params")  # Get parameters reference
-progressive_ix(topic="examples")  # Get usage examples
-progressive_ix(topic="all")  # Get complete guide
+progressive_description(topic="workflow")  # Get 4-step workflow
+progressive_description(topic="search_params")  # Get parameters reference
+progressive_description(topic="examples")  # Get usage examples
+progressive_description(topic="all")  # Get complete guide
 ```
 
 ## Why This Workflow?
 
-**Massive performance gains:**
+**Token efficiency:**
 
-- **Index format:** ~50-100 tokens per result
-- **Full format:** ~500-1000 tokens per result
-- **10x token savings** - only fetch full when you know it's relevant
+- **Search results:** ~50-100 tokens per result (table index)
+- **Full observation:** ~500-1000 tokens each
+- **10x savings** - only fetch full when you know it's relevant
 
-**Batch fetching optimization:**
+**Batch fetching:**
 
-- **Fetching 10 observations individually:** 10 HTTP requests, ~5-10s latency
+- **Individual fetches:** 10 HTTP requests, ~5-10s latency
 - **Batch fetch:** 1 HTTP request, ~0.5-1s latency
 - **10-100x faster** for multi-observation queries
 
 **Clarity:**
 
-- See everything first (index)
+- See everything first (table index)
 - Get timeline context around interesting results
 - Pick what matters based on context
 - Fetch details only for what you need (batch when possible)
@@ -214,7 +209,6 @@ progressive_ix(topic="all")  # Get complete guide
 
 **Remember:**
 
-- ALWAYS search with `format="index"` first for token efficiency
 - ALWAYS get timeline context to understand what was happening
 - ALWAYS use `get_batch_observations` when fetching 2+ observations
-- The workflow is optimized: index → timeline → batch fetch = 10-100x faster
+- The workflow is optimized: search → timeline → batch fetch = 10-100x faster

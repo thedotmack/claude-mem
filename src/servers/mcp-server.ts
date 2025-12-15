@@ -32,7 +32,7 @@ const TOOL_ENDPOINT_MAP: Record<string, string> = {
   'timeline': '/api/timeline',
   'get_recent_context': '/api/context/recent',
   'get_context_timeline': '/api/context/timeline',
-  'progressive_ix': '/api/instructions'
+  'progressive_description': '/api/instructions'
 };
 
 /**
@@ -182,15 +182,14 @@ async function verifyWorkerConnection(): Promise<boolean> {
 
 /**
  * Tool definitions with HTTP-based handlers
- * Descriptions removed - use progressive_ix tool for parameter documentation
+ * Descriptions removed - use progressive_description tool for parameter documentation
  */
 const tools = [
   {
     name: 'search',
-    description: 'Search observations, sessions, and prompts',
+    description: 'Search memory',
     inputSchema: z.object({
       query: z.string().optional(),
-      format: z.enum(['index', 'full']).default('index'),
       type: z.enum(['observations', 'sessions', 'prompts']).optional(),
       obs_type: z.string().optional(),
       concepts: z.string().optional(),
@@ -209,13 +208,12 @@ const tools = [
   },
   {
     name: 'timeline',
-    description: 'Get timeline around observation ID or query',
+    description: 'Timeline context',
     inputSchema: z.object({
       query: z.string().optional(),
       anchor: z.number().optional(),
       depth_before: z.number().min(0).max(100).default(10),
       depth_after: z.number().min(0).max(100).default(10),
-      format: z.enum(['index', 'full']).default('index'),
       type: z.string().optional(),
       concepts: z.string().optional(),
       files: z.string().optional(),
@@ -228,10 +226,9 @@ const tools = [
   },
   {
     name: 'get_recent_context',
-    description: 'Get recent timeline items',
+    description: 'Recent context',
     inputSchema: z.object({
       limit: z.number().min(1).max(100).default(30),
-      format: z.enum(['index', 'full']).default('index'),
       type: z.string().optional(),
       concepts: z.string().optional(),
       files: z.string().optional(),
@@ -246,12 +243,11 @@ const tools = [
   },
   {
     name: 'get_context_timeline',
-    description: 'Get timeline around specific observation',
+    description: 'Timeline around ID',
     inputSchema: z.object({
       anchor: z.number(),
       depth_before: z.number().min(0).max(100).default(10),
       depth_after: z.number().min(0).max(100).default(10),
-      format: z.enum(['index', 'full']).default('index'),
       type: z.string().optional(),
       concepts: z.string().optional(),
       files: z.string().optional(),
@@ -263,19 +259,19 @@ const tools = [
     }
   },
   {
-    name: 'progressive_ix',
-    description: 'Load parameter docs and usage instructions',
+    name: 'progressive_description',
+    description: 'Usage help',
     inputSchema: z.object({
       topic: z.enum(['workflow', 'search_params', 'examples', 'all']).default('all')
     }),
     handler: async (args: any) => {
-      const endpoint = TOOL_ENDPOINT_MAP['progressive_ix'];
+      const endpoint = TOOL_ENDPOINT_MAP['progressive_description'];
       return await callWorkerAPI(endpoint, args);
     }
   },
   {
     name: 'get_observation',
-    description: 'Get observation by ID',
+    description: 'Fetch by ID',
     inputSchema: z.object({
       id: z.number()
     }),
@@ -285,7 +281,7 @@ const tools = [
   },
   {
     name: 'get_batch_observations',
-    description: 'Get multiple observations by IDs',
+    description: 'Batch fetch',
     inputSchema: z.object({
       ids: z.array(z.number()),
       orderBy: z.enum(['date_desc', 'date_asc']).optional(),
@@ -298,7 +294,7 @@ const tools = [
   },
   {
     name: 'get_session',
-    description: 'Get session summary by ID',
+    description: 'Session by ID',
     inputSchema: z.object({
       id: z.number()
     }),
@@ -308,7 +304,7 @@ const tools = [
   },
   {
     name: 'get_prompt',
-    description: 'Get user prompt by ID',
+    description: 'Prompt by ID',
     inputSchema: z.object({
       id: z.number()
     }),
