@@ -48,7 +48,7 @@ npm run worker:logs           # View worker logs
 Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created with defaults on first run.
 
 **Core Settings:**
-- `CLAUDE_MEM_MODEL` - Model for observations/summaries (default: claude-haiku-4-5)
+- `CLAUDE_MEM_MODEL` - Model for observations/summaries (default: claude-sonnet-4-5)
 - `CLAUDE_MEM_CONTEXT_OBSERVATIONS` - Observations injected at SessionStart
 - `CLAUDE_MEM_WORKER_PORT` - Worker service port (default: 37777)
 - `CLAUDE_MEM_WORKER_HOST` - Worker bind address (default: 127.0.0.1, use 0.0.0.0 for remote access)

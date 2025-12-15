@@ -13,7 +13,7 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 
 | Setting                       | Default                         | Description                           |
 |-------------------------------|---------------------------------|---------------------------------------|
-| `CLAUDE_MEM_MODEL`            | `haiku`                         | AI model for processing observations  |
+| `CLAUDE_MEM_MODEL`            | `sonnet`                        | AI model for processing observations  |
 | `CLAUDE_MEM_CONTEXT_OBSERVATIONS` | `50`                        | Number of observations to inject      |
 | `CLAUDE_MEM_WORKER_PORT`      | `37777`                         | Worker service port                   |
 | `CLAUDE_MEM_SKIP_TOOLS`       | `ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion` | Comma-separated tools to exclude from observations |
@@ -35,8 +35,8 @@ Configure which AI model processes your observations.
 
 Shorthand model names automatically forward to the latest version:
 
-- `haiku` - Fast, cost-efficient (default)
-- `sonnet` - Balanced
+- `haiku` - Fast, cost-efficient
+- `sonnet` - Balanced (default)
 - `opus` - Most capable
 
 ### Using the Interactive Script
@@ -53,7 +53,7 @@ Edit `~/.claude-mem/settings.json`:
 
 ```json
 {
-  "CLAUDE_MEM_MODEL": "haiku"
+  "CLAUDE_MEM_MODEL": "sonnet"
 }
 ```
 
@@ -262,7 +262,7 @@ Token economics help you understand the value of cached observations vs. re-read
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| **Model** | haiku | AI model for generating observations |
+| **Model** | sonnet | AI model for generating observations |
 | **Worker Port** | 37777 | Port for background worker service |
 | **MCP search server** | true | Enable Model Context Protocol search tools |
 | **Include last summary** | false | Add previous session's summary to context |
@@ -420,7 +420,7 @@ npm run worker:logs
 
 ### Invalid Model Name
 
-If you specify an invalid model name, the worker will fall back to `haiku` and log a warning.
+If you specify an invalid model name, the worker will fall back to `sonnet` and log a warning.
 
 Valid shorthand models (forward to latest version):
 - haiku
