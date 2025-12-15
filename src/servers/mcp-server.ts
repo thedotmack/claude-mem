@@ -87,7 +87,7 @@ async function callWorkerAPIWithPath(
   endpoint: string,
   id: number
 ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
-  happy_path_error__with_fallback('[mcp-server] → Worker API (path)', { endpoint, id });
+  logger.debug('HTTP', 'Worker API request (path)', undefined, { endpoint, id });
 
   try {
     const url = `${WORKER_BASE_URL}${endpoint}/${id}`;
@@ -100,7 +100,7 @@ async function callWorkerAPIWithPath(
 
     const data = await response.json();
 
-    happy_path_error__with_fallback('[mcp-server] ← Worker API success (path)', { endpoint, id });
+    logger.debug('HTTP', 'Worker API success (path)', undefined, { endpoint, id });
 
     // Wrap raw data in MCP format
     return {
@@ -110,7 +110,7 @@ async function callWorkerAPIWithPath(
       }]
     };
   } catch (error: any) {
-    happy_path_error__with_fallback('[mcp-server] ← Worker API error (path)', { endpoint, id, error: error.message });
+    logger.error('HTTP', 'Worker API error (path)', undefined, { endpoint, id, error: error.message });
     return {
       content: [{
         type: 'text' as const,
@@ -128,7 +128,7 @@ async function callWorkerAPIPost(
   endpoint: string,
   body: Record<string, any>
 ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
-  happy_path_error__with_fallback('[mcp-server] → Worker API (POST)', { endpoint, body });
+  logger.debug('HTTP', 'Worker API request (POST)', undefined, { endpoint });
 
   try {
     const url = `${WORKER_BASE_URL}${endpoint}`;
@@ -147,7 +147,7 @@ async function callWorkerAPIPost(
 
     const data = await response.json();
 
-    happy_path_error__with_fallback('[mcp-server] ← Worker API success (POST)', { endpoint });
+    logger.debug('HTTP', 'Worker API success (POST)', undefined, { endpoint });
 
     // Wrap raw data in MCP format
     return {
@@ -157,7 +157,7 @@ async function callWorkerAPIPost(
       }]
     };
   } catch (error: any) {
-    happy_path_error__with_fallback('[mcp-server] ← Worker API error (POST)', { endpoint, error: error.message });
+    logger.error('HTTP', 'Worker API error (POST)', undefined, { endpoint, error: error.message });
     return {
       content: [{
         type: 'text' as const,

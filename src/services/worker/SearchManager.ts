@@ -17,6 +17,8 @@ import { logger } from '../../utils/logger.js';
 import { formatDate, formatTime, extractFirstFile, groupByDate } from '../../shared/timeline-formatting.js';
 
 const COLLECTION_NAME = 'cm__claude-mem';
+const RECENCY_WINDOW_DAYS = 90;
+const RECENCY_WINDOW_MS = RECENCY_WINDOW_DAYS * 24 * 60 * 60 * 1000;
 
 export class SearchManager {
   constructor(
@@ -133,7 +135,7 @@ export class SearchManager {
 
             if (chromaResults.ids.length > 0) {
               // Step 2: Filter by recency (90 days)
-              const ninetyDaysAgo = Date.now() - (90 * 24 * 60 * 60 * 1000);
+              const ninetyDaysAgo = Date.now() - RECENCY_WINDOW_MS;
               const recentMetadata = chromaResults.metadatas.map((meta, idx) => ({
                 id: chromaResults.ids[idx],
                 meta,
@@ -360,7 +362,7 @@ export class SearchManager {
               logger.debug('SEARCH', 'Chroma returned semantic matches for timeline', { matchCount: chromaResults?.ids?.length ?? 0 });
 
               if (chromaResults?.ids && chromaResults.ids.length > 0) {
-                const ninetyDaysAgo = Date.now() - (90 * 24 * 60 * 60 * 1000);
+                const ninetyDaysAgo = Date.now() - RECENCY_WINDOW_MS;
                 const recentIds = chromaResults.ids.filter((_id, idx) => {
                   const meta = chromaResults.metadatas[idx];
                   return meta && meta.created_at_epoch > ninetyDaysAgo;
@@ -912,7 +914,7 @@ export class SearchManager {
 
             if (chromaResults.ids.length > 0) {
               // Step 2: Filter by recency (90 days)
-              const ninetyDaysAgo = Date.now() - (90 * 24 * 60 * 60 * 1000);
+              const ninetyDaysAgo = Date.now() - RECENCY_WINDOW_MS;
               const recentIds = chromaResults.ids.filter((_id, idx) => {
                 const meta = chromaResults.metadatas[idx];
                 return meta && meta.created_at_epoch > ninetyDaysAgo;
@@ -982,7 +984,7 @@ export class SearchManager {
 
             if (chromaResults.ids.length > 0) {
               // Step 2: Filter by recency (90 days)
-              const ninetyDaysAgo = Date.now() - (90 * 24 * 60 * 60 * 1000);
+              const ninetyDaysAgo = Date.now() - RECENCY_WINDOW_MS;
               const recentIds = chromaResults.ids.filter((_id, idx) => {
                 const meta = chromaResults.metadatas[idx];
                 return meta && meta.created_at_epoch > ninetyDaysAgo;
@@ -1052,7 +1054,7 @@ export class SearchManager {
 
             if (chromaResults.ids.length > 0) {
               // Step 2: Filter by recency (90 days)
-              const ninetyDaysAgo = Date.now() - (90 * 24 * 60 * 60 * 1000);
+              const ninetyDaysAgo = Date.now() - RECENCY_WINDOW_MS;
               const recentIds = chromaResults.ids.filter((_id, idx) => {
                 const meta = chromaResults.metadatas[idx];
                 return meta && meta.created_at_epoch > ninetyDaysAgo;
@@ -1787,7 +1789,7 @@ export class SearchManager {
 
             if (chromaResults.ids.length > 0) {
               // Filter by recency (90 days)
-              const ninetyDaysAgo = Date.now() - (90 * 24 * 60 * 60 * 1000);
+              const ninetyDaysAgo = Date.now() - RECENCY_WINDOW_MS;
               const recentIds = chromaResults.ids.filter((_id, idx) => {
                 const meta = chromaResults.metadatas[idx];
                 return meta && meta.created_at_epoch > ninetyDaysAgo;
