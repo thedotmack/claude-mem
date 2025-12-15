@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [7.2.3] - 2025-12-15
+
+## Bug Fixes
+
+- **Fix MCP server failures on plugin updates**: Add 2-second pre-restart delay in `ensureWorkerVersionMatches()` to give files time to sync before killing the old worker. This prevents the race condition where the worker restart happened too quickly after plugin file updates, causing "Worker service connection failed" errors.
+
+## Changes
+
+- Add `PRE_RESTART_SETTLE_DELAY` constant (2000ms) to `hook-constants.ts`
+- Add delay before `ProcessManager.restart()` call in `worker-utils.ts`
+- Fix pre-existing bug where `port` variable was undefined in error logging
+
 ## [7.2.2] - 2025-12-15
 
 ## Changes
