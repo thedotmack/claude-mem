@@ -86,7 +86,6 @@ Restart Claude Code. Context from previous sessions will automatically appear in
 - ⚙️ **Context Configuration** - Fine-grained control over what context gets injected
 - 🤖 **Automatic Operation** - No manual intervention required
 - 🔗 **Citations** - Reference past observations with IDs (access via http://localhost:37777/api/observation/{id} or view all in the web viewer at http://localhost:37777)
-- 🧪 **Beta Channel** - Try experimental features like Endless Mode via version switching
 
 ---
 
@@ -206,6 +205,8 @@ See [Search Tools Guide](https://docs.claude-mem.ai/usage/search-tools) for deta
 
 ## Beta Features & Endless Mode
 
+> **Note**: Endless Mode is an **experimental feature in the beta branch only**. It is not included in the stable release you install via the marketplace. You must manually switch to the beta channel to try it, and it comes with significant caveats (see below).
+
 Claude-Mem offers a **beta channel** with experimental features. Switch between stable and beta versions directly from the web viewer UI.
 
 ### How to Try Beta
@@ -230,13 +231,17 @@ Working Memory (Context):     Compressed observations (~500 tokens each)
 Archive Memory (Disk):        Full tool outputs preserved for recall
 ```
 
-**Expected Results**:
-- ~95% token reduction in context window
-- ~20x more tool uses before context exhaustion
+**Projected Results** (based on theoretical modeling, not production measurements):
+- Significant token reduction in context window
+- More tool uses before context exhaustion
 - Linear O(N) scaling instead of quadratic O(N²)
 - Full transcripts preserved for perfect recall
 
-**Caveats**: Adds latency (60-90s per tool for observation generation), still experimental.
+**Important Caveats**:
+- **Not in stable release** - You must switch to beta branch to use this feature
+- **Still in development** - May have bugs, breaking changes, or incomplete functionality
+- **Slower than standard mode** - Blocking observation generation adds latency to each tool use
+- **Theoretical projections** - The efficiency claims above are based on simulations, not real-world production data
 
 See [Beta Features Documentation](https://docs.claude-mem.ai/beta-features) for details.
 
