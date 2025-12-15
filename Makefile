@@ -3,7 +3,7 @@
 NPM ?= bun
 PORT ?= 37777
 
-.PHONY: help install build test test-parser test-context test-context-verbose \
+.PHONY: help install build build-and-sync test test-parser test-context test-context-verbose \
 	sync sync-force worker-start worker-stop worker-restart worker-logs \
 	worker-logs-no-flush viewer
 
@@ -11,6 +11,7 @@ help:
 	@echo "Claude-Mem local dev:"
 	@echo "  install                  Install dependencies"
 	@echo "  build                    Build hooks"
+	@echo "  build-and-sync           Build, sync to marketplace, restart worker (most common)"
 	@echo "  test                     Run vitest suite"
 	@echo "  test-parser              Run parser test"
 	@echo "  test-context             Smoke test context hook"
@@ -29,6 +30,11 @@ install:
 
 build:
 	$(NPM) run build
+
+build-and-sync: build sync
+	@sleep 1
+	@cd ~/.claude/plugins/marketplaces/thedotmack && $(NPM) run worker:restart
+	@echo "✓ Build, sync, and worker restart complete"
 
 test:
 	$(NPM) test
