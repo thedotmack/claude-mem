@@ -14,6 +14,7 @@ import { FormattingService } from './FormattingService.js';
 import { TimelineService, TimelineItem } from './TimelineService.js';
 import { ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../sqlite/types.js';
 import { logger } from '../../utils/logger.js';
+import { formatDate, formatTime, extractFirstFile, groupByDate } from '../../shared/timeline-formatting.js';
 
 const COLLECTION_NAME = 'cm__claude-mem';
 
@@ -211,15 +212,31 @@ export class SearchManager {
           type: 'observation' | 'session' | 'prompt';
           data: any;
           epoch: number;
+          created_at: string;
         }
 
         const allResults: CombinedResult[] = [
-          ...observations.map(obs => ({ type: 'observation' as const, data: obs, epoch: obs.created_at_epoch })),
-          ...sessions.map(sess => ({ type: 'session' as const, data: sess, epoch: sess.created_at_epoch })),
-          ...prompts.map(prompt => ({ type: 'prompt' as const, data: prompt, epoch: prompt.created_at_epoch }))
+          ...observations.map(obs => ({
+            type: 'observation' as const,
+            data: obs,
+            epoch: obs.created_at_epoch,
+            created_at: obs.created_at
+          })),
+          ...sessions.map(sess => ({
+            type: 'session' as const,
+            data: sess,
+            epoch: sess.created_at_epoch,
+            created_at: sess.created_at
+          })),
+          ...prompts.map(prompt => ({
+            type: 'prompt' as const,
+            data: prompt,
+            epoch: prompt.created_at_epoch,
+            created_at: prompt.created_at
+          }))
         ];
 
-        // Sort by date (most recent first)
+        // Sort by date
         if (options.orderBy === 'date_desc') {
           allResults.sort((a, b) => b.epoch - a.epoch);
         } else if (options.orderBy === 'date_asc') {
@@ -229,22 +246,62 @@ export class SearchManager {
         // Apply limit across all types
         const limitedResults = allResults.slice(0, options.limit || 20);
 
-        // Format as table
-        const header = `Found ${totalResults} result(s) matching "${query}" (${observations.length} obs, ${sessions.length} sessions, ${prompts.length} prompts)\n\n${this.formatter.formatTableHeader()}`;
-        const formattedResults = limitedResults.map((item, i) => {
-          if (item.type === 'observation') {
-            return this.formatter.formatObservationIndex(item.data, i);
-          } else if (item.type === 'session') {
-            return this.formatter.formatSessionIndex(item.data, i);
-          } else {
-            return this.formatter.formatUserPromptIndex(item.data, i);
+        // Group by date, then by file within each day
+        const cwd = process.cwd();
+        const resultsByDate = groupByDate(limitedResults, item => item.created_at);
+
+        // Build output with date/file grouping
+        const lines: string[] = [];
+        lines.push(`Found ${totalResults} result(s) matching "${query}" (${observations.length} obs, ${sessions.length} sessions, ${prompts.length} prompts)`);
+        lines.push('');
+
+        for (const [day, dayResults] of resultsByDate) {
+          lines.push(`### ${day}`);
+          lines.push('');
+
+          // Group by file within this day
+          const resultsByFile = new Map<string, CombinedResult[]>();
+          for (const result of dayResults) {
+            let file = 'General';
+            if (result.type === 'observation') {
+              file = extractFirstFile(result.data.files_modified, cwd);
+            }
+            if (!resultsByFile.has(file)) {
+              resultsByFile.set(file, []);
+            }
+            resultsByFile.get(file)!.push(result);
           }
-        });
+
+          // Render each file section
+          for (const [file, fileResults] of resultsByFile) {
+            lines.push(`**${file}**`);
+            lines.push(this.formatter.formatSearchTableHeader());
+
+            let lastTime = '';
+            for (const result of fileResults) {
+              if (result.type === 'observation') {
+                const formatted = this.formatter.formatObservationSearchRow(result.data as ObservationSearchResult, lastTime);
+                lines.push(formatted.row);
+                lastTime = formatted.time;
+              } else if (result.type === 'session') {
+                const formatted = this.formatter.formatSessionSearchRow(result.data as SessionSummarySearchResult, lastTime);
+                lines.push(formatted.row);
+                lastTime = formatted.time;
+              } else {
+                const formatted = this.formatter.formatUserPromptSearchRow(result.data as UserPromptSearchResult, lastTime);
+                lines.push(formatted.row);
+                lastTime = formatted.time;
+              }
+            }
+
+            lines.push('');
+          }
+        }
 
         return {
           content: [{
             type: 'text' as const,
-            text: header + '\n' + formattedResults.join('\n')
+            text: lines.join('\n')
           }]
         };
       } catch (error: any) {
@@ -264,6 +321,7 @@ export class SearchManager {
   async timeline(args: any): Promise<any> {
       try {
         const { anchor, query, depth_before = 10, depth_after = 10, project } = args;
+        const cwd = process.cwd();
 
         // Validate: must provide either anchor or query, not both
         if (!anchor && !query) {
@@ -531,7 +589,7 @@ export class SearchManager {
               lines.push('');
             } else if (item.type === 'observation') {
               const obs = item.data as ObservationSearchResult;
-              const file = 'General';
+              const file = extractFirstFile(obs.files_modified, cwd);
 
               if (file !== currentFile) {
                 if (tableOpen) {
@@ -1454,6 +1512,7 @@ export class SearchManager {
   async getContextTimeline(args: any): Promise<any> {
       try {
         const { anchor, depth_before = 10, depth_after = 10, project } = args;
+        const cwd = process.cwd();
         let anchorEpoch: number;
         let anchorId: string | number = anchor;
 
@@ -1650,7 +1709,7 @@ export class SearchManager {
             } else if (item.type === 'observation') {
               // Render observation in table
               const obs = item.data as ObservationSearchResult;
-              const file = 'General'; // Simplified for timeline view
+              const file = extractFirstFile(obs.files_modified, cwd);
 
               // Check if we need a new file section
               if (file !== currentFile) {
@@ -1722,6 +1781,7 @@ export class SearchManager {
   async getTimelineByQuery(args: any): Promise<any> {
       try {
         const { query, mode = 'auto', depth_before = 10, depth_after = 10, limit = 5, project } = args;
+        const cwd = process.cwd();
 
         // Step 1: Search for observations
         let results: ObservationSearchResult[] = [];
@@ -1941,7 +2001,7 @@ export class SearchManager {
               } else if (item.type === 'observation') {
                 // Render observation in table
                 const obs = item.data as ObservationSearchResult;
-                const file = 'General'; // Simplified for timeline view
+                const file = extractFirstFile(obs.files_modified, cwd);
 
                 // Check if we need a new file section
                 if (file !== currentFile) {

@@ -101,4 +101,70 @@ Tips:
     return `| ID | Time | T | Title | Read | Work |
 |-----|------|---|-------|------|------|`;
   }
+
+  /**
+   * Generate table header for search results (no Work column)
+   */
+  formatSearchTableHeader(): string {
+    return `| ID | Time | T | Title | Read |
+|----|------|---|-------|------|`;
+  }
+
+  /**
+   * Format observation as table row for search results (no Work column)
+   */
+  formatObservationSearchRow(obs: ObservationSearchResult, lastTime: string): { row: string; time: string } {
+    const id = `#${obs.id}`;
+    const time = this.formatTime(obs.created_at_epoch);
+    const icon = TYPE_ICON_MAP[obs.type as keyof typeof TYPE_ICON_MAP] || '•';
+    const title = obs.title || 'Untitled';
+    const readTokens = this.estimateReadTokens(obs);
+
+    // Use ditto mark if same time as previous row
+    const timeDisplay = time === lastTime ? '″' : time;
+
+    return {
+      row: `| ${id} | ${timeDisplay} | ${icon} | ${title} | ~${readTokens} |`,
+      time
+    };
+  }
+
+  /**
+   * Format session summary as table row for search results (no Work column)
+   */
+  formatSessionSearchRow(session: SessionSummarySearchResult, lastTime: string): { row: string; time: string } {
+    const id = `#S${session.id}`;
+    const time = this.formatTime(session.created_at_epoch);
+    const icon = '🎯';
+    const title = session.request || `Session ${session.sdk_session_id?.substring(0, 8) || 'unknown'}`;
+
+    // Use ditto mark if same time as previous row
+    const timeDisplay = time === lastTime ? '″' : time;
+
+    return {
+      row: `| ${id} | ${timeDisplay} | ${icon} | ${title} | - |`,
+      time
+    };
+  }
+
+  /**
+   * Format user prompt as table row for search results (no Work column)
+   */
+  formatUserPromptSearchRow(prompt: UserPromptSearchResult, lastTime: string): { row: string; time: string } {
+    const id = `#P${prompt.id}`;
+    const time = this.formatTime(prompt.created_at_epoch);
+    const icon = '💬';
+    // Truncate long prompts for table display
+    const title = prompt.prompt_text.length > 60
+      ? prompt.prompt_text.substring(0, 57) + '...'
+      : prompt.prompt_text;
+
+    // Use ditto mark if same time as previous row
+    const timeDisplay = time === lastTime ? '″' : time;
+
+    return {
+      row: `| ${id} | ${timeDisplay} | ${icon} | ${title} | - |`,
+      time
+    };
+  }
 }
