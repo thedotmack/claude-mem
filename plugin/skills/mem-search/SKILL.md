@@ -87,13 +87,7 @@ Review the index results (and timeline if used). Identify which IDs are actually
 
 For each relevant ID, fetch full details using MCP tools:
 
-**Fetch single observation:**
-
-```
-get_observation(id=11131)
-```
-
-**Fetch multiple observations (recommended for 2+ IDs):**
+**Fetch multiple observations (ALWAYS use for 2+ IDs):**
 
 ```
 get_batch_observations(ids=[11131, 10942, 10855])
@@ -105,8 +99,15 @@ get_batch_observations(ids=[11131, 10942, 10855])
 get_batch_observations(
   ids=[11131, 10942, 10855],
   orderBy="date_desc",
-  limit=10
+  limit=10,
+  project="my-project"
 )
+```
+
+**Fetch single observation (only when fetching exactly 1):**
+
+```
+get_observation(id=11131)
 ```
 
 **Fetch session:**
@@ -127,18 +128,20 @@ get_prompt(id=5421)
 - Sessions: Just the number (2005) from "S2005"
 - Prompts: Just the number (5421)
 
-**When to use batch:**
+**Batch optimization:**
 
-- Always use `get_batch_observations` when fetching 2+ observations
-- More efficient: one request vs multiple
-- Returns all observations in a single response
+- **ALWAYS use `get_batch_observations` for 2+ observations**
+- 10-100x more efficient than individual fetches
+- Single HTTP request vs N requests
+- Returns all results in one response
+- Supports ordering and filtering
 
 ## Search Parameters
 
 **Basic:**
 
 - `query` - What to search for (required)
-- `format` - "index" or "full" (always use "index" first)
+- `format` - "index" (NEVER USE FULL)
 - `limit` - How many results (default 30)
 - `project` - Filter by project name (required)
 
@@ -188,18 +191,30 @@ progressive_ix(topic="all")  # Get complete guide
 
 ## Why This Workflow?
 
-**Token efficiency:**
+**Massive performance gains:**
 
-- Index format: ~50-100 tokens per result
-- Full format: ~500-1000 tokens per result
-- **10x difference** - only fetch full when you know it's relevant
+- **Index format:** ~50-100 tokens per result
+- **Full format:** ~500-1000 tokens per result
+- **10x token savings** - only fetch full when you know it's relevant
+
+**Batch fetching optimization:**
+
+- **Fetching 10 observations individually:** 10 HTTP requests, ~5-10s latency
+- **Batch fetch:** 1 HTTP request, ~0.5-1s latency
+- **10-100x faster** for multi-observation queries
 
 **Clarity:**
 
-- See everything first
-- Pick what matters
-- Get details only for what you need
+- See everything first (index)
+- Get timeline context around interesting results
+- Pick what matters based on context
+- Fetch details only for what you need (batch when possible)
 
 ---
 
-**Remember:** ALWAYS search with format=index first. ALWAYS get timeline context for observations you're interested in. ALWAYS fetch by ID for details. The IDs are there for a reason - use them.
+**Remember:**
+
+- ALWAYS search with `format="index"` first for token efficiency
+- ALWAYS get timeline context to understand what was happening
+- ALWAYS use `get_batch_observations` when fetching 2+ observations
+- The workflow is optimized: index → timeline → batch fetch = 10-100x faster

@@ -38,9 +38,7 @@ Other tips:
     const date = new Date(obs.created_at_epoch).toLocaleString();
     const type = obs.type ? `[${obs.type}]` : '';
 
-    return `${index + 1}. ${type} ${title}
-   Date: ${date}
-   Source: claude-mem://observation/${obs.id}`;
+    return `   ${index + 1}. ${type} ${title}\n      Date: ${date}\n      Source: claude-mem://observation/${obs.id}`;
   }
 
   /**
@@ -50,9 +48,7 @@ Other tips:
     const title = session.request || `Session ${session.sdk_session_id?.substring(0, 8) || 'unknown'}`;
     const date = new Date(session.created_at_epoch).toLocaleString();
 
-    return `${index + 1}. ${title}
-   Date: ${date}
-   Source: claude-mem://session/${session.sdk_session_id}`;
+    return `   ${index + 1}. ${title}\n      Date: ${date}\n      Source: claude-mem://session/${session.sdk_session_id}`;
   }
 
   /**
@@ -61,9 +57,7 @@ Other tips:
   formatUserPromptIndex(prompt: UserPromptSearchResult, index: number): string {
     const date = new Date(prompt.created_at_epoch).toLocaleString();
 
-    return `${index + 1}. "${prompt.prompt_text}"
-   Date: ${date} | Prompt #${prompt.prompt_number}
-   Source: claude-mem://user-prompt/${prompt.id}`;
+    return `   ${index + 1}. "${prompt.prompt_text}"\n      Date: ${date} | Prompt #${prompt.prompt_number}\n      Source: claude-mem://user-prompt/${prompt.id}`;
   }
 
   /**

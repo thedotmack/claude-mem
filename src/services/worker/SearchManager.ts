@@ -248,7 +248,7 @@ export class SearchManager {
 
         let combinedText: string;
         if (format === 'index') {
-          const header = `Found ${totalResults} result(s) matching "${query}" (${observations.length} obs, ${sessions.length} sessions, ${prompts.length} prompts):\n\n`;
+          const header = `  ⎿  Found ${totalResults} result(s) matching "${query}" (${observations.length} obs, ${sessions.length} sessions, ${prompts.length} prompts):\n\n`;
           const formattedResults = limitedResults.map((item, i) => {
             if (item.type === 'observation') {
               return this.formatter.formatObservationIndex(item.data, i);
@@ -258,7 +258,7 @@ export class SearchManager {
               return this.formatter.formatUserPromptIndex(item.data, i);
             }
           });
-          combinedText = header + formattedResults.join('\n\n') + this.formatter.formatSearchTips();
+          combinedText = header + formattedResults.join('\n\n');
         } else {
           const formattedResults = limitedResults.map(item => {
             if (item.type === 'observation') {
@@ -688,7 +688,7 @@ export class SearchManager {
 
         let combinedText: string;
         if (format === 'index') {
-          const header = `Found ${results.length} decision(s):\n\n`;
+          const header = `  ⎿  Found ${results.length} decision(s):\n\n`;
           const formattedResults = results.map((obs, i) => this.formatter.formatObservationIndex(obs, i));
           combinedText = header + formattedResults.join('\n\n');
         } else {
@@ -786,7 +786,7 @@ export class SearchManager {
 
         let combinedText: string;
         if (format === 'index') {
-          const header = `Found ${results.length} change-related observation(s):\n\n`;
+          const header = `  ⎿  Found ${results.length} change-related observation(s):\n\n`;
           const formattedResults = results.map((obs, i) => this.formatter.formatObservationIndex(obs, i));
           combinedText = header + formattedResults.join('\n\n');
         } else {
@@ -862,7 +862,7 @@ export class SearchManager {
 
         let combinedText: string;
         if (format === 'index') {
-          const header = `Found ${results.length} "how it works" observation(s):\n\n`;
+          const header = `  ⎿  Found ${results.length} "how it works" observation(s):\n\n`;
           const formattedResults = results.map((obs, i) => this.formatter.formatObservationIndex(obs, i));
           combinedText = header + formattedResults.join('\n\n');
         } else {
@@ -939,9 +939,9 @@ export class SearchManager {
         // Format based on requested format
         let combinedText: string;
         if (format === 'index') {
-          const header = `Found ${results.length} observation(s) matching "${query}":\n\n`;
+          const header = `  ⎿  Found ${results.length} observation(s) matching "${query}":\n\n`;
           const formattedResults = results.map((obs, i) => this.formatter.formatObservationIndex(obs, i));
-          combinedText = header + formattedResults.join('\n\n') + this.formatter.formatSearchTips();
+          combinedText = header + formattedResults.join('\n\n');
         } else {
           const formattedResults = results.map((obs) => this.formatter.formatObservationResult(obs));
           combinedText = formattedResults.join('\n\n---\n\n');
@@ -1016,9 +1016,9 @@ export class SearchManager {
         // Format based on requested format
         let combinedText: string;
         if (format === 'index') {
-          const header = `Found ${results.length} session(s) matching "${query}":\n\n`;
+          const header = `  ⎿  Found ${results.length} session(s) matching "${query}":\n\n`;
           const formattedResults = results.map((session, i) => this.formatter.formatSessionIndex(session, i));
-          combinedText = header + formattedResults.join('\n\n') + this.formatter.formatSearchTips();
+          combinedText = header + formattedResults.join('\n\n');
         } else {
           const formattedResults = results.map((session) => this.formatter.formatSessionResult(session));
           combinedText = formattedResults.join('\n\n---\n\n');
@@ -1093,9 +1093,9 @@ export class SearchManager {
         // Format based on requested format
         let combinedText: string;
         if (format === 'index') {
-          const header = `Found ${results.length} user prompt(s) matching "${query}":\n\n`;
+          const header = `  ⎿  Found ${results.length} user prompt(s) matching "${query}":\n\n`;
           const formattedResults = results.map((prompt, i) => this.formatter.formatUserPromptIndex(prompt, i));
-          combinedText = header + formattedResults.join('\n\n') + this.formatter.formatSearchTips();
+          combinedText = header + formattedResults.join('\n\n');
         } else {
           const formattedResults = results.map((prompt) => this.formatter.formatUserPromptResult(prompt));
           combinedText = formattedResults.join('\n\n---\n\n');
@@ -1182,9 +1182,9 @@ export class SearchManager {
         // Format based on requested format
         let combinedText: string;
         if (format === 'index') {
-          const header = `Found ${results.length} observation(s) with concept "${concept}":\n\n`;
+          const header = `  ⎿  Found ${results.length} observation(s) with concept "${concept}":\n\n`;
           const formattedResults = results.map((obs, i) => this.formatter.formatObservationIndex(obs, i));
-          combinedText = header + formattedResults.join('\n\n') + this.formatter.formatSearchTips();
+          combinedText = header + formattedResults.join('\n\n');
         } else {
           const formattedResults = results.map((obs) => this.formatter.formatObservationResult(obs));
           combinedText = formattedResults.join('\n\n---\n\n');
@@ -1279,7 +1279,7 @@ export class SearchManager {
 
         let combinedText: string;
         if (format === 'index') {
-          const header = `Found ${totalResults} result(s) for file "${filePath}":\n\n`;
+          const header = `  ⎿  Found ${totalResults} result(s) for file "${filePath}":\n\n`;
           const formattedResults: string[] = [];
 
           // Add observations
@@ -1292,7 +1292,7 @@ export class SearchManager {
             formattedResults.push(this.formatter.formatSessionIndex(session, i + observations.length));
           });
 
-          combinedText = header + formattedResults.join('\n\n') + this.formatter.formatSearchTips();
+          combinedText = header + formattedResults.join('\n\n');
         } else {
           const formattedResults: string[] = [];
 
@@ -1391,9 +1391,9 @@ export class SearchManager {
         // Format based on requested format
         let combinedText: string;
         if (format === 'index') {
-          const header = `Found ${results.length} observation(s) with type "${typeStr}":\n\n`;
+          const header = `  ⎿  Found ${results.length} observation(s) with type "${typeStr}":\n\n`;
           const formattedResults = results.map((obs, i) => this.formatter.formatObservationIndex(obs, i));
-          combinedText = header + formattedResults.join('\n\n') + this.formatter.formatSearchTips();
+          combinedText = header + formattedResults.join('\n\n');
         } else {
           const formattedResults = results.map((obs) => this.formatter.formatObservationResult(obs));
           combinedText = formattedResults.join('\n\n---\n\n');
