@@ -133,7 +133,7 @@ Invoke this skill when users ask about:
 ...
 ```
 
-**Token Savings**: ~2,250 tokens per session start (90% reduction)
+**Token Efficiency**: Minimal frontmatter at session start with progressive disclosure
 
 ## HTTP API Endpoints
 
@@ -341,14 +341,14 @@ All user-provided search queries are properly escaped to prevent SQL injection.
 ### 1. Token Efficiency
 
 **Before (MCP)**:
-- Session start: ~2,500 tokens for tool definitions
+- Session start: All tool definitions loaded upfront
 - Every session pays this cost
 - No progressive disclosure
 
 **After (Skill)**:
-- Session start: ~250 tokens for skill frontmatter
-- Full instructions: ~2,500 tokens (only when invoked)
-- Net savings: ~2,250 tokens per session (~90% reduction)
+- Session start: Minimal token cost for skill frontmatter
+- Full instructions loaded only when invoked (progressive disclosure)
+- More efficient than loading all tool definitions upfront
 
 ### 2. Natural Language Interface
 
