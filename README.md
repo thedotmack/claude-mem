@@ -79,7 +79,7 @@ Restart Claude Code. Context from previous sessions will automatically appear in
 
 - 🧠 **Persistent Memory** - Context survives across sessions
 - 📊 **Progressive Disclosure** - Layered memory retrieval with token cost visibility
-- 🔍 **Skill-Based Search** - Query your project history with mem-search skill (~2,250 token savings)
+- 🔍 **Skill-Based Search** - Query your project history with mem-search skill
 - 🖥️ **Web Viewer UI** - Real-time memory stream at http://localhost:37777
 - 💻 **Claude Desktop Skill** - Search memory from Claude Desktop conversations
 - 🔒 **Privacy Control** - Use `<private>` tags to exclude sensitive content from storage
@@ -160,7 +160,7 @@ npx mintlify dev
 2. **Smart Install** - Cached dependency checker (pre-hook script, not a lifecycle hook)
 3. **Worker Service** - HTTP API on port 37777 with web viewer UI and 10 search endpoints, managed by Bun
 4. **SQLite Database** - Stores sessions, observations, summaries with FTS5 full-text search
-5. **mem-search Skill** - Natural language queries with progressive disclosure (~2,250 token savings vs MCP)
+5. **mem-search Skill** - Natural language queries with progressive disclosure
 6. **Chroma Vector Database** - Hybrid semantic + keyword search for intelligent context retrieval
 
 See [Architecture Overview](https://docs.claude-mem.ai/architecture/overview) for details.
@@ -174,7 +174,6 @@ Claude-Mem provides intelligent search through the mem-search skill that auto-in
 **How It Works:**
 - Just ask naturally: *"What did we do last session?"* or *"Did we fix this bug before?"*
 - Claude automatically invokes the mem-search skill to find relevant context
-- ~2,250 token savings per session start vs MCP approach
 
 **Available Search Operations:**
 
