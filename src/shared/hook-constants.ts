@@ -3,6 +3,7 @@ export const HOOK_TIMEOUTS = {
   HEALTH_CHECK: 1000,         // Worker health check (up from 500ms)
   WORKER_STARTUP_WAIT: 1000,
   WORKER_STARTUP_RETRIES: 15,
+  PRE_RESTART_SETTLE_DELAY: 2000,  // Give files time to sync before restart
   WINDOWS_MULTIPLIER: 1.5     // Platform-specific adjustment
 } as const;
 

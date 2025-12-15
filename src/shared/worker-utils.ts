@@ -131,6 +131,9 @@ async function ensureWorkerVersionMatches(): Promise<void> {
       workerVersion
     });
 
+    // Give files time to sync before restart
+    await new Promise(resolve => setTimeout(resolve, getTimeout(HOOK_TIMEOUTS.PRE_RESTART_SETTLE_DELAY)));
+
     // Restart the worker
     await ProcessManager.restart(getWorkerPort());
 
@@ -142,7 +145,7 @@ async function ensureWorkerVersionMatches(): Promise<void> {
       logger.error('SYSTEM', 'Worker failed to restart after version mismatch', {
         expectedVersion: pluginVersion,
         runningVersion: workerVersion,
-        port
+        port: getWorkerPort()
       });
     }
   }
