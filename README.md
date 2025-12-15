@@ -97,7 +97,7 @@ Restart Claude Code. Context from previous sessions will automatically appear in
 💻 **Local Preview**: Run Mintlify docs locally:
 
 ```bash
-cd docs
+cd docs/public
 npx mintlify dev
 ```
 
