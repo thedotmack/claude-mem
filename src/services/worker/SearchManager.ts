@@ -87,7 +87,7 @@ export class SearchManager {
       try {
         // Normalize URL-friendly params to internal format
         const normalized = this.normalizeParams(args);
-        const { query, type, obs_type, concepts, files, ...options } = normalized;
+        const { query, type, obs_type, concepts, files, format, ...options } = normalized;
         let observations: ObservationSearchResult[] = [];
         let sessions: SessionSummarySearchResult[] = [];
         let prompts: UserPromptSearchResult[] = [];
@@ -199,6 +199,17 @@ export class SearchManager {
         }
 
         const totalResults = observations.length + sessions.length + prompts.length;
+
+        // JSON format: return raw data for programmatic access (e.g., export scripts)
+        if (format === 'json') {
+          return {
+            observations,
+            sessions,
+            prompts,
+            totalResults,
+            query: query || ''
+          };
+        }
 
         if (totalResults === 0) {
           return {
