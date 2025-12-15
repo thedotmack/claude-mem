@@ -63,14 +63,21 @@ export class SDKAgent {
       // Create message generator (event-driven)
       const messageGenerator = this.createMessageGenerator(session);
 
+      // Determine working directory for SDK agent
+      // Use home directory to ensure Claude subprocess runs in a trusted location
+      const workingDirectory = homedir();
+
       // Run Agent SDK query loop
       const queryResult = query({
         prompt: messageGenerator,
+        // @ts-ignore - workingDirectory and settingSources are supported but types may be outdated
         options: {
           model: modelId,
           disallowedTools,
           abortController: session.abortController,
-          pathToClaudeCodeExecutable: claudePath
+          pathToClaudeCodeExecutable: claudePath,
+          workingDirectory,
+          settingSources: ["user"]  // Load user's API settings (BYOK support)
         }
       });
 
@@ -152,7 +159,7 @@ export class SDKAgent {
       throw error;
     } finally {
       // Cleanup
-      this.sessionManager.deleteSession(session.sessionDbId).catch(() => {});
+      this.sessionManager.deleteSession(session.sessionDbId).catch(() => { });
     }
   }
 
