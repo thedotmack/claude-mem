@@ -4,31 +4,24 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [8.0.0] - 2025-12-14
+## [7.3.0] - 2025-12-15
 
-### Fixed
+## Features
 
-**Timeline MCP Tools Parameter Bug**
+- **Table-based search output**: Unified timeline formatting with cleaner, more organized presentation of search results grouped by date and file
+- **Simplified API**: Removed unused format parameter from MCP search tools for cleaner interface
+- **Shared formatting utilities**: Extracted common timeline formatting logic into reusable module
 
-Fixed critical bug where timeline tools were completely non-functional due to parameter name mismatch between MCP layer and SearchManager. The tools now use correct parameter names:
-- `anchor` (was incorrectly `anchor_id`)
-- `depth_before` (was incorrectly `before`)
-- `depth_after` (was incorrectly `after`)
-- `type` (was incorrectly `obs_type` in timeline tool only)
+## Changes
 
-**Affected Tools:** `timeline`, `get_context_timeline`, `get_timeline_by_query`
+- **Default model upgrade**: Changed default model from Haiku to Sonnet for better observation quality
+- **Removed fake URIs**: Replaced claude-mem:// pseudo-protocol with actual HTTP API endpoints for citations
 
-**Impact:** These tools were previously broken and would fail with "Cannot read properties of undefined (reading 'length')" errors. They now work correctly with the proper parameter names that match the underlying SearchManager implementation.
+## Bug Fixes
 
-### Added
-- New `get_batch_observations` MCP tool for efficiently fetching multiple observations in a single request
-- Enhanced SessionStore methods for fetching prompts and session summaries by ID
-
-### Changed
-- Extracted magic numbers to constants (`RECENCY_WINDOW_DAYS`, `RECENCY_WINDOW_MS`)
-- Replaced debug logging calls with proper logger methods
-
----
+- Fixed undefined debug function calls in MCP server
+- Fixed skillPath variable scoping bug in instructions endpoint
+- Extracted magic numbers to named constants for better code maintainability
 
 ## [7.2.1] - 2025-12-14
 
