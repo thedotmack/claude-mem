@@ -4,31 +4,34 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [8.0.0] - 2025-12-14
+## [7.2.2] - 2025-12-15
 
-### Fixed
+## Changes
 
-**Timeline MCP Tools Parameter Bug**
+- **Refactor:** Consolidate mem-search skill, remove desktop-skill duplication
+  - Delete separate `desktop-skill/` directory (was outdated)
+  - Generate `mem-search.zip` during build from `plugin/skills/mem-search/`
+  - Update docs with correct MCP tool list and new download path
+  - Single source of truth for Claude Desktop skill
 
-Fixed critical bug where timeline tools were completely non-functional due to parameter name mismatch between MCP layer and SearchManager. The tools now use correct parameter names:
-- `anchor` (was incorrectly `anchor_id`)
-- `depth_before` (was incorrectly `before`)
-- `depth_after` (was incorrectly `after`)
-- `type` (was incorrectly `obs_type` in timeline tool only)
+## [7.3.0] - 2025-12-15
 
-**Affected Tools:** `timeline`, `get_context_timeline`, `get_timeline_by_query`
+## Features
 
-**Impact:** These tools were previously broken and would fail with "Cannot read properties of undefined (reading 'length')" errors. They now work correctly with the proper parameter names that match the underlying SearchManager implementation.
+- **Table-based search output**: Unified timeline formatting with cleaner, more organized presentation of search results grouped by date and file
+- **Simplified API**: Removed unused format parameter from MCP search tools for cleaner interface
+- **Shared formatting utilities**: Extracted common timeline formatting logic into reusable module
 
-### Added
-- New `get_batch_observations` MCP tool for efficiently fetching multiple observations in a single request
-- Enhanced SessionStore methods for fetching prompts and session summaries by ID
+## Changes
 
-### Changed
-- Extracted magic numbers to constants (`RECENCY_WINDOW_DAYS`, `RECENCY_WINDOW_MS`)
-- Replaced debug logging calls with proper logger methods
+- **Default model upgrade**: Changed default model from Haiku to Sonnet for better observation quality
+- **Removed fake URIs**: Replaced claude-mem:// pseudo-protocol with actual HTTP API endpoints for citations
 
----
+## Bug Fixes
+
+- Fixed undefined debug function calls in MCP server
+- Fixed skillPath variable scoping bug in instructions endpoint
+- Extracted magic numbers to named constants for better code maintainability
 
 ## [7.2.1] - 2025-12-14
 
