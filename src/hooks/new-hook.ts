@@ -2,7 +2,6 @@ import path from 'path';
 import { stdin } from 'process';
 import { createHookResponse } from './hook-response.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
-import { happy_path_error__with_fallback } from '../utils/silent-debug.js';
 import { handleWorkerError } from '../shared/hook-error-handler.js';
 import { handleFetchError } from './shared/error-handler.js';
 
@@ -26,12 +25,6 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
 
   const { session_id, cwd, prompt } = input;
   const project = path.basename(cwd);
-
-  happy_path_error__with_fallback('[new-hook] Input received', {
-    session_id,
-    project,
-    prompt_length: prompt?.length
-  });
 
   const port = getWorkerPort();
 

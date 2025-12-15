@@ -44,7 +44,7 @@
     "worker:stop": "bun plugin/scripts/worker-cli.js stop",
     "worker:restart": "bun plugin/scripts/worker-cli.js restart",
     "worker:status": "bun plugin/scripts/worker-cli.js status",
-    "worker:logs": "tail -f ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log",
+    "worker:logs": "tail -n 50 ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log",
     "changelog:generate": "node scripts/generate-changelog.js",
     "usage:analyze": "node scripts/analyze-usage.js",
     "usage:today": "node scripts/analyze-usage.js $(date +%Y-%m-%d)",

@@ -1,33 +1,16 @@
 /**
  * Happy Path Error With Fallback
  *
- * Semantic meaning: "When the happy path fails, this is an error, but we have a fallback."
+ * @deprecated This function is deprecated. Use logger.happyPathError() instead.
+ * All usages have been migrated to the new logger system which consolidates logs
+ * into the regular worker logs instead of separate silent.log files.
  *
- * Logs to ~/.claude-mem/silent.log and returns a fallback value.
- * Check logs with `npm run logs:silent`
+ * Migration example:
+ * OLD: happy_path_error__with_fallback('Missing value', { data }, 'default')
+ * NEW: logger.happyPathError('COMPONENT', 'Missing value', undefined, { data }, 'default')
  *
- * Use happy_path_error__with_fallback for:
- * ✅ Unexpected null/undefined values that should theoretically never happen
- * ✅ Defensive coding where silent fallback is acceptable
- * ✅ Situations where you want to track unexpected nulls without breaking execution
- *
- * DO NOT use for:
- * ❌ Nullable fields with valid default behavior (use direct || defaults)
- * ❌ Critical validation failures (use logger.warn or throw Error)
- * ❌ Try-catch blocks where error is already logged (redundant)
- *
- * Good examples:
- *   // Truly unexpected null (should never happen in theory)
- *   const id = session.id || happy_path_error__with_fallback('session.id missing', { session });
- *
- * Bad examples (use direct defaults instead):
- *   // Nullable field with valid empty default
- *   const title = obs.title || happy_path_error__with_fallback('obs.title missing', { obs }, '(untitled)');
- *   // BETTER: const title = obs.title || '(untitled)';
- *
- *   // Array that can validly be undefined/null
- *   const count = obs.files?.length ?? (happy_path_error__with_fallback('obs.files missing', { obs }), 0);
- *   // BETTER: const count = obs.files?.length ?? 0;
+ * See: src/utils/logger.ts for the new happyPathError method
+ * Issue: #312 - Consolidate silent logs into regular worker logs
  */
 
 import { appendFileSync } from 'fs';
