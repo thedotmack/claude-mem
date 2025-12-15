@@ -44,22 +44,48 @@ export class SessionRoutes extends BaseRouteHandler {
    */
   private ensureGeneratorRunning(sessionDbId: number, source: string): void {
     const session = this.sessionManager.getSession(sessionDbId);
-    if (session && !session.generatorPromise) {
-      logger.info('SESSION', `Generator auto-starting (${source})`, {
-        sessionId: sessionDbId,
-        queueDepth: session.pendingMessages.length
+
+    // Debug: Log why we're not starting
+    if (!session) {
+      logger.warn('SESSION', `Cannot start generator - session not found`, { sessionId: sessionDbId, source });
+      return;
+    }
+    if (session.generatorPromise) {
+      logger.info('SESSION', `Generator already running`, { sessionId: sessionDbId, source });
+      return;
+    }
+
+    logger.info('SESSION', `Generator auto-starting (${source})`, {
+      sessionId: sessionDbId,
+      queueDepth: session.pendingMessages.length
+    });
+
+    // Debug: Log generator starting
+    this.sessionManager.addDebugLog('generator_start', sessionDbId, { source, method: 'ensureGeneratorRunning' });
+
+    session.generatorPromise = this.sdkAgent.startSession(session, this.workerService)
+      .catch(err => {
+        logger.failure('SDK', 'SDK agent error', { sessionId: sessionDbId }, err);
+      })
+      .finally(() => {
+        logger.info('SESSION', `Generator finished`, { sessionId: sessionDbId });
+        // Debug: Log generator stopping
+        this.sessionManager.addDebugLog('generator_stop', sessionDbId, { source, method: 'ensureGeneratorRunning' });
+        session.generatorPromise = null;
+        // Debug: Log after promise cleared
+        this.sessionManager.addDebugLog('promise_cleared', sessionDbId, { source, method: 'ensureGeneratorRunning' });
+        this.workerService.broadcastProcessingStatus();
       });
 
-      session.generatorPromise = this.sdkAgent.startSession(session, this.workerService)
-        .catch(err => {
-          logger.failure('SDK', 'SDK agent error', { sessionId: sessionDbId }, err);
-        })
-        .finally(() => {
-          logger.info('SESSION', `Generator finished`, { sessionId: sessionDbId });
-          session.generatorPromise = null;
-          this.workerService.broadcastProcessingStatus();
-        });
-    }
+    // Debug: Log promise assignment
+    this.sessionManager.addDebugLog('promise_assigned', sessionDbId, {
+      source,
+      method: 'ensureGeneratorRunning',
+      promiseExists: session.generatorPromise !== null
+    });
+
+    // Broadcast immediately so UI knows agent is now active
+    this.workerService.broadcastProcessingStatus();
   }
 
   setupRoutes(app: express.Application): void {
@@ -137,6 +163,9 @@ export class SessionRoutes extends BaseRouteHandler {
       promptNum: session.lastPromptNumber
     });
 
+    // Debug: Log generator starting
+    this.sessionManager.addDebugLog('generator_start', sessionDbId, { source: 'handleSessionInit', method: 'handleSessionInit' });
+
     session.generatorPromise = this.sdkAgent.startSession(session, this.workerService)
       .catch(err => {
         logger.failure('SDK', 'SDK agent error', { sessionId: sessionDbId }, err);
@@ -144,10 +173,21 @@ export class SessionRoutes extends BaseRouteHandler {
       .finally(() => {
         // Clear generator reference when completed
         logger.info('SESSION', `Generator finished`, { sessionId: sessionDbId });
+        // Debug: Log generator stopping
+        this.sessionManager.addDebugLog('generator_stop', sessionDbId, { source: 'handleSessionInit', method: 'handleSessionInit' });
         session.generatorPromise = null;
+        // Debug: Log after promise cleared
+        this.sessionManager.addDebugLog('promise_cleared', sessionDbId, { source: 'handleSessionInit', method: 'handleSessionInit' });
         // Broadcast status change (generator finished, may stop spinner)
         this.workerService.broadcastProcessingStatus();
       });
+
+    // Debug: Log promise assignment
+    this.sessionManager.addDebugLog('promise_assigned', sessionDbId, {
+      source: 'handleSessionInit',
+      method: 'handleSessionInit',
+      promiseExists: session.generatorPromise !== null
+    });
 
     // Broadcast session started event
     this.eventBroadcaster.broadcastSessionStarted(sessionDbId, session.project);
@@ -176,8 +216,8 @@ export class SessionRoutes extends BaseRouteHandler {
     // CRITICAL: Ensure SDK agent is running to consume the queue
     this.ensureGeneratorRunning(sessionDbId, 'observation');
 
-    // Broadcast observation queued event
-    this.eventBroadcaster.broadcastObservationQueued(sessionDbId);
+    // Always broadcast full queue status (includes hasActiveAgent for each message)
+    this.workerService.broadcastProcessingStatus();
 
     res.json({ status: 'queued' });
   });
@@ -197,8 +237,8 @@ export class SessionRoutes extends BaseRouteHandler {
     // CRITICAL: Ensure SDK agent is running to consume the queue
     this.ensureGeneratorRunning(sessionDbId, 'summarize');
 
-    // Broadcast summarize queued event
-    this.eventBroadcaster.broadcastSummarizeQueued();
+    // Always broadcast full queue status (includes hasActiveAgent for each message)
+    this.workerService.broadcastProcessingStatus();
 
     res.json({ status: 'queued' });
   });
@@ -353,8 +393,8 @@ export class SessionRoutes extends BaseRouteHandler {
     // Ensure SDK agent is running
     this.ensureGeneratorRunning(sessionDbId, 'observation');
 
-    // Broadcast observation queued event
-    this.eventBroadcaster.broadcastObservationQueued(sessionDbId);
+    // Always broadcast full queue status (includes hasActiveAgent for each message)
+    this.workerService.broadcastProcessingStatus();
 
     res.json({ status: 'queued' });
   });
@@ -408,8 +448,8 @@ export class SessionRoutes extends BaseRouteHandler {
     // Ensure SDK agent is running
     this.ensureGeneratorRunning(sessionDbId, 'summarize');
 
-    // Broadcast summarize queued event
-    this.eventBroadcaster.broadcastSummarizeQueued();
+    // Always broadcast full queue status (includes hasActiveAgent for each message)
+    this.workerService.broadcastProcessingStatus();
 
     res.json({ status: 'queued' });
   });

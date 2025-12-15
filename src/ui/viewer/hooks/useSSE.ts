@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Observation, Summary, UserPrompt, StreamEvent } from '../types';
+import { Observation, Summary, UserPrompt, StreamEvent, QueueMessage } from '../types';
 import { API_ENDPOINTS } from '../constants/api';
 import { TIMING } from '../constants/timing';
 
@@ -11,6 +11,9 @@ export function useSSE() {
   const [isConnected, setIsConnected] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [queueDepth, setQueueDepth] = useState(0);
+  const [queueMessages, setQueueMessages] = useState<QueueMessage[]>([]);
+  const [recentlyProcessed, setRecentlyProcessed] = useState<QueueMessage[]>([]);
+  const [stuckCount, setStuckCount] = useState(0);
   const eventSourceRef = useRef<EventSource | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout>();
 
@@ -84,9 +87,16 @@ export function useSSE() {
 
             case 'processing_status':
               if (typeof data.isProcessing === 'boolean') {
-                console.log('[SSE] Processing status:', data.isProcessing, 'Queue depth:', data.queueDepth);
+                console.log('[SSE] Processing status:', data.isProcessing, 'Queue depth:', data.queueDepth, 'Stuck:', data.stuckCount, 'Recently processed:', data.recentlyProcessed?.length || 0);
                 setIsProcessing(data.isProcessing);
                 setQueueDepth(data.queueDepth || 0);
+                setStuckCount(data.stuckCount || 0);
+                if (data.messages) {
+                  setQueueMessages(data.messages);
+                }
+                if (data.recentlyProcessed) {
+                  setRecentlyProcessed(data.recentlyProcessed);
+                }
               }
               break;
           }
@@ -109,5 +119,5 @@ export function useSSE() {
     };
   }, []);
 
-  return { observations, summaries, prompts, projects, isProcessing, queueDepth, isConnected };
+  return { observations, summaries, prompts, projects, isProcessing, queueDepth, queueMessages, recentlyProcessed, stuckCount, isConnected };
 }

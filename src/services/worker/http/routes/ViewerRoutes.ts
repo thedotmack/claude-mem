@@ -67,13 +67,36 @@ export class ViewerRoutes extends BaseRouteHandler {
       timestamp: Date.now()
     });
 
-    // Send initial processing status (based on queue depth + active generators)
+    // Send initial processing status with queue messages
     const isProcessing = this.sessionManager.isAnySessionProcessing();
-    const queueDepth = this.sessionManager.getTotalActiveWork(); // Includes queued + actively processing
+    const pendingMessageStore = this.sessionManager.getPendingMessageStore();
+
+    let messages: any[] = [];
+    let stuckCount = 0;
+    const stuckThresholdMs = 150000; // 2.5 minutes
+
+    if (pendingMessageStore) {
+      const rawMessages = pendingMessageStore.getQueueMessages();
+      stuckCount = pendingMessageStore.getStuckCount(stuckThresholdMs);
+
+      const now = Date.now();
+      messages = rawMessages.map(msg => ({
+        ...msg,
+        isStuck: msg.status === 'processing' &&
+          msg.started_processing_at_epoch !== null &&
+          (now - msg.started_processing_at_epoch) > stuckThresholdMs
+      }));
+    }
+
+    // queueDepth derived from actual messages (consistent with drawer display)
+    const queueDepth = messages.length;
+
     this.sseBroadcaster.broadcast({
       type: 'processing_status',
       isProcessing,
-      queueDepth
+      queueDepth,
+      stuckCount,
+      messages
     });
   });
 }

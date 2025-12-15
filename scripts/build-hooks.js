@@ -106,12 +106,12 @@ async function buildHooks() {
       outfile: `${hooksDir}/${WORKER_SERVICE.name}.cjs`,
       minify: true,
       logLevel: 'error', // Suppress warnings (import.meta warning is benign)
-      external: ['bun:sqlite'],
+      external: ['bun:sqlite', 'better-sqlite3'],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
       },
       banner: {
-        js: '#!/usr/bin/env bun'
+        js: '#!/usr/bin/env node'
       }
     });
 
@@ -131,12 +131,12 @@ async function buildHooks() {
       outfile: `${hooksDir}/${MCP_SERVER.name}.cjs`,
       minify: true,
       logLevel: 'error',
-      external: ['bun:sqlite'],
+      external: ['bun:sqlite', 'better-sqlite3'],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
       },
       banner: {
-        js: '#!/usr/bin/env bun'
+        js: '#!/usr/bin/env node'
       }
     });
 
@@ -156,7 +156,7 @@ async function buildHooks() {
       outfile: `${hooksDir}/${CONTEXT_GENERATOR.name}.cjs`,
       minify: true,
       logLevel: 'error',
-      external: ['bun:sqlite'],
+      external: ['bun:sqlite', 'better-sqlite3'],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
       }
@@ -176,12 +176,12 @@ async function buildHooks() {
       outfile: `${hooksDir}/${WORKER_CLI.name}.js`,
       minify: true,
       logLevel: 'error',
-      external: ['bun:sqlite'],
+      external: ['bun:sqlite', 'better-sqlite3'],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
       },
       banner: {
-        js: '#!/usr/bin/env bun'
+        js: '#!/usr/bin/env node'
       }
     });
 

@@ -10,6 +10,9 @@ interface ContextSettingsModalProps {
   onSave: (settings: Settings) => void;
   isSaving: boolean;
   saveStatus: string;
+  notificationsEnabled: boolean;
+  onNotificationsChange: (enabled: boolean) => void;
+  notificationPermission: NotificationPermission | 'unsupported';
 }
 
 // Simple debounce helper
@@ -191,7 +194,10 @@ export function ContextSettingsModal({
   settings,
   onSave,
   isSaving,
-  saveStatus
+  saveStatus,
+  notificationsEnabled,
+  onNotificationsChange,
+  notificationPermission
 }: ContextSettingsModalProps) {
   const [formState, setFormState] = useState<Settings>(settings);
 
@@ -528,6 +534,20 @@ export function ContextSettingsModal({
                   checked={mcpEnabled}
                   onChange={handleMcpToggle}
                   disabled={mcpToggling}
+                />
+                <ToggleSwitch
+                  id="queue-notifications"
+                  label="Queue notifications"
+                  description={
+                    notificationPermission === 'unsupported'
+                      ? "Notifications not supported in this browser"
+                      : notificationPermission === 'denied'
+                      ? "Notifications blocked - check browser settings"
+                      : "Get notified when messages are stuck"
+                  }
+                  checked={notificationsEnabled}
+                  onChange={onNotificationsChange}
+                  disabled={notificationPermission !== 'granted' && notificationPermission !== 'default'}
                 />
                 <ToggleSwitch
                   id="show-last-summary"

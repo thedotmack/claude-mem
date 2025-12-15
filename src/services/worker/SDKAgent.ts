@@ -18,7 +18,7 @@ import { parseObservations, parseSummary } from '../../sdk/parser.js';
 import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
-import type { ActiveSession, SDKUserMessage, PendingMessage } from '../worker-types.js';
+import type { ActiveSession, SDKUserMessage, PendingMessageWithId } from '../worker-types.js';
 
 // Import Agent SDK (assumes it's installed)
 // @ts-ignore - Agent SDK types may not be available
@@ -198,7 +198,14 @@ export class SDKAgent {
     };
 
     // Consume pending messages from SessionManager (event-driven, no polling)
+    // Messages now include _persistentId for completion tracking and _originalTimestamp for accurate observation timestamps
     for await (const message of this.sessionManager.getMessageIterator(session.sessionDbId)) {
+      // Track the message being processed for completion marking and original timestamp
+      session.currentProcessingMessageId = message._persistentId;
+      session.currentProcessingOriginalTimestamp = message._originalTimestamp;
+      // Also add to set of all pending processing IDs (for batch completion)
+      session.pendingProcessingIds.add(message._persistentId);
+
       if (message.type === 'observation') {
         // Update last prompt number
         if (message.prompt_number !== undefined) {
@@ -252,14 +259,15 @@ export class SDKAgent {
     // Parse observations
     const observations = parseObservations(text, session.claudeSessionId);
 
-    // Store observations
+    // Store observations - use original timestamp if available (for stuck message recovery)
     for (const obs of observations) {
       const { id: obsId, createdAtEpoch } = this.dbManager.getSessionStore().storeObservation(
         session.claudeSessionId,
         session.project,
         obs,
         session.lastPromptNumber,
-        discoveryTokens
+        discoveryTokens,
+        session.currentProcessingOriginalTimestamp  // Original timestamp from when message was queued
       );
 
       // Log observation details
@@ -394,6 +402,31 @@ export class SDKAgent {
           }
         });
       }
+    }
+
+    // Mark ALL pending messages as successfully processed (handles SDK batching)
+    const pendingMessageStore = this.sessionManager.getPendingMessageStore();
+    if (session.pendingProcessingIds.size > 0) {
+      for (const messageId of session.pendingProcessingIds) {
+        pendingMessageStore.markProcessed(messageId);
+      }
+      logger.debug('SDK', 'Messages marked as processed', {
+        sessionId: session.sessionDbId,
+        messageIds: Array.from(session.pendingProcessingIds),
+        count: session.pendingProcessingIds.size
+      });
+      session.pendingProcessingIds.clear();
+      session.currentProcessingMessageId = null;
+      session.currentProcessingOriginalTimestamp = null;
+    } else if (session.currentProcessingMessageId !== null) {
+      // Legacy fallback: single message tracking
+      pendingMessageStore.markProcessed(session.currentProcessingMessageId);
+      logger.debug('SDK', 'Message marked as processed (legacy)', {
+        sessionId: session.sessionDbId,
+        messageId: session.currentProcessingMessageId
+      });
+      session.currentProcessingMessageId = null;
+      session.currentProcessingOriginalTimestamp = null;
     }
 
     // Broadcast activity status after processing (queue may have changed)

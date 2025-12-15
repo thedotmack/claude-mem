@@ -1,10 +1,9 @@
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from 'fs';
 import { createWriteStream } from 'fs';
 import { join } from 'path';
-import { spawn } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import { homedir } from 'os';
 import { DATA_DIR } from '../../shared/paths.js';
-import { getBunPath, isBunAvailable } from '../../utils/bun-path.js';
 
 const PID_FILE = join(DATA_DIR, 'worker.pid');
 const LOG_DIR = join(DATA_DIR, 'logs');
@@ -52,56 +51,80 @@ export class ProcessManager {
 
     const logFile = this.getLogFilePath();
 
-    // Use Bun on all platforms
-    return this.startWithBun(workerScript, logFile, port);
+    // Use Node on all platforms (Bun has zombie socket issues on Windows)
+    return this.startWithNode(workerScript, logFile, port);
   }
 
-  private static isBunAvailable(): boolean {
-    return isBunAvailable();
-  }
-
-  private static async startWithBun(script: string, logFile: string, port: number): Promise<{ success: boolean; pid?: number; error?: string }> {
-    const bunPath = getBunPath();
-    if (!bunPath) {
-      return {
-        success: false,
-        error: 'Bun is required but not found in PATH or common installation paths. Install from https://bun.sh'
-      };
-    }
-
+  private static async startWithNode(script: string, logFile: string, port: number): Promise<{ success: boolean; pid?: number; error?: string }> {
     try {
       const isWindows = process.platform === 'win32';
 
-      const child = spawn(bunPath, [script], {
-        detached: true,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env, CLAUDE_MEM_WORKER_PORT: String(port) },
-        cwd: MARKETPLACE_ROOT,
-        // Hide console window on Windows
-        ...(isWindows && { windowsHide: true })
-      });
+      if (isWindows) {
+        // Windows: Use PowerShell Start-Process with -WindowStyle Hidden
+        // This properly hides the console window (Node.js bug #21825 workaround)
+        // Note: windowsHide: true doesn't work with detached: true
+        const envVars = `$env:CLAUDE_MEM_WORKER_PORT='${port}'`;
+        const psCommand = `${envVars}; Start-Process -FilePath 'node' -ArgumentList '${script}' -WorkingDirectory '${MARKETPLACE_ROOT}' -WindowStyle Hidden -PassThru | Select-Object -ExpandProperty Id`;
 
-      // Write logs
-      const logStream = createWriteStream(logFile, { flags: 'a' });
-      child.stdout?.pipe(logStream);
-      child.stderr?.pipe(logStream);
+        const result = spawnSync('powershell', ['-Command', psCommand], {
+          stdio: 'pipe',
+          timeout: 10000,
+          windowsHide: true
+        });
 
-      child.unref();
+        if (result.status !== 0) {
+          return {
+            success: false,
+            error: `PowerShell spawn failed: ${result.stderr?.toString() || 'unknown error'}`
+          };
+        }
 
-      if (!child.pid) {
-        return { success: false, error: 'Failed to get PID from spawned process' };
+        const pid = parseInt(result.stdout.toString().trim(), 10);
+        if (isNaN(pid)) {
+          return { success: false, error: 'Failed to get PID from PowerShell' };
+        }
+
+        // Write PID file
+        this.writePidFile({
+          pid,
+          port,
+          startedAt: new Date().toISOString(),
+          version: process.env.npm_package_version || 'unknown'
+        });
+
+        // Wait for health
+        return this.waitForHealth(pid, port);
+      } else {
+        // Unix: Use standard spawn with detached
+        const child = spawn('node', [script], {
+          detached: true,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          env: { ...process.env, CLAUDE_MEM_WORKER_PORT: String(port) },
+          cwd: MARKETPLACE_ROOT
+        });
+
+        // Write logs
+        const logStream = createWriteStream(logFile, { flags: 'a' });
+        child.stdout?.pipe(logStream);
+        child.stderr?.pipe(logStream);
+
+        child.unref();
+
+        if (!child.pid) {
+          return { success: false, error: 'Failed to get PID from spawned process' };
+        }
+
+        // Write PID file
+        this.writePidFile({
+          pid: child.pid,
+          port,
+          startedAt: new Date().toISOString(),
+          version: process.env.npm_package_version || 'unknown'
+        });
+
+        // Wait for health
+        return this.waitForHealth(child.pid, port);
       }
-
-      // Write PID file
-      this.writePidFile({
-        pid: child.pid,
-        port,
-        startedAt: new Date().toISOString(),
-        version: process.env.npm_package_version || 'unknown'
-      });
-
-      // Wait for health
-      return this.waitForHealth(child.pid, port);
     } catch (error) {
       return {
         success: false,

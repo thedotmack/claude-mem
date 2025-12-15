@@ -2,6 +2,7 @@ import React from 'react';
 import { ThemeToggle } from './ThemeToggle';
 import { ThemePreference } from '../hooks/useTheme';
 import { GitHubStarsButton } from './GitHubStarsButton';
+import { QueueButton } from './QueueButton';
 
 interface HeaderProps {
   isConnected: boolean;
@@ -10,9 +11,11 @@ interface HeaderProps {
   onFilterChange: (filter: string) => void;
   isProcessing: boolean;
   queueDepth: number;
+  stuckCount: number;
   themePreference: ThemePreference;
   onThemeChange: (theme: ThemePreference) => void;
   onContextPreviewToggle: () => void;
+  onQueueToggle: () => void;
 }
 
 export function Header({
@@ -22,9 +25,11 @@ export function Header({
   onFilterChange,
   isProcessing,
   queueDepth,
+  stuckCount,
   themePreference,
   onThemeChange,
-  onContextPreviewToggle
+  onContextPreviewToggle,
+  onQueueToggle
 }: HeaderProps) {
   // Resolve effective theme for Product Hunt badge
   const isDark = themePreference === 'dark' ||
@@ -81,6 +86,11 @@ export function Header({
             <option key={project} value={project}>{project}</option>
           ))}
         </select>
+        <QueueButton
+          queueDepth={queueDepth}
+          stuckCount={stuckCount}
+          onClick={onQueueToggle}
+        />
         <ThemeToggle
           preference={themePreference}
           onThemeChange={onThemeChange}

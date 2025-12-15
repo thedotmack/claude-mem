@@ -238,7 +238,11 @@ export class DataRoutes extends BaseRouteHandler {
    */
   private handleGetProcessingStatus = this.wrapHandler((req: Request, res: Response): void => {
     const isProcessing = this.sessionManager.isAnySessionProcessing();
-    const queueDepth = this.sessionManager.getTotalActiveWork(); // Includes queued + actively processing
+    const pendingMessageStore = this.sessionManager.getPendingMessageStore();
+
+    // queueDepth derived from actual messages (consistent with drawer display)
+    const queueDepth = pendingMessageStore?.getQueueMessages().length ?? 0;
+
     res.json({ isProcessing, queueDepth });
   });
 
