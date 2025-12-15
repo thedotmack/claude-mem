@@ -501,14 +501,11 @@ export async function generateContext(input?: ContextInput, useColors: boolean =
 
           const summary = item.data;
           const summaryTitle = `${summary.request || 'Session started'} (${formatDateTime(summary.displayTime)})`;
-          const link = summary.shouldShowLink ? `claude-mem://session-summary/${summary.id}` : '';
 
           if (useColors) {
-            const linkPart = link ? `${colors.dim}[${link}]${colors.reset}` : '';
-            output.push(`🎯 ${colors.yellow}#S${summary.id}${colors.reset} ${summaryTitle} ${linkPart}`);
+            output.push(`🎯 ${colors.yellow}#S${summary.id}${colors.reset} ${summaryTitle}`);
           } else {
-            const linkPart = link ? ` [→](${link})` : '';
-            output.push(`**🎯 #S${summary.id}** ${summaryTitle}${linkPart}`);
+            output.push(`**🎯 #S${summary.id}** ${summaryTitle}`);
           }
           output.push('');
         } else {

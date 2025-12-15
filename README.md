@@ -85,7 +85,7 @@ Restart Claude Code. Context from previous sessions will automatically appear in
 - 🔒 **Privacy Control** - Use `<private>` tags to exclude sensitive content from storage
 - ⚙️ **Context Configuration** - Fine-grained control over what context gets injected
 - 🤖 **Automatic Operation** - No manual intervention required
-- 🔗 **Citations** - Reference past decisions with `claude-mem://` URIs
+- 🔗 **Citations** - Reference past observations with IDs (access via http://localhost:37777/api/observation/{id} or view all in the web viewer at http://localhost:37777)
 - 🧪 **Beta Channel** - Try experimental features like Endless Mode via version switching
 
 ---

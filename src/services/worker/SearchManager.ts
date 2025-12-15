@@ -565,10 +565,9 @@ export class SearchManager {
 
               const sess = item.data as SessionSummarySearchResult;
               const title = sess.request || 'Session summary';
-              const link = `claude-mem://session-summary/${sess.id}`;
               const marker = isAnchor ? ' ← **ANCHOR**' : '';
 
-              lines.push(`**🎯 #S${sess.id}** ${title} (${formatDateTime(item.epoch)}) [→](${link})${marker}`);
+              lines.push(`**🎯 #S${sess.id}** ${title} (${formatDateTime(item.epoch)})${marker}`);
               lines.push('');
             } else if (item.type === 'prompt') {
               if (tableOpen) {
@@ -1679,10 +1678,9 @@ export class SearchManager {
               // Render session
               const sess = item.data as SessionSummarySearchResult;
               const title = sess.request || 'Session summary';
-              const link = `claude-mem://session-summary/${sess.id}`;
               const marker = isAnchor ? ' ← **ANCHOR**' : '';
 
-              lines.push(`**🎯 #S${sess.id}** ${title} (${formatDateTime(item.epoch)}) [→](${link})${marker}`);
+              lines.push(`**🎯 #S${sess.id}** ${title} (${formatDateTime(item.epoch)})${marker}`);
               lines.push('');
             } else if (item.type === 'prompt') {
               // Close any open table
@@ -1841,7 +1839,6 @@ export class SearchManager {
             if (obs.subtitle) {
               lines.push(`   - ${obs.subtitle}`);
             }
-            lines.push(`   - Source: claude-mem://observation/${obs.id}`);
             lines.push('');
           }
 
@@ -1969,9 +1966,8 @@ export class SearchManager {
                 // Render session
                 const sess = item.data as SessionSummarySearchResult;
                 const title = sess.request || 'Session summary';
-                const link = `claude-mem://session-summary/${sess.id}`;
 
-                lines.push(`**🎯 #S${sess.id}** ${title} (${formatDateTime(item.epoch)}) [→](${link})`);
+                lines.push(`**🎯 #S${sess.id}** ${title} (${formatDateTime(item.epoch)})`);
                 lines.push('');
               } else if (item.type === 'prompt') {
                 // Close any open table

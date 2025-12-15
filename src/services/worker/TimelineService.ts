@@ -148,10 +148,9 @@ export class TimelineService {
 
           const sess = item.data as SessionSummarySearchResult;
           const title = sess.request || 'Session summary';
-          const link = `claude-mem://session-summary/${sess.id}`;
           const marker = isAnchor ? ' ← **ANCHOR**' : '';
 
-          lines.push(`**🎯 #S${sess.id}** ${title} (${this.formatDateTime(item.epoch)}) [→](${link})${marker}`);
+          lines.push(`**🎯 #S${sess.id}** ${title} (${this.formatDateTime(item.epoch)})${marker}`);
           lines.push('');
         } else if (item.type === 'prompt') {
           if (tableOpen) {
