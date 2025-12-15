@@ -1,0 +1,238 @@
+---
+title: "Fresh Session"
+description: "Start conversations without historical memory using the fresh-session tag"
+---
+
+# Fresh Session
+
+## Overview
+
+Use the `<fresh-session>` tag to start a conversation without any historical context from past sessions. This gives you a clean slate when you want Claude to approach a problem without being influenced by previous work.
+
+## How It Works
+
+Add the `<fresh-session>` tag to your first message:
+
+```
+<fresh-session>
+Help me debug this React component
+```
+
+Claude will start the session without loading any observations, summaries, or previous context from the project.
+
+## Use Cases
+
+### 1. Fresh Perspective
+
+When you want Claude to analyze something without bias from past decisions:
+
+```
+<fresh-session>
+Review this authentication implementation and tell me if there are security issues
+```
+
+Without historical context, Claude approaches the code with fresh eyes, potentially spotting issues that were previously overlooked or accepted.
+
+Useful for understanding how Claude approaches problems without domain-specific knowledge.
+
+### 2. Unrelated Tasks
+
+When working on something completely different from your project's history:
+
+```
+<fresh-session>
+Help me write a blog post about TypeScript generics
+```
+
+The project's technical context won't interfere with creative or educational tasks.
+
+### 3. Privacy-Conscious Work
+
+When you want to avoid revealing project details through context injection:
+
+```
+<fresh-session>
+<private>
+Here are some code snippets from a client project
+</private>
+
+Can you explain how this pattern works?
+```
+
+Combining `<fresh-session>` with `<private>` tags ensures no project information leaks through context.
+
+## Behavior
+
+### What Gets Skipped
+
+When you use `<fresh-session>`:
+
+- **No context injection** - Past observations are not loaded
+- **No session summaries** - Previous session summaries are not shown
+- **No token economics** - Context cost calculations are skipped
+- **No timeline** - Historical work timeline is not displayed
+
+### What Still Works
+
+Everything else functions normally:
+
+- **Observation capture** - The current session's work is still recorded
+- **Session summary** - The session will still be summarized at the end
+- **Memory search** - You can still manually search past work with the mem-search skill
+- **Future context** - This session's observations will be available in future sessions (unless you use `<private>` tags)
+
+## Tag Behavior
+
+### Self-Closing Tag
+
+Both forms work:
+
+```
+<fresh-session>
+Your message here
+```
+
+```
+<fresh-session/>
+Your message here
+```
+
+### Tag Stripping
+
+The `<fresh-session>` tag is automatically removed from your message, so Claude never sees it. It's purely a control signal for the plugin.
+
+### Multiple Tags
+
+You can combine with other tags:
+
+```
+<fresh-session>
+<private>
+Sensitive debugging context here
+</private>
+
+Help me fix this bug
+```
+
+### Position Matters
+
+The tag only works in the **first user message** of a session. Adding it later has no effect:
+
+```
+# First message - WORKS
+<fresh-session>
+Help me debug this code
+
+# Later message - IGNORED
+<fresh-session>
+Start fresh now
+```
+
+If you want to start fresh mid-conversation, you need to start a new session entirely.
+
+## Comparison with Private Tags
+
+| Feature     | `<fresh-session>`           | `<private>`                |
+| ----------- | --------------------------- | -------------------------- |
+| **Purpose** | Skip context injection      | Prevent content storage    |
+| **Scope**   | Entire session start        | Specific content blocks    |
+| **Timing**  | First message only          | Any message                |
+| **Storage** | Still captures observations | Blocks observation storage |
+
+### Use Together
+
+Combine both for maximum control:
+
+```
+<fresh-session>
+<private>
+Confidential project details for context
+</private>
+
+How would you architect a microservices system for a financial institution?
+```
+
+This gives Claude the confidential context it needs without loading past work or storing the sensitive details.
+
+## Best Practices
+
+### When to Use Fresh Session
+
+✅ **Good reasons:**
+
+- Getting an unbiased code review
+- Working on unrelated tasks
+- Testing without context
+
+### When NOT to Use Fresh Session
+
+❌ **Avoid when:**
+
+- Continuing work from previous sessions
+- Debugging issues with project context
+- Building on past decisions
+- Working with project-specific patterns
+- You want Claude to remember past work
+
+### Guidelines
+
+1. **Don't overuse** - The memory system is valuable for maintaining project context
+2. **Context helps quality** - Claude makes better decisions with project history
+3. **Use for specific cases** - Reserve for situations where fresh perspective is needed
+4. **Combine with private** - Use both tags together for sensitive unrelated work
+
+## Verification
+
+To verify the tag is working:
+
+1. Start a session with `<fresh-session>` tag
+2. Check that no context is injected in Claude's first response
+3. You should NOT see:
+   - Timeline of past work
+   - Token economics section
+   - Session summaries
+   - "recent context" header
+
+## Related Features
+
+- [Private Tags](/usage/private-tags) - Control what gets stored in memory
+- [Search Tools](/usage/search-tools) - Manually fetch observations when needed
+- [Getting Started](/usage/getting-started) - Basic usage guide
+- [Configuration](/configuration) - Adjust how much context loads by default
+
+## Troubleshooting
+
+### Tag Not Working
+
+If context still loads:
+
+1. **Check tag spelling**: Must be exactly `<fresh-session>` or `<fresh-session/>`
+2. **Verify position**: Must be in the very first user message
+3. **Restart session**: Tag is only checked at session start
+4. **Check logs**: Look at `~/.claude-mem/logs/worker-*.log` for errors
+
+### Tag Visible in Conversation
+
+If you can see the `<fresh-session>` tag in Claude's response:
+
+1. The tag stripping is working (it's only stripped from storage)
+2. This is expected - Claude may acknowledge or quote your original message
+3. The tag won't be stored in observations or user_prompts table
+
+### Still Want Context
+
+If you used `<fresh-session>` but now want context:
+
+1. **Manual search**: Use the mem-search skill to fetch specific observations
+2. **Start new session**: Begin a new session without the tag
+3. **Ask directly**: Claude can search memories when you ask about past work
+
+Example:
+
+```
+[In a fresh session]
+User: What did we decide about authentication last week?
+Claude: [Uses mem-search skill to fetch relevant observations]
+```
+
+The mem-search skill works even in fresh sessions, giving you selective context on demand.

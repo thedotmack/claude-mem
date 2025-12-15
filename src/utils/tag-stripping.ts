@@ -1,11 +1,13 @@
 /**
  * Tag Stripping Utilities
  *
- * Implements the dual-tag system for meta-observation control:
+ * Implements the tag system for meta-observation control:
  * 1. <claude-mem-context> - System-level tag for auto-injected observations
  *    (prevents recursive storage when context injection is active)
  * 2. <private> - User-level tag for manual privacy control
  *    (allows users to mark content they don't want persisted)
+ * 3. <fresh-session> - User-level tag to skip context injection
+ *    (allows users to start sessions without historical memory)
  *
  * EDGE PROCESSING PATTERN: Filter at hook layer before sending to worker/storage.
  * This keeps the worker service simple and follows one-way data stream.
@@ -27,7 +29,8 @@ const MAX_TAG_COUNT = 100;
 function countTags(content: string): number {
   const privateCount = (content.match(/<private>/g) || []).length;
   const contextCount = (content.match(/<claude-mem-context>/g) || []).length;
-  return privateCount + contextCount;
+  const freshSessionCount = (content.match(/<fresh-session>/g) || []).length;
+  return privateCount + contextCount + freshSessionCount;
 }
 
 /**
@@ -59,6 +62,7 @@ export function stripMemoryTagsFromJson(content: string): string {
   return content
     .replace(/<claude-mem-context>[\s\S]*?<\/claude-mem-context>/g, '')
     .replace(/<private>[\s\S]*?<\/private>/g, '')
+    .replace(/<fresh-session\s*\/?>/g, '')
     .trim();
 }
 
@@ -91,5 +95,6 @@ export function stripMemoryTagsFromPrompt(content: string): string {
   return content
     .replace(/<claude-mem-context>[\s\S]*?<\/claude-mem-context>/g, '')
     .replace(/<private>[\s\S]*?<\/private>/g, '')
+    .replace(/<fresh-session\s*\/?>/g, '')
     .trim();
 }

@@ -83,6 +83,7 @@ Restart Claude Code. Context from previous sessions will automatically appear in
 - 🖥️ **Web Viewer UI** - Real-time memory stream at http://localhost:37777
 - 💻 **Claude Desktop Skill** - Search memory from Claude Desktop conversations
 - 🔒 **Privacy Control** - Use `<private>` tags to exclude sensitive content from storage
+- 🆕 **Fresh Session** - Use `<fresh-session>` tag to start without historical context
 - ⚙️ **Context Configuration** - Fine-grained control over what context gets injected
 - 🤖 **Automatic Operation** - No manual intervention required
 - 🔗 **Citations** - Reference past observations with IDs (access via http://localhost:37777/api/observation/{id} or view all in the web viewer at http://localhost:37777)
