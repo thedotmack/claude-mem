@@ -77,7 +77,9 @@ export class SDKAgent {
           abortController: session.abortController,
           pathToClaudeCodeExecutable: claudePath,
           workingDirectory,
-          settingSources: ["user"]  // Load user's API settings (BYOK support)
+          // Use empty settingSources to prevent loading user hooks (avoids infinite recursion)
+          // API auth comes from env vars set by worker-service.loadClaudeCodeApiSettings()
+          settingSources: []
         }
       });
 

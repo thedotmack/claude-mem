@@ -207,10 +207,10 @@ export class WorkerService {
       try {
         // Wait for initialization to complete (with timeout)
         const timeoutMs = 30000; // 30 second timeout
-        const timeoutPromise = new Promise((_, reject) => 
+        const timeoutPromise = new Promise((_, reject) =>
           setTimeout(() => reject(new Error('Initialization timeout')), timeoutMs)
         );
-        
+
         await Promise.race([this.initializationComplete, timeoutPromise]);
 
         // If searchRoutes is still null after initialization, something went wrong
@@ -329,6 +329,10 @@ export class WorkerService {
       // Clean up any orphaned chroma-mcp processes BEFORE starting our own
       await this.cleanupOrphanedProcesses();
 
+      // Load Claude Code API settings and set as env vars for SDK Agent
+      // This allows SDK to use settingSources: [] (no hooks loaded) while still having API auth
+      this.loadClaudeCodeApiSettings();
+
       // Initialize database (once, stays open)
       await this.dbManager.initialize();
 
@@ -395,6 +399,55 @@ export class WorkerService {
     if (endIdx === -1) return content.substring(startIdx);
 
     return content.substring(startIdx, endIdx).trim();
+  }
+
+  /**
+   * Load Claude Code API settings from ~/.claude/settings.json
+   * Sets ANTHROPIC_BASE_URL and ANTHROPIC_AUTH_TOKEN as env vars
+   * This enables SDK Agent to use settingSources: [] (avoiding loading hooks)
+   * while still having proper API authentication for BYOK users
+   */
+  private loadClaudeCodeApiSettings(): void {
+    try {
+      const { homedir } = require('os');
+      const { readFileSync, existsSync } = require('fs');
+      const settingsPath = path.join(homedir(), '.claude', 'settings.json');
+
+      if (!existsSync(settingsPath)) {
+        logger.debug('SYSTEM', 'Claude settings.json not found, skipping API config');
+        return;
+      }
+
+      const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+
+      // Check for BYOK env settings
+      if (settings.env) {
+        if (settings.env.ANTHROPIC_BASE_URL && !process.env.ANTHROPIC_BASE_URL) {
+          process.env.ANTHROPIC_BASE_URL = settings.env.ANTHROPIC_BASE_URL;
+          logger.debug('SYSTEM', 'Set ANTHROPIC_BASE_URL from Claude settings');
+        }
+        if (settings.env.ANTHROPIC_AUTH_TOKEN && !process.env.ANTHROPIC_AUTH_TOKEN) {
+          process.env.ANTHROPIC_AUTH_TOKEN = settings.env.ANTHROPIC_AUTH_TOKEN;
+          logger.debug('SYSTEM', 'Set ANTHROPIC_AUTH_TOKEN from Claude settings');
+        }
+      }
+
+      // Also check apiKeyHelper
+      if (settings.apiKeyHelper && !process.env.ANTHROPIC_AUTH_TOKEN) {
+        try {
+          const { execSync } = require('child_process');
+          const apiKey = execSync(settings.apiKeyHelper, { encoding: 'utf-8' }).trim();
+          if (apiKey) {
+            process.env.ANTHROPIC_AUTH_TOKEN = apiKey;
+            logger.debug('SYSTEM', 'Set ANTHROPIC_AUTH_TOKEN from apiKeyHelper');
+          }
+        } catch (e) {
+          logger.debug('SYSTEM', 'apiKeyHelper execution failed', { error: (e as Error).message });
+        }
+      }
+    } catch (error) {
+      logger.debug('SYSTEM', 'Failed to load Claude API settings', { error: (error as Error).message });
+    }
   }
 
   /**
