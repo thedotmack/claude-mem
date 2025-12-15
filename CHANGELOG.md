@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [7.2.4] - 2025-12-15
+
+## What's Changed
+
+### Documentation
+- Updated endless mode setup instructions with improved configuration guidance for better user experience
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.2.3...v7.2.4
+
 ## [7.2.3] - 2025-12-15
 
 ## Bug Fixes
