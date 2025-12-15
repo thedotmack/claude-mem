@@ -146,12 +146,12 @@ export class WorkerService {
     // Instructions endpoint - loads SKILL.md sections on-demand for progressive instruction loading
     this.app.get('/api/instructions', async (req, res) => {
       const topic = (req.query.topic as string) || 'all';
+      // Read SKILL.md from plugin directory
+      // Path resolution: __dirname is build output directory (plugin/scripts/)
+      // SKILL.md is at plugin/skills/mem-search/SKILL.md
+      const skillPath = path.join(__dirname, '../skills/mem-search/SKILL.md');
 
       try {
-        // Read SKILL.md from plugin directory
-        // Path resolution: __dirname is build output directory (plugin/scripts/)
-        // SKILL.md is at plugin/skills/mem-search/SKILL.md
-        const skillPath = path.join(__dirname, '../skills/mem-search/SKILL.md');
         const fullContent = await fs.promises.readFile(skillPath, 'utf-8');
 
         // Extract section based on topic
