@@ -25,24 +25,6 @@ Fixed critical bug where timeline tools were completely non-functional due to pa
 - Enhanced SessionStore methods for fetching prompts and session summaries by ID
 
 ### Changed
-
-**Default Model Upgrade: Haiku → Sonnet**
-
-The default model for observations and summaries has been upgraded from `claude-haiku-4-5` to `claude-sonnet-4-5` for significantly improved quality.
-
-**Impact on Costs:**
-- Sonnet is approximately 5-10x more expensive than Haiku
-- Better observation quality and more accurate context summaries
-- **Recommendation**: Review your usage patterns and consider adjusting `CLAUDE_MEM_MODEL` in `~/.claude-mem/settings.json` if cost is a concern
-
-**To revert to Haiku (lower cost):**
-```json
-{
-  "CLAUDE_MEM_MODEL": "claude-haiku-4-5"
-}
-```
-
-**Code Quality:**
 - Extracted magic numbers to constants (`RECENCY_WINDOW_DAYS`, `RECENCY_WINDOW_MS`)
 - Replaced debug logging calls with proper logger methods
 
