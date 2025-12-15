@@ -84,7 +84,7 @@ export class SearchManager {
       try {
         // Normalize URL-friendly params to internal format
         const normalized = this.normalizeParams(args);
-        const { query, format = 'index', type, obs_type, concepts, files, ...options } = normalized;
+        const { query, type, obs_type, concepts, files, ...options } = normalized;
         let observations: ObservationSearchResult[] = [];
         let sessions: SessionSummarySearchResult[] = [];
         let prompts: UserPromptSearchResult[] = [];
@@ -198,13 +198,6 @@ export class SearchManager {
         const totalResults = observations.length + sessions.length + prompts.length;
 
         if (totalResults === 0) {
-          if (format === 'json') {
-            return {
-              observations: [],
-              sessions: [],
-              prompts: []
-            };
-          }
           return {
             content: [{
               type: 'text' as const,
@@ -236,46 +229,22 @@ export class SearchManager {
         // Apply limit across all types
         const limitedResults = allResults.slice(0, options.limit || 20);
 
-        // Format based on requested format
-        if (format === 'json') {
-          // Raw JSON format for exports
-          return {
-            observations,
-            sessions,
-            prompts
-          };
-        }
-
-        let combinedText: string;
-        if (format === 'index') {
-          const header = `  ⎿  Found ${totalResults} result(s) matching "${query}" (${observations.length} obs, ${sessions.length} sessions, ${prompts.length} prompts):\n\n`;
-          const formattedResults = limitedResults.map((item, i) => {
-            if (item.type === 'observation') {
-              return this.formatter.formatObservationIndex(item.data, i);
-            } else if (item.type === 'session') {
-              return this.formatter.formatSessionIndex(item.data, i);
-            } else {
-              return this.formatter.formatUserPromptIndex(item.data, i);
-            }
-          });
-          combinedText = header + formattedResults.join('\n\n');
-        } else {
-          const formattedResults = limitedResults.map(item => {
-            if (item.type === 'observation') {
-              return this.formatter.formatObservationResult(item.data);
-            } else if (item.type === 'session') {
-              return this.formatter.formatSessionResult(item.data);
-            } else {
-              return this.formatter.formatUserPromptResult(item.data);
-            }
-          });
-          combinedText = formattedResults.join('\n\n---\n\n');
-        }
+        // Format as table
+        const header = `Found ${totalResults} result(s) matching "${query}" (${observations.length} obs, ${sessions.length} sessions, ${prompts.length} prompts)\n\n${this.formatter.formatTableHeader()}`;
+        const formattedResults = limitedResults.map((item, i) => {
+          if (item.type === 'observation') {
+            return this.formatter.formatObservationIndex(item.data, i);
+          } else if (item.type === 'session') {
+            return this.formatter.formatSessionIndex(item.data, i);
+          } else {
+            return this.formatter.formatUserPromptIndex(item.data, i);
+          }
+        });
 
         return {
           content: [{
             type: 'text' as const,
-            text: combinedText
+            text: header + '\n' + formattedResults.join('\n')
           }]
         };
       } catch (error: any) {
@@ -629,7 +598,7 @@ export class SearchManager {
   async decisions(args: any): Promise<any> {
       try {
         const normalized = this.normalizeParams(args);
-        const { query, format = 'index', ...filters } = normalized;
+        const { query, ...filters } = normalized;
         let results: ObservationSearchResult[] = [];
 
         // Search for decision-type observations
@@ -686,20 +655,14 @@ export class SearchManager {
           };
         }
 
-        let combinedText: string;
-        if (format === 'index') {
-          const header = `  ⎿  Found ${results.length} decision(s):\n\n`;
-          const formattedResults = results.map((obs, i) => this.formatter.formatObservationIndex(obs, i));
-          combinedText = header + formattedResults.join('\n\n');
-        } else {
-          const formattedResults = results.map((obs) => this.formatter.formatObservationResult(obs));
-          combinedText = formattedResults.join('\n\n---\n\n');
-        }
+        // Format as table
+        const header = `Found ${results.length} decision(s)\n\n${this.formatter.formatTableHeader()}`;
+        const formattedResults = results.map((obs, i) => this.formatter.formatObservationIndex(obs, i));
 
         return {
           content: [{
             type: 'text' as const,
-            text: combinedText
+            text: header + '\n' + formattedResults.join('\n')
           }]
         };
       } catch (error: any) {
@@ -719,7 +682,7 @@ export class SearchManager {
   async changes(args: any): Promise<any> {
       try {
         const normalized = this.normalizeParams(args);
-        const { format = 'index', ...filters } = normalized;
+        const { ...filters } = normalized;
         let results: ObservationSearchResult[] = [];
 
         // Search for change-type observations and change-related concepts
@@ -784,20 +747,14 @@ export class SearchManager {
           };
         }
 
-        let combinedText: string;
-        if (format === 'index') {
-          const header = `  ⎿  Found ${results.length} change-related observation(s):\n\n`;
-          const formattedResults = results.map((obs, i) => this.formatter.formatObservationIndex(obs, i));
-          combinedText = header + formattedResults.join('\n\n');
-        } else {
-          const formattedResults = results.map((obs) => this.formatter.formatObservationResult(obs));
-          combinedText = formattedResults.join('\n\n---\n\n');
-        }
+        // Format as table
+        const header = `Found ${results.length} change-related observation(s)\n\n${this.formatter.formatTableHeader()}`;
+        const formattedResults = results.map((obs, i) => this.formatter.formatObservationIndex(obs, i));
 
         return {
           content: [{
             type: 'text' as const,
-            text: combinedText
+            text: header + '\n' + formattedResults.join('\n')
           }]
         };
       } catch (error: any) {
@@ -817,7 +774,7 @@ export class SearchManager {
   async howItWorks(args: any): Promise<any> {
       try {
         const normalized = this.normalizeParams(args);
-        const { format = 'index', ...filters } = normalized;
+        const { ...filters } = normalized;
         let results: ObservationSearchResult[] = [];
 
         // Search for how-it-works concept observations
@@ -860,20 +817,14 @@ export class SearchManager {
           };
         }
 
-        let combinedText: string;
-        if (format === 'index') {
-          const header = `  ⎿  Found ${results.length} "how it works" observation(s):\n\n`;
-          const formattedResults = results.map((obs, i) => this.formatter.formatObservationIndex(obs, i));
-          combinedText = header + formattedResults.join('\n\n');
-        } else {
-          const formattedResults = results.map((obs) => this.formatter.formatObservationResult(obs));
-          combinedText = formattedResults.join('\n\n---\n\n');
-        }
+        // Format as table
+        const header = `Found ${results.length} "how it works" observation(s)\n\n${this.formatter.formatTableHeader()}`;
+        const formattedResults = results.map((obs, i) => this.formatter.formatObservationIndex(obs, i));
 
         return {
           content: [{
             type: 'text' as const,
-            text: combinedText
+            text: header + '\n' + formattedResults.join('\n')
           }]
         };
       } catch (error: any) {
@@ -893,7 +844,7 @@ export class SearchManager {
   async searchObservations(args: any): Promise<any> {
       try {
         const normalized = this.normalizeParams(args);
-        const { query, format = 'index', ...options } = normalized;
+        const { query, ...options } = normalized;
         let results: ObservationSearchResult[] = [];
 
         // Vector-first search via ChromaDB
@@ -936,21 +887,14 @@ export class SearchManager {
           };
         }
 
-        // Format based on requested format
-        let combinedText: string;
-        if (format === 'index') {
-          const header = `  ⎿  Found ${results.length} observation(s) matching "${query}":\n\n`;
-          const formattedResults = results.map((obs, i) => this.formatter.formatObservationIndex(obs, i));
-          combinedText = header + formattedResults.join('\n\n');
-        } else {
-          const formattedResults = results.map((obs) => this.formatter.formatObservationResult(obs));
-          combinedText = formattedResults.join('\n\n---\n\n');
-        }
+        // Format as table
+        const header = `Found ${results.length} observation(s) matching "${query}"\n\n${this.formatter.formatTableHeader()}`;
+        const formattedResults = results.map((obs, i) => this.formatter.formatObservationIndex(obs, i));
 
         return {
           content: [{
             type: 'text' as const,
-            text: combinedText
+            text: header + '\n' + formattedResults.join('\n')
           }]
         };
       } catch (error: any) {
@@ -970,7 +914,7 @@ export class SearchManager {
   async searchSessions(args: any): Promise<any> {
       try {
         const normalized = this.normalizeParams(args);
-        const { query, format = 'index', ...options } = normalized;
+        const { query, ...options } = normalized;
         let results: SessionSummarySearchResult[] = [];
 
         // Vector-first search via ChromaDB
@@ -1013,21 +957,14 @@ export class SearchManager {
           };
         }
 
-        // Format based on requested format
-        let combinedText: string;
-        if (format === 'index') {
-          const header = `  ⎿  Found ${results.length} session(s) matching "${query}":\n\n`;
-          const formattedResults = results.map((session, i) => this.formatter.formatSessionIndex(session, i));
-          combinedText = header + formattedResults.join('\n\n');
-        } else {
-          const formattedResults = results.map((session) => this.formatter.formatSessionResult(session));
-          combinedText = formattedResults.join('\n\n---\n\n');
-        }
+        // Format as table
+        const header = `Found ${results.length} session(s) matching "${query}"\n\n${this.formatter.formatTableHeader()}`;
+        const formattedResults = results.map((session, i) => this.formatter.formatSessionIndex(session, i));
 
         return {
           content: [{
             type: 'text' as const,
-            text: combinedText
+            text: header + '\n' + formattedResults.join('\n')
           }]
         };
       } catch (error: any) {
@@ -1047,7 +984,7 @@ export class SearchManager {
   async searchUserPrompts(args: any): Promise<any> {
       try {
         const normalized = this.normalizeParams(args);
-        const { query, format = 'index', ...options } = normalized;
+        const { query, ...options } = normalized;
         let results: UserPromptSearchResult[] = [];
 
         // Vector-first search via ChromaDB
@@ -1090,21 +1027,14 @@ export class SearchManager {
           };
         }
 
-        // Format based on requested format
-        let combinedText: string;
-        if (format === 'index') {
-          const header = `  ⎿  Found ${results.length} user prompt(s) matching "${query}":\n\n`;
-          const formattedResults = results.map((prompt, i) => this.formatter.formatUserPromptIndex(prompt, i));
-          combinedText = header + formattedResults.join('\n\n');
-        } else {
-          const formattedResults = results.map((prompt) => this.formatter.formatUserPromptResult(prompt));
-          combinedText = formattedResults.join('\n\n---\n\n');
-        }
+        // Format as table
+        const header = `Found ${results.length} user prompt(s) matching "${query}"\n\n${this.formatter.formatTableHeader()}`;
+        const formattedResults = results.map((prompt, i) => this.formatter.formatUserPromptIndex(prompt, i));
 
         return {
           content: [{
             type: 'text' as const,
-            text: combinedText
+            text: header + '\n' + formattedResults.join('\n')
           }]
         };
       } catch (error: any) {
@@ -1124,7 +1054,7 @@ export class SearchManager {
   async findByConcept(args: any): Promise<any> {
       try {
         const normalized = this.normalizeParams(args);
-        const { concepts: concept, format = 'index', ...filters } = normalized;
+        const { concepts: concept, ...filters } = normalized;
         let results: ObservationSearchResult[] = [];
 
         // Metadata-first, semantic-enhanced search
@@ -1179,21 +1109,14 @@ export class SearchManager {
           };
         }
 
-        // Format based on requested format
-        let combinedText: string;
-        if (format === 'index') {
-          const header = `  ⎿  Found ${results.length} observation(s) with concept "${concept}":\n\n`;
-          const formattedResults = results.map((obs, i) => this.formatter.formatObservationIndex(obs, i));
-          combinedText = header + formattedResults.join('\n\n');
-        } else {
-          const formattedResults = results.map((obs) => this.formatter.formatObservationResult(obs));
-          combinedText = formattedResults.join('\n\n---\n\n');
-        }
+        // Format as table
+        const header = `Found ${results.length} observation(s) with concept "${concept}"\n\n${this.formatter.formatTableHeader()}`;
+        const formattedResults = results.map((obs, i) => this.formatter.formatObservationIndex(obs, i));
 
         return {
           content: [{
             type: 'text' as const,
-            text: combinedText
+            text: header + '\n' + formattedResults.join('\n')
           }]
         };
       } catch (error: any) {
@@ -1213,7 +1136,7 @@ export class SearchManager {
   async findByFile(args: any): Promise<any> {
       try {
         const normalized = this.normalizeParams(args);
-        const { files: filePath, format = 'index', ...filters } = normalized;
+        const { files: filePath, ...filters } = normalized;
         let observations: ObservationSearchResult[] = [];
         let sessions: SessionSummarySearchResult[] = [];
 
@@ -1277,42 +1200,24 @@ export class SearchManager {
           };
         }
 
-        let combinedText: string;
-        if (format === 'index') {
-          const header = `  ⎿  Found ${totalResults} result(s) for file "${filePath}":\n\n`;
-          const formattedResults: string[] = [];
+        // Format as table
+        const header = `Found ${totalResults} result(s) for file "${filePath}"\n\n${this.formatter.formatTableHeader()}`;
+        const formattedResults: string[] = [];
 
-          // Add observations
-          observations.forEach((obs, i) => {
-            formattedResults.push(this.formatter.formatObservationIndex(obs, i));
-          });
+        // Add observations
+        observations.forEach((obs, i) => {
+          formattedResults.push(this.formatter.formatObservationIndex(obs, i));
+        });
 
-          // Add sessions
-          sessions.forEach((session, i) => {
-            formattedResults.push(this.formatter.formatSessionIndex(session, i + observations.length));
-          });
-
-          combinedText = header + formattedResults.join('\n\n');
-        } else {
-          const formattedResults: string[] = [];
-
-          // Add observations
-          observations.forEach((obs) => {
-            formattedResults.push(this.formatter.formatObservationResult(obs));
-          });
-
-          // Add sessions
-          sessions.forEach((session) => {
-            formattedResults.push(this.formatter.formatSessionResult(session));
-          });
-
-          combinedText = formattedResults.join('\n\n---\n\n');
-        }
+        // Add sessions
+        sessions.forEach((session, i) => {
+          formattedResults.push(this.formatter.formatSessionIndex(session, i + observations.length));
+        });
 
         return {
           content: [{
             type: 'text' as const,
-            text: combinedText
+            text: header + '\n' + formattedResults.join('\n')
           }]
         };
       } catch (error: any) {
@@ -1332,7 +1237,7 @@ export class SearchManager {
   async findByType(args: any): Promise<any> {
       try {
         const normalized = this.normalizeParams(args);
-        const { type, format = 'index', ...filters } = normalized;
+        const { type, ...filters } = normalized;
         const typeStr = Array.isArray(type) ? type.join(', ') : type;
         let results: ObservationSearchResult[] = [];
 
@@ -1388,21 +1293,14 @@ export class SearchManager {
           };
         }
 
-        // Format based on requested format
-        let combinedText: string;
-        if (format === 'index') {
-          const header = `  ⎿  Found ${results.length} observation(s) with type "${typeStr}":\n\n`;
-          const formattedResults = results.map((obs, i) => this.formatter.formatObservationIndex(obs, i));
-          combinedText = header + formattedResults.join('\n\n');
-        } else {
-          const formattedResults = results.map((obs) => this.formatter.formatObservationResult(obs));
-          combinedText = formattedResults.join('\n\n---\n\n');
-        }
+        // Format as table
+        const header = `Found ${results.length} observation(s) with type "${typeStr}"\n\n${this.formatter.formatTableHeader()}`;
+        const formattedResults = results.map((obs, i) => this.formatter.formatObservationIndex(obs, i));
 
         return {
           content: [{
             type: 'text' as const,
-            text: combinedText
+            text: header + '\n' + formattedResults.join('\n')
           }]
         };
       } catch (error: any) {

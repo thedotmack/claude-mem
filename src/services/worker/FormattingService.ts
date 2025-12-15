@@ -1,12 +1,13 @@
 /**
  * FormattingService - Handles all formatting logic for search results
- * Extracted from mcp-server.ts to follow worker service organization pattern
+ * Uses table format matching context-generator style for visual consistency
  */
 
 import { ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../sqlite/types.js';
-import { logger } from '../../utils/logger.js';
+import { TYPE_ICON_MAP, TYPE_WORK_EMOJI_MAP } from '../../constants/observation-metadata.js';
 
-export type FormatType = 'index' | 'full';
+// Token estimation constant (matches context-generator)
+const CHARS_PER_TOKEN_ESTIMATE = 4;
 
 export class FormattingService {
   /**
@@ -15,226 +16,89 @@ export class FormattingService {
   formatSearchTips(): string {
     return `\n---
 💡 Search Strategy:
-ALWAYS search with index format FIRST to get an overview and identify relevant results.
-This is critical for token efficiency - index format uses ~10x fewer tokens than full format.
+1. Search with index to see titles, dates, IDs
+2. Use timeline to get context around interesting results
+3. Batch fetch full details: get_batch_observations(ids=[...])
 
-Search workflow:
-1. Initial search: Use default (index) format to see titles, dates, and sources
-2. Review results: Identify which items are most relevant to your needs
-3. Deep dive: Only then use format: "full" on specific items of interest
-4. Narrow down: Use filters (type, dateStart/dateEnd, concepts, files) to refine results
-
-Other tips:
-• To search by concept: Use find_by_concept tool
-• To browse by type: Use find_by_type with ["decision", "feature", etc.]
-• To sort by date: Use orderBy: "date_desc" or "date_asc"`;
+Tips:
+• Filter by type: obs_type="bugfix,feature"
+• Filter by date: dateStart="2025-01-01"
+• Sort: orderBy="date_desc" or "date_asc"`;
   }
 
   /**
-   * Format observation as index entry (title, date, ID only)
+   * Format time from epoch (matches context-generator formatTime)
    */
-  formatObservationIndex(obs: ObservationSearchResult, index: number): string {
-    const title = obs.title || `Observation #${obs.id}`;
-    const date = new Date(obs.created_at_epoch).toLocaleString();
-    const type = obs.type ? `[${obs.type}]` : '';
-
-    return `   ${index + 1}. ${type} ${title}\n      Date: ${date}\n      Source: claude-mem://observation/${obs.id}`;
+  private formatTime(epoch: number): string {
+    return new Date(epoch).toLocaleString('en-US', {
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true
+    });
   }
 
   /**
-   * Format session summary as index entry (title, date, ID only)
+   * Estimate read tokens for an observation
    */
-  formatSessionIndex(session: SessionSummarySearchResult, index: number): string {
-    const title = session.request || `Session ${session.sdk_session_id?.substring(0, 8) || 'unknown'}`;
-    const date = new Date(session.created_at_epoch).toLocaleString();
-
-    return `   ${index + 1}. ${title}\n      Date: ${date}\n      Source: claude-mem://session/${session.sdk_session_id}`;
+  private estimateReadTokens(obs: ObservationSearchResult): number {
+    const size = (obs.title?.length || 0) +
+                 (obs.subtitle?.length || 0) +
+                 (obs.narrative?.length || 0) +
+                 (obs.facts?.length || 0);
+    return Math.ceil(size / CHARS_PER_TOKEN_ESTIMATE);
   }
 
   /**
-   * Format user prompt as index entry (full text - don't truncate context!)
+   * Format observation as table row
+   * | ID | Time | T | Title | Read | Work |
    */
-  formatUserPromptIndex(prompt: UserPromptSearchResult, index: number): string {
-    const date = new Date(prompt.created_at_epoch).toLocaleString();
+  formatObservationIndex(obs: ObservationSearchResult, _index: number): string {
+    const id = `#${obs.id}`;
+    const time = this.formatTime(obs.created_at_epoch);
+    const icon = TYPE_ICON_MAP[obs.type as keyof typeof TYPE_ICON_MAP] || '•';
+    const title = obs.title || 'Untitled';
+    const readTokens = this.estimateReadTokens(obs);
+    const workEmoji = TYPE_WORK_EMOJI_MAP[obs.type as keyof typeof TYPE_WORK_EMOJI_MAP] || '🔍';
+    const workTokens = obs.discovery_tokens || 0;
+    const workDisplay = workTokens > 0 ? `${workEmoji} ${workTokens}` : '-';
 
-    return `   ${index + 1}. "${prompt.prompt_text}"\n      Date: ${date} | Prompt #${prompt.prompt_number}\n      Source: claude-mem://user-prompt/${prompt.id}`;
+    return `| ${id} | ${time} | ${icon} | ${title} | ~${readTokens} | ${workDisplay} |`;
   }
 
   /**
-   * Format observation as text content with metadata
+   * Format session summary as table row
+   * | ID | Time | T | Title | - | - |
    */
-  formatObservationResult(obs: ObservationSearchResult): string {
-    const title = obs.title || `Observation #${obs.id}`;
-
-    // Build content from available fields
-    const contentParts: string[] = [];
-    contentParts.push(`## ${title}`);
-    contentParts.push(`*Source: claude-mem://observation/${obs.id}*`);
-    contentParts.push('');
-
-    if (obs.subtitle) {
-      contentParts.push(`**${obs.subtitle}**`);
-      contentParts.push('');
-    }
-
-    if (obs.narrative) {
-      contentParts.push(obs.narrative);
-      contentParts.push('');
-    }
-
-    if (obs.text) {
-      contentParts.push(obs.text);
-      contentParts.push('');
-    }
-
-    // Add metadata
-    const metadata: string[] = [];
-    metadata.push(`Type: ${obs.type}`);
-
-    if (obs.facts) {
-      try {
-        const facts = JSON.parse(obs.facts);
-        if (facts.length > 0) {
-          metadata.push(`Facts: ${facts.join('; ')}`);
-        }
-      } catch (e) {
-        logger.warn('FORMAT', 'Invalid JSON in facts field', { obsId: obs.id });
-      }
-    }
-
-    if (obs.concepts) {
-      try {
-        const concepts = JSON.parse(obs.concepts);
-        if (concepts.length > 0) {
-          metadata.push(`Concepts: ${concepts.join(', ')}`);
-        }
-      } catch (e) {
-        logger.warn('FORMAT', 'Invalid JSON in concepts field', { obsId: obs.id });
-      }
-    }
-
-    if (obs.files_read || obs.files_modified) {
-      const files: string[] = [];
-      if (obs.files_read) {
-        try {
-          files.push(...JSON.parse(obs.files_read));
-        } catch (e) {
-          logger.warn('FORMAT', 'Invalid JSON in files_read field', { obsId: obs.id });
-        }
-      }
-      if (obs.files_modified) {
-        try {
-          files.push(...JSON.parse(obs.files_modified));
-        } catch (e) {
-          logger.warn('FORMAT', 'Invalid JSON in files_modified field', { obsId: obs.id });
-        }
-      }
-      if (files.length > 0) {
-        metadata.push(`Files: ${[...new Set(files)].join(', ')}`);
-      }
-    }
-
-    if (metadata.length > 0) {
-      contentParts.push('---');
-      contentParts.push(metadata.join(' | '));
-    }
-
-    // Add date
-    const date = new Date(obs.created_at_epoch).toLocaleString();
-    contentParts.push('');
-    contentParts.push(`---`);
-    contentParts.push(`Date: ${date}`);
-
-    return contentParts.join('\n');
-  }
-
-  /**
-   * Format session summary as text content with metadata
-   */
-  formatSessionResult(session: SessionSummarySearchResult): string {
+  formatSessionIndex(session: SessionSummarySearchResult, _index: number): string {
+    const id = `#S${session.id}`;
+    const time = this.formatTime(session.created_at_epoch);
+    const icon = '🎯';
     const title = session.request || `Session ${session.sdk_session_id?.substring(0, 8) || 'unknown'}`;
 
-    // Build content from available fields
-    const contentParts: string[] = [];
-    contentParts.push(`## ${title}`);
-    contentParts.push(`*Source: claude-mem://session/${session.sdk_session_id}*`);
-    contentParts.push('');
-
-    if (session.completed) {
-      contentParts.push(`**Completed:** ${session.completed}`);
-      contentParts.push('');
-    }
-
-    if (session.learned) {
-      contentParts.push(`**Learned:** ${session.learned}`);
-      contentParts.push('');
-    }
-
-    if (session.investigated) {
-      contentParts.push(`**Investigated:** ${session.investigated}`);
-      contentParts.push('');
-    }
-
-    if (session.next_steps) {
-      contentParts.push(`**Next Steps:** ${session.next_steps}`);
-      contentParts.push('');
-    }
-
-    if (session.notes) {
-      contentParts.push(`**Notes:** ${session.notes}`);
-      contentParts.push('');
-    }
-
-    // Add metadata
-    const metadata: string[] = [];
-
-    if (session.files_read || session.files_edited) {
-      const files: string[] = [];
-      if (session.files_read) {
-        try {
-          files.push(...JSON.parse(session.files_read));
-        } catch (e) {
-          logger.warn('FORMAT', 'Invalid JSON in session files_read field', { sessionId: session.sdk_session_id });
-        }
-      }
-      if (session.files_edited) {
-        try {
-          files.push(...JSON.parse(session.files_edited));
-        } catch (e) {
-          logger.warn('FORMAT', 'Invalid JSON in session files_edited field', { sessionId: session.sdk_session_id });
-        }
-      }
-      if (files.length > 0) {
-        metadata.push(`Files: ${[...new Set(files)].join(', ')}`);
-      }
-    }
-
-    const date = new Date(session.created_at_epoch).toLocaleDateString();
-    metadata.push(`Date: ${date}`);
-
-    if (metadata.length > 0) {
-      contentParts.push('---');
-      contentParts.push(metadata.join(' | '));
-    }
-
-    return contentParts.join('\n');
+    return `| ${id} | ${time} | ${icon} | ${title} | - | - |`;
   }
 
   /**
-   * Format user prompt as text content with metadata
+   * Format user prompt as table row
+   * | ID | Time | T | Title | - | - |
    */
-  formatUserPromptResult(prompt: UserPromptSearchResult): string {
-    const contentParts: string[] = [];
-    contentParts.push(`## User Prompt #${prompt.prompt_number}`);
-    contentParts.push(`*Source: claude-mem://user-prompt/${prompt.id}*`);
-    contentParts.push('');
-    contentParts.push(prompt.prompt_text);
-    contentParts.push('');
-    contentParts.push('---');
+  formatUserPromptIndex(prompt: UserPromptSearchResult, _index: number): string {
+    const id = `#P${prompt.id}`;
+    const time = this.formatTime(prompt.created_at_epoch);
+    const icon = '💬';
+    // Truncate long prompts for table display
+    const title = prompt.prompt_text.length > 60
+      ? prompt.prompt_text.substring(0, 57) + '...'
+      : prompt.prompt_text;
 
-    const date = new Date(prompt.created_at_epoch).toLocaleString();
-    contentParts.push(`Date: ${date}`);
+    return `| ${id} | ${time} | ${icon} | ${title} | - | - |`;
+  }
 
-    return contentParts.join('\n');
+  /**
+   * Generate table header for observations
+   */
+  formatTableHeader(): string {
+    return `| ID | Time | T | Title | Read | Work |
+|-----|------|---|-------|------|------|`;
   }
 }
