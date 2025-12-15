@@ -14,10 +14,10 @@ import path from 'path';
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
-import { silentDebug } from '../../utils/silent-debug.js';
 import { parseObservations, parseSummary } from '../../sdk/parser.js';
 import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
-import { SettingsDefaultsManager } from './settings/SettingsDefaultsManager.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import type { ActiveSession, SDKUserMessage, PendingMessage } from '../worker-types.js';
 
 // Import Agent SDK (assumes it's installed)
@@ -274,10 +274,10 @@ export class SDKAgent {
         sessionId: session.sessionDbId,
         obsId,
         type: obs.type,
-        title: obs.title || silentDebug('obs.title is null', { obsId, type: obs.type }, '(untitled)'),
-        filesRead: obs.files_read?.length ?? (silentDebug('obs.files_read is null/undefined', { obsId }), 0),
-        filesModified: obs.files_modified?.length ?? (silentDebug('obs.files_modified is null/undefined', { obsId }), 0),
-        concepts: obs.concepts?.length ?? (silentDebug('obs.concepts is null/undefined', { obsId }), 0)
+        title: obs.title || '(untitled)',
+        filesRead: obs.files_read?.length ?? 0,
+        filesModified: obs.files_modified?.length ?? 0,
+        concepts: obs.concepts?.length ?? 0
       });
 
       // Track for Endless Mode event
@@ -296,7 +296,7 @@ export class SDKAgent {
       // Sync to Chroma with error logging
       const chromaStart = Date.now();
       const obsType = obs.type;
-      const obsTitle = obs.title || silentDebug('obs.title is null for Chroma sync', { obsId, type: obs.type }, '(untitled)');
+      const obsTitle = obs.title || '(untitled)';
       this.dbManager.getChromaSync().syncObservation(
         obsId,
         session.claudeSessionId,
@@ -367,14 +367,14 @@ export class SDKAgent {
       logger.info('SDK', 'Summary saved', {
         sessionId: session.sessionDbId,
         summaryId,
-        request: summary.request || silentDebug('summary.request is null', { summaryId }, '(no request)'),
+        request: summary.request || '(no request)',
         hasCompleted: !!summary.completed,
         hasNextSteps: !!summary.next_steps
       });
 
       // Sync to Chroma with error logging
       const chromaStart = Date.now();
-      const summaryRequest = summary.request || silentDebug('summary.request is null for Chroma sync', { summaryId }, '(no request)');
+      const summaryRequest = summary.request || '(no request)';
       this.dbManager.getChromaSync().syncSummary(
         summaryId,
         session.claudeSessionId,
@@ -453,7 +453,8 @@ export class SDKAgent {
    * Find Claude executable (inline, called once per session)
    */
   private findClaudeExecutable(): string {
-    const claudePath = process.env.CLAUDE_CODE_PATH ||
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const claudePath = settings.CLAUDE_CODE_PATH ||
       execSync(process.platform === 'win32' ? 'where claude' : 'which claude', { encoding: 'utf8', windowsHide: true })
         .trim().split('\n')[0].trim();
 

@@ -38,6 +38,7 @@ export class DataRoutes extends BaseRouteHandler {
 
     // Fetch by ID endpoints
     app.get('/api/observation/:id', this.handleGetObservationById.bind(this));
+    app.post('/api/observations/batch', this.handleGetObservationsByIds.bind(this));
     app.get('/api/session/:id', this.handleGetSessionById.bind(this));
     app.get('/api/prompt/:id', this.handleGetPromptById.bind(this));
 
@@ -94,6 +95,36 @@ export class DataRoutes extends BaseRouteHandler {
     }
 
     res.json(observation);
+  });
+
+  /**
+   * Get observations by array of IDs
+   * POST /api/observations/batch
+   * Body: { ids: number[], orderBy?: 'date_desc' | 'date_asc', limit?: number, project?: string }
+   */
+  private handleGetObservationsByIds = this.wrapHandler((req: Request, res: Response): void => {
+    const { ids, orderBy, limit, project } = req.body;
+
+    if (!ids || !Array.isArray(ids)) {
+      this.badRequest(res, 'ids must be an array of numbers');
+      return;
+    }
+
+    if (ids.length === 0) {
+      res.json([]);
+      return;
+    }
+
+    // Validate all IDs are numbers
+    if (!ids.every(id => typeof id === 'number' && Number.isInteger(id))) {
+      this.badRequest(res, 'All ids must be integers');
+      return;
+    }
+
+    const store = this.dbManager.getSessionStore();
+    const observations = store.getObservationsByIds(ids, { orderBy, limit, project });
+
+    res.json(observations);
   });
 
   /**

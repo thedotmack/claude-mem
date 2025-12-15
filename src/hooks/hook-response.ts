@@ -1,4 +1,4 @@
-export type HookType = 'PreCompact' | 'SessionStart' | 'UserPromptSubmit' | 'PostToolUse' | 'Stop' | string;
+export type HookType = 'SessionStart' | 'UserPromptSubmit' | 'PostToolUse' | 'Stop';
 
 export interface HookResponseOptions {
   reason?: string;
@@ -20,21 +20,6 @@ function buildHookResponse(
   success: boolean,
   options: HookResponseOptions
 ): HookResponse {
-  if (hookType === 'PreCompact') {
-    if (success) {
-      return {
-        continue: true,
-        suppressOutput: true
-      };
-    }
-
-    return {
-      continue: false,
-      stopReason: options.reason || 'Pre-compact operation failed',
-      suppressOutput: true
-    };
-  }
-
   if (hookType === 'SessionStart') {
     if (success && options.context) {
       return {

@@ -6,15 +6,13 @@
 
 Claude-mem is a Claude Code plugin providing persistent memory across sessions. It captures tool usage, compresses observations using the Claude Agent SDK, and injects relevant context into future sessions.
 
-**Current Version**: 7.0.0
-
 ## Architecture
 
 **5 Lifecycle Hooks**: SessionStart → UserPromptSubmit → PostToolUse → Summary → SessionEnd
 
 **Hooks** (`src/hooks/*.ts`) - TypeScript → ESM, built to `plugin/scripts/*-hook.js`
 
-**Worker Service** (`src/services/worker-service.ts`) - Express API on port 37777, PM2-managed, handles AI processing asynchronously
+**Worker Service** (`src/services/worker-service.ts`) - Express API on port 37777, Bun-managed, handles AI processing asynchronously
 
 **Database** (`src/services/sqlite/`) - SQLite3 at `~/.claude-mem/claude-mem.db` with FTS5 full-text search
 
@@ -34,20 +32,30 @@ Claude-mem is a Claude Code plugin providing persistent memory across sessions. 
 
 ## Build Commands
 
-**Hooks only**: `npm run build && npm run sync-marketplace`
+```bash
+npm run build-and-sync        # Build, sync to marketplace, restart worker (most common)
+npm run build                 # Compile TypeScript only
+npm run sync-marketplace      # Copy to ~/.claude/plugins only
+npm run worker:restart        # Restart worker service only
+npm run worker:status         # Check worker status
+npm run worker:logs           # View worker logs
+```
 
-**Worker changes**: `npm run build && npm run sync-marketplace && npm run worker:restart`
+**Viewer UI**: http://localhost:37777
 
-**Skills only**: `npm run sync-marketplace`
+## Configuration
 
-**Viewer UI**: `npm run build && npm run sync-marketplace && npm run worker:restart`
+Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created with defaults on first run.
 
-## Environment Variables
-
-- `CLAUDE_MEM_MODEL` - Model for observations/summaries (default: claude-haiku-4-5)
-- `CLAUDE_MEM_CONTEXT_OBSERVATIONS` - Observations injected at SessionStart (default: 50)
+**Core Settings:**
+- `CLAUDE_MEM_MODEL` - Model for observations/summaries (default: claude-sonnet-4-5)
+- `CLAUDE_MEM_CONTEXT_OBSERVATIONS` - Observations injected at SessionStart
 - `CLAUDE_MEM_WORKER_PORT` - Worker service port (default: 37777)
-- `CLAUDE_MEM_PYTHON_VERSION` - Python version for uvx/chroma-mcp (default: 3.13, avoids onnxruntime compatibility issues with Python 3.14+)
+- `CLAUDE_MEM_WORKER_HOST` - Worker bind address (default: 127.0.0.1, use 0.0.0.0 for remote access)
+
+**System Configuration:**
+- `CLAUDE_MEM_DATA_DIR` - Data directory location (default: ~/.claude-mem)
+- `CLAUDE_MEM_LOG_LEVEL` - Log verbosity: DEBUG, INFO, WARN, ERROR, SILENT (default: INFO)
 
 ## File Locations
 
@@ -56,17 +64,15 @@ Claude-mem is a Claude Code plugin providing persistent memory across sessions. 
 - **Installed Plugin**: `~/.claude/plugins/marketplaces/thedotmack/`
 - **Database**: `~/.claude-mem/claude-mem.db`
 - **Chroma**: `~/.claude-mem/chroma/`
-- **Usage Logs**: `~/.claude-mem/usage-logs/usage-YYYY-MM-DD.jsonl`
 
-## Quick Reference
+## Requirements
 
-```bash
-npm run build                 # Compile TypeScript
-npm run sync-marketplace      # Copy to ~/.claude/plugins
-npm run worker:restart        # Restart PM2 worker
-npm run worker:logs           # View worker logs
-pm2 list                      # Check worker status
-pm2 delete claude-mem-worker  # Force clean start
-```
+- **Bun** (all platforms - auto-installed if missing)
+- **uv** (all platforms - auto-installed if missing, provides Python for Chroma)
+- Node.js (build tools only)
 
-**Viewer UI**: http://localhost:37777
+## Documentation
+
+**Public Docs**: https://docs.claude-mem.ai (Mintlify)
+**Source**: `docs/public/` - MDX files, edit `docs.json` for navigation
+**Deploy**: Auto-deploys from GitHub on push to main

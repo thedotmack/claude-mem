@@ -1,26 +1,16 @@
 /**
- * Silent Debug Logger
+ * Happy Path Error With Fallback
  *
- * NOTE: This utility is to be used like Frank's Red Hot, we put that shit on everything.
+ * @deprecated This function is deprecated. Use logger.happyPathError() instead.
+ * All usages have been migrated to the new logger system which consolidates logs
+ * into the regular worker logs instead of separate silent.log files.
  *
- * USE THIS INSTEAD OF SILENT FAILURES!
- * Stop doing this: `const value = something || '';`
- * Start doing this: `const value = something || silentDebug('something was undefined');`
+ * Migration example:
+ * OLD: happy_path_error__with_fallback('Missing value', { data }, 'default')
+ * NEW: logger.happyPathError('COMPONENT', 'Missing value', undefined, { data }, 'default')
  *
- * Logs to ~/.claude-mem/silent.log and returns a fallback value.
- * Check logs with `npm run logs:silent`
- *
- * Usage:
- *   import { silentDebug } from '../utils/silent-debug.js';
- *
- *   const title = obs.title || silentDebug('obs.title missing', { obs });
- *   const name = user.name || silentDebug('user.name missing', { user }, 'Anonymous');
- *
- *   try {
- *     doSomething();
- *   } catch (error) {
- *     silentDebug('doSomething failed', { error });
- *   }
+ * See: src/utils/logger.ts for the new happyPathError method
+ * Issue: #312 - Consolidate silent logs into regular worker logs
  */
 
 import { appendFileSync } from 'fs';
@@ -30,13 +20,13 @@ import { join } from 'path';
 const LOG_FILE = join(homedir(), '.claude-mem', 'silent.log');
 
 /**
- * Write a debug message to silent.log and return fallback value
- * @param message - The message to log
+ * Write an error message to silent.log and return fallback value
+ * @param message - Error message describing what went wrong
  * @param data - Optional data to include (will be JSON stringified)
  * @param fallback - Value to return (defaults to empty string)
  * @returns The fallback value (for use in || fallbacks)
  */
-export function silentDebug(message: string, data?: any, fallback: string = ''): string {
+export function happy_path_error__with_fallback(message: string, data?: any, fallback: string = ''): string {
   const timestamp = new Date().toISOString();
 
   // Capture stack trace to get caller location
@@ -51,7 +41,7 @@ export function silentDebug(message: string, data?: any, fallback: string = ''):
     ? `${callerMatch[1].split('/').pop()}:${callerMatch[2]}`
     : 'unknown';
 
-  let logLine = `[${timestamp}] [${location}] ${message}`;
+  let logLine = `[${timestamp}] [HAPPY-PATH-ERROR] [${location}] ${message}`;
 
   if (data !== undefined) {
     try {
@@ -81,6 +71,7 @@ export function clearSilentLog(): void {
   try {
     appendFileSync(LOG_FILE, `\n${'='.repeat(80)}\n[${new Date().toISOString()}] Log cleared\n${'='.repeat(80)}\n\n`);
   } catch (error) {
-    // Ignore errors
+    // Expected: Log file may not be writable
   }
 }
+

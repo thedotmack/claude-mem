@@ -246,11 +246,10 @@ authentication for better scalability and stateless design...
 
 ## Citations
 
-All search results include citations using the `claude-mem://` URI scheme:
+All search results include observation IDs that can be accessed via the HTTP API:
 
-- `claude-mem://observation/123` - Specific observation
-- `claude-mem://session/abc-456` - Specific session
-- `claude-mem://user-prompt/789` - Specific user prompt
+- `http://localhost:37777/api/observation/{id}` - Get specific observation by ID
+- View all observations in the web viewer at `http://localhost:37777`
 
 These citations enable referencing specific historical context in your work.
 
@@ -364,7 +363,7 @@ search_sessions with query="[YOUR PROJECT NAME]" and orderBy="date_desc"
 If search isn't working, check the worker service:
 
 ```bash
-pm2 list                    # Check worker status
+npm run worker:status       # Check worker status
 npm run worker:restart      # Restart if needed
 npm run worker:logs         # View logs
 ```

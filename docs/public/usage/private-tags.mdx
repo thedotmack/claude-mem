@@ -1,6 +1,6 @@
 ---
 title: "Private Tags"
-description: "Control what gets stored in memory with <private> tags"
+description: "Control what gets stored in memory with privacy tags"
 ---
 
 # Private Tags
@@ -165,8 +165,8 @@ This design ensures that private content never reaches the database, search indi
 
 ## Related Features
 
-- [Search Tools](search-tools) - How to search past observations
-- [Getting Started](getting-started) - Basic usage guide
+- [Search Tools](/usage/search-tools) - How to search past observations
+- [Getting Started](/usage/getting-started) - Basic usage guide
 - [Configuration](/configuration) - System settings and environment variables
 
 ## Troubleshooting
@@ -175,7 +175,7 @@ This design ensures that private content never reaches the database, search indi
 
 1. Verify correct syntax: `<private>content</private>`
 2. Check `~/.claude-mem/silent.log` for errors
-3. Ensure worker is running: `pm2 list`
+3. Ensure worker is running: `npm run worker:status`
 4. Restart worker: `npm run worker:restart`
 
 ### Partial Content Stored

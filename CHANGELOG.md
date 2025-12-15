@@ -4,6 +4,694 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [7.2.3] - 2025-12-15
+
+## Bug Fixes
+
+- **Fix MCP server failures on plugin updates**: Add 2-second pre-restart delay in `ensureWorkerVersionMatches()` to give files time to sync before killing the old worker. This prevents the race condition where the worker restart happened too quickly after plugin file updates, causing "Worker service connection failed" errors.
+
+## Changes
+
+- Add `PRE_RESTART_SETTLE_DELAY` constant (2000ms) to `hook-constants.ts`
+- Add delay before `ProcessManager.restart()` call in `worker-utils.ts`
+- Fix pre-existing bug where `port` variable was undefined in error logging
+
+## [7.2.2] - 2025-12-15
+
+## Changes
+
+- **Refactor:** Consolidate mem-search skill, remove desktop-skill duplication
+  - Delete separate `desktop-skill/` directory (was outdated)
+  - Generate `mem-search.zip` during build from `plugin/skills/mem-search/`
+  - Update docs with correct MCP tool list and new download path
+  - Single source of truth for Claude Desktop skill
+
+## [7.3.0] - 2025-12-15
+
+## Features
+
+- **Table-based search output**: Unified timeline formatting with cleaner, more organized presentation of search results grouped by date and file
+- **Simplified API**: Removed unused format parameter from MCP search tools for cleaner interface
+- **Shared formatting utilities**: Extracted common timeline formatting logic into reusable module
+
+## Changes
+
+- **Default model upgrade**: Changed default model from Haiku to Sonnet for better observation quality
+- **Removed fake URIs**: Replaced claude-mem:// pseudo-protocol with actual HTTP API endpoints for citations
+
+## Bug Fixes
+
+- Fixed undefined debug function calls in MCP server
+- Fixed skillPath variable scoping bug in instructions endpoint
+- Extracted magic numbers to named constants for better code maintainability
+
+## [7.2.1] - 2025-12-14
+
+## Translation Script Enhancements
+
+This release adds powerful enhancements to the README translation system, supporting 35 languages with improved efficiency and caching.
+
+### What's New
+
+**Translation Script Improvements:**
+- **Caching System**: Smart `.translation-cache.json` tracks content hashes to skip re-translating unchanged content
+- **Parallel Processing**: `--parallel <n>` flag enables concurrent translations for faster execution
+- **Force Re-translation**: `--force` flag to override cache when needed
+- **Tier-Based Scripts**: Organized translation workflows by language priority
+  - `npm run translate:tier1` - 7 major languages (Chinese, Japanese, Korean, etc.)
+  - `npm run translate:tier2` - 8 strong tech scene languages (Hebrew, Arabic, Russian, etc.)
+  - `npm run translate:tier3` - 7 emerging markets (Vietnamese, Indonesian, Thai, etc.)
+  - `npm run translate:tier4` - 6 additional languages (Italian, Greek, Hungarian, etc.)
+  - `npm run translate:all` - All 35 languages sequentially
+- **Better Output Handling**: Automatically strips markdown code fences if Claude wraps output
+- **Translation Disclaimer**: Adds community correction notice at top of translated files
+- **Performance**: Uses Bun runtime for faster execution
+
+### Supported Languages (35 Total)
+
+Arabic, Bengali, Brazilian Portuguese, Bulgarian, Chinese (Simplified), Chinese (Traditional), Czech, Danish, Dutch, Estonian, Finnish, French, German, Greek, Hebrew, Hindi, Hungarian, Indonesian, Italian, Japanese, Korean, Latvian, Lithuanian, Norwegian, Polish, Portuguese, Romanian, Russian, Slovak, Slovenian, Spanish, Swedish, Thai, Turkish, Ukrainian, Vietnamese
+
+### Breaking Changes
+
+None - fully backward compatible.
+
+### Installation
+
+```bash
+# Update via npm
+npm install -g claude-mem@7.2.1
+
+# Or reinstall plugin
+claude plugin install thedotmack/claude-mem
+```
+
+---
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.2.0...v7.2.1
+
+## [7.2.0] - 2025-12-14
+
+## 🎉 New Features
+
+### Automated Bug Report Generator
+
+Added comprehensive bug report tool that streamlines issue reporting with AI assistance:
+
+- **Command**: `npm run bug-report`
+- **🌎 Multi-language Support**: Write in ANY language, auto-translates to English
+- **📊 Smart Diagnostics**: Automatically collects:
+  - Version information (claude-mem, Claude Code, Node.js, Bun)
+  - Platform details (OS, version, architecture)
+  - Worker status (running state, PID, port, uptime, stats)
+  - Last 50 lines of logs (worker + silent debug)
+  - Database info and configuration settings
+- **🤖 AI-Powered**: Uses Claude Agent SDK to generate professional GitHub issues
+- **📝 Interactive**: Multiline input support with intuitive prompts
+- **🔒 Privacy-Safe**: 
+  - Auto-sanitizes all file paths (replaces home directory with ~)
+  - Optional `--no-logs` flag to exclude logs
+- **⚡ Streaming Progress**: Real-time character count and animated spinner
+- **🌐 One-Click Submit**: Auto-opens GitHub with pre-filled title and body
+
+### Usage
+
+From the plugin directory:
+```bash
+cd ~/.claude/plugins/marketplaces/thedotmack
+npm run bug-report
+```
+
+**Plugin Paths:**
+- macOS/Linux: `~/.claude/plugins/marketplaces/thedotmack`
+- Windows: `%USERPROFILE%\.claude\plugins\marketplaces\thedotmack`
+
+**Options:**
+```bash
+npm run bug-report --no-logs    # Skip logs for privacy
+npm run bug-report --verbose    # Show all diagnostics
+npm run bug-report --help       # Show help
+```
+
+## 📚 Documentation
+
+- Updated README with bug report section and usage instructions
+- Enhanced GitHub issue template to feature automated tool
+- Added platform-specific directory paths
+
+## 🔧 Technical Details
+
+**Files Added:**
+- `scripts/bug-report/cli.ts` - Interactive CLI entry point
+- `scripts/bug-report/index.ts` - Core logic with Agent SDK integration
+- `scripts/bug-report/collector.ts` - System diagnostics collector
+
+**Files Modified:**
+- `package.json` - Added bug-report script
+- `README.md` - New Bug Reports section
+- `.github/ISSUE_TEMPLATE/bug_report.md` - Updated with automated tool instructions
+
+---
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.1.15...v7.2.0
+
+## [7.1.15] - 2025-12-14
+
+## 🐛 Bug Fixes
+
+**Worker Service Initialization**
+- Fixed 404 error on `/api/context/inject` during worker startup
+- Route is now registered immediately instead of after database initialization
+- Prevents race condition on fresh installs and restarts
+- Added integration test for early context inject route access
+
+## Technical Details
+
+The context hook was failing with `Cannot GET /api/context/inject` because the route was registered only after database initialization completed. This created a race condition where the hook could attempt to access the endpoint before it existed.
+
+**Implementation:**
+- Added `initializationComplete` Promise to track async background initialization
+- Register `/api/context/inject` route immediately in `setupRoutes()`
+- Early handler blocks requests until initialization resolves (30s timeout)
+- Route handler duplicates logic from `SearchRoutes.handleContextInject` by design to prevent 404s
+
+**Testing:**
+- Added integration test verifying route registration and timeout handling
+
+Fixes #305
+Related: PR #310
+
+## [7.1.14] - 2025-12-14
+
+## Enhanced Error Handling & Logging
+
+This patch release improves error message quality and logging across the claude-mem system.
+
+### Error Message Improvements
+
+**Standardized Hook Error Handling**
+- Created shared error handlers (`handleFetchError`, `handleWorkerError`) for consistent error messages
+- Platform-aware restart instructions (macOS, Linux, Windows) with correct commands
+- Migrated all hooks (context, new, save, summary) to use standardized handlers
+- Enhanced error logging with actionable context before throwing restart instructions
+
+**ChromaSync Error Standardization**
+- Consistent client initialization checks across all methods
+- Enhanced error messages with troubleshooting steps and restart instructions
+- Better context about which operation failed
+
+**Worker Service Improvements**
+- Enhanced version endpoint error logging with status codes and response text
+- Improved worker restart error messages with PM2 commands
+- Better context in all worker-related error scenarios
+
+### Bug Fixes
+
+- **Issue #260**: Fixed `happy_path_error__with_fallback` misuse in save-hook causing false "Missing cwd" errors
+- Removed unnecessary `happy_path_error` calls from SDKAgent that were masking real error messages
+- Cleaned up migration logging to use `console.log` instead of `console.error` for non-error events
+
+### Logging Improvements
+
+**Timezone-Aware Timestamps**
+- Worker logs now use local machine timezone instead of UTC
+- Maintains same format (`YYYY-MM-DD HH:MM:SS.mmm`) but reflects local time
+- Easier debugging and log correlation with system events
+- Enhanced worker-cli logging output format
+
+### Test Coverage
+
+Added comprehensive test suites:
+- `tests/error-handling/hook-error-logging.test.ts` - 12 tests for hook error handler behavior
+- `tests/services/chroma-sync-errors.test.ts` - ChromaSync error message consistency
+- `tests/integration/hook-execution-environments.test.ts` - Bun PATH resolution across shells
+- `docs/context/TEST_AUDIT_2025-12-13.md` - Comprehensive audit report
+
+### Files Changed
+
+27 files changed: 1,435 additions, 200 deletions
+
+**What's Changed**
+* Standardize and enhance error handling across hooks and worker service by @thedotmack in #295
+* Timezone-aware logging for worker service and CLI
+* Complete build with all plugin files included
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.1.12...v7.1.14
+
+## [7.1.13] - 2025-12-14
+
+## Enhanced Error Handling & Logging
+
+This patch release improves error message quality and logging across the claude-mem system.
+
+### Error Message Improvements
+
+**Standardized Hook Error Handling**
+- Created shared error handlers (`handleFetchError`, `handleWorkerError`) for consistent error messages
+- Platform-aware restart instructions (macOS, Linux, Windows) with correct commands
+- Migrated all hooks (context, new, save, summary) to use standardized handlers
+- Enhanced error logging with actionable context before throwing restart instructions
+
+**ChromaSync Error Standardization**
+- Consistent client initialization checks across all methods
+- Enhanced error messages with troubleshooting steps and restart instructions
+- Better context about which operation failed
+
+**Worker Service Improvements**
+- Enhanced version endpoint error logging with status codes and response text
+- Improved worker restart error messages with PM2 commands
+- Better context in all worker-related error scenarios
+
+### Bug Fixes
+
+- **Issue #260**: Fixed `happy_path_error__with_fallback` misuse in save-hook causing false "Missing cwd" errors
+- Removed unnecessary `happy_path_error` calls from SDKAgent that were masking real error messages
+- Cleaned up migration logging to use `console.log` instead of `console.error` for non-error events
+
+### Logging Improvements
+
+**Timezone-Aware Timestamps**
+- Worker logs now use local machine timezone instead of UTC
+- Maintains same format (`YYYY-MM-DD HH:MM:SS.mmm`) but reflects local time
+- Easier debugging and log correlation with system events
+
+### Test Coverage
+
+Added comprehensive test suites:
+- `tests/error-handling/hook-error-logging.test.ts` - 12 tests for hook error handler behavior
+- `tests/services/chroma-sync-errors.test.ts` - ChromaSync error message consistency
+- `tests/integration/hook-execution-environments.test.ts` - Bun PATH resolution across shells
+- `docs/context/TEST_AUDIT_2025-12-13.md` - Comprehensive audit report
+
+### Files Changed
+
+27 files changed: 1,435 additions, 200 deletions
+
+**What's Changed**
+* Standardize and enhance error handling across hooks and worker service by @thedotmack in #295
+* Timezone-aware logging for worker service
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.1.12...v7.1.13
+
+## [7.1.12] - 2025-12-14
+
+## What's Fixed
+
+- **Fix data directory creation**: Ensure `~/.claude-mem/` directory exists before writing PM2 migration marker file
+  - Fixes ENOENT errors on first-time installation (issue #259)
+  - Adds `mkdirSync(dataDir, { recursive: true })` in `startWorker()` before marker file write
+  - Resolves Windows installation failures introduced in f923c0c and exposed in 5d4e71d
+
+## Changes
+
+- Added directory creation check in `src/shared/worker-utils.ts`
+- All 52 tests passing
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.1.11...v7.1.12
+
+## [7.1.11] - 2025-12-14
+
+## What's Changed
+
+**Refactor: Simplified hook execution by removing bun-wrapper indirection**
+
+Hooks are compiled to standard JavaScript and work perfectly with Node. The bun-wrapper was solving a problem that doesn't exist - hooks don't use Bun-specific APIs, they're just HTTP clients to the worker service.
+
+**Benefits:**
+- Removes ~100 lines of code
+- Simpler cross-platform support (especially Windows)
+- No PATH resolution needed for hooks
+- Worker still uses Bun where performance matters
+- Follows YAGNI and Simple First principles
+
+**Fixes:**
+- Fish shell compatibility issue (#264)
+
+**Full Changelog:** https://github.com/thedotmack/claude-mem/compare/v7.1.10...v7.1.11
+
+## [7.1.10] - 2025-12-14
+
+## Enhancement
+
+This release adds automatic orphan cleanup to complement the process leak fix from v7.1.9.
+
+### Added
+
+- **Auto-Cleanup on Startup**: Worker now automatically detects and kills orphaned chroma-mcp processes before starting
+  - Scans for existing chroma-mcp processes on worker startup
+  - Kills all found processes before creating new ones
+  - Logs cleanup activity (process count and PIDs)
+  - Non-fatal error handling (continues on cleanup failure)
+
+### Benefits
+
+- Automatically recovers from pre-7.1.9 process leaks without manual intervention
+- Ensures clean slate on every worker restart
+- Prevents accumulation even if v7.1.9's close() method fails
+- No user action required - works transparently
+
+### Example Logs
+
+```
+[INFO] [SYSTEM] Cleaning up orphaned chroma-mcp processes {count=2, pids=33753,33750}
+[INFO] [SYSTEM] Orphaned processes cleaned up {count=2}
+```
+
+### Recommendation
+
+Upgrade from v7.1.9 to get automatic orphan cleanup. Combined with v7.1.9's proper subprocess cleanup, this provides comprehensive protection against process leaks.
+
+---
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.1.9...v7.1.10
+
+## [7.1.9] - 2025-12-14
+
+## Critical Bugfix
+
+This patch release fixes a critical memory leak that caused chroma-mcp processes to accumulate with each worker restart, leading to memory exhaustion and silent backfill failures.
+
+### Fixed
+
+- **Process Leak Prevention**: ChromaSync now properly cleans up chroma-mcp subprocesses when the worker is restarted
+  - Store reference to StdioClientTransport subprocess
+  - Explicitly close transport to kill subprocess on shutdown
+  - Add error handling to ensure cleanup even on failures
+  - Reset all state in finally block
+
+### Impact
+
+- Eliminates process accumulation (16+ orphaned processes seen in production)
+- Prevents memory exhaustion from leaked subprocesses (900MB+ RAM usage)
+- Fixes silent backfill failures caused by OOM kills
+- Ensures graceful cleanup on worker shutdown
+
+### Recommendation
+
+**All users should upgrade immediately** to prevent memory leaks and ensure reliable backfill operation.
+
+---
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.1.8...v7.1.9
+
+## [7.1.8] - 2025-12-13
+
+## Memory Export/Import Scripts
+
+Added portable memory export and import functionality with automatic duplicate prevention.
+
+### New Features
+- **Export memories** to JSON format with search filtering and project-based filtering
+- **Import memories** with automatic duplicate detection via composite keys
+- Complete documentation in docs/public/usage/export-import.mdx
+
+### Use Cases
+- Share memory sets between developers working on the same project
+- Backup and restore specific project memories
+- Collaborate on domain knowledge across teams
+- Migrate memories between different claude-mem installations
+
+### Example Usage
+```bash
+# Export Windows-related memories
+npx tsx scripts/export-memories.ts "windows" windows-work.json
+
+# Export only claude-mem project memories
+npx tsx scripts/export-memories.ts "bugfix" fixes.json --project=claude-mem
+
+# Import memories (with automatic duplicate prevention)
+npx tsx scripts/import-memories.ts windows-work.json
+```
+
+### Technical Improvements
+- Fixed JSON format response in /api/search endpoint for consistent structure
+- Enhanced project filtering in ChromaDB hybrid search result hydration
+- Duplicate detection using composite keys (session ID + title + timestamp)
+
+## [7.1.7] - 2025-12-13
+
+## Fixed
+- Removed Windows workaround that was causing libuv assertion failures
+- Prioritized stability over cosmetic console window issue
+
+## Known Issue
+- On Windows, a console window may briefly appear when the worker starts (cosmetic only, does not affect functionality)
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.1.6...v7.1.7
+
+## [7.1.6] - 2025-12-13
+
+## What's Changed
+
+Improved error messages with platform-specific worker restart instructions for better troubleshooting experience.
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.1.5...v7.1.6
+
+## [7.1.5] - 2025-12-13
+
+## What's Changed
+
+* fix: Use getWorkerHost() instead of hardcoded localhost in MCP server (#276)
+
+### Bug Fix
+Fixes Windows IPv6 issue where `localhost` resolves to `::1` (IPv6) but worker binds to `127.0.0.1` (IPv4), causing MCP tool connections to fail.
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.1.4...v7.1.5
+
+## [7.1.4] - 2025-12-13
+
+## What's Changed
+
+* fix: add npm fallback when bun install fails with alias packages (#265)
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.1.3...v7.1.4
+
+## [7.1.3] - 2025-12-13
+
+## Bug Fixes
+
+### Smart Install Script Refactoring
+
+Refactored the smart-install.js script to improve code quality and maintainability:
+- Extracted common installation paths as top-level constants (BUN_COMMON_PATHS, UV_COMMON_PATHS)
+- Simplified installation check functions to delegate to dedicated path-finding helpers
+- Streamlined installation verification logic with clearer error messages
+- Removed redundant post-installation verification checks
+- Improved error propagation by removing unnecessary retry logic
+
+This refactoring reduces code duplication and makes the installation process more maintainable while preserving the same functionality for detecting Bun and uv binaries across platforms.
+
+## [7.1.2] - 2025-12-13
+
+## 🐛 Bug Fixes
+
+### Windows Installation
+- Fixed Bun PATH detection on Windows after fresh install
+- Added fallback to check common install paths before PATH reload  
+- Improved smart-install.js to use full Bun path when not in PATH
+- Added proper path quoting for Windows usernames with spaces
+
+### Worker Startup
+- Fixed worker connection failures in Stop hook
+- Added health check retry loop (5 attempts, 500ms intervals)
+- Worker now waits up to 2.5s for responsiveness before returning
+- Improved error detection for Bun's ConnectionRefused error format
+
+---
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.1.1...v7.1.2
+
+## [7.1.1] - 2025-12-13
+
+## 🚨 Critical Fixes
+
+### Windows 11 Bun Auto-Install Fixed
+- **Problem**: v7.1.0 had a chicken-and-egg bug where `bun smart-install.js` failed if Bun wasn't installed
+- **Solution**: SessionStart hook now uses `node` (always available) for smart-install.js
+- **Impact**: Fresh Windows installations now work out-of-box
+
+### Path Quoting for Windows
+- Fixed `hooks.json` to quote all paths
+- Prevents SyntaxError for usernames with spaces (e.g., "C:\Users\John Doe\")
+
+## ✨ New Feature
+
+### Automatic Worker Restart on Version Updates
+- Worker now automatically restarts when plugin version changes
+- No more manual `npm run worker:restart` needed after upgrades
+- Eliminates connection errors from running old worker code
+
+## 📝 Notes
+
+- **No manual actions required** - worker auto-restarts on next session start
+- All future upgrades will automatically restart the worker
+- Fresh installs on Windows 11 work correctly
+
+## 🔗 Links
+
+- [Full Changelog](https://github.com/thedotmack/claude-mem/blob/main/CHANGELOG.md#711---2025-12-12)
+- [Documentation](https://docs.claude-mem.ai)
+
+## [7.1.0] - 2025-12-13
+
+## Major Architectural Migration
+
+This release completely replaces PM2 with native Bun-based process management and migrates from better-sqlite3 to bun:sqlite.
+
+### Key Changes
+
+**Process Management**
+- Replace PM2 with custom Bun-based ProcessManager
+- PID file-based process tracking
+- Automatic legacy PM2 process cleanup on all platforms
+
+**Database Driver**
+- Migrate from better-sqlite3 npm package to bun:sqlite runtime module
+- Zero native compilation required
+- Same API compatibility
+
+**Auto-Installation**
+- Bun runtime auto-installed if missing
+- uv (Python package manager) auto-installed for Chroma vector search
+- Smart installer with platform-specific methods (curl/PowerShell)
+
+### Migration
+
+**Automatic**: First hook trigger after update performs one-time PM2 cleanup and transitions to new architecture. No user action required.
+
+### Documentation
+
+Complete technical documentation in `docs/PM2-TO-BUN-MIGRATION.md`
+
+## [7.0.11] - 2025-12-12
+
+Patch release adding feature/bun-executable to experimental branch selector for testing Bun runtime integration.
+
+## [7.0.9] - 2025-12-10
+
+## Bug Fixes
+
+- Fixed MCP response format in search route handlers - all 14 search endpoints now return complete response objects with error status instead of just content arrays, restoring MCP protocol compatibility
+
+## Changes
+
+- `SearchRoutes.ts`: Updated all route handlers to return full result object instead of extracted content property
+
+## [7.0.8] - 2025-12-10
+
+## Bug Fixes
+
+- **Critical**: Filter out meta-observations for session-memory files to prevent recursive timeline pollution
+  - Memory agent was creating observations about editing Agent SDK's session-memory/summary.md files
+  - This created a recursive loop where investigating timeline pollution caused more pollution
+  - Filter now skips Edit/Write/Read/NotebookEdit operations on any file path containing 'session-memory'
+  - Eliminates 91+ meta-observations that were polluting the timeline
+
+## Technical Details
+
+Added filtering logic in SessionRoutes.ts to detect and skip file operations on session-memory files before observations are queued to the SDK agent. This prevents the memory agent from observing its own observation metadata files.
+
+## [7.0.7] - 2025-12-10
+
+## What's Changed
+
+### Code Quality Improvements
+- Refactored hooks codebase to reduce complexity and improve maintainability (#204)
+- Net reduction of 78 lines while adding new functionality
+- Improved type safety across all hook input interfaces
+
+### New Features
+- Added `CLAUDE_MEM_SKIP_TOOLS` configuration setting for controlling which tools are excluded from observations
+- Default skip tools: `ListMcpResourcesTool`, `SlashCommand`, `Skill`, `TodoWrite`, `AskUserQuestion`
+
+### Technical Improvements
+- Created shared utilities: `transcript-parser.ts`, `hook-constants.ts`, `hook-error-handler.ts`
+- Migrated business logic from hooks to worker service for better separation of concerns
+- Enhanced error handling and spinner management
+- Removed dead code and unnecessary abstractions
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.0.6...v7.0.7
+
+## [7.0.6] - 2025-12-10
+
+## Bug Fixes
+
+- Fixed Windows terminal spawning to hide terminal windows when spawning child processes (#203, thanks @CrystallDEV)
+- Improved worker service process management on Windows
+
+## Contributors
+
+Thanks to @CrystallDEV for this contribution!
+
+## [7.0.5] - 2025-12-09
+
+## What's Changed
+
+### Bug Fixes
+- Fixed settings schema inconsistency between write and read operations
+- Fixed PowerShell command injection vulnerability in worker-utils.ts
+- Enhanced PM2 existence check with clear error messages
+- Added error logging to silent tool serialization handlers
+
+### Improvements
+- Settings centralization: Migrated to SettingsDefaultsManager across codebase
+- Auto-creation of settings.json file with defaults on first run
+- Settings schema migration from nested to flat format
+- Refactored HTTP-only new-hook implementation
+- Cross-platform worker service improvements
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.0.4...v7.0.5
+
+## [7.0.4] - 2025-12-09
+
+## What's Changed
+
+### Bug Fixes
+- **Windows**: Comprehensive fixes for Windows plugin installation
+- **Cache**: Add package.json to plugin directory for cache dependency resolution
+
+Thanks to @kat-bell for the excellent contributions!
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.0.3...v7.0.4
+
+## [7.0.3] - 2025-12-09
+
+## What's Changed
+
+**Refactoring:**
+- Completed rename of `search-server` to `mcp-server` throughout codebase
+- Updated all documentation references from search-server to mcp-server
+- Updated debug log messages to use `[mcp-server]` prefix
+- Removed legacy `search-server.cjs` file
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.0.2...v7.0.3
+
+## [7.0.2] - 2025-12-09
+
+## What's Changed
+
+**Bug Fixes:**
+- Improved auto-start worker functionality for better reliability
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.0.1...v7.0.2
+
+## [7.0.1] - 2025-12-09
+
+## Bug Fixes
+
+- **Hook Execution**: Ensure worker is running at the beginning of all hook files
+- **Context Hook**: Replace waitForPort with ensureWorkerRunning for better error handling
+- **Reliability**: Move ensureWorkerRunning to start of all hook functions to ensure worker is started before any logic executes
+
+## Technical Changes
+
+- context-hook.ts: Replace waitForPort logic with ensureWorkerRunning
+- summary-hook.ts: Move ensureWorkerRunning before input validation
+- new-hook.ts: Move ensureWorkerRunning before debug logging
+- save-hook.ts: Move ensureWorkerRunning before SKIP_TOOLS check
+- cleanup-hook.ts: Move ensureWorkerRunning before silentDebug calls
+
+This ensures more reliable worker startup and clearer error messages when the worker fails to start.
+
 ## [7.0.0] - 2025-12-08
 
 # Major Architectural Refactor

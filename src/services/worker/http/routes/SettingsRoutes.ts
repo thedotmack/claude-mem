@@ -7,7 +7,7 @@
 
 import express, { Request, Response } from 'express';
 import path from 'path';
-import { readFileSync, writeFileSync, existsSync, renameSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, renameSync, mkdirSync } from 'fs';
 import { homedir } from 'os';
 import { getPackageRoot } from '../../../../shared/paths.js';
 import { logger } from '../../../../utils/logger.js';
@@ -20,7 +20,8 @@ import {
   ObservationConcept
 } from '../../../../constants/observation-metadata.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
-import { SettingsDefaultsManager } from '../../settings/SettingsDefaultsManager.js';
+import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
+import { clearPortCache } from '../../../../shared/worker-utils.js';
 
 export class SettingsRoutes extends BaseRouteHandler {
   constructor(
@@ -45,16 +46,17 @@ export class SettingsRoutes extends BaseRouteHandler {
   }
 
   /**
-   * Get environment settings (from ~/.claude/settings.json)
+   * Get environment settings (from ~/.claude-mem/settings.json)
    */
   private handleGetSettings = this.wrapHandler((req: Request, res: Response): void => {
     const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+    this.ensureSettingsFile(settingsPath);
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
     res.json(settings);
   });
 
   /**
-   * Update environment settings (in ~/.claude/settings.json) with validation
+   * Update environment settings (in ~/.claude-mem/settings.json) with validation
    */
   private handleUpdateSettings = this.wrapHandler((req: Request, res: Response): void => {
     // Validate CLAUDE_MEM_CONTEXT_OBSERVATIONS
@@ -81,6 +83,44 @@ export class SettingsRoutes extends BaseRouteHandler {
       }
     }
 
+    // Validate CLAUDE_MEM_WORKER_HOST (IP address or 0.0.0.0)
+    if (req.body.CLAUDE_MEM_WORKER_HOST) {
+      const host = req.body.CLAUDE_MEM_WORKER_HOST;
+      // Allow localhost variants and valid IP patterns
+      const validHostPattern = /^(127\.0\.0\.1|0\.0\.0\.0|localhost|\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/;
+      if (!validHostPattern.test(host)) {
+        res.status(400).json({
+          success: false,
+          error: 'CLAUDE_MEM_WORKER_HOST must be a valid IP address (e.g., 127.0.0.1, 0.0.0.0)'
+        });
+        return;
+      }
+    }
+
+    // Validate CLAUDE_MEM_LOG_LEVEL
+    if (req.body.CLAUDE_MEM_LOG_LEVEL) {
+      const validLevels = ['DEBUG', 'INFO', 'WARN', 'ERROR', 'SILENT'];
+      if (!validLevels.includes(req.body.CLAUDE_MEM_LOG_LEVEL.toUpperCase())) {
+        res.status(400).json({
+          success: false,
+          error: 'CLAUDE_MEM_LOG_LEVEL must be one of: DEBUG, INFO, WARN, ERROR, SILENT'
+        });
+        return;
+      }
+    }
+
+    // Validate CLAUDE_MEM_PYTHON_VERSION (must be valid Python version format)
+    if (req.body.CLAUDE_MEM_PYTHON_VERSION) {
+      const pythonVersionRegex = /^3\.\d{1,2}$/;
+      if (!pythonVersionRegex.test(req.body.CLAUDE_MEM_PYTHON_VERSION)) {
+        res.status(400).json({
+          success: false,
+          error: 'CLAUDE_MEM_PYTHON_VERSION must be in format "3.X" or "3.XX" (e.g., "3.13")'
+        });
+        return;
+      }
+    }
+
     // Validate context settings
     const validation = this.validateContextSettings(req.body);
     if (!validation.valid) {
@@ -93,14 +133,12 @@ export class SettingsRoutes extends BaseRouteHandler {
 
     // Read existing settings
     const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
-    let settings: any = { env: {} };
+    this.ensureSettingsFile(settingsPath);
+    let settings: any = {};
 
     if (existsSync(settingsPath)) {
       const settingsData = readFileSync(settingsPath, 'utf-8');
       settings = JSON.parse(settingsData);
-      if (!settings.env) {
-        settings.env = {};
-      }
     }
 
     // Update all settings from request body
@@ -108,27 +146,40 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_MODEL',
       'CLAUDE_MEM_CONTEXT_OBSERVATIONS',
       'CLAUDE_MEM_WORKER_PORT',
+      'CLAUDE_MEM_WORKER_HOST',
+      // System Configuration
+      'CLAUDE_MEM_DATA_DIR',
+      'CLAUDE_MEM_LOG_LEVEL',
+      'CLAUDE_MEM_PYTHON_VERSION',
+      'CLAUDE_CODE_PATH',
+      // Token Economics
       'CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS',
       'CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS',
       'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT',
       'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT',
+      // Observation Filtering
       'CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES',
       'CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS',
+      // Display Configuration
       'CLAUDE_MEM_CONTEXT_FULL_COUNT',
       'CLAUDE_MEM_CONTEXT_FULL_FIELD',
       'CLAUDE_MEM_CONTEXT_SESSION_COUNT',
+      // Feature Toggles
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY',
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE',
     ];
 
     for (const key of settingKeys) {
       if (req.body[key] !== undefined) {
-        settings.env[key] = req.body[key];
+        settings[key] = req.body[key];
       }
     }
 
     // Write back
     writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf-8');
+
+    // Clear port cache to force re-reading from updated settings
+    clearPortCache();
 
     logger.info('WORKER', 'Settings updated');
     res.json({ success: true, message: 'Settings updated successfully' });
@@ -179,7 +230,7 @@ export class SettingsRoutes extends BaseRouteHandler {
     }
 
     // Validate branch name
-    const allowedBranches = ['main', 'beta/7.0'];
+    const allowedBranches = ['main', 'beta/7.0', 'feature/bun-executable'];
     if (!allowedBranches.includes(branch)) {
       res.status(400).json({
         success: false,
@@ -320,6 +371,24 @@ export class SettingsRoutes extends BaseRouteHandler {
     } catch (error) {
       logger.failure('WORKER', 'Failed to toggle MCP', { enabled }, error as Error);
       throw error;
+    }
+  }
+
+  /**
+   * Ensure settings file exists, creating with defaults if missing
+   */
+  private ensureSettingsFile(settingsPath: string): void {
+    if (!existsSync(settingsPath)) {
+      const defaults = SettingsDefaultsManager.getAllDefaults();
+
+      // Ensure directory exists
+      const dir = path.dirname(settingsPath);
+      if (!existsSync(dir)) {
+        mkdirSync(dir, { recursive: true });
+      }
+
+      writeFileSync(settingsPath, JSON.stringify(defaults, null, 2), 'utf-8');
+      logger.info('SETTINGS', 'Created settings file with defaults', { settingsPath });
     }
   }
 }

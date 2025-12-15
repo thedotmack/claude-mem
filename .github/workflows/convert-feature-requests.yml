@@ -1,0 +1,131 @@
+name: Convert Feature Requests to Discussions
+
+on:
+  issues:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: 'Issue number to convert to discussion'
+        required: true
+        type: number
+
+jobs:
+  convert:
+    runs-on: ubuntu-latest
+    # Only run on labeled event if the label is 'feature-request', or always run on workflow_dispatch
+    if: |
+      (github.event_name == 'issues' && github.event.label.name == 'feature-request') ||
+      github.event_name == 'workflow_dispatch'
+
+    permissions:
+      issues: write
+      discussions: write
+      contents: read
+
+    steps:
+      - name: Get issue details and create discussion
+        id: discussion
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // Get issue details
+            let issue;
+            if (context.eventName === 'workflow_dispatch') {
+              const { data } = await github.rest.issues.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.inputs.issue_number
+              });
+              issue = data;
+            } else {
+              issue = context.payload.issue;
+            }
+
+            console.log(`Processing issue #${issue.number}: ${issue.title}`);
+
+            // Format the discussion body with a reference to the original issue
+            const discussionBody = `> Originally posted as issue #${issue.number} by @${issue.user.login}\n> ${issue.html_url}\n\n${issue.body || 'No description provided.'}`;
+
+            const mutation = `
+              mutation($repositoryId: ID!, $categoryId: ID!, $title: String!, $body: String!) {
+                createDiscussion(input: {
+                  repositoryId: $repositoryId
+                  categoryId: $categoryId
+                  title: $title
+                  body: $body
+                }) {
+                  discussion {
+                    url
+                    number
+                  }
+                }
+              }
+            `;
+
+            const variables = {
+              repositoryId: 'R_kgDOPng1Jw',
+              categoryId: 'DIC_kwDOPng1J84Cw86z',
+              title: issue.title,
+              body: discussionBody
+            };
+
+            try {
+              const result = await github.graphql(mutation, variables);
+              const discussionUrl = result.createDiscussion.discussion.url;
+              const discussionNumber = result.createDiscussion.discussion.number;
+
+              core.setOutput('url', discussionUrl);
+              core.setOutput('number', discussionNumber);
+              core.setOutput('issue_number', issue.number);
+
+              console.log(`Created discussion #${discussionNumber}: ${discussionUrl}`);
+              return { discussionUrl, discussionNumber, issueNumber: issue.number };
+            } catch (error) {
+              core.setFailed(`Failed to create discussion: ${error.message}`);
+              throw error;
+            }
+
+      - name: Comment on issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issueNumber = ${{ steps.discussion.outputs.issue_number }};
+            const discussionUrl = '${{ steps.discussion.outputs.url }}';
+
+            const comment = `This feature request has been moved to [Discussions](${discussionUrl}) to keep bug reports separate from feature ideas.\n\nPlease continue the conversation there - we'd love to hear your thoughts!`;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              body: comment
+            });
+
+            console.log(`Added comment to issue #${issueNumber}`);
+
+      - name: Close and lock issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issueNumber = ${{ steps.discussion.outputs.issue_number }};
+
+            // Close the issue
+            await github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              state: 'closed'
+            });
+
+            console.log(`Closed issue #${issueNumber}`);
+
+            // Lock the issue
+            await github.rest.issues.lock({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              lock_reason: 'resolved'
+            });
+
+            console.log(`Locked issue #${issueNumber}`);

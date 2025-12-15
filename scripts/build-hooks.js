@@ -37,6 +37,11 @@ const CONTEXT_GENERATOR = {
   source: 'src/services/context-generator.ts'
 };
 
+const WORKER_CLI = {
+  name: 'worker-cli',
+  source: 'src/cli/worker-cli.ts'
+};
+
 async function buildHooks() {
   console.log('🔨 Building claude-mem hooks and worker service...\n');
 
@@ -58,6 +63,24 @@ async function buildHooks() {
       fs.mkdirSync(uiDir, { recursive: true });
     }
     console.log('✓ Output directories ready');
+
+    // Generate plugin/package.json for cache directory dependency installation
+    // Note: bun:sqlite is a Bun built-in, no external dependencies needed for SQLite
+    console.log('\n📦 Generating plugin package.json...');
+    const pluginPackageJson = {
+      name: 'claude-mem-plugin',
+      version: version,
+      private: true,
+      description: 'Runtime dependencies for claude-mem bundled hooks',
+      type: 'module',
+      dependencies: {},
+      engines: {
+        node: '>=18.0.0',
+        bun: '>=1.0.0'
+      }
+    };
+    fs.writeFileSync('plugin/package.json', JSON.stringify(pluginPackageJson, null, 2) + '\n');
+    console.log('✓ plugin/package.json generated');
 
     // Build React viewer
     console.log('\n📋 Building React viewer...');
@@ -84,12 +107,12 @@ async function buildHooks() {
       outfile: `${hooksDir}/${WORKER_SERVICE.name}.cjs`,
       minify: true,
       logLevel: 'error', // Suppress warnings (import.meta warning is benign)
-      external: ['better-sqlite3'],
+      external: ['bun:sqlite'],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
       },
       banner: {
-        js: '#!/usr/bin/env node'
+        js: '#!/usr/bin/env bun'
       }
     });
 
@@ -109,12 +132,12 @@ async function buildHooks() {
       outfile: `${hooksDir}/${MCP_SERVER.name}.cjs`,
       minify: true,
       logLevel: 'error',
-      external: ['better-sqlite3'],
+      external: ['bun:sqlite'],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
       },
       banner: {
-        js: '#!/usr/bin/env node'
+        js: '#!/usr/bin/env bun'
       }
     });
 
@@ -134,7 +157,7 @@ async function buildHooks() {
       outfile: `${hooksDir}/${CONTEXT_GENERATOR.name}.cjs`,
       minify: true,
       logLevel: 'error',
-      external: ['better-sqlite3'],
+      external: ['bun:sqlite'],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
       }
@@ -142,6 +165,31 @@ async function buildHooks() {
 
     const contextGenStats = fs.statSync(`${hooksDir}/${CONTEXT_GENERATOR.name}.cjs`);
     console.log(`✓ context-generator built (${(contextGenStats.size / 1024).toFixed(2)} KB)`);
+
+    // Build worker CLI
+    console.log(`\n🔧 Building worker CLI...`);
+    await build({
+      entryPoints: [WORKER_CLI.source],
+      bundle: true,
+      platform: 'node',
+      target: 'node18',
+      format: 'esm',
+      outfile: `${hooksDir}/${WORKER_CLI.name}.js`,
+      minify: true,
+      logLevel: 'error',
+      external: ['bun:sqlite'],
+      define: {
+        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
+      },
+      banner: {
+        js: '#!/usr/bin/env bun'
+      }
+    });
+
+    // Make worker CLI executable
+    fs.chmodSync(`${hooksDir}/${WORKER_CLI.name}.js`, 0o755);
+    const workerCliStats = fs.statSync(`${hooksDir}/${WORKER_CLI.name}.js`);
+    console.log(`✓ worker-cli built (${(workerCliStats.size / 1024).toFixed(2)} KB)`);
 
     // Build each hook
     for (const hook of HOOKS) {
@@ -157,12 +205,12 @@ async function buildHooks() {
         format: 'esm',
         outfile,
         minify: true,
-        external: ['better-sqlite3'],
+        external: ['bun:sqlite'],
         define: {
           '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
         },
         banner: {
-          js: '#!/usr/bin/env node'
+          js: '#!/usr/bin/env bun'
         }
       });
 
@@ -175,12 +223,28 @@ async function buildHooks() {
       console.log(`✓ ${hook.name} built (${sizeInKB} KB)`);
     }
 
+    // Build mem-search skill zip for Claude Desktop
+    console.log('\n📦 Building mem-search skill zip for Claude Desktop...');
+    const { execSync } = await import('child_process');
+    const zipOutput = 'plugin/skills/mem-search.zip';
+
+    // Remove old zip if exists
+    if (fs.existsSync(zipOutput)) {
+      fs.unlinkSync(zipOutput);
+    }
+
+    // Create zip from mem-search skill directory
+    execSync(`cd plugin/skills && zip -r mem-search.zip mem-search/`, { stdio: 'pipe' });
+    const zipStats = fs.statSync(zipOutput);
+    console.log(`✓ mem-search.zip built (${(zipStats.size / 1024).toFixed(2)} KB)`);
+
     console.log('\n✅ All hooks, worker service, and MCP server built successfully!');
     console.log(`   Output: ${hooksDir}/`);
     console.log(`   - Hooks: *-hook.js`);
     console.log(`   - Worker: worker-service.cjs`);
     console.log(`   - MCP Server: mcp-server.cjs`);
     console.log(`   - Skills: plugin/skills/`);
+    console.log(`   - Desktop Skill: plugin/skills/mem-search.zip`);
     console.log('\n💡 Note: Dependencies will be auto-installed on first hook execution');
 
   } catch (error) {

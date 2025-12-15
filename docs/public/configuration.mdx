@@ -5,18 +5,27 @@ description: "Environment variables and settings for Claude-Mem"
 
 # Configuration
 
-## Environment Variables
+## Settings File
 
-| Variable                      | Default                         | Description                           |
+Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created with defaults on first run.
+
+### Core Settings
+
+| Setting                       | Default                         | Description                           |
 |-------------------------------|---------------------------------|---------------------------------------|
-| `CLAUDE_PLUGIN_ROOT`          | Set by Claude Code              | Plugin installation directory         |
-| `CLAUDE_MEM_DATA_DIR`         | `~/.claude-mem/`                | Data directory (production default)   |
-| `CLAUDE_CODE_PATH`            | Auto-detected                   | Path to Claude Code CLI (for Windows) |
-| `CLAUDE_MEM_WORKER_PORT`      | `37777`                         | Worker service port                   |
-| `CLAUDE_MEM_MODEL`            | `claude-haiku-4-5`              | AI model for processing observations  |
+| `CLAUDE_MEM_MODEL`            | `sonnet`                        | AI model for processing observations  |
 | `CLAUDE_MEM_CONTEXT_OBSERVATIONS` | `50`                        | Number of observations to inject      |
-| `NODE_ENV`                    | `production`                    | Environment mode                      |
-| `FORCE_COLOR`                 | `1`                             | Enable colored logs                   |
+| `CLAUDE_MEM_WORKER_PORT`      | `37777`                         | Worker service port                   |
+| `CLAUDE_MEM_SKIP_TOOLS`       | `ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion` | Comma-separated tools to exclude from observations |
+
+### System Configuration
+
+| Setting                       | Default                         | Description                           |
+|-------------------------------|---------------------------------|---------------------------------------|
+| `CLAUDE_MEM_DATA_DIR`         | `~/.claude-mem`                 | Data directory location               |
+| `CLAUDE_MEM_LOG_LEVEL`        | `INFO`                          | Log verbosity (DEBUG, INFO, WARN, ERROR, SILENT) |
+| `CLAUDE_MEM_PYTHON_VERSION`   | `3.13`                          | Python version for chroma-mcp         |
+| `CLAUDE_CODE_PATH`            | _(auto-detect)_                 | Path to Claude Code CLI (for Windows) |
 
 ## Model Configuration
 
@@ -24,10 +33,11 @@ Configure which AI model processes your observations.
 
 ### Available Models
 
-- `claude-haiku-4-5` - Fast, cost-efficient (default)
-- `claude-sonnet-4-5` - Balanced
-- `claude-opus-4` - Most capable
-- `claude-3-7-sonnet` - Alternative version
+Shorthand model names automatically forward to the latest version:
+
+- `haiku` - Fast, cost-efficient
+- `sonnet` - Balanced (default)
+- `opus` - Most capable
 
 ### Using the Interactive Script
 
@@ -35,15 +45,15 @@ Configure which AI model processes your observations.
 ./claude-mem-settings.sh
 ```
 
-This script manages `CLAUDE_MEM_MODEL` in `~/.claude/settings.json`.
+This script manages settings in `~/.claude-mem/settings.json`.
 
 ### Manual Configuration
 
-Edit `~/.claude/settings.json`:
+Edit `~/.claude-mem/settings.json`:
 
 ```json
 {
-  "CLAUDE_MEM_MODEL": "claude-haiku-4-5"
+  "CLAUDE_MEM_MODEL": "sonnet"
 }
 ```
 
@@ -82,7 +92,7 @@ ${CLAUDE_PLUGIN_ROOT}/
 │   ├── summary-hook.js     # Summary generation hook
 │   ├── cleanup-hook.js     # Session cleanup hook
 │   ├── worker-service.cjs  # Worker service (CJS)
-│   └── search-server.cjs   # MCP search server (CJS)
+│   └── mcp-server.cjs      # MCP search server (CJS)
 └── ui/
     └── viewer.html         # Web viewer UI bundle
 ```
@@ -169,35 +179,13 @@ Claude-Mem supports switching between stable and beta versions via the web viewe
 
 **Your memory data is preserved** when switching versions. Only the plugin code changes.
 
-See [Beta Features](beta-features) for details on what's available in beta.
+<Note>
+Endless Mode is experimental and slower than standard mode. See [Beta Features](beta-features) for full details and important limitations.
+</Note>
 
-## PM2 Configuration
+## Worker Service Management
 
-Worker service is managed by PM2 via `ecosystem.config.cjs`:
-
-```javascript
-module.exports = {
-  apps: [{
-    name: 'claude-mem-worker',
-    script: './plugin/scripts/worker-service.cjs',
-    instances: 1,
-    autorestart: true,
-    watch: false,
-    max_memory_restart: '1G',
-    env: {
-      NODE_ENV: 'production',
-      FORCE_COLOR: '1'
-    }
-  }]
-};
-```
-
-### PM2 Settings
-
-- **instances**: 1 (single instance)
-- **autorestart**: true (auto-restart on crash)
-- **watch**: false (no file watching)
-- **max_memory_restart**: 1G (restart if memory exceeds 1GB)
+Worker service is managed by Bun as a background process. The worker auto-starts on first session and runs continuously in the background.
 
 ## Context Injection Configuration
 
@@ -276,7 +264,7 @@ Token economics help you understand the value of cached observations vs. re-read
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| **Model** | claude-haiku-4-5 | AI model for generating observations |
+| **Model** | sonnet | AI model for generating observations |
 | **Worker Port** | 37777 | Port for background worker service |
 | **MCP search server** | true | Enable Model Context Protocol search tools |
 | **Include last summary** | false | Add previous session's summary to context |
@@ -284,55 +272,90 @@ Token economics help you understand the value of cached observations vs. re-read
 
 ### Manual Configuration
 
-Settings are stored in `~/.claude-mem/settings.json`. You can also configure via environment variables in `~/.claude/settings.json`:
+Settings are stored in `~/.claude-mem/settings.json`:
 
 ```json
 {
-  "env": {
-    "CLAUDE_MEM_CONTEXT_OBSERVATIONS": "100",
-    "CLAUDE_MEM_CONTEXT_SESSION_COUNT": "20",
-    "CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES": "bugfix,decision,discovery",
-    "CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS": "how-it-works,gotcha",
-    "CLAUDE_MEM_CONTEXT_FULL_COUNT": "10",
-    "CLAUDE_MEM_CONTEXT_FULL_FIELD": "narrative",
-    "CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS": "true",
-    "CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS": "true",
-    "CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT": "true",
-    "CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY": "false",
-    "CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE": "false"
-  }
+  "CLAUDE_MEM_CONTEXT_OBSERVATIONS": "100",
+  "CLAUDE_MEM_CONTEXT_SESSION_COUNT": "20",
+  "CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES": "bugfix,decision,discovery",
+  "CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS": "how-it-works,gotcha",
+  "CLAUDE_MEM_CONTEXT_FULL_COUNT": "10",
+  "CLAUDE_MEM_CONTEXT_FULL_FIELD": "narrative",
+  "CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS": "true",
+  "CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS": "true",
+  "CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT": "true",
+  "CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY": "false",
+  "CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE": "false"
 }
 ```
 
-**Note**: The Context Settings Modal is the recommended way to configure these settings, as it provides live preview of changes.
+**Note**: The Context Settings Modal (at http://localhost:37777) is the recommended way to configure these settings, as it provides live preview of changes.
 
 ## Customization
 
+Settings can be customized in `~/.claude-mem/settings.json`.
+
 ### Custom Data Directory
 
-For development or testing, override the data directory:
-
-```bash
-export CLAUDE_MEM_DATA_DIR=/custom/path
+Edit `~/.claude-mem/settings.json`:
+```json
+{
+  "CLAUDE_MEM_DATA_DIR": "/custom/path"
+}
 ```
 
 ### Custom Worker Port
 
-If port 37777 is in use:
+Edit `~/.claude-mem/settings.json`:
+```json
+{
+  "CLAUDE_MEM_WORKER_PORT": "38000"
+}
+```
 
+Then restart the worker:
 ```bash
-export CLAUDE_MEM_WORKER_PORT=38000
 npm run worker:restart
 ```
 
 ### Custom Model
 
-Use a different AI model:
+Edit `~/.claude-mem/settings.json`:
+```json
+{
+  "CLAUDE_MEM_MODEL": "opus"
+}
+```
 
+Then restart the worker:
 ```bash
-export CLAUDE_MEM_MODEL=claude-opus-4
+export CLAUDE_MEM_MODEL=opus
 npm run worker:restart
 ```
+
+### Custom Skip Tools
+
+Control which tools are excluded from observations. Edit `~/.claude-mem/settings.json`:
+```json
+{
+  "CLAUDE_MEM_SKIP_TOOLS": "ListMcpResourcesTool,SlashCommand,Skill"
+}
+```
+
+**Default excluded tools:**
+- `ListMcpResourcesTool`
+- `SlashCommand`
+- `Skill`
+- `TodoWrite`
+- `AskUserQuestion`
+
+**Common customizations:**
+- Include TodoWrite: Remove from skip list to track task planning
+- Include AskUserQuestion: Remove to capture decision-making conversations
+- Skip additional tools: Add tool names to reduce observation noise
+
+Changes take effect on the next tool execution (no worker restart needed).
 
 ## Advanced Configuration
 
@@ -357,13 +380,7 @@ Recommended values:
 
 ### Worker Memory Limit
 
-Modify PM2 memory limit in `ecosystem.config.cjs`:
-
-```javascript
-{
-  max_memory_restart: '2G'  // Increase if needed
-}
-```
+The worker service is managed by Bun and will automatically restart if it encounters issues. Memory usage is typically low (~100-200MB).
 
 ### Logging Verbosity
 
@@ -405,13 +422,12 @@ npm run worker:logs
 
 ### Invalid Model Name
 
-If you specify an invalid model name, the worker will fall back to `claude-haiku-4-5` and log a warning.
+If you specify an invalid model name, the worker will fall back to `sonnet` and log a warning.
 
-Valid models:
-- claude-haiku-4-5
-- claude-sonnet-4-5
-- claude-opus-4
-- claude-3-7-sonnet
+Valid shorthand models (forward to latest version):
+- haiku
+- sonnet
+- opus
 
 ### Port Already in Use
 

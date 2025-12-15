@@ -17,6 +17,9 @@ import { logger } from '../utils/logger.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
 import { formatObservationAsMarkdown } from './context-injection.js';
 import { clearToolInputInTranscript } from './context-injection.js';
+import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
+import { handleWorkerError } from '../shared/hook-error-handler.js';
+import { handleFetchError } from './shared/error-handler.js';
 
 export interface PostToolUseInput {
   session_id: string;
@@ -28,15 +31,6 @@ export interface PostToolUseInput {
   tool_use_id?: string;  // For Endless Mode v7.1 observation correlation
   [key: string]: any;
 }
-
-// Tools to skip (low value or too frequent)
-const SKIP_TOOLS = new Set([
-  'ListMcpResourcesTool',  // MCP infrastructure
-  'SlashCommand',          // Command invocation (observe what it produces, not the call)
-  'Skill',                 // Skill invocation (observe what it produces, not the call)
-  'TodoWrite',             // Task management meta-tool
-  'AskUserQuestion'        // User interaction, not substantive work
-]);
 
 /**
  * Load Endless Mode configuration from settings
@@ -61,6 +55,9 @@ function loadEndlessModeConfig(): { enabled: boolean } {
  * Save Hook Main Logic - Synchronous observation processing for Endless Mode
  */
 async function saveHook(input?: PostToolUseInput): Promise<void> {
+  // Ensure worker is running before any other logic
+  await ensureWorkerRunning();
+
   if (!input) {
     throw new Error('saveHook requires input');
   }
@@ -70,12 +67,6 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
 
   const { session_id, cwd, tool_name, tool_input, tool_response } = input;
 
-  if (SKIP_TOOLS.has(tool_name)) {
-    console.log(createHookResponse('PostToolUse', true));
-    return;
-  }
-
-  await ensureWorkerRunning();
   const port = getWorkerPort();
 
   // Check if Endless Mode is enabled
@@ -117,7 +108,14 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
           tool_name,
           tool_input,
           tool_response,
-          cwd: cwd || ''
+          cwd: cwd || logger.happyPathError(
+            'HOOK',
+            'Missing cwd in PostToolUse hook input',
+            undefined,
+            { session_id, tool_name },
+            ''
+          ),
+          toolUseId: input.tool_use_id
         }),
         signal: AbortSignal.timeout(110000)  // 110s timeout (within 120s hook limit)
       }
@@ -125,9 +123,13 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
 
     if (!response.ok) {
       const errorText = await response.text();
-      logger.failure('HOOK', 'Failed to get observation', {
-        status: response.status
-      }, errorText);
+      handleFetchError(response, errorText, {
+        hookName: 'save',
+        operation: 'Observation storage',
+        toolName: tool_name,
+        sessionId: session_id,
+        port
+      });
 
       // Fall back to success without injection on timeout/error
       console.log(createHookResponse('PostToolUse', true));
@@ -167,9 +169,7 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
     }
 
   } catch (error: any) {
-    if (error.cause?.code === 'ECONNREFUSED' || error.name === 'TimeoutError') {
-      throw new Error("There's a problem with the worker. Try: pm2 restart claude-mem-worker");
-    }
+    handleWorkerError(error);
 
     // Other errors: log but don't block
     logger.failure('HOOK', 'Error in save-hook', {}, error.message);

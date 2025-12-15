@@ -3,6 +3,8 @@
  * Provides readable, traceable logging with correlation IDs and data flow tracking
  */
 
+import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
+
 export enum LogLevel {
   DEBUG = 0,
   INFO = 1,
@@ -21,16 +23,23 @@ interface LogContext {
 }
 
 class Logger {
-  private level: LogLevel;
+  private level: LogLevel | null = null;
   private useColor: boolean;
 
   constructor() {
-    // Parse log level from environment
-    const envLevel = process.env.CLAUDE_MEM_LOG_LEVEL?.toUpperCase() || 'INFO';
-    this.level = LogLevel[envLevel as keyof typeof LogLevel] ?? LogLevel.INFO;
-
     // Disable colors when output is not a TTY (e.g., PM2 logs)
     this.useColor = process.stdout.isTTY ?? false;
+  }
+
+  /**
+   * Lazy-load log level from settings (breaks circular dependency with SettingsDefaultsManager)
+   */
+  private getLevel(): LogLevel {
+    if (this.level === null) {
+      const envLevel = SettingsDefaultsManager.get('CLAUDE_MEM_LOG_LEVEL').toUpperCase();
+      this.level = LogLevel[envLevel as keyof typeof LogLevel] ?? LogLevel.INFO;
+    }
+    return this.level;
   }
 
   /**
@@ -60,7 +69,7 @@ class Logger {
     if (typeof data === 'object') {
       // If it's an error, show message and stack in debug mode
       if (data instanceof Error) {
-        return this.level === LogLevel.DEBUG
+        return this.getLevel() === LogLevel.DEBUG
           ? `${data.message}\n${data.stack}`
           : data.message;
       }
@@ -123,6 +132,20 @@ class Logger {
   }
 
   /**
+   * Format timestamp in local timezone (YYYY-MM-DD HH:MM:SS.mmm)
+   */
+  private formatTimestamp(date: Date): string {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    const hours = String(date.getHours()).padStart(2, '0');
+    const minutes = String(date.getMinutes()).padStart(2, '0');
+    const seconds = String(date.getSeconds()).padStart(2, '0');
+    const ms = String(date.getMilliseconds()).padStart(3, '0');
+    return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}.${ms}`;
+  }
+
+  /**
    * Core logging method
    */
   private log(
@@ -132,9 +155,9 @@ class Logger {
     context?: LogContext,
     data?: any
   ): void {
-    if (level < this.level) return;
+    if (level < this.getLevel()) return;
 
-    const timestamp = new Date().toISOString().replace('T', ' ').substring(0, 23);
+    const timestamp = this.formatTimestamp(new Date());
     const levelStr = LogLevel[level].padEnd(5);
     const componentStr = component.padEnd(6);
 
@@ -149,7 +172,7 @@ class Logger {
     // Build data part
     let dataStr = '';
     if (data !== undefined && data !== null) {
-      if (this.level === LogLevel.DEBUG && typeof data === 'object') {
+      if (this.getLevel() === LogLevel.DEBUG && typeof data === 'object') {
         // In debug mode, show full JSON for objects
         dataStr = '\n' + JSON.stringify(data, null, 2);
       } else {
@@ -227,6 +250,58 @@ class Logger {
    */
   timing(component: Component, message: string, durationMs: number, context?: LogContext): void {
     this.info(component, `⏱ ${message}`, context, { duration: `${durationMs}ms` });
+  }
+
+  /**
+   * Happy Path Error - logs when the expected "happy path" fails but we have a fallback
+   *
+   * Semantic meaning: "When the happy path fails, this is an error, but we have a fallback."
+   *
+   * Use for:
+   * ✅ Unexpected null/undefined values that should theoretically never happen
+   * ✅ Defensive coding where silent fallback is acceptable
+   * ✅ Situations where you want to track unexpected nulls without breaking execution
+   *
+   * DO NOT use for:
+   * ❌ Nullable fields with valid default behavior (use direct || defaults)
+   * ❌ Critical validation failures (use logger.warn or throw Error)
+   * ❌ Try-catch blocks where error is already logged (redundant)
+   *
+   * @param component - Component where error occurred
+   * @param message - Error message describing what went wrong
+   * @param context - Optional context (sessionId, correlationId, etc)
+   * @param data - Optional data to include
+   * @param fallback - Value to return (defaults to empty string)
+   * @returns The fallback value
+   */
+  happyPathError<T = string>(
+    component: Component,
+    message: string,
+    context?: LogContext,
+    data?: any,
+    fallback: T = '' as T
+  ): T {
+    // Capture stack trace to get caller location
+    const stack = new Error().stack || '';
+    const stackLines = stack.split('\n');
+    // Line 0: "Error"
+    // Line 1: "at happyPathError ..."
+    // Line 2: "at <CALLER> ..." <- We want this one
+    const callerLine = stackLines[2] || '';
+    const callerMatch = callerLine.match(/at\s+(?:.*\s+)?\(?([^:]+):(\d+):(\d+)\)?/);
+    const location = callerMatch
+      ? `${callerMatch[1].split('/').pop()}:${callerMatch[2]}`
+      : 'unknown';
+
+    // Log as a warning with location info
+    const enhancedContext = {
+      ...context,
+      location
+    };
+
+    this.warn(component, `[HAPPY-PATH] ${message}`, enhancedContext, data);
+
+    return fallback;
   }
 }
 

@@ -1,22 +1,60 @@
 import path from "path";
 import { homedir } from "os";
 import { spawnSync } from "child_process";
-import { getPackageRoot } from "./paths.js";
-import { SettingsDefaultsManager } from "../services/worker/settings/SettingsDefaultsManager.js";
+import { existsSync, writeFileSync, readFileSync, mkdirSync } from "fs";
+import { logger } from "../utils/logger.js";
+import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
+import { ProcessManager } from "../services/process/ProcessManager.js";
+import { SettingsDefaultsManager } from "./SettingsDefaultsManager.js";
+import { getWorkerRestartInstructions } from "../utils/error-messages.js";
+
+const MARKETPLACE_ROOT = path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
 
 // Named constants for health checks
-const HEALTH_CHECK_TIMEOUT_MS = 100;
-const WORKER_STARTUP_WAIT_MS = 500;
-const WORKER_STARTUP_RETRIES = 10;
+const HEALTH_CHECK_TIMEOUT_MS = getTimeout(HOOK_TIMEOUTS.HEALTH_CHECK);
+
+// Port cache to avoid repeated settings file reads
+let cachedPort: number | null = null;
 
 /**
- * Get the worker port number
- * Priority: ~/.claude-mem/settings.json > env var > default
+ * Get the worker port number from settings
+ * Uses CLAUDE_MEM_WORKER_PORT from settings file or default (37777)
+ * Caches the port value to avoid repeated file reads
  */
 export function getWorkerPort(): number {
+  if (cachedPort !== null) {
+    return cachedPort;
+  }
+
+  try {
+    const settingsPath = path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), 'settings.json');
+    const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+    cachedPort = parseInt(settings.CLAUDE_MEM_WORKER_PORT, 10);
+    return cachedPort;
+  } catch (error) {
+    // Fallback to default if settings load fails
+    logger.debug('SYSTEM', 'Failed to load port from settings, using default', { error });
+    cachedPort = parseInt(SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_PORT'), 10);
+    return cachedPort;
+  }
+}
+
+/**
+ * Clear the cached port value
+ * Call this when settings are updated to force re-reading from file
+ */
+export function clearPortCache(): void {
+  cachedPort = null;
+}
+
+/**
+ * Get the worker host address
+ * Priority: ~/.claude-mem/settings.json > env var > default (127.0.0.1)
+ */
+export function getWorkerHost(): string {
   const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
   const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-  return parseInt(settings.CLAUDE_MEM_WORKER_PORT, 10);
+  return settings.CLAUDE_MEM_WORKER_HOST;
 }
 
 /**
@@ -29,65 +67,139 @@ async function isWorkerHealthy(): Promise<boolean> {
       signal: AbortSignal.timeout(HEALTH_CHECK_TIMEOUT_MS)
     });
     return response.ok;
-  } catch {
+  } catch (error) {
+    logger.debug('SYSTEM', 'Worker health check failed', {
+      error: error instanceof Error ? error.message : String(error),
+      errorType: error?.constructor?.name
+    });
     return false;
   }
 }
 
 /**
- * Start the worker using PM2
+ * Get the current plugin version from package.json
+ */
+function getPluginVersion(): string | null {
+  try {
+    const packageJsonPath = path.join(MARKETPLACE_ROOT, 'package.json');
+    const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
+    return packageJson.version;
+  } catch (error) {
+    logger.debug('SYSTEM', 'Failed to read plugin version', {
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return null;
+  }
+}
+
+/**
+ * Get the running worker's version from the API
+ */
+async function getWorkerVersion(): Promise<string | null> {
+  try {
+    const port = getWorkerPort();
+    const response = await fetch(`http://127.0.0.1:${port}/api/version`, {
+      signal: AbortSignal.timeout(HEALTH_CHECK_TIMEOUT_MS)
+    });
+    if (!response.ok) return null;
+    const data = await response.json() as { version: string };
+    return data.version;
+  } catch (error) {
+    logger.debug('SYSTEM', 'Failed to get worker version', {
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return null;
+  }
+}
+
+/**
+ * Check if worker version matches plugin version
+ * If mismatch detected, restart the worker automatically
+ */
+async function ensureWorkerVersionMatches(): Promise<void> {
+  const pluginVersion = getPluginVersion();
+  const workerVersion = await getWorkerVersion();
+
+  if (!pluginVersion || !workerVersion) {
+    // Can't determine versions, skip check
+    return;
+  }
+
+  if (pluginVersion !== workerVersion) {
+    logger.info('SYSTEM', 'Worker version mismatch detected - restarting worker', {
+      pluginVersion,
+      workerVersion
+    });
+
+    // Give files time to sync before restart
+    await new Promise(resolve => setTimeout(resolve, getTimeout(HOOK_TIMEOUTS.PRE_RESTART_SETTLE_DELAY)));
+
+    // Restart the worker
+    await ProcessManager.restart(getWorkerPort());
+
+    // Give it a moment to start
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
+    // Verify it's healthy
+    if (!await isWorkerHealthy()) {
+      logger.error('SYSTEM', 'Worker failed to restart after version mismatch', {
+        expectedVersion: pluginVersion,
+        runningVersion: workerVersion,
+        port: getWorkerPort()
+      });
+    }
+  }
+}
+
+/**
+ * Start the worker service using ProcessManager
+ * Handles both Unix (Bun) and Windows (compiled exe) platforms
  */
 async function startWorker(): Promise<boolean> {
-  try {
-    // Find the ecosystem config file (built version in plugin/)
-    const pluginRoot = getPackageRoot();
-    const ecosystemPath = path.join(pluginRoot, 'ecosystem.config.cjs');
+  // Clean up legacy PM2 (one-time migration)
+  const dataDir = SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR');
+  const pm2MigratedMarker = path.join(dataDir, '.pm2-migrated');
 
-    if (!existsSync(ecosystemPath)) {
-      throw new Error(`Ecosystem config not found at ${ecosystemPath}`);
+  // Ensure data directory exists (may not exist on fresh install)
+  mkdirSync(dataDir, { recursive: true });
+
+  if (!existsSync(pm2MigratedMarker)) {
+    try {
+      spawnSync('pm2', ['delete', 'claude-mem-worker'], { stdio: 'ignore' });
+      // Mark migration as complete
+      writeFileSync(pm2MigratedMarker, new Date().toISOString(), 'utf-8');
+      logger.debug('SYSTEM', 'PM2 cleanup completed and marked');
+    } catch {
+      // PM2 not installed or process doesn't exist - still mark as migrated
+      writeFileSync(pm2MigratedMarker, new Date().toISOString(), 'utf-8');
     }
-
-    // Try to use local PM2 from node_modules first, fall back to global PM2
-    // On Windows, PM2 executable is pm2.cmd, not pm2
-    const localPm2Base = path.join(pluginRoot, 'node_modules', '.bin', 'pm2');
-    const localPm2Cmd = process.platform === 'win32' ? localPm2Base + '.cmd' : localPm2Base;
-    const pm2Command = existsSync(localPm2Cmd) ? localPm2Cmd : 'pm2';
-
-    // Start using PM2 with the ecosystem config
-    // CRITICAL: Must set cwd to pluginRoot so PM2 starts from marketplace directory
-    // Using spawnSync with array args to avoid command injection risks
-    const result = spawnSync(pm2Command, ['start', ecosystemPath], {
-      cwd: pluginRoot,
-      stdio: 'pipe',
-      encoding: 'utf-8',
-      windowsHide: true
-    });
-    if (result.status !== 0) {
-      throw new Error(result.stderr || 'PM2 start failed');
-    }
-
-    // Wait for worker to become healthy
-    for (let i = 0; i < WORKER_STARTUP_RETRIES; i++) {
-      await new Promise(resolve => setTimeout(resolve, WORKER_STARTUP_WAIT_MS));
-      if (await isWorkerHealthy()) {
-        return true;
-      }
-    }
-
-    return false;
-  } catch (error) {
-    // Failed to start worker
-    return false;
   }
+
+  const port = getWorkerPort();
+  const result = await ProcessManager.start(port);
+
+  if (!result.success) {
+    logger.error('SYSTEM', 'Failed to start worker', {
+      platform: process.platform,
+      port,
+      error: result.error,
+      marketplaceRoot: MARKETPLACE_ROOT
+    });
+  }
+
+  return result.success;
 }
 
 /**
  * Ensure worker service is running
  * Checks health and auto-starts if not running
+ * Also ensures worker version matches plugin version
  */
 export async function ensureWorkerRunning(): Promise<void> {
   // Check if already healthy
   if (await isWorkerHealthy()) {
+    // Worker is healthy, but check if version matches
+    await ensureWorkerVersionMatches();
     return;
   }
 
@@ -96,13 +208,31 @@ export async function ensureWorkerRunning(): Promise<void> {
 
   if (!started) {
     const port = getWorkerPort();
-    const pluginRoot = getPackageRoot();
     throw new Error(
-      `Worker service failed to start on port ${port}.\n\n` +
-      `To start manually, run:\n` +
-      `  cd ${pluginRoot}\n` +
-      `  npx pm2 start ecosystem.config.cjs\n\n` +
-      `If already running, try: npx pm2 restart claude-mem-worker`
+      getWorkerRestartInstructions({
+        port,
+        customPrefix: `Worker service failed to start on port ${port}.`
+      })
     );
   }
+
+  // Wait for worker to become responsive after starting
+  // Try up to 5 times with 500ms delays (2.5 seconds total)
+  for (let i = 0; i < 5; i++) {
+    await new Promise(resolve => setTimeout(resolve, 500));
+    if (await isWorkerHealthy()) {
+      await ensureWorkerVersionMatches();
+      return;
+    }
+  }
+
+  // Worker started but isn't responding
+  const port = getWorkerPort();
+  logger.error('SYSTEM', 'Worker started but not responding to health checks');
+  throw new Error(
+    getWorkerRestartInstructions({
+      port,
+      customPrefix: `Worker service started but is not responding on port ${port}.`
+    })
+  );
 }
