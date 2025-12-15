@@ -19,7 +19,7 @@ This directory contains skills **for developing and maintaining the claude-mem p
 ## Skills in This Directory
 
 ### version-bump
-Manages semantic versioning for the claude-mem project itself. Handles updating all four version files (package.json, marketplace.json, plugin.json, CLAUDE.md), creating git tags, and GitHub releases.
+Manages semantic versioning for the claude-mem project itself. Handles updating all three version files (package.json, marketplace.json, plugin.json), creating git tags, and GitHub releases.
 
 **Usage**: Only for claude-mem maintainers releasing new versions.
 

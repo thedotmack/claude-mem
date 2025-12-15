@@ -95,7 +95,7 @@ echo '{"env":{"CLAUDE_MEM_WORKER_PORT":"37778"}}' > ~/.claude-mem/settings.json
 # Change AI model
 {
   "env": {
-    "CLAUDE_MEM_MODEL": "claude-haiku-4-5"
+    "CLAUDE_MEM_MODEL": "claude-sonnet-4-5"
   }
 }
 ```

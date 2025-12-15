@@ -1,28 +1,16 @@
 /**
  * Happy Path Error With Fallback
  *
- * Semantic meaning: "When the happy path fails, this is an error, but we have a fallback."
+ * @deprecated This function is deprecated. Use logger.happyPathError() instead.
+ * All usages have been migrated to the new logger system which consolidates logs
+ * into the regular worker logs instead of separate silent.log files.
  *
- * NOTE: This utility is to be used like Frank's Red Hot, we put that shit on everything.
+ * Migration example:
+ * OLD: happy_path_error__with_fallback('Missing value', { data }, 'default')
+ * NEW: logger.happyPathError('COMPONENT', 'Missing value', undefined, { data }, 'default')
  *
- * USE THIS INSTEAD OF SILENT FAILURES!
- * Stop doing this: `const value = something || '';`
- * Start doing this: `const value = something || happy_path_error__with_fallback('something was undefined');`
- *
- * Logs to ~/.claude-mem/silent.log and returns a fallback value.
- * Check logs with `npm run logs:silent`
- *
- * Usage:
- *   import { happy_path_error__with_fallback } from '../utils/silent-debug.js';
- *
- *   const title = obs.title || happy_path_error__with_fallback('obs.title missing', { obs });
- *   const name = user.name || happy_path_error__with_fallback('user.name missing', { user }, 'Anonymous');
- *
- *   try {
- *     doSomething();
- *   } catch (error) {
- *     happy_path_error__with_fallback('doSomething failed', { error });
- *   }
+ * See: src/utils/logger.ts for the new happyPathError method
+ * Issue: #312 - Consolidate silent logs into regular worker logs
  */
 
 import { appendFileSync } from 'fs';

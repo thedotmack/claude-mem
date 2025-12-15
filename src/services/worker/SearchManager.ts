@@ -14,8 +14,11 @@ import { FormattingService } from './FormattingService.js';
 import { TimelineService, TimelineItem } from './TimelineService.js';
 import { ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../sqlite/types.js';
 import { logger } from '../../utils/logger.js';
+import { formatDate, formatTime, extractFirstFile, groupByDate } from '../../shared/timeline-formatting.js';
 
 const COLLECTION_NAME = 'cm__claude-mem';
+const RECENCY_WINDOW_DAYS = 90;
+const RECENCY_WINDOW_MS = RECENCY_WINDOW_DAYS * 24 * 60 * 60 * 1000;
 
 export class SearchManager {
   constructor(
@@ -84,7 +87,7 @@ export class SearchManager {
       try {
         // Normalize URL-friendly params to internal format
         const normalized = this.normalizeParams(args);
-        const { query, format = 'index', type, obs_type, concepts, files, ...options } = normalized;
+        const { query, type, obs_type, concepts, files, ...options } = normalized;
         let observations: ObservationSearchResult[] = [];
         let sessions: SessionSummarySearchResult[] = [];
         let prompts: UserPromptSearchResult[] = [];
@@ -132,7 +135,7 @@ export class SearchManager {
 
             if (chromaResults.ids.length > 0) {
               // Step 2: Filter by recency (90 days)
-              const ninetyDaysAgo = Date.now() - (90 * 24 * 60 * 60 * 1000);
+              const ninetyDaysAgo = Date.now() - RECENCY_WINDOW_MS;
               const recentMetadata = chromaResults.metadatas.map((meta, idx) => ({
                 id: chromaResults.ids[idx],
                 meta,
@@ -166,10 +169,10 @@ export class SearchManager {
                 observations = this.sessionStore.getObservationsByIds(obsIds, obsOptions);
               }
               if (sessionIds.length > 0) {
-                sessions = this.sessionStore.getSessionSummariesByIds(sessionIds, { orderBy: 'date_desc', limit: options.limit });
+                sessions = this.sessionStore.getSessionSummariesByIds(sessionIds, { orderBy: 'date_desc', limit: options.limit, project: options.project });
               }
               if (promptIds.length > 0) {
-                prompts = this.sessionStore.getUserPromptsByIds(promptIds, { orderBy: 'date_desc', limit: options.limit });
+                prompts = this.sessionStore.getUserPromptsByIds(promptIds, { orderBy: 'date_desc', limit: options.limit, project: options.project });
               }
 
               logger.debug('SEARCH', 'Hydrated results from SQLite', { observations: observations.length, sessions: sessions.length, prompts: prompts.length });
@@ -211,15 +214,31 @@ export class SearchManager {
           type: 'observation' | 'session' | 'prompt';
           data: any;
           epoch: number;
+          created_at: string;
         }
 
         const allResults: CombinedResult[] = [
-          ...observations.map(obs => ({ type: 'observation' as const, data: obs, epoch: obs.created_at_epoch })),
-          ...sessions.map(sess => ({ type: 'session' as const, data: sess, epoch: sess.created_at_epoch })),
-          ...prompts.map(prompt => ({ type: 'prompt' as const, data: prompt, epoch: prompt.created_at_epoch }))
+          ...observations.map(obs => ({
+            type: 'observation' as const,
+            data: obs,
+            epoch: obs.created_at_epoch,
+            created_at: obs.created_at
+          })),
+          ...sessions.map(sess => ({
+            type: 'session' as const,
+            data: sess,
+            epoch: sess.created_at_epoch,
+            created_at: sess.created_at
+          })),
+          ...prompts.map(prompt => ({
+            type: 'prompt' as const,
+            data: prompt,
+            epoch: prompt.created_at_epoch,
+            created_at: prompt.created_at
+          }))
         ];
 
-        // Sort by date (most recent first)
+        // Sort by date
         if (options.orderBy === 'date_desc') {
           allResults.sort((a, b) => b.epoch - a.epoch);
         } else if (options.orderBy === 'date_asc') {
@@ -229,37 +248,62 @@ export class SearchManager {
         // Apply limit across all types
         const limitedResults = allResults.slice(0, options.limit || 20);
 
-        // Format based on requested format
-        let combinedText: string;
-        if (format === 'index') {
-          const header = `Found ${totalResults} result(s) matching "${query}" (${observations.length} obs, ${sessions.length} sessions, ${prompts.length} prompts):\n\n`;
-          const formattedResults = limitedResults.map((item, i) => {
-            if (item.type === 'observation') {
-              return this.formatter.formatObservationIndex(item.data, i);
-            } else if (item.type === 'session') {
-              return this.formatter.formatSessionIndex(item.data, i);
-            } else {
-              return this.formatter.formatUserPromptIndex(item.data, i);
+        // Group by date, then by file within each day
+        const cwd = process.cwd();
+        const resultsByDate = groupByDate(limitedResults, item => item.created_at);
+
+        // Build output with date/file grouping
+        const lines: string[] = [];
+        lines.push(`Found ${totalResults} result(s) matching "${query}" (${observations.length} obs, ${sessions.length} sessions, ${prompts.length} prompts)`);
+        lines.push('');
+
+        for (const [day, dayResults] of resultsByDate) {
+          lines.push(`### ${day}`);
+          lines.push('');
+
+          // Group by file within this day
+          const resultsByFile = new Map<string, CombinedResult[]>();
+          for (const result of dayResults) {
+            let file = 'General';
+            if (result.type === 'observation') {
+              file = extractFirstFile(result.data.files_modified, cwd);
             }
-          });
-          combinedText = header + formattedResults.join('\n\n') + this.formatter.formatSearchTips();
-        } else {
-          const formattedResults = limitedResults.map(item => {
-            if (item.type === 'observation') {
-              return this.formatter.formatObservationResult(item.data);
-            } else if (item.type === 'session') {
-              return this.formatter.formatSessionResult(item.data);
-            } else {
-              return this.formatter.formatUserPromptResult(item.data);
+            if (!resultsByFile.has(file)) {
+              resultsByFile.set(file, []);
             }
-          });
-          combinedText = formattedResults.join('\n\n---\n\n');
+            resultsByFile.get(file)!.push(result);
+          }
+
+          // Render each file section
+          for (const [file, fileResults] of resultsByFile) {
+            lines.push(`**${file}**`);
+            lines.push(this.formatter.formatSearchTableHeader());
+
+            let lastTime = '';
+            for (const result of fileResults) {
+              if (result.type === 'observation') {
+                const formatted = this.formatter.formatObservationSearchRow(result.data as ObservationSearchResult, lastTime);
+                lines.push(formatted.row);
+                lastTime = formatted.time;
+              } else if (result.type === 'session') {
+                const formatted = this.formatter.formatSessionSearchRow(result.data as SessionSummarySearchResult, lastTime);
+                lines.push(formatted.row);
+                lastTime = formatted.time;
+              } else {
+                const formatted = this.formatter.formatUserPromptSearchRow(result.data as UserPromptSearchResult, lastTime);
+                lines.push(formatted.row);
+                lastTime = formatted.time;
+              }
+            }
+
+            lines.push('');
+          }
         }
 
         return {
           content: [{
             type: 'text' as const,
-            text: combinedText
+            text: lines.join('\n')
           }]
         };
       } catch (error: any) {
@@ -279,6 +323,7 @@ export class SearchManager {
   async timeline(args: any): Promise<any> {
       try {
         const { anchor, query, depth_before = 10, depth_after = 10, project } = args;
+        const cwd = process.cwd();
 
         // Validate: must provide either anchor or query, not both
         if (!anchor && !query) {
@@ -317,7 +362,7 @@ export class SearchManager {
               logger.debug('SEARCH', 'Chroma returned semantic matches for timeline', { matchCount: chromaResults?.ids?.length ?? 0 });
 
               if (chromaResults?.ids && chromaResults.ids.length > 0) {
-                const ninetyDaysAgo = Date.now() - (90 * 24 * 60 * 60 * 1000);
+                const ninetyDaysAgo = Date.now() - RECENCY_WINDOW_MS;
                 const recentIds = chromaResults.ids.filter((_id, idx) => {
                   const meta = chromaResults.metadatas[idx];
                   return meta && meta.created_at_epoch > ninetyDaysAgo;
@@ -479,9 +524,6 @@ export class SearchManager {
         lines.push(`**Window:** ${depth_before} records before → ${depth_after} records after | **Items:** ${filteredItems?.length ?? 0}`);
         lines.push('');
 
-        // Legend
-        lines.push(`**Legend:** 🎯 session-request | 🔴 bugfix | 🟣 feature | 🔄 refactor | ✅ change | 🔵 discovery | 🧠 decision`);
-        lines.push('');
 
         // Group by day
         const dayMap = new Map<string, TimelineItem[]>();
@@ -525,10 +567,9 @@ export class SearchManager {
 
               const sess = item.data as SessionSummarySearchResult;
               const title = sess.request || 'Session summary';
-              const link = `claude-mem://session-summary/${sess.id}`;
               const marker = isAnchor ? ' ← **ANCHOR**' : '';
 
-              lines.push(`**🎯 #S${sess.id}** ${title} (${formatDateTime(item.epoch)}) [→](${link})${marker}`);
+              lines.push(`**🎯 #S${sess.id}** ${title} (${formatDateTime(item.epoch)})${marker}`);
               lines.push('');
             } else if (item.type === 'prompt') {
               if (tableOpen) {
@@ -546,7 +587,7 @@ export class SearchManager {
               lines.push('');
             } else if (item.type === 'observation') {
               const obs = item.data as ObservationSearchResult;
-              const file = 'General';
+              const file = extractFirstFile(obs.files_modified, cwd);
 
               if (file !== currentFile) {
                 if (tableOpen) {
@@ -613,7 +654,7 @@ export class SearchManager {
   async decisions(args: any): Promise<any> {
       try {
         const normalized = this.normalizeParams(args);
-        const { query, format = 'index', ...filters } = normalized;
+        const { query, ...filters } = normalized;
         let results: ObservationSearchResult[] = [];
 
         // Search for decision-type observations
@@ -670,20 +711,14 @@ export class SearchManager {
           };
         }
 
-        let combinedText: string;
-        if (format === 'index') {
-          const header = `Found ${results.length} decision(s):\n\n`;
-          const formattedResults = results.map((obs, i) => this.formatter.formatObservationIndex(obs, i));
-          combinedText = header + formattedResults.join('\n\n');
-        } else {
-          const formattedResults = results.map((obs) => this.formatter.formatObservationResult(obs));
-          combinedText = formattedResults.join('\n\n---\n\n');
-        }
+        // Format as table
+        const header = `Found ${results.length} decision(s)\n\n${this.formatter.formatTableHeader()}`;
+        const formattedResults = results.map((obs, i) => this.formatter.formatObservationIndex(obs, i));
 
         return {
           content: [{
             type: 'text' as const,
-            text: combinedText
+            text: header + '\n' + formattedResults.join('\n')
           }]
         };
       } catch (error: any) {
@@ -703,7 +738,7 @@ export class SearchManager {
   async changes(args: any): Promise<any> {
       try {
         const normalized = this.normalizeParams(args);
-        const { format = 'index', ...filters } = normalized;
+        const { ...filters } = normalized;
         let results: ObservationSearchResult[] = [];
 
         // Search for change-type observations and change-related concepts
@@ -768,20 +803,14 @@ export class SearchManager {
           };
         }
 
-        let combinedText: string;
-        if (format === 'index') {
-          const header = `Found ${results.length} change-related observation(s):\n\n`;
-          const formattedResults = results.map((obs, i) => this.formatter.formatObservationIndex(obs, i));
-          combinedText = header + formattedResults.join('\n\n');
-        } else {
-          const formattedResults = results.map((obs) => this.formatter.formatObservationResult(obs));
-          combinedText = formattedResults.join('\n\n---\n\n');
-        }
+        // Format as table
+        const header = `Found ${results.length} change-related observation(s)\n\n${this.formatter.formatTableHeader()}`;
+        const formattedResults = results.map((obs, i) => this.formatter.formatObservationIndex(obs, i));
 
         return {
           content: [{
             type: 'text' as const,
-            text: combinedText
+            text: header + '\n' + formattedResults.join('\n')
           }]
         };
       } catch (error: any) {
@@ -801,7 +830,7 @@ export class SearchManager {
   async howItWorks(args: any): Promise<any> {
       try {
         const normalized = this.normalizeParams(args);
-        const { format = 'index', ...filters } = normalized;
+        const { ...filters } = normalized;
         let results: ObservationSearchResult[] = [];
 
         // Search for how-it-works concept observations
@@ -844,20 +873,14 @@ export class SearchManager {
           };
         }
 
-        let combinedText: string;
-        if (format === 'index') {
-          const header = `Found ${results.length} "how it works" observation(s):\n\n`;
-          const formattedResults = results.map((obs, i) => this.formatter.formatObservationIndex(obs, i));
-          combinedText = header + formattedResults.join('\n\n');
-        } else {
-          const formattedResults = results.map((obs) => this.formatter.formatObservationResult(obs));
-          combinedText = formattedResults.join('\n\n---\n\n');
-        }
+        // Format as table
+        const header = `Found ${results.length} "how it works" observation(s)\n\n${this.formatter.formatTableHeader()}`;
+        const formattedResults = results.map((obs, i) => this.formatter.formatObservationIndex(obs, i));
 
         return {
           content: [{
             type: 'text' as const,
-            text: combinedText
+            text: header + '\n' + formattedResults.join('\n')
           }]
         };
       } catch (error: any) {
@@ -877,7 +900,7 @@ export class SearchManager {
   async searchObservations(args: any): Promise<any> {
       try {
         const normalized = this.normalizeParams(args);
-        const { query, format = 'index', ...options } = normalized;
+        const { query, ...options } = normalized;
         let results: ObservationSearchResult[] = [];
 
         // Vector-first search via ChromaDB
@@ -891,7 +914,7 @@ export class SearchManager {
 
             if (chromaResults.ids.length > 0) {
               // Step 2: Filter by recency (90 days)
-              const ninetyDaysAgo = Date.now() - (90 * 24 * 60 * 60 * 1000);
+              const ninetyDaysAgo = Date.now() - RECENCY_WINDOW_MS;
               const recentIds = chromaResults.ids.filter((_id, idx) => {
                 const meta = chromaResults.metadatas[idx];
                 return meta && meta.created_at_epoch > ninetyDaysAgo;
@@ -920,21 +943,14 @@ export class SearchManager {
           };
         }
 
-        // Format based on requested format
-        let combinedText: string;
-        if (format === 'index') {
-          const header = `Found ${results.length} observation(s) matching "${query}":\n\n`;
-          const formattedResults = results.map((obs, i) => this.formatter.formatObservationIndex(obs, i));
-          combinedText = header + formattedResults.join('\n\n') + this.formatter.formatSearchTips();
-        } else {
-          const formattedResults = results.map((obs) => this.formatter.formatObservationResult(obs));
-          combinedText = formattedResults.join('\n\n---\n\n');
-        }
+        // Format as table
+        const header = `Found ${results.length} observation(s) matching "${query}"\n\n${this.formatter.formatTableHeader()}`;
+        const formattedResults = results.map((obs, i) => this.formatter.formatObservationIndex(obs, i));
 
         return {
           content: [{
             type: 'text' as const,
-            text: combinedText
+            text: header + '\n' + formattedResults.join('\n')
           }]
         };
       } catch (error: any) {
@@ -954,7 +970,7 @@ export class SearchManager {
   async searchSessions(args: any): Promise<any> {
       try {
         const normalized = this.normalizeParams(args);
-        const { query, format = 'index', ...options } = normalized;
+        const { query, ...options } = normalized;
         let results: SessionSummarySearchResult[] = [];
 
         // Vector-first search via ChromaDB
@@ -968,7 +984,7 @@ export class SearchManager {
 
             if (chromaResults.ids.length > 0) {
               // Step 2: Filter by recency (90 days)
-              const ninetyDaysAgo = Date.now() - (90 * 24 * 60 * 60 * 1000);
+              const ninetyDaysAgo = Date.now() - RECENCY_WINDOW_MS;
               const recentIds = chromaResults.ids.filter((_id, idx) => {
                 const meta = chromaResults.metadatas[idx];
                 return meta && meta.created_at_epoch > ninetyDaysAgo;
@@ -997,21 +1013,14 @@ export class SearchManager {
           };
         }
 
-        // Format based on requested format
-        let combinedText: string;
-        if (format === 'index') {
-          const header = `Found ${results.length} session(s) matching "${query}":\n\n`;
-          const formattedResults = results.map((session, i) => this.formatter.formatSessionIndex(session, i));
-          combinedText = header + formattedResults.join('\n\n') + this.formatter.formatSearchTips();
-        } else {
-          const formattedResults = results.map((session) => this.formatter.formatSessionResult(session));
-          combinedText = formattedResults.join('\n\n---\n\n');
-        }
+        // Format as table
+        const header = `Found ${results.length} session(s) matching "${query}"\n\n${this.formatter.formatTableHeader()}`;
+        const formattedResults = results.map((session, i) => this.formatter.formatSessionIndex(session, i));
 
         return {
           content: [{
             type: 'text' as const,
-            text: combinedText
+            text: header + '\n' + formattedResults.join('\n')
           }]
         };
       } catch (error: any) {
@@ -1031,7 +1040,7 @@ export class SearchManager {
   async searchUserPrompts(args: any): Promise<any> {
       try {
         const normalized = this.normalizeParams(args);
-        const { query, format = 'index', ...options } = normalized;
+        const { query, ...options } = normalized;
         let results: UserPromptSearchResult[] = [];
 
         // Vector-first search via ChromaDB
@@ -1045,7 +1054,7 @@ export class SearchManager {
 
             if (chromaResults.ids.length > 0) {
               // Step 2: Filter by recency (90 days)
-              const ninetyDaysAgo = Date.now() - (90 * 24 * 60 * 60 * 1000);
+              const ninetyDaysAgo = Date.now() - RECENCY_WINDOW_MS;
               const recentIds = chromaResults.ids.filter((_id, idx) => {
                 const meta = chromaResults.metadatas[idx];
                 return meta && meta.created_at_epoch > ninetyDaysAgo;
@@ -1074,21 +1083,14 @@ export class SearchManager {
           };
         }
 
-        // Format based on requested format
-        let combinedText: string;
-        if (format === 'index') {
-          const header = `Found ${results.length} user prompt(s) matching "${query}":\n\n`;
-          const formattedResults = results.map((prompt, i) => this.formatter.formatUserPromptIndex(prompt, i));
-          combinedText = header + formattedResults.join('\n\n') + this.formatter.formatSearchTips();
-        } else {
-          const formattedResults = results.map((prompt) => this.formatter.formatUserPromptResult(prompt));
-          combinedText = formattedResults.join('\n\n---\n\n');
-        }
+        // Format as table
+        const header = `Found ${results.length} user prompt(s) matching "${query}"\n\n${this.formatter.formatTableHeader()}`;
+        const formattedResults = results.map((prompt, i) => this.formatter.formatUserPromptIndex(prompt, i));
 
         return {
           content: [{
             type: 'text' as const,
-            text: combinedText
+            text: header + '\n' + formattedResults.join('\n')
           }]
         };
       } catch (error: any) {
@@ -1108,7 +1110,7 @@ export class SearchManager {
   async findByConcept(args: any): Promise<any> {
       try {
         const normalized = this.normalizeParams(args);
-        const { concepts: concept, format = 'index', ...filters } = normalized;
+        const { concepts: concept, ...filters } = normalized;
         let results: ObservationSearchResult[] = [];
 
         // Metadata-first, semantic-enhanced search
@@ -1163,21 +1165,14 @@ export class SearchManager {
           };
         }
 
-        // Format based on requested format
-        let combinedText: string;
-        if (format === 'index') {
-          const header = `Found ${results.length} observation(s) with concept "${concept}":\n\n`;
-          const formattedResults = results.map((obs, i) => this.formatter.formatObservationIndex(obs, i));
-          combinedText = header + formattedResults.join('\n\n') + this.formatter.formatSearchTips();
-        } else {
-          const formattedResults = results.map((obs) => this.formatter.formatObservationResult(obs));
-          combinedText = formattedResults.join('\n\n---\n\n');
-        }
+        // Format as table
+        const header = `Found ${results.length} observation(s) with concept "${concept}"\n\n${this.formatter.formatTableHeader()}`;
+        const formattedResults = results.map((obs, i) => this.formatter.formatObservationIndex(obs, i));
 
         return {
           content: [{
             type: 'text' as const,
-            text: combinedText
+            text: header + '\n' + formattedResults.join('\n')
           }]
         };
       } catch (error: any) {
@@ -1197,7 +1192,7 @@ export class SearchManager {
   async findByFile(args: any): Promise<any> {
       try {
         const normalized = this.normalizeParams(args);
-        const { files: filePath, format = 'index', ...filters } = normalized;
+        const { files: filePath, ...filters } = normalized;
         let observations: ObservationSearchResult[] = [];
         let sessions: SessionSummarySearchResult[] = [];
 
@@ -1261,42 +1256,24 @@ export class SearchManager {
           };
         }
 
-        let combinedText: string;
-        if (format === 'index') {
-          const header = `Found ${totalResults} result(s) for file "${filePath}":\n\n`;
-          const formattedResults: string[] = [];
+        // Format as table
+        const header = `Found ${totalResults} result(s) for file "${filePath}"\n\n${this.formatter.formatTableHeader()}`;
+        const formattedResults: string[] = [];
 
-          // Add observations
-          observations.forEach((obs, i) => {
-            formattedResults.push(this.formatter.formatObservationIndex(obs, i));
-          });
+        // Add observations
+        observations.forEach((obs, i) => {
+          formattedResults.push(this.formatter.formatObservationIndex(obs, i));
+        });
 
-          // Add sessions
-          sessions.forEach((session, i) => {
-            formattedResults.push(this.formatter.formatSessionIndex(session, i + observations.length));
-          });
-
-          combinedText = header + formattedResults.join('\n\n') + this.formatter.formatSearchTips();
-        } else {
-          const formattedResults: string[] = [];
-
-          // Add observations
-          observations.forEach((obs) => {
-            formattedResults.push(this.formatter.formatObservationResult(obs));
-          });
-
-          // Add sessions
-          sessions.forEach((session) => {
-            formattedResults.push(this.formatter.formatSessionResult(session));
-          });
-
-          combinedText = formattedResults.join('\n\n---\n\n');
-        }
+        // Add sessions
+        sessions.forEach((session, i) => {
+          formattedResults.push(this.formatter.formatSessionIndex(session, i + observations.length));
+        });
 
         return {
           content: [{
             type: 'text' as const,
-            text: combinedText
+            text: header + '\n' + formattedResults.join('\n')
           }]
         };
       } catch (error: any) {
@@ -1316,7 +1293,7 @@ export class SearchManager {
   async findByType(args: any): Promise<any> {
       try {
         const normalized = this.normalizeParams(args);
-        const { type, format = 'index', ...filters } = normalized;
+        const { type, ...filters } = normalized;
         const typeStr = Array.isArray(type) ? type.join(', ') : type;
         let results: ObservationSearchResult[] = [];
 
@@ -1372,21 +1349,14 @@ export class SearchManager {
           };
         }
 
-        // Format based on requested format
-        let combinedText: string;
-        if (format === 'index') {
-          const header = `Found ${results.length} observation(s) with type "${typeStr}":\n\n`;
-          const formattedResults = results.map((obs, i) => this.formatter.formatObservationIndex(obs, i));
-          combinedText = header + formattedResults.join('\n\n') + this.formatter.formatSearchTips();
-        } else {
-          const formattedResults = results.map((obs) => this.formatter.formatObservationResult(obs));
-          combinedText = formattedResults.join('\n\n---\n\n');
-        }
+        // Format as table
+        const header = `Found ${results.length} observation(s) with type "${typeStr}"\n\n${this.formatter.formatTableHeader()}`;
+        const formattedResults = results.map((obs, i) => this.formatter.formatObservationIndex(obs, i));
 
         return {
           content: [{
             type: 'text' as const,
-            text: combinedText
+            text: header + '\n' + formattedResults.join('\n')
           }]
         };
       } catch (error: any) {
@@ -1540,6 +1510,7 @@ export class SearchManager {
   async getContextTimeline(args: any): Promise<any> {
       try {
         const { anchor, depth_before = 10, depth_after = 10, project } = args;
+        const cwd = process.cwd();
         let anchorEpoch: number;
         let anchorId: string | number = anchor;
 
@@ -1664,9 +1635,6 @@ export class SearchManager {
         lines.push(`**Window:** ${depth_before} records before → ${depth_after} records after | **Items:** ${filteredItems?.length ?? 0}`);
         lines.push('');
 
-        // Legend
-        lines.push(`**Legend:** 🎯 session-request | 🔴 bugfix | 🟣 feature | 🔄 refactor | ✅ change | 🔵 discovery | 🧠 decision`);
-        lines.push('');
 
         // Group by day
         const dayMap = new Map<string, TimelineItem[]>();
@@ -1712,10 +1680,9 @@ export class SearchManager {
               // Render session
               const sess = item.data as SessionSummarySearchResult;
               const title = sess.request || 'Session summary';
-              const link = `claude-mem://session-summary/${sess.id}`;
               const marker = isAnchor ? ' ← **ANCHOR**' : '';
 
-              lines.push(`**🎯 #S${sess.id}** ${title} (${formatDateTime(item.epoch)}) [→](${link})${marker}`);
+              lines.push(`**🎯 #S${sess.id}** ${title} (${formatDateTime(item.epoch)})${marker}`);
               lines.push('');
             } else if (item.type === 'prompt') {
               // Close any open table
@@ -1736,7 +1703,7 @@ export class SearchManager {
             } else if (item.type === 'observation') {
               // Render observation in table
               const obs = item.data as ObservationSearchResult;
-              const file = 'General'; // Simplified for timeline view
+              const file = extractFirstFile(obs.files_modified, cwd);
 
               // Check if we need a new file section
               if (file !== currentFile) {
@@ -1808,6 +1775,7 @@ export class SearchManager {
   async getTimelineByQuery(args: any): Promise<any> {
       try {
         const { query, mode = 'auto', depth_before = 10, depth_after = 10, limit = 5, project } = args;
+        const cwd = process.cwd();
 
         // Step 1: Search for observations
         let results: ObservationSearchResult[] = [];
@@ -1821,7 +1789,7 @@ export class SearchManager {
 
             if (chromaResults.ids.length > 0) {
               // Filter by recency (90 days)
-              const ninetyDaysAgo = Date.now() - (90 * 24 * 60 * 60 * 1000);
+              const ninetyDaysAgo = Date.now() - RECENCY_WINDOW_MS;
               const recentIds = chromaResults.ids.filter((_id, idx) => {
                 const meta = chromaResults.metadatas[idx];
                 return meta && meta.created_at_epoch > ninetyDaysAgo;
@@ -1873,7 +1841,6 @@ export class SearchManager {
             if (obs.subtitle) {
               lines.push(`   - ${obs.subtitle}`);
             }
-            lines.push(`   - Source: claude-mem://observation/${obs.id}`);
             lines.push('');
           }
 
@@ -1959,9 +1926,6 @@ export class SearchManager {
           lines.push(`**Window:** ${depth_before} records before → ${depth_after} records after | **Items:** ${filteredItems?.length ?? 0}`);
           lines.push('');
 
-          // Legend
-          lines.push(`**Legend:** 🎯 session-request | 🔴 bugfix | 🟣 feature | 🔄 refactor | ✅ change | 🔵 discovery | 🧠 decision`);
-          lines.push('');
 
           // Group by day
           const dayMap = new Map<string, TimelineItem[]>();
@@ -2004,9 +1968,8 @@ export class SearchManager {
                 // Render session
                 const sess = item.data as SessionSummarySearchResult;
                 const title = sess.request || 'Session summary';
-                const link = `claude-mem://session-summary/${sess.id}`;
 
-                lines.push(`**🎯 #S${sess.id}** ${title} (${formatDateTime(item.epoch)}) [→](${link})`);
+                lines.push(`**🎯 #S${sess.id}** ${title} (${formatDateTime(item.epoch)})`);
                 lines.push('');
               } else if (item.type === 'prompt') {
                 // Close any open table
@@ -2027,7 +1990,7 @@ export class SearchManager {
               } else if (item.type === 'observation') {
                 // Render observation in table
                 const obs = item.data as ObservationSearchResult;
-                const file = 'General'; // Simplified for timeline view
+                const file = extractFirstFile(obs.files_modified, cwd);
 
                 // Check if we need a new file section
                 if (file !== currentFile) {

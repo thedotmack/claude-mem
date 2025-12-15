@@ -44,6 +44,9 @@ export class SessionSearch {
    * - Tables maintained but search paths removed
    * - Triggers still fire to keep tables synchronized
    *
+   * Note: Using console.log for migration messages since they run during constructor
+   * before structured logger is available. Actual errors use console.error.
+   *
    * TODO: Remove FTS5 infrastructure in future major version (v7.0.0)
    */
   private ensureFTSTables(): void {
@@ -57,7 +60,7 @@ export class SessionSearch {
         return;
       }
 
-      console.error('[SessionSearch] Creating FTS5 tables...');
+      console.log('[SessionSearch] Creating FTS5 tables...');
 
       // Create observations_fts virtual table
       this.db.run(`
@@ -141,7 +144,7 @@ export class SessionSearch {
         END;
       `);
 
-      console.error('[SessionSearch] FTS5 tables created successfully');
+      console.log('[SessionSearch] FTS5 tables created successfully');
     } catch (error: any) {
       console.error('[SessionSearch] FTS migration error:', error.message);
     }

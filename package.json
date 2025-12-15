@@ -1,6 +1,6 @@
 {
   "name": "claude-mem",
-  "version": "7.1.3",
+  "version": "7.2.3",
   "description": "Memory compression system for Claude Code - persist context across sessions",
   "keywords": [
     "claude",
@@ -32,6 +32,7 @@
   },
   "scripts": {
     "build": "node scripts/build-hooks.js",
+    "build-and-sync": "npm run build && npm run sync-marketplace && sleep 1 && cd ~/.claude/plugins/marketplaces/thedotmack && npm run worker:restart",
     "test": "vitest",
     "test:parser": "npx tsx src/sdk/parser.test.ts",
     "test:context": "echo '{\"session_id\":\"test-'$(date +%s)'\",\"cwd\":\"'$(pwd)'\",\"source\":\"startup\"}' | node plugin/scripts/context-hook.js 2>/dev/null",
@@ -43,11 +44,17 @@
     "worker:stop": "bun plugin/scripts/worker-cli.js stop",
     "worker:restart": "bun plugin/scripts/worker-cli.js restart",
     "worker:status": "bun plugin/scripts/worker-cli.js status",
-    "worker:logs": "tail -f ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log",
+    "worker:logs": "tail -n 50 ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log",
     "changelog:generate": "node scripts/generate-changelog.js",
     "usage:analyze": "node scripts/analyze-usage.js",
     "usage:today": "node scripts/analyze-usage.js $(date +%Y-%m-%d)",
-    "translate-readme": "npx tsx scripts/translate-readme/cli.ts -v README.md zh ko ja"
+    "translate-readme": "bun scripts/translate-readme/cli.ts -v -o docs/i18n README.md",
+    "translate:tier1": "npm run translate-readme -- zh ja pt-br ko es de fr",
+    "translate:tier2": "npm run translate-readme -- he ar ru pl cs nl tr uk",
+    "translate:tier3": "npm run translate-readme -- vi id th hi bn ro sv",
+    "translate:tier4": "npm run translate-readme -- it el hu fi da no",
+    "translate:all": "npm run translate:tier1 && npm run translate:tier2 && npm run translate:tier3 && npm run translate:tier4",
+    "bug-report": "npx tsx scripts/bug-report/cli.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.1.67",

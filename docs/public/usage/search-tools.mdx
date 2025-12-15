@@ -246,11 +246,10 @@ authentication for better scalability and stateless design...
 
 ## Citations
 
-All search results include citations using the `claude-mem://` URI scheme:
+All search results include observation IDs that can be accessed via the HTTP API:
 
-- `claude-mem://observation/123` - Specific observation
-- `claude-mem://session/abc-456` - Specific session
-- `claude-mem://user-prompt/789` - Specific user prompt
+- `http://localhost:37777/api/observation/{id}` - Get specific observation by ID
+- View all observations in the web viewer at `http://localhost:37777`
 
 These citations enable referencing specific historical context in your work.
 

@@ -1,9 +1,10 @@
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from 'fs';
 import { createWriteStream } from 'fs';
 import { join } from 'path';
-import { spawn, spawnSync } from 'child_process';
+import { spawn } from 'child_process';
 import { homedir } from 'os';
 import { DATA_DIR } from '../../shared/paths.js';
+import { getBunPath, isBunAvailable } from '../../utils/bun-path.js';
 
 const PID_FILE = join(DATA_DIR, 'worker.pid');
 const LOG_DIR = join(DATA_DIR, 'logs');
@@ -56,26 +57,22 @@ export class ProcessManager {
   }
 
   private static isBunAvailable(): boolean {
-    try {
-      const result = spawnSync('bun', ['--version'], { stdio: 'pipe', timeout: 5000 });
-      return result.status === 0;
-    } catch {
-      return false;
-    }
+    return isBunAvailable();
   }
 
   private static async startWithBun(script: string, logFile: string, port: number): Promise<{ success: boolean; pid?: number; error?: string }> {
-    if (!this.isBunAvailable()) {
+    const bunPath = getBunPath();
+    if (!bunPath) {
       return {
         success: false,
-        error: 'Bun is required but not found in PATH. Install from https://bun.sh'
+        error: 'Bun is required but not found in PATH or common installation paths. Install from https://bun.sh'
       };
     }
 
     try {
       const isWindows = process.platform === 'win32';
 
-      const child = spawn('bun', [script], {
+      const child = spawn(bunPath, [script], {
         detached: true,
         stdio: ['ignore', 'pipe', 'pipe'],
         env: { ...process.env, CLAUDE_MEM_WORKER_PORT: String(port) },
