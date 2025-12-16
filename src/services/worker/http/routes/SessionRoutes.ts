@@ -6,7 +6,6 @@
  */
 
 import express, { Request, Response } from 'express';
-import { homedir } from 'os';
 import { getWorkerPort } from '../../../../shared/worker-utils.js';
 import { logger } from '../../../../utils/logger.js';
 import { stripMemoryTagsFromJson, stripMemoryTagsFromPrompt } from '../../../../utils/tag-stripping.js';
@@ -458,34 +457,6 @@ export class SessionRoutes extends BaseRouteHandler {
     // Validate required parameters
     if (!this.validateRequired(req, res, ['claudeSessionId', 'project', 'prompt'])) {
       return;
-    }
-
-    // Filter out SDK internal sessions
-    // SDK Agent runs with workingDirectory: homedir(), so project = username
-    // Also check for common SDK internal prompt patterns as fallback
-    const homeDir = homedir();
-    const homeDirName = homeDir.split('/').pop() || '';
-
-    // If project name matches home directory name, this is likely an SDK internal session
-    if (project === homeDirName) {
-      logger.debug('SESSION', 'Skipping SDK internal session (project = homedir)', { project });
-      res.json({ sessionDbId: 0, promptNumber: 0, skipped: true, reason: 'sdk_internal' });
-      return;
-    }
-
-    // Fallback: Check for SDK internal prompt patterns
-    const sdkPromptPatterns = [
-      'You are a Claude-Mem, a specialized observer tool',
-      'PROGRESS SUMMARY CHECKPOINT',
-      'Hello memory agent, you are continuing to observe'
-    ];
-
-    for (const pattern of sdkPromptPatterns) {
-      if (prompt.includes(pattern)) {
-        logger.debug('SESSION', 'Skipping SDK internal prompt', { pattern: pattern.substring(0, 30) });
-        res.json({ sessionDbId: 0, promptNumber: 0, skipped: true, reason: 'sdk_internal' });
-        return;
-      }
     }
 
     const store = this.dbManager.getSessionStore();

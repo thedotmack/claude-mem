@@ -436,7 +436,7 @@ export class WorkerService {
       if (settings.apiKeyHelper && !process.env.ANTHROPIC_AUTH_TOKEN) {
         try {
           const { execSync } = require('child_process');
-          const apiKey = execSync(settings.apiKeyHelper, { encoding: 'utf-8' }).trim();
+          const apiKey = execSync(settings.apiKeyHelper, { encoding: 'utf-8', timeout: 5000 }).trim();
           if (apiKey) {
             process.env.ANTHROPIC_AUTH_TOKEN = apiKey;
             logger.debug('SYSTEM', 'Set ANTHROPIC_AUTH_TOKEN from apiKeyHelper');
