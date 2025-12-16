@@ -60,6 +60,15 @@ export class ProcessManager {
     return isBunAvailable();
   }
 
+  /**
+   * Escapes a string for safe use in PowerShell single-quoted strings.
+   * In PowerShell single quotes, the only special character is the single quote itself,
+   * which must be doubled to escape it.
+   */
+  private static escapePowerShellString(str: string): string {
+    return str.replace(/'/g, "''");
+  }
+
   private static async startWithBun(script: string, logFile: string, port: number): Promise<{ success: boolean; pid?: number; error?: string }> {
     const bunPath = getBunPath();
     if (!bunPath) {
@@ -76,8 +85,16 @@ export class ProcessManager {
         // This properly hides the console window (affects both Bun and Node.js)
         // Note: windowsHide: true doesn't work with detached: true (Bun inherits Node.js process spawning semantics)
         // See: https://github.com/nodejs/node/issues/21825 and PR #315 for detailed testing
+        //
+        // Security: All paths (bunPath, script, MARKETPLACE_ROOT) are application-controlled system paths,
+        // not user input. If an attacker could modify these paths, they would already have full filesystem
+        // access including direct access to ~/.claude-mem/claude-mem.db. Nevertheless, we properly escape
+        // all values for PowerShell to follow security best practices.
+        const escapedBunPath = this.escapePowerShellString(bunPath);
+        const escapedScript = this.escapePowerShellString(script);
+        const escapedWorkDir = this.escapePowerShellString(MARKETPLACE_ROOT);
         const envVars = `$env:CLAUDE_MEM_WORKER_PORT='${port}'`;
-        const psCommand = `${envVars}; Start-Process -FilePath '${bunPath}' -ArgumentList '${script}' -WorkingDirectory '${MARKETPLACE_ROOT}' -WindowStyle Hidden -PassThru | Select-Object -ExpandProperty Id`;
+        const psCommand = `${envVars}; Start-Process -FilePath '${escapedBunPath}' -ArgumentList '${escapedScript}' -WorkingDirectory '${escapedWorkDir}' -WindowStyle Hidden -PassThru | Select-Object -ExpandProperty Id`;
 
         const result = spawnSync('powershell', ['-Command', psCommand], {
           stdio: 'pipe',
