@@ -329,9 +329,8 @@ export class WorkerService {
       // Clean up any orphaned chroma-mcp processes BEFORE starting our own
       await this.cleanupOrphanedProcesses();
 
-      // Load Claude Code API settings and set as env vars for SDK Agent
-      // This allows SDK to use settingSources: [] (no hooks loaded) while still having API auth
-      this.loadClaudeCodeApiSettings();
+      // Load custom API key from claude-mem settings for SDK Agent
+      this.loadCustomKeyAgentSDK();
 
       // Initialize database (once, stays open)
       await this.dbManager.initialize();
@@ -402,51 +401,37 @@ export class WorkerService {
   }
 
   /**
-   * Load Claude Code API settings from ~/.claude/settings.json
-   * Sets ANTHROPIC_BASE_URL and ANTHROPIC_AUTH_TOKEN as env vars
-   * This enables SDK Agent to use settingSources: [] (avoiding loading hooks)
-   * while still having proper API authentication for BYOK users
+   * Load custom API key from ~/.claude-mem/settings.json (for logging/validation only)
+   *
+   * NOTE: API key is now passed to SDK via buildSDKEnvironment() in SDKAgent.ts
+   * This method is kept for startup validation and logging.
    */
-  private loadClaudeCodeApiSettings(): void {
+  private loadCustomKeyAgentSDK(): void {
     try {
       const { homedir } = require('os');
       const { readFileSync, existsSync } = require('fs');
-      const settingsPath = path.join(homedir(), '.claude', 'settings.json');
+      const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+
+      logger.info('SYSTEM', 'Loading API settings', { settingsPath, exists: existsSync(settingsPath) });
 
       if (!existsSync(settingsPath)) {
-        logger.debug('SYSTEM', 'Claude settings.json not found, skipping API config');
+        logger.info('SYSTEM', 'claude-mem settings.json not found, will use default auth');
         return;
       }
 
       const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
 
-      // Check for BYOK env settings
-      if (settings.env) {
-        if (settings.env.ANTHROPIC_BASE_URL && !process.env.ANTHROPIC_BASE_URL) {
-          process.env.ANTHROPIC_BASE_URL = settings.env.ANTHROPIC_BASE_URL;
-          logger.debug('SYSTEM', 'Set ANTHROPIC_BASE_URL from Claude settings');
-        }
-        if (settings.env.ANTHROPIC_AUTH_TOKEN && !process.env.ANTHROPIC_AUTH_TOKEN) {
-          process.env.ANTHROPIC_AUTH_TOKEN = settings.env.ANTHROPIC_AUTH_TOKEN;
-          logger.debug('SYSTEM', 'Set ANTHROPIC_AUTH_TOKEN from Claude settings');
-        }
-      }
+      // Support ANTHROPIC_API_KEY (user-friendly) or ANTHROPIC_AUTH_TOKEN
+      const apiKey = settings.ANTHROPIC_API_KEY || settings.ANTHROPIC_AUTH_TOKEN;
+      logger.info('SYSTEM', 'API key check', {
+        hasApiKey: !!apiKey,
+        keyPrefix: apiKey ? apiKey.substring(0, 15) + '...' : 'none',
+        hasBaseUrl: !!settings.ANTHROPIC_BASE_URL
+      });
 
-      // Also check apiKeyHelper
-      if (settings.apiKeyHelper && !process.env.ANTHROPIC_AUTH_TOKEN) {
-        try {
-          const { execSync } = require('child_process');
-          const apiKey = execSync(settings.apiKeyHelper, { encoding: 'utf-8', timeout: 5000 }).trim();
-          if (apiKey) {
-            process.env.ANTHROPIC_AUTH_TOKEN = apiKey;
-            logger.debug('SYSTEM', 'Set ANTHROPIC_AUTH_TOKEN from apiKeyHelper');
-          }
-        } catch (e) {
-          logger.debug('SYSTEM', 'apiKeyHelper execution failed', { error: (e as Error).message });
-        }
-      }
+      // NOTE: Not setting process.env here - SDK gets env explicitly via buildSDKEnvironment()
     } catch (error) {
-      logger.debug('SYSTEM', 'Failed to load Claude API settings', { error: (error as Error).message });
+      logger.info('SYSTEM', 'Failed to load API settings', { error: (error as Error).message });
     }
   }
 

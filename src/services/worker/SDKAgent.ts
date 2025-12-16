@@ -9,6 +9,7 @@
  */
 
 import { execSync } from 'child_process';
+import { existsSync, readFileSync } from 'fs';
 import { homedir } from 'os';
 import path from 'path';
 import { DatabaseManager } from './DatabaseManager.js';
@@ -67,18 +68,22 @@ export class SDKAgent {
       // Use home directory to ensure Claude subprocess runs in a trusted location
       const workingDirectory = homedir();
 
+      // Build environment with API credentials from ~/.claude-mem/settings.json
+      const sdkEnv = this.buildSDKEnvironment();
+
       // Run Agent SDK query loop
       const queryResult = query({
         prompt: messageGenerator,
-        // @ts-ignore - workingDirectory and settingSources are supported but types may be outdated
+        // @ts-ignore - workingDirectory, settingSources, and env are supported but types may be outdated
         options: {
           model: modelId,
           disallowedTools,
           abortController: session.abortController,
           pathToClaudeCodeExecutable: claudePath,
           workingDirectory,
+          env: sdkEnv,  // Pass environment explicitly to subprocess
           // Use empty settingSources to prevent loading user hooks (avoids infinite recursion)
-          // API auth comes from env vars set by worker-service.loadClaudeCodeApiSettings()
+          // API auth comes from env parameter above, not from settings files
           settingSources: []
         }
       });
@@ -438,5 +443,47 @@ export class SDKAgent {
     const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
     return settings.CLAUDE_MEM_MODEL;
+  }
+
+  /**
+   * Build environment for SDK subprocess with API credentials
+   *
+   * Reads API key from ~/.claude-mem/settings.json and explicitly passes to SDK subprocess.
+   * This ensures BYOK authentication works without requiring settingSources: ["user"],
+   * which would load hooks and cause infinite recursion.
+   */
+  private buildSDKEnvironment(): NodeJS.ProcessEnv {
+    const env = { ...process.env };  // Start with parent env
+
+    try {
+      const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+
+      if (existsSync(settingsPath)) {
+        const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+
+        // Support both ANTHROPIC_API_KEY (user-friendly) and ANTHROPIC_AUTH_TOKEN
+        const apiKey = settings.ANTHROPIC_API_KEY || settings.ANTHROPIC_AUTH_TOKEN;
+        if (apiKey) {
+          env.ANTHROPIC_AUTH_TOKEN = apiKey;
+          logger.debug('SDK', 'Added API key to subprocess environment', {
+            keyPrefix: apiKey.substring(0, 15) + '...'
+          });
+        }
+
+        // Also pass base URL for third-party API proxy support
+        if (settings.ANTHROPIC_BASE_URL) {
+          env.ANTHROPIC_BASE_URL = settings.ANTHROPIC_BASE_URL;
+          logger.debug('SDK', 'Added base URL to subprocess environment', {
+            baseUrl: settings.ANTHROPIC_BASE_URL
+          });
+        }
+      } else {
+        logger.debug('SDK', 'No claude-mem settings found, using default auth');
+      }
+    } catch (error) {
+      logger.warn('SDK', 'Failed to load API settings for subprocess', {}, error as Error);
+    }
+
+    return env;
   }
 }

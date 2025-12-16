@@ -332,6 +332,7 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 | `CLAUDE_MEM_PYTHON_VERSION` | `3.13` | Python version for chroma-mcp |
 | `CLAUDE_CODE_PATH` | _(auto-detect)_ | Path to Claude executable |
 | `CLAUDE_MEM_CONTEXT_OBSERVATIONS` | `50` | Number of observations to inject at SessionStart |
+| `ANTHROPIC_API_KEY` | _(none)_ | Your Anthropic API key for BYOK usage (optional) |
 
 **Settings Management:**
 
@@ -352,7 +353,8 @@ curl http://localhost:37777/api/settings
 {
   "CLAUDE_MEM_MODEL": "claude-sonnet-4-5",
   "CLAUDE_MEM_WORKER_PORT": "37777",
-  "CLAUDE_MEM_CONTEXT_OBSERVATIONS": "50"
+  "CLAUDE_MEM_CONTEXT_OBSERVATIONS": "50",
+  "ANTHROPIC_API_KEY": "sk-ant-api03-..."
 }
 ```
 
