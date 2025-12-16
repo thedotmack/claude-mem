@@ -409,6 +409,14 @@ export class SDKAgent {
         count: session.pendingProcessingIds.size
       });
       session.pendingProcessingIds.clear();
+
+      // Clean up old processed messages (keep last 100 for UI display)
+      const deletedCount = pendingMessageStore.cleanupProcessed(100);
+      if (deletedCount > 0) {
+        logger.debug('SDK', 'Cleaned up old processed messages', {
+          deletedCount
+        });
+      }
     }
 
     // Broadcast activity status after processing (queue may have changed)

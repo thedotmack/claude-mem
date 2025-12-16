@@ -224,12 +224,17 @@ export class PendingMessageStore {
 
   /**
    * Mark message as successfully processed (status: processing -> processed)
+   * Clears tool_input and tool_response to save space (observations are already saved)
    */
   markProcessed(messageId: number): void {
     const now = Date.now();
     const stmt = this.db.prepare(`
       UPDATE pending_messages
-      SET status = 'processed', completed_at_epoch = ?
+      SET
+        status = 'processed',
+        completed_at_epoch = ?,
+        tool_input = NULL,
+        tool_response = NULL
       WHERE id = ? AND status = 'processing'
     `);
     stmt.run(now, messageId);
@@ -334,18 +339,23 @@ export class PendingMessageStore {
 
   /**
    * Cleanup old processed messages (retention policy)
-   * @param retentionMs Delete processed messages older than this (0 = delete all processed)
+   * Keeps the most recent N processed messages, deletes the rest
+   * @param retentionCount Number of processed messages to keep (default: 100)
    * @returns Number of messages deleted
    */
-  cleanupProcessed(retentionMs: number): number {
-    const cutoff = retentionMs === 0 ? Date.now() : Date.now() - retentionMs;
-
+  cleanupProcessed(retentionCount: number = 100): number {
     const stmt = this.db.prepare(`
       DELETE FROM pending_messages
-      WHERE status = 'processed' AND completed_at_epoch < ?
+      WHERE status = 'processed'
+      AND id NOT IN (
+        SELECT id FROM pending_messages
+        WHERE status = 'processed'
+        ORDER BY completed_at_epoch DESC
+        LIMIT ?
+      )
     `);
 
-    const result = stmt.run(cutoff);
+    const result = stmt.run(retentionCount);
     return result.changes;
   }
 
