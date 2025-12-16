@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [7.3.0] - 2025-12-15
+
+## Features
+
+- **Table-based search output**: Unified timeline formatting with cleaner, more organized presentation of search results grouped by date and file
+- **Simplified API**: Removed unused format parameter from MCP search tools for cleaner interface
+- **Shared formatting utilities**: Extracted common timeline formatting logic into reusable module
+
+## Changes
+
+- **Default model upgrade**: Changed default model from Haiku to Sonnet for better observation quality
+- **Removed fake URIs**: Replaced claude-mem:// pseudo-protocol with actual HTTP API endpoints for citations
+
+## Bug Fixes
+
+- Fixed undefined debug function calls in MCP server
+- Fixed skillPath variable scoping bug in instructions endpoint
+- Extracted magic numbers to named constants for better code maintainability
+
 ## [7.2.4] - 2025-12-15
 
 ## What's Changed
@@ -34,25 +53,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - Generate `mem-search.zip` during build from `plugin/skills/mem-search/`
   - Update docs with correct MCP tool list and new download path
   - Single source of truth for Claude Desktop skill
-
-## [7.3.0] - 2025-12-15
-
-## Features
-
-- **Table-based search output**: Unified timeline formatting with cleaner, more organized presentation of search results grouped by date and file
-- **Simplified API**: Removed unused format parameter from MCP search tools for cleaner interface
-- **Shared formatting utilities**: Extracted common timeline formatting logic into reusable module
-
-## Changes
-
-- **Default model upgrade**: Changed default model from Haiku to Sonnet for better observation quality
-- **Removed fake URIs**: Replaced claude-mem:// pseudo-protocol with actual HTTP API endpoints for citations
-
-## Bug Fixes
-
-- Fixed undefined debug function calls in MCP server
-- Fixed skillPath variable scoping bug in instructions endpoint
-- Extracted magic numbers to named constants for better code maintainability
 
 ## [7.2.1] - 2025-12-14
 
