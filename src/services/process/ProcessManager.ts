@@ -70,7 +70,7 @@ export class ProcessManager {
       // Check if error is port-related
       const isPortError = result.error?.includes('EADDRINUSE') || 
                           result.error?.includes('address already in use') ||
-                          result.error?.includes('port') && result.error?.includes('use');
+                          (result.error?.includes('port') && result.error?.includes('use'));
 
       if (isPortError && attempt < MAX_START_RETRIES - 1) {
         // Try to cleanup the port on Windows
@@ -104,8 +104,13 @@ export class ProcessManager {
    * See: https://github.com/oven-sh/bun/issues/12127
    */
   private static async cleanupWindowsPort(port: number): Promise<void> {
+    // Validate port to prevent command injection
+    if (isNaN(port) || port < 1024 || port > 65535) {
+      return;
+    }
+
     try {
-      // Find process using the port
+      // Find process using the port - port is validated above
       const { stdout } = await execAsync(`netstat -ano | findstr :${port}`);
       
       if (!stdout) {
@@ -115,13 +120,15 @@ export class ProcessManager {
       // Parse PID from netstat output
       // Format: "  TCP    127.0.0.1:37777    0.0.0.0:0    LISTENING    12345"
       const lines = stdout.trim().split('\n');
-      const pids = new Set<string>();
+      const pids = new Set<number>();
 
       for (const line of lines) {
         const parts = line.trim().split(/\s+/);
         if (parts.length >= 5 && parts[1].includes(`:${port}`)) {
-          const pid = parts[4];
-          if (pid && pid !== '0' && !isNaN(parseInt(pid))) {
+          const pidStr = parts[4];
+          const pid = parseInt(pidStr, 10);
+          // Validate PID is a positive number
+          if (!isNaN(pid) && pid > 0) {
             pids.add(pid);
           }
         }
@@ -130,6 +137,7 @@ export class ProcessManager {
       // Kill each process holding the port
       for (const pid of pids) {
         try {
+          // PID is validated as a positive integer above
           await execAsync(`taskkill /F /PID ${pid}`);
         } catch (killError) {
           // Process might have already exited or be a system process we can't kill
@@ -296,7 +304,7 @@ export class ProcessManager {
           
           if (recentLogs.includes('EADDRINUSE') || 
               recentLogs.includes('address already in use') ||
-              recentLogs.includes(`port ${port}`) && recentLogs.includes('in use')) {
+              (recentLogs.includes(`port ${port}`) && recentLogs.includes('in use'))) {
             return { 
               success: false, 
               error: `Port ${port} is already in use. Process died during startup.` 
