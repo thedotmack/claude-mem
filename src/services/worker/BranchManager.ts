@@ -5,13 +5,28 @@
  * The installed plugin at ~/.claude/plugins/marketplaces/thedotmack/ is a git repo.
  */
 
-import { execSync } from 'child_process';
+import { execSync, spawnSync } from 'child_process';
 import { existsSync, unlinkSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import { logger } from '../../utils/logger.js';
 
 const INSTALLED_PLUGIN_PATH = join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
+
+/**
+ * Validate branch name to prevent command injection
+ * Only allows alphanumeric, hyphens, underscores, forward slashes, and dots
+ */
+function isValidBranchName(branchName: string): boolean {
+  if (!branchName || typeof branchName !== 'string') {
+    return false;
+  }
+  // Git branch name validation: alphanumeric, hyphen, underscore, slash, dot
+  // Must not start with dot, hyphen, or slash
+  // Must not contain double dots (..)
+  const validBranchRegex = /^[a-zA-Z0-9][a-zA-Z0-9._/-]*$/;
+  return validBranchRegex.test(branchName) && !branchName.includes('..');
+}
 
 // Timeout constants
 const GIT_COMMAND_TIMEOUT_MS = 30_000;
@@ -35,27 +50,54 @@ export interface SwitchResult {
 }
 
 /**
- * Execute git command in installed plugin directory
+ * Execute git command in installed plugin directory using safe array-based arguments
+ * SECURITY: Uses spawnSync with argument array to prevent command injection
  */
-function execGit(command: string): string {
-  return execSync(`git ${command}`, {
+function execGit(args: string[]): string {
+  const result = spawnSync('git', args, {
     cwd: INSTALLED_PLUGIN_PATH,
     encoding: 'utf-8',
     timeout: GIT_COMMAND_TIMEOUT_MS,
-    windowsHide: true
-  }).trim();
+    windowsHide: true,
+    shell: false  // CRITICAL: Never use shell with user input
+  });
+
+  if (result.error) {
+    throw result.error;
+  }
+
+  if (result.status !== 0) {
+    throw new Error(result.stderr || result.stdout || 'Git command failed');
+  }
+
+  return result.stdout.trim();
 }
 
 /**
- * Execute shell command in installed plugin directory
+ * Execute npm command in installed plugin directory using safe array-based arguments
+ * SECURITY: Uses spawnSync with argument array to prevent command injection
  */
-function execShell(command: string, timeoutMs: number = DEFAULT_SHELL_TIMEOUT_MS): string {
-  return execSync(command, {
+function execNpm(args: string[], timeoutMs: number = NPM_INSTALL_TIMEOUT_MS): string {
+  const isWindows = process.platform === 'win32';
+  const npmCmd = isWindows ? 'npm.cmd' : 'npm';
+
+  const result = spawnSync(npmCmd, args, {
     cwd: INSTALLED_PLUGIN_PATH,
     encoding: 'utf-8',
     timeout: timeoutMs,
-    windowsHide: true
-  }).trim();
+    windowsHide: true,
+    shell: false  // CRITICAL: Never use shell with user input
+  });
+
+  if (result.error) {
+    throw result.error;
+  }
+
+  if (result.status !== 0) {
+    throw new Error(result.stderr || result.stdout || 'npm command failed');
+  }
+
+  return result.stdout.trim();
 }
 
 /**
@@ -77,10 +119,10 @@ export function getBranchInfo(): BranchInfo {
 
   try {
     // Get current branch
-    const branch = execGit('rev-parse --abbrev-ref HEAD');
+    const branch = execGit(['rev-parse', '--abbrev-ref', 'HEAD']);
 
     // Check if dirty (has uncommitted changes)
-    const status = execGit('status --porcelain');
+    const status = execGit(['status', '--porcelain']);
     const isDirty = status.length > 0;
 
     // Determine if on beta branch
@@ -118,6 +160,14 @@ export function getBranchInfo(): BranchInfo {
  * 6. Restart worker (handled by caller after response)
  */
 export async function switchBranch(targetBranch: string): Promise<SwitchResult> {
+  // SECURITY: Validate branch name to prevent command injection
+  if (!isValidBranchName(targetBranch)) {
+    return {
+      success: false,
+      error: `Invalid branch name: ${targetBranch}. Branch names must be alphanumeric with hyphens, underscores, slashes, or dots.`
+    };
+  }
+
   const info = getBranchInfo();
 
   if (!info.isGitRepo) {
@@ -143,25 +193,25 @@ export async function switchBranch(targetBranch: string): Promise<SwitchResult> 
 
     // 1. Discard local changes (safe - user data is at ~/.claude-mem/)
     logger.debug('BRANCH', 'Discarding local changes');
-    execGit('checkout -- .');
-    execGit('clean -fd'); // Remove untracked files too
+    execGit(['checkout', '--', '.']);
+    execGit(['clean', '-fd']); // Remove untracked files too
 
     // 2. Fetch latest
     logger.debug('BRANCH', 'Fetching from origin');
-    execGit('fetch origin');
+    execGit(['fetch', 'origin']);
 
     // 3. Checkout target branch
     logger.debug('BRANCH', 'Checking out branch', { branch: targetBranch });
     try {
-      execGit(`checkout ${targetBranch}`);
+      execGit(['checkout', targetBranch]);
     } catch {
       // Branch might not exist locally, try tracking remote
-      execGit(`checkout -b ${targetBranch} origin/${targetBranch}`);
+      execGit(['checkout', '-b', targetBranch, `origin/${targetBranch}`]);
     }
 
     // 4. Pull latest
     logger.debug('BRANCH', 'Pulling latest');
-    execGit(`pull origin ${targetBranch}`);
+    execGit(['pull', 'origin', targetBranch]);
 
     // 5. Clear install marker and run npm install
     const installMarker = join(INSTALLED_PLUGIN_PATH, '.install-version');
@@ -170,7 +220,7 @@ export async function switchBranch(targetBranch: string): Promise<SwitchResult> 
     }
 
     logger.debug('BRANCH', 'Running npm install');
-    execShell('npm install', NPM_INSTALL_TIMEOUT_MS);
+    execNpm(['install'], NPM_INSTALL_TIMEOUT_MS);
 
     logger.success('BRANCH', 'Branch switch complete', {
       branch: targetBranch
@@ -186,8 +236,8 @@ export async function switchBranch(targetBranch: string): Promise<SwitchResult> 
 
     // Try to recover by checking out original branch
     try {
-      if (info.branch) {
-        execGit(`checkout ${info.branch}`);
+      if (info.branch && isValidBranchName(info.branch)) {
+        execGit(['checkout', info.branch]);
       }
     } catch {
       // Recovery failed, user needs manual intervention
@@ -214,21 +264,29 @@ export async function pullUpdates(): Promise<SwitchResult> {
   }
 
   try {
+    // SECURITY: Validate branch name before use
+    if (!isValidBranchName(info.branch)) {
+      return {
+        success: false,
+        error: `Invalid current branch name: ${info.branch}`
+      };
+    }
+
     logger.info('BRANCH', 'Pulling updates', { branch: info.branch });
 
     // Discard local changes first
-    execGit('checkout -- .');
+    execGit(['checkout', '--', '.']);
 
     // Fetch and pull
-    execGit('fetch origin');
-    execGit(`pull origin ${info.branch}`);
+    execGit(['fetch', 'origin']);
+    execGit(['pull', 'origin', info.branch]);
 
     // Clear install marker and reinstall
     const installMarker = join(INSTALLED_PLUGIN_PATH, '.install-version');
     if (existsSync(installMarker)) {
       unlinkSync(installMarker);
     }
-    execShell('npm install', NPM_INSTALL_TIMEOUT_MS);
+    execNpm(['install'], NPM_INSTALL_TIMEOUT_MS);
 
     logger.success('BRANCH', 'Updates pulled', { branch: info.branch });
 
