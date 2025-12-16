@@ -17,7 +17,7 @@
     <img src="https://img.shields.io/badge/License-AGPL%203.0-blue.svg" alt="License">
   </a>
   <a href="package.json">
-    <img src="https://img.shields.io/badge/version-6.5.0-green.svg" alt="Version">
+    <img src="https://img.shields.io/badge/version-7.1.12-green.svg" alt="Version">
   </a>
   <a href="package.json">
     <img src="https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg" alt="Node">
@@ -86,7 +86,6 @@ Restart Claude Code. Context from previous sessions will automatically appear in
 - ⚙️ **Context Configuration** - Fine-grained control over what context gets injected
 - 🤖 **Automatic Operation** - No manual intervention required
 - 🔗 **Citations** - Reference past observations with IDs (access via http://localhost:37777/api/observation/{id} or view all in the web viewer at http://localhost:37777)
-- 🧪 **Beta Channel** - Try experimental features like Endless Mode via version switching
 
 ---
 
@@ -97,7 +96,7 @@ Restart Claude Code. Context from previous sessions will automatically appear in
 💻 **Local Preview**: Run Mintlify docs locally:
 
 ```bash
-cd docs/public
+cd docs
 npx mintlify dev
 ```
 
@@ -135,11 +134,11 @@ npx mintlify dev
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│ Session Start → Inject recent observations as context      │
+│ Session Start → Inject recent observations as context       │
 └─────────────────────────────────────────────────────────────┘
                             ↓
 ┌─────────────────────────────────────────────────────────────┐
-│ User Prompts → Create session, save user prompts           │
+│ User Prompts → Create session, save user prompts            │
 └─────────────────────────────────────────────────────────────┘
                             ↓
 ┌─────────────────────────────────────────────────────────────┐
@@ -249,21 +248,28 @@ See [Beta Features Documentation](https://docs.claude-mem.ai/beta-features) for 
 
 ## What's New
 
-**v6.4.9 - Context Configuration Settings:**
-- 11 new settings for fine-grained control over context injection
-- Configure token economics display, observation filtering by type/concept
-- Control number of observations and which fields to display
+**v7.1.12 - First Install Fix:**
+- Fixed ENOENT error on first install when `~/.claude-mem/` directory doesn't exist yet
+- Ensures data directory is created before writing PM2 migration marker file
+- Fixes [#259](https://github.com/thedotmack/claude-mem/issues/259)
 
-**v6.4.0 - Dual-Tag Privacy System:**
-- `<private>` tags for user-controlled privacy - wrap sensitive content to exclude from storage
-- System-level `<claude-mem-context>` tags prevent recursive observation storage
-- Edge processing ensures private content never reaches database
+**v7.1.0 - Bun Migration:**
+- Replaced PM2 with native Bun process management for improved reliability
+- Switched from better-sqlite3 to bun:sqlite for faster database access
+- Automatic one-time migration on first hook trigger
+- Simplified cross-platform support
+- Refactored hooks from 400-800 lines to ~75 lines (pure HTTP clients)
 
-**v6.3.0 - Version Channel:**
-- Switch between stable and beta versions from the web viewer UI
-- Try experimental features like Endless Mode without manual git operations
+**v7.0.0 - Architecture Overhaul:**
+- 11 new context configuration settings for fine-grained control over context injection
+- Dual-tag privacy system (`<private>` tags for user-controlled privacy)
+- Extracted worker service into modular route handlers and service classes
+- Replaced 9 MCP tools (~2,500 tokens) with 1 skill (~250 tokens)
 
 **Previous Highlights:**
+- **v6.5.0**: Documentation overhaul, Windows console window fix
+- **v6.4.0**: Dual-tag privacy system, search API improvements
+- **v6.3.0**: Version channel for switching between stable/beta
 - **v6.0.0**: Major session management & transcript processing improvements
 - **v5.5.0**: mem-search skill enhancement with 100% effectiveness rate
 - **v5.4.0**: Skill-based search architecture (~2,250 tokens saved per session)
@@ -329,7 +335,7 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `CLAUDE_MEM_MODEL` | `claude-sonnet-4-5` | AI model for observations |
+| `CLAUDE_MEM_MODEL` | `claude-haiku-4-5` | AI model for observations |
 | `CLAUDE_MEM_WORKER_PORT` | `37777` | Worker service port |
 | `CLAUDE_MEM_WORKER_HOST` | `127.0.0.1` | Worker bind address (use `0.0.0.0` for remote access) |
 | `CLAUDE_MEM_DATA_DIR` | `~/.claude-mem` | Data directory location |
@@ -355,7 +361,7 @@ curl http://localhost:37777/api/settings
 
 ```json
 {
-  "CLAUDE_MEM_MODEL": "claude-sonnet-4-5",
+  "CLAUDE_MEM_MODEL": "claude-haiku-4-5",
   "CLAUDE_MEM_WORKER_PORT": "37777",
   "CLAUDE_MEM_CONTEXT_OBSERVATIONS": "50"
 }
