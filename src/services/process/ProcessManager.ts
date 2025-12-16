@@ -1,10 +1,13 @@
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from 'fs';
 import { createWriteStream } from 'fs';
 import { join } from 'path';
-import { spawn } from 'child_process';
+import { spawn, exec } from 'child_process';
+import { promisify } from 'util';
 import { homedir } from 'os';
 import { DATA_DIR } from '../../shared/paths.js';
 import { getBunPath, isBunAvailable } from '../../utils/bun-path.js';
+
+const execAsync = promisify(exec);
 
 const PID_FILE = join(DATA_DIR, 'worker.pid');
 const LOG_DIR = join(DATA_DIR, 'logs');
@@ -16,6 +19,10 @@ const HEALTH_CHECK_TIMEOUT_MS = 10000;
 const HEALTH_CHECK_INTERVAL_MS = 200;
 const HEALTH_CHECK_FETCH_TIMEOUT_MS = 1000;
 const PROCESS_EXIT_CHECK_INTERVAL_MS = 100;
+
+// Retry constants for port binding issues
+const MAX_START_RETRIES = 3;
+const RETRY_DELAYS_MS = [2000, 4000, 6000]; // Exponential backoff
 
 interface PidInfo {
   pid: number;
@@ -52,12 +59,90 @@ export class ProcessManager {
 
     const logFile = this.getLogFilePath();
 
-    // Use Bun on all platforms
-    return this.startWithBun(workerScript, logFile, port);
+    // Retry logic for handling port binding issues (especially on Windows with Bun zombie sockets)
+    for (let attempt = 0; attempt < MAX_START_RETRIES; attempt++) {
+      const result = await this.startWithBun(workerScript, logFile, port);
+      
+      if (result.success) {
+        return result;
+      }
+
+      // Check if error is port-related
+      const isPortError = result.error?.includes('EADDRINUSE') || 
+                          result.error?.includes('address already in use') ||
+                          result.error?.includes('port') && result.error?.includes('use');
+
+      if (isPortError && attempt < MAX_START_RETRIES - 1) {
+        // Try to cleanup the port on Windows
+        if (process.platform === 'win32') {
+          await this.cleanupWindowsPort(port);
+        }
+
+        // Wait before retrying
+        await new Promise(resolve => setTimeout(resolve, RETRY_DELAYS_MS[attempt]));
+        continue;
+      }
+
+      // Non-port error or final attempt failed
+      return result;
+    }
+
+    // Should not reach here, but return error just in case
+    return {
+      success: false,
+      error: `Failed to start worker after ${MAX_START_RETRIES} attempts`
+    };
   }
 
   private static isBunAvailable(): boolean {
     return isBunAvailable();
+  }
+
+  /**
+   * Cleanup zombie port on Windows
+   * Addresses Bun's known issue where TCP sockets remain bound after process termination
+   * See: https://github.com/oven-sh/bun/issues/12127
+   */
+  private static async cleanupWindowsPort(port: number): Promise<void> {
+    try {
+      // Find process using the port
+      const { stdout } = await execAsync(`netstat -ano | findstr :${port}`);
+      
+      if (!stdout) {
+        return; // Port is not bound
+      }
+
+      // Parse PID from netstat output
+      // Format: "  TCP    127.0.0.1:37777    0.0.0.0:0    LISTENING    12345"
+      const lines = stdout.trim().split('\n');
+      const pids = new Set<string>();
+
+      for (const line of lines) {
+        const parts = line.trim().split(/\s+/);
+        if (parts.length >= 5 && parts[1].includes(`:${port}`)) {
+          const pid = parts[4];
+          if (pid && pid !== '0' && !isNaN(parseInt(pid))) {
+            pids.add(pid);
+          }
+        }
+      }
+
+      // Kill each process holding the port
+      for (const pid of pids) {
+        try {
+          await execAsync(`taskkill /F /PID ${pid}`);
+        } catch (killError) {
+          // Process might have already exited or be a system process we can't kill
+          // Continue with other PIDs
+        }
+      }
+
+      // Give the OS time to release the port
+      await new Promise(resolve => setTimeout(resolve, 500));
+    } catch (error) {
+      // Non-fatal error - netstat might fail if port is not in use
+      // or taskkill might fail if we don't have permissions
+    }
   }
 
   private static async startWithBun(script: string, logFile: string, port: number): Promise<{ success: boolean; pid?: number; error?: string }> {
@@ -199,10 +284,27 @@ export class ProcessManager {
 
   private static async waitForHealth(pid: number, port: number, timeoutMs: number = HEALTH_CHECK_TIMEOUT_MS): Promise<{ success: boolean; pid?: number; error?: string }> {
     const startTime = Date.now();
+    const logFile = this.getLogFilePath();
 
     while (Date.now() - startTime < timeoutMs) {
       // Check if process is still alive
       if (!this.isProcessAlive(pid)) {
+        // Process died - check logs for port binding error
+        try {
+          const logContent = readFileSync(logFile, 'utf-8');
+          const recentLogs = logContent.split('\n').slice(-20).join('\n');
+          
+          if (recentLogs.includes('EADDRINUSE') || 
+              recentLogs.includes('address already in use') ||
+              recentLogs.includes(`port ${port}`) && recentLogs.includes('in use')) {
+            return { 
+              success: false, 
+              error: `Port ${port} is already in use. Process died during startup.` 
+            };
+          }
+        } catch {
+          // Can't read logs, return generic error
+        }
         return { success: false, error: 'Process died during startup' };
       }
 

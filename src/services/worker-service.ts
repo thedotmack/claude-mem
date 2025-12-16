@@ -485,7 +485,16 @@ if (require.main === module || !module.parent) {
   });
 
   worker.start().catch((error) => {
-    logger.failure('SYSTEM', 'Worker failed to start', {}, error as Error);
+    const isPortError = error?.code === 'EADDRINUSE' || 
+                        error?.message?.includes('EADDRINUSE') ||
+                        error?.message?.includes('address already in use');
+    
+    if (isPortError) {
+      const port = getWorkerPort();
+      logger.failure('SYSTEM', `Failed to start server. Is port ${port} in use?`, { port, error: error?.message });
+    } else {
+      logger.failure('SYSTEM', 'Worker failed to start', {}, error as Error);
+    }
     process.exit(1);
   });
 }
