@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [7.3.3] - 2025-12-16
+
+## What's Changed
+
+- Remove all better-sqlite3 references from codebase (#357)
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.3.2...v7.3.3
+
 ## [7.3.2] - 2025-12-16
 
 ## 🪟 Windows Console Fix
