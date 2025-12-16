@@ -13,8 +13,6 @@ export const HOOK_TIMEOUTS = {
 export const HOOK_EXIT_CODES = {
   SUCCESS: 0,
   FAILURE: 1,
-  /** Show user message that Claude does NOT receive as context */
-  USER_MESSAGE_ONLY: 3,
 } as const;
 
 export function getTimeout(baseTimeout: number): number {
