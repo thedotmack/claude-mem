@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import fs from 'fs';
-import Database from 'better-sqlite3';
+import { Database } from 'bun:sqlite';
 import readline from 'readline';
 import path from 'path';
 import { homedir } from 'os';
