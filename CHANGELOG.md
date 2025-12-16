@@ -4,13 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [7.3.0] - 2025-12-15
+## [7.3.0] - 2025-12-16
 
 ## Features
 
 - **Table-based search output**: Unified timeline formatting with cleaner, more organized presentation of search results grouped by date and file
 - **Simplified API**: Removed unused format parameter from MCP search tools for cleaner interface
 - **Shared formatting utilities**: Extracted common timeline formatting logic into reusable module
+- **Batch observations endpoint**: Added `/api/observations/batch` endpoint for efficient retrieval of multiple observations by ID array
 
 ## Changes
 
@@ -22,6 +23,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Fixed undefined debug function calls in MCP server
 - Fixed skillPath variable scoping bug in instructions endpoint
 - Extracted magic numbers to named constants for better code maintainability
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.2.4...v7.3.0
 
 ## [7.2.4] - 2025-12-15
 
