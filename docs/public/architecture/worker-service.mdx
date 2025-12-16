@@ -19,7 +19,7 @@ The worker service is a long-running HTTP API built with Express.js and managed 
 
 ## REST API Endpoints
 
-The worker service exposes 14 HTTP endpoints organized into four categories:
+The worker service exposes 20 HTTP endpoints organized into five categories:
 
 ### Viewer & Health Endpoints
 
@@ -156,7 +156,150 @@ GET /api/summaries?project=my-project&limit=20&offset=0
 }
 ```
 
-#### 7. Get Stats
+#### 7. Get Observation by ID
+```
+GET /api/observation/:id
+```
+
+**Purpose**: Retrieve a single observation by its ID
+
+**Path Parameters**:
+- `id` (required): Observation ID
+
+**Response**:
+```json
+{
+  "id": 123,
+  "sdk_session_id": "abc123",
+  "project": "my-project",
+  "type": "bugfix",
+  "title": "Fix authentication bug",
+  "narrative": "...",
+  "created_at": "2025-11-06T10:30:00Z",
+  "created_at_epoch": 1730886600000
+}
+```
+
+**Error Response** (404):
+```json
+{
+  "error": "Observation #123 not found"
+}
+```
+
+#### 8. Get Observations by IDs (Batch)
+```
+POST /api/observations/batch
+```
+
+**Purpose**: Retrieve multiple observations by their IDs in a single request
+
+**Request Body**:
+```json
+{
+  "ids": [123, 456, 789],
+  "orderBy": "date_desc",
+  "limit": 10,
+  "project": "my-project"
+}
+```
+
+**Body Parameters**:
+- `ids` (required): Array of observation IDs
+- `orderBy` (optional): Sort order - `date_desc` or `date_asc` (default: `date_desc`)
+- `limit` (optional): Maximum number of results to return
+- `project` (optional): Filter by project name
+
+**Response**:
+```json
+[
+  {
+    "id": 789,
+    "sdk_session_id": "abc123",
+    "project": "my-project",
+    "type": "feature",
+    "title": "Add new feature",
+    "narrative": "...",
+    "created_at": "2025-11-06T12:00:00Z",
+    "created_at_epoch": 1730891400000
+  },
+  {
+    "id": 456,
+    "sdk_session_id": "abc124",
+    "project": "my-project",
+    "type": "bugfix",
+    "title": "Fix authentication bug",
+    "narrative": "...",
+    "created_at": "2025-11-06T10:30:00Z",
+    "created_at_epoch": 1730886600000
+  }
+]
+```
+
+**Error Responses**:
+- `400 Bad Request`: `{"error": "ids must be an array of numbers"}`
+- `400 Bad Request`: `{"error": "All ids must be integers"}`
+
+**Use Case**: This endpoint is used by the `get_batch_observations` MCP tool to efficiently retrieve multiple observations in a single request, avoiding the overhead of multiple individual requests.
+
+#### 9. Get Session by ID
+```
+GET /api/session/:id
+```
+
+**Purpose**: Retrieve a single session by its ID
+
+**Path Parameters**:
+- `id` (required): Session ID
+
+**Response**:
+```json
+{
+  "id": 456,
+  "sdk_session_id": "abc123",
+  "project": "my-project",
+  "request": "User's original request",
+  "completed": "Work finished",
+  "created_at": "2025-11-06T10:30:00Z"
+}
+```
+
+**Error Response** (404):
+```json
+{
+  "error": "Session #456 not found"
+}
+```
+
+#### 10. Get Prompt by ID
+```
+GET /api/prompt/:id
+```
+
+**Purpose**: Retrieve a single user prompt by its ID
+
+**Path Parameters**:
+- `id` (required): Prompt ID
+
+**Response**:
+```json
+{
+  "id": 1,
+  "session_id": "abc123",
+  "prompt": "User's prompt text",
+  "prompt_number": 1,
+  "created_at": "2025-11-06T10:30:00Z"
+}
+```
+
+**Error Response** (404):
+```json
+{
+  "error": "Prompt #1 not found"
+}
+```
+
+#### 12. Get Stats
 ```
 GET /api/stats
 ```
@@ -187,9 +330,23 @@ GET /api/stats
 }
 ```
 
+#### 13. Get Projects
+```
+GET /api/projects
+```
+
+**Purpose**: Get list of distinct projects from observations
+
+**Response**:
+```json
+{
+  "projects": ["my-project", "other-project", "test-project"]
+}
+```
+
 ### Settings Endpoints
 
-#### 8. Get Settings
+#### 14. Get Settings
 ```
 GET /api/settings
 ```
@@ -205,7 +362,7 @@ GET /api/settings
 }
 ```
 
-#### 9. Save Settings
+#### 15. Save Settings
 ```
 POST /api/settings
 ```
@@ -230,7 +387,7 @@ POST /api/settings
 
 ### Session Management Endpoints
 
-#### 10. Initialize Session
+#### 16. Initialize Session
 ```
 POST /sessions/:sessionDbId/init
 ```
@@ -251,7 +408,7 @@ POST /sessions/:sessionDbId/init
 }
 ```
 
-#### 11. Add Observation
+#### 17. Add Observation
 ```
 POST /sessions/:sessionDbId/observations
 ```
@@ -274,7 +431,7 @@ POST /sessions/:sessionDbId/observations
 }
 ```
 
-#### 12. Generate Summary
+#### 18. Generate Summary
 ```
 POST /sessions/:sessionDbId/summarize
 ```
@@ -294,7 +451,7 @@ POST /sessions/:sessionDbId/summarize
 }
 ```
 
-#### 13. Session Status
+#### 19. Session Status
 ```
 GET /sessions/:sessionDbId/status
 ```
@@ -309,7 +466,7 @@ GET /sessions/:sessionDbId/status
 }
 ```
 
-#### 14. Delete Session
+#### 20. Delete Session
 ```
 DELETE /sessions/:sessionDbId
 ```
