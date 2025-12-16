@@ -1040,6 +1040,36 @@ export class SessionStore {
   }
 
   /**
+   * Get SDK sessions by SDK session IDs
+   * Used for exporting session metadata
+   */
+  getSdkSessionsBySessionIds(sdkSessionIds: string[]): {
+    id: number;
+    claude_session_id: string;
+    sdk_session_id: string;
+    project: string;
+    user_prompt: string;
+    started_at: string;
+    started_at_epoch: number;
+    completed_at: string | null;
+    completed_at_epoch: number | null;
+    status: string;
+  }[] {
+    if (sdkSessionIds.length === 0) return [];
+
+    const placeholders = sdkSessionIds.map(() => '?').join(',');
+    const stmt = this.db.prepare(`
+      SELECT id, claude_session_id, sdk_session_id, project, user_prompt,
+             started_at, started_at_epoch, completed_at, completed_at_epoch, status
+      FROM sdk_sessions
+      WHERE sdk_session_id IN (${placeholders})
+      ORDER BY started_at_epoch DESC
+    `);
+
+    return stmt.all(...sdkSessionIds) as any[];
+  }
+
+  /**
    * Find active SDK session for a Claude session
    */
   findActiveSDKSession(claudeSessionId: string): {
@@ -1794,5 +1824,213 @@ export class SessionStore {
    */
   close(): void {
     this.db.close();
+  }
+
+  // ===========================================
+  // Import Methods (for import-memories script)
+  // ===========================================
+
+  /**
+   * Import SDK session with duplicate checking
+   * Returns: { imported: boolean, id: number }
+   */
+  importSdkSession(session: {
+    claude_session_id: string;
+    sdk_session_id: string;
+    project: string;
+    user_prompt: string;
+    started_at: string;
+    started_at_epoch: number;
+    completed_at: string | null;
+    completed_at_epoch: number | null;
+    status: string;
+  }): { imported: boolean; id: number } {
+    // Check if session already exists
+    const existing = this.db.prepare(
+      'SELECT id FROM sdk_sessions WHERE claude_session_id = ?'
+    ).get(session.claude_session_id) as { id: number } | undefined;
+
+    if (existing) {
+      return { imported: false, id: existing.id };
+    }
+
+    const stmt = this.db.prepare(`
+      INSERT INTO sdk_sessions (
+        claude_session_id, sdk_session_id, project, user_prompt,
+        started_at, started_at_epoch, completed_at, completed_at_epoch, status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const result = stmt.run(
+      session.claude_session_id,
+      session.sdk_session_id,
+      session.project,
+      session.user_prompt,
+      session.started_at,
+      session.started_at_epoch,
+      session.completed_at,
+      session.completed_at_epoch,
+      session.status
+    );
+
+    return { imported: true, id: result.lastInsertRowid as number };
+  }
+
+  /**
+   * Import session summary with duplicate checking
+   * Returns: { imported: boolean, id: number }
+   */
+  importSessionSummary(summary: {
+    sdk_session_id: string;
+    project: string;
+    request: string | null;
+    investigated: string | null;
+    learned: string | null;
+    completed: string | null;
+    next_steps: string | null;
+    files_read: string | null;
+    files_edited: string | null;
+    notes: string | null;
+    prompt_number: number | null;
+    discovery_tokens: number;
+    created_at: string;
+    created_at_epoch: number;
+  }): { imported: boolean; id: number } {
+    // Check if summary already exists for this session
+    const existing = this.db.prepare(
+      'SELECT id FROM session_summaries WHERE sdk_session_id = ?'
+    ).get(summary.sdk_session_id) as { id: number } | undefined;
+
+    if (existing) {
+      return { imported: false, id: existing.id };
+    }
+
+    const stmt = this.db.prepare(`
+      INSERT INTO session_summaries (
+        sdk_session_id, project, request, investigated, learned,
+        completed, next_steps, files_read, files_edited, notes,
+        prompt_number, discovery_tokens, created_at, created_at_epoch
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const result = stmt.run(
+      summary.sdk_session_id,
+      summary.project,
+      summary.request,
+      summary.investigated,
+      summary.learned,
+      summary.completed,
+      summary.next_steps,
+      summary.files_read,
+      summary.files_edited,
+      summary.notes,
+      summary.prompt_number,
+      summary.discovery_tokens || 0,
+      summary.created_at,
+      summary.created_at_epoch
+    );
+
+    return { imported: true, id: result.lastInsertRowid as number };
+  }
+
+  /**
+   * Import observation with duplicate checking
+   * Duplicates are identified by sdk_session_id + title + created_at_epoch
+   * Returns: { imported: boolean, id: number }
+   */
+  importObservation(obs: {
+    sdk_session_id: string;
+    project: string;
+    text: string | null;
+    type: string;
+    title: string | null;
+    subtitle: string | null;
+    facts: string | null;
+    narrative: string | null;
+    concepts: string | null;
+    files_read: string | null;
+    files_modified: string | null;
+    prompt_number: number | null;
+    discovery_tokens: number;
+    created_at: string;
+    created_at_epoch: number;
+  }): { imported: boolean; id: number } {
+    // Check if observation already exists
+    const existing = this.db.prepare(`
+      SELECT id FROM observations
+      WHERE sdk_session_id = ? AND title = ? AND created_at_epoch = ?
+    `).get(obs.sdk_session_id, obs.title, obs.created_at_epoch) as { id: number } | undefined;
+
+    if (existing) {
+      return { imported: false, id: existing.id };
+    }
+
+    const stmt = this.db.prepare(`
+      INSERT INTO observations (
+        sdk_session_id, project, text, type, title, subtitle,
+        facts, narrative, concepts, files_read, files_modified,
+        prompt_number, discovery_tokens, created_at, created_at_epoch
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const result = stmt.run(
+      obs.sdk_session_id,
+      obs.project,
+      obs.text,
+      obs.type,
+      obs.title,
+      obs.subtitle,
+      obs.facts,
+      obs.narrative,
+      obs.concepts,
+      obs.files_read,
+      obs.files_modified,
+      obs.prompt_number,
+      obs.discovery_tokens || 0,
+      obs.created_at,
+      obs.created_at_epoch
+    );
+
+    return { imported: true, id: result.lastInsertRowid as number };
+  }
+
+  /**
+   * Import user prompt with duplicate checking
+   * Duplicates are identified by claude_session_id + prompt_number
+   * Returns: { imported: boolean, id: number }
+   */
+  importUserPrompt(prompt: {
+    claude_session_id: string;
+    prompt_number: number;
+    prompt_text: string;
+    created_at: string;
+    created_at_epoch: number;
+  }): { imported: boolean; id: number } {
+    // Check if prompt already exists
+    const existing = this.db.prepare(`
+      SELECT id FROM user_prompts
+      WHERE claude_session_id = ? AND prompt_number = ?
+    `).get(prompt.claude_session_id, prompt.prompt_number) as { id: number } | undefined;
+
+    if (existing) {
+      return { imported: false, id: existing.id };
+    }
+
+    const stmt = this.db.prepare(`
+      INSERT INTO user_prompts (
+        claude_session_id, prompt_number, prompt_text,
+        created_at, created_at_epoch
+      ) VALUES (?, ?, ?, ?, ?)
+    `);
+
+    const result = stmt.run(
+      prompt.claude_session_id,
+      prompt.prompt_number,
+      prompt.prompt_text,
+      prompt.created_at,
+      prompt.created_at_epoch
+    );
+
+    return { imported: true, id: result.lastInsertRowid as number };
   }
 }

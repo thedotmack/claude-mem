@@ -172,7 +172,8 @@ SELECT
 If FTS5 counts don't match, triggers may have failed. Restart worker to rebuild:
 
 ```bash
-pm2 restart claude-mem-worker
+cd ~/.claude/plugins/marketplaces/thedotmack/
+npm run worker:restart
 ```
 
 The worker will rebuild FTS5 indexes on startup if they're out of sync.
@@ -196,7 +197,7 @@ The worker will rebuild FTS5 indexes on startup if they're out of sync.
 1. Create test observation (use any skill and cancel)
 2. Check worker logs for errors:
    ```bash
-   pm2 logs claude-mem-worker --lines 50 --nostream
+   tail -50 ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log
    ```
 3. Verify observation appears in database
 
@@ -228,9 +229,10 @@ ls -la ~/.claude-mem/claude-mem.db-wal
 ls -la ~/.claude-mem/claude-mem.db-shm
 
 # Remove lock files (only if worker is stopped!)
-pm2 stop claude-mem-worker
+cd ~/.claude/plugins/marketplaces/thedotmack/
+npm run worker:stop
 rm ~/.claude-mem/claude-mem.db-wal ~/.claude-mem/claude-mem.db-shm
-pm2 start claude-mem-worker
+npm run worker:start
 ```
 
 ### Issue: Database Growing Too Large
@@ -260,7 +262,8 @@ sqlite3 ~/.claude-mem/claude-mem.db "SELECT COUNT(*) FROM observations;"
 3. Archive and start fresh:
    ```bash
    mv ~/.claude-mem/claude-mem.db ~/.claude-mem/claude-mem.db.archive
-   pm2 restart claude-mem-worker
+   cd ~/.claude/plugins/marketplaces/thedotmack/
+   npm run worker:restart
    ```
 
 ## Database Recovery
@@ -275,9 +278,10 @@ cp ~/.claude-mem/claude-mem.db ~/.claude-mem/claude-mem.db.backup
 ### Restore from Backup
 
 ```bash
-pm2 stop claude-mem-worker
+cd ~/.claude/plugins/marketplaces/thedotmack/
+npm run worker:stop
 cp ~/.claude-mem/claude-mem.db.backup ~/.claude-mem/claude-mem.db
-pm2 start claude-mem-worker
+npm run worker:start
 ```
 
 ### Export Data
@@ -300,8 +304,10 @@ sqlite3 ~/.claude-mem/claude-mem.db -json "SELECT * FROM user_prompts;" > prompt
 **WARNING: Data loss. Backup first!**
 
 ```bash
+cd ~/.claude/plugins/marketplaces/thedotmack/
+
 # Stop worker
-pm2 stop claude-mem-worker
+npm run worker:stop
 
 # Backup current database
 cp ~/.claude-mem/claude-mem.db ~/.claude-mem/claude-mem.db.old
@@ -310,7 +316,7 @@ cp ~/.claude-mem/claude-mem.db ~/.claude-mem/claude-mem.db.old
 rm ~/.claude-mem/claude-mem.db
 
 # Start worker (creates new database)
-pm2 start claude-mem-worker
+npm run worker:start
 ```
 
 ## Database Statistics
