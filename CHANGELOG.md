@@ -4,6 +4,42 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [7.3.2] - 2025-12-16
+
+## 🪟 Windows Console Fix
+
+Fixes blank console windows appearing for Windows 11 users during claude-mem operations.
+
+### What Changed
+
+- **Windows**: Uses PowerShell `Start-Process -WindowStyle Hidden` to properly hide worker process
+- **Security**: Added PowerShell string escaping to follow security best practices
+- **Unix/Mac**: No changes (continues to work as before)
+
+### Root Cause
+
+The issue was caused by a Node.js limitation where `windowsHide: true` doesn't work with `detached: true` in `child_process.spawn()`. This affects both Bun and Node.js since Bun inherits Node.js process spawning semantics.
+
+See: https://github.com/nodejs/node/issues/21825
+
+### Security Note
+
+While all paths in the PowerShell command are application-controlled (not user input), we've added proper escaping to follow security best practices. If an attacker could modify bun installation paths or plugin directories, they would already have full filesystem access including the database.
+
+### Related
+
+- Fixes #304 (Multiple visible console windows)
+- Merged PR #339
+- Testing documented in PR #315
+
+### Breaking Changes
+
+None - fully backward compatible.
+
+---
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.3.1...v7.3.2
+
 ## [7.3.1] - 2025-12-16
 
 ## 🐛 Bug Fixes
