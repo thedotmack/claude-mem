@@ -282,7 +282,7 @@ No results found for "{query}". Try:
 The search service isn't available. Check if the worker is running:
 
 ```bash
-pm2 list
+npm run worker:status
 ```
 
 If the worker is stopped, restart it:

@@ -93,7 +93,7 @@ curl -s "http://localhost:37777/api/context/recent?limit=3"
 Response: "No recent sessions found for 'new-project'. This might be a new project."
 
 **Worker not running:**
-Connection refused error. Inform user to check if worker is running: `pm2 list`
+Connection refused error. Inform user to check if worker is running: `npm run worker:status`
 
 ## Tips
 

@@ -1,10 +1,10 @@
 # Worker Service Diagnostics
 
-PM2 worker-specific troubleshooting for claude-mem.
+Bun worker-specific troubleshooting for claude-mem.
 
-## PM2 Worker Overview
+## Worker Overview
 
-The claude-mem worker is a persistent background service managed by PM2. It:
+The claude-mem worker is a persistent background service managed by Bun. It:
 - Runs Express.js server on port 37777 (default)
 - Processes observations asynchronously
 - Serves the viewer UI
@@ -15,36 +15,41 @@ The claude-mem worker is a persistent background service managed by PM2. It:
 ### Basic Status Check
 
 ```bash
-# List all PM2 processes
-pm2 list
+# Check worker status using npm script
+cd ~/.claude/plugins/marketplaces/thedotmack/
+npm run worker:status
 
-# JSON format (parseable)
-pm2 jlist
-
-# Filter for claude-mem-worker
-pm2 status | grep claude-mem-worker
+# Or check health endpoint directly
+curl -s http://127.0.0.1:37777/health
 ```
 
-**Expected output:**
+**Expected npm run worker:status output:**
 ```
-│ claude-mem-worker │ online    │ 12345  │ 0    │ 45m │ 0% │ 85.6mb │
+✓ Worker is running (PID: 12345)
+  Port: 37777
+  Uptime: 45m
+  Health: OK
 ```
 
-**Status meanings:**
-- `online` - Worker running correctly
-- `stopped` - Worker stopped (normal shutdown)
-- `errored` - Worker crashed (check logs)
-- `stopping` - Worker shutting down
-- Not listed - Worker never started
+**Expected health endpoint output:**
+```json
+{"status":"ok"}
+```
+
+**Status indicators:**
+- `Worker is running` - Worker running correctly
+- `Worker is not running` - Worker stopped or crashed
+- Connection refused - Worker not running
+- Timeout - Worker hung (restart needed)
 
 ### Detailed Worker Info
 
 ```bash
-# Show detailed information
-pm2 show claude-mem-worker
+# View PID file
+cat ~/.claude-mem/worker.pid
 
-# JSON format
-pm2 jlist | grep -A 20 '"name":"claude-mem-worker"'
+# Check process details
+ps aux | grep "bun.*worker-service"
 ```
 
 ## Worker Health Endpoint
@@ -72,30 +77,37 @@ curl -s http://127.0.0.1:$PORT/health
 ### View Recent Logs
 
 ```bash
-# Last 50 lines
-pm2 logs claude-mem-worker --lines 50 --nostream
+# View logs using npm script
+cd ~/.claude/plugins/marketplaces/thedotmack/
+npm run worker:logs
 
-# Last 200 lines
-pm2 logs claude-mem-worker --lines 200 --nostream
+# View today's log file directly
+cat ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log
+
+# Last 50 lines of today's log
+tail -50 ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log
 
 # Follow logs in real-time
-pm2 logs claude-mem-worker
+tail -f ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log
 ```
 
 ### Search Logs for Errors
 
 ```bash
-# Find errors
-pm2 logs claude-mem-worker --lines 500 --nostream | grep -i "error"
+# Find errors in today's log
+grep -i "error" ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log
 
 # Find exceptions
-pm2 logs claude-mem-worker --lines 500 --nostream | grep -i "exception"
+grep -i "exception" ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log
 
 # Find failed requests
-pm2 logs claude-mem-worker --lines 500 --nostream | grep -i "failed"
+grep -i "failed" ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log
 
 # All error patterns
-pm2 logs claude-mem-worker --lines 500 --nostream | grep -iE "error|exception|failed|crash"
+grep -iE "error|exception|failed|crash" ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log
+
+# Search across all log files
+grep -iE "error|exception|failed|crash" ~/.claude-mem/logs/worker-*.log
 ```
 
 ### Common Log Patterns
@@ -122,8 +134,8 @@ Port 37777 already in use
 
 **Crashes:**
 ```
-PM2        | App [claude-mem-worker] exited with code [1]
-PM2        | App [claude-mem-worker] will restart in 100ms
+Worker process exited with code 1
+Worker restarting...
 ```
 
 ## Starting the Worker
@@ -132,37 +144,26 @@ PM2        | App [claude-mem-worker] will restart in 100ms
 
 ```bash
 cd ~/.claude/plugins/marketplaces/thedotmack/
-pm2 start ecosystem.config.cjs
-```
-
-### Start with Local PM2
-
-If `pm2` command not in PATH:
-
-```bash
-cd ~/.claude/plugins/marketplaces/thedotmack/
-node_modules/.bin/pm2 start ecosystem.config.cjs
+npm run worker:start
 ```
 
 ### Force Restart
 
 ```bash
-# Restart if already running
-pm2 restart claude-mem-worker
+# Restart worker (stops and starts)
+cd ~/.claude/plugins/marketplaces/thedotmack/
+npm run worker:restart
 
-# Delete and start fresh
-pm2 delete claude-mem-worker
-pm2 start ecosystem.config.cjs
+# Or manually stop and start
+npm run worker:stop
+npm run worker:start
 ```
 
 ## Stopping the Worker
 
 ```bash
-# Graceful stop
-pm2 stop claude-mem-worker
-
-# Delete completely (also removes from PM2 list)
-pm2 delete claude-mem-worker
+cd ~/.claude/plugins/marketplaces/thedotmack/
+npm run worker:stop
 ```
 
 ## Worker Not Starting
@@ -172,23 +173,22 @@ pm2 delete claude-mem-worker
 1. **Try manual start to see error:**
    ```bash
    cd ~/.claude/plugins/marketplaces/thedotmack/
-   node plugin/scripts/worker-service.cjs
+   bun plugin/scripts/worker-service.js
    ```
-   This runs the worker directly without PM2, showing full error output.
+   This runs the worker directly, showing full error output.
 
-2. **Check PM2 itself:**
+2. **Check Bun installation:**
    ```bash
-   which pm2
-   pm2 --version
+   which bun
+   bun --version
    ```
-   If PM2 not found, dependencies not installed.
+   If Bun not found, run: `npm install` (auto-installs Bun)
 
 3. **Check dependencies:**
    ```bash
    cd ~/.claude/plugins/marketplaces/thedotmack/
    ls node_modules/@anthropic-ai/claude-agent-sdk
    ls node_modules/express
-   ls node_modules/pm2
    ```
 
 4. **Check port availability:**
@@ -197,42 +197,57 @@ pm2 delete claude-mem-worker
    ```
    If port in use, either kill that process or change claude-mem port.
 
+5. **Check PID file:**
+   ```bash
+   cat ~/.claude-mem/worker.pid
+   ```
+   If worker PID exists but process is dead, remove stale PID:
+   ```bash
+   rm ~/.claude-mem/worker.pid
+   npm run worker:start
+   ```
+
 ### Common Fixes
 
 **Dependencies missing:**
 ```bash
 cd ~/.claude/plugins/marketplaces/thedotmack/
 npm install
-pm2 start ecosystem.config.cjs
+npm run worker:start
 ```
 
 **Port conflict:**
 ```bash
-echo '{"env":{"CLAUDE_MEM_WORKER_PORT":"37778"}}' > ~/.claude-mem/settings.json
-pm2 restart claude-mem-worker
+echo '{"CLAUDE_MEM_WORKER_PORT":"37778"}' > ~/.claude-mem/settings.json
+npm run worker:restart
 ```
 
-**Corrupted PM2:**
+**Stale PID file:**
 ```bash
-pm2 kill  # Stop PM2 daemon
-cd ~/.claude/plugins/marketplaces/thedotmack/
-pm2 start ecosystem.config.cjs
+rm ~/.claude-mem/worker.pid
+npm run worker:start
 ```
 
 ## Worker Crashing Repeatedly
 
-If worker keeps restarting (check with `pm2 status` showing high restart count):
+If worker keeps restarting (check logs for repeated startup messages):
 
 ### Find the Cause
 
 1. **Check error logs:**
    ```bash
-   pm2 logs claude-mem-worker --err --lines 100 --nostream
+   grep -i "error" ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log | tail -100
    ```
 
 2. **Look for crash pattern:**
    ```bash
-   pm2 logs claude-mem-worker --lines 200 --nostream | grep -A 5 "exited with code"
+   grep -A 5 "exited with code" ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log
+   ```
+
+3. **Run worker in foreground to see crashes:**
+   ```bash
+   cd ~/.claude/plugins/marketplaces/thedotmack/
+   bun plugin/scripts/worker-service.js
    ```
 
 ### Common Crash Causes
@@ -246,42 +261,70 @@ If fails, backup and recreate database.
 **Out of memory:**
 Check if database is too large or memory leak. Restart:
 ```bash
-pm2 restart claude-mem-worker
+npm run worker:restart
 ```
 
 **Port conflict race condition:**
 Another process grabbing port intermittently. Change port:
 ```bash
-echo '{"env":{"CLAUDE_MEM_WORKER_PORT":"37778"}}' > ~/.claude-mem/settings.json
-pm2 restart claude-mem-worker
+echo '{"CLAUDE_MEM_WORKER_PORT":"37778"}' > ~/.claude-mem/settings.json
+npm run worker:restart
 ```
 
-## PM2 Management Commands
+## Worker Management Commands
 
 ```bash
-# List processes
-pm2 list
-pm2 jlist  # JSON format
+# Check status
+npm run worker:status
 
-# Show detailed info
-pm2 show claude-mem-worker
+# Start worker
+npm run worker:start
 
-# Monitor resources
-pm2 monit
+# Stop worker
+npm run worker:stop
 
-# Clear logs
-pm2 flush claude-mem-worker
+# Restart worker
+npm run worker:restart
 
-# Restart PM2 daemon
-pm2 kill
-pm2 resurrect  # Restore saved processes
+# View logs
+npm run worker:logs
 
-# Save current process list
-pm2 save
+# Check health endpoint
+curl -s http://127.0.0.1:37777/health
 
-# Update PM2
-npm install -g pm2
+# View PID
+cat ~/.claude-mem/worker.pid
+
+# View today's log file
+cat ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log
+
+# List all log files
+ls -lh ~/.claude-mem/logs/worker-*.log
 ```
+
+## Log File Management
+
+Worker logs are stored in `~/.claude-mem/logs/` with daily rotation:
+
+```bash
+# View today's log
+cat ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log
+
+# View yesterday's log
+cat ~/.claude-mem/logs/worker-$(date -d "yesterday" +%Y-%m-%d).log  # Linux
+cat ~/.claude-mem/logs/worker-$(date -v-1d +%Y-%m-%d).log          # macOS
+
+# List all logs
+ls -lh ~/.claude-mem/logs/
+
+# Clean old logs (older than 7 days)
+find ~/.claude-mem/logs/ -name "worker-*.log" -mtime +7 -delete
+
+# Archive logs
+tar -czf ~/claude-mem-logs-backup-$(date +%Y-%m-%d).tar.gz ~/.claude-mem/logs/
+```
+
+**Note:** Logs auto-rotate daily. No manual flush required.
 
 ## Testing Worker Endpoints
 
@@ -298,10 +341,22 @@ curl -s http://127.0.0.1:37777/ | head -20
 curl -s http://127.0.0.1:37777/api/stats
 
 # Search API
-curl -s "http://127.0.0.1:37777/api/search/observations?q=test&format=index"
+curl -s "http://127.0.0.1:37777/api/search?query=test&limit=5"
 
-# Prompts API
-curl -s "http://127.0.0.1:37777/api/prompts?limit=5"
+# Recent context
+curl -s "http://127.0.0.1:37777/api/context/recent?limit=3"
 ```
 
 All should return appropriate responses (HTML for viewer, JSON for APIs).
+
+## Troubleshooting Quick Reference
+
+| Problem | Command | Expected Result |
+|---------|---------|----------------|
+| Check if running | `npm run worker:status` | Shows PID and uptime |
+| Worker not running | `npm run worker:start` | Worker starts successfully |
+| Worker crashed | `npm run worker:restart` | Worker restarts |
+| View recent errors | `grep -i error ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log \| tail -20` | Shows recent errors |
+| Port in use | `lsof -i :37777` | Shows process using port |
+| Stale PID | `rm ~/.claude-mem/worker.pid && npm run worker:start` | Removes stale PID and starts |
+| Dependencies missing | `npm install && npm run worker:start` | Installs deps and starts |

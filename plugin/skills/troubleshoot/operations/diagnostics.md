@@ -6,29 +6,42 @@ Comprehensive step-by-step diagnostic workflow for claude-mem issues.
 
 Run these checks systematically to identify the root cause:
 
-### 1. Check PM2 Worker Status
+### 1. Check Worker Status
 
 First, verify if the worker service is running:
 
 ```bash
-# Check if PM2 is available
-which pm2 || echo "PM2 not found in PATH"
+# Check worker status using npm script
+cd ~/.claude/plugins/marketplaces/thedotmack/
+npm run worker:status
 
-# List PM2 processes
-pm2 jlist 2>&1
-
-# If pm2 is not found, try the local installation
-~/.claude/plugins/marketplaces/thedotmack/node_modules/.bin/pm2 jlist 2>&1
+# Or check health endpoint directly
+curl -s http://127.0.0.1:37777/health
 ```
 
-**Expected output:** JSON array with `claude-mem-worker` process showing `"status": "online"`
+**Expected output from npm run worker:status:**
+```
+✓ Worker is running (PID: 12345)
+  Port: 37777
+  Uptime: 45m
+  Health: OK
+```
 
-**If worker not running or status is not "online":**
+**Expected output from health endpoint:** `{"status":"ok"}`
+
+**If worker not running:**
 ```bash
 cd ~/.claude/plugins/marketplaces/thedotmack/
-pm2 start ecosystem.config.cjs
-# Or use local pm2:
-node_modules/.bin/pm2 start ecosystem.config.cjs
+npm run worker:start
+```
+
+**If health endpoint fails but worker reports running:**
+Check for stale PID file:
+```bash
+cat ~/.claude-mem/worker.pid
+ps -p $(cat ~/.claude-mem/worker.pid 2>/dev/null | grep -o '"pid":[0-9]*' | grep -o '[0-9]*') 2>/dev/null || echo "Stale PID - worker not actually running"
+rm ~/.claude-mem/worker.pid
+npm run worker:start
 ```
 
 ### 2. Check Worker Service Health
@@ -98,10 +111,12 @@ cd ~/.claude/plugins/marketplaces/thedotmack/
 # Check for critical packages
 ls node_modules/@anthropic-ai/claude-agent-sdk 2>&1 | head -1
 ls node_modules/express 2>&1 | head -1
-ls node_modules/pm2 2>&1 | head -1
+
+# Check if Bun is available
+bun --version 2>&1
 ```
 
-**Expected:** All critical packages present
+**Expected:** All critical packages present, Bun installed
 
 **If dependencies missing:**
 ```bash
@@ -114,16 +129,25 @@ npm install
 Review recent worker logs for errors:
 
 ```bash
-# View last 50 lines of worker logs
-pm2 logs claude-mem-worker --lines 50 --nostream
-
-# Or use local pm2:
+# View logs using npm script
 cd ~/.claude/plugins/marketplaces/thedotmack/
-node_modules/.bin/pm2 logs claude-mem-worker --lines 50 --nostream
+npm run worker:logs
+
+# View today's log file directly
+cat ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log
+
+# Last 50 lines
+tail -50 ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log
 
 # Check for specific errors
-pm2 logs claude-mem-worker --lines 100 --nostream | grep -i "error\|exception\|failed"
+grep -iE "error|exception|failed" ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log | tail -20
 ```
+
+**Common error patterns to look for:**
+- `SQLITE_ERROR` - Database issues
+- `EADDRINUSE` - Port conflict
+- `ENOENT` - Missing files
+- `Module not found` - Dependency issues
 
 ### 6. Test Viewer UI
 
@@ -167,6 +191,8 @@ echo "=== Claude-Mem Troubleshooting Report ==="
 echo ""
 echo "1. Environment"
 echo "   OS: $(uname -s)"
+echo "   Node version: $(node --version 2>/dev/null || echo 'N/A')"
+echo "   Bun version: $(bun --version 2>/dev/null || echo 'N/A')"
 echo ""
 echo "2. Plugin Installation"
 echo "   Plugin directory exists: $([ -d ~/.claude/plugins/marketplaces/thedotmack ] && echo 'YES' || echo 'NO')"
@@ -179,19 +205,27 @@ echo "   Observation count: $(sqlite3 ~/.claude-mem/claude-mem.db 'SELECT COUNT(
 echo "   Session count: $(sqlite3 ~/.claude-mem/claude-mem.db 'SELECT COUNT(*) FROM sessions;' 2>/dev/null || echo 'N/A')"
 echo ""
 echo "4. Worker Service"
-PM2_PATH=$(which pm2 2>/dev/null || echo "~/.claude/plugins/marketplaces/thedotmack/node_modules/.bin/pm2")
-echo "   PM2 path: $PM2_PATH"
-WORKER_STATUS=$($PM2_PATH jlist 2>/dev/null | grep -o '"name":"claude-mem-worker".*"status":"[^"]*"' | grep -o 'status":"[^"]*"' | cut -d'"' -f3 || echo 'not running')
-echo "   Worker status: $WORKER_STATUS"
+echo "   Worker PID file: $([ -f ~/.claude-mem/worker.pid ] && echo 'EXISTS' || echo 'MISSING')"
+if [ -f ~/.claude-mem/worker.pid ]; then
+  WORKER_PID=$(cat ~/.claude-mem/worker.pid 2>/dev/null | grep -o '"pid":[0-9]*' | grep -o '[0-9]*')
+  echo "   Worker PID: $WORKER_PID"
+  echo "   Process running: $(ps -p $WORKER_PID >/dev/null 2>&1 && echo 'YES' || echo 'NO (stale PID)')"
+fi
 echo "   Health check: $(curl -s http://127.0.0.1:37777/health 2>/dev/null || echo 'FAILED')"
 echo ""
 echo "5. Configuration"
 echo "   Port setting: $(cat ~/.claude-mem/settings.json 2>/dev/null | grep CLAUDE_MEM_WORKER_PORT || echo 'default (37777)')"
 echo "   Observation count: $(cat ~/.claude-mem/settings.json 2>/dev/null | grep CLAUDE_MEM_CONTEXT_OBSERVATIONS || echo 'default (50)')"
+echo "   Model: $(cat ~/.claude-mem/settings.json 2>/dev/null | grep CLAUDE_MEM_MODEL || echo 'default (claude-sonnet-4-5)')"
 echo ""
 echo "6. Recent Activity"
 echo "   Latest observation: $(sqlite3 ~/.claude-mem/claude-mem.db 'SELECT created_at FROM observations ORDER BY created_at DESC LIMIT 1;' 2>/dev/null || echo 'N/A')"
 echo "   Latest session: $(sqlite3 ~/.claude-mem/claude-mem.db 'SELECT created_at FROM sessions ORDER BY created_at DESC LIMIT 1;' 2>/dev/null || echo 'N/A')"
+echo ""
+echo "7. Logs"
+echo "   Today's log file: $([ -f ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log ] && echo 'EXISTS' || echo 'MISSING')"
+echo "   Log file size: $(du -h ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log 2>/dev/null | cut -f1 || echo 'N/A')"
+echo "   Recent errors: $(grep -c -i "error" ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log 2>/dev/null || echo '0')"
 echo ""
 echo "=== End Report ==="
 ```
@@ -201,18 +235,75 @@ Save this as `/tmp/claude-mem-diagnostics.sh` and run:
 bash /tmp/claude-mem-diagnostics.sh
 ```
 
+## Quick Diagnostic One-Liners
+
+```bash
+# Full status check
+npm run worker:status && curl -s http://127.0.0.1:37777/health && echo " - All systems OK"
+
+# Database stats
+echo "DB: $(du -h ~/.claude-mem/claude-mem.db | cut -f1) | Obs: $(sqlite3 ~/.claude-mem/claude-mem.db 'SELECT COUNT(*) FROM observations;' 2>/dev/null) | Sessions: $(sqlite3 ~/.claude-mem/claude-mem.db 'SELECT COUNT(*) FROM sessions;' 2>/dev/null)"
+
+# Recent errors
+grep -i "error" ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log 2>/dev/null | tail -5 || echo "No recent errors"
+
+# Port check
+lsof -i :37777 || echo "Port 37777 is free"
+
+# Worker process check
+ps aux | grep -E "bun.*worker-service" | grep -v grep || echo "Worker not running"
+```
+
+## Automated Fix Sequence
+
+If diagnostics show issues, run this automated fix sequence:
+
+```bash
+#!/bin/bash
+echo "Running automated fix sequence..."
+
+# 1. Stop worker if running
+echo "1. Stopping worker..."
+cd ~/.claude/plugins/marketplaces/thedotmack/
+npm run worker:stop
+
+# 2. Clean stale PID if exists
+echo "2. Cleaning stale PID file..."
+rm -f ~/.claude-mem/worker.pid
+
+# 3. Reinstall dependencies
+echo "3. Reinstalling dependencies..."
+npm install
+
+# 4. Start worker
+echo "4. Starting worker..."
+npm run worker:start
+
+# 5. Wait for startup
+echo "5. Waiting for worker to start..."
+sleep 3
+
+# 6. Verify health
+echo "6. Verifying health..."
+curl -s http://127.0.0.1:37777/health || echo "Worker health check FAILED"
+
+echo "Fix sequence complete!"
+```
+
 ## Reporting Issues
 
-If troubleshooting doesn't resolve the issue, collect this information for a bug report:
+If troubleshooting doesn't resolve the issue, run the built-in bug report tool:
 
-1. Full diagnostic report (run script above)
-2. Worker logs: `pm2 logs claude-mem-worker --lines 100 --nostream`
-3. Your setup:
-   - Claude version: Check with Claude
-   - OS: `uname -a`
-   - Node version: `node --version`
-   - Plugin version: In package.json
-4. Steps to reproduce the issue
-5. Expected vs actual behavior
+```bash
+cd ~/.claude/plugins/marketplaces/thedotmack/
+npm run bug-report
+```
 
-Post to: https://github.com/thedotmack/claude-mem/issues
+This will collect:
+1. Full diagnostic report
+2. Worker logs
+3. System information
+4. Configuration details
+5. Database stats
+
+Post the generated report to: https://github.com/thedotmack/claude-mem/issues
