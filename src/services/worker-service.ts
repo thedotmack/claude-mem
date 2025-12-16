@@ -486,8 +486,8 @@ if (require.main === module || !module.parent) {
 
   worker.start().catch((error) => {
     const isPortError = error?.code === 'EADDRINUSE' || 
-                        error?.message?.includes('EADDRINUSE') ||
-                        error?.message?.includes('address already in use');
+                        (error?.message?.includes('EADDRINUSE') ||
+                        error?.message?.includes('address already in use'));
     
     if (isPortError) {
       const port = getWorkerPort();

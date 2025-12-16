@@ -68,8 +68,8 @@ export class ProcessManager {
       }
 
       // Check if error is port-related
-      const isPortError = result.error?.includes('EADDRINUSE') || 
-                          result.error?.includes('address already in use') ||
+      const isPortError = (result.error?.includes('EADDRINUSE') || 
+                          result.error?.includes('address already in use')) ||
                           (result.error?.includes('port') && result.error?.includes('use'));
 
       if (isPortError && attempt < MAX_START_RETRIES - 1) {
