@@ -30,6 +30,8 @@ import { SearchManager } from './worker/SearchManager.js';
 import { FormattingService } from './worker/FormattingService.js';
 import { TimelineService } from './worker/TimelineService.js';
 import { SessionEventBroadcaster } from './worker/events/SessionEventBroadcaster.js';
+import { WatchdogService } from './worker/WatchdogService.js';
+import { PendingMessageStore } from './sqlite/PendingMessageStore.js';
 
 // Import HTTP layer
 import { createMiddleware, summarizeRequestBody as summarizeBody } from './worker/http/middleware.js';
@@ -38,6 +40,7 @@ import { SessionRoutes } from './worker/http/routes/SessionRoutes.js';
 import { DataRoutes } from './worker/http/routes/DataRoutes.js';
 import { SearchRoutes } from './worker/http/routes/SearchRoutes.js';
 import { SettingsRoutes } from './worker/http/routes/SettingsRoutes.js';
+import { QueueRoutes } from './worker/http/routes/QueueRoutes.js';
 
 export class WorkerService {
   private app: express.Application;
@@ -53,6 +56,7 @@ export class WorkerService {
   private paginationHelper: PaginationHelper;
   private settingsManager: SettingsManager;
   private sessionEventBroadcaster: SessionEventBroadcaster;
+  private watchdogService: WatchdogService | null = null;
 
   // Route handlers
   private viewerRoutes: ViewerRoutes;
@@ -60,6 +64,7 @@ export class WorkerService {
   private dataRoutes: DataRoutes;
   private searchRoutes: SearchRoutes | null;
   private settingsRoutes: SettingsRoutes;
+  private queueRoutes: QueueRoutes | null = null;
 
   // Initialization tracking
   private initializationComplete: Promise<void>;
@@ -120,6 +125,19 @@ export class WorkerService {
     // Health check endpoint
     this.app.get('/api/health', (_req, res) => {
       res.status(200).json({ status: 'ok' });
+    });
+
+    // Debug log endpoint - returns recent agent lifecycle events for debugging hasActiveAgent issues
+    this.app.get('/api/debug/agent-log', (_req, res) => {
+      const log = this.sessionManager.getDebugLog();
+      const sessionDiagnostics = Array.from(this.sessionManager.getSessionDiagnostics().entries())
+        .map(([id, d]) => ({ sessionId: id, hasActiveAgent: d.hasActiveAgent, startTime: d.startTime }));
+
+      res.status(200).json({
+        timestamp: Date.now(),
+        sessionDiagnostics,
+        recentEvents: log.slice(-50) // Last 50 events
+      });
     });
 
     // Version endpoint - returns the worker's current version
@@ -332,6 +350,30 @@ export class WorkerService {
       // Initialize database (once, stays open)
       await this.dbManager.initialize();
 
+      // Initialize PendingMessageStore and set it on SessionManager
+      const pendingMessageStore = new PendingMessageStore(this.dbManager.getSessionStore().db);
+      this.sessionManager.setPendingMessageStore(pendingMessageStore);
+      logger.info('WORKER', 'PendingMessageStore initialized');
+
+      // Initialize WatchdogService
+      this.watchdogService = new WatchdogService(
+        pendingMessageStore,
+        this.sessionManager,
+        this.sdkAgent,
+        this  // Pass WorkerService reference for spinner updates
+      );
+
+      // Recover any pending messages from previous run (crash recovery)
+      await this.watchdogService.recoverPendingMessages();
+
+      // Start the watchdog
+      this.watchdogService.start();
+
+      // Initialize Queue routes (requires PendingMessageStore)
+      this.queueRoutes = new QueueRoutes(pendingMessageStore, this.sessionManager, this);
+      this.queueRoutes.setupRoutes(this.app);
+      logger.info('WORKER', 'QueueRoutes initialized');
+
       // Initialize search services (requires initialized database)
       const formattingService = new FormattingService();
       const timelineService = new TimelineService();
@@ -401,6 +443,11 @@ export class WorkerService {
    * Shutdown the worker service
    */
   async shutdown(): Promise<void> {
+    // Stop watchdog first
+    if (this.watchdogService) {
+      this.watchdogService.stop();
+    }
+
     // Shutdown all active sessions
     await this.sessionManager.shutdownAll();
 
@@ -436,6 +483,70 @@ export class WorkerService {
   }
 
   /**
+   * Recover an orphaned session - initialize it and start SDK agent
+   * Used when a session has pending/processing messages but no active agent
+   * Handles both "pending" messages and stuck "processing" messages
+   *
+   * PUBLIC: Called by QueueRoutes for manual recovery
+   */
+  async recoverOrphanedSession(sessionDbId: number): Promise<{ success: boolean; pendingCount: number; messagesReset: number }> {
+    const pendingMessageStore = this.sessionManager.getPendingMessageStore();
+
+    // First, reset any stuck "processing" messages back to "pending"
+    const messagesReset = pendingMessageStore?.resetProcessingToPending(sessionDbId) ?? 0;
+    if (messagesReset > 0) {
+      logger.info('RECOVERY', 'Reset stuck processing messages to pending', {
+        sessionDbId,
+        messagesReset
+      });
+    }
+
+    const pendingCount = pendingMessageStore?.getPendingCount(sessionDbId) ?? 0;
+
+    if (pendingCount === 0) {
+      return { success: false, pendingCount: 0, messagesReset };
+    }
+
+    // Initialize session from database (creates in-memory session)
+    const session = this.sessionManager.initializeSession(sessionDbId);
+
+    // Debug: Log recovery generator starting
+    this.sessionManager.addDebugLog('generator_start', sessionDbId, { source: 'manualRecover', method: 'recoverOrphanedSession' });
+
+    // Start SDK agent generator for this session
+    session.generatorPromise = this.sdkAgent.startSession(session, this)
+      .catch(err => {
+        logger.failure('SDK', 'Manual recovery agent error', { sessionDbId }, err);
+      })
+      .finally(() => {
+        // Debug: Log recovery generator stopping
+        this.sessionManager.addDebugLog('generator_stop', sessionDbId, { source: 'manualRecover', method: 'recoverOrphanedSession' });
+        session.generatorPromise = null;
+        // Debug: Log after promise cleared
+        this.sessionManager.addDebugLog('promise_cleared', sessionDbId, { source: 'manualRecover', method: 'recoverOrphanedSession' });
+        this.broadcastProcessingStatus();
+      });
+
+    // Debug: Log promise assignment
+    this.sessionManager.addDebugLog('promise_assigned', sessionDbId, {
+      source: 'manualRecover',
+      method: 'recoverOrphanedSession',
+      promiseExists: session.generatorPromise !== null
+    });
+
+    // Broadcast immediately so UI knows agent is now active
+    this.broadcastProcessingStatus();
+
+    logger.info('RECOVERY', 'Manually recovered orphaned session', {
+      sessionDbId,
+      pendingCount,
+      messagesReset
+    });
+
+    return { success: true, pendingCount, messagesReset };
+  }
+
+  /**
    * Broadcast processing status change to SSE clients
    * Checks both queue depth and active generators to prevent premature spinner stop
    *
@@ -443,19 +554,114 @@ export class WorkerService {
    */
   broadcastProcessingStatus(): void {
     const isProcessing = this.sessionManager.isAnySessionProcessing();
-    const queueDepth = this.sessionManager.getTotalActiveWork(); // Includes queued + actively processing
     const activeSessions = this.sessionManager.getActiveSessionCount();
 
+    // Get queue data from persistent store (single source of truth)
+    let messages: any[] = [];
+    let recentlyProcessed: any[] = [];
+    let stuckCount = 0;
+    const stuckThresholdMs = 150000; // 2.5 minutes
+
+    const pendingMessageStore = this.sessionManager.getPendingMessageStore();
+    if (pendingMessageStore) {
+      let rawMessages = pendingMessageStore.getQueueMessages();
+      stuckCount = pendingMessageStore.getStuckCount(stuckThresholdMs);
+      recentlyProcessed = pendingMessageStore.getRecentlyProcessed(10, 30);
+
+      // Self-healing: Auto-reset processing messages with no active agent
+      const sessionDiagnostics = this.sessionManager.getSessionDiagnostics();
+      const sessionsToReset: Set<number> = new Set();
+
+      for (const msg of rawMessages) {
+        if (msg.status === 'processing') {
+          const diag = sessionDiagnostics.get(msg.session_db_id);
+          const hasActiveAgent = diag?.hasActiveAgent ?? false;
+          if (!hasActiveAgent) {
+            sessionsToReset.add(msg.session_db_id);
+          }
+        }
+      }
+
+      // Reset orphaned processing messages and restart generators
+      if (sessionsToReset.size > 0) {
+        let totalReset = 0;
+        for (const sessionId of sessionsToReset) {
+          const count = pendingMessageStore.resetProcessingToPending(sessionId);
+          totalReset += count;
+        }
+        if (totalReset > 0) {
+          logger.info('WORKER', 'Auto-reset orphaned processing messages', {
+            sessionsFixed: sessionsToReset.size,
+            messagesReset: totalReset
+          });
+
+          // CRITICAL: Restart generators for orphaned sessions
+          // Schedule this to run after broadcast completes to avoid recursion
+          setImmediate(() => {
+            for (const sessionId of sessionsToReset) {
+              const session = this.sessionManager.getSession(sessionId);
+              if (session && !session.generatorPromise) {
+                // Debug log
+                this.sessionManager.addDebugLog('self_heal_restart', sessionId, { messagesReset: totalReset });
+                logger.info('WORKER', 'Auto-restarting generator for orphaned session', { sessionId });
+                session.generatorPromise = this.sdkAgent.startSession(session, this)
+                  .catch(err => {
+                    logger.failure('SDK', 'Self-heal generator error', { sessionId }, err);
+                  })
+                  .finally(() => {
+                    this.sessionManager.addDebugLog('generator_stop', sessionId, { source: 'self_heal' });
+                    session.generatorPromise = null;
+                    this.sessionManager.addDebugLog('promise_cleared', sessionId, { source: 'self_heal' });
+                    this.broadcastProcessingStatus();
+                  });
+                // Debug log promise assigned
+                this.sessionManager.addDebugLog('promise_assigned', sessionId, { source: 'self_heal', promiseExists: true });
+              }
+            }
+            // Broadcast again after restart
+            this.broadcastProcessingStatus();
+          });
+
+          // Re-fetch after reset
+          rawMessages = pendingMessageStore.getQueueMessages();
+          stuckCount = pendingMessageStore.getStuckCount(stuckThresholdMs);
+        }
+      }
+
+      const now = Date.now();
+      messages = rawMessages.map(msg => {
+        const diag = sessionDiagnostics.get(msg.session_db_id);
+        return {
+          ...msg,
+          isStuck: msg.status === 'processing' &&
+            msg.started_processing_at_epoch !== null &&
+            (now - msg.started_processing_at_epoch) > stuckThresholdMs,
+          hasActiveAgent: diag?.hasActiveAgent ?? false
+        };
+      });
+    }
+
+    // queueDepth derived from actual messages (consistent with drawer display)
+    const queueDepth = messages.length;
+
+    // Debug: log hasActiveAgent for each message
+    const agentStatus = messages.map(m => `${m.session_db_id}:${m.hasActiveAgent}`).join(', ');
     logger.info('WORKER', 'Broadcasting processing status', {
       isProcessing,
       queueDepth,
-      activeSessions
+      activeSessions,
+      stuckCount,
+      recentlyProcessed: recentlyProcessed.length,
+      agentStatus: agentStatus || 'none'
     });
 
     this.sseBroadcaster.broadcast({
       type: 'processing_status',
       isProcessing,
-      queueDepth
+      queueDepth,
+      stuckCount,
+      messages,
+      recentlyProcessed
     });
   }
 }

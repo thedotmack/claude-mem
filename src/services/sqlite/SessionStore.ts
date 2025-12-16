@@ -40,6 +40,7 @@ export class SessionStore {
     this.makeObservationsTextNullable();
     this.createUserPromptsTable();
     this.ensureDiscoveryTokensColumn();
+    this.createPendingMessagesTable();
   }
 
   /**
@@ -542,6 +543,64 @@ export class SessionStore {
     } catch (error: any) {
       console.error('[SessionStore] Discovery tokens migration error:', error.message);
       throw error; // Re-throw to prevent silent failures
+    }
+  }
+
+  /**
+   * Create pending_messages table for persistent work queue (migration 12)
+   * Messages are persisted before processing and deleted after success.
+   * Enables recovery from SDK hangs and worker crashes.
+   */
+  private createPendingMessagesTable(): void {
+    try {
+      // Check if migration already applied
+      const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(12) as SchemaVersion | undefined;
+      if (applied) return;
+
+      // Check if table already exists
+      const tables = this.db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='pending_messages'").all() as TableNameRow[];
+      if (tables.length > 0) {
+        this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(12, new Date().toISOString());
+        return;
+      }
+
+      console.log('[SessionStore] Creating pending_messages table...');
+
+      this.db.run(`
+        CREATE TABLE pending_messages (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_db_id INTEGER NOT NULL,
+          claude_session_id TEXT NOT NULL,
+          message_type TEXT NOT NULL CHECK(message_type IN ('observation', 'summarize')),
+          tool_name TEXT,
+          tool_input TEXT,
+          tool_response TEXT,
+          cwd TEXT,
+          last_user_message TEXT,
+          last_assistant_message TEXT,
+          prompt_number INTEGER,
+          status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'processing', 'processed', 'failed')),
+          retry_count INTEGER NOT NULL DEFAULT 0,
+          created_at_epoch INTEGER NOT NULL,
+          started_processing_at_epoch INTEGER,
+          completed_at_epoch INTEGER,
+          FOREIGN KEY(session_db_id) REFERENCES sdk_sessions(id) ON DELETE CASCADE
+        )
+      `);
+
+      // Create indexes for efficient queries
+      this.db.run('CREATE INDEX idx_pending_messages_session ON pending_messages(session_db_id)');
+      this.db.run('CREATE INDEX idx_pending_messages_status ON pending_messages(status)');
+      this.db.run('CREATE INDEX idx_pending_messages_pending ON pending_messages(session_db_id, status)');
+      this.db.run('CREATE INDEX idx_pending_messages_processing ON pending_messages(status, started_processing_at_epoch)');
+
+      // Record migration
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(12, new Date().toISOString());
+
+      console.log('[SessionStore] Successfully created pending_messages table');
+    } catch (error: any) {
+      console.error('[SessionStore] Pending messages migration error:', error.message);
+      throw error;
     }
   }
 
@@ -1214,6 +1273,7 @@ export class SessionStore {
   /**
    * Store an observation (from SDK parsing)
    * Auto-creates session record if it doesn't exist in the index
+   * @param originalTimestamp - Optional timestamp from when message was originally queued (for stuck message recovery)
    */
   storeObservation(
     sdkSessionId: string,
@@ -1229,10 +1289,13 @@ export class SessionStore {
       files_modified: string[];
     },
     promptNumber?: number,
-    discoveryTokens: number = 0
+    discoveryTokens: number = 0,
+    originalTimestamp: number | null = null
   ): { id: number; createdAtEpoch: number } {
     const now = new Date();
-    const nowEpoch = now.getTime();
+    // Use original timestamp if provided (for stuck message recovery), otherwise use current time
+    const effectiveEpoch = originalTimestamp ?? now.getTime();
+    const effectiveDate = originalTimestamp ? new Date(originalTimestamp) : now;
 
     // Ensure session record exists in the index (auto-create if missing)
     const checkStmt = this.db.prepare(`
@@ -1242,6 +1305,7 @@ export class SessionStore {
 
     if (!existingSession) {
       // Auto-create session record if it doesn't exist
+      // Use current time for session creation (not the observation's original timestamp)
       const insertSession = this.db.prepare(`
         INSERT INTO sdk_sessions
         (claude_session_id, sdk_session_id, project, started_at, started_at_epoch, status)
@@ -1252,7 +1316,7 @@ export class SessionStore {
         sdkSessionId,
         project,
         now.toISOString(),
-        nowEpoch
+        now.getTime()
       );
       console.log(`[SessionStore] Auto-created session record for session_id: ${sdkSessionId}`);
     }
@@ -1277,13 +1341,13 @@ export class SessionStore {
       JSON.stringify(observation.files_modified),
       promptNumber || null,
       discoveryTokens,
-      now.toISOString(),
-      nowEpoch
+      effectiveDate.toISOString(),
+      effectiveEpoch
     );
 
     return {
       id: Number(result.lastInsertRowid),
-      createdAtEpoch: nowEpoch
+      createdAtEpoch: effectiveEpoch
     };
   }
 

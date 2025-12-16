@@ -42,6 +42,34 @@ export type FeedItem =
   | (Summary & { itemType: 'summary' })
   | (UserPrompt & { itemType: 'prompt' });
 
+export interface QueueMessage {
+  id: number;
+  session_db_id: number;
+  claude_session_id: string;
+  message_type: 'observation' | 'summarize';
+  tool_name: string | null;
+  tool_input: string | null;
+  tool_response: string | null;
+  cwd: string | null;
+  last_user_message: string | null;
+  last_assistant_message: string | null;
+  prompt_number: number | null;
+  status: 'pending' | 'processing' | 'failed' | 'processed';
+  retry_count: number;
+  created_at_epoch: number;
+  started_processing_at_epoch: number | null;
+  completed_at_epoch: number | null;
+  isStuck: boolean;
+  project: string | null;
+  hasActiveAgent: boolean;
+}
+
+export interface QueueState {
+  messages: QueueMessage[];
+  stuckCount: number;
+  stuckThresholdMs: number;
+}
+
 export interface StreamEvent {
   type: 'initial_load' | 'new_observation' | 'new_summary' | 'new_prompt' | 'processing_status';
   observations?: Observation[];
@@ -52,6 +80,10 @@ export interface StreamEvent {
   summary?: Summary;
   prompt?: UserPrompt;
   isProcessing?: boolean;
+  queueDepth?: number;
+  stuckCount?: number;
+  messages?: QueueMessage[];
+  recentlyProcessed?: QueueMessage[];
 }
 
 export interface Settings {
@@ -78,6 +110,9 @@ export interface Settings {
   // Feature Toggles
   CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY?: string;
   CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE?: string;
+
+  // Queue Notifications
+  CLAUDE_MEM_QUEUE_NOTIFICATIONS?: string;
 }
 
 export interface WorkerStats {
