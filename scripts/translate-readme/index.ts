@@ -1,6 +1,34 @@
 import { query, type SDKMessage, type SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
 import * as fs from "fs/promises";
 import * as path from "path";
+import { createHash } from "crypto";
+
+interface TranslationCache {
+  sourceHash: string;
+  lastUpdated: string;
+  translations: Record<string, {
+    hash: string;
+    translatedAt: string;
+    costUsd: number;
+  }>;
+}
+
+function hashContent(content: string): string {
+  return createHash("sha256").update(content).digest("hex").slice(0, 16);
+}
+
+async function readCache(cachePath: string): Promise<TranslationCache | null> {
+  try {
+    const data = await fs.readFile(cachePath, "utf-8");
+    return JSON.parse(data);
+  } catch {
+    return null;
+  }
+}
+
+async function writeCache(cachePath: string, cache: TranslationCache): Promise<void> {
+  await fs.writeFile(cachePath, JSON.stringify(cache, null, 2), "utf-8");
+}
 
 export interface TranslationOptions {
   /** Source README file path */
@@ -19,6 +47,10 @@ export interface TranslationOptions {
   maxBudgetUsd?: number;
   /** Verbose output */
   verbose?: boolean;
+  /** Force re-translation even if cached */
+  force?: boolean;
+  /** Number of concurrent translations (default: 1) */
+  parallel?: number;
 }
 
 export interface TranslationResult {
@@ -27,6 +59,8 @@ export interface TranslationResult {
   success: boolean;
   error?: string;
   costUsd?: number;
+  /** Whether this was served from cache */
+  cached?: boolean;
 }
 
 export interface TranslationJobResult {
@@ -37,40 +71,46 @@ export interface TranslationJobResult {
 }
 
 const LANGUAGE_NAMES: Record<string, string> = {
-  ar: "Arabic",
-  bg: "Bulgarian",
-  cs: "Czech",
-  da: "Danish",
-  de: "German",
-  el: "Greek",
-  es: "Spanish",
-  et: "Estonian",
-  fi: "Finnish",
-  fr: "French",
-  he: "Hebrew",
-  hi: "Hindi",
-  hu: "Hungarian",
-  id: "Indonesian",
-  it: "Italian",
+  // Tier 1 - No-brainers
+  zh: "Chinese (Simplified)",
   ja: "Japanese",
-  ko: "Korean",
-  lt: "Lithuanian",
-  lv: "Latvian",
-  nl: "Dutch",
-  no: "Norwegian",
-  pl: "Polish",
-  pt: "Portuguese",
   "pt-br": "Brazilian Portuguese",
-  ro: "Romanian",
+  ko: "Korean",
+  es: "Spanish",
+  de: "German",
+  fr: "French",
+  // Tier 2 - Strong tech scenes
+  he: "Hebrew",
+  ar: "Arabic",
   ru: "Russian",
-  sk: "Slovak",
-  sl: "Slovenian",
-  sv: "Swedish",
-  th: "Thai",
+  pl: "Polish",
+  cs: "Czech",
+  nl: "Dutch",
   tr: "Turkish",
   uk: "Ukrainian",
+  // Tier 3 - Emerging/Growing fast
   vi: "Vietnamese",
-  zh: "Chinese (Simplified)",
+  id: "Indonesian",
+  th: "Thai",
+  hi: "Hindi",
+  bn: "Bengali",
+  ro: "Romanian",
+  sv: "Swedish",
+  // Tier 4 - Why not
+  it: "Italian",
+  el: "Greek",
+  hu: "Hungarian",
+  fi: "Finnish",
+  da: "Danish",
+  no: "Norwegian",
+  // Other supported
+  bg: "Bulgarian",
+  et: "Estonian",
+  lt: "Lithuanian",
+  lv: "Latvian",
+  pt: "Portuguese",
+  sk: "Slovak",
+  sl: "Slovenian",
   "zh-tw": "Chinese (Traditional)",
 };
 
@@ -107,6 +147,7 @@ Guidelines:
 - Preserve technical accuracy
 - Use appropriate technical terminology for ${languageName}
 - Keep proper nouns (product names, company names) unchanged unless they have official translations
+- Add a small note at the very top of the document (before any other content) in ${languageName}: "🌐 This is an automated translation. Community corrections are welcome!"
 
 Here is the README content to translate:
 
@@ -114,7 +155,12 @@ Here is the README content to translate:
 ${content}
 ---
 
-Output ONLY the translated README content, nothing else. Do not include any preamble or explanation.`;
+CRITICAL OUTPUT RULES:
+- Output ONLY the raw translated markdown content
+- Do NOT wrap output in \`\`\`markdown code fences
+- Do NOT add any preamble, explanation, or commentary
+- Start directly with the translation note, then the content
+- The output will be saved directly to a .md file`;
 
   let translation = "";
   let costUsd = 0;
@@ -182,7 +228,21 @@ Always output only the translated content without any surrounding explanation.`,
     process.stdout.write("\r" + " ".repeat(60) + "\r");
   }
 
-  return { translation: translation.trim(), costUsd };
+  // Strip markdown code fences if Claude wrapped the output
+  let cleaned = translation.trim();
+  if (cleaned.startsWith("```markdown")) {
+    cleaned = cleaned.slice("```markdown".length);
+  } else if (cleaned.startsWith("```md")) {
+    cleaned = cleaned.slice("```md".length);
+  } else if (cleaned.startsWith("```")) {
+    cleaned = cleaned.slice(3);
+  }
+  if (cleaned.endsWith("```")) {
+    cleaned = cleaned.slice(0, -3);
+  }
+  cleaned = cleaned.trim();
+
+  return { translation: cleaned, costUsd };
 }
 
 export async function translateReadme(
@@ -197,6 +257,8 @@ export async function translateReadme(
     model,
     maxBudgetUsd,
     verbose = false,
+    force = false,
+    parallel = 1,
   } = options;
 
   // Read source file
@@ -207,6 +269,12 @@ export async function translateReadme(
   const outDir = outputDir ? path.resolve(outputDir) : path.dirname(sourcePath);
   await fs.mkdir(outDir, { recursive: true });
 
+  // Compute content hash and load cache
+  const sourceHash = hashContent(content);
+  const cachePath = path.join(outDir, ".translation-cache.json");
+  const cache = await readCache(cachePath);
+  const isHashMatch = cache?.sourceHash === sourceHash;
+
   const results: TranslationResult[] = [];
   let totalCostUsd = 0;
 
@@ -214,23 +282,27 @@ export async function translateReadme(
     console.log(`📖 Source: ${sourcePath}`);
     console.log(`📂 Output: ${outDir}`);
     console.log(`🌍 Languages: ${languages.join(", ")}`);
+    if (parallel > 1) {
+      console.log(`⚡ Parallel: ${parallel} concurrent translations`);
+    }
     console.log("");
   }
 
-  for (const lang of languages) {
-    // Check budget
-    if (maxBudgetUsd && totalCostUsd >= maxBudgetUsd) {
-      results.push({
-        language: lang,
-        outputPath: "",
-        success: false,
-        error: "Budget exceeded",
-      });
-      continue;
-    }
-
+  // Worker function for a single language
+  async function translateLang(lang: string): Promise<TranslationResult> {
     const outputFilename = pattern.replace("{lang}", lang);
     const outputPath = path.join(outDir, outputFilename);
+
+    // Check cache (unless --force)
+    if (!force && isHashMatch && cache?.translations[lang]) {
+      const outputExists = await fs.access(outputPath).then(() => true).catch(() => false);
+      if (outputExists) {
+        if (verbose) {
+          console.log(`   ✅ ${outputFilename} (cached, unchanged)`);
+        }
+        return { language: lang, outputPath, success: true, cached: true, costUsd: 0 };
+      }
+    }
 
     if (verbose) {
       console.log(`🔄 Translating to ${getLanguageName(lang)} (${lang})...`);
@@ -240,36 +312,80 @@ export async function translateReadme(
       const { translation, costUsd } = await translateToLanguage(content, lang, {
         preserveCode,
         model,
-        verbose,
+        verbose: verbose && parallel === 1, // Only show progress spinner for sequential
       });
 
       await fs.writeFile(outputPath, translation, "utf-8");
-      totalCostUsd += costUsd;
-
-      results.push({
-        language: lang,
-        outputPath,
-        success: true,
-        costUsd,
-      });
 
       if (verbose) {
         console.log(`   ✅ Saved to ${outputFilename} ($${costUsd.toFixed(4)})`);
       }
+
+      return { language: lang, outputPath, success: true, costUsd };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      results.push({
-        language: lang,
-        outputPath,
-        success: false,
-        error: errorMessage,
-      });
-
       if (verbose) {
-        console.log(`   ❌ Failed: ${errorMessage}`);
+        console.log(`   ❌ ${lang} failed: ${errorMessage}`);
       }
+      return { language: lang, outputPath, success: false, error: errorMessage };
     }
   }
+
+  // Run with concurrency limit
+  async function runWithConcurrency<T>(items: T[], limit: number, fn: (item: T) => Promise<TranslationResult>): Promise<TranslationResult[]> {
+    const results: TranslationResult[] = [];
+    const executing: Promise<void>[] = [];
+
+    for (const item of items) {
+      // Check budget before starting new translation
+      if (maxBudgetUsd && totalCostUsd >= maxBudgetUsd) {
+        results.push({
+          language: String(item),
+          outputPath: "",
+          success: false,
+          error: "Budget exceeded",
+        });
+        continue;
+      }
+
+      const p = fn(item).then((result) => {
+        results.push(result);
+        if (result.costUsd) {
+          totalCostUsd += result.costUsd;
+        }
+      });
+
+      executing.push(p.then(() => {
+        executing.splice(executing.indexOf(p.then(() => {})), 1);
+      }));
+
+      if (executing.length >= limit) {
+        await Promise.race(executing);
+      }
+    }
+
+    await Promise.all(executing);
+    return results;
+  }
+
+  const translationResults = await runWithConcurrency(languages, parallel, translateLang);
+  results.push(...translationResults);
+
+  // Save updated cache
+  const newCache: TranslationCache = {
+    sourceHash,
+    lastUpdated: new Date().toISOString(),
+    translations: {
+      ...(isHashMatch ? cache?.translations : {}),
+      ...Object.fromEntries(
+        results.filter(r => r.success && !r.cached).map(r => [
+          r.language,
+          { hash: sourceHash, translatedAt: new Date().toISOString(), costUsd: r.costUsd || 0 }
+        ])
+      ),
+    },
+  };
+  await writeCache(cachePath, newCache);
 
   const successful = results.filter((r) => r.success).length;
   const failed = results.filter((r) => !r.success).length;

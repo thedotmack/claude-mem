@@ -1,4 +1,4 @@
-#!/usr/bin/env npx tsx
+#!/usr/bin/env bun
 
 import { translateReadme, SUPPORTED_LANGUAGES } from "./index.ts";
 
@@ -11,6 +11,8 @@ interface CliArgs {
   model?: string;
   maxBudget?: number;
   verbose: boolean;
+  force: boolean;
+  parallel: number;
   help: boolean;
   listLanguages: boolean;
 }
@@ -39,6 +41,8 @@ OPTIONS:
   -m, --model <model>     Claude model to use (default: sonnet)
   --max-budget <usd>      Maximum budget in USD
   -v, --verbose           Show detailed progress
+  -f, --force             Force re-translation ignoring cache
+  --parallel <n>          Run n translations concurrently (default: 1)
   -h, --help              Show this help message
   --list-languages        List all supported language codes
 
@@ -59,40 +63,46 @@ SUPPORTED LANGUAGES:
 
 function printLanguages(): void {
   const LANGUAGE_NAMES: Record<string, string> = {
-    ar: "Arabic",
-    bg: "Bulgarian",
-    cs: "Czech",
-    da: "Danish",
-    de: "German",
-    el: "Greek",
-    es: "Spanish",
-    et: "Estonian",
-    fi: "Finnish",
-    fr: "French",
-    he: "Hebrew",
-    hi: "Hindi",
-    hu: "Hungarian",
-    id: "Indonesian",
-    it: "Italian",
+    // Tier 1 - No-brainers
+    zh: "Chinese (Simplified)",
     ja: "Japanese",
-    ko: "Korean",
-    lt: "Lithuanian",
-    lv: "Latvian",
-    nl: "Dutch",
-    no: "Norwegian",
-    pl: "Polish",
-    pt: "Portuguese",
     "pt-br": "Brazilian Portuguese",
-    ro: "Romanian",
+    ko: "Korean",
+    es: "Spanish",
+    de: "German",
+    fr: "French",
+    // Tier 2 - Strong tech scenes
+    he: "Hebrew",
+    ar: "Arabic",
     ru: "Russian",
-    sk: "Slovak",
-    sl: "Slovenian",
-    sv: "Swedish",
-    th: "Thai",
+    pl: "Polish",
+    cs: "Czech",
+    nl: "Dutch",
     tr: "Turkish",
     uk: "Ukrainian",
+    // Tier 3 - Emerging/Growing fast
     vi: "Vietnamese",
-    zh: "Chinese (Simplified)",
+    id: "Indonesian",
+    th: "Thai",
+    hi: "Hindi",
+    bn: "Bengali",
+    ro: "Romanian",
+    sv: "Swedish",
+    // Tier 4 - Why not
+    it: "Italian",
+    el: "Greek",
+    hu: "Hungarian",
+    fi: "Finnish",
+    da: "Danish",
+    no: "Norwegian",
+    // Other supported
+    bg: "Bulgarian",
+    et: "Estonian",
+    lt: "Lithuanian",
+    lv: "Latvian",
+    pt: "Portuguese",
+    sk: "Slovak",
+    sl: "Slovenian",
     "zh-tw": "Chinese (Traditional)",
   };
 
@@ -112,6 +122,8 @@ function parseArgs(argv: string[]): CliArgs {
     languages: [],
     preserveCode: true,
     verbose: false,
+    force: false,
+    parallel: 1,
     help: false,
     listLanguages: false,
   };
@@ -134,6 +146,10 @@ function parseArgs(argv: string[]): CliArgs {
       case "--verbose":
         args.verbose = true;
         break;
+      case "-f":
+      case "--force":
+        args.force = true;
+        break;
       case "--no-preserve-code":
         args.preserveCode = false;
         break;
@@ -151,6 +167,13 @@ function parseArgs(argv: string[]): CliArgs {
         break;
       case "--max-budget":
         args.maxBudget = parseFloat(argv[++i]);
+        break;
+      case "--parallel":
+        args.parallel = parseInt(argv[++i], 10);
+        if (isNaN(args.parallel) || args.parallel < 1) {
+          console.error("Error: --parallel must be a positive integer");
+          process.exit(1);
+        }
         break;
       default:
         if (arg.startsWith("-")) {
@@ -215,6 +238,8 @@ async function main(): Promise<void> {
       model: args.model,
       maxBudgetUsd: args.maxBudget,
       verbose: args.verbose,
+      force: args.force,
+      parallel: args.parallel,
     });
 
     // Exit with error code if any translations failed

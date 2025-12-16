@@ -5,6 +5,10 @@ description: "Try experimental features like Endless Mode before they're release
 
 # Beta Features
 
+<Warning>
+**Endless Mode is experimental and not included in the stable release.** You must manually switch to the beta branch to try it. The efficiency projections below are based on theoretical modeling, not production measurements. Expect slower performance than standard mode and potential bugs.
+</Warning>
+
 Claude-Mem offers a beta channel for users who want to try experimental features before they're released to the stable channel.
 
 ## Version Channel Switching
@@ -77,19 +81,22 @@ Archive Memory (Transcript File):
 
 This transforms O(N²) scaling into O(N) - linear instead of quadratic.
 
-### Expected Results
+### Projected Results
 
-Based on analysis of real sessions:
+Based on theoretical modeling (not production measurements):
 
-- **Token savings**: ~95% reduction in context window usage
-- **Efficiency gain**: ~20x more tool uses before context exhaustion
+- **Token savings**: Significant reduction in context window usage
+- **Efficiency gain**: More tool uses before context exhaustion
 - **Quality preservation**: Observations cache the synthesis result, so no information is lost
 
-### Caveats
+### Important Caveats
 
-Endless Mode is experimental:
+Endless Mode is experimental and has significant limitations:
 
-- **Adds latency** - Blocking hooks wait for observation generation (60-90s per tool use)
+- **Not in stable release** - You must manually switch to the beta branch to use this feature
+- **Still in development** - May have bugs, breaking changes, or incomplete functionality
+- **Slower than standard mode** - Blocking observation generation adds latency to each tool use
+- **Theoretical projections** - The efficiency claims above are based on simulations, not real-world production data
 - **Requires working database** - Observations must save successfully for transformation
 - **New architecture** - Less battle-tested than standard mode
 

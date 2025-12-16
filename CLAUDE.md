@@ -6,8 +6,6 @@
 
 Claude-mem is a Claude Code plugin providing persistent memory across sessions. It captures tool usage, compresses observations using the Claude Agent SDK, and injects relevant context into future sessions.
 
-**Current Version**: 7.1.0
-
 ## Architecture
 
 **5 Lifecycle Hooks**: SessionStart → UserPromptSubmit → PostToolUse → Summary → SessionEnd
@@ -34,54 +32,6 @@ Claude-mem is a Claude Code plugin providing persistent memory across sessions. 
 
 ## Build Commands
 
-**Hooks only**: `bun run build && bun run sync-marketplace`
-
-**Worker changes**: `bun run build && bun run sync-marketplace && bun run worker:restart`
-
-**Skills only**: `bun run sync-marketplace`
-
-**Viewer UI**: `bun run build && bun run sync-marketplace && bun run worker:restart`
-
-## Configuration
-
-Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created with defaults on first run.
-
-**Core Settings:**
-- `CLAUDE_MEM_MODEL` - Model for observations/summaries (default: claude-haiku-4-5)
-- `CLAUDE_MEM_CONTEXT_OBSERVATIONS` - Observations injected at SessionStart (default: 50)
-- `CLAUDE_MEM_WORKER_PORT` - Worker service port (default: 37777)
-
-**System Configuration:**
-- `CLAUDE_MEM_DATA_DIR` - Data directory location (default: ~/.claude-mem)
-- `CLAUDE_MEM_LOG_LEVEL` - Log verbosity: DEBUG, INFO, WARN, ERROR, SILENT (default: INFO)
-- `CLAUDE_MEM_PYTHON_VERSION` - Python version for uvx/chroma-mcp (default: 3.13, avoids onnxruntime compatibility issues with Python 3.14+)
-- `CLAUDE_CODE_PATH` - Path to Claude executable (default: auto-detect via 'which claude')
-
-**Settings File Format:**
-```json
-{
-  "CLAUDE_MEM_MODEL": "claude-haiku-4-5",
-  "CLAUDE_MEM_WORKER_PORT": "37777"
-}
-```
-
-## File Locations
-
-- **Source**: `<project-root>/src/`
-- **Built Plugin**: `<project-root>/plugin/`
-- **Installed Plugin**: `~/.claude/plugins/marketplaces/thedotmack/`
-- **Database**: `~/.claude-mem/claude-mem.db`
-- **Chroma**: `~/.claude-mem/chroma/`
-- **Usage Logs**: `~/.claude-mem/usage-logs/usage-YYYY-MM-DD.jsonl`
-
-## Requirements
-
-- **Bun** >= 1.0 (all platforms - auto-installed if missing)
-- **uv** (all platforms - auto-installed if missing, provides Python for Chroma)
-- Node.js >= 18 (build tools only)
-
-## Quick Reference
-
 ```bash
 bun run build                 # Compile TypeScript
 bun run sync-marketplace      # Copy to ~/.claude/plugins
@@ -91,11 +41,37 @@ bun run worker:logs           # View worker logs
 ```
 
 **Viewer UI**: http://localhost:37777
-**Worker Logs**: `~/.claude-mem/logs/worker-YYYY-MM-DD.log`
+
+## Configuration
+
+Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created with defaults on first run.
+
+**Core Settings:**
+- `CLAUDE_MEM_MODEL` - Model for observations/summaries (default: claude-sonnet-4-5)
+- `CLAUDE_MEM_CONTEXT_OBSERVATIONS` - Observations injected at SessionStart
+- `CLAUDE_MEM_WORKER_PORT` - Worker service port (default: 37777)
+- `CLAUDE_MEM_WORKER_HOST` - Worker bind address (default: 127.0.0.1, use 0.0.0.0 for remote access)
+
+**System Configuration:**
+- `CLAUDE_MEM_DATA_DIR` - Data directory location (default: ~/.claude-mem)
+- `CLAUDE_MEM_LOG_LEVEL` - Log verbosity: DEBUG, INFO, WARN, ERROR, SILENT (default: INFO)
+
+## File Locations
+
+- **Source**: `<project-root>/src/`
+- **Built Plugin**: `<project-root>/plugin/`
+- **Installed Plugin**: `~/.claude/plugins/marketplaces/thedotmack/`
+- **Database**: `~/.claude-mem/claude-mem.db`
+- **Chroma**: `~/.claude-mem/chroma/`
+
+## Requirements
+
+- **Bun** (all platforms - auto-installed if missing)
+- **uv** (all platforms - auto-installed if missing, provides Python for Chroma)
+- Node.js (build tools only)
 
 ## Documentation
 
 **Public Docs**: https://docs.claude-mem.ai (Mintlify)
 **Source**: `docs/public/` - MDX files, edit `docs.json` for navigation
 **Deploy**: Auto-deploys from GitHub on push to main
-**Local Dev**: `cd docs/public && npx mintlify dev`

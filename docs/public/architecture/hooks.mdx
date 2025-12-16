@@ -864,7 +864,7 @@ async startSession(session: ActiveSession, worker?: any) {
   const queryResult = query({
     prompt: messageGenerator,
     options: {
-      model: 'claude-haiku-4-5',
+      model: 'claude-sonnet-4-5',
       disallowedTools: ['Bash', 'Read', 'Write', ...],  // Observer-only
       abortController: session.abortController
     }

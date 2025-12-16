@@ -79,14 +79,13 @@ Restart Claude Code. Context from previous sessions will automatically appear in
 
 - 🧠 **Persistent Memory** - Context survives across sessions
 - 📊 **Progressive Disclosure** - Layered memory retrieval with token cost visibility
-- 🔍 **Skill-Based Search** - Query your project history with mem-search skill (~2,250 token savings)
+- 🔍 **Skill-Based Search** - Query your project history with mem-search skill
 - 🖥️ **Web Viewer UI** - Real-time memory stream at http://localhost:37777
 - 💻 **Claude Desktop Skill** - Search memory from Claude Desktop conversations
 - 🔒 **Privacy Control** - Use `<private>` tags to exclude sensitive content from storage
 - ⚙️ **Context Configuration** - Fine-grained control over what context gets injected
 - 🤖 **Automatic Operation** - No manual intervention required
-- 🔗 **Citations** - Reference past decisions with `claude-mem://` URIs
-- 🧪 **Beta Channel** - Try experimental features like Endless Mode via version switching
+- 🔗 **Citations** - Reference past observations with IDs (access via http://localhost:37777/api/observation/{id} or view all in the web viewer at http://localhost:37777)
 
 ---
 
@@ -161,7 +160,7 @@ npx mintlify dev
 2. **Smart Install** - Cached dependency checker (pre-hook script, not a lifecycle hook)
 3. **Worker Service** - HTTP API on port 37777 with web viewer UI and 10 search endpoints, managed by Bun
 4. **SQLite Database** - Stores sessions, observations, summaries with FTS5 full-text search
-5. **mem-search Skill** - Natural language queries with progressive disclosure (~2,250 token savings vs MCP)
+5. **mem-search Skill** - Natural language queries with progressive disclosure
 6. **Chroma Vector Database** - Hybrid semantic + keyword search for intelligent context retrieval
 
 See [Architecture Overview](https://docs.claude-mem.ai/architecture/overview) for details.
@@ -176,7 +175,6 @@ Claude-Mem provides intelligent search through the mem-search skill that auto-in
 
 - Just ask naturally: _"What did we do last session?"_ or _"Did we fix this bug before?"_
 - Claude automatically invokes the mem-search skill to find relevant context
-- ~2,250 token savings per session start vs MCP approach
 
 **Available Search Operations:**
 
@@ -207,6 +205,8 @@ See [Search Tools Guide](https://docs.claude-mem.ai/usage/search-tools) for deta
 
 ## Beta Features & Endless Mode
 
+> **Note**: Endless Mode is an **experimental feature in the beta branch only**. It is not included in the stable release you install via the marketplace. You must manually switch to the beta channel to try it, and it comes with significant caveats (see below).
+
 Claude-Mem offers a **beta channel** with experimental features. Switch between stable and beta versions directly from the web viewer UI.
 
 ### How to Try Beta
@@ -231,14 +231,17 @@ Working Memory (Context):     Compressed observations (~500 tokens each)
 Archive Memory (Disk):        Full tool outputs preserved for recall
 ```
 
-**Expected Results**:
-
-- ~95% token reduction in context window
-- ~20x more tool uses before context exhaustion
+**Projected Results** (based on theoretical modeling, not production measurements):
+- Significant token reduction in context window
+- More tool uses before context exhaustion
 - Linear O(N) scaling instead of quadratic O(N²)
 - Full transcripts preserved for perfect recall
 
-**Caveats**: Adds latency (60-90s per tool for observation generation), still experimental.
+**Important Caveats**:
+- **Not in stable release** - You must switch to beta branch to use this feature
+- **Still in development** - May have bugs, breaking changes, or incomplete functionality
+- **Slower than standard mode** - Blocking observation generation adds latency to each tool use
+- **Theoretical projections** - The efficiency claims above are based on simulations, not real-world production data
 
 See [Beta Features Documentation](https://docs.claude-mem.ai/beta-features) for details.
 
@@ -325,15 +328,16 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 
 **Available Settings:**
 
-| Setting                           | Default            | Description                                      |
-| --------------------------------- | ------------------ | ------------------------------------------------ |
-| `CLAUDE_MEM_MODEL`                | `claude-haiku-4-5` | AI model for observations                        |
-| `CLAUDE_MEM_WORKER_PORT`          | `37777`            | Worker service port                              |
-| `CLAUDE_MEM_DATA_DIR`             | `~/.claude-mem`    | Data directory location                          |
-| `CLAUDE_MEM_LOG_LEVEL`            | `INFO`             | Log verbosity (DEBUG, INFO, WARN, ERROR, SILENT) |
-| `CLAUDE_MEM_PYTHON_VERSION`       | `3.13`             | Python version for chroma-mcp                    |
-| `CLAUDE_CODE_PATH`                | _(auto-detect)_    | Path to Claude executable                        |
-| `CLAUDE_MEM_CONTEXT_OBSERVATIONS` | `50`               | Number of observations to inject at SessionStart |
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CLAUDE_MEM_MODEL` | `claude-sonnet-4-5` | AI model for observations |
+| `CLAUDE_MEM_WORKER_PORT` | `37777` | Worker service port |
+| `CLAUDE_MEM_WORKER_HOST` | `127.0.0.1` | Worker bind address (use `0.0.0.0` for remote access) |
+| `CLAUDE_MEM_DATA_DIR` | `~/.claude-mem` | Data directory location |
+| `CLAUDE_MEM_LOG_LEVEL` | `INFO` | Log verbosity (DEBUG, INFO, WARN, ERROR, SILENT) |
+| `CLAUDE_MEM_PYTHON_VERSION` | `3.13` | Python version for chroma-mcp |
+| `CLAUDE_CODE_PATH` | _(auto-detect)_ | Path to Claude executable |
+| `CLAUDE_MEM_CONTEXT_OBSERVATIONS` | `50` | Number of observations to inject at SessionStart |
 
 **Settings Management:**
 
@@ -352,7 +356,7 @@ curl http://localhost:37777/api/settings
 
 ```json
 {
-  "CLAUDE_MEM_MODEL": "claude-haiku-4-5",
+  "CLAUDE_MEM_MODEL": "claude-sonnet-4-5",
   "CLAUDE_MEM_WORKER_PORT": "37777",
   "CLAUDE_MEM_CONTEXT_OBSERVATIONS": "50"
 }
@@ -409,6 +413,41 @@ If you're experiencing issues, describe the problem to Claude and the troublesho
 - Search not working → Check FTS5 tables exist
 
 See [Troubleshooting Guide](https://docs.claude-mem.ai/troubleshooting) for complete solutions.
+
+### Windows Known Issues
+
+**Console Window Visibility**: On Windows, a console window may briefly appear when the worker service starts. This is a cosmetic issue that we're working to resolve. We've prioritized stability by removing a workaround that was causing libuv crashes. The window does not affect functionality and will be addressed in a future release when the MCP SDK provides proper window hiding support.
+
+---
+
+## Bug Reports
+
+**Automated Bug Report Generator** - Create comprehensive bug reports with one command:
+
+```bash
+# From the plugin directory
+cd ~/.claude/plugins/marketplaces/thedotmack
+npm run bug-report
+```
+
+The bug report tool will:
+- 🌎 **Auto-translate** - Write in ANY language, automatically translates to English
+- 📊 **Collect diagnostics** - Gathers versions, platform info, worker status, logs, and configuration
+- 📝 **Interactive prompts** - Guides you through describing the issue with multiline support
+- 🤖 **AI formatting** - Uses Claude Agent SDK to generate professional GitHub issues
+- 🔒 **Privacy-safe** - Auto-sanitizes paths, optional `--no-logs` flag
+- 🌐 **Auto-submit** - Opens GitHub with pre-filled title and body
+
+**Plugin Directory Paths:**
+- **macOS/Linux**: `~/.claude/plugins/marketplaces/thedotmack`
+- **Windows**: `%USERPROFILE%\.claude\plugins\marketplaces\thedotmack`
+
+**Options:**
+```bash
+npm run bug-report --no-logs    # Skip logs for privacy
+npm run bug-report --verbose    # Show all diagnostics
+npm run bug-report --help       # Show help
+```
 
 ---
 

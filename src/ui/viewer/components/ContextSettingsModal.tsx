@@ -195,11 +195,6 @@ export function ContextSettingsModal({
 }: ContextSettingsModalProps) {
   const [formState, setFormState] = useState<Settings>(settings);
 
-  // MCP toggle state
-  const [mcpEnabled, setMcpEnabled] = useState(true);
-  const [mcpToggling, setMcpToggling] = useState(false);
-  const [mcpStatus, setMcpStatus] = useState('');
-
   // Create debounced save function
   const debouncedSave = useCallback(
     debounce((newSettings: Settings) => {
@@ -212,14 +207,6 @@ export function ContextSettingsModal({
   useEffect(() => {
     setFormState(settings);
   }, [settings]);
-
-  // Fetch MCP status on mount
-  useEffect(() => {
-    fetch('/api/mcp/status')
-      .then(res => res.json())
-      .then(data => setMcpEnabled(data.enabled))
-      .catch(error => console.error('Failed to load MCP status:', error));
-  }, []);
 
   // Get context preview based on current form state
   const { preview, isLoading, error, projects, selectedProject, setSelectedProject } = useContextPreview(formState);
@@ -253,36 +240,6 @@ export function ContextSettingsModal({
   const setAllArrayValues = useCallback((key: keyof Settings, values: string[]) => {
     updateSetting(key, values.join(','));
   }, [updateSetting]);
-
-  // Handle MCP toggle
-  const handleMcpToggle = async (enabled: boolean) => {
-    setMcpToggling(true);
-    setMcpStatus('Toggling...');
-
-    try {
-      const response = await fetch('/api/mcp/toggle', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled })
-      });
-
-      const result = await response.json();
-
-      if (result.success) {
-        setMcpEnabled(result.enabled);
-        setMcpStatus('Updated (restart to apply)');
-        setTimeout(() => setMcpStatus(''), 3000);
-      } else {
-        setMcpStatus(`Error: ${result.error}`);
-        setTimeout(() => setMcpStatus(''), 3000);
-      }
-    } catch (err) {
-      setMcpStatus(`Error: ${err instanceof Error ? err.message : 'Unknown error'}`);
-      setTimeout(() => setMcpStatus(''), 3000);
-    } finally {
-      setMcpToggling(false);
-    }
-  };
 
   // Handle ESC key
   useEffect(() => {
@@ -521,14 +478,6 @@ export function ContextSettingsModal({
               </FormField>
 
               <div className="toggle-group" style={{ marginTop: '12px' }}>
-                <ToggleSwitch
-                  id="mcp-enabled"
-                  label="MCP search server"
-                  description={mcpStatus || "Enable Model Context Protocol search"}
-                  checked={mcpEnabled}
-                  onChange={handleMcpToggle}
-                  disabled={mcpToggling}
-                />
                 <ToggleSwitch
                   id="show-last-summary"
                   label="Include last summary"

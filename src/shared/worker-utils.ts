@@ -1,11 +1,12 @@
 import path from "path";
 import { homedir } from "os";
 import { spawnSync } from "child_process";
-import { existsSync, writeFileSync } from "fs";
+import { existsSync, writeFileSync, readFileSync, mkdirSync } from "fs";
 import { logger } from "../utils/logger.js";
 import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
 import { ProcessManager } from "../services/process/ProcessManager.js";
 import { SettingsDefaultsManager } from "./SettingsDefaultsManager.js";
+import { getWorkerRestartInstructions } from "../utils/error-messages.js";
 
 const MARKETPLACE_ROOT = path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
 
@@ -47,6 +48,16 @@ export function clearPortCache(): void {
 }
 
 /**
+ * Get the worker host address
+ * Priority: ~/.claude-mem/settings.json > env var > default (127.0.0.1)
+ */
+export function getWorkerHost(): string {
+  const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+  const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+  return settings.CLAUDE_MEM_WORKER_HOST;
+}
+
+/**
  * Check if worker is responsive by trying the health endpoint
  */
 async function isWorkerHealthy(): Promise<boolean> {
@@ -66,12 +77,91 @@ async function isWorkerHealthy(): Promise<boolean> {
 }
 
 /**
+ * Get the current plugin version from package.json
+ */
+function getPluginVersion(): string | null {
+  try {
+    const packageJsonPath = path.join(MARKETPLACE_ROOT, 'package.json');
+    const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
+    return packageJson.version;
+  } catch (error) {
+    logger.debug('SYSTEM', 'Failed to read plugin version', {
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return null;
+  }
+}
+
+/**
+ * Get the running worker's version from the API
+ */
+async function getWorkerVersion(): Promise<string | null> {
+  try {
+    const port = getWorkerPort();
+    const response = await fetch(`http://127.0.0.1:${port}/api/version`, {
+      signal: AbortSignal.timeout(HEALTH_CHECK_TIMEOUT_MS)
+    });
+    if (!response.ok) return null;
+    const data = await response.json() as { version: string };
+    return data.version;
+  } catch (error) {
+    logger.debug('SYSTEM', 'Failed to get worker version', {
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return null;
+  }
+}
+
+/**
+ * Check if worker version matches plugin version
+ * If mismatch detected, restart the worker automatically
+ */
+async function ensureWorkerVersionMatches(): Promise<void> {
+  const pluginVersion = getPluginVersion();
+  const workerVersion = await getWorkerVersion();
+
+  if (!pluginVersion || !workerVersion) {
+    // Can't determine versions, skip check
+    return;
+  }
+
+  if (pluginVersion !== workerVersion) {
+    logger.info('SYSTEM', 'Worker version mismatch detected - restarting worker', {
+      pluginVersion,
+      workerVersion
+    });
+
+    // Give files time to sync before restart
+    await new Promise(resolve => setTimeout(resolve, getTimeout(HOOK_TIMEOUTS.PRE_RESTART_SETTLE_DELAY)));
+
+    // Restart the worker
+    await ProcessManager.restart(getWorkerPort());
+
+    // Give it a moment to start
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
+    // Verify it's healthy
+    if (!await isWorkerHealthy()) {
+      logger.error('SYSTEM', 'Worker failed to restart after version mismatch', {
+        expectedVersion: pluginVersion,
+        runningVersion: workerVersion,
+        port: getWorkerPort()
+      });
+    }
+  }
+}
+
+/**
  * Start the worker service using ProcessManager
  * Handles both Unix (Bun) and Windows (compiled exe) platforms
  */
 async function startWorker(): Promise<boolean> {
   // Clean up legacy PM2 (one-time migration)
-  const pm2MigratedMarker = path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), '.pm2-migrated');
+  const dataDir = SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR');
+  const pm2MigratedMarker = path.join(dataDir, '.pm2-migrated');
+
+  // Ensure data directory exists (may not exist on fresh install)
+  mkdirSync(dataDir, { recursive: true });
 
   if (!existsSync(pm2MigratedMarker)) {
     try {
@@ -103,28 +193,46 @@ async function startWorker(): Promise<boolean> {
 /**
  * Ensure worker service is running
  * Checks health and auto-starts if not running
+ * Also ensures worker version matches plugin version
  */
 export async function ensureWorkerRunning(): Promise<void> {
   // Check if already healthy
   if (await isWorkerHealthy()) {
+    // Worker is healthy, but check if version matches
+    await ensureWorkerVersionMatches();
     return;
   }
 
   // Try to start the worker
   const started = await startWorker();
 
-  // Final health check before throwing error
-  // Worker might be already running but was temporarily unresponsive
-  if (!started && await isWorkerHealthy()) {
-    return;
-  }
-
   if (!started) {
     const port = getWorkerPort();
     throw new Error(
-      `Worker service failed to start on port ${port}.\n\n` +
-      `To start manually, run: bun run worker:start\n` +
-      `If already running, try: bun run worker:restart`
+      getWorkerRestartInstructions({
+        port,
+        customPrefix: `Worker service failed to start on port ${port}.`
+      })
     );
   }
+
+  // Wait for worker to become responsive after starting
+  // Try up to 5 times with 500ms delays (2.5 seconds total)
+  for (let i = 0; i < 5; i++) {
+    await new Promise(resolve => setTimeout(resolve, 500));
+    if (await isWorkerHealthy()) {
+      await ensureWorkerVersionMatches();
+      return;
+    }
+  }
+
+  // Worker started but isn't responding
+  const port = getWorkerPort();
+  logger.error('SYSTEM', 'Worker started but not responding to health checks');
+  throw new Error(
+    getWorkerRestartInstructions({
+      port,
+      customPrefix: `Worker service started but is not responding on port ${port}.`
+    })
+  );
 }

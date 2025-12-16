@@ -19,7 +19,7 @@ Current: 4.2.8
 New: 4.2.9 (PATCH)
 
 Steps:
-1. Update all four files to 4.2.9
+1. Update all three files to 4.2.9
 2. npm run build
 3. git commit -m "Release v4.2.9: Fixed memory leak in search"
 4. git tag v4.2.9 -m "Release v4.2.9: Fixed memory leak in search"
@@ -44,7 +44,7 @@ Current: 4.2.8
 New: 4.3.0 (MINOR - reset patch to 0)
 
 Steps:
-1. Update all four files to 4.3.0
+1. Update all three files to 4.3.0
 2. npm run build
 3. git commit -m "Release v4.3.0: Added web search MCP integration"
 4. git tag v4.3.0 -m "Release v4.3.0: Added web search MCP integration"
@@ -69,7 +69,7 @@ Current: 4.2.8
 New: 5.0.0 (MAJOR - reset minor and patch to 0)
 
 Steps:
-1. Update all four files to 5.0.0
+1. Update all three files to 5.0.0
 2. npm run build
 3. git commit -m "Release v5.0.0: Storage layer redesign with migration required"
 4. git tag v5.0.0 -m "Release v5.0.0: Storage layer redesign"
@@ -94,7 +94,7 @@ Current: 4.2.8
 New: 4.2.9 (PATCH)
 
 Steps:
-1. Update all four files to 4.2.9
+1. Update all three files to 4.2.9
 2. npm run build
 3. git commit -m "Release v4.2.9: Multiple bug fixes
 
@@ -122,7 +122,7 @@ Current: 5.1.0
 New: 5.2.0 (MINOR)
 
 Steps:
-1. Update all four files to 5.2.0
+1. Update all three files to 5.2.0
 2. npm run build
 3. git commit -m "Release v5.2.0: Dark mode support + bug fixes
 

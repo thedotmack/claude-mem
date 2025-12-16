@@ -14,8 +14,8 @@ import { createHookResponse } from './hook-response.js';
 import { logger } from '../utils/logger.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
-import { happy_path_error__with_fallback } from '../utils/silent-debug.js';
 import { handleWorkerError } from '../shared/hook-error-handler.js';
+import { handleFetchError } from './shared/error-handler.js';
 import { extractLastMessage } from '../shared/transcript-parser.js';
 
 export interface StopInput {
@@ -40,10 +40,12 @@ async function summaryHook(input?: StopInput): Promise<void> {
   const port = getWorkerPort();
 
   // Extract last user AND assistant messages from transcript
-  const transcriptPath = happy_path_error__with_fallback(
+  const transcriptPath = input.transcript_path || logger.happyPathError(
+    'HOOK',
     'Missing transcript_path in Stop hook input',
+    undefined,
     { session_id },
-    input.transcript_path || ''
+    ''
   );
   const lastUserMessage = extractLastMessage(transcriptPath, 'user');
   const lastAssistantMessage = extractLastMessage(transcriptPath, 'assistant', true);
@@ -69,10 +71,12 @@ async function summaryHook(input?: StopInput): Promise<void> {
 
     if (!response.ok) {
       const errorText = await response.text();
-      logger.failure('HOOK', 'Failed to generate summary', {
-        status: response.status
-      }, errorText);
-      throw new Error(`Failed to request summary from worker: ${response.status} ${errorText}`);
+      handleFetchError(response, errorText, {
+        hookName: 'summary',
+        operation: 'Summary generation',
+        sessionId: session_id,
+        port
+      });
     }
 
     logger.debug('HOOK', 'Summary request sent successfully');

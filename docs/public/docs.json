@@ -39,7 +39,9 @@
           "usage/search-tools",
           "usage/claude-desktop",
           "usage/private-tags",
-          "beta-features"
+          "usage/export-import",
+          "beta-features",
+          "endless-mode"
         ]
       },
       {

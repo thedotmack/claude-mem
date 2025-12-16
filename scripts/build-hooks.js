@@ -222,12 +222,28 @@ async function buildHooks() {
       console.log(`✓ ${hook.name} built (${sizeInKB} KB)`);
     }
 
+    // Build mem-search skill zip for Claude Desktop
+    console.log('\n📦 Building mem-search skill zip for Claude Desktop...');
+    const { execSync } = await import('child_process');
+    const zipOutput = 'plugin/skills/mem-search.zip';
+
+    // Remove old zip if exists
+    if (fs.existsSync(zipOutput)) {
+      fs.unlinkSync(zipOutput);
+    }
+
+    // Create zip from mem-search skill directory
+    execSync(`cd plugin/skills && zip -r mem-search.zip mem-search/`, { stdio: 'pipe' });
+    const zipStats = fs.statSync(zipOutput);
+    console.log(`✓ mem-search.zip built (${(zipStats.size / 1024).toFixed(2)} KB)`);
+
     console.log('\n✅ All hooks, worker service, and MCP server built successfully!');
     console.log(`   Output: ${hooksDir}/`);
     console.log(`   - Hooks: *-hook.js`);
     console.log(`   - Worker: worker-service.cjs`);
     console.log(`   - MCP Server: mcp-server.cjs`);
     console.log(`   - Skills: plugin/skills/`);
+    console.log(`   - Desktop Skill: plugin/skills/mem-search.zip`);
     console.log('\n💡 Note: Dependencies will be auto-installed on first hook execution');
 
   } catch (error) {
