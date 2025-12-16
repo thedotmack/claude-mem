@@ -4,6 +4,66 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [7.3.1] - 2025-12-16
+
+## 🐛 Bug Fixes
+
+### Pending Messages Cleanup (Issue #353)
+
+Fixed unbounded database growth in the `pending_messages` table by implementing proper cleanup logic:
+
+- **Content Clearing**: `markProcessed()` now clears `tool_input` and `tool_response` when marking messages as processed, preventing duplicate storage of transcript data that's already saved in observations
+- **Count-Based Retention**: `cleanupProcessed()` now keeps only the 100 most recent processed messages for UI display, deleting older ones automatically
+- **Automatic Cleanup**: Cleanup runs automatically after processing messages in `SDKAgent.processSDKResponse()`
+
+### What This Fixes
+
+- Prevents database from growing unbounded with duplicate transcript content
+- Keeps metadata (tool_name, status, timestamps) for recent messages
+- Maintains UI functionality while optimizing storage
+
+### Technical Details
+
+**Files Modified:**
+- `src/services/sqlite/PendingMessageStore.ts` - Cleanup logic implementation
+- `src/services/worker/SDKAgent.ts` - Periodic cleanup calls
+
+**Database Behavior:**
+- Pending/processing messages: Keep full transcript data (needed for processing)
+- Processed messages: Clear transcript, keep metadata only (observations already saved)
+- Retention: Last 100 processed messages for UI feedback
+
+### Related
+
+- Fixes #353 - Observations not being saved
+- Part of the pending messages persistence feature (from PR #335)
+
+---
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.3.0...v7.3.1
+
+## [7.3.0] - 2025-12-16
+
+## Features
+
+- **Table-based search output**: Unified timeline formatting with cleaner, more organized presentation of search results grouped by date and file
+- **Simplified API**: Removed unused format parameter from MCP search tools for cleaner interface
+- **Shared formatting utilities**: Extracted common timeline formatting logic into reusable module
+- **Batch observations endpoint**: Added `/api/observations/batch` endpoint for efficient retrieval of multiple observations by ID array
+
+## Changes
+
+- **Default model upgrade**: Changed default model from Haiku to Sonnet for better observation quality
+- **Removed fake URIs**: Replaced claude-mem:// pseudo-protocol with actual HTTP API endpoints for citations
+
+## Bug Fixes
+
+- Fixed undefined debug function calls in MCP server
+- Fixed skillPath variable scoping bug in instructions endpoint
+- Extracted magic numbers to named constants for better code maintainability
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.2.4...v7.3.0
+
 ## [7.2.4] - 2025-12-15
 
 ## What's Changed
@@ -34,25 +94,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - Generate `mem-search.zip` during build from `plugin/skills/mem-search/`
   - Update docs with correct MCP tool list and new download path
   - Single source of truth for Claude Desktop skill
-
-## [7.3.0] - 2025-12-15
-
-## Features
-
-- **Table-based search output**: Unified timeline formatting with cleaner, more organized presentation of search results grouped by date and file
-- **Simplified API**: Removed unused format parameter from MCP search tools for cleaner interface
-- **Shared formatting utilities**: Extracted common timeline formatting logic into reusable module
-
-## Changes
-
-- **Default model upgrade**: Changed default model from Haiku to Sonnet for better observation quality
-- **Removed fake URIs**: Replaced claude-mem:// pseudo-protocol with actual HTTP API endpoints for citations
-
-## Bug Fixes
-
-- Fixed undefined debug function calls in MCP server
-- Fixed skillPath variable scoping bug in instructions endpoint
-- Extracted magic numbers to named constants for better code maintainability
 
 ## [7.2.1] - 2025-12-14
 

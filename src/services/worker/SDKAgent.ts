@@ -396,6 +396,29 @@ export class SDKAgent {
       }
     }
 
+    // CRITICAL: Mark ALL pending messages as successfully processed
+    // This prevents message loss if worker crashes before SDK finishes
+    const pendingMessageStore = this.sessionManager.getPendingMessageStore();
+    if (session.pendingProcessingIds.size > 0) {
+      for (const messageId of session.pendingProcessingIds) {
+        pendingMessageStore.markProcessed(messageId);
+      }
+      logger.debug('SDK', 'Messages marked as processed', {
+        sessionId: session.sessionDbId,
+        messageIds: Array.from(session.pendingProcessingIds),
+        count: session.pendingProcessingIds.size
+      });
+      session.pendingProcessingIds.clear();
+
+      // Clean up old processed messages (keep last 100 for UI display)
+      const deletedCount = pendingMessageStore.cleanupProcessed(100);
+      if (deletedCount > 0) {
+        logger.debug('SDK', 'Cleaned up old processed messages', {
+          deletedCount
+        });
+      }
+    }
+
     // Broadcast activity status after processing (queue may have changed)
     if (worker && typeof worker.broadcastProcessingStatus === 'function') {
       worker.broadcastProcessingStatus();

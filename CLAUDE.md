@@ -76,3 +76,7 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 **Public Docs**: https://docs.claude-mem.ai (Mintlify)
 **Source**: `docs/public/` - MDX files, edit `docs.json` for navigation
 **Deploy**: Auto-deploys from GitHub on push to main
+
+# Important
+
+No need to edit the changelog ever, it's generated automatically.

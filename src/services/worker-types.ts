@@ -14,13 +14,14 @@ export interface ActiveSession {
   sdkSessionId: string | null;
   project: string;
   userPrompt: string;
-  pendingMessages: PendingMessage[];
+  pendingMessages: PendingMessage[];  // Deprecated: now using persistent store, kept for compatibility
   abortController: AbortController;
   generatorPromise: Promise<void> | null;
   lastPromptNumber: number;
   startTime: number;
   cumulativeInputTokens: number;   // Track input tokens for discovery cost
   cumulativeOutputTokens: number;  // Track output tokens for discovery cost
+  pendingProcessingIds: Set<number>;  // Track ALL message IDs yielded but not yet processed
 }
 
 export interface PendingMessage {
@@ -32,6 +33,16 @@ export interface PendingMessage {
   cwd?: string;
   last_user_message?: string;
   last_assistant_message?: string;
+}
+
+/**
+ * PendingMessage with database ID for completion tracking.
+ * The _persistentId is used to mark the message as processed after SDK success.
+ * The _originalTimestamp is the epoch when the message was first queued (for accurate observation timestamps).
+ */
+export interface PendingMessageWithId extends PendingMessage {
+  _persistentId: number;
+  _originalTimestamp: number;
 }
 
 export interface ObservationData {
