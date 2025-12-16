@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from 'fs';
 import { createWriteStream } from 'fs';
 import { join } from 'path';
-import { spawn } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import { homedir } from 'os';
 import { DATA_DIR } from '../../shared/paths.js';
 import { getBunPath, isBunAvailable } from '../../utils/bun-path.js';
@@ -52,12 +52,21 @@ export class ProcessManager {
 
     const logFile = this.getLogFilePath();
 
-    // Use Bun on all platforms
+    // Use Bun on all platforms with PowerShell workaround for Windows console popups
     return this.startWithBun(workerScript, logFile, port);
   }
 
   private static isBunAvailable(): boolean {
     return isBunAvailable();
+  }
+
+  /**
+   * Escapes a string for safe use in PowerShell single-quoted strings.
+   * In PowerShell single quotes, the only special character is the single quote itself,
+   * which must be doubled to escape it.
+   */
+  private static escapePowerShellString(str: string): string {
+    return str.replace(/'/g, "''");
   }
 
   private static async startWithBun(script: string, logFile: string, port: number): Promise<{ success: boolean; pid?: number; error?: string }> {
@@ -68,40 +77,84 @@ export class ProcessManager {
         error: 'Bun is required but not found in PATH or common installation paths. Install from https://bun.sh'
       };
     }
-
     try {
       const isWindows = process.platform === 'win32';
 
-      const child = spawn(bunPath, [script], {
-        detached: true,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env, CLAUDE_MEM_WORKER_PORT: String(port) },
-        cwd: MARKETPLACE_ROOT,
-        // Hide console window on Windows
-        ...(isWindows && { windowsHide: true })
-      });
+      if (isWindows) {
+        // Windows: Use PowerShell Start-Process with -WindowStyle Hidden
+        // This properly hides the console window (affects both Bun and Node.js)
+        // Note: windowsHide: true doesn't work with detached: true (Bun inherits Node.js process spawning semantics)
+        // See: https://github.com/nodejs/node/issues/21825 and PR #315 for detailed testing
+        //
+        // Security: All paths (bunPath, script, MARKETPLACE_ROOT) are application-controlled system paths,
+        // not user input. If an attacker could modify these paths, they would already have full filesystem
+        // access including direct access to ~/.claude-mem/claude-mem.db. Nevertheless, we properly escape
+        // all values for PowerShell to follow security best practices.
+        const escapedBunPath = this.escapePowerShellString(bunPath);
+        const escapedScript = this.escapePowerShellString(script);
+        const escapedWorkDir = this.escapePowerShellString(MARKETPLACE_ROOT);
+        const envVars = `$env:CLAUDE_MEM_WORKER_PORT='${port}'`;
+        const psCommand = `${envVars}; Start-Process -FilePath '${escapedBunPath}' -ArgumentList '${escapedScript}' -WorkingDirectory '${escapedWorkDir}' -WindowStyle Hidden -PassThru | Select-Object -ExpandProperty Id`;
 
-      // Write logs
-      const logStream = createWriteStream(logFile, { flags: 'a' });
-      child.stdout?.pipe(logStream);
-      child.stderr?.pipe(logStream);
+        const result = spawnSync('powershell', ['-Command', psCommand], {
+          stdio: 'pipe',
+          timeout: 10000,
+          windowsHide: true
+        });
 
-      child.unref();
+        if (result.status !== 0) {
+          return {
+            success: false,
+            error: `PowerShell spawn failed: ${result.stderr?.toString() || 'unknown error'}`
+          };
+        }
 
-      if (!child.pid) {
-        return { success: false, error: 'Failed to get PID from spawned process' };
+        const pid = parseInt(result.stdout.toString().trim(), 10);
+        if (isNaN(pid)) {
+          return { success: false, error: 'Failed to get PID from PowerShell' };
+        }
+
+        // Write PID file
+        this.writePidFile({
+          pid,
+          port,
+          startedAt: new Date().toISOString(),
+          version: process.env.npm_package_version || 'unknown'
+        });
+
+        // Wait for health
+        return this.waitForHealth(pid, port);
+      } else {
+        // Unix: Use standard spawn with detached
+        const child = spawn(bunPath, [script], {
+          detached: true,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          env: { ...process.env, CLAUDE_MEM_WORKER_PORT: String(port) },
+          cwd: MARKETPLACE_ROOT
+        });
+
+        // Write logs
+        const logStream = createWriteStream(logFile, { flags: 'a' });
+        child.stdout?.pipe(logStream);
+        child.stderr?.pipe(logStream);
+
+        child.unref();
+
+        if (!child.pid) {
+          return { success: false, error: 'Failed to get PID from spawned process' };
+        }
+
+        // Write PID file
+        this.writePidFile({
+          pid: child.pid,
+          port,
+          startedAt: new Date().toISOString(),
+          version: process.env.npm_package_version || 'unknown'
+        });
+
+        // Wait for health
+        return this.waitForHealth(child.pid, port);
       }
-
-      // Write PID file
-      this.writePidFile({
-        pid: child.pid,
-        port,
-        startedAt: new Date().toISOString(),
-        version: process.env.npm_package_version || 'unknown'
-      });
-
-      // Wait for health
-      return this.waitForHealth(child.pid, port);
     } catch (error) {
       return {
         success: false,
