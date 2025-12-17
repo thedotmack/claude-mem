@@ -155,12 +155,13 @@ export class WorkerService {
 
     // Version endpoint - returns the worker's current version
     this.app.get('/api/version', (_req, res) => {
+      const { homedir } = require('os');
+      const { readFileSync } = require('fs');
+      const marketplaceRoot = path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
+      const packageJsonPath = path.join(marketplaceRoot, 'package.json');
+
       try {
         // Read version from marketplace package.json
-        const { homedir } = require('os');
-        const { readFileSync } = require('fs');
-        const marketplaceRoot = path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
-        const packageJsonPath = path.join(marketplaceRoot, 'package.json');
         const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
         res.status(200).json({ version: packageJson.version });
       } catch (error) {
@@ -333,7 +334,8 @@ export class WorkerService {
         const pidStrings = stdout.trim().split('\n');
         for (const pidStr of pidStrings) {
           const pid = parseInt(pidStr.trim(), 10);
-          if (!isNaN(pid)) {
+          // SECURITY: Validate PID is positive integer before adding to list
+          if (!isNaN(pid) && Number.isInteger(pid) && pid > 0) {
             pids.push(pid);
           }
         }
@@ -351,7 +353,8 @@ export class WorkerService {
           const parts = line.trim().split(/\s+/);
           if (parts.length > 1) {
             const pid = parseInt(parts[1], 10);
-            if (!isNaN(pid)) {
+            // SECURITY: Validate PID is positive integer before adding to list
+            if (!isNaN(pid) && Number.isInteger(pid) && pid > 0) {
               pids.push(pid);
             }
           }
@@ -371,6 +374,11 @@ export class WorkerService {
       // Kill all found processes
       if (isWindows) {
         for (const pid of pids) {
+          // SECURITY: Double-check PID validation before using in taskkill command
+          if (!Number.isInteger(pid) || pid <= 0) {
+            logger.warn('SYSTEM', 'Skipping invalid PID', { pid });
+            continue;
+          }
           try {
             execSync(`taskkill /PID ${pid} /T /F`, { timeout: 5000, stdio: 'ignore' });
           } catch (error) {
@@ -554,6 +562,12 @@ export class WorkerService {
       return [];
     }
 
+    // SECURITY: Validate PID is a positive integer to prevent command injection
+    if (!Number.isInteger(parentPid) || parentPid <= 0) {
+      logger.warn('SYSTEM', 'Invalid parent PID for child process enumeration', { parentPid });
+      return [];
+    }
+
     try {
       const cmd = `powershell -Command "Get-CimInstance Win32_Process | Where-Object { $_.ParentProcessId -eq ${parentPid} } | Select-Object -ExpandProperty ProcessId"`;
       const { stdout } = await execAsync(cmd, { timeout: 5000 });
@@ -561,7 +575,7 @@ export class WorkerService {
         .trim()
         .split('\n')
         .map(s => parseInt(s.trim(), 10))
-        .filter(n => !isNaN(n));
+        .filter(n => !isNaN(n) && Number.isInteger(n) && n > 0); // SECURITY: Validate each PID
     } catch (error) {
       logger.warn('SYSTEM', 'Failed to enumerate child processes', {}, error as Error);
       return [];
@@ -572,6 +586,12 @@ export class WorkerService {
    * Force kill a process by PID (Windows: uses taskkill /F /T)
    */
   private async forceKillProcess(pid: number): Promise<void> {
+    // SECURITY: Validate PID is a positive integer to prevent command injection
+    if (!Number.isInteger(pid) || pid <= 0) {
+      logger.warn('SYSTEM', 'Invalid PID for force kill', { pid });
+      return;
+    }
+
     try {
       if (process.platform === 'win32') {
         // /T kills entire process tree, /F forces termination

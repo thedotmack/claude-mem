@@ -84,6 +84,12 @@ async function getDescendantPids(parentPid: number): Promise<number[]> {
     return [];
   }
 
+  // SECURITY: Validate PID is a positive integer to prevent command injection
+  if (!Number.isInteger(parentPid) || parentPid <= 0) {
+    log(`Invalid PID for process enumeration: ${parentPid}`);
+    return [];
+  }
+
   try {
     const cmd = `powershell -Command "Get-CimInstance Win32_Process | Where-Object { $_.ParentProcessId -eq ${parentPid} } | Select-Object -ExpandProperty ProcessId"`;
     const { stdout } = await execAsync(cmd, { timeout: 5000 });
@@ -122,6 +128,12 @@ async function killInner(): Promise<void> {
     const descendantPids = await getDescendantPids(pid);
     log(`Process tree enumeration: root=${pid}, descendants=[${descendantPids.join(', ')}]`);
 
+    // SECURITY: Validate PID before using in taskkill command
+    if (!Number.isInteger(pid) || pid <= 0) {
+      log(`Invalid PID for taskkill: ${pid}`);
+      return;
+    }
+
     // Kill root + all descendants with /T (tree) flag
     try {
       execSync(`taskkill /PID ${pid} /T /F`, { timeout: 10000, stdio: 'ignore' });
@@ -131,6 +143,11 @@ async function killInner(): Promise<void> {
       // Fallback: kill each descendant individually in reverse order (children before parents)
       for (let i = descendantPids.length - 1; i >= 0; i--) {
         const dpid = descendantPids[i];
+        // SECURITY: Validate each descendant PID before using in taskkill
+        if (!Number.isInteger(dpid) || dpid <= 0) {
+          log(`Skipping invalid descendant PID: ${dpid}`);
+          continue;
+        }
         try {
           execSync(`taskkill /PID ${dpid} /F`, { timeout: 2000, stdio: 'ignore' });
           log(`Killed descendant PID ${dpid}`);

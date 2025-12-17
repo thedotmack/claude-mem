@@ -863,29 +863,60 @@ export class ChromaSync {
     try {
       // On Windows, force-kill subprocess BEFORE closing transport to prevent zombie processes
       if (process.platform === 'win32' && this.childPid) {
-        try {
-          execSync(`taskkill /PID ${this.childPid} /T /F`, { timeout: 5000, stdio: 'ignore' });
-          logger.info('CHROMA_SYNC', 'Killed subprocess tree', { pid: this.childPid, project: this.project });
-        } catch (error) {
-          logger.warn('CHROMA_SYNC', 'Failed to kill subprocess', { pid: this.childPid, project: this.project }, error as Error);
+        // SECURITY: Validate PID is a positive integer to prevent command injection
+        if (!Number.isInteger(this.childPid) || this.childPid <= 0) {
+          logger.warn('CHROMA_SYNC', 'Invalid child PID, skipping kill', { pid: this.childPid, project: this.project });
+        } else {
+          try {
+            execSync(`taskkill /PID ${this.childPid} /T /F`, { timeout: 5000, stdio: 'ignore' });
+            logger.info('CHROMA_SYNC', 'Killed subprocess tree', { pid: this.childPid, project: this.project });
+          } catch (error) {
+            logger.warn('CHROMA_SYNC', 'Failed to kill subprocess', { pid: this.childPid, project: this.project }, error as Error);
+          }
         }
       }
 
-      // Close client first
+      // Close client first with timeout to prevent hanging
       if (this.client) {
         try {
-          await this.client.close();
+          const CLOSE_TIMEOUT_MS = 10000; // 10 second timeout
+          const closePromise = this.client.close();
+          const timeoutPromise = new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('Client close timeout')), CLOSE_TIMEOUT_MS)
+          );
+
+          await Promise.race([closePromise, timeoutPromise]);
+          logger.info('CHROMA_SYNC', 'Chroma client closed gracefully', { project: this.project });
         } catch (error) {
-          logger.warn('CHROMA_SYNC', 'Error closing Chroma client', { project: this.project }, error as Error);
+          logger.warn('CHROMA_SYNC', 'Error closing Chroma client (forcing cleanup)', { project: this.project }, error as Error);
+
+          // Timeout occurred - force kill the subprocess if we have the PID
+          if (process.platform === 'win32' && this.childPid) {
+            if (Number.isInteger(this.childPid) && this.childPid > 0) {
+              try {
+                execSync(`taskkill /PID ${this.childPid} /T /F`, { timeout: 5000, stdio: 'ignore' });
+                logger.info('CHROMA_SYNC', 'Force killed subprocess after client close timeout', { pid: this.childPid, project: this.project });
+              } catch (killError) {
+                logger.warn('CHROMA_SYNC', 'Failed to force kill subprocess', { pid: this.childPid, project: this.project }, killError as Error);
+              }
+            }
+          }
         }
       }
 
       // Explicitly close transport to kill subprocess
       if (this.transport) {
         try {
-          await this.transport.close();
+          const TRANSPORT_CLOSE_TIMEOUT_MS = 5000; // 5 second timeout for transport
+          const transportClosePromise = this.transport.close();
+          const timeoutPromise = new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('Transport close timeout')), TRANSPORT_CLOSE_TIMEOUT_MS)
+          );
+
+          await Promise.race([transportClosePromise, timeoutPromise]);
+          logger.info('CHROMA_SYNC', 'Transport closed gracefully', { project: this.project });
         } catch (error) {
-          logger.warn('CHROMA_SYNC', 'Error closing transport', { project: this.project }, error as Error);
+          logger.warn('CHROMA_SYNC', 'Error closing transport (process may remain)', { project: this.project }, error as Error);
         }
       }
 
