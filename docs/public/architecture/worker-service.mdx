@@ -240,7 +240,7 @@ POST /api/observations/batch
 - `400 Bad Request`: `{"error": "ids must be an array of numbers"}`
 - `400 Bad Request`: `{"error": "All ids must be integers"}`
 
-**Use Case**: This endpoint is used by the `get_batch_observations` MCP tool to efficiently retrieve multiple observations in a single request, avoiding the overhead of multiple individual requests.
+**Use Case**: This endpoint is used by the `get_observations` MCP tool to efficiently retrieve multiple observations in a single request, avoiding the overhead of multiple individual requests.
 
 #### 9. Get Session by ID
 ```
