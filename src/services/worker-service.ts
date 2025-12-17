@@ -118,8 +118,17 @@ export class WorkerService {
    */
   private setupRoutes(): void {
     // Health check endpoint
+    // TEST_BUILD_ID helps verify which build is running during debugging
+    const TEST_BUILD_ID = 'TEST-008-wrapper-ipc';
     this.app.get('/api/health', (_req, res) => {
-      res.status(200).json({ status: 'ok' });
+      res.status(200).json({
+        status: 'ok',
+        build: TEST_BUILD_ID,
+        managed: process.env.CLAUDE_MEM_MANAGED === 'true',
+        hasIpc: typeof process.send === 'function',
+        platform: process.platform,
+        pid: process.pid,
+      });
     });
 
     // Version endpoint - returns the worker's current version
@@ -179,18 +188,43 @@ export class WorkerService {
     // Admin endpoints for process management
     this.app.post('/api/admin/restart', async (_req, res) => {
       res.json({ status: 'restarting' });
-      setTimeout(async () => {
-        await this.shutdown();
-        process.exit(0);
-      }, 100);
+
+      // On Windows, if managed by wrapper, send message to parent to handle restart
+      // This solves the Windows zombie port problem where sockets aren't properly released
+      const isWindowsManaged = process.platform === 'win32' &&
+        process.env.CLAUDE_MEM_MANAGED === 'true' &&
+        process.send;
+
+      if (isWindowsManaged) {
+        logger.info('SYSTEM', 'Sending restart request to wrapper');
+        process.send!({ type: 'restart' });
+      } else {
+        // Unix or standalone Windows - handle restart ourselves
+        setTimeout(async () => {
+          await this.shutdown();
+          process.exit(0);
+        }, 100);
+      }
     });
 
     this.app.post('/api/admin/shutdown', async (_req, res) => {
       res.json({ status: 'shutting_down' });
-      setTimeout(async () => {
-        await this.shutdown();
-        process.exit(0);
-      }, 100);
+
+      // On Windows, if managed by wrapper, send message to parent to handle shutdown
+      const isWindowsManaged = process.platform === 'win32' &&
+        process.env.CLAUDE_MEM_MANAGED === 'true' &&
+        process.send;
+
+      if (isWindowsManaged) {
+        logger.info('SYSTEM', 'Sending shutdown request to wrapper');
+        process.send!({ type: 'shutdown' });
+      } else {
+        // Unix or standalone Windows - handle shutdown ourselves
+        setTimeout(async () => {
+          await this.shutdown();
+          process.exit(0);
+        }, 100);
+      }
     });
 
     this.viewerRoutes.setupRoutes(this.app);
@@ -399,12 +433,32 @@ export class WorkerService {
 
   /**
    * Shutdown the worker service
+   *
+   * IMPORTANT: On Windows, we must kill all child processes before exiting
+   * to prevent zombie ports. The socket handle can be inherited by children,
+   * and if not properly closed, the port stays bound after process death.
    */
   async shutdown(): Promise<void> {
-    // Shutdown all active sessions
+    logger.info('SYSTEM', 'Shutdown initiated');
+
+    // STEP 1: Enumerate all child processes BEFORE we start closing things
+    const childPids = await this.getChildProcesses(process.pid);
+    logger.info('SYSTEM', 'Found child processes', { count: childPids.length, pids: childPids });
+
+    // STEP 2: Close HTTP server first
+    if (this.server) {
+      this.server.closeAllConnections();
+      await new Promise<void>((resolve, reject) => {
+        this.server!.close(err => err ? reject(err) : resolve());
+      });
+      this.server = null;
+      logger.info('SYSTEM', 'HTTP server closed');
+    }
+
+    // STEP 3: Shutdown active sessions
     await this.sessionManager.shutdownAll();
 
-    // Close MCP client connection (terminates MCP server process)
+    // STEP 4: Close MCP client connection (signals child to exit gracefully)
     if (this.mcpClient) {
       try {
         await this.mcpClient.close();
@@ -414,17 +468,88 @@ export class WorkerService {
       }
     }
 
-    // Close HTTP server
-    if (this.server) {
-      await new Promise<void>((resolve, reject) => {
-        this.server!.close(err => err ? reject(err) : resolve());
-      });
-    }
-
-    // Close database connection (includes ChromaSync cleanup)
+    // STEP 5: Close database connection (includes ChromaSync cleanup)
     await this.dbManager.close();
 
+    // STEP 6: Force kill any remaining child processes (Windows zombie port fix)
+    if (childPids.length > 0) {
+      logger.info('SYSTEM', 'Force killing remaining children');
+      for (const pid of childPids) {
+        await this.forceKillProcess(pid);
+      }
+      // Wait for children to fully exit
+      await this.waitForProcessesExit(childPids, 5000);
+    }
+
     logger.info('SYSTEM', 'Worker shutdown complete');
+  }
+
+  /**
+   * Get all child process PIDs (Windows-specific)
+   */
+  private async getChildProcesses(parentPid: number): Promise<number[]> {
+    if (process.platform !== 'win32') {
+      return [];
+    }
+
+    try {
+      const cmd = `powershell -Command "Get-CimInstance Win32_Process | Where-Object { $_.ParentProcessId -eq ${parentPid} } | Select-Object -ExpandProperty ProcessId"`;
+      const { stdout } = await execAsync(cmd, { timeout: 5000 });
+      return stdout
+        .trim()
+        .split('\n')
+        .map(s => parseInt(s.trim(), 10))
+        .filter(n => !isNaN(n));
+    } catch (error) {
+      logger.warn('SYSTEM', 'Failed to enumerate child processes', {}, error as Error);
+      return [];
+    }
+  }
+
+  /**
+   * Force kill a process by PID (Windows: uses taskkill /F /T)
+   */
+  private async forceKillProcess(pid: number): Promise<void> {
+    try {
+      if (process.platform === 'win32') {
+        // /T kills entire process tree, /F forces termination
+        await execAsync(`taskkill /PID ${pid} /T /F`, { timeout: 5000 });
+        logger.info('SYSTEM', 'Killed process', { pid });
+      } else {
+        process.kill(pid, 'SIGKILL');
+      }
+    } catch (error) {
+      // Process may already be dead, which is fine
+      logger.debug('SYSTEM', 'Process already dead or kill failed', { pid });
+    }
+  }
+
+  /**
+   * Wait for processes to fully exit
+   */
+  private async waitForProcessesExit(pids: number[], timeoutMs: number): Promise<void> {
+    const start = Date.now();
+
+    while (Date.now() - start < timeoutMs) {
+      const stillAlive = pids.filter(pid => {
+        try {
+          process.kill(pid, 0); // Signal 0 checks if process exists
+          return true;
+        } catch {
+          return false;
+        }
+      });
+
+      if (stillAlive.length === 0) {
+        logger.info('SYSTEM', 'All child processes exited');
+        return;
+      }
+
+      logger.debug('SYSTEM', 'Waiting for processes to exit', { stillAlive });
+      await new Promise(r => setTimeout(r, 100));
+    }
+
+    logger.warn('SYSTEM', 'Timeout waiting for child processes to exit');
   }
 
   /**
