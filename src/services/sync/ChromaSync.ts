@@ -876,47 +876,21 @@ export class ChromaSync {
         }
       }
 
-      // Close client first with timeout to prevent hanging
+      // Close client
       if (this.client) {
         try {
-          const CLOSE_TIMEOUT_MS = 10000; // 10 second timeout
-          const closePromise = this.client.close();
-          const timeoutPromise = new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error('Client close timeout')), CLOSE_TIMEOUT_MS)
-          );
-
-          await Promise.race([closePromise, timeoutPromise]);
-          logger.info('CHROMA_SYNC', 'Chroma client closed gracefully', { project: this.project });
+          await this.client.close();
         } catch (error) {
-          logger.warn('CHROMA_SYNC', 'Error closing Chroma client (forcing cleanup)', { project: this.project }, error as Error);
-
-          // Timeout occurred - force kill the subprocess if we have the PID
-          if (process.platform === 'win32' && this.childPid) {
-            if (Number.isInteger(this.childPid) && this.childPid > 0) {
-              try {
-                execSync(`taskkill /PID ${this.childPid} /T /F`, { timeout: 5000, stdio: 'ignore' });
-                logger.info('CHROMA_SYNC', 'Force killed subprocess after client close timeout', { pid: this.childPid, project: this.project });
-              } catch (killError) {
-                logger.warn('CHROMA_SYNC', 'Failed to force kill subprocess', { pid: this.childPid, project: this.project }, killError as Error);
-              }
-            }
-          }
+          logger.warn('CHROMA_SYNC', 'Error closing Chroma client', { project: this.project }, error as Error);
         }
       }
 
-      // Explicitly close transport to kill subprocess
+      // Close transport to kill subprocess
       if (this.transport) {
         try {
-          const TRANSPORT_CLOSE_TIMEOUT_MS = 5000; // 5 second timeout for transport
-          const transportClosePromise = this.transport.close();
-          const timeoutPromise = new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error('Transport close timeout')), TRANSPORT_CLOSE_TIMEOUT_MS)
-          );
-
-          await Promise.race([transportClosePromise, timeoutPromise]);
-          logger.info('CHROMA_SYNC', 'Transport closed gracefully', { project: this.project });
+          await this.transport.close();
         } catch (error) {
-          logger.warn('CHROMA_SYNC', 'Error closing transport (process may remain)', { project: this.project }, error as Error);
+          logger.warn('CHROMA_SYNC', 'Error closing transport', { project: this.project }, error as Error);
         }
       }
 
