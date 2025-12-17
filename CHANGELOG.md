@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [7.3.4] - 2025-12-17
+
+Patch release for bug fixes and minor improvements
+
 ## [7.3.3] - 2025-12-16
 
 ## What's Changed
