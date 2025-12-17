@@ -280,7 +280,7 @@ const tools = [
     }
   },
   {
-    name: 'get_batch_observations',
+    name: 'get_observations',
     description: 'Batch fetch',
     inputSchema: z.object({
       ids: z.array(z.number()),
