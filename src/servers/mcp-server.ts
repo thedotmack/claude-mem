@@ -187,7 +187,7 @@ async function verifyWorkerConnection(): Promise<boolean> {
 const tools = [
   {
     name: 'search',
-    description: 'Search memory',
+    description: 'メモリを検索 - 過去のセッションや作業履歴を検索',
     inputSchema: z.object({
       query: z.string().optional(),
       type: z.enum(['observations', 'sessions', 'prompts']).optional(),
@@ -208,7 +208,7 @@ const tools = [
   },
   {
     name: 'timeline',
-    description: 'Timeline context',
+    description: 'タイムライン表示 - 時系列でコンテキストを取得',
     inputSchema: z.object({
       query: z.string().optional(),
       anchor: z.number().optional(),
@@ -226,7 +226,7 @@ const tools = [
   },
   {
     name: 'get_recent_context',
-    description: 'Recent context',
+    description: '最近のコンテキスト - 直近の作業履歴を取得',
     inputSchema: z.object({
       limit: z.number().min(1).max(100).default(30),
       type: z.string().optional(),
@@ -243,7 +243,7 @@ const tools = [
   },
   {
     name: 'get_context_timeline',
-    description: 'Timeline around ID',
+    description: 'ID周辺のタイムライン - 指定IDの前後を取得',
     inputSchema: z.object({
       anchor: z.number(),
       depth_before: z.number().min(0).max(100).default(10),
@@ -260,7 +260,7 @@ const tools = [
   },
   {
     name: 'help',
-    description: 'Usage help',
+    description: '使い方ヘルプ - ツールの使用方法を表示',
     inputSchema: z.object({
       topic: z.enum(['workflow', 'search_params', 'examples', 'all']).default('all')
     }),
@@ -271,7 +271,7 @@ const tools = [
   },
   {
     name: 'get_observation',
-    description: 'Fetch by ID',
+    description: 'IDで取得 - 指定IDの観察データを取得',
     inputSchema: z.object({
       id: z.number()
     }),
@@ -281,7 +281,7 @@ const tools = [
   },
   {
     name: 'get_observations',
-    description: 'Batch fetch',
+    description: '一括取得 - 複数IDのデータをまとめて取得',
     inputSchema: z.object({
       ids: z.array(z.number()),
       orderBy: z.enum(['date_desc', 'date_asc']).optional(),
@@ -294,7 +294,7 @@ const tools = [
   },
   {
     name: 'get_session',
-    description: 'Session by ID',
+    description: 'セッション取得 - 指定IDのセッションを取得',
     inputSchema: z.object({
       id: z.number()
     }),
@@ -304,7 +304,7 @@ const tools = [
   },
   {
     name: 'get_prompt',
-    description: 'Prompt by ID',
+    description: 'プロンプト取得 - 指定IDのプロンプトを取得',
     inputSchema: z.object({
       id: z.number()
     }),

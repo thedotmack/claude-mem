@@ -54,7 +54,8 @@
   <a href="#documentation">Documentation</a> •
   <a href="#configuration">Configuration</a> •
   <a href="#troubleshooting">Troubleshooting</a> •
-  <a href="#license">License</a>
+  <a href="#license">License</a> •
+  <a href="README.ja.md">日本語</a>
 </p>
 
 <p align="center">

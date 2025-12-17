@@ -4,7 +4,7 @@
     "name": "Alex Newman"
   },
   "metadata": {
-    "description": "Plugins by Alex Newman (thedotmack)",
+    "description": "Alex Newman (thedotmack) によるプラグイン",
     "homepage": "https://github.com/thedotmack/claude-mem"
   },
   "plugins": [
@@ -12,7 +12,7 @@
       "name": "claude-mem",
       "version": "7.3.4",
       "source": "./plugin",
-      "description": "Persistent memory system for Claude Code - context compression across sessions"
+      "description": "Claude Code用永続メモリシステム - セッション間でコンテキストを圧縮保存"
     }
   ]
 }

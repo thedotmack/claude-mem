@@ -1,95 +1,95 @@
 ---
 name: mem-search
-description: Search claude-mem's persistent cross-session memory database. Use when user asks "did we already solve this?", "how did we do X last time?", or needs work from previous sessions.
+description: claude-memの永続的なクロスセッションメモリデータベースを検索します。「前に解決したっけ？」「前回どうやったっけ？」「過去のセッションの作業を探したい」といった質問で使用します。
 ---
 
-# Memory Search
+# メモリ検索
 
-Search past work across all sessions. Simple workflow: search → get IDs → fetch details by ID.
+過去のセッションの作業を検索します。シンプルなワークフロー：検索 → IDを取得 → IDで詳細を取得
 
-## When to Use
+## 使用場面
 
-Use when users ask about PREVIOUS sessions (not current conversation):
+**現在の会話ではなく**、過去のセッションについて聞かれた時に使用：
 
-- "Did we already fix this?"
-- "How did we solve X last time?"
-- "What happened last week?"
+- 「前にこれ直したっけ？」
+- 「前回Xをどう解決した？」
+- 「先週何やった？」
 
-## The Workflow
+## ワークフロー
 
-**ALWAYS follow this exact flow:**
+**必ずこの流れに従ってください：**
 
-1. **Search** - Get an index of results with IDs
-2. **Timeline** - Get context around top results to understand what was happening
-3. **Review** - Look at titles/dates/context, pick relevant IDs
-4. **Fetch** - Get full details ONLY for those IDs
+1. **検索** - IDを含む結果一覧を取得
+2. **タイムライン** - トップ結果の周辺コンテキストを取得して状況を理解
+3. **確認** - タイトル/日付/コンテキストを見て、関連するIDを選択
+4. **取得** - 選んだIDの詳細**のみ**を取得
 
-### Step 1: Search Everything
+### ステップ1：まず検索
 
-Use the `search` MCP tool:
+`search` MCPツールを使用：
 
-**Required parameters:**
+**必須パラメータ：**
 
-- `query` - Search term
-- `limit: 20` - You can request large indexes as necessary
-- `project` - Project name (required)
+- `query` - 検索キーワード
+- `limit: 20` - 必要に応じて大きな件数を指定可能
+- `project` - プロジェクト名（必須）
 
-**Example:**
+**例：**
 
 ```
-search(query="authentication", limit=20, project="my-project")
+search(query="認証", limit=20, project="my-project")
 ```
 
-**Returns:**
+**返却値：**
 
 ```
 | ID | Time | T | Title | Read | Work |
 |----|------|---|-------|------|------|
-| #11131 | 3:48 PM | 🟣 | Added JWT authentication | ~75 | 🛠️ 450 |
-| #10942 | 2:15 PM | 🔴 | Fixed auth token expiration | ~50 | 🛠️ 200 |
+| #11131 | 3:48 PM | 🟣 | JWT認証を追加 | ~75 | 🛠️ 450 |
+| #10942 | 2:15 PM | 🔴 | 認証トークン期限切れを修正 | ~50 | 🛠️ 200 |
 ```
 
-### Step 2: Get Timeline Context
+### ステップ2：タイムラインで文脈を把握
 
-You MUST understand "what was happening" around a result.
+結果の「何が起きていたか」を理解することが**必須**です。
 
-Use the `timeline` MCP tool:
+`timeline` MCPツールを使用：
 
-**Example with observation ID:**
+**観察IDを指定する例：**
 
 ```
 timeline(anchor=11131, depth_before=3, depth_after=3, project="my-project")
 ```
 
-**Example with query (finds anchor automatically):**
+**クエリで自動検索する例：**
 
 ```
-timeline(query="authentication", depth_before=3, depth_after=3, project="my-project")
+timeline(query="認証", depth_before=3, depth_after=3, project="my-project")
 ```
 
-**Returns exactly `depth_before + 1 + depth_after` items** - observations, sessions, and prompts interleaved chronologically around the anchor.
+**返却値:** `depth_before + 1 + depth_after` 件のアイテム - アンカーを中心に、観察・セッション・プロンプトが時系列で混在
 
-**When to use:**
+**使用場面：**
 
-- User asks "what was happening when..."
-- Need to understand sequence of events
-- Want broader context around a specific observation
+- 「〜の時に何が起きてた？」
+- イベントの順序を理解したい時
+- 特定の観察の周辺コンテキストが欲しい時
 
-### Step 3: Pick IDs
+### ステップ3：IDを選別
 
-Review the index results (and timeline if used). Identify which IDs are actually relevant. Discard the rest.
+検索結果（とタイムライン）を確認。実際に関連するIDを特定し、残りは除外。
 
-### Step 4: Fetch by ID
+### ステップ4：IDで詳細取得
 
-For each relevant ID, fetch full details using MCP tools:
+関連するIDごとに、MCPツールで詳細を取得：
 
-**Fetch multiple observations (ALWAYS use for 2+ IDs):**
+**複数の観察を取得（2件以上は必ずこれを使用）：**
 
 ```
 get_observations(ids=[11131, 10942, 10855])
 ```
 
-**With ordering and limit:**
+**並べ替えと件数制限付き：**
 
 ```
 get_observations(
@@ -100,115 +100,115 @@ get_observations(
 )
 ```
 
-**Fetch single observation (only when fetching exactly 1):**
+**単一の観察を取得（1件のみの場合）：**
 
 ```
 get_observation(id=11131)
 ```
 
-**Fetch session:**
+**セッションを取得：**
 
 ```
-get_session(id=2005)  # Just the number from S2005
+get_session(id=2005)  # S2005から数字だけ
 ```
 
-**Fetch prompt:**
+**プロンプトを取得：**
 
 ```
 get_prompt(id=5421)
 ```
 
-**ID formats:**
+**IDの形式：**
 
-- Observations: Just the number (11131)
-- Sessions: Just the number (2005) from "S2005"
-- Prompts: Just the number (5421)
+- 観察：数字のみ（11131）
+- セッション：「S2005」から数字のみ（2005）
+- プロンプト：数字のみ（5421）
 
-**Batch optimization:**
+**バッチ取得の最適化：**
 
-- **ALWAYS use `get_observations` for 2+ observations**
-- 10-100x more efficient than individual fetches
-- Single HTTP request vs N requests
-- Returns all results in one response
-- Supports ordering and filtering
+- **2件以上の観察は必ず `get_observations` を使用**
+- 個別取得より10〜100倍効率的
+- N回のリクエストではなく1回のHTTPリクエスト
+- 1レスポンスで全結果を返却
+- 並べ替えとフィルタリング対応
 
-## Search Parameters
+## 検索パラメータ
 
-**Basic:**
+**基本：**
 
-- `query` - What to search for (required)
-- `limit` - How many results (default 20)
-- `project` - Filter by project name (required)
+- `query` - 検索キーワード（必須）
+- `limit` - 結果件数（デフォルト20）
+- `project` - プロジェクト名でフィルタ（必須）
 
-**Filters (optional):**
+**フィルタ（任意）：**
 
-- `type` - Filter to "observations", "sessions", or "prompts"
-- `dateStart` - Start date (YYYY-MM-DD or epoch timestamp)
-- `dateEnd` - End date (YYYY-MM-DD or epoch timestamp)
-- `obs_type` - Filter observations by type (comma-separated): bugfix, feature, decision, discovery, change
+- `type` - "observations"、"sessions"、"prompts"でフィルタ
+- `dateStart` - 開始日（YYYY-MM-DDまたはエポックタイムスタンプ）
+- `dateEnd` - 終了日（YYYY-MM-DDまたはエポックタイムスタンプ）
+- `obs_type` - 観察タイプでフィルタ（カンマ区切り）: bugfix, feature, decision, discovery, change
 
-## Examples
+## 使用例
 
-**Find recent bug fixes:**
+**最近のバグ修正を検索：**
 
-Use the `search` MCP tool with filters:
+フィルタ付きで `search` MCPツールを使用：
 
 ```
-search(query="bug", type="observations", obs_type="bugfix", limit=20, project="my-project")
+search(query="バグ", type="observations", obs_type="bugfix", limit=20, project="my-project")
 ```
 
-**Find what happened last week:**
+**先週の作業を検索：**
 
-Use date filters:
+日付フィルタを使用：
 
 ```
 search(type="observations", dateStart="2025-11-11", limit=20, project="my-project")
 ```
 
-**Search everything:**
+**全体検索：**
 
-Simple query search:
-
-```
-search(query="database migration", limit=20, project="my-project")
-```
-
-**Get detailed instructions:**
-
-Use the `help` tool to load full instructions on-demand:
+シンプルなクエリ検索：
 
 ```
-help(topic="workflow")  # Get 4-step workflow
-help(topic="search_params")  # Get parameters reference
-help(topic="examples")  # Get usage examples
-help(topic="all")  # Get complete guide
+search(query="データベースマイグレーション", limit=20, project="my-project")
 ```
 
-## Why This Workflow?
+**詳細な使い方を取得：**
 
-**Token efficiency:**
+`help` ツールでオンデマンドで詳細な説明を読み込み：
 
-- **Search results:** ~50-100 tokens per result (table index)
-- **Full observation:** ~500-1000 tokens each
-- **10x savings** - only fetch full when you know it's relevant
+```
+help(topic="workflow")  # 4ステップワークフロー
+help(topic="search_params")  # パラメータリファレンス
+help(topic="examples")  # 使用例
+help(topic="all")  # 完全ガイド
+```
 
-**Batch fetching:**
+## なぜこのワークフロー？
 
-- **Individual fetches:** 10 HTTP requests, ~5-10s latency
-- **Batch fetch:** 1 HTTP request, ~0.5-1s latency
-- **10-100x faster** for multi-observation queries
+**トークン効率：**
 
-**Clarity:**
+- **検索結果：** 1件あたり〜50-100トークン（テーブルインデックス）
+- **完全な観察：** 各〜500-1000トークン
+- **10倍の節約** - 関連性が確認できてから詳細を取得
 
-- See everything first (table index)
-- Get timeline context around interesting results
-- Pick what matters based on context
-- Fetch details only for what you need (batch when possible)
+**バッチ取得：**
+
+- **個別取得：** 10回のHTTPリクエスト、〜5-10秒の遅延
+- **バッチ取得：** 1回のHTTPリクエスト、〜0.5-1秒の遅延
+- **10〜100倍高速** - 複数観察のクエリに最適
+
+**明確性：**
+
+- まず全体を確認（テーブルインデックス）
+- 興味深い結果の周辺コンテキストを取得
+- コンテキストに基づいて重要なものを選択
+- 必要なものだけ詳細を取得（可能な限りバッチで）
 
 ---
 
-**Remember:**
+**重要：**
 
-- ALWAYS get timeline context to understand what was happening
-- ALWAYS use `get_observations` when fetching 2+ observations
-- The workflow is optimized: search → timeline → batch fetch = 10-100x faster
+- 状況を理解するために**必ず**タイムラインでコンテキストを取得
+- 2件以上の観察を取得する時は**必ず** `get_observations` を使用
+- ワークフローは最適化済み：検索 → タイムライン → バッチ取得 = 10〜100倍高速
