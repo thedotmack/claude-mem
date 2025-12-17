@@ -177,7 +177,25 @@ export class WorkerService {
     });
 
     // Admin endpoints for process management
-    this.app.post('/api/admin/restart', async (_req, res) => {
+    // Protected by localhost-only authentication
+    this.app.post('/api/admin/restart', async (req, res) => {
+      // Authenticate: require localhost-only access for admin operations
+      const clientIp = req.ip || req.connection.remoteAddress || '';
+      const isLocalhost = clientIp === '127.0.0.1' || clientIp === '::1' || clientIp === '::ffff:127.0.0.1' || clientIp === 'localhost';
+      
+      if (!isLocalhost) {
+        logger.warn('SECURITY', 'Unauthorized admin endpoint access attempt from non-localhost', {
+          endpoint: '/api/admin/restart',
+          clientIp,
+          method: 'POST'
+        });
+        res.status(403).json({
+          error: 'Forbidden',
+          message: 'Admin endpoints are only accessible from localhost'
+        });
+        return;
+      }
+
       res.json({ status: 'restarting' });
       setTimeout(async () => {
         await this.shutdown();
@@ -185,7 +203,24 @@ export class WorkerService {
       }, 100);
     });
 
-    this.app.post('/api/admin/shutdown', async (_req, res) => {
+    this.app.post('/api/admin/shutdown', async (req, res) => {
+      // Authenticate: require localhost-only access for admin operations
+      const clientIp = req.ip || req.connection.remoteAddress || '';
+      const isLocalhost = clientIp === '127.0.0.1' || clientIp === '::1' || clientIp === '::ffff:127.0.0.1' || clientIp === 'localhost';
+      
+      if (!isLocalhost) {
+        logger.warn('SECURITY', 'Unauthorized admin endpoint access attempt from non-localhost', {
+          endpoint: '/api/admin/shutdown',
+          clientIp,
+          method: 'POST'
+        });
+        res.status(403).json({
+          error: 'Forbidden',
+          message: 'Admin endpoints are only accessible from localhost'
+        });
+        return;
+      }
+
       res.json({ status: 'shutting_down' });
       setTimeout(async () => {
         await this.shutdown();
