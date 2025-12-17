@@ -12,6 +12,7 @@
 
 import { spawn, ChildProcess, execSync } from 'child_process';
 import path from 'path';
+import { getBunPath } from '../utils/bun-path.js';
 
 const isWindows = process.platform === 'win32';
 
@@ -29,7 +30,15 @@ function log(msg: string) {
 function spawnInner() {
   log(`Spawning inner worker: ${INNER_SCRIPT}`);
 
-  inner = spawn(process.execPath, [INNER_SCRIPT], {
+  // Resolve Bun executable path (handles cases where Bun not in PATH)
+  const bunPath = getBunPath();
+  if (!bunPath) {
+    log('ERROR: Bun not found in PATH or common locations');
+    process.exit(1);
+  }
+  log(`Using Bun executable: ${bunPath}`);
+
+  inner = spawn(bunPath, [INNER_SCRIPT], {
     stdio: ['inherit', 'inherit', 'inherit', 'ipc'],
     env: { ...process.env, CLAUDE_MEM_MANAGED: 'true' },
     cwd: path.dirname(INNER_SCRIPT),

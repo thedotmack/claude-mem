@@ -1,6 +1,6 @@
 /**
  * Bun Path Utility
- * 
+ *
  * Resolves the Bun executable path for environments where Bun is not in PATH
  * (e.g., fish shell users where ~/.config/fish/config.fish isn't read by /bin/sh)
  */
@@ -9,6 +9,7 @@ import { spawnSync } from 'child_process';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
+import { logger } from './logger.js';
 
 /**
  * Get the Bun executable path
@@ -26,6 +27,7 @@ export function getBunPath(): string | null {
       shell: false  // SECURITY: No need for shell, bun is the executable
     });
     if (result.status === 0) {
+      logger.debug('BUN_PATH', 'Found in PATH', { path: 'bun' });
       return 'bun'; // Available in PATH
     }
   } catch {
@@ -44,10 +46,20 @@ export function getBunPath(): string | null {
 
   for (const bunPath of bunPaths) {
     if (existsSync(bunPath)) {
+      // Windows-specific validation: ensure .exe exists
+      if (isWindows && !bunPath.endsWith('.exe')) {
+        logger.warn('BUN_PATH', 'Invalid Windows path (missing .exe)', { path: bunPath });
+        continue;
+      }
+      logger.info('BUN_PATH', 'Using fallback path', { path: bunPath });
       return bunPath;
     }
   }
 
+  logger.warn('BUN_PATH', 'Bun executable not found', {
+    platform: process.platform,
+    searchedPaths: bunPaths
+  });
   return null;
 }
 
