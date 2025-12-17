@@ -1,0 +1,108 @@
+name: Windows CI
+
+on:
+  push:
+    branches: [main, 'fix/**', 'feature/**', 'bugfix/**']
+  pull_request:
+    branches: [main]
+
+jobs:
+  test-windows:
+    name: Test on Windows
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build project
+        run: npm run build
+
+      - name: Verify Bun detection
+        shell: pwsh
+        run: |
+          Write-Output "Testing Bun PATH detection..."
+          node -e "const { getBunPath } = require('./plugin/scripts/bun-path.cjs'); const path = getBunPath(); if (!path) { process.exit(1); } console.log('Bun found:', path);"
+
+      - name: Test worker startup/shutdown cycle
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          Write-Output "Starting worker service..."
+          $env:CLAUDE_MEM_WORKER_PORT = "37777"
+
+          # Start worker in background
+          $worker = Start-Process -FilePath "bun" -ArgumentList "plugin/scripts/worker-service.cjs" -PassThru -WindowStyle Hidden
+          Start-Sleep -Seconds 10
+
+          # Check if worker is healthy
+          $response = Invoke-WebRequest -Uri "http://127.0.0.1:37777/api/readiness" -UseBasicParsing -TimeoutSec 5
+          if ($response.StatusCode -ne 200) {
+            Write-Error "Worker health check failed"
+            exit 1
+          }
+
+          Write-Output "Worker started successfully, PID: $($worker.Id)"
+
+          # Gracefully shutdown
+          Stop-Process -Id $worker.Id -Force
+          Start-Sleep -Seconds 2
+
+          # Verify port is released
+          $portInUse = Get-NetTCPConnection -LocalPort 37777 -ErrorAction SilentlyContinue
+          if ($portInUse) {
+            Write-Error "Port 37777 still in use after shutdown"
+            exit 1
+          }
+
+          Write-Output "Worker shutdown cleanly, port released"
+
+      - name: Test rapid restart cycles
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          Write-Output "Testing rapid restart cycles..."
+          for ($i = 1; $i -le 3; $i++) {
+            Write-Output "Cycle $i of 3"
+
+            $worker = Start-Process -FilePath "bun" -ArgumentList "plugin/scripts/worker-service.cjs" -PassThru -WindowStyle Hidden
+            Start-Sleep -Seconds 8
+
+            $response = Invoke-WebRequest -Uri "http://127.0.0.1:37777/api/health" -UseBasicParsing -TimeoutSec 5
+            if ($response.StatusCode -ne 200) {
+              Write-Error "Restart cycle $i failed"
+              exit 1
+            }
+
+            Stop-Process -Id $worker.Id -Force
+            Start-Sleep -Seconds 3
+          }
+
+          Write-Output "Rapid restart test passed"
+
+      - name: Check for zombie processes
+        if: always()
+        shell: pwsh
+        run: |
+          Write-Output "Checking for zombie processes..."
+          $zombies = Get-Process -Name "bun","node","python" -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle -eq "" }
+          if ($zombies) {
+            Write-Warning "Found potential zombie processes:"
+            $zombies | Format-Table Name, Id, StartTime
+            $zombies | Stop-Process -Force
+          } else {
+            Write-Output "No zombie processes found"
+          }
