@@ -43,8 +43,10 @@ export class ProcessManager {
     // Ensure log directory exists
     mkdirSync(LOG_DIR, { recursive: true });
 
-    // Get worker script path
-    const workerScript = join(MARKETPLACE_ROOT, 'plugin', 'scripts', 'worker-service.cjs');
+    // On Windows, use the wrapper script to solve zombie port problem
+    // On Unix, use the worker directly
+    const scriptName = process.platform === 'win32' ? 'worker-wrapper.cjs' : 'worker-service.cjs';
+    const workerScript = join(MARKETPLACE_ROOT, 'plugin', 'scripts', scriptName);
 
     if (!existsSync(workerScript)) {
       return { success: false, error: `Worker script not found at ${workerScript}` };
@@ -85,6 +87,10 @@ export class ProcessManager {
         // This properly hides the console window (affects both Bun and Node.js)
         // Note: windowsHide: true doesn't work with detached: true (Bun inherits Node.js process spawning semantics)
         // See: https://github.com/nodejs/node/issues/21825 and PR #315 for detailed testing
+        //
+        // On Windows, we start worker-wrapper.cjs which manages the actual worker-service.cjs.
+        // This solves the zombie port problem: the wrapper has no sockets, so when it kills
+        // and respawns the inner worker, the socket is properly released.
         //
         // Security: All paths (bunPath, script, MARKETPLACE_ROOT) are application-controlled system paths,
         // not user input. If an attacker could modify these paths, they would already have full filesystem
@@ -168,8 +174,21 @@ export class ProcessManager {
     if (!info) return true;
 
     try {
-      process.kill(info.pid, 'SIGTERM');
-      await this.waitForExit(info.pid, timeout);
+      if (process.platform === 'win32') {
+        // On Windows, use taskkill /T /F to kill entire process tree
+        // This ensures the wrapper AND all its children (inner worker, MCP, ChromaSync) are killed
+        // which is necessary to properly release the socket and avoid zombie ports
+        const { execSync } = await import('child_process');
+        try {
+          execSync(`taskkill /PID ${info.pid} /T /F`, { timeout: 10000, stdio: 'ignore' });
+        } catch {
+          // Process may already be dead
+        }
+      } else {
+        // On Unix, use signals
+        process.kill(info.pid, 'SIGTERM');
+        await this.waitForExit(info.pid, timeout);
+      }
     } catch {
       try {
         process.kill(info.pid, 'SIGKILL');
