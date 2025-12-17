@@ -11,11 +11,7 @@
  */
 
 import { spawn, ChildProcess, execSync } from 'child_process';
-import { promisify } from 'util';
 import path from 'path';
-import { getBunPath } from '../utils/bun-path.js';
-
-const execAsync = promisify(require('child_process').exec);
 
 const isWindows = process.platform === 'win32';
 
@@ -33,15 +29,7 @@ function log(msg: string) {
 function spawnInner() {
   log(`Spawning inner worker: ${INNER_SCRIPT}`);
 
-  // Resolve Bun executable path (handles cases where Bun not in PATH)
-  const bunPath = getBunPath();
-  if (!bunPath) {
-    log('ERROR: Bun not found in PATH or common locations');
-    process.exit(1);
-  }
-  log(`Using Bun executable: ${bunPath}`);
-
-  inner = spawn(bunPath, [INNER_SCRIPT], {
+  inner = spawn(process.execPath, [INNER_SCRIPT], {
     stdio: ['inherit', 'inherit', 'inherit', 'ipc'],
     env: { ...process.env, CLAUDE_MEM_MANAGED: 'true' },
     cwd: path.dirname(INNER_SCRIPT),
@@ -75,44 +63,6 @@ function spawnInner() {
   });
 }
 
-/**
- * Recursively enumerate all descendant process IDs on Windows
- * Returns all child PIDs and their descendants
- */
-async function getDescendantPids(parentPid: number): Promise<number[]> {
-  if (process.platform !== 'win32') {
-    return [];
-  }
-
-  // SECURITY: Validate PID is a positive integer to prevent command injection
-  if (!Number.isInteger(parentPid) || parentPid <= 0) {
-    log(`Invalid PID for process enumeration: ${parentPid}`);
-    return [];
-  }
-
-  try {
-    const cmd = `powershell -Command "Get-CimInstance Win32_Process | Where-Object { $_.ParentProcessId -eq ${parentPid} } | Select-Object -ExpandProperty ProcessId"`;
-    const { stdout } = await execAsync(cmd, { timeout: 5000 });
-    const childPids = stdout
-      .trim()
-      .split('\n')
-      .map((s: string) => parseInt(s.trim(), 10))
-      .filter((n: number) => !isNaN(n));
-
-    // Recursively get descendants of each child
-    const allDescendants = [...childPids];
-    for (const childPid of childPids) {
-      const subDescendants = await getDescendantPids(childPid);
-      allDescendants.push(...subDescendants);
-    }
-
-    return allDescendants;
-  } catch (error) {
-    log(`Failed to enumerate descendants of PID ${parentPid}: ${error}`);
-    return [];
-  }
-}
-
 async function killInner(): Promise<void> {
   if (!inner || !inner.pid) {
     log('No inner process to kill');
@@ -123,44 +73,15 @@ async function killInner(): Promise<void> {
   log(`Killing inner process tree (pid=${pid})`);
 
   if (isWindows) {
-    // CRITICAL: Enumerate ALL descendants before killing to ensure complete cleanup
-    // This prevents socket leaks by ensuring all child processes (ChromaSync, MCP, etc.) are terminated
-    const descendantPids = await getDescendantPids(pid);
-    log(`Process tree enumeration: root=${pid}, descendants=[${descendantPids.join(', ')}]`);
-
-    // SECURITY: Validate PID before using in taskkill command
-    if (!Number.isInteger(pid) || pid <= 0) {
-      log(`Invalid PID for taskkill: ${pid}`);
-      return;
-    }
-
-    // Kill root + all descendants with /T (tree) flag
+    // On Windows, use taskkill /T /F to kill entire process tree
+    // This ensures all children (MCP server, ChromaSync, etc.) are killed
+    // which is necessary to properly release the socket
     try {
       execSync(`taskkill /PID ${pid} /T /F`, { timeout: 10000, stdio: 'ignore' });
       log(`taskkill completed for pid=${pid}`);
     } catch (error) {
-      log(`taskkill failed, trying individual kills: ${error}`);
-      // Fallback: kill each descendant individually in reverse order (children before parents)
-      for (let i = descendantPids.length - 1; i >= 0; i--) {
-        const dpid = descendantPids[i];
-        // SECURITY: Validate each descendant PID before using in taskkill
-        if (!Number.isInteger(dpid) || dpid <= 0) {
-          log(`Skipping invalid descendant PID: ${dpid}`);
-          continue;
-        }
-        try {
-          execSync(`taskkill /PID ${dpid} /F`, { timeout: 2000, stdio: 'ignore' });
-          log(`Killed descendant PID ${dpid}`);
-        } catch (killError) {
-          log(`Failed to kill descendant PID ${dpid} (may already be dead)`);
-        }
-      }
-      // Finally try to kill the root process
-      try {
-        execSync(`taskkill /PID ${pid} /F`, { timeout: 2000, stdio: 'ignore' });
-      } catch {
-        log(`Failed to kill root PID ${pid} (may already be dead)`);
-      }
+      // Process may already be dead
+      log(`taskkill failed (process may be dead): ${error}`);
     }
   } else {
     // On Unix, SIGTERM then SIGKILL
