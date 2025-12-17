@@ -74,9 +74,12 @@ export function getBunPathOrThrow(): string {
     const installCmd = isWindows
       ? 'powershell -c "irm bun.sh/install.ps1 | iex"'
       : 'curl -fsSL https://bun.sh/install | bash';
-    throw new Error(
-      `Bun is required but not found. Install it with:\n  ${installCmd}\nThen restart your terminal.`
-    );
+
+    const errorMsg = isWindows
+      ? `Bun is required but not found in PATH or common installation paths.\n\nInstall Bun:\n  ${installCmd}\n\nThen restart your terminal and PowerShell.\n\nTroubleshooting:\n1. Verify installation: bun --version\n2. Check PATH includes: %USERPROFILE%\\.bun\\bin\n3. See issue #371 for Windows PATH detection issues\n4. Docs: https://docs.claude-mem.ai/troubleshooting/windows-issues`
+      : `Bun is required but not found. Install it with:\n  ${installCmd}\nThen restart your terminal.`;
+
+    throw new Error(errorMsg);
   }
   return bunPath;
 }

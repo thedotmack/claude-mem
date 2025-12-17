@@ -146,6 +146,14 @@ class Logger {
   }
 
   /**
+   * Get platform identifier for logging
+   */
+  private getPlatform(): string {
+    const platform = process.platform === 'win32' ? 'WIN32' : process.platform.toUpperCase();
+    return platform;
+  }
+
+  /**
    * Core logging method
    */
   private log(
@@ -158,6 +166,7 @@ class Logger {
     if (level < this.getLevel()) return;
 
     const timestamp = this.formatTimestamp(new Date());
+    const platform = this.getPlatform();
     const levelStr = LogLevel[level].padEnd(5);
     const componentStr = component.padEnd(6);
 
@@ -180,17 +189,18 @@ class Logger {
       }
     }
 
-    // Build additional context
+    // Build additional context - include PID for process-related debugging
     let contextStr = '';
-    if (context) {
-      const { sessionId, sdkSessionId, correlationId, ...rest } = context;
+    const enhancedContext = { ...context, pid: process.pid };
+    if (enhancedContext) {
+      const { sessionId, sdkSessionId, correlationId, ...rest } = enhancedContext;
       if (Object.keys(rest).length > 0) {
         const pairs = Object.entries(rest).map(([k, v]) => `${k}=${v}`);
         contextStr = ` {${pairs.join(', ')}}`;
       }
     }
 
-    const logLine = `[${timestamp}] [${levelStr}] [${componentStr}] ${correlationStr}${message}${contextStr}${dataStr}`;
+    const logLine = `[${timestamp}] [${platform}] [${levelStr}] [${componentStr}] ${correlationStr}${message}${contextStr}${dataStr}`;
 
     // Output to appropriate stream
     if (level === LogLevel.ERROR) {
