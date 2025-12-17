@@ -77,6 +77,26 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 **Source**: `docs/public/` - MDX files, edit `docs.json` for navigation
 **Deploy**: Auto-deploys from GitHub on push to main
 
+## Pro Features Architecture
+
+Claude-mem is designed with a clean separation between open-source core functionality and optional Pro features.
+
+**Open-Source Core** (this repository):
+
+- All worker API endpoints on localhost:37777 remain fully open and accessible
+- Pro features are headless - no proprietary UI elements in this codebase
+- Pro integration points are minimal: settings for license keys, tunnel provisioning logic
+- The architecture ensures Pro features extend rather than replace core functionality
+
+**Pro Features** (coming soon, external):
+
+- Enhanced UI (Memory Stream) connects to the same localhost:37777 endpoints as the open viewer
+- Additional features like advanced filtering, timeline scrubbing, and search tools
+- Access gated by license validation, not by modifying core endpoints
+- Users without Pro licenses continue using the full open-source viewer UI without limitation
+
+This architecture preserves the open-source nature of the project while enabling sustainable development through optional paid features.
+
 # Important
 
 No need to edit the changelog ever, it's generated automatically.
