@@ -32,7 +32,7 @@ const TOOL_ENDPOINT_MAP: Record<string, string> = {
   'timeline': '/api/timeline',
   'get_recent_context': '/api/context/recent',
   'get_context_timeline': '/api/context/timeline',
-  'progressive_description': '/api/instructions'
+  'help': '/api/instructions'
 };
 
 /**
@@ -259,13 +259,13 @@ const tools = [
     }
   },
   {
-    name: 'progressive_description',
+    name: 'help',
     description: 'Usage help',
     inputSchema: z.object({
       topic: z.enum(['workflow', 'search_params', 'examples', 'all']).default('all')
     }),
     handler: async (args: any) => {
-      const endpoint = TOOL_ENDPOINT_MAP['progressive_description'];
+      const endpoint = TOOL_ENDPOINT_MAP['help'];
       return await callWorkerAPI(endpoint, args);
     }
   },
@@ -280,7 +280,7 @@ const tools = [
     }
   },
   {
-    name: 'get_batch_observations',
+    name: 'get_observations',
     description: 'Batch fetch',
     inputSchema: z.object({
       ids: z.array(z.number()),
@@ -317,7 +317,7 @@ const tools = [
 // Create the MCP server
 const server = new Server(
   {
-    name: 'claude-mem-search-server',
+    name: 'mem-search-server',
     version: '1.0.0',
   },
   {

@@ -86,13 +86,13 @@ For each relevant ID, fetch full details using MCP tools:
 **Fetch multiple observations (ALWAYS use for 2+ IDs):**
 
 ```
-get_batch_observations(ids=[11131, 10942, 10855])
+get_observations(ids=[11131, 10942, 10855])
 ```
 
 **With ordering and limit:**
 
 ```
-get_batch_observations(
+get_observations(
   ids=[11131, 10942, 10855],
   orderBy="date_desc",
   limit=10,
@@ -126,7 +126,7 @@ get_prompt(id=5421)
 
 **Batch optimization:**
 
-- **ALWAYS use `get_batch_observations` for 2+ observations**
+- **ALWAYS use `get_observations` for 2+ observations**
 - 10-100x more efficient than individual fetches
 - Single HTTP request vs N requests
 - Returns all results in one response
@@ -175,13 +175,13 @@ search(query="database migration", limit=20, project="my-project")
 
 **Get detailed instructions:**
 
-Use the `progressive_description` tool to load full instructions on-demand:
+Use the `help` tool to load full instructions on-demand:
 
 ```
-progressive_description(topic="workflow")  # Get 4-step workflow
-progressive_description(topic="search_params")  # Get parameters reference
-progressive_description(topic="examples")  # Get usage examples
-progressive_description(topic="all")  # Get complete guide
+help(topic="workflow")  # Get 4-step workflow
+help(topic="search_params")  # Get parameters reference
+help(topic="examples")  # Get usage examples
+help(topic="all")  # Get complete guide
 ```
 
 ## Why This Workflow?
@@ -210,5 +210,5 @@ progressive_description(topic="all")  # Get complete guide
 **Remember:**
 
 - ALWAYS get timeline context to understand what was happening
-- ALWAYS use `get_batch_observations` when fetching 2+ observations
+- ALWAYS use `get_observations` when fetching 2+ observations
 - The workflow is optimized: search → timeline → batch fetch = 10-100x faster

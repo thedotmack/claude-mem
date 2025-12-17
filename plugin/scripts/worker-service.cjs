@@ -1157,7 +1157,7 @@ No previous sessions found for project "${r}".`}]};let i=[];i.push("# Recent Ses
 \u{1F4A1} Search Strategy:
 1. Search with index to see titles, dates, IDs
 2. Use timeline to get context around interesting results
-3. Batch fetch full details: get_batch_observations(ids=[...])
+3. Batch fetch full details: get_observations(ids=[...])
 
 Tips:
 \u2022 Filter by type: obs_type="bugfix,feature"
