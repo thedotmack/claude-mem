@@ -1,11 +1,10 @@
 export const HOOK_TIMEOUTS = {
   DEFAULT: 5000,              // Standard HTTP timeout (up from 2000ms)
-  HEALTH_CHECK: 2000,         // Worker readiness check (increased from 1000ms for Windows)
+  HEALTH_CHECK: 1000,         // Worker health check (up from 500ms)
   WORKER_STARTUP_WAIT: 1000,
-  WORKER_STARTUP_RETRIES: 25, // Increased from 15 for Windows startup
+  WORKER_STARTUP_RETRIES: 15,
   PRE_RESTART_SETTLE_DELAY: 2000,  // Give files time to sync before restart
-  WINDOWS_MULTIPLIER: 2.0,    // Platform-specific adjustment (increased from 1.5x)
-  MCP_INIT_TIMEOUT_MS: 15000  // Timeout for MCP connection initialization
+  WINDOWS_MULTIPLIER: 1.5     // Platform-specific adjustment
 } as const;
 
 /**

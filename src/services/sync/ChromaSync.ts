@@ -17,7 +17,6 @@ import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import path from 'path';
 import os from 'os';
-import { execSync } from 'child_process';
 
 interface ChromaDocument {
   id: string;
@@ -75,7 +74,6 @@ export class ChromaSync {
   private client: Client | null = null;
   private transport: StdioClientTransport | null = null;
   private connected: boolean = false;
-  private childPid: number | null = null;
   private project: string;
   private collectionName: string;
   private readonly VECTOR_DB_DIR: string;
@@ -134,17 +132,6 @@ export class ChromaSync {
 
       await this.client.connect(this.transport);
       this.connected = true;
-
-      // Try to extract subprocess PID for Windows cleanup (transport internals may not expose this)
-      try {
-        const transportAny = this.transport as any;
-        if (transportAny._process && transportAny._process.pid) {
-          this.childPid = transportAny._process.pid;
-          logger.debug('CHROMA_SYNC', 'Extracted subprocess PID', { pid: this.childPid, project: this.project });
-        }
-      } catch (error) {
-        logger.debug('CHROMA_SYNC', 'Could not extract subprocess PID from transport', { project: this.project });
-      }
 
       logger.info('CHROMA_SYNC', 'Connected to Chroma MCP server', { project: this.project });
     } catch (error) {
@@ -861,22 +848,7 @@ export class ChromaSync {
     }
 
     try {
-      // On Windows, force-kill subprocess BEFORE closing transport to prevent zombie processes
-      if (process.platform === 'win32' && this.childPid) {
-        // SECURITY: Validate PID is a positive integer to prevent command injection
-        if (!Number.isInteger(this.childPid) || this.childPid <= 0) {
-          logger.warn('CHROMA_SYNC', 'Invalid child PID, skipping kill', { pid: this.childPid, project: this.project });
-        } else {
-          try {
-            execSync(`taskkill /PID ${this.childPid} /T /F`, { timeout: 5000, stdio: 'ignore' });
-            logger.info('CHROMA_SYNC', 'Killed subprocess tree', { pid: this.childPid, project: this.project });
-          } catch (error) {
-            logger.warn('CHROMA_SYNC', 'Failed to kill subprocess', { pid: this.childPid, project: this.project }, error as Error);
-          }
-        }
-      }
-
-      // Close client
+      // Close client first
       if (this.client) {
         try {
           await this.client.close();
@@ -885,7 +857,7 @@ export class ChromaSync {
         }
       }
 
-      // Close transport to kill subprocess
+      // Explicitly close transport to kill subprocess
       if (this.transport) {
         try {
           await this.transport.close();
@@ -900,7 +872,6 @@ export class ChromaSync {
       this.connected = false;
       this.client = null;
       this.transport = null;
-      this.childPid = null;
     }
   }
 }

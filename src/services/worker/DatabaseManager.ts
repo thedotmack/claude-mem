@@ -45,22 +45,13 @@ export class DatabaseManager {
     // Close ChromaSync first (terminates uvx/python processes)
     if (this.chromaSync) {
       try {
-        // Add timeout to prevent hanging if ChromaSync subprocess is stuck
-        await Promise.race([
-          this.chromaSync.close(),
-          new Promise((_, reject) =>
-            setTimeout(() => reject(new Error('ChromaSync close timeout after 10s')), 10000)
-          )
-        ]);
+        await this.chromaSync.close();
         this.chromaSync = null;
-        logger.info('DB', 'ChromaSync closed successfully');
       } catch (error) {
         logger.error('DB', 'Failed to close ChromaSync', {}, error as Error);
-        // Force nullify even if close failed to prevent resource leaks
-        this.chromaSync = null;
       }
     }
-
+    
     if (this.sessionStore) {
       this.sessionStore.close();
       this.sessionStore = null;
