@@ -271,29 +271,31 @@ export class ProcessManager {
 
   private static async waitForHealth(pid: number, port: number, timeoutMs: number = HEALTH_CHECK_TIMEOUT_MS): Promise<{ success: boolean; pid?: number; error?: string }> {
     const startTime = Date.now();
+    // Increase timeout on Windows to account for slower process startup
+    const adjustedTimeout = process.platform === 'win32' ? timeoutMs * 2 : timeoutMs;
 
-    while (Date.now() - startTime < timeoutMs) {
+    while (Date.now() - startTime < adjustedTimeout) {
       // Check if process is still alive
       if (!this.isProcessAlive(pid)) {
         return { success: false, error: 'Process died during startup' };
       }
 
-      // Try health check
+      // Try readiness check (changed from /health to /api/readiness)
       try {
-        const response = await fetch(`http://127.0.0.1:${port}/health`, {
+        const response = await fetch(`http://127.0.0.1:${port}/api/readiness`, {
           signal: AbortSignal.timeout(HEALTH_CHECK_FETCH_TIMEOUT_MS)
         });
         if (response.ok) {
           return { success: true, pid };
         }
       } catch {
-        // Not ready yet
+        // Not ready yet, continue polling
       }
 
       await new Promise(resolve => setTimeout(resolve, HEALTH_CHECK_INTERVAL_MS));
     }
 
-    return { success: false, error: 'Health check timed out' };
+    return { success: false, error: 'Readiness check timed out' };
   }
 
   private static async waitForExit(pid: number, timeout: number): Promise<void> {

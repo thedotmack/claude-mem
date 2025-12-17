@@ -45,6 +45,10 @@ export class WorkerService {
   private startTime: number = Date.now();
   private mcpClient: Client;
 
+  // Initialization flags for MCP/SDK readiness tracking
+  private mcpReady: boolean = false;
+  private initializationCompleteFlag: boolean = false;
+
   // Domain services
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
@@ -128,7 +132,25 @@ export class WorkerService {
         hasIpc: typeof process.send === 'function',
         platform: process.platform,
         pid: process.pid,
+        initialized: this.initializationCompleteFlag,
+        mcpReady: this.mcpReady,
       });
+    });
+
+    // Readiness check endpoint - returns 503 until full initialization completes
+    // Used by ProcessManager and worker-utils to ensure worker is fully ready before routing requests
+    this.app.get('/api/readiness', (_req, res) => {
+      if (this.initializationCompleteFlag) {
+        res.status(200).json({
+          status: 'ready',
+          mcpReady: this.mcpReady,
+        });
+      } else {
+        res.status(503).json({
+          status: 'initializing',
+          message: 'Worker is still initializing, please retry',
+        });
+      }
     });
 
     // Version endpoint - returns the worker's current version
@@ -380,7 +402,7 @@ export class WorkerService {
       this.searchRoutes.setupRoutes(this.app); // Setup search routes now that SearchManager is ready
       logger.info('WORKER', 'SearchManager initialized and search routes registered');
 
-      // Connect to MCP server
+      // Connect to MCP server with timeout guard
       const mcpServerPath = path.join(__dirname, 'mcp-server.cjs');
       const transport = new StdioClientTransport({
         command: 'node',
@@ -388,10 +410,19 @@ export class WorkerService {
         env: process.env
       });
 
-      await this.mcpClient.connect(transport);
+      // Add timeout guard to prevent hanging on MCP connection (15 seconds)
+      const MCP_INIT_TIMEOUT_MS = 15000;
+      const mcpConnectionPromise = this.mcpClient.connect(transport);
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('MCP connection timeout after 15s')), MCP_INIT_TIMEOUT_MS)
+      );
+
+      await Promise.race([mcpConnectionPromise, timeoutPromise]);
+      this.mcpReady = true;
       logger.success('WORKER', 'Connected to MCP server');
 
       // Signal that initialization is complete
+      this.initializationCompleteFlag = true;
       this.resolveInitialization();
       logger.info('SYSTEM', 'Background initialization complete');
     } catch (error) {
