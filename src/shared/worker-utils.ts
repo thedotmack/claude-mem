@@ -58,17 +58,18 @@ export function getWorkerHost(): string {
 }
 
 /**
- * Check if worker is responsive by trying the health endpoint
+ * Check if worker is responsive and fully initialized by trying the readiness endpoint
+ * Changed from /health to /api/readiness to ensure MCP initialization is complete
  */
 async function isWorkerHealthy(): Promise<boolean> {
   try {
     const port = getWorkerPort();
-    const response = await fetch(`http://127.0.0.1:${port}/health`, {
+    const response = await fetch(`http://127.0.0.1:${port}/api/readiness`, {
       signal: AbortSignal.timeout(HEALTH_CHECK_TIMEOUT_MS)
     });
     return response.ok;
   } catch (error) {
-    logger.debug('SYSTEM', 'Worker health check failed', {
+    logger.debug('SYSTEM', 'Worker readiness check failed', {
       error: error instanceof Error ? error.message : String(error),
       errorType: error?.constructor?.name
     });

@@ -14,7 +14,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
 import { logger } from '../utils/logger.js';
-import { exec } from 'child_process';
+import { exec, execSync } from 'child_process';
 import { promisify } from 'util';
 
 const execAsync = promisify(exec);
@@ -44,6 +44,10 @@ export class WorkerService {
   private server: http.Server | null = null;
   private startTime: number = Date.now();
   private mcpClient: Client;
+
+  // Initialization flags for MCP/SDK readiness tracking
+  private mcpReady: boolean = false;
+  private initializationCompleteFlag: boolean = false;
 
   // Domain services
   private dbManager: DatabaseManager;
@@ -128,17 +132,36 @@ export class WorkerService {
         hasIpc: typeof process.send === 'function',
         platform: process.platform,
         pid: process.pid,
+        initialized: this.initializationCompleteFlag,
+        mcpReady: this.mcpReady,
       });
+    });
+
+    // Readiness check endpoint - returns 503 until full initialization completes
+    // Used by ProcessManager and worker-utils to ensure worker is fully ready before routing requests
+    this.app.get('/api/readiness', (_req, res) => {
+      if (this.initializationCompleteFlag) {
+        res.status(200).json({
+          status: 'ready',
+          mcpReady: this.mcpReady,
+        });
+      } else {
+        res.status(503).json({
+          status: 'initializing',
+          message: 'Worker is still initializing, please retry',
+        });
+      }
     });
 
     // Version endpoint - returns the worker's current version
     this.app.get('/api/version', (_req, res) => {
+      const { homedir } = require('os');
+      const { readFileSync } = require('fs');
+      const marketplaceRoot = path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
+      const packageJsonPath = path.join(marketplaceRoot, 'package.json');
+
       try {
         // Read version from marketplace package.json
-        const { homedir } = require('os');
-        const { readFileSync } = require('fs');
-        const marketplaceRoot = path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
-        const packageJsonPath = path.join(marketplaceRoot, 'package.json');
         const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
         res.status(200).json({ version: packageJson.version });
       } catch (error) {
@@ -295,23 +318,45 @@ export class WorkerService {
    */
   private async cleanupOrphanedProcesses(): Promise<void> {
     try {
-      // Find all chroma-mcp processes
-      const { stdout } = await execAsync('ps aux | grep "chroma-mcp" | grep -v grep || true');
-
-      if (!stdout.trim()) {
-        logger.debug('SYSTEM', 'No orphaned chroma-mcp processes found');
-        return;
-      }
-
-      const lines = stdout.trim().split('\n');
+      const isWindows = process.platform === 'win32';
       const pids: number[] = [];
 
-      for (const line of lines) {
-        const parts = line.trim().split(/\s+/);
-        if (parts.length > 1) {
-          const pid = parseInt(parts[1], 10);
-          if (!isNaN(pid)) {
+      if (isWindows) {
+        // Windows: Use PowerShell Get-CimInstance to find chroma-mcp processes
+        const cmd = `powershell -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -like '*python*' -and $_.CommandLine -like '*chroma-mcp*' } | Select-Object -ExpandProperty ProcessId"`;
+        const { stdout } = await execAsync(cmd, { timeout: 5000 });
+
+        if (!stdout.trim()) {
+          logger.debug('SYSTEM', 'No orphaned chroma-mcp processes found (Windows)');
+          return;
+        }
+
+        const pidStrings = stdout.trim().split('\n');
+        for (const pidStr of pidStrings) {
+          const pid = parseInt(pidStr.trim(), 10);
+          // SECURITY: Validate PID is positive integer before adding to list
+          if (!isNaN(pid) && Number.isInteger(pid) && pid > 0) {
             pids.push(pid);
+          }
+        }
+      } else {
+        // Unix: Use ps aux | grep
+        const { stdout } = await execAsync('ps aux | grep "chroma-mcp" | grep -v grep || true');
+
+        if (!stdout.trim()) {
+          logger.debug('SYSTEM', 'No orphaned chroma-mcp processes found (Unix)');
+          return;
+        }
+
+        const lines = stdout.trim().split('\n');
+        for (const line of lines) {
+          const parts = line.trim().split(/\s+/);
+          if (parts.length > 1) {
+            const pid = parseInt(parts[1], 10);
+            // SECURITY: Validate PID is positive integer before adding to list
+            if (!isNaN(pid) && Number.isInteger(pid) && pid > 0) {
+              pids.push(pid);
+            }
           }
         }
       }
@@ -321,12 +366,28 @@ export class WorkerService {
       }
 
       logger.info('SYSTEM', 'Cleaning up orphaned chroma-mcp processes', {
+        platform: isWindows ? 'Windows' : 'Unix',
         count: pids.length,
         pids
       });
 
       // Kill all found processes
-      await execAsync(`kill ${pids.join(' ')}`);
+      if (isWindows) {
+        for (const pid of pids) {
+          // SECURITY: Double-check PID validation before using in taskkill command
+          if (!Number.isInteger(pid) || pid <= 0) {
+            logger.warn('SYSTEM', 'Skipping invalid PID', { pid });
+            continue;
+          }
+          try {
+            execSync(`taskkill /PID ${pid} /T /F`, { timeout: 5000, stdio: 'ignore' });
+          } catch (error) {
+            logger.warn('SYSTEM', 'Failed to kill orphaned process', { pid }, error as Error);
+          }
+        }
+      } else {
+        await execAsync(`kill ${pids.join(' ')}`);
+      }
 
       logger.info('SYSTEM', 'Orphaned processes cleaned up', { count: pids.length });
     } catch (error) {
@@ -380,7 +441,7 @@ export class WorkerService {
       this.searchRoutes.setupRoutes(this.app); // Setup search routes now that SearchManager is ready
       logger.info('WORKER', 'SearchManager initialized and search routes registered');
 
-      // Connect to MCP server
+      // Connect to MCP server with timeout guard
       const mcpServerPath = path.join(__dirname, 'mcp-server.cjs');
       const transport = new StdioClientTransport({
         command: 'node',
@@ -388,10 +449,19 @@ export class WorkerService {
         env: process.env
       });
 
-      await this.mcpClient.connect(transport);
+      // Add timeout guard to prevent hanging on MCP connection (15 seconds)
+      const MCP_INIT_TIMEOUT_MS = 15000;
+      const mcpConnectionPromise = this.mcpClient.connect(transport);
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('MCP connection timeout after 15s')), MCP_INIT_TIMEOUT_MS)
+      );
+
+      await Promise.race([mcpConnectionPromise, timeoutPromise]);
+      this.mcpReady = true;
       logger.success('WORKER', 'Connected to MCP server');
 
       // Signal that initialization is complete
+      this.initializationCompleteFlag = true;
       this.resolveInitialization();
       logger.info('SYSTEM', 'Background initialization complete');
     } catch (error) {
@@ -492,6 +562,12 @@ export class WorkerService {
       return [];
     }
 
+    // SECURITY: Validate PID is a positive integer to prevent command injection
+    if (!Number.isInteger(parentPid) || parentPid <= 0) {
+      logger.warn('SYSTEM', 'Invalid parent PID for child process enumeration', { parentPid });
+      return [];
+    }
+
     try {
       const cmd = `powershell -Command "Get-CimInstance Win32_Process | Where-Object { $_.ParentProcessId -eq ${parentPid} } | Select-Object -ExpandProperty ProcessId"`;
       const { stdout } = await execAsync(cmd, { timeout: 5000 });
@@ -499,7 +575,7 @@ export class WorkerService {
         .trim()
         .split('\n')
         .map(s => parseInt(s.trim(), 10))
-        .filter(n => !isNaN(n));
+        .filter(n => !isNaN(n) && Number.isInteger(n) && n > 0); // SECURITY: Validate each PID
     } catch (error) {
       logger.warn('SYSTEM', 'Failed to enumerate child processes', {}, error as Error);
       return [];
@@ -510,6 +586,12 @@ export class WorkerService {
    * Force kill a process by PID (Windows: uses taskkill /F /T)
    */
   private async forceKillProcess(pid: number): Promise<void> {
+    // SECURITY: Validate PID is a positive integer to prevent command injection
+    if (!Number.isInteger(pid) || pid <= 0) {
+      logger.warn('SYSTEM', 'Invalid PID for force kill', { pid });
+      return;
+    }
+
     try {
       if (process.platform === 'win32') {
         // /T kills entire process tree, /F forces termination

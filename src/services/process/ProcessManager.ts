@@ -271,29 +271,39 @@ export class ProcessManager {
 
   private static async waitForHealth(pid: number, port: number, timeoutMs: number = HEALTH_CHECK_TIMEOUT_MS): Promise<{ success: boolean; pid?: number; error?: string }> {
     const startTime = Date.now();
+    const isWindows = process.platform === 'win32';
+    // Increase timeout on Windows to account for slower process startup
+    const adjustedTimeout = isWindows ? timeoutMs * 2 : timeoutMs;
 
-    while (Date.now() - startTime < timeoutMs) {
+    while (Date.now() - startTime < adjustedTimeout) {
       // Check if process is still alive
       if (!this.isProcessAlive(pid)) {
-        return { success: false, error: 'Process died during startup' };
+        const errorMsg = isWindows
+          ? `Process died during startup\n\nTroubleshooting:\n1. Check Task Manager for zombie 'bun.exe' or 'node.exe' processes\n2. Verify port ${port} is not in use: netstat -ano | findstr ${port}\n3. Check worker logs in ~/.claude-mem/logs/\n4. See GitHub issues: #363, #367, #371, #373\n5. Docs: https://docs.claude-mem.ai/troubleshooting/windows-issues`
+          : 'Process died during startup';
+        return { success: false, error: errorMsg };
       }
 
-      // Try health check
+      // Try readiness check (changed from /health to /api/readiness)
       try {
-        const response = await fetch(`http://127.0.0.1:${port}/health`, {
+        const response = await fetch(`http://127.0.0.1:${port}/api/readiness`, {
           signal: AbortSignal.timeout(HEALTH_CHECK_FETCH_TIMEOUT_MS)
         });
         if (response.ok) {
           return { success: true, pid };
         }
       } catch {
-        // Not ready yet
+        // Not ready yet, continue polling
       }
 
       await new Promise(resolve => setTimeout(resolve, HEALTH_CHECK_INTERVAL_MS));
     }
 
-    return { success: false, error: 'Health check timed out' };
+    const timeoutMsg = isWindows
+      ? `Worker failed to start on Windows (readiness check timed out after ${adjustedTimeout}ms)\n\nTroubleshooting:\n1. Check Task Manager for zombie 'bun.exe' or 'node.exe' processes\n2. Verify port ${port} is not in use: netstat -ano | findstr ${port}\n3. Check worker logs in ~/.claude-mem/logs/\n4. See GitHub issues: #363, #367, #371, #373\n5. Docs: https://docs.claude-mem.ai/troubleshooting/windows-issues`
+      : `Readiness check timed out after ${adjustedTimeout}ms`;
+
+    return { success: false, error: timeoutMsg };
   }
 
   private static async waitForExit(pid: number, timeout: number): Promise<void> {
