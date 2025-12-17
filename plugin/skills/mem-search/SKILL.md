@@ -175,13 +175,13 @@ search(query="database migration", limit=20, project="my-project")
 
 **Get detailed instructions:**
 
-Use the `progressive_description` tool to load full instructions on-demand:
+Use the `help` tool to load full instructions on-demand:
 
 ```
-progressive_description(topic="workflow")  # Get 4-step workflow
-progressive_description(topic="search_params")  # Get parameters reference
-progressive_description(topic="examples")  # Get usage examples
-progressive_description(topic="all")  # Get complete guide
+help(topic="workflow")  # Get 4-step workflow
+help(topic="search_params")  # Get parameters reference
+help(topic="examples")  # Get usage examples
+help(topic="all")  # Get complete guide
 ```
 
 ## Why This Workflow?
