@@ -113,7 +113,7 @@ export class SDKAgent {
           // Calculate discovery tokens (delta for this response only)
           const discoveryTokens = (session.cumulativeInputTokens + session.cumulativeOutputTokens) - tokensBeforeResponse;
 
-          // Only log non-empty responses (filter out noise)
+          // Process response (empty or not) and mark messages as processed
           if (responseSize > 0) {
             const truncatedResponse = responseSize > 100
               ? textContent.substring(0, 100) + '...'
@@ -125,6 +125,9 @@ export class SDKAgent {
 
             // Parse and process response with discovery token delta
             await this.processSDKResponse(session, textContent, worker, discoveryTokens);
+          } else {
+            // Empty response - still need to mark pending messages as processed
+            await this.markMessagesProcessed(session, worker);
           }
         }
 
@@ -396,8 +399,15 @@ export class SDKAgent {
       }
     }
 
-    // CRITICAL: Mark ALL pending messages as successfully processed
-    // This prevents message loss if worker crashes before SDK finishes
+    // Mark messages as processed after successful observation/summary storage
+    await this.markMessagesProcessed(session, worker);
+  }
+
+  /**
+   * Mark all pending messages as successfully processed
+   * CRITICAL: Prevents message loss and duplicate processing
+   */
+  private async markMessagesProcessed(session: ActiveSession, worker: any | undefined): Promise<void> {
     const pendingMessageStore = this.sessionManager.getPendingMessageStore();
     if (session.pendingProcessingIds.size > 0) {
       for (const messageId of session.pendingProcessingIds) {
