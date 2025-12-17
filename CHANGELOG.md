@@ -4,6 +4,33 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [7.3.7] - 2025-12-17
+
+## Windows Platform Stabilization
+
+This patch release includes comprehensive improvements for Windows platform stability and reliability.
+
+### Key Improvements
+
+- **Worker Readiness Tracking**: Added `/api/readiness` endpoint with MCP/SDK initialization flags to prevent premature connection attempts
+- **Process Tree Cleanup**: Implemented recursive process enumeration on Windows to prevent zombie socket processes  
+- **Bun Runtime Migration**: Migrated worker wrapper from Node.js to Bun for consistency and reliability
+- **Centralized Project Name Utility**: Consolidated duplicate project name extraction logic with Windows drive root handling
+- **Enhanced Error Messages**: Added platform-aware logging and detailed Windows troubleshooting guidance
+- **Subprocess Console Hiding**: Standardized `windowsHide: true` across all child process spawns to prevent console window flashing
+
+### Technical Details
+
+- Worker service tracks MCP and SDK readiness states separately
+- ChromaSync service properly tracks subprocess PIDs for Windows cleanup
+- Worker wrapper uses Bun runtime with enhanced socket cleanup via process tree enumeration
+- Increased timeouts on Windows platform (30s worker startup, 10s hook timeouts)
+- Logger utility includes platform and PID information for better debugging
+
+This represents a major reliability improvement for Windows users, eliminating common issues with worker startup failures, orphaned processes, and zombie sockets.
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.3.6...v7.3.7
+
 ## [7.3.6] - 2025-12-17
 
 ## Bug Fixes
