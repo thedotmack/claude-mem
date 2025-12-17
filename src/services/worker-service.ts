@@ -14,7 +14,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
 import { logger } from '../utils/logger.js';
-import { exec } from 'child_process';
+import { exec, execSync } from 'child_process';
 import { promisify } from 'util';
 
 const execAsync = promisify(exec);
@@ -317,23 +317,43 @@ export class WorkerService {
    */
   private async cleanupOrphanedProcesses(): Promise<void> {
     try {
-      // Find all chroma-mcp processes
-      const { stdout } = await execAsync('ps aux | grep "chroma-mcp" | grep -v grep || true');
-
-      if (!stdout.trim()) {
-        logger.debug('SYSTEM', 'No orphaned chroma-mcp processes found');
-        return;
-      }
-
-      const lines = stdout.trim().split('\n');
+      const isWindows = process.platform === 'win32';
       const pids: number[] = [];
 
-      for (const line of lines) {
-        const parts = line.trim().split(/\s+/);
-        if (parts.length > 1) {
-          const pid = parseInt(parts[1], 10);
+      if (isWindows) {
+        // Windows: Use PowerShell Get-CimInstance to find chroma-mcp processes
+        const cmd = `powershell -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -like '*python*' -and $_.CommandLine -like '*chroma-mcp*' } | Select-Object -ExpandProperty ProcessId"`;
+        const { stdout } = await execAsync(cmd, { timeout: 5000 });
+
+        if (!stdout.trim()) {
+          logger.debug('SYSTEM', 'No orphaned chroma-mcp processes found (Windows)');
+          return;
+        }
+
+        const pidStrings = stdout.trim().split('\n');
+        for (const pidStr of pidStrings) {
+          const pid = parseInt(pidStr.trim(), 10);
           if (!isNaN(pid)) {
             pids.push(pid);
+          }
+        }
+      } else {
+        // Unix: Use ps aux | grep
+        const { stdout } = await execAsync('ps aux | grep "chroma-mcp" | grep -v grep || true');
+
+        if (!stdout.trim()) {
+          logger.debug('SYSTEM', 'No orphaned chroma-mcp processes found (Unix)');
+          return;
+        }
+
+        const lines = stdout.trim().split('\n');
+        for (const line of lines) {
+          const parts = line.trim().split(/\s+/);
+          if (parts.length > 1) {
+            const pid = parseInt(parts[1], 10);
+            if (!isNaN(pid)) {
+              pids.push(pid);
+            }
           }
         }
       }
@@ -343,12 +363,23 @@ export class WorkerService {
       }
 
       logger.info('SYSTEM', 'Cleaning up orphaned chroma-mcp processes', {
+        platform: isWindows ? 'Windows' : 'Unix',
         count: pids.length,
         pids
       });
 
       // Kill all found processes
-      await execAsync(`kill ${pids.join(' ')}`);
+      if (isWindows) {
+        for (const pid of pids) {
+          try {
+            execSync(`taskkill /PID ${pid} /T /F`, { timeout: 5000, stdio: 'ignore' });
+          } catch (error) {
+            logger.warn('SYSTEM', 'Failed to kill orphaned process', { pid }, error as Error);
+          }
+        }
+      } else {
+        await execAsync(`kill ${pids.join(' ')}`);
+      }
 
       logger.info('SYSTEM', 'Orphaned processes cleaned up', { count: pids.length });
     } catch (error) {

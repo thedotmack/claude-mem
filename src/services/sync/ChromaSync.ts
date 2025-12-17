@@ -17,6 +17,7 @@ import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import path from 'path';
 import os from 'os';
+import { execSync } from 'child_process';
 
 interface ChromaDocument {
   id: string;
@@ -74,6 +75,7 @@ export class ChromaSync {
   private client: Client | null = null;
   private transport: StdioClientTransport | null = null;
   private connected: boolean = false;
+  private childPid: number | null = null;
   private project: string;
   private collectionName: string;
   private readonly VECTOR_DB_DIR: string;
@@ -101,7 +103,9 @@ export class ChromaSync {
       // See: https://github.com/thedotmack/claude-mem/issues/170 (Python 3.14 incompatibility)
       const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
       const pythonVersion = settings.CLAUDE_MEM_PYTHON_VERSION;
-      this.transport = new StdioClientTransport({
+      const isWindows = process.platform === 'win32';
+
+      const transportOptions: any = {
         command: 'uvx',
         args: [
           '--python', pythonVersion,
@@ -110,7 +114,16 @@ export class ChromaSync {
           '--data-dir', this.VECTOR_DB_DIR
         ],
         stderr: 'ignore'
-      });
+      };
+
+      // CRITICAL: On Windows, try to hide console window to prevent PowerShell popups
+      // Note: windowsHide may not be supported by MCP SDK's StdioClientTransport
+      if (isWindows) {
+        transportOptions.windowsHide = true;
+        logger.debug('CHROMA_SYNC', 'Windows detected, attempting to hide console window', { project: this.project });
+      }
+
+      this.transport = new StdioClientTransport(transportOptions);
 
       this.client = new Client({
         name: 'claude-mem-chroma-sync',
@@ -121,6 +134,17 @@ export class ChromaSync {
 
       await this.client.connect(this.transport);
       this.connected = true;
+
+      // Try to extract subprocess PID for Windows cleanup (transport internals may not expose this)
+      try {
+        const transportAny = this.transport as any;
+        if (transportAny._process && transportAny._process.pid) {
+          this.childPid = transportAny._process.pid;
+          logger.debug('CHROMA_SYNC', 'Extracted subprocess PID', { pid: this.childPid, project: this.project });
+        }
+      } catch (error) {
+        logger.debug('CHROMA_SYNC', 'Could not extract subprocess PID from transport', { project: this.project });
+      }
 
       logger.info('CHROMA_SYNC', 'Connected to Chroma MCP server', { project: this.project });
     } catch (error) {
@@ -837,6 +861,16 @@ export class ChromaSync {
     }
 
     try {
+      // On Windows, force-kill subprocess BEFORE closing transport to prevent zombie processes
+      if (process.platform === 'win32' && this.childPid) {
+        try {
+          execSync(`taskkill /PID ${this.childPid} /T /F`, { timeout: 5000, stdio: 'ignore' });
+          logger.info('CHROMA_SYNC', 'Killed subprocess tree', { pid: this.childPid, project: this.project });
+        } catch (error) {
+          logger.warn('CHROMA_SYNC', 'Failed to kill subprocess', { pid: this.childPid, project: this.project }, error as Error);
+        }
+      }
+
       // Close client first
       if (this.client) {
         try {
@@ -861,6 +895,7 @@ export class ChromaSync {
       this.connected = false;
       this.client = null;
       this.transport = null;
+      this.childPid = null;
     }
   }
 }
