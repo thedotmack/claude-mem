@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [7.3.6] - 2025-12-17
+
+## Bug Fixes
+
+- Enhanced SDKAgent response handling and message processing
+
+## [7.3.5] - 2025-12-17
+
+## What's Changed
+* fix(windows): solve zombie port problem with wrapper architecture by @ToxMox in https://github.com/thedotmack/claude-mem/pull/372
+* chore: bump version to 7.3.5 by @thedotmack in https://github.com/thedotmack/claude-mem/pull/375
+
+## New Contributors
+* @ToxMox made their first contribution in https://github.com/thedotmack/claude-mem/pull/372
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.3.4...v7.3.5
+
 ## [7.3.4] - 2025-12-17
 
 Patch release for bug fixes and minor improvements
