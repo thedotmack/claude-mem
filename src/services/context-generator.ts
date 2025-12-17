@@ -25,6 +25,7 @@ import {
   toRelativePath,
   extractFirstFile
 } from '../shared/timeline-formatting.js';
+import { getProjectName } from '../utils/project-name.js';
 
 // Version marker path - use homedir-based path that works in both CJS and ESM contexts
 const VERSION_MARKER_PATH = path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack', 'plugin', '.install-version');
@@ -222,7 +223,7 @@ function extractPriorMessages(transcriptPath: string): { userMessage: string; as
 export async function generateContext(input?: ContextInput, useColors: boolean = false): Promise<string> {
   const config = loadContextConfig();
   const cwd = input?.cwd ?? process.cwd();
-  const project = cwd ? path.basename(cwd) : 'unknown-project';
+  const project = getProjectName(cwd);
 
   let db: SessionStore | null = null;
   try {
