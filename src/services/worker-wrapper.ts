@@ -11,8 +11,11 @@
  */
 
 import { spawn, ChildProcess, execSync } from 'child_process';
+import { promisify } from 'util';
 import path from 'path';
 import { getBunPath } from '../utils/bun-path.js';
+
+const execAsync = promisify(require('child_process').exec);
 
 const isWindows = process.platform === 'win32';
 
@@ -72,6 +75,38 @@ function spawnInner() {
   });
 }
 
+/**
+ * Recursively enumerate all descendant process IDs on Windows
+ * Returns all child PIDs and their descendants
+ */
+async function getDescendantPids(parentPid: number): Promise<number[]> {
+  if (process.platform !== 'win32') {
+    return [];
+  }
+
+  try {
+    const cmd = `powershell -Command "Get-CimInstance Win32_Process | Where-Object { $_.ParentProcessId -eq ${parentPid} } | Select-Object -ExpandProperty ProcessId"`;
+    const { stdout } = await execAsync(cmd, { timeout: 5000 });
+    const childPids = stdout
+      .trim()
+      .split('\n')
+      .map((s: string) => parseInt(s.trim(), 10))
+      .filter((n: number) => !isNaN(n));
+
+    // Recursively get descendants of each child
+    const allDescendants = [...childPids];
+    for (const childPid of childPids) {
+      const subDescendants = await getDescendantPids(childPid);
+      allDescendants.push(...subDescendants);
+    }
+
+    return allDescendants;
+  } catch (error) {
+    log(`Failed to enumerate descendants of PID ${parentPid}: ${error}`);
+    return [];
+  }
+}
+
 async function killInner(): Promise<void> {
   if (!inner || !inner.pid) {
     log('No inner process to kill');
@@ -82,15 +117,33 @@ async function killInner(): Promise<void> {
   log(`Killing inner process tree (pid=${pid})`);
 
   if (isWindows) {
-    // On Windows, use taskkill /T /F to kill entire process tree
-    // This ensures all children (MCP server, ChromaSync, etc.) are killed
-    // which is necessary to properly release the socket
+    // CRITICAL: Enumerate ALL descendants before killing to ensure complete cleanup
+    // This prevents socket leaks by ensuring all child processes (ChromaSync, MCP, etc.) are terminated
+    const descendantPids = await getDescendantPids(pid);
+    log(`Process tree enumeration: root=${pid}, descendants=[${descendantPids.join(', ')}]`);
+
+    // Kill root + all descendants with /T (tree) flag
     try {
       execSync(`taskkill /PID ${pid} /T /F`, { timeout: 10000, stdio: 'ignore' });
       log(`taskkill completed for pid=${pid}`);
     } catch (error) {
-      // Process may already be dead
-      log(`taskkill failed (process may be dead): ${error}`);
+      log(`taskkill failed, trying individual kills: ${error}`);
+      // Fallback: kill each descendant individually in reverse order (children before parents)
+      for (let i = descendantPids.length - 1; i >= 0; i--) {
+        const dpid = descendantPids[i];
+        try {
+          execSync(`taskkill /PID ${dpid} /F`, { timeout: 2000, stdio: 'ignore' });
+          log(`Killed descendant PID ${dpid}`);
+        } catch (killError) {
+          log(`Failed to kill descendant PID ${dpid} (may already be dead)`);
+        }
+      }
+      // Finally try to kill the root process
+      try {
+        execSync(`taskkill /PID ${pid} /F`, { timeout: 2000, stdio: 'ignore' });
+      } catch {
+        log(`Failed to kill root PID ${pid} (may already be dead)`);
+      }
     }
   } else {
     // On Unix, SIGTERM then SIGKILL
