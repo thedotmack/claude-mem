@@ -8,10 +8,9 @@
 
 import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
-import YAML from 'yaml';
 import type { ModeConfig, ObservationType, ObservationConcept } from './types.js';
 import { logger } from '../../utils/logger.js';
-import { DATA_DIR } from '../../shared/paths.js';
+import { getPackageRoot } from '../../shared/paths.js';
 
 export class ModeManager {
   private static instance: ModeManager | null = null;
@@ -19,7 +18,8 @@ export class ModeManager {
   private modesDir: string;
 
   private constructor() {
-    this.modesDir = join(DATA_DIR, 'modes');
+    // Modes are in plugin/modes/ - getPackageRoot() points to plugin/
+    this.modesDir = join(getPackageRoot(), 'modes');
   }
 
   /**
@@ -37,31 +37,20 @@ export class ModeManager {
    * Caches the result for subsequent calls
    */
   loadMode(modeId: string): ModeConfig {
-    const modePath = join(this.modesDir, `${modeId}.yaml`);
+    const modePath = join(this.modesDir, `${modeId}.json`);
 
     if (!existsSync(modePath)) {
       logger.warn('SYSTEM', `Mode file not found: ${modePath}, falling back to 'code'`);
       // If we're already trying to load 'code', throw to prevent infinite recursion
       if (modeId === 'code') {
-        throw new Error('Critical: code.yaml mode file missing');
+        throw new Error('Critical: code.json mode file missing');
       }
       return this.loadMode('code');
     }
 
     try {
-      const yamlContent = readFileSync(modePath, 'utf-8');
-      const mode = YAML.parse(yamlContent) as ModeConfig;
-
-      // Validate required fields
-      if (!mode.name || !mode.observation_types || !mode.observation_concepts || !mode.prompts) {
-        throw new Error('Invalid mode config: missing required fields');
-      }
-
-      // Validate that 'observation' type exists (universal fallback)
-      const hasObservationType = mode.observation_types.some(t => t.id === 'observation');
-      if (!hasObservationType) {
-        throw new Error('Invalid mode config: must include "observation" type as universal fallback');
-      }
+      const jsonContent = readFileSync(modePath, 'utf-8');
+      const mode = JSON.parse(jsonContent) as ModeConfig;
 
       this.activeMode = mode;
       logger.debug('SYSTEM', `Loaded mode: ${mode.name} (${modeId})`, undefined, {
@@ -71,10 +60,9 @@ export class ModeManager {
 
       return mode;
     } catch (error) {
-      logger.error('SYSTEM', `Failed to parse mode file: ${modePath}`, undefined, error);
-      // Fallback to 'code' mode
+      logger.error('SYSTEM', `Failed to load mode: ${modePath}`, undefined, error);
       if (modeId === 'code') {
-        throw new Error('Critical: code.yaml mode file is invalid');
+        throw error; // Can't fall back from code mode
       }
       return this.loadMode('code');
     }

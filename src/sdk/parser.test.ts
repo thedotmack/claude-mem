@@ -4,6 +4,10 @@
  */
 
 import { parseObservations, parseSummary } from './parser.js';
+import { ModeManager } from '../services/domain/ModeManager.js';
+
+// Initialize mode before running tests
+ModeManager.getInstance().loadMode('code');
 
 // ANSI color codes for output
 const GREEN = '\x1b[32m';
@@ -132,7 +136,7 @@ assert(minimalResult[0].title === null, 'Empty title should be null');
 assert(minimalResult[0].subtitle === null, 'Empty subtitle should be null');
 assert(minimalResult[0].narrative === null, 'Empty narrative should be null');
 
-// Test 5: Observation with missing type should use "change" as fallback
+// Test 5: Observation with missing type should use first mode type as fallback
 const missingTypeXml = `
 <observation>
   <title>Something happened</title>
@@ -147,9 +151,9 @@ const missingTypeXml = `
 
 const missingTypeResult = parseObservations(missingTypeXml);
 assert(missingTypeResult.length === 1, 'Should parse observation with missing type');
-assertEqual(missingTypeResult[0].type, 'change', 'Missing type should default to "change"');
+assertEqual(missingTypeResult[0].type, 'bugfix', 'Missing type should default to first mode type (bugfix for code mode)');
 
-// Test 6: Observation with invalid type should use "change" as fallback
+// Test 6: Observation with invalid type should use first mode type as fallback
 const invalidTypeXml = `
 <observation>
   <type>invalid_type_here</type>
@@ -165,7 +169,7 @@ const invalidTypeXml = `
 
 const invalidTypeResult = parseObservations(invalidTypeXml);
 assert(invalidTypeResult.length === 1, 'Should parse observation with invalid type');
-assertEqual(invalidTypeResult[0].type, 'change', 'Invalid type should default to "change"');
+assertEqual(invalidTypeResult[0].type, 'bugfix', 'Invalid type should default to first mode type (bugfix for code mode)');
 
 // Test 7: Multiple observations with mixed completeness should all be saved
 const mixedObservationsXml = `
@@ -200,7 +204,7 @@ const mixedResult = parseObservations(mixedObservationsXml);
 assertEqual(mixedResult.length, 3, 'Should parse all three observations regardless of completeness');
 assertEqual(mixedResult[0].type, 'feature', 'First observation should have correct type');
 assertEqual(mixedResult[1].type, 'bugfix', 'Second observation should have correct type');
-assertEqual(mixedResult[2].type, 'change', 'Third observation should default to "change"');
+assertEqual(mixedResult[2].type, 'bugfix', 'Third observation should default to first mode type (bugfix for code mode)');
 
 // ============================================================================
 // v4.2.5: Summary Parsing - NEVER Skip Summaries
