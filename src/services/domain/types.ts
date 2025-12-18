@@ -1,5 +1,5 @@
 /**
- * TypeScript interfaces for domain configuration system
+ * TypeScript interfaces for mode configuration system
  */
 
 export interface ObservationType {
@@ -16,17 +16,17 @@ export interface ObservationConcept {
   description: string;
 }
 
-export interface DomainPrompts {
+export interface ModePrompts {
   init_context: string;
   type_guidance: string;
   concept_guidance: string;
 }
 
-export interface DomainConfig {
+export interface ModeConfig {
   name: string;
   description: string;
   version: string;
   observation_types: ObservationType[];
   observation_concepts: ObservationConcept[];
-  prompts: DomainPrompts;
+  prompts: ModePrompts;
 }
