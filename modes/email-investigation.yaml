@@ -1,0 +1,78 @@
+name: "Email Investigation"
+description: "RAGTIME-style email fraud investigation"
+version: "1.0.0"
+
+observation_types:
+  - id: "entity"
+    label: "Entity Discovery"
+    description: "New person, organization, or email address identified"
+    emoji: "👤"
+    work_emoji: "🔍"
+  - id: "relationship"
+    label: "Relationship"
+    description: "Connection between entities discovered"
+    emoji: "🔗"
+    work_emoji: "🔍"
+  - id: "timeline-event"
+    label: "Timeline Event"
+    description: "Time-stamped event in communication sequence"
+    emoji: "📅"
+    work_emoji: "🔍"
+  - id: "evidence"
+    label: "Evidence"
+    description: "Supporting documentation or proof discovered"
+    emoji: "📄"
+    work_emoji: "📋"
+  - id: "anomaly"
+    label: "Anomaly"
+    description: "Suspicious pattern or irregularity detected"
+    emoji: "⚠️"
+    work_emoji: "🔍"
+  - id: "conclusion"
+    label: "Conclusion"
+    description: "Investigative finding or determination"
+    emoji: "⚖️"
+    work_emoji: "⚖️"
+  - id: "observation"
+    label: "Observation"
+    description: "General observation (universal fallback)"
+    emoji: "📝"
+    work_emoji: "📝"
+
+observation_concepts:
+  - id: "who"
+    label: "Who"
+    description: "People and organizations involved"
+  - id: "when"
+    label: "When"
+    description: "Timing and sequence of events"
+  - id: "what-happened"
+    label: "What Happened"
+    description: "Events and communications"
+  - id: "motive"
+    label: "Motive"
+    description: "Intent or purpose behind actions"
+  - id: "red-flag"
+    label: "Red Flag"
+    description: "Warning signs of fraud or deception"
+  - id: "corroboration"
+    label: "Corroboration"
+    description: "Evidence supporting a claim"
+
+prompts:
+  init_context: |
+    You are observing an EMAIL FRAUD INVESTIGATION session.
+    Focus on entities (people, orgs), relationships, timeline events, and evidence.
+
+  type_guidance: |
+    **type**: MUST be EXACTLY one of these options:
+      - entity: new person, organization, or email address identified
+      - relationship: connection between entities discovered
+      - timeline-event: time-stamped event in communication sequence
+      - evidence: supporting documentation or proof discovered
+      - anomaly: suspicious pattern or irregularity detected
+      - conclusion: investigative finding or determination
+
+  concept_guidance: |
+    **concepts**: 2-5 knowledge-type categories. MUST use ONLY these exact keywords:
+      - who, when, what-happened, motive, red-flag, corroboration

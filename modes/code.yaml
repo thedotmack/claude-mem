@@ -1,0 +1,81 @@
+name: "Code Development"
+description: "Software development and engineering work"
+version: "1.0.0"
+
+observation_types:
+  - id: "bugfix"
+    label: "Bug Fix"
+    description: "Something was broken, now fixed"
+    emoji: "🔴"
+    work_emoji: "🛠️"
+  - id: "feature"
+    label: "Feature"
+    description: "New capability or functionality added"
+    emoji: "🟣"
+    work_emoji: "🛠️"
+  - id: "refactor"
+    label: "Refactor"
+    description: "Code restructured, behavior unchanged"
+    emoji: "🔄"
+    work_emoji: "🛠️"
+  - id: "change"
+    label: "Change"
+    description: "Generic modification (docs, config, misc)"
+    emoji: "✅"
+    work_emoji: "🛠️"
+  - id: "discovery"
+    label: "Discovery"
+    description: "Learning about existing system"
+    emoji: "🔵"
+    work_emoji: "🔍"
+  - id: "decision"
+    label: "Decision"
+    description: "Architectural/design choice with rationale"
+    emoji: "⚖️"
+    work_emoji: "⚖️"
+  - id: "observation"
+    label: "Observation"
+    description: "General observation (universal fallback)"
+    emoji: "📝"
+    work_emoji: "📝"
+
+observation_concepts:
+  - id: "how-it-works"
+    label: "How It Works"
+    description: "Understanding mechanisms"
+  - id: "why-it-exists"
+    label: "Why It Exists"
+    description: "Purpose or rationale"
+  - id: "what-changed"
+    label: "What Changed"
+    description: "Modifications made"
+  - id: "problem-solution"
+    label: "Problem-Solution"
+    description: "Issues and their fixes"
+  - id: "gotcha"
+    label: "Gotcha"
+    description: "Traps or edge cases"
+  - id: "pattern"
+    label: "Pattern"
+    description: "Reusable approach"
+  - id: "trade-off"
+    label: "Trade-Off"
+    description: "Pros/cons of a decision"
+
+prompts:
+  init_context: |
+    You are observing a CODE DEVELOPMENT session.
+    Focus on technical implementations, architectural decisions, and code changes.
+
+  type_guidance: |
+    **type**: MUST be EXACTLY one of these options:
+      - bugfix: something was broken, now fixed
+      - feature: new capability or functionality added
+      - refactor: code restructured, behavior unchanged
+      - change: generic modification (docs, config, misc)
+      - discovery: learning about existing system
+      - decision: architectural/design choice with rationale
+
+  concept_guidance: |
+    **concepts**: 2-5 knowledge-type categories. MUST use ONLY these exact keywords:
+      - how-it-works, why-it-exists, what-changed, problem-solution, gotcha, pattern, trade-off
