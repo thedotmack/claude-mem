@@ -2,7 +2,7 @@
  * Worker Service - Slim Orchestrator
  *
  * Refactored from 2000-line monolith to ~150-line orchestrator.
- * Routes organized by domain in http/routes/*.ts
+ * Routes organized by feature area in http/routes/*.ts
  * See src/services/worker/README.md for architecture details.
  */
 
@@ -19,7 +19,7 @@ import { promisify } from 'util';
 
 const execAsync = promisify(exec);
 
-// Import composed domain services
+// Import composed service layer
 import { DatabaseManager } from './worker/DatabaseManager.js';
 import { SessionManager } from './worker/SessionManager.js';
 import { SSEBroadcaster } from './worker/SSEBroadcaster.js';
@@ -49,7 +49,7 @@ export class WorkerService {
   private mcpReady: boolean = false;
   private initializationCompleteFlag: boolean = false;
 
-  // Domain services
+  // Service layer
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
   private sseBroadcaster: SSEBroadcaster;
@@ -77,7 +77,7 @@ export class WorkerService {
       this.resolveInitialization = resolve;
     });
 
-    // Initialize domain services
+    // Initialize service layer
     this.dbManager = new DatabaseManager();
     this.sessionManager = new SessionManager(this.dbManager);
     this.sseBroadcaster = new SSEBroadcaster();
