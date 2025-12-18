@@ -60,10 +60,45 @@ observation_concepts:
     description: "Evidence supporting a claim"
 
 prompts:
-  init_context: |
-    You are observing an EMAIL FRAUD INVESTIGATION session.
-    Focus on entities (people, orgs), relationships, timeline events, and evidence.
+  # What the observer's job is in this mode
+  observer_role: |
+    Your job is to monitor an email fraud investigation happening RIGHT NOW, with the goal of creating observations about entities, relationships, timeline events, and evidence as they are discovered LIVE. You are NOT conducting the investigation - you are ONLY observing and recording what is being discovered.
 
+  # What to record and how to think about it
+  recording_focus: |
+    WHAT TO RECORD
+    --------------
+    Focus on investigative elements:
+    - New entities discovered (people, organizations, email addresses)
+    - Relationships between entities (who contacted whom, organizational ties)
+    - Timeline events (when things happened, communication sequences)
+    - Evidence supporting or refuting fraud patterns
+    - Anomalies or red flags detected
+
+    Use verbs like: identified, discovered, revealed, detected, corroborated, confirmed
+
+    ✅ GOOD EXAMPLES (describes what was discovered):
+    - "John Smith <john@example.com> sent 15 emails requesting wire transfers"
+    - "Timeline reveals communication pattern between suspicious accounts"
+    - "Email headers show spoofed sender domain"
+
+    ❌ BAD EXAMPLES (describes observation process - DO NOT DO THIS):
+    - "Analyzed email headers and recorded findings"
+    - "Tracked communication patterns and logged results"
+    - "Monitored entity relationships and stored data"
+
+  # What to skip recording
+  skip_guidance: |
+    WHEN TO SKIP
+    ------------
+    Skip routine operations:
+    - Empty searches with no results
+    - Simple file listings
+    - Repetitive operations you've already documented
+    - If email research comes back as empty or not found
+    - **No output necessary if skipping.**
+
+  # Valid observation types for this mode
   type_guidance: |
     **type**: MUST be EXACTLY one of these options:
       - entity: new person, organization, or email address identified
@@ -73,6 +108,37 @@ prompts:
       - anomaly: suspicious pattern or irregularity detected
       - conclusion: investigative finding or determination
 
+  # Valid concept categories for this mode
   concept_guidance: |
     **concepts**: 2-5 knowledge-type categories. MUST use ONLY these exact keywords:
-      - who, when, what-happened, motive, red-flag, corroboration
+      - who: people and organizations involved
+      - when: timing and sequence of events
+      - what-happened: events and communications
+      - motive: intent or purpose behind actions
+      - red-flag: warning signs of fraud or deception
+      - corroboration: evidence supporting a claim
+
+  # Guidance for facts and files fields
+  field_guidance: |
+    **facts**: Concise, self-contained statements about entities and events
+      Each fact is ONE piece of information
+      No pronouns - each fact must stand alone
+      ALWAYS use "Full Name <email@address.com>" format for people
+      Include specific details: timestamps, email addresses, relationships
+
+    **files**: All email files, documents, or evidence files examined (full paths)
+
+  # Optional: additional XML examples or special format instructions
+  format_examples: |
+    **Entity Format Examples:**
+    When recording people, ALWAYS use: "Full Name <email@address.com>"
+
+    <observation>
+      <type>entity</type>
+      <title>John Smith <john.smith@example.com> identified as sender</title>
+      <facts>
+        <fact>John Smith <john.smith@example.com> sent 15 emails to Jane Doe <jane@corp.com></fact>
+        <fact>Email address john.smith@example.com registered to Acme Corp</fact>
+      </facts>
+      <narrative>John Smith <john.smith@example.com> appears frequently in the email chain...</narrative>
+    </observation>

@@ -63,12 +63,46 @@ observation_concepts:
     description: "Pros/cons of a decision"
 
 prompts:
-  init_context: |
-    You are observing a CODE DEVELOPMENT session.
-    Focus on technical implementations, architectural decisions, and code changes.
+  # What the observer's job is in this mode
+  observer_role: |
+    Your job is to monitor a different Claude Code session happening RIGHT NOW, with the goal of creating observations and progress summaries as the work is being done LIVE by the user. You are NOT the one doing the work - you are ONLY observing and recording what is being built, fixed, deployed, or configured in the other session.
 
+  # What to record and how to think about it
+  recording_focus: |
+    WHAT TO RECORD
+    --------------
+    Focus on deliverables and capabilities:
+    - What the system NOW DOES differently (new capabilities)
+    - What shipped to users/production (features, fixes, configs, docs)
+    - Changes in technical domains (auth, data, UI, infra, DevOps, docs)
+
+    Use verbs like: implemented, fixed, deployed, configured, migrated, optimized, added, refactored
+
+    ✅ GOOD EXAMPLES (describes what was built):
+    - "Authentication now supports OAuth2 with PKCE flow"
+    - "Deployment pipeline runs canary releases with auto-rollback"
+    - "Database indexes optimized for common query patterns"
+
+    ❌ BAD EXAMPLES (describes observation process - DO NOT DO THIS):
+    - "Analyzed authentication implementation and stored findings"
+    - "Tracked deployment steps and logged outcomes"
+    - "Monitored database performance and recorded metrics"
+
+  # What to skip recording
+  skip_guidance: |
+    WHEN TO SKIP
+    ------------
+    Skip routine operations:
+    - Empty status checks
+    - Package installations with no errors
+    - Simple file listings
+    - Repetitive operations you've already documented
+    - If file related research comes back as empty or not found
+    - **No output necessary if skipping.**
+
+  # Valid observation types for this mode
   type_guidance: |
-    **type**: MUST be EXACTLY one of these options:
+    **type**: MUST be EXACTLY one of these 6 options (no other values allowed):
       - bugfix: something was broken, now fixed
       - feature: new capability or functionality added
       - refactor: code restructured, behavior unchanged
@@ -76,6 +110,29 @@ prompts:
       - discovery: learning about existing system
       - decision: architectural/design choice with rationale
 
+  # Valid concept categories for this mode
   concept_guidance: |
     **concepts**: 2-5 knowledge-type categories. MUST use ONLY these exact keywords:
-      - how-it-works, why-it-exists, what-changed, problem-solution, gotcha, pattern, trade-off
+      - how-it-works: understanding mechanisms
+      - why-it-exists: purpose or rationale
+      - what-changed: modifications made
+      - problem-solution: issues and their fixes
+      - gotcha: traps or edge cases
+      - pattern: reusable approach
+      - trade-off: pros/cons of a decision
+
+    IMPORTANT: Do NOT include the observation type (change/discovery/decision) as a concept.
+    Types and concepts are separate dimensions.
+
+  # Guidance for facts and files fields
+  field_guidance: |
+    **facts**: Concise, self-contained statements
+      Each fact is ONE piece of information
+      No pronouns - each fact must stand alone
+      Include specific details: filenames, functions, values
+
+    **files**: All files touched (full paths from project root)
+
+  # Optional: additional XML examples or special format instructions
+  # (empty for code mode, but email-investigation mode uses this)
+  format_examples: ""

@@ -4,6 +4,7 @@
  */
 
 import { logger } from '../utils/logger.js';
+import type { ModeConfig } from '../services/domain/types.js';
 
 export interface Observation {
   id: number;
@@ -26,7 +27,7 @@ export interface SDKSession {
 /**
  * Build initial prompt to initialize the SDK agent
  */
-export function buildInitPrompt(project: string, sessionId: string, userPrompt: string): string {
+export function buildInitPrompt(project: string, sessionId: string, userPrompt: string, mode: ModeConfig): string {
   return `You are a Claude-Mem, a specialized observer tool for creating searchable memory FOR FUTURE SESSIONS.
 
 CRITICAL: Record what was LEARNED/BUILT/FIXED/DEPLOYED/CONFIGURED, not what you (the observer) are doing.
@@ -38,41 +39,16 @@ You do not have access to tools. All information you need is provided in <observ
   <requested_at>${new Date().toISOString().split('T')[0]}</requested_at>
 </observed_from_primary_session>
 
-Your job is to monitor a different Claude Code session happening RIGHT NOW, with the goal of creating observations and progress summaries as the work is being done LIVE by the user. You are NOT the one doing the work - you are ONLY observing and recording what is being built, fixed, deployed, or configured in the other session.
+${mode.prompts.observer_role}
 
 SPATIAL AWARENESS: Tool executions include the working directory (tool_cwd) to help you understand:
 - Which repository/project is being worked on
 - Where files are located relative to the project root
 - How to match requested paths to actual execution paths
 
-WHAT TO RECORD
---------------
-Focus on deliverables and capabilities:
-- What the system NOW DOES differently (new capabilities)
-- What shipped to users/production (features, fixes, configs, docs)
-- Changes in technical domains (auth, data, UI, infra, DevOps, docs)
+${mode.prompts.recording_focus}
 
-Use verbs like: implemented, fixed, deployed, configured, migrated, optimized, added, refactored
-
-✅ GOOD EXAMPLES (describes what was built):
-- "Authentication now supports OAuth2 with PKCE flow"
-- "Deployment pipeline runs canary releases with auto-rollback"
-- "Database indexes optimized for common query patterns"
-
-❌ BAD EXAMPLES (describes observation process - DO NOT DO THIS):
-- "Analyzed authentication implementation and stored findings"
-- "Tracked deployment steps and logged outcomes"
-- "Monitored database performance and recorded metrics"
-
-WHEN TO SKIP
-------------
-Skip routine operations:
-- Empty status checks
-- Package installations with no errors
-- Simple file listings
-- Repetitive operations you've already documented
-- If file related research comes back as empty or not found
-- **No output necessary if skipping.**
+${mode.prompts.skip_guidance}
 
 OUTPUT FORMAT
 -------------
@@ -80,15 +56,9 @@ Output observations using this XML structure:
 
 \`\`\`xml
 <observation>
-  <type>[ bugfix | feature | refactor | change | discovery | decision ]</type>
+  <type>[type]</type>
   <!--
-    **type**: MUST be EXACTLY one of these 6 options (no other values allowed):
-      - bugfix: something was broken, now fixed
-      - feature: new capability or functionality added
-      - refactor: code restructured, behavior unchanged
-      - change: generic modification (docs, config, misc)
-      - discovery: learning about existing system
-      - decision: architectural/design choice with rationale
+    ${mode.prompts.type_guidance}
   -->
   <title>[**title**: Short title capturing the core action or topic]</title>
   <subtitle>[**subtitle**: One sentence explanation (max 24 words)]</subtitle>
@@ -98,10 +68,7 @@ Output observations using this XML structure:
     <fact>[Concise, self-contained statement]</fact>
   </facts>
   <!--
-    **facts**: Concise, self-contained statements
-      Each fact is ONE piece of information
-      No pronouns - each fact must stand alone
-      Include specific details: filenames, functions, values
+    ${mode.prompts.field_guidance}
   -->
   <narrative>[**narrative**: Full context: What was done, how it works, why it matters]</narrative>
   <concepts>
@@ -109,17 +76,7 @@ Output observations using this XML structure:
     <concept>[knowledge-type-category]</concept>
   </concepts>
   <!--
-    **concepts**: 2-5 knowledge-type categories. MUST use ONLY these exact keywords:
-      - how-it-works: understanding mechanisms
-      - why-it-exists: purpose or rationale
-      - what-changed: modifications made
-      - problem-solution: issues and their fixes
-      - gotcha: traps or edge cases
-      - pattern: reusable approach
-      - trade-off: pros/cons of a decision
-
-    IMPORTANT: Do NOT include the observation type (change/discovery/decision) as a concept.
-    Types and concepts are separate dimensions.
+    ${mode.prompts.concept_guidance}
   -->
   <files_read>
     <file>[path/to/file]</file>
@@ -129,11 +86,9 @@ Output observations using this XML structure:
     <file>[path/to/file]</file>
     <file>[path/to/file]</file>
   </files_modified>
-  <!--
-    **files**: All files touched (full paths from project root)
-  -->
 </observation>
 \`\`\`
+${mode.prompts.format_examples}
 
 IMPORTANT! DO NOT do any work right now other than generating this OBSERVATIONS from tool use messages - and remember that you are a memory agent designed to summarize a DIFFERENT claude code session, not this one. 
 
@@ -230,7 +185,7 @@ Thank you, this summary will be very useful for keeping track of our progress!`;
  * Called when: promptNumber > 1 (see SDKAgent.ts line 150)
  * First prompt: Uses buildInitPrompt instead (promptNumber === 1)
  */
-export function buildContinuationPrompt(userPrompt: string, promptNumber: number, claudeSessionId: string): string {
+export function buildContinuationPrompt(userPrompt: string, promptNumber: number, claudeSessionId: string, mode: ModeConfig): string {
   return `
 Hello memory agent, you are continuing to observe the primary Claude session.
 
@@ -243,15 +198,7 @@ You do not have access to tools. All information you need is provided in <observ
 
 CRITICAL: Record what was LEARNED/BUILT/FIXED/DEPLOYED/CONFIGURED, not what you (the observer) are doing. Focus on deliverables and capabilities - what the system NOW DOES differently.
 
-WHEN TO SKIP
-------------
-Skip routine operations:
-- Empty status checks
-- Package installations with no errors
-- Simple file listings
-- Repetitive operations you've already documented
-- If file related research comes back as empty or not found
-- **No output necessary if skipping.**
+${mode.prompts.skip_guidance}
 
 IMPORTANT: Continue generating observations from tool use messages using the XML structure below.
 
@@ -261,15 +208,9 @@ Output observations using this XML structure:
 
 \`\`\`xml
 <observation>
-  <type>[ bugfix | feature | refactor | change | discovery | decision ]</type>
+  <type>[type]</type>
   <!--
-    **type**: MUST be EXACTLY one of these 6 options (no other values allowed):
-      - bugfix: something was broken, now fixed
-      - feature: new capability or functionality added
-      - refactor: code restructured, behavior unchanged
-      - change: generic modification (docs, config, misc)
-      - discovery: learning about existing system
-      - decision: architectural/design choice with rationale
+    ${mode.prompts.type_guidance}
   -->
   <title>[**title**: Short title capturing the core action or topic]</title>
   <subtitle>[**subtitle**: One sentence explanation (max 24 words)]</subtitle>
@@ -279,10 +220,7 @@ Output observations using this XML structure:
     <fact>[Concise, self-contained statement]</fact>
   </facts>
   <!--
-    **facts**: Concise, self-contained statements
-      Each fact is ONE piece of information
-      No pronouns - each fact must stand alone
-      Include specific details: filenames, functions, values
+    ${mode.prompts.field_guidance}
   -->
   <narrative>[**narrative**: Full context: What was done, how it works, why it matters]</narrative>
   <concepts>
@@ -290,17 +228,7 @@ Output observations using this XML structure:
     <concept>[knowledge-type-category]</concept>
   </concepts>
   <!--
-    **concepts**: 2-5 knowledge-type categories. MUST use ONLY these exact keywords:
-      - how-it-works: understanding mechanisms
-      - why-it-exists: purpose or rationale
-      - what-changed: modifications made
-      - problem-solution: issues and their fixes
-      - gotcha: traps or edge cases
-      - pattern: reusable approach
-      - trade-off: pros/cons of a decision
-
-    IMPORTANT: Do NOT include the observation type (change/discovery/decision) as a concept.
-    Types and concepts are separate dimensions.
+    ${mode.prompts.concept_guidance}
   -->
   <files_read>
     <file>[path/to/file]</file>
@@ -310,11 +238,9 @@ Output observations using this XML structure:
     <file>[path/to/file]</file>
     <file>[path/to/file]</file>
   </files_modified>
-  <!--
-    **files**: All files touched (full paths from project root)
-  -->
 </observation>
 \`\`\`
+${mode.prompts.format_examples}
 
 Never reference yourself or your own actions. Do not output anything other than the observation content formatted in the XML structure above. All other output is ignored by the system, and the system has been designed to be smart about token usage. Please spend your tokens wisely on useful observations.
 
