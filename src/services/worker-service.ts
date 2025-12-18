@@ -178,26 +178,35 @@ export class WorkerService {
     // Instructions endpoint - loads SKILL.md sections on-demand for progressive instruction loading
     this.app.get('/api/instructions', async (req, res) => {
       const topic = (req.query.topic as string) || 'all';
-      // Read SKILL.md from plugin directory
+      const operation = req.query.operation as string | undefined;
+
       // Path resolution: __dirname is build output directory (plugin/scripts/)
       // SKILL.md is at plugin/skills/mem-search/SKILL.md
-      const skillPath = path.join(__dirname, '../skills/mem-search/SKILL.md');
+      // Operations are at plugin/skills/mem-search/operations/*.md
 
       try {
-        const fullContent = await fs.promises.readFile(skillPath, 'utf-8');
+        let content: string;
 
-        // Extract section based on topic
-        const section = this.extractInstructionSection(fullContent, topic);
+        if (operation) {
+          // Load specific operation file
+          const operationPath = path.join(__dirname, '../skills/mem-search/operations', `${operation}.md`);
+          content = await fs.promises.readFile(operationPath, 'utf-8');
+        } else {
+          // Load SKILL.md and extract section based on topic (backward compatibility)
+          const skillPath = path.join(__dirname, '../skills/mem-search/SKILL.md');
+          const fullContent = await fs.promises.readFile(skillPath, 'utf-8');
+          content = this.extractInstructionSection(fullContent, topic);
+        }
 
         // Return in MCP format
         res.json({
           content: [{
             type: 'text',
-            text: section
+            text: content
           }]
         });
       } catch (error) {
-        logger.error('WORKER', 'Failed to load instructions', { topic, skillPath }, error as Error);
+        logger.error('WORKER', 'Failed to load instructions', { topic, operation }, error as Error);
         res.status(500).json({
           content: [{
             type: 'text',
