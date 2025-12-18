@@ -12,10 +12,12 @@ const MARKETPLACE_ROOT = join(homedir(), '.claude', 'plugins', 'marketplaces', '
 
 // Timeout constants
 const PROCESS_STOP_TIMEOUT_MS = 5000;
-const HEALTH_CHECK_TIMEOUT_MS = 10000;
+// Base readiness timeout (non-Windows). Windows gets a higher multiplier to accommodate slower startup.
+const HEALTH_CHECK_TIMEOUT_MS = 15000;
 const HEALTH_CHECK_INTERVAL_MS = 200;
 const HEALTH_CHECK_FETCH_TIMEOUT_MS = 1000;
 const PROCESS_EXIT_CHECK_INTERVAL_MS = 100;
+const WINDOWS_HEALTH_TIMEOUT_MULTIPLIER = 3;
 
 interface PidInfo {
   pid: number;
@@ -273,7 +275,7 @@ export class ProcessManager {
     const startTime = Date.now();
     const isWindows = process.platform === 'win32';
     // Increase timeout on Windows to account for slower process startup
-    const adjustedTimeout = isWindows ? timeoutMs * 2 : timeoutMs;
+    const adjustedTimeout = isWindows ? timeoutMs * WINDOWS_HEALTH_TIMEOUT_MULTIPLIER : timeoutMs;
 
     while (Date.now() - startTime < adjustedTimeout) {
       // Check if process is still alive
