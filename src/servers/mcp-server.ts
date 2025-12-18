@@ -258,20 +258,23 @@ const tools = [
       required: ['tool_name']
     },
     handler: async (args: any) => {
-      const schema = TOOL_SCHEMAS[args.tool_name];
-      if (!schema) {
+      // Validate tool_name to prevent prototype pollution
+      const toolName = args.tool_name;
+      if (typeof toolName !== 'string' || !Object.hasOwn(TOOL_SCHEMAS, toolName)) {
         return {
           content: [{
             type: 'text' as const,
-            text: `Unknown tool: ${args.tool_name}\n\nAvailable tools: ${Object.keys(TOOL_SCHEMAS).join(', ')}`
+            text: `Unknown tool: ${toolName}\n\nAvailable tools: ${Object.keys(TOOL_SCHEMAS).join(', ')}`
           }],
           isError: true
         };
       }
+
+      const schema = TOOL_SCHEMAS[toolName];
       return {
         content: [{
           type: 'text' as const,
-          text: `# ${args.tool_name} Parameters\n\n${JSON.stringify(schema, null, 2)}`
+          text: `# ${toolName} Parameters\n\n${JSON.stringify(schema, null, 2)}`
         }]
       };
     }
