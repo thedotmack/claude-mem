@@ -32,7 +32,7 @@ import { TimelineService } from './worker/TimelineService.js';
 import { SessionEventBroadcaster } from './worker/events/SessionEventBroadcaster.js';
 
 // Import HTTP layer
-import { createMiddleware, summarizeRequestBody as summarizeBody } from './worker/http/middleware.js';
+import { createMiddleware, summarizeRequestBody as summarizeBody, requireLocalhost } from './worker/http/middleware.js';
 import { ViewerRoutes } from './worker/http/routes/ViewerRoutes.js';
 import { SessionRoutes } from './worker/http/routes/SessionRoutes.js';
 import { DataRoutes } from './worker/http/routes/DataRoutes.js';
@@ -208,8 +208,8 @@ export class WorkerService {
       }
     });
 
-    // Admin endpoints for process management
-    this.app.post('/api/admin/restart', async (_req, res) => {
+    // Admin endpoints for process management (localhost-only)
+    this.app.post('/api/admin/restart', requireLocalhost, async (_req, res) => {
       res.json({ status: 'restarting' });
 
       // On Windows, if managed by wrapper, send message to parent to handle restart
@@ -230,7 +230,7 @@ export class WorkerService {
       }
     });
 
-    this.app.post('/api/admin/shutdown', async (_req, res) => {
+    this.app.post('/api/admin/shutdown', requireLocalhost, async (_req, res) => {
       res.json({ status: 'shutting_down' });
 
       // On Windows, if managed by wrapper, send message to parent to handle shutdown
