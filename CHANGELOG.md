@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [7.3.9] - 2025-12-18
+
+## Fixes
+
+- Fix MCP server compatibility and web UI path resolution
+
+This patch release addresses compatibility issues with the MCP server and resolves path resolution problems in the web UI.
+
 ## [7.3.8] - 2025-12-18
 
 ## Security Fix
