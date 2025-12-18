@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [7.4.0] - 2025-12-18
+
+## What's New
+
+### MCP Tool Token Reduction
+
+Optimized MCP tool definitions for reduced token consumption in Claude Code sessions through progressive parameter disclosure.
+
+**Changes:**
+- Streamlined MCP tool schemas with minimal inline definitions
+- Added `get_schema()` tool for on-demand parameter documentation
+- Enhanced worker API with operation-based instruction loading
+
+This release improves session efficiency by reducing the token overhead of MCP tool definitions while maintaining full functionality through progressive disclosure.
+
 ## [7.3.9] - 2025-12-18
 
 ## Fixes
