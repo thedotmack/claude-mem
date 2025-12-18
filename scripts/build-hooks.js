@@ -166,7 +166,7 @@ async function buildHooks() {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
       },
       banner: {
-        js: '#!/usr/bin/env bun'
+        js: '#!/usr/bin/env node'
       }
     });
 
