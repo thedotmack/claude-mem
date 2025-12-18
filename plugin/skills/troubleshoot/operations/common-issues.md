@@ -17,7 +17,8 @@ Quick fixes for frequently encountered claude-mem problems.
 **Fix:**
 1. Verify worker is running:
    ```bash
-   pm2 jlist | grep claude-mem-worker
+   cd ~/.claude/plugins/marketplaces/thedotmack/
+   npm run worker:status
    ```
 
 2. Check database has recent observations:
@@ -27,7 +28,8 @@ Quick fixes for frequently encountered claude-mem problems.
 
 3. Restart worker and start new session:
    ```bash
-   pm2 restart claude-mem-worker
+   cd ~/.claude/plugins/marketplaces/thedotmack/
+   npm run worker:restart
    ```
 
 4. Create a test observation: `/skill version-bump` then cancel
@@ -66,7 +68,7 @@ Quick fixes for frequently encountered claude-mem problems.
 
 3. Verify worker is using correct database path in logs:
    ```bash
-   pm2 logs claude-mem-worker --lines 50 --nostream | grep "Database"
+   grep "Database" ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log
    ```
 
 4. Test viewer connection manually:
@@ -109,34 +111,34 @@ Quick fixes for frequently encountered claude-mem problems.
 ## Issue: Worker Not Starting {#worker-not-starting}
 
 **Symptoms:**
-- PM2 shows worker as "stopped" or "errored"
+- Worker status shows not running or error
 - Health check fails
 - Viewer not accessible
 
 **Root cause:**
 - Port already in use
-- PM2 not installed or not in PATH
+- Bun not installed
 - Missing dependencies
 
 **Fix:**
 1. Try manual worker start to see error:
    ```bash
    cd ~/.claude/plugins/marketplaces/thedotmack/
-   node plugin/scripts/worker-service.cjs
+   bun plugin/scripts/worker-service.js
    # Should start server on port 37777 or show error
    ```
 
 2. If port in use, change it:
    ```bash
    mkdir -p ~/.claude-mem
-   echo '{"env":{"CLAUDE_MEM_WORKER_PORT":"37778"}}' > ~/.claude-mem/settings.json
+   echo '{"CLAUDE_MEM_WORKER_PORT":"37778"}' > ~/.claude-mem/settings.json
    ```
 
 3. If dependencies missing:
    ```bash
    cd ~/.claude/plugins/marketplaces/thedotmack/
    npm install
-   pm2 start ecosystem.config.cjs
+   npm run worker:start
    ```
 
 ## Issue: Search Results Empty
@@ -170,7 +172,8 @@ Quick fixes for frequently encountered claude-mem problems.
 
 4. If FTS5 out of sync, restart worker (triggers reindex):
    ```bash
-   pm2 restart claude-mem-worker
+   cd ~/.claude/plugins/marketplaces/thedotmack/
+   npm run worker:restart
    ```
 
 ## Issue: Port Conflicts
@@ -189,8 +192,9 @@ Quick fixes for frequently encountered claude-mem problems.
 2. Either kill the conflicting process or change claude-mem port:
    ```bash
    mkdir -p ~/.claude-mem
-   echo '{"env":{"CLAUDE_MEM_WORKER_PORT":"37778"}}' > ~/.claude-mem/settings.json
-   pm2 restart claude-mem-worker
+   echo '{"CLAUDE_MEM_WORKER_PORT":"37778"}' > ~/.claude-mem/settings.json
+   cd ~/.claude/plugins/marketplaces/thedotmack/
+   npm run worker:restart
    ```
 
 ## Issue: Database Corrupted
@@ -214,7 +218,8 @@ Quick fixes for frequently encountered claude-mem problems.
 3. If repair fails, recreate (loses data):
    ```bash
    rm ~/.claude-mem/claude-mem.db
-   pm2 restart claude-mem-worker
+   cd ~/.claude/plugins/marketplaces/thedotmack/
+   npm run worker:restart
    # Worker will create new database
    ```
 

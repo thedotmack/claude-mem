@@ -4,6 +4,191 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [7.3.9] - 2025-12-18
+
+## Fixes
+
+- Fix MCP server compatibility and web UI path resolution
+
+This patch release addresses compatibility issues with the MCP server and resolves path resolution problems in the web UI.
+
+## [7.3.8] - 2025-12-18
+
+## Security Fix
+
+Added localhost-only protection for admin endpoints to prevent DoS attacks when worker service is bound to 0.0.0.0 for remote UI access.
+
+### Changes
+- Created `requireLocalhost` middleware to restrict admin endpoints
+- Applied to `/api/admin/restart` and `/api/admin/shutdown`
+- Returns 403 Forbidden for non-localhost requests
+
+### Security Impact
+Prevents unauthorized shutdown/restart of worker service when exposed on network.
+
+Fixes security concern raised in #368.
+
+## [7.3.7] - 2025-12-17
+
+## Windows Platform Stabilization
+
+This patch release includes comprehensive improvements for Windows platform stability and reliability.
+
+### Key Improvements
+
+- **Worker Readiness Tracking**: Added `/api/readiness` endpoint with MCP/SDK initialization flags to prevent premature connection attempts
+- **Process Tree Cleanup**: Implemented recursive process enumeration on Windows to prevent zombie socket processes  
+- **Bun Runtime Migration**: Migrated worker wrapper from Node.js to Bun for consistency and reliability
+- **Centralized Project Name Utility**: Consolidated duplicate project name extraction logic with Windows drive root handling
+- **Enhanced Error Messages**: Added platform-aware logging and detailed Windows troubleshooting guidance
+- **Subprocess Console Hiding**: Standardized `windowsHide: true` across all child process spawns to prevent console window flashing
+
+### Technical Details
+
+- Worker service tracks MCP and SDK readiness states separately
+- ChromaSync service properly tracks subprocess PIDs for Windows cleanup
+- Worker wrapper uses Bun runtime with enhanced socket cleanup via process tree enumeration
+- Increased timeouts on Windows platform (30s worker startup, 10s hook timeouts)
+- Logger utility includes platform and PID information for better debugging
+
+This represents a major reliability improvement for Windows users, eliminating common issues with worker startup failures, orphaned processes, and zombie sockets.
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.3.6...v7.3.7
+
+## [7.3.6] - 2025-12-17
+
+## Bug Fixes
+
+- Enhanced SDKAgent response handling and message processing
+
+## [7.3.5] - 2025-12-17
+
+## What's Changed
+* fix(windows): solve zombie port problem with wrapper architecture by @ToxMox in https://github.com/thedotmack/claude-mem/pull/372
+* chore: bump version to 7.3.5 by @thedotmack in https://github.com/thedotmack/claude-mem/pull/375
+
+## New Contributors
+* @ToxMox made their first contribution in https://github.com/thedotmack/claude-mem/pull/372
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.3.4...v7.3.5
+
+## [7.3.4] - 2025-12-17
+
+Patch release for bug fixes and minor improvements
+
+## [7.3.3] - 2025-12-16
+
+## What's Changed
+
+- Remove all better-sqlite3 references from codebase (#357)
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.3.2...v7.3.3
+
+## [7.3.2] - 2025-12-16
+
+## 🪟 Windows Console Fix
+
+Fixes blank console windows appearing for Windows 11 users during claude-mem operations.
+
+### What Changed
+
+- **Windows**: Uses PowerShell `Start-Process -WindowStyle Hidden` to properly hide worker process
+- **Security**: Added PowerShell string escaping to follow security best practices
+- **Unix/Mac**: No changes (continues to work as before)
+
+### Root Cause
+
+The issue was caused by a Node.js limitation where `windowsHide: true` doesn't work with `detached: true` in `child_process.spawn()`. This affects both Bun and Node.js since Bun inherits Node.js process spawning semantics.
+
+See: https://github.com/nodejs/node/issues/21825
+
+### Security Note
+
+While all paths in the PowerShell command are application-controlled (not user input), we've added proper escaping to follow security best practices. If an attacker could modify bun installation paths or plugin directories, they would already have full filesystem access including the database.
+
+### Related
+
+- Fixes #304 (Multiple visible console windows)
+- Merged PR #339
+- Testing documented in PR #315
+
+### Breaking Changes
+
+None - fully backward compatible.
+
+---
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.3.1...v7.3.2
+
+## [7.3.1] - 2025-12-16
+
+## 🐛 Bug Fixes
+
+### Pending Messages Cleanup (Issue #353)
+
+Fixed unbounded database growth in the `pending_messages` table by implementing proper cleanup logic:
+
+- **Content Clearing**: `markProcessed()` now clears `tool_input` and `tool_response` when marking messages as processed, preventing duplicate storage of transcript data that's already saved in observations
+- **Count-Based Retention**: `cleanupProcessed()` now keeps only the 100 most recent processed messages for UI display, deleting older ones automatically
+- **Automatic Cleanup**: Cleanup runs automatically after processing messages in `SDKAgent.processSDKResponse()`
+
+### What This Fixes
+
+- Prevents database from growing unbounded with duplicate transcript content
+- Keeps metadata (tool_name, status, timestamps) for recent messages
+- Maintains UI functionality while optimizing storage
+
+### Technical Details
+
+**Files Modified:**
+- `src/services/sqlite/PendingMessageStore.ts` - Cleanup logic implementation
+- `src/services/worker/SDKAgent.ts` - Periodic cleanup calls
+
+**Database Behavior:**
+- Pending/processing messages: Keep full transcript data (needed for processing)
+- Processed messages: Clear transcript, keep metadata only (observations already saved)
+- Retention: Last 100 processed messages for UI feedback
+
+### Related
+
+- Fixes #353 - Observations not being saved
+- Part of the pending messages persistence feature (from PR #335)
+
+---
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.3.0...v7.3.1
+
+## [7.3.0] - 2025-12-16
+
+## Features
+
+- **Table-based search output**: Unified timeline formatting with cleaner, more organized presentation of search results grouped by date and file
+- **Simplified API**: Removed unused format parameter from MCP search tools for cleaner interface
+- **Shared formatting utilities**: Extracted common timeline formatting logic into reusable module
+- **Batch observations endpoint**: Added `/api/observations/batch` endpoint for efficient retrieval of multiple observations by ID array
+
+## Changes
+
+- **Default model upgrade**: Changed default model from Haiku to Sonnet for better observation quality
+- **Removed fake URIs**: Replaced claude-mem:// pseudo-protocol with actual HTTP API endpoints for citations
+
+## Bug Fixes
+
+- Fixed undefined debug function calls in MCP server
+- Fixed skillPath variable scoping bug in instructions endpoint
+- Extracted magic numbers to named constants for better code maintainability
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.2.4...v7.3.0
+
+## [7.2.4] - 2025-12-15
+
+## What's Changed
+
+### Documentation
+- Updated endless mode setup instructions with improved configuration guidance for better user experience
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.2.3...v7.2.4
+
 ## [7.2.3] - 2025-12-15
 
 ## Bug Fixes
@@ -25,25 +210,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - Generate `mem-search.zip` during build from `plugin/skills/mem-search/`
   - Update docs with correct MCP tool list and new download path
   - Single source of truth for Claude Desktop skill
-
-## [7.3.0] - 2025-12-15
-
-## Features
-
-- **Table-based search output**: Unified timeline formatting with cleaner, more organized presentation of search results grouped by date and file
-- **Simplified API**: Removed unused format parameter from MCP search tools for cleaner interface
-- **Shared formatting utilities**: Extracted common timeline formatting logic into reusable module
-
-## Changes
-
-- **Default model upgrade**: Changed default model from Haiku to Sonnet for better observation quality
-- **Removed fake URIs**: Replaced claude-mem:// pseudo-protocol with actual HTTP API endpoints for citations
-
-## Bug Fixes
-
-- Fixed undefined debug function calls in MCP server
-- Fixed skillPath variable scoping bug in instructions endpoint
-- Extracted magic numbers to named constants for better code maintainability
 
 ## [7.2.1] - 2025-12-14
 

@@ -40,6 +40,7 @@ export class DataRoutes extends BaseRouteHandler {
     app.get('/api/observation/:id', this.handleGetObservationById.bind(this));
     app.post('/api/observations/batch', this.handleGetObservationsByIds.bind(this));
     app.get('/api/session/:id', this.handleGetSessionById.bind(this));
+    app.post('/api/sdk-sessions/batch', this.handleGetSdkSessionsByIds.bind(this));
     app.get('/api/prompt/:id', this.handleGetPromptById.bind(this));
 
     // Metadata endpoints
@@ -49,6 +50,9 @@ export class DataRoutes extends BaseRouteHandler {
     // Processing status endpoints
     app.get('/api/processing-status', this.handleGetProcessingStatus.bind(this));
     app.post('/api/processing', this.handleSetProcessing.bind(this));
+
+    // Import endpoint
+    app.post('/api/import', this.handleImport.bind(this));
   }
 
   /**
@@ -144,6 +148,24 @@ export class DataRoutes extends BaseRouteHandler {
     }
 
     res.json(sessions[0]);
+  });
+
+  /**
+   * Get SDK sessions by SDK session IDs
+   * POST /api/sdk-sessions/batch
+   * Body: { sdkSessionIds: string[] }
+   */
+  private handleGetSdkSessionsByIds = this.wrapHandler((req: Request, res: Response): void => {
+    const { sdkSessionIds } = req.body;
+
+    if (!Array.isArray(sdkSessionIds)) {
+      this.badRequest(res, 'sdkSessionIds must be an array');
+      return;
+    }
+
+    const store = this.dbManager.getSessionStore();
+    const sessions = store.getSdkSessionsBySessionIds(sdkSessionIds);
+    res.json(sessions);
   });
 
   /**
@@ -267,4 +289,79 @@ export class DataRoutes extends BaseRouteHandler {
 
     return { offset, limit, project };
   }
+
+  /**
+   * Import memories from export file
+   * POST /api/import
+   * Body: { sessions: [], summaries: [], observations: [], prompts: [] }
+   */
+  private handleImport = this.wrapHandler((req: Request, res: Response): void => {
+    const { sessions, summaries, observations, prompts } = req.body;
+
+    const stats = {
+      sessionsImported: 0,
+      sessionsSkipped: 0,
+      summariesImported: 0,
+      summariesSkipped: 0,
+      observationsImported: 0,
+      observationsSkipped: 0,
+      promptsImported: 0,
+      promptsSkipped: 0
+    };
+
+    const store = this.dbManager.getSessionStore();
+
+    // Import sessions first (dependency for everything else)
+    if (Array.isArray(sessions)) {
+      for (const session of sessions) {
+        const result = store.importSdkSession(session);
+        if (result.imported) {
+          stats.sessionsImported++;
+        } else {
+          stats.sessionsSkipped++;
+        }
+      }
+    }
+
+    // Import summaries (depends on sessions)
+    if (Array.isArray(summaries)) {
+      for (const summary of summaries) {
+        const result = store.importSessionSummary(summary);
+        if (result.imported) {
+          stats.summariesImported++;
+        } else {
+          stats.summariesSkipped++;
+        }
+      }
+    }
+
+    // Import observations (depends on sessions)
+    if (Array.isArray(observations)) {
+      for (const obs of observations) {
+        const result = store.importObservation(obs);
+        if (result.imported) {
+          stats.observationsImported++;
+        } else {
+          stats.observationsSkipped++;
+        }
+      }
+    }
+
+    // Import prompts (depends on sessions)
+    if (Array.isArray(prompts)) {
+      for (const prompt of prompts) {
+        const result = store.importUserPrompt(prompt);
+        if (result.imported) {
+          stats.promptsImported++;
+        } else {
+          stats.promptsSkipped++;
+        }
+      }
+    }
+
+    res.json({
+      success: true,
+      stats
+    });
+  });
 }

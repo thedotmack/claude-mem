@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from 'fs';
 import { createWriteStream } from 'fs';
 import { join } from 'path';
-import { spawn } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import { homedir } from 'os';
 import { DATA_DIR } from '../../shared/paths.js';
 import { getBunPath, isBunAvailable } from '../../utils/bun-path.js';
@@ -43,8 +43,10 @@ export class ProcessManager {
     // Ensure log directory exists
     mkdirSync(LOG_DIR, { recursive: true });
 
-    // Get worker script path
-    const workerScript = join(MARKETPLACE_ROOT, 'plugin', 'scripts', 'worker-service.cjs');
+    // On Windows, use the wrapper script to solve zombie port problem
+    // On Unix, use the worker directly
+    const scriptName = process.platform === 'win32' ? 'worker-wrapper.cjs' : 'worker-service.cjs';
+    const workerScript = join(MARKETPLACE_ROOT, 'plugin', 'scripts', scriptName);
 
     if (!existsSync(workerScript)) {
       return { success: false, error: `Worker script not found at ${workerScript}` };
@@ -52,12 +54,21 @@ export class ProcessManager {
 
     const logFile = this.getLogFilePath();
 
-    // Use Bun on all platforms
+    // Use Bun on all platforms with PowerShell workaround for Windows console popups
     return this.startWithBun(workerScript, logFile, port);
   }
 
   private static isBunAvailable(): boolean {
     return isBunAvailable();
+  }
+
+  /**
+   * Escapes a string for safe use in PowerShell single-quoted strings.
+   * In PowerShell single quotes, the only special character is the single quote itself,
+   * which must be doubled to escape it.
+   */
+  private static escapePowerShellString(str: string): string {
+    return str.replace(/'/g, "''");
   }
 
   private static async startWithBun(script: string, logFile: string, port: number): Promise<{ success: boolean; pid?: number; error?: string }> {
@@ -68,40 +79,88 @@ export class ProcessManager {
         error: 'Bun is required but not found in PATH or common installation paths. Install from https://bun.sh'
       };
     }
-
     try {
       const isWindows = process.platform === 'win32';
 
-      const child = spawn(bunPath, [script], {
-        detached: true,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env, CLAUDE_MEM_WORKER_PORT: String(port) },
-        cwd: MARKETPLACE_ROOT,
-        // Hide console window on Windows
-        ...(isWindows && { windowsHide: true })
-      });
+      if (isWindows) {
+        // Windows: Use PowerShell Start-Process with -WindowStyle Hidden
+        // This properly hides the console window (affects both Bun and Node.js)
+        // Note: windowsHide: true doesn't work with detached: true (Bun inherits Node.js process spawning semantics)
+        // See: https://github.com/nodejs/node/issues/21825 and PR #315 for detailed testing
+        //
+        // On Windows, we start worker-wrapper.cjs which manages the actual worker-service.cjs.
+        // This solves the zombie port problem: the wrapper has no sockets, so when it kills
+        // and respawns the inner worker, the socket is properly released.
+        //
+        // Security: All paths (bunPath, script, MARKETPLACE_ROOT) are application-controlled system paths,
+        // not user input. If an attacker could modify these paths, they would already have full filesystem
+        // access including direct access to ~/.claude-mem/claude-mem.db. Nevertheless, we properly escape
+        // all values for PowerShell to follow security best practices.
+        const escapedBunPath = this.escapePowerShellString(bunPath);
+        const escapedScript = this.escapePowerShellString(script);
+        const escapedWorkDir = this.escapePowerShellString(MARKETPLACE_ROOT);
+        const envVars = `$env:CLAUDE_MEM_WORKER_PORT='${port}'`;
+        const psCommand = `${envVars}; Start-Process -FilePath '${escapedBunPath}' -ArgumentList '${escapedScript}' -WorkingDirectory '${escapedWorkDir}' -WindowStyle Hidden -PassThru | Select-Object -ExpandProperty Id`;
 
-      // Write logs
-      const logStream = createWriteStream(logFile, { flags: 'a' });
-      child.stdout?.pipe(logStream);
-      child.stderr?.pipe(logStream);
+        const result = spawnSync('powershell', ['-Command', psCommand], {
+          stdio: 'pipe',
+          timeout: 10000,
+          windowsHide: true
+        });
 
-      child.unref();
+        if (result.status !== 0) {
+          return {
+            success: false,
+            error: `PowerShell spawn failed: ${result.stderr?.toString() || 'unknown error'}`
+          };
+        }
 
-      if (!child.pid) {
-        return { success: false, error: 'Failed to get PID from spawned process' };
+        const pid = parseInt(result.stdout.toString().trim(), 10);
+        if (isNaN(pid)) {
+          return { success: false, error: 'Failed to get PID from PowerShell' };
+        }
+
+        // Write PID file
+        this.writePidFile({
+          pid,
+          port,
+          startedAt: new Date().toISOString(),
+          version: process.env.npm_package_version || 'unknown'
+        });
+
+        // Wait for health
+        return this.waitForHealth(pid, port);
+      } else {
+        // Unix: Use standard spawn with detached
+        const child = spawn(bunPath, [script], {
+          detached: true,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          env: { ...process.env, CLAUDE_MEM_WORKER_PORT: String(port) },
+          cwd: MARKETPLACE_ROOT
+        });
+
+        // Write logs
+        const logStream = createWriteStream(logFile, { flags: 'a' });
+        child.stdout?.pipe(logStream);
+        child.stderr?.pipe(logStream);
+
+        child.unref();
+
+        if (!child.pid) {
+          return { success: false, error: 'Failed to get PID from spawned process' };
+        }
+
+        // Write PID file
+        this.writePidFile({
+          pid: child.pid,
+          port,
+          startedAt: new Date().toISOString(),
+          version: process.env.npm_package_version || 'unknown'
+        });
+
+        // Wait for health
+        return this.waitForHealth(child.pid, port);
       }
-
-      // Write PID file
-      this.writePidFile({
-        pid: child.pid,
-        port,
-        startedAt: new Date().toISOString(),
-        version: process.env.npm_package_version || 'unknown'
-      });
-
-      // Wait for health
-      return this.waitForHealth(child.pid, port);
     } catch (error) {
       return {
         success: false,
@@ -115,8 +174,21 @@ export class ProcessManager {
     if (!info) return true;
 
     try {
-      process.kill(info.pid, 'SIGTERM');
-      await this.waitForExit(info.pid, timeout);
+      if (process.platform === 'win32') {
+        // On Windows, use taskkill /T /F to kill entire process tree
+        // This ensures the wrapper AND all its children (inner worker, MCP, ChromaSync) are killed
+        // which is necessary to properly release the socket and avoid zombie ports
+        const { execSync } = await import('child_process');
+        try {
+          execSync(`taskkill /PID ${info.pid} /T /F`, { timeout: 10000, stdio: 'ignore' });
+        } catch {
+          // Process may already be dead
+        }
+      } else {
+        // On Unix, use signals
+        process.kill(info.pid, 'SIGTERM');
+        await this.waitForExit(info.pid, timeout);
+      }
     } catch {
       try {
         process.kill(info.pid, 'SIGKILL');
@@ -199,29 +271,39 @@ export class ProcessManager {
 
   private static async waitForHealth(pid: number, port: number, timeoutMs: number = HEALTH_CHECK_TIMEOUT_MS): Promise<{ success: boolean; pid?: number; error?: string }> {
     const startTime = Date.now();
+    const isWindows = process.platform === 'win32';
+    // Increase timeout on Windows to account for slower process startup
+    const adjustedTimeout = isWindows ? timeoutMs * 2 : timeoutMs;
 
-    while (Date.now() - startTime < timeoutMs) {
+    while (Date.now() - startTime < adjustedTimeout) {
       // Check if process is still alive
       if (!this.isProcessAlive(pid)) {
-        return { success: false, error: 'Process died during startup' };
+        const errorMsg = isWindows
+          ? `Process died during startup\n\nTroubleshooting:\n1. Check Task Manager for zombie 'bun.exe' or 'node.exe' processes\n2. Verify port ${port} is not in use: netstat -ano | findstr ${port}\n3. Check worker logs in ~/.claude-mem/logs/\n4. See GitHub issues: #363, #367, #371, #373\n5. Docs: https://docs.claude-mem.ai/troubleshooting/windows-issues`
+          : 'Process died during startup';
+        return { success: false, error: errorMsg };
       }
 
-      // Try health check
+      // Try readiness check (changed from /health to /api/readiness)
       try {
-        const response = await fetch(`http://127.0.0.1:${port}/health`, {
+        const response = await fetch(`http://127.0.0.1:${port}/api/readiness`, {
           signal: AbortSignal.timeout(HEALTH_CHECK_FETCH_TIMEOUT_MS)
         });
         if (response.ok) {
           return { success: true, pid };
         }
       } catch {
-        // Not ready yet
+        // Not ready yet, continue polling
       }
 
       await new Promise(resolve => setTimeout(resolve, HEALTH_CHECK_INTERVAL_MS));
     }
 
-    return { success: false, error: 'Health check timed out' };
+    const timeoutMsg = isWindows
+      ? `Worker failed to start on Windows (readiness check timed out after ${adjustedTimeout}ms)\n\nTroubleshooting:\n1. Check Task Manager for zombie 'bun.exe' or 'node.exe' processes\n2. Verify port ${port} is not in use: netstat -ano | findstr ${port}\n3. Check worker logs in ~/.claude-mem/logs/\n4. See GitHub issues: #363, #367, #371, #373\n5. Docs: https://docs.claude-mem.ai/troubleshooting/windows-issues`
+      : `Readiness check timed out after ${adjustedTimeout}ms`;
+
+    return { success: false, error: timeoutMsg };
   }
 
   private static async waitForExit(pid: number, timeout: number): Promise<void> {

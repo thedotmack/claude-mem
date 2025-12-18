@@ -61,6 +61,34 @@ export function createMiddleware(
 }
 
 /**
+ * Middleware to require localhost-only access
+ * Used for admin endpoints that should not be exposed when binding to 0.0.0.0
+ */
+export function requireLocalhost(req: Request, res: Response, next: NextFunction): void {
+  const clientIp = req.ip || req.connection.remoteAddress || '';
+  const isLocalhost =
+    clientIp === '127.0.0.1' ||
+    clientIp === '::1' ||
+    clientIp === '::ffff:127.0.0.1' ||
+    clientIp === 'localhost';
+
+  if (!isLocalhost) {
+    logger.warn('SECURITY', 'Admin endpoint access denied - not localhost', {
+      endpoint: req.path,
+      clientIp,
+      method: req.method
+    });
+    res.status(403).json({
+      error: 'Forbidden',
+      message: 'Admin endpoints are only accessible from localhost'
+    });
+    return;
+  }
+
+  next();
+}
+
+/**
  * Summarize request body for logging
  * Used to avoid logging sensitive data or large payloads
  */

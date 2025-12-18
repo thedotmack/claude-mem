@@ -1,6 +1,6 @@
 ---
 name: troubleshoot
-description: Diagnose and fix claude-mem installation issues. Checks PM2 worker status, database integrity, service health, dependencies, and provides automated fixes for common problems.
+description: Diagnose and fix claude-mem installation issues. Checks worker status, database integrity, service health, dependencies, and provides automated fixes for common problems.
 ---
 
 # Claude-Mem Troubleshooting Skill
@@ -39,7 +39,7 @@ Choose the appropriate operation file for detailed instructions:
 
 ### Diagnostic Workflows
 1. **[Full System Diagnostics](operations/diagnostics.md)** - Comprehensive step-by-step diagnostic workflow
-2. **[Worker Diagnostics](operations/worker.md)** - PM2 worker-specific troubleshooting
+2. **[Worker Diagnostics](operations/worker.md)** - Bun worker-specific troubleshooting
 3. **[Database Diagnostics](operations/database.md)** - Database integrity and data checks
 
 ### Issue Resolution
@@ -54,9 +54,9 @@ Choose the appropriate operation file for detailed instructions:
 **Fast automated fix (try this first):**
 ```bash
 cd ~/.claude/plugins/marketplaces/thedotmack/ && \
-pm2 delete claude-mem-worker 2>/dev/null; \
+npm run worker:stop; \
 npm install && \
-node_modules/.bin/pm2 start ecosystem.config.cjs && \
+npm run worker:start && \
 sleep 3 && \
 curl -s http://127.0.0.1:37777/health
 ```
@@ -79,7 +79,7 @@ When troubleshooting:
 - **Worker port:** Default 37777 (configurable via `CLAUDE_MEM_WORKER_PORT`)
 - **Database location:** `~/.claude-mem/claude-mem.db`
 - **Plugin location:** `~/.claude/plugins/marketplaces/thedotmack/`
-- **PM2 process name:** `claude-mem-worker`
+- **Worker PID file:** `~/.claude-mem/worker.pid`
 
 ## Error Reporting
 

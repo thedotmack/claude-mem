@@ -5,8 +5,7 @@
  * Example: npx tsx scripts/export-memories.ts "windows" windows-memories.json --project=claude-mem
  */
 
-import Database from 'better-sqlite3';
-import { existsSync, writeFileSync } from 'fs';
+import { writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import { SettingsDefaultsManager } from '../src/shared/SettingsDefaultsManager';
@@ -127,33 +126,19 @@ async function exportMemories(query: string, outputFile: string, project?: strin
       if (s.sdk_session_id) sdkSessionIds.add(s.sdk_session_id);
     });
 
-    // Get SDK sessions metadata from database
-    // (We need this because the API doesn't expose sdk_sessions table directly)
+    // Get SDK sessions metadata via API
     console.log('📡 Fetching SDK sessions metadata...');
-    const sessions: SdkSessionRecord[] = [];
+    let sessions: SdkSessionRecord[] = [];
     if (sdkSessionIds.size > 0) {
-      // Read directly from database for sdk_sessions table
-      const Database = (await import('better-sqlite3')).default;
-      const dbPath = join(homedir(), '.claude-mem', 'claude-mem.db');
-
-      if (!existsSync(dbPath)) {
-        console.error(`❌ Database not found at: ${dbPath}`);
-        console.error('💡 Has claude-mem been initialized? Try running a session first.');
-        process.exit(1);
-      }
-
-      const db = new Database(dbPath, { readonly: true });
-
-      try {
-        const placeholders = Array.from(sdkSessionIds).map(() => '?').join(',');
-        const sessionQuery = `
-          SELECT * FROM sdk_sessions
-          WHERE sdk_session_id IN (${placeholders})
-          ORDER BY started_at_epoch DESC
-        `;
-        sessions.push(...db.prepare(sessionQuery).all(...Array.from(sdkSessionIds)));
-      } finally {
-        db.close();
+      const sessionsResponse = await fetch(`${baseUrl}/api/sdk-sessions/batch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sdkSessionIds: Array.from(sdkSessionIds) })
+      });
+      if (sessionsResponse.ok) {
+        sessions = await sessionsResponse.json();
+      } else {
+        console.warn(`⚠️ Failed to fetch SDK sessions: ${sessionsResponse.status}`);
       }
     }
     console.log(`✅ Found ${sessions.length} SDK sessions`);

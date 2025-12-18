@@ -6,30 +6,29 @@ Essential commands for troubleshooting claude-mem.
 
 ```bash
 # Check worker status
-pm2 status | grep claude-mem-worker
-pm2 jlist | grep claude-mem-worker  # JSON format
+cd ~/.claude/plugins/marketplaces/thedotmack/
+npm run worker:status
 
 # Start worker
-cd ~/.claude/plugins/marketplaces/thedotmack/
-pm2 start ecosystem.config.cjs
+npm run worker:start
 
 # Restart worker
-pm2 restart claude-mem-worker
+npm run worker:restart
 
 # Stop worker
-pm2 stop claude-mem-worker
-
-# Delete worker (for clean restart)
-pm2 delete claude-mem-worker
+npm run worker:stop
 
 # View logs
-pm2 logs claude-mem-worker
+npm run worker:logs
 
-# View last N lines
-pm2 logs claude-mem-worker --lines 50 --nostream
+# View today's log file
+cat ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log
 
-# Clear logs
-pm2 flush claude-mem-worker
+# Last 50 lines
+tail -50 ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log
+
+# Follow logs in real-time
+tail -f ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log
 ```
 
 ## Health Checks
@@ -82,21 +81,17 @@ cat ~/.claude-mem/settings.json
 cat ~/.claude/settings.json
 
 # Change worker port
-echo '{"env":{"CLAUDE_MEM_WORKER_PORT":"37778"}}' > ~/.claude-mem/settings.json
+echo '{"CLAUDE_MEM_WORKER_PORT":"37778"}' > ~/.claude-mem/settings.json
 
 # Change context observation count
 # Edit ~/.claude-mem/settings.json and add:
 {
-  "env": {
-    "CLAUDE_MEM_CONTEXT_OBSERVATIONS": "25"
-  }
+  "CLAUDE_MEM_CONTEXT_OBSERVATIONS": "25"
 }
 
 # Change AI model
 {
-  "env": {
-    "CLAUDE_MEM_MODEL": "claude-sonnet-4-5"
-  }
+  "CLAUDE_MEM_MODEL": "claude-sonnet-4-5"
 }
 ```
 
@@ -132,16 +127,19 @@ curl -v http://127.0.0.1:37777/health
 
 ```bash
 # Search logs for errors
-pm2 logs claude-mem-worker --lines 100 --nostream | grep -i "error"
+grep -i "error" ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log
 
 # Search for specific keyword
-pm2 logs claude-mem-worker --lines 100 --nostream | grep "keyword"
+grep "keyword" ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log
+
+# Search across all log files
+grep -i "error" ~/.claude-mem/logs/worker-*.log
+
+# Last 100 error lines
+grep -i "error" ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log | tail -100
 
 # Follow logs in real-time
-pm2 logs claude-mem-worker
-
-# Show only error logs
-pm2 logs claude-mem-worker --err
+tail -f ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log
 ```
 
 ## File Locations
@@ -160,11 +158,11 @@ pm2 logs claude-mem-worker --err
 # Chroma vector database
 ~/.claude-mem/chroma/
 
-# Usage logs
-~/.claude-mem/usage-logs/
+# Worker logs (daily rotation)
+~/.claude-mem/logs/worker-*.log
 
-# PM2 logs
-~/.pm2/logs/
+# Worker PID file
+~/.claude-mem/worker.pid
 ```
 
 ## System Information
@@ -179,12 +177,31 @@ node --version
 # NPM version
 npm --version
 
-# PM2 version
-pm2 --version
+# Bun version
+bun --version
 
 # SQLite version
 sqlite3 --version
 
 # Check disk space
 df -h ~/.claude-mem/
+```
+
+## One-Line Diagnostics
+
+```bash
+# Full worker status check
+npm run worker:status && curl -s http://127.0.0.1:37777/health
+
+# Quick health check
+curl -s http://127.0.0.1:37777/health && echo " - Worker is healthy"
+
+# Database stats
+echo "Observations: $(sqlite3 ~/.claude-mem/claude-mem.db 'SELECT COUNT(*) FROM observations;')" && echo "Sessions: $(sqlite3 ~/.claude-mem/claude-mem.db 'SELECT COUNT(*) FROM sessions;')"
+
+# Recent errors
+grep -i "error" ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log | tail -10
+
+# Port check
+lsof -i :37777 || echo "Port 37777 is free"
 ```

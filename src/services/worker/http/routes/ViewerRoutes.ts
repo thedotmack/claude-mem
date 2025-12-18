@@ -7,7 +7,7 @@
 
 import express, { Request, Response } from 'express';
 import path from 'path';
-import { readFileSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import { getPackageRoot } from '../../../../shared/paths.js';
 import { SSEBroadcaster } from '../../SSEBroadcaster.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
@@ -41,7 +41,19 @@ export class ViewerRoutes extends BaseRouteHandler {
    */
   private handleViewerUI = this.wrapHandler((req: Request, res: Response): void => {
     const packageRoot = getPackageRoot();
-    const viewerPath = path.join(packageRoot, 'plugin', 'ui', 'viewer.html');
+
+    // Try cache structure first (ui/viewer.html), then marketplace structure (plugin/ui/viewer.html)
+    const viewerPaths = [
+      path.join(packageRoot, 'ui', 'viewer.html'),
+      path.join(packageRoot, 'plugin', 'ui', 'viewer.html')
+    ];
+
+    const viewerPath = viewerPaths.find(p => existsSync(p));
+
+    if (!viewerPath) {
+      throw new Error('Viewer UI not found at any expected location');
+    }
+
     const html = readFileSync(viewerPath, 'utf-8');
     res.setHeader('Content-Type', 'text/html');
     res.send(html);

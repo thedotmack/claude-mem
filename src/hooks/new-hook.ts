@@ -1,9 +1,9 @@
-import path from 'path';
 import { stdin } from 'process';
 import { createHookResponse } from './hook-response.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
 import { handleWorkerError } from '../shared/hook-error-handler.js';
 import { handleFetchError } from './shared/error-handler.js';
+import { getProjectName } from '../utils/project-name.js';
 
 export interface UserPromptSubmitInput {
   session_id: string;
@@ -24,7 +24,7 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
   }
 
   const { session_id, cwd, prompt } = input;
-  const project = path.basename(cwd);
+  const project = getProjectName(cwd);
 
   const port = getWorkerPort();
 
