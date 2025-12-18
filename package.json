@@ -65,6 +65,7 @@
     "handlebars": "^4.7.8",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "yaml": "^2.8.2",
     "zod-to-json-schema": "^3.24.6"
   },
   "devDependencies": {
