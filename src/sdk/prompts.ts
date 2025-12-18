@@ -56,7 +56,7 @@ Output observations using this XML structure:
 
 \`\`\`xml
 <observation>
-  <type>[type]</type>
+  <type>[ ${mode.observation_types.map(t => t.id).join(' | ')} ]</type>
   <!--
     ${mode.prompts.type_guidance}
   -->
@@ -208,7 +208,7 @@ Output observations using this XML structure:
 
 \`\`\`xml
 <observation>
-  <type>[type]</type>
+  <type>[ ${mode.observation_types.map(t => t.id).join(' | ')} ]</type>
   <!--
     ${mode.prompts.type_guidance}
   -->
