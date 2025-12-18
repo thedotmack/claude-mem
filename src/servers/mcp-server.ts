@@ -12,8 +12,6 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { z } from 'zod';
-import { zodToJsonSchema } from 'zod-to-json-schema';
 import { logger } from '../utils/logger.js';
 import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
 
@@ -33,6 +31,72 @@ const TOOL_ENDPOINT_MAP: Record<string, string> = {
   'get_recent_context': '/api/context/recent',
   'get_context_timeline': '/api/context/timeline',
   'help': '/api/instructions'
+};
+
+/**
+ * Detailed parameter schemas for each tool
+ */
+const TOOL_SCHEMAS: Record<string, any> = {
+  search: {
+    query: { type: 'string', description: 'Full-text search query' },
+    type: { type: 'string', description: 'Filter by type: tool_use, tool_result, prompt, summary' },
+    obs_type: { type: 'string', description: 'Observation type filter' },
+    concepts: { type: 'string', description: 'Comma-separated concept tags' },
+    files: { type: 'string', description: 'Comma-separated file paths' },
+    project: { type: 'string', description: 'Project name filter' },
+    dateStart: { type: ['string', 'number'], description: 'Start date (ISO or timestamp)' },
+    dateEnd: { type: ['string', 'number'], description: 'End date (ISO or timestamp)' },
+    limit: { type: 'number', description: 'Max results (default: 10)' },
+    offset: { type: 'number', description: 'Result offset for pagination' },
+    orderBy: { type: 'string', description: 'Sort order: created_at, relevance' }
+  },
+  timeline: {
+    query: { type: 'string', description: 'Search query to find anchor point' },
+    anchor: { type: 'number', description: 'Observation ID as timeline center' },
+    depth_before: { type: 'number', description: 'Observations before anchor (default: 5)' },
+    depth_after: { type: 'number', description: 'Observations after anchor (default: 5)' },
+    type: { type: 'string', description: 'Filter by type' },
+    concepts: { type: 'string', description: 'Comma-separated concept tags' },
+    files: { type: 'string', description: 'Comma-separated file paths' },
+    project: { type: 'string', description: 'Project name filter' }
+  },
+  get_recent_context: {
+    limit: { type: 'number', description: 'Max results (default: 20)' },
+    type: { type: 'string', description: 'Filter by type' },
+    concepts: { type: 'string', description: 'Comma-separated concept tags' },
+    files: { type: 'string', description: 'Comma-separated file paths' },
+    project: { type: 'string', description: 'Project name filter' },
+    dateStart: { type: ['string', 'number'], description: 'Start date' },
+    dateEnd: { type: ['string', 'number'], description: 'End date' }
+  },
+  get_context_timeline: {
+    anchor: { type: 'number', description: 'Observation ID (required)', required: true },
+    depth_before: { type: 'number', description: 'Observations before anchor' },
+    depth_after: { type: 'number', description: 'Observations after anchor' },
+    type: { type: 'string', description: 'Filter by type' },
+    concepts: { type: 'string', description: 'Comma-separated concept tags' },
+    files: { type: 'string', description: 'Comma-separated file paths' },
+    project: { type: 'string', description: 'Project name filter' }
+  },
+  get_observations: {
+    ids: { type: 'array', items: { type: 'number' }, description: 'Array of observation IDs (required)', required: true },
+    orderBy: { type: 'string', description: 'Sort order' },
+    limit: { type: 'number', description: 'Max results' },
+    project: { type: 'string', description: 'Project filter' }
+  },
+  help: {
+    operation: { type: 'string', description: 'Operation type: "observations", "timeline", "sessions", etc.' },
+    topic: { type: 'string', description: 'Specific topic for help' }
+  },
+  get_observation: {
+    id: { type: 'number', description: 'Observation ID (required)', required: true }
+  },
+  get_session: {
+    id: { type: 'number', description: 'Session ID (required)', required: true }
+  },
+  get_prompt: {
+    id: { type: 'number', description: 'Prompt ID (required)', required: true }
+  }
 };
 
 /**
@@ -182,25 +246,47 @@ async function verifyWorkerConnection(): Promise<boolean> {
 
 /**
  * Tool definitions with HTTP-based handlers
- * Descriptions removed - use progressive_description tool for parameter documentation
+ * Minimal descriptions - use help() tool with operation parameter for detailed docs
  */
 const tools = [
   {
+    name: 'get_schema',
+    description: 'Get parameter schema for a tool. Call get_schema(tool_name) for details',
+    inputSchema: {
+      type: 'object',
+      properties: { tool_name: { type: 'string' } },
+      required: ['tool_name']
+    },
+    handler: async (args: any) => {
+      // Validate tool_name to prevent prototype pollution
+      const toolName = args.tool_name;
+      if (typeof toolName !== 'string' || !Object.hasOwn(TOOL_SCHEMAS, toolName)) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `Unknown tool: ${toolName}\n\nAvailable tools: ${Object.keys(TOOL_SCHEMAS).join(', ')}`
+          }],
+          isError: true
+        };
+      }
+
+      const schema = TOOL_SCHEMAS[toolName];
+      return {
+        content: [{
+          type: 'text' as const,
+          text: `# ${toolName} Parameters\n\n${JSON.stringify(schema, null, 2)}`
+        }]
+      };
+    }
+  },
+  {
     name: 'search',
-    description: 'Search memory',
-    inputSchema: z.object({
-      query: z.string().optional(),
-      type: z.enum(['observations', 'sessions', 'prompts']).optional(),
-      obs_type: z.string().optional(),
-      concepts: z.string().optional(),
-      files: z.string().optional(),
-      project: z.string().optional(),
-      dateStart: z.union([z.string(), z.number()]).optional(),
-      dateEnd: z.union([z.string(), z.number()]).optional(),
-      limit: z.number().min(1).max(100).default(20),
-      offset: z.number().min(0).default(0),
-      orderBy: z.enum(['relevance', 'date_desc', 'date_asc']).default('date_desc')
-    }),
+    description: 'Search memory. All parameters optional - call get_schema("search") for details',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+      additionalProperties: true
+    },
     handler: async (args: any) => {
       const endpoint = TOOL_ENDPOINT_MAP['search'];
       return await callWorkerAPI(endpoint, args);
@@ -208,17 +294,12 @@ const tools = [
   },
   {
     name: 'timeline',
-    description: 'Timeline context',
-    inputSchema: z.object({
-      query: z.string().optional(),
-      anchor: z.number().optional(),
-      depth_before: z.number().min(0).max(100).default(10),
-      depth_after: z.number().min(0).max(100).default(10),
-      type: z.string().optional(),
-      concepts: z.string().optional(),
-      files: z.string().optional(),
-      project: z.string().optional()
-    }),
+    description: 'Timeline context. All parameters optional - call get_schema("timeline") for details',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+      additionalProperties: true
+    },
     handler: async (args: any) => {
       const endpoint = TOOL_ENDPOINT_MAP['timeline'];
       return await callWorkerAPI(endpoint, args);
@@ -226,16 +307,12 @@ const tools = [
   },
   {
     name: 'get_recent_context',
-    description: 'Recent context',
-    inputSchema: z.object({
-      limit: z.number().min(1).max(100).default(30),
-      type: z.string().optional(),
-      concepts: z.string().optional(),
-      files: z.string().optional(),
-      project: z.string().optional(),
-      dateStart: z.union([z.string(), z.number()]).optional(),
-      dateEnd: z.union([z.string(), z.number()]).optional()
-    }),
+    description: 'Recent context. All parameters optional - call get_schema("get_recent_context") for details',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+      additionalProperties: true
+    },
     handler: async (args: any) => {
       const endpoint = TOOL_ENDPOINT_MAP['get_recent_context'];
       return await callWorkerAPI(endpoint, args);
@@ -243,16 +320,18 @@ const tools = [
   },
   {
     name: 'get_context_timeline',
-    description: 'Timeline around ID',
-    inputSchema: z.object({
-      anchor: z.number(),
-      depth_before: z.number().min(0).max(100).default(10),
-      depth_after: z.number().min(0).max(100).default(10),
-      type: z.string().optional(),
-      concepts: z.string().optional(),
-      files: z.string().optional(),
-      project: z.string().optional()
-    }),
+    description: 'Timeline around observation ID',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        anchor: {
+          type: 'number',
+          description: 'Observation ID (required). Optional params: get_schema("get_context_timeline")'
+        }
+      },
+      required: ['anchor'],
+      additionalProperties: true
+    },
     handler: async (args: any) => {
       const endpoint = TOOL_ENDPOINT_MAP['get_context_timeline'];
       return await callWorkerAPI(endpoint, args);
@@ -260,10 +339,12 @@ const tools = [
   },
   {
     name: 'help',
-    description: 'Usage help',
-    inputSchema: z.object({
-      topic: z.enum(['workflow', 'search_params', 'examples', 'all']).default('all')
-    }),
+    description: 'Get detailed docs. All parameters optional - call get_schema("help") for details',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+      additionalProperties: true
+    },
     handler: async (args: any) => {
       const endpoint = TOOL_ENDPOINT_MAP['help'];
       return await callWorkerAPI(endpoint, args);
@@ -271,43 +352,70 @@ const tools = [
   },
   {
     name: 'get_observation',
-    description: 'Fetch by ID',
-    inputSchema: z.object({
-      id: z.number()
-    }),
+    description: 'Fetch observation by ID',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'number',
+          description: 'Observation ID (required)'
+        }
+      },
+      required: ['id']
+    },
     handler: async (args: any) => {
       return await callWorkerAPIWithPath('/api/observation', args.id);
     }
   },
   {
     name: 'get_observations',
-    description: 'Batch fetch',
-    inputSchema: z.object({
-      ids: z.array(z.number()),
-      orderBy: z.enum(['date_desc', 'date_asc']).optional(),
-      limit: z.number().optional(),
-      project: z.string().optional()
-    }),
+    description: 'Batch fetch observations',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ids: {
+          type: 'array',
+          items: { type: 'number' },
+          description: 'Array of observation IDs (required). Optional params: get_schema("get_observations")'
+        }
+      },
+      required: ['ids'],
+      additionalProperties: true
+    },
     handler: async (args: any) => {
       return await callWorkerAPIPost('/api/observations/batch', args);
     }
   },
   {
     name: 'get_session',
-    description: 'Session by ID',
-    inputSchema: z.object({
-      id: z.number()
-    }),
+    description: 'Fetch session by ID',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'number',
+          description: 'Session ID (required)'
+        }
+      },
+      required: ['id']
+    },
     handler: async (args: any) => {
       return await callWorkerAPIWithPath('/api/session', args.id);
     }
   },
   {
     name: 'get_prompt',
-    description: 'Prompt by ID',
-    inputSchema: z.object({
-      id: z.number()
-    }),
+    description: 'Fetch prompt by ID',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'number',
+          description: 'Prompt ID (required)'
+        }
+      },
+      required: ['id']
+    },
     handler: async (args: any) => {
       return await callWorkerAPIWithPath('/api/prompt', args.id);
     }
@@ -333,7 +441,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     tools: tools.map(tool => ({
       name: tool.name,
       description: tool.description,
-      inputSchema: zodToJsonSchema(tool.inputSchema) as Record<string, unknown>
+      inputSchema: tool.inputSchema
     }))
   };
 });
