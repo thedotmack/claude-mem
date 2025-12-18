@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [7.3.8] - 2025-12-18
+
+## Security Fix
+
+Added localhost-only protection for admin endpoints to prevent DoS attacks when worker service is bound to 0.0.0.0 for remote UI access.
+
+### Changes
+- Created `requireLocalhost` middleware to restrict admin endpoints
+- Applied to `/api/admin/restart` and `/api/admin/shutdown`
+- Returns 403 Forbidden for non-localhost requests
+
+### Security Impact
+Prevents unauthorized shutdown/restart of worker service when exposed on network.
+
+Fixes security concern raised in #368.
+
 ## [7.3.7] - 2025-12-17
 
 ## Windows Platform Stabilization
