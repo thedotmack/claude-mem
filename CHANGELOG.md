@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [7.4.1] - 2025-12-19
+
+## Bug Fixes
+
+- **MCP Server**: Redirect logs to stderr to preserve JSON-RPC protocol (#396)
+  - MCP uses stdio transport where stdout is reserved for JSON-RPC messages
+  - Console.log was writing startup logs to stdout, causing Claude Desktop to parse log lines as JSON and fail
+
 ## [7.4.0] - 2025-12-18
 
 ## What's New
