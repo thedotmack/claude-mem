@@ -9,12 +9,15 @@ export const HOOK_TIMEOUTS = {
 
 /**
  * Hook exit codes for Claude Code
+ * See: https://code.claude.com/docs/en/hooks.md
  */
 export const HOOK_EXIT_CODES = {
+  /** Success - stdout shown in verbose mode, or added to context for SessionStart/UserPromptSubmit */
   SUCCESS: 0,
+  /** Non-blocking error - stderr shown in verbose mode, execution continues */
   FAILURE: 1,
-  /** Show user message that Claude does NOT receive as context */
-  USER_MESSAGE_ONLY: 3,
+  /** Blocking error - stderr fed back to Claude, may block operations */
+  BLOCKING_ERROR: 2,
 } as const;
 
 export function getTimeout(baseTimeout: number): number {

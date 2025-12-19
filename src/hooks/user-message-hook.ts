@@ -62,4 +62,5 @@ This message was not added to your startup context, so you can continue working 
 `);
 }
 
-process.exit(HOOK_EXIT_CODES.USER_MESSAGE_ONLY);
+// Exit 0 for clean hook completion - stderr output shown in verbose mode (Ctrl+O)
+process.exit(HOOK_EXIT_CODES.SUCCESS);
