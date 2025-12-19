@@ -3,7 +3,9 @@
  *
  * Mode profiles define observation types, concepts, and prompts for different use cases.
  * Default mode is 'code' (software development). Other modes like 'email-investigation'
- * can be selected via CLAUDE_MEM_MODE setting.
+ * can be selected per-session via CLAUDE_MEM_MODE env var.
+ *
+ * Supports multiple concurrent sessions with different modes by caching all loaded modes.
  */
 
 import { readFileSync, existsSync } from 'fs';
@@ -14,7 +16,7 @@ import { getPackageRoot } from '../../shared/paths.js';
 
 export class ModeManager {
   private static instance: ModeManager | null = null;
-  private activeMode: ModeConfig | null = null;
+  private modeCache: Map<string, ModeConfig> = new Map();
   private modesDir: string;
 
   private constructor() {
@@ -34,9 +36,15 @@ export class ModeManager {
 
   /**
    * Load a mode profile by ID
-   * Caches the result for subsequent calls
+   * Returns cached mode if already loaded, otherwise loads from file and caches
    */
   loadMode(modeId: string): ModeConfig {
+    // Check cache first
+    const cached = this.modeCache.get(modeId);
+    if (cached) {
+      return cached;
+    }
+
     const modePath = join(this.modesDir, `${modeId}.json`);
 
     if (!existsSync(modePath)) {
@@ -52,7 +60,8 @@ export class ModeManager {
       const jsonContent = readFileSync(modePath, 'utf-8');
       const mode = JSON.parse(jsonContent) as ModeConfig;
 
-      this.activeMode = mode;
+      // Cache the loaded mode
+      this.modeCache.set(modeId, mode);
       logger.debug('SYSTEM', `Loaded mode: ${mode.name} (${modeId})`, undefined, {
         types: mode.observation_types.map(t => t.id),
         concepts: mode.observation_concepts.map(c => c.id)
@@ -69,57 +78,47 @@ export class ModeManager {
   }
 
   /**
-   * Get currently active mode
+   * Get all observation types from a mode
    */
-  getActiveMode(): ModeConfig {
-    if (!this.activeMode) {
-      throw new Error('No mode loaded. Call loadMode() first.');
-    }
-    return this.activeMode;
+  getObservationTypes(modeId: string): ObservationType[] {
+    return this.loadMode(modeId).observation_types;
   }
 
   /**
-   * Get all observation types from active mode
+   * Get all observation concepts from a mode
    */
-  getObservationTypes(): ObservationType[] {
-    return this.getActiveMode().observation_types;
+  getObservationConcepts(modeId: string): ObservationConcept[] {
+    return this.loadMode(modeId).observation_concepts;
   }
 
   /**
-   * Get all observation concepts from active mode
+   * Get icon for a specific observation type in a mode
    */
-  getObservationConcepts(): ObservationConcept[] {
-    return this.getActiveMode().observation_concepts;
-  }
-
-  /**
-   * Get icon for a specific observation type
-   */
-  getTypeIcon(typeId: string): string {
-    const type = this.getObservationTypes().find(t => t.id === typeId);
+  getTypeIcon(modeId: string, typeId: string): string {
+    const type = this.getObservationTypes(modeId).find(t => t.id === typeId);
     return type?.emoji || '📝';
   }
 
   /**
-   * Get work emoji for a specific observation type
+   * Get work emoji for a specific observation type in a mode
    */
-  getWorkEmoji(typeId: string): string {
-    const type = this.getObservationTypes().find(t => t.id === typeId);
+  getWorkEmoji(modeId: string, typeId: string): string {
+    const type = this.getObservationTypes(modeId).find(t => t.id === typeId);
     return type?.work_emoji || '📝';
   }
 
   /**
-   * Validate that a type ID exists in the active mode
+   * Validate that a type ID exists in a mode
    */
-  validateType(typeId: string): boolean {
-    return this.getObservationTypes().some(t => t.id === typeId);
+  validateType(modeId: string, typeId: string): boolean {
+    return this.getObservationTypes(modeId).some(t => t.id === typeId);
   }
 
   /**
-   * Get label for a specific observation type
+   * Get label for a specific observation type in a mode
    */
-  getTypeLabel(typeId: string): string {
-    const type = this.getObservationTypes().find(t => t.id === typeId);
+  getTypeLabel(modeId: string, typeId: string): string {
+    const type = this.getObservationTypes(modeId).find(t => t.id === typeId);
     return type?.label || typeId;
   }
 }

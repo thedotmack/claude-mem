@@ -186,8 +186,9 @@ export class SDKAgent {
    * - We just use the session_id we're given - simple and reliable
    */
   private async *createMessageGenerator(session: ActiveSession): AsyncIterableIterator<SDKUserMessage> {
-    // Load active mode
-    const mode = ModeManager.getInstance().getActiveMode();
+    // Load mode for this session (TODO: Phase 4 will get this from session metadata)
+    const modeId = 'code'; // Default for now, will come from session in Phase 4
+    const mode = ModeManager.getInstance().loadMode(modeId);
 
     // Yield initial user prompt with context (or continuation if prompt #2+)
     // CRITICAL: Both paths use session.claudeSessionId from the hook

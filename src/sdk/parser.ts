@@ -29,8 +29,11 @@ export interface ParsedSummary {
 /**
  * Parse observation XML blocks from SDK response
  * Returns all observations found in the response
+ * @param text - The text to parse
+ * @param modeId - The mode ID to use for type validation (defaults to 'code')
+ * @param correlationId - Optional correlation ID for logging
  */
-export function parseObservations(text: string, correlationId?: string): ParsedObservation[] {
+export function parseObservations(text: string, modeId: string = 'code', correlationId?: string): ParsedObservation[] {
   const observations: ParsedObservation[] = [];
 
   // Match <observation>...</observation> blocks (non-greedy)
@@ -54,9 +57,9 @@ export function parseObservations(text: string, correlationId?: string): ParsedO
     // All fields except type are nullable in schema
     // If type is missing or invalid, use first type from mode as fallback
 
-    // Determine final type using active mode's valid types
-    const mode = ModeManager.getInstance().getActiveMode();
-    const validTypes = mode.observation_types.map(t => t.id);
+    // Determine final type using session's mode valid types
+    const mode = ModeManager.getInstance().loadMode(modeId);
+    const validTypes = mode.observation_types.map((t: { id: string }) => t.id);
     const fallbackType = validTypes[0]; // First type in mode's list is the fallback
     let finalType = fallbackType;
     if (type) {

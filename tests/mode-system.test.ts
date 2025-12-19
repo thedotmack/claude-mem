@@ -62,68 +62,56 @@ describe('Mode System', () => {
     });
 
     describe('Type validation', () => {
-      beforeEach(() => {
-        modeManager.loadMode('code');
-      });
-
-      it('validates valid type IDs', () => {
-        expect(modeManager.validateType('bugfix')).toBe(true);
-        expect(modeManager.validateType('feature')).toBe(true);
-        expect(modeManager.validateType('refactor')).toBe(true);
-        expect(modeManager.validateType('change')).toBe(true);
-        expect(modeManager.validateType('discovery')).toBe(true);
-        expect(modeManager.validateType('decision')).toBe(true);
+      it('validates valid type IDs for code mode', () => {
+        expect(modeManager.validateType('code', 'bugfix')).toBe(true);
+        expect(modeManager.validateType('code', 'feature')).toBe(true);
+        expect(modeManager.validateType('code', 'refactor')).toBe(true);
+        expect(modeManager.validateType('code', 'change')).toBe(true);
+        expect(modeManager.validateType('code', 'discovery')).toBe(true);
+        expect(modeManager.validateType('code', 'decision')).toBe(true);
       });
 
       it('rejects invalid type IDs', () => {
-        expect(modeManager.validateType('invalid')).toBe(false);
-        expect(modeManager.validateType('observation')).toBe(false);
-        expect(modeManager.validateType('')).toBe(false);
+        expect(modeManager.validateType('code', 'invalid')).toBe(false);
+        expect(modeManager.validateType('code', 'observation')).toBe(false);
+        expect(modeManager.validateType('code', '')).toBe(false);
       });
 
       it('returns correct type labels', () => {
-        expect(modeManager.getTypeLabel('bugfix')).toBe('Bug Fix');
-        expect(modeManager.getTypeLabel('feature')).toBe('Feature');
-        expect(modeManager.getTypeLabel('decision')).toBe('Decision');
+        expect(modeManager.getTypeLabel('code', 'bugfix')).toBe('Bug Fix');
+        expect(modeManager.getTypeLabel('code', 'feature')).toBe('Feature');
+        expect(modeManager.getTypeLabel('code', 'decision')).toBe('Decision');
       });
 
       it('returns correct type icons', () => {
-        expect(modeManager.getTypeIcon('bugfix')).toBe('🔴');
-        expect(modeManager.getTypeIcon('feature')).toBe('🟣');
-        expect(modeManager.getTypeIcon('decision')).toBe('⚖️');
+        expect(modeManager.getTypeIcon('code', 'bugfix')).toBe('🔴');
+        expect(modeManager.getTypeIcon('code', 'feature')).toBe('🟣');
+        expect(modeManager.getTypeIcon('code', 'decision')).toBe('⚖️');
       });
     });
 
     describe('Email Investigation mode types', () => {
-      beforeEach(() => {
-        modeManager.loadMode('email-investigation');
-      });
-
       it('validates email investigation type IDs', () => {
-        expect(modeManager.validateType('entity')).toBe(true);
-        expect(modeManager.validateType('relationship')).toBe(true);
-        expect(modeManager.validateType('timeline-event')).toBe(true);
-        expect(modeManager.validateType('evidence')).toBe(true);
-        expect(modeManager.validateType('anomaly')).toBe(true);
-        expect(modeManager.validateType('conclusion')).toBe(true);
+        expect(modeManager.validateType('email-investigation', 'entity')).toBe(true);
+        expect(modeManager.validateType('email-investigation', 'relationship')).toBe(true);
+        expect(modeManager.validateType('email-investigation', 'timeline-event')).toBe(true);
+        expect(modeManager.validateType('email-investigation', 'evidence')).toBe(true);
+        expect(modeManager.validateType('email-investigation', 'anomaly')).toBe(true);
+        expect(modeManager.validateType('email-investigation', 'conclusion')).toBe(true);
       });
 
       it('rejects code mode types in email investigation mode', () => {
-        expect(modeManager.validateType('bugfix')).toBe(false);
-        expect(modeManager.validateType('feature')).toBe(false);
-        expect(modeManager.validateType('change')).toBe(false);
+        expect(modeManager.validateType('email-investigation', 'bugfix')).toBe(false);
+        expect(modeManager.validateType('email-investigation', 'feature')).toBe(false);
+        expect(modeManager.validateType('email-investigation', 'change')).toBe(false);
       });
     });
   });
 
   describe('Prompt Injection', () => {
     describe('Code mode prompts', () => {
-      beforeEach(() => {
-        modeManager.loadMode('code');
-      });
-
       it('injects all observation types into init prompt', () => {
-        const mode = modeManager.getActiveMode();
+        const mode = modeManager.loadMode('code');
         const prompt = buildInitPrompt('test-project', 'test-session', 'test prompt', mode);
 
         expect(prompt).toContain('bugfix');
@@ -135,42 +123,42 @@ describe('Mode System', () => {
       });
 
       it('injects observer role guidance', () => {
-        const mode = modeManager.getActiveMode();
+        const mode = modeManager.loadMode('code');
         const prompt = buildInitPrompt('test-project', 'test-session', 'test prompt', mode);
 
         expect(prompt).toContain(mode.prompts.observer_role);
       });
 
       it('injects recording focus guidance', () => {
-        const mode = modeManager.getActiveMode();
+        const mode = modeManager.loadMode('code');
         const prompt = buildInitPrompt('test-project', 'test-session', 'test prompt', mode);
 
         expect(prompt).toContain(mode.prompts.recording_focus);
       });
 
       it('injects skip guidance', () => {
-        const mode = modeManager.getActiveMode();
+        const mode = modeManager.loadMode('code');
         const prompt = buildInitPrompt('test-project', 'test-session', 'test prompt', mode);
 
         expect(prompt).toContain(mode.prompts.skip_guidance);
       });
 
       it('injects type guidance', () => {
-        const mode = modeManager.getActiveMode();
+        const mode = modeManager.loadMode('code');
         const prompt = buildInitPrompt('test-project', 'test-session', 'test prompt', mode);
 
         expect(prompt).toContain(mode.prompts.type_guidance);
       });
 
       it('injects concept guidance', () => {
-        const mode = modeManager.getActiveMode();
+        const mode = modeManager.loadMode('code');
         const prompt = buildInitPrompt('test-project', 'test-session', 'test prompt', mode);
 
         expect(prompt).toContain(mode.prompts.concept_guidance);
       });
 
       it('injects field guidance', () => {
-        const mode = modeManager.getActiveMode();
+        const mode = modeManager.loadMode('code');
         const prompt = buildInitPrompt('test-project', 'test-session', 'test prompt', mode);
 
         expect(prompt).toContain(mode.prompts.field_guidance);
@@ -178,12 +166,8 @@ describe('Mode System', () => {
     });
 
     describe('Email Investigation mode prompts', () => {
-      beforeEach(() => {
-        modeManager.loadMode('email-investigation');
-      });
-
       it('injects all observation types into init prompt', () => {
-        const mode = modeManager.getActiveMode();
+        const mode = modeManager.loadMode('email-investigation');
         const prompt = buildInitPrompt('test-project', 'test-session', 'test prompt', mode);
 
         expect(prompt).toContain('entity');
@@ -195,7 +179,7 @@ describe('Mode System', () => {
       });
 
       it('does not inject code mode types', () => {
-        const mode = modeManager.getActiveMode();
+        const mode = modeManager.loadMode('email-investigation');
         const prompt = buildInitPrompt('test-project', 'test-session', 'test prompt', mode);
 
         // Check that code mode types are NOT in the type list
@@ -208,7 +192,7 @@ describe('Mode System', () => {
       });
 
       it('injects mode-specific format examples', () => {
-        const mode = modeManager.getActiveMode();
+        const mode = modeManager.loadMode('email-investigation');
         const prompt = buildInitPrompt('test-project', 'test-session', 'test prompt', mode);
 
         expect(prompt).toContain(mode.prompts.format_examples);
@@ -218,7 +202,7 @@ describe('Mode System', () => {
 
     describe('Continuation prompts', () => {
       it('injects types correctly in continuation prompts', () => {
-        const mode = modeManager.getActiveMode();
+        const mode = modeManager.loadMode('code');
         const prompt = buildContinuationPrompt('test prompt', 2, 'test-session', mode);
 
         // Verify types are injected
@@ -229,10 +213,6 @@ describe('Mode System', () => {
 
   describe('Parser Integration', () => {
     describe('Code mode parsing', () => {
-      beforeEach(() => {
-        modeManager.loadMode('code');
-      });
-
       it('accepts valid code mode types', () => {
         const xml = `
 <observation>
@@ -246,7 +226,7 @@ describe('Mode System', () => {
   <files_modified></files_modified>
 </observation>
         `;
-        const result = parseObservations(xml);
+        const result = parseObservations(xml, 'code');
         expect(result).toHaveLength(1);
         expect(result[0].type).toBe('bugfix');
       });
@@ -264,7 +244,7 @@ describe('Mode System', () => {
   <files_modified></files_modified>
 </observation>
         `;
-        const result = parseObservations(xml);
+        const result = parseObservations(xml, 'code');
         expect(result).toHaveLength(1);
         expect(result[0].type).toBe('bugfix'); // First type in code mode
       });
@@ -281,17 +261,13 @@ describe('Mode System', () => {
   <files_modified></files_modified>
 </observation>
         `;
-        const result = parseObservations(xml);
+        const result = parseObservations(xml, 'code');
         expect(result).toHaveLength(1);
         expect(result[0].type).toBe('bugfix');
       });
     });
 
     describe('Email Investigation mode parsing', () => {
-      beforeEach(() => {
-        modeManager.loadMode('email-investigation');
-      });
-
       it('accepts valid email investigation types', () => {
         const xml = `
 <observation>
@@ -305,7 +281,7 @@ describe('Mode System', () => {
   <files_modified></files_modified>
 </observation>
         `;
-        const result = parseObservations(xml);
+        const result = parseObservations(xml, 'email-investigation');
         expect(result).toHaveLength(1);
         expect(result[0].type).toBe('entity');
       });
@@ -323,7 +299,7 @@ describe('Mode System', () => {
   <files_modified></files_modified>
 </observation>
         `;
-        const result = parseObservations(xml);
+        const result = parseObservations(xml, 'email-investigation');
         expect(result).toHaveLength(1);
         expect(result[0].type).toBe('entity'); // First type in email-investigation mode
       });
@@ -341,54 +317,60 @@ describe('Mode System', () => {
   <files_modified></files_modified>
 </observation>
         `;
-        const result = parseObservations(xml);
+        const result = parseObservations(xml, 'email-investigation');
         expect(result).toHaveLength(1);
         expect(result[0].type).toBe('entity');
       });
     });
   });
 
-  describe('Mode Switching', () => {
-    it('switches from code to email-investigation mode', () => {
-      modeManager.loadMode('code');
-      expect(modeManager.validateType('bugfix')).toBe(true);
-      expect(modeManager.validateType('entity')).toBe(false);
-
-      modeManager.loadMode('email-investigation');
-      expect(modeManager.validateType('bugfix')).toBe(false);
-      expect(modeManager.validateType('entity')).toBe(true);
+  describe('Multiple Modes', () => {
+    it('validates types for code mode', () => {
+      expect(modeManager.validateType('code', 'bugfix')).toBe(true);
+      expect(modeManager.validateType('code', 'entity')).toBe(false);
     });
 
-    it('switches from email-investigation to code mode', () => {
-      modeManager.loadMode('email-investigation');
-      expect(modeManager.validateType('entity')).toBe(true);
-      expect(modeManager.validateType('bugfix')).toBe(false);
-
-      modeManager.loadMode('code');
-      expect(modeManager.validateType('entity')).toBe(false);
-      expect(modeManager.validateType('bugfix')).toBe(true);
+    it('validates types for email-investigation mode', () => {
+      expect(modeManager.validateType('email-investigation', 'entity')).toBe(true);
+      expect(modeManager.validateType('email-investigation', 'bugfix')).toBe(false);
     });
 
-    it('maintains correct fallback type after mode switch', () => {
+    it('can query both modes simultaneously', () => {
+      // Both modes can be queried at the same time
+      expect(modeManager.validateType('code', 'bugfix')).toBe(true);
+      expect(modeManager.validateType('email-investigation', 'entity')).toBe(true);
+      expect(modeManager.validateType('code', 'entity')).toBe(false);
+      expect(modeManager.validateType('email-investigation', 'bugfix')).toBe(false);
+    });
+
+    it('maintains correct fallback type per mode', () => {
       // Code mode - fallback is bugfix
-      modeManager.loadMode('code');
       const xml1 = '<observation><type>invalid</type><title>Test</title><subtitle>Details</subtitle><narrative>Info</narrative><facts></facts><concepts></concepts><files_read></files_read><files_modified></files_modified></observation>';
-      const result1 = parseObservations(xml1);
+      const result1 = parseObservations(xml1, 'code');
       expect(result1[0].type).toBe('bugfix');
 
       // Email investigation mode - fallback is entity
-      modeManager.loadMode('email-investigation');
       const xml2 = '<observation><type>invalid</type><title>Test</title><subtitle>Details</subtitle><narrative>Info</narrative><facts></facts><concepts></concepts><files_read></files_read><files_modified></files_modified></observation>';
-      const result2 = parseObservations(xml2);
+      const result2 = parseObservations(xml2, 'email-investigation');
       expect(result2[0].type).toBe('entity');
+    });
+
+    it('caches modes after first load', () => {
+      // Load both modes
+      const code1 = modeManager.loadMode('code');
+      const email1 = modeManager.loadMode('email-investigation');
+
+      // Load again - should return cached versions
+      const code2 = modeManager.loadMode('code');
+      const email2 = modeManager.loadMode('email-investigation');
+
+      // Should be the same object references (cached)
+      expect(code1).toBe(code2);
+      expect(email1).toBe(email2);
     });
   });
 
   describe('Edge Cases', () => {
-    beforeEach(() => {
-      modeManager.loadMode('code');
-    });
-
     it('handles whitespace in type field', () => {
       const xml = `
 <observation>
@@ -402,7 +384,7 @@ describe('Mode System', () => {
   <files_modified></files_modified>
 </observation>
       `;
-      const result = parseObservations(xml);
+      const result = parseObservations(xml, 'code');
       expect(result[0].type).toBe('bugfix');
     });
 
@@ -422,7 +404,7 @@ describe('Mode System', () => {
   <files_modified></files_modified>
 </observation>
       `;
-      const result = parseObservations(xml);
+      const result = parseObservations(xml, 'code');
       expect(result[0].concepts).toEqual(['how-it-works']);
       expect(result[0].concepts).not.toContain('feature');
     });
