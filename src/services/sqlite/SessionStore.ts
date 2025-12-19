@@ -41,6 +41,7 @@ export class SessionStore {
     this.createUserPromptsTable();
     this.ensureDiscoveryTokensColumn();
     this.createPendingMessagesTable();
+    this.ensureMetadataJsonColumn();
   }
 
   /**
@@ -598,6 +599,32 @@ export class SessionStore {
     } catch (error: any) {
       console.error('[SessionStore] Pending messages table migration error:', error.message);
       throw error;
+    }
+  }
+
+  /**
+   * Ensure metadata_json column exists (migration 17)
+   * Stores per-session metadata like mode configuration
+   */
+  private ensureMetadataJsonColumn(): void {
+    try {
+      // Check if migration already applied
+      const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(17) as SchemaVersion | undefined;
+      if (applied) return;
+
+      // Check if column exists
+      const tableInfo = this.db.query('PRAGMA table_info(sdk_sessions)').all() as TableColumnInfo[];
+      const hasMetadataJson = tableInfo.some(col => col.name === 'metadata_json');
+
+      if (!hasMetadataJson) {
+        this.db.run('ALTER TABLE sdk_sessions ADD COLUMN metadata_json TEXT');
+        console.log('[SessionStore] Added metadata_json column to sdk_sessions table');
+      }
+
+      // Record migration
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(17, new Date().toISOString());
+    } catch (error: any) {
+      console.error('[SessionStore] Metadata JSON migration error:', error.message);
     }
   }
 
@@ -1171,20 +1198,23 @@ export class SessionStore {
    * This is KISS in action: Trust the database UNIQUE constraint and
    * INSERT OR IGNORE to handle both creation and lookup elegantly.
    */
-  createSDKSession(claudeSessionId: string, project: string, userPrompt: string): number {
+  createSDKSession(claudeSessionId: string, project: string, userPrompt: string, mode?: string): number {
     const now = new Date();
     const nowEpoch = now.getTime();
+
+    // Build metadata_json if mode is provided
+    const metadataJson = mode ? JSON.stringify({ mode }) : null;
 
     // CRITICAL: INSERT OR IGNORE makes this idempotent
     // First call (prompt #1): Creates new row
     // Subsequent calls (prompt #2+): Ignored, returns existing ID
     const stmt = this.db.prepare(`
       INSERT OR IGNORE INTO sdk_sessions
-      (claude_session_id, sdk_session_id, project, user_prompt, started_at, started_at_epoch, status)
-      VALUES (?, ?, ?, ?, ?, ?, 'active')
+      (claude_session_id, sdk_session_id, project, user_prompt, started_at, started_at_epoch, status, metadata_json)
+      VALUES (?, ?, ?, ?, ?, ?, 'active', ?)
     `);
 
-    const result = stmt.run(claudeSessionId, claudeSessionId, project, userPrompt, now.toISOString(), nowEpoch);
+    const result = stmt.run(claudeSessionId, claudeSessionId, project, userPrompt, now.toISOString(), nowEpoch, metadataJson);
 
     // If lastInsertRowid is 0, insert was ignored (session exists), so fetch existing ID
     if (result.lastInsertRowid === 0 || result.changes === 0) {
@@ -1197,6 +1227,15 @@ export class SessionStore {
           SET project = ?, user_prompt = ?
           WHERE claude_session_id = ?
         `).run(project, userPrompt, claudeSessionId);
+      }
+
+      // Update mode in metadata if provided (even for existing sessions)
+      if (mode) {
+        const selectStmt = this.db.prepare(`SELECT id FROM sdk_sessions WHERE claude_session_id = ? LIMIT 1`);
+        const existing = selectStmt.get(claudeSessionId) as { id: number } | undefined;
+        if (existing) {
+          this.setSessionMode(existing.id, mode);
+        }
       }
 
       const selectStmt = this.db.prepare(`
@@ -1262,6 +1301,66 @@ export class SessionStore {
 
     const result = stmt.get(id) as { worker_port: number | null } | undefined;
     return result?.worker_port || null;
+  }
+
+  /**
+   * Set mode in session's metadata_json
+   * Creates or updates the metadata_json field with the mode value
+   */
+  setSessionMode(sessionId: number, mode: string): void {
+    // Get current metadata
+    const stmt = this.db.prepare('SELECT metadata_json FROM sdk_sessions WHERE id = ?');
+    const result = stmt.get(sessionId) as { metadata_json: string | null } | undefined;
+
+    let metadata: Record<string, unknown> = {};
+    if (result?.metadata_json) {
+      try {
+        metadata = JSON.parse(result.metadata_json);
+      } catch {
+        // Invalid JSON, start fresh
+      }
+    }
+
+    metadata.mode = mode;
+
+    const updateStmt = this.db.prepare('UPDATE sdk_sessions SET metadata_json = ? WHERE id = ?');
+    updateStmt.run(JSON.stringify(metadata), sessionId);
+  }
+
+  /**
+   * Get mode from session's metadata_json
+   * Returns undefined if no mode is set
+   */
+  getSessionMode(sessionId: number): string | undefined {
+    const stmt = this.db.prepare('SELECT metadata_json FROM sdk_sessions WHERE id = ?');
+    const result = stmt.get(sessionId) as { metadata_json: string | null } | undefined;
+
+    if (!result?.metadata_json) return undefined;
+
+    try {
+      const metadata = JSON.parse(result.metadata_json);
+      return metadata.mode;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Get mode from session by claude_session_id
+   * Returns undefined if no mode is set
+   */
+  getSessionModeByClaudeSessionId(claudeSessionId: string): string | undefined {
+    const stmt = this.db.prepare('SELECT metadata_json FROM sdk_sessions WHERE claude_session_id = ?');
+    const result = stmt.get(claudeSessionId) as { metadata_json: string | null } | undefined;
+
+    if (!result?.metadata_json) return undefined;
+
+    try {
+      const metadata = JSON.parse(result.metadata_json);
+      return metadata.mode;
+    } catch {
+      return undefined;
+    }
   }
 
   /**

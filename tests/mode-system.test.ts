@@ -410,3 +410,7 @@ describe('Mode System', () => {
     });
   });
 });
+
+// Session Mode Storage tests require Bun runtime due to bun:sqlite dependency.
+// Run with: bun test tests/session-mode-storage.test.ts
+// Or manually test with: bun -e "..." (see Phase 2 commit for inline test)
