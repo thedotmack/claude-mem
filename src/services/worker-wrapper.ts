@@ -3,11 +3,15 @@
  *
  * This wrapper exists to solve the Windows zombie port problem.
  * The wrapper spawns the actual worker as a child process.
- * When restart/shutdown is requested, the wrapper kills the child
- * and respawns it (or exits), ensuring clean socket cleanup.
+ * When shutdown is requested, the wrapper kills the child and exits.
+ * The hooks will start a fresh wrapper+worker if needed.
  *
  * The wrapper itself has no sockets, so Bun's socket cleanup bug
  * doesn't affect it.
+ *
+ * NOTE: The wrapper does NOT auto-restart the worker on crash.
+ * This is intentional - the hooks handle startup via ensureWorkerRunning().
+ * Auto-restart would cause PID file mismatches and potential infinite loops.
  */
 
 import { spawn, ChildProcess, execSync } from 'child_process';
@@ -51,10 +55,11 @@ function spawnInner() {
     log(`Inner exited with code=${code}, signal=${signal}`);
     inner = null;
 
-    // If inner crashed unexpectedly (not during shutdown), respawn it
-    if (!isShuttingDown && code !== 0) {
-      log('Inner crashed, respawning in 1 second...');
-      setTimeout(() => spawnInner(), 1000);
+    // Don't auto-restart - let hooks handle it via ensureWorkerRunning()
+    // Auto-restart causes PID file mismatches and potential infinite loops
+    if (!isShuttingDown) {
+      log('Inner exited unexpectedly, wrapper exiting (hooks will restart if needed)');
+      process.exit(code ?? 1);
     }
   });
 
