@@ -54,7 +54,10 @@
     "translate:tier3": "npm run translate-readme -- vi id th hi bn ro sv",
     "translate:tier4": "npm run translate-readme -- it el hu fi da no",
     "translate:all": "npm run translate:tier1 && npm run translate:tier2 && npm run translate:tier3 && npm run translate:tier4",
-    "bug-report": "npx tsx scripts/bug-report/cli.ts"
+    "bug-report": "npx tsx scripts/bug-report/cli.ts",
+    "ragtime:process": "CLAUDE_MEM_MODE=email-investigation bun scripts/ragtime.ts",
+    "ragtime:status": "echo 'Observations: ' && sqlite3 ~/.claude-mem/claude-mem.db 'SELECT COUNT(*) FROM observations WHERE project = \"'$(basename $(pwd))'\"'",
+    "ragtime:explore": "echo 'Open http://localhost:37777 to explore the investigation'"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.1.67",
