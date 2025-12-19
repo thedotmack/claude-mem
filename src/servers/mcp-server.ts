@@ -6,6 +6,12 @@
  * Maintains MCP protocol handling and tool schemas
  */
 
+// CRITICAL: Redirect console.log to stderr BEFORE any imports
+// MCP uses stdio transport where stdout is reserved for JSON-RPC protocol messages.
+// Any logs to stdout break the protocol (Claude Desktop parses "[2025..." as JSON array).
+const _originalConsoleLog = console.log;
+console.log = (...args: any[]) => console.error(...args);
+
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
