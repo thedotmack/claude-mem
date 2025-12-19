@@ -99,8 +99,9 @@ export class ProcessManager {
         const escapedBunPath = this.escapePowerShellString(bunPath);
         const escapedScript = this.escapePowerShellString(script);
         const escapedWorkDir = this.escapePowerShellString(MARKETPLACE_ROOT);
+        const escapedLogFile = this.escapePowerShellString(logFile);
         const envVars = `$env:CLAUDE_MEM_WORKER_PORT='${port}'`;
-        const psCommand = `${envVars}; Start-Process -FilePath '${escapedBunPath}' -ArgumentList '${escapedScript}' -WorkingDirectory '${escapedWorkDir}' -WindowStyle Hidden -PassThru | Select-Object -ExpandProperty Id`;
+        const psCommand = `${envVars}; Start-Process -FilePath '${escapedBunPath}' -ArgumentList '${escapedScript}' -WorkingDirectory '${escapedWorkDir}' -WindowStyle Hidden -RedirectStandardOutput '${escapedLogFile}' -RedirectStandardError '${escapedLogFile}.err' -PassThru | Select-Object -ExpandProperty Id`;
 
         const result = spawnSync('powershell', ['-Command', psCommand], {
           stdio: 'pipe',
