@@ -109,6 +109,7 @@ export interface ContextInput {
   cwd?: string;
   hook_event_name?: string;
   source?: "startup" | "resume" | "clear" | "compact";
+  mode?: string;
   [key: string]: any;
 }
 
@@ -224,6 +225,7 @@ export async function generateContext(input?: ContextInput, useColors: boolean =
   const config = loadContextConfig();
   const cwd = input?.cwd ?? process.cwd();
   const project = getProjectName(cwd);
+  const mode = input?.mode || 'code';
 
   let db: SessionStore | null = null;
   try {
@@ -241,12 +243,20 @@ export async function generateContext(input?: ContextInput, useColors: boolean =
     throw error;
   }
 
+  // Load mode-specific observation types and concepts
+  const { ModeManager } = await import('./domain/ModeManager.js');
+  const modeManager = ModeManager.getInstance();
+  const modeConfig = modeManager.loadMode(mode);
+
+  const modeTypes = modeConfig.observation_types.map(t => t.id);
+  const modeConcepts = modeConfig.observation_concepts.map(c => c.id);
+
   // Build SQL WHERE clause for observation types
-  const typeArray = Array.from(config.observationTypes);
+  const typeArray = modeTypes;
   const typePlaceholders = typeArray.map(() => '?').join(',');
 
   // Build SQL WHERE clause for concepts
-  const conceptArray = Array.from(config.observationConcepts);
+  const conceptArray = modeConcepts;
   const conceptPlaceholders = conceptArray.map(() => '?').join(',');
 
   // Get recent observations

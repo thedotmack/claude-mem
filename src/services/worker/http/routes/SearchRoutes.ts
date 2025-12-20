@@ -194,13 +194,15 @@ export class SearchRoutes extends BaseRouteHandler {
 
   /**
    * Context injection endpoint for hooks
-   * GET /api/context/inject?project=...&colors=true
+   * GET /api/context/inject?project=...&mode=...&colors=true
    *
    * Returns pre-formatted context string ready for display.
    * Use colors=true for ANSI-colored terminal output.
+   * Use mode=email-investigation (or other mode) to filter by mode-specific observation types.
    */
   private handleContextInject = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const projectName = req.query.project as string;
+    const mode = (req.query.mode as string) || 'code';
     const useColors = req.query.colors === 'true';
 
     if (!projectName) {
@@ -218,7 +220,8 @@ export class SearchRoutes extends BaseRouteHandler {
     const contextText = await generateContext(
       {
         session_id: 'context-inject-' + Date.now(),
-        cwd: cwd
+        cwd: cwd,
+        mode: mode
       },
       useColors
     );

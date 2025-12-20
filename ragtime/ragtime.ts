@@ -23,15 +23,7 @@ const EMAIL_LIMIT = process.env.EMAIL_LIMIT ? parseInt(process.env.EMAIL_LIMIT, 
 // Path to claude-mem plugin
 const CLAUDE_MEM_PLUGIN_PATH = join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack', 'claude-mem');
 
-const PRIMARY_PROMPT = `Read this email and think about how it relates to the emails that came before it.
-
-Focus on:
-- **Entities**: Identify people, organizations, email addresses, locations
-- **Relationships**: Who communicates with whom? What are the organizational ties?
-- **Timeline**: When did events occur? What is the sequence of communications?
-- **Evidence**: What documentation or proof is mentioned or provided?
-- **Anomalies**: Unusual patterns, inconsistencies, red flags
-- **Corroboration**: Does this email support or contradict previous findings`;
+const PRIMARY_PROMPT = `Read this email and think about how it relates to the emails that came before it.`;
 
 async function processEmail(
   email: Email,
@@ -45,7 +37,16 @@ async function processEmail(
   console.log(`  Date: ${email.date}`);
 
   const context = buildContextForEmail(sessionStore, email, emailNumber, totalEmails, project);
-  const fullPrompt = `${context}\n\n---\n\n${PRIMARY_PROMPT}`;
+
+  // Write email to temp file for Read tool
+  const { writeFileSync, mkdirSync } = await import('fs');
+  const { tmpdir } = await import('os');
+  const emailDir = join(tmpdir(), 'ragtime-emails');
+  mkdirSync(emailDir, { recursive: true });
+  const emailPath = join(emailDir, `email-${email.id}.txt`);
+  writeFileSync(emailPath, email.body);
+
+  const fullPrompt = `${context}\n\n---\n\nRead this email ${emailPath} and think about how it relates to the emails that came before it.`;
 
   try {
     // Create query with claude-mem plugin loaded
