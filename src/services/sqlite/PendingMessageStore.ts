@@ -68,8 +68,8 @@ export class PendingMessageStore {
       claudeSessionId,
       message.type,
       message.tool_name || null,
-      message.tool_input ? JSON.stringify(message.tool_input) : null,
-      message.tool_response ? JSON.stringify(message.tool_response) : null,
+      message.tool_input || null,  // Already a string
+      message.tool_response || null,  // Already a string
       message.cwd || null,
       message.last_user_message || null,
       message.last_assistant_message || null,
@@ -366,8 +366,8 @@ export class PendingMessageStore {
     return {
       type: persistent.message_type,
       tool_name: persistent.tool_name || undefined,
-      tool_input: persistent.tool_input ? JSON.parse(persistent.tool_input) : undefined,
-      tool_response: persistent.tool_response ? JSON.parse(persistent.tool_response) : undefined,
+      tool_input: persistent.tool_input || undefined,  // Already a string in DB
+      tool_response: persistent.tool_response || undefined,  // Already a string in DB
       prompt_number: persistent.prompt_number || undefined,
       cwd: persistent.cwd || undefined,
       last_user_message: persistent.last_user_message || undefined,

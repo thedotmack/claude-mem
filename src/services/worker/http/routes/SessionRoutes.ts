@@ -261,6 +261,9 @@ export class SessionRoutes extends BaseRouteHandler {
    * Queue observations by claudeSessionId (post-tool-use-hook uses this)
    * POST /api/sessions/observations
    * Body: { claudeSessionId, tool_name, tool_input, tool_response, cwd }
+   *
+   * IMPORTANT: tool_input and tool_response come as ANY type from hooks.
+   * We parse them to strings here at the worker entry point.
    */
   private handleObservationsByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
     const { claudeSessionId, tool_name, tool_input, tool_response, cwd } = req.body;
@@ -280,29 +283,37 @@ export class SessionRoutes extends BaseRouteHandler {
       return;
     }
 
+    // Parse tool_input once at worker entry (normalize ANY -> string)
+    let parsedToolInput: any;
+    try {
+      // If it's already a string, parse it; otherwise use it directly
+      parsedToolInput = typeof tool_input === 'string' ? JSON.parse(tool_input) : tool_input;
+    } catch (error) {
+      logger.debug('SESSION', 'Failed to parse tool_input', { tool_name }, error);
+      parsedToolInput = {};
+    }
+
     // Skip meta-observations: file operations on session-memory files
     const fileOperationTools = new Set(['Edit', 'Write', 'Read', 'NotebookEdit']);
-    if (fileOperationTools.has(tool_name) && tool_input) {
-      try {
-        const filePath = tool_input.file_path || tool_input.notebook_path;
-        if (filePath && filePath.includes('session-memory')) {
-          logger.debug('SESSION', 'Skipping meta-observation for session-memory file', {
-            tool_name,
-            file_path: filePath
-          });
-          res.json({ status: 'skipped', reason: 'session_memory_meta' });
-          return;
-        }
-      } catch (error) {
-        // If we can't parse tool_input, continue normally
-        logger.debug('SESSION', 'Could not check file_path for session-memory filter', { tool_name }, error);
+    if (fileOperationTools.has(tool_name) && parsedToolInput) {
+      const filePath = parsedToolInput.file_path || parsedToolInput.notebook_path;
+      if (filePath && filePath.includes('session-memory')) {
+        logger.debug('SESSION', 'Skipping meta-observation for session-memory file', {
+          tool_name,
+          file_path: filePath
+        });
+        res.json({ status: 'skipped', reason: 'session_memory_meta' });
+        return;
       }
     }
 
     const store = this.dbManager.getSessionStore();
 
-    // Get or create session
-    const sessionDbId = store.createSDKSession(claudeSessionId, '', '');
+    // Get existing session (must have been initialized via /api/sessions/init)
+    const sessionDbId = store.getSessionDbIdByClaudeId(claudeSessionId);
+    if (!sessionDbId) {
+      return this.badRequest(res, 'Session not initialized. /api/sessions/init must be called first.');
+    }
     const promptNumber = store.getPromptCounter(sessionDbId);
 
     // Privacy check: skip if user prompt was entirely private
@@ -319,13 +330,14 @@ export class SessionRoutes extends BaseRouteHandler {
       return;
     }
 
-    // Strip memory tags from tool_input and tool_response
+    // Strip memory tags and stringify (normalize to string for storage)
     let cleanedToolInput = '{}';
     let cleanedToolResponse = '{}';
 
     try {
+      const toolInputStr = typeof tool_input === 'string' ? tool_input : JSON.stringify(tool_input);
       cleanedToolInput = tool_input !== undefined
-        ? stripMemoryTagsFromJson(JSON.stringify(tool_input))
+        ? stripMemoryTagsFromJson(toolInputStr)
         : '{}';
     } catch (error) {
       logger.debug('SESSION', 'Failed to serialize tool_input', { sessionDbId }, error);
@@ -333,15 +345,16 @@ export class SessionRoutes extends BaseRouteHandler {
     }
 
     try {
+      const toolResponseStr = typeof tool_response === 'string' ? tool_response : JSON.stringify(tool_response);
       cleanedToolResponse = tool_response !== undefined
-        ? stripMemoryTagsFromJson(JSON.stringify(tool_response))
+        ? stripMemoryTagsFromJson(toolResponseStr)
         : '{}';
     } catch (error) {
       logger.debug('SESSION', 'Failed to serialize tool_result', { sessionDbId }, error);
       cleanedToolResponse = '{"error": "Failed to serialize tool_response"}';
     }
 
-    // Queue observation
+    // Queue observation (tool_input and tool_response are now strings)
     this.sessionManager.queueObservation(sessionDbId, {
       tool_name,
       tool_input: cleanedToolInput,
@@ -381,8 +394,11 @@ export class SessionRoutes extends BaseRouteHandler {
 
     const store = this.dbManager.getSessionStore();
 
-    // Get or create session
-    const sessionDbId = store.createSDKSession(claudeSessionId, '', '');
+    // Get existing session (must have been initialized via /api/sessions/init)
+    const sessionDbId = store.getSessionDbIdByClaudeId(claudeSessionId);
+    if (!sessionDbId) {
+      return this.badRequest(res, 'Session not initialized. /api/sessions/init must be called first.');
+    }
     const promptNumber = store.getPromptCounter(sessionDbId);
 
     // Privacy check: skip if user prompt was entirely private

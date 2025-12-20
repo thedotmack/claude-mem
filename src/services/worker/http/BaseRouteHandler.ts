@@ -5,12 +5,13 @@
  * - Automatic try-catch wrapping with error logging
  * - Integer parameter validation
  * - Required body parameter validation
- * - Standard HTTP response helpers
+ * - Standard HTTP response helpers (APIError format)
  * - Centralized error handling
  */
 
 import { Request, Response } from 'express';
 import { logger } from '../../../utils/logger.js';
+import type { APIError } from '../../worker-types.js';
 
 export abstract class BaseRouteHandler {
   /**
@@ -59,24 +60,34 @@ export abstract class BaseRouteHandler {
   }
 
   /**
-   * Send 400 Bad Request response
+   * Send 400 Bad Request response (standard APIError format)
    */
-  protected badRequest(res: Response, message: string): void {
-    res.status(400).json({ error: message });
+  protected badRequest(res: Response, message: string, code?: string, details?: unknown): void {
+    const errorResponse: APIError = { error: message };
+    if (code) errorResponse.code = code;
+    if (details) errorResponse.details = details;
+    res.status(400).json(errorResponse);
   }
 
   /**
-   * Send 404 Not Found response
+   * Send 404 Not Found response (standard APIError format)
    */
-  protected notFound(res: Response, message: string): void {
-    res.status(404).json({ error: message });
+  protected notFound(res: Response, message: string, code?: string, details?: unknown): void {
+    const errorResponse: APIError = { error: message };
+    if (code) errorResponse.code = code;
+    if (details) errorResponse.details = details;
+    res.status(404).json(errorResponse);
   }
 
   /**
-   * Centralized error logging and response
+   * Centralized error logging and response (standard APIError format)
    */
   protected handleError(res: Response, error: Error, context?: string): void {
     logger.failure('WORKER', context || 'Request failed', {}, error);
-    res.status(500).json({ error: error.message });
+    const errorResponse: APIError = {
+      error: error.message,
+      code: error.name !== 'Error' ? error.name : undefined
+    };
+    res.status(500).json(errorResponse);
   }
 }

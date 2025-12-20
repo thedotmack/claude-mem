@@ -229,6 +229,7 @@ export class SDKAgent {
           session.lastPromptNumber = message.prompt_number;
         }
 
+        // tool_input and tool_response are already strings from SessionRoutes normalization
         yield {
           type: 'user',
           message: {
@@ -236,8 +237,8 @@ export class SDKAgent {
             content: buildObservationPrompt({
               id: 0, // Not used in prompt
               tool_name: message.tool_name!,
-              tool_input: JSON.stringify(message.tool_input),
-              tool_output: JSON.stringify(message.tool_response),
+              tool_input: message.tool_input || '{}',
+              tool_output: message.tool_response || '{}',
               created_at_epoch: Date.now(),
               cwd: message.cwd
             })
@@ -264,6 +265,13 @@ export class SDKAgent {
           parent_tool_use_id: null,
           isSynthetic: true
         };
+      } else {
+        // Handle unknown message types explicitly
+        logger.error('SDK', 'Unknown message type in generator', {
+          sessionId: session.sessionDbId,
+          messageType: (message as any).type
+        });
+        throw new Error(`Unknown message type: ${(message as any).type}`);
       }
     }
   }

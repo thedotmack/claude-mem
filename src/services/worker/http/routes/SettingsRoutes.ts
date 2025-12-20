@@ -63,10 +63,7 @@ export class SettingsRoutes extends BaseRouteHandler {
     if (req.body.CLAUDE_MEM_CONTEXT_OBSERVATIONS) {
       const obsCount = parseInt(req.body.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10);
       if (isNaN(obsCount) || obsCount < 1 || obsCount > 200) {
-        res.status(400).json({
-          success: false,
-          error: 'CLAUDE_MEM_CONTEXT_OBSERVATIONS must be between 1 and 200'
-        });
+        this.badRequest(res, 'CLAUDE_MEM_CONTEXT_OBSERVATIONS must be between 1 and 200', 'VALIDATION_ERROR');
         return;
       }
     }
@@ -75,10 +72,7 @@ export class SettingsRoutes extends BaseRouteHandler {
     if (req.body.CLAUDE_MEM_WORKER_PORT) {
       const port = parseInt(req.body.CLAUDE_MEM_WORKER_PORT, 10);
       if (isNaN(port) || port < 1024 || port > 65535) {
-        res.status(400).json({
-          success: false,
-          error: 'CLAUDE_MEM_WORKER_PORT must be between 1024 and 65535'
-        });
+        this.badRequest(res, 'CLAUDE_MEM_WORKER_PORT must be between 1024 and 65535', 'VALIDATION_ERROR');
         return;
       }
     }
@@ -89,10 +83,7 @@ export class SettingsRoutes extends BaseRouteHandler {
       // Allow localhost variants and valid IP patterns
       const validHostPattern = /^(127\.0\.0\.1|0\.0\.0\.0|localhost|\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/;
       if (!validHostPattern.test(host)) {
-        res.status(400).json({
-          success: false,
-          error: 'CLAUDE_MEM_WORKER_HOST must be a valid IP address (e.g., 127.0.0.1, 0.0.0.0)'
-        });
+        this.badRequest(res, 'CLAUDE_MEM_WORKER_HOST must be a valid IP address (e.g., 127.0.0.1, 0.0.0.0)', 'VALIDATION_ERROR');
         return;
       }
     }
@@ -101,10 +92,7 @@ export class SettingsRoutes extends BaseRouteHandler {
     if (req.body.CLAUDE_MEM_LOG_LEVEL) {
       const validLevels = ['DEBUG', 'INFO', 'WARN', 'ERROR', 'SILENT'];
       if (!validLevels.includes(req.body.CLAUDE_MEM_LOG_LEVEL.toUpperCase())) {
-        res.status(400).json({
-          success: false,
-          error: 'CLAUDE_MEM_LOG_LEVEL must be one of: DEBUG, INFO, WARN, ERROR, SILENT'
-        });
+        this.badRequest(res, 'CLAUDE_MEM_LOG_LEVEL must be one of: DEBUG, INFO, WARN, ERROR, SILENT', 'VALIDATION_ERROR');
         return;
       }
     }
@@ -113,10 +101,7 @@ export class SettingsRoutes extends BaseRouteHandler {
     if (req.body.CLAUDE_MEM_PYTHON_VERSION) {
       const pythonVersionRegex = /^3\.\d{1,2}$/;
       if (!pythonVersionRegex.test(req.body.CLAUDE_MEM_PYTHON_VERSION)) {
-        res.status(400).json({
-          success: false,
-          error: 'CLAUDE_MEM_PYTHON_VERSION must be in format "3.X" or "3.XX" (e.g., "3.13")'
-        });
+        this.badRequest(res, 'CLAUDE_MEM_PYTHON_VERSION must be in format "3.X" or "3.XX" (e.g., "3.13")', 'VALIDATION_ERROR');
         return;
       }
     }
@@ -124,10 +109,7 @@ export class SettingsRoutes extends BaseRouteHandler {
     // Validate context settings
     const validation = this.validateContextSettings(req.body);
     if (!validation.valid) {
-      res.status(400).json({
-        success: false,
-        error: validation.error
-      });
+      this.badRequest(res, validation.error, 'VALIDATION_ERROR');
       return;
     }
 
@@ -225,17 +207,14 @@ export class SettingsRoutes extends BaseRouteHandler {
     const { branch } = req.body;
 
     if (!branch) {
-      res.status(400).json({ success: false, error: 'Missing branch parameter' });
+      this.badRequest(res, 'Missing branch parameter', 'VALIDATION_ERROR');
       return;
     }
 
     // Validate branch name
     const allowedBranches = ['main', 'beta/7.0', 'feature/bun-executable'];
     if (!allowedBranches.includes(branch)) {
-      res.status(400).json({
-        success: false,
-        error: `Invalid branch. Allowed: ${allowedBranches.join(', ')}`
-      });
+      this.badRequest(res, `Invalid branch. Allowed: ${allowedBranches.join(', ')}`, 'VALIDATION_ERROR');
       return;
     }
 
