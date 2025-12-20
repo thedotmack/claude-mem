@@ -28,7 +28,7 @@ export function useGitHubStars(username: string, repo: string): UseGitHubStarsRe
         throw new Error(`GitHub API error: ${response.status}`);
       }
 
-      const data: GitHubStarsData = await response.json();
+      const data = await response.json() as GitHubStarsData;
       setStars(data.stargazers_count);
     } catch (error) {
       console.error('Failed to fetch GitHub stars:', error);

@@ -14,7 +14,7 @@ type DataItem = Observation | Summary | UserPrompt;
 /**
  * Generic pagination hook for observations, summaries, and prompts
  */
-function usePaginationFor(endpoint: string, dataType: DataType, currentFilter: string) {
+function usePaginationFor<T extends DataItem>(endpoint: string, dataType: DataType, currentFilter: string) {
   const [state, setState] = useState<PaginationState>({
     isLoading: false,
     hasMore: true
@@ -29,7 +29,7 @@ function usePaginationFor(endpoint: string, dataType: DataType, currentFilter: s
    * Load more items from the API
    * Automatically resets offset to 0 if filter has changed
    */
-  const loadMore = useCallback(async (): Promise<DataItem[]> => {
+  const loadMore = useCallback(async (): Promise<T[]> => {
     // Check if filter changed - if so, reset pagination synchronously
     const filterChanged = lastFilterRef.current !== currentFilter;
 
@@ -69,7 +69,7 @@ function usePaginationFor(endpoint: string, dataType: DataType, currentFilter: s
         throw new Error(`Failed to load ${dataType}: ${response.statusText}`);
       }
 
-      const data = await response.json() as { items: DataItem[], hasMore: boolean };
+      const data = await response.json() as { items: T[], hasMore: boolean };
 
       setState(prev => ({
         ...prev,
@@ -98,9 +98,9 @@ function usePaginationFor(endpoint: string, dataType: DataType, currentFilter: s
  * Hook for paginating observations
  */
 export function usePagination(currentFilter: string) {
-  const observations = usePaginationFor(API_ENDPOINTS.OBSERVATIONS, 'observations', currentFilter);
-  const summaries = usePaginationFor(API_ENDPOINTS.SUMMARIES, 'summaries', currentFilter);
-  const prompts = usePaginationFor(API_ENDPOINTS.PROMPTS, 'prompts', currentFilter);
+  const observations = usePaginationFor<Observation>(API_ENDPOINTS.OBSERVATIONS, 'observations', currentFilter);
+  const summaries = usePaginationFor<Summary>(API_ENDPOINTS.SUMMARIES, 'summaries', currentFilter);
+  const prompts = usePaginationFor<UserPrompt>(API_ENDPOINTS.PROMPTS, 'prompts', currentFilter);
 
   return {
     observations,

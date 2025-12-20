@@ -455,7 +455,7 @@ export class WorkerService {
       const transport = new StdioClientTransport({
         command: 'node',
         args: [mcpServerPath],
-        env: process.env
+        env: process.env as Record<string, string>
       });
 
       // Add timeout guard to prevent hanging on MCP connection (15 seconds)
