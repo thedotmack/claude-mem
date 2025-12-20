@@ -254,6 +254,97 @@ function installUv() {
 }
 
 /**
+ * Install the claude-mem CLI command to PATH
+ * Creates a wrapper script in ~/.local/bin (Unix) or %LOCALAPPDATA%\Programs\claude-mem (Windows)
+ */
+function installCLI() {
+  const CLI_NAME = 'claude-mem';
+  const WORKER_CLI = join(ROOT, 'plugin', 'scripts', 'worker-cli.js');
+
+  if (IS_WINDOWS) {
+    // Windows: Create .cmd file in LocalAppData
+    const cliDir = join(process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local'), 'Programs', 'claude-mem');
+    const cliPath = join(cliDir, `${CLI_NAME}.cmd`);
+    const markerPath = join(cliDir, '.cli-installed');
+
+    // Skip if already installed
+    if (existsSync(markerPath)) return;
+
+    try {
+      // Create directory if needed
+      if (!existsSync(cliDir)) {
+        execSync(`mkdir "${cliDir}"`, { stdio: 'ignore', shell: true });
+      }
+
+      // Get Bun path for the wrapper
+      const bunPath = getBunPath() || 'bun';
+
+      // Create the wrapper script
+      const cmdContent = `@echo off
+"${bunPath}" "${WORKER_CLI}" %*
+`;
+      writeFileSync(cliPath, cmdContent);
+      writeFileSync(markerPath, new Date().toISOString());
+
+      console.error(`✅ CLI installed: ${cliPath}`);
+      console.error('');
+      console.error('📋 Add to PATH (run once in PowerShell as Admin):');
+      console.error(`   [Environment]::SetEnvironmentVariable("Path", $env:Path + ";${cliDir}", "User")`);
+      console.error('');
+      console.error('   Then restart your terminal and use: claude-mem start|stop|restart|status');
+    } catch (error) {
+      console.error(`⚠️  Could not install CLI: ${error.message}`);
+      console.error(`   You can still use: bun "${WORKER_CLI}" <command>`);
+    }
+  } else {
+    // Unix: Create shell script in ~/.local/bin
+    const cliDir = join(homedir(), '.local', 'bin');
+    const cliPath = join(cliDir, CLI_NAME);
+    const markerPath = join(ROOT, '.cli-installed');
+
+    // Skip if already installed
+    if (existsSync(markerPath) && existsSync(cliPath)) return;
+
+    try {
+      // Create directory if needed
+      if (!existsSync(cliDir)) {
+        execSync(`mkdir -p "${cliDir}"`, { stdio: 'ignore', shell: true });
+      }
+
+      // Get Bun path for the wrapper
+      const bunPath = getBunPath() || 'bun';
+
+      // Create the wrapper script
+      const shContent = `#!/usr/bin/env bash
+# claude-mem CLI wrapper - manages the worker service
+exec "${bunPath}" "${WORKER_CLI}" "$@"
+`;
+      writeFileSync(cliPath, shContent, { mode: 0o755 });
+      writeFileSync(markerPath, new Date().toISOString());
+
+      console.error(`✅ CLI installed: ${cliPath}`);
+
+      // Check if ~/.local/bin is in PATH
+      const pathDirs = (process.env.PATH || '').split(':');
+      const localBinInPath = pathDirs.some(p => p === cliDir || p === '$HOME/.local/bin' || p.endsWith('/.local/bin'));
+
+      if (!localBinInPath) {
+        console.error('');
+        console.error('📋 Add to PATH (add to ~/.bashrc or ~/.zshrc):');
+        console.error('   export PATH="$HOME/.local/bin:$PATH"');
+        console.error('');
+        console.error('   Then restart your terminal and use: claude-mem start|stop|restart|status');
+      } else {
+        console.error('   Usage: claude-mem start|stop|restart|status');
+      }
+    } catch (error) {
+      console.error(`⚠️  Could not install CLI: ${error.message}`);
+      console.error(`   You can still use: bun "${WORKER_CLI}" <command>`);
+    }
+  }
+}
+
+/**
  * Check if dependencies need to be installed
  */
 function needsInstall() {
@@ -351,6 +442,9 @@ try {
     installDeps();
     console.error('✅ Dependencies installed');
   }
+
+  // Step 4: Install CLI to PATH
+  installCLI();
 } catch (e) {
   console.error('❌ Installation failed:', e.message);
   process.exit(1);
