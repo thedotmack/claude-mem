@@ -42,6 +42,7 @@ export class SessionStore {
     this.ensureDiscoveryTokensColumn();
     this.createPendingMessagesTable();
     this.ensureMetadataJsonColumn();
+    this.removeObservationsTypeCheckConstraint();
   }
 
   /**
@@ -97,7 +98,7 @@ export class SessionStore {
             sdk_session_id TEXT NOT NULL,
             project TEXT NOT NULL,
             text TEXT NOT NULL,
-            type TEXT NOT NULL CHECK(type IN ('decision', 'bugfix', 'feature', 'refactor', 'discovery')),
+            type TEXT NOT NULL,
             created_at TEXT NOT NULL,
             created_at_epoch INTEGER NOT NULL,
             FOREIGN KEY(sdk_session_id) REFERENCES sdk_sessions(sdk_session_id) ON DELETE CASCADE
@@ -368,7 +369,7 @@ export class SessionStore {
             sdk_session_id TEXT NOT NULL,
             project TEXT NOT NULL,
             text TEXT,
-            type TEXT NOT NULL CHECK(type IN ('decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change')),
+            type TEXT NOT NULL,
             title TEXT,
             subtitle TEXT,
             facts TEXT,
@@ -625,6 +626,91 @@ export class SessionStore {
       this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(17, new Date().toISOString());
     } catch (error: any) {
       console.error('[SessionStore] Metadata JSON migration error:', error.message);
+    }
+  }
+
+  /**
+   * Remove the CHECK constraint from observations.type (migration 18)
+   *
+   * The worker originally constrained observation "type" to code-mode values.
+   * Email-investigation mode uses different types (e.g., entity/evidence/etc),
+   * so we must allow arbitrary strings.
+   */
+  private removeObservationsTypeCheckConstraint(): void {
+    try {
+      const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(18) as SchemaVersion | undefined;
+      if (applied) return;
+
+      const row = this.db
+        .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='observations'")
+        .get() as { sql?: string } | undefined;
+
+      const createSql = row?.sql;
+      if (!createSql) {
+        this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(18, new Date().toISOString());
+        return;
+      }
+
+      // If the table no longer has the CHECK constraint, record migration and exit.
+      if (!/CHECK\s*\(\s*type\s+IN\s*\(/i.test(createSql)) {
+        this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(18, new Date().toISOString());
+        return;
+      }
+
+      console.log('[SessionStore] Removing CHECK constraint from observations.type...');
+
+      const indexRows = this.db
+        .prepare("SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name='observations' AND sql IS NOT NULL")
+        .all() as Array<{ sql: string }>;
+      const indexSqlStatements = indexRows.map(r => r.sql).filter(Boolean);
+
+      // Build a new CREATE TABLE statement with the CHECK constraint removed.
+      let newCreateSql = createSql
+        .replace(
+          /type\s+TEXT\s+NOT\s+NULL\s+CHECK\s*\(\s*type\s+IN\s*\([^)]+\)\s*\)/i,
+          'type TEXT NOT NULL'
+        )
+        .replace(/CHECK\s*\(\s*type\s+IN\s*\([^)]+\)\s*\)/i, '');
+
+      // Safety check: if we failed to remove it, do nothing.
+      if (/CHECK\s*\(\s*type\s+IN\s*\(/i.test(newCreateSql)) {
+        console.error('[SessionStore] Failed to rewrite observations schema; CHECK constraint still present.');
+        return;
+      }
+
+      this.db.run('BEGIN TRANSACTION');
+
+      try {
+        this.db.run('ALTER TABLE observations RENAME TO observations_old');
+        this.db.run(newCreateSql);
+
+        const columns = (this.db.prepare('PRAGMA table_info(observations_old)').all() as TableColumnInfo[]).map(c => c.name);
+        const columnList = columns.map(name => `"${name}"`).join(', ');
+
+        // Some legacy DBs can contain observations whose sdk_session_id no longer exists.
+        // Copy only rows with a valid parent session to avoid FOREIGN KEY failures.
+        this.db.run(`
+          INSERT INTO observations (${columnList})
+          SELECT ${columnList}
+          FROM observations_old
+          WHERE sdk_session_id IN (SELECT sdk_session_id FROM sdk_sessions)
+        `);
+        this.db.run('DROP TABLE observations_old');
+
+        for (const stmt of indexSqlStatements) {
+          this.db.run(stmt);
+        }
+
+        this.db.run('COMMIT');
+
+        this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(18, new Date().toISOString());
+        console.log('[SessionStore] observations.type CHECK constraint removed');
+      } catch (error: any) {
+        this.db.run('ROLLBACK');
+        throw error;
+      }
+    } catch (error: any) {
+      console.error('[SessionStore] Migration error (remove type CHECK constraint):', error.message);
     }
   }
 

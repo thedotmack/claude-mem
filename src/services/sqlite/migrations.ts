@@ -256,7 +256,7 @@ export const migration004: Migration = {
         sdk_session_id TEXT NOT NULL,
         project TEXT NOT NULL,
         text TEXT NOT NULL,
-        type TEXT NOT NULL CHECK(type IN ('decision', 'bugfix', 'feature', 'refactor', 'discovery')),
+        type TEXT NOT NULL,
         created_at TEXT NOT NULL,
         created_at_epoch INTEGER NOT NULL,
         FOREIGN KEY(sdk_session_id) REFERENCES sdk_sessions(sdk_session_id) ON DELETE CASCADE
