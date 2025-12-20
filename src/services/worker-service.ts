@@ -475,8 +475,7 @@ export class WorkerService {
       logger.info('SYSTEM', 'Background initialization complete');
     } catch (error) {
       logger.error('SYSTEM', 'Background initialization failed', {}, error as Error);
-      // Still resolve to prevent hanging requests, but they'll see searchRoutes is null
-      this.resolveInitialization();
+      // Don't resolve - let the promise remain pending so readiness check continues to fail
       throw error;
     }
   }
