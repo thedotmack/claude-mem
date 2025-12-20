@@ -10,7 +10,7 @@
  */
 
 import { stdin } from 'process';
-import { createHookResponse } from './hook-response.js';
+import { STANDARD_HOOK_RESPONSE } from './hook-response.js';
 import { logger } from '../utils/logger.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
@@ -105,7 +105,7 @@ async function summaryHook(input?: StopInput): Promise<void> {
     throw summaryError;
   }
 
-  console.log(createHookResponse('Stop', true));
+  console.log(STANDARD_HOOK_RESPONSE);
 }
 
 // Entry Point
