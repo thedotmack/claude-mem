@@ -9,6 +9,11 @@ import { logger } from './logger.js';
  * @returns Project name or "unknown-project" if extraction fails
  */
 export function getProjectName(cwd: string | null | undefined): string {
+  // Allow manual project name override via env var
+  if (process.env.CLAUDE_MEM_PROJECT) {
+    return process.env.CLAUDE_MEM_PROJECT;
+  }
+
   if (!cwd || cwd.trim() === '') {
     logger.warn('PROJECT_NAME', 'Empty cwd provided, using fallback', { cwd });
     return 'unknown-project';
