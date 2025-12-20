@@ -26,17 +26,10 @@ export function getWorkerPort(): number {
     return cachedPort;
   }
 
-  try {
-    const settingsPath = path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), 'settings.json');
-    const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-    cachedPort = parseInt(settings.CLAUDE_MEM_WORKER_PORT, 10);
-    return cachedPort;
-  } catch (error) {
-    // Fallback to default if settings load fails
-    logger.debug('SYSTEM', 'Failed to load port from settings, using default', { error });
-    cachedPort = parseInt(SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_PORT'), 10);
-    return cachedPort;
-  }
+  const settingsPath = path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), 'settings.json');
+  const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+  cachedPort = parseInt(settings.CLAUDE_MEM_WORKER_PORT, 10);
+  return cachedPort;
 }
 
 /**
