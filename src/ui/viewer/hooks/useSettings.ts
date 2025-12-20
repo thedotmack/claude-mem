@@ -13,7 +13,7 @@ export function useSettings() {
     // Load initial settings
     fetch(API_ENDPOINTS.SETTINGS)
       .then(res => res.json())
-      .then(data => {
+      .then((data: Partial<Settings>) => {
         setSettings({
           CLAUDE_MEM_MODEL: data.CLAUDE_MEM_MODEL || DEFAULT_SETTINGS.CLAUDE_MEM_MODEL,
           CLAUDE_MEM_CONTEXT_OBSERVATIONS: data.CLAUDE_MEM_CONTEXT_OBSERVATIONS || DEFAULT_SETTINGS.CLAUDE_MEM_CONTEXT_OBSERVATIONS,
@@ -56,7 +56,7 @@ export function useSettings() {
         body: JSON.stringify(newSettings)
       });
 
-      const result = await response.json();
+      const result = await response.json() as { success: boolean; error?: string };
 
       if (result.success) {
         setSettings(newSettings);

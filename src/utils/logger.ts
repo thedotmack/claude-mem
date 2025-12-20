@@ -13,10 +13,10 @@ export enum LogLevel {
   SILENT = 4
 }
 
-export type Component = 'HOOK' | 'WORKER' | 'SDK' | 'PARSER' | 'DB' | 'SYSTEM' | 'HTTP' | 'SESSION' | 'CHROMA';
+export type Component = 'HOOK' | 'WORKER' | 'SDK' | 'PARSER' | 'DB' | 'SYSTEM' | 'HTTP' | 'SESSION' | 'CHROMA' | 'CHROMA_SYNC' | 'PROJECT_NAME' | 'BRANCH' | 'SECURITY' | 'SETTINGS' | 'SEARCH';
 
 interface LogContext {
-  sessionId?: number;
+  sessionId?: number | string;
   sdkSessionId?: string;
   correlationId?: string;
   [key: string]: any;

@@ -107,6 +107,14 @@ export interface UserPromptRecord {
 }
 
 /**
+ * User Prompt with session context (joined with sdk_sessions)
+ */
+export interface UserPromptWithContext extends UserPromptRecord {
+  project: string;
+  sdk_session_id: string;
+}
+
+/**
  * Latest user prompt with session join
  */
 export interface LatestPromptResult {

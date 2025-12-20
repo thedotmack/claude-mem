@@ -332,12 +332,12 @@ export class SDKAgent {
             type: obs.type,
             title: obs.title,
             subtitle: obs.subtitle,
-            text: obs.text || null,
+            text: null,
             narrative: obs.narrative || null,
             facts: JSON.stringify(obs.facts || []),
             concepts: JSON.stringify(obs.concepts || []),
-            files_read: JSON.stringify(obs.files || []),
-            files_modified: JSON.stringify([]),
+            files_read: JSON.stringify(obs.files_read || []),
+            files_modified: JSON.stringify(obs.files_modified || []),
             project: session.project,
             prompt_number: session.lastPromptNumber,
             created_at_epoch: createdAtEpoch
@@ -354,7 +354,14 @@ export class SDKAgent {
       const { id: summaryId, createdAtEpoch } = this.dbManager.getSessionStore().storeSummary(
         session.claudeSessionId,
         session.project,
-        summary,
+        {
+          request: summary.request || '',
+          investigated: summary.investigated || '',
+          learned: summary.learned || '',
+          completed: summary.completed || '',
+          next_steps: summary.next_steps || '',
+          notes: summary.notes
+        },
         session.lastPromptNumber,
         discoveryTokens
       );

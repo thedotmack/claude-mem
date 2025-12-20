@@ -7,11 +7,19 @@ import {
   TableNameRow,
   SchemaVersion,
   SdkSessionRecord,
-  ObservationRecord,
-  SessionSummaryRecord,
-  UserPromptRecord,
   LatestPromptResult
 } from '../../types/database.js';
+import {
+  ObservationRow as ObservationRecord,
+  SessionSummaryRow as SessionSummaryRecord,
+  UserPromptRow as UserPromptRecord
+} from './types.js';
+
+// Extended type for joined queries
+export interface UserPromptWithContext extends UserPromptRecord {
+  project: string;
+  sdk_session_id: string;
+}
 
 /**
  * Session data store for SDK sessions, observations, and summaries
@@ -1868,7 +1876,7 @@ export class SessionStore {
     try {
       const observations = this.db.prepare(obsQuery).all(startEpoch, endEpoch, ...projectParams) as ObservationRecord[];
       const sessions = this.db.prepare(sessQuery).all(startEpoch, endEpoch, ...projectParams) as SessionSummaryRecord[];
-      const prompts = this.db.prepare(promptQuery).all(startEpoch, endEpoch, ...projectParams) as UserPromptRecord[];
+      const prompts = this.db.prepare(promptQuery).all(startEpoch, endEpoch, ...projectParams) as UserPromptWithContext[];
 
       return {
         observations,

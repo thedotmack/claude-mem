@@ -57,7 +57,7 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
       });
     }
 
-    const initResult = await initResponse.json();
+    const initResult = await initResponse.json() as { sessionDbId: number; promptNumber: number; skipped?: boolean; reason?: string };
     sessionDbId = initResult.sessionDbId;
     promptNumber = initResult.promptNumber;
 

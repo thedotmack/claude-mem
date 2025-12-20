@@ -96,11 +96,11 @@ export function TerminalPreview({ content, isLoading = false, className = '' }: 
             transition: 'all 0.2s',
             whiteSpace: 'nowrap'
           }}
-          onMouseEnter={(e) => {
+          onMouseEnter={(e: React.MouseEvent<HTMLButtonElement>) => {
             e.currentTarget.style.borderColor = 'var(--color-accent-primary)';
             e.currentTarget.style.color = 'var(--color-accent-primary)';
           }}
-          onMouseLeave={(e) => {
+          onMouseLeave={(e: React.MouseEvent<HTMLButtonElement>) => {
             e.currentTarget.style.borderColor = wordWrap ? 'var(--color-border-primary)' : 'var(--color-accent-primary)';
             e.currentTarget.style.color = wordWrap ? 'var(--color-text-secondary)' : 'var(--color-accent-primary)';
           }}

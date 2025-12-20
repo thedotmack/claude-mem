@@ -160,19 +160,21 @@ export type { SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 
 export interface ParsedObservation {
   type: string;
-  title: string;
+  title: string | null;
   subtitle: string | null;
-  text: string;
+  facts: string[];
+  narrative: string | null;
   concepts: string[];
-  files: string[];
+  files_read: string[];
+  files_modified: string[];
 }
 
 export interface ParsedSummary {
-  request: string | null;
-  investigated: string | null;
-  learned: string | null;
-  completed: string | null;
-  next_steps: string | null;
+  request: string;
+  investigated: string;
+  learned: string;
+  completed: string;
+  next_steps: string;
   notes: string | null;
 }
 

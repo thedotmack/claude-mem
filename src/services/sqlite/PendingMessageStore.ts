@@ -1,4 +1,4 @@
-import { Database } from './sqlite-compat.js';
+import { Database } from 'bun:sqlite';
 import type { PendingMessage } from '../worker-types.js';
 
 /**

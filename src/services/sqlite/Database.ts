@@ -83,8 +83,8 @@ export class DatabaseManager {
    */
   withTransaction<T>(fn: (db: Database) => T): T {
     const db = this.getConnection();
-    const transaction = db.transaction(fn);
-    return transaction(db);
+    const transaction = db.transaction(() => fn(db));
+    return transaction();
   }
 
   /**

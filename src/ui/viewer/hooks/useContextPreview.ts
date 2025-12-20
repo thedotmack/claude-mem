@@ -23,7 +23,7 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
     async function fetchProjects() {
       try {
         const response = await fetch('/api/projects');
-        const data = await response.json();
+        const data = await response.json() as { projects: string[] };
         if (data.projects && data.projects.length > 0) {
           setProjects(data.projects);
           setSelectedProject(data.projects[0]); // Default to first project
