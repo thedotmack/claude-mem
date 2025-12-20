@@ -37,6 +37,8 @@ export interface SettingsDefaults {
   // Feature Toggles
   CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: string;
   CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: string;
+  // Language Configuration
+  CLAUDE_MEM_LANGUAGE: string;
 }
 
 export class SettingsDefaultsManager {
@@ -69,6 +71,8 @@ export class SettingsDefaultsManager {
     // Feature Toggles
     CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: 'true',
     CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: 'false',
+    // Language Configuration
+    CLAUDE_MEM_LANGUAGE: 'en', // Observation output language (en, ja, zh, etc.)
   };
 
   /**

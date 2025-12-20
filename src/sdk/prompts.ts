@@ -5,6 +5,34 @@
 
 import { logger } from '../utils/logger.js';
 
+/**
+ * Language code to display name mapping
+ */
+const LANGUAGE_NAMES: Record<string, string> = {
+  en: 'English',
+  ja: 'Japanese',
+  zh: 'Chinese',
+  ko: 'Korean',
+  es: 'Spanish',
+  fr: 'French',
+  de: 'German',
+  pt: 'Portuguese',
+  ru: 'Russian',
+  ar: 'Arabic',
+};
+
+/**
+ * Generate language instruction for prompts
+ * Returns empty string for English (default), instruction for other languages
+ */
+function getLanguageInstruction(language: string): string {
+  if (!language || language === 'en') {
+    return '';
+  }
+  const langName = LANGUAGE_NAMES[language] || language;
+  return `\nLANGUAGE: Write ALL observation content (title, subtitle, facts, narrative) in ${langName}. Only XML tags remain in English.\n`;
+}
+
 export interface Observation {
   id: number;
   tool_name: string;
@@ -25,10 +53,12 @@ export interface SDKSession {
 
 /**
  * Build initial prompt to initialize the SDK agent
+ * @param language - Language code for observation output (e.g., 'en', 'ja', 'zh')
  */
-export function buildInitPrompt(project: string, sessionId: string, userPrompt: string): string {
+export function buildInitPrompt(project: string, sessionId: string, userPrompt: string, language: string = 'en'): string {
+  const languageInstruction = getLanguageInstruction(language);
   return `You are a Claude-Mem, a specialized observer tool for creating searchable memory FOR FUTURE SESSIONS.
-
+${languageInstruction}
 CRITICAL: Record what was LEARNED/BUILT/FIXED/DEPLOYED/CONFIGURED, not what you (the observer) are doing.
 
 You do not have access to tools. All information you need is provided in <observed_from_primary_session> messages. Create observations from what you observe - no investigation needed.
@@ -175,8 +205,9 @@ export function buildObservationPrompt(obs: Observation): string {
 
 /**
  * Build prompt to generate progress summary
+ * @param language - Language code for summary output (e.g., 'en', 'ja', 'zh')
  */
-export function buildSummaryPrompt(session: SDKSession): string {
+export function buildSummaryPrompt(session: SDKSession, language: string = 'en'): string {
   const lastAssistantMessage = session.last_assistant_message || logger.happyPathError(
     'SDK',
     'Missing last_assistant_message in session for summary prompt',
@@ -185,7 +216,9 @@ export function buildSummaryPrompt(session: SDKSession): string {
     ''
   );
 
+  const languageInstruction = getLanguageInstruction(language);
   return `PROGRESS SUMMARY CHECKPOINT
+${languageInstruction}
 ===========================
 Write progress notes of what was done, what was learned, and what's next. This is a checkpoint to capture progress so far. The session is ongoing - you may receive more requests and tool executions after this summary. Write "next_steps" as the current trajectory of work (what's actively being worked on or coming up next), not as post-session future work. Always write at least a minimal summary explaining current progress, even if work is still in early stages, so that users see a summary output tied to each request.
 
@@ -229,10 +262,13 @@ Thank you, this summary will be very useful for keeping track of our progress!`;
  *
  * Called when: promptNumber > 1 (see SDKAgent.ts line 150)
  * First prompt: Uses buildInitPrompt instead (promptNumber === 1)
+ * @param language - Language code for observation output (e.g., 'en', 'ja', 'zh')
  */
-export function buildContinuationPrompt(userPrompt: string, promptNumber: number, claudeSessionId: string): string {
+export function buildContinuationPrompt(userPrompt: string, promptNumber: number, claudeSessionId: string, language: string = 'en'): string {
+  const languageInstruction = getLanguageInstruction(language);
   return `
 Hello memory agent, you are continuing to observe the primary Claude session.
+${languageInstruction}
 
 <observed_from_primary_session>
   <user_request>${userPrompt}</user_request>
