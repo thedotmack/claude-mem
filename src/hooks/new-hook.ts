@@ -25,8 +25,10 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
 
   const { session_id, cwd, prompt } = input;
   const project = getProjectName(cwd);
-
   const port = getWorkerPort();
+
+  // Read mode from environment variable (set by parent process like ragtime)
+  const mode = process.env.CLAUDE_MEM_MODE || 'code';
 
   // Initialize session via HTTP - handles DB operations and privacy checks
   let sessionDbId: number;
@@ -39,7 +41,8 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
       body: JSON.stringify({
         claudeSessionId: session_id,
         project,
-        prompt
+        prompt,
+        mode
       }),
       signal: AbortSignal.timeout(5000)
     });

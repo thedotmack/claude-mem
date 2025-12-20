@@ -28,7 +28,10 @@ async function contextHook(input?: SessionStartInput): Promise<string> {
   const project = getProjectName(cwd);
   const port = getWorkerPort();
 
-  const url = `http://127.0.0.1:${port}/api/context/inject?project=${encodeURIComponent(project)}`;
+  // Read mode from environment variable (set by parent process like ragtime)
+  const mode = process.env.CLAUDE_MEM_MODE || 'code';
+
+  const url = `http://127.0.0.1:${port}/api/context/inject?project=${encodeURIComponent(project)}&mode=${encodeURIComponent(mode)}`;
 
   try {
     const response = await fetch(url, { signal: AbortSignal.timeout(HOOK_TIMEOUTS.DEFAULT) });

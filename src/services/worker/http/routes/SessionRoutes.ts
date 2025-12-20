@@ -442,17 +442,18 @@ export class SessionRoutes extends BaseRouteHandler {
   /**
    * Initialize session by claudeSessionId (new-hook uses this)
    * POST /api/sessions/init
-   * Body: { claudeSessionId, project, prompt }
+   * Body: { claudeSessionId, project, prompt, mode? }
    *
    * Performs all session initialization DB operations:
    * - Creates/gets SDK session (idempotent)
+   * - Stores mode in session metadata (if provided)
    * - Increments prompt counter
    * - Saves user prompt (with privacy tag stripping)
    *
    * Returns: { sessionDbId, promptNumber, skipped: boolean, reason?: string }
    */
   private handleSessionInitByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
-    const { claudeSessionId, project, prompt } = req.body;
+    const { claudeSessionId, project, prompt, mode } = req.body;
 
     // Validate required parameters
     if (!this.validateRequired(req, res, ['claudeSessionId', 'project', 'prompt'])) {
@@ -464,13 +465,18 @@ export class SessionRoutes extends BaseRouteHandler {
     // Step 1: Create/get SDK session (idempotent INSERT OR IGNORE)
     const sessionDbId = store.createSDKSession(claudeSessionId, project, prompt);
 
-    // Step 2: Increment prompt counter
+    // Step 2: Store mode in session metadata (if provided)
+    if (mode) {
+      store.setSessionMode(sessionDbId, mode);
+    }
+
+    // Step 3: Increment prompt counter
     const promptNumber = store.incrementPromptCounter(sessionDbId);
 
-    // Step 3: Strip privacy tags from prompt
+    // Step 4: Strip privacy tags from prompt
     const cleanedPrompt = stripMemoryTagsFromPrompt(prompt);
 
-    // Step 4: Check if prompt is entirely private
+    // Step 5: Check if prompt is entirely private
     if (!cleanedPrompt || cleanedPrompt.trim() === '') {
       logger.debug('HOOK', 'Session init - prompt entirely private', {
         sessionId: sessionDbId,
@@ -487,13 +493,14 @@ export class SessionRoutes extends BaseRouteHandler {
       return;
     }
 
-    // Step 5: Save cleaned user prompt
+    // Step 6: Save cleaned user prompt
     store.saveUserPrompt(claudeSessionId, promptNumber, cleanedPrompt);
 
     logger.info('SESSION', 'Session initialized via HTTP', {
       sessionId: sessionDbId,
       promptNumber,
-      project
+      project,
+      mode: mode || 'code'
     });
 
     res.json({

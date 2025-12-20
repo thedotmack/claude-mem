@@ -186,9 +186,16 @@ export class SDKAgent {
    * - We just use the session_id we're given - simple and reliable
    */
   private async *createMessageGenerator(session: ActiveSession): AsyncIterableIterator<SDKUserMessage> {
-    // Load mode for this session (TODO: Phase 4 will get this from session metadata)
-    const modeId = 'code'; // Default for now, will come from session in Phase 4
+    // Load mode for this session from database metadata
+    const store = this.dbManager.getSessionStore();
+    const modeId = store.getSessionModeByClaudeSessionId(session.claudeSessionId) || 'code';
     const mode = ModeManager.getInstance().loadMode(modeId);
+
+    logger.debug('SDK', 'Using mode for session', {
+      sessionId: session.sessionDbId,
+      modeId,
+      modeName: mode.name
+    });
 
     // Yield initial user prompt with context (or continuation if prompt #2+)
     // CRITICAL: Both paths use session.claudeSessionId from the hook
@@ -257,8 +264,12 @@ export class SDKAgent {
    * @param discoveryTokens - Token cost for discovering this response (delta, not cumulative)
    */
   private async processSDKResponse(session: ActiveSession, text: string, worker: any | undefined, discoveryTokens: number): Promise<void> {
-    // Parse observations
-    const observations = parseObservations(text, session.claudeSessionId);
+    // Get mode for this session from database metadata
+    const store = this.dbManager.getSessionStore();
+    const modeId = store.getSessionModeByClaudeSessionId(session.claudeSessionId) || 'code';
+
+    // Parse observations using session's mode for type validation
+    const observations = parseObservations(text, modeId, session.claudeSessionId);
 
     // Store observations
     for (const obs of observations) {

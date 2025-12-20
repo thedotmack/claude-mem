@@ -433,15 +433,10 @@ export class WorkerService {
       // Clean up any orphaned chroma-mcp processes BEFORE starting our own
       await this.cleanupOrphanedProcesses();
 
-      // Load mode configuration (must happen before database to set observation types)
+      // Preload default 'code' mode configuration (other modes loaded on-demand per-session)
       const { ModeManager } = await import('./domain/ModeManager.js');
-      const { SettingsDefaultsManager } = await import('../shared/SettingsDefaultsManager.js');
-      const { USER_SETTINGS_PATH } = await import('../shared/paths.js');
-
-      const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-      const modeId = settings.CLAUDE_MEM_MODE;
-      ModeManager.getInstance().loadMode(modeId);
-      logger.info('SYSTEM', `Mode loaded: ${modeId}`);
+      ModeManager.getInstance().loadMode('code');
+      logger.info('SYSTEM', 'Default mode preloaded: code');
 
       // Initialize database (once, stays open)
       await this.dbManager.initialize();

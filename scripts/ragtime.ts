@@ -16,7 +16,6 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { execSync } from 'child_process';
 
 const CORPUS_PATH = process.env.CORPUS_PATH || './corpus/emails.json';
-const CLAUDE_MEM_MODE = process.env.CLAUDE_MEM_MODE || 'email-investigation';
 const MODEL_ID = process.env.CLAUDE_MEM_MODEL || 'claude-sonnet-4-5-20250929';
 
 const PRIMARY_PROMPT = `You are analyzing this email as part of a fraud investigation.
@@ -108,16 +107,14 @@ async function processEmail(
 }
 
 async function main() {
+  // Set mode for claude-mem hooks to pick up
+  process.env.CLAUDE_MEM_MODE = 'email-investigation';
+
   console.log('RAGTIME Email Processor');
   console.log('======================\n');
   console.log(`Corpus: ${CORPUS_PATH}`);
-  console.log(`Mode: ${CLAUDE_MEM_MODE}`);
+  console.log(`Mode: ${process.env.CLAUDE_MEM_MODE}`);
   console.log(`Model: ${MODEL_ID}\n`);
-
-  if (process.env.CLAUDE_MEM_MODE !== CLAUDE_MEM_MODE) {
-    console.warn(`⚠️  Warning: CLAUDE_MEM_MODE environment variable is not set to "${CLAUDE_MEM_MODE}"`);
-    console.warn(`   Set it before running: export CLAUDE_MEM_MODE=${CLAUDE_MEM_MODE}\n`);
-  }
 
   console.log('Loading emails...');
   const emails = await loadEmails(CORPUS_PATH);
