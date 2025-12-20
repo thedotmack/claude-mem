@@ -495,36 +495,6 @@ export class SearchManager {
           };
         }
 
-        // Format timeline (helper functions)
-        const formatDate = (epochMs: number): string => {
-          const date = new Date(epochMs);
-          return date.toLocaleString('en-US', {
-            month: 'short',
-            day: 'numeric',
-            year: 'numeric'
-          });
-        };
-
-        const formatTime = (epochMs: number): string => {
-          const date = new Date(epochMs);
-          return date.toLocaleString('en-US', {
-            hour: 'numeric',
-            minute: '2-digit',
-            hour12: true
-          });
-        };
-
-        const formatDateTime = (epochMs: number): string => {
-          const date = new Date(epochMs);
-          return date.toLocaleString('en-US', {
-            month: 'short',
-            day: 'numeric',
-            hour: 'numeric',
-            minute: '2-digit',
-            hour12: true
-          });
-        };
-
         const estimateTokens = (text: string | null): number => {
           if (!text) return 0;
           return Math.ceil(text.length / 4);
@@ -1614,36 +1584,6 @@ export class SearchManager {
           };
         }
 
-        // Helper functions matching context-hook.ts
-        const formatDate = (epochMs: number): string => {
-          const date = new Date(epochMs);
-          return date.toLocaleString('en-US', {
-            month: 'short',
-            day: 'numeric',
-            year: 'numeric'
-          });
-        };
-
-        const formatTime = (epochMs: number): string => {
-          const date = new Date(epochMs);
-          return date.toLocaleString('en-US', {
-            hour: 'numeric',
-            minute: '2-digit',
-            hour12: true
-          });
-        };
-
-        const formatDateTime = (epochMs: number): string => {
-          const date = new Date(epochMs);
-          return date.toLocaleString('en-US', {
-            month: 'short',
-            day: 'numeric',
-            hour: 'numeric',
-            minute: '2-digit',
-            hour12: true
-          });
-        };
-
         const estimateTokens = (text: string | null): number => {
           if (!text) return 0;
           return Math.ceil(text.length / 4);
@@ -1903,36 +1843,6 @@ export class SearchManager {
               }]
             };
           }
-
-          // Helper functions (reused from get_context_timeline)
-          const formatDate = (epochMs: number): string => {
-            const date = new Date(epochMs);
-            return date.toLocaleString('en-US', {
-              month: 'short',
-              day: 'numeric',
-              year: 'numeric'
-            });
-          };
-
-          const formatTime = (epochMs: number): string => {
-            const date = new Date(epochMs);
-            return date.toLocaleString('en-US', {
-              hour: 'numeric',
-              minute: '2-digit',
-              hour12: true
-            });
-          };
-
-          const formatDateTime = (epochMs: number): string => {
-            const date = new Date(epochMs);
-            return date.toLocaleString('en-US', {
-              month: 'short',
-              day: 'numeric',
-              hour: 'numeric',
-              minute: '2-digit',
-              hour12: true
-            });
-          };
 
           const estimateTokens = (text: string | null): number => {
             if (!text) return 0;
