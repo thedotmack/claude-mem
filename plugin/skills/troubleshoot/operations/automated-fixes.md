@@ -44,7 +44,7 @@ npm run worker:status
 ```bash
 cd ~/.claude/plugins/marketplaces/thedotmack/ && \
 npm install && \
-npm run worker:restart
+claude-mem restart
 ```
 
 ## Fix: Stale PID File
@@ -70,7 +70,7 @@ curl -s http://127.0.0.1:37777/health
 mkdir -p ~/.claude-mem && \
 echo '{"CLAUDE_MEM_WORKER_PORT":"37778"}' > ~/.claude-mem/settings.json && \
 cd ~/.claude/plugins/marketplaces/thedotmack/ && \
-npm run worker:restart && \
+claude-mem restart && \
 sleep 2 && \
 curl -s http://127.0.0.1:37778/health
 ```
@@ -86,7 +86,7 @@ curl -s http://127.0.0.1:37778/health
 cp ~/.claude-mem/claude-mem.db ~/.claude-mem/claude-mem.db.backup && \
 sqlite3 ~/.claude-mem/claude-mem.db "PRAGMA integrity_check;" && \
 cd ~/.claude/plugins/marketplaces/thedotmack/ && \
-npm run worker:restart
+claude-mem restart
 ```
 
 **If integrity check fails, recreate database:**
@@ -94,7 +94,7 @@ npm run worker:restart
 # WARNING: This deletes all memory data
 mv ~/.claude-mem/claude-mem.db ~/.claude-mem/claude-mem.db.old && \
 cd ~/.claude/plugins/marketplaces/thedotmack/ && \
-npm run worker:restart
+claude-mem restart
 ```
 
 ## Fix: Clean Reinstall
@@ -135,7 +135,7 @@ find ~/.claude-mem/logs/ -name "worker-*.log" -mtime +7 -delete
 
 # Restart worker for fresh log
 cd ~/.claude/plugins/marketplaces/thedotmack/
-npm run worker:restart
+claude-mem restart
 ```
 
 **Note:** Logs auto-rotate daily, manual cleanup rarely needed.

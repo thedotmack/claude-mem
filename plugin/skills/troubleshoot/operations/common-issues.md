@@ -29,7 +29,7 @@ Quick fixes for frequently encountered claude-mem problems.
 3. Restart worker and start new session:
    ```bash
    cd ~/.claude/plugins/marketplaces/thedotmack/
-   npm run worker:restart
+   claude-mem restart
    ```
 
 4. Create a test observation: `/skill version-bump` then cancel
@@ -173,7 +173,7 @@ Quick fixes for frequently encountered claude-mem problems.
 4. If FTS5 out of sync, restart worker (triggers reindex):
    ```bash
    cd ~/.claude/plugins/marketplaces/thedotmack/
-   npm run worker:restart
+   claude-mem restart
    ```
 
 ## Issue: Port Conflicts
@@ -194,7 +194,7 @@ Quick fixes for frequently encountered claude-mem problems.
    mkdir -p ~/.claude-mem
    echo '{"CLAUDE_MEM_WORKER_PORT":"37778"}' > ~/.claude-mem/settings.json
    cd ~/.claude/plugins/marketplaces/thedotmack/
-   npm run worker:restart
+   claude-mem restart
    ```
 
 ## Issue: Database Corrupted
@@ -219,7 +219,7 @@ Quick fixes for frequently encountered claude-mem problems.
    ```bash
    rm ~/.claude-mem/claude-mem.db
    cd ~/.claude/plugins/marketplaces/thedotmack/
-   npm run worker:restart
+   claude-mem restart
    # Worker will create new database
    ```
 

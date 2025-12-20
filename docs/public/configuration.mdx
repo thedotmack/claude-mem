@@ -316,7 +316,7 @@ Edit `~/.claude-mem/settings.json`:
 
 Then restart the worker:
 ```bash
-npm run worker:restart
+claude-mem restart
 ```
 
 ### Custom Model
@@ -331,7 +331,7 @@ Edit `~/.claude-mem/settings.json`:
 Then restart the worker:
 ```bash
 export CLAUDE_MEM_MODEL=opus
-npm run worker:restart
+claude-mem restart
 ```
 
 ### Custom Skip Tools
@@ -388,7 +388,7 @@ Enable debug logging:
 
 ```bash
 export DEBUG=claude-mem:*
-npm run worker:restart
+claude-mem restart
 npm run worker:logs
 ```
 
@@ -406,7 +406,7 @@ npm run worker:logs
 
 1. Restart worker after changes:
    ```bash
-   npm run worker:restart
+   claude-mem restart
    ```
 
 2. Verify environment variables:
@@ -440,7 +440,7 @@ If port 37777 is already in use:
 
 2. Restart worker:
    ```bash
-   npm run worker:restart
+   claude-mem restart
    ```
 
 3. Verify new port:

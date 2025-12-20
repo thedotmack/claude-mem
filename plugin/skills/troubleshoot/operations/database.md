@@ -173,7 +173,7 @@ If FTS5 counts don't match, triggers may have failed. Restart worker to rebuild:
 
 ```bash
 cd ~/.claude/plugins/marketplaces/thedotmack/
-npm run worker:restart
+claude-mem restart
 ```
 
 The worker will rebuild FTS5 indexes on startup if they're out of sync.
@@ -263,7 +263,7 @@ sqlite3 ~/.claude-mem/claude-mem.db "SELECT COUNT(*) FROM observations;"
    ```bash
    mv ~/.claude-mem/claude-mem.db ~/.claude-mem/claude-mem.db.archive
    cd ~/.claude/plugins/marketplaces/thedotmack/
-   npm run worker:restart
+   claude-mem restart
    ```
 
 ## Database Recovery

@@ -13,7 +13,7 @@ npm run worker:status
 npm run worker:start
 
 # Restart worker
-npm run worker:restart
+claude-mem restart
 
 # Stop worker
 npm run worker:stop

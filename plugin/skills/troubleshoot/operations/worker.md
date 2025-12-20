@@ -152,7 +152,7 @@ npm run worker:start
 ```bash
 # Restart worker (stops and starts)
 cd ~/.claude/plugins/marketplaces/thedotmack/
-npm run worker:restart
+claude-mem restart
 
 # Or manually stop and start
 npm run worker:stop
@@ -219,7 +219,7 @@ npm run worker:start
 **Port conflict:**
 ```bash
 echo '{"CLAUDE_MEM_WORKER_PORT":"37778"}' > ~/.claude-mem/settings.json
-npm run worker:restart
+claude-mem restart
 ```
 
 **Stale PID file:**
@@ -261,14 +261,14 @@ If fails, backup and recreate database.
 **Out of memory:**
 Check if database is too large or memory leak. Restart:
 ```bash
-npm run worker:restart
+claude-mem restart
 ```
 
 **Port conflict race condition:**
 Another process grabbing port intermittently. Change port:
 ```bash
 echo '{"CLAUDE_MEM_WORKER_PORT":"37778"}' > ~/.claude-mem/settings.json
-npm run worker:restart
+claude-mem restart
 ```
 
 ## Worker Management Commands
@@ -284,7 +284,7 @@ npm run worker:start
 npm run worker:stop
 
 # Restart worker
-npm run worker:restart
+claude-mem restart
 
 # View logs
 npm run worker:logs
@@ -355,7 +355,7 @@ All should return appropriate responses (HTML for viewer, JSON for APIs).
 |---------|---------|----------------|
 | Check if running | `npm run worker:status` | Shows PID and uptime |
 | Worker not running | `npm run worker:start` | Worker starts successfully |
-| Worker crashed | `npm run worker:restart` | Worker restarts |
+| Worker crashed | `claude-mem restart` | Worker restarts |
 | View recent errors | `grep -i error ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log \| tail -20` | Shows recent errors |
 | Port in use | `lsof -i :37777` | Shows process using port |
 | Stale PID | `rm ~/.claude-mem/worker.pid && npm run worker:start` | Removes stale PID and starts |
