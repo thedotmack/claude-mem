@@ -54,6 +54,8 @@ async function summaryHook(input?: StopInput): Promise<void> {
     hasLastAssistantMessage: !!lastAssistantMessage
   });
 
+  let summaryError: Error | null = null;
+
   try {
     // Send to worker - worker handles privacy check and database operations
     const response = await fetch(`http://127.0.0.1:${port}/api/sessions/summarize`, {
@@ -79,9 +81,10 @@ async function summaryHook(input?: StopInput): Promise<void> {
 
     logger.debug('HOOK', 'Summary request sent successfully');
   } catch (error: any) {
+    summaryError = error;
     handleWorkerError(error);
   } finally {
-    // Stop processing spinner
+    // Stop processing spinner (non-critical operation, errors are logged but don't block)
     try {
       const spinnerResponse = await fetch(`http://127.0.0.1:${port}/api/processing`, {
         method: 'POST',
@@ -95,6 +98,11 @@ async function summaryHook(input?: StopInput): Promise<void> {
     } catch (error: any) {
       logger.warn('HOOK', 'Could not stop spinner', { error: error.message });
     }
+  }
+
+  // Re-throw summary error after cleanup to ensure it's not masked by finally block
+  if (summaryError) {
+    throw summaryError;
   }
 
   console.log(createHookResponse('Stop', true));
