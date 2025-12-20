@@ -319,7 +319,7 @@ ${e.stack}`:e.message;if(Array.isArray(e))return`[${e.length} items]`;let s=Obje
       FROM sdk_sessions
       WHERE claude_session_id = ?
       LIMIT 1
-    `).get(e)||null}reactivateSession(e,s){this.db.prepare(`
+    `).get(e)||null}getSessionDbIdByClaudeId(e){return this.findAnySDKSession(e)?.id??null}reactivateSession(e,s){this.db.prepare(`
       UPDATE sdk_sessions
       SET status = 'active', user_prompt = ?, worker_port = NULL
       WHERE id = ?

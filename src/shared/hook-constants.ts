@@ -4,7 +4,6 @@ export const HOOK_TIMEOUTS = {
   WORKER_STARTUP_WAIT: 1000,
   WORKER_STARTUP_RETRIES: 15,
   PRE_RESTART_SETTLE_DELAY: 2000,  // Give files time to sync before restart
-  WINDOWS_MULTIPLIER: 1.5     // Platform-specific adjustment
 } as const;
 
 /**
@@ -16,9 +15,3 @@ export const HOOK_EXIT_CODES = {
   /** Show user message that Claude does NOT receive as context */
   USER_MESSAGE_ONLY: 3,
 } as const;
-
-export function getTimeout(baseTimeout: number): number {
-  return process.platform === 'win32'
-    ? Math.round(baseTimeout * HOOK_TIMEOUTS.WINDOWS_MULTIPLIER)
-    : baseTimeout;
-}

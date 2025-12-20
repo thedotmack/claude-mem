@@ -8,33 +8,38 @@
 import express, { Request, Response } from 'express';
 import { getWorkerPort } from '../../../../shared/worker-utils.js';
 import { logger } from '../../../../utils/logger.js';
-import { stripMemoryTagsFromJson, stripMemoryTagsFromPrompt } from '../../../../utils/tag-stripping.js';
+import { stripMemoryTagsFromPrompt } from '../../../../utils/tag-stripping.js';
 import { SessionManager } from '../../SessionManager.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
 import { SDKAgent } from '../../SDKAgent.js';
 import type { WorkerService } from '../../../worker-service.js';
-import { BaseRouteHandler } from '../BaseRouteHandler.js';
-import { SessionEventBroadcaster } from '../../events/SessionEventBroadcaster.js';
+import { SSEBroadcaster } from '../../SSEBroadcaster.js';
 import { SessionCompletionHandler } from '../../session/SessionCompletionHandler.js';
-import { PrivacyCheckValidator } from '../../validation/PrivacyCheckValidator.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
+import type { APIError } from '../../worker-types.js';
+import {
+  broadcastNewPrompt,
+  broadcastSessionStarted,
+  broadcastObservationQueued,
+  broadcastSummarizeQueued
+} from '../../events/session-events.js';
 
-export class SessionRoutes extends BaseRouteHandler {
+export class SessionRoutes {
   private completionHandler: SessionCompletionHandler;
 
   constructor(
     private sessionManager: SessionManager,
     private dbManager: DatabaseManager,
     private sdkAgent: SDKAgent,
-    private eventBroadcaster: SessionEventBroadcaster,
+    private sseBroadcaster: SSEBroadcaster,
     private workerService: WorkerService
   ) {
-    super();
     this.completionHandler = new SessionCompletionHandler(
       sessionManager,
       dbManager,
-      eventBroadcaster
+      sseBroadcaster,
+      workerService
     );
   }
 
@@ -44,16 +49,14 @@ export class SessionRoutes extends BaseRouteHandler {
    */
   private ensureGeneratorRunning(sessionDbId: number, source: string): void {
     const session = this.sessionManager.getSession(sessionDbId);
-    logger.info('SESSION', `ensureGeneratorRunning called (${source})`, {
+    logger.debug('SESSION', `ensureGeneratorRunning called (${source})`, {
       sessionId: sessionDbId,
       sessionExists: !!session,
-      hasGenerator: session?.generatorPromise !== null && session?.generatorPromise !== undefined,
-      queueDepth: session?.pendingMessages.length ?? 0
+      hasGenerator: session?.generatorPromise !== null && session?.generatorPromise !== undefined
     });
     if (session && !session.generatorPromise) {
-      logger.info('SESSION', `Generator auto-starting (${source})`, {
-        sessionId: sessionDbId,
-        queueDepth: session.pendingMessages.length
+      logger.debug('SESSION', `Generator auto-starting (${source})`, {
+        sessionId: sessionDbId
       });
 
       session.generatorPromise = this.sdkAgent.startSession(session, this.workerService)
@@ -61,7 +64,7 @@ export class SessionRoutes extends BaseRouteHandler {
           logger.failure('SDK', 'SDK agent error', { sessionId: sessionDbId }, err);
         })
         .finally(() => {
-          logger.info('SESSION', `Generator finished`, { sessionId: sessionDbId });
+          logger.debug('SESSION', `Generator finished`, { sessionId: sessionDbId });
           session.generatorPromise = null;
           this.workerService.broadcastProcessingStatus();
         });
@@ -87,9 +90,13 @@ export class SessionRoutes extends BaseRouteHandler {
   /**
    * Initialize a new session
    */
-  private handleSessionInit = this.wrapHandler((req: Request, res: Response): void => {
-    const sessionDbId = this.parseIntParam(req, res, 'sessionDbId');
-    if (sessionDbId === null) return;
+  private handleSessionInit = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const sessionDbId = parseInt(req.params.sessionDbId, 10);
+      if (isNaN(sessionDbId)) {
+        res.status(400).json({ error: 'Invalid sessionDbId' });
+        return;
+      }
 
     const { userPrompt, promptNumber } = req.body;
     const session = this.sessionManager.initializeSession(sessionDbId, userPrompt, promptNumber);
@@ -99,7 +106,7 @@ export class SessionRoutes extends BaseRouteHandler {
 
     // Broadcast new prompt to SSE clients (for web UI)
     if (latestPrompt) {
-      this.eventBroadcaster.broadcastNewPrompt({
+      broadcastNewPrompt(this.sseBroadcaster, this.workerService, {
         id: latestPrompt.id,
         claude_session_id: latestPrompt.claude_session_id,
         project: latestPrompt.project,
@@ -136,30 +143,19 @@ export class SessionRoutes extends BaseRouteHandler {
       });
     }
 
-    // Start SDK agent in background (pass worker ref for spinner control)
-    logger.info('SESSION', 'Generator starting', {
-      sessionId: sessionDbId,
-      project: session.project,
-      promptNum: session.lastPromptNumber
-    });
-
-    session.generatorPromise = this.sdkAgent.startSession(session, this.workerService)
-      .catch(err => {
-        logger.failure('SDK', 'SDK agent error', { sessionId: sessionDbId }, err);
-      })
-      .finally(() => {
-        // Clear generator reference when completed
-        logger.info('SESSION', `Generator finished`, { sessionId: sessionDbId });
-        session.generatorPromise = null;
-        // Broadcast status change (generator finished, may stop spinner)
-        this.workerService.broadcastProcessingStatus();
-      });
+    // Ensure SDK agent is running to process any queued messages
+    // Use single entry point for generator management (no manual starts)
+    this.ensureGeneratorRunning(sessionDbId, 'init');
 
     // Broadcast session started event
-    this.eventBroadcaster.broadcastSessionStarted(sessionDbId, session.project);
+    broadcastSessionStarted(this.sseBroadcaster, this.workerService, sessionDbId, session.project);
 
-    res.json({ status: 'initialized', sessionDbId, port: getWorkerPort() });
-  });
+      res.json({ status: 'initialized', sessionDbId, port: getWorkerPort() });
+    } catch (error) {
+      logger.failure('WORKER', 'Request failed', {}, error as Error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  };
 
   /**
    * Queue observations for processing
@@ -183,7 +179,7 @@ export class SessionRoutes extends BaseRouteHandler {
     this.ensureGeneratorRunning(sessionDbId, 'observation');
 
     // Broadcast observation queued event
-    this.eventBroadcaster.broadcastObservationQueued(sessionDbId);
+    broadcastObservationQueued(this.sseBroadcaster, this.workerService, sessionDbId);
 
     res.json({ status: 'queued' });
   });
@@ -204,7 +200,7 @@ export class SessionRoutes extends BaseRouteHandler {
     this.ensureGeneratorRunning(sessionDbId, 'summarize');
 
     // Broadcast summarize queued event
-    this.eventBroadcaster.broadcastSummarizeQueued();
+    broadcastSummarizeQueued(this.workerService);
 
     res.json({ status: 'queued' });
   });
@@ -223,11 +219,13 @@ export class SessionRoutes extends BaseRouteHandler {
       return;
     }
 
+    const queueLength = this.sessionManager.getPendingMessageStore().getPendingCount(sessionDbId);
+
     res.json({
       status: 'active',
       sessionDbId,
       project: session.project,
-      queueLength: session.pendingMessages.length,
+      queueLength,
       uptime: Date.now() - session.startTime
     });
   });
@@ -262,8 +260,9 @@ export class SessionRoutes extends BaseRouteHandler {
    * POST /api/sessions/observations
    * Body: { claudeSessionId, tool_name, tool_input, tool_response, cwd }
    *
-   * IMPORTANT: tool_input and tool_response come as ANY type from hooks.
-   * We parse them to strings here at the worker entry point.
+   * IMPORTANT: Privacy tags are stripped at the hook layer (edge processing).
+   * The worker receives pre-sanitized data and assumes tags have been removed.
+   * tool_input and tool_response arrive as strings from the hook.
    */
   private handleObservationsByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
     const { claudeSessionId, tool_name, tool_input, tool_response, cwd } = req.body;
@@ -314,51 +313,34 @@ export class SessionRoutes extends BaseRouteHandler {
     if (!sessionDbId) {
       return this.badRequest(res, 'Session not initialized. /api/sessions/init must be called first.');
     }
-    const promptNumber = store.getPromptCounter(sessionDbId);
+
+    // Get prompt number from active session (avoids race with DB counter)
+    // Session stores lastPromptNumber set during init, eliminating DB read
+    const session = this.sessionManager.getSession(sessionDbId);
+    const promptNumber = session?.lastPromptNumber || store.getPromptCounter(sessionDbId);
 
     // Privacy check: skip if user prompt was entirely private
-    const userPrompt = PrivacyCheckValidator.checkUserPromptPrivacy(
-      store,
-      claudeSessionId,
-      promptNumber,
-      'observation',
-      sessionDbId,
-      { tool_name }
-    );
-    if (!userPrompt) {
+    const userPrompt = store.getUserPrompt(claudeSessionId, promptNumber);
+    if (!userPrompt || userPrompt.trim() === '') {
+      logger.debug('HOOK', 'Skipping observation - user prompt was entirely private', {
+        sessionId: sessionDbId,
+        promptNumber,
+        tool_name
+      });
       res.json({ status: 'skipped', reason: 'private' });
       return;
     }
 
-    // Strip memory tags and stringify (normalize to string for storage)
-    let cleanedToolInput = '{}';
-    let cleanedToolResponse = '{}';
+    // Data arrives pre-sanitized from hook (privacy tags already stripped)
+    // Defensive validation: ensure we have valid strings
+    const finalToolInput = tool_input || '{}';
+    const finalToolResponse = tool_response || '{}';
 
-    try {
-      const toolInputStr = typeof tool_input === 'string' ? tool_input : JSON.stringify(tool_input);
-      cleanedToolInput = tool_input !== undefined
-        ? stripMemoryTagsFromJson(toolInputStr)
-        : '{}';
-    } catch (error) {
-      logger.debug('SESSION', 'Failed to serialize tool_input', { sessionDbId }, error);
-      cleanedToolInput = '{"error": "Failed to serialize tool_input"}';
-    }
-
-    try {
-      const toolResponseStr = typeof tool_response === 'string' ? tool_response : JSON.stringify(tool_response);
-      cleanedToolResponse = tool_response !== undefined
-        ? stripMemoryTagsFromJson(toolResponseStr)
-        : '{}';
-    } catch (error) {
-      logger.debug('SESSION', 'Failed to serialize tool_result', { sessionDbId }, error);
-      cleanedToolResponse = '{"error": "Failed to serialize tool_response"}';
-    }
-
-    // Queue observation (tool_input and tool_response are now strings)
+    // Queue observation (tool_input and tool_response are strings from hook)
     this.sessionManager.queueObservation(sessionDbId, {
       tool_name,
-      tool_input: cleanedToolInput,
-      tool_response: cleanedToolResponse,
+      tool_input: finalToolInput,
+      tool_response: finalToolResponse,
       prompt_number: promptNumber,
       cwd: cwd || logger.happyPathError(
         'SESSION',
@@ -373,7 +355,7 @@ export class SessionRoutes extends BaseRouteHandler {
     this.ensureGeneratorRunning(sessionDbId, 'observation');
 
     // Broadcast observation queued event
-    this.eventBroadcaster.broadcastObservationQueued(sessionDbId);
+    broadcastObservationQueued(this.sseBroadcaster, this.workerService, sessionDbId);
 
     res.json({ status: 'queued' });
   });
@@ -399,17 +381,19 @@ export class SessionRoutes extends BaseRouteHandler {
     if (!sessionDbId) {
       return this.badRequest(res, 'Session not initialized. /api/sessions/init must be called first.');
     }
-    const promptNumber = store.getPromptCounter(sessionDbId);
+
+    // Get prompt number from active session (avoids race with DB counter)
+    // Session stores lastPromptNumber set during init, eliminating DB read
+    const session = this.sessionManager.getSession(sessionDbId);
+    const promptNumber = session?.lastPromptNumber || store.getPromptCounter(sessionDbId);
 
     // Privacy check: skip if user prompt was entirely private
-    const userPrompt = PrivacyCheckValidator.checkUserPromptPrivacy(
-      store,
-      claudeSessionId,
-      promptNumber,
-      'summarize',
-      sessionDbId
-    );
-    if (!userPrompt) {
+    const userPrompt = store.getUserPrompt(claudeSessionId, promptNumber);
+    if (!userPrompt || userPrompt.trim() === '') {
+      logger.debug('HOOK', 'Skipping summarize - user prompt was entirely private', {
+        sessionId: sessionDbId,
+        promptNumber
+      });
       res.json({ status: 'skipped', reason: 'private' });
       return;
     }
@@ -431,7 +415,7 @@ export class SessionRoutes extends BaseRouteHandler {
     this.ensureGeneratorRunning(sessionDbId, 'summarize');
 
     // Broadcast summarize queued event
-    this.eventBroadcaster.broadcastSummarizeQueued();
+    broadcastSummarizeQueued(this.workerService);
 
     res.json({ status: 'queued' });
   });

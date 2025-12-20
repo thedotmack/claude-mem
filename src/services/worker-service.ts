@@ -29,7 +29,6 @@ import { SettingsManager } from './worker/SettingsManager.js';
 import { SearchManager } from './worker/SearchManager.js';
 import { FormattingService } from './worker/FormattingService.js';
 import { TimelineService } from './worker/TimelineService.js';
-import { SessionEventBroadcaster } from './worker/events/SessionEventBroadcaster.js';
 
 // Import HTTP layer
 import { createMiddleware, summarizeRequestBody as summarizeBody, requireLocalhost } from './worker/http/middleware.js';
@@ -56,7 +55,6 @@ export class WorkerService {
   private sdkAgent: SDKAgent;
   private paginationHelper: PaginationHelper;
   private settingsManager: SettingsManager;
-  private sessionEventBroadcaster: SessionEventBroadcaster;
 
   // Route handlers
   private viewerRoutes: ViewerRoutes;
@@ -84,7 +82,6 @@ export class WorkerService {
     this.sdkAgent = new SDKAgent(this.dbManager, this.sessionManager);
     this.paginationHelper = new PaginationHelper(this.dbManager);
     this.settingsManager = new SettingsManager(this.dbManager);
-    this.sessionEventBroadcaster = new SessionEventBroadcaster(this.sseBroadcaster, this);
 
     // Set callback for when sessions are deleted (to update activity indicator)
     this.sessionManager.setOnSessionDeleted(() => {
@@ -99,7 +96,7 @@ export class WorkerService {
 
     // Initialize route handlers (SearchRoutes will use MCP client initially, then switch to SearchManager after DB init)
     this.viewerRoutes = new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager);
-    this.sessionRoutes = new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.sessionEventBroadcaster, this);
+    this.sessionRoutes = new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.sseBroadcaster, this);
     this.dataRoutes = new DataRoutes(this.paginationHelper, this.dbManager, this.sessionManager, this.sseBroadcaster, this, this.startTime);
     // SearchRoutes needs SearchManager which requires initialized DB - will be created in initializeBackground()
     this.searchRoutes = null;
@@ -122,12 +119,9 @@ export class WorkerService {
    */
   private setupRoutes(): void {
     // Health check endpoint
-    // TEST_BUILD_ID helps verify which build is running during debugging
-    const TEST_BUILD_ID = 'TEST-008-wrapper-ipc';
     this.app.get('/api/health', (_req, res) => {
       res.status(200).json({
         status: 'ok',
-        build: TEST_BUILD_ID,
         managed: process.env.CLAUDE_MEM_MANAGED === 'true',
         hasIpc: typeof process.send === 'function',
         platform: process.platform,
@@ -264,66 +258,50 @@ export class WorkerService {
     this.dataRoutes.setupRoutes(this.app);
     // searchRoutes is set up after database initialization in initializeBackground()
     this.settingsRoutes.setupRoutes(this.app);
-
-    // Register early handler for /api/context/inject to avoid 404 during startup
-    // This handler waits for initialization to complete before delegating to SearchRoutes
-    // NOTE: This duplicates logic from SearchRoutes.handleContextInject by design,
-    // as we need the route available immediately before SearchRoutes is initialized
-    this.app.get('/api/context/inject', async (req, res, next) => {
-      try {
-        // Wait for initialization to complete (with timeout)
-        const timeoutMs = 30000; // 30 second timeout
-        const timeoutPromise = new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('Initialization timeout')), timeoutMs)
-        );
-        
-        await Promise.race([this.initializationComplete, timeoutPromise]);
-
-        // If searchRoutes is still null after initialization, something went wrong
-        if (!this.searchRoutes) {
-          res.status(503).json({ error: 'Search routes not initialized' });
-          return;
-        }
-
-        // Delegate to the proper handler by re-processing the request
-        // Since we're already in the middleware chain, we need to call the handler directly
-        const projectName = req.query.project as string;
-        const useColors = req.query.colors === 'true';
-
-        if (!projectName) {
-          res.status(400).json({ error: 'Project parameter is required' });
-          return;
-        }
-
-        // Import context generator (runs in worker, has access to database)
-        const { generateContext } = await import('./context-generator.js');
-
-        // Use project name as CWD (generateContext uses path.basename to get project)
-        const cwd = `/context/${projectName}`;
-
-        // Generate context
-        const contextText = await generateContext(
-          {
-            session_id: 'context-inject-' + Date.now(),
-            cwd: cwd
-          },
-          useColors
-        );
-
-        // Return as plain text
-        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-        res.send(contextText);
-      } catch (error) {
-        logger.error('WORKER', 'Context inject handler failed', {}, error as Error);
-        res.status(500).json({ error: error instanceof Error ? error.message : 'Internal server error' });
-      }
-    });
   }
 
 
   /**
    * Clean up orphaned chroma-mcp processes from previous worker sessions
-   * Prevents process accumulation and memory leaks
+   *
+   * PURPOSE:
+   * Prevents process accumulation and memory leaks by killing orphaned chroma-mcp
+   * Python processes that may remain after abnormal worker shutdowns.
+   *
+   * PROBLEM SOLVED:
+   * ChromaSync spawns chroma-mcp as a child process for vector embeddings. If the
+   * worker crashes or is forcefully killed (e.g., task manager, SIGKILL), the
+   * chroma-mcp child process may become orphaned and continue running, consuming
+   * memory and potentially causing port conflicts.
+   *
+   * PLATFORM-SPECIFIC IMPLEMENTATION:
+   *
+   * WINDOWS (lines 273-290):
+   * - Uses PowerShell Get-CimInstance to find python.exe processes with chroma-mcp in command line
+   * - Command: Get-CimInstance Win32_Process | Where { Name -like '*python*' -and CommandLine -like '*chroma-mcp*' }
+   * - Kills each PID using taskkill /T /F (tree kill with force)
+   * - Validates PIDs before execution to prevent command injection
+   *
+   * UNIX/MACOS (lines 291-311):
+   * - Uses ps aux | grep "chroma-mcp" to find matching processes
+   * - Parses output to extract PID from second column
+   * - Kills all PIDs using single kill command
+   * - Validates PIDs before execution
+   *
+   * SECURITY CONSIDERATIONS:
+   * - PID validation occurs at TWO points (lines 287, 306, 327) to prevent injection
+   * - Only kills processes matching "chroma-mcp" string (prevents accidental system process kills)
+   * - Non-fatal failure: Logs warning and continues if cleanup fails (lines 342-345)
+   *
+   * WHEN IT RUNS:
+   * - Called during background initialization (line 374)
+   * - Runs BEFORE starting our own chroma-mcp instance
+   * - Ensures clean slate for vector embeddings
+   *
+   * MAINTAINED FOR:
+   * - All platforms (Windows, macOS, Linux)
+   * - Essential for production stability
+   * - Prevents "ghost process" accumulation over time
    */
   private async cleanupOrphanedProcesses(): Promise<void> {
     try {

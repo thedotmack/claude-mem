@@ -12,13 +12,16 @@
 
 import { SessionManager } from '../SessionManager.js';
 import { DatabaseManager } from '../DatabaseManager.js';
-import { SessionEventBroadcaster } from '../events/SessionEventBroadcaster.js';
+import { SSEBroadcaster } from '../SSEBroadcaster.js';
+import type { WorkerService } from '../../worker-service.js';
+import { broadcastSessionCompleted } from '../events/session-events.js';
 
 export class SessionCompletionHandler {
   constructor(
     private sessionManager: SessionManager,
     private dbManager: DatabaseManager,
-    private eventBroadcaster: SessionEventBroadcaster
+    private sseBroadcaster: SSEBroadcaster,
+    private workerService: WorkerService
   ) {}
 
   /**
@@ -33,7 +36,7 @@ export class SessionCompletionHandler {
     this.dbManager.markSessionComplete(sessionDbId);
 
     // Broadcast session completed event
-    this.eventBroadcaster.broadcastSessionCompleted(sessionDbId);
+    broadcastSessionCompleted(this.sseBroadcaster, this.workerService, sessionDbId);
   }
 
   /**

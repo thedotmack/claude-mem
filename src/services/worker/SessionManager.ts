@@ -110,7 +110,6 @@ export class SessionManager {
       sdkSessionId: null,
       project: dbSession.project,
       userPrompt,
-      pendingMessages: [],
       abortController: new AbortController(),
       generatorPromise: null,
       lastPromptNumber: promptNumber || this.dbManager.getSessionStore().getPromptCounter(sessionDbId),
@@ -130,7 +129,6 @@ export class SessionManager {
       sessionId: sessionDbId,
       project: session.project,
       claudeSessionId: session.claudeSessionId,
-      queueDepth: 0,
       hasGenerator: false
     });
 
@@ -158,7 +156,7 @@ export class SessionManager {
       session = this.initializeSession(sessionDbId);
     }
 
-    const beforeDepth = session.pendingMessages.length;
+    const beforeDepth = this.getPendingStore().getPendingCount(sessionDbId);
 
     // CRITICAL: Persist to database FIRST
     const message: PendingMessage = {
@@ -185,10 +183,7 @@ export class SessionManager {
       throw error; // Don't continue if we can't persist
     }
 
-    // Add to in-memory queue (for backward compatibility with existing iterator)
-    session.pendingMessages.push(message);
-
-    const afterDepth = session.pendingMessages.length;
+    const afterDepth = this.getPendingStore().getPendingCount(sessionDbId);
 
     // Notify generator immediately (zero latency)
     const emitter = this.sessionQueues.get(sessionDbId);
@@ -218,7 +213,7 @@ export class SessionManager {
       session = this.initializeSession(sessionDbId);
     }
 
-    const beforeDepth = session.pendingMessages.length;
+    const beforeDepth = this.getPendingStore().getPendingCount(sessionDbId);
 
     // CRITICAL: Persist to database FIRST
     const message: PendingMessage = {
@@ -240,10 +235,7 @@ export class SessionManager {
       throw error; // Don't continue if we can't persist
     }
 
-    // Add to in-memory queue (for backward compatibility with existing iterator)
-    session.pendingMessages.push(message);
-
-    const afterDepth = session.pendingMessages.length;
+    const afterDepth = this.getPendingStore().getPendingCount(sessionDbId);
 
     const emitter = this.sessionQueues.get(sessionDbId);
     emitter?.emit('message');
@@ -301,9 +293,11 @@ export class SessionManager {
    * Check if any session has pending messages (for spinner tracking)
    */
   hasPendingMessages(): boolean {
-    return Array.from(this.sessions.values()).some(
-      session => session.pendingMessages.length > 0
-    );
+    for (const session of this.sessions.values()) {
+      const queueDepth = this.getPendingStore().getPendingCount(session.sessionDbId);
+      if (queueDepth > 0) return true;
+    }
+    return false;
   }
 
   /**
@@ -319,7 +313,7 @@ export class SessionManager {
   getTotalQueueDepth(): number {
     let total = 0;
     for (const session of this.sessions.values()) {
-      total += session.pendingMessages.length;
+      total += this.getPendingStore().getPendingCount(session.sessionDbId);
     }
     return total;
   }
@@ -332,7 +326,7 @@ export class SessionManager {
     let total = 0;
     for (const session of this.sessions.values()) {
       // Count queued messages
-      total += session.pendingMessages.length;
+      total += this.getPendingStore().getPendingCount(session.sessionDbId);
       // Count currently processing item (1 per active generator)
       if (session.generatorPromise !== null) {
         total += 1;
@@ -348,7 +342,7 @@ export class SessionManager {
   isAnySessionProcessing(): boolean {
     for (const session of this.sessions.values()) {
       // Has queued messages waiting to be processed
-      if (session.pendingMessages.length > 0) {
+      if (this.getPendingStore().getPendingCount(session.sessionDbId) > 0) {
         return true;
       }
       // Has active SDK generator running (processing dequeued messages)
@@ -453,13 +447,7 @@ export class SessionManager {
         ...this.getPendingStore().toPendingMessage(persistentMessage)
       };
 
-      // Also add to in-memory queue for backward compatibility (status tracking)
-      session.pendingMessages.push(message);
-
       yield message;
-
-      // Remove from in-memory queue after yielding
-      session.pendingMessages.shift();
 
       // If we just yielded a summary, that's the end of this batch - stop the iterator
       if (message.type === 'summarize') {

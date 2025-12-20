@@ -1224,6 +1224,16 @@ export class SessionStore {
   }
 
   /**
+   * Get session DB ID by Claude session ID
+   * Returns null if session doesn't exist
+   * Used by routes to validate session exists before queuing observations/summaries
+   */
+  getSessionDbIdByClaudeId(claudeSessionId: string): number | null {
+    const result = this.findAnySDKSession(claudeSessionId);
+    return result?.id ?? null;
+  }
+
+  /**
    * Reactivate an existing session
    */
   reactivateSession(id: number, userPrompt: string): void {

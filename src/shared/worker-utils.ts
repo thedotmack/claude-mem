@@ -3,15 +3,15 @@ import { homedir } from "os";
 import { spawnSync } from "child_process";
 import { existsSync, writeFileSync, readFileSync, mkdirSync } from "fs";
 import { logger } from "../utils/logger.js";
-import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
+import { HOOK_TIMEOUTS } from "./hook-constants.js";
 import { ProcessManager } from "../services/process/ProcessManager.js";
 import { SettingsDefaultsManager } from "./SettingsDefaultsManager.js";
 import { getWorkerRestartInstructions } from "../utils/error-messages.js";
 
 const MARKETPLACE_ROOT = path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
 
-// Named constants for health checks
-const HEALTH_CHECK_TIMEOUT_MS = getTimeout(HOOK_TIMEOUTS.HEALTH_CHECK);
+// Named constants for health checks (Windows uses 1500ms, Unix uses 1000ms)
+const HEALTH_CHECK_TIMEOUT_MS = process.platform === 'win32' ? 1500 : 1000;
 
 // Port cache to avoid repeated settings file reads
 let cachedPort: number | null = null;
@@ -132,8 +132,9 @@ async function ensureWorkerVersionMatches(): Promise<void> {
       workerVersion
     });
 
-    // Give files time to sync before restart
-    await new Promise(resolve => setTimeout(resolve, getTimeout(HOOK_TIMEOUTS.PRE_RESTART_SETTLE_DELAY)));
+    // Give files time to sync before restart (Windows: 3000ms, Unix: 2000ms)
+    const settleDelay = process.platform === 'win32' ? 3000 : 2000;
+    await new Promise(resolve => setTimeout(resolve, settleDelay));
 
     // Restart the worker
     await ProcessManager.restart(getWorkerPort());

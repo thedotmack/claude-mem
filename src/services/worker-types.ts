@@ -20,7 +20,6 @@ export interface ActiveSession {
   sdkSessionId: string | null;  // DEPRECATED: unused, will be removed
   project: string;
   userPrompt: string;
-  pendingMessages: PendingMessage[];  // Deprecated: now using persistent store, kept for compatibility
   abortController: AbortController;
   generatorPromise: Promise<void> | null;
   lastPromptNumber: number;

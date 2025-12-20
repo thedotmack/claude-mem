@@ -1,13 +1,50 @@
 /**
  * Worker Wrapper - Manages worker process lifecycle
  *
- * This wrapper exists to solve the Windows zombie port problem.
- * The wrapper spawns the actual worker as a child process.
- * When restart/shutdown is requested, the wrapper kills the child
- * and respawns it (or exits), ensuring clean socket cleanup.
+ * PURPOSE: This wrapper exists to solve the Windows zombie port problem
  *
- * The wrapper itself has no sockets, so Bun's socket cleanup bug
- * doesn't affect it.
+ * PROBLEM SOLVED:
+ * On Windows, Bun has a bug where HTTP server sockets are not properly released
+ * when the process exits. This causes "port already in use" errors when trying to
+ * restart the worker service, requiring manual process killing or system reboot.
+ *
+ * SOLUTION ARCHITECTURE:
+ * Instead of running the worker directly, we use a two-process architecture:
+ *
+ * 1. WRAPPER PROCESS (this file):
+ *    - Has NO network sockets (immune to Bun's socket cleanup bug)
+ *    - Spawns the actual worker as a child process
+ *    - Listens for IPC messages from the worker
+ *    - Handles process lifecycle (restart/shutdown/crash recovery)
+ *
+ * 2. INNER WORKER PROCESS (worker-service.ts):
+ *    - Runs the HTTP server on port 37777
+ *    - Handles all API requests and background work
+ *    - Sends IPC messages to wrapper for restart/shutdown
+ *
+ * RESTART FLOW:
+ * 1. Worker receives shutdown/restart request via HTTP API
+ * 2. Worker sends IPC message to wrapper: { type: 'restart' }
+ * 3. Wrapper kills the worker process tree (releases socket)
+ * 4. Wrapper exits cleanly
+ * 5. Hooks detect worker is down and spawn a fresh wrapper+worker
+ *
+ * PLATFORM-SPECIFIC BEHAVIOR:
+ * - Windows: Uses taskkill /T /F to kill entire process tree (lines 75-85)
+ * - Unix: Uses SIGTERM then SIGKILL if needed (lines 86-109)
+ *
+ * CRASH RECOVERY:
+ * If the inner worker crashes (exit code != 0) while NOT shutting down,
+ * the wrapper automatically respawns it after 1 second (lines 54-58)
+ *
+ * MAINTAINED FOR:
+ * - Windows users experiencing the Bun socket cleanup bug
+ * - Cross-platform consistency (same architecture on all platforms)
+ *
+ * HISTORICAL CONTEXT:
+ * - Introduced in PR #372 by @ToxMox (Dec 2024)
+ * - Fixed Windows "zombie port" problem permanently
+ * - See git commit: a5bf653
  */
 
 import { spawn, ChildProcess, execSync } from 'child_process';

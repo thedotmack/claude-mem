@@ -15,58 +15,25 @@ export interface HookResponse {
   };
 }
 
-function buildHookResponse(
-  hookType: HookType,
-  success: boolean,
-  options: HookResponseOptions
-): HookResponse {
-  if (hookType === 'SessionStart') {
-    if (success && options.context) {
-      return {
-        continue: true,
-        suppressOutput: true,
-        hookSpecificOutput: {
-          hookEventName: 'SessionStart',
-          additionalContext: options.context
-        }
-      };
-    }
-
-    return {
-      continue: true,
-      suppressOutput: true
-    };
-  }
-
-  if (hookType === 'UserPromptSubmit' || hookType === 'PostToolUse') {
-    return {
-      continue: true,
-      suppressOutput: true
-    };
-  }
-
-  if (hookType === 'Stop') {
-    return {
-      continue: true,
-      suppressOutput: true
-    };
-  }
-
-  return {
-    continue: success,
-    suppressOutput: true,
-    ...(options.reason && !success ? { stopReason: options.reason } : {})
-  };
-}
-
 /**
- * Creates a standardized hook response using the HookTemplates system.
+ * Creates a standardized hook response.
+ * All hooks return the same basic response, with optional context injection for SessionStart.
  */
 export function createHookResponse(
   hookType: HookType,
   success: boolean,
   options: HookResponseOptions = {}
 ): string {
-  const response = buildHookResponse(hookType, success, options);
-  return JSON.stringify(response);
+  if (hookType === 'SessionStart' && success && options.context) {
+    return JSON.stringify({
+      continue: true,
+      suppressOutput: true,
+      hookSpecificOutput: {
+        hookEventName: 'SessionStart',
+        additionalContext: options.context
+      }
+    });
+  }
+
+  return JSON.stringify({ continue: true, suppressOutput: true });
 }

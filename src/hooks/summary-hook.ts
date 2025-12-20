@@ -82,21 +82,6 @@ async function summaryHook(input?: StopInput): Promise<void> {
     logger.debug('HOOK', 'Summary request sent successfully');
   } catch (error: any) {
     handleWorkerError(error);
-  } finally {
-    // Stop processing spinner
-    try {
-      const spinnerResponse = await fetch(`http://127.0.0.1:${port}/api/processing`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ isProcessing: false }),
-        signal: AbortSignal.timeout(2000)
-      });
-      if (!spinnerResponse.ok) {
-        logger.warn('HOOK', 'Failed to stop spinner', { status: spinnerResponse.status });
-      }
-    } catch (error: any) {
-      logger.warn('HOOK', 'Could not stop spinner', { error: error.message });
-    }
   }
 
   console.log(createHookResponse('Stop', true));

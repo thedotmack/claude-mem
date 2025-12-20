@@ -55,14 +55,9 @@ async function cleanupHook(input?: SessionEndInput): Promise<void> {
 }
 
 // Entry Point
-if (stdin.isTTY) {
-  // Running manually
-  cleanupHook(undefined);
-} else {
-  let input = '';
-  stdin.on('data', (chunk) => input += chunk);
-  stdin.on('end', async () => {
-    const parsed = input ? JSON.parse(input) : undefined;
-    await cleanupHook(parsed);
-  });
-}
+let input = '';
+stdin.on('data', (chunk) => input += chunk);
+stdin.on('end', async () => {
+  const parsed = input ? JSON.parse(input) : undefined;
+  await cleanupHook(parsed);
+});

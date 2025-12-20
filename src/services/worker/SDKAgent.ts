@@ -43,7 +43,7 @@ export class SDKAgent {
       sessionDbId: session.sessionDbId,
       claudeSessionId: session.claudeSessionId,
       project: session.project,
-      queueDepth: session.pendingMessages.length
+      queueDepth: this.sessionManager.getPendingMessageStore().getPendingCount(session.sessionDbId)
     });
 
     try {

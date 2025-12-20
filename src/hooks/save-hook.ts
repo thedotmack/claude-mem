@@ -1,9 +1,9 @@
 /**
  * Save Hook - PostToolUse
  *
- * Pure HTTP client - sends data to worker, worker handles all database operations
- * including privacy checks. This allows the hook to run under any runtime
- * (Node.js or Bun) since it has no native module dependencies.
+ * PRIVACY BOUNDARY: This hook strips privacy tags before sending data to worker.
+ * The worker receives pre-sanitized data and assumes tags have been removed.
+ * This edge processing pattern keeps the worker service simple.
  */
 
 import { stdin } from 'process';
@@ -13,6 +13,7 @@ import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { handleWorkerError } from '../shared/hook-error-handler.js';
 import { handleFetchError } from './shared/error-handler.js';
+import { stripMemoryTagsFromJson } from '../utils/tag-stripping.js';
 
 export interface PostToolUseInput {
   session_id: string;
@@ -46,22 +47,41 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
   });
 
   try {
-    // Send to worker - worker handles privacy check and database operations
+    // PRIVACY BOUNDARY: Strip tags here at the edge before sending to worker
+    // Normalize to string and strip privacy/context tags
+    let cleanedToolInput = '{}';
+    let cleanedToolResponse = '{}';
+
+    try {
+      const toolInputStr = typeof tool_input === 'string' ? tool_input : JSON.stringify(tool_input);
+      cleanedToolInput = tool_input !== undefined
+        ? stripMemoryTagsFromJson(toolInputStr)
+        : '{}';
+    } catch (error) {
+      logger.debug('HOOK', 'Failed to serialize tool_input', { tool_name }, error);
+      cleanedToolInput = '{"error": "Failed to serialize tool_input"}';
+    }
+
+    try {
+      const toolResponseStr = typeof tool_response === 'string' ? tool_response : JSON.stringify(tool_response);
+      cleanedToolResponse = tool_response !== undefined
+        ? stripMemoryTagsFromJson(toolResponseStr)
+        : '{}';
+    } catch (error) {
+      logger.debug('HOOK', 'Failed to serialize tool_response', { tool_name }, error);
+      cleanedToolResponse = '{"error": "Failed to serialize tool_response"}';
+    }
+
+    // Send pre-sanitized data to worker
     const response = await fetch(`http://127.0.0.1:${port}/api/sessions/observations`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         claudeSessionId: session_id,
         tool_name,
-        tool_input,
-        tool_response,
-        cwd: cwd || logger.happyPathError(
-          'HOOK',
-          'Missing cwd in PostToolUse hook input',
-          undefined,
-          { session_id, tool_name },
-          ''
-        )
+        tool_input: cleanedToolInput,
+        tool_response: cleanedToolResponse,
+        cwd: cwd || process.cwd()
       }),
       signal: AbortSignal.timeout(HOOK_TIMEOUTS.DEFAULT)
     });
