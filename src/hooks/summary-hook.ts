@@ -39,16 +39,14 @@ async function summaryHook(input?: StopInput): Promise<void> {
 
   const port = getWorkerPort();
 
+  // Validate required fields before processing
+  if (!input.transcript_path) {
+    throw new Error(`Missing transcript_path in Stop hook input for session ${session_id}`);
+  }
+
   // Extract last user AND assistant messages from transcript
-  const transcriptPath = input.transcript_path || logger.happyPathError(
-    'HOOK',
-    'Missing transcript_path in Stop hook input',
-    undefined,
-    { session_id },
-    ''
-  );
-  const lastUserMessage = extractLastMessage(transcriptPath, 'user');
-  const lastAssistantMessage = extractLastMessage(transcriptPath, 'assistant', true);
+  const lastUserMessage = extractLastMessage(input.transcript_path, 'user');
+  const lastAssistantMessage = extractLastMessage(input.transcript_path, 'assistant', true);
 
   logger.dataIn('HOOK', 'Stop: Requesting summary', {
     workerPort: port,
