@@ -1,7 +1,7 @@
 import { SessionStore } from '../src/services/sqlite/SessionStore.js';
 import type { Email } from './email-loader.js';
 
-export interface ContextLayerInput {
+interface ContextLayerInput {
   summary?: string;
   observations: Array<{
     id: number;
@@ -11,8 +11,6 @@ export interface ContextLayerInput {
     narrative: string | null;
     facts: string | null;
     created_at: string;
-    from_email?: string;
-    to_email?: string;
   }>;
   currentEmail: Email;
   emailNumber: number;
@@ -42,53 +40,6 @@ function formatTime(isoString: string): string {
   return `${hours}:${minutes}`;
 }
 
-function extractEmailParticipants(email: Email): { from: string; to: string } {
-  const extractAddress = (str: string): string => {
-    const match = str.match(/<([^>]+)>/);
-    return match ? match[1] : str;
-  };
-
-  const from = extractAddress(email.from);
-  const to = email.to.length > 0 ? extractAddress(email.to[0]) : '';
-
-  return { from, to };
-}
-
-function extractObservationParticipants(obs: ContextLayerInput['observations'][0]): { from: string; to: string } {
-  const { from_email, to_email, title, facts } = obs;
-
-  if (from_email && to_email) {
-    return { from: from_email, to: to_email };
-  }
-
-  const extractFromText = (text: string): { from: string; to: string } => {
-    const emailPattern = /<([^>]+@[^>]+)>/g;
-    const matches = Array.from(text.matchAll(emailPattern));
-    if (matches.length >= 2) {
-      return { from: matches[0][1], to: matches[1][1] };
-    }
-    return { from: '', to: '' };
-  };
-
-  if (title) {
-    const extracted = extractFromText(title);
-    if (extracted.from && extracted.to) return extracted;
-  }
-
-  if (facts) {
-    try {
-      const factsList = JSON.parse(facts);
-      if (Array.isArray(factsList) && factsList.length > 0) {
-        const extracted = extractFromText(factsList[0]);
-        if (extracted.from && extracted.to) return extracted;
-      }
-    } catch {
-      // Ignore parsing errors
-    }
-  }
-
-  return { from: '', to: '' };
-}
 
 function buildSummarySection(summary: string | undefined): string {
   if (!summary) {
@@ -98,42 +49,46 @@ function buildSummarySection(summary: string | undefined): string {
   return `# Investigation Summary\n\n${summary}\n`;
 }
 
-function buildIndexTable(observations: ContextLayerInput['observations'], limit: number = 100): string {
+function buildIndexTable(observations: ContextLayerInput['observations']): string {
   if (observations.length === 0) {
     return '\n# Recent Observations Index\n\nNo observations recorded yet.\n';
   }
 
-  const recentObs = observations.slice(0, limit);
-
-  const rows = recentObs.map(obs => {
+  const rows = observations.map(obs => {
     const emoji = TYPE_EMOJI_MAP[obs.type] || '📝';
     const date = formatDate(obs.created_at);
     const time = formatTime(obs.created_at);
-    const { from, to } = extractObservationParticipants(obs);
-    const participants = from && to ? `${from}→${to}` : '';
-    const type = obs.type;
-    const title = (obs.title || '').slice(0, 50);
+    const title = obs.title || '';
 
-    return `| #${obs.id} | ${date} ${time} | ${participants.slice(0, 30)} | ${emoji} | ${type} | ${title} |`;
+    return `| #${obs.id} | ${date} ${time} | ${emoji} | ${obs.type} | ${title} |`;
   });
 
   return `
-# Recent Observations Index (Last ${recentObs.length})
+# Recent Observations Index (Last ${observations.length})
 
-| ID | Date | From→To | T | Type | Title |
-|----|------|---------|---|------|-------|
+| ID | Date | T | Type | Title |
+|----|------|---|------|-------|
 ${rows.join('\n')}
 `;
 }
 
-function buildExpandedSection(observations: ContextLayerInput['observations'], limit: number = 20): string {
+function parseFacts(facts: string | null): string[] | null {
+  if (!facts) return null;
+  try {
+    const parsed = JSON.parse(facts);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    console.warn(`Failed to parse facts JSON: ${facts.slice(0, 100)}...`);
+    return null;
+  }
+}
+
+function buildExpandedSection(observations: ContextLayerInput['observations']): string {
   if (observations.length === 0) {
     return '\n# Detailed Recent Observations\n\nNo observations to display yet.\n';
   }
 
-  const recentObs = observations.slice(0, limit);
-
-  const formatted = recentObs.map(obs => {
+  const formatted = observations.map(obs => {
     const emoji = TYPE_EMOJI_MAP[obs.type] || '📝';
     const title = obs.title || 'Untitled';
     const subtitle = obs.subtitle ? `\n**${obs.subtitle}**` : '';
@@ -144,35 +99,27 @@ function buildExpandedSection(observations: ContextLayerInput['observations'], l
       content += `\n${obs.narrative}`;
     }
 
-    if (obs.facts) {
-      try {
-        const factsList = JSON.parse(obs.facts);
-        if (Array.isArray(factsList) && factsList.length > 0) {
-          content += '\n\n**Facts:**\n';
-          factsList.forEach(fact => {
-            content += `- ${fact}\n`;
-          });
-        }
-      } catch {
-        // Ignore parsing errors
-      }
+    const factsList = parseFacts(obs.facts);
+    if (factsList && factsList.length > 0) {
+      content += '\n\n**Facts:**\n';
+      factsList.forEach(fact => {
+        content += `- ${fact}\n`;
+      });
     }
 
     return `**${emoji} #${obs.id}** ${title}${subtitle}${content}\n`;
   });
 
   return `
-# Detailed Recent Observations (Last ${recentObs.length})
+# Detailed Recent Observations (Last ${observations.length})
 
 ${formatted.join('\n---\n\n')}
 `;
 }
 
 function buildCurrentEmailSection(email: Email, emailNumber: number, totalEmails: number): string {
-  const { from, to } = extractEmailParticipants(email);
-  const date = new Date(email.date).toISOString();
-  const formattedDate = formatDate(date);
-  const formattedTime = formatTime(date);
+  const formattedDate = formatDate(email.date);
+  const formattedTime = formatTime(email.date);
 
   const toList = email.to.join(', ');
   const ccList = email.cc && email.cc.length > 0 ? `\n**CC:** ${email.cc.join(', ')}` : '';
@@ -190,12 +137,12 @@ ${email.body}
 `;
 }
 
-export function formatProgressiveContext(input: ContextLayerInput): string {
+function formatProgressiveContext(input: ContextLayerInput): string {
   const parts: string[] = [];
 
   parts.push(buildSummarySection(input.summary));
-  parts.push(buildIndexTable(input.observations, 100));
-  parts.push(buildExpandedSection(input.observations, 20));
+  parts.push(buildIndexTable(input.observations));
+  parts.push(buildExpandedSection(input.observations));
   parts.push(buildCurrentEmailSection(input.currentEmail, input.emailNumber, input.totalEmails));
 
   return parts.join('\n');
