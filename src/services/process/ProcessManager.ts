@@ -331,10 +331,15 @@ export class ProcessManager {
       const parsed = JSON.parse(content);
       // Validate required fields have correct types
       if (typeof parsed.pid !== 'number' || typeof parsed.port !== 'number') {
+        logger.warn('PROCESS', 'Malformed PID file: missing or invalid pid/port fields', {}, { parsed });
         return null;
       }
       return parsed as PidInfo;
-    } catch {
+    } catch (error) {
+      logger.warn('PROCESS', 'Failed to read PID file', {}, {
+        error: error instanceof Error ? error.message : String(error),
+        path: PID_FILE
+      });
       return null;
     }
   }
