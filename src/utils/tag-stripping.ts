@@ -31,20 +31,10 @@ function countTags(content: string): number {
 }
 
 /**
- * Strip memory tags from JSON-serialized content (tool inputs/responses)
- *
- * @param content - Stringified JSON content from tool_input or tool_response
- * @returns Cleaned content with tags removed, or '{}' if non-string/invalid
- *
- * Note: Returns '{}' for non-strings because this is used in JSON context
- * where we need a valid JSON object if the input is invalid.
+ * Internal function to strip memory tags from content
+ * Shared logic extracted from both JSON and prompt stripping functions
  */
-export function stripMemoryTagsFromJson(content: string): string {
-  if (typeof content !== 'string') {
-    logger.happyPathError('SYSTEM', 'received non-string for JSON context', undefined, { type: typeof content }, '{}');
-    return '{}';  // Safe default for JSON context
-  }
-
+function stripTagsInternal(content: string): string {
   // ReDoS protection: limit tag count before regex processing
   const tagCount = countTags(content);
   if (tagCount > MAX_TAG_COUNT) {
@@ -63,33 +53,21 @@ export function stripMemoryTagsFromJson(content: string): string {
 }
 
 /**
+ * Strip memory tags from JSON-serialized content (tool inputs/responses)
+ *
+ * @param content - Stringified JSON content from tool_input or tool_response
+ * @returns Cleaned content with tags removed, or '{}' if invalid
+ */
+export function stripMemoryTagsFromJson(content: string): string {
+  return stripTagsInternal(content);
+}
+
+/**
  * Strip memory tags from user prompt content
  *
  * @param content - Raw user prompt text
- * @returns Cleaned content with tags removed, or '' if non-string/invalid
- *
- * Note: Returns '' (empty string) for non-strings because this is used in prompt context
- * where an empty prompt indicates the user didn't provide any content.
+ * @returns Cleaned content with tags removed
  */
 export function stripMemoryTagsFromPrompt(content: string): string {
-  if (typeof content !== 'string') {
-    logger.happyPathError('SYSTEM', 'received non-string for prompt context', undefined, { type: typeof content }, '');
-    return '';  // Safe default for prompt content
-  }
-
-  // ReDoS protection: limit tag count before regex processing
-  const tagCount = countTags(content);
-  if (tagCount > MAX_TAG_COUNT) {
-    logger.warn('SYSTEM', 'tag count exceeds limit', undefined, {
-      tagCount,
-      maxAllowed: MAX_TAG_COUNT,
-      contentLength: content.length
-    });
-    // Still process but log the anomaly
-  }
-
-  return content
-    .replace(/<claude-mem-context>[\s\S]*?<\/claude-mem-context>/g, '')
-    .replace(/<private>[\s\S]*?<\/private>/g, '')
-    .trim();
+  return stripTagsInternal(content);
 }
