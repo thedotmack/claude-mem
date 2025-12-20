@@ -40,7 +40,9 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
   const toolStr = logger.formatTool(tool_name, tool_input);
 
   logger.dataIn('HOOK', `PostToolUse: ${toolStr}`, {
-    workerPort: port
+    workerPort: port,
+    sessionId: session_id,
+    cwd
   });
 
   try {

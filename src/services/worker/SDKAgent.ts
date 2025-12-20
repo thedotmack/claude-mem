@@ -39,6 +39,13 @@ export class SDKAgent {
    * @param worker WorkerService reference for spinner control (optional)
    */
   async startSession(session: ActiveSession, worker?: any): Promise<void> {
+    logger.info('SDK', 'Starting SDK agent', {
+      sessionDbId: session.sessionDbId,
+      claudeSessionId: session.claudeSessionId,
+      project: session.project,
+      queueDepth: session.pendingMessages.length
+    });
+
     try {
       // Find Claude executable
       const claudePath = this.findClaudeExecutable();
@@ -74,6 +81,8 @@ export class SDKAgent {
           pathToClaudeCodeExecutable: claudePath
         }
       });
+
+      logger.info('SDK', 'SDK query loop starting', { sessionDbId: session.sessionDbId });
 
       // Process SDK messages
       for await (const message of queryResult) {
@@ -264,12 +273,23 @@ export class SDKAgent {
    * @param discoveryTokens - Token cost for discovering this response (delta, not cumulative)
    */
   private async processSDKResponse(session: ActiveSession, text: string, worker: any | undefined, discoveryTokens: number): Promise<void> {
+    logger.info('SDK', 'Processing SDK response', {
+      sessionDbId: session.sessionDbId,
+      textLength: text.length,
+      hasObservationTag: text.includes('<observation>'),
+      hasSummaryTag: text.includes('<summary>')
+    });
+
     // Get mode for this session from database metadata
     const store = this.dbManager.getSessionStore();
     const modeId = store.getSessionModeByClaudeSessionId(session.claudeSessionId) || 'code';
 
     // Parse observations using session's mode for type validation
     const observations = parseObservations(text, modeId, session.claudeSessionId);
+    logger.info('SDK', 'Parsed observations', {
+      sessionDbId: session.sessionDbId,
+      count: observations.length
+    });
 
     // Store observations
     for (const obs of observations) {

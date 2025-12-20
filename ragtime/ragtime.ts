@@ -17,7 +17,7 @@ import path from 'path';
 // Environment configuration
 const EMAILS_DIR = process.env.EMAILS_DIR || './datasets/emails-markdown';
 const EMAIL_LIMIT = process.env.EMAIL_LIMIT ? parseInt(process.env.EMAIL_LIMIT, 10) : undefined;
-const MODEL_ID = process.env.CLAUDE_MEM_MODEL || 'claude-sonnet-4-5-20250929';
+const MODEL_ID = process.env.CLAUDE_MEM_MODEL || 'sonnet';
 
 function resolvePluginPath(): string {
   // If explicitly set, use that
@@ -38,6 +38,9 @@ function resolvePluginPath(): string {
 async function processEmail(emailPath: string, emailNumber: number, totalEmails: number, pluginPath: string): Promise<void> {
   const absolutePath = path.resolve(emailPath);
   console.log(`\n[${emailNumber}/${totalEmails}] ${path.basename(emailPath)}`);
+  console.log(`Plugin: ${pluginPath}`);
+  console.log(`Mode: ${process.env.CLAUDE_MEM_MODE}`);
+  console.log(`Project: ${process.env.CLAUDE_MEM_PROJECT}`);
 
   // Simple prompt - just tell it to read the file
   const prompt = `Read ${absolutePath}`;

@@ -44,6 +44,12 @@ export class SessionRoutes extends BaseRouteHandler {
    */
   private ensureGeneratorRunning(sessionDbId: number, source: string): void {
     const session = this.sessionManager.getSession(sessionDbId);
+    logger.info('SESSION', `ensureGeneratorRunning called (${source})`, {
+      sessionId: sessionDbId,
+      sessionExists: !!session,
+      hasGenerator: session?.generatorPromise !== null && session?.generatorPromise !== undefined,
+      queueDepth: session?.pendingMessages.length ?? 0
+    });
     if (session && !session.generatorPromise) {
       logger.info('SESSION', `Generator auto-starting (${source})`, {
         sessionId: sessionDbId,
