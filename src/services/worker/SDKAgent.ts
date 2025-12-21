@@ -215,8 +215,9 @@ export class SDKAgent {
             content: buildObservationPrompt({
               id: 0, // Not used in prompt
               tool_name: message.tool_name!,
-              tool_input: JSON.stringify(message.tool_input),
-              tool_output: JSON.stringify(message.tool_response),
+              // tool_input and tool_response are already JSON strings from SessionRoutes
+              tool_input: message.tool_input as string,
+              tool_output: message.tool_response as string,
               created_at_epoch: Date.now(),
               cwd: message.cwd
             })
@@ -277,6 +278,8 @@ export class SDKAgent {
       });
 
       // Sync to Chroma with error logging
+      // NOTE: This is fire-and-forget. If Chroma sync fails, the observation is still
+      // saved to SQLite but won't be available for semantic search.
       const chromaStart = Date.now();
       const obsType = obs.type;
       const obsTitle = obs.title || '(untitled)';
@@ -297,12 +300,16 @@ export class SDKAgent {
           title: obsTitle
         });
       }).catch(err => {
-        logger.error('CHROMA', 'Failed to sync observation', {
+        // Log as warning to make sync failures more visible
+        // The observation is saved to SQLite but semantic search may be incomplete
+        logger.warn('CHROMA', 'Failed to sync observation - semantic search may be incomplete', {
           obsId,
           sessionId: session.sessionDbId,
           type: obsType,
-          title: obsTitle
-        }, err);
+          title: obsTitle,
+          errorMessage: err instanceof Error ? err.message : String(err)
+        });
+        logger.debug('CHROMA', 'Sync error details', { obsId }, err);
       });
 
       // Broadcast to SSE clients (for web UI)

@@ -456,14 +456,15 @@ export class SessionRoutes extends BaseRouteHandler {
 
     const store = this.dbManager.getSessionStore();
 
-    // Step 1: Create/get SDK session (idempotent INSERT OR IGNORE)
-    const sessionDbId = store.createSDKSession(claudeSessionId, project, prompt);
-
-    // Step 2: Increment prompt counter
-    const promptNumber = store.incrementPromptCounter(sessionDbId);
-
-    // Step 3: Strip privacy tags from prompt
+    // Step 1: Strip privacy tags from prompt BEFORE storing
+    // This prevents <private> content from being persisted to sdk_sessions.user_prompt
     const cleanedPrompt = stripMemoryTagsFromPrompt(prompt);
+
+    // Step 2: Create/get SDK session with CLEANED prompt (idempotent INSERT OR IGNORE)
+    const sessionDbId = store.createSDKSession(claudeSessionId, project, cleanedPrompt);
+
+    // Step 3: Increment prompt counter
+    const promptNumber = store.incrementPromptCounter(sessionDbId);
 
     // Step 4: Check if prompt is entirely private
     if (!cleanedPrompt || cleanedPrompt.trim() === '') {
