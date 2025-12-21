@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [7.4.4] - 2025-12-21
+
+## What's Changed
+
+* Code quality: comprehensive nonsense audit cleanup (20 issues) by @thedotmack in #400
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.4.3...v7.4.4
+
 ## [7.4.3] - 2025-12-20
 
 Added Discord notification script for release announcements.
