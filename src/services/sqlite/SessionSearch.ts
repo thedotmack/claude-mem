@@ -1,4 +1,4 @@
-import Database from 'better-sqlite3';
+import { Database } from 'bun:sqlite';
 import { TableNameRow } from '../../types/database.js';
 import { DATA_DIR, DB_PATH, ensureDir } from '../../shared/paths.js';
 import {
@@ -18,7 +18,7 @@ import {
  * Vector search is handled by ChromaDB - this class only supports filtering without query text
  */
 export class SessionSearch {
-  private db: Database.Database;
+  private db: Database;
 
   constructor(dbPath?: string) {
     if (!dbPath) {
@@ -26,7 +26,7 @@ export class SessionSearch {
       dbPath = DB_PATH;
     }
     this.db = new Database(dbPath);
-    this.db.pragma('journal_mode = WAL');
+    this.db.run('PRAGMA journal_mode = WAL');
 
     // Ensure FTS tables exist
     this.ensureFTSTables();
@@ -44,6 +44,9 @@ export class SessionSearch {
    * - Tables maintained but search paths removed
    * - Triggers still fire to keep tables synchronized
    *
+   * Note: Using console.log for migration messages since they run during constructor
+   * before structured logger is available. Actual errors use console.error.
+   *
    * TODO: Remove FTS5 infrastructure in future major version (v7.0.0)
    */
   private ensureFTSTables(): void {
@@ -57,10 +60,10 @@ export class SessionSearch {
         return;
       }
 
-      console.error('[SessionSearch] Creating FTS5 tables...');
+      console.log('[SessionSearch] Creating FTS5 tables...');
 
       // Create observations_fts virtual table
-      this.db.exec(`
+      this.db.run(`
         CREATE VIRTUAL TABLE IF NOT EXISTS observations_fts USING fts5(
           title,
           subtitle,
@@ -74,14 +77,14 @@ export class SessionSearch {
       `);
 
       // Populate with existing data
-      this.db.exec(`
+      this.db.run(`
         INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
         SELECT id, title, subtitle, narrative, text, facts, concepts
         FROM observations;
       `);
 
       // Create triggers for observations
-      this.db.exec(`
+      this.db.run(`
         CREATE TRIGGER IF NOT EXISTS observations_ai AFTER INSERT ON observations BEGIN
           INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
           VALUES (new.id, new.title, new.subtitle, new.narrative, new.text, new.facts, new.concepts);
@@ -101,7 +104,7 @@ export class SessionSearch {
       `);
 
       // Create session_summaries_fts virtual table
-      this.db.exec(`
+      this.db.run(`
         CREATE VIRTUAL TABLE IF NOT EXISTS session_summaries_fts USING fts5(
           request,
           investigated,
@@ -115,14 +118,14 @@ export class SessionSearch {
       `);
 
       // Populate with existing data
-      this.db.exec(`
+      this.db.run(`
         INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
         SELECT id, request, investigated, learned, completed, next_steps, notes
         FROM session_summaries;
       `);
 
       // Create triggers for session_summaries
-      this.db.exec(`
+      this.db.run(`
         CREATE TRIGGER IF NOT EXISTS session_summaries_ai AFTER INSERT ON session_summaries BEGIN
           INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
           VALUES (new.id, new.request, new.investigated, new.learned, new.completed, new.next_steps, new.notes);
@@ -141,7 +144,7 @@ export class SessionSearch {
         END;
       `);
 
-      console.error('[SessionSearch] FTS5 tables created successfully');
+      console.log('[SessionSearch] FTS5 tables created successfully');
     } catch (error: any) {
       console.error('[SessionSearch] FTS migration error:', error.message);
     }

@@ -108,7 +108,7 @@ Settings and configuration (use domain services directly):
 - Keep all existing behavior identical
 
 **MCP vs Direct DB Split** (inherited, not changed in Phase 1):
-- Search operations → MCP server (claude-mem-search)
+- Search operations → MCP server (mem-search)
 - Session/data operations → Direct DB access via domain services
 
 ## Future Phase 2

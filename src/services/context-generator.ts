@@ -6,6 +6,7 @@
  */
 
 import path from 'path';
+import { homedir } from 'os';
 import { existsSync, readFileSync, unlinkSync } from 'fs';
 import { SessionStore } from './sqlite/SessionStore.js';
 import {
@@ -16,6 +17,15 @@ import {
 } from '../constants/observation-metadata.js';
 import { logger } from '../utils/logger.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
+import {
+  parseJsonArray,
+  formatDateTime,
+  formatTime,
+  formatDate,
+  toRelativePath,
+  extractFirstFile
+} from '../shared/timeline-formatting.js';
+import { getProjectName } from '../utils/project-name.js';
 import { MARKETPLACE_ROOT } from '../shared/paths.js';
 
 // Version marker path - respects CLAUDE_CONFIG_DIR for users with custom Claude locations
@@ -145,57 +155,6 @@ interface SessionSummary {
   created_at_epoch: number;
 }
 
-// Helper: Parse JSON array safely
-function parseJsonArray(json: string | null): string[] {
-  if (!json) return [];
-  try {
-    const parsed = JSON.parse(json);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch (err) {
-    return [];
-  }
-}
-
-// Helper: Format date with time
-function formatDateTime(dateStr: string): string {
-  const date = new Date(dateStr);
-  return date.toLocaleString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-    hour12: true
-  });
-}
-
-// Helper: Format just time (no date)
-function formatTime(dateStr: string): string {
-  const date = new Date(dateStr);
-  return date.toLocaleString('en-US', {
-    hour: 'numeric',
-    minute: '2-digit',
-    hour12: true
-  });
-}
-
-// Helper: Format just date
-function formatDate(dateStr: string): string {
-  const date = new Date(dateStr);
-  return date.toLocaleString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric'
-  });
-}
-
-// Helper: Convert absolute paths to relative paths
-function toRelativePath(filePath: string, cwd: string): string {
-  if (path.isAbsolute(filePath)) {
-    return path.relative(cwd, filePath);
-  }
-  return filePath;
-}
-
 // Helper: Render a summary field
 function renderSummaryField(label: string, value: string | null, color: string, useColors: boolean): string[] {
   if (!value) return [];
@@ -265,7 +224,7 @@ function extractPriorMessages(transcriptPath: string): { userMessage: string; as
 export async function generateContext(input?: ContextInput, useColors: boolean = false): Promise<string> {
   const config = loadContextConfig();
   const cwd = input?.cwd ?? process.cwd();
-  const project = cwd ? path.basename(cwd) : 'unknown-project';
+  const project = getProjectName(cwd);
 
   let db: SessionStore | null = null;
   try {
@@ -335,7 +294,7 @@ export async function generateContext(input?: ContextInput, useColors: boolean =
         priorAssistantMessage = messages.assistantMessage;
       }
     } catch (error) {
-      // Ignore
+      // Expected: Transcript file may not exist or be readable
     }
   }
 
@@ -544,20 +503,16 @@ export async function generateContext(input?: ContextInput, useColors: boolean =
 
           const summary = item.data;
           const summaryTitle = `${summary.request || 'Session started'} (${formatDateTime(summary.displayTime)})`;
-          const link = summary.shouldShowLink ? `claude-mem://session-summary/${summary.id}` : '';
 
           if (useColors) {
-            const linkPart = link ? `${colors.dim}[${link}]${colors.reset}` : '';
-            output.push(`🎯 ${colors.yellow}#S${summary.id}${colors.reset} ${summaryTitle} ${linkPart}`);
+            output.push(`🎯 ${colors.yellow}#S${summary.id}${colors.reset} ${summaryTitle}`);
           } else {
-            const linkPart = link ? ` [→](${link})` : '';
-            output.push(`**🎯 #S${summary.id}** ${summaryTitle}${linkPart}`);
+            output.push(`**🎯 #S${summary.id}** ${summaryTitle}`);
           }
           output.push('');
         } else {
           const obs = item.data;
-          const files = parseJsonArray(obs.files_modified);
-          const file = (files.length > 0 && files[0]) ? toRelativePath(files[0], cwd) : 'General';
+          const file = extractFirstFile(obs.files_modified, cwd);
 
           if (file !== currentFile) {
             if (tableOpen) {

@@ -15,7 +15,6 @@ import { SessionStore } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
-import { happy_path_error__with_fallback } from '../../utils/silent-debug.js';
 import path from 'path';
 import os from 'os';
 
@@ -73,6 +72,7 @@ interface StoredUserPrompt {
 
 export class ChromaSync {
   private client: Client | null = null;
+  private transport: StdioClientTransport | null = null;
   private connected: boolean = false;
   private project: string;
   private collectionName: string;
@@ -101,7 +101,9 @@ export class ChromaSync {
       // See: https://github.com/thedotmack/claude-mem/issues/170 (Python 3.14 incompatibility)
       const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
       const pythonVersion = settings.CLAUDE_MEM_PYTHON_VERSION;
-      const transport = new StdioClientTransport({
+      const isWindows = process.platform === 'win32';
+
+      const transportOptions: any = {
         command: 'uvx',
         args: [
           '--python', pythonVersion,
@@ -110,7 +112,16 @@ export class ChromaSync {
           '--data-dir', this.VECTOR_DB_DIR
         ],
         stderr: 'ignore'
-      });
+      };
+
+      // CRITICAL: On Windows, try to hide console window to prevent PowerShell popups
+      // Note: windowsHide may not be supported by MCP SDK's StdioClientTransport
+      if (isWindows) {
+        transportOptions.windowsHide = true;
+        logger.debug('CHROMA_SYNC', 'Windows detected, attempting to hide console window', { project: this.project });
+      }
+
+      this.transport = new StdioClientTransport(transportOptions);
 
       this.client = new Client({
         name: 'claude-mem-chroma-sync',
@@ -119,7 +130,7 @@ export class ChromaSync {
         capabilities: {}
       });
 
-      await this.client.connect(transport);
+      await this.client.connect(this.transport);
       this.connected = true;
 
       logger.info('CHROMA_SYNC', 'Connected to Chroma MCP server', { project: this.project });
@@ -137,7 +148,10 @@ export class ChromaSync {
     await this.ensureConnection();
 
     if (!this.client) {
-      throw new Error('Chroma client not initialized');
+      throw new Error(
+        'Chroma client not initialized. Call ensureConnection() before using client methods.' +
+        ` Project: ${this.project}`
+      );
     }
 
     try {
@@ -318,7 +332,10 @@ export class ChromaSync {
     await this.ensureCollection();
 
     if (!this.client) {
-      throw new Error('Chroma client not initialized');
+      throw new Error(
+        'Chroma client not initialized. Call ensureConnection() before using client methods.' +
+        ` Project: ${this.project}`
+      );
     }
 
     try {
@@ -495,7 +512,10 @@ export class ChromaSync {
     await this.ensureConnection();
 
     if (!this.client) {
-      throw new Error('Chroma client not initialized');
+      throw new Error(
+        'Chroma client not initialized. Call ensureConnection() before using client methods.' +
+        ` Project: ${this.project}`
+      );
     }
 
     const observationIds = new Set<number>();
@@ -749,7 +769,10 @@ export class ChromaSync {
     await this.ensureConnection();
 
     if (!this.client) {
-      throw new Error('Chroma client not initialized');
+      throw new Error(
+        'Chroma client not initialized. Call ensureConnection() before using client methods.' +
+        ` Project: ${this.project}`
+      );
     }
 
     const whereStringified = whereFilter ? JSON.stringify(whereFilter) : undefined;
@@ -767,9 +790,11 @@ export class ChromaSync {
       arguments: arguments_obj
     });
 
-    const resultText = happy_path_error__with_fallback(
+    const resultText = logger.happyPathError(
+      'CHROMA',
       'Missing text in MCP chroma_query_documents result',
-      { project: this.project, query_text: query },
+      { project: this.project },
+      { query_text: query },
       result.content[0]?.text || ''
     );
 
@@ -815,14 +840,38 @@ export class ChromaSync {
   }
 
   /**
-   * Close the Chroma client connection
+   * Close the Chroma client connection and cleanup subprocess
    */
   async close(): Promise<void> {
-    if (this.client && this.connected) {
-      await this.client.close();
+    if (!this.connected && !this.client && !this.transport) {
+      return;
+    }
+
+    try {
+      // Close client first
+      if (this.client) {
+        try {
+          await this.client.close();
+        } catch (error) {
+          logger.warn('CHROMA_SYNC', 'Error closing Chroma client', { project: this.project }, error as Error);
+        }
+      }
+
+      // Explicitly close transport to kill subprocess
+      if (this.transport) {
+        try {
+          await this.transport.close();
+        } catch (error) {
+          logger.warn('CHROMA_SYNC', 'Error closing transport', { project: this.project }, error as Error);
+        }
+      }
+
+      logger.info('CHROMA_SYNC', 'Chroma client and subprocess closed', { project: this.project });
+    } finally {
+      // Always reset state, even if errors occurred
       this.connected = false;
       this.client = null;
-      logger.info('CHROMA_SYNC', 'Chroma client closed', { project: this.project });
+      this.transport = null;
     }
   }
 }

@@ -5,17 +5,17 @@ description: "SQLite schema, FTS5 search, and data storage"
 
 # Database Architecture
 
-Claude-Mem uses SQLite 3 with the better-sqlite3 native module for persistent storage and FTS5 for full-text search.
+Claude-Mem uses SQLite 3 with the bun:sqlite native module for persistent storage and FTS5 for full-text search.
 
 ## Database Location
 
-- **Current**: `~/.claude-mem/claude-mem.db`
+**Path**: `~/.claude-mem/claude-mem.db`
 
-**Note**: Despite the README claiming v4.0.0+ moved the database to `${CLAUDE_PLUGIN_ROOT}/data/`, the actual implementation still uses `~/.claude-mem/`.
+The database uses SQLite's WAL (Write-Ahead Logging) mode for concurrent reads/writes.
 
 ## Database Implementation
 
-**Primary Implementation**: better-sqlite3 (native SQLite module)
+**Primary Implementation**: bun:sqlite (native SQLite module)
 - Used by: SessionStore and SessionSearch
 - Format: Synchronous API with better performance
 - **Note**: Database.ts (using bun:sqlite) is legacy code
@@ -301,8 +301,8 @@ Database schema is managed via migrations in `src/services/sqlite/migrations.ts`
 - **Indexes**: All foreign keys and frequently queried columns are indexed
 - **FTS5**: Full-text search is significantly faster than LIKE queries
 - **Triggers**: Automatic synchronization has minimal overhead
-- **Connection Pooling**: better-sqlite3 reuses connections efficiently
-- **Synchronous API**: better-sqlite3 uses synchronous API for better performance
+- **Connection Pooling**: bun:sqlite reuses connections efficiently
+- **Synchronous API**: bun:sqlite uses synchronous API for better performance
 
 ## Troubleshooting
 

@@ -7,12 +7,12 @@
  */
 
 import { stdin } from 'process';
-import { createHookResponse } from './hook-response.js';
+import { STANDARD_HOOK_RESPONSE } from './hook-response.js';
 import { logger } from '../utils/logger.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
-import { happy_path_error__with_fallback } from '../utils/silent-debug.js';
 import { handleWorkerError } from '../shared/hook-error-handler.js';
+import { handleFetchError } from './shared/error-handler.js';
 
 export interface PostToolUseInput {
   session_id: string;
@@ -43,6 +43,11 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
     workerPort: port
   });
 
+  // Validate required fields before sending to worker
+  if (!cwd) {
+    throw new Error(`Missing cwd in PostToolUse hook input for session ${session_id}, tool ${tool_name}`);
+  }
+
   try {
     // Send to worker - worker handles privacy check and database operations
     const response = await fetch(`http://127.0.0.1:${port}/api/sessions/observations`, {
@@ -53,21 +58,20 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
         tool_name,
         tool_input,
         tool_response,
-        cwd: happy_path_error__with_fallback(
-          'Missing cwd in PostToolUse hook input',
-          { session_id, tool_name },
-          cwd || ''
-        )
+        cwd
       }),
       signal: AbortSignal.timeout(HOOK_TIMEOUTS.DEFAULT)
     });
 
     if (!response.ok) {
       const errorText = await response.text();
-      logger.failure('HOOK', 'Failed to send observation', {
-        status: response.status
-      }, errorText);
-      throw new Error(`Failed to send observation to worker: ${response.status} ${errorText}`);
+      handleFetchError(response, errorText, {
+        hookName: 'save',
+        operation: 'Observation storage',
+        toolName: tool_name,
+        sessionId: session_id,
+        port
+      });
     }
 
     logger.debug('HOOK', 'Observation sent successfully', { toolName: tool_name });
@@ -75,7 +79,7 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
     handleWorkerError(error);
   }
 
-  console.log(createHookResponse('PostToolUse', true));
+  console.log(STANDARD_HOOK_RESPONSE);
 }
 
 // Entry Point

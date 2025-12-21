@@ -1,9 +1,9 @@
-import path from 'path';
 import { stdin } from 'process';
-import { createHookResponse } from './hook-response.js';
+import { STANDARD_HOOK_RESPONSE } from './hook-response.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
-import { happy_path_error__with_fallback } from '../utils/silent-debug.js';
 import { handleWorkerError } from '../shared/hook-error-handler.js';
+import { handleFetchError } from './shared/error-handler.js';
+import { getProjectName } from '../utils/project-name.js';
 
 export interface UserPromptSubmitInput {
   session_id: string;
@@ -24,13 +24,7 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
   }
 
   const { session_id, cwd, prompt } = input;
-  const project = path.basename(cwd);
-
-  happy_path_error__with_fallback('[new-hook] Input received', {
-    session_id,
-    project,
-    prompt_length: prompt?.length
-  });
+  const project = getProjectName(cwd);
 
   const port = getWorkerPort();
 
@@ -52,7 +46,12 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
 
     if (!initResponse.ok) {
       const errorText = await initResponse.text();
-      throw new Error(`Failed to initialize session: ${initResponse.status} ${errorText}`);
+      handleFetchError(initResponse, errorText, {
+        hookName: 'new',
+        operation: 'Session initialization',
+        project,
+        port
+      });
     }
 
     const initResult = await initResponse.json();
@@ -62,7 +61,7 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
     // Check if prompt was entirely private (worker performs privacy check)
     if (initResult.skipped && initResult.reason === 'private') {
       console.error(`[new-hook] Session ${sessionDbId}, prompt #${promptNumber} (fully private - skipped)`);
-      console.log(createHookResponse('UserPromptSubmit', true));
+      console.log(STANDARD_HOOK_RESPONSE);
       return;
     }
 
@@ -86,13 +85,19 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`Failed to start SDK agent: ${response.status} ${errorText}`);
+      handleFetchError(response, errorText, {
+        hookName: 'new',
+        operation: 'SDK agent start',
+        project,
+        port,
+        sessionId: String(sessionDbId)
+      });
     }
   } catch (error: any) {
     handleWorkerError(error);
   }
 
-  console.log(createHookResponse('UserPromptSubmit', true));
+  console.log(STANDARD_HOOK_RESPONSE);
 }
 
 // Entry Point

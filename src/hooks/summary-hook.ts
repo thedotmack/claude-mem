@@ -10,12 +10,12 @@
  */
 
 import { stdin } from 'process';
-import { createHookResponse } from './hook-response.js';
+import { STANDARD_HOOK_RESPONSE } from './hook-response.js';
 import { logger } from '../utils/logger.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
-import { happy_path_error__with_fallback } from '../utils/silent-debug.js';
 import { handleWorkerError } from '../shared/hook-error-handler.js';
+import { handleFetchError } from './shared/error-handler.js';
 import { extractLastMessage } from '../shared/transcript-parser.js';
 
 export interface StopInput {
@@ -39,20 +39,22 @@ async function summaryHook(input?: StopInput): Promise<void> {
 
   const port = getWorkerPort();
 
+  // Validate required fields before processing
+  if (!input.transcript_path) {
+    throw new Error(`Missing transcript_path in Stop hook input for session ${session_id}`);
+  }
+
   // Extract last user AND assistant messages from transcript
-  const transcriptPath = happy_path_error__with_fallback(
-    'Missing transcript_path in Stop hook input',
-    { session_id },
-    input.transcript_path || ''
-  );
-  const lastUserMessage = extractLastMessage(transcriptPath, 'user');
-  const lastAssistantMessage = extractLastMessage(transcriptPath, 'assistant', true);
+  const lastUserMessage = extractLastMessage(input.transcript_path, 'user');
+  const lastAssistantMessage = extractLastMessage(input.transcript_path, 'assistant', true);
 
   logger.dataIn('HOOK', 'Stop: Requesting summary', {
     workerPort: port,
     hasLastUserMessage: !!lastUserMessage,
     hasLastAssistantMessage: !!lastAssistantMessage
   });
+
+  let summaryError: Error | null = null;
 
   try {
     // Send to worker - worker handles privacy check and database operations
@@ -69,17 +71,20 @@ async function summaryHook(input?: StopInput): Promise<void> {
 
     if (!response.ok) {
       const errorText = await response.text();
-      logger.failure('HOOK', 'Failed to generate summary', {
-        status: response.status
-      }, errorText);
-      throw new Error(`Failed to request summary from worker: ${response.status} ${errorText}`);
+      handleFetchError(response, errorText, {
+        hookName: 'summary',
+        operation: 'Summary generation',
+        sessionId: session_id,
+        port
+      });
     }
 
     logger.debug('HOOK', 'Summary request sent successfully');
   } catch (error: any) {
+    summaryError = error;
     handleWorkerError(error);
   } finally {
-    // Stop processing spinner
+    // Stop processing spinner (non-critical operation, errors are logged but don't block)
     try {
       const spinnerResponse = await fetch(`http://127.0.0.1:${port}/api/processing`, {
         method: 'POST',
@@ -95,7 +100,12 @@ async function summaryHook(input?: StopInput): Promise<void> {
     }
   }
 
-  console.log(createHookResponse('Stop', true));
+  // Re-throw summary error after cleanup to ensure it's not masked by finally block
+  if (summaryError) {
+    throw summaryError;
+  }
+
+  console.log(STANDARD_HOOK_RESPONSE);
 }
 
 // Entry Point

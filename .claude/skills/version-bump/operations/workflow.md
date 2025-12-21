@@ -64,7 +64,6 @@ Files to update:
 - package.json: "version": "4.2.9"
 - marketplace.json: "version": "4.2.9"
 - plugin.json: "version": "4.2.9"
-- CLAUDE.md line 9: "**Current Version**: 4.2.9" (version number ONLY)
 - Git tag: v4.2.9
 
 Proceed? (yes/no)
@@ -116,18 +115,6 @@ File: `plugin/.claude-plugin/plugin.json`
 
 Update line 3 with new version.
 
-### Update CLAUDE.md
-
-File: `CLAUDE.md`
-
-**ONLY update line 9 with the version number:**
-
-```markdown
-**Current Version**: 4.2.9
-```
-
-**CRITICAL:** DO NOT add version history entries to CLAUDE.md. Version history is managed separately outside this skill.
-
 ## Step 6: Verify Consistency
 
 ```bash
@@ -155,7 +142,7 @@ Build must succeed before proceeding.
 
 ```bash
 # Stage all version files
-git add package.json .claude-plugin/marketplace.json plugin/.claude-plugin/plugin.json CLAUDE.md plugin/scripts/
+git add package.json .claude-plugin/marketplace.json plugin/.claude-plugin/plugin.json plugin/scripts/
 
 # Commit with descriptive message
 git commit -m "Release vX.Y.Z: [Brief description]
@@ -209,6 +196,17 @@ git push
 - Keeps the changelog in sync with release notes
 - No manual editing required
 - Single source of truth: GitHub releases
+
+## Step 11: Discord Notification
+
+Post release announcement to the Discord updates channel:
+
+```bash
+# Send Discord notification with release details
+npm run discord:notify vX.Y.Z
+```
+
+This fetches the release notes from GitHub and posts a formatted embed to the Discord updates channel configured in `.env`.
 
 ## Verification
 

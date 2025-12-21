@@ -113,7 +113,7 @@ Many endpoints share these parameters:
 ## Error Handling
 
 **Worker not running:**
-Connection refused error. Response: "The search API isn't available. Check if worker is running: `pm2 list`"
+Connection refused error. Response: "The search API isn't available. Check if worker is running: `npm run worker:status`"
 
 **Invalid endpoint:**
 ```json

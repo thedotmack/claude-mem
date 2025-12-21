@@ -6,11 +6,12 @@
  * native module dependencies.
  */
 
-import path from "path";
 import { stdin } from "process";
 import { ensureWorkerRunning, getWorkerPort } from "../shared/worker-utils.js";
 import { HOOK_TIMEOUTS } from "../shared/hook-constants.js";
 import { handleWorkerError } from "../shared/hook-error-handler.js";
+import { handleFetchError } from "./shared/error-handler.js";
+import { getProjectName } from "../utils/project-name.js";
 
 export interface SessionStartInput {
   session_id: string;
@@ -24,7 +25,7 @@ async function contextHook(input?: SessionStartInput): Promise<string> {
   await ensureWorkerRunning();
 
   const cwd = input?.cwd ?? process.cwd();
-  const project = cwd ? path.basename(cwd) : "unknown-project";
+  const project = getProjectName(cwd);
   const port = getWorkerPort();
 
   const url = `http://127.0.0.1:${port}/api/context/inject?project=${encodeURIComponent(project)}`;
@@ -34,7 +35,12 @@ async function contextHook(input?: SessionStartInput): Promise<string> {
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`Failed to fetch context: ${response.status} ${errorText}`);
+      handleFetchError(response, errorText, {
+        hookName: 'context',
+        operation: 'Context generation',
+        project,
+        port
+      });
     }
 
     const result = await response.text();

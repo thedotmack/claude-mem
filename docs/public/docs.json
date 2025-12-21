@@ -37,8 +37,11 @@
           "installation",
           "usage/getting-started",
           "usage/search-tools",
+          "usage/claude-desktop",
           "usage/private-tags",
-          "beta-features"
+          "usage/export-import",
+          "beta-features",
+          "endless-mode"
         ]
       },
       {
@@ -69,7 +72,8 @@
           "architecture/hooks",
           "architecture/worker-service",
           "architecture/database",
-          "architecture/search-architecture"
+          "architecture/search-architecture",
+          "architecture/pm2-to-bun-migration"
         ]
       }
     ]

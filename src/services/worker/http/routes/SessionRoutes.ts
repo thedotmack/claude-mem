@@ -9,7 +9,6 @@ import express, { Request, Response } from 'express';
 import { getWorkerPort } from '../../../../shared/worker-utils.js';
 import { logger } from '../../../../utils/logger.js';
 import { stripMemoryTagsFromJson, stripMemoryTagsFromPrompt } from '../../../../utils/tag-stripping.js';
-import { happy_path_error__with_fallback } from '../../../../utils/silent-debug.js';
 import { SessionManager } from '../../SessionManager.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
 import { SDKAgent } from '../../SDKAgent.js';
@@ -278,19 +277,14 @@ export class SessionRoutes extends BaseRouteHandler {
     // Skip meta-observations: file operations on session-memory files
     const fileOperationTools = new Set(['Edit', 'Write', 'Read', 'NotebookEdit']);
     if (fileOperationTools.has(tool_name) && tool_input) {
-      try {
-        const filePath = tool_input.file_path || tool_input.notebook_path;
-        if (filePath && filePath.includes('session-memory')) {
-          logger.debug('SESSION', 'Skipping meta-observation for session-memory file', {
-            tool_name,
-            file_path: filePath
-          });
-          res.json({ status: 'skipped', reason: 'session_memory_meta' });
-          return;
-        }
-      } catch (error) {
-        // If we can't parse tool_input, continue normally
-        logger.debug('SESSION', 'Could not check file_path for session-memory filter', { tool_name }, error);
+      const filePath = tool_input.file_path || tool_input.notebook_path;
+      if (filePath && filePath.includes('session-memory')) {
+        logger.debug('SESSION', 'Skipping meta-observation for session-memory file', {
+          tool_name,
+          file_path: filePath
+        });
+        res.json({ status: 'skipped', reason: 'session_memory_meta' });
+        return;
       }
     }
 
@@ -342,10 +336,12 @@ export class SessionRoutes extends BaseRouteHandler {
       tool_input: cleanedToolInput,
       tool_response: cleanedToolResponse,
       prompt_number: promptNumber,
-      cwd: happy_path_error__with_fallback(
+      cwd: cwd || logger.happyPathError(
+        'SESSION',
         'Missing cwd when queueing observation in SessionRoutes',
-        { sessionDbId, tool_name },
-        cwd || ''
+        { sessionId: sessionDbId },
+        { tool_name },
+        ''
       )
     });
 
@@ -394,10 +390,12 @@ export class SessionRoutes extends BaseRouteHandler {
     // Queue summarize
     this.sessionManager.queueSummarize(
       sessionDbId,
-      happy_path_error__with_fallback(
+      last_user_message || logger.happyPathError(
+        'SESSION',
         'Missing last_user_message when queueing summary in SessionRoutes',
-        { sessionDbId },
-        last_user_message || ''
+        { sessionId: sessionDbId },
+        undefined,
+        ''
       ),
       last_assistant_message
     );

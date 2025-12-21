@@ -15,6 +15,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_MODEL: string;
   CLAUDE_MEM_CONTEXT_OBSERVATIONS: string;
   CLAUDE_MEM_WORKER_PORT: string;
+  CLAUDE_MEM_WORKER_HOST: string;
   CLAUDE_MEM_SKIP_TOOLS: string;
   // System Configuration
   CLAUDE_MEM_DATA_DIR: string;
@@ -43,9 +44,10 @@ export class SettingsDefaultsManager {
    * Default values for all settings
    */
   private static readonly DEFAULTS: SettingsDefaults = {
-    CLAUDE_MEM_MODEL: 'claude-haiku-4-5',
+    CLAUDE_MEM_MODEL: 'claude-sonnet-4-5',
     CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
     CLAUDE_MEM_WORKER_PORT: '37777',
+    CLAUDE_MEM_WORKER_HOST: '127.0.0.1',
     CLAUDE_MEM_SKIP_TOOLS: 'ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion',
     // System Configuration
     CLAUDE_MEM_DATA_DIR: join(homedir(), '.claude-mem'),
@@ -102,39 +104,45 @@ export class SettingsDefaultsManager {
   /**
    * Load settings from file with fallback to defaults
    * Returns merged settings with defaults as fallback
+   * Handles all errors (missing file, corrupted JSON, permissions) by returning defaults
    */
   static loadFromFile(settingsPath: string): SettingsDefaults {
-    if (!existsSync(settingsPath)) {
+    try {
+      if (!existsSync(settingsPath)) {
+        return this.getAllDefaults();
+      }
+
+      const settingsData = readFileSync(settingsPath, 'utf-8');
+      const settings = JSON.parse(settingsData);
+
+      // MIGRATION: Handle old nested schema { env: {...} }
+      let flatSettings = settings;
+      if (settings.env && typeof settings.env === 'object') {
+        // Migrate from nested to flat schema
+        flatSettings = settings.env;
+
+        // Auto-migrate the file to flat schema
+        try {
+          writeFileSync(settingsPath, JSON.stringify(flatSettings, null, 2), 'utf-8');
+          logger.info('SETTINGS', 'Migrated settings file from nested to flat schema', { settingsPath });
+        } catch (error) {
+          logger.warn('SETTINGS', 'Failed to auto-migrate settings file', { settingsPath }, error);
+          // Continue with in-memory migration even if write fails
+        }
+      }
+
+      // Merge file settings with defaults (flat schema)
+      const result: SettingsDefaults = { ...this.DEFAULTS };
+      for (const key of Object.keys(this.DEFAULTS) as Array<keyof SettingsDefaults>) {
+        if (flatSettings[key] !== undefined) {
+          result[key] = flatSettings[key];
+        }
+      }
+
+      return result;
+    } catch (error) {
+      logger.warn('SETTINGS', 'Failed to load settings, using defaults', { settingsPath }, error);
       return this.getAllDefaults();
     }
-
-    const settingsData = readFileSync(settingsPath, 'utf-8');
-    const settings = JSON.parse(settingsData);
-
-    // MIGRATION: Handle old nested schema { env: {...} }
-    let flatSettings = settings;
-    if (settings.env && typeof settings.env === 'object') {
-      // Migrate from nested to flat schema
-      flatSettings = settings.env;
-
-      // Auto-migrate the file to flat schema
-      try {
-        writeFileSync(settingsPath, JSON.stringify(flatSettings, null, 2), 'utf-8');
-        logger.info('SETTINGS', 'Migrated settings file from nested to flat schema', { settingsPath });
-      } catch (error) {
-        logger.warn('SETTINGS', 'Failed to auto-migrate settings file', { settingsPath }, error);
-        // Continue with in-memory migration even if write fails
-      }
-    }
-
-    // Merge file settings with defaults (flat schema)
-    const result: SettingsDefaults = { ...this.DEFAULTS };
-    for (const key of Object.keys(this.DEFAULTS) as Array<keyof SettingsDefaults>) {
-      if (flatSettings[key] !== undefined) {
-        result[key] = flatSettings[key];
-      }
-    }
-
-    return result;
   }
 }
