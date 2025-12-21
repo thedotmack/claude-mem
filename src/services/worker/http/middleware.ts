@@ -30,7 +30,9 @@ export function createMiddleware(
   // HTTP request/response logging
   middlewares.push((req: Request, res: Response, next: NextFunction) => {
     // Skip logging for static assets and health checks
-    if (req.path.startsWith('/health') || req.path === '/' || req.path.includes('.')) {
+    const staticExtensions = ['.html', '.js', '.css', '.svg', '.png', '.jpg', '.jpeg', '.webp', '.woff', '.woff2', '.ttf', '.eot'];
+    const isStaticAsset = staticExtensions.some(ext => req.path.endsWith(ext));
+    if (req.path.startsWith('/health') || req.path === '/' || isStaticAsset) {
       return next();
     }
 
