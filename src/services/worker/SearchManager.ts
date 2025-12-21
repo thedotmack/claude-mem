@@ -14,7 +14,7 @@ import { FormattingService } from './FormattingService.js';
 import { TimelineService, TimelineItem } from './TimelineService.js';
 import { ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../sqlite/types.js';
 import { logger } from '../../utils/logger.js';
-import { formatDate, formatTime, extractFirstFile, groupByDate, estimateTokens } from '../../shared/timeline-formatting.js';
+import { formatDate, formatTime, formatDateTime, extractFirstFile, groupByDate, estimateTokens } from '../../shared/timeline-formatting.js';
 
 const COLLECTION_NAME = 'cm__claude-mem';
 const RECENCY_WINDOW_DAYS = 90;
