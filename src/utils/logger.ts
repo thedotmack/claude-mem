@@ -101,7 +101,7 @@ class Logger {
     try {
       const input = typeof toolInput === 'string' ? JSON.parse(toolInput) : toolInput;
 
-      // Special formatting for common tools
+      // Bash: show command (truncated)
       if (toolName === 'Bash' && input.command) {
         const cmd = input.command.length > 50
           ? input.command.substring(0, 50) + '...'
@@ -109,19 +109,67 @@ class Logger {
         return `${toolName}(${cmd})`;
       }
 
-      if (toolName === 'Read' && input.file_path) {
-        const path = input.file_path.split('/').pop() || input.file_path;
-        return `${toolName}(${path})`;
+      // File operations: show filename only
+      if (input.file_path) {
+        const filename = input.file_path.split('/').pop() || input.file_path;
+        return `${toolName}(${filename})`;
       }
 
-      if (toolName === 'Edit' && input.file_path) {
-        const path = input.file_path.split('/').pop() || input.file_path;
-        return `${toolName}(${path})`;
+      // NotebookEdit: show notebook filename
+      if (input.notebook_path) {
+        const filename = input.notebook_path.split('/').pop() || input.notebook_path;
+        return `${toolName}(${filename})`;
       }
 
-      if (toolName === 'Write' && input.file_path) {
-        const path = input.file_path.split('/').pop() || input.file_path;
-        return `${toolName}(${path})`;
+      // Glob: show pattern
+      if (toolName === 'Glob' && input.pattern) {
+        return `${toolName}(${input.pattern})`;
+      }
+
+      // Grep: show pattern
+      if (toolName === 'Grep' && input.pattern) {
+        const pattern = input.pattern.length > 30
+          ? input.pattern.substring(0, 30) + '...'
+          : input.pattern;
+        return `${toolName}(${pattern})`;
+      }
+
+      // WebFetch/WebSearch: show URL or query
+      if (input.url) {
+        const url = input.url.length > 40
+          ? input.url.substring(0, 40) + '...'
+          : input.url;
+        return `${toolName}(${url})`;
+      }
+
+      if (input.query) {
+        const query = input.query.length > 40
+          ? input.query.substring(0, 40) + '...'
+          : input.query;
+        return `${toolName}(${query})`;
+      }
+
+      // Task: show subagent_type or description
+      if (toolName === 'Task') {
+        if (input.subagent_type) {
+          return `${toolName}(${input.subagent_type})`;
+        }
+        if (input.description) {
+          const desc = input.description.length > 30
+            ? input.description.substring(0, 30) + '...'
+            : input.description;
+          return `${toolName}(${desc})`;
+        }
+      }
+
+      // Skill: show skill name
+      if (toolName === 'Skill' && input.skill) {
+        return `${toolName}(${input.skill})`;
+      }
+
+      // LSP: show operation type
+      if (toolName === 'LSP' && input.operation) {
+        return `${toolName}(${input.operation})`;
       }
 
       // Default: just show tool name
