@@ -83,3 +83,4 @@ This architecture preserves the open-source nature of the project while enabling
 # Important
 
 No need to edit the changelog ever, it's generated automatically.
+No need to run tests, they are useless and are always deleted.
