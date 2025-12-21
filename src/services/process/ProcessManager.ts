@@ -11,14 +11,6 @@ const PID_FILE = join(DATA_DIR, 'worker.pid');
 const LOG_DIR = join(DATA_DIR, 'logs');
 const MARKETPLACE_ROOT = join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
 
-// Timeout constants
-const PROCESS_STOP_TIMEOUT_MS = 5000;
-const HEALTH_CHECK_TIMEOUT_MS = 10000;
-const HEALTH_CHECK_INTERVAL_MS = 200;
-const HEALTH_CHECK_FETCH_TIMEOUT_MS = 1000;
-const PROCESS_EXIT_CHECK_INTERVAL_MS = 100;
-const HTTP_SHUTDOWN_TIMEOUT_MS = 2000;
-
 interface PidInfo {
   pid: number;
   port: number;
@@ -172,7 +164,7 @@ export class ProcessManager {
     }
   }
 
-  static async stop(timeout: number = PROCESS_STOP_TIMEOUT_MS): Promise<boolean> {
+  static async stop(timeout: number = 5000): Promise<boolean> {
     const info = this.getPidInfo();
 
     if (process.platform === 'win32') {
@@ -285,7 +277,7 @@ export class ProcessManager {
       // Send shutdown request
       const response = await fetch(`http://127.0.0.1:${port}/api/admin/shutdown`, {
         method: 'POST',
-        signal: AbortSignal.timeout(HTTP_SHUTDOWN_TIMEOUT_MS)
+        signal: AbortSignal.timeout(2000)
       });
 
       if (!response.ok) {
@@ -293,7 +285,7 @@ export class ProcessManager {
       }
 
       // Wait for worker to actually stop responding
-      return await this.waitForWorkerDown(port, PROCESS_STOP_TIMEOUT_MS);
+      return await this.waitForWorkerDown(port, 5000);
     } catch {
       // Worker not responding to HTTP - it may be dead or hung
       return false;
@@ -312,7 +304,7 @@ export class ProcessManager {
           signal: AbortSignal.timeout(500)
         });
         // Still responding, wait and retry
-        await new Promise(resolve => setTimeout(resolve, PROCESS_EXIT_CHECK_INTERVAL_MS));
+        await new Promise(resolve => setTimeout(resolve, 100));
       } catch {
         // Worker stopped responding - success
         return true;
@@ -331,10 +323,15 @@ export class ProcessManager {
       const parsed = JSON.parse(content);
       // Validate required fields have correct types
       if (typeof parsed.pid !== 'number' || typeof parsed.port !== 'number') {
+        logger.warn('PROCESS', 'Malformed PID file: missing or invalid pid/port fields', {}, { parsed });
         return null;
       }
       return parsed as PidInfo;
-    } catch {
+    } catch (error) {
+      logger.warn('PROCESS', 'Failed to read PID file', {}, {
+        error: error instanceof Error ? error.message : String(error),
+        path: PID_FILE
+      });
       return null;
     }
   }
@@ -363,7 +360,7 @@ export class ProcessManager {
     }
   }
 
-  private static async waitForHealth(pid: number, port: number, timeoutMs: number = HEALTH_CHECK_TIMEOUT_MS): Promise<{ success: boolean; pid?: number; error?: string }> {
+  private static async waitForHealth(pid: number, port: number, timeoutMs: number = 10000): Promise<{ success: boolean; pid?: number; error?: string }> {
     const startTime = Date.now();
     const isWindows = process.platform === 'win32';
     // Increase timeout on Windows to account for slower process startup
@@ -381,7 +378,7 @@ export class ProcessManager {
       // Try readiness check (changed from /health to /api/readiness)
       try {
         const response = await fetch(`http://127.0.0.1:${port}/api/readiness`, {
-          signal: AbortSignal.timeout(HEALTH_CHECK_FETCH_TIMEOUT_MS)
+          signal: AbortSignal.timeout(1000)
         });
         if (response.ok) {
           return { success: true, pid };
@@ -390,7 +387,7 @@ export class ProcessManager {
         // Not ready yet, continue polling
       }
 
-      await new Promise(resolve => setTimeout(resolve, HEALTH_CHECK_INTERVAL_MS));
+      await new Promise(resolve => setTimeout(resolve, 200));
     }
 
     const timeoutMsg = isWindows
@@ -407,7 +404,7 @@ export class ProcessManager {
       if (!this.isProcessAlive(pid)) {
         return;
       }
-      await new Promise(resolve => setTimeout(resolve, PROCESS_EXIT_CHECK_INTERVAL_MS));
+      await new Promise(resolve => setTimeout(resolve, 100));
     }
 
     throw new Error('Process did not exit within timeout');

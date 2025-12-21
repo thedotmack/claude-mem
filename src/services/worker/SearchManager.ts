@@ -14,7 +14,7 @@ import { FormattingService } from './FormattingService.js';
 import { TimelineService, TimelineItem } from './TimelineService.js';
 import { ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../sqlite/types.js';
 import { logger } from '../../utils/logger.js';
-import { formatDate, formatTime, extractFirstFile, groupByDate } from '../../shared/timeline-formatting.js';
+import { formatDate, formatTime, extractFirstFile, groupByDate, estimateTokens } from '../../shared/timeline-formatting.js';
 
 const COLLECTION_NAME = 'cm__claude-mem';
 const RECENCY_WINDOW_DAYS = 90;
@@ -91,6 +91,7 @@ export class SearchManager {
         let observations: ObservationSearchResult[] = [];
         let sessions: SessionSummarySearchResult[] = [];
         let prompts: UserPromptSearchResult[] = [];
+        let chromaFailed = false;
 
         // Determine which types to query based on type filter
         const searchObservations = !type || type === 'observations';
@@ -181,17 +182,19 @@ export class SearchManager {
               logger.debug('SEARCH', 'ChromaDB found no matches (final result, no FTS5 fallback)', {});
             }
           } catch (chromaError: any) {
-            logger.debug('SEARCH', 'ChromaDB failed - returning empty results (FTS5 fallback removed)', { error: chromaError.message });
+            chromaFailed = true;
+            logger.debug('SEARCH', 'ChromaDB failed - semantic search unavailable', { error: chromaError.message });
             logger.debug('SEARCH', 'Install UVX/Python to enable vector search', { url: 'https://docs.astral.sh/uv/getting-started/installation/' });
-            // Return empty results - no fallback
+            // Set empty results - will show error message to user
             observations = [];
             sessions = [];
             prompts = [];
           }
         }
-        // ChromaDB not initialized - return empty results (no fallback)
-        else {
-          logger.debug('SEARCH', 'ChromaDB not initialized - returning empty results (FTS5 fallback removed)', {});
+        // ChromaDB not initialized - mark as failed to show proper error message
+        else if (query) {
+          chromaFailed = true;
+          logger.debug('SEARCH', 'ChromaDB not initialized - semantic search unavailable', {});
           logger.debug('SEARCH', 'Install UVX/Python to enable vector search', { url: 'https://docs.astral.sh/uv/getting-started/installation/' });
           observations = [];
           sessions = [];
@@ -212,6 +215,14 @@ export class SearchManager {
         }
 
         if (totalResults === 0) {
+          if (chromaFailed) {
+            return {
+              content: [{
+                type: 'text' as const,
+                text: `⚠️  Vector search failed - semantic search unavailable.\n\nTo enable semantic search:\n1. Install uv: https://docs.astral.sh/uv/getting-started/installation/\n2. Restart the worker: npm run worker:restart\n\nNote: You can still use filter-only searches (date ranges, types, files) without a query term.`
+              }]
+            };
+          }
           return {
             content: [{
               type: 'text' as const,
@@ -483,41 +494,6 @@ export class SearchManager {
             }]
           };
         }
-
-        // Format timeline (helper functions)
-        const formatDate = (epochMs: number): string => {
-          const date = new Date(epochMs);
-          return date.toLocaleString('en-US', {
-            month: 'short',
-            day: 'numeric',
-            year: 'numeric'
-          });
-        };
-
-        const formatTime = (epochMs: number): string => {
-          const date = new Date(epochMs);
-          return date.toLocaleString('en-US', {
-            hour: 'numeric',
-            minute: '2-digit',
-            hour12: true
-          });
-        };
-
-        const formatDateTime = (epochMs: number): string => {
-          const date = new Date(epochMs);
-          return date.toLocaleString('en-US', {
-            month: 'short',
-            day: 'numeric',
-            hour: 'numeric',
-            minute: '2-digit',
-            hour12: true
-          });
-        };
-
-        const estimateTokens = (text: string | null): number => {
-          if (!text) return 0;
-          return Math.ceil(text.length / 4);
-        };
 
         // Format results
         const lines: string[] = [];
@@ -1603,41 +1579,6 @@ export class SearchManager {
           };
         }
 
-        // Helper functions matching context-hook.ts
-        const formatDate = (epochMs: number): string => {
-          const date = new Date(epochMs);
-          return date.toLocaleString('en-US', {
-            month: 'short',
-            day: 'numeric',
-            year: 'numeric'
-          });
-        };
-
-        const formatTime = (epochMs: number): string => {
-          const date = new Date(epochMs);
-          return date.toLocaleString('en-US', {
-            hour: 'numeric',
-            minute: '2-digit',
-            hour12: true
-          });
-        };
-
-        const formatDateTime = (epochMs: number): string => {
-          const date = new Date(epochMs);
-          return date.toLocaleString('en-US', {
-            month: 'short',
-            day: 'numeric',
-            hour: 'numeric',
-            minute: '2-digit',
-            hour12: true
-          });
-        };
-
-        const estimateTokens = (text: string | null): number => {
-          if (!text) return 0;
-          return Math.ceil(text.length / 4);
-        };
-
         // Format results matching context-hook.ts exactly
         const lines: string[] = [];
 
@@ -1892,41 +1833,6 @@ export class SearchManager {
               }]
             };
           }
-
-          // Helper functions (reused from get_context_timeline)
-          const formatDate = (epochMs: number): string => {
-            const date = new Date(epochMs);
-            return date.toLocaleString('en-US', {
-              month: 'short',
-              day: 'numeric',
-              year: 'numeric'
-            });
-          };
-
-          const formatTime = (epochMs: number): string => {
-            const date = new Date(epochMs);
-            return date.toLocaleString('en-US', {
-              hour: 'numeric',
-              minute: '2-digit',
-              hour12: true
-            });
-          };
-
-          const formatDateTime = (epochMs: number): string => {
-            const date = new Date(epochMs);
-            return date.toLocaleString('en-US', {
-              month: 'short',
-              day: 'numeric',
-              hour: 'numeric',
-              minute: '2-digit',
-              hour12: true
-            });
-          };
-
-          const estimateTokens = (text: string | null): number => {
-            if (!text) return 0;
-            return Math.ceil(text.length / 4);
-          };
 
           // Format timeline (reused from get_context_timeline)
           const lines: string[] = [];

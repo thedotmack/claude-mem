@@ -10,7 +10,7 @@
  */
 
 import { stdin } from 'process';
-import { createHookResponse } from './hook-response.js';
+import { STANDARD_HOOK_RESPONSE } from './hook-response.js';
 import { logger } from '../utils/logger.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
@@ -39,22 +39,22 @@ async function summaryHook(input?: StopInput): Promise<void> {
 
   const port = getWorkerPort();
 
+  // Validate required fields before processing
+  if (!input.transcript_path) {
+    throw new Error(`Missing transcript_path in Stop hook input for session ${session_id}`);
+  }
+
   // Extract last user AND assistant messages from transcript
-  const transcriptPath = input.transcript_path || logger.happyPathError(
-    'HOOK',
-    'Missing transcript_path in Stop hook input',
-    undefined,
-    { session_id },
-    ''
-  );
-  const lastUserMessage = extractLastMessage(transcriptPath, 'user');
-  const lastAssistantMessage = extractLastMessage(transcriptPath, 'assistant', true);
+  const lastUserMessage = extractLastMessage(input.transcript_path, 'user');
+  const lastAssistantMessage = extractLastMessage(input.transcript_path, 'assistant', true);
 
   logger.dataIn('HOOK', 'Stop: Requesting summary', {
     workerPort: port,
     hasLastUserMessage: !!lastUserMessage,
     hasLastAssistantMessage: !!lastAssistantMessage
   });
+
+  let summaryError: Error | null = null;
 
   try {
     // Send to worker - worker handles privacy check and database operations
@@ -81,9 +81,10 @@ async function summaryHook(input?: StopInput): Promise<void> {
 
     logger.debug('HOOK', 'Summary request sent successfully');
   } catch (error: any) {
+    summaryError = error;
     handleWorkerError(error);
   } finally {
-    // Stop processing spinner
+    // Stop processing spinner (non-critical operation, errors are logged but don't block)
     try {
       const spinnerResponse = await fetch(`http://127.0.0.1:${port}/api/processing`, {
         method: 'POST',
@@ -99,7 +100,12 @@ async function summaryHook(input?: StopInput): Promise<void> {
     }
   }
 
-  console.log(createHookResponse('Stop', true));
+  // Re-throw summary error after cleanup to ensure it's not masked by finally block
+  if (summaryError) {
+    throw summaryError;
+  }
+
+  console.log(STANDARD_HOOK_RESPONSE);
 }
 
 // Entry Point

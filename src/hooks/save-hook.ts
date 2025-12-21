@@ -7,7 +7,7 @@
  */
 
 import { stdin } from 'process';
-import { createHookResponse } from './hook-response.js';
+import { STANDARD_HOOK_RESPONSE } from './hook-response.js';
 import { logger } from '../utils/logger.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
@@ -43,6 +43,11 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
     workerPort: port
   });
 
+  // Validate required fields before sending to worker
+  if (!cwd) {
+    throw new Error(`Missing cwd in PostToolUse hook input for session ${session_id}, tool ${tool_name}`);
+  }
+
   try {
     // Send to worker - worker handles privacy check and database operations
     const response = await fetch(`http://127.0.0.1:${port}/api/sessions/observations`, {
@@ -53,13 +58,7 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
         tool_name,
         tool_input,
         tool_response,
-        cwd: cwd || logger.happyPathError(
-          'HOOK',
-          'Missing cwd in PostToolUse hook input',
-          undefined,
-          { session_id, tool_name },
-          ''
-        )
+        cwd
       }),
       signal: AbortSignal.timeout(HOOK_TIMEOUTS.DEFAULT)
     });
@@ -80,7 +79,7 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
     handleWorkerError(error);
   }
 
-  console.log(createHookResponse('PostToolUse', true));
+  console.log(STANDARD_HOOK_RESPONSE);
 }
 
 // Entry Point

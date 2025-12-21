@@ -22,15 +22,17 @@ export function getProjectName(cwd: string | null | undefined): string {
   if (basename === '') {
     // Extract drive letter on Windows, or use 'root' on Unix
     const isWindows = process.platform === 'win32';
-    if (isWindows && cwd.match(/^[A-Z]:\\/i)) {
-      const driveLetter = cwd[0].toUpperCase();
-      const projectName = `drive-${driveLetter}`;
-      logger.info('PROJECT_NAME', 'Drive root detected', { cwd, projectName });
-      return projectName;
-    } else {
-      logger.warn('PROJECT_NAME', 'Root directory detected, using fallback', { cwd });
-      return 'unknown-project';
+    if (isWindows) {
+      const driveMatch = cwd.match(/^([A-Z]):\\/i);
+      if (driveMatch) {
+        const driveLetter = driveMatch[1].toUpperCase();
+        const projectName = `drive-${driveLetter}`;
+        logger.info('PROJECT_NAME', 'Drive root detected', { cwd, projectName });
+        return projectName;
+      }
     }
+    logger.warn('PROJECT_NAME', 'Root directory detected, using fallback', { cwd });
+    return 'unknown-project';
   }
 
   return basename;

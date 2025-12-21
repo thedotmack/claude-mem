@@ -22,9 +22,10 @@ export function parseJsonArray(json: string | null): string[] {
 
 /**
  * Format date with time (e.g., "Dec 14, 7:30 PM")
+ * Accepts either ISO date string or epoch milliseconds
  */
-export function formatDateTime(dateStr: string): string {
-  const date = new Date(dateStr);
+export function formatDateTime(dateInput: string | number): string {
+  const date = new Date(dateInput);
   return date.toLocaleString('en-US', {
     month: 'short',
     day: 'numeric',
@@ -36,9 +37,10 @@ export function formatDateTime(dateStr: string): string {
 
 /**
  * Format just time, no date (e.g., "7:30 PM")
+ * Accepts either ISO date string or epoch milliseconds
  */
-export function formatTime(dateStr: string): string {
-  const date = new Date(dateStr);
+export function formatTime(dateInput: string | number): string {
+  const date = new Date(dateInput);
   return date.toLocaleString('en-US', {
     hour: 'numeric',
     minute: '2-digit',
@@ -48,9 +50,10 @@ export function formatTime(dateStr: string): string {
 
 /**
  * Format just date (e.g., "Dec 14, 2025")
+ * Accepts either ISO date string or epoch milliseconds
  */
-export function formatDate(dateStr: string): string {
-  const date = new Date(dateStr);
+export function formatDate(dateInput: string | number): string {
+  const date = new Date(dateInput);
   return date.toLocaleString('en-US', {
     month: 'short',
     day: 'numeric',
@@ -74,6 +77,14 @@ export function toRelativePath(filePath: string, cwd: string): string {
 export function extractFirstFile(filesModified: string | null, cwd: string): string {
   const files = parseJsonArray(filesModified);
   return files.length > 0 ? toRelativePath(files[0], cwd) : 'General';
+}
+
+/**
+ * Estimate token count for text (rough approximation: ~4 chars per token)
+ */
+export function estimateTokens(text: string | null): number {
+  if (!text) return 0;
+  return Math.ceil(text.length / 4);
 }
 
 /**

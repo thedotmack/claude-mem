@@ -59,70 +59,8 @@ export class SettingsRoutes extends BaseRouteHandler {
    * Update environment settings (in ~/.claude-mem/settings.json) with validation
    */
   private handleUpdateSettings = this.wrapHandler((req: Request, res: Response): void => {
-    // Validate CLAUDE_MEM_CONTEXT_OBSERVATIONS
-    if (req.body.CLAUDE_MEM_CONTEXT_OBSERVATIONS) {
-      const obsCount = parseInt(req.body.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10);
-      if (isNaN(obsCount) || obsCount < 1 || obsCount > 200) {
-        res.status(400).json({
-          success: false,
-          error: 'CLAUDE_MEM_CONTEXT_OBSERVATIONS must be between 1 and 200'
-        });
-        return;
-      }
-    }
-
-    // Validate CLAUDE_MEM_WORKER_PORT
-    if (req.body.CLAUDE_MEM_WORKER_PORT) {
-      const port = parseInt(req.body.CLAUDE_MEM_WORKER_PORT, 10);
-      if (isNaN(port) || port < 1024 || port > 65535) {
-        res.status(400).json({
-          success: false,
-          error: 'CLAUDE_MEM_WORKER_PORT must be between 1024 and 65535'
-        });
-        return;
-      }
-    }
-
-    // Validate CLAUDE_MEM_WORKER_HOST (IP address or 0.0.0.0)
-    if (req.body.CLAUDE_MEM_WORKER_HOST) {
-      const host = req.body.CLAUDE_MEM_WORKER_HOST;
-      // Allow localhost variants and valid IP patterns
-      const validHostPattern = /^(127\.0\.0\.1|0\.0\.0\.0|localhost|\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/;
-      if (!validHostPattern.test(host)) {
-        res.status(400).json({
-          success: false,
-          error: 'CLAUDE_MEM_WORKER_HOST must be a valid IP address (e.g., 127.0.0.1, 0.0.0.0)'
-        });
-        return;
-      }
-    }
-
-    // Validate CLAUDE_MEM_LOG_LEVEL
-    if (req.body.CLAUDE_MEM_LOG_LEVEL) {
-      const validLevels = ['DEBUG', 'INFO', 'WARN', 'ERROR', 'SILENT'];
-      if (!validLevels.includes(req.body.CLAUDE_MEM_LOG_LEVEL.toUpperCase())) {
-        res.status(400).json({
-          success: false,
-          error: 'CLAUDE_MEM_LOG_LEVEL must be one of: DEBUG, INFO, WARN, ERROR, SILENT'
-        });
-        return;
-      }
-    }
-
-    // Validate CLAUDE_MEM_PYTHON_VERSION (must be valid Python version format)
-    if (req.body.CLAUDE_MEM_PYTHON_VERSION) {
-      const pythonVersionRegex = /^3\.\d{1,2}$/;
-      if (!pythonVersionRegex.test(req.body.CLAUDE_MEM_PYTHON_VERSION)) {
-        res.status(400).json({
-          success: false,
-          error: 'CLAUDE_MEM_PYTHON_VERSION must be in format "3.X" or "3.XX" (e.g., "3.13")'
-        });
-        return;
-      }
-    }
-
-    // Validate context settings
-    const validation = this.validateContextSettings(req.body);
+    // Validate all settings
+    const validation = this.validateSettings(req.body);
     if (!validation.valid) {
       res.status(400).json({
         success: false,
@@ -274,9 +212,51 @@ export class SettingsRoutes extends BaseRouteHandler {
   });
 
   /**
-   * Validate context settings from request body
+   * Validate all settings from request body (single source of truth)
    */
-  private validateContextSettings(settings: any): { valid: boolean; error?: string } {
+  private validateSettings(settings: any): { valid: boolean; error?: string } {
+    // Validate CLAUDE_MEM_CONTEXT_OBSERVATIONS
+    if (settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS) {
+      const obsCount = parseInt(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10);
+      if (isNaN(obsCount) || obsCount < 1 || obsCount > 200) {
+        return { valid: false, error: 'CLAUDE_MEM_CONTEXT_OBSERVATIONS must be between 1 and 200' };
+      }
+    }
+
+    // Validate CLAUDE_MEM_WORKER_PORT
+    if (settings.CLAUDE_MEM_WORKER_PORT) {
+      const port = parseInt(settings.CLAUDE_MEM_WORKER_PORT, 10);
+      if (isNaN(port) || port < 1024 || port > 65535) {
+        return { valid: false, error: 'CLAUDE_MEM_WORKER_PORT must be between 1024 and 65535' };
+      }
+    }
+
+    // Validate CLAUDE_MEM_WORKER_HOST (IP address or 0.0.0.0)
+    if (settings.CLAUDE_MEM_WORKER_HOST) {
+      const host = settings.CLAUDE_MEM_WORKER_HOST;
+      // Allow localhost variants and valid IP patterns
+      const validHostPattern = /^(127\.0\.0\.1|0\.0\.0\.0|localhost|\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/;
+      if (!validHostPattern.test(host)) {
+        return { valid: false, error: 'CLAUDE_MEM_WORKER_HOST must be a valid IP address (e.g., 127.0.0.1, 0.0.0.0)' };
+      }
+    }
+
+    // Validate CLAUDE_MEM_LOG_LEVEL
+    if (settings.CLAUDE_MEM_LOG_LEVEL) {
+      const validLevels = ['DEBUG', 'INFO', 'WARN', 'ERROR', 'SILENT'];
+      if (!validLevels.includes(settings.CLAUDE_MEM_LOG_LEVEL.toUpperCase())) {
+        return { valid: false, error: 'CLAUDE_MEM_LOG_LEVEL must be one of: DEBUG, INFO, WARN, ERROR, SILENT' };
+      }
+    }
+
+    // Validate CLAUDE_MEM_PYTHON_VERSION (must be valid Python version format)
+    if (settings.CLAUDE_MEM_PYTHON_VERSION) {
+      const pythonVersionRegex = /^3\.\d{1,2}$/;
+      if (!pythonVersionRegex.test(settings.CLAUDE_MEM_PYTHON_VERSION)) {
+        return { valid: false, error: 'CLAUDE_MEM_PYTHON_VERSION must be in format "3.X" or "3.XX" (e.g., "3.13")' };
+      }
+    }
+
     // Validate boolean string values
     const booleanSettings = [
       'CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS',
