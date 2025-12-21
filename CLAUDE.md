@@ -14,7 +14,7 @@ Claude-mem is a Claude Code plugin providing persistent memory across sessions. 
 
 **Worker Service** (`src/services/worker-service.ts`) - Express API on port 37777, Bun-managed, handles AI processing asynchronously
 
-**Database** (`src/services/sqlite/`) - SQLite3 at `~/.claude-mem/claude-mem.db` with FTS5 full-text search
+**Database** (`src/services/sqlite/`) - SQLite3 at `~/.claude-mem/claude-mem.db` 
 
 **Search Skill** (`plugin/skills/mem-search/SKILL.md`) - HTTP API for searching past work, auto-invoked when users ask about history
 
@@ -36,21 +36,9 @@ Claude-mem is a Claude Code plugin providing persistent memory across sessions. 
 npm run build-and-sync        # Build, sync to marketplace, restart worker
 ```
 
-**Viewer UI**: http://localhost:37777
-
 ## Configuration
 
 Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created with defaults on first run.
-
-**Core Settings:**
-- `CLAUDE_MEM_MODEL` - Model for observations/summaries (default: claude-sonnet-4-5)
-- `CLAUDE_MEM_CONTEXT_OBSERVATIONS` - Observations injected at SessionStart
-- `CLAUDE_MEM_WORKER_PORT` - Worker service port (default: 37777)
-- `CLAUDE_MEM_WORKER_HOST` - Worker bind address (default: 127.0.0.1, use 0.0.0.0 for remote access)
-
-**System Configuration:**
-- `CLAUDE_MEM_DATA_DIR` - Data directory location (default: ~/.claude-mem)
-- `CLAUDE_MEM_LOG_LEVEL` - Log verbosity: DEBUG, INFO, WARN, ERROR, SILENT (default: INFO)
 
 ## File Locations
 
@@ -64,7 +52,7 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 
 - **Bun** (all platforms - auto-installed if missing)
 - **uv** (all platforms - auto-installed if missing, provides Python for Chroma)
-- Node.js (build tools only)
+- Node.js
 
 ## Documentation
 
