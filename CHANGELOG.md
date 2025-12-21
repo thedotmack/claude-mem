@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [7.4.5] - 2025-12-21
+
+## Bug Fixes
+
+- Fix missing `formatDateTime` import in SearchManager that broke `get_context_timeline` mem-search function
+
 ## [7.4.4] - 2025-12-21
 
 ## What's Changed
