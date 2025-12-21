@@ -14,7 +14,7 @@ import { FormattingService } from './FormattingService.js';
 import { TimelineService, TimelineItem } from './TimelineService.js';
 import { ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../sqlite/types.js';
 import { logger } from '../../utils/logger.js';
-import { formatDate, formatTime, extractFirstFile, groupByDate } from '../../shared/timeline-formatting.js';
+import { formatDate, formatTime, extractFirstFile, groupByDate, estimateTokens } from '../../shared/timeline-formatting.js';
 
 const COLLECTION_NAME = 'cm__claude-mem';
 const RECENCY_WINDOW_DAYS = 90;
@@ -494,11 +494,6 @@ export class SearchManager {
             }]
           };
         }
-
-        const estimateTokens = (text: string | null): number => {
-          if (!text) return 0;
-          return Math.ceil(text.length / 4);
-        };
 
         // Format results
         const lines: string[] = [];
@@ -1584,11 +1579,6 @@ export class SearchManager {
           };
         }
 
-        const estimateTokens = (text: string | null): number => {
-          if (!text) return 0;
-          return Math.ceil(text.length / 4);
-        };
-
         // Format results matching context-hook.ts exactly
         const lines: string[] = [];
 
@@ -1843,11 +1833,6 @@ export class SearchManager {
               }]
             };
           }
-
-          const estimateTokens = (text: string | null): number => {
-            if (!text) return 0;
-            return Math.ceil(text.length / 4);
-          };
 
           // Format timeline (reused from get_context_timeline)
           const lines: string[] = [];

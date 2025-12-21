@@ -80,6 +80,14 @@ export function extractFirstFile(filesModified: string | null, cwd: string): str
 }
 
 /**
+ * Estimate token count for text (rough approximation: ~4 chars per token)
+ */
+export function estimateTokens(text: string | null): number {
+  if (!text) return 0;
+  return Math.ceil(text.length / 4);
+}
+
+/**
  * Group items by date
  *
  * Generic function that works with any item type that has a date field.
