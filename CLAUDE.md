@@ -33,12 +33,7 @@ Claude-mem is a Claude Code plugin providing persistent memory across sessions. 
 ## Build Commands
 
 ```bash
-npm run build-and-sync        # Build, sync to marketplace, restart worker (most common)
-npm run build                 # Compile TypeScript only
-npm run sync-marketplace      # Copy to ~/.claude/plugins only
-npm run worker:restart        # Restart worker service only
-npm run worker:status         # Check worker status
-npm run worker:logs           # View worker logs
+npm run build-and-sync        # Build, sync to marketplace, restart worker
 ```
 
 **Viewer UI**: http://localhost:37777

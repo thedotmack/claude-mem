@@ -1,5 +1,5 @@
 import { stdin } from 'process';
-import { createHookResponse } from './hook-response.js';
+import { STANDARD_HOOK_RESPONSE } from './hook-response.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
 import { handleWorkerError } from '../shared/hook-error-handler.js';
 import { handleFetchError } from './shared/error-handler.js';
@@ -61,7 +61,7 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
     // Check if prompt was entirely private (worker performs privacy check)
     if (initResult.skipped && initResult.reason === 'private') {
       console.error(`[new-hook] Session ${sessionDbId}, prompt #${promptNumber} (fully private - skipped)`);
-      console.log(createHookResponse('UserPromptSubmit', true));
+      console.log(STANDARD_HOOK_RESPONSE);
       return;
     }
 
@@ -97,7 +97,7 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
     handleWorkerError(error);
   }
 
-  console.log(createHookResponse('UserPromptSubmit', true));
+  console.log(STANDARD_HOOK_RESPONSE);
 }
 
 // Entry Point

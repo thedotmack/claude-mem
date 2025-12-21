@@ -396,7 +396,7 @@ If you're experiencing issues, describe the problem to Claude and the troublesho
 
 **Common Issues:**
 
-- Worker not starting → `npm run worker:restart`
+- Worker not starting → `claude-mem restart`
 - No context appearing → `npm run test:context`
 - Database issues → `sqlite3 ~/.claude-mem/claude-mem.db "PRAGMA integrity_check;"`
 - Search not working → Check FTS5 tables exist

@@ -4,6 +4,50 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [7.4.5] - 2025-12-21
+
+## Bug Fixes
+
+- Fix missing `formatDateTime` import in SearchManager that broke `get_context_timeline` mem-search function
+
+## [7.4.4] - 2025-12-21
+
+## What's Changed
+
+* Code quality: comprehensive nonsense audit cleanup (20 issues) by @thedotmack in #400
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.4.3...v7.4.4
+
+## [7.4.3] - 2025-12-20
+
+Added Discord notification script for release announcements.
+
+### Added
+- `scripts/discord-release-notify.js` - Posts formatted release notifications to Discord using webhook URL from `.env`
+- `npm run discord:notify <version>` - New npm script to trigger Discord notifications
+- Updated version-bump skill workflow to include Discord notification step
+
+### Configuration
+Set `DISCORD_UPDATES_WEBHOOK` in your `.env` file to enable release notifications.
+
+## [7.4.2] - 2025-12-20
+
+Patch release v7.4.2
+
+## Changes
+- Refactored worker commands from npm scripts to claude-mem CLI
+- Added path alias script
+- Fixed Windows worker stop/restart reliability (#395)
+- Simplified build commands section in CLAUDE.md
+
+## [7.4.1] - 2025-12-19
+
+## Bug Fixes
+
+- **MCP Server**: Redirect logs to stderr to preserve JSON-RPC protocol (#396)
+  - MCP uses stdio transport where stdout is reserved for JSON-RPC messages
+  - Console.log was writing startup logs to stdout, causing Claude Desktop to parse log lines as JSON and fail
+
 ## [7.4.0] - 2025-12-18
 
 ## What's New

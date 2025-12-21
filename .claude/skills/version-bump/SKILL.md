@@ -42,6 +42,7 @@ See [operations/workflow.md](operations/workflow.md) for detailed step-by-step p
 7. Commit and create git tag
 8. Push and create GitHub release
 9. Generate CHANGELOG.md from releases and commit
+10. Post Discord notification
 
 ## Common Scenarios
 
@@ -57,6 +58,7 @@ See [operations/scenarios.md](operations/scenarios.md) for examples:
 - Create git tag with format `vX.Y.Z`
 - Create GitHub release from the tag
 - Generate CHANGELOG.md from releases after creating release
+- Post Discord notification after release
 - Ask user if version type is unclear
 
 **NEVER:**
@@ -74,6 +76,7 @@ Before considering the task complete:
 - [ ] Commit and tags pushed to remote
 - [ ] GitHub release created from the tag
 - [ ] CHANGELOG.md generated and committed
+- [ ] Discord notification sent
 
 ## Reference Commands
 

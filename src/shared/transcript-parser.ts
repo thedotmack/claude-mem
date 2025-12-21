@@ -56,6 +56,20 @@ export function extractLastMessage(
                 .filter((c: any) => c.type === 'text')
                 .map((c: any) => c.text)
                 .join('\n');
+            } else {
+              // Unknown content format - log error and skip this message
+              logger.error(
+                'PARSER',
+                'Unknown message content format',
+                {
+                  role,
+                  transcriptPath,
+                  contentType: typeof msgContent,
+                  content: msgContent
+                },
+                new Error('Message content is neither string nor array')
+              );
+              continue;
             }
 
             if (stripSystemReminders) {

@@ -13,8 +13,9 @@ const MARKETPLACE_ROOT = path.join(homedir(), '.claude', 'plugins', 'marketplace
 // Named constants for health checks
 const HEALTH_CHECK_TIMEOUT_MS = getTimeout(HOOK_TIMEOUTS.HEALTH_CHECK);
 
-// Port cache to avoid repeated settings file reads
+// Cache to avoid repeated settings file reads
 let cachedPort: number | null = null;
+let cachedHost: string | null = null;
 
 /**
  * Get the worker port number from settings
@@ -26,35 +27,35 @@ export function getWorkerPort(): number {
     return cachedPort;
   }
 
-  try {
-    const settingsPath = path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), 'settings.json');
-    const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-    cachedPort = parseInt(settings.CLAUDE_MEM_WORKER_PORT, 10);
-    return cachedPort;
-  } catch (error) {
-    // Fallback to default if settings load fails
-    logger.debug('SYSTEM', 'Failed to load port from settings, using default', { error });
-    cachedPort = parseInt(SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_PORT'), 10);
-    return cachedPort;
-  }
-}
-
-/**
- * Clear the cached port value
- * Call this when settings are updated to force re-reading from file
- */
-export function clearPortCache(): void {
-  cachedPort = null;
+  const settingsPath = path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), 'settings.json');
+  const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+  cachedPort = parseInt(settings.CLAUDE_MEM_WORKER_PORT, 10);
+  return cachedPort;
 }
 
 /**
  * Get the worker host address
- * Priority: ~/.claude-mem/settings.json > env var > default (127.0.0.1)
+ * Uses CLAUDE_MEM_WORKER_HOST from settings file or default (127.0.0.1)
+ * Caches the host value to avoid repeated file reads
  */
 export function getWorkerHost(): string {
-  const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+  if (cachedHost !== null) {
+    return cachedHost;
+  }
+
+  const settingsPath = path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), 'settings.json');
   const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-  return settings.CLAUDE_MEM_WORKER_HOST;
+  cachedHost = settings.CLAUDE_MEM_WORKER_HOST;
+  return cachedHost;
+}
+
+/**
+ * Clear the cached port and host values
+ * Call this when settings are updated to force re-reading from file
+ */
+export function clearPortCache(): void {
+  cachedPort = null;
+  cachedHost = null;
 }
 
 /**

@@ -276,7 +276,7 @@ export class DataRoutes extends BaseRouteHandler {
     const queueDepth = this.sessionManager.getTotalQueueDepth();
     const activeSessions = this.sessionManager.getActiveSessionCount();
 
-    res.json({ status: 'ok', isProcessing });
+    res.json({ status: 'ok', isProcessing, queueDepth, activeSessions });
   });
 
   /**

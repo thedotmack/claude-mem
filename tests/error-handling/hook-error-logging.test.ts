@@ -48,7 +48,7 @@ describe('Hook Error Logging', () => {
         handleFetchError(mockResponse, errorText, context);
       } catch (error: any) {
         expect(error.message).toContain('Failed Observation storage for Bash');
-        expect(error.message).toContain('npm run worker:restart');
+        expect(error.message).toContain('claude-mem restart');
       }
     });
 
@@ -119,7 +119,7 @@ describe('Hook Error Logging', () => {
 
       expect(() => {
         handleWorkerError(connError);
-      }).toThrow('npm run worker:restart');
+      }).toThrow('claude-mem restart');
     });
 
     it('re-throws non-connection errors unchanged', () => {
@@ -130,7 +130,7 @@ describe('Hook Error Logging', () => {
         expect.fail('Should have thrown');
       } catch (error: any) {
         expect(error.message).toBe('Something went wrong');
-        expect(error.message).not.toContain('npm run worker:restart');
+        expect(error.message).not.toContain('claude-mem restart');
       }
     });
 
@@ -227,7 +227,7 @@ describe('Hook Error Logging', () => {
         handleFetchError(mockResponse, 'error', context);
       } catch (error: any) {
         // Must include restart command
-        expect(error.message).toMatch(/npm run worker:restart/);
+        expect(error.message).toMatch(/claude-mem restart/);
 
         // Must be user-facing (no technical jargon)
         expect(error.message).not.toContain('ECONNREFUSED');

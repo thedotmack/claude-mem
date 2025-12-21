@@ -5,17 +5,11 @@ import { spawn, spawnSync } from 'child_process';
 import { homedir } from 'os';
 import { DATA_DIR } from '../../shared/paths.js';
 import { getBunPath, isBunAvailable } from '../../utils/bun-path.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 
 const PID_FILE = join(DATA_DIR, 'worker.pid');
 const LOG_DIR = join(DATA_DIR, 'logs');
 const MARKETPLACE_ROOT = join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
-
-// Timeout constants
-const PROCESS_STOP_TIMEOUT_MS = 5000;
-const HEALTH_CHECK_TIMEOUT_MS = 10000;
-const HEALTH_CHECK_INTERVAL_MS = 200;
-const HEALTH_CHECK_FETCH_TIMEOUT_MS = 1000;
-const PROCESS_EXIT_CHECK_INTERVAL_MS = 100;
 
 interface PidInfo {
   pid: number;
@@ -99,8 +93,9 @@ export class ProcessManager {
         const escapedBunPath = this.escapePowerShellString(bunPath);
         const escapedScript = this.escapePowerShellString(script);
         const escapedWorkDir = this.escapePowerShellString(MARKETPLACE_ROOT);
+        const escapedLogFile = this.escapePowerShellString(logFile);
         const envVars = `$env:CLAUDE_MEM_WORKER_PORT='${port}'`;
-        const psCommand = `${envVars}; Start-Process -FilePath '${escapedBunPath}' -ArgumentList '${escapedScript}' -WorkingDirectory '${escapedWorkDir}' -WindowStyle Hidden -PassThru | Select-Object -ExpandProperty Id`;
+        const psCommand = `${envVars}; Start-Process -FilePath '${escapedBunPath}' -ArgumentList '${escapedScript}' -WorkingDirectory '${escapedWorkDir}' -WindowStyle Hidden -RedirectStandardOutput '${escapedLogFile}' -RedirectStandardError '${escapedLogFile}.err' -PassThru | Select-Object -ExpandProperty Id`;
 
         const result = spawnSync('powershell', ['-Command', psCommand], {
           stdio: 'pipe',
@@ -169,36 +164,67 @@ export class ProcessManager {
     }
   }
 
-  static async stop(timeout: number = PROCESS_STOP_TIMEOUT_MS): Promise<boolean> {
+  static async stop(timeout: number = 5000): Promise<boolean> {
     const info = this.getPidInfo();
-    if (!info) return true;
 
-    try {
-      if (process.platform === 'win32') {
-        // On Windows, use taskkill /T /F to kill entire process tree
+    if (process.platform === 'win32') {
+      // Windows: Try graceful HTTP shutdown first - this works regardless of PID file state
+      // because the worker shuts itself down from the inside (via wrapper IPC)
+      const port = info?.port ?? this.getPortFromSettings();
+      const httpShutdownSucceeded = await this.tryHttpShutdown(port);
+
+      if (httpShutdownSucceeded) {
+        // HTTP shutdown succeeded - worker confirmed down, safe to remove PID file
+        this.removePidFile();
+        return true;
+      }
+
+      // HTTP shutdown failed (worker not responding), fall back to taskkill
+      if (!info) {
+        // No PID file and HTTP failed - nothing more we can do
+        return true;
+      }
+
+      const { execSync } = await import('child_process');
+      try {
+        // Use taskkill /T /F to kill entire process tree
         // This ensures the wrapper AND all its children (inner worker, MCP, ChromaSync) are killed
         // which is necessary to properly release the socket and avoid zombie ports
-        const { execSync } = await import('child_process');
-        try {
-          execSync(`taskkill /PID ${info.pid} /T /F`, { timeout: 10000, stdio: 'ignore' });
-        } catch {
-          // Process may already be dead
-        }
-      } else {
-        // On Unix, use signals
+        execSync(`taskkill /PID ${info.pid} /T /F`, { timeout: 10000, stdio: 'ignore' });
+      } catch {
+        // Process may already be dead
+      }
+
+      // Wait for process to actually exit before removing PID file
+      try {
+        await this.waitForExit(info.pid, timeout);
+      } catch {
+        // Timeout waiting - process may still be alive
+      }
+
+      // Only remove PID file if process is confirmed dead
+      if (!this.isProcessAlive(info.pid)) {
+        this.removePidFile();
+      }
+      return true;
+    } else {
+      // Unix: Use signals (unchanged behavior)
+      if (!info) return true;
+
+      try {
         process.kill(info.pid, 'SIGTERM');
         await this.waitForExit(info.pid, timeout);
-      }
-    } catch {
-      try {
-        process.kill(info.pid, 'SIGKILL');
       } catch {
-        // Process already dead
+        try {
+          process.kill(info.pid, 'SIGKILL');
+        } catch {
+          // Process already dead
+        }
       }
-    }
 
-    this.removePidFile();
-    return true;
+      this.removePidFile();
+      return true;
+    }
   }
 
   static async restart(port: number): Promise<{ success: boolean; pid?: number; error?: string }> {
@@ -229,6 +255,66 @@ export class ProcessManager {
     return alive;
   }
 
+  /**
+   * Get worker port from settings file
+   */
+  private static getPortFromSettings(): number {
+    try {
+      const settingsPath = join(DATA_DIR, 'settings.json');
+      const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+      return parseInt(settings.CLAUDE_MEM_WORKER_PORT, 10);
+    } catch {
+      return parseInt(SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_PORT'), 10);
+    }
+  }
+
+  /**
+   * Try to shut down the worker via HTTP endpoint
+   * Returns true if shutdown succeeded, false if worker not responding
+   */
+  private static async tryHttpShutdown(port: number): Promise<boolean> {
+    try {
+      // Send shutdown request
+      const response = await fetch(`http://127.0.0.1:${port}/api/admin/shutdown`, {
+        method: 'POST',
+        signal: AbortSignal.timeout(2000)
+      });
+
+      if (!response.ok) {
+        return false;
+      }
+
+      // Wait for worker to actually stop responding
+      return await this.waitForWorkerDown(port, 5000);
+    } catch {
+      // Worker not responding to HTTP - it may be dead or hung
+      return false;
+    }
+  }
+
+  /**
+   * Wait for worker to stop responding on the given port
+   */
+  private static async waitForWorkerDown(port: number, timeout: number): Promise<boolean> {
+    const startTime = Date.now();
+
+    while (Date.now() - startTime < timeout) {
+      try {
+        await fetch(`http://127.0.0.1:${port}/api/health`, {
+          signal: AbortSignal.timeout(500)
+        });
+        // Still responding, wait and retry
+        await new Promise(resolve => setTimeout(resolve, 100));
+      } catch {
+        // Worker stopped responding - success
+        return true;
+      }
+    }
+
+    // Timeout - worker still responding
+    return false;
+  }
+
   // Helper methods
   private static getPidInfo(): PidInfo | null {
     try {
@@ -237,10 +323,15 @@ export class ProcessManager {
       const parsed = JSON.parse(content);
       // Validate required fields have correct types
       if (typeof parsed.pid !== 'number' || typeof parsed.port !== 'number') {
+        logger.warn('PROCESS', 'Malformed PID file: missing or invalid pid/port fields', {}, { parsed });
         return null;
       }
       return parsed as PidInfo;
-    } catch {
+    } catch (error) {
+      logger.warn('PROCESS', 'Failed to read PID file', {}, {
+        error: error instanceof Error ? error.message : String(error),
+        path: PID_FILE
+      });
       return null;
     }
   }
@@ -269,7 +360,7 @@ export class ProcessManager {
     }
   }
 
-  private static async waitForHealth(pid: number, port: number, timeoutMs: number = HEALTH_CHECK_TIMEOUT_MS): Promise<{ success: boolean; pid?: number; error?: string }> {
+  private static async waitForHealth(pid: number, port: number, timeoutMs: number = 10000): Promise<{ success: boolean; pid?: number; error?: string }> {
     const startTime = Date.now();
     const isWindows = process.platform === 'win32';
     // Increase timeout on Windows to account for slower process startup
@@ -287,7 +378,7 @@ export class ProcessManager {
       // Try readiness check (changed from /health to /api/readiness)
       try {
         const response = await fetch(`http://127.0.0.1:${port}/api/readiness`, {
-          signal: AbortSignal.timeout(HEALTH_CHECK_FETCH_TIMEOUT_MS)
+          signal: AbortSignal.timeout(1000)
         });
         if (response.ok) {
           return { success: true, pid };
@@ -296,7 +387,7 @@ export class ProcessManager {
         // Not ready yet, continue polling
       }
 
-      await new Promise(resolve => setTimeout(resolve, HEALTH_CHECK_INTERVAL_MS));
+      await new Promise(resolve => setTimeout(resolve, 200));
     }
 
     const timeoutMsg = isWindows
@@ -313,7 +404,7 @@ export class ProcessManager {
       if (!this.isProcessAlive(pid)) {
         return;
       }
-      await new Promise(resolve => setTimeout(resolve, PROCESS_EXIT_CHECK_INTERVAL_MS));
+      await new Promise(resolve => setTimeout(resolve, 100));
     }
 
     throw new Error('Process did not exit within timeout');

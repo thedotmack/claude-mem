@@ -48,6 +48,8 @@ async function cleanupHook(input?: SessionEndInput): Promise<void> {
     }
   } catch (error: any) {
     // Worker might not be running - that's okay (non-critical)
+    // But we should still log it for visibility
+    console.error('[cleanup-hook] Failed to notify worker of session end:', error.message);
   }
 
   console.log('{"continue": true, "suppressOutput": true}');

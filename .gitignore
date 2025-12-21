@@ -1,3 +1,4 @@
+datasets/
 node_modules/
 dist/
 *.log

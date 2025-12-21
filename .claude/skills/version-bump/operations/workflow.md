@@ -197,6 +197,17 @@ git push
 - No manual editing required
 - Single source of truth: GitHub releases
 
+## Step 11: Discord Notification
+
+Post release announcement to the Discord updates channel:
+
+```bash
+# Send Discord notification with release details
+npm run discord:notify vX.Y.Z
+```
+
+This fetches the release notes from GitHub and posts a formatted embed to the Discord updates channel configured in `.env`.
+
 ## Verification
 
 After completing all steps, verify:
