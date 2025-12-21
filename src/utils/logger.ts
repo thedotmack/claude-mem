@@ -101,64 +101,47 @@ class Logger {
     try {
       const input = typeof toolInput === 'string' ? JSON.parse(toolInput) : toolInput;
 
-      // Bash: show command (truncated)
+      // Bash: show full command
       if (toolName === 'Bash' && input.command) {
-        const cmd = input.command.length > 50
-          ? input.command.substring(0, 50) + '...'
-          : input.command;
-        return `${toolName}(${cmd})`;
+        return `${toolName}(${input.command})`;
       }
 
-      // File operations: show filename only
+      // File operations: show full path
       if (input.file_path) {
-        const filename = input.file_path.split('/').pop() || input.file_path;
-        return `${toolName}(${filename})`;
+        return `${toolName}(${input.file_path})`;
       }
 
-      // NotebookEdit: show notebook filename
+      // NotebookEdit: show full notebook path
       if (input.notebook_path) {
-        const filename = input.notebook_path.split('/').pop() || input.notebook_path;
-        return `${toolName}(${filename})`;
+        return `${toolName}(${input.notebook_path})`;
       }
 
-      // Glob: show pattern
+      // Glob: show full pattern
       if (toolName === 'Glob' && input.pattern) {
         return `${toolName}(${input.pattern})`;
       }
 
-      // Grep: show pattern
+      // Grep: show full pattern
       if (toolName === 'Grep' && input.pattern) {
-        const pattern = input.pattern.length > 30
-          ? input.pattern.substring(0, 30) + '...'
-          : input.pattern;
-        return `${toolName}(${pattern})`;
+        return `${toolName}(${input.pattern})`;
       }
 
-      // WebFetch/WebSearch: show URL or query
+      // WebFetch/WebSearch: show full URL or query
       if (input.url) {
-        const url = input.url.length > 40
-          ? input.url.substring(0, 40) + '...'
-          : input.url;
-        return `${toolName}(${url})`;
+        return `${toolName}(${input.url})`;
       }
 
       if (input.query) {
-        const query = input.query.length > 40
-          ? input.query.substring(0, 40) + '...'
-          : input.query;
-        return `${toolName}(${query})`;
+        return `${toolName}(${input.query})`;
       }
 
-      // Task: show subagent_type or description
+      // Task: show subagent_type or full description
       if (toolName === 'Task') {
         if (input.subagent_type) {
           return `${toolName}(${input.subagent_type})`;
         }
         if (input.description) {
-          const desc = input.description.length > 30
-            ? input.description.substring(0, 30) + '...'
-            : input.description;
-          return `${toolName}(${desc})`;
+          return `${toolName}(${input.description})`;
         }
       }
 
