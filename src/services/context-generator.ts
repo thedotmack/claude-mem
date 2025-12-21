@@ -11,9 +11,7 @@ import { existsSync, readFileSync, unlinkSync } from 'fs';
 import { SessionStore } from './sqlite/SessionStore.js';
 import {
   OBSERVATION_TYPES,
-  OBSERVATION_CONCEPTS,
-  TYPE_ICON_MAP,
-  TYPE_WORK_EMOJI_MAP
+  OBSERVATION_CONCEPTS
 } from '../constants/observation-metadata.js';
 import { logger } from '../utils/logger.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
@@ -26,6 +24,7 @@ import {
   extractFirstFile
 } from '../shared/timeline-formatting.js';
 import { getProjectName } from '../utils/project-name.js';
+import { ModeManager } from './domain/ModeManager.js';
 
 // Version marker path - use homedir-based path that works in both CJS and ESM contexts
 const VERSION_MARKER_PATH = path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack', 'plugin', '.install-version');
@@ -325,11 +324,13 @@ export async function generateContext(input?: ContextInput, useColors: boolean =
 
   // Chronological Timeline
   if (timelineObs.length > 0) {
-    // Legend
+    // Legend - generate dynamically from active mode
+    const mode = ModeManager.getInstance().getActiveMode();
+    const typeLegendItems = mode.observation_types.map(t => `${t.emoji} ${t.id}`).join(' | ');
     if (useColors) {
-      output.push(`${colors.dim}Legend: 🎯 session-request | 🔴 bugfix | 🟣 feature | 🔄 refactor | ✅ change | 🔵 discovery | ⚖️  decision${colors.reset}`);
+      output.push(`${colors.dim}Legend: 🎯 session-request | ${typeLegendItems}${colors.reset}`);
     } else {
-      output.push(`**Legend:** 🎯 session-request | 🔴 bugfix | 🟣 feature | 🔄 refactor | ✅ change | 🔵 discovery | ⚖️  decision`);
+      output.push(`**Legend:** 🎯 session-request | ${typeLegendItems}`);
     }
     output.push('');
 
@@ -536,7 +537,7 @@ export async function generateContext(input?: ContextInput, useColors: boolean =
 
           const time = formatTime(obs.created_at);
           const title = obs.title || 'Untitled';
-          const icon = TYPE_ICON_MAP[obs.type as keyof typeof TYPE_ICON_MAP] || '•';
+          const icon = ModeManager.getInstance().getTypeIcon(obs.type);
 
           const obsSize = (obs.title?.length || 0) +
                           (obs.subtitle?.length || 0) +
@@ -544,7 +545,7 @@ export async function generateContext(input?: ContextInput, useColors: boolean =
                           JSON.stringify(obs.facts || []).length;
           const readTokens = Math.ceil(obsSize / CHARS_PER_TOKEN_ESTIMATE);
           const discoveryTokens = obs.discovery_tokens || 0;
-          const workEmoji = TYPE_WORK_EMOJI_MAP[obs.type as keyof typeof TYPE_WORK_EMOJI_MAP] || '🔍';
+          const workEmoji = ModeManager.getInstance().getWorkEmoji(obs.type);
           const discoveryDisplay = discoveryTokens > 0 ? `${workEmoji} ${discoveryTokens.toLocaleString()}` : '-';
 
           const showTime = time !== lastTime;

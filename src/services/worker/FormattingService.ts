@@ -4,7 +4,7 @@
  */
 
 import { ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../sqlite/types.js';
-import { TYPE_ICON_MAP, TYPE_WORK_EMOJI_MAP } from '../../constants/observation-metadata.js';
+import { ModeManager } from '../domain/ModeManager.js';
 
 // Token estimation constant (matches context-generator)
 const CHARS_PER_TOKEN_ESTIMATE = 4;
@@ -55,10 +55,10 @@ Tips:
   formatObservationIndex(obs: ObservationSearchResult, _index: number): string {
     const id = `#${obs.id}`;
     const time = this.formatTime(obs.created_at_epoch);
-    const icon = TYPE_ICON_MAP[obs.type as keyof typeof TYPE_ICON_MAP] || '•';
+    const icon = ModeManager.getInstance().getTypeIcon(obs.type);
     const title = obs.title || 'Untitled';
     const readTokens = this.estimateReadTokens(obs);
-    const workEmoji = TYPE_WORK_EMOJI_MAP[obs.type as keyof typeof TYPE_WORK_EMOJI_MAP] || '🔍';
+    const workEmoji = ModeManager.getInstance().getWorkEmoji(obs.type);
     const workTokens = obs.discovery_tokens || 0;
     const workDisplay = workTokens > 0 ? `${workEmoji} ${workTokens}` : '-';
 
@@ -116,7 +116,7 @@ Tips:
   formatObservationSearchRow(obs: ObservationSearchResult, lastTime: string): { row: string; time: string } {
     const id = `#${obs.id}`;
     const time = this.formatTime(obs.created_at_epoch);
-    const icon = TYPE_ICON_MAP[obs.type as keyof typeof TYPE_ICON_MAP] || '•';
+    const icon = ModeManager.getInstance().getTypeIcon(obs.type);
     const title = obs.title || 'Untitled';
     const readTokens = this.estimateReadTokens(obs);
 
