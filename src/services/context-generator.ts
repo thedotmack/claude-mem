@@ -9,10 +9,6 @@ import path from 'path';
 import { homedir } from 'os';
 import { existsSync, readFileSync, unlinkSync } from 'fs';
 import { SessionStore } from './sqlite/SessionStore.js';
-import {
-  OBSERVATION_TYPES,
-  OBSERVATION_CONCEPTS
-} from '../constants/observation-metadata.js';
 import { logger } from '../utils/logger.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import {
@@ -89,8 +85,8 @@ function loadContextConfig(): ContextConfig {
       showWorkTokens: true,
       showSavingsAmount: true,
       showSavingsPercent: true,
-      observationTypes: new Set(OBSERVATION_TYPES),
-      observationConcepts: new Set(OBSERVATION_CONCEPTS),
+      observationTypes: new Set(ModeManager.getInstance().getObservationTypes().map(t => t.id)),
+      observationConcepts: new Set(ModeManager.getInstance().getObservationConcepts().map(c => c.id)),
       fullObservationField: 'narrative' as const,
       showLastSummary: true,
       showLastMessage: false,
