@@ -18,8 +18,19 @@ export class ModeManager {
   private modesDir: string;
 
   private constructor() {
-    // Modes are in plugin/modes/ - getPackageRoot() points to plugin/
-    this.modesDir = join(getPackageRoot(), 'modes');
+    // Modes are in plugin/modes/
+    // getPackageRoot() points to plugin/ in production and src/ in development
+    // We want to ensure we find the modes directory which is at the project root/plugin/modes
+    const packageRoot = getPackageRoot();
+    
+    // Check for plugin/modes relative to package root (covers both dev and prod if paths are right)
+    const possiblePaths = [
+      join(packageRoot, 'modes'),           // Production (plugin/modes)
+      join(packageRoot, '..', 'plugin', 'modes'), // Development (src/../plugin/modes)
+    ];
+
+    const foundPath = possiblePaths.find(p => existsSync(p));
+    this.modesDir = foundPath || possiblePaths[0];
   }
 
   /**
@@ -56,7 +67,7 @@ export class ModeManager {
     return {
       hasParent: true,
       parentId: parts[0],
-      overrideId: parts[1]
+      overrideId: modeId // Use the full modeId (e.g., code--es) to find the override file
     };
   }
 
