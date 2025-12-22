@@ -29,7 +29,7 @@ export interface SDKSession {
  */
 export function buildInitPrompt(project: string, sessionId: string, userPrompt: string, mode: ModeConfig): string {
   const languageNote = mode.prompts.language_instruction
-    ? `\n  <!--\n    ${mode.prompts.language_instruction}\n    Keep XML tags in English, write content (title, subtitle, facts, narrative) in the specified language.\n  -->\n  `
+    ? `\n  <!--\n    ${mode.prompts.language_instruction}\n  -->\n  `
     : '\n  ';
 
   return `${mode.prompts.system_identity}
@@ -54,31 +54,31 @@ ${mode.prompts.output_format_header}
   <!--
     ${mode.prompts.type_guidance}
   -->
-  <title>[**title**: Short title capturing the core action or topic]</title>
-  <subtitle>[**subtitle**: One sentence explanation (max 24 words)]</subtitle>
+  <title>${mode.prompts.xml_title_placeholder}</title>
+  <subtitle>${mode.prompts.xml_subtitle_placeholder}</subtitle>
   <facts>
-    <fact>[Concise, self-contained statement]</fact>
-    <fact>[Concise, self-contained statement]</fact>
-    <fact>[Concise, self-contained statement]</fact>
+    <fact>${mode.prompts.xml_fact_placeholder}</fact>
+    <fact>${mode.prompts.xml_fact_placeholder}</fact>
+    <fact>${mode.prompts.xml_fact_placeholder}</fact>
   </facts>
   <!--
     ${mode.prompts.field_guidance}
   -->
-  <narrative>[**narrative**: Full context: What was done, how it works, why it matters]</narrative>
+  <narrative>${mode.prompts.xml_narrative_placeholder}</narrative>
   <concepts>
-    <concept>[knowledge-type-category]</concept>
-    <concept>[knowledge-type-category]</concept>
+    <concept>${mode.prompts.xml_concept_placeholder}</concept>
+    <concept>${mode.prompts.xml_concept_placeholder}</concept>
   </concepts>
   <!--
     ${mode.prompts.concept_guidance}
   -->
   <files_read>
-    <file>[path/to/file]</file>
-    <file>[path/to/file]</file>
+    <file>${mode.prompts.xml_file_placeholder}</file>
+    <file>${mode.prompts.xml_file_placeholder}</file>
   </files_read>
   <files_modified>
-    <file>[path/to/file]</file>
-    <file>[path/to/file]</file>
+    <file>${mode.prompts.xml_file_placeholder}</file>
+    <file>${mode.prompts.xml_file_placeholder}</file>
   </files_modified>
 </observation>
 \`\`\`
@@ -86,8 +86,7 @@ ${mode.prompts.format_examples}
 
 ${mode.prompts.footer}
 
-MEMORY PROCESSING START
-=======================`;
+${mode.prompts.header_memory_start}`;
 }
 
 /**
@@ -131,23 +130,22 @@ export function buildSummaryPrompt(session: SDKSession, mode: ModeConfig): strin
   );
 
   const languageNote = mode.prompts.language_instruction
-    ? `\n  <!--\n    ${mode.prompts.language_instruction}\n    Keep XML tags in English, write content (request, investigated, learned, completed, next_steps, notes) in the specified language.\n  -->\n  `
+    ? `\n  <!--\n    ${mode.prompts.language_instruction}\n  -->\n  `
     : '\n  ';
 
-  return `PROGRESS SUMMARY CHECKPOINT
-===========================
+  return `${mode.prompts.header_summary_checkpoint}
 Write progress notes of what was done, what was learned, and what's next. This is a checkpoint to capture progress so far. The session is ongoing - you may receive more requests and tool executions after this summary. Write "next_steps" as the current trajectory of work (what's actively being worked on or coming up next), not as post-session future work. Always write at least a minimal summary explaining current progress, even if work is still in early stages, so that users see a summary output tied to each request.
 
 Claude's Full Response to User:
 ${lastAssistantMessage}
 
 Respond in this XML format:
-<summary>${languageNote}<request>[Short title capturing the user's request AND the substance of what was discussed/done]</request>
-  <investigated>[What has been explored so far? What was examined?]</investigated>
-  <learned>[What have you learned about how things work?]</learned>
-  <completed>[What work has been completed so far? What has shipped or changed?]</completed>
-  <next_steps>[What are you actively working on or planning to work on next in this session?]</next_steps>
-  <notes>[Additional insights or observations about the current progress]</notes>
+<summary>${languageNote}<request>${mode.prompts.xml_summary_request_placeholder}</request>
+  <investigated>${mode.prompts.xml_summary_investigated_placeholder}</investigated>
+  <learned>${mode.prompts.xml_summary_learned_placeholder}</learned>
+  <completed>${mode.prompts.xml_summary_completed_placeholder}</completed>
+  <next_steps>${mode.prompts.xml_summary_next_steps_placeholder}</next_steps>
+  <notes>${mode.prompts.xml_summary_notes_placeholder}</notes>
 </summary>
 
 IMPORTANT! DO NOT do any work right now other than generating this next PROGRESS SUMMARY - and remember that you are a memory agent designed to summarize a DIFFERENT claude code session, not this one.
@@ -180,10 +178,10 @@ Thank you, this summary will be very useful for keeping track of our progress!`;
  */
 export function buildContinuationPrompt(userPrompt: string, promptNumber: number, claudeSessionId: string, mode: ModeConfig): string {
   const languageNote = mode.prompts.language_instruction
-    ? `\n  <!--\n    ${mode.prompts.language_instruction}\n    Keep XML tags in English, write content (title, subtitle, facts, narrative) in the specified language.\n  -->\n  `
+    ? `\n  <!--\n    ${mode.prompts.language_instruction}\n  -->\n  `
     : '\n  ';
 
-  return `Hello memory agent, you are continuing to observe the primary Claude session.
+  return `${mode.prompts.continuation_greeting}
 
 <observed_from_primary_session>
   <user_request>${userPrompt}</user_request>
@@ -200,7 +198,7 @@ ${mode.prompts.recording_focus}
 
 ${mode.prompts.skip_guidance}
 
-IMPORTANT: Continue generating observations from tool use messages using the XML structure below.
+${mode.prompts.continuation_instruction}
 
 ${mode.prompts.output_format_header}
 
@@ -209,31 +207,31 @@ ${mode.prompts.output_format_header}
   <!--
     ${mode.prompts.type_guidance}
   -->
-  <title>[**title**: Short title capturing the core action or topic]</title>
-  <subtitle>[**subtitle**: One sentence explanation (max 24 words)]</subtitle>
+  <title>${mode.prompts.xml_title_placeholder}</title>
+  <subtitle>${mode.prompts.xml_subtitle_placeholder}</subtitle>
   <facts>
-    <fact>[Concise, self-contained statement]</fact>
-    <fact>[Concise, self-contained statement]</fact>
-    <fact>[Concise, self-contained statement]</fact>
+    <fact>${mode.prompts.xml_fact_placeholder}</fact>
+    <fact>${mode.prompts.xml_fact_placeholder}</fact>
+    <fact>${mode.prompts.xml_fact_placeholder}</fact>
   </facts>
   <!--
     ${mode.prompts.field_guidance}
   -->
-  <narrative>[**narrative**: Full context: What was done, how it works, why it matters]</narrative>
+  <narrative>${mode.prompts.xml_narrative_placeholder}</narrative>
   <concepts>
-    <concept>[knowledge-type-category]</concept>
-    <concept>[knowledge-type-category]</concept>
+    <concept>${mode.prompts.xml_concept_placeholder}</concept>
+    <concept>${mode.prompts.xml_concept_placeholder}</concept>
   </concepts>
   <!--
     ${mode.prompts.concept_guidance}
   -->
   <files_read>
-    <file>[path/to/file]</file>
-    <file>[path/to/file]</file>
+    <file>${mode.prompts.xml_file_placeholder}</file>
+    <file>${mode.prompts.xml_file_placeholder}</file>
   </files_read>
   <files_modified>
-    <file>[path/to/file]</file>
-    <file>[path/to/file]</file>
+    <file>${mode.prompts.xml_file_placeholder}</file>
+    <file>${mode.prompts.xml_file_placeholder}</file>
   </files_modified>
 </observation>
 \`\`\`
@@ -241,6 +239,5 @@ ${mode.prompts.format_examples}
 
 ${mode.prompts.footer}
 
-MEMORY PROCESSING CONTINUED
-===========================`;
+${mode.prompts.header_memory_continued}`;
 } 
