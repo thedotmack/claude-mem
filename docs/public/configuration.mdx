@@ -14,6 +14,7 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 | Setting                       | Default                         | Description                           |
 |-------------------------------|---------------------------------|---------------------------------------|
 | `CLAUDE_MEM_MODEL`            | `sonnet`                        | AI model for processing observations  |
+| `CLAUDE_MEM_MODE`             | `code`                          | Active mode profile (e.g., `code--es`, `email-investigation`) |
 | `CLAUDE_MEM_CONTEXT_OBSERVATIONS` | `50`                        | Number of observations to inject      |
 | `CLAUDE_MEM_WORKER_PORT`      | `37777`                         | Worker service port                   |
 | `CLAUDE_MEM_SKIP_TOOLS`       | `ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion` | Comma-separated tools to exclude from observations |
@@ -54,6 +55,32 @@ Edit `~/.claude-mem/settings.json`:
 ```json
 {
   "CLAUDE_MEM_MODEL": "sonnet"
+}
+```
+
+## Mode Configuration
+
+Configure the active workflow mode and language.
+
+### Settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CLAUDE_MEM_MODE` | `code` | Defines behavior and language. See [Modes & Languages](modes). |
+
+### Examples
+
+**Spanish Code Mode:**
+```json
+{
+  "CLAUDE_MEM_MODE": "code--es"
+}
+```
+
+**Email Investigation Mode:**
+```json
+{
+  "CLAUDE_MEM_MODE": "email-investigation"
 }
 ```
 

@@ -57,6 +57,7 @@
         "icon": "gear",
         "pages": [
           "configuration",
+          "modes",
           "development",
           "troubleshooting",
           "platform-integration"
