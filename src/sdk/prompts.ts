@@ -28,31 +28,24 @@ export interface SDKSession {
  * Build initial prompt to initialize the SDK agent
  */
 export function buildInitPrompt(project: string, sessionId: string, userPrompt: string, mode: ModeConfig): string {
-  return `You are a Claude-Mem, a specialized observer tool for creating searchable memory FOR FUTURE SESSIONS.
+  const languageInstruction = mode.prompts.language_instruction ? `\n${mode.prompts.language_instruction}\n` : '';
 
-CRITICAL: Record what was LEARNED/BUILT/FIXED/DEPLOYED/CONFIGURED, not what you (the observer) are doing.
-
-You do not have access to tools. All information you need is provided in <observed_from_primary_session> messages. Create observations from what you observe - no investigation needed.
+  return `${mode.prompts.system_identity}
 
 <observed_from_primary_session>
   <user_request>${userPrompt}</user_request>
   <requested_at>${new Date().toISOString().split('T')[0]}</requested_at>
 </observed_from_primary_session>
-
+${languageInstruction}
 ${mode.prompts.observer_role}
 
-SPATIAL AWARENESS: Tool executions include the working directory (tool_cwd) to help you understand:
-- Which repository/project is being worked on
-- Where files are located relative to the project root
-- How to match requested paths to actual execution paths
+${mode.prompts.spatial_awareness}
 
 ${mode.prompts.recording_focus}
 
 ${mode.prompts.skip_guidance}
 
-OUTPUT FORMAT
--------------
-Output observations using this XML structure:
+${mode.prompts.output_format_header}
 
 \`\`\`xml
 <observation>
@@ -90,11 +83,7 @@ Output observations using this XML structure:
 \`\`\`
 ${mode.prompts.format_examples}
 
-IMPORTANT! DO NOT do any work right now other than generating this OBSERVATIONS from tool use messages - and remember that you are a memory agent designed to summarize a DIFFERENT claude code session, not this one. 
-
-Never reference yourself or your own actions. Do not output anything other than the observation content formatted in the XML structure above. All other output is ignored by the system, and the system has been designed to be smart about token usage. Please spend your tokens wisely on useful observations. 
-
-Remember that we record these observations as a way of helping us stay on track with our progress, and to help us keep important decisions and changes at the forefront of our minds! :) Thank you so much for your help!
+${mode.prompts.footer}
 
 MEMORY PROCESSING START
 =======================`;
@@ -186,25 +175,28 @@ Thank you, this summary will be very useful for keeping track of our progress!`;
  * First prompt: Uses buildInitPrompt instead (promptNumber === 1)
  */
 export function buildContinuationPrompt(userPrompt: string, promptNumber: number, claudeSessionId: string, mode: ModeConfig): string {
-  return `
-Hello memory agent, you are continuing to observe the primary Claude session.
+  const languageInstruction = mode.prompts.language_instruction ? `\n${mode.prompts.language_instruction}\n` : '';
+
+  return `Hello memory agent, you are continuing to observe the primary Claude session.
 
 <observed_from_primary_session>
   <user_request>${userPrompt}</user_request>
   <requested_at>${new Date().toISOString().split('T')[0]}</requested_at>
 </observed_from_primary_session>
 
-You do not have access to tools. All information you need is provided in <observed_from_primary_session> messages. Create observations from what you observe - no investigation needed.
+${mode.prompts.system_identity}
+${languageInstruction}
+${mode.prompts.observer_role}
 
-CRITICAL: Record what was LEARNED/BUILT/FIXED/DEPLOYED/CONFIGURED, not what you (the observer) are doing. Focus on deliverables and capabilities - what the system NOW DOES differently.
+${mode.prompts.spatial_awareness}
+
+${mode.prompts.recording_focus}
 
 ${mode.prompts.skip_guidance}
 
 IMPORTANT: Continue generating observations from tool use messages using the XML structure below.
 
-OUTPUT FORMAT
--------------
-Output observations using this XML structure:
+${mode.prompts.output_format_header}
 
 \`\`\`xml
 <observation>
@@ -242,9 +234,7 @@ Output observations using this XML structure:
 \`\`\`
 ${mode.prompts.format_examples}
 
-Never reference yourself or your own actions. Do not output anything other than the observation content formatted in the XML structure above. All other output is ignored by the system, and the system has been designed to be smart about token usage. Please spend your tokens wisely on useful observations.
-
-Remember that we record these observations as a way of helping us stay on track with our progress, and to help us keep important decisions and changes at the forefront of our minds! :) Thank you so much for your continued help!
+${mode.prompts.footer}
 
 MEMORY PROCESSING CONTINUED
 ===========================`;
