@@ -334,7 +334,7 @@ export async function translateReadme(
   // Run with concurrency limit
   async function runWithConcurrency<T>(items: T[], limit: number, fn: (item: T) => Promise<TranslationResult>): Promise<TranslationResult[]> {
     const results: TranslationResult[] = [];
-    const executing: Promise<void>[] = [];
+    const executing = new Set<Promise<void>>();
 
     for (const item of items) {
       // Check budget before starting new translation
@@ -355,15 +355,20 @@ export async function translateReadme(
         }
       });
 
-      executing.push(p.then(() => {
-        executing.splice(executing.indexOf(p.then(() => {})), 1);
-      }));
+      // Create a wrapped promise that removes itself when done
+      const wrapped = p.finally(() => {
+        executing.delete(wrapped);
+      });
 
-      if (executing.length >= limit) {
+      executing.add(wrapped);
+
+      // Wait for a slot to open up if we're at the limit
+      if (executing.size >= limit) {
         await Promise.race(executing);
       }
     }
 
+    // Wait for all remaining translations to complete
     await Promise.all(executing);
     return results;
   }
