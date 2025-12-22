@@ -51,9 +51,6 @@ export class SessionRoutes extends BaseRouteHandler {
       });
 
       session.generatorPromise = this.sdkAgent.startSession(session, this.workerService)
-        .catch(err => {
-          logger.failure('SDK', 'SDK agent error', { sessionId: sessionDbId }, err);
-        })
         .finally(() => {
           logger.info('SESSION', `Generator finished`, { sessionId: sessionDbId });
           session.generatorPromise = null;
@@ -102,7 +99,7 @@ export class SessionRoutes extends BaseRouteHandler {
         created_at_epoch: latestPrompt.created_at_epoch
       });
 
-      // Sync user prompt to Chroma with error logging
+      // Sync user prompt to Chroma
       const chromaStart = Date.now();
       const promptText = latestPrompt.prompt_text;
       this.dbManager.getChromaSync().syncUserPrompt(
@@ -122,11 +119,6 @@ export class SessionRoutes extends BaseRouteHandler {
           duration: `${chromaDuration}ms`,
           prompt: truncatedPrompt
         });
-      }).catch(err => {
-        logger.error('CHROMA', 'Failed to sync user_prompt', {
-          promptId: latestPrompt.id,
-          sessionId: sessionDbId
-        }, err);
       });
     }
 
@@ -138,9 +130,6 @@ export class SessionRoutes extends BaseRouteHandler {
     });
 
     session.generatorPromise = this.sdkAgent.startSession(session, this.workerService)
-      .catch(err => {
-        logger.failure('SDK', 'SDK agent error', { sessionId: sessionDbId }, err);
-      })
       .finally(() => {
         // Clear generator reference when completed
         logger.info('SESSION', `Generator finished`, { sessionId: sessionDbId });
@@ -309,26 +298,13 @@ export class SessionRoutes extends BaseRouteHandler {
     }
 
     // Strip memory tags from tool_input and tool_response
-    let cleanedToolInput = '{}';
-    let cleanedToolResponse = '{}';
+    const cleanedToolInput = tool_input !== undefined
+      ? stripMemoryTagsFromJson(JSON.stringify(tool_input))
+      : '{}';
 
-    try {
-      cleanedToolInput = tool_input !== undefined
-        ? stripMemoryTagsFromJson(JSON.stringify(tool_input))
-        : '{}';
-    } catch (error) {
-      logger.debug('SESSION', 'Failed to serialize tool_input', { sessionDbId }, error);
-      cleanedToolInput = '{"error": "Failed to serialize tool_input"}';
-    }
-
-    try {
-      cleanedToolResponse = tool_response !== undefined
-        ? stripMemoryTagsFromJson(JSON.stringify(tool_response))
-        : '{}';
-    } catch (error) {
-      logger.debug('SESSION', 'Failed to serialize tool_result', { sessionDbId }, error);
-      cleanedToolResponse = '{"error": "Failed to serialize tool_response"}';
-    }
+    const cleanedToolResponse = tool_response !== undefined
+      ? stripMemoryTagsFromJson(JSON.stringify(tool_response))
+      : '{}';
 
     // Queue observation
     this.sessionManager.queueObservation(sessionDbId, {

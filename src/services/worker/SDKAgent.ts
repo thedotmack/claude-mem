@@ -280,7 +280,7 @@ export class SDKAgent {
         concepts: obs.concepts?.length ?? 0
       });
 
-      // Sync to Chroma with error logging
+      // Sync to Chroma
       const chromaStart = Date.now();
       const obsType = obs.type;
       const obsTitle = obs.title || '(untitled)';
@@ -300,13 +300,6 @@ export class SDKAgent {
           type: obsType,
           title: obsTitle
         });
-      }).catch(err => {
-        logger.error('CHROMA', 'Failed to sync observation', {
-          obsId,
-          sessionId: session.sessionDbId,
-          type: obsType,
-          title: obsTitle
-        }, err);
       });
 
       // Broadcast to SSE clients (for web UI)
@@ -356,7 +349,7 @@ export class SDKAgent {
         hasNextSteps: !!summary.next_steps
       });
 
-      // Sync to Chroma with error logging
+      // Sync to Chroma
       const chromaStart = Date.now();
       const summaryRequest = summary.request || '(no request)';
       this.dbManager.getChromaSync().syncSummary(
@@ -374,12 +367,6 @@ export class SDKAgent {
           duration: `${chromaDuration}ms`,
           request: summaryRequest
         });
-      }).catch(err => {
-        logger.error('CHROMA', 'Failed to sync summary', {
-          summaryId,
-          sessionId: session.sessionDbId,
-          request: summaryRequest
-        }, err);
       });
 
       // Broadcast to SSE clients (for web UI)

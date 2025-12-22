@@ -313,25 +313,20 @@ export class SettingsRoutes extends BaseRouteHandler {
    * Toggle MCP search server (rename .mcp.json <-> .mcp.json.disabled)
    */
   private toggleMcp(enabled: boolean): void {
-    try {
-      const packageRoot = getPackageRoot();
-      const mcpPath = path.join(packageRoot, 'plugin', '.mcp.json');
-      const mcpDisabledPath = path.join(packageRoot, 'plugin', '.mcp.json.disabled');
+    const packageRoot = getPackageRoot();
+    const mcpPath = path.join(packageRoot, 'plugin', '.mcp.json');
+    const mcpDisabledPath = path.join(packageRoot, 'plugin', '.mcp.json.disabled');
 
-      if (enabled && existsSync(mcpDisabledPath)) {
-        // Enable: rename .mcp.json.disabled -> .mcp.json
-        renameSync(mcpDisabledPath, mcpPath);
-        logger.info('WORKER', 'MCP search server enabled');
-      } else if (!enabled && existsSync(mcpPath)) {
-        // Disable: rename .mcp.json -> .mcp.json.disabled
-        renameSync(mcpPath, mcpDisabledPath);
-        logger.info('WORKER', 'MCP search server disabled');
-      } else {
-        logger.debug('WORKER', 'MCP toggle no-op (already in desired state)', { enabled });
-      }
-    } catch (error) {
-      logger.failure('WORKER', 'Failed to toggle MCP', { enabled }, error as Error);
-      throw error;
+    if (enabled && existsSync(mcpDisabledPath)) {
+      // Enable: rename .mcp.json.disabled -> .mcp.json
+      renameSync(mcpDisabledPath, mcpPath);
+      logger.info('WORKER', 'MCP search server enabled');
+    } else if (!enabled && existsSync(mcpPath)) {
+      // Disable: rename .mcp.json -> .mcp.json.disabled
+      renameSync(mcpPath, mcpDisabledPath);
+      logger.info('WORKER', 'MCP search server disabled');
+    } else {
+      logger.debug('WORKER', 'MCP toggle no-op (already in desired state)', { enabled });
     }
   }
 
