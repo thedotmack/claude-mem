@@ -55,43 +55,24 @@ function loadContextConfig(): ContextConfig {
   const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
   const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
 
-  try {
-    return {
-      totalObservationCount: parseInt(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10),
-      fullObservationCount: parseInt(settings.CLAUDE_MEM_CONTEXT_FULL_COUNT, 10),
-      sessionCount: parseInt(settings.CLAUDE_MEM_CONTEXT_SESSION_COUNT, 10),
-      showReadTokens: settings.CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS === 'true',
-      showWorkTokens: settings.CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS === 'true',
-      showSavingsAmount: settings.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT === 'true',
-      showSavingsPercent: settings.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT === 'true',
-      observationTypes: new Set(
-        settings.CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES.split(',').map((t: string) => t.trim()).filter(Boolean)
-      ),
-      observationConcepts: new Set(
-        settings.CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS.split(',').map((c: string) => c.trim()).filter(Boolean)
-      ),
-      fullObservationField: settings.CLAUDE_MEM_CONTEXT_FULL_FIELD as 'narrative' | 'facts',
-      showLastSummary: settings.CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY === 'true',
-      showLastMessage: settings.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE === 'true',
-    };
-  } catch (error) {
-    logger.warn('WORKER', 'Failed to load context settings, using defaults', {}, error as Error);
-    // Return defaults on error
-    return {
-      totalObservationCount: 50,
-      fullObservationCount: 5,
-      sessionCount: 10,
-      showReadTokens: true,
-      showWorkTokens: true,
-      showSavingsAmount: true,
-      showSavingsPercent: true,
-      observationTypes: new Set(ModeManager.getInstance().getObservationTypes().map(t => t.id)),
-      observationConcepts: new Set(ModeManager.getInstance().getObservationConcepts().map(c => c.id)),
-      fullObservationField: 'narrative' as const,
-      showLastSummary: true,
-      showLastMessage: false,
-    };
-  }
+  return {
+    totalObservationCount: parseInt(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10),
+    fullObservationCount: parseInt(settings.CLAUDE_MEM_CONTEXT_FULL_COUNT, 10),
+    sessionCount: parseInt(settings.CLAUDE_MEM_CONTEXT_SESSION_COUNT, 10),
+    showReadTokens: settings.CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS === 'true',
+    showWorkTokens: settings.CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS === 'true',
+    showSavingsAmount: settings.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT === 'true',
+    showSavingsPercent: settings.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT === 'true',
+    observationTypes: new Set(
+      settings.CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES.split(',').map((t: string) => t.trim()).filter(Boolean)
+    ),
+    observationConcepts: new Set(
+      settings.CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS.split(',').map((c: string) => c.trim()).filter(Boolean)
+    ),
+    fullObservationField: settings.CLAUDE_MEM_CONTEXT_FULL_FIELD as 'narrative' | 'facts',
+    showLastSummary: settings.CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY === 'true',
+    showLastMessage: settings.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE === 'true',
+  };
 }
 
 // Configuration constants
@@ -275,20 +256,16 @@ export async function generateContext(input?: ContextInput, useColors: boolean =
   let priorAssistantMessage = '';
 
   if (config.showLastMessage && observations.length > 0) {
-    try {
-      const currentSessionId = input?.session_id;
-      const priorSessionObs = observations.find(obs => obs.sdk_session_id !== currentSessionId);
+    const currentSessionId = input?.session_id;
+    const priorSessionObs = observations.find(obs => obs.sdk_session_id !== currentSessionId);
 
-      if (priorSessionObs) {
-        const priorSessionId = priorSessionObs.sdk_session_id;
-        const dashedCwd = cwdToDashed(cwd);
-        const transcriptPath = path.join(homedir(), '.claude', 'projects', dashedCwd, `${priorSessionId}.jsonl`);
-        const messages = extractPriorMessages(transcriptPath);
-        priorUserMessage = messages.userMessage;
-        priorAssistantMessage = messages.assistantMessage;
-      }
-    } catch (error) {
-      // Expected: Transcript file may not exist or be readable
+    if (priorSessionObs) {
+      const priorSessionId = priorSessionObs.sdk_session_id;
+      const dashedCwd = cwdToDashed(cwd);
+      const transcriptPath = path.join(homedir(), '.claude', 'projects', dashedCwd, `${priorSessionId}.jsonl`);
+      const messages = extractPriorMessages(transcriptPath);
+      priorUserMessage = messages.userMessage;
+      priorAssistantMessage = messages.assistantMessage;
     }
   }
 
