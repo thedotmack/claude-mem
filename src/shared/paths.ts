@@ -111,10 +111,10 @@ export function getCurrentProjectName(): string {
  * Find package root directory
  *
  * Works because bundled hooks are in plugin/scripts/,
- * so package root is always two levels up
+ * so package root is always one level up (the plugin directory)
  */
 export function getPackageRoot(): string {
-  return join(_dirname, '..', '..');
+  return join(_dirname, '..');
 }
 
 /**
