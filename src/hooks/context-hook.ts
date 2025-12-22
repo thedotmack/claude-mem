@@ -9,8 +9,6 @@
 import { stdin } from "process";
 import { ensureWorkerRunning, getWorkerPort } from "../shared/worker-utils.js";
 import { HOOK_TIMEOUTS } from "../shared/hook-constants.js";
-import { handleWorkerError } from "../shared/hook-error-handler.js";
-import { handleFetchError } from "./shared/error-handler.js";
 import { getProjectName } from "../utils/project-name.js";
 
 export interface SessionStartInput {
@@ -30,24 +28,14 @@ async function contextHook(input?: SessionStartInput): Promise<string> {
 
   const url = `http://127.0.0.1:${port}/api/context/inject?project=${encodeURIComponent(project)}`;
 
-  try {
-    const response = await fetch(url, { signal: AbortSignal.timeout(HOOK_TIMEOUTS.DEFAULT) });
+  const response = await fetch(url, { signal: AbortSignal.timeout(HOOK_TIMEOUTS.DEFAULT) });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      handleFetchError(response, errorText, {
-        hookName: 'context',
-        operation: 'Context generation',
-        project,
-        port
-      });
-    }
-
-    const result = await response.text();
-    return result.trim();
-  } catch (error: any) {
-    handleWorkerError(error);
+  if (!response.ok) {
+    throw new Error(`Context generation failed: ${response.status}`);
   }
+
+  const result = await response.text();
+  return result.trim();
 }
 
 // Entry Point - handle stdin/stdout
@@ -62,7 +50,12 @@ if (stdin.isTTY || forceColors) {
   let input = "";
   stdin.on("data", (chunk) => (input += chunk));
   stdin.on("end", async () => {
-    const parsed = input.trim() ? JSON.parse(input) : undefined;
+    let parsed: SessionStartInput | undefined;
+    try {
+      parsed = input.trim() ? JSON.parse(input) : undefined;
+    } catch (error) {
+      throw new Error(`Failed to parse hook input: ${error instanceof Error ? error.message : String(error)}`);
+    }
     const text = await contextHook(parsed);
 
     console.log(
