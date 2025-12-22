@@ -28,10 +28,6 @@ export interface SDKSession {
  * Build initial prompt to initialize the SDK agent
  */
 export function buildInitPrompt(project: string, sessionId: string, userPrompt: string, mode: ModeConfig): string {
-  const languageNote = mode.prompts.language_instruction
-    ? `\n  <!--\n    ${mode.prompts.language_instruction}\n  -->\n  `
-    : '\n  ';
-
   return `${mode.prompts.system_identity}
 
 <observed_from_primary_session>
@@ -50,7 +46,8 @@ ${mode.prompts.skip_guidance}
 ${mode.prompts.output_format_header}
 
 \`\`\`xml
-<observation>${languageNote}<type>[ ${mode.observation_types.map(t => t.id).join(' | ')} ]</type>
+<observation>
+  <type>[ ${mode.observation_types.map(t => t.id).join(' | ')} ]</type>
   <!--
     ${mode.prompts.type_guidance}
   -->
@@ -129,10 +126,6 @@ export function buildSummaryPrompt(session: SDKSession, mode: ModeConfig): strin
     ''
   );
 
-  const languageNote = mode.prompts.language_instruction
-    ? `\n  <!--\n    ${mode.prompts.language_instruction}\n  -->\n  `
-    : '\n  ';
-
   return `${mode.prompts.header_summary_checkpoint}
 Write progress notes of what was done, what was learned, and what's next. This is a checkpoint to capture progress so far. The session is ongoing - you may receive more requests and tool executions after this summary. Write "next_steps" as the current trajectory of work (what's actively being worked on or coming up next), not as post-session future work. Always write at least a minimal summary explaining current progress, even if work is still in early stages, so that users see a summary output tied to each request.
 
@@ -140,7 +133,8 @@ Claude's Full Response to User:
 ${lastAssistantMessage}
 
 Respond in this XML format:
-<summary>${languageNote}<request>${mode.prompts.xml_summary_request_placeholder}</request>
+<summary>
+  <request>${mode.prompts.xml_summary_request_placeholder}</request>
   <investigated>${mode.prompts.xml_summary_investigated_placeholder}</investigated>
   <learned>${mode.prompts.xml_summary_learned_placeholder}</learned>
   <completed>${mode.prompts.xml_summary_completed_placeholder}</completed>
@@ -177,10 +171,6 @@ Thank you, this summary will be very useful for keeping track of our progress!`;
  * First prompt: Uses buildInitPrompt instead (promptNumber === 1)
  */
 export function buildContinuationPrompt(userPrompt: string, promptNumber: number, claudeSessionId: string, mode: ModeConfig): string {
-  const languageNote = mode.prompts.language_instruction
-    ? `\n  <!--\n    ${mode.prompts.language_instruction}\n  -->\n  `
-    : '\n  ';
-
   return `${mode.prompts.continuation_greeting}
 
 <observed_from_primary_session>
@@ -203,7 +193,8 @@ ${mode.prompts.continuation_instruction}
 ${mode.prompts.output_format_header}
 
 \`\`\`xml
-<observation>${languageNote}<type>[ ${mode.observation_types.map(t => t.id).join(' | ')} ]</type>
+<observation>
+  <type>[ ${mode.observation_types.map(t => t.id).join(' | ')} ]</type>
   <!--
     ${mode.prompts.type_guidance}
   -->

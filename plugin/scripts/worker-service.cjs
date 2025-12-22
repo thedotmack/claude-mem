@@ -843,12 +843,7 @@ No previous sessions found for this project yet.`;let g=d.slice(0,r.sessionCount
 
 `;U.debug("WORKER","SSE broadcast sent",{eventType:e.type,clients:this.sseClients.size});for(let a of this.sseClients)a.write(n)}getClientCount(){return this.sseClients.size}sendToClient(e,r){let n=`data: ${JSON.stringify(r)}
 
-`;e.write(n)}};var Fk=require("child_process"),zk=require("os"),Uk=kt(require("path"),1);mt();mt();La();function i1(t,e){let r=[],n=/<observation>([\s\S]*?)<\/observation>/g,a;for(;(a=n.exec(t))!==null;){let s=a[1],i=ra(s,"type"),o=ra(s,"title"),c=ra(s,"subtitle"),u=ra(s,"narrative"),l=Fu(s,"facts","fact"),d=Fu(s,"concepts","concept"),f=Fu(s,"files_read","file"),m=Fu(s,"files_modified","file"),b=$t.getInstance().getActiveMode().observation_types.map(v=>v.id),p=b[0],h=p;i?b.includes(i.trim())?h=i.trim():U.warn("PARSER",`Invalid observation type: ${i}, using "${p}"`,{correlationId:e}):U.warn("PARSER",`Observation missing type field, using "${p}"`,{correlationId:e});let y=d.filter(v=>v!==h);y.length!==d.length&&U.warn("PARSER","Removed observation type from concepts array",{correlationId:e,type:h,originalConcepts:d,cleanedConcepts:y}),r.push({type:h,title:o,subtitle:c,facts:l,narrative:u,concepts:y,files_read:f,files_modified:m})}return r}function o1(t,e){let n=/<skip_summary\s+reason="([^"]+)"\s*\/>/.exec(t);if(n)return U.info("PARSER","Summary skipped",{sessionId:e,reason:n[1]}),null;let s=/<summary>([\s\S]*?)<\/summary>/.exec(t);if(!s)return null;let i=s[1],o=ra(i,"request"),c=ra(i,"investigated"),u=ra(i,"learned"),l=ra(i,"completed"),d=ra(i,"next_steps"),f=ra(i,"notes");return{request:o,investigated:c,learned:u,completed:l,next_steps:d,notes:f}}function ra(t,e){let n=new RegExp(`<${e}>([^<]*)</${e}>`).exec(t);if(!n)return null;let a=n[1].trim();return a===""?null:a}function Fu(t,e,r){let n=[],s=new RegExp(`<${e}>(.*?)</${e}>`,"s").exec(t);if(!s)return n;let i=s[1],o=new RegExp(`<${r}>([^<]+)</${r}>`,"g"),c;for(;(c=o.exec(i))!==null;)n.push(c[1].trim());return n}mt();function c1(t,e,r,n){let a=n.prompts.language_instruction?`
-  <!--
-    ${n.prompts.language_instruction}
-  -->
-  `:`
-  `;return`${n.prompts.system_identity}
+`;e.write(n)}};var Fk=require("child_process"),zk=require("os"),Uk=kt(require("path"),1);mt();mt();La();function i1(t,e){let r=[],n=/<observation>([\s\S]*?)<\/observation>/g,a;for(;(a=n.exec(t))!==null;){let s=a[1],i=ra(s,"type"),o=ra(s,"title"),c=ra(s,"subtitle"),u=ra(s,"narrative"),l=Fu(s,"facts","fact"),d=Fu(s,"concepts","concept"),f=Fu(s,"files_read","file"),m=Fu(s,"files_modified","file"),b=$t.getInstance().getActiveMode().observation_types.map(v=>v.id),p=b[0],h=p;i?b.includes(i.trim())?h=i.trim():U.warn("PARSER",`Invalid observation type: ${i}, using "${p}"`,{correlationId:e}):U.warn("PARSER",`Observation missing type field, using "${p}"`,{correlationId:e});let y=d.filter(v=>v!==h);y.length!==d.length&&U.warn("PARSER","Removed observation type from concepts array",{correlationId:e,type:h,originalConcepts:d,cleanedConcepts:y}),r.push({type:h,title:o,subtitle:c,facts:l,narrative:u,concepts:y,files_read:f,files_modified:m})}return r}function o1(t,e){let n=/<skip_summary\s+reason="([^"]+)"\s*\/>/.exec(t);if(n)return U.info("PARSER","Summary skipped",{sessionId:e,reason:n[1]}),null;let s=/<summary>([\s\S]*?)<\/summary>/.exec(t);if(!s)return null;let i=s[1],o=ra(i,"request"),c=ra(i,"investigated"),u=ra(i,"learned"),l=ra(i,"completed"),d=ra(i,"next_steps"),f=ra(i,"notes");return{request:o,investigated:c,learned:u,completed:l,next_steps:d,notes:f}}function ra(t,e){let n=new RegExp(`<${e}>([^<]*)</${e}>`).exec(t);if(!n)return null;let a=n[1].trim();return a===""?null:a}function Fu(t,e,r){let n=[],s=new RegExp(`<${e}>(.*?)</${e}>`,"s").exec(t);if(!s)return n;let i=s[1],o=new RegExp(`<${r}>([^<]+)</${r}>`,"g"),c;for(;(c=o.exec(i))!==null;)n.push(c[1].trim());return n}mt();function c1(t,e,r,n){return`${n.prompts.system_identity}
 
 <observed_from_primary_session>
   <user_request>${r}</user_request>
@@ -866,7 +861,8 @@ ${n.prompts.skip_guidance}
 ${n.prompts.output_format_header}
 
 \`\`\`xml
-<observation>${a}<type>[ ${n.observation_types.map(s=>s.id).join(" | ")} ]</type>
+<observation>
+  <type>[ ${n.observation_types.map(a=>a.id).join(" | ")} ]</type>
   <!--
     ${n.prompts.type_guidance}
   -->
@@ -908,19 +904,15 @@ ${n.prompts.header_memory_start}`}function u1(t){let e,r;try{e=typeof t.tool_inp
   <working_directory>${t.cwd}</working_directory>`:""}
   <parameters>${JSON.stringify(e,null,2)}</parameters>
   <outcome>${JSON.stringify(r,null,2)}</outcome>
-</observed_from_primary_session>`}function l1(t,e){let r=t.last_assistant_message||U.happyPathError("SDK","Missing last_assistant_message in session for summary prompt",{sessionId:t.id},void 0,""),n=e.prompts.language_instruction?`
-  <!--
-    ${e.prompts.language_instruction}
-  -->
-  `:`
-  `;return`${e.prompts.header_summary_checkpoint}
+</observed_from_primary_session>`}function l1(t,e){let r=t.last_assistant_message||U.happyPathError("SDK","Missing last_assistant_message in session for summary prompt",{sessionId:t.id},void 0,"");return`${e.prompts.header_summary_checkpoint}
 Write progress notes of what was done, what was learned, and what's next. This is a checkpoint to capture progress so far. The session is ongoing - you may receive more requests and tool executions after this summary. Write "next_steps" as the current trajectory of work (what's actively being worked on or coming up next), not as post-session future work. Always write at least a minimal summary explaining current progress, even if work is still in early stages, so that users see a summary output tied to each request.
 
 Claude's Full Response to User:
 ${r}
 
 Respond in this XML format:
-<summary>${n}<request>${e.prompts.xml_summary_request_placeholder}</request>
+<summary>
+  <request>${e.prompts.xml_summary_request_placeholder}</request>
   <investigated>${e.prompts.xml_summary_investigated_placeholder}</investigated>
   <learned>${e.prompts.xml_summary_learned_placeholder}</learned>
   <completed>${e.prompts.xml_summary_completed_placeholder}</completed>
@@ -932,12 +924,7 @@ IMPORTANT! DO NOT do any work right now other than generating this next PROGRESS
 
 Never reference yourself or your own actions. Do not output anything other than the summary content formatted in the XML structure above. All other output is ignored by the system, and the system has been designed to be smart about token usage. Please spend your tokens wisely on useful summary content.
 
-Thank you, this summary will be very useful for keeping track of our progress!`}function d1(t,e,r,n){let a=n.prompts.language_instruction?`
-  <!--
-    ${n.prompts.language_instruction}
-  -->
-  `:`
-  `;return`${n.prompts.continuation_greeting}
+Thank you, this summary will be very useful for keeping track of our progress!`}function d1(t,e,r,n){return`${n.prompts.continuation_greeting}
 
 <observed_from_primary_session>
   <user_request>${t}</user_request>
@@ -959,7 +946,8 @@ ${n.prompts.continuation_instruction}
 ${n.prompts.output_format_header}
 
 \`\`\`xml
-<observation>${a}<type>[ ${n.observation_types.map(s=>s.id).join(" | ")} ]</type>
+<observation>
+  <type>[ ${n.observation_types.map(a=>a.id).join(" | ")} ]</type>
   <!--
     ${n.prompts.type_guidance}
   -->
