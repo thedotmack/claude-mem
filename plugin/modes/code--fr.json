@@ -1,6 +1,6 @@
 {
   "name": "Code Development (French)",
   "prompts": {
-    "language_instruction": "LANGUAGE: Write ALL outputs (titles, subtitles, facts, narratives, summaries) in French (Français)."
+    "language_instruction": "IMPORTANT ! Rédigez TOUTES les sorties (titres, sous-titres, faits, récits, résumés) en français."
   }
 }

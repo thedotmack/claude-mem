@@ -1,6 +1,6 @@
 {
   "name": "Code Development (German)",
   "prompts": {
-    "language_instruction": "LANGUAGE: Write ALL outputs (titles, subtitles, facts, narratives, summaries) in German (Deutsch)."
+    "language_instruction": "IMPORTANT! Schreiben Sie ALLE Ausgaben (Titel, Untertitel, Fakten, Erzählungen, Zusammenfassungen) auf Deutsch."
   }
 }

@@ -1,6 +1,6 @@
 {
   "name": "Code Development (Japanese)",
   "prompts": {
-    "language_instruction": "LANGUAGE: Write ALL outputs (titles, subtitles, facts, narratives, summaries) in Japanese (日本語)."
+    "language_instruction": "IMPORTANT! すべての出力（タイトル、小見出し、事実、ナラティブ、要約）を日本語で書いてください。"
   }
 }

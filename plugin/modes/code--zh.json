@@ -1,6 +1,6 @@
 {
   "name": "Code Development (Chinese)",
   "prompts": {
-    "language_instruction": "LANGUAGE: Write ALL outputs (titles, subtitles, facts, narratives, summaries) in Chinese (中文)."
+    "language_instruction": "IMPORTANT! 请用中文编写所有输出（标题、副标题、事实、叙述、摘要）。"
   }
 }

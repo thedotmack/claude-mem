@@ -1,6 +1,6 @@
 {
   "name": "Code Development (Russian)",
   "prompts": {
-    "language_instruction": "LANGUAGE: Write ALL outputs (titles, subtitles, facts, narratives, summaries) in Russian (Русский)."
+    "language_instruction": "IMPORTANT! Пишите ВСЕ выходные данные (заголовки, подзаголовки, факты, повествования, резюме) на русском языке."
   }
 }

@@ -1,6 +1,6 @@
 {
   "name": "Code Development (Vietnamese)",
   "prompts": {
-    "language_instruction": "LANGUAGE: Write ALL outputs (titles, subtitles, facts, narratives, summaries) in Vietnamese (Tiếng Việt)."
+    "language_instruction": "IMPORTANT! Viết TẤT CẢ đầu ra (tiêu đề, tiêu đề phụ, sự thật, tường thuật, tóm tắt) bằng tiếng Việt."
   }
 }

@@ -241,7 +241,7 @@ export class SDKAgent {
               user_prompt: session.userPrompt,
               last_user_message: message.last_user_message || '',
               last_assistant_message: message.last_assistant_message || ''
-            })
+            }, mode)
           },
           session_id: session.claudeSessionId,
           parent_tool_use_id: null,

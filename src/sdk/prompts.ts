@@ -28,7 +28,9 @@ export interface SDKSession {
  * Build initial prompt to initialize the SDK agent
  */
 export function buildInitPrompt(project: string, sessionId: string, userPrompt: string, mode: ModeConfig): string {
-  const languageInstruction = mode.prompts.language_instruction ? `\n${mode.prompts.language_instruction}\n` : '';
+  const languageNote = mode.prompts.language_instruction
+    ? `\n  <!--\n    ${mode.prompts.language_instruction}\n    Keep XML tags in English, write content (title, subtitle, facts, narrative) in the specified language.\n  -->\n  `
+    : '\n  ';
 
   return `${mode.prompts.system_identity}
 
@@ -36,7 +38,7 @@ export function buildInitPrompt(project: string, sessionId: string, userPrompt: 
   <user_request>${userPrompt}</user_request>
   <requested_at>${new Date().toISOString().split('T')[0]}</requested_at>
 </observed_from_primary_session>
-${languageInstruction}
+
 ${mode.prompts.observer_role}
 
 ${mode.prompts.spatial_awareness}
@@ -48,8 +50,7 @@ ${mode.prompts.skip_guidance}
 ${mode.prompts.output_format_header}
 
 \`\`\`xml
-<observation>
-  <type>[ ${mode.observation_types.map(t => t.id).join(' | ')} ]</type>
+<observation>${languageNote}<type>[ ${mode.observation_types.map(t => t.id).join(' | ')} ]</type>
   <!--
     ${mode.prompts.type_guidance}
   -->
@@ -120,7 +121,7 @@ export function buildObservationPrompt(obs: Observation): string {
 /**
  * Build prompt to generate progress summary
  */
-export function buildSummaryPrompt(session: SDKSession): string {
+export function buildSummaryPrompt(session: SDKSession, mode: ModeConfig): string {
   const lastAssistantMessage = session.last_assistant_message || logger.happyPathError(
     'SDK',
     'Missing last_assistant_message in session for summary prompt',
@@ -128,6 +129,10 @@ export function buildSummaryPrompt(session: SDKSession): string {
     undefined,
     ''
   );
+
+  const languageNote = mode.prompts.language_instruction
+    ? `\n  <!--\n    ${mode.prompts.language_instruction}\n    Keep XML tags in English, write content (request, investigated, learned, completed, next_steps, notes) in the specified language.\n  -->\n  `
+    : '\n  ';
 
   return `PROGRESS SUMMARY CHECKPOINT
 ===========================
@@ -137,8 +142,7 @@ Claude's Full Response to User:
 ${lastAssistantMessage}
 
 Respond in this XML format:
-<summary>
-  <request>[Short title capturing the user's request AND the substance of what was discussed/done]</request>
+<summary>${languageNote}<request>[Short title capturing the user's request AND the substance of what was discussed/done]</request>
   <investigated>[What has been explored so far? What was examined?]</investigated>
   <learned>[What have you learned about how things work?]</learned>
   <completed>[What work has been completed so far? What has shipped or changed?]</completed>
@@ -175,7 +179,9 @@ Thank you, this summary will be very useful for keeping track of our progress!`;
  * First prompt: Uses buildInitPrompt instead (promptNumber === 1)
  */
 export function buildContinuationPrompt(userPrompt: string, promptNumber: number, claudeSessionId: string, mode: ModeConfig): string {
-  const languageInstruction = mode.prompts.language_instruction ? `\n${mode.prompts.language_instruction}\n` : '';
+  const languageNote = mode.prompts.language_instruction
+    ? `\n  <!--\n    ${mode.prompts.language_instruction}\n    Keep XML tags in English, write content (title, subtitle, facts, narrative) in the specified language.\n  -->\n  `
+    : '\n  ';
 
   return `Hello memory agent, you are continuing to observe the primary Claude session.
 
@@ -185,7 +191,7 @@ export function buildContinuationPrompt(userPrompt: string, promptNumber: number
 </observed_from_primary_session>
 
 ${mode.prompts.system_identity}
-${languageInstruction}
+
 ${mode.prompts.observer_role}
 
 ${mode.prompts.spatial_awareness}
@@ -199,8 +205,7 @@ IMPORTANT: Continue generating observations from tool use messages using the XML
 ${mode.prompts.output_format_header}
 
 \`\`\`xml
-<observation>
-  <type>[ ${mode.observation_types.map(t => t.id).join(' | ')} ]</type>
+<observation>${languageNote}<type>[ ${mode.observation_types.map(t => t.id).join(' | ')} ]</type>
   <!--
     ${mode.prompts.type_guidance}
   -->

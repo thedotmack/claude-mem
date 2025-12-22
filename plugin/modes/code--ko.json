@@ -1,6 +1,6 @@
 {
   "name": "Code Development (Korean)",
   "prompts": {
-    "language_instruction": "LANGUAGE: Write ALL outputs (titles, subtitles, facts, narratives, summaries) in Korean (한국어)."
+    "language_instruction": "IMPORTANT! 모든 출력(제목, 소제목, 사실, 서사, 요약)을 한국어로 작성하십시오."
   }
 }

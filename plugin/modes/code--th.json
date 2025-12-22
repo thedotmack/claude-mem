@@ -1,6 +1,6 @@
 {
   "name": "Code Development (Thai)",
   "prompts": {
-    "language_instruction": "LANGUAGE: Write ALL outputs (titles, subtitles, facts, narratives, summaries) in Thai (ภาษาไทย)."
+    "language_instruction": "IMPORTANT! เขียนข้อมูลที่แสดงผลทั้งหมด (หัวข้อ, หัวข้อย่อย, ข้อเท็จจริง, การบรรยาย, บทสรุป) เป็นภาษาไทย"
   }
 }

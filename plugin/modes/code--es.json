@@ -1,6 +1,6 @@
 {
   "name": "Code Development (Spanish)",
   "prompts": {
-    "language_instruction": "LANGUAGE: Write ALL outputs (titles, subtitles, facts, narratives, summaries) in Spanish (Español)."
+    "language_instruction": "IMPORTANT! Escriba TODAS las salidas (títulos, subtítulos, hechos, narrativas, resúmenes) en español."
   }
 }
