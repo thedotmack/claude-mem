@@ -1,5 +1,20 @@
 # Ragtime
 
+> **Status**: Not yet implemented
+
+Ragtime is a planned feature for claude-mem that will enable advanced timeline analysis and automated workflow orchestration.
+
+## Why It's Not Ready Yet
+
+Ragtime requires a fully functional **modes system** to work properly. The modes system (implemented in PR #412) provides:
+
+- Mode inheritance and configuration loading
+- Type-safe observation metadata
+- Dynamic prompt injection based on workflow context
+- Language-specific behavior
+
+Now that the modes system is complete, Ragtime can be fully scripted out in a future release.
+
 ## License
 
 This directory is licensed under the **PolyForm Noncommercial License 1.0.0**.
