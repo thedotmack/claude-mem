@@ -49,8 +49,6 @@ export interface TranslationOptions {
   verbose?: boolean;
   /** Force re-translation even if cached */
   force?: boolean;
-  /** Number of concurrent translations (default: 1) */
-  parallel?: number;
 }
 
 export interface TranslationResult {
@@ -258,8 +256,10 @@ export async function translateReadme(
     maxBudgetUsd,
     verbose = false,
     force = false,
-    parallel = 1,
   } = options;
+
+  // Run all translations in parallel (up to 10 concurrent)
+  const parallel = Math.min(languages.length, 10);
 
   // Read source file
   const sourcePath = path.resolve(source);
@@ -282,9 +282,7 @@ export async function translateReadme(
     console.log(`📖 Source: ${sourcePath}`);
     console.log(`📂 Output: ${outDir}`);
     console.log(`🌍 Languages: ${languages.join(", ")}`);
-    if (parallel > 1) {
-      console.log(`⚡ Parallel: ${parallel} concurrent translations`);
-    }
+    console.log(`⚡ Running ${parallel} translations in parallel`);
     console.log("");
   }
 

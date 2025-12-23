@@ -48,7 +48,7 @@
     "translate:tier2": "npm run translate-readme -- he ar ru pl cs nl tr uk",
     "translate:tier3": "npm run translate-readme -- vi id th hi bn ro sv",
     "translate:tier4": "npm run translate-readme -- it el hu fi da no",
-    "translate:all": "npm run translate:tier1 && npm run translate:tier2 && npm run translate:tier3 && npm run translate:tier4",
+    "translate:all": "npm run translate:tier1 & npm run translate:tier2 & npm run translate:tier3 & npm run translate:tier4 & wait",
     "bug-report": "npx tsx scripts/bug-report/cli.ts"
   },
   "dependencies": {
