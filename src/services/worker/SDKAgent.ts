@@ -184,10 +184,23 @@ export class SDKAgent {
    * - SessionManager.initializeSession already fetched this from database
    * - Database row was created by new-hook's createSDKSession call
    * - We just use the session_id we're given - simple and reliable
+   *
+   * SHARED CONVERSATION HISTORY:
+   * - Each user message is added to session.conversationHistory
+   * - This allows provider switching (Claude→Gemini) with full context
+   * - SDK manages its own internal state, but we mirror it for interop
    */
   private async *createMessageGenerator(session: ActiveSession): AsyncIterableIterator<SDKUserMessage> {
     // Load active mode
     const mode = ModeManager.getInstance().getActiveMode();
+
+    // Build initial prompt
+    const initPrompt = session.lastPromptNumber === 1
+      ? buildInitPrompt(session.project, session.claudeSessionId, session.userPrompt, mode)
+      : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.claudeSessionId, mode);
+
+    // Add to shared conversation history for provider interop
+    session.conversationHistory.push({ role: 'user', content: initPrompt });
 
     // Yield initial user prompt with context (or continuation if prompt #2+)
     // CRITICAL: Both paths use session.claudeSessionId from the hook
@@ -195,9 +208,7 @@ export class SDKAgent {
       type: 'user',
       message: {
         role: 'user',
-        content: session.lastPromptNumber === 1
-          ? buildInitPrompt(session.project, session.claudeSessionId, session.userPrompt, mode)
-          : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.claudeSessionId, mode)
+        content: initPrompt
       },
       session_id: session.claudeSessionId,
       parent_tool_use_id: null,
@@ -212,36 +223,46 @@ export class SDKAgent {
           session.lastPromptNumber = message.prompt_number;
         }
 
+        const obsPrompt = buildObservationPrompt({
+          id: 0, // Not used in prompt
+          tool_name: message.tool_name!,
+          tool_input: JSON.stringify(message.tool_input),
+          tool_output: JSON.stringify(message.tool_response),
+          created_at_epoch: Date.now(),
+          cwd: message.cwd
+        });
+
+        // Add to shared conversation history for provider interop
+        session.conversationHistory.push({ role: 'user', content: obsPrompt });
+
         yield {
           type: 'user',
           message: {
             role: 'user',
-            content: buildObservationPrompt({
-              id: 0, // Not used in prompt
-              tool_name: message.tool_name!,
-              tool_input: JSON.stringify(message.tool_input),
-              tool_output: JSON.stringify(message.tool_response),
-              created_at_epoch: Date.now(),
-              cwd: message.cwd
-            })
+            content: obsPrompt
           },
           session_id: session.claudeSessionId,
           parent_tool_use_id: null,
           isSynthetic: true
         };
       } else if (message.type === 'summarize') {
+        const summaryPrompt = buildSummaryPrompt({
+          id: session.sessionDbId,
+          sdk_session_id: session.sdkSessionId,
+          project: session.project,
+          user_prompt: session.userPrompt,
+          last_user_message: message.last_user_message || '',
+          last_assistant_message: message.last_assistant_message || ''
+        }, mode);
+
+        // Add to shared conversation history for provider interop
+        session.conversationHistory.push({ role: 'user', content: summaryPrompt });
+
         yield {
           type: 'user',
           message: {
             role: 'user',
-            content: buildSummaryPrompt({
-              id: session.sessionDbId,
-              sdk_session_id: session.sdkSessionId,
-              project: session.project,
-              user_prompt: session.userPrompt,
-              last_user_message: message.last_user_message || '',
-              last_assistant_message: message.last_assistant_message || ''
-            }, mode)
+            content: summaryPrompt
           },
           session_id: session.claudeSessionId,
           parent_tool_use_id: null,
@@ -254,8 +275,16 @@ export class SDKAgent {
   /**
    * Process SDK response text (parse XML, save to database, sync to Chroma)
    * @param discoveryTokens - Token cost for discovering this response (delta, not cumulative)
+   *
+   * Also captures assistant responses to shared conversation history for provider interop.
+   * This allows Gemini to see full context if provider is switched mid-session.
    */
   private async processSDKResponse(session: ActiveSession, text: string, worker: any | undefined, discoveryTokens: number): Promise<void> {
+    // Add assistant response to shared conversation history for provider interop
+    if (text) {
+      session.conversationHistory.push({ role: 'assistant', content: text });
+    }
+
     // Parse observations
     const observations = parseObservations(text, session.claudeSessionId);
 

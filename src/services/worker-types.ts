@@ -8,6 +8,15 @@ import type { Response } from 'express';
 // Active Session Types
 // ============================================================================
 
+/**
+ * Provider-agnostic conversation message for shared history
+ * Used to maintain context across Claude↔Gemini provider switches
+ */
+export interface ConversationMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
 export interface ActiveSession {
   sessionDbId: number;
   claudeSessionId: string;
@@ -22,6 +31,8 @@ export interface ActiveSession {
   cumulativeInputTokens: number;   // Track input tokens for discovery cost
   cumulativeOutputTokens: number;  // Track output tokens for discovery cost
   pendingProcessingIds: Set<number>;  // Track ALL message IDs yielded but not yet processed
+  conversationHistory: ConversationMessage[];  // Shared conversation history for provider switching
+  currentProvider: 'claude' | 'gemini' | null;  // Track which provider is currently running
 }
 
 export interface PendingMessage {

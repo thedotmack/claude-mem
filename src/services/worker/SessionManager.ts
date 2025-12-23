@@ -117,7 +117,9 @@ export class SessionManager {
       startTime: Date.now(),
       cumulativeInputTokens: 0,
       cumulativeOutputTokens: 0,
-      pendingProcessingIds: new Set()
+      pendingProcessingIds: new Set(),
+      conversationHistory: [],  // Initialize empty - will be populated by agents
+      currentProvider: null  // Will be set when generator starts
     };
 
     this.sessions.set(sessionDbId, session);

@@ -19,7 +19,7 @@ import { parseObservations, parseSummary } from '../../sdk/parser.js';
 import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
-import type { ActiveSession, PendingMessage } from '../worker-types.js';
+import type { ActiveSession, PendingMessage, ConversationMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 
 // Gemini API endpoint
@@ -43,9 +43,24 @@ interface GeminiResponse {
   };
 }
 
+/**
+ * Gemini content message format
+ * role: "user" or "model" (Gemini uses "model" not "assistant")
+ */
+interface GeminiContent {
+  role: 'user' | 'model';
+  parts: Array<{ text: string }>;
+}
+
+// Forward declaration for fallback agent type
+type FallbackAgent = {
+  startSession(session: ActiveSession, worker?: any): Promise<void>;
+};
+
 export class GeminiAgent {
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
+  private fallbackAgent: FallbackAgent | null = null;
 
   constructor(dbManager: DatabaseManager, sessionManager: SessionManager) {
     this.dbManager = dbManager;
@@ -53,7 +68,33 @@ export class GeminiAgent {
   }
 
   /**
+   * Set the fallback agent (Claude SDK) for when Gemini API fails
+   * Must be set after construction to avoid circular dependency
+   */
+  setFallbackAgent(agent: FallbackAgent): void {
+    this.fallbackAgent = agent;
+  }
+
+  /**
+   * Check if an error should trigger fallback to Claude
+   */
+  private shouldFallbackToClaude(error: any): boolean {
+    const message = error?.message || '';
+    // Fall back on rate limit (429), server errors (5xx), or network issues
+    return (
+      message.includes('429') ||
+      message.includes('500') ||
+      message.includes('502') ||
+      message.includes('503') ||
+      message.includes('ECONNREFUSED') ||
+      message.includes('ETIMEDOUT') ||
+      message.includes('fetch failed')
+    );
+  }
+
+  /**
    * Start Gemini agent for a session
+   * Uses multi-turn conversation to maintain context across messages
    */
   async startSession(session: ActiveSession, worker?: any): Promise<void> {
     try {
@@ -72,10 +113,14 @@ export class GeminiAgent {
         ? buildInitPrompt(session.project, session.claudeSessionId, session.userPrompt, mode)
         : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.claudeSessionId, mode);
 
-      // Query Gemini with initial prompt
-      const initResponse = await this.queryGemini(initPrompt, apiKey, model);
+      // Add to conversation history and query Gemini with full context
+      session.conversationHistory.push({ role: 'user', content: initPrompt });
+      const initResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model);
 
       if (initResponse.content) {
+        // Add response to conversation history
+        session.conversationHistory.push({ role: 'assistant', content: initResponse.content });
+
         // Track token usage
         const tokensUsed = initResponse.tokensUsed || 0;
         session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);  // Rough estimate
@@ -103,10 +148,14 @@ export class GeminiAgent {
             cwd: message.cwd
           });
 
-          // Query Gemini
-          const obsResponse = await this.queryGemini(obsPrompt, apiKey, model);
+          // Add to conversation history and query Gemini with full context
+          session.conversationHistory.push({ role: 'user', content: obsPrompt });
+          const obsResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model);
 
           if (obsResponse.content) {
+            // Add response to conversation history
+            session.conversationHistory.push({ role: 'assistant', content: obsResponse.content });
+
             const tokensUsed = obsResponse.tokensUsed || 0;
             session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
             session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
@@ -124,10 +173,14 @@ export class GeminiAgent {
             last_assistant_message: message.last_assistant_message || ''
           }, mode);
 
-          // Query Gemini
-          const summaryResponse = await this.queryGemini(summaryPrompt, apiKey, model);
+          // Add to conversation history and query Gemini with full context
+          session.conversationHistory.push({ role: 'user', content: summaryPrompt });
+          const summaryResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model);
 
           if (summaryResponse.content) {
+            // Add response to conversation history
+            session.conversationHistory.push({ role: 'assistant', content: summaryResponse.content });
+
             const tokensUsed = summaryResponse.tokensUsed || 0;
             session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
             session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
@@ -140,7 +193,8 @@ export class GeminiAgent {
       const sessionDuration = Date.now() - session.startTime;
       logger.success('SDK', 'Gemini agent completed', {
         sessionId: session.sessionDbId,
-        duration: `${(sessionDuration / 1000).toFixed(1)}s`
+        duration: `${(sessionDuration / 1000).toFixed(1)}s`,
+        historyLength: session.conversationHistory.length
       });
 
       this.dbManager.getSessionStore().markSessionCompleted(session.sessionDbId);
@@ -148,25 +202,65 @@ export class GeminiAgent {
     } catch (error: any) {
       if (error.name === 'AbortError') {
         logger.warn('SDK', 'Gemini agent aborted', { sessionId: session.sessionDbId });
-      } else {
-        logger.failure('SDK', 'Gemini agent error', { sessionDbId: session.sessionDbId }, error);
+        throw error;
       }
+
+      // Check if we should fall back to Claude
+      if (this.shouldFallbackToClaude(error) && this.fallbackAgent) {
+        logger.warn('SDK', 'Gemini API failed, falling back to Claude SDK', {
+          sessionDbId: session.sessionDbId,
+          error: error.message,
+          historyLength: session.conversationHistory.length
+        });
+
+        // Reset any 'processing' messages back to 'pending' so Claude can retry them
+        // This handles the case where Gemini failed mid-processing a message
+        const pendingStore = this.sessionManager.getPendingMessageStore();
+        const resetCount = pendingStore.resetStuckMessages(0);  // 0 = reset ALL processing messages
+        if (resetCount > 0) {
+          logger.info('SDK', 'Reset processing messages for fallback', {
+            sessionDbId: session.sessionDbId,
+            resetCount
+          });
+        }
+
+        // Fall back to Claude - it will use the same session with shared conversationHistory
+        // Note: Claude SDK will continue processing from current state
+        return this.fallbackAgent.startSession(session, worker);
+      }
+
+      logger.failure('SDK', 'Gemini agent error', { sessionDbId: session.sessionDbId }, error);
       throw error;
-    } finally {
-      // Cleanup
-      this.sessionManager.deleteSession(session.sessionDbId).catch(() => {});
     }
   }
 
   /**
-   * Query Gemini via REST API
+   * Convert shared ConversationMessage array to Gemini's contents format
+   * Maps 'assistant' role to 'model' for Gemini API compatibility
    */
-  private async queryGemini(
-    prompt: string,
+  private conversationToGeminiContents(history: ConversationMessage[]): GeminiContent[] {
+    return history.map(msg => ({
+      role: msg.role === 'assistant' ? 'model' : 'user',
+      parts: [{ text: msg.content }]
+    }));
+  }
+
+  /**
+   * Query Gemini via REST API with full conversation history (multi-turn)
+   * Sends the entire conversation context for coherent responses
+   */
+  private async queryGeminiMultiTurn(
+    history: ConversationMessage[],
     apiKey: string,
     model: GeminiModel
   ): Promise<{ content: string; tokensUsed?: number }> {
-    logger.debug('SDK', `Querying Gemini (${model})`, { promptLength: prompt.length });
+    const contents = this.conversationToGeminiContents(history);
+    const totalChars = history.reduce((sum, m) => sum + m.content.length, 0);
+
+    logger.debug('SDK', `Querying Gemini multi-turn (${model})`, {
+      turns: history.length,
+      totalChars
+    });
 
     const url = `${GEMINI_API_URL}/${model}:generateContent?key=${apiKey}`;
 
@@ -176,9 +270,7 @@ export class GeminiAgent {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        contents: [{
-          parts: [{ text: prompt }]
-        }],
+        contents,
         generationConfig: {
           temperature: 0.3,  // Lower temperature for structured extraction
           maxOutputTokens: 4096,

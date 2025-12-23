@@ -42,7 +42,10 @@ export class SessionRoutes extends BaseRouteHandler {
 
   /**
    * Get the appropriate agent based on settings
-   * Falls back to Claude SDK if Gemini is selected but not configured
+   * Throws error if Gemini is selected but not configured (no silent fallback)
+   *
+   * Note: Session linking via claudeSessionId allows provider switching mid-session.
+   * The conversationHistory on ActiveSession maintains context across providers.
    */
   private getActiveAgent(): SDKAgent | GeminiAgent {
     if (isGeminiSelected()) {
@@ -50,36 +53,82 @@ export class SessionRoutes extends BaseRouteHandler {
         logger.debug('SESSION', 'Using Gemini agent');
         return this.geminiAgent;
       } else {
-        logger.warn('SESSION', 'Gemini selected but no API key configured, falling back to Claude SDK');
-        return this.sdkAgent;
+        throw new Error('Gemini provider selected but no API key configured. Set CLAUDE_MEM_GEMINI_API_KEY in settings or GEMINI_API_KEY environment variable.');
       }
     }
     return this.sdkAgent;
   }
 
   /**
+   * Get the currently selected provider name
+   */
+  private getSelectedProvider(): 'claude' | 'gemini' {
+    return (isGeminiSelected() && isGeminiAvailable()) ? 'gemini' : 'claude';
+  }
+
+  /**
    * Ensures agent generator is running for a session
    * Auto-starts if not already running to process pending queue
    * Uses either Claude SDK or Gemini based on settings
+   *
+   * Provider switching: If provider setting changed while generator is running,
+   * we let the current generator finish naturally (max 5s linger timeout).
+   * The next generator will use the new provider with shared conversationHistory.
    */
   private ensureGeneratorRunning(sessionDbId: number, source: string): void {
     const session = this.sessionManager.getSession(sessionDbId);
-    if (session && !session.generatorPromise) {
-      const agent = this.getActiveAgent();
-      const agentName = (isGeminiSelected() && isGeminiAvailable()) ? 'Gemini' : 'Claude SDK';
+    if (!session) return;
 
-      logger.info('SESSION', `Generator auto-starting (${source}) using ${agentName}`, {
-        sessionId: sessionDbId,
-        queueDepth: session.pendingMessages.length
-      });
+    const selectedProvider = this.getSelectedProvider();
 
-      session.generatorPromise = agent.startSession(session, this.workerService)
-        .finally(() => {
-          logger.info('SESSION', `Generator finished`, { sessionId: sessionDbId });
-          session.generatorPromise = null;
-          this.workerService.broadcastProcessingStatus();
-        });
+    // Start generator if not running
+    if (!session.generatorPromise) {
+      this.startGeneratorWithProvider(session, selectedProvider, source);
+      return;
     }
+
+    // Generator is running - check if provider changed
+    if (session.currentProvider && session.currentProvider !== selectedProvider) {
+      logger.info('SESSION', `Provider changed, will switch after current generator finishes`, {
+        sessionId: sessionDbId,
+        currentProvider: session.currentProvider,
+        selectedProvider,
+        historyLength: session.conversationHistory.length
+      });
+      // Let current generator finish naturally, next one will use new provider
+      // The shared conversationHistory ensures context is preserved
+    }
+  }
+
+  /**
+   * Start a generator with the specified provider
+   */
+  private startGeneratorWithProvider(
+    session: ReturnType<typeof this.sessionManager.getSession>,
+    provider: 'claude' | 'gemini',
+    source: string
+  ): void {
+    if (!session) return;
+
+    const agent = provider === 'gemini' ? this.geminiAgent : this.sdkAgent;
+    const agentName = provider === 'gemini' ? 'Gemini' : 'Claude SDK';
+
+    logger.info('SESSION', `Generator auto-starting (${source}) using ${agentName}`, {
+      sessionId: session.sessionDbId,
+      queueDepth: session.pendingMessages.length,
+      historyLength: session.conversationHistory.length
+    });
+
+    // Track which provider is running
+    session.currentProvider = provider;
+
+    session.generatorPromise = agent.startSession(session, this.workerService)
+      .finally(() => {
+        logger.info('SESSION', `Generator finished`, { sessionId: session.sessionDbId });
+        session.generatorPromise = null;
+        session.currentProvider = null;
+        this.workerService.broadcastProcessingStatus();
+      });
   }
 
   setupRoutes(app: express.Application): void {
@@ -150,24 +199,8 @@ export class SessionRoutes extends BaseRouteHandler {
       });
     }
 
-    // Start agent in background (pass worker ref for spinner control)
-    const agent = this.getActiveAgent();
-    const agentName = isGeminiSelected() ? 'Gemini' : 'Claude SDK';
-
-    logger.info('SESSION', `Generator starting using ${agentName}`, {
-      sessionId: sessionDbId,
-      project: session.project,
-      promptNum: session.lastPromptNumber
-    });
-
-    session.generatorPromise = agent.startSession(session, this.workerService)
-      .finally(() => {
-        // Clear generator reference when completed
-        logger.info('SESSION', `Generator finished`, { sessionId: sessionDbId });
-        session.generatorPromise = null;
-        // Broadcast status change (generator finished, may stop spinner)
-        this.workerService.broadcastProcessingStatus();
-      });
+    // Start agent in background using the helper method
+    this.startGeneratorWithProvider(session, this.getSelectedProvider(), 'init');
 
     // Broadcast session started event
     this.eventBroadcaster.broadcastSessionStarted(sessionDbId, session.project);
