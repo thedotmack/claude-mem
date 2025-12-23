@@ -24,6 +24,7 @@ import { DatabaseManager } from './worker/DatabaseManager.js';
 import { SessionManager } from './worker/SessionManager.js';
 import { SSEBroadcaster } from './worker/SSEBroadcaster.js';
 import { SDKAgent } from './worker/SDKAgent.js';
+import { GeminiAgent } from './worker/GeminiAgent.js';
 import { PaginationHelper } from './worker/PaginationHelper.js';
 import { SettingsManager } from './worker/SettingsManager.js';
 import { SearchManager } from './worker/SearchManager.js';
@@ -54,6 +55,7 @@ export class WorkerService {
   private sessionManager: SessionManager;
   private sseBroadcaster: SSEBroadcaster;
   private sdkAgent: SDKAgent;
+  private geminiAgent: GeminiAgent;
   private paginationHelper: PaginationHelper;
   private settingsManager: SettingsManager;
   private sessionEventBroadcaster: SessionEventBroadcaster;
@@ -82,6 +84,7 @@ export class WorkerService {
     this.sessionManager = new SessionManager(this.dbManager);
     this.sseBroadcaster = new SSEBroadcaster();
     this.sdkAgent = new SDKAgent(this.dbManager, this.sessionManager);
+    this.geminiAgent = new GeminiAgent(this.dbManager, this.sessionManager);
     this.paginationHelper = new PaginationHelper(this.dbManager);
     this.settingsManager = new SettingsManager(this.dbManager);
     this.sessionEventBroadcaster = new SessionEventBroadcaster(this.sseBroadcaster, this);
@@ -99,7 +102,7 @@ export class WorkerService {
 
     // Initialize route handlers (SearchRoutes will use MCP client initially, then switch to SearchManager after DB init)
     this.viewerRoutes = new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager);
-    this.sessionRoutes = new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.sessionEventBroadcaster, this);
+    this.sessionRoutes = new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.sessionEventBroadcaster, this);
     this.dataRoutes = new DataRoutes(this.paginationHelper, this.dbManager, this.sessionManager, this.sseBroadcaster, this, this.startTime);
     // SearchRoutes needs SearchManager which requires initialized DB - will be created in initializeBackground()
     this.searchRoutes = null;

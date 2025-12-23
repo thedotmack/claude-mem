@@ -423,23 +423,64 @@ export function ContextSettingsModal({
             {/* Section 4: Advanced */}
             <CollapsibleSection
               title="Advanced"
-              description="Model selection and integrations"
+              description="AI provider and model selection"
               defaultOpen={false}
             >
               <FormField
-                label="Model"
-                tooltip="AI model used for generating observations"
+                label="AI Provider"
+                tooltip="Choose between Claude (via Agent SDK) or Gemini (via REST API)"
               >
                 <select
-                  value={formState.CLAUDE_MEM_MODEL || 'haiku'}
-                  onChange={(e) => updateSetting('CLAUDE_MEM_MODEL', e.target.value)}
+                  value={formState.CLAUDE_MEM_PROVIDER || 'claude'}
+                  onChange={(e) => updateSetting('CLAUDE_MEM_PROVIDER', e.target.value)}
                 >
-                  {/* Shorthand names forward to latest model version */}
-                  <option value="haiku">haiku (fastest)</option>
-                  <option value="sonnet">sonnet (balanced)</option>
-                  <option value="opus">opus (highest quality)</option>
+                  <option value="claude">Claude (uses your Claude account)</option>
+                  <option value="gemini">Gemini (uses API key)</option>
                 </select>
               </FormField>
+
+              {formState.CLAUDE_MEM_PROVIDER === 'claude' ? (
+                <FormField
+                  label="Claude Model"
+                  tooltip="Claude model used for generating observations"
+                >
+                  <select
+                    value={formState.CLAUDE_MEM_MODEL || 'haiku'}
+                    onChange={(e) => updateSetting('CLAUDE_MEM_MODEL', e.target.value)}
+                  >
+                    <option value="haiku">haiku (fastest)</option>
+                    <option value="sonnet">sonnet (balanced)</option>
+                    <option value="opus">opus (highest quality)</option>
+                  </select>
+                </FormField>
+              ) : (
+                <>
+                  <FormField
+                    label="Gemini API Key"
+                    tooltip="Your Google AI Studio API key (or set GEMINI_API_KEY env var)"
+                  >
+                    <input
+                      type="password"
+                      value={formState.CLAUDE_MEM_GEMINI_API_KEY || ''}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_GEMINI_API_KEY', e.target.value)}
+                      placeholder="Enter Gemini API key..."
+                    />
+                  </FormField>
+                  <FormField
+                    label="Gemini Model"
+                    tooltip="Gemini model used for generating observations"
+                  >
+                    <select
+                      value={formState.CLAUDE_MEM_GEMINI_MODEL || 'gemini-2.0-flash-exp'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_GEMINI_MODEL', e.target.value)}
+                    >
+                      <option value="gemini-2.0-flash-exp">gemini-2.0-flash-exp (fastest)</option>
+                      <option value="gemini-1.5-flash">gemini-1.5-flash (balanced)</option>
+                      <option value="gemini-1.5-pro">gemini-1.5-pro (highest quality)</option>
+                    </select>
+                  </FormField>
+                </>
+              )}
 
               <FormField
                 label="Worker Port"

@@ -12,6 +12,7 @@ import { stripMemoryTagsFromJson, stripMemoryTagsFromPrompt } from '../../../../
 import { SessionManager } from '../../SessionManager.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
 import { SDKAgent } from '../../SDKAgent.js';
+import { GeminiAgent, isGeminiSelected, isGeminiAvailable } from '../../GeminiAgent.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { SessionEventBroadcaster } from '../../events/SessionEventBroadcaster.js';
@@ -27,6 +28,7 @@ export class SessionRoutes extends BaseRouteHandler {
     private sessionManager: SessionManager,
     private dbManager: DatabaseManager,
     private sdkAgent: SDKAgent,
+    private geminiAgent: GeminiAgent,
     private eventBroadcaster: SessionEventBroadcaster,
     private workerService: WorkerService
   ) {
@@ -39,18 +41,39 @@ export class SessionRoutes extends BaseRouteHandler {
   }
 
   /**
-   * Ensures SDK agent generator is running for a session
+   * Get the appropriate agent based on settings
+   * Falls back to Claude SDK if Gemini is selected but not configured
+   */
+  private getActiveAgent(): SDKAgent | GeminiAgent {
+    if (isGeminiSelected()) {
+      if (isGeminiAvailable()) {
+        logger.debug('SESSION', 'Using Gemini agent');
+        return this.geminiAgent;
+      } else {
+        logger.warn('SESSION', 'Gemini selected but no API key configured, falling back to Claude SDK');
+        return this.sdkAgent;
+      }
+    }
+    return this.sdkAgent;
+  }
+
+  /**
+   * Ensures agent generator is running for a session
    * Auto-starts if not already running to process pending queue
+   * Uses either Claude SDK or Gemini based on settings
    */
   private ensureGeneratorRunning(sessionDbId: number, source: string): void {
     const session = this.sessionManager.getSession(sessionDbId);
     if (session && !session.generatorPromise) {
-      logger.info('SESSION', `Generator auto-starting (${source})`, {
+      const agent = this.getActiveAgent();
+      const agentName = (isGeminiSelected() && isGeminiAvailable()) ? 'Gemini' : 'Claude SDK';
+
+      logger.info('SESSION', `Generator auto-starting (${source}) using ${agentName}`, {
         sessionId: sessionDbId,
         queueDepth: session.pendingMessages.length
       });
 
-      session.generatorPromise = this.sdkAgent.startSession(session, this.workerService)
+      session.generatorPromise = agent.startSession(session, this.workerService)
         .finally(() => {
           logger.info('SESSION', `Generator finished`, { sessionId: sessionDbId });
           session.generatorPromise = null;
@@ -127,14 +150,17 @@ export class SessionRoutes extends BaseRouteHandler {
       });
     }
 
-    // Start SDK agent in background (pass worker ref for spinner control)
-    logger.info('SESSION', 'Generator starting', {
+    // Start agent in background (pass worker ref for spinner control)
+    const agent = this.getActiveAgent();
+    const agentName = isGeminiSelected() ? 'Gemini' : 'Claude SDK';
+
+    logger.info('SESSION', `Generator starting using ${agentName}`, {
       sessionId: sessionDbId,
       project: session.project,
       promptNum: session.lastPromptNumber
     });
 
-    session.generatorPromise = this.sdkAgent.startSession(session, this.workerService)
+    session.generatorPromise = agent.startSession(session, this.workerService)
       .finally(() => {
         // Clear generator reference when completed
         logger.info('SESSION', `Generator finished`, { sessionId: sessionDbId });
