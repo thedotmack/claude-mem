@@ -4,6 +4,31 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [8.0.2] - 2025-12-23
+
+New "chill" remix of code mode for users who want fewer, more selective observations.
+
+## Features
+
+- **code--chill mode**: A behavioral variant that produces fewer observations
+  - Only records things "painful to rediscover" - shipped features, architectural decisions, non-obvious gotchas
+  - Skips routine work, straightforward implementations, and obvious changes
+  - Philosophy: "When in doubt, skip it"
+
+## Documentation
+
+- Updated modes.mdx with all 28 language modes (was 10)
+- Added Code Mode Variants section documenting chill mode
+
+## Usage
+
+Set in ~/.claude-mem/settings.json:
+```json
+{
+  "CLAUDE_MEM_MODE": "code--chill"
+}
+```
+
 ## [8.0.1] - 2025-12-23
 
 ## 🎨 UI Improvements
