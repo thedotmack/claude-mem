@@ -9,6 +9,7 @@
  */
 
 import { execSync } from 'child_process';
+import { existsSync } from 'fs';
 import { homedir } from 'os';
 import path from 'path';
 import { DatabaseManager } from './DatabaseManager.js';
@@ -436,8 +437,14 @@ export class SDKAgent {
   private findClaudeExecutable(): string {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     
-    // If CLAUDE_CODE_PATH is explicitly set in settings, use it
+    // If CLAUDE_CODE_PATH is explicitly set in settings, validate and use it
     if (settings.CLAUDE_CODE_PATH) {
+      if (!existsSync(settings.CLAUDE_CODE_PATH)) {
+        throw new Error(
+          `CLAUDE_CODE_PATH is set to "${settings.CLAUDE_CODE_PATH}" but the file does not exist.\n` +
+          'Please update CLAUDE_CODE_PATH in ~/.claude-mem/settings.json or remove it to use auto-detection.'
+        );
+      }
       return settings.CLAUDE_CODE_PATH;
     }
 
@@ -453,7 +460,7 @@ export class SDKAgent {
       }
     } catch (error) {
       // Command failed (claude not found in PATH)
-      logger.debug('SDK', 'Failed to auto-detect Claude executable', error);
+      logger.debug('SDK', 'Claude executable auto-detection failed - Claude may not be in PATH or accessible', error);
     }
 
     // Claude not found
