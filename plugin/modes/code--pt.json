@@ -17,6 +17,8 @@
     "xml_summary_next_steps_placeholder": "[No que você está trabalhando ativamente ou planeja trabalhar a seguir nesta sessão?]",
     "xml_summary_notes_placeholder": "[Insights adicionais ou observações sobre o progresso atual]",
 
-    "continuation_instruction": "IMPORTANT: Continue generating observations from tool use messages using the XML structure below.\n\nLANGUAGE REQUIREMENTS: Please write the observation data in português"
+    "continuation_instruction": "IMPORTANT: Continue generating observations from tool use messages using the XML structure below.\n\nLANGUAGE REQUIREMENTS: Please write the observation data in português",
+
+    "summary_footer": "IMPORTANT! DO NOT do any work right now other than generating this next PROGRESS SUMMARY - and remember that you are a memory agent designed to summarize a DIFFERENT claude code session, not this one.\n\nNever reference yourself or your own actions. Do not output anything other than the summary content formatted in the XML structure above. All other output is ignored by the system, and the system has been designed to be smart about token usage. Please spend your tokens wisely on useful summary content.\n\nThank you, this summary will be very useful for keeping track of our progress!\n\nLANGUAGE REQUIREMENTS: Please write ALL summary content (request, investigated, learned, completed, next_steps, notes) in português"
   }
 }

@@ -905,12 +905,12 @@ ${n.prompts.header_memory_start}`}function u1(t){let e,r;try{e=typeof t.tool_inp
   <parameters>${JSON.stringify(e,null,2)}</parameters>
   <outcome>${JSON.stringify(r,null,2)}</outcome>
 </observed_from_primary_session>`}function l1(t,e){let r=t.last_assistant_message||U.happyPathError("SDK","Missing last_assistant_message in session for summary prompt",{sessionId:t.id},void 0,"");return`${e.prompts.header_summary_checkpoint}
-Write progress notes of what was done, what was learned, and what's next. This is a checkpoint to capture progress so far. The session is ongoing - you may receive more requests and tool executions after this summary. Write "next_steps" as the current trajectory of work (what's actively being worked on or coming up next), not as post-session future work. Always write at least a minimal summary explaining current progress, even if work is still in early stages, so that users see a summary output tied to each request.
+${e.prompts.summary_instruction}
 
-Claude's Full Response to User:
+${e.prompts.summary_context_label}
 ${r}
 
-Respond in this XML format:
+${e.prompts.summary_format_instruction}
 <summary>
   <request>${e.prompts.xml_summary_request_placeholder}</request>
   <investigated>${e.prompts.xml_summary_investigated_placeholder}</investigated>
@@ -920,11 +920,7 @@ Respond in this XML format:
   <notes>${e.prompts.xml_summary_notes_placeholder}</notes>
 </summary>
 
-IMPORTANT! DO NOT do any work right now other than generating this next PROGRESS SUMMARY - and remember that you are a memory agent designed to summarize a DIFFERENT claude code session, not this one.
-
-Never reference yourself or your own actions. Do not output anything other than the summary content formatted in the XML structure above. All other output is ignored by the system, and the system has been designed to be smart about token usage. Please spend your tokens wisely on useful summary content.
-
-Thank you, this summary will be very useful for keeping track of our progress!`}function d1(t,e,r,n){return`${n.prompts.continuation_greeting}
+${e.prompts.summary_footer}`}function d1(t,e,r,n){return`${n.prompts.continuation_greeting}
 
 <observed_from_primary_session>
   <user_request>${t}</user_request>

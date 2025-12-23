@@ -54,6 +54,12 @@ export interface ModePrompts {
   // Continuation prompts
   continuation_greeting: string;      // e.g., "Hello memory agent, you are continuing to observe the primary Claude session."
   continuation_instruction: string;   // e.g., "IMPORTANT: Continue generating observations from tool use messages using the XML structure below."
+
+  // Summary prompts
+  summary_instruction: string;        // Instructions for writing progress summary
+  summary_context_label: string;      // Label for Claude's response section (e.g., "Claude's Full Response to User:")
+  summary_format_instruction: string; // Instruction to use XML format (e.g., "Respond in this XML format:")
+  summary_footer: string;             // Footer with closing instructions and language requirement
 }
 
 export interface ModeConfig {

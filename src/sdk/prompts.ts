@@ -127,12 +127,12 @@ export function buildSummaryPrompt(session: SDKSession, mode: ModeConfig): strin
   );
 
   return `${mode.prompts.header_summary_checkpoint}
-Write progress notes of what was done, what was learned, and what's next. This is a checkpoint to capture progress so far. The session is ongoing - you may receive more requests and tool executions after this summary. Write "next_steps" as the current trajectory of work (what's actively being worked on or coming up next), not as post-session future work. Always write at least a minimal summary explaining current progress, even if work is still in early stages, so that users see a summary output tied to each request.
+${mode.prompts.summary_instruction}
 
-Claude's Full Response to User:
+${mode.prompts.summary_context_label}
 ${lastAssistantMessage}
 
-Respond in this XML format:
+${mode.prompts.summary_format_instruction}
 <summary>
   <request>${mode.prompts.xml_summary_request_placeholder}</request>
   <investigated>${mode.prompts.xml_summary_investigated_placeholder}</investigated>
@@ -142,11 +142,7 @@ Respond in this XML format:
   <notes>${mode.prompts.xml_summary_notes_placeholder}</notes>
 </summary>
 
-IMPORTANT! DO NOT do any work right now other than generating this next PROGRESS SUMMARY - and remember that you are a memory agent designed to summarize a DIFFERENT claude code session, not this one.
-
-Never reference yourself or your own actions. Do not output anything other than the summary content formatted in the XML structure above. All other output is ignored by the system, and the system has been designed to be smart about token usage. Please spend your tokens wisely on useful summary content.
-
-Thank you, this summary will be very useful for keeping track of our progress!`;
+${mode.prompts.summary_footer}`;
 }
 
 /**

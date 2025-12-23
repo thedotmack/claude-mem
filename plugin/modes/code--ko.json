@@ -17,6 +17,8 @@
     "xml_summary_next_steps_placeholder": "[이 세션에서 다음으로 적극적으로 작업 중이거나 작업할 계획인 것은 무엇입니까?]",
     "xml_summary_notes_placeholder": "[현재 진행 상황에 대한 추가 통찰이나 관찰]",
 
-    "continuation_instruction": "IMPORTANT: Continue generating observations from tool use messages using the XML structure below.\n\nLANGUAGE REQUIREMENTS: Please write the observation data in 한국어"
+    "continuation_instruction": "IMPORTANT: Continue generating observations from tool use messages using the XML structure below.\n\nLANGUAGE REQUIREMENTS: Please write the observation data in 한국어",
+
+    "summary_footer": "IMPORTANT! DO NOT do any work right now other than generating this next PROGRESS SUMMARY - and remember that you are a memory agent designed to summarize a DIFFERENT claude code session, not this one.\n\nNever reference yourself or your own actions. Do not output anything other than the summary content formatted in the XML structure above. All other output is ignored by the system, and the system has been designed to be smart about token usage. Please spend your tokens wisely on useful summary content.\n\nThank you, this summary will be very useful for keeping track of our progress!\n\nLANGUAGE REQUIREMENTS: Please write ALL summary content (request, investigated, learned, completed, next_steps, notes) in 한국어"
   }
 }
