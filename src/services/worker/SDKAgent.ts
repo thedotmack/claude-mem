@@ -435,15 +435,32 @@ export class SDKAgent {
    */
   private findClaudeExecutable(): string {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-    const claudePath = settings.CLAUDE_CODE_PATH ||
-      execSync(process.platform === 'win32' ? 'where claude' : 'which claude', { encoding: 'utf8', windowsHide: true })
-        .trim().split('\n')[0].trim();
-
-    if (!claudePath) {
-      throw new Error('Claude executable not found in PATH');
+    
+    // If CLAUDE_CODE_PATH is explicitly set in settings, use it
+    if (settings.CLAUDE_CODE_PATH) {
+      return settings.CLAUDE_CODE_PATH;
     }
 
-    return claudePath;
+    // Try to auto-detect Claude executable
+    try {
+      const claudePath = execSync(
+        process.platform === 'win32' ? 'where claude' : 'which claude',
+        { encoding: 'utf8', windowsHide: true }
+      ).trim().split('\n')[0].trim();
+
+      if (claudePath) {
+        return claudePath;
+      }
+    } catch (error) {
+      // Command failed (claude not found in PATH)
+    }
+
+    // Claude not found
+    throw new Error(
+      'Claude executable not found. Please either:\n' +
+      '1. Add "claude" to your system PATH, or\n' +
+      '2. Set CLAUDE_CODE_PATH in ~/.claude-mem/settings.json'
+    );
   }
 
   /**
