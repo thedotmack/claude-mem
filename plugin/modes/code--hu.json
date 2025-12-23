@@ -1,0 +1,24 @@
+{
+  "name": "Code Development (Hungarian)",
+  "prompts": {
+    "footer": "IMPORTANT! DO NOT do any work right now other than generating this OBSERVATIONS from tool use messages - and remember that you are a memory agent designed to summarize a DIFFERENT claude code session, not this one.\n\nNever reference yourself or your own actions. Do not output anything other than the observation content formatted in the XML structure above. All other output is ignored by the system, and the system has been designed to be smart about token usage. Please spend your tokens wisely on useful observations.\n\nRemember that we record these observations as a way of helping us stay on track with our progress, and to help us keep important decisions and changes at the forefront of our minds! :) Thank you so much for your help!\n\nLANGUAGE REQUIREMENTS: Please write the observation data in magyar",
+
+    "xml_title_placeholder": "[**title**: Rövid cím, amely megragadja a fő műveletet vagy témát]",
+    "xml_subtitle_placeholder": "[**subtitle**: Egyetlen mondatos magyarázat (maximum 24 szó)]",
+    "xml_fact_placeholder": "[Tömör, önálló kijelentés]",
+    "xml_narrative_placeholder": "[**narrative**: Teljes kontextus: mit csináltak, hogyan működik, miért fontos]",
+    "xml_concept_placeholder": "[tudástípus-kategória]",
+    "xml_file_placeholder": "[fájl/elérési/útja]",
+
+    "xml_summary_request_placeholder": "[Rövid cím, amely megragadja a felhasználó kérését és a megvitatott/végrehajtott dolgok lényegét]",
+    "xml_summary_investigated_placeholder": "[Mit vizsgáltak meg eddig? Mit tekintettek át?]",
+    "xml_summary_learned_placeholder": "[Mit tanultál arról, hogyan működnek a dolgok?]",
+    "xml_summary_completed_placeholder": "[Milyen munka fejeződött be eddig? Mit szállítottak le vagy változtattak meg?]",
+    "xml_summary_next_steps_placeholder": "[Min dolgozol aktívan, vagy min tervezel dolgozni ebben az ülésben?]",
+    "xml_summary_notes_placeholder": "[További meglátások vagy megfigyelések a jelenlegi előrehaladásról]",
+
+    "continuation_instruction": "IMPORTANT: Continue generating observations from tool use messages using the XML structure below.\n\nLANGUAGE REQUIREMENTS: Please write the observation data in magyar",
+
+    "summary_footer": "IMPORTANT! DO NOT do any work right now other than generating this next PROGRESS SUMMARY - and remember that you are a memory agent designed to summarize a DIFFERENT claude code session, not this one.\n\nNever reference yourself or your own actions. Do not output anything other than the summary content formatted in the XML structure above. All other output is ignored by the system, and the system has been designed to be smart about token usage. Please spend your tokens wisely on useful summary content.\n\nThank you, this summary will be very useful for keeping track of our progress!\n\nLANGUAGE REQUIREMENTS: Please write ALL summary content (request, investigated, learned, completed, next_steps, notes) in magyar"
+  }
+}

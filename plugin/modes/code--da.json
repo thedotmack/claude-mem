@@ -1,0 +1,24 @@
+{
+  "name": "Code Development (Danish)",
+  "prompts": {
+    "footer": "IMPORTANT! DO NOT do any work right now other than generating this OBSERVATIONS from tool use messages - and remember that you are a memory agent designed to summarize a DIFFERENT claude code session, not this one.\n\nNever reference yourself or your own actions. Do not output anything other than the observation content formatted in the XML structure above. All other output is ignored by the system, and the system has been designed to be smart about token usage. Please spend your tokens wisely on useful observations.\n\nRemember that we record these observations as a way of helping us stay on track with our progress, and to help us keep important decisions and changes at the forefront of our minds! :) Thank you so much for your help!\n\nLANGUAGE REQUIREMENTS: Please write the observation data in dansk",
+
+    "xml_title_placeholder": "[**title**: Kort titel der beskriver hovedhandlingen eller emnet]",
+    "xml_subtitle_placeholder": "[**subtitle**: Forklaring i én sætning (maksimalt 24 ord)]",
+    "xml_fact_placeholder": "[Kortfattet, selvstændig erklæring]",
+    "xml_narrative_placeholder": "[**narrative**: Fuld kontekst: hvad der blev gjort, hvordan det virker, hvorfor det er vigtigt]",
+    "xml_concept_placeholder": "[videnstype-kategori]",
+    "xml_file_placeholder": "[sti/til/fil]",
+
+    "xml_summary_request_placeholder": "[Kort titel der beskriver brugerens anmodning og essensen af hvad der blev diskuteret/gjort]",
+    "xml_summary_investigated_placeholder": "[Hvad er der blevet udforsket indtil videre? Hvad er blevet gennemgået?]",
+    "xml_summary_learned_placeholder": "[Hvad har du lært om, hvordan tingene fungerer?]",
+    "xml_summary_completed_placeholder": "[Hvilket arbejde er blevet afsluttet indtil videre? Hvad er blevet leveret eller ændret?]",
+    "xml_summary_next_steps_placeholder": "[Hvad arbejder du aktivt på eller planlægger at arbejde på næste i denne session?]",
+    "xml_summary_notes_placeholder": "[Yderligere indsigter eller observationer om den aktuelle fremgang]",
+
+    "continuation_instruction": "IMPORTANT: Continue generating observations from tool use messages using the XML structure below.\n\nLANGUAGE REQUIREMENTS: Please write the observation data in dansk",
+
+    "summary_footer": "IMPORTANT! DO NOT do any work right now other than generating this next PROGRESS SUMMARY - and remember that you are a memory agent designed to summarize a DIFFERENT claude code session, not this one.\n\nNever reference yourself or your own actions. Do not output anything other than the summary content formatted in the XML structure above. All other output is ignored by the system, and the system has been designed to be smart about token usage. Please spend your tokens wisely on useful summary content.\n\nThank you, this summary will be very useful for keeping track of our progress!\n\nLANGUAGE REQUIREMENTS: Please write ALL summary content (request, investigated, learned, completed, next_steps, notes) in dansk"
+  }
+}
