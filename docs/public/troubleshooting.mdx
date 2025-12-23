@@ -285,6 +285,45 @@ The skill includes comprehensive diagnostics, automated repair sequences, and de
    claude-mem restart
    ```
 
+### Claude Executable Not Found
+
+**Symptoms**: Worker crashes immediately with "Command failed: which claude" or "Claude executable not found" error.
+
+**Cause**: The worker service cannot locate the Claude Code executable, which is required to run the Agent SDK.
+
+**Solutions**:
+
+1. **Option A**: Add Claude to your system PATH:
+   ```bash
+   # Check if Claude is in PATH
+   which claude
+   
+   # If not found, add it to PATH in your shell config (~/.bashrc, ~/.zshrc, etc.)
+   export PATH="/path/to/claude:$PATH"
+   ```
+
+2. **Option B**: Set CLAUDE_CODE_PATH in settings:
+   ```bash
+   # Edit settings file
+   nano ~/.claude-mem/settings.json
+   
+   # Add or update CLAUDE_CODE_PATH:
+   {
+     "CLAUDE_CODE_PATH": "/full/path/to/claude"
+   }
+   ```
+
+3. Restart worker after configuration:
+   ```bash
+   claude-mem restart
+   ```
+
+4. Verify the fix:
+   ```bash
+   npm run worker:logs
+   # Should not show "Command failed: which claude" error
+   ```
+
 ## Hook Issues
 
 ### Hooks Not Firing
