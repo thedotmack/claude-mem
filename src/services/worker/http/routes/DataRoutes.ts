@@ -2,7 +2,7 @@
  * Data Routes
  *
  * Handles data retrieval operations: observations, summaries, prompts, stats, processing status.
- * All endpoints use direct database access via domain services.
+ * All endpoints use direct database access via service layer.
  */
 
 import express, { Request, Response } from 'express';

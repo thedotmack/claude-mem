@@ -15,6 +15,7 @@ import { TimelineService, TimelineItem } from './TimelineService.js';
 import { ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../sqlite/types.js';
 import { logger } from '../../utils/logger.js';
 import { formatDate, formatTime, formatDateTime, extractFirstFile, groupByDate, estimateTokens } from '../../shared/timeline-formatting.js';
+import { ModeManager } from '../domain/ModeManager.js';
 
 const COLLECTION_NAME = 'cm__claude-mem';
 const RECENCY_WINDOW_DAYS = 90;
@@ -590,15 +591,7 @@ export class SearchManager {
                 lastTime = '';
               }
 
-              let icon = '•';
-              switch (obs.type) {
-                case 'bugfix': icon = '🔴'; break;
-                case 'feature': icon = '🟣'; break;
-                case 'refactor': icon = '🔄'; break;
-                case 'change': icon = '✅'; break;
-                case 'discovery': icon = '🔵'; break;
-                case 'decision': icon = '🧠'; break;
-              }
+              const icon = ModeManager.getInstance().getTypeIcon(obs.type);
 
               const time = formatTime(item.epoch);
               const title = obs.title || 'Untitled';
@@ -1675,15 +1668,7 @@ export class SearchManager {
               }
 
               // Map observation type to emoji
-              let icon = '•';
-              switch (obs.type) {
-                case 'bugfix': icon = '🔴'; break;
-                case 'feature': icon = '🟣'; break;
-                case 'refactor': icon = '🔄'; break;
-                case 'change': icon = '✅'; break;
-                case 'discovery': icon = '🔵'; break;
-                case 'decision': icon = '🧠'; break;
-              }
+              const icon = ModeManager.getInstance().getTypeIcon(obs.type);
 
               const time = formatTime(item.epoch);
               const title = obs.title || 'Untitled';
@@ -1927,15 +1912,7 @@ export class SearchManager {
                 }
 
                 // Map observation type to emoji
-                let icon = '•';
-                switch (obs.type) {
-                  case 'bugfix': icon = '🔴'; break;
-                  case 'feature': icon = '🟣'; break;
-                  case 'refactor': icon = '🔄'; break;
-                  case 'change': icon = '✅'; break;
-                  case 'discovery': icon = '🔵'; break;
-                  case 'decision': icon = '🧠'; break;
-                }
+                const icon = ModeManager.getInstance().getTypeIcon(obs.type);
 
                 const time = formatTime(item.epoch);
                 const title = obs.title || 'Untitled';

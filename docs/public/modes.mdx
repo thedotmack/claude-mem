@@ -1,0 +1,77 @@
+---
+title: "Modes & Languages"
+description: "Configure Claude-Mem behavior and language with the Mode System"
+---
+
+# Modes & Languages
+
+Claude-Mem uses a flexible **Mode System** to adapt its behavior, observation types, and output language. This allows you to switch between different workflows (like coding vs. email investigation) or languages without reinstalling the plugin.
+
+## What is a Mode?
+
+A "mode" is a configuration profile that defines:
+1.  **Observer Role**: How Claude should analyze your work (e.g., "Software Engineer" vs. "Forensic Analyst").
+2.  **Observation Types**: Valid categories for memory (e.g., "Bug Fix", "Feature" vs. "Person", "Organization").
+3.  **Concepts**: Semantic tags for indexing (e.g., "Pattern", "Trade-off").
+4.  **Language**: The language used for generating observations and summaries.
+
+## Configuration
+
+Set the active mode using the `CLAUDE_MEM_MODE` setting in `~/.claude-mem/settings.json`:
+
+```json
+{
+  "CLAUDE_MEM_MODE": "code--es"
+}
+```
+
+Or via environment variable:
+
+```bash
+export CLAUDE_MEM_MODE="code--fr"
+```
+
+## Available Modes
+
+### Code Mode (Default)
+The standard mode for software development. Captures bug fixes, features, refactors, and architectural decisions.
+
+**ID:** `code`
+
+### Multilingual Code Modes
+Inherits all behavior from Code Mode but instructs Claude to generate **all** memory artifacts (titles, narratives, facts, summaries) in the target language.
+
+| Language | Mode ID | Description |
+|----------|---------|-------------|
+| **Chinese** | `code--zh` | 中文 |
+| **Spanish** | `code--es` | Español |
+| **French** | `code--fr` | Français |
+| **German** | `code--de` | Deutsch |
+| **Japanese** | `code--ja` | 日本語 |
+| **Korean** | `code--ko` | 한국어 |
+| **Portuguese** | `code--pt` | Português |
+| **Russian** | `code--ru` | Русский |
+| **Thai** | `code--th` | ภาษาไทย |
+| **Vietnamese** | `code--vi` | Tiếng Việt |
+
+### Email Investigation Mode
+A specialized mode for analyzing email dumps (e.g., FOIA releases, corporate archives). Focuses on identifying entities, relationships, timeline events, and key topics.
+
+**ID:** `email-investigation`
+
+**Observation Types:**
+- `entity`: Person, organization, or email address
+- `relationship`: Connection between entities
+- `timeline-event`: Time-stamped event in communication sequence
+- `evidence`: Supporting documentation or proof
+- `anomaly`: Suspicious pattern or irregularity
+- `conclusion`: Investigative finding or determination
+
+## Mode Inheritance
+
+The system supports inheritance using the `--` separator. For example, `code--es` means:
+1.  Load `code` (Parent) configuration.
+2.  Load `code--es` (Child) configuration.
+3.  Merge Child into Parent (Child overrides).
+
+This allows for lightweight "remix" modes that only change specific aspects (like the language prompt) while keeping the core definitions intact.

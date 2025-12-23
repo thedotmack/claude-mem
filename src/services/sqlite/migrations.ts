@@ -495,6 +495,7 @@ export const migration007: Migration = {
   }
 };
 
+
 /**
  * All migrations in order
  */

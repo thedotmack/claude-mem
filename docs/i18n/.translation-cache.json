@@ -1,0 +1,146 @@
+{
+  "sourceHash": "c0eb50d6772b5e61",
+  "lastUpdated": "2025-12-23T00:48:34.035Z",
+  "translations": {
+    "zh": {
+      "hash": "c0eb50d6772b5e61",
+      "translatedAt": "2025-12-23T00:39:44.891Z",
+      "costUsd": 0.09515915
+    },
+    "ja": {
+      "hash": "c0eb50d6772b5e61",
+      "translatedAt": "2025-12-23T00:39:44.891Z",
+      "costUsd": 0.09678544999999998
+    },
+    "pt-br": {
+      "hash": "c0eb50d6772b5e61",
+      "translatedAt": "2025-12-23T00:39:44.891Z",
+      "costUsd": 0.08436794999999998
+    },
+    "ko": {
+      "hash": "c0eb50d6772b5e61",
+      "translatedAt": "2025-12-23T00:39:44.891Z",
+      "costUsd": 0.10244419999999999
+    },
+    "es": {
+      "hash": "c0eb50d6772b5e61",
+      "translatedAt": "2025-12-23T00:39:44.891Z",
+      "costUsd": 0.0894832
+    },
+    "de": {
+      "hash": "c0eb50d6772b5e61",
+      "translatedAt": "2025-12-23T00:39:44.891Z",
+      "costUsd": 0.08818689999999998
+    },
+    "fr": {
+      "hash": "c0eb50d6772b5e61",
+      "translatedAt": "2025-12-23T00:39:44.891Z",
+      "costUsd": 0.0855869
+    },
+    "nl": {
+      "hash": "c0eb50d6772b5e61",
+      "translatedAt": "2025-12-23T00:43:09.878Z",
+      "costUsd": 0.0943619
+    },
+    "ru": {
+      "hash": "c0eb50d6772b5e61",
+      "translatedAt": "2025-12-23T00:43:09.878Z",
+      "costUsd": 0.0944719
+    },
+    "pl": {
+      "hash": "c0eb50d6772b5e61",
+      "translatedAt": "2025-12-23T00:43:09.878Z",
+      "costUsd": 0.08966189999999999
+    },
+    "cs": {
+      "hash": "c0eb50d6772b5e61",
+      "translatedAt": "2025-12-23T00:43:09.878Z",
+      "costUsd": 0.08897189999999998
+    },
+    "uk": {
+      "hash": "c0eb50d6772b5e61",
+      "translatedAt": "2025-12-23T00:43:09.878Z",
+      "costUsd": 0.09968189999999999
+    },
+    "tr": {
+      "hash": "c0eb50d6772b5e61",
+      "translatedAt": "2025-12-23T00:43:09.878Z",
+      "costUsd": 0.0969419
+    },
+    "ar": {
+      "hash": "c0eb50d6772b5e61",
+      "translatedAt": "2025-12-23T00:43:09.878Z",
+      "costUsd": 0.10445689999999998
+    },
+    "he": {
+      "hash": "c0eb50d6772b5e61",
+      "translatedAt": "2025-12-23T00:43:09.878Z",
+      "costUsd": 0.1489769
+    },
+    "id": {
+      "hash": "c0eb50d6772b5e61",
+      "translatedAt": "2025-12-23T00:45:44.015Z",
+      "costUsd": 0.08454690000000001
+    },
+    "sv": {
+      "hash": "c0eb50d6772b5e61",
+      "translatedAt": "2025-12-23T00:45:44.015Z",
+      "costUsd": 0.09621189999999999
+    },
+    "ro": {
+      "hash": "c0eb50d6772b5e61",
+      "translatedAt": "2025-12-23T00:45:44.015Z",
+      "costUsd": 0.10500190000000001
+    },
+    "vi": {
+      "hash": "c0eb50d6772b5e61",
+      "translatedAt": "2025-12-23T00:45:44.015Z",
+      "costUsd": 0.1035169
+    },
+    "hi": {
+      "hash": "c0eb50d6772b5e61",
+      "translatedAt": "2025-12-23T00:45:44.015Z",
+      "costUsd": 0.1171519
+    },
+    "th": {
+      "hash": "c0eb50d6772b5e61",
+      "translatedAt": "2025-12-23T00:45:44.015Z",
+      "costUsd": 0.11580689999999999
+    },
+    "bn": {
+      "hash": "c0eb50d6772b5e61",
+      "translatedAt": "2025-12-23T00:45:44.015Z",
+      "costUsd": 0.1376269
+    },
+    "it": {
+      "hash": "c0eb50d6772b5e61",
+      "translatedAt": "2025-12-23T00:48:34.035Z",
+      "costUsd": 0.0875869
+    },
+    "da": {
+      "hash": "c0eb50d6772b5e61",
+      "translatedAt": "2025-12-23T00:48:34.035Z",
+      "costUsd": 0.0830469
+    },
+    "no": {
+      "hash": "c0eb50d6772b5e61",
+      "translatedAt": "2025-12-23T00:48:34.035Z",
+      "costUsd": 0.08986190000000001
+    },
+    "hu": {
+      "hash": "c0eb50d6772b5e61",
+      "translatedAt": "2025-12-23T00:48:34.035Z",
+      "costUsd": 0.0911269
+    },
+    "fi": {
+      "hash": "c0eb50d6772b5e61",
+      "translatedAt": "2025-12-23T00:48:34.035Z",
+      "costUsd": 0.09436689999999999
+    },
+    "el": {
+      "hash": "c0eb50d6772b5e61",
+      "translatedAt": "2025-12-23T00:48:34.035Z",
+      "costUsd": 0.19731189999999998
+    }
+  }
+}

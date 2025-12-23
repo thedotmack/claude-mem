@@ -30,26 +30,19 @@ async function cleanupHook(input?: SessionEndInput): Promise<void> {
 
   const port = getWorkerPort();
 
-  try {
-    // Send to worker - worker handles finding session, marking complete, and stopping spinner
-    const response = await fetch(`http://127.0.0.1:${port}/api/sessions/complete`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        claudeSessionId: session_id,
-        reason
-      }),
-      signal: AbortSignal.timeout(HOOK_TIMEOUTS.DEFAULT)
-    });
+  // Send to worker - worker handles finding session, marking complete, and stopping spinner
+  const response = await fetch(`http://127.0.0.1:${port}/api/sessions/complete`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      claudeSessionId: session_id,
+      reason
+    }),
+    signal: AbortSignal.timeout(HOOK_TIMEOUTS.DEFAULT)
+  });
 
-    if (!response.ok) {
-      // Non-fatal - session might not exist
-      console.error('[cleanup-hook] Session not found or already cleaned up');
-    }
-  } catch (error: any) {
-    // Worker might not be running - that's okay (non-critical)
-    // But we should still log it for visibility
-    console.error('[cleanup-hook] Failed to notify worker of session end:', error.message);
+  if (!response.ok) {
+    throw new Error(`Session cleanup failed: ${response.status}`);
   }
 
   console.log('{"continue": true, "suppressOutput": true}');
@@ -64,7 +57,12 @@ if (stdin.isTTY) {
   let input = '';
   stdin.on('data', (chunk) => input += chunk);
   stdin.on('end', async () => {
-    const parsed = input ? JSON.parse(input) : undefined;
+    let parsed: SessionEndInput | undefined;
+    try {
+      parsed = input ? JSON.parse(input) : undefined;
+    } catch (error) {
+      throw new Error(`Failed to parse hook input: ${error instanceof Error ? error.message : String(error)}`);
+    }
     await cleanupHook(parsed);
   });
 }

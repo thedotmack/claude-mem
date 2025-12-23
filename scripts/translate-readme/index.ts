@@ -49,8 +49,6 @@ export interface TranslationOptions {
   verbose?: boolean;
   /** Force re-translation even if cached */
   force?: boolean;
-  /** Number of concurrent translations (default: 1) */
-  parallel?: number;
 }
 
 export interface TranslationResult {
@@ -258,8 +256,10 @@ export async function translateReadme(
     maxBudgetUsd,
     verbose = false,
     force = false,
-    parallel = 1,
   } = options;
+
+  // Run all translations in parallel (up to 10 concurrent)
+  const parallel = Math.min(languages.length, 10);
 
   // Read source file
   const sourcePath = path.resolve(source);
@@ -282,9 +282,7 @@ export async function translateReadme(
     console.log(`📖 Source: ${sourcePath}`);
     console.log(`📂 Output: ${outDir}`);
     console.log(`🌍 Languages: ${languages.join(", ")}`);
-    if (parallel > 1) {
-      console.log(`⚡ Parallel: ${parallel} concurrent translations`);
-    }
+    console.log(`⚡ Running ${parallel} translations in parallel`);
     console.log("");
   }
 
@@ -334,7 +332,7 @@ export async function translateReadme(
   // Run with concurrency limit
   async function runWithConcurrency<T>(items: T[], limit: number, fn: (item: T) => Promise<TranslationResult>): Promise<TranslationResult[]> {
     const results: TranslationResult[] = [];
-    const executing: Promise<void>[] = [];
+    const executing = new Set<Promise<void>>();
 
     for (const item of items) {
       // Check budget before starting new translation
@@ -355,15 +353,20 @@ export async function translateReadme(
         }
       });
 
-      executing.push(p.then(() => {
-        executing.splice(executing.indexOf(p.then(() => {})), 1);
-      }));
+      // Create a wrapped promise that removes itself when done
+      const wrapped = p.finally(() => {
+        executing.delete(wrapped);
+      });
 
-      if (executing.length >= limit) {
+      executing.add(wrapped);
+
+      // Wait for a slot to open up if we're at the limit
+      if (executing.size >= limit) {
         await Promise.race(executing);
       }
     }
 
+    // Wait for all remaining translations to complete
     await Promise.all(executing);
     return results;
   }

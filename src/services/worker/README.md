@@ -10,7 +10,7 @@ The Worker Service is an Express HTTP server that handles all claude-mem operati
 Hook (plugin/scripts/*-hook.js)
   → HTTP Request to Worker (localhost:37777)
     → Route Handler (http/routes/*.ts)
-      → MCP Server Tool (for search) OR Domain Service (for session/data)
+      → MCP Server Tool (for search) OR Service Layer (for session/data)
         → Database (SQLite3 + Chroma vector DB)
 ```
 
@@ -22,13 +22,13 @@ src/services/worker/
 ├── WorkerService.ts              # Slim orchestrator (~150 lines)
 ├── http/                         # HTTP layer
 │   ├── middleware.ts             # Shared middleware (logging, CORS, etc.)
-│   └── routes/                   # Route handlers organized by domain
+│   └── routes/                   # Route handlers organized by feature area
 │       ├── SessionRoutes.ts      # Session lifecycle (init, observations, summarize, complete)
 │       ├── DataRoutes.ts         # Data retrieval (get observations, summaries, prompts, stats)
 │       ├── SearchRoutes.ts       # Search/MCP proxy (all search endpoints)
 │       ├── SettingsRoutes.ts     # Settings, MCP toggle, branch switching
 │       └── ViewerRoutes.ts       # Health check, viewer UI, SSE stream
-└── domain/                       # Business logic (existing services, NO CHANGES in Phase 1)
+└── services/                     # Business logic services (existing, NO CHANGES in Phase 1)
     ├── DatabaseManager.ts        # SQLite connection management
     ├── SessionManager.ts         # Session state tracking
     ├── SDKAgent.ts               # Claude Agent SDK for observations/summaries
@@ -46,7 +46,7 @@ src/services/worker/
 - `GET /stream` - SSE stream for real-time updates
 
 ### SessionRoutes.ts
-Session lifecycle operations (use domain services directly):
+Session lifecycle operations (use service layer directly):
 - `POST /sessions/init` - Initialize new session
 - `POST /sessions/:sessionId/observations` - Add tool usage observations
 - `POST /sessions/:sessionId/summarize` - Trigger session summary
@@ -58,7 +58,7 @@ Session lifecycle operations (use domain services directly):
 - `POST /sessions/claude-id/:claudeId/complete` - Complete by claude_id
 
 ### DataRoutes.ts
-Data retrieval operations (use domain services directly):
+Data retrieval operations (use service layer directly):
 - `GET /observations` - List observations (paginated)
 - `GET /summaries` - List session summaries (paginated)
 - `GET /prompts` - List user prompts (paginated)
@@ -91,7 +91,7 @@ All search operations (proxy to MCP server):
 - `GET /search/help` - Search help
 
 ### SettingsRoutes.ts
-Settings and configuration (use domain services directly):
+Settings and configuration (use service layer directly):
 - `GET /settings` - Get user settings
 - `POST /settings` - Update user settings
 - `GET /mcp/status` - Get MCP server status
@@ -109,14 +109,14 @@ Settings and configuration (use domain services directly):
 
 **MCP vs Direct DB Split** (inherited, not changed in Phase 1):
 - Search operations → MCP server (mem-search)
-- Session/data operations → Direct DB access via domain services
+- Session/data operations → Direct DB access via service layer
 
 ## Future Phase 2
 
 Phase 2 will unify the architecture:
 1. Expand MCP server to handle ALL operations (not just search)
 2. Convert all route handlers to proxy through MCP
-3. Move database logic from domain services into MCP tools
+3. Move database logic from service layer into MCP tools
 4. Result: Worker becomes pure HTTP → MCP proxy for maximum portability
 
 This separation allows the worker to be deployed anywhere (as a CLI tool, cloud service, etc.) without carrying database dependencies.
@@ -126,7 +126,7 @@ This separation allows the worker to be deployed anywhere (as a CLI tool, cloud 
 1. Choose the appropriate route file based on the endpoint's purpose
 2. Add the route handler method to the class
 3. Register the route in the `setupRoutes()` method
-4. Import any needed domain services in the constructor
+4. Import any needed services in the constructor
 5. Follow the existing patterns for error handling and logging
 
 Example:
@@ -149,7 +149,7 @@ app.get('/foo', this.handleGetFoo.bind(this));
 ## Key Design Principles
 
 1. **Progressive Disclosure**: Navigate from high-level (WorkerService.ts) to specific routes to implementation details
-2. **Single Responsibility**: Each route class handles one domain area
+2. **Single Responsibility**: Each route class handles one feature area
 3. **Dependency Injection**: Route classes receive only the services they need
 4. **Consistent Error Handling**: All handlers use try/catch with logger.failure()
 5. **Bound Methods**: All route handlers use `.bind(this)` to preserve context

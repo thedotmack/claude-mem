@@ -4,6 +4,7 @@
  */
 
 import { logger } from '../utils/logger.js';
+import type { ModeConfig } from '../services/domain/types.js';
 
 export interface Observation {
   id: number;
@@ -26,123 +27,63 @@ export interface SDKSession {
 /**
  * Build initial prompt to initialize the SDK agent
  */
-export function buildInitPrompt(project: string, sessionId: string, userPrompt: string): string {
-  return `You are a Claude-Mem, a specialized observer tool for creating searchable memory FOR FUTURE SESSIONS.
-
-CRITICAL: Record what was LEARNED/BUILT/FIXED/DEPLOYED/CONFIGURED, not what you (the observer) are doing.
-
-You do not have access to tools. All information you need is provided in <observed_from_primary_session> messages. Create observations from what you observe - no investigation needed.
+export function buildInitPrompt(project: string, sessionId: string, userPrompt: string, mode: ModeConfig): string {
+  return `${mode.prompts.system_identity}
 
 <observed_from_primary_session>
   <user_request>${userPrompt}</user_request>
   <requested_at>${new Date().toISOString().split('T')[0]}</requested_at>
 </observed_from_primary_session>
 
-Your job is to monitor a different Claude Code session happening RIGHT NOW, with the goal of creating observations and progress summaries as the work is being done LIVE by the user. You are NOT the one doing the work - you are ONLY observing and recording what is being built, fixed, deployed, or configured in the other session.
+${mode.prompts.observer_role}
 
-SPATIAL AWARENESS: Tool executions include the working directory (tool_cwd) to help you understand:
-- Which repository/project is being worked on
-- Where files are located relative to the project root
-- How to match requested paths to actual execution paths
+${mode.prompts.spatial_awareness}
 
-WHAT TO RECORD
---------------
-Focus on deliverables and capabilities:
-- What the system NOW DOES differently (new capabilities)
-- What shipped to users/production (features, fixes, configs, docs)
-- Changes in technical domains (auth, data, UI, infra, DevOps, docs)
+${mode.prompts.recording_focus}
 
-Use verbs like: implemented, fixed, deployed, configured, migrated, optimized, added, refactored
+${mode.prompts.skip_guidance}
 
-✅ GOOD EXAMPLES (describes what was built):
-- "Authentication now supports OAuth2 with PKCE flow"
-- "Deployment pipeline runs canary releases with auto-rollback"
-- "Database indexes optimized for common query patterns"
-
-❌ BAD EXAMPLES (describes observation process - DO NOT DO THIS):
-- "Analyzed authentication implementation and stored findings"
-- "Tracked deployment steps and logged outcomes"
-- "Monitored database performance and recorded metrics"
-
-WHEN TO SKIP
-------------
-Skip routine operations:
-- Empty status checks
-- Package installations with no errors
-- Simple file listings
-- Repetitive operations you've already documented
-- If file related research comes back as empty or not found
-- **No output necessary if skipping.**
-
-OUTPUT FORMAT
--------------
-Output observations using this XML structure:
+${mode.prompts.output_format_header}
 
 \`\`\`xml
 <observation>
-  <type>[ bugfix | feature | refactor | change | discovery | decision ]</type>
+  <type>[ ${mode.observation_types.map(t => t.id).join(' | ')} ]</type>
   <!--
-    **type**: MUST be EXACTLY one of these 6 options (no other values allowed):
-      - bugfix: something was broken, now fixed
-      - feature: new capability or functionality added
-      - refactor: code restructured, behavior unchanged
-      - change: generic modification (docs, config, misc)
-      - discovery: learning about existing system
-      - decision: architectural/design choice with rationale
+    ${mode.prompts.type_guidance}
   -->
-  <title>[**title**: Short title capturing the core action or topic]</title>
-  <subtitle>[**subtitle**: One sentence explanation (max 24 words)]</subtitle>
+  <title>${mode.prompts.xml_title_placeholder}</title>
+  <subtitle>${mode.prompts.xml_subtitle_placeholder}</subtitle>
   <facts>
-    <fact>[Concise, self-contained statement]</fact>
-    <fact>[Concise, self-contained statement]</fact>
-    <fact>[Concise, self-contained statement]</fact>
+    <fact>${mode.prompts.xml_fact_placeholder}</fact>
+    <fact>${mode.prompts.xml_fact_placeholder}</fact>
+    <fact>${mode.prompts.xml_fact_placeholder}</fact>
   </facts>
   <!--
-    **facts**: Concise, self-contained statements
-      Each fact is ONE piece of information
-      No pronouns - each fact must stand alone
-      Include specific details: filenames, functions, values
+    ${mode.prompts.field_guidance}
   -->
-  <narrative>[**narrative**: Full context: What was done, how it works, why it matters]</narrative>
+  <narrative>${mode.prompts.xml_narrative_placeholder}</narrative>
   <concepts>
-    <concept>[knowledge-type-category]</concept>
-    <concept>[knowledge-type-category]</concept>
+    <concept>${mode.prompts.xml_concept_placeholder}</concept>
+    <concept>${mode.prompts.xml_concept_placeholder}</concept>
   </concepts>
   <!--
-    **concepts**: 2-5 knowledge-type categories. MUST use ONLY these exact keywords:
-      - how-it-works: understanding mechanisms
-      - why-it-exists: purpose or rationale
-      - what-changed: modifications made
-      - problem-solution: issues and their fixes
-      - gotcha: traps or edge cases
-      - pattern: reusable approach
-      - trade-off: pros/cons of a decision
-
-    IMPORTANT: Do NOT include the observation type (change/discovery/decision) as a concept.
-    Types and concepts are separate dimensions.
+    ${mode.prompts.concept_guidance}
   -->
   <files_read>
-    <file>[path/to/file]</file>
-    <file>[path/to/file]</file>
+    <file>${mode.prompts.xml_file_placeholder}</file>
+    <file>${mode.prompts.xml_file_placeholder}</file>
   </files_read>
   <files_modified>
-    <file>[path/to/file]</file>
-    <file>[path/to/file]</file>
+    <file>${mode.prompts.xml_file_placeholder}</file>
+    <file>${mode.prompts.xml_file_placeholder}</file>
   </files_modified>
-  <!--
-    **files**: All files touched (full paths from project root)
-  -->
 </observation>
 \`\`\`
+${mode.prompts.format_examples}
 
-IMPORTANT! DO NOT do any work right now other than generating this OBSERVATIONS from tool use messages - and remember that you are a memory agent designed to summarize a DIFFERENT claude code session, not this one. 
+${mode.prompts.footer}
 
-Never reference yourself or your own actions. Do not output anything other than the observation content formatted in the XML structure above. All other output is ignored by the system, and the system has been designed to be smart about token usage. Please spend your tokens wisely on useful observations. 
-
-Remember that we record these observations as a way of helping us stay on track with our progress, and to help us keep important decisions and changes at the forefront of our minds! :) Thank you so much for your help!
-
-MEMORY PROCESSING START
-=======================`;
+${mode.prompts.header_memory_start}`;
 }
 
 /**
@@ -176,7 +117,7 @@ export function buildObservationPrompt(obs: Observation): string {
 /**
  * Build prompt to generate progress summary
  */
-export function buildSummaryPrompt(session: SDKSession): string {
+export function buildSummaryPrompt(session: SDKSession, mode: ModeConfig): string {
   const lastAssistantMessage = session.last_assistant_message || logger.happyPathError(
     'SDK',
     'Missing last_assistant_message in session for summary prompt',
@@ -185,28 +126,23 @@ export function buildSummaryPrompt(session: SDKSession): string {
     ''
   );
 
-  return `PROGRESS SUMMARY CHECKPOINT
-===========================
-Write progress notes of what was done, what was learned, and what's next. This is a checkpoint to capture progress so far. The session is ongoing - you may receive more requests and tool executions after this summary. Write "next_steps" as the current trajectory of work (what's actively being worked on or coming up next), not as post-session future work. Always write at least a minimal summary explaining current progress, even if work is still in early stages, so that users see a summary output tied to each request.
+  return `${mode.prompts.header_summary_checkpoint}
+${mode.prompts.summary_instruction}
 
-Claude's Full Response to User:
+${mode.prompts.summary_context_label}
 ${lastAssistantMessage}
 
-Respond in this XML format:
+${mode.prompts.summary_format_instruction}
 <summary>
-  <request>[Short title capturing the user's request AND the substance of what was discussed/done]</request>
-  <investigated>[What has been explored so far? What was examined?]</investigated>
-  <learned>[What have you learned about how things work?]</learned>
-  <completed>[What work has been completed so far? What has shipped or changed?]</completed>
-  <next_steps>[What are you actively working on or planning to work on next in this session?]</next_steps>
-  <notes>[Additional insights or observations about the current progress]</notes>
+  <request>${mode.prompts.xml_summary_request_placeholder}</request>
+  <investigated>${mode.prompts.xml_summary_investigated_placeholder}</investigated>
+  <learned>${mode.prompts.xml_summary_learned_placeholder}</learned>
+  <completed>${mode.prompts.xml_summary_completed_placeholder}</completed>
+  <next_steps>${mode.prompts.xml_summary_next_steps_placeholder}</next_steps>
+  <notes>${mode.prompts.xml_summary_notes_placeholder}</notes>
 </summary>
 
-IMPORTANT! DO NOT do any work right now other than generating this next PROGRESS SUMMARY - and remember that you are a memory agent designed to summarize a DIFFERENT claude code session, not this one.
-
-Never reference yourself or your own actions. Do not output anything other than the summary content formatted in the XML structure above. All other output is ignored by the system, and the system has been designed to be smart about token usage. Please spend your tokens wisely on useful summary content.
-
-Thank you, this summary will be very useful for keeping track of our progress!`;
+${mode.prompts.summary_footer}`;
 }
 
 /**
@@ -230,96 +166,65 @@ Thank you, this summary will be very useful for keeping track of our progress!`;
  * Called when: promptNumber > 1 (see SDKAgent.ts line 150)
  * First prompt: Uses buildInitPrompt instead (promptNumber === 1)
  */
-export function buildContinuationPrompt(userPrompt: string, promptNumber: number, claudeSessionId: string): string {
-  return `
-Hello memory agent, you are continuing to observe the primary Claude session.
+export function buildContinuationPrompt(userPrompt: string, promptNumber: number, claudeSessionId: string, mode: ModeConfig): string {
+  return `${mode.prompts.continuation_greeting}
 
 <observed_from_primary_session>
   <user_request>${userPrompt}</user_request>
   <requested_at>${new Date().toISOString().split('T')[0]}</requested_at>
 </observed_from_primary_session>
 
-You do not have access to tools. All information you need is provided in <observed_from_primary_session> messages. Create observations from what you observe - no investigation needed.
+${mode.prompts.system_identity}
 
-CRITICAL: Record what was LEARNED/BUILT/FIXED/DEPLOYED/CONFIGURED, not what you (the observer) are doing. Focus on deliverables and capabilities - what the system NOW DOES differently.
+${mode.prompts.observer_role}
 
-WHEN TO SKIP
-------------
-Skip routine operations:
-- Empty status checks
-- Package installations with no errors
-- Simple file listings
-- Repetitive operations you've already documented
-- If file related research comes back as empty or not found
-- **No output necessary if skipping.**
+${mode.prompts.spatial_awareness}
 
-IMPORTANT: Continue generating observations from tool use messages using the XML structure below.
+${mode.prompts.recording_focus}
 
-OUTPUT FORMAT
--------------
-Output observations using this XML structure:
+${mode.prompts.skip_guidance}
+
+${mode.prompts.continuation_instruction}
+
+${mode.prompts.output_format_header}
 
 \`\`\`xml
 <observation>
-  <type>[ bugfix | feature | refactor | change | discovery | decision ]</type>
+  <type>[ ${mode.observation_types.map(t => t.id).join(' | ')} ]</type>
   <!--
-    **type**: MUST be EXACTLY one of these 6 options (no other values allowed):
-      - bugfix: something was broken, now fixed
-      - feature: new capability or functionality added
-      - refactor: code restructured, behavior unchanged
-      - change: generic modification (docs, config, misc)
-      - discovery: learning about existing system
-      - decision: architectural/design choice with rationale
+    ${mode.prompts.type_guidance}
   -->
-  <title>[**title**: Short title capturing the core action or topic]</title>
-  <subtitle>[**subtitle**: One sentence explanation (max 24 words)]</subtitle>
+  <title>${mode.prompts.xml_title_placeholder}</title>
+  <subtitle>${mode.prompts.xml_subtitle_placeholder}</subtitle>
   <facts>
-    <fact>[Concise, self-contained statement]</fact>
-    <fact>[Concise, self-contained statement]</fact>
-    <fact>[Concise, self-contained statement]</fact>
+    <fact>${mode.prompts.xml_fact_placeholder}</fact>
+    <fact>${mode.prompts.xml_fact_placeholder}</fact>
+    <fact>${mode.prompts.xml_fact_placeholder}</fact>
   </facts>
   <!--
-    **facts**: Concise, self-contained statements
-      Each fact is ONE piece of information
-      No pronouns - each fact must stand alone
-      Include specific details: filenames, functions, values
+    ${mode.prompts.field_guidance}
   -->
-  <narrative>[**narrative**: Full context: What was done, how it works, why it matters]</narrative>
+  <narrative>${mode.prompts.xml_narrative_placeholder}</narrative>
   <concepts>
-    <concept>[knowledge-type-category]</concept>
-    <concept>[knowledge-type-category]</concept>
+    <concept>${mode.prompts.xml_concept_placeholder}</concept>
+    <concept>${mode.prompts.xml_concept_placeholder}</concept>
   </concepts>
   <!--
-    **concepts**: 2-5 knowledge-type categories. MUST use ONLY these exact keywords:
-      - how-it-works: understanding mechanisms
-      - why-it-exists: purpose or rationale
-      - what-changed: modifications made
-      - problem-solution: issues and their fixes
-      - gotcha: traps or edge cases
-      - pattern: reusable approach
-      - trade-off: pros/cons of a decision
-
-    IMPORTANT: Do NOT include the observation type (change/discovery/decision) as a concept.
-    Types and concepts are separate dimensions.
+    ${mode.prompts.concept_guidance}
   -->
   <files_read>
-    <file>[path/to/file]</file>
-    <file>[path/to/file]</file>
+    <file>${mode.prompts.xml_file_placeholder}</file>
+    <file>${mode.prompts.xml_file_placeholder}</file>
   </files_read>
   <files_modified>
-    <file>[path/to/file]</file>
-    <file>[path/to/file]</file>
+    <file>${mode.prompts.xml_file_placeholder}</file>
+    <file>${mode.prompts.xml_file_placeholder}</file>
   </files_modified>
-  <!--
-    **files**: All files touched (full paths from project root)
-  -->
 </observation>
 \`\`\`
+${mode.prompts.format_examples}
 
-Never reference yourself or your own actions. Do not output anything other than the observation content formatted in the XML structure above. All other output is ignored by the system, and the system has been designed to be smart about token usage. Please spend your tokens wisely on useful observations.
+${mode.prompts.footer}
 
-Remember that we record these observations as a way of helping us stay on track with our progress, and to help us keep important decisions and changes at the forefront of our minds! :) Thank you so much for your continued help!
-
-MEMORY PROCESSING CONTINUED
-===========================`;
+${mode.prompts.header_memory_continued}`;
 } 

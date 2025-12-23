@@ -847,31 +847,21 @@ export class ChromaSync {
       return;
     }
 
-    try {
-      // Close client first
-      if (this.client) {
-        try {
-          await this.client.close();
-        } catch (error) {
-          logger.warn('CHROMA_SYNC', 'Error closing Chroma client', { project: this.project }, error as Error);
-        }
-      }
-
-      // Explicitly close transport to kill subprocess
-      if (this.transport) {
-        try {
-          await this.transport.close();
-        } catch (error) {
-          logger.warn('CHROMA_SYNC', 'Error closing transport', { project: this.project }, error as Error);
-        }
-      }
-
-      logger.info('CHROMA_SYNC', 'Chroma client and subprocess closed', { project: this.project });
-    } finally {
-      // Always reset state, even if errors occurred
-      this.connected = false;
-      this.client = null;
-      this.transport = null;
+    // Close client first
+    if (this.client) {
+      await this.client.close();
     }
+
+    // Explicitly close transport to kill subprocess
+    if (this.transport) {
+      await this.transport.close();
+    }
+
+    logger.info('CHROMA_SYNC', 'Chroma client and subprocess closed', { project: this.project });
+
+    // Always reset state
+    this.connected = false;
+    this.client = null;
+    this.transport = null;
   }
 }

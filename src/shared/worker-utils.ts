@@ -63,55 +63,35 @@ export function clearPortCache(): void {
  * Changed from /health to /api/readiness to ensure MCP initialization is complete
  */
 async function isWorkerHealthy(): Promise<boolean> {
-  try {
-    const port = getWorkerPort();
-    const response = await fetch(`http://127.0.0.1:${port}/api/readiness`, {
-      signal: AbortSignal.timeout(HEALTH_CHECK_TIMEOUT_MS)
-    });
-    return response.ok;
-  } catch (error) {
-    logger.debug('SYSTEM', 'Worker readiness check failed', {
-      error: error instanceof Error ? error.message : String(error),
-      errorType: error?.constructor?.name
-    });
-    return false;
-  }
+  const port = getWorkerPort();
+  const response = await fetch(`http://127.0.0.1:${port}/api/readiness`, {
+    signal: AbortSignal.timeout(HEALTH_CHECK_TIMEOUT_MS)
+  });
+  return response.ok;
 }
 
 /**
  * Get the current plugin version from package.json
  */
-function getPluginVersion(): string | null {
-  try {
-    const packageJsonPath = path.join(MARKETPLACE_ROOT, 'package.json');
-    const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
-    return packageJson.version;
-  } catch (error) {
-    logger.debug('SYSTEM', 'Failed to read plugin version', {
-      error: error instanceof Error ? error.message : String(error)
-    });
-    return null;
-  }
+function getPluginVersion(): string {
+  const packageJsonPath = path.join(MARKETPLACE_ROOT, 'package.json');
+  const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
+  return packageJson.version;
 }
 
 /**
  * Get the running worker's version from the API
  */
-async function getWorkerVersion(): Promise<string | null> {
-  try {
-    const port = getWorkerPort();
-    const response = await fetch(`http://127.0.0.1:${port}/api/version`, {
-      signal: AbortSignal.timeout(HEALTH_CHECK_TIMEOUT_MS)
-    });
-    if (!response.ok) return null;
-    const data = await response.json() as { version: string };
-    return data.version;
-  } catch (error) {
-    logger.debug('SYSTEM', 'Failed to get worker version', {
-      error: error instanceof Error ? error.message : String(error)
-    });
-    return null;
+async function getWorkerVersion(): Promise<string> {
+  const port = getWorkerPort();
+  const response = await fetch(`http://127.0.0.1:${port}/api/version`, {
+    signal: AbortSignal.timeout(HEALTH_CHECK_TIMEOUT_MS)
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to get worker version: ${response.status}`);
   }
+  const data = await response.json() as { version: string };
+  return data.version;
 }
 
 /**
@@ -121,11 +101,6 @@ async function getWorkerVersion(): Promise<string | null> {
 async function ensureWorkerVersionMatches(): Promise<void> {
   const pluginVersion = getPluginVersion();
   const workerVersion = await getWorkerVersion();
-
-  if (!pluginVersion || !workerVersion) {
-    // Can't determine versions, skip check
-    return;
-  }
 
   if (pluginVersion !== workerVersion) {
     logger.info('SYSTEM', 'Worker version mismatch detected - restarting worker', {
@@ -144,11 +119,7 @@ async function ensureWorkerVersionMatches(): Promise<void> {
 
     // Verify it's healthy
     if (!await isWorkerHealthy()) {
-      logger.error('SYSTEM', 'Worker failed to restart after version mismatch', {
-        expectedVersion: pluginVersion,
-        runningVersion: workerVersion,
-        port: getWorkerPort()
-      });
+      throw new Error(`Worker failed to restart after version mismatch. Expected ${pluginVersion}, was running ${workerVersion}`);
     }
   }
 }
@@ -166,15 +137,10 @@ async function startWorker(): Promise<boolean> {
   mkdirSync(dataDir, { recursive: true });
 
   if (!existsSync(pm2MigratedMarker)) {
-    try {
-      spawnSync('pm2', ['delete', 'claude-mem-worker'], { stdio: 'ignore' });
-      // Mark migration as complete
-      writeFileSync(pm2MigratedMarker, new Date().toISOString(), 'utf-8');
-      logger.debug('SYSTEM', 'PM2 cleanup completed and marked');
-    } catch {
-      // PM2 not installed or process doesn't exist - still mark as migrated
-      writeFileSync(pm2MigratedMarker, new Date().toISOString(), 'utf-8');
-    }
+    spawnSync('pm2', ['delete', 'claude-mem-worker'], { stdio: 'ignore' });
+    // Mark migration as complete
+    writeFileSync(pm2MigratedMarker, new Date().toISOString(), 'utf-8');
+    logger.debug('SYSTEM', 'PM2 cleanup completed and marked');
   }
 
   const port = getWorkerPort();
@@ -198,8 +164,16 @@ async function startWorker(): Promise<boolean> {
  * Also ensures worker version matches plugin version
  */
 export async function ensureWorkerRunning(): Promise<void> {
-  // Check if already healthy
-  if (await isWorkerHealthy()) {
+  // Check if already healthy (will throw on fetch errors)
+  let healthy = false;
+  try {
+    healthy = await isWorkerHealthy();
+  } catch (error) {
+    // Worker not running or unreachable - continue to start it
+    healthy = false;
+  }
+
+  if (healthy) {
     // Worker is healthy, but check if version matches
     await ensureWorkerVersionMatches();
     return;
@@ -222,9 +196,13 @@ export async function ensureWorkerRunning(): Promise<void> {
   // Try up to 5 times with 500ms delays (2.5 seconds total)
   for (let i = 0; i < 5; i++) {
     await new Promise(resolve => setTimeout(resolve, 500));
-    if (await isWorkerHealthy()) {
-      await ensureWorkerVersionMatches();
-      return;
+    try {
+      if (await isWorkerHealthy()) {
+        await ensureWorkerVersionMatches();
+        return;
+      }
+    } catch (error) {
+      // Continue trying
     }
   }
 

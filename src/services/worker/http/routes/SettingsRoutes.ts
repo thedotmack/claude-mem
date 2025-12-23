@@ -13,12 +13,7 @@ import { getPackageRoot } from '../../../../shared/paths.js';
 import { logger } from '../../../../utils/logger.js';
 import { SettingsManager } from '../../SettingsManager.js';
 import { getBranchInfo, switchBranch, pullUpdates } from '../../BranchManager.js';
-import {
-  OBSERVATION_TYPES,
-  OBSERVATION_CONCEPTS,
-  ObservationType,
-  ObservationConcept
-} from '../../../../constants/observation-metadata.js';
+import { ModeManager } from '../../domain/ModeManager.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { clearPortCache } from '../../../../shared/worker-utils.js';
@@ -296,25 +291,11 @@ export class SettingsRoutes extends BaseRouteHandler {
       }
     }
 
-    // Validate observation types
-    if (settings.CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES) {
-      const types = settings.CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES.split(',').map((t: string) => t.trim());
-      for (const type of types) {
-        if (type && !OBSERVATION_TYPES.includes(type as ObservationType)) {
-          return { valid: false, error: `Invalid observation type: ${type}. Valid types: ${OBSERVATION_TYPES.join(', ')}` };
-        }
-      }
-    }
+    // Skip observation types validation - any type string is valid since modes define their own types
+    // The database accepts any TEXT value, and mode-specific validation happens at parse time
 
-    // Validate observation concepts
-    if (settings.CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS) {
-      const concepts = settings.CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS.split(',').map((c: string) => c.trim());
-      for (const concept of concepts) {
-        if (concept && !OBSERVATION_CONCEPTS.includes(concept as ObservationConcept)) {
-          return { valid: false, error: `Invalid observation concept: ${concept}. Valid concepts: ${OBSERVATION_CONCEPTS.join(', ')}` };
-        }
-      }
-    }
+    // Skip observation concepts validation - any concept string is valid since modes define their own concepts
+    // The database accepts any TEXT value, and mode-specific validation happens at parse time
 
     return { valid: true };
   }
@@ -332,25 +313,20 @@ export class SettingsRoutes extends BaseRouteHandler {
    * Toggle MCP search server (rename .mcp.json <-> .mcp.json.disabled)
    */
   private toggleMcp(enabled: boolean): void {
-    try {
-      const packageRoot = getPackageRoot();
-      const mcpPath = path.join(packageRoot, 'plugin', '.mcp.json');
-      const mcpDisabledPath = path.join(packageRoot, 'plugin', '.mcp.json.disabled');
+    const packageRoot = getPackageRoot();
+    const mcpPath = path.join(packageRoot, 'plugin', '.mcp.json');
+    const mcpDisabledPath = path.join(packageRoot, 'plugin', '.mcp.json.disabled');
 
-      if (enabled && existsSync(mcpDisabledPath)) {
-        // Enable: rename .mcp.json.disabled -> .mcp.json
-        renameSync(mcpDisabledPath, mcpPath);
-        logger.info('WORKER', 'MCP search server enabled');
-      } else if (!enabled && existsSync(mcpPath)) {
-        // Disable: rename .mcp.json -> .mcp.json.disabled
-        renameSync(mcpPath, mcpDisabledPath);
-        logger.info('WORKER', 'MCP search server disabled');
-      } else {
-        logger.debug('WORKER', 'MCP toggle no-op (already in desired state)', { enabled });
-      }
-    } catch (error) {
-      logger.failure('WORKER', 'Failed to toggle MCP', { enabled }, error as Error);
-      throw error;
+    if (enabled && existsSync(mcpDisabledPath)) {
+      // Enable: rename .mcp.json.disabled -> .mcp.json
+      renameSync(mcpDisabledPath, mcpPath);
+      logger.info('WORKER', 'MCP search server enabled');
+    } else if (!enabled && existsSync(mcpPath)) {
+      // Disable: rename .mcp.json -> .mcp.json.disabled
+      renameSync(mcpPath, mcpDisabledPath);
+      logger.info('WORKER', 'MCP search server disabled');
+    } else {
+      logger.debug('WORKER', 'MCP toggle no-op (already in desired state)', { enabled });
     }
   }
 

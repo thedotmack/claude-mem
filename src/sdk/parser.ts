@@ -4,6 +4,7 @@
  */
 
 import { logger } from '../utils/logger.js';
+import { ModeManager } from '../services/domain/ModeManager.js';
 
 export interface ParsedObservation {
   type: string;
@@ -51,19 +52,21 @@ export function parseObservations(text: string, correlationId?: string): ParsedO
 
     // NOTE FROM THEDOTMACK: ALWAYS save observations - never skip. 10/24/2025
     // All fields except type are nullable in schema
-    // If type is missing or invalid, use "change" as catch-all fallback
+    // If type is missing or invalid, use first type from mode as fallback
 
-    // Determine final type
-    let finalType = 'change'; // Default catch-all
+    // Determine final type using active mode's valid types
+    const mode = ModeManager.getInstance().getActiveMode();
+    const validTypes = mode.observation_types.map(t => t.id);
+    const fallbackType = validTypes[0]; // First type in mode's list is the fallback
+    let finalType = fallbackType;
     if (type) {
-      const validTypes = ['bugfix', 'feature', 'refactor', 'change', 'discovery', 'decision'];
       if (validTypes.includes(type.trim())) {
         finalType = type.trim();
       } else {
-        logger.warn('PARSER', `Invalid observation type: ${type}, using "change"`, { correlationId });
+        logger.warn('PARSER', `Invalid observation type: ${type}, using "${fallbackType}"`, { correlationId });
       }
     } else {
-      logger.warn('PARSER', 'Observation missing type field, using "change"', { correlationId });
+      logger.warn('PARSER', `Observation missing type field, using "${fallbackType}"`, { correlationId });
     }
 
     // All other fields are optional - save whatever we have

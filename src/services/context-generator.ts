@@ -9,12 +9,6 @@ import path from 'path';
 import { homedir } from 'os';
 import { existsSync, readFileSync, unlinkSync } from 'fs';
 import { SessionStore } from './sqlite/SessionStore.js';
-import {
-  OBSERVATION_TYPES,
-  OBSERVATION_CONCEPTS,
-  TYPE_ICON_MAP,
-  TYPE_WORK_EMOJI_MAP
-} from '../constants/observation-metadata.js';
 import { logger } from '../utils/logger.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import {
@@ -26,6 +20,7 @@ import {
   extractFirstFile
 } from '../shared/timeline-formatting.js';
 import { getProjectName } from '../utils/project-name.js';
+import { ModeManager } from './domain/ModeManager.js';
 
 // Version marker path - use homedir-based path that works in both CJS and ESM contexts
 const VERSION_MARKER_PATH = path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack', 'plugin', '.install-version');
@@ -60,43 +55,24 @@ function loadContextConfig(): ContextConfig {
   const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
   const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
 
-  try {
-    return {
-      totalObservationCount: parseInt(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10),
-      fullObservationCount: parseInt(settings.CLAUDE_MEM_CONTEXT_FULL_COUNT, 10),
-      sessionCount: parseInt(settings.CLAUDE_MEM_CONTEXT_SESSION_COUNT, 10),
-      showReadTokens: settings.CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS === 'true',
-      showWorkTokens: settings.CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS === 'true',
-      showSavingsAmount: settings.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT === 'true',
-      showSavingsPercent: settings.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT === 'true',
-      observationTypes: new Set(
-        settings.CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES.split(',').map((t: string) => t.trim()).filter(Boolean)
-      ),
-      observationConcepts: new Set(
-        settings.CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS.split(',').map((c: string) => c.trim()).filter(Boolean)
-      ),
-      fullObservationField: settings.CLAUDE_MEM_CONTEXT_FULL_FIELD as 'narrative' | 'facts',
-      showLastSummary: settings.CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY === 'true',
-      showLastMessage: settings.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE === 'true',
-    };
-  } catch (error) {
-    logger.warn('WORKER', 'Failed to load context settings, using defaults', {}, error as Error);
-    // Return defaults on error
-    return {
-      totalObservationCount: 50,
-      fullObservationCount: 5,
-      sessionCount: 10,
-      showReadTokens: true,
-      showWorkTokens: true,
-      showSavingsAmount: true,
-      showSavingsPercent: true,
-      observationTypes: new Set(OBSERVATION_TYPES),
-      observationConcepts: new Set(OBSERVATION_CONCEPTS),
-      fullObservationField: 'narrative' as const,
-      showLastSummary: true,
-      showLastMessage: false,
-    };
-  }
+  return {
+    totalObservationCount: parseInt(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10),
+    fullObservationCount: parseInt(settings.CLAUDE_MEM_CONTEXT_FULL_COUNT, 10),
+    sessionCount: parseInt(settings.CLAUDE_MEM_CONTEXT_SESSION_COUNT, 10),
+    showReadTokens: settings.CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS === 'true',
+    showWorkTokens: settings.CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS === 'true',
+    showSavingsAmount: settings.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT === 'true',
+    showSavingsPercent: settings.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT === 'true',
+    observationTypes: new Set(
+      settings.CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES.split(',').map((t: string) => t.trim()).filter(Boolean)
+    ),
+    observationConcepts: new Set(
+      settings.CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS.split(',').map((c: string) => c.trim()).filter(Boolean)
+    ),
+    fullObservationField: settings.CLAUDE_MEM_CONTEXT_FULL_FIELD as 'narrative' | 'facts',
+    showLastSummary: settings.CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY === 'true',
+    showLastMessage: settings.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE === 'true',
+  };
 }
 
 // Configuration constants
@@ -280,20 +256,16 @@ export async function generateContext(input?: ContextInput, useColors: boolean =
   let priorAssistantMessage = '';
 
   if (config.showLastMessage && observations.length > 0) {
-    try {
-      const currentSessionId = input?.session_id;
-      const priorSessionObs = observations.find(obs => obs.sdk_session_id !== currentSessionId);
+    const currentSessionId = input?.session_id;
+    const priorSessionObs = observations.find(obs => obs.sdk_session_id !== currentSessionId);
 
-      if (priorSessionObs) {
-        const priorSessionId = priorSessionObs.sdk_session_id;
-        const dashedCwd = cwdToDashed(cwd);
-        const transcriptPath = path.join(homedir(), '.claude', 'projects', dashedCwd, `${priorSessionId}.jsonl`);
-        const messages = extractPriorMessages(transcriptPath);
-        priorUserMessage = messages.userMessage;
-        priorAssistantMessage = messages.assistantMessage;
-      }
-    } catch (error) {
-      // Expected: Transcript file may not exist or be readable
+    if (priorSessionObs) {
+      const priorSessionId = priorSessionObs.sdk_session_id;
+      const dashedCwd = cwdToDashed(cwd);
+      const transcriptPath = path.join(homedir(), '.claude', 'projects', dashedCwd, `${priorSessionId}.jsonl`);
+      const messages = extractPriorMessages(transcriptPath);
+      priorUserMessage = messages.userMessage;
+      priorAssistantMessage = messages.assistantMessage;
     }
   }
 
@@ -325,11 +297,13 @@ export async function generateContext(input?: ContextInput, useColors: boolean =
 
   // Chronological Timeline
   if (timelineObs.length > 0) {
-    // Legend
+    // Legend - generate dynamically from active mode
+    const mode = ModeManager.getInstance().getActiveMode();
+    const typeLegendItems = mode.observation_types.map(t => `${t.emoji} ${t.id}`).join(' | ');
     if (useColors) {
-      output.push(`${colors.dim}Legend: 🎯 session-request | 🔴 bugfix | 🟣 feature | 🔄 refactor | ✅ change | 🔵 discovery | ⚖️  decision${colors.reset}`);
+      output.push(`${colors.dim}Legend: 🎯 session-request | ${typeLegendItems}${colors.reset}`);
     } else {
-      output.push(`**Legend:** 🎯 session-request | 🔴 bugfix | 🟣 feature | 🔄 refactor | ✅ change | 🔵 discovery | ⚖️  decision`);
+      output.push(`**Legend:** 🎯 session-request | ${typeLegendItems}`);
     }
     output.push('');
 
@@ -536,7 +510,7 @@ export async function generateContext(input?: ContextInput, useColors: boolean =
 
           const time = formatTime(obs.created_at);
           const title = obs.title || 'Untitled';
-          const icon = TYPE_ICON_MAP[obs.type as keyof typeof TYPE_ICON_MAP] || '•';
+          const icon = ModeManager.getInstance().getTypeIcon(obs.type);
 
           const obsSize = (obs.title?.length || 0) +
                           (obs.subtitle?.length || 0) +
@@ -544,7 +518,7 @@ export async function generateContext(input?: ContextInput, useColors: boolean =
                           JSON.stringify(obs.facts || []).length;
           const readTokens = Math.ceil(obsSize / CHARS_PER_TOKEN_ESTIMATE);
           const discoveryTokens = obs.discovery_tokens || 0;
-          const workEmoji = TYPE_WORK_EMOJI_MAP[obs.type as keyof typeof TYPE_WORK_EMOJI_MAP] || '🔍';
+          const workEmoji = ModeManager.getInstance().getWorkEmoji(obs.type);
           const discoveryDisplay = discoveryTokens > 0 ? `${workEmoji} ${discoveryTokens.toLocaleString()}` : '-';
 
           const showTime = time !== lastTime;

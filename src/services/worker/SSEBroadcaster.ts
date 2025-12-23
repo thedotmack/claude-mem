@@ -53,15 +53,9 @@ export class SSEBroadcaster {
 
     logger.debug('WORKER', 'SSE broadcast sent', { eventType: event.type, clients: this.sseClients.size });
 
-    // Single-pass write + cleanup
+    // Single-pass write
     for (const client of this.sseClients) {
-      try {
-        client.write(data);
-      } catch (err) {
-        // Remove failed client immediately
-        this.sseClients.delete(client);
-        logger.debug('WORKER', 'Client removed due to write error');
-      }
+      client.write(data);
     }
   }
 
@@ -77,10 +71,6 @@ export class SSEBroadcaster {
    */
   private sendToClient(res: Response, event: SSEEvent): void {
     const data = `data: ${JSON.stringify(event)}\n\n`;
-    try {
-      res.write(data);
-    } catch (err) {
-      this.sseClients.delete(res);
-    }
+    res.write(data);
   }
 }

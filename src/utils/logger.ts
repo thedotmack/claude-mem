@@ -98,68 +98,64 @@ class Logger {
   formatTool(toolName: string, toolInput?: any): string {
     if (!toolInput) return toolName;
 
-    try {
-      const input = typeof toolInput === 'string' ? JSON.parse(toolInput) : toolInput;
+    const input = typeof toolInput === 'string' ? JSON.parse(toolInput) : toolInput;
 
-      // Bash: show full command
-      if (toolName === 'Bash' && input.command) {
-        return `${toolName}(${input.command})`;
-      }
-
-      // File operations: show full path
-      if (input.file_path) {
-        return `${toolName}(${input.file_path})`;
-      }
-
-      // NotebookEdit: show full notebook path
-      if (input.notebook_path) {
-        return `${toolName}(${input.notebook_path})`;
-      }
-
-      // Glob: show full pattern
-      if (toolName === 'Glob' && input.pattern) {
-        return `${toolName}(${input.pattern})`;
-      }
-
-      // Grep: show full pattern
-      if (toolName === 'Grep' && input.pattern) {
-        return `${toolName}(${input.pattern})`;
-      }
-
-      // WebFetch/WebSearch: show full URL or query
-      if (input.url) {
-        return `${toolName}(${input.url})`;
-      }
-
-      if (input.query) {
-        return `${toolName}(${input.query})`;
-      }
-
-      // Task: show subagent_type or full description
-      if (toolName === 'Task') {
-        if (input.subagent_type) {
-          return `${toolName}(${input.subagent_type})`;
-        }
-        if (input.description) {
-          return `${toolName}(${input.description})`;
-        }
-      }
-
-      // Skill: show skill name
-      if (toolName === 'Skill' && input.skill) {
-        return `${toolName}(${input.skill})`;
-      }
-
-      // LSP: show operation type
-      if (toolName === 'LSP' && input.operation) {
-        return `${toolName}(${input.operation})`;
-      }
-
-      // Default: just show tool name
-      return toolName;
-    } catch {
-      return toolName;
+    // Bash: show full command
+    if (toolName === 'Bash' && input.command) {
+      return `${toolName}(${input.command})`;
     }
+
+    // File operations: show full path
+    if (input.file_path) {
+      return `${toolName}(${input.file_path})`;
+    }
+
+    // NotebookEdit: show full notebook path
+    if (input.notebook_path) {
+      return `${toolName}(${input.notebook_path})`;
+    }
+
+    // Glob: show full pattern
+    if (toolName === 'Glob' && input.pattern) {
+      return `${toolName}(${input.pattern})`;
+    }
+
+    // Grep: show full pattern
+    if (toolName === 'Grep' && input.pattern) {
+      return `${toolName}(${input.pattern})`;
+    }
+
+    // WebFetch/WebSearch: show full URL or query
+    if (input.url) {
+      return `${toolName}(${input.url})`;
+    }
+
+    if (input.query) {
+      return `${toolName}(${input.query})`;
+    }
+
+    // Task: show subagent_type or full description
+    if (toolName === 'Task') {
+      if (input.subagent_type) {
+        return `${toolName}(${input.subagent_type})`;
+      }
+      if (input.description) {
+        return `${toolName}(${input.description})`;
+      }
+    }
+
+    // Skill: show skill name
+    if (toolName === 'Skill' && input.skill) {
+      return `${toolName}(${input.skill})`;
+    }
+
+    // LSP: show operation type
+    if (toolName === 'LSP' && input.operation) {
+      return `${toolName}(${input.operation})`;
+    }
+
+    // Default: just show tool name
+    return toolName;
   }
 
   /**

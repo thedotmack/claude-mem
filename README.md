@@ -1,3 +1,5 @@
+
+
 <h1 align="center">
   <br>
   <a href="https://github.com/thedotmack/claude-mem">
@@ -9,6 +11,37 @@
   </a>
   <br>
 </h1>
+
+<p align="center">
+  <a href="docs/i18n/README.zh.md">🇨🇳 中文</a> •
+  <a href="docs/i18n/README.ja.md">🇯🇵 日本語</a> •
+  <a href="docs/i18n/README.pt-br.md">🇧🇷 Português</a> •
+  <a href="docs/i18n/README.ko.md">🇰🇷 한국어</a> •
+  <a href="docs/i18n/README.es.md">🇪🇸 Español</a> •
+  <a href="docs/i18n/README.de.md">🇩🇪 Deutsch</a> •
+  <a href="docs/i18n/README.fr.md">🇫🇷 Français</a>
+  <a href="docs/i18n/README.he.md">🇮🇱 עברית</a> •
+  <a href="docs/i18n/README.ar.md">🇸🇦 العربية</a> •
+  <a href="docs/i18n/README.ru.md">🇷🇺 Русский</a> •
+  <a href="docs/i18n/README.pl.md">🇵🇱 Polski</a> •
+  <a href="docs/i18n/README.cs.md">🇨🇿 Čeština</a> •
+  <a href="docs/i18n/README.nl.md">🇳🇱 Nederlands</a> •
+  <a href="docs/i18n/README.tr.md">🇹🇷 Türkçe</a> •
+  <a href="docs/i18n/README.uk.md">🇺🇦 Українська</a> •
+  <a href="docs/i18n/README.vi.md">🇻🇳 Tiếng Việt</a> •
+  <a href="docs/i18n/README.id.md">🇮🇩 Indonesia</a> •
+  <a href="docs/i18n/README.th.md">🇹🇭 ไทย</a> •
+  <a href="docs/i18n/README.hi.md">🇮🇳 हिन्दी</a> •
+  <a href="docs/i18n/README.bn.md">🇧🇩 বাংলা</a> •
+  <a href="docs/i18n/README.ro.md">🇷🇴 Română</a> •
+  <a href="docs/i18n/README.sv.md">🇸🇪 Svenska</a> •
+  <a href="docs/i18n/README.it.md">🇮🇹 Italiano</a> •
+  <a href="docs/i18n/README.el.md">🇬🇷 Ελληνικά</a> •
+  <a href="docs/i18n/README.hu.md">🇭🇺 Magyar</a> •
+  <a href="docs/i18n/README.fi.md">🇫🇮 Suomi</a> •
+  <a href="docs/i18n/README.da.md">🇩🇰 Dansk</a> •
+  <a href="docs/i18n/README.no.md">🇳🇴 Norsk</a>
+</p>
 
 <h4 align="center">Persistent memory compression system built for <a href="https://claude.com/claude-code" target="_blank">Claude Code</a>.</h4>
 
@@ -94,13 +127,6 @@ Restart Claude Code. Context from previous sessions will automatically appear in
 
 📚 **[View Full Documentation](docs/)** - Browse markdown docs on GitHub
 
-💻 **Local Preview**: Run Mintlify docs locally:
-
-```bash
-cd docs/public
-npx mintlify dev
-```
-
 ### Getting Started
 
 - **[Installation Guide](https://docs.claude-mem.ai/installation)** - Quick start & advanced installation
@@ -133,34 +159,12 @@ npx mintlify dev
 
 ## How It Works
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│ Session Start → Inject recent observations as context      │
-└─────────────────────────────────────────────────────────────┘
-                            ↓
-┌─────────────────────────────────────────────────────────────┐
-│ User Prompts → Create session, save user prompts           │
-└─────────────────────────────────────────────────────────────┘
-                            ↓
-┌─────────────────────────────────────────────────────────────┐
-│ Tool Executions → Capture observations (Read, Write, etc.)  │
-└─────────────────────────────────────────────────────────────┘
-                            ↓
-┌─────────────────────────────────────────────────────────────┐
-│ Worker Processes → Extract learnings via Claude Agent SDK   │
-└─────────────────────────────────────────────────────────────┘
-                            ↓
-┌─────────────────────────────────────────────────────────────┐
-│ Session Ends → Generate summary, ready for next session     │
-└─────────────────────────────────────────────────────────────┘
-```
-
 **Core Components:**
 
 1. **5 Lifecycle Hooks** - SessionStart, UserPromptSubmit, PostToolUse, Stop, SessionEnd (6 hook scripts)
 2. **Smart Install** - Cached dependency checker (pre-hook script, not a lifecycle hook)
 3. **Worker Service** - HTTP API on port 37777 with web viewer UI and 10 search endpoints, managed by Bun
-4. **SQLite Database** - Stores sessions, observations, summaries with FTS5 full-text search
+4. **SQLite Database** - Stores sessions, observations, summaries
 5. **mem-search Skill** - Natural language queries with progressive disclosure
 6. **Chroma Vector Database** - Hybrid semantic + keyword search for intelligent context retrieval
 
@@ -203,74 +207,11 @@ See [Search Tools Guide](https://docs.claude-mem.ai/usage/search-tools) for deta
 
 ---
 
-## Beta Features & Endless Mode
+## Beta Features
 
-> **Note**: Endless Mode is an **experimental feature in the beta branch only**. It is not included in the stable release you install via the marketplace. You must manually switch to the beta channel to try it, and it comes with significant caveats (see below).
+Claude-Mem offers a **beta channel** with experimental features like **Endless Mode** (biomimetic memory architecture for extended sessions). Switch between stable and beta versions from the web viewer UI at http://localhost:37777 → Settings.
 
-Claude-Mem offers a **beta channel** with experimental features. Switch between stable and beta versions directly from the web viewer UI.
-
-### How to Try Beta
-
-1. Open http://localhost:37777
-2. Click Settings (gear icon)
-3. In **Version Channel**, click "Try Beta (Endless Mode)"
-4. Wait for the worker to restart
-
-Your memory data is preserved when switching versions.
-
-### Endless Mode (Beta)
-
-The flagship beta feature is **Endless Mode** - a biomimetic memory architecture that dramatically extends session length:
-
-**The Problem**: Standard Claude Code sessions hit context limits after ~50 tool uses. Each tool adds 1-10k+ tokens, and Claude re-synthesizes all previous outputs on every response (O(N²) complexity).
-
-**The Solution**: Endless Mode compresses tool outputs into ~500-token observations and transforms the transcript in real-time:
-
-```
-Working Memory (Context):     Compressed observations (~500 tokens each)
-Archive Memory (Disk):        Full tool outputs preserved for recall
-```
-
-**Projected Results** (based on theoretical modeling, not production measurements):
-- Significant token reduction in context window
-- More tool uses before context exhaustion
-- Linear O(N) scaling instead of quadratic O(N²)
-- Full transcripts preserved for perfect recall
-
-**Important Caveats**:
-- **Not in stable release** - You must switch to beta branch to use this feature
-- **Still in development** - May have bugs, breaking changes, or incomplete functionality
-- **Slower than standard mode** - Blocking observation generation adds latency to each tool use
-- **Theoretical projections** - The efficiency claims above are based on simulations, not real-world production data
-
-See [Beta Features Documentation](https://docs.claude-mem.ai/beta-features) for details.
-
----
-
-## What's New
-
-**v6.4.9 - Context Configuration Settings:**
-- 11 new settings for fine-grained control over context injection
-- Configure token economics display, observation filtering by type/concept
-- Control number of observations and which fields to display
-
-**v6.4.0 - Dual-Tag Privacy System:**
-- `<private>` tags for user-controlled privacy - wrap sensitive content to exclude from storage
-- System-level `<claude-mem-context>` tags prevent recursive observation storage
-- Edge processing ensures private content never reaches database
-
-**v6.3.0 - Version Channel:**
-- Switch between stable and beta versions from the web viewer UI
-- Try experimental features like Endless Mode without manual git operations
-
-**Previous Highlights:**
-- **v6.0.0**: Major session management & transcript processing improvements
-- **v5.5.0**: mem-search skill enhancement with 100% effectiveness rate
-- **v5.4.0**: Skill-based search architecture (~2,250 tokens saved per session)
-- **v5.1.0**: Web-based viewer UI with real-time updates
-- **v5.0.0**: Hybrid search with Chroma vector database
-
-See [CHANGELOG.md](CHANGELOG.md) for complete version history.
+See **[Beta Features Documentation](https://docs.claude-mem.ai/beta-features)** for details on Endless Mode and how to try it.
 
 ---
 
@@ -284,161 +225,36 @@ See [CHANGELOG.md](CHANGELOG.md) for complete version history.
 
 ---
 
-## Key Benefits
-
-### Progressive Disclosure Context
-
-- **Layered memory retrieval** mirrors human memory patterns
-- **Layer 1 (Index)**: See what observations exist with token costs at session start
-- **Layer 2 (Details)**: Fetch full narratives on-demand via MCP search
-- **Layer 3 (Perfect Recall)**: Access source code and original transcripts
-- **Smart decision-making**: Token counts help Claude choose between fetching details or reading code
-- **Type indicators**: Visual cues (🔴 critical, 🟤 decision, 🔵 informational) highlight observation importance
-
-### Automatic Memory
-
-- Context automatically injected when Claude starts
-- No manual commands or configuration needed
-- Works transparently in the background
-
-### Full History Search
-
-- Search across all sessions and observations
-- FTS5 full-text search for fast queries
-- Citations link back to specific observations
-
-### Structured Observations
-
-- AI-powered extraction of learnings
-- Categorized by type (decision, bugfix, feature, etc.)
-- Tagged with concepts and file references
-
-### Multi-Prompt Sessions
-
-- Sessions span multiple user prompts
-- Context preserved across `/clear` commands
-- Track entire conversation threads
-
----
-
 ## Configuration
 
-Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created with defaults on first run.
+Settings are managed in `~/.claude-mem/settings.json` (auto-created with defaults on first run). Configure AI model, worker port, data directory, log level, and context injection settings.
 
-**Available Settings:**
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `CLAUDE_MEM_MODEL` | `claude-sonnet-4-5` | AI model for observations |
-| `CLAUDE_MEM_WORKER_PORT` | `37777` | Worker service port |
-| `CLAUDE_MEM_WORKER_HOST` | `127.0.0.1` | Worker bind address (use `0.0.0.0` for remote access) |
-| `CLAUDE_MEM_DATA_DIR` | `~/.claude-mem` | Data directory location |
-| `CLAUDE_MEM_LOG_LEVEL` | `INFO` | Log verbosity (DEBUG, INFO, WARN, ERROR, SILENT) |
-| `CLAUDE_MEM_PYTHON_VERSION` | `3.13` | Python version for chroma-mcp |
-| `CLAUDE_CODE_PATH` | _(auto-detect)_ | Path to Claude executable |
-| `CLAUDE_MEM_CONTEXT_OBSERVATIONS` | `50` | Number of observations to inject at SessionStart |
-
-**Settings Management:**
-
-```bash
-# Edit settings via CLI helper
-./claude-mem-settings.sh
-
-# Or edit directly
-nano ~/.claude-mem/settings.json
-
-# View current settings
-curl http://localhost:37777/api/settings
-```
-
-**Settings File Format:**
-
-```json
-{
-  "CLAUDE_MEM_MODEL": "claude-sonnet-4-5",
-  "CLAUDE_MEM_WORKER_PORT": "37777",
-  "CLAUDE_MEM_CONTEXT_OBSERVATIONS": "50"
-}
-```
-
-See [Configuration Guide](https://docs.claude-mem.ai/configuration) for details.
+See the **[Configuration Guide](https://docs.claude-mem.ai/configuration)** for all available settings and examples.
 
 ---
 
 ## Development
 
-```bash
-# Clone and build
-git clone https://github.com/thedotmack/claude-mem.git
-cd claude-mem
-npm install
-npm run build
-
-# Run tests
-npm test
-
-# Start worker
-npm run worker:start
-
-# View logs
-npm run worker:logs
-```
-
-See [Development Guide](https://docs.claude-mem.ai/development) for detailed instructions.
+See the **[Development Guide](https://docs.claude-mem.ai/development)** for build instructions, testing, and contribution workflow.
 
 ---
 
 ## Troubleshooting
 
-**Quick Diagnostic:**
+If experiencing issues, describe the problem to Claude and the troubleshoot skill will automatically diagnose and provide fixes.
 
-If you're experiencing issues, describe the problem to Claude and the troubleshoot skill will automatically activate to diagnose and provide fixes.
-
-**Common Issues:**
-
-- Worker not starting → `claude-mem restart`
-- No context appearing → `npm run test:context`
-- Database issues → `sqlite3 ~/.claude-mem/claude-mem.db "PRAGMA integrity_check;"`
-- Search not working → Check FTS5 tables exist
-
-See [Troubleshooting Guide](https://docs.claude-mem.ai/troubleshooting) for complete solutions.
-
-### Windows Known Issues
-
-**Console Window Visibility**: On Windows, a console window may briefly appear when the worker service starts. This is a cosmetic issue that we're working to resolve. We've prioritized stability by removing a workaround that was causing libuv crashes. The window does not affect functionality and will be addressed in a future release when the MCP SDK provides proper window hiding support.
+See the **[Troubleshooting Guide](https://docs.claude-mem.ai/troubleshooting)** for common issues and solutions.
 
 ---
 
 ## Bug Reports
 
-**Automated Bug Report Generator** - Create comprehensive bug reports with one command:
+Create comprehensive bug reports with the automated generator:
 
 ```bash
-# From the plugin directory
 cd ~/.claude/plugins/marketplaces/thedotmack
 npm run bug-report
 ```
-
-The bug report tool will:
-- 🌎 **Auto-translate** - Write in ANY language, automatically translates to English
-- 📊 **Collect diagnostics** - Gathers versions, platform info, worker status, logs, and configuration
-- 📝 **Interactive prompts** - Guides you through describing the issue with multiline support
-- 🤖 **AI formatting** - Uses Claude Agent SDK to generate professional GitHub issues
-- 🔒 **Privacy-safe** - Auto-sanitizes paths, optional `--no-logs` flag
-- 🌐 **Auto-submit** - Opens GitHub with pre-filled title and body
-
-**Plugin Directory Paths:**
-- **macOS/Linux**: `~/.claude/plugins/marketplaces/thedotmack`
-- **Windows**: `%USERPROFILE%\.claude\plugins\marketplaces\thedotmack`
-
-**Options:**
-```bash
-npm run bug-report --no-logs    # Skip logs for privacy
-npm run bug-report --verbose    # Show all diagnostics
-npm run bug-report --help       # Show help
-```
-
----
 
 ## Contributing
 
@@ -468,6 +284,8 @@ See the [LICENSE](LICENSE) file for full details.
 - If you modify and deploy on a network server, you must make your source code available
 - Derivative works must also be licensed under AGPL-3.0
 - There is NO WARRANTY for this software
+
+**Note on Ragtime**: The `ragtime/` directory is licensed separately under the **PolyForm Noncommercial License 1.0.0**. See [ragtime/LICENSE](ragtime/LICENSE) for details.
 
 ---
 

@@ -24,6 +24,10 @@ export class ViewerRoutes extends BaseRouteHandler {
   }
 
   setupRoutes(app: express.Application): void {
+    // Serve static UI assets (JS, CSS, fonts, etc.)
+    const packageRoot = getPackageRoot();
+    app.use(express.static(path.join(packageRoot, 'ui')));
+
     app.get('/health', this.handleHealth.bind(this));
     app.get('/', this.handleViewerUI.bind(this));
     app.get('/stream', this.handleSSEStream.bind(this));

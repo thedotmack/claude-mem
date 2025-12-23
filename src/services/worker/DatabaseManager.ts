@@ -30,10 +30,8 @@ export class DatabaseManager {
     // Initialize ChromaSync
     this.chromaSync = new ChromaSync('claude-mem');
 
-    // Start background backfill (fire-and-forget, with error logging)
-    this.chromaSync.ensureBackfilled().catch((error) => {
-      logger.error('DB', 'Chroma backfill failed (non-fatal)', {}, error);
-    });
+    // Start background backfill (fire-and-forget)
+    this.chromaSync.ensureBackfilled();
 
     logger.info('DB', 'Database initialized');
   }
@@ -44,14 +42,10 @@ export class DatabaseManager {
   async close(): Promise<void> {
     // Close ChromaSync first (terminates uvx/python processes)
     if (this.chromaSync) {
-      try {
-        await this.chromaSync.close();
-        this.chromaSync = null;
-      } catch (error) {
-        logger.error('DB', 'Failed to close ChromaSync', {}, error as Error);
-      }
+      await this.chromaSync.close();
+      this.chromaSync = null;
     }
-    
+
     if (this.sessionStore) {
       this.sessionStore.close();
       this.sessionStore = null;

@@ -33,28 +33,22 @@
   "scripts": {
     "build": "node scripts/build-hooks.js",
     "build-and-sync": "npm run build && npm run sync-marketplace && sleep 1 && cd ~/.claude/plugins/marketplaces/thedotmack && npm run worker:restart",
-    "test": "vitest",
-    "test:parser": "npx tsx src/sdk/parser.test.ts",
-    "test:context": "echo '{\"session_id\":\"test-'$(date +%s)'\",\"cwd\":\"'$(pwd)'\",\"source\":\"startup\"}' | node plugin/scripts/context-hook.js 2>/dev/null",
-    "test:context:verbose": "echo '{\"session_id\":\"test-'$(date +%s)'\",\"cwd\":\"'$(pwd)'\",\"source\":\"startup\"}' | node plugin/scripts/context-hook.js",
     "sync-marketplace": "node scripts/sync-marketplace.cjs",
     "sync-marketplace:force": "node scripts/sync-marketplace.cjs --force",
     "build:binaries": "node scripts/build-worker-binary.js",
-    "worker:start": "bun plugin/scripts/worker-cli.js start",
-    "worker:stop": "bun plugin/scripts/worker-cli.js stop",
-    "worker:restart": "bun plugin/scripts/worker-cli.js restart",
-    "worker:status": "bun plugin/scripts/worker-cli.js status",
+    "worker:start": "claude-mem start",
+    "worker:stop": "claude-mem stop",
+    "worker:restart": "claude-mem restart",
+    "worker:status": "claude-mem status",
     "worker:logs": "tail -n 50 ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log",
     "changelog:generate": "node scripts/generate-changelog.js",
     "discord:notify": "node scripts/discord-release-notify.js",
-    "usage:analyze": "node scripts/analyze-usage.js",
-    "usage:today": "node scripts/analyze-usage.js $(date +%Y-%m-%d)",
     "translate-readme": "bun scripts/translate-readme/cli.ts -v -o docs/i18n README.md",
     "translate:tier1": "npm run translate-readme -- zh ja pt-br ko es de fr",
     "translate:tier2": "npm run translate-readme -- he ar ru pl cs nl tr uk",
     "translate:tier3": "npm run translate-readme -- vi id th hi bn ro sv",
     "translate:tier4": "npm run translate-readme -- it el hu fi da no",
-    "translate:all": "npm run translate:tier1 && npm run translate:tier2 && npm run translate:tier3 && npm run translate:tier4",
+    "translate:all": "npm run translate:tier1 & npm run translate:tier2 & npm run translate:tier3 & npm run translate:tier4 & wait",
     "bug-report": "npx tsx scripts/bug-report/cli.ts"
   },
   "dependencies": {
@@ -66,6 +60,7 @@
     "handlebars": "^4.7.8",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "yaml": "^2.8.2",
     "zod-to-json-schema": "^3.24.6"
   },
   "devDependencies": {
@@ -76,7 +71,6 @@
     "@types/react-dom": "^18.3.0",
     "esbuild": "^0.25.12",
     "tsx": "^4.20.6",
-    "typescript": "^5.3.0",
-    "vitest": "^4.0.15"
+    "typescript": "^5.3.0"
   }
 }

@@ -19,6 +19,7 @@ import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildConti
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import type { ActiveSession, SDKUserMessage, PendingMessage } from '../worker-types.js';
+import { ModeManager } from '../domain/ModeManager.js';
 
 // Import Agent SDK (assumes it's installed)
 // @ts-ignore - Agent SDK types may not be available
@@ -185,6 +186,9 @@ export class SDKAgent {
    * - We just use the session_id we're given - simple and reliable
    */
   private async *createMessageGenerator(session: ActiveSession): AsyncIterableIterator<SDKUserMessage> {
+    // Load active mode
+    const mode = ModeManager.getInstance().getActiveMode();
+
     // Yield initial user prompt with context (or continuation if prompt #2+)
     // CRITICAL: Both paths use session.claudeSessionId from the hook
     yield {
@@ -192,8 +196,8 @@ export class SDKAgent {
       message: {
         role: 'user',
         content: session.lastPromptNumber === 1
-          ? buildInitPrompt(session.project, session.claudeSessionId, session.userPrompt)
-          : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.claudeSessionId)
+          ? buildInitPrompt(session.project, session.claudeSessionId, session.userPrompt, mode)
+          : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.claudeSessionId, mode)
       },
       session_id: session.claudeSessionId,
       parent_tool_use_id: null,
@@ -237,7 +241,7 @@ export class SDKAgent {
               user_prompt: session.userPrompt,
               last_user_message: message.last_user_message || '',
               last_assistant_message: message.last_assistant_message || ''
-            })
+            }, mode)
           },
           session_id: session.claudeSessionId,
           parent_tool_use_id: null,
@@ -276,7 +280,7 @@ export class SDKAgent {
         concepts: obs.concepts?.length ?? 0
       });
 
-      // Sync to Chroma with error logging
+      // Sync to Chroma
       const chromaStart = Date.now();
       const obsType = obs.type;
       const obsTitle = obs.title || '(untitled)';
@@ -296,13 +300,6 @@ export class SDKAgent {
           type: obsType,
           title: obsTitle
         });
-      }).catch(err => {
-        logger.error('CHROMA', 'Failed to sync observation', {
-          obsId,
-          sessionId: session.sessionDbId,
-          type: obsType,
-          title: obsTitle
-        }, err);
       });
 
       // Broadcast to SSE clients (for web UI)
@@ -352,7 +349,7 @@ export class SDKAgent {
         hasNextSteps: !!summary.next_steps
       });
 
-      // Sync to Chroma with error logging
+      // Sync to Chroma
       const chromaStart = Date.now();
       const summaryRequest = summary.request || '(no request)';
       this.dbManager.getChromaSync().syncSummary(
@@ -370,12 +367,6 @@ export class SDKAgent {
           duration: `${chromaDuration}ms`,
           request: summaryRequest
         });
-      }).catch(err => {
-        logger.error('CHROMA', 'Failed to sync summary', {
-          summaryId,
-          sessionId: session.sessionDbId,
-          request: summaryRequest
-        }, err);
       });
 
       // Broadcast to SSE clients (for web UI)
