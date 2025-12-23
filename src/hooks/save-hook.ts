@@ -11,7 +11,7 @@ import { STANDARD_HOOK_RESPONSE } from './hook-response.js';
 import { logger } from '../utils/logger.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
-import { extractDirFromBashCommand, extractDirFromFileTool } from '../shared/project-detector.js';
+import { detectCwdFromTool } from '../shared/project-detector.js';
 
 export interface PostToolUseInput {
   session_id: string;
@@ -51,28 +51,7 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
   // This handles cases where user cd's during a session or operates on files in different projects
   let actualCwd = cwd;
   try {
-    switch (tool_name) {
-      case 'Bash':
-        const command = tool_input?.command || (typeof tool_input === 'string' ? tool_input : '');
-        if (command) {
-          actualCwd = extractDirFromBashCommand(command, cwd);
-        }
-        break;
-
-      case 'Read':
-      case 'Write':
-      case 'Edit':
-      case 'Glob':
-      case 'Grep':
-      case 'NotebookEdit':
-        const fileDir = extractDirFromFileTool(tool_input || {});
-        if (fileDir) actualCwd = fileDir;
-        break;
-
-      default:
-        // Use session cwd for other tools
-        break;
-    }
+    actualCwd = detectCwdFromTool(tool_name, tool_input, cwd);
 
     if (actualCwd !== cwd) {
       logger.debug('HOOK', `Detected actual cwd: ${actualCwd} (was: ${cwd})`);

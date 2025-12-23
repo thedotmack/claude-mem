@@ -32,16 +32,23 @@ export function getProjectFromPath(dirPath: string): string | null {
     if (gitRoot) {
       // Check if we're in a worktree - if so, use the main repo name
       try {
-        const gitCommonDir = execSync('git rev-parse --git-common-dir', {
+        const gitCommonDirRaw = execSync('git rev-parse --git-common-dir', {
           cwd: absPath,
           encoding: 'utf8',
           stdio: ['pipe', 'pipe', 'pipe']
         }).trim();
 
-        // If git-common-dir points elsewhere, we're in a worktree
-        // gitCommonDir will be like "/path/to/main-repo/.git" for worktrees
-        // or ".git" for the main repo itself
-        if (gitCommonDir !== '.git' && !gitCommonDir.endsWith(`${basename(gitRoot)}/.git`)) {
+        // Resolve to absolute path to handle relative paths (e.g. "../.git")
+        // and normalize comparison
+        const gitCommonDir = resolve(absPath, gitCommonDirRaw);
+        const expectedGitDir = resolve(gitRoot, '.git');
+
+        // If git-common-dir points elsewhere, we're likely in a worktree
+        // Note: checking absolute paths handles cases where we are in a subdir
+        // but simple string comparison might fail due to symlinks (e.g. /var vs /private/var)
+        // However, even if it fails due to symlinks, extracting the name from 
+        // gitCommonDir usually yields the correct project name anyway.
+        if (gitCommonDir !== expectedGitDir) {
           // Extract main repo name from common dir path
           // e.g., "/Users/me/git/universal-tracker/.git" → "universal-tracker"
           const mainRepoPath = dirname(gitCommonDir);
@@ -169,13 +176,15 @@ export interface ToolContext {
 }
 
 /**
- * Main function: detect project from tool execution context
+ * Detect the actual working directory from tool execution context
+ * Handles cd commands, file paths, etc.
  *
- * @param context - Tool execution context from PostToolUse hook
- * @returns Project name
+ * @param tool_name - Name of the tool
+ * @param tool_input - Tool input arguments
+ * @param cwd - Current session CWD
+ * @returns Detected CWD or original CWD if detection fails
  */
-export function detectProjectFromTool(context: ToolContext): string {
-  const { tool_name, tool_input, cwd } = context;
+export function detectCwdFromTool(tool_name: string, tool_input: any, cwd: string): string {
   let detectedDir = cwd || process.cwd();
 
   // Handle different tool types
@@ -218,6 +227,20 @@ export function detectProjectFromTool(context: ToolContext): string {
       // Use session cwd for other tools
       break;
   }
+  
+  return detectedDir;
+}
+
+/**
+ * Main function: detect project from tool execution context
+ *
+ * @param context - Tool execution context from PostToolUse hook
+ * @returns Project name
+ */
+export function detectProjectFromTool(context: ToolContext): string {
+  const { tool_name, tool_input, cwd } = context;
+  
+  const detectedDir = detectCwdFromTool(tool_name, tool_input, cwd);
 
   // Get project name from detected directory
   const project = getProjectFromPath(detectedDir);
