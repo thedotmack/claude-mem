@@ -38,20 +38,46 @@ The standard mode for software development. Captures bug fixes, features, refact
 
 **ID:** `code`
 
+### Code Mode Variants
+
+Behavioral variants that change how the code mode operates:
+
+| Variant | Mode ID | Description |
+|---------|---------|-------------|
+| **Chill** | `code--chill` | Produces fewer observations. Only records things "painful to rediscover" - shipped features, architectural decisions, and non-obvious gotchas. Skips routine work and obvious changes. |
+
 ### Multilingual Code Modes
 Inherits all behavior from Code Mode but instructs Claude to generate **all** memory artifacts (titles, narratives, facts, summaries) in the target language.
 
-| Language | Mode ID | Description |
+| Language | Mode ID | Native Name |
 |----------|---------|-------------|
+| **Arabic** | `code--ar` | العربية |
+| **Bengali** | `code--bn` | বাংলা |
 | **Chinese** | `code--zh` | 中文 |
-| **Spanish** | `code--es` | Español |
+| **Czech** | `code--cs` | Čeština |
+| **Danish** | `code--da` | Dansk |
+| **Dutch** | `code--nl` | Nederlands |
+| **Finnish** | `code--fi` | Suomi |
 | **French** | `code--fr` | Français |
 | **German** | `code--de` | Deutsch |
+| **Greek** | `code--el` | Ελληνικά |
+| **Hebrew** | `code--he` | עברית |
+| **Hindi** | `code--hi` | हिन्दी |
+| **Hungarian** | `code--hu` | Magyar |
+| **Indonesian** | `code--id` | Bahasa Indonesia |
+| **Italian** | `code--it` | Italiano |
 | **Japanese** | `code--ja` | 日本語 |
 | **Korean** | `code--ko` | 한국어 |
-| **Portuguese** | `code--pt` | Português |
+| **Norwegian** | `code--no` | Norsk |
+| **Polish** | `code--pl` | Polski |
+| **Portuguese (Brazil)** | `code--pt-br` | Português Brasileiro |
+| **Romanian** | `code--ro` | Română |
 | **Russian** | `code--ru` | Русский |
+| **Spanish** | `code--es` | Español |
+| **Swedish** | `code--sv` | Svenska |
 | **Thai** | `code--th` | ภาษาไทย |
+| **Turkish** | `code--tr` | Türkçe |
+| **Ukrainian** | `code--uk` | Українська |
 | **Vietnamese** | `code--vi` | Tiếng Việt |
 
 ### Email Investigation Mode
