@@ -8,11 +8,9 @@
     "homepage": "https://github.com/thedotmack/claude-mem"
   },
   "plugins": [
-    {
+    "thedotmack": {
       "name": "claude-mem",
-      "version": "8.0.2",
-      "source": "./plugin",
-      "description": "Persistent memory system for Claude Code - context compression across sessions"
-    }
+      "version": "8.0.3",
+      "description": "Memory compression system for Claude Code",
   ]
 }
