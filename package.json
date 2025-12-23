@@ -1,6 +1,6 @@
 {
   "name": "claude-mem",
-  "version": "8.0.3",
+  "version": "8.0.4",
   "description": "Memory compression system for Claude Code - persist context across sessions",
   "keywords": [
     "claude",
@@ -36,10 +36,6 @@
     "sync-marketplace": "node scripts/sync-marketplace.cjs",
     "sync-marketplace:force": "node scripts/sync-marketplace.cjs --force",
     "build:binaries": "node scripts/build-worker-binary.js",
-    "worker:start": "claude-mem start",
-    "worker:stop": "claude-mem stop",
-    "worker:restart": "claude-mem restart",
-    "worker:status": "claude-mem status",
     "worker:logs": "tail -n 50 ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log",
     "changelog:generate": "node scripts/generate-changelog.js",
     "discord:notify": "node scripts/discord-release-notify.js",

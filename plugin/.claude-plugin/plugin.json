@@ -1,7 +1,6 @@
 {
-  "schema_version": "1.0",
-  "version": "8.0.3",
   "name": "claude-mem",
+  "version": "8.0.4",
   "description": "Persistent memory system for Claude Code - seamlessly preserve context across sessions",
   "author": {
     "name": "Alex Newman"
