@@ -4,6 +4,51 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [8.0.0] - 2025-12-23
+
+## 🌍 Major Features
+
+### **Mode System**: Context-aware observation capture tailored to different workflows
+- **Code Development mode** (default): Tracks bugfixes, features, refactors, and more
+- **Email Investigation mode**: Optimized for email analysis workflows
+- Extensible architecture for custom domains
+
+### **28 Language Support**: Full multilingual memory
+- Arabic, Bengali, Chinese, Czech, Danish, Dutch, Finnish, French, German, Greek
+- Hebrew, Hindi, Hungarian, Indonesian, Italian, Japanese, Korean, Norwegian, Polish
+- Portuguese (Brazilian), Romanian, Russian, Spanish, Swedish, Thai, Turkish
+- Ukrainian, Vietnamese
+- All observations, summaries, and narratives generated in your chosen language
+
+### **Inheritance Architecture**: Language modes inherit from base modes
+- Consistent observation types across languages
+- Locale-specific output while maintaining structural integrity
+- JSON-based configuration for easy customization
+
+## 🔧 Technical Improvements
+
+- **ModeManager**: Centralized mode loading and configuration validation
+- **Dynamic Prompts**: SDK prompts now adapt based on active mode
+- **Mode-Specific Icons**: Observation types display contextual icons/emojis per mode
+- **Fail-Fast Error Handling**: Complete removal of silent failures across all layers
+
+## 📚 Documentation
+
+- New docs/public/modes.mdx documenting the mode system
+- 28 translated README files for multilingual community support
+- Updated configuration guide for mode selection
+
+## 🔨 Breaking Changes
+
+- **None** - Mode system is fully backward compatible
+- Default mode is 'code' (existing behavior)
+- Settings: New `CLAUDE_MEM_MODE` option (defaults to 'code')
+
+---
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.4.5...v8.0.0
+**View PR**: https://github.com/thedotmack/claude-mem/pull/412
+
 ## [7.4.5] - 2025-12-21
 
 ## Bug Fixes
