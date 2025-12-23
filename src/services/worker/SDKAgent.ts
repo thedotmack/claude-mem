@@ -453,6 +453,7 @@ export class SDKAgent {
       }
     } catch (error) {
       // Command failed (claude not found in PATH)
+      logger.debug('SDK', 'Failed to auto-detect Claude executable', error);
     }
 
     // Claude not found
