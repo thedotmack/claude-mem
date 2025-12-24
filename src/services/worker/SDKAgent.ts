@@ -300,6 +300,12 @@ export class SDKAgent {
           type: obsType,
           title: obsTitle
         });
+      }).catch((error) => {
+        logger.warn('CHROMA', 'Observation sync failed, continuing without vector search', {
+          obsId,
+          type: obsType,
+          title: obsTitle
+        }, error);
       });
 
       // Broadcast to SSE clients (for web UI)
@@ -367,6 +373,11 @@ export class SDKAgent {
           duration: `${chromaDuration}ms`,
           request: summaryRequest
         });
+      }).catch((error) => {
+        logger.warn('CHROMA', 'Summary sync failed, continuing without vector search', {
+          summaryId,
+          request: summaryRequest
+        }, error);
       });
 
       // Broadcast to SSE clients (for web UI)
