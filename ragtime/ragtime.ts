@@ -2,7 +2,7 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import * as fs from "fs";
 import * as path from "path";
 
-const pathToFolder = "/Users/alexnewman/Scripts/claude-mem/datasets/emails-markdown/";
+const pathToFolder = "/Users/alexnewman/Scripts/claude-mem/datasets/epstein-mode/";
 const pathToPlugin = "/Users/alexnewman/Scripts/claude-mem/plugin/";
 
 // Or read from a directory
@@ -11,12 +11,12 @@ const filesToProcess = fs
   .filter((f) => f.endsWith(".md"))
   .map((f) => path.join(pathToFolder, f));
 
-var i = 0;
+// var i = 0;
 
 for (const file of filesToProcess) {
-  i++;
+  // i++;
   // Limit for testing
-  if (i > 3) break;
+  // if (i > 3) break;
 
   console.log(`\n=== Processing ${file} ===\n`);
 
