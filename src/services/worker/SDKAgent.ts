@@ -302,6 +302,9 @@ export class SDKAgent {
         });
       });
 
+      // Calculate and store surprise score (Phase 2: Titans concepts)
+      this.calculateAndStoreSurpriseScore(obsId, session);
+
       // Broadcast to SSE clients (for web UI)
       if (worker && worker.sseBroadcaster) {
         worker.sseBroadcaster.broadcast({
@@ -392,6 +395,64 @@ export class SDKAgent {
 
     // Mark messages as processed after successful observation/summary storage
     await this.markMessagesProcessed(session, worker);
+  }
+
+  /**
+   * Calculate and store surprise score for an observation (Phase 2: Titans concepts)
+   * This runs AFTER the observation is saved to always preserve data
+   */
+  private async calculateAndStoreSurpriseScore(obsId: number, session: ActiveSession): Promise<void> {
+    try {
+      // Get settings
+      const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+
+      // Skip if surprise filtering is disabled
+      if (!settings.CLAUDE_MEM_SURPRISE_ENABLED) {
+        return;
+      }
+
+      // Import dynamically to avoid circular dependencies
+      const { SurpriseMetric } = await import('./SurpriseMetric.js');
+      const { getMomentumBuffer } = await import('./MomentumBuffer.js');
+
+      const db = this.dbManager.getSessionStore().db;
+      const surpriseMetric = new SurpriseMetric(db);
+      const momentumBuffer = getMomentumBuffer();
+
+      // Get the observation
+      const obs = this.dbManager.getSessionStore().getObservationById(obsId);
+      if (!obs) return;
+
+      // Calculate surprise
+      const result = await surpriseMetric.calculate(obs, {
+        lookbackDays: settings.CLAUDE_MEM_SURPRISE_LOOKBACK_DAYS,
+        sampleSize: 50,
+      });
+
+      // Update importance score with surprise factor
+      const { ImportanceScorer } = await import('./ImportanceScorer.js');
+      const importanceScorer = new ImportanceScorer(db);
+      await importanceScorer.updateScore(obsId);
+
+      // If high surprise, boost related topics (momentum)
+      if (result.score > settings.CLAUDE_MEM_SURPRISE_THRESHOLD && settings.CLAUDE_MEM_MOMENTUM_ENABLED) {
+        const topics = momentumBuffer.extractTopics(obs.title || obs.text || '', 10);
+        momentumBuffer.boostFromMemory(
+          topics,
+          obsId,
+          { duration: settings.CLAUDE_MEM_MOMENTUM_DURATION_MINUTES }
+        );
+
+        logger.debug('SDK', 'High surprise detected, topics boosted', {
+          obsId,
+          surprise: result.score,
+          topics,
+        });
+      }
+    } catch (error) {
+      // Don't fail the observation save if surprise calculation fails
+      logger.debug('SDK', 'Surprise calculation failed (non-fatal)', { obsId }, error as Error);
+    }
   }
 
   /**

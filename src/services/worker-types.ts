@@ -90,6 +90,12 @@ export interface ViewerSettings {
   sidebarOpen: boolean;
   selectedProject: string | null;
   theme: 'light' | 'dark' | 'system';
+  // Surprise filtering settings (Phase 2: Titans concepts)
+  surpriseEnabled: boolean;
+  surpriseThreshold: number;      // 0-1, observations below this are filtered
+  surpriseLookbackDays: number;   // How many days back to compare
+  momentumEnabled: boolean;
+  momentumDurationMinutes: number; // How long topic boosts last
 }
 
 // ============================================================================

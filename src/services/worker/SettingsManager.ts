@@ -16,7 +16,13 @@ export class SettingsManager {
   private readonly defaultSettings: ViewerSettings = {
     sidebarOpen: true,
     selectedProject: null,
-    theme: 'system'
+    theme: 'system',
+    // Surprise filtering defaults (Phase 2: Titans concepts)
+    surpriseEnabled: true,
+    surpriseThreshold: 0.3,      // Filter out observations with < 30% surprise
+    surpriseLookbackDays: 30,    // Compare against last 30 days
+    momentumEnabled: true,
+    momentumDurationMinutes: 5,  // Boost topics for 5 minutes after high surprise
   };
 
   constructor(dbManager: DatabaseManager) {

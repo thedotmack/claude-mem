@@ -41,6 +41,7 @@ export class SessionStore {
     this.createUserPromptsTable();
     this.ensureDiscoveryTokensColumn();
     this.createPendingMessagesTable();
+    this.createMemoryAccessTracking();
   }
 
   /**
@@ -573,6 +574,81 @@ export class SessionStore {
       console.log('[SessionStore] pending_messages table created successfully');
     } catch (error: any) {
       console.error('[SessionStore] Pending messages table migration error:', error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Create memory_access table and add importance tracking to observations (migration 17)
+   * Tracks when memories are accessed for importance scoring and intelligent forgetting
+   */
+  private createMemoryAccessTracking(): void {
+    try {
+      // Check if migration already applied
+      const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(17) as SchemaVersion | undefined;
+      if (applied) return;
+
+      console.log('[SessionStore] Creating memory access tracking...');
+
+      this.db.run('BEGIN TRANSACTION');
+
+      try {
+        // Check if memory_access table already exists
+        const tables = this.db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='memory_access'").all() as TableNameRow[];
+        if (tables.length === 0) {
+          // Create memory_access table
+          this.db.run(`
+            CREATE TABLE memory_access (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              memory_id INTEGER NOT NULL,
+              timestamp INTEGER NOT NULL,
+              context TEXT,
+              FOREIGN KEY (memory_id) REFERENCES observations(id) ON DELETE CASCADE
+            )
+          `);
+
+          // Create indexes for efficient queries
+          this.db.run('CREATE INDEX idx_memory_access_memory_id ON memory_access(memory_id)');
+          this.db.run('CREATE INDEX idx_memory_access_timestamp ON memory_access(timestamp DESC)');
+          this.db.run('CREATE INDEX idx_memory_access_memory_timestamp ON memory_access(memory_id, timestamp DESC)');
+
+          console.log('[SessionStore] Created memory_access table');
+        }
+
+        // Check if observations table already has the new columns
+        const tableInfo = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+
+        const hasImportanceScore = tableInfo.some(col => col.name === 'importance_score');
+        const hasAccessCount = tableInfo.some(col => col.name === 'access_count');
+        const hasLastAccessed = tableInfo.some(col => col.name === 'last_accessed');
+
+        if (!hasImportanceScore) {
+          this.db.run('ALTER TABLE observations ADD COLUMN importance_score REAL DEFAULT 0.5');
+          console.log('[SessionStore] Added importance_score column to observations');
+        }
+
+        if (!hasAccessCount) {
+          this.db.run('ALTER TABLE observations ADD COLUMN access_count INTEGER DEFAULT 0');
+          console.log('[SessionStore] Added access_count column to observations');
+        }
+
+        if (!hasLastAccessed) {
+          this.db.run('ALTER TABLE observations ADD COLUMN last_accessed INTEGER');
+          console.log('[SessionStore] Added last_accessed column to observations');
+        }
+
+        this.db.run('COMMIT');
+
+        // Record migration
+        this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(17, new Date().toISOString());
+
+        console.log('[SessionStore] Memory access tracking migration completed successfully');
+      } catch (error: any) {
+        this.db.run('ROLLBACK');
+        throw error;
+      }
+    } catch (error: any) {
+      console.error('[SessionStore] Memory access tracking migration error:', error.message);
       throw error;
     }
   }

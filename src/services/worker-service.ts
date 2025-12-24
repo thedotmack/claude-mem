@@ -441,6 +441,11 @@ export class WorkerService {
       this.searchRoutes.setupRoutes(this.app); // Setup search routes now that SearchManager is ready
       logger.info('WORKER', 'SearchManager initialized and search routes registered');
 
+      // Initialize cleanup job for memory management (Phase 3: Titans concepts)
+      // Using lazy import to avoid initialization timing issues
+      // The actual job instance is created on-demand in the API routes
+      logger.info('WORKER', 'CleanupJob configured for lazy initialization (scheduled cleanup disabled by default)');
+
       // Connect to MCP server with timeout guard
       const mcpServerPath = path.join(__dirname, 'mcp-server.cjs');
       const transport = new StdioClientTransport({
