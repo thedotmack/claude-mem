@@ -1,273 +1,218 @@
 import path from "path";
-import { existsSync, readdirSync } from "fs";
 import { homedir } from "os";
 import { spawnSync } from "child_process";
-import { SettingsDefaultsManager } from "./SettingsDefaultsManager.js";
+import { existsSync, writeFileSync, readFileSync, mkdirSync } from "fs";
 import { logger } from "../utils/logger.js";
 import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
+import { ProcessManager } from "../services/process/ProcessManager.js";
+import { SettingsDefaultsManager } from "./SettingsDefaultsManager.js";
+import { getWorkerRestartInstructions } from "../utils/error-messages.js";
 
-// Directory paths
 const MARKETPLACE_ROOT = path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
-const CACHE_BASE = path.join(homedir(), '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem');
-
-/**
- * Find the cache directory with the highest version number
- * Cache directories are named like: ~/.claude/plugins/cache/thedotmack/claude-mem/7.0.10/
- */
-function findLatestCacheDir(): string | null {
-  try {
-    if (!existsSync(CACHE_BASE)) {
-      return null;
-    }
-    const versions = readdirSync(CACHE_BASE)
-      .filter(name => /^\d+\.\d+\.\d+$/.test(name))
-      .sort((a, b) => {
-        const [aMajor, aMinor, aPatch] = a.split('.').map(Number);
-        const [bMajor, bMinor, bPatch] = b.split('.').map(Number);
-        if (aMajor !== bMajor) return bMajor - aMajor;
-        if (aMinor !== bMinor) return bMinor - aMinor;
-        return bPatch - aPatch;
-      });
-    return versions.length > 0 ? path.join(CACHE_BASE, versions[0]) : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Find PM2 executable - checks cache directory first, then marketplace, then global
- */
-function findPm2(): { command: string; cwd: string } | null {
-  // Check cache directory first (most likely location for marketplace installs)
-  const cacheDir = findLatestCacheDir();
-  if (cacheDir) {
-    const cachePm2 = path.join(cacheDir, 'node_modules', '.bin', 'pm2');
-    if (existsSync(cachePm2)) {
-      return { command: cachePm2, cwd: cacheDir };
-    }
-  }
-
-  // Check marketplace directory
-  const marketplacePm2 = path.join(MARKETPLACE_ROOT, 'node_modules', '.bin', 'pm2');
-  if (existsSync(marketplacePm2)) {
-    return { command: marketplacePm2, cwd: MARKETPLACE_ROOT };
-  }
-
-  // Check global PM2
-  const globalPm2Check = spawnSync('which', ['pm2'], {
-    encoding: 'utf-8',
-    stdio: 'pipe'
-  });
-  if (globalPm2Check.status === 0) {
-    return { command: 'pm2', cwd: MARKETPLACE_ROOT };
-  }
-
-  return null;
-}
-
-/**
- * Find worker script - checks cache directory first, then marketplace
- */
-function findWorkerScript(): { script: string; cwd: string } | null {
-  // Check cache directory first
-  const cacheDir = findLatestCacheDir();
-  if (cacheDir) {
-    const cacheWorker = path.join(cacheDir, 'scripts', 'worker-service.cjs');
-    if (existsSync(cacheWorker)) {
-      return { script: cacheWorker, cwd: cacheDir };
-    }
-  }
-
-  // Check marketplace directory
-  const marketplaceWorker = path.join(MARKETPLACE_ROOT, 'plugin', 'scripts', 'worker-service.cjs');
-  if (existsSync(marketplaceWorker)) {
-    return { script: marketplaceWorker, cwd: MARKETPLACE_ROOT };
-  }
-
-  return null;
-}
-
-/**
- * Find ecosystem config - checks cache first (has correct relative paths for cache structure)
- * Returns both the config path and the directory (cwd) where PM2 should run from
- */
-function findEcosystemConfig(): { configPath: string; cwd: string } | null {
-  // Check cache directory first - it has ecosystem config with correct paths for cache structure
-  const cacheDir = findLatestCacheDir();
-  if (cacheDir) {
-    const cacheEcosystem = path.join(cacheDir, 'ecosystem.config.cjs');
-    if (existsSync(cacheEcosystem)) {
-      return { configPath: cacheEcosystem, cwd: cacheDir };
-    }
-  }
-
-  // Fallback to marketplace (for development/direct installs)
-  const marketplaceEcosystem = path.join(MARKETPLACE_ROOT, 'ecosystem.config.cjs');
-  if (existsSync(marketplaceEcosystem)) {
-    return { configPath: marketplaceEcosystem, cwd: MARKETPLACE_ROOT };
-  }
-  return null;
-}
 
 // Named constants for health checks
-// Windows needs longer timeouts due to startup overhead
 const HEALTH_CHECK_TIMEOUT_MS = getTimeout(HOOK_TIMEOUTS.HEALTH_CHECK);
-const WORKER_STARTUP_WAIT_MS = HOOK_TIMEOUTS.WORKER_STARTUP_WAIT;
-const WORKER_STARTUP_RETRIES = HOOK_TIMEOUTS.WORKER_STARTUP_RETRIES;
+
+// Cache to avoid repeated settings file reads
+let cachedPort: number | null = null;
+let cachedHost: string | null = null;
 
 /**
- * Get the worker port number
- * Priority: ~/.claude-mem/settings.json > env var > default
+ * Get the worker port number from settings
+ * Uses CLAUDE_MEM_WORKER_PORT from settings file or default (37777)
+ * Caches the port value to avoid repeated file reads
  */
 export function getWorkerPort(): number {
-  const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+  if (cachedPort !== null) {
+    return cachedPort;
+  }
+
+  const settingsPath = path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), 'settings.json');
   const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-  return parseInt(settings.CLAUDE_MEM_WORKER_PORT, 10);
+  cachedPort = parseInt(settings.CLAUDE_MEM_WORKER_PORT, 10);
+  return cachedPort;
 }
 
 /**
- * Check if worker is responsive by trying the health endpoint
+ * Get the worker host address
+ * Uses CLAUDE_MEM_WORKER_HOST from settings file or default (127.0.0.1)
+ * Caches the host value to avoid repeated file reads
+ */
+export function getWorkerHost(): string {
+  if (cachedHost !== null) {
+    return cachedHost;
+  }
+
+  const settingsPath = path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), 'settings.json');
+  const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+  cachedHost = settings.CLAUDE_MEM_WORKER_HOST;
+  return cachedHost;
+}
+
+/**
+ * Clear the cached port and host values
+ * Call this when settings are updated to force re-reading from file
+ */
+export function clearPortCache(): void {
+  cachedPort = null;
+  cachedHost = null;
+}
+
+/**
+ * Check if worker is responsive and fully initialized by trying the readiness endpoint
+ * Changed from /health to /api/readiness to ensure MCP initialization is complete
  */
 async function isWorkerHealthy(): Promise<boolean> {
-  try {
-    const port = getWorkerPort();
-    const response = await fetch(`http://127.0.0.1:${port}/health`, {
-      signal: AbortSignal.timeout(HEALTH_CHECK_TIMEOUT_MS)
+  const port = getWorkerPort();
+  const response = await fetch(`http://127.0.0.1:${port}/api/readiness`, {
+    signal: AbortSignal.timeout(HEALTH_CHECK_TIMEOUT_MS)
+  });
+  return response.ok;
+}
+
+/**
+ * Get the current plugin version from package.json
+ */
+function getPluginVersion(): string {
+  const packageJsonPath = path.join(MARKETPLACE_ROOT, 'package.json');
+  const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
+  return packageJson.version;
+}
+
+/**
+ * Get the running worker's version from the API
+ */
+async function getWorkerVersion(): Promise<string> {
+  const port = getWorkerPort();
+  const response = await fetch(`http://127.0.0.1:${port}/api/version`, {
+    signal: AbortSignal.timeout(HEALTH_CHECK_TIMEOUT_MS)
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to get worker version: ${response.status}`);
+  }
+  const data = await response.json() as { version: string };
+  return data.version;
+}
+
+/**
+ * Check if worker version matches plugin version
+ * If mismatch detected, restart the worker automatically
+ */
+async function ensureWorkerVersionMatches(): Promise<void> {
+  const pluginVersion = getPluginVersion();
+  const workerVersion = await getWorkerVersion();
+
+  if (pluginVersion !== workerVersion) {
+    logger.info('SYSTEM', 'Worker version mismatch detected - restarting worker', {
+      pluginVersion,
+      workerVersion
     });
-    return response.ok;
-  } catch (error) {
-    logger.debug('SYSTEM', 'Worker health check failed', {
-      error: error instanceof Error ? error.message : String(error),
-      errorType: error?.constructor?.name
-    });
-    return false;
+
+    // Give files time to sync before restart
+    await new Promise(resolve => setTimeout(resolve, getTimeout(HOOK_TIMEOUTS.PRE_RESTART_SETTLE_DELAY)));
+
+    // Restart the worker
+    await ProcessManager.restart(getWorkerPort());
+
+    // Give it a moment to start
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
+    // Verify it's healthy
+    if (!await isWorkerHealthy()) {
+      throw new Error(`Worker failed to restart after version mismatch. Expected ${pluginVersion}, was running ${workerVersion}`);
+    }
   }
 }
 
 /**
- * Start the worker service
- * On Windows: Uses PowerShell Start-Process with hidden window to avoid console flash
- * On Unix: Uses PM2 for process management
+ * Start the worker service using ProcessManager
+ * Handles both Unix (Bun) and Windows (compiled exe) platforms
  */
 async function startWorker(): Promise<boolean> {
-  try {
-    // Find worker script (checks cache first, then marketplace)
-    const workerInfo = findWorkerScript();
-    if (!workerInfo) {
-      throw new Error('Worker script not found in cache or marketplace directory');
-    }
+  // Clean up legacy PM2 (one-time migration)
+  const dataDir = SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR');
+  const pm2MigratedMarker = path.join(dataDir, '.pm2-migrated');
 
-    const { script: workerScript, cwd: workerCwd } = workerInfo;
+  // Ensure data directory exists (may not exist on fresh install)
+  mkdirSync(dataDir, { recursive: true });
 
-    if (process.platform === 'win32') {
-      // On Windows, use PowerShell Start-Process with -WindowStyle Hidden
-      // This avoids visible console windows that PM2 creates on Windows
-      // Escape single quotes for PowerShell by doubling them
-      const escapedScript = workerScript.replace(/'/g, "''");
-      const escapedWorkingDir = workerCwd.replace(/'/g, "''");
+  if (!existsSync(pm2MigratedMarker)) {
+    spawnSync('pm2', ['delete', 'claude-mem-worker'], { stdio: 'ignore' });
+    // Mark migration as complete
+    writeFileSync(pm2MigratedMarker, new Date().toISOString(), 'utf-8');
+    logger.debug('SYSTEM', 'PM2 cleanup completed and marked');
+  }
 
-      const result = spawnSync('powershell.exe', [
-        '-NoProfile',
-        '-NonInteractive',
-        '-Command',
-        `Start-Process -FilePath 'node' -ArgumentList '${escapedScript}' -WorkingDirectory '${escapedWorkingDir}' -WindowStyle Hidden`
-      ], {
-        cwd: workerCwd,
-        stdio: 'pipe',
-        encoding: 'utf-8',
-        windowsHide: true
-      });
+  const port = getWorkerPort();
+  const result = await ProcessManager.start(port);
 
-      if (result.status !== 0) {
-        throw new Error(result.stderr || 'PowerShell Start-Process failed');
-      }
-    } else {
-      // On Unix, use PM2 for process management
-      const ecosystemInfo = findEcosystemConfig();
-
-      if (!ecosystemInfo) {
-        throw new Error('Ecosystem config not found');
-      }
-
-      // Find PM2 (checks cache first, then marketplace, then global)
-      const pm2Info = findPm2();
-
-      if (!pm2Info) {
-        const cacheDir = findLatestCacheDir();
-        throw new Error(
-          'PM2 not found. Install it locally with:\n' +
-          `  cd ${cacheDir || MARKETPLACE_ROOT}\n` +
-          '  npm install\n\n' +
-          'Or install globally with: npm install -g pm2'
-        );
-      }
-
-      // IMPORTANT: Use ecosystem config's cwd, not pm2's cwd
-      // PM2 resolves relative script paths from cwd, and ecosystem config
-      // has paths relative to its own directory
-      const result = spawnSync(pm2Info.command, ['start', ecosystemInfo.configPath], {
-        cwd: ecosystemInfo.cwd,
-        stdio: 'pipe',
-        encoding: 'utf-8'
-      });
-
-      if (result.status !== 0) {
-        throw new Error(result.stderr || 'PM2 start failed');
-      }
-    }
-
-    // Wait for worker to become healthy
-    for (let i = 0; i < WORKER_STARTUP_RETRIES; i++) {
-      await new Promise(resolve => setTimeout(resolve, WORKER_STARTUP_WAIT_MS));
-      if (await isWorkerHealthy()) {
-        return true;
-      }
-    }
-
-    return false;
-  } catch (error) {
-    const workerInfo = findWorkerScript();
+  if (!result.success) {
     logger.error('SYSTEM', 'Failed to start worker', {
       platform: process.platform,
-      workerScript: workerInfo?.script || 'not found',
-      error: error instanceof Error ? error.message : String(error),
-      cacheDir: findLatestCacheDir(),
+      port,
+      error: result.error,
       marketplaceRoot: MARKETPLACE_ROOT
     });
-    return false;
   }
+
+  return result.success;
 }
 
 /**
  * Ensure worker service is running
  * Checks health and auto-starts if not running
+ * Also ensures worker version matches plugin version
  */
 export async function ensureWorkerRunning(): Promise<void> {
-  // Check if already healthy
-  if (await isWorkerHealthy()) {
+  // Check if already healthy (will throw on fetch errors)
+  let healthy = false;
+  try {
+    healthy = await isWorkerHealthy();
+  } catch (error) {
+    // Worker not running or unreachable - continue to start it
+    healthy = false;
+  }
+
+  if (healthy) {
+    // Worker is healthy, but check if version matches
+    await ensureWorkerVersionMatches();
     return;
   }
 
   // Try to start the worker
   const started = await startWorker();
 
-  // Final health check before throwing error
-  // Worker might be already running but was temporarily unresponsive
-  if (!started && await isWorkerHealthy()) {
-    return;
-  }
-
   if (!started) {
     const port = getWorkerPort();
-    const ecosystemInfo = findEcosystemConfig();
-    const installDir = ecosystemInfo?.cwd || findLatestCacheDir() || MARKETPLACE_ROOT;
-    const ecosystemPath = ecosystemInfo?.configPath || path.join(MARKETPLACE_ROOT, 'ecosystem.config.cjs');
     throw new Error(
-      `Worker service failed to start on port ${port}.\n\n` +
-      `To start manually, run:\n` +
-      `  cd ${installDir}\n` +
-      `  npx pm2 start ${ecosystemPath}\n\n` +
-      `If already running, try: npx pm2 restart claude-mem-worker`
+      getWorkerRestartInstructions({
+        port,
+        customPrefix: `Worker service failed to start on port ${port}.`
+      })
     );
   }
+
+  // Wait for worker to become responsive after starting
+  // Try up to 5 times with 500ms delays (2.5 seconds total)
+  for (let i = 0; i < 5; i++) {
+    await new Promise(resolve => setTimeout(resolve, 500));
+    try {
+      if (await isWorkerHealthy()) {
+        await ensureWorkerVersionMatches();
+        return;
+      }
+    } catch (error) {
+      // Continue trying
+    }
+  }
+
+  // Worker started but isn't responding
+  const port = getWorkerPort();
+  logger.error('SYSTEM', 'Worker started but not responding to health checks');
+  throw new Error(
+    getWorkerRestartInstructions({
+      port,
+      customPrefix: `Worker service started but is not responding on port ${port}.`
+    })
+  );
 }

@@ -582,6 +582,43 @@
       box-shadow: 0 2px 8px rgba(9, 105, 218, 0.25);
     }
 
+    /* View Mode Toggle Button */
+    .view-mode-btn {
+      background: var(--color-bg-card);
+      border: 1px solid var(--color-border-primary);
+      border-radius: 6px;
+      padding: 0;
+      width: 36px;
+      height: 36px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--color-text-secondary);
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+    }
+
+    .view-mode-btn svg {
+      width: 18px;
+      height: 18px;
+    }
+
+    .view-mode-btn:hover {
+      background: var(--color-bg-card-hover);
+      border-color: var(--color-border-focus);
+      color: var(--color-text-primary);
+      transform: translateY(-1px);
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.08);
+    }
+
+    .view-mode-btn.active {
+      background: linear-gradient(135deg, var(--color-bg-button) 0%, var(--color-accent-primary) 100%);
+      border-color: var(--color-bg-button);
+      color: var(--color-text-button);
+      box-shadow: 0 2px 8px rgba(9, 105, 218, 0.25);
+    }
+
     .community-btn {
       background: var(--color-bg-card);
       border: 1px solid var(--color-border-primary);
@@ -768,6 +805,254 @@
       border-color: var(--color-border-focus);
       box-shadow: 0 0 0 3px rgba(9, 105, 218, 0.1);
       transform: translateY(-1px);
+    }
+
+    /* Type Filter Row */
+    .type-filter-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 24px;
+      background: var(--color-bg-secondary);
+      border-bottom: 1px solid var(--color-border-primary);
+      flex-wrap: wrap;
+    }
+
+    .type-filter-label {
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--color-text-muted);
+      font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+    }
+
+    .type-filter-buttons {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .type-filter-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 4px 10px;
+      height: 28px;
+      background: var(--type-bg, transparent);
+      border: 1px solid var(--color-border-primary);
+      border-radius: 14px;
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--color-text-secondary);
+      cursor: pointer;
+      transition: all 0.15s ease;
+      white-space: nowrap;
+    }
+
+    .type-filter-btn:hover {
+      background: var(--color-bg-card-hover);
+      border-color: var(--type-color, var(--color-border-hover));
+      color: var(--color-text-primary);
+    }
+
+    .type-filter-btn.active {
+      background: var(--type-bg);
+      border-color: var(--type-color);
+      color: var(--type-color);
+      box-shadow: 0 0 0 1px var(--type-color) inset;
+    }
+
+    .type-filter-btn .type-emoji {
+      font-size: 12px;
+      line-height: 1;
+    }
+
+    .type-filter-btn .type-label {
+      font-size: 11px;
+    }
+
+    .type-filter-actions {
+      display: flex;
+      gap: 4px;
+      margin-left: 8px;
+      padding-left: 8px;
+      border-left: 1px solid var(--color-border-primary);
+    }
+
+    .type-action-btn {
+      padding: 4px 8px;
+      height: 24px;
+      background: transparent;
+      border: 1px solid var(--color-border-primary);
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 500;
+      color: var(--color-text-muted);
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .type-action-btn:hover {
+      background: var(--color-bg-card-hover);
+      border-color: var(--color-border-hover);
+      color: var(--color-text-primary);
+    }
+
+    .type-action-btn.active {
+      background: var(--color-accent-primary);
+      border-color: var(--color-accent-primary);
+      color: white;
+    }
+
+    /* Responsive: Hide type labels on mobile, show only emoji */
+    @media (max-width: 600px) {
+      .type-filter-row {
+        padding: 8px 16px;
+        gap: 8px;
+      }
+
+      .type-filter-btn .type-label {
+        display: none;
+      }
+
+      .type-filter-btn {
+        padding: 4px 8px;
+        min-width: 32px;
+        justify-content: center;
+      }
+
+      .type-filter-actions {
+        margin-left: 4px;
+        padding-left: 4px;
+      }
+    }
+
+    /* Search Row */
+    .search-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 24px;
+      background: var(--color-bg-secondary);
+      border-bottom: 1px solid var(--color-border-primary);
+    }
+
+    .search-input-container {
+      flex: 1;
+      max-width: 600px;
+      position: relative;
+      display: flex;
+      align-items: center;
+    }
+
+    .search-icon {
+      position: absolute;
+      left: 12px;
+      width: 16px;
+      height: 16px;
+      color: var(--color-text-muted);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .search-spinner {
+      width: 14px;
+      height: 14px;
+      border: 2px solid var(--color-border-primary);
+      border-top-color: var(--color-accent-primary);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .search-input {
+      width: 100%;
+      padding: 10px 36px 10px 36px;
+      font-size: 14px;
+      font-family: inherit;
+      background: var(--color-bg-primary);
+      border: 1px solid var(--color-border-primary);
+      border-radius: 8px;
+      color: var(--color-text-primary);
+      transition: all 0.15s ease;
+    }
+
+    .search-input::placeholder {
+      color: var(--color-text-muted);
+    }
+
+    .search-input:focus {
+      outline: none;
+      border-color: var(--color-accent-primary);
+      box-shadow: 0 0 0 3px rgba(9, 105, 218, 0.15);
+    }
+
+    .search-clear-btn {
+      position: absolute;
+      right: 8px;
+      width: 24px;
+      height: 24px;
+      padding: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: transparent;
+      border: none;
+      border-radius: 4px;
+      color: var(--color-text-muted);
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .search-clear-btn:hover {
+      background: var(--color-bg-card-hover);
+      color: var(--color-text-primary);
+    }
+
+    .search-mode-indicator {
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--color-accent-primary);
+      background: rgba(9, 105, 218, 0.1);
+      padding: 4px 10px;
+      border-radius: 12px;
+      white-space: nowrap;
+    }
+
+    .search-results-header {
+      padding: 16px 24px;
+      font-size: 14px;
+      color: var(--color-text-secondary);
+      background: var(--color-bg-secondary);
+      border-bottom: 1px solid var(--color-border-primary);
+    }
+
+    .search-results-header strong {
+      color: var(--color-text-primary);
+    }
+
+    .search-results-header em {
+      color: var(--color-accent-primary);
+      font-style: normal;
+    }
+
+    /* Responsive: Collapse search row on mobile */
+    @media (max-width: 600px) {
+      .search-row {
+        padding: 8px 16px;
+      }
+
+      .search-input {
+        font-size: 16px; /* Prevent iOS zoom */
+      }
+
+      .search-mode-indicator {
+        display: none;
+      }
     }
 
     select:hover,
@@ -1040,7 +1325,13 @@
 
     /* Project badge styling */
     .card-project {
-      color: var(--color-text-muted);
+      color: var(--color-text-primary);
+      background: rgba(234, 179, 8, 0.15);
+      border: 1px solid rgba(234, 179, 8, 0.6);
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
     }
 
     .summary-card {
@@ -2496,7 +2787,1792 @@
         transform: translateX(16px);
       }
     }
-  </style>
+
+    /* ========== Graph Panel ========== */
+
+    .app-container {
+      display: flex;
+      flex-direction: row;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    .main-content {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      transition: margin-left 0.3s ease;
+    }
+
+    .app-container.graph-panel-visible .main-content {
+      margin-left: 0;
+    }
+
+    /* Graph Panel Toggle Button */
+    .graph-panel-toggle {
+      position: fixed;
+      left: 8px;
+      top: 50%;
+      transform: translateY(-50%);
+      z-index: 1001;
+      width: 36px;
+      height: 36px;
+      padding: 0;
+      background: var(--color-bg-card);
+      border: 1px solid var(--color-border-primary);
+      border-radius: 8px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--color-text-secondary);
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+      transition: all 0.2s ease;
+    }
+
+    .graph-panel-toggle:hover {
+      background: var(--color-bg-card-hover);
+      color: var(--color-text-primary);
+      border-color: var(--color-border-hover);
+    }
+
+    .graph-panel-toggle svg {
+      width: 18px;
+      height: 18px;
+    }
+
+    .graph-panel-toggle.open {
+      left: 368px;
+    }
+
+    /* Graph Panel */
+    .graph-panel {
+      position: fixed;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: 360px;
+      background: var(--color-bg-primary);
+      border-right: 1px solid var(--color-border-primary);
+      display: flex;
+      flex-direction: column;
+      z-index: 1000;
+      transform: translateX(-100%);
+      transition: transform 0.3s ease;
+    }
+
+    .graph-panel.open {
+      transform: translateX(0);
+    }
+
+    .graph-panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--color-border-primary);
+    }
+
+    .graph-panel-header h2 {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--color-text-primary);
+    }
+
+    .refresh-btn {
+      width: 28px;
+      height: 28px;
+      padding: 0;
+      background: transparent;
+      border: 1px solid var(--color-border-primary);
+      border-radius: 6px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--color-text-secondary);
+      transition: all 0.2s ease;
+    }
+
+    .refresh-btn:hover:not(:disabled) {
+      background: var(--color-bg-card-hover);
+      color: var(--color-text-primary);
+    }
+
+    .refresh-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .refresh-btn svg {
+      width: 14px;
+      height: 14px;
+    }
+
+    .refresh-btn svg.spinning {
+      animation: spin 1s linear infinite;
+    }
+
+    /* Graph Panel Tabs */
+    .graph-panel-tabs {
+      display: flex;
+      padding: 0 12px;
+      border-bottom: 1px solid var(--color-border-primary);
+      background: var(--color-bg-secondary);
+    }
+
+    .graph-tab {
+      flex: 1;
+      padding: 10px 8px;
+      background: transparent;
+      border: none;
+      border-bottom: 2px solid transparent;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 2px;
+      color: var(--color-text-secondary);
+      transition: all 0.15s ease;
+      font-size: 11px;
+    }
+
+    .graph-tab:hover {
+      color: var(--color-text-primary);
+      background: var(--color-bg-card-hover);
+    }
+
+    .graph-tab.active {
+      color: var(--color-accent-primary);
+      border-bottom-color: var(--color-accent-primary);
+    }
+
+    .tab-icon {
+      font-size: 16px;
+    }
+
+    .tab-label {
+      font-weight: 500;
+    }
+
+    /* Graph Panel Content */
+    .graph-panel-content {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+    }
+
+    .graph-error {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px;
+      background: rgba(208, 36, 47, 0.1);
+      border: 1px solid var(--color-accent-error);
+      border-radius: 8px;
+      color: var(--color-accent-error);
+      font-size: 13px;
+    }
+
+    .graph-loading {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      padding: 40px;
+      color: var(--color-text-secondary);
+    }
+
+    .graph-empty {
+      padding: 40px 20px;
+      text-align: center;
+      color: var(--color-text-muted);
+      font-size: 14px;
+    }
+
+    /* Graph Placeholder Views */
+    .graph-placeholder {
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    .stats-summary {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .stat-item {
+      flex: 1;
+      min-width: 80px;
+      padding: 12px;
+      background: var(--color-bg-stat);
+      border: 1px solid var(--color-border-primary);
+      border-radius: 8px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .stat-value {
+      font-size: 20px;
+      font-weight: 600;
+      color: var(--color-text-primary);
+    }
+
+    .stat-label {
+      font-size: 11px;
+      color: var(--color-text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .top-items h4,
+    .nodes-list h4,
+    .connections-list h4 {
+      margin: 0 0 8px 0;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--color-text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .top-items ul,
+    .nodes-list ul,
+    .connections-list ul {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .top-items li,
+    .nodes-list li,
+    .connections-list li {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 12px;
+      background: var(--color-bg-card);
+      border: 1px solid var(--color-border-primary);
+      border-radius: 6px;
+      margin-bottom: 6px;
+      font-size: 13px;
+    }
+
+    .concept-tag {
+      padding: 2px 8px;
+      background: var(--color-type-badge-bg);
+      color: var(--color-type-badge-text);
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: 500;
+    }
+
+    .node-name {
+      font-weight: 500;
+      color: var(--color-text-primary);
+    }
+
+    .node-count {
+      font-size: 12px;
+      color: var(--color-text-muted);
+      background: var(--color-bg-secondary);
+      padding: 2px 8px;
+      border-radius: 10px;
+    }
+
+    .node-title {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--color-text-primary);
+    }
+
+    .node-meta {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .usage-badge {
+      font-size: 11px;
+      padding: 2px 6px;
+      background: var(--color-accent-success);
+      color: white;
+      border-radius: 10px;
+    }
+
+    .connection-projects {
+      font-weight: 500;
+      color: var(--color-text-primary);
+    }
+
+    .connection-count {
+      font-size: 12px;
+      color: var(--color-text-muted);
+    }
+
+    /* Usage Stats Table */
+    .usage-view {
+      gap: 16px;
+    }
+
+    .usage-table-container {
+      overflow-x: auto;
+      border: 1px solid var(--color-border-primary);
+      border-radius: 8px;
+    }
+
+    .usage-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+
+    .usage-table th {
+      padding: 10px 12px;
+      text-align: left;
+      font-weight: 600;
+      color: var(--color-text-secondary);
+      background: var(--color-bg-secondary);
+      border-bottom: 1px solid var(--color-border-primary);
+      text-transform: uppercase;
+      font-size: 10px;
+      letter-spacing: 0.5px;
+    }
+
+    .usage-table td {
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--color-border-primary);
+      color: var(--color-text-primary);
+    }
+
+    .usage-table tr:last-child td {
+      border-bottom: none;
+    }
+
+    .usage-table tr:hover td {
+      background: var(--color-bg-card-hover);
+    }
+
+    .title-cell {
+      max-width: 150px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .type-cell {
+      font-size: 11px;
+      font-weight: 500;
+      text-transform: capitalize;
+    }
+
+    .type-bugfix { color: #d73a4a; }
+    .type-feature { color: #8250df; }
+    .type-refactor { color: #1f6feb; }
+    .type-change { color: #1a7f37; }
+    .type-discovery { color: #0969da; }
+    .type-decision { color: #bf8700; }
+
+    .count-cell {
+      font-weight: 600;
+      text-align: center;
+    }
+
+    .date-cell {
+      color: var(--color-text-muted);
+      font-size: 11px;
+    }
+
+    .no-usage {
+      padding: 20px;
+      text-align: center;
+      color: var(--color-text-muted);
+    }
+
+    .no-usage p {
+      margin: 0 0 8px 0;
+    }
+
+    .no-usage .hint {
+      font-size: 12px;
+      margin-bottom: 12px;
+    }
+
+    .no-usage ul {
+      margin: 0;
+      padding: 0 0 0 20px;
+      text-align: left;
+      font-size: 12px;
+    }
+
+    .no-usage li {
+      margin-bottom: 4px;
+    }
+
+    /* ========== Health View Styles ========== */
+    .health-view {
+      gap: 20px;
+    }
+
+    .health-summary {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .health-status {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 16px;
+      background: var(--color-bg-card);
+      border: 2px solid;
+      border-radius: 8px;
+      width: fit-content;
+    }
+
+    .status-indicator {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    .health-status .status-text {
+      font-weight: 700;
+      font-size: 14px;
+      letter-spacing: 0.5px;
+    }
+
+    .health-summary .stats-row {
+      display: flex;
+      gap: 20px;
+      flex-wrap: wrap;
+    }
+
+    .health-summary .stat-item {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      padding: 12px 16px;
+      background: var(--color-bg-card);
+      border: 1px solid var(--color-border-primary);
+      border-radius: 8px;
+      min-width: 100px;
+    }
+
+    .health-summary .stat-value {
+      font-size: 24px;
+      font-weight: 700;
+      color: var(--color-text-primary);
+    }
+
+    .health-summary .stat-label {
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--color-text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    /* Top Errors */
+    .top-errors {
+      padding: 16px;
+      background: var(--color-bg-card);
+      border: 1px solid var(--color-border-primary);
+      border-radius: 8px;
+    }
+
+    .top-errors h4 {
+      margin: 0 0 12px 0;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--color-text-secondary);
+    }
+
+    .error-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .error-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      background: rgba(239, 68, 68, 0.08);
+      border: 1px solid rgba(239, 68, 68, 0.2);
+      border-radius: 6px;
+      font-size: 12px;
+    }
+
+    .error-count {
+      font-weight: 700;
+      color: var(--color-error, #ef4444);
+      min-width: 30px;
+    }
+
+    .error-component {
+      font-weight: 600;
+      color: var(--color-text-secondary);
+      font-family: 'Monaco', 'Menlo', monospace;
+      font-size: 10px;
+    }
+
+    .error-message {
+      color: var(--color-text-primary);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      flex: 1;
+    }
+
+    /* Recent Logs */
+    .recent-logs {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .recent-logs h4 {
+      margin: 0;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--color-text-secondary);
+    }
+
+    .logs-table-container {
+      overflow-x: auto;
+      border: 1px solid var(--color-border-primary);
+      border-radius: 8px;
+      max-height: 300px;
+      overflow-y: auto;
+    }
+
+    .logs-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 11px;
+      font-family: 'Monaco', 'Menlo', monospace;
+    }
+
+    .logs-table th {
+      padding: 8px 10px;
+      text-align: left;
+      font-weight: 600;
+      color: var(--color-text-secondary);
+      background: var(--color-bg-secondary);
+      border-bottom: 1px solid var(--color-border-primary);
+      text-transform: uppercase;
+      font-size: 9px;
+      letter-spacing: 0.5px;
+      position: sticky;
+      top: 0;
+    }
+
+    .logs-table td {
+      padding: 6px 10px;
+      border-bottom: 1px solid var(--color-border-primary);
+      color: var(--color-text-primary);
+      vertical-align: top;
+    }
+
+    .logs-table tr:last-child td {
+      border-bottom: none;
+    }
+
+    .logs-table .time-cell {
+      color: var(--color-text-muted);
+      white-space: nowrap;
+      width: 80px;
+    }
+
+    .logs-table .level-cell {
+      font-weight: 600;
+      width: 50px;
+    }
+
+    .logs-table .component-cell {
+      color: var(--color-text-secondary);
+      width: 80px;
+    }
+
+    .logs-table .message-cell {
+      max-width: 300px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .logs-table tr.log-level-error td {
+      background: rgba(239, 68, 68, 0.05);
+    }
+
+    .logs-table tr.log-level-warn td {
+      background: rgba(245, 158, 11, 0.05);
+    }
+
+    .no-logs {
+      padding: 20px;
+      text-align: center;
+      color: var(--color-text-muted);
+    }
+
+    .no-logs p {
+      margin: 0 0 8px 0;
+    }
+
+    .no-logs .hint {
+      font-size: 12px;
+    }
+
+    /* ========== Insights View Styles ========== */
+    .insights-view {
+      gap: 20px;
+    }
+
+    .insights-summary {
+      display: flex;
+      gap: 20px;
+      flex-wrap: wrap;
+    }
+
+    .insights-summary .stat-item {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      padding: 16px 20px;
+      background: var(--color-bg-card);
+      border: 1px solid var(--color-border-primary);
+      border-radius: 8px;
+      min-width: 120px;
+    }
+
+    .insights-summary .stat-value {
+      font-size: 28px;
+      font-weight: 700;
+      color: var(--color-accent-primary);
+    }
+
+    .insights-summary .stat-label {
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--color-text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .insights-section {
+      padding: 16px;
+      background: var(--color-bg-card);
+      border: 1px solid var(--color-border-primary);
+      border-radius: 8px;
+    }
+
+    .insights-section h4 {
+      margin: 0 0 12px 0;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--color-text-secondary);
+    }
+
+    .concept-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .concept-tag {
+      display: inline-block;
+      padding: 4px 12px;
+      background: rgba(59, 130, 246, 0.1);
+      border: 1px solid rgba(59, 130, 246, 0.3);
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--color-accent-primary);
+    }
+
+    .patterns-list {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .pattern-item {
+      padding: 12px;
+      background: var(--color-bg-secondary);
+      border: 1px solid var(--color-border-primary);
+      border-radius: 6px;
+    }
+
+    .pattern-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 8px;
+    }
+
+    .pattern-name {
+      font-weight: 600;
+      color: var(--color-text-primary);
+      font-size: 13px;
+    }
+
+    .pattern-type {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 600;
+      color: white;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .pattern-details {
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      color: var(--color-text-muted);
+      margin-bottom: 8px;
+    }
+
+    .pattern-projects {
+      max-width: 200px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .pattern-strength {
+      height: 4px;
+      background: var(--color-bg-secondary);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+
+    .strength-bar {
+      height: 100%;
+      background: linear-gradient(90deg, var(--color-accent-primary), var(--color-accent-secondary, #8b5cf6));
+      border-radius: 2px;
+      transition: width 0.3s ease;
+    }
+
+    .synergies-list {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .synergy-item {
+      padding: 12px;
+      background: var(--color-bg-secondary);
+      border: 1px solid var(--color-border-primary);
+      border-radius: 6px;
+    }
+
+    .synergy-projects {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+
+    .synergy-projects .project-name {
+      font-weight: 600;
+      color: var(--color-text-primary);
+      font-size: 13px;
+    }
+
+    .synergy-arrow {
+      color: var(--color-accent-primary);
+      font-size: 16px;
+    }
+
+    .synergy-details {
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      color: var(--color-text-muted);
+    }
+
+    .synergy-score {
+      font-weight: 600;
+      color: var(--color-accent-primary);
+    }
+
+    .potential-learnings {
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid var(--color-border-primary);
+      font-size: 11px;
+      color: var(--color-text-secondary);
+    }
+
+    .learnings-label {
+      font-weight: 500;
+      margin-right: 4px;
+    }
+
+    .learnings-list {
+      font-style: italic;
+    }
+
+    .clusters-list {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .cluster-item {
+      padding: 12px;
+      background: var(--color-bg-secondary);
+      border: 1px solid var(--color-border-primary);
+      border-radius: 6px;
+    }
+
+    .cluster-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+
+    .cluster-type {
+      font-weight: 600;
+      color: var(--color-warning, #f59e0b);
+      font-size: 13px;
+    }
+
+    .cluster-count {
+      font-size: 11px;
+      color: var(--color-text-muted);
+    }
+
+    .cluster-projects {
+      font-size: 11px;
+      color: var(--color-text-secondary);
+      margin-bottom: 4px;
+    }
+
+    .common-approaches {
+      font-size: 11px;
+      color: var(--color-text-muted);
+      font-style: italic;
+    }
+
+    .no-insights {
+      padding: 20px;
+      text-align: center;
+      color: var(--color-text-muted);
+    }
+
+    .no-insights p {
+      margin: 0 0 8px 0;
+    }
+
+    .no-insights .hint {
+      font-size: 12px;
+    }
+
+    .no-insights ul {
+      text-align: left;
+      display: inline-block;
+      font-size: 12px;
+    }
+
+    .no-insights li {
+      margin-bottom: 4px;
+    }
+
+    /* Responsive: Move panel to bottom on mobile */
+    @media (max-width: 768px) {
+      .graph-panel {
+        width: 100%;
+        height: 50vh;
+        top: auto;
+        bottom: 0;
+        border-right: none;
+        border-top: 1px solid var(--color-border-primary);
+        transform: translateY(100%);
+      }
+
+      .graph-panel.open {
+        transform: translateY(0);
+      }
+
+      .graph-panel-toggle {
+        left: auto;
+        right: 16px;
+        top: auto;
+        bottom: 16px;
+        transform: none;
+      }
+
+      .graph-panel-toggle.open {
+        left: auto;
+        bottom: calc(50vh + 16px);
+      }
+    }
+
+    /* ========== Graph View (Main Content Area) ========== */
+
+    .graph-view {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      padding: 16px 20px;
+    }
+
+    .graph-view-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+      flex-shrink: 0;
+    }
+
+    .graph-view-tabs {
+      display: flex;
+      gap: 4px;
+      background: var(--color-bg-secondary);
+      padding: 4px;
+      border-radius: 8px;
+    }
+
+    .graph-view-tabs .graph-tab {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 16px;
+      border: none;
+      background: transparent;
+      color: var(--color-text-secondary);
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 500;
+      transition: all 0.15s ease;
+    }
+
+    .graph-view-tabs .graph-tab:hover {
+      background: var(--color-bg-card);
+      color: var(--color-text-primary);
+    }
+
+    .graph-view-tabs .graph-tab.active {
+      background: var(--color-bg-card);
+      color: var(--color-accent-primary);
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    }
+
+    .graph-view-tabs .tab-icon {
+      font-size: 14px;
+    }
+
+    .graph-view-content {
+      flex: 1;
+      min-height: 0;
+      border-radius: 12px;
+      overflow: hidden;
+      background: var(--color-bg-secondary);
+      border: 1px solid var(--color-border-primary);
+      position: relative;
+    }
+
+    .graph-view-content .react-flow-wrapper {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      width: 100%;
+      height: 100%;
+    }
+
+    .graph-view-content .graph-placeholder,
+    .graph-view-content .usage-view {
+      height: 100%;
+      overflow: auto;
+    }
+
+    .graph-view-content .graph-loading,
+    .graph-view-content .graph-error,
+    .graph-view-content .graph-empty {
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+
+    /* ========== React Flow Integration ========== */
+
+    .react-flow-wrapper {
+      width: 100%;
+      height: 400px;
+      position: relative;
+      border-radius: 8px;
+      overflow: hidden;
+      background: var(--color-bg-secondary);
+    }
+
+    .react-flow {
+      background: var(--color-bg-secondary) !important;
+      width: 100% !important;
+      height: 100% !important;
+    }
+
+    .react-flow__node {
+      cursor: grab;
+    }
+
+    .react-flow__node:active {
+      cursor: grabbing;
+    }
+
+    .react-flow__controls {
+      background: var(--color-bg-card);
+      border: 1px solid var(--color-border-primary);
+      border-radius: 6px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+
+    .react-flow__controls-button {
+      background: var(--color-bg-card);
+      border: none;
+      border-bottom: 1px solid var(--color-border-primary);
+      color: var(--color-text-secondary);
+      width: 24px;
+      height: 24px;
+    }
+
+    .react-flow__controls-button:hover {
+      background: var(--color-bg-card-hover);
+      color: var(--color-text-primary);
+    }
+
+    .react-flow__controls-button:last-child {
+      border-bottom: none;
+    }
+
+    .react-flow__controls-button svg {
+      fill: currentColor;
+    }
+
+    .react-flow__minimap {
+      background: var(--color-bg-card);
+      border: 1px solid var(--color-border-primary);
+      border-radius: 6px;
+    }
+
+    .react-flow__attribution {
+      display: none;
+    }
+
+    .react-flow__background {
+      background: var(--color-bg-secondary);
+    }
+
+    /* Graph Stats Overlay */
+    .graph-stats-overlay {
+      position: absolute;
+      bottom: 8px;
+      right: 8px;
+      background: var(--color-bg-card);
+      border: 1px solid var(--color-border-primary);
+      border-radius: 6px;
+      padding: 8px 12px;
+      font-size: 11px;
+      z-index: 10;
+      max-width: 200px;
+    }
+
+    .graph-stats-overlay .stats-row {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 4px;
+    }
+
+    .graph-stats-overlay .stat {
+      color: var(--color-text-secondary);
+    }
+
+    .graph-stats-overlay .most-connected {
+      color: var(--color-text-muted);
+      font-size: 10px;
+    }
+
+    .graph-stats-overlay .legend-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 4px;
+      padding-top: 4px;
+      border-top: 1px solid var(--color-border-primary);
+    }
+
+    .graph-stats-overlay .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 9px;
+    }
+
+    .graph-stats-overlay .legend-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+    }
+
+    /* Custom Node Styles */
+    .concept-node:hover,
+    .observation-node:hover,
+    .project-node:hover {
+      transform: scale(1.05);
+      box-shadow: 0 4px 16px rgba(0,0,0,0.2);
+    }
+  
+    /* ========== React Flow Base Styles (injected at build time) ========== */
+/* this gets exported as style.css and can be used for the default theming */
+/* these are the necessary styles for React/Svelte Flow, they get used by base.css and style.css */
+.react-flow {
+  direction: ltr;
+
+  --xy-edge-stroke-default: #b1b1b7;
+  --xy-edge-stroke-width-default: 1;
+  --xy-edge-stroke-selected-default: #555;
+
+  --xy-connectionline-stroke-default: #b1b1b7;
+  --xy-connectionline-stroke-width-default: 1;
+
+  --xy-attribution-background-color-default: rgba(255, 255, 255, 0.5);
+
+  --xy-minimap-background-color-default: #fff;
+  --xy-minimap-mask-background-color-default: rgba(240, 240, 240, 0.6);
+  --xy-minimap-mask-stroke-color-default: transparent;
+  --xy-minimap-mask-stroke-width-default: 1;
+  --xy-minimap-node-background-color-default: #e2e2e2;
+  --xy-minimap-node-stroke-color-default: transparent;
+  --xy-minimap-node-stroke-width-default: 2;
+
+  --xy-background-color-default: transparent;
+  --xy-background-pattern-dots-color-default: #91919a;
+  --xy-background-pattern-lines-color-default: #eee;
+  --xy-background-pattern-cross-color-default: #e2e2e2;
+  background-color: var(--xy-background-color, var(--xy-background-color-default));
+  --xy-node-color-default: inherit;
+  --xy-node-border-default: 1px solid #1a192b;
+  --xy-node-background-color-default: #fff;
+  --xy-node-group-background-color-default: rgba(240, 240, 240, 0.25);
+  --xy-node-boxshadow-hover-default: 0 1px 4px 1px rgba(0, 0, 0, 0.08);
+  --xy-node-boxshadow-selected-default: 0 0 0 0.5px #1a192b;
+  --xy-node-border-radius-default: 3px;
+
+  --xy-handle-background-color-default: #1a192b;
+  --xy-handle-border-color-default: #fff;
+
+  --xy-selection-background-color-default: rgba(0, 89, 220, 0.08);
+  --xy-selection-border-default: 1px dotted rgba(0, 89, 220, 0.8);
+
+  --xy-controls-button-background-color-default: #fefefe;
+  --xy-controls-button-background-color-hover-default: #f4f4f4;
+  --xy-controls-button-color-default: inherit;
+  --xy-controls-button-color-hover-default: inherit;
+  --xy-controls-button-border-color-default: #eee;
+  --xy-controls-box-shadow-default: 0 0 2px 1px rgba(0, 0, 0, 0.08);
+
+  --xy-edge-label-background-color-default: #ffffff;
+  --xy-edge-label-color-default: inherit;
+  --xy-resize-background-color-default: #3367d9;
+}
+.react-flow.dark {
+  --xy-edge-stroke-default: #3e3e3e;
+  --xy-edge-stroke-width-default: 1;
+  --xy-edge-stroke-selected-default: #727272;
+
+  --xy-connectionline-stroke-default: #b1b1b7;
+  --xy-connectionline-stroke-width-default: 1;
+
+  --xy-attribution-background-color-default: rgba(150, 150, 150, 0.25);
+
+  --xy-minimap-background-color-default: #141414;
+  --xy-minimap-mask-background-color-default: rgba(60, 60, 60, 0.6);
+  --xy-minimap-mask-stroke-color-default: transparent;
+  --xy-minimap-mask-stroke-width-default: 1;
+  --xy-minimap-node-background-color-default: #2b2b2b;
+  --xy-minimap-node-stroke-color-default: transparent;
+  --xy-minimap-node-stroke-width-default: 2;
+
+  --xy-background-color-default: #141414;
+  --xy-background-pattern-dots-color-default: #777;
+  --xy-background-pattern-lines-color-default: #777;
+  --xy-background-pattern-cross-color-default: #777;
+  --xy-node-color-default: #f8f8f8;
+  --xy-node-border-default: 1px solid #3c3c3c;
+  --xy-node-background-color-default: #1e1e1e;
+  --xy-node-group-background-color-default: rgba(240, 240, 240, 0.25);
+  --xy-node-boxshadow-hover-default: 0 1px 4px 1px rgba(255, 255, 255, 0.08);
+  --xy-node-boxshadow-selected-default: 0 0 0 0.5px #999;
+
+  --xy-handle-background-color-default: #bebebe;
+  --xy-handle-border-color-default: #1e1e1e;
+
+  --xy-selection-background-color-default: rgba(200, 200, 220, 0.08);
+  --xy-selection-border-default: 1px dotted rgba(200, 200, 220, 0.8);
+
+  --xy-controls-button-background-color-default: #2b2b2b;
+  --xy-controls-button-background-color-hover-default: #3e3e3e;
+  --xy-controls-button-color-default: #f8f8f8;
+  --xy-controls-button-color-hover-default: #fff;
+  --xy-controls-button-border-color-default: #5b5b5b;
+  --xy-controls-box-shadow-default: 0 0 2px 1px rgba(0, 0, 0, 0.08);
+
+  --xy-edge-label-background-color-default: #141414;
+  --xy-edge-label-color-default: #f8f8f8;
+}
+.react-flow__background {
+  background-color: var(--xy-background-color-props, var(--xy-background-color, var(--xy-background-color-default)));
+  pointer-events: none;
+  z-index: -1;
+}
+.react-flow__container {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  top: 0;
+  left: 0;
+}
+.react-flow__pane {
+  z-index: 1;
+}
+.react-flow__pane.draggable {
+    cursor: grab;
+  }
+.react-flow__pane.dragging {
+    cursor: grabbing;
+  }
+.react-flow__pane.selection {
+    cursor: pointer;
+  }
+.react-flow__viewport {
+  transform-origin: 0 0;
+  z-index: 2;
+  pointer-events: none;
+}
+.react-flow__renderer {
+  z-index: 4;
+}
+.react-flow__selection {
+  z-index: 6;
+}
+.react-flow__nodesselection-rect:focus,
+.react-flow__nodesselection-rect:focus-visible {
+  outline: none;
+}
+.react-flow__edge-path {
+  stroke: var(--xy-edge-stroke, var(--xy-edge-stroke-default));
+  stroke-width: var(--xy-edge-stroke-width, var(--xy-edge-stroke-width-default));
+  fill: none;
+}
+.react-flow__connection-path {
+  stroke: var(--xy-connectionline-stroke, var(--xy-connectionline-stroke-default));
+  stroke-width: var(--xy-connectionline-stroke-width, var(--xy-connectionline-stroke-width-default));
+  fill: none;
+}
+.react-flow .react-flow__edges {
+  position: absolute;
+}
+.react-flow .react-flow__edges svg {
+    overflow: visible;
+    position: absolute;
+    pointer-events: none;
+  }
+.react-flow__edge {
+  pointer-events: visibleStroke;
+}
+.react-flow__edge.selectable {
+    cursor: pointer;
+  }
+.react-flow__edge.animated path {
+    stroke-dasharray: 5;
+    animation: dashdraw 0.5s linear infinite;
+  }
+.react-flow__edge.animated path.react-flow__edge-interaction {
+    stroke-dasharray: none;
+    animation: none;
+  }
+.react-flow__edge.inactive {
+    pointer-events: none;
+  }
+.react-flow__edge.selected,
+  .react-flow__edge:focus,
+  .react-flow__edge:focus-visible {
+    outline: none;
+  }
+.react-flow__edge.selected .react-flow__edge-path,
+  .react-flow__edge.selectable:focus .react-flow__edge-path,
+  .react-flow__edge.selectable:focus-visible .react-flow__edge-path {
+    stroke: var(--xy-edge-stroke-selected, var(--xy-edge-stroke-selected-default));
+  }
+.react-flow__edge-textwrapper {
+    pointer-events: all;
+  }
+.react-flow__edge .react-flow__edge-text {
+    pointer-events: none;
+    -webkit-user-select: none;
+       -moz-user-select: none;
+            user-select: none;
+  }
+/* Arrowhead marker styles - use CSS custom properties as default */
+.react-flow__arrowhead polyline {
+  stroke: var(--xy-edge-stroke, var(--xy-edge-stroke-default));
+}
+.react-flow__arrowhead polyline.arrowclosed {
+  fill: var(--xy-edge-stroke, var(--xy-edge-stroke-default));
+}
+.react-flow__connection {
+  pointer-events: none;
+}
+.react-flow__connection .animated {
+    stroke-dasharray: 5;
+    animation: dashdraw 0.5s linear infinite;
+  }
+svg.react-flow__connectionline {
+  z-index: 1001;
+  overflow: visible;
+  position: absolute;
+}
+.react-flow__nodes {
+  pointer-events: none;
+  transform-origin: 0 0;
+}
+.react-flow__node {
+  position: absolute;
+  -webkit-user-select: none;
+     -moz-user-select: none;
+          user-select: none;
+  pointer-events: all;
+  transform-origin: 0 0;
+  box-sizing: border-box;
+  cursor: default;
+}
+.react-flow__node.selectable {
+    cursor: pointer;
+  }
+.react-flow__node.draggable {
+    cursor: grab;
+    pointer-events: all;
+  }
+.react-flow__node.draggable.dragging {
+      cursor: grabbing;
+    }
+.react-flow__nodesselection {
+  z-index: 3;
+  transform-origin: left top;
+  pointer-events: none;
+}
+.react-flow__nodesselection-rect {
+    position: absolute;
+    pointer-events: all;
+    cursor: grab;
+  }
+.react-flow__handle {
+  position: absolute;
+  pointer-events: none;
+  min-width: 5px;
+  min-height: 5px;
+  width: 6px;
+  height: 6px;
+  background-color: var(--xy-handle-background-color, var(--xy-handle-background-color-default));
+  border: 1px solid var(--xy-handle-border-color, var(--xy-handle-border-color-default));
+  border-radius: 100%;
+}
+.react-flow__handle.connectingfrom {
+    pointer-events: all;
+  }
+.react-flow__handle.connectionindicator {
+    pointer-events: all;
+    cursor: crosshair;
+  }
+.react-flow__handle-bottom {
+    top: auto;
+    left: 50%;
+    bottom: 0;
+    transform: translate(-50%, 50%);
+  }
+.react-flow__handle-top {
+    top: 0;
+    left: 50%;
+    transform: translate(-50%, -50%);
+  }
+.react-flow__handle-left {
+    top: 50%;
+    left: 0;
+    transform: translate(-50%, -50%);
+  }
+.react-flow__handle-right {
+    top: 50%;
+    right: 0;
+    transform: translate(50%, -50%);
+  }
+.react-flow__edgeupdater {
+  cursor: move;
+  pointer-events: all;
+}
+.react-flow__pane.selection .react-flow__panel {
+  pointer-events: none;
+}
+.react-flow__panel {
+  position: absolute;
+  z-index: 5;
+  margin: 15px;
+}
+.react-flow__panel.top {
+    top: 0;
+  }
+.react-flow__panel.bottom {
+    bottom: 0;
+  }
+.react-flow__panel.top.center, .react-flow__panel.bottom.center {
+      left: 50%;
+      transform: translateX(-15px) translateX(-50%);
+    }
+.react-flow__panel.left {
+    left: 0;
+  }
+.react-flow__panel.right {
+    right: 0;
+  }
+.react-flow__panel.left.center, .react-flow__panel.right.center {
+      top: 50%;
+      transform: translateY(-15px) translateY(-50%);
+    }
+.react-flow__attribution {
+  font-size: 10px;
+  background: var(--xy-attribution-background-color, var(--xy-attribution-background-color-default));
+  padding: 2px 3px;
+  margin: 0;
+}
+.react-flow__attribution a {
+    text-decoration: none;
+    color: #999;
+  }
+@keyframes dashdraw {
+  from {
+    stroke-dashoffset: 10;
+  }
+}
+.react-flow__edgelabel-renderer {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  -webkit-user-select: none;
+     -moz-user-select: none;
+          user-select: none;
+  left: 0;
+  top: 0;
+}
+.react-flow__viewport-portal {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  left: 0;
+  top: 0;
+  -webkit-user-select: none;
+     -moz-user-select: none;
+          user-select: none;
+}
+.react-flow__minimap {
+  background: var(
+    --xy-minimap-background-color-props,
+    var(--xy-minimap-background-color, var(--xy-minimap-background-color-default))
+  );
+}
+.react-flow__minimap-svg {
+    display: block;
+  }
+.react-flow__minimap-mask {
+    fill: var(
+      --xy-minimap-mask-background-color-props,
+      var(--xy-minimap-mask-background-color, var(--xy-minimap-mask-background-color-default))
+    );
+    stroke: var(
+      --xy-minimap-mask-stroke-color-props,
+      var(--xy-minimap-mask-stroke-color, var(--xy-minimap-mask-stroke-color-default))
+    );
+    stroke-width: var(
+      --xy-minimap-mask-stroke-width-props,
+      var(--xy-minimap-mask-stroke-width, var(--xy-minimap-mask-stroke-width-default))
+    );
+  }
+.react-flow__minimap-node {
+    fill: var(
+      --xy-minimap-node-background-color-props,
+      var(--xy-minimap-node-background-color, var(--xy-minimap-node-background-color-default))
+    );
+    stroke: var(
+      --xy-minimap-node-stroke-color-props,
+      var(--xy-minimap-node-stroke-color, var(--xy-minimap-node-stroke-color-default))
+    );
+    stroke-width: var(
+      --xy-minimap-node-stroke-width-props,
+      var(--xy-minimap-node-stroke-width, var(--xy-minimap-node-stroke-width-default))
+    );
+  }
+.react-flow__background-pattern.dots {
+    fill: var(
+      --xy-background-pattern-color-props,
+      var(--xy-background-pattern-color, var(--xy-background-pattern-dots-color-default))
+    );
+  }
+.react-flow__background-pattern.lines {
+    stroke: var(
+      --xy-background-pattern-color-props,
+      var(--xy-background-pattern-color, var(--xy-background-pattern-lines-color-default))
+    );
+  }
+.react-flow__background-pattern.cross {
+    stroke: var(
+      --xy-background-pattern-color-props,
+      var(--xy-background-pattern-color, var(--xy-background-pattern-cross-color-default))
+    );
+  }
+.react-flow__controls {
+  display: flex;
+  flex-direction: column;
+  box-shadow: var(--xy-controls-box-shadow, var(--xy-controls-box-shadow-default));
+}
+.react-flow__controls.horizontal {
+    flex-direction: row;
+  }
+.react-flow__controls-button {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 26px;
+    width: 26px;
+    padding: 4px;
+    border: none;
+    background: var(--xy-controls-button-background-color, var(--xy-controls-button-background-color-default));
+    border-bottom: 1px solid
+      var(
+        --xy-controls-button-border-color-props,
+        var(--xy-controls-button-border-color, var(--xy-controls-button-border-color-default))
+      );
+    color: var(
+      --xy-controls-button-color-props,
+      var(--xy-controls-button-color, var(--xy-controls-button-color-default))
+    );
+    cursor: pointer;
+    -webkit-user-select: none;
+       -moz-user-select: none;
+            user-select: none;
+  }
+.react-flow__controls-button svg {
+      width: 100%;
+      max-width: 12px;
+      max-height: 12px;
+      fill: currentColor;
+    }
+.react-flow__edge.updating .react-flow__edge-path {
+      stroke: #777;
+    }
+.react-flow__edge-text {
+    font-size: 10px;
+  }
+.react-flow__node.selectable:focus,
+  .react-flow__node.selectable:focus-visible {
+    outline: none;
+  }
+.react-flow__node-input,
+.react-flow__node-default,
+.react-flow__node-output,
+.react-flow__node-group {
+  padding: 10px;
+  border-radius: var(--xy-node-border-radius, var(--xy-node-border-radius-default));
+  width: 150px;
+  font-size: 12px;
+  color: var(--xy-node-color, var(--xy-node-color-default));
+  text-align: center;
+  border: var(--xy-node-border, var(--xy-node-border-default));
+  background-color: var(--xy-node-background-color, var(--xy-node-background-color-default));
+}
+.react-flow__node-input.selectable:hover, .react-flow__node-default.selectable:hover, .react-flow__node-output.selectable:hover, .react-flow__node-group.selectable:hover {
+      box-shadow: var(--xy-node-boxshadow-hover, var(--xy-node-boxshadow-hover-default));
+    }
+.react-flow__node-input.selectable.selected,
+    .react-flow__node-input.selectable:focus,
+    .react-flow__node-input.selectable:focus-visible,
+    .react-flow__node-default.selectable.selected,
+    .react-flow__node-default.selectable:focus,
+    .react-flow__node-default.selectable:focus-visible,
+    .react-flow__node-output.selectable.selected,
+    .react-flow__node-output.selectable:focus,
+    .react-flow__node-output.selectable:focus-visible,
+    .react-flow__node-group.selectable.selected,
+    .react-flow__node-group.selectable:focus,
+    .react-flow__node-group.selectable:focus-visible {
+      box-shadow: var(--xy-node-boxshadow-selected, var(--xy-node-boxshadow-selected-default));
+    }
+.react-flow__node-group {
+  background-color: var(--xy-node-group-background-color, var(--xy-node-group-background-color-default));
+}
+.react-flow__nodesselection-rect,
+.react-flow__selection {
+  background: var(--xy-selection-background-color, var(--xy-selection-background-color-default));
+  border: var(--xy-selection-border, var(--xy-selection-border-default));
+}
+.react-flow__nodesselection-rect:focus,
+  .react-flow__nodesselection-rect:focus-visible,
+  .react-flow__selection:focus,
+  .react-flow__selection:focus-visible {
+    outline: none;
+  }
+.react-flow__controls-button:hover {
+      background: var(
+        --xy-controls-button-background-color-hover-props,
+        var(--xy-controls-button-background-color-hover, var(--xy-controls-button-background-color-hover-default))
+      );
+      color: var(
+        --xy-controls-button-color-hover-props,
+        var(--xy-controls-button-color-hover, var(--xy-controls-button-color-hover-default))
+      );
+    }
+.react-flow__controls-button:disabled {
+      pointer-events: none;
+    }
+.react-flow__controls-button:disabled svg {
+        fill-opacity: 0.4;
+      }
+.react-flow__controls-button:last-child {
+    border-bottom: none;
+  }
+.react-flow__controls.horizontal .react-flow__controls-button {
+    border-bottom: none;
+    border-right: 1px solid
+      var(
+        --xy-controls-button-border-color-props,
+        var(--xy-controls-button-border-color, var(--xy-controls-button-border-color-default))
+      );
+  }
+.react-flow__controls.horizontal .react-flow__controls-button:last-child {
+    border-right: none;
+  }
+.react-flow__resize-control {
+  position: absolute;
+}
+.react-flow__resize-control.left,
+.react-flow__resize-control.right {
+  cursor: ew-resize;
+}
+.react-flow__resize-control.top,
+.react-flow__resize-control.bottom {
+  cursor: ns-resize;
+}
+.react-flow__resize-control.top.left,
+.react-flow__resize-control.bottom.right {
+  cursor: nwse-resize;
+}
+.react-flow__resize-control.bottom.left,
+.react-flow__resize-control.top.right {
+  cursor: nesw-resize;
+}
+/* handle styles */
+.react-flow__resize-control.handle {
+  width: 5px;
+  height: 5px;
+  border: 1px solid #fff;
+  border-radius: 1px;
+  background-color: var(--xy-resize-background-color, var(--xy-resize-background-color-default));
+  translate: -50% -50%;
+}
+.react-flow__resize-control.handle.left {
+  left: 0;
+  top: 50%;
+}
+.react-flow__resize-control.handle.right {
+  left: 100%;
+  top: 50%;
+}
+.react-flow__resize-control.handle.top {
+  left: 50%;
+  top: 0;
+}
+.react-flow__resize-control.handle.bottom {
+  left: 50%;
+  top: 100%;
+}
+.react-flow__resize-control.handle.top.left {
+  left: 0;
+}
+.react-flow__resize-control.handle.bottom.left {
+  left: 0;
+}
+.react-flow__resize-control.handle.top.right {
+  left: 100%;
+}
+.react-flow__resize-control.handle.bottom.right {
+  left: 100%;
+}
+/* line styles */
+.react-flow__resize-control.line {
+  border-color: var(--xy-resize-background-color, var(--xy-resize-background-color-default));
+  border-width: 0;
+  border-style: solid;
+}
+.react-flow__resize-control.line.left,
+.react-flow__resize-control.line.right {
+  width: 1px;
+  transform: translate(-50%, 0);
+  top: 0;
+  height: 100%;
+}
+.react-flow__resize-control.line.left {
+  left: 0;
+  border-left-width: 1px;
+}
+.react-flow__resize-control.line.right {
+  left: 100%;
+  border-right-width: 1px;
+}
+.react-flow__resize-control.line.top,
+.react-flow__resize-control.line.bottom {
+  height: 1px;
+  transform: translate(0, -50%);
+  left: 0;
+  width: 100%;
+}
+.react-flow__resize-control.line.top {
+  top: 0;
+  border-top-width: 1px;
+}
+.react-flow__resize-control.line.bottom {
+  border-bottom-width: 1px;
+  top: 100%;
+}
+.react-flow__edge-textbg {
+  fill: var(--xy-edge-label-background-color, var(--xy-edge-label-background-color-default));
+}
+.react-flow__edge-text {
+  fill: var(--xy-edge-label-color, var(--xy-edge-label-color-default));
+}
+
+</style>
 </head>
 
 <body>

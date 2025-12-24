@@ -10,14 +10,11 @@
  */
 
 import { stdin } from 'process';
-import { createHookResponse } from './hook-response.js';
+import { STANDARD_HOOK_RESPONSE } from './hook-response.js';
 import { logger } from '../utils/logger.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
-import { happy_path_error__with_fallback } from '../utils/silent-debug.js';
-import { handleWorkerError } from '../shared/hook-error-handler.js';
 import { extractLastMessage } from '../shared/transcript-parser.js';
-import { detectQuestion, mightBeQuestion } from '../utils/question-detector.js';
 
 export interface StopInput {
   session_id: string;
@@ -40,14 +37,14 @@ async function summaryHook(input?: StopInput): Promise<void> {
 
   const port = getWorkerPort();
 
+  // Validate required fields before processing
+  if (!input.transcript_path) {
+    throw new Error(`Missing transcript_path in Stop hook input for session ${session_id}`);
+  }
+
   // Extract last user AND assistant messages from transcript
-  const transcriptPath = happy_path_error__with_fallback(
-    'Missing transcript_path in Stop hook input',
-    { session_id },
-    input.transcript_path || ''
-  );
-  const lastUserMessage = extractLastMessage(transcriptPath, 'user');
-  const lastAssistantMessage = extractLastMessage(transcriptPath, 'assistant', true);
+  const lastUserMessage = extractLastMessage(input.transcript_path, 'user');
+  const lastAssistantMessage = extractLastMessage(input.transcript_path, 'assistant', true);
 
   logger.dataIn('HOOK', 'Stop: Requesting summary', {
     workerPort: port,
@@ -55,84 +52,36 @@ async function summaryHook(input?: StopInput): Promise<void> {
     hasLastAssistantMessage: !!lastAssistantMessage
   });
 
-  // Check if assistant message might be a question (for Slack notifications)
-  // Do quick pre-check before expensive full analysis
-  if (lastAssistantMessage && mightBeQuestion(lastAssistantMessage)) {
-    const questionResult = detectQuestion(lastAssistantMessage);
+  // Send to worker - worker handles privacy check and database operations
+  const response = await fetch(`http://127.0.0.1:${port}/api/sessions/summarize`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      claudeSessionId: session_id,
+      last_user_message: lastUserMessage,
+      last_assistant_message: lastAssistantMessage
+    }),
+    signal: AbortSignal.timeout(HOOK_TIMEOUTS.DEFAULT)
+  });
 
-    if (questionResult.isQuestion && questionResult.confidence !== 'low') {
-      logger.info('HOOK', 'Question detected, notifying worker', {
-        confidence: questionResult.confidence,
-        hasExtractedQuestion: !!questionResult.extractedQuestion
-      });
-
-      // Fire-and-forget notification to worker (don't block summary)
-      fetch(`http://127.0.0.1:${port}/api/sessions/waiting`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          claudeSessionId: session_id,
-          project: input.cwd.split('/').pop() || 'unknown',
-          cwd: input.cwd,
-          question: questionResult.extractedQuestion,
-          fullMessage: lastAssistantMessage,
-          transcriptPath: transcriptPath
-        }),
-        signal: AbortSignal.timeout(5000)
-      }).catch((error: any) => {
-        logger.warn('HOOK', 'Failed to notify waiting session', { error: error.message });
-      });
-    }
+  if (!response.ok) {
+    throw new Error(`Summary generation failed: ${response.status}`);
   }
 
-  try {
-    // Send to worker - worker handles privacy check and database operations
-    const response = await fetch(`http://127.0.0.1:${port}/api/sessions/summarize`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        claudeSessionId: session_id,
-        last_user_message: lastUserMessage,
-        last_assistant_message: lastAssistantMessage
-      }),
-      signal: AbortSignal.timeout(HOOK_TIMEOUTS.DEFAULT)
-    });
+  logger.debug('HOOK', 'Summary request sent successfully');
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      logger.failure('HOOK', 'Failed to generate summary', {
-        status: response.status
-      }, errorText);
-      throw new Error(`Failed to request summary from worker: ${response.status} ${errorText}`);
-    }
-
-    logger.debug('HOOK', 'Summary request sent successfully');
-  } catch (error: any) {
-    handleWorkerError(error);
-  } finally {
-    // Stop processing spinner
-    try {
-      const spinnerResponse = await fetch(`http://127.0.0.1:${port}/api/processing`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ isProcessing: false }),
-        signal: AbortSignal.timeout(2000)
-      });
-      if (!spinnerResponse.ok) {
-        logger.warn('HOOK', 'Failed to stop spinner', { status: spinnerResponse.status });
-      }
-    } catch (error: any) {
-      logger.warn('HOOK', 'Could not stop spinner', { error: error.message });
-    }
-  }
-
-  console.log(createHookResponse('Stop', true));
+  console.log(STANDARD_HOOK_RESPONSE);
 }
 
 // Entry Point
 let input = '';
 stdin.on('data', (chunk) => input += chunk);
 stdin.on('end', async () => {
-  const parsed = input ? JSON.parse(input) : undefined;
+  let parsed: StopInput | undefined;
+  try {
+    parsed = input ? JSON.parse(input) : undefined;
+  } catch (error) {
+    throw new Error(`Failed to parse hook input: ${error instanceof Error ? error.message : String(error)}`);
+  }
   await summaryHook(parsed);
 });
