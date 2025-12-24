@@ -73,6 +73,13 @@ export class SessionRoutes extends BaseRouteHandler {
     app.post('/api/sessions/observations', this.handleObservationsByClaudeId.bind(this));
     app.post('/api/sessions/summarize', this.handleSummarizeByClaudeId.bind(this));
     app.post('/api/sessions/complete', this.handleSessionCompleteByClaudeId.bind(this));
+    app.post('/api/sessions/waiting', this.handleSessionWaiting.bind(this));
+    app.post('/api/sessions/waiting/:id/respond', this.handleWaitingSessionRespond.bind(this));
+    app.get('/api/sessions/waiting', this.handleGetWaitingSessions.bind(this));
+
+    // Slack sharing endpoints
+    app.post('/api/slack/share/summary', this.handleShareSummary.bind(this));
+    app.post('/api/slack/share/observation/:id', this.handleShareObservation.bind(this));
   }
 
   /**
@@ -477,5 +484,329 @@ export class SessionRoutes extends BaseRouteHandler {
       promptNumber,
       skipped: false
     });
+  });
+
+  /**
+   * Handle session waiting for user input (summary-hook calls this when question detected)
+   * POST /api/sessions/waiting
+   * Body: { claudeSessionId, project, cwd, question, fullMessage, transcriptPath }
+   *
+   * Creates a waiting session record and triggers Slack notification if enabled
+   */
+  private handleSessionWaiting = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const { claudeSessionId, project, cwd, question, fullMessage, transcriptPath } = req.body;
+
+    if (!claudeSessionId || !project || !cwd) {
+      return this.badRequest(res, 'Missing required fields: claudeSessionId, project, cwd');
+    }
+
+    logger.info('SESSION', 'Session waiting for user input', {
+      claudeSessionId: claudeSessionId.substring(0, 8) + '...',
+      project,
+      hasQuestion: !!question,
+    });
+
+    // Get notification manager from worker service
+    const notificationManager = this.workerService.getNotificationManager?.();
+
+    if (!notificationManager || !notificationManager.isEnabled()) {
+      // Slack notifications not enabled - just log and return
+      logger.debug('SESSION', 'Slack notifications not enabled, skipping waiting notification');
+      res.json({ status: 'skipped', reason: 'notifications_disabled' });
+      return;
+    }
+
+    try {
+      const waitingSessionId = await notificationManager.notifyWaitingForInput(
+        claudeSessionId,
+        project,
+        cwd,
+        question || null,
+        fullMessage || '',
+        transcriptPath || null
+      );
+
+      if (waitingSessionId) {
+        logger.success('SESSION', 'Created waiting session with notification', {
+          waitingSessionId,
+          project,
+        });
+
+        res.json({
+          status: 'notified',
+          waitingSessionId,
+        });
+      } else {
+        res.json({ status: 'skipped', reason: 'notification_failed' });
+      }
+    } catch (error: any) {
+      logger.error('SESSION', 'Failed to create waiting session', {
+        claudeSessionId,
+        project,
+      }, error);
+
+      res.status(500).json({
+        status: 'error',
+        error: error.message,
+      });
+    }
+  });
+
+  /**
+   * Respond to a waiting session from local client (Claude Code / VS Code)
+   * POST /api/sessions/waiting/:id/respond
+   * Body: { response, source?: 'local' | 'api' }
+   *
+   * This allows responding from Claude Code or VS Code instead of Slack
+   */
+  private handleWaitingSessionRespond = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const waitingSessionId = this.parseIntParam(req, res, 'id');
+    if (waitingSessionId === null) return;
+
+    const { response, source = 'local' } = req.body;
+
+    if (!response) {
+      return this.badRequest(res, 'Missing required field: response');
+    }
+
+    const store = this.dbManager.getSessionStore();
+    const waitingSession = store.getWaitingSessionById(waitingSessionId);
+
+    if (!waitingSession) {
+      res.status(404).json({
+        status: 'error',
+        error: 'Waiting session not found',
+      });
+      return;
+    }
+
+    if (waitingSession.status !== 'waiting') {
+      res.status(409).json({
+        status: 'error',
+        error: `Session is already ${waitingSession.status}`,
+        respondedAt: waitingSession.responded_at,
+        responseSource: waitingSession.response_source,
+      });
+      return;
+    }
+
+    // Check interaction mode - if slack-only, don't allow local responses
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const interactionMode = settings.CLAUDE_MEM_INTERACTION_MODE || 'auto';
+
+    if (interactionMode === 'slack-only') {
+      res.status(403).json({
+        status: 'error',
+        error: 'Local responses are disabled. Interaction mode is set to slack-only.',
+      });
+      return;
+    }
+
+    try {
+      // Mark session as responded (from local)
+      const responseSource = source === 'api' ? 'api' : 'local';
+      store.markWaitingSessionResponded(waitingSessionId, response, responseSource);
+
+      logger.success('SESSION', 'Waiting session responded via local', {
+        waitingSessionId,
+        claudeSessionId: waitingSession.claude_session_id.substring(0, 8) + '...',
+        project: waitingSession.project,
+        responseSource,
+      });
+
+      // Notify Slack thread that session was continued from local (if Slack was involved)
+      if (waitingSession.slack_thread_ts && waitingSession.slack_channel_id) {
+        const notificationManager = this.workerService.getNotificationManager?.();
+        if (notificationManager && notificationManager.isEnabled()) {
+          // Get SlackService to send update
+          await notificationManager.notifyRespondedFromLocal(
+            waitingSession.slack_channel_id,
+            waitingSession.slack_thread_ts,
+            responseSource,
+            response
+          );
+        }
+      }
+
+      // Continue the Claude Code session
+      const notificationManager = this.workerService.getNotificationManager?.();
+      if (notificationManager) {
+        await notificationManager.continueSession(
+          waitingSession.claude_session_id,
+          response,
+          waitingSession.cwd
+        );
+      }
+
+      res.json({
+        status: 'responded',
+        waitingSessionId,
+        responseSource,
+      });
+    } catch (error: any) {
+      logger.error('SESSION', 'Failed to respond to waiting session', {
+        waitingSessionId,
+      }, error);
+
+      res.status(500).json({
+        status: 'error',
+        error: error.message,
+      });
+    }
+  });
+
+  /**
+   * Get all pending waiting sessions
+   * GET /api/sessions/waiting
+   * Query: ?project=<project-name> (optional filter)
+   *
+   * Returns all sessions currently waiting for user response
+   */
+  private handleGetWaitingSessions = this.wrapHandler((req: Request, res: Response): void => {
+    const { project } = req.query;
+
+    const store = this.dbManager.getSessionStore();
+    let sessions = store.getPendingWaitingSessions();
+
+    // Filter by project if specified
+    if (project && typeof project === 'string') {
+      sessions = sessions.filter(s => s.project === project);
+    }
+
+    res.json({
+      count: sessions.length,
+      sessions: sessions.map(s => ({
+        id: s.id,
+        claudeSessionId: s.claude_session_id,
+        project: s.project,
+        question: s.question,
+        createdAt: s.created_at,
+        expiresAt: new Date(s.expires_at_epoch).toISOString(),
+        hasSlackThread: !!s.slack_thread_ts,
+      })),
+    });
+  });
+
+  /**
+   * Share a session summary to Slack
+   * POST /api/slack/share/summary
+   * Body: { sessionId } - The SDK session ID to share summary for
+   */
+  private handleShareSummary = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const { sessionId } = req.body;
+
+    if (!sessionId) {
+      return this.badRequest(res, 'Missing required field: sessionId');
+    }
+
+    const notificationManager = this.workerService.getNotificationManager?.();
+    if (!notificationManager || !notificationManager.isEnabled()) {
+      res.status(503).json({
+        status: 'error',
+        error: 'Slack notifications are not enabled',
+      });
+      return;
+    }
+
+    // Get the session summary from database
+    const store = this.dbManager.getSessionStore();
+    const summary = store.getLatestSessionSummary(sessionId);
+
+    if (!summary) {
+      res.status(404).json({
+        status: 'error',
+        error: 'No summary found for this session',
+      });
+      return;
+    }
+
+    try {
+      const threadTs = await notificationManager.shareSessionSummary({
+        project: summary.project,
+        sessionId: summary.sdk_session_id,
+        request: summary.request,
+        completed: summary.completed,
+        learned: summary.learned,
+        nextSteps: summary.next_steps,
+      });
+
+      if (threadTs) {
+        res.json({
+          status: 'shared',
+          threadTs,
+        });
+      } else {
+        res.json({
+          status: 'skipped',
+          reason: 'Summary sharing is disabled or Slack not configured',
+        });
+      }
+    } catch (error: any) {
+      logger.error('SESSION', 'Failed to share summary to Slack', { sessionId }, error);
+      res.status(500).json({
+        status: 'error',
+        error: error.message,
+      });
+    }
+  });
+
+  /**
+   * Share an observation to Slack
+   * POST /api/slack/share/observation/:id
+   */
+  private handleShareObservation = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const observationId = this.parseIntParam(req, res, 'id');
+    if (observationId === null) return;
+
+    const notificationManager = this.workerService.getNotificationManager?.();
+    if (!notificationManager || !notificationManager.isEnabled()) {
+      res.status(503).json({
+        status: 'error',
+        error: 'Slack notifications are not enabled',
+      });
+      return;
+    }
+
+    // Get the observation from database
+    const store = this.dbManager.getSessionStore();
+    const observation = store.getObservationById(observationId);
+
+    if (!observation) {
+      res.status(404).json({
+        status: 'error',
+        error: 'Observation not found',
+      });
+      return;
+    }
+
+    try {
+      const threadTs = await notificationManager.shareObservation({
+        id: observation.id,
+        project: observation.project,
+        type: observation.type,
+        title: observation.title || 'Untitled',
+        narrative: observation.text || '',
+        files: observation.source_files ? observation.source_files.split(',') : [],
+      });
+
+      if (threadTs) {
+        res.json({
+          status: 'shared',
+          threadTs,
+          observationId,
+        });
+      } else {
+        res.json({
+          status: 'skipped',
+          reason: 'Observation type not configured for sharing or Slack not configured',
+        });
+      }
+    } catch (error: any) {
+      logger.error('SESSION', 'Failed to share observation to Slack', { observationId }, error);
+      res.status(500).json({
+        status: 'error',
+        error: error.message,
+      });
+    }
   });
 }

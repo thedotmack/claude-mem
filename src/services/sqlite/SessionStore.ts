@@ -10,7 +10,9 @@ import {
   ObservationRecord,
   SessionSummaryRecord,
   UserPromptRecord,
-  LatestPromptResult
+  LatestPromptResult,
+  WaitingSessionRecord,
+  ScheduledContinuationRecord
 } from '../../types/database.js';
 
 /**
@@ -42,6 +44,9 @@ export class SessionStore {
     this.ensureDiscoveryTokensColumn();
     this.createPendingMessagesTable();
     this.createObservationAccessTable();
+    this.createWaitingSessionsTable();
+    this.createScheduledContinuationsTable();
+    this.addWaitingSessionsResponseSource();
   }
 
   /**
@@ -643,6 +648,131 @@ export class SessionStore {
       console.error('[SessionStore] Successfully created observation_access table');
     } catch (error: any) {
       console.error('[SessionStore] Migration error (create observation_access table):', error.message);
+    }
+  }
+
+  /**
+   * Create waiting_sessions table for Slack notification tracking (migration 13)
+   */
+  private createWaitingSessionsTable(): void {
+    try {
+      // Check if migration already applied
+      const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(13) as SchemaVersion | undefined;
+      if (applied) return;
+
+      // Check if table already exists
+      const tableInfo = this.db.pragma('table_info(waiting_sessions)') as TableColumnInfo[];
+      if (tableInfo.length > 0) {
+        this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(13, new Date().toISOString());
+        return;
+      }
+
+      console.error('[SessionStore] Creating waiting_sessions table for Slack notifications...');
+
+      this.db.exec(`
+        CREATE TABLE waiting_sessions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          claude_session_id TEXT NOT NULL,
+          project TEXT NOT NULL,
+          cwd TEXT NOT NULL,
+          question TEXT,
+          full_message TEXT,
+          transcript_path TEXT,
+          slack_thread_ts TEXT,
+          slack_channel_id TEXT,
+          status TEXT CHECK(status IN ('waiting', 'responded', 'expired', 'cancelled')) NOT NULL DEFAULT 'waiting',
+          created_at TEXT NOT NULL,
+          created_at_epoch INTEGER NOT NULL,
+          responded_at TEXT,
+          responded_at_epoch INTEGER,
+          response_text TEXT,
+          expires_at_epoch INTEGER NOT NULL
+        );
+
+        CREATE INDEX idx_waiting_sessions_claude_id ON waiting_sessions(claude_session_id);
+        CREATE INDEX idx_waiting_sessions_status ON waiting_sessions(status);
+        CREATE INDEX idx_waiting_sessions_slack_thread ON waiting_sessions(slack_thread_ts);
+        CREATE INDEX idx_waiting_sessions_expires ON waiting_sessions(expires_at_epoch);
+      `);
+
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(13, new Date().toISOString());
+      console.error('[SessionStore] Successfully created waiting_sessions table');
+    } catch (error: any) {
+      console.error('[SessionStore] Migration error (create waiting_sessions table):', error.message);
+    }
+  }
+
+  /**
+   * Create scheduled_continuations table for rate limit handling (migration 14)
+   */
+  private createScheduledContinuationsTable(): void {
+    try {
+      // Check if migration already applied
+      const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(14) as SchemaVersion | undefined;
+      if (applied) return;
+
+      // Check if table already exists
+      const tableInfo = this.db.pragma('table_info(scheduled_continuations)') as TableColumnInfo[];
+      if (tableInfo.length > 0) {
+        this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(14, new Date().toISOString());
+        return;
+      }
+
+      console.error('[SessionStore] Creating scheduled_continuations table...');
+
+      this.db.exec(`
+        CREATE TABLE scheduled_continuations (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          claude_session_id TEXT NOT NULL,
+          project TEXT NOT NULL,
+          cwd TEXT NOT NULL,
+          scheduled_at TEXT NOT NULL,
+          scheduled_at_epoch INTEGER NOT NULL,
+          reason TEXT CHECK(reason IN ('rate_limit', 'user_scheduled', 'other')) NOT NULL DEFAULT 'other',
+          prompt TEXT NOT NULL DEFAULT 'continue',
+          status TEXT CHECK(status IN ('pending', 'executed', 'cancelled', 'failed')) NOT NULL DEFAULT 'pending',
+          created_at TEXT NOT NULL,
+          created_at_epoch INTEGER NOT NULL,
+          executed_at TEXT,
+          executed_at_epoch INTEGER
+        );
+
+        CREATE INDEX idx_scheduled_continuations_status ON scheduled_continuations(status);
+        CREATE INDEX idx_scheduled_continuations_scheduled ON scheduled_continuations(scheduled_at_epoch);
+      `);
+
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(14, new Date().toISOString());
+      console.error('[SessionStore] Successfully created scheduled_continuations table');
+    } catch (error: any) {
+      console.error('[SessionStore] Migration error (create scheduled_continuations table):', error.message);
+    }
+  }
+
+  /**
+   * Add response_source column to waiting_sessions (migration 15)
+   * Tracks where the response came from: 'slack', 'local', or 'api'
+   */
+  private addWaitingSessionsResponseSource(): void {
+    try {
+      // Check if migration already applied
+      const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(15) as SchemaVersion | undefined;
+      if (applied) return;
+
+      // Check if column already exists
+      const tableInfo = this.db.pragma('table_info(waiting_sessions)') as TableColumnInfo[];
+      const hasColumn = tableInfo.some(col => col.name === 'response_source');
+
+      if (!hasColumn) {
+        console.error('[SessionStore] Adding response_source column to waiting_sessions...');
+        this.db.exec(`
+          ALTER TABLE waiting_sessions ADD COLUMN response_source TEXT CHECK(response_source IN ('slack', 'local', 'api'));
+        `);
+        console.error('[SessionStore] Successfully added response_source column');
+      }
+
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(15, new Date().toISOString());
+    } catch (error: any) {
+      console.error('[SessionStore] Migration error (add response_source column):', error.message);
     }
   }
 
@@ -1648,6 +1778,20 @@ export class SessionStore {
   }
 
   /**
+   * Get the latest session summary for a given SDK session ID
+   */
+  getLatestSessionSummary(sdkSessionId: string): SessionSummaryRecord | null {
+    const stmt = this.db.prepare(`
+      SELECT * FROM session_summaries
+      WHERE sdk_session_id = ?
+      ORDER BY created_at_epoch DESC
+      LIMIT 1
+    `);
+
+    return stmt.get(sdkSessionId) as SessionSummaryRecord | null;
+  }
+
+  /**
    * Get user prompts by IDs (for hybrid Chroma search)
    * Returns prompts in specified temporal order
    */
@@ -1838,6 +1982,185 @@ export class SessionStore {
       console.error('[SessionStore] Error querying timeline records:', err.message);
       return { observations: [], sessions: [], prompts: [] };
     }
+  }
+
+  // ===== Waiting Sessions Methods (Slack Notifications) =====
+
+  /**
+   * Create a waiting session record
+   * @param expiresInHours How long until the session expires (default: 24 hours)
+   */
+  createWaitingSession(
+    claudeSessionId: string,
+    project: string,
+    cwd: string,
+    question: string | null,
+    fullMessage: string | null,
+    transcriptPath: string | null,
+    expiresInHours: number = 24
+  ): number {
+    const now = new Date();
+    const nowEpoch = now.getTime();
+    const expiresAtEpoch = nowEpoch + (expiresInHours * 60 * 60 * 1000);
+
+    const stmt = this.db.prepare(`
+      INSERT INTO waiting_sessions
+      (claude_session_id, project, cwd, question, full_message, transcript_path,
+       status, created_at, created_at_epoch, expires_at_epoch)
+      VALUES (?, ?, ?, ?, ?, ?, 'waiting', ?, ?, ?)
+    `);
+
+    const result = stmt.run(
+      claudeSessionId,
+      project,
+      cwd,
+      question,
+      fullMessage,
+      transcriptPath,
+      now.toISOString(),
+      nowEpoch,
+      expiresAtEpoch
+    );
+
+    return result.lastInsertRowid as number;
+  }
+
+  /**
+   * Update waiting session with Slack thread info
+   */
+  updateWaitingSessionSlackThread(
+    id: number,
+    slackThreadTs: string,
+    slackChannelId: string
+  ): void {
+    const stmt = this.db.prepare(`
+      UPDATE waiting_sessions
+      SET slack_thread_ts = ?, slack_channel_id = ?
+      WHERE id = ?
+    `);
+
+    stmt.run(slackThreadTs, slackChannelId, id);
+  }
+
+  /**
+   * Get waiting session by Slack thread timestamp
+   */
+  getWaitingSessionBySlackThread(slackThreadTs: string): WaitingSessionRecord | null {
+    const stmt = this.db.prepare(`
+      SELECT * FROM waiting_sessions
+      WHERE slack_thread_ts = ? AND status = 'waiting'
+      LIMIT 1
+    `);
+
+    return stmt.get(slackThreadTs) as WaitingSessionRecord | null;
+  }
+
+  /**
+   * Get a responded session by Slack thread timestamp (for duplicate detection)
+   */
+  getRespondedSessionBySlackThread(slackThreadTs: string): WaitingSessionRecord | null {
+    const stmt = this.db.prepare(`
+      SELECT * FROM waiting_sessions
+      WHERE slack_thread_ts = ? AND status = 'responded'
+      ORDER BY responded_at_epoch DESC
+      LIMIT 1
+    `);
+
+    return stmt.get(slackThreadTs) as WaitingSessionRecord | null;
+  }
+
+  /**
+   * Get waiting session by ID
+   */
+  getWaitingSessionById(id: number): WaitingSessionRecord | null {
+    const stmt = this.db.prepare(`
+      SELECT * FROM waiting_sessions WHERE id = ?
+    `);
+
+    return stmt.get(id) as WaitingSessionRecord | null;
+  }
+
+  /**
+   * Get all waiting sessions for a Claude session
+   */
+  getWaitingSessionsForClaudeSession(claudeSessionId: string): WaitingSessionRecord[] {
+    const stmt = this.db.prepare(`
+      SELECT * FROM waiting_sessions
+      WHERE claude_session_id = ? AND status = 'waiting'
+      ORDER BY created_at_epoch DESC
+    `);
+
+    return stmt.all(claudeSessionId) as WaitingSessionRecord[];
+  }
+
+  /**
+   * Get all pending waiting sessions (not yet responded or expired)
+   */
+  getPendingWaitingSessions(): WaitingSessionRecord[] {
+    const now = Date.now();
+    const stmt = this.db.prepare(`
+      SELECT * FROM waiting_sessions
+      WHERE status = 'waiting' AND expires_at_epoch > ?
+      ORDER BY created_at_epoch DESC
+    `);
+
+    return stmt.all(now) as WaitingSessionRecord[];
+  }
+
+  /**
+   * Mark waiting session as responded
+   * @param id The waiting session ID
+   * @param responseText The user's response
+   * @param responseSource Where the response came from: 'slack', 'local', or 'api'
+   */
+  markWaitingSessionResponded(id: number, responseText: string, responseSource: 'slack' | 'local' | 'api' = 'slack'): void {
+    const now = new Date();
+
+    const stmt = this.db.prepare(`
+      UPDATE waiting_sessions
+      SET status = 'responded', responded_at = ?, responded_at_epoch = ?, response_text = ?, response_source = ?
+      WHERE id = ?
+    `);
+
+    stmt.run(now.toISOString(), now.getTime(), responseText, responseSource, id);
+  }
+
+  /**
+   * Mark waiting session as expired
+   */
+  markWaitingSessionExpired(id: number): void {
+    const stmt = this.db.prepare(`
+      UPDATE waiting_sessions SET status = 'expired' WHERE id = ?
+    `);
+
+    stmt.run(id);
+  }
+
+  /**
+   * Mark waiting session as cancelled
+   */
+  markWaitingSessionCancelled(id: number): void {
+    const stmt = this.db.prepare(`
+      UPDATE waiting_sessions SET status = 'cancelled' WHERE id = ?
+    `);
+
+    stmt.run(id);
+  }
+
+  /**
+   * Expire all waiting sessions that have passed their expiry time
+   * Returns the number of sessions expired
+   */
+  expireOldWaitingSessions(): number {
+    const now = Date.now();
+    const stmt = this.db.prepare(`
+      UPDATE waiting_sessions
+      SET status = 'expired'
+      WHERE status = 'waiting' AND expires_at_epoch <= ?
+    `);
+
+    const result = stmt.run(now);
+    return result.changes;
   }
 
   /**

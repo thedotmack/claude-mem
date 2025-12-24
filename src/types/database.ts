@@ -136,3 +136,55 @@ export interface ObservationWithContext {
   prompt_number?: number;
   discovery_tokens?: number;
 }
+
+/**
+ * Response source for waiting sessions
+ * - 'slack': Response came from Slack thread reply
+ * - 'local': Response came from Claude Code / VS Code extension
+ * - 'api': Response came from direct API call
+ */
+export type ResponseSource = 'slack' | 'local' | 'api';
+
+/**
+ * Waiting Session database record
+ * Tracks sessions waiting for user response (via Slack, Claude Code, or VS Code)
+ */
+export interface WaitingSessionRecord {
+  id: number;
+  claude_session_id: string;
+  project: string;
+  cwd: string;
+  question: string | null;
+  full_message: string | null;
+  transcript_path: string | null;
+  slack_thread_ts: string | null;
+  slack_channel_id: string | null;
+  status: 'waiting' | 'responded' | 'expired' | 'cancelled';
+  created_at: string;
+  created_at_epoch: number;
+  responded_at: string | null;
+  responded_at_epoch: number | null;
+  response_text: string | null;
+  response_source: ResponseSource | null;
+  expires_at_epoch: number;
+}
+
+/**
+ * Scheduled Continuation database record
+ * Tracks scheduled session continuations (e.g., after rate limits)
+ */
+export interface ScheduledContinuationRecord {
+  id: number;
+  claude_session_id: string;
+  project: string;
+  cwd: string;
+  scheduled_at: string;
+  scheduled_at_epoch: number;
+  reason: 'rate_limit' | 'user_scheduled' | 'other';
+  prompt: string;
+  status: 'pending' | 'executed' | 'cancelled' | 'failed';
+  created_at: string;
+  created_at_epoch: number;
+  executed_at: string | null;
+  executed_at_epoch: number | null;
+}

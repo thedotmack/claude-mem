@@ -38,6 +38,19 @@ export interface SettingsDefaults {
   // Feature Toggles
   CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: string;
   CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: string;
+  // Slack Notifications
+  CLAUDE_MEM_SLACK_ENABLED: string;
+  CLAUDE_MEM_SLACK_BOT_TOKEN: string;
+  CLAUDE_MEM_SLACK_APP_TOKEN: string;
+  CLAUDE_MEM_SLACK_CHANNEL_ID: string;
+  CLAUDE_MEM_SLACK_NOTIFY_ON_QUESTIONS: string;
+  CLAUDE_MEM_SLACK_SESSION_EXPIRY_HOURS: string;
+  // Interaction Mode: 'auto' (both), 'slack-only' (away mode), 'local-only' (disable Slack responses)
+  CLAUDE_MEM_INTERACTION_MODE: string;
+  // Auto-share session summaries to Slack when session ends
+  CLAUDE_MEM_SLACK_SHARE_SUMMARIES: string;
+  // Filter which observation types to auto-share (comma-separated: decision,feature,bugfix)
+  CLAUDE_MEM_SLACK_SHARE_TYPES: string;
 }
 
 export class SettingsDefaultsManager {
@@ -71,6 +84,19 @@ export class SettingsDefaultsManager {
     // Feature Toggles
     CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: 'true',
     CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: 'false',
+    // Slack Notifications (disabled by default - opt-in)
+    CLAUDE_MEM_SLACK_ENABLED: 'false',
+    CLAUDE_MEM_SLACK_BOT_TOKEN: '', // xoxb-... token from Slack App
+    CLAUDE_MEM_SLACK_APP_TOKEN: '', // xapp-... token for Socket Mode
+    CLAUDE_MEM_SLACK_CHANNEL_ID: '', // Channel ID (not name) to post notifications
+    CLAUDE_MEM_SLACK_NOTIFY_ON_QUESTIONS: 'true', // Send notification when Claude asks a question
+    CLAUDE_MEM_SLACK_SESSION_EXPIRY_HOURS: '24', // Hours until waiting sessions expire
+    // Interaction Mode: 'auto' (respond from anywhere), 'slack-only' (away mode), 'local-only' (no Slack responses)
+    CLAUDE_MEM_INTERACTION_MODE: 'auto',
+    // Auto-share session summaries to Slack (disabled by default)
+    CLAUDE_MEM_SLACK_SHARE_SUMMARIES: 'false',
+    // Auto-share these observation types to Slack (empty = none, 'decision,feature,bugfix' = selected types)
+    CLAUDE_MEM_SLACK_SHARE_TYPES: '',
   };
 
   /**

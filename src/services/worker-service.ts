@@ -60,6 +60,9 @@ import { SettingsRoutes } from './worker/http/routes/SettingsRoutes.js';
 import { GraphRoutes } from './worker/http/routes/GraphRoutes.js';
 import { GraphService } from './worker/GraphService.js';
 
+// Import notification system
+import { NotificationManager } from './notifications/NotificationManager.js';
+
 export class WorkerService {
   private app: express.Application;
   private server: http.Server | null = null;
@@ -82,6 +85,9 @@ export class WorkerService {
   private searchRoutes: SearchRoutes | null;
   private settingsRoutes: SettingsRoutes;
   private graphRoutes: GraphRoutes | null;
+
+  // Notification system
+  private notificationManager: NotificationManager | null = null;
 
   constructor() {
     this.app = express();
@@ -189,6 +195,11 @@ export class WorkerService {
     this.graphRoutes.setupRoutes(this.app);
     logger.info('WORKER', 'SearchManager and GraphService initialized, routes registered');
 
+    // Initialize notification system (requires initialized database)
+    this.notificationManager = new NotificationManager(this.dbManager.getSessionStore());
+    await this.notificationManager.initialize();
+    logger.info('WORKER', 'NotificationManager initialized');
+
     // Connect to MCP server
     const mcpServerPath = path.join(__dirname, 'mcp-server.cjs');
     const transport = new StdioClientTransport({
@@ -207,6 +218,11 @@ export class WorkerService {
   async shutdown(): Promise<void> {
     // Shutdown all active sessions
     await this.sessionManager.shutdownAll();
+
+    // Shutdown notification system
+    if (this.notificationManager) {
+      await this.notificationManager.shutdown();
+    }
 
     // Close MCP client connection (terminates MCP server process)
     if (this.mcpClient) {
@@ -237,6 +253,16 @@ export class WorkerService {
    */
   private summarizeRequestBody(method: string, path: string, body: any): string {
     return summarizeBody(method, path, body);
+  }
+
+  /**
+   * Get the notification manager (for route handlers)
+   * Returns null if not yet initialized
+   *
+   * PUBLIC: Called by SessionRoutes
+   */
+  getNotificationManager(): NotificationManager | null {
+    return this.notificationManager;
   }
 
   /**
