@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/scripts/worker-cli.js\" start",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/scripts/worker-cli.js\" restart",
             "timeout": 30
           },
           {
