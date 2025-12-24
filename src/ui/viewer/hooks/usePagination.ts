@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef } from 'react';
-import { Observation, Summary, UserPrompt } from '../types';
+import { Observation, Summary, UserPrompt, OBSERVATION_TYPES } from '../types';
 import { UI } from '../constants/ui';
 import { API_ENDPOINTS } from '../constants/api';
 
@@ -13,16 +13,23 @@ type DataItem = Observation | Summary | UserPrompt;
 
 /**
  * Generic pagination hook for observations, summaries, and prompts
+ * @param selectedTypes - For observations endpoint, filter by these types (only applied to observations)
  */
-function usePaginationFor(endpoint: string, dataType: DataType, currentFilter: string) {
+function usePaginationFor(
+  endpoint: string,
+  dataType: DataType,
+  currentFilter: string,
+  selectedTypes?: string[]
+) {
   const [state, setState] = useState<PaginationState>({
     isLoading: false,
     hasMore: true
   });
 
-  // Track offset and filter in refs to handle synchronous resets
+  // Track offset and filters in refs to handle synchronous resets
   const offsetRef = useRef(0);
   const lastFilterRef = useRef(currentFilter);
+  const lastTypesRef = useRef(selectedTypes?.join(',') || '');
   const stateRef = useRef(state);
 
   /**
@@ -30,12 +37,16 @@ function usePaginationFor(endpoint: string, dataType: DataType, currentFilter: s
    * Automatically resets offset to 0 if filter has changed
    */
   const loadMore = useCallback(async (): Promise<DataItem[]> => {
+    const currentTypesKey = selectedTypes?.join(',') || '';
+
     // Check if filter changed - if so, reset pagination synchronously
-    const filterChanged = lastFilterRef.current !== currentFilter;
+    const filterChanged = lastFilterRef.current !== currentFilter ||
+                          lastTypesRef.current !== currentTypesKey;
 
     if (filterChanged) {
       offsetRef.current = 0;
       lastFilterRef.current = currentFilter;
+      lastTypesRef.current = currentTypesKey;
 
       // Reset state both in React state and ref synchronously
       const newState = { isLoading: false, hasMore: true };
@@ -63,6 +74,14 @@ function usePaginationFor(endpoint: string, dataType: DataType, currentFilter: s
         params.append('project', currentFilter);
       }
 
+      // Add type filter for observations endpoint (only if not all types selected)
+      if (dataType === 'observations' && selectedTypes && selectedTypes.length > 0) {
+        // Only add type param if not all types are selected
+        if (selectedTypes.length < OBSERVATION_TYPES.length) {
+          params.append('type', selectedTypes.join(','));
+        }
+      }
+
       const response = await fetch(`${endpoint}?${params}`);
 
       if (!response.ok) {
@@ -86,7 +105,7 @@ function usePaginationFor(endpoint: string, dataType: DataType, currentFilter: s
       setState(prev => ({ ...prev, isLoading: false }));
       return [];
     }
-  }, [currentFilter, endpoint, dataType]);
+  }, [currentFilter, endpoint, dataType, selectedTypes]);
 
   return {
     ...state,
@@ -95,10 +114,12 @@ function usePaginationFor(endpoint: string, dataType: DataType, currentFilter: s
 }
 
 /**
- * Hook for paginating observations
+ * Hook for paginating observations, summaries, and prompts
+ * @param currentFilter - Project filter
+ * @param selectedTypes - Array of observation types to filter by (only applies to observations)
  */
-export function usePagination(currentFilter: string) {
-  const observations = usePaginationFor(API_ENDPOINTS.OBSERVATIONS, 'observations', currentFilter);
+export function usePagination(currentFilter: string, selectedTypes?: string[]) {
+  const observations = usePaginationFor(API_ENDPOINTS.OBSERVATIONS, 'observations', currentFilter, selectedTypes);
   const summaries = usePaginationFor(API_ENDPOINTS.SUMMARIES, 'summaries', currentFilter);
   const prompts = usePaginationFor(API_ENDPOINTS.PROMPTS, 'prompts', currentFilter);
 

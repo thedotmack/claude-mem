@@ -260,6 +260,12 @@ export async function generateContext(input?: ContextInput, useColors: boolean =
     LIMIT ?
   `).all(project, ...typeArray, ...conceptArray, config.totalObservationCount) as Observation[];
 
+  // Log observation access for usage tracking
+  if (observations.length > 0) {
+    const observationIds = observations.map(obs => obs.id);
+    db.logObservationAccessBatch(observationIds, 'context_injection', input?.session_id);
+  }
+
   // Get recent summaries
   const recentSummaries = db.db.prepare(`
     SELECT id, sdk_session_id, request, investigated, learned, completed, next_steps, created_at, created_at_epoch

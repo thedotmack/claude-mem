@@ -98,3 +98,33 @@ export interface Stats {
   worker?: WorkerStats;
   database?: DatabaseStats;
 }
+
+/**
+ * Observation types with their display metadata
+ */
+export const OBSERVATION_TYPES = [
+  'bugfix',
+  'feature',
+  'refactor',
+  'discovery',
+  'decision',
+  'change'
+] as const;
+
+export type ObservationType = typeof OBSERVATION_TYPES[number];
+
+export interface TypeMetadata {
+  id: ObservationType;
+  label: string;
+  emoji: string;
+  color: string;
+}
+
+export const TYPE_METADATA: Record<ObservationType, TypeMetadata> = {
+  bugfix: { id: 'bugfix', label: 'Bug Fix', emoji: '🔴', color: '#ef4444' },
+  feature: { id: 'feature', label: 'Feature', emoji: '🟣', color: '#a855f7' },
+  refactor: { id: 'refactor', label: 'Refactor', emoji: '🔄', color: '#3b82f6' },
+  discovery: { id: 'discovery', label: 'Discovery', emoji: '🔵', color: '#06b6d4' },
+  decision: { id: 'decision', label: 'Decision', emoji: '⚖️', color: '#f59e0b' },
+  change: { id: 'change', label: 'Change', emoji: '✅', color: '#22c55e' }
+};

@@ -57,10 +57,11 @@ export class DataRoutes extends BaseRouteHandler {
 
   /**
    * Get paginated observations
+   * Supports filtering by type via ?type=bugfix,feature query param
    */
   private handleGetObservations = this.wrapHandler((req: Request, res: Response): void => {
-    const { offset, limit, project } = this.parsePaginationParams(req);
-    const result = this.paginationHelper.getObservations(offset, limit, project);
+    const { offset, limit, project, types } = this.parsePaginationParams(req);
+    const result = this.paginationHelper.getObservations(offset, limit, project, types);
     res.json(result);
   });
 
@@ -281,13 +282,18 @@ export class DataRoutes extends BaseRouteHandler {
 
   /**
    * Parse pagination parameters from request query
+   * @returns offset, limit, project, and optional types array
    */
-  private parsePaginationParams(req: Request): { offset: number; limit: number; project?: string } {
+  private parsePaginationParams(req: Request): { offset: number; limit: number; project?: string; types?: string[] } {
     const offset = parseInt(req.query.offset as string, 10) || 0;
     const limit = Math.min(parseInt(req.query.limit as string, 10) || 20, 100); // Max 100
     const project = req.query.project as string | undefined;
 
-    return { offset, limit, project };
+    // Parse types filter (comma-separated list: ?type=bugfix,feature)
+    const typeParam = req.query.type as string | undefined;
+    const types = typeParam ? typeParam.split(',').map(t => t.trim()).filter(t => t) : undefined;
+
+    return { offset, limit, project, types };
   }
 
   /**

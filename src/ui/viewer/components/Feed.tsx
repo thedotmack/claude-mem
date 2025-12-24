@@ -13,9 +13,12 @@ interface FeedProps {
   onLoadMore: () => void;
   isLoading: boolean;
   hasMore: boolean;
+  isSearchMode?: boolean;
+  searchQuery?: string;
+  searchTotal?: number;
 }
 
-export function Feed({ observations, summaries, prompts, onLoadMore, isLoading, hasMore }: FeedProps) {
+export function Feed({ observations, summaries, prompts, onLoadMore, isLoading, hasMore, isSearchMode, searchQuery, searchTotal }: FeedProps) {
   const loadMoreRef = useRef<HTMLDivElement>(null);
   const feedRef = useRef<HTMLDivElement>(null);
   const onLoadMoreRef = useRef(onLoadMore);
@@ -64,6 +67,17 @@ export function Feed({ observations, summaries, prompts, onLoadMore, isLoading, 
     <div className="feed" ref={feedRef}>
       <ScrollToTop targetRef={feedRef} />
       <div className="feed-content">
+        {/* Search results header */}
+        {isSearchMode && (
+          <div className="search-results-header">
+            {searchTotal !== undefined ? (
+              <>Found <strong>{searchTotal}</strong> result{searchTotal !== 1 ? 's' : ''} for "<em>{searchQuery}</em>"</>
+            ) : (
+              <>Searching for "<em>{searchQuery}</em>"...</>
+            )}
+          </div>
+        )}
+
         {items.map(item => {
           const key = `${item.itemType}-${item.id}`;
           if (item.itemType === 'observation') {
@@ -74,21 +88,29 @@ export function Feed({ observations, summaries, prompts, onLoadMore, isLoading, 
             return <PromptCard key={key} prompt={item} />;
           }
         })}
+
+        {/* Empty state */}
         {items.length === 0 && !isLoading && (
           <div style={{ textAlign: 'center', padding: '40px', color: '#8b949e' }}>
-            No items to display
+            {isSearchMode ? 'No results found' : 'No items to display'}
           </div>
         )}
+
+        {/* Loading state */}
         {isLoading && (
           <div style={{ textAlign: 'center', padding: '20px', color: '#8b949e' }}>
             <div className="spinner" style={{ display: 'inline-block', marginRight: '10px' }}></div>
-            Loading more...
+            {isSearchMode ? 'Searching...' : 'Loading more...'}
           </div>
         )}
-        {hasMore && !isLoading && items.length > 0 && (
+
+        {/* Load more trigger (only in feed mode, not search mode) */}
+        {!isSearchMode && hasMore && !isLoading && items.length > 0 && (
           <div ref={loadMoreRef} style={{ height: '20px', margin: '10px 0' }} />
         )}
-        {!hasMore && items.length > 0 && (
+
+        {/* End of results (only in feed mode) */}
+        {!isSearchMode && !hasMore && items.length > 0 && (
           <div style={{ textAlign: 'center', padding: '20px', color: '#8b949e', fontSize: '14px' }}>
             No more items to load
           </div>

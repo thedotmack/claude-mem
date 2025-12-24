@@ -76,8 +76,12 @@ try {
   const CACHE_VERSION_PATH = path.join(CACHE_BASE_PATH, version);
 
   console.log(`Syncing to cache folder (version ${version})...`);
+  // Exclude files that are specific to the cache environment:
+  // - node_modules: installed by Claude Code's plugin installer
+  // - package-lock.json: generated during npm install in cache
+  // - .install-version: tracks installed version for cache
   execSync(
-    `rsync -av --delete --exclude=.git plugin/ "${CACHE_VERSION_PATH}/"`,
+    `rsync -av --delete --exclude=.git --exclude=node_modules --exclude=package-lock.json --exclude=.install-version plugin/ "${CACHE_VERSION_PATH}/"`,
     { stdio: 'inherit' }
   );
 

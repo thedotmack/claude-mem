@@ -69,20 +69,67 @@ export class PaginationHelper {
 
   /**
    * Get paginated observations
+   * @param types - Optional array of observation types to filter by (e.g., ['bugfix', 'feature'])
    */
-  getObservations(offset: number, limit: number, project?: string): PaginatedResult<Observation> {
-    const result = this.paginate<Observation>(
-      'observations',
+  getObservations(offset: number, limit: number, project?: string, types?: string[]): PaginatedResult<Observation> {
+    const result = this.paginateObservations(
       'id, sdk_session_id, project, type, title, subtitle, narrative, text, facts, concepts, files_read, files_modified, prompt_number, created_at, created_at_epoch',
       offset,
       limit,
-      project
+      project,
+      types
     );
 
     // Strip project paths from file paths before returning
     return {
       ...result,
       items: result.items.map(obs => this.sanitizeObservation(obs))
+    };
+  }
+
+  /**
+   * Paginate observations with optional type filtering
+   */
+  private paginateObservations(
+    columns: string,
+    offset: number,
+    limit: number,
+    project?: string,
+    types?: string[]
+  ): PaginatedResult<Observation> {
+    const db = this.dbManager.getSessionStore().db;
+
+    let query = `SELECT ${columns} FROM observations`;
+    const params: any[] = [];
+    const conditions: string[] = [];
+
+    if (project) {
+      conditions.push('project = ?');
+      params.push(project);
+    }
+
+    if (types && types.length > 0) {
+      // Build IN clause with placeholders
+      const placeholders = types.map(() => '?').join(', ');
+      conditions.push(`type IN (${placeholders})`);
+      params.push(...types);
+    }
+
+    if (conditions.length > 0) {
+      query += ' WHERE ' + conditions.join(' AND ');
+    }
+
+    query += ' ORDER BY created_at_epoch DESC LIMIT ? OFFSET ?';
+    params.push(limit + 1, offset); // Fetch one extra to check hasMore
+
+    const stmt = db.prepare(query);
+    const results = stmt.all(...params) as Observation[];
+
+    return {
+      items: results.slice(0, limit),
+      hasMore: results.length > limit,
+      offset,
+      limit
     };
   }
 

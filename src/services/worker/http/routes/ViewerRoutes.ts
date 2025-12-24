@@ -23,10 +23,20 @@ export class ViewerRoutes extends BaseRouteHandler {
     super();
   }
 
-  setupRoutes(app: express.Application): void {
-    // Serve static UI assets (JS, CSS, fonts, etc.)
+  /**
+   * Get the UI directory path (handles both cache and marketplace structures)
+   */
+  private getUiDir(): string {
     const packageRoot = getPackageRoot();
-    app.use(express.static(path.join(packageRoot, 'ui')));
+    const cacheUiDir = path.join(packageRoot, 'ui');
+    const marketplaceUiDir = path.join(packageRoot, 'plugin', 'ui');
+    return existsSync(cacheUiDir) ? cacheUiDir : marketplaceUiDir;
+  }
+
+  setupRoutes(app: express.Application): void {
+    // Serve static files from ui directory (viewer-bundle.js, assets, etc.)
+    const uiDir = this.getUiDir();
+    app.use(express.static(uiDir));
 
     app.get('/health', this.handleHealth.bind(this));
     app.get('/', this.handleViewerUI.bind(this));
@@ -44,20 +54,7 @@ export class ViewerRoutes extends BaseRouteHandler {
    * Serve viewer UI
    */
   private handleViewerUI = this.wrapHandler((req: Request, res: Response): void => {
-    const packageRoot = getPackageRoot();
-
-    // Try cache structure first (ui/viewer.html), then marketplace structure (plugin/ui/viewer.html)
-    const viewerPaths = [
-      path.join(packageRoot, 'ui', 'viewer.html'),
-      path.join(packageRoot, 'plugin', 'ui', 'viewer.html')
-    ];
-
-    const viewerPath = viewerPaths.find(p => existsSync(p));
-
-    if (!viewerPath) {
-      throw new Error('Viewer UI not found at any expected location');
-    }
-
+    const viewerPath = path.join(this.getUiDir(), 'viewer.html');
     const html = readFileSync(viewerPath, 'utf-8');
     res.setHeader('Content-Type', 'text/html');
     res.send(html);
