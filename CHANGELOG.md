@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [8.0.6] - 2025-12-24
+
+## Bug Fixes
+
+- Add error handlers to Chroma sync operations to prevent worker crashes on timeout (#428)
+
+This patch release improves stability by adding proper error handling to Chroma vector database sync operations, preventing worker crashes when sync operations timeout.
+
 ## [8.0.5] - 2025-12-24
 
 ## Bug Fixes
