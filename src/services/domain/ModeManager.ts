@@ -19,13 +19,14 @@ export class ModeManager {
 
   private constructor() {
     // Modes are in plugin/modes/
-    // getPackageRoot() points to plugin/ in production and src/ in development
-    // We want to ensure we find the modes directory which is at the project root/plugin/modes
+    // getPackageRoot() returns the marketplace root (e.g., ~/.claude/plugins/marketplaces/thedotmack)
+    // or the cache version root (e.g., ~/.claude/plugins/cache/thedotmack/claude-mem/8.0.6)
     const packageRoot = getPackageRoot();
-    
-    // Check for plugin/modes relative to package root (covers both dev and prod if paths are right)
+
+    // Check for modes in various possible locations
     const possiblePaths = [
-      join(packageRoot, 'modes'),           // Production (plugin/modes)
+      join(packageRoot, 'plugin', 'modes'), // Marketplace structure (thedotmack/plugin/modes)
+      join(packageRoot, 'modes'),           // Cache structure (8.0.6/modes) or if modes is at root
       join(packageRoot, '..', 'plugin', 'modes'), // Development (src/../plugin/modes)
     ];
 
