@@ -119,6 +119,11 @@ export class SessionRoutes extends BaseRouteHandler {
           duration: `${chromaDuration}ms`,
           prompt: truncatedPrompt
         });
+      }).catch((error) => {
+        logger.warn('CHROMA', 'User prompt sync failed, continuing without vector search', {
+          promptId: latestPrompt.id,
+          prompt: promptText.length > 60 ? promptText.substring(0, 60) + '...' : promptText
+        }, error);
       });
     }
 

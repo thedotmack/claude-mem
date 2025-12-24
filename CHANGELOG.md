@@ -4,6 +4,30 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [8.0.6] - 2025-12-24
+
+## Bug Fixes
+
+- Add error handlers to Chroma sync operations to prevent worker crashes on timeout (#428)
+
+This patch release improves stability by adding proper error handling to Chroma vector database sync operations, preventing worker crashes when sync operations timeout.
+
+## [8.0.5] - 2025-12-24
+
+## Bug Fixes
+
+- **Context Loading**: Fixed observation filtering for non-code modes, ensuring observations are properly retrieved across all mode types
+
+## Technical Details
+
+Refactored context loading logic to differentiate between code and non-code modes, resolving issues where mode-specific observations were filtered by stale settings.
+
+## [8.0.4] - 2025-12-23
+
+## Changes
+
+- Changed worker start script
+
 ## [8.0.3] - 2025-12-23
 
 Fix critical worker crashes on startup (v8.0.2 regression)
