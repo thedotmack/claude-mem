@@ -1,7 +1,7 @@
 import { stdin } from 'process';
 import { STANDARD_HOOK_RESPONSE } from './hook-response.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
-import { getProjectName } from '../utils/project-name.js';
+import { getProjectName, isProjectExcluded } from '../utils/project-name.js';
 
 export interface UserPromptSubmitInput {
   session_id: string;
@@ -14,15 +14,21 @@ export interface UserPromptSubmitInput {
  * New Hook Main Logic
  */
 async function newHook(input?: UserPromptSubmitInput): Promise<void> {
-  // Ensure worker is running before any other logic
-  await ensureWorkerRunning();
-
   if (!input) {
     throw new Error('newHook requires input');
   }
 
   const { session_id, cwd, prompt } = input;
   const project = getProjectName(cwd);
+
+  // Early exit for excluded projects - no session tracking
+  if (isProjectExcluded(project)) {
+    console.log(STANDARD_HOOK_RESPONSE);
+    return;
+  }
+
+  // Ensure worker is running before any other logic
+  await ensureWorkerRunning();
 
   const port = getWorkerPort();
 

@@ -15,6 +15,7 @@ import { logger } from '../utils/logger.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { extractLastMessage } from '../shared/transcript-parser.js';
+import { getProjectName, isProjectExcluded } from '../utils/project-name.js';
 
 export interface StopInput {
   session_id: string;
@@ -26,14 +27,21 @@ export interface StopInput {
  * Summary Hook Main Logic - Fire-and-forget HTTP client
  */
 async function summaryHook(input?: StopInput): Promise<void> {
-  // Ensure worker is running before any other logic
-  await ensureWorkerRunning();
-
   if (!input) {
     throw new Error('summaryHook requires input');
   }
 
-  const { session_id } = input;
+  const { session_id, cwd } = input;
+  const project = getProjectName(cwd);
+
+  // Early exit for excluded projects - no summary generation needed
+  if (isProjectExcluded(project)) {
+    console.log(STANDARD_HOOK_RESPONSE);
+    return;
+  }
+
+  // Ensure worker is running before any other logic
+  await ensureWorkerRunning();
 
   const port = getWorkerPort();
 

@@ -9,6 +9,7 @@
 import { stdin } from 'process';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
+import { getProjectName, isProjectExcluded } from '../utils/project-name.js';
 
 export interface SessionEndInput {
   session_id: string;
@@ -19,6 +20,13 @@ export interface SessionEndInput {
  * Cleanup Hook Main Logic - Fire-and-forget HTTP client
  */
 async function cleanupHook(input?: SessionEndInput): Promise<void> {
+  // Check project exclusion early - before worker contact
+  const project = getProjectName(process.cwd());
+  if (isProjectExcluded(project)) {
+    console.log('{"continue": true, "suppressOutput": true}');
+    process.exit(0);
+  }
+
   // Ensure worker is running before any other logic
   await ensureWorkerRunning();
 

@@ -18,6 +18,7 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 | `CLAUDE_MEM_CONTEXT_OBSERVATIONS` | `50`                        | Number of observations to inject      |
 | `CLAUDE_MEM_WORKER_PORT`      | `37777`                         | Worker service port                   |
 | `CLAUDE_MEM_SKIP_TOOLS`       | `ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion` | Comma-separated tools to exclude from observations |
+| `CLAUDE_MEM_EXCLUDE_PROJECTS` | _(empty)_                       | Comma-separated glob patterns for projects to exclude from memory |
 
 ### System Configuration
 
@@ -383,6 +384,38 @@ Control which tools are excluded from observations. Edit `~/.claude-mem/settings
 - Skip additional tools: Add tool names to reduce observation noise
 
 Changes take effect on the next tool execution (no worker restart needed).
+
+### Exclude Projects from Memory
+
+Prevent claude-mem from recording observations for specific projects. Supports glob patterns for flexible matching.
+
+Edit `~/.claude-mem/settings.json`:
+```json
+{
+  "CLAUDE_MEM_EXCLUDE_PROJECTS": "test-project, tmp-*, claude-analysis-*"
+}
+```
+
+**Pattern Support:**
+- `project-name` - Exact match
+- `tmp-*` - Matches tmp-foo, tmp-bar, tmp-anything
+- `*-test` - Matches foo-test, bar-test
+- `test-?` - Matches test-1, test-a (single character only)
+
+**Use Cases:**
+- Temporary test projects
+- Private or sensitive work
+- Throwaway experiments
+- CI/build directories
+- Automated analysis projects (e.g., `claude-analysis-*`)
+
+**What Gets Excluded:**
+- No context injection at session start
+- No session tracking on UserPromptSubmit
+- No observations recorded from tool usage
+- Zero overhead - worker is never contacted for excluded projects
+
+Changes take effect immediately on the next session start (no worker restart needed).
 
 ## Advanced Configuration
 

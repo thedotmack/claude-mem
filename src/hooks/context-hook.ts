@@ -9,7 +9,7 @@
 import { stdin } from "process";
 import { ensureWorkerRunning, getWorkerPort } from "../shared/worker-utils.js";
 import { HOOK_TIMEOUTS } from "../shared/hook-constants.js";
-import { getProjectName } from "../utils/project-name.js";
+import { getProjectName, isProjectExcluded } from "../utils/project-name.js";
 
 export interface SessionStartInput {
   session_id: string;
@@ -19,11 +19,17 @@ export interface SessionStartInput {
 }
 
 async function contextHook(input?: SessionStartInput): Promise<string> {
+  const cwd = input?.cwd ?? process.cwd();
+  const project = getProjectName(cwd);
+
+  // Early exit for excluded projects - no context injection
+  if (isProjectExcluded(project)) {
+    return '';
+  }
+
   // Ensure worker is running before any other logic
   await ensureWorkerRunning();
 
-  const cwd = input?.cwd ?? process.cwd();
-  const project = getProjectName(cwd);
   const port = getWorkerPort();
 
   const url = `http://127.0.0.1:${port}/api/context/inject?project=${encodeURIComponent(project)}`;

@@ -11,6 +11,7 @@ import { STANDARD_HOOK_RESPONSE } from './hook-response.js';
 import { logger } from '../utils/logger.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
+import { getProjectName, isProjectExcluded } from '../utils/project-name.js';
 
 export interface PostToolUseInput {
   session_id: string;
@@ -24,14 +25,21 @@ export interface PostToolUseInput {
  * Save Hook Main Logic - Fire-and-forget HTTP client
  */
 async function saveHook(input?: PostToolUseInput): Promise<void> {
-  // Ensure worker is running before any other logic
-  await ensureWorkerRunning();
-
   if (!input) {
     throw new Error('saveHook requires input');
   }
 
   const { session_id, cwd, tool_name, tool_input, tool_response } = input;
+
+  // Early exit for excluded projects - no observation recording
+  const project = getProjectName(cwd);
+  if (isProjectExcluded(project)) {
+    console.log(STANDARD_HOOK_RESPONSE);
+    return;
+  }
+
+  // Ensure worker is running before any other logic
+  await ensureWorkerRunning();
 
   const port = getWorkerPort();
 

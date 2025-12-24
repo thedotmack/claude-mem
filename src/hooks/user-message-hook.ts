@@ -6,15 +6,21 @@
  * has been loaded into their session. Uses stderr as the communication channel
  * since it's currently the only way to display messages in Claude Code UI.
  */
-import { basename } from "path";
 import { ensureWorkerRunning, getWorkerPort } from "../shared/worker-utils.js";
 import { HOOK_EXIT_CODES } from "../shared/hook-constants.js";
+import { getProjectName, isProjectExcluded } from "../utils/project-name.js";
+
+const project = getProjectName(process.cwd());
+
+// Early exit for excluded projects - no user message display needed
+if (isProjectExcluded(project)) {
+  process.exit(HOOK_EXIT_CODES.USER_MESSAGE_ONLY);
+}
 
 // Ensure worker is running
 await ensureWorkerRunning();
 
 const port = getWorkerPort();
-const project = basename(process.cwd());
 
 // Fetch formatted context directly from worker API
 const response = await fetch(
