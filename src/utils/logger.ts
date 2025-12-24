@@ -1,8 +1,15 @@
 /**
  * Structured Logger for claude-mem Worker Service
  * Provides readable, traceable logging with correlation IDs and data flow tracking
+ *
+ * Features:
+ * - Console output with structured formatting
+ * - Optional database sink for self-aware logging
+ * - Error pattern detection and tracking
+ * - Buffered writes for performance
  */
 
+import { createHash } from 'crypto';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 
 export enum LogLevel {
@@ -13,7 +20,7 @@ export enum LogLevel {
   SILENT = 4
 }
 
-export type Component = 'HOOK' | 'WORKER' | 'SDK' | 'PARSER' | 'DB' | 'SYSTEM' | 'HTTP' | 'SESSION' | 'CHROMA';
+export type Component = 'HOOK' | 'WORKER' | 'SDK' | 'PARSER' | 'DB' | 'SYSTEM' | 'HTTP' | 'SESSION' | 'CHROMA' | 'GRAPH' | 'SLACK' | 'NOTIFICATIONS' | 'HEALTH';
 
 interface LogContext {
   sessionId?: number;
@@ -22,13 +29,101 @@ interface LogContext {
   [key: string]: any;
 }
 
+interface LogEntry {
+  level: 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
+  component: string;
+  message: string;
+  context?: Record<string, any>;
+  data?: any;
+  errorStack?: string;
+  timestamp: Date;
+}
+
+/**
+ * Interface for database sink - allows lazy injection to avoid circular dependencies
+ */
+interface DatabaseSink {
+  storeSystemLog(
+    level: 'DEBUG' | 'INFO' | 'WARN' | 'ERROR',
+    component: string,
+    message: string,
+    context?: Record<string, any>,
+    data?: any,
+    errorStack?: string
+  ): number;
+  storeSystemLogBatch(logs: LogEntry[]): number;
+  trackErrorPattern(errorHash: string, errorMessage: string, component: string): { id: number; isNew: boolean; occurrenceCount: number };
+}
+
 class Logger {
   private level: LogLevel | null = null;
   private useColor: boolean;
+  private dbSink: DatabaseSink | null = null;
+  private logBuffer: LogEntry[] = [];
+  private flushTimer: NodeJS.Timeout | null = null;
+  private readonly bufferSize = 50;          // Flush after 50 logs
+  private readonly flushIntervalMs = 5000;   // Or flush every 5 seconds
+  private isInitialized = false;
 
   constructor() {
     // Disable colors when output is not a TTY (e.g., PM2 logs)
     this.useColor = process.stdout.isTTY ?? false;
+  }
+
+  /**
+   * Initialize database sink for persistent logging
+   * Called by worker service after SessionStore is ready
+   */
+  initializeDatabaseSink(sink: DatabaseSink): void {
+    if (this.isInitialized) return;
+    this.dbSink = sink;
+    this.isInitialized = true;
+
+    // Start flush timer
+    this.flushTimer = setInterval(() => this.flushBuffer(), this.flushIntervalMs);
+
+    // Flush on process exit
+    process.on('beforeExit', () => this.flushBuffer());
+    process.on('SIGINT', () => { this.flushBuffer(); process.exit(0); });
+    process.on('SIGTERM', () => { this.flushBuffer(); process.exit(0); });
+  }
+
+  /**
+   * Check if database logging is enabled
+   */
+  get isDatabaseLoggingEnabled(): boolean {
+    return this.dbSink !== null;
+  }
+
+  /**
+   * Flush buffered logs to database
+   */
+  private flushBuffer(): void {
+    if (this.logBuffer.length === 0 || !this.dbSink) return;
+
+    const logsToFlush = [...this.logBuffer];
+    this.logBuffer = [];
+
+    try {
+      this.dbSink.storeSystemLogBatch(logsToFlush);
+    } catch (error) {
+      // Silently fail - we can't log this error without recursion
+      console.error('[Logger] Failed to flush logs to database');
+    }
+  }
+
+  /**
+   * Create a hash for error pattern detection
+   */
+  private createErrorHash(message: string, component: string): string {
+    // Normalize the message: remove timestamps, IDs, file paths
+    const normalized = message
+      .replace(/\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2}/g, 'TIMESTAMP')
+      .replace(/\b\d+\b/g, 'NUM')
+      .replace(/\/[\w\/.-]+/g, 'PATH')
+      .substring(0, 200);  // Limit length
+
+    return createHash('md5').update(`${component}:${normalized}`).digest('hex').substring(0, 16);
   }
 
   /**
@@ -98,78 +193,37 @@ class Logger {
   formatTool(toolName: string, toolInput?: any): string {
     if (!toolInput) return toolName;
 
-    const input = typeof toolInput === 'string' ? JSON.parse(toolInput) : toolInput;
+    try {
+      const input = typeof toolInput === 'string' ? JSON.parse(toolInput) : toolInput;
 
-    // Bash: show full command
-    if (toolName === 'Bash' && input.command) {
-      return `${toolName}(${input.command})`;
-    }
-
-    // File operations: show full path
-    if (input.file_path) {
-      return `${toolName}(${input.file_path})`;
-    }
-
-    // NotebookEdit: show full notebook path
-    if (input.notebook_path) {
-      return `${toolName}(${input.notebook_path})`;
-    }
-
-    // Glob: show full pattern
-    if (toolName === 'Glob' && input.pattern) {
-      return `${toolName}(${input.pattern})`;
-    }
-
-    // Grep: show full pattern
-    if (toolName === 'Grep' && input.pattern) {
-      return `${toolName}(${input.pattern})`;
-    }
-
-    // WebFetch/WebSearch: show full URL or query
-    if (input.url) {
-      return `${toolName}(${input.url})`;
-    }
-
-    if (input.query) {
-      return `${toolName}(${input.query})`;
-    }
-
-    // Task: show subagent_type or full description
-    if (toolName === 'Task') {
-      if (input.subagent_type) {
-        return `${toolName}(${input.subagent_type})`;
+      // Special formatting for common tools
+      if (toolName === 'Bash' && input.command) {
+        const cmd = input.command.length > 50
+          ? input.command.substring(0, 50) + '...'
+          : input.command;
+        return `${toolName}(${cmd})`;
       }
-      if (input.description) {
-        return `${toolName}(${input.description})`;
+
+      if (toolName === 'Read' && input.file_path) {
+        const path = input.file_path.split('/').pop() || input.file_path;
+        return `${toolName}(${path})`;
       }
+
+      if (toolName === 'Edit' && input.file_path) {
+        const path = input.file_path.split('/').pop() || input.file_path;
+        return `${toolName}(${path})`;
+      }
+
+      if (toolName === 'Write' && input.file_path) {
+        const path = input.file_path.split('/').pop() || input.file_path;
+        return `${toolName}(${path})`;
+      }
+
+      // Default: just show tool name
+      return toolName;
+    } catch {
+      return toolName;
     }
-
-    // Skill: show skill name
-    if (toolName === 'Skill' && input.skill) {
-      return `${toolName}(${input.skill})`;
-    }
-
-    // LSP: show operation type
-    if (toolName === 'LSP' && input.operation) {
-      return `${toolName}(${input.operation})`;
-    }
-
-    // Default: just show tool name
-    return toolName;
-  }
-
-  /**
-   * Format timestamp in local timezone (YYYY-MM-DD HH:MM:SS.mmm)
-   */
-  private formatTimestamp(date: Date): string {
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
-    const hours = String(date.getHours()).padStart(2, '0');
-    const minutes = String(date.getMinutes()).padStart(2, '0');
-    const seconds = String(date.getSeconds()).padStart(2, '0');
-    const ms = String(date.getMilliseconds()).padStart(3, '0');
-    return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}.${ms}`;
   }
 
   /**
@@ -184,7 +238,8 @@ class Logger {
   ): void {
     if (level < this.getLevel()) return;
 
-    const timestamp = this.formatTimestamp(new Date());
+    const now = new Date();
+    const timestamp = now.toISOString().replace('T', ' ').substring(0, 23);
     const levelStr = LogLevel[level].padEnd(5);
     const componentStr = component.padEnd(6);
 
@@ -224,6 +279,43 @@ class Logger {
       console.error(logLine);
     } else {
       console.log(logLine);
+    }
+
+    // Write to database if enabled (skip DEBUG level for database to reduce noise)
+    if (this.dbSink && level >= LogLevel.INFO) {
+      const levelName = LogLevel[level] as 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
+
+      // Extract error stack if data is an Error
+      let errorStack: string | undefined;
+      if (data instanceof Error) {
+        errorStack = data.stack;
+      }
+
+      // Add to buffer
+      this.logBuffer.push({
+        level: levelName,
+        component,
+        message,
+        context: context ? { ...context } : undefined,
+        data: data instanceof Error ? { message: data.message, name: data.name } : data,
+        errorStack,
+        timestamp: now
+      });
+
+      // Track error patterns
+      if (level === LogLevel.ERROR && this.dbSink) {
+        const errorHash = this.createErrorHash(message, component);
+        try {
+          this.dbSink.trackErrorPattern(errorHash, message, component);
+        } catch {
+          // Silently fail pattern tracking
+        }
+      }
+
+      // Flush if buffer is full
+      if (this.logBuffer.length >= this.bufferSize) {
+        this.flushBuffer();
+      }
     }
   }
 
@@ -277,58 +369,6 @@ class Logger {
    */
   timing(component: Component, message: string, durationMs: number, context?: LogContext): void {
     this.info(component, `⏱ ${message}`, context, { duration: `${durationMs}ms` });
-  }
-
-  /**
-   * Happy Path Error - logs when the expected "happy path" fails but we have a fallback
-   *
-   * Semantic meaning: "When the happy path fails, this is an error, but we have a fallback."
-   *
-   * Use for:
-   * ✅ Unexpected null/undefined values that should theoretically never happen
-   * ✅ Defensive coding where silent fallback is acceptable
-   * ✅ Situations where you want to track unexpected nulls without breaking execution
-   *
-   * DO NOT use for:
-   * ❌ Nullable fields with valid default behavior (use direct || defaults)
-   * ❌ Critical validation failures (use logger.warn or throw Error)
-   * ❌ Try-catch blocks where error is already logged (redundant)
-   *
-   * @param component - Component where error occurred
-   * @param message - Error message describing what went wrong
-   * @param context - Optional context (sessionId, correlationId, etc)
-   * @param data - Optional data to include
-   * @param fallback - Value to return (defaults to empty string)
-   * @returns The fallback value
-   */
-  happyPathError<T = string>(
-    component: Component,
-    message: string,
-    context?: LogContext,
-    data?: any,
-    fallback: T = '' as T
-  ): T {
-    // Capture stack trace to get caller location
-    const stack = new Error().stack || '';
-    const stackLines = stack.split('\n');
-    // Line 0: "Error"
-    // Line 1: "at happyPathError ..."
-    // Line 2: "at <CALLER> ..." <- We want this one
-    const callerLine = stackLines[2] || '';
-    const callerMatch = callerLine.match(/at\s+(?:.*\s+)?\(?([^:]+):(\d+):(\d+)\)?/);
-    const location = callerMatch
-      ? `${callerMatch[1].split('/').pop()}:${callerMatch[2]}`
-      : 'unknown';
-
-    // Log as a warning with location info
-    const enhancedContext = {
-      ...context,
-      location
-    };
-
-    this.warn(component, `[HAPPY-PATH] ${message}`, enhancedContext, data);
-
-    return fallback;
   }
 }
 

@@ -188,3 +188,46 @@ export interface ScheduledContinuationRecord {
   executed_at: string | null;
   executed_at_epoch: number | null;
 }
+
+/**
+ * Log level for system_logs table
+ */
+export type SystemLogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
+
+/**
+ * Component identifier for system_logs table
+ */
+export type SystemLogComponent = 'HOOK' | 'WORKER' | 'SDK' | 'PARSER' | 'DB' | 'SYSTEM' | 'HTTP' | 'SESSION' | 'CHROMA' | 'GRAPH' | 'SLACK' | 'NOTIFICATIONS' | 'HEALTH';
+
+/**
+ * System Log database record
+ * Stores all application logs for self-awareness and debugging
+ */
+export interface SystemLogRecord {
+  id: number;
+  level: SystemLogLevel;
+  component: SystemLogComponent;
+  message: string;
+  context: string | null;  // JSON: sessionId, correlationId, etc.
+  data: string | null;     // JSON: additional data
+  error_stack: string | null;  // Stack trace for errors
+  created_at: string;
+  created_at_epoch: number;
+}
+
+/**
+ * Error Pattern database record
+ * Tracks recurring errors for self-healing capabilities
+ */
+export interface ErrorPatternRecord {
+  id: number;
+  error_hash: string;       // Hash of error message + component
+  error_message: string;    // Original error message
+  component: SystemLogComponent;
+  first_seen_epoch: number;
+  last_seen_epoch: number;
+  occurrence_count: number;
+  is_resolved: number;      // SQLite boolean (0/1)
+  resolution_notes: string | null;
+  auto_resolution: string | null;  // JSON: automatic fix that was applied
+}

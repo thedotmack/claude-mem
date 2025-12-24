@@ -107,13 +107,88 @@ export interface UsageStatsData {
   };
 }
 
-export type GraphTab = 'concepts' | 'observations' | 'projects' | 'usage';
+// Health data types
+export interface HealthSummary {
+  totalLogs: number;
+  errorCount24h: number;
+  warnCount24h: number;
+  unresolvedPatterns: number;
+  topErrors: Array<{ message: string; count: number; component: string }>;
+  componentErrorCounts: Record<string, number>;
+  status: 'healthy' | 'warning' | 'critical';
+}
+
+export interface SystemLogEntry {
+  id: number;
+  level: 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
+  component: string;
+  message: string;
+  context: string | null;
+  data: string | null;
+  error_stack: string | null;
+  created_at: string;
+  created_at_epoch: number;
+}
+
+export interface HealthData {
+  summary: HealthSummary;
+  recentLogs: SystemLogEntry[];
+}
+
+// Cross-project insights types
+export interface CrossProjectPattern {
+  id: string;
+  patternType: 'shared_concept' | 'problem_solution' | 'common_approach' | 'tech_stack';
+  description: string;
+  projects: string[];
+  observationCount: number;
+  sampleObservationIds: number[];
+  strength: number;
+}
+
+export interface ProjectSynergy {
+  project1: string;
+  project2: string;
+  sharedPatterns: string[];
+  synergyScore: number;
+  potentialLearnings: string[];
+}
+
+export interface ProblemSolutionCluster {
+  id: string;
+  problemType: string;
+  observations: Array<{
+    id: number;
+    title: string;
+    project: string;
+    type: string;
+  }>;
+  commonApproaches: string[];
+  projectsInvolved: string[];
+}
+
+export interface InsightsData {
+  crossProjectPatterns: CrossProjectPattern[];
+  projectSynergies: ProjectSynergy[];
+  problemClusters: ProblemSolutionCluster[];
+  summary: {
+    totalPatterns: number;
+    totalSynergies: number;
+    totalClusters: number;
+    mostConnectedProjects: string[];
+    topSharedConcepts: string[];
+  };
+}
+
+export type GraphTab = 'concepts' | 'observations' | 'projects' | 'usage' | 'insights' | 'health';
 
 interface GraphState {
   conceptData: ConceptGraphData | null;
   observationData: ObservationGraphData | null;
   projectData: ProjectGraphData | null;
   usageData: UsageStatsData | null;
+  insightsData: InsightsData | null;
+  healthData: HealthData | null;
   isLoading: boolean;
   error: string | null;
   activeTab: GraphTab;
@@ -129,6 +204,8 @@ export function useGraph(project?: string) {
     observationData: null,
     projectData: null,
     usageData: null,
+    insightsData: null,
+    healthData: null,
     isLoading: false,
     error: null,
     activeTab: 'concepts'
@@ -273,6 +350,82 @@ export function useGraph(project?: string) {
     }
   }, [project]);
 
+  const fetchInsightsData = useCallback(async () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    abortControllerRef.current = new AbortController();
+
+    setState(prev => ({ ...prev, isLoading: true, error: null }));
+
+    try {
+      const response = await fetch(`${API_ENDPOINTS.GRAPH_INSIGHTS}?limit=50`, {
+        signal: abortControllerRef.current.signal
+      });
+
+      if (!response.ok) throw new Error(`Failed to fetch insights: ${response.statusText}`);
+
+      const result = await response.json();
+      setState(prev => ({
+        ...prev,
+        insightsData: result.data,
+        isLoading: false
+      }));
+    } catch (error: any) {
+      if (error.name === 'AbortError') return;
+      setState(prev => ({
+        ...prev,
+        isLoading: false,
+        error: error.message || 'Failed to fetch insights'
+      }));
+    }
+  }, []);
+
+  const fetchHealthData = useCallback(async () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    abortControllerRef.current = new AbortController();
+
+    setState(prev => ({ ...prev, isLoading: true, error: null }));
+
+    try {
+      // Fetch both summary and recent logs in parallel
+      const [summaryResponse, logsResponse] = await Promise.all([
+        fetch(`${API_ENDPOINTS.HEALTH_SUMMARY}`, {
+          signal: abortControllerRef.current.signal
+        }),
+        fetch(`${API_ENDPOINTS.LOGS}?limit=50`, {
+          signal: abortControllerRef.current.signal
+        })
+      ]);
+
+      if (!summaryResponse.ok) throw new Error(`Failed to fetch health summary: ${summaryResponse.statusText}`);
+      if (!logsResponse.ok) throw new Error(`Failed to fetch logs: ${logsResponse.statusText}`);
+
+      const [summaryResult, logsResult] = await Promise.all([
+        summaryResponse.json(),
+        logsResponse.json()
+      ]);
+
+      setState(prev => ({
+        ...prev,
+        healthData: {
+          summary: summaryResult.data,
+          recentLogs: logsResult.data.logs
+        },
+        isLoading: false
+      }));
+    } catch (error: any) {
+      if (error.name === 'AbortError') return;
+      setState(prev => ({
+        ...prev,
+        isLoading: false,
+        error: error.message || 'Failed to fetch health data'
+      }));
+    }
+  }, []);
+
   // Fetch data when active tab or project changes
   useEffect(() => {
     switch (state.activeTab) {
@@ -288,8 +441,14 @@ export function useGraph(project?: string) {
       case 'usage':
         fetchUsageStats();
         break;
+      case 'insights':
+        fetchInsightsData();
+        break;
+      case 'health':
+        fetchHealthData();
+        break;
     }
-  }, [state.activeTab, project, fetchConceptGraph, fetchObservationGraph, fetchProjectGraph, fetchUsageStats]);
+  }, [state.activeTab, project, fetchConceptGraph, fetchObservationGraph, fetchProjectGraph, fetchUsageStats, fetchInsightsData, fetchHealthData]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -314,14 +473,22 @@ export function useGraph(project?: string) {
       case 'usage':
         fetchUsageStats();
         break;
+      case 'insights':
+        fetchInsightsData();
+        break;
+      case 'health':
+        fetchHealthData();
+        break;
     }
-  }, [state.activeTab, fetchConceptGraph, fetchObservationGraph, fetchProjectGraph, fetchUsageStats]);
+  }, [state.activeTab, fetchConceptGraph, fetchObservationGraph, fetchProjectGraph, fetchUsageStats, fetchInsightsData, fetchHealthData]);
 
   return {
     conceptData: state.conceptData,
     observationData: state.observationData,
     projectData: state.projectData,
     usageData: state.usageData,
+    insightsData: state.insightsData,
+    healthData: state.healthData,
     isLoading: state.isLoading,
     error: state.error,
     activeTab: state.activeTab,

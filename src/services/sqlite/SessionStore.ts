@@ -12,7 +12,11 @@ import {
   UserPromptRecord,
   LatestPromptResult,
   WaitingSessionRecord,
-  ScheduledContinuationRecord
+  ScheduledContinuationRecord,
+  SystemLogRecord,
+  ErrorPatternRecord,
+  SystemLogLevel,
+  SystemLogComponent
 } from '../../types/database.js';
 
 /**
@@ -47,6 +51,7 @@ export class SessionStore {
     this.createWaitingSessionsTable();
     this.createScheduledContinuationsTable();
     this.addWaitingSessionsResponseSource();
+    this.createSystemLoggingTables();
   }
 
   /**
@@ -773,6 +778,402 @@ export class SessionStore {
       this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(15, new Date().toISOString());
     } catch (error: any) {
       console.error('[SessionStore] Migration error (add response_source column):', error.message);
+    }
+  }
+
+  /**
+   * Create system_logs and error_patterns tables for self-aware logging (migration 16)
+   * Enables the system to track its own errors, detect patterns, and facilitate self-healing
+   */
+  private createSystemLoggingTables(): void {
+    try {
+      // Check if migration already applied
+      const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(16) as SchemaVersion | undefined;
+      if (applied) return;
+
+      // Check if tables already exist
+      const logsInfo = this.db.pragma('table_info(system_logs)') as TableColumnInfo[];
+      const patternsInfo = this.db.pragma('table_info(error_patterns)') as TableColumnInfo[];
+
+      if (logsInfo.length > 0 && patternsInfo.length > 0) {
+        this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(16, new Date().toISOString());
+        return;
+      }
+
+      console.error('[SessionStore] Creating system_logs and error_patterns tables for self-aware logging...');
+
+      // Create system_logs table
+      if (logsInfo.length === 0) {
+        this.db.exec(`
+          CREATE TABLE system_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            level TEXT NOT NULL CHECK(level IN ('DEBUG', 'INFO', 'WARN', 'ERROR')),
+            component TEXT NOT NULL,
+            message TEXT NOT NULL,
+            context TEXT,
+            data TEXT,
+            error_stack TEXT,
+            created_at TEXT NOT NULL,
+            created_at_epoch INTEGER NOT NULL
+          );
+
+          CREATE INDEX idx_system_logs_level ON system_logs(level);
+          CREATE INDEX idx_system_logs_component ON system_logs(component);
+          CREATE INDEX idx_system_logs_created ON system_logs(created_at_epoch DESC);
+          CREATE INDEX idx_system_logs_level_created ON system_logs(level, created_at_epoch DESC);
+        `);
+        console.error('[SessionStore] Created system_logs table');
+      }
+
+      // Create error_patterns table
+      if (patternsInfo.length === 0) {
+        this.db.exec(`
+          CREATE TABLE error_patterns (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            error_hash TEXT UNIQUE NOT NULL,
+            error_message TEXT NOT NULL,
+            component TEXT NOT NULL,
+            first_seen_epoch INTEGER NOT NULL,
+            last_seen_epoch INTEGER NOT NULL,
+            occurrence_count INTEGER DEFAULT 1,
+            is_resolved INTEGER DEFAULT 0,
+            resolution_notes TEXT,
+            auto_resolution TEXT
+          );
+
+          CREATE INDEX idx_error_patterns_hash ON error_patterns(error_hash);
+          CREATE INDEX idx_error_patterns_component ON error_patterns(component);
+          CREATE INDEX idx_error_patterns_count ON error_patterns(occurrence_count DESC);
+          CREATE INDEX idx_error_patterns_resolved ON error_patterns(is_resolved);
+        `);
+        console.error('[SessionStore] Created error_patterns table');
+      }
+
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(16, new Date().toISOString());
+      console.error('[SessionStore] Successfully created system logging tables');
+    } catch (error: any) {
+      console.error('[SessionStore] Migration error (create system logging tables):', error.message);
+    }
+  }
+
+  // ===== System Logging Methods =====
+
+  /**
+   * Store a system log entry
+   */
+  storeSystemLog(
+    level: SystemLogLevel,
+    component: string,
+    message: string,
+    context?: Record<string, any>,
+    data?: any,
+    errorStack?: string
+  ): number {
+    try {
+      const now = new Date();
+
+      const stmt = this.db.prepare(`
+        INSERT INTO system_logs (level, component, message, context, data, error_stack, created_at, created_at_epoch)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+
+      const result = stmt.run(
+        level,
+        component,
+        message,
+        context ? JSON.stringify(context) : null,
+        data !== undefined ? JSON.stringify(data) : null,
+        errorStack || null,
+        now.toISOString(),
+        now.getTime()
+      );
+
+      return result.lastInsertRowid as number;
+    } catch (error: any) {
+      // Silently fail to avoid infinite recursion
+      console.error('[SessionStore] Failed to store system log:', error.message);
+      return -1;
+    }
+  }
+
+  /**
+   * Store multiple system logs in a batch (for buffered logging)
+   */
+  storeSystemLogBatch(logs: Array<{
+    level: SystemLogLevel;
+    component: string;
+    message: string;
+    context?: Record<string, any>;
+    data?: any;
+    errorStack?: string;
+    timestamp: Date;
+  }>): number {
+    if (logs.length === 0) return 0;
+
+    try {
+      const stmt = this.db.prepare(`
+        INSERT INTO system_logs (level, component, message, context, data, error_stack, created_at, created_at_epoch)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+
+      const insertMany = this.db.transaction((entries: typeof logs) => {
+        let count = 0;
+        for (const log of entries) {
+          stmt.run(
+            log.level,
+            log.component,
+            log.message,
+            log.context ? JSON.stringify(log.context) : null,
+            log.data !== undefined ? JSON.stringify(log.data) : null,
+            log.errorStack || null,
+            log.timestamp.toISOString(),
+            log.timestamp.getTime()
+          );
+          count++;
+        }
+        return count;
+      });
+
+      return insertMany(logs);
+    } catch (error: any) {
+      console.error('[SessionStore] Failed to store system log batch:', error.message);
+      return 0;
+    }
+  }
+
+  /**
+   * Track or update an error pattern
+   * @returns The error pattern ID and whether it was newly created
+   */
+  trackErrorPattern(
+    errorHash: string,
+    errorMessage: string,
+    component: string
+  ): { id: number; isNew: boolean; occurrenceCount: number } {
+    try {
+      const now = Date.now();
+
+      // Check if pattern exists
+      const existing = this.db.prepare(`
+        SELECT id, occurrence_count FROM error_patterns WHERE error_hash = ?
+      `).get(errorHash) as { id: number; occurrence_count: number } | undefined;
+
+      if (existing) {
+        // Update existing pattern
+        this.db.prepare(`
+          UPDATE error_patterns
+          SET last_seen_epoch = ?, occurrence_count = occurrence_count + 1
+          WHERE id = ?
+        `).run(now, existing.id);
+
+        return {
+          id: existing.id,
+          isNew: false,
+          occurrenceCount: existing.occurrence_count + 1
+        };
+      }
+
+      // Create new pattern
+      const result = this.db.prepare(`
+        INSERT INTO error_patterns (error_hash, error_message, component, first_seen_epoch, last_seen_epoch, occurrence_count)
+        VALUES (?, ?, ?, ?, ?, 1)
+      `).run(errorHash, errorMessage, component, now, now);
+
+      return {
+        id: result.lastInsertRowid as number,
+        isNew: true,
+        occurrenceCount: 1
+      };
+    } catch (error: any) {
+      console.error('[SessionStore] Failed to track error pattern:', error.message);
+      return { id: -1, isNew: false, occurrenceCount: 0 };
+    }
+  }
+
+  /**
+   * Get recent system logs with optional filtering
+   */
+  getRecentSystemLogs(options: {
+    level?: SystemLogLevel;
+    component?: string;
+    limit?: number;
+    since?: number;  // epoch timestamp
+  } = {}): SystemLogRecord[] {
+    const { level, component, limit = 100, since } = options;
+
+    const conditions: string[] = [];
+    const params: any[] = [];
+
+    if (level) {
+      conditions.push('level = ?');
+      params.push(level);
+    }
+    if (component) {
+      conditions.push('component = ?');
+      params.push(component);
+    }
+    if (since) {
+      conditions.push('created_at_epoch >= ?');
+      params.push(since);
+    }
+
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+    const stmt = this.db.prepare(`
+      SELECT * FROM system_logs
+      ${whereClause}
+      ORDER BY created_at_epoch DESC
+      LIMIT ?
+    `);
+
+    params.push(limit);
+    return stmt.all(...params) as SystemLogRecord[];
+  }
+
+  /**
+   * Get error patterns sorted by occurrence count
+   */
+  getErrorPatterns(options: {
+    resolved?: boolean;
+    component?: string;
+    limit?: number;
+    minOccurrences?: number;
+  } = {}): ErrorPatternRecord[] {
+    const { resolved, component, limit = 50, minOccurrences = 1 } = options;
+
+    const conditions: string[] = ['occurrence_count >= ?'];
+    const params: any[] = [minOccurrences];
+
+    if (resolved !== undefined) {
+      conditions.push('is_resolved = ?');
+      params.push(resolved ? 1 : 0);
+    }
+    if (component) {
+      conditions.push('component = ?');
+      params.push(component);
+    }
+
+    const whereClause = `WHERE ${conditions.join(' AND ')}`;
+
+    const stmt = this.db.prepare(`
+      SELECT * FROM error_patterns
+      ${whereClause}
+      ORDER BY occurrence_count DESC, last_seen_epoch DESC
+      LIMIT ?
+    `);
+
+    params.push(limit);
+    return stmt.all(...params) as ErrorPatternRecord[];
+  }
+
+  /**
+   * Mark an error pattern as resolved
+   */
+  resolveErrorPattern(errorHash: string, resolutionNotes: string, autoResolution?: object): boolean {
+    try {
+      const result = this.db.prepare(`
+        UPDATE error_patterns
+        SET is_resolved = 1, resolution_notes = ?, auto_resolution = ?
+        WHERE error_hash = ?
+      `).run(resolutionNotes, autoResolution ? JSON.stringify(autoResolution) : null, errorHash);
+
+      return result.changes > 0;
+    } catch (error: any) {
+      console.error('[SessionStore] Failed to resolve error pattern:', error.message);
+      return false;
+    }
+  }
+
+  /**
+   * Get system health summary
+   */
+  getSystemHealthSummary(): {
+    totalLogs: number;
+    errorCount24h: number;
+    warnCount24h: number;
+    unresolvedPatterns: number;
+    topErrors: Array<{ message: string; count: number; component: string }>;
+    componentErrorCounts: Record<string, number>;
+  } {
+    try {
+      const oneDayAgo = Date.now() - (24 * 60 * 60 * 1000);
+
+      // Total logs
+      const totalLogs = (this.db.prepare('SELECT COUNT(*) as count FROM system_logs').get() as { count: number }).count;
+
+      // Errors in last 24h
+      const errorCount24h = (this.db.prepare(
+        'SELECT COUNT(*) as count FROM system_logs WHERE level = ? AND created_at_epoch >= ?'
+      ).get('ERROR', oneDayAgo) as { count: number }).count;
+
+      // Warnings in last 24h
+      const warnCount24h = (this.db.prepare(
+        'SELECT COUNT(*) as count FROM system_logs WHERE level = ? AND created_at_epoch >= ?'
+      ).get('WARN', oneDayAgo) as { count: number }).count;
+
+      // Unresolved patterns
+      const unresolvedPatterns = (this.db.prepare(
+        'SELECT COUNT(*) as count FROM error_patterns WHERE is_resolved = 0'
+      ).get() as { count: number }).count;
+
+      // Top 5 errors
+      const topErrors = this.db.prepare(`
+        SELECT error_message as message, occurrence_count as count, component
+        FROM error_patterns
+        WHERE is_resolved = 0
+        ORDER BY occurrence_count DESC
+        LIMIT 5
+      `).all() as Array<{ message: string; count: number; component: string }>;
+
+      // Error counts by component (last 24h)
+      const componentCounts = this.db.prepare(`
+        SELECT component, COUNT(*) as count
+        FROM system_logs
+        WHERE level = 'ERROR' AND created_at_epoch >= ?
+        GROUP BY component
+        ORDER BY count DESC
+      `).all(oneDayAgo) as Array<{ component: string; count: number }>;
+
+      const componentErrorCounts: Record<string, number> = {};
+      for (const row of componentCounts) {
+        componentErrorCounts[row.component] = row.count;
+      }
+
+      return {
+        totalLogs,
+        errorCount24h,
+        warnCount24h,
+        unresolvedPatterns,
+        topErrors,
+        componentErrorCounts
+      };
+    } catch (error: any) {
+      console.error('[SessionStore] Failed to get system health summary:', error.message);
+      return {
+        totalLogs: 0,
+        errorCount24h: 0,
+        warnCount24h: 0,
+        unresolvedPatterns: 0,
+        topErrors: [],
+        componentErrorCounts: {}
+      };
+    }
+  }
+
+  /**
+   * Cleanup old system logs (older than specified days)
+   * @returns Number of logs deleted
+   */
+  cleanupOldSystemLogs(olderThanDays: number = 30): number {
+    try {
+      const cutoffEpoch = Date.now() - (olderThanDays * 24 * 60 * 60 * 1000);
+      const result = this.db.prepare(`
+        DELETE FROM system_logs WHERE created_at_epoch < ?
+      `).run(cutoffEpoch);
+      return result.changes;
+    } catch (error: any) {
+      console.error('[SessionStore] Failed to cleanup old system logs:', error.message);
+      return 0;
     }
   }
 

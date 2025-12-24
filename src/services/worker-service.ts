@@ -58,6 +58,7 @@ import { DataRoutes } from './worker/http/routes/DataRoutes.js';
 import { SearchRoutes } from './worker/http/routes/SearchRoutes.js';
 import { SettingsRoutes } from './worker/http/routes/SettingsRoutes.js';
 import { GraphRoutes } from './worker/http/routes/GraphRoutes.js';
+import { HealthRoutes } from './worker/http/routes/HealthRoutes.js';
 import { GraphService } from './worker/GraphService.js';
 
 // Import notification system
@@ -85,6 +86,7 @@ export class WorkerService {
   private searchRoutes: SearchRoutes | null;
   private settingsRoutes: SettingsRoutes;
   private graphRoutes: GraphRoutes | null;
+  private healthRoutes: HealthRoutes | null;
 
   // Notification system
   private notificationManager: NotificationManager | null = null;
@@ -116,9 +118,10 @@ export class WorkerService {
     this.viewerRoutes = new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager);
     this.sessionRoutes = new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.sessionEventBroadcaster, this);
     this.dataRoutes = new DataRoutes(this.paginationHelper, this.dbManager, this.sessionManager, this.sseBroadcaster, this, this.startTime);
-    // SearchRoutes and GraphRoutes need initialized DB - will be created in initializeBackground()
+    // SearchRoutes, GraphRoutes, and HealthRoutes need initialized DB - will be created in initializeBackground()
     this.searchRoutes = null;
     this.graphRoutes = null;
+    this.healthRoutes = null;
     this.settingsRoutes = new SettingsRoutes(this.settingsManager);
 
     this.setupMiddleware();
@@ -176,6 +179,15 @@ export class WorkerService {
     // Initialize database (once, stays open)
     await this.dbManager.initialize();
 
+    // Initialize database sink for logger (enables self-aware logging)
+    const sessionStore = this.dbManager.getSessionStore();
+    logger.initializeDatabaseSink({
+      storeSystemLog: sessionStore.storeSystemLog.bind(sessionStore),
+      storeSystemLogBatch: sessionStore.storeSystemLogBatch.bind(sessionStore),
+      trackErrorPattern: sessionStore.trackErrorPattern.bind(sessionStore)
+    });
+    logger.info('SYSTEM', 'Database logging sink initialized');
+
     // Initialize search services (requires initialized database)
     const formattingService = new FormattingService();
     const timelineService = new TimelineService();
@@ -193,7 +205,11 @@ export class WorkerService {
     const graphService = new GraphService(this.dbManager.getSessionStore());
     this.graphRoutes = new GraphRoutes(graphService);
     this.graphRoutes.setupRoutes(this.app);
-    logger.info('WORKER', 'SearchManager and GraphService initialized, routes registered');
+
+    // Initialize health routes (requires initialized database)
+    this.healthRoutes = new HealthRoutes(sessionStore);
+    this.healthRoutes.setupRoutes(this.app);
+    logger.info('WORKER', 'SearchManager, GraphService, and HealthRoutes initialized');
 
     // Initialize notification system (requires initialized database)
     this.notificationManager = new NotificationManager(this.dbManager.getSessionStore());

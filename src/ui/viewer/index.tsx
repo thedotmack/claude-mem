@@ -1,5 +1,6 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
+import '@xyflow/react/dist/style.css';  // React Flow base styles (required for nodes/edges to render)
 import { App } from './App';
 import { ErrorBoundary } from './components/ErrorBoundary';
 

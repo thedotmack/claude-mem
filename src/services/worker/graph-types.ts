@@ -155,6 +155,103 @@ export interface UsageStatsData {
   };
 }
 
+// ========== Cross-Project Insights ==========
+
+export interface CrossProjectPattern {
+  /** Pattern ID (concept or concept pair) */
+  id: string;
+  /** Type of pattern */
+  patternType: 'shared_concept' | 'problem_solution' | 'common_approach' | 'tech_stack';
+  /** Human-readable description */
+  description: string;
+  /** Projects that share this pattern */
+  projects: string[];
+  /** Number of observations with this pattern */
+  observationCount: number;
+  /** Sample observation IDs */
+  sampleObservationIds: number[];
+  /** Strength score (0-1) */
+  strength: number;
+}
+
+export interface ProjectSynergy {
+  /** First project */
+  project1: string;
+  /** Second project */
+  project2: string;
+  /** Shared patterns between projects */
+  sharedPatterns: string[];
+  /** Synergy score (0-1) based on overlap */
+  synergyScore: number;
+  /** Potential learnings project1 could apply from project2 */
+  potentialLearnings: string[];
+}
+
+export interface ProblemSolutionCluster {
+  /** Cluster ID */
+  id: string;
+  /** Problem type or description */
+  problemType: string;
+  /** Observations in this cluster */
+  observations: Array<{
+    id: number;
+    title: string;
+    project: string;
+    type: string;
+  }>;
+  /** Common approaches used */
+  commonApproaches: string[];
+  /** Projects that solved similar problems */
+  projectsInvolved: string[];
+}
+
+export interface InsightsData {
+  /** Cross-project patterns */
+  crossProjectPatterns: CrossProjectPattern[];
+  /** Project synergies (pairs of projects with high overlap) */
+  projectSynergies: ProjectSynergy[];
+  /** Problem-solution clusters */
+  problemClusters: ProblemSolutionCluster[];
+  /** Summary statistics */
+  summary: {
+    totalPatterns: number;
+    totalSynergies: number;
+    totalClusters: number;
+    mostConnectedProjects: string[];
+    topSharedConcepts: string[];
+  };
+}
+
+// ========== Session Clustering ==========
+
+export interface SessionCluster {
+  /** Session ID */
+  sessionId: string;
+  /** Project */
+  project: string;
+  /** Observations in this session */
+  observations: ObservationNode[];
+  /** Session start time */
+  startTime: number;
+  /** Session end time */
+  endTime: number;
+  /** Main concepts in this session */
+  mainConcepts: string[];
+  /** Session type based on observation types */
+  sessionType: 'feature_work' | 'bug_fixing' | 'refactoring' | 'exploration' | 'mixed';
+}
+
+export interface SessionClusteredData {
+  clusters: SessionCluster[];
+  standaloneObservations: ObservationNode[];
+  stats: {
+    totalSessions: number;
+    avgObservationsPerSession: number;
+    longestSession: string;
+    mostProductiveSession: string;
+  };
+}
+
 // ========== API Response Types ==========
 
 export interface GraphApiResponse<T> {

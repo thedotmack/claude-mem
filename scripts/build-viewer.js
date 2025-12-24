@@ -13,8 +13,8 @@ async function buildViewer() {
   console.log('Building React viewer...');
 
   try {
-    // Build React app
-    await esbuild.build({
+    // Build React app with CSS bundling
+    const result = await esbuild.build({
       entryPoints: [path.join(rootDir, 'src/ui/viewer/index.tsx')],
       bundle: true,
       minify: true,
@@ -25,18 +25,44 @@ async function buildViewer() {
       jsx: 'automatic',
       loader: {
         '.tsx': 'tsx',
-        '.ts': 'ts'
+        '.ts': 'ts',
+        '.css': 'css'  // Handle CSS imports (React Flow styles)
       },
       define: {
         'process.env.NODE_ENV': '"production"'
-      }
+      },
+      metafile: true
     });
 
-    // Copy HTML template to build output
-    const htmlTemplate = fs.readFileSync(
+    // Read React Flow CSS from node_modules and prepare for injection
+    const reactFlowCssPath = path.join(rootDir, 'node_modules/@xyflow/react/dist/style.css');
+    let reactFlowCss = '';
+    if (fs.existsSync(reactFlowCssPath)) {
+      reactFlowCss = fs.readFileSync(reactFlowCssPath, 'utf-8');
+      console.log('  - React Flow CSS loaded from node_modules');
+    } else {
+      console.warn('  ⚠ React Flow CSS not found at node_modules/@xyflow/react/dist/style.css');
+    }
+
+    // Copy HTML template and inject React Flow CSS
+    let htmlTemplate = fs.readFileSync(
       path.join(rootDir, 'src/ui/viewer-template.html'),
       'utf-8'
     );
+
+    // Inject React Flow CSS before the closing </style> tag in the template
+    if (reactFlowCss) {
+      // Find the last </style> tag and inject before it
+      const styleCloseIndex = htmlTemplate.lastIndexOf('</style>');
+      if (styleCloseIndex !== -1) {
+        htmlTemplate = htmlTemplate.slice(0, styleCloseIndex) +
+          '\n    /* ========== React Flow Base Styles (injected at build time) ========== */\n' +
+          reactFlowCss + '\n' +
+          htmlTemplate.slice(styleCloseIndex);
+        console.log('  - React Flow CSS injected into HTML template');
+      }
+    }
+
     fs.writeFileSync(
       path.join(rootDir, 'plugin/ui/viewer.html'),
       htmlTemplate

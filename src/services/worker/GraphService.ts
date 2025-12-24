@@ -15,7 +15,13 @@ import {
   ProjectEdge,
   ProjectGraphData,
   UsageStatsEntry,
-  UsageStatsData
+  UsageStatsData,
+  CrossProjectPattern,
+  ProjectSynergy,
+  ProblemSolutionCluster,
+  InsightsData,
+  SessionCluster,
+  SessionClusteredData
 } from './graph-types.js';
 
 interface ObservationRow {
@@ -541,6 +547,352 @@ export class GraphService {
         totalObservationsAccessed,
         avgAccessesPerObservation: Math.round(avgAccessesPerObservation * 100) / 100,
         topAccessType
+      }
+    };
+  }
+
+  /**
+   * Get cross-project insights and patterns
+   * Identifies shared concepts, problem-solution clusters, and synergies
+   */
+  getInsights(limit: number = 50): InsightsData {
+    const db = this.sessionStore.db;
+
+    // Get all observations with concepts
+    const observations = db.prepare(`
+      SELECT id, project, type, title, concepts, created_at_epoch
+      FROM observations
+      WHERE concepts IS NOT NULL AND concepts != '[]'
+      ORDER BY created_at_epoch DESC
+    `).all() as ObservationRow[];
+
+    // Build concept -> projects mapping
+    const conceptProjects = new Map<string, Set<string>>();
+    const conceptObservations = new Map<string, Array<{ id: number; project: string; title: string; type: string }>>();
+
+    for (const obs of observations) {
+      try {
+        const concepts = JSON.parse(obs.concepts || '[]') as string[];
+        for (const concept of concepts) {
+          // Track which projects use this concept
+          const projects = conceptProjects.get(concept) || new Set();
+          projects.add(obs.project);
+          conceptProjects.set(concept, projects);
+
+          // Track observations with this concept
+          const obsArray = conceptObservations.get(concept) || [];
+          obsArray.push({ id: obs.id, project: obs.project, title: obs.title || `Observation #${obs.id}`, type: obs.type });
+          conceptObservations.set(concept, obsArray);
+        }
+      } catch {}
+    }
+
+    // Find cross-project patterns (concepts used in 2+ projects)
+    const crossProjectPatterns: CrossProjectPattern[] = [];
+
+    for (const [concept, projects] of conceptProjects) {
+      if (projects.size >= 2) {
+        const obsForConcept = conceptObservations.get(concept) || [];
+        const projectArray = Array.from(projects);
+
+        // Determine pattern type based on concept name
+        let patternType: CrossProjectPattern['patternType'] = 'shared_concept';
+        if (concept.includes('problem') || concept.includes('fix') || concept.includes('bug')) {
+          patternType = 'problem_solution';
+        } else if (concept.includes('pattern') || concept.includes('approach') || concept.includes('architecture')) {
+          patternType = 'common_approach';
+        } else if (concept.includes('react') || concept.includes('typescript') || concept.includes('node') || concept.includes('python')) {
+          patternType = 'tech_stack';
+        }
+
+        crossProjectPatterns.push({
+          id: concept,
+          patternType,
+          description: `"${concept}" is used across ${projects.size} projects`,
+          projects: projectArray,
+          observationCount: obsForConcept.length,
+          sampleObservationIds: obsForConcept.slice(0, 5).map(o => o.id),
+          strength: Math.min(1, (projects.size * obsForConcept.length) / 20) // Normalize to 0-1
+        });
+      }
+    }
+
+    // Sort by strength and limit
+    crossProjectPatterns.sort((a, b) => b.strength - a.strength);
+    const topPatterns = crossProjectPatterns.slice(0, limit);
+
+    // Calculate project synergies
+    const projectSynergies: ProjectSynergy[] = [];
+    const allProjects = new Set<string>();
+    for (const obs of observations) {
+      allProjects.add(obs.project);
+    }
+
+    const projectArray = Array.from(allProjects);
+    for (let i = 0; i < projectArray.length; i++) {
+      for (let j = i + 1; j < projectArray.length; j++) {
+        const p1 = projectArray[i];
+        const p2 = projectArray[j];
+
+        // Find shared concepts between projects
+        const sharedPatterns: string[] = [];
+        for (const [concept, projects] of conceptProjects) {
+          if (projects.has(p1) && projects.has(p2)) {
+            sharedPatterns.push(concept);
+          }
+        }
+
+        if (sharedPatterns.length > 0) {
+          // Find concepts unique to each project that could be learnings
+          const p1Concepts = new Set<string>();
+          const p2Concepts = new Set<string>();
+
+          for (const [concept, projects] of conceptProjects) {
+            if (projects.has(p1)) p1Concepts.add(concept);
+            if (projects.has(p2)) p2Concepts.add(concept);
+          }
+
+          const potentialLearnings = Array.from(p2Concepts)
+            .filter(c => !p1Concepts.has(c))
+            .slice(0, 5);
+
+          // Calculate synergy score based on shared concepts
+          const synergyScore = Math.min(1, sharedPatterns.length / 10);
+
+          projectSynergies.push({
+            project1: p1,
+            project2: p2,
+            sharedPatterns,
+            synergyScore,
+            potentialLearnings
+          });
+        }
+      }
+    }
+
+    // Sort by synergy score
+    projectSynergies.sort((a, b) => b.synergyScore - a.synergyScore);
+    const topSynergies = projectSynergies.slice(0, 20);
+
+    // Build problem-solution clusters
+    const problemClusters: ProblemSolutionCluster[] = [];
+    const problemConcepts = ['bugfix', 'fix', 'problem-solution', 'debugging', 'error-handling'];
+
+    for (const problemConcept of problemConcepts) {
+      const obsWithConcept = conceptObservations.get(problemConcept);
+      if (obsWithConcept && obsWithConcept.length >= 2) {
+        const projectsInvolved = [...new Set(obsWithConcept.map(o => o.project))];
+
+        // Find common approaches in these observations
+        const approachConcepts = new Set<string>();
+        for (const obs of obsWithConcept) {
+          const fullObs = observations.find(o => o.id === obs.id);
+          if (fullObs) {
+            try {
+              const concepts = JSON.parse(fullObs.concepts || '[]') as string[];
+              for (const c of concepts) {
+                if (c !== problemConcept && !problemConcepts.includes(c)) {
+                  approachConcepts.add(c);
+                }
+              }
+            } catch {}
+          }
+        }
+
+        problemClusters.push({
+          id: `cluster-${problemConcept}`,
+          problemType: problemConcept,
+          observations: obsWithConcept.slice(0, 10),
+          commonApproaches: Array.from(approachConcepts).slice(0, 5),
+          projectsInvolved
+        });
+      }
+    }
+
+    // Find most connected projects
+    const projectConnectionCounts = new Map<string, number>();
+    for (const synergy of projectSynergies) {
+      projectConnectionCounts.set(synergy.project1, (projectConnectionCounts.get(synergy.project1) || 0) + synergy.sharedPatterns.length);
+      projectConnectionCounts.set(synergy.project2, (projectConnectionCounts.get(synergy.project2) || 0) + synergy.sharedPatterns.length);
+    }
+
+    const mostConnectedProjects = Array.from(projectConnectionCounts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([p]) => p);
+
+    // Find top shared concepts
+    const topSharedConcepts = topPatterns
+      .slice(0, 5)
+      .map(p => p.id);
+
+    return {
+      crossProjectPatterns: topPatterns,
+      projectSynergies: topSynergies,
+      problemClusters,
+      summary: {
+        totalPatterns: crossProjectPatterns.length,
+        totalSynergies: projectSynergies.length,
+        totalClusters: problemClusters.length,
+        mostConnectedProjects,
+        topSharedConcepts
+      }
+    };
+  }
+
+  /**
+   * Get session-clustered observation data
+   * Groups observations by their sdk_session_id for timeline visualization
+   */
+  getSessionClusters(project?: string, limit: number = 100): SessionClusteredData {
+    const db = this.sessionStore.db;
+
+    // Get observations with session info
+    let query = `
+      SELECT
+        o.id,
+        o.project,
+        o.type,
+        o.title,
+        o.concepts,
+        o.created_at_epoch,
+        o.sdk_session_id,
+        COALESCE(
+          (SELECT COUNT(*) FROM observation_access WHERE observation_id = o.id),
+          0
+        ) as usage_count,
+        (SELECT MAX(accessed_at_epoch) FROM observation_access WHERE observation_id = o.id) as last_accessed
+      FROM observations o
+      WHERE 1=1
+    `;
+    const params: any[] = [];
+
+    if (project) {
+      query += ' AND o.project = ?';
+      params.push(project);
+    }
+
+    query += ' ORDER BY o.created_at_epoch DESC LIMIT ?';
+    params.push(limit);
+
+    const observations = db.prepare(query).all(...params) as Array<ObservationRow & {
+      usage_count: number;
+      last_accessed: number | null;
+    }>;
+
+    // Group observations by session
+    const sessionMap = new Map<string, Array<ObservationRow & { usage_count: number; last_accessed: number | null }>>();
+    const standaloneObs: ObservationNode[] = [];
+
+    for (const obs of observations) {
+      if (obs.sdk_session_id) {
+        const existing = sessionMap.get(obs.sdk_session_id) || [];
+        existing.push(obs);
+        sessionMap.set(obs.sdk_session_id, existing);
+      } else {
+        standaloneObs.push({
+          id: obs.id,
+          title: obs.title || `Observation #${obs.id}`,
+          type: obs.type,
+          project: obs.project,
+          usageCount: obs.usage_count,
+          createdAt: obs.created_at_epoch,
+          lastAccessed: obs.last_accessed
+        });
+      }
+    }
+
+    // Build session clusters
+    const clusters: SessionCluster[] = [];
+    let longestSession = '';
+    let longestDuration = 0;
+    let mostProductiveSession = '';
+    let maxObservations = 0;
+
+    for (const [sessionId, obsArray] of sessionMap) {
+      if (obsArray.length < 1) continue;
+
+      // Convert to ObservationNodes
+      const obsNodes: ObservationNode[] = obsArray.map(obs => ({
+        id: obs.id,
+        title: obs.title || `Observation #${obs.id}`,
+        type: obs.type,
+        project: obs.project,
+        usageCount: obs.usage_count,
+        createdAt: obs.created_at_epoch,
+        lastAccessed: obs.last_accessed
+      }));
+
+      // Calculate session times
+      const startTime = Math.min(...obsArray.map(o => o.created_at_epoch));
+      const endTime = Math.max(...obsArray.map(o => o.created_at_epoch));
+      const duration = endTime - startTime;
+
+      // Extract main concepts
+      const conceptCounts = new Map<string, number>();
+      for (const obs of obsArray) {
+        try {
+          const concepts = JSON.parse(obs.concepts || '[]') as string[];
+          for (const c of concepts) {
+            conceptCounts.set(c, (conceptCounts.get(c) || 0) + 1);
+          }
+        } catch {}
+      }
+      const mainConcepts = Array.from(conceptCounts.entries())
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5)
+        .map(([c]) => c);
+
+      // Determine session type
+      const typeCounts = new Map<string, number>();
+      for (const obs of obsArray) {
+        typeCounts.set(obs.type, (typeCounts.get(obs.type) || 0) + 1);
+      }
+      const dominantType = Array.from(typeCounts.entries())
+        .sort((a, b) => b[1] - a[1])[0]?.[0] || 'mixed';
+
+      let sessionType: SessionCluster['sessionType'] = 'mixed';
+      if (dominantType === 'feature') sessionType = 'feature_work';
+      else if (dominantType === 'bugfix') sessionType = 'bug_fixing';
+      else if (dominantType === 'refactor') sessionType = 'refactoring';
+      else if (dominantType === 'discovery') sessionType = 'exploration';
+
+      clusters.push({
+        sessionId,
+        project: obsArray[0].project,
+        observations: obsNodes,
+        startTime,
+        endTime,
+        mainConcepts,
+        sessionType
+      });
+
+      // Track longest and most productive
+      if (duration > longestDuration) {
+        longestDuration = duration;
+        longestSession = sessionId;
+      }
+      if (obsArray.length > maxObservations) {
+        maxObservations = obsArray.length;
+        mostProductiveSession = sessionId;
+      }
+    }
+
+    // Sort clusters by start time (most recent first)
+    clusters.sort((a, b) => b.startTime - a.startTime);
+
+    const avgObservationsPerSession = clusters.length > 0
+      ? clusters.reduce((sum, c) => sum + c.observations.length, 0) / clusters.length
+      : 0;
+
+    return {
+      clusters,
+      standaloneObservations: standaloneObs,
+      stats: {
+        totalSessions: clusters.length,
+        avgObservationsPerSession: Math.round(avgObservationsPerSession * 10) / 10,
+        longestSession,
+        mostProductiveSession
       }
     };
   }

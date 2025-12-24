@@ -20,6 +20,9 @@ export class GraphRoutes extends BaseRouteHandler {
     app.get('/api/graph/observations', this.handleObservationGraph.bind(this));
     app.get('/api/graph/projects', this.handleProjectGraph.bind(this));
     app.get('/api/graph/usage-stats', this.handleUsageStats.bind(this));
+    // Cross-project insights and session clustering
+    app.get('/api/graph/insights', this.handleInsights.bind(this));
+    app.get('/api/graph/sessions', this.handleSessionClusters.bind(this));
   }
 
   /**
@@ -64,6 +67,29 @@ export class GraphRoutes extends BaseRouteHandler {
     const limit = parseInt(req.query.limit as string) || 50;
 
     const data = this.graphService.getUsageStats(project, limit);
+    res.json({ success: true, data });
+  });
+
+  /**
+   * Get cross-project insights and patterns
+   * GET /api/graph/insights?limit=50
+   */
+  private handleInsights = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const limit = parseInt(req.query.limit as string) || 50;
+
+    const data = this.graphService.getInsights(limit);
+    res.json({ success: true, data });
+  });
+
+  /**
+   * Get session-clustered observation data
+   * GET /api/graph/sessions?project=&limit=100
+   */
+  private handleSessionClusters = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const project = req.query.project as string | undefined;
+    const limit = parseInt(req.query.limit as string) || 100;
+
+    const data = this.graphService.getSessionClusters(project, limit);
     res.json({ success: true, data });
   });
 }
