@@ -8,7 +8,44 @@ import { ProcessManager } from "../services/process/ProcessManager.js";
 import { SettingsDefaultsManager } from "./SettingsDefaultsManager.js";
 import { getWorkerRestartInstructions } from "../utils/error-messages.js";
 
-const MARKETPLACE_ROOT = path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
+// Plugin can be installed in either marketplace or cache location
+const MARKETPLACE_PATH = path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
+const CACHE_PATH = path.join(homedir(), '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem');
+
+// Find the actual plugin root (marketplace takes precedence, then latest cache version)
+function getPluginRoot(): string {
+  // Check marketplace first
+  if (existsSync(path.join(MARKETPLACE_PATH, 'plugin', 'package.json'))) {
+    return path.join(MARKETPLACE_PATH, 'plugin');
+  }
+  if (existsSync(path.join(MARKETPLACE_PATH, 'package.json'))) {
+    return MARKETPLACE_PATH;
+  }
+
+  // Check cache - find latest version
+  if (existsSync(CACHE_PATH)) {
+    try {
+      const { readdirSync } = require('fs');
+      const versions = readdirSync(CACHE_PATH)
+        .filter((v: string) => /^\d+\.\d+\.\d+$/.test(v))
+        .sort((a: string, b: string) => {
+          const [aMaj, aMin, aPat] = a.split('.').map(Number);
+          const [bMaj, bMin, bPat] = b.split('.').map(Number);
+          return bMaj - aMaj || bMin - aMin || bPat - aPat;
+        });
+      if (versions.length > 0) {
+        return path.join(CACHE_PATH, versions[0]);
+      }
+    } catch {
+      // Fall through to default
+    }
+  }
+
+  // Default to marketplace path (for backwards compatibility)
+  return MARKETPLACE_PATH;
+}
+
+const MARKETPLACE_ROOT = getPluginRoot();
 
 // Named constants for health checks
 const HEALTH_CHECK_TIMEOUT_MS = getTimeout(HOOK_TIMEOUTS.HEALTH_CHECK);
