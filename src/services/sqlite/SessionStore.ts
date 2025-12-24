@@ -2001,4 +2001,57 @@ export class SessionStore {
 
     return { imported: true, id: result.lastInsertRowid as number };
   }
+
+  // ===== Usage Tracking Methods =====
+  // These are stub methods to maintain API compatibility with graph visualization features
+  // The observation_access table may not exist in all installations
+
+  /**
+   * Log multiple observation accesses in a batch (for context injection tracking)
+   * This is a no-op stub - usage tracking is optional and won't break if table doesn't exist
+   */
+  logObservationAccessBatch(
+    observationIds: number[],
+    accessType: 'context_injection' | 'search_result' | 'manual_view',
+    sdkSessionId?: string
+  ): void {
+    if (observationIds.length === 0) return;
+
+    try {
+      // Check if table exists first
+      const tableExists = this.db.query(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='observation_access'"
+      ).get();
+
+      if (!tableExists) return; // Silently skip if table doesn't exist
+
+      const now = new Date();
+      const nowIso = now.toISOString();
+      const nowEpoch = Math.floor(now.getTime() / 1000);
+
+      const stmt = this.db.prepare(`
+        INSERT INTO observation_access (observation_id, access_type, accessed_at, accessed_at_epoch, sdk_session_id)
+        VALUES (?, ?, ?, ?, ?)
+      `);
+
+      for (const id of observationIds) {
+        stmt.run(id, accessType, nowIso, nowEpoch, sdkSessionId || null);
+      }
+    } catch (error: unknown) {
+      // Log but don't throw - usage tracking shouldn't break core functionality
+      const err = error as Error;
+      console.error('[SessionStore] Failed to log observation access batch:', err.message);
+    }
+  }
+
+  /**
+   * Log a single observation access event
+   */
+  logObservationAccess(
+    observationId: number,
+    accessType: 'context_injection' | 'search_result' | 'manual_view',
+    sdkSessionId?: string
+  ): void {
+    this.logObservationAccessBatch([observationId], accessType, sdkSessionId);
+  }
 }
