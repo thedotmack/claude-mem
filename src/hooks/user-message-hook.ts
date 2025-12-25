@@ -37,4 +37,4 @@ console.error(
   `\n📺 Watch live in browser http://localhost:${port}/\n`
 );
 
-process.exit(HOOK_EXIT_CODES.USER_MESSAGE_ONLY);
+process.exit(HOOK_EXIT_CODES.SUCCESS);

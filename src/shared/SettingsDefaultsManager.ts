@@ -38,6 +38,12 @@ export interface SettingsDefaults {
   // Feature Toggles
   CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: string;
   CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: string;
+  // Phase 2: Surprise & Momentum (Titans concepts)
+  CLAUDE_MEM_SURPRISE_ENABLED: string;
+  CLAUDE_MEM_SURPRISE_THRESHOLD: string;
+  CLAUDE_MEM_SURPRISE_LOOKBACK_DAYS: string;
+  CLAUDE_MEM_MOMENTUM_ENABLED: string;
+  CLAUDE_MEM_MOMENTUM_DURATION_MINUTES: string;
 }
 
 export class SettingsDefaultsManager {
@@ -71,6 +77,12 @@ export class SettingsDefaultsManager {
     // Feature Toggles
     CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: 'true',
     CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: 'false',
+    // Phase 2: Surprise & Momentum (Titans concepts)
+    CLAUDE_MEM_SURPRISE_ENABLED: 'true',
+    CLAUDE_MEM_SURPRISE_THRESHOLD: '0.3',
+    CLAUDE_MEM_SURPRISE_LOOKBACK_DAYS: '30',
+    CLAUDE_MEM_MOMENTUM_ENABLED: 'true',
+    CLAUDE_MEM_MOMENTUM_DURATION_MINUTES: '5',
   };
 
   /**
