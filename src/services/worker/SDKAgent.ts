@@ -145,8 +145,6 @@ export class SDKAgent {
         duration: `${(sessionDuration / 1000).toFixed(1)}s`
       });
 
-      this.dbManager.getSessionStore().markSessionCompleted(session.sessionDbId);
-
     } catch (error: any) {
       if (error.name === 'AbortError') {
         logger.warn('SDK', 'Agent aborted', { sessionId: session.sessionDbId });
