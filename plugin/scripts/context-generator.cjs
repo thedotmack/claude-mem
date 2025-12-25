@@ -319,17 +319,17 @@ ${e.stack}`:e.message;if(Array.isArray(e))return`[${e.length} items]`;let t=Obje
       FROM user_prompts
       WHERE claude_session_id = ? AND prompt_number = ?
       LIMIT 1
-    `).get(e,t)?.prompt_text??null}storeObservation(e,t,s,n,i=0){let a=new Date,c=a.getTime(),l=this.db.prepare(`
+    `).get(e,t)?.prompt_text??null}storeObservation(e,t,s,n,i=0,a){let c=a??Date.now(),p=new Date(c).toISOString(),u=this.db.prepare(`
       INSERT INTO observations
       (sdk_session_id, project, type, title, subtitle, facts, narrative, concepts,
        files_read, files_modified, prompt_number, discovery_tokens, created_at, created_at_epoch)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(e,t,s.type,s.title,s.subtitle,JSON.stringify(s.facts),s.narrative,JSON.stringify(s.concepts),JSON.stringify(s.files_read),JSON.stringify(s.files_modified),n||null,i,a.toISOString(),c);return{id:Number(l.lastInsertRowid),createdAtEpoch:c}}storeSummary(e,t,s,n,i=0){let a=new Date,c=a.getTime(),l=this.db.prepare(`
+    `).run(e,t,s.type,s.title,s.subtitle,JSON.stringify(s.facts),s.narrative,JSON.stringify(s.concepts),JSON.stringify(s.files_read),JSON.stringify(s.files_modified),n||null,i,p,c);return{id:Number(u.lastInsertRowid),createdAtEpoch:c}}storeSummary(e,t,s,n,i=0,a){let c=a??Date.now(),p=new Date(c).toISOString(),u=this.db.prepare(`
       INSERT INTO session_summaries
       (sdk_session_id, project, request, investigated, learned, completed,
        next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(e,t,s.request,s.investigated,s.learned,s.completed,s.next_steps,s.notes,n||null,i,a.toISOString(),c);return{id:Number(l.lastInsertRowid),createdAtEpoch:c}}getSessionSummariesByIds(e,t={}){if(e.length===0)return[];let{orderBy:s="date_desc",limit:n,project:i}=t,a=s==="date_asc"?"ASC":"DESC",c=n?`LIMIT ${n}`:"",p=e.map(()=>"?").join(","),l=[...e],u=i?`WHERE id IN (${p}) AND project = ?`:`WHERE id IN (${p})`;return i&&l.push(i),this.db.prepare(`
+    `).run(e,t,s.request,s.investigated,s.learned,s.completed,s.next_steps,s.notes,n||null,i,p,c);return{id:Number(u.lastInsertRowid),createdAtEpoch:c}}getSessionSummariesByIds(e,t={}){if(e.length===0)return[];let{orderBy:s="date_desc",limit:n,project:i}=t,a=s==="date_asc"?"ASC":"DESC",c=n?`LIMIT ${n}`:"",p=e.map(()=>"?").join(","),l=[...e],u=i?`WHERE id IN (${p}) AND project = ?`:`WHERE id IN (${p})`;return i&&l.push(i),this.db.prepare(`
       SELECT * FROM session_summaries
       ${u}
       ORDER BY created_at_epoch ${a}

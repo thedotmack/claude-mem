@@ -110,6 +110,11 @@
     "header_summary_checkpoint": "INVESTIGATION SUMMARY CHECKPOINT\n================================",
 
     "continuation_greeting": "Hello memory agent, you are continuing to observe the email fraud investigation session.",
-    "continuation_instruction": "IMPORTANT: Continue generating observations from tool use messages using the XML structure below."
+    "continuation_instruction": "IMPORTANT: Continue generating observations from tool use messages using the XML structure below.",
+
+    "summary_instruction": "Write progress notes of what was discovered, what entities were identified, and what investigation steps are next. This is a checkpoint to capture investigation progress so far. The session is ongoing - you may receive more tool executions after this summary. Write \"next_steps\" as the current trajectory of investigation (what's actively being examined or coming up next), not as post-session future work. Always write at least a minimal summary explaining current investigation progress, even if work is still in early stages.",
+    "summary_context_label": "Claude's Full Investigation Response:",
+    "summary_format_instruction": "Respond in this XML format:",
+    "summary_footer": "IMPORTANT! DO NOT do any work right now other than generating this next INVESTIGATION SUMMARY - and remember that you are a memory agent designed to summarize a DIFFERENT investigation session, not this one.\n\nNever reference yourself or your own actions. Do not output anything other than the summary content formatted in the XML structure above. All other output is ignored by the system.\n\nThank you, this summary will be very useful for tracking investigation progress!"
   }
 }

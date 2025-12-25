@@ -427,6 +427,16 @@ export class WorkerService {
       // Initialize database (once, stays open)
       await this.dbManager.initialize();
 
+      // Recover stuck messages from previous crashes
+      // Messages stuck in 'processing' state are reset to 'pending' for reprocessing
+      const { PendingMessageStore } = await import('./sqlite/PendingMessageStore.js');
+      const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
+      const STUCK_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
+      const resetCount = pendingStore.resetStuckMessages(STUCK_THRESHOLD_MS);
+      if (resetCount > 0) {
+        logger.info('SYSTEM', `Recovered ${resetCount} stuck messages from previous session`, { thresholdMinutes: 5 });
+      }
+
       // Initialize search services (requires initialized database)
       const formattingService = new FormattingService();
       const timelineService = new TimelineService();
@@ -464,10 +474,63 @@ export class WorkerService {
       this.initializationCompleteFlag = true;
       this.resolveInitialization();
       logger.info('SYSTEM', 'Background initialization complete');
+
+      // Process orphaned session queues (timestamp fix validated and working)
+      this.processOrphanedQueues(pendingStore).catch((err: Error) => {
+        logger.warn('SYSTEM', 'Orphan queue processing failed', {}, err);
+      });
     } catch (error) {
       logger.error('SYSTEM', 'Background initialization failed', {}, error as Error);
       // Don't resolve - let the promise remain pending so readiness check continues to fail
       throw error;
+    }
+  }
+
+  /**
+   * Process orphaned session queues from previous worker instances
+   * Starts SDK agents for sessions that have pending messages but no active processor
+   */
+  private async processOrphanedQueues(pendingStore: import('./sqlite/PendingMessageStore.js').PendingMessageStore): Promise<void> {
+    const orphanedSessionIds = pendingStore.getSessionsWithPendingMessages();
+
+    if (orphanedSessionIds.length === 0) {
+      return;
+    }
+
+    logger.info('SYSTEM', `Processing ${orphanedSessionIds.length} orphaned session queues`, {
+      sessionIds: orphanedSessionIds.slice(0, 10), // Log first 10
+      totalSessions: orphanedSessionIds.length
+    });
+
+    // Process each orphaned session sequentially to avoid overwhelming the system
+    for (const sessionDbId of orphanedSessionIds) {
+      try {
+        // Skip if session already has an active generator
+        const existingSession = this.sessionManager.getSession(sessionDbId);
+        if (existingSession?.generatorPromise) {
+          continue;
+        }
+
+        // Initialize session and start SDK agent
+        const session = this.sessionManager.initializeSession(sessionDbId);
+
+        logger.info('SYSTEM', `Starting orphan processor for session ${sessionDbId}`, {
+          project: session.project,
+          pendingCount: pendingStore.getPendingCount(sessionDbId)
+        });
+
+        // Start SDK agent (non-blocking)
+        session.generatorPromise = this.sdkAgent.startSession(session, this)
+          .finally(() => {
+            session.generatorPromise = null;
+            this.broadcastProcessingStatus();
+          });
+
+        // Small delay between sessions to avoid rate limiting
+        await new Promise(resolve => setTimeout(resolve, 100));
+      } catch (error) {
+        logger.warn('SYSTEM', `Failed to process orphaned session ${sessionDbId}`, {}, error as Error);
+      }
     }
   }
 

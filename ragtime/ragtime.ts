@@ -84,6 +84,7 @@ for (const file of filesToProcess) {
     if (message.type === "assistant") {
       console.log("Assistant:", message.message.content);
     }
+    console.log("Raw:",  JSON.stringify(message, null, 2));
   }
 
   // Wait for the worker queue to be empty before continuing to the next file

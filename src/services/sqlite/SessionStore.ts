@@ -1150,10 +1150,12 @@ export class SessionStore {
       files_modified: string[];
     },
     promptNumber?: number,
-    discoveryTokens: number = 0
+    discoveryTokens: number = 0,
+    overrideTimestampEpoch?: number
   ): { id: number; createdAtEpoch: number } {
-    const now = new Date();
-    const nowEpoch = now.getTime();
+    // Use override timestamp if provided (for processing backlog messages with original timestamps)
+    const timestampEpoch = overrideTimestampEpoch ?? Date.now();
+    const timestampIso = new Date(timestampEpoch).toISOString();
 
     const stmt = this.db.prepare(`
       INSERT INTO observations
@@ -1175,13 +1177,13 @@ export class SessionStore {
       JSON.stringify(observation.files_modified),
       promptNumber || null,
       discoveryTokens,
-      now.toISOString(),
-      nowEpoch
+      timestampIso,
+      timestampEpoch
     );
 
     return {
       id: Number(result.lastInsertRowid),
-      createdAtEpoch: nowEpoch
+      createdAtEpoch: timestampEpoch
     };
   }
 
@@ -1201,10 +1203,12 @@ export class SessionStore {
       notes: string | null;
     },
     promptNumber?: number,
-    discoveryTokens: number = 0
+    discoveryTokens: number = 0,
+    overrideTimestampEpoch?: number
   ): { id: number; createdAtEpoch: number } {
-    const now = new Date();
-    const nowEpoch = now.getTime();
+    // Use override timestamp if provided (for processing backlog messages with original timestamps)
+    const timestampEpoch = overrideTimestampEpoch ?? Date.now();
+    const timestampIso = new Date(timestampEpoch).toISOString();
 
     const stmt = this.db.prepare(`
       INSERT INTO session_summaries
@@ -1224,13 +1228,13 @@ export class SessionStore {
       summary.notes,
       promptNumber || null,
       discoveryTokens,
-      now.toISOString(),
-      nowEpoch
+      timestampIso,
+      timestampEpoch
     );
 
     return {
       id: Number(result.lastInsertRowid),
-      createdAtEpoch: nowEpoch
+      createdAtEpoch: timestampEpoch
     };
   }
 
