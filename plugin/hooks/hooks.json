@@ -71,22 +71,6 @@
           }
         ]
       }
-    ],
-    "SessionEnd": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/worker-cli.js\" start",
-            "timeout": 30
-          },
-          {
-            "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/cleanup-hook.js\"",
-            "timeout": 120
-          }
-        ]
-      }
     ]
   }
 }

@@ -33,7 +33,6 @@ export class SessionRoutes extends BaseRouteHandler {
     super();
     this.completionHandler = new SessionCompletionHandler(
       sessionManager,
-      dbManager,
       eventBroadcaster
     );
   }
@@ -72,7 +71,6 @@ export class SessionRoutes extends BaseRouteHandler {
     app.post('/api/sessions/init', this.handleSessionInitByClaudeId.bind(this));
     app.post('/api/sessions/observations', this.handleObservationsByClaudeId.bind(this));
     app.post('/api/sessions/summarize', this.handleSummarizeByClaudeId.bind(this));
-    app.post('/api/sessions/complete', this.handleSessionCompleteByClaudeId.bind(this));
   }
 
   /**
@@ -388,31 +386,6 @@ export class SessionRoutes extends BaseRouteHandler {
     this.eventBroadcaster.broadcastSummarizeQueued();
 
     res.json({ status: 'queued' });
-  });
-
-  /**
-   * Complete session by claudeSessionId (cleanup-hook uses this)
-   * POST /api/sessions/complete
-   * Body: { claudeSessionId }
-   *
-   * Marks session complete, stops SDK agent, broadcasts status
-   */
-  private handleSessionCompleteByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const { claudeSessionId } = req.body;
-
-    if (!claudeSessionId) {
-      return this.badRequest(res, 'Missing claudeSessionId');
-    }
-
-    const found = await this.completionHandler.completeByClaudeId(claudeSessionId);
-
-    if (!found) {
-      // No active session - nothing to clean up (may have already been completed)
-      res.json({ success: true, message: 'No active session found' });
-      return;
-    }
-
-    res.json({ success: true });
   });
 
   /**
