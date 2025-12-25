@@ -227,19 +227,20 @@ function main() {
         claudeSessionToSdkSession.set(sessionMeta.sessionId, existing.sdk_session_id);
       } else if (existing && !existing.sdk_session_id) {
         // Session exists but sdk_session_id is NULL, update it
-        const dbId = (db['db'].prepare('SELECT id FROM sdk_sessions WHERE claude_session_id = ?').get(sessionMeta.sessionId) as { id: number }).id;
-        db.updateSDKSessionId(dbId, syntheticSdkSessionId);
+        db['db'].prepare('UPDATE sdk_sessions SET sdk_session_id = ? WHERE claude_session_id = ?')
+          .run(syntheticSdkSessionId, sessionMeta.sessionId);
         claudeSessionToSdkSession.set(sessionMeta.sessionId, syntheticSdkSessionId);
       } else {
         // Create new SDK session
-        const dbId = db.createSDKSession(
+        db.createSDKSession(
           sessionMeta.sessionId,
           sessionMeta.project,
           'Imported from transcript XML'
         );
 
         // Update with synthetic SDK session ID
-        db.updateSDKSessionId(dbId, syntheticSdkSessionId);
+        db['db'].prepare('UPDATE sdk_sessions SET sdk_session_id = ? WHERE claude_session_id = ?')
+          .run(syntheticSdkSessionId, sessionMeta.sessionId);
 
         claudeSessionToSdkSession.set(sessionMeta.sessionId, syntheticSdkSessionId);
       }
