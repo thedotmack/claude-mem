@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/worker-cli.js\" start",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/scripts/worker-cli.js\" start",
             "timeout": 30
           },
           {
@@ -45,7 +45,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/worker-cli.js\" start",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/scripts/worker-cli.js\" start",
             "timeout": 30
           },
           {
@@ -61,7 +61,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/worker-cli.js\" start",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/scripts/worker-cli.js\" start",
             "timeout": 30
           },
           {
