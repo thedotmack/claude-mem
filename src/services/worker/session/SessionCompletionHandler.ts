@@ -29,9 +29,6 @@ export class SessionCompletionHandler {
     // Delete from session manager (aborts SDK agent)
     await this.sessionManager.deleteSession(sessionDbId);
 
-    // Mark session complete in database
-    this.dbManager.markSessionComplete(sessionDbId);
-
     // Broadcast session completed event
     this.eventBroadcaster.broadcastSessionCompleted(sessionDbId);
   }
