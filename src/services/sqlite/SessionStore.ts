@@ -20,9 +20,11 @@ import {
 export class SessionStore {
   public db: Database;
 
-  constructor() {
-    ensureDir(DATA_DIR);
-    this.db = new Database(DB_PATH);
+  constructor(dbPath: string = DB_PATH) {
+    if (dbPath !== ':memory:') {
+      ensureDir(DATA_DIR);
+    }
+    this.db = new Database(dbPath);
 
     // Ensure optimized settings
     this.db.run('PRAGMA journal_mode = WAL');
@@ -928,11 +930,13 @@ export class SessionStore {
     notes: string | null;
     prompt_number: number | null;
     created_at: string;
+    created_at_epoch: number;
   } | null {
     const stmt = this.db.prepare(`
       SELECT
         request, investigated, learned, completed, next_steps,
-        files_read, files_edited, notes, prompt_number, created_at
+        files_read, files_edited, notes, prompt_number, created_at,
+        created_at_epoch
       FROM session_summaries
       WHERE sdk_session_id = ?
       ORDER BY created_at_epoch DESC
