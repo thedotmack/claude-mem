@@ -1,0 +1,148 @@
+---
+title: "Gemini Provider"
+description: "Use Google's Gemini API as an alternative to Claude for observation extraction"
+---
+
+# Gemini Provider
+
+Claude-mem supports Google's Gemini API as an alternative to the Claude Agent SDK for extracting observations from your sessions. This can significantly reduce costs since Gemini offers a generous free tier.
+
+<Note>
+**Free Tier Available**: Google provides 60 requests per minute and 1 million tokens per month at no cost. No billing information required.
+</Note>
+
+## Why Use Gemini?
+
+- **Cost savings**: The free tier covers most individual usage patterns
+- **Same quality**: Gemini extracts observations using the same XML format as Claude
+- **Seamless fallback**: Automatically falls back to Claude if Gemini is unavailable
+- **Hot-swappable**: Switch providers without restarting the worker
+
+## Getting a Free API Key
+
+1. Go to the [Google AI Studio API Key page](https://aistudio.google.com/app/apikey)
+2. Sign in with your Google account
+3. Accept the Terms of Service and privacy policies
+4. Click the **Create API key** button
+5. Choose a Google Cloud project or create a new one
+6. Copy and securely store the generated API key
+
+<Tip>
+Billing information is generally not required to use the free tier.
+</Tip>
+
+## Configuration
+
+### Settings
+
+| Setting | Values | Default | Description |
+|---------|--------|---------|-------------|
+| `CLAUDE_MEM_PROVIDER` | `claude`, `gemini` | `claude` | AI provider for observation extraction |
+| `CLAUDE_MEM_GEMINI_API_KEY` | string | — | Your Gemini API key |
+| `CLAUDE_MEM_GEMINI_MODEL` | `gemini-2.0-flash-exp`, `gemini-1.5-flash`, `gemini-1.5-pro` | `gemini-2.0-flash-exp` | Gemini model to use |
+
+### Using the Settings UI
+
+1. Open the viewer at http://localhost:37777
+2. Click the **gear icon** to open Settings
+3. Under **AI Provider**, select **Gemini**
+4. Enter your Gemini API key
+5. Optionally select a different model
+
+Settings are applied immediately—no restart required.
+
+### Manual Configuration
+
+Edit `~/.claude-mem/settings.json`:
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "gemini",
+  "CLAUDE_MEM_GEMINI_API_KEY": "your-api-key-here",
+  "CLAUDE_MEM_GEMINI_MODEL": "gemini-2.0-flash-exp"
+}
+```
+
+Alternatively, set the API key via environment variable:
+
+```bash
+export GEMINI_API_KEY="your-api-key-here"
+```
+
+The settings file takes precedence over the environment variable.
+
+## Available Models
+
+| Model | Speed | Capability | Notes |
+|-------|-------|------------|-------|
+| `gemini-2.0-flash-exp` | Fastest | Good | Default, recommended for most usage |
+| `gemini-1.5-flash` | Fast | Good | Stable release |
+| `gemini-1.5-pro` | Slower | Best | Use for complex observation extraction |
+
+## Provider Switching
+
+You can switch between Claude and Gemini at any time:
+
+- **No restart required**: Changes take effect on the next observation
+- **Conversation history preserved**: When switching mid-session, the new provider sees the full conversation context
+- **Seamless transition**: Both providers use the same observation format
+
+### Switching via UI
+
+1. Open Settings in the viewer
+2. Change the **AI Provider** dropdown
+3. The next observation will use the new provider
+
+### Switching via Settings File
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "gemini"
+}
+```
+
+## Fallback Behavior
+
+If Gemini is selected but encounters errors, claude-mem automatically falls back to the Claude Agent SDK:
+
+**Triggers fallback:**
+- Rate limiting (HTTP 429)
+- Server errors (HTTP 5xx)
+- Network issues (connection refused, timeout)
+
+**Does not trigger fallback:**
+- Missing API key (logs warning, uses Claude from start)
+- Invalid API key (fails with error)
+
+When fallback occurs:
+1. A warning is logged
+2. Any in-progress messages are reset to pending
+3. Claude SDK takes over with the full conversation context
+
+## Troubleshooting
+
+### "Gemini API key not configured"
+
+Either:
+- Set `CLAUDE_MEM_GEMINI_API_KEY` in `~/.claude-mem/settings.json`, or
+- Set the `GEMINI_API_KEY` environment variable
+
+### Rate Limiting
+
+The free tier allows 60 requests per minute. If you hit rate limits:
+- Claude-mem automatically falls back to Claude SDK
+- Consider upgrading to a paid Gemini plan for higher limits
+- Or switch back to Claude as your primary provider
+
+### Observation Quality
+
+If observations seem lower quality with Gemini:
+- Try `gemini-1.5-pro` for more capable extraction
+- Note that Claude typically produces slightly higher quality observations
+- Consider using Gemini for cost savings and Claude for important projects
+
+## Next Steps
+
+- [Configuration](../configuration) - Full settings reference
+- [Getting Started](getting-started) - Basic usage guide
+- [Troubleshooting](../troubleshooting) - Common issues
