@@ -286,7 +286,7 @@ export class SessionRoutes extends BaseRouteHandler {
 
     // Get or create session
     const sessionDbId = store.createSDKSession(claudeSessionId, '', '');
-    const promptNumber = store.getPromptCounter(sessionDbId);
+    const promptNumber = store.getPromptNumberFromUserPrompts(claudeSessionId);
 
     // Privacy check: skip if user prompt was entirely private
     const userPrompt = PrivacyCheckValidator.checkUserPromptPrivacy(
@@ -353,7 +353,7 @@ export class SessionRoutes extends BaseRouteHandler {
 
     // Get or create session
     const sessionDbId = store.createSDKSession(claudeSessionId, '', '');
-    const promptNumber = store.getPromptCounter(sessionDbId);
+    const promptNumber = store.getPromptNumberFromUserPrompts(claudeSessionId);
 
     // Privacy check: skip if user prompt was entirely private
     const userPrompt = PrivacyCheckValidator.checkUserPromptPrivacy(
@@ -440,8 +440,9 @@ export class SessionRoutes extends BaseRouteHandler {
     // Step 1: Create/get SDK session (idempotent INSERT OR IGNORE)
     const sessionDbId = store.createSDKSession(claudeSessionId, project, prompt);
 
-    // Step 2: Increment prompt counter
-    const promptNumber = store.incrementPromptCounter(sessionDbId);
+    // Step 2: Get next prompt number from user_prompts count
+    const currentCount = store.getPromptNumberFromUserPrompts(claudeSessionId);
+    const promptNumber = currentCount + 1;
 
     // Step 3: Strip privacy tags from prompt
     const cleanedPrompt = stripMemoryTagsFromPrompt(prompt);
