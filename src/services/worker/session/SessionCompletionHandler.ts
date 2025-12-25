@@ -45,10 +45,13 @@ export class SessionCompletionHandler {
   async completeByClaudeId(claudeSessionId: string): Promise<boolean> {
     const store = this.dbManager.getSessionStore();
 
-    // Find session by claudeSessionId
-    const session = store.findActiveSDKSession(claudeSessionId);
+    // Find session by claudeSessionId (direct query)
+    const session = store.db.prepare(
+      'SELECT id FROM sdk_sessions WHERE claude_session_id = ?'
+    ).get(claudeSessionId) as { id: number } | undefined;
+
     if (!session) {
-      // No active session - nothing to clean up (may have already been completed)
+      // No session found - nothing to clean up (may have already been completed)
       return false;
     }
 
