@@ -7,6 +7,11 @@
         "hooks": [
           {
             "type": "command",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/scripts/worker-cli.js\" restart",
+            "timeout": 30
+          },
+          {
+            "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/smart-install.js\" && node \"${CLAUDE_PLUGIN_ROOT}/scripts/context-hook.js\"",
             "timeout": 300
           },
@@ -23,6 +28,11 @@
         "hooks": [
           {
             "type": "command",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/scripts/worker-cli.js\" start",
+            "timeout": 30
+          },
+          {
+            "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/new-hook.js\"",
             "timeout": 120
           }
@@ -33,6 +43,11 @@
       {
         "matcher": "*",
         "hooks": [
+          {
+            "type": "command",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/scripts/worker-cli.js\" start",
+            "timeout": 30
+          },
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/save-hook.js\"",
@@ -46,18 +61,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/summary-hook.js\"",
-            "timeout": 120
-          }
-        ]
-      }
-    ],
-    "SessionEnd": [
-      {
-        "hooks": [
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/scripts/worker-cli.js\" start",
+            "timeout": 30
+          },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/cleanup-hook.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/summary-hook.js\"",
             "timeout": 120
           }
         ]

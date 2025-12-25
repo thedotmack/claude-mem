@@ -4,6 +4,117 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [8.1.0] - 2025-12-25
+
+## Summary
+
+This minor release brings significant architectural improvements focused on **explicit user control**, **simplified session management**, and **enhanced worker reliability**. The automatic recovery system has been replaced with a manual recovery approach, giving users complete control over when observations are reprocessed.
+
+## Breaking Changes
+
+**Manual Recovery Replaces Automatic Recovery**
+- Worker no longer automatically reprocesses stuck observations on startup
+- Users must explicitly trigger recovery via CLI tool or HTTP API
+- Prevents unexpected duplicate observations and processing
+- See the new Manual Recovery documentation for migration guide
+
+**Removed Cleanup Hook**
+- `cleanup-hook.ts` and `plugin/scripts/cleanup-hook.js` have been removed
+- Hook behavior was moved to session completion handler
+
+**Hook Timeout Increased**
+- Default hook timeout changed from 5000ms to 120000ms
+- Accommodates longer-running operations during startup
+
+## New Features
+
+**Queue Management API**
+- `GET /api/pending-queue` - View processing queue status, stuck messages, and session work
+- `POST /api/pending-queue/process` - Manually trigger recovery with session limits
+- Detailed queue statistics including stuck detection (>5 minute threshold)
+
+**CLI Recovery Tool**
+- `bun scripts/check-pending-queue.ts` - Interactive queue inspection and recovery
+- `--process` flag for non-interactive mode
+- `--limit N` to control sessions processed per batch
+- npm scripts: `npm run queue:check` and `npm run queue:process`
+
+**Data Routes API**
+- New DataRoutes module for queue management endpoints
+- Session-aware pending work tracking
+
+## Bug Fixes
+
+**Observation Timestamps Fixed**
+- Corrected timestamp handling throughout the observation lifecycle
+- Fixed `created_at_epoch` preservation in database operations
+
+**Enhanced Worker Reliability**
+- Added error handlers to Chroma sync operations (prevents crashes on timeout)
+- Version mismatch now logs warning instead of force-restarting worker
+- Improved polling mechanism with increased retries and reduced interval
+
+## Refactoring
+
+**Simplified Session Management**
+- Removed 279 lines of complexity from SessionStore
+- `createSDKSession` simplified to pure `INSERT OR IGNORE`
+- Removed auto-create logic from `storeObservation` and `storeSummary`
+- Deleted 11 unused session management methods
+- `prompt_number` now derived from `user_prompts` count
+
+**Simplified Worker Utils**
+- Removed 117 lines of legacy code
+- Removed PM2 cleanup logic
+- Streamlined `ensureWorkerRunning` function
+
+**SDK Agent Improvements**
+- Removed complex session creation retry logic
+- Cleaner prompt number retrieval from SessionRoutes
+
+## Documentation
+
+**New Manual Recovery Guide** (`docs/public/usage/manual-recovery.mdx`)
+- Complete 450-line guide for recovery workflows
+- Interactive CLI usage examples
+- HTTP API integration examples
+- Troubleshooting stuck messages
+- Cron job and monitoring script examples
+
+**Enhanced Troubleshooting** (`docs/public/troubleshooting.mdx`)
+- Added 195 lines of manual recovery troubleshooting
+- Queue state explanations
+- Direct database inspection queries
+
+**Updated Development Guide**
+- Changed testing philosophy to emphasize real-world testing
+- Added manual testing workflow documentation
+- Queue health verification procedures
+
+**Worker Service Docs Updated**
+- Documented 22 HTTP endpoints (up from 20)
+- Queue management endpoint documentation
+
+## Dependencies
+
+- Upgraded `@anthropic-ai/claude-agent-sdk` from `^0.1.67` to `^0.1.76`
+
+## New Scripts
+
+- `scripts/check-pending-queue.ts` - CLI tool for queue management
+- `scripts/fix-all-timestamps.ts` - Timestamp correction utility
+- `scripts/fix-corrupted-timestamps.ts` - Corrupted timestamp repair
+- `scripts/investigate-timestamps.ts` - Timestamp debugging tool
+- `scripts/validate-timestamp-logic.ts` - Timestamp validation
+- `scripts/verify-timestamp-fix.ts` - Post-fix verification
+
+## Migration Guide
+
+1. **After upgrading**: Run `bun scripts/check-pending-queue.ts` to check for stuck messages
+2. **If messages found**: Run `bun scripts/check-pending-queue.ts --process` to recover
+3. **Optional**: Add recovery to your workflow (cron job, pre-shutdown script)
+4. **Note**: Automatic recovery no longer happens - you must trigger it manually
+
 ## [8.0.6] - 2025-12-24
 
 ## Bug Fixes

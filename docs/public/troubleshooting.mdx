@@ -285,6 +285,201 @@ The skill includes comprehensive diagnostics, automated repair sequences, and de
    claude-mem restart
    ```
 
+### Manual Recovery for Stuck Observations
+
+**Symptoms**: Observations stuck in processing queue after worker crash or restart, no new summaries appearing despite worker running.
+
+**Background**: As of v5.x, automatic queue recovery on worker startup is disabled. Users must manually trigger recovery to maintain explicit control over reprocessing and prevent unexpected duplicate observations.
+
+**Solutions**:
+
+#### Option 1: Use CLI Recovery Tool (Recommended)
+
+The interactive CLI tool provides the safest and most user-friendly recovery experience:
+
+```bash
+# Check queue status and prompt for recovery
+bun scripts/check-pending-queue.ts
+
+# Auto-process without prompting
+bun scripts/check-pending-queue.ts --process
+
+# Process up to 5 sessions
+bun scripts/check-pending-queue.ts --process --limit 5
+```
+
+**What it does**:
+- ✅ Checks worker health before proceeding
+- ✅ Shows detailed queue summary (pending, processing, failed, stuck)
+- ✅ Groups messages by session with age and status breakdown
+- ✅ Prompts user to confirm processing (unless `--process` flag used)
+- ✅ Shows recently processed messages for feedback
+
+**Interactive Example**:
+```
+Worker is healthy ✓
+
+Queue Summary:
+  Pending: 12 messages
+  Processing: 2 messages (1 stuck)
+  Failed: 0 messages
+  Recently Processed: 5 messages in last 30 minutes
+
+Sessions with pending work: 3
+  Session 44: 5 pending, 1 processing (age: 2m)
+  Session 45: 4 pending, 1 processing (age: 7m - STUCK)
+  Session 46: 2 pending
+
+Would you like to process these pending queues? (y/n)
+```
+
+#### Option 2: Use HTTP API Directly
+
+For automation or scripting scenarios:
+
+1. **Check queue status**:
+   ```bash
+   curl http://localhost:37777/api/pending-queue
+   ```
+
+   Response shows:
+   - `queue.totalPending`: Messages waiting to process
+   - `queue.totalProcessing`: Messages currently processing
+   - `queue.stuckCount`: Processing messages >5 minutes old
+   - `sessionsWithPendingWork`: Session IDs needing recovery
+
+2. **Trigger manual recovery**:
+   ```bash
+   curl -X POST http://localhost:37777/api/pending-queue/process \
+     -H "Content-Type: application/json" \
+     -d '{"sessionLimit": 10}'
+   ```
+
+   Response includes:
+   - `totalPendingSessions`: Total sessions with pending messages
+   - `sessionsStarted`: Number of sessions we started processing
+   - `sessionsSkipped`: Sessions already processing (not restarted)
+   - `startedSessionIds`: Database IDs of sessions started
+
+#### Understanding Queue States
+
+Messages progress through these states:
+
+1. **pending** - Queued, waiting to process
+2. **processing** - Currently being processed by SDK agent
+3. **processed** - Completed successfully
+4. **failed** - Failed after 3 retry attempts
+
+**Stuck Detection**: Messages in `processing` state for >5 minutes are considered stuck and automatically reset to `pending` on worker startup (but not automatically reprocessed).
+
+#### Recovery Strategy
+
+**When to use manual recovery**:
+- After worker crashes or unexpected restarts
+- When observations appear saved but no summaries generated
+- When queue status shows stuck messages (processing >5 minutes)
+- After system crashes or forced shutdowns
+
+**Best practices**:
+1. Always check queue status before triggering recovery
+2. Use the CLI tool for interactive sessions (provides feedback)
+3. Use the HTTP API for automation/scripting
+4. Start with a low session limit (5-10) to avoid overwhelming the worker
+5. Monitor worker logs during recovery: `npm run worker:logs`
+6. Check recently processed messages to confirm recovery worked
+
+#### Troubleshooting Recovery Issues
+
+If recovery fails or messages remain stuck:
+
+1. **Verify worker is healthy**:
+   ```bash
+   curl http://localhost:37777/health
+   # Should return: {"status":"ok","uptime":12345,"port":37777}
+   ```
+
+2. **Check database for corruption**:
+   ```bash
+   sqlite3 ~/.claude-mem/claude-mem.db "PRAGMA integrity_check;"
+   ```
+
+3. **View stuck messages directly**:
+   ```bash
+   sqlite3 ~/.claude-mem/claude-mem.db "
+     SELECT id, session_db_id, status, retry_count,
+            (strftime('%s', 'now') * 1000 - started_processing_at_epoch) / 60000 as age_minutes
+     FROM pending_messages
+     WHERE status = 'processing'
+     ORDER BY started_processing_at_epoch;
+   "
+   ```
+
+4. **Force reset stuck messages** (nuclear option):
+   ```bash
+   sqlite3 ~/.claude-mem/claude-mem.db "
+     UPDATE pending_messages
+     SET status = 'pending', started_processing_at_epoch = NULL
+     WHERE status = 'processing';
+   "
+   ```
+
+   Then trigger recovery:
+   ```bash
+   bun scripts/check-pending-queue.ts --process
+   ```
+
+5. **Check worker logs for SDK errors**:
+   ```bash
+   npm run worker:logs | grep -i error
+   ```
+
+#### Understanding the Queue Table
+
+The `pending_messages` table tracks all messages with these key fields:
+
+```sql
+CREATE TABLE pending_messages (
+  id INTEGER PRIMARY KEY,
+  session_db_id INTEGER,          -- Foreign key to sdk_sessions
+  claude_session_id TEXT,          -- Claude session ID
+  message_type TEXT,               -- 'observation' | 'summarize'
+  status TEXT,                     -- 'pending' | 'processing' | 'processed' | 'failed'
+  retry_count INTEGER,             -- Current retry attempt (max: 3)
+  created_at_epoch INTEGER,        -- When message was queued
+  started_processing_at_epoch INTEGER,  -- When marked 'processing'
+  completed_at_epoch INTEGER       -- When completed/failed
+)
+```
+
+**Query examples**:
+
+```bash
+# Count messages by status
+sqlite3 ~/.claude-mem/claude-mem.db "
+  SELECT status, COUNT(*)
+  FROM pending_messages
+  GROUP BY status;
+"
+
+# Find sessions with pending work
+sqlite3 ~/.claude-mem/claude-mem.db "
+  SELECT session_db_id, COUNT(*) as pending_count
+  FROM pending_messages
+  WHERE status IN ('pending', 'processing')
+  GROUP BY session_db_id;
+"
+
+# View recent failures
+sqlite3 ~/.claude-mem/claude-mem.db "
+  SELECT id, session_db_id, message_type, retry_count,
+         datetime(completed_at_epoch/1000, 'unixepoch') as failed_at
+  FROM pending_messages
+  WHERE status = 'failed'
+  ORDER BY completed_at_epoch DESC
+  LIMIT 10;
+"
+```
+
 ## Hook Issues
 
 ### Hooks Not Firing

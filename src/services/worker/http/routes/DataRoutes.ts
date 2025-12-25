@@ -51,6 +51,10 @@ export class DataRoutes extends BaseRouteHandler {
     app.get('/api/processing-status', this.handleGetProcessingStatus.bind(this));
     app.post('/api/processing', this.handleSetProcessing.bind(this));
 
+    // Pending queue management endpoints
+    app.get('/api/pending-queue', this.handleGetPendingQueue.bind(this));
+    app.post('/api/pending-queue/process', this.handleProcessPendingQueue.bind(this));
+
     // Import endpoint
     app.post('/api/import', this.handleImport.bind(this));
   }
@@ -362,6 +366,60 @@ export class DataRoutes extends BaseRouteHandler {
     res.json({
       success: true,
       stats
+    });
+  });
+
+  /**
+   * Get pending queue contents
+   * GET /api/pending-queue
+   * Returns all pending, processing, and failed messages with optional recently processed
+   */
+  private handleGetPendingQueue = this.wrapHandler((req: Request, res: Response): void => {
+    const { PendingMessageStore } = require('../../../sqlite/PendingMessageStore.js');
+    const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
+
+    // Get queue contents (pending, processing, failed)
+    const queueMessages = pendingStore.getQueueMessages();
+
+    // Get recently processed (last 30 min, up to 20)
+    const recentlyProcessed = pendingStore.getRecentlyProcessed(20, 30);
+
+    // Get stuck message count (processing > 5 min)
+    const stuckCount = pendingStore.getStuckCount(5 * 60 * 1000);
+
+    // Get sessions with pending work
+    const sessionsWithPending = pendingStore.getSessionsWithPendingMessages();
+
+    res.json({
+      queue: {
+        messages: queueMessages,
+        totalPending: queueMessages.filter((m: { status: string }) => m.status === 'pending').length,
+        totalProcessing: queueMessages.filter((m: { status: string }) => m.status === 'processing').length,
+        totalFailed: queueMessages.filter((m: { status: string }) => m.status === 'failed').length,
+        stuckCount
+      },
+      recentlyProcessed,
+      sessionsWithPendingWork: sessionsWithPending
+    });
+  });
+
+  /**
+   * Process pending queue
+   * POST /api/pending-queue/process
+   * Body: { sessionLimit?: number } - defaults to 10
+   * Starts SDK agents for sessions with pending messages
+   */
+  private handleProcessPendingQueue = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const sessionLimit = Math.min(
+      Math.max(parseInt(req.body.sessionLimit, 10) || 10, 1),
+      100 // Max 100 sessions at once
+    );
+
+    const result = await this.workerService.processPendingQueues(sessionLimit);
+
+    res.json({
+      success: true,
+      ...result
     });
   });
 }

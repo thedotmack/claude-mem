@@ -115,6 +115,9 @@ export class SDKAgent {
           const discoveryTokens = (session.cumulativeInputTokens + session.cumulativeOutputTokens) - tokensBeforeResponse;
 
           // Process response (empty or not) and mark messages as processed
+          // Capture earliest timestamp BEFORE processing (will be cleared after)
+          const originalTimestamp = session.earliestPendingTimestamp;
+
           if (responseSize > 0) {
             const truncatedResponse = responseSize > 100
               ? textContent.substring(0, 100) + '...'
@@ -124,8 +127,8 @@ export class SDKAgent {
               promptNumber: session.lastPromptNumber
             }, truncatedResponse);
 
-            // Parse and process response with discovery token delta
-            await this.processSDKResponse(session, textContent, worker, discoveryTokens);
+            // Parse and process response with discovery token delta and original timestamp
+            await this.processSDKResponse(session, textContent, worker, discoveryTokens, originalTimestamp);
           } else {
             // Empty response - still need to mark pending messages as processed
             await this.markMessagesProcessed(session, worker);
@@ -144,8 +147,6 @@ export class SDKAgent {
         sessionId: session.sessionDbId,
         duration: `${(sessionDuration / 1000).toFixed(1)}s`
       });
-
-      this.dbManager.getSessionStore().markSessionCompleted(session.sessionDbId);
 
     } catch (error: any) {
       if (error.name === 'AbortError') {
@@ -275,11 +276,12 @@ export class SDKAgent {
   /**
    * Process SDK response text (parse XML, save to database, sync to Chroma)
    * @param discoveryTokens - Token cost for discovering this response (delta, not cumulative)
+   * @param originalTimestamp - Original epoch when message was queued (for backlog processing accuracy)
    *
    * Also captures assistant responses to shared conversation history for provider interop.
    * This allows Gemini to see full context if provider is switched mid-session.
    */
-  private async processSDKResponse(session: ActiveSession, text: string, worker: any | undefined, discoveryTokens: number): Promise<void> {
+  private async processSDKResponse(session: ActiveSession, text: string, worker: any | undefined, discoveryTokens: number, originalTimestamp: number | null): Promise<void> {
     // Add assistant response to shared conversation history for provider interop
     if (text) {
       session.conversationHistory.push({ role: 'assistant', content: text });
@@ -288,14 +290,15 @@ export class SDKAgent {
     // Parse observations
     const observations = parseObservations(text, session.claudeSessionId);
 
-    // Store observations
+    // Store observations with original timestamp (if processing backlog) or current time
     for (const obs of observations) {
       const { id: obsId, createdAtEpoch } = this.dbManager.getSessionStore().storeObservation(
         session.claudeSessionId,
         session.project,
         obs,
         session.lastPromptNumber,
-        discoveryTokens
+        discoveryTokens,
+        originalTimestamp ?? undefined
       );
 
       // Log observation details
@@ -365,14 +368,15 @@ export class SDKAgent {
     // Parse summary
     const summary = parseSummary(text, session.sessionDbId);
 
-    // Store summary
+    // Store summary with original timestamp (if processing backlog) or current time
     if (summary) {
       const { id: summaryId, createdAtEpoch } = this.dbManager.getSessionStore().storeSummary(
         session.claudeSessionId,
         session.project,
         summary,
         session.lastPromptNumber,
-        discoveryTokens
+        discoveryTokens,
+        originalTimestamp ?? undefined
       );
 
       // Log summary details
@@ -450,6 +454,9 @@ export class SDKAgent {
         count: session.pendingProcessingIds.size
       });
       session.pendingProcessingIds.clear();
+
+      // Clear timestamp for next batch (will be set fresh from next message)
+      session.earliestPendingTimestamp = null;
 
       // Clean up old processed messages (keep last 100 for UI display)
       const deletedCount = pendingMessageStore.cleanupProcessed(100);

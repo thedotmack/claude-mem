@@ -113,11 +113,12 @@ export class SessionManager {
       pendingMessages: [],
       abortController: new AbortController(),
       generatorPromise: null,
-      lastPromptNumber: promptNumber || this.dbManager.getSessionStore().getPromptCounter(sessionDbId),
+      lastPromptNumber: promptNumber || this.dbManager.getSessionStore().getPromptNumberFromUserPrompts(dbSession.claude_session_id),
       startTime: Date.now(),
       cumulativeInputTokens: 0,
       cumulativeOutputTokens: 0,
       pendingProcessingIds: new Set(),
+      earliestPendingTimestamp: null,
       conversationHistory: [],  // Initialize empty - will be populated by agents
       currentProvider: null  // Will be set when generator starts
     };
@@ -446,6 +447,14 @@ export class SessionManager {
 
       // Track this message ID for completion marking
       session.pendingProcessingIds.add(persistentMessage.id);
+
+      // Track earliest timestamp for accurate observation timestamps
+      // This ensures backlog messages get their original timestamps, not current time
+      if (session.earliestPendingTimestamp === null) {
+        session.earliestPendingTimestamp = persistentMessage.created_at_epoch;
+      } else {
+        session.earliestPendingTimestamp = Math.min(session.earliestPendingTimestamp, persistentMessage.created_at_epoch);
+      }
 
       // Convert to PendingMessageWithId and yield
       // Include original timestamp for accurate observation timestamps (survives stuck processing)

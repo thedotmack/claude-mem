@@ -20,9 +20,11 @@ import {
 export class SessionStore {
   public db: Database;
 
-  constructor() {
-    ensureDir(DATA_DIR);
-    this.db = new Database(DB_PATH);
+  constructor(dbPath: string = DB_PATH) {
+    if (dbPath !== ':memory:') {
+      ensureDir(DATA_DIR);
+    }
+    this.db = new Database(dbPath);
 
     // Ensure optimized settings
     this.db.run('PRAGMA journal_mode = WAL');
@@ -928,11 +930,13 @@ export class SessionStore {
     notes: string | null;
     prompt_number: number | null;
     created_at: string;
+    created_at_epoch: number;
   } | null {
     const stmt = this.db.prepare(`
       SELECT
         request, investigated, learned, completed, next_steps,
-        files_read, files_edited, notes, prompt_number, created_at
+        files_read, files_edited, notes, prompt_number, created_at,
+        created_at_epoch
       FROM session_summaries
       WHERE sdk_session_id = ?
       ORDER BY created_at_epoch DESC
@@ -1037,80 +1041,20 @@ export class SessionStore {
     return stmt.all(...sdkSessionIds) as any[];
   }
 
-  /**
-   * Find active SDK session for a Claude session
-   */
-  findActiveSDKSession(claudeSessionId: string): {
-    id: number;
-    sdk_session_id: string | null;
-    project: string;
-    worker_port: number | null;
-  } | null {
-    const stmt = this.db.prepare(`
-      SELECT id, sdk_session_id, project, worker_port
-      FROM sdk_sessions
-      WHERE claude_session_id = ? AND status = 'active'
-      LIMIT 1
-    `);
 
-    return stmt.get(claudeSessionId) || null;
-  }
+
+
+
 
   /**
-   * Find any SDK session for a Claude session (active, failed, or completed)
+   * Get current prompt number by counting user_prompts for this session
+   * Replaces the prompt_counter column which is no longer maintained
    */
-  findAnySDKSession(claudeSessionId: string): { id: number } | null {
-    const stmt = this.db.prepare(`
-      SELECT id
-      FROM sdk_sessions
-      WHERE claude_session_id = ?
-      LIMIT 1
-    `);
-
-    return stmt.get(claudeSessionId) || null;
-  }
-
-  /**
-   * Reactivate an existing session
-   */
-  reactivateSession(id: number, userPrompt: string): void {
-    const stmt = this.db.prepare(`
-      UPDATE sdk_sessions
-      SET status = 'active', user_prompt = ?, worker_port = NULL
-      WHERE id = ?
-    `);
-
-    stmt.run(userPrompt, id);
-  }
-
-  /**
-   * Increment prompt counter and return new value
-   */
-  incrementPromptCounter(id: number): number {
-    const stmt = this.db.prepare(`
-      UPDATE sdk_sessions
-      SET prompt_counter = COALESCE(prompt_counter, 0) + 1
-      WHERE id = ?
-    `);
-
-    stmt.run(id);
-
+  getPromptNumberFromUserPrompts(claudeSessionId: string): number {
     const result = this.db.prepare(`
-      SELECT prompt_counter FROM sdk_sessions WHERE id = ?
-    `).get(id) as { prompt_counter: number } | undefined;
-
-    return result?.prompt_counter || 1;
-  }
-
-  /**
-   * Get current prompt counter for a session
-   */
-  getPromptCounter(id: number): number {
-    const result = this.db.prepare(`
-      SELECT prompt_counter FROM sdk_sessions WHERE id = ?
-    `).get(id) as { prompt_counter: number | null } | undefined;
-
-    return result?.prompt_counter || 0;
+      SELECT COUNT(*) as count FROM user_prompts WHERE claude_session_id = ?
+    `).get(claudeSessionId) as { count: number };
+    return result.count;
   }
 
   /**
@@ -1143,94 +1087,21 @@ export class SessionStore {
     const now = new Date();
     const nowEpoch = now.getTime();
 
-    // CRITICAL: INSERT OR IGNORE makes this idempotent
-    // First call (prompt #1): Creates new row
-    // Subsequent calls (prompt #2+): Ignored, returns existing ID
-    const stmt = this.db.prepare(`
+    // Pure INSERT OR IGNORE - no updates, no complexity
+    this.db.prepare(`
       INSERT OR IGNORE INTO sdk_sessions
       (claude_session_id, sdk_session_id, project, user_prompt, started_at, started_at_epoch, status)
       VALUES (?, ?, ?, ?, ?, ?, 'active')
-    `);
+    `).run(claudeSessionId, claudeSessionId, project, userPrompt, now.toISOString(), nowEpoch);
 
-    const result = stmt.run(claudeSessionId, claudeSessionId, project, userPrompt, now.toISOString(), nowEpoch);
-
-    // If lastInsertRowid is 0, insert was ignored (session exists), so fetch existing ID
-    if (result.lastInsertRowid === 0 || result.changes === 0) {
-      // Session exists - UPDATE project and user_prompt if we have non-empty values
-      // This fixes the bug where SAVE hook creates session with empty project,
-      // then NEW hook can't update it because INSERT OR IGNORE skips the insert
-      if (project && project.trim() !== '') {
-        this.db.prepare(`
-          UPDATE sdk_sessions
-          SET project = ?, user_prompt = ?
-          WHERE claude_session_id = ?
-        `).run(project, userPrompt, claudeSessionId);
-      }
-
-      const selectStmt = this.db.prepare(`
-        SELECT id FROM sdk_sessions WHERE claude_session_id = ? LIMIT 1
-      `);
-      const existing = selectStmt.get(claudeSessionId) as { id: number } | undefined;
-      return existing!.id;
-    }
-
-    return result.lastInsertRowid as number;
+    // Return existing or new ID
+    const row = this.db.prepare('SELECT id FROM sdk_sessions WHERE claude_session_id = ?')
+      .get(claudeSessionId) as { id: number };
+    return row.id;
   }
 
-  /**
-   * Update SDK session ID (captured from init message)
-   * Only updates if current sdk_session_id is NULL to avoid breaking foreign keys
-   * Returns true if update succeeded, false if skipped
-   */
-  updateSDKSessionId(id: number, sdkSessionId: string): boolean {
-    const stmt = this.db.prepare(`
-      UPDATE sdk_sessions
-      SET sdk_session_id = ?
-      WHERE id = ? AND sdk_session_id IS NULL
-    `);
 
-    const result = stmt.run(sdkSessionId, id);
 
-    if (result.changes === 0) {
-      // This is expected behavior - sdk_session_id is already set
-      // Only log at debug level to avoid noise
-      logger.debug('DB', 'sdk_session_id already set, skipping update', {
-        sessionId: id,
-        sdkSessionId
-      });
-      return false;
-    }
-
-    return true;
-  }
-
-  /**
-   * Set worker port for a session
-   */
-  setWorkerPort(id: number, port: number): void {
-    const stmt = this.db.prepare(`
-      UPDATE sdk_sessions
-      SET worker_port = ?
-      WHERE id = ?
-    `);
-
-    stmt.run(port, id);
-  }
-
-  /**
-   * Get worker port for a session
-   */
-  getWorkerPort(id: number): number | null {
-    const stmt = this.db.prepare(`
-      SELECT worker_port
-      FROM sdk_sessions
-      WHERE id = ?
-      LIMIT 1
-    `);
-
-    const result = stmt.get(id) as { worker_port: number | null } | undefined;
-    return result?.worker_port || null;
-  }
 
   /**
    * Save a user prompt
@@ -1267,7 +1138,7 @@ export class SessionStore {
 
   /**
    * Store an observation (from SDK parsing)
-   * Auto-creates session record if it doesn't exist in the index
+   * Assumes session already exists (created by hook)
    */
   storeObservation(
     sdkSessionId: string,
@@ -1283,33 +1154,12 @@ export class SessionStore {
       files_modified: string[];
     },
     promptNumber?: number,
-    discoveryTokens: number = 0
+    discoveryTokens: number = 0,
+    overrideTimestampEpoch?: number
   ): { id: number; createdAtEpoch: number } {
-    const now = new Date();
-    const nowEpoch = now.getTime();
-
-    // Ensure session record exists in the index (auto-create if missing)
-    const checkStmt = this.db.prepare(`
-      SELECT id FROM sdk_sessions WHERE sdk_session_id = ?
-    `);
-    const existingSession = checkStmt.get(sdkSessionId) as { id: number } | undefined;
-
-    if (!existingSession) {
-      // Auto-create session record if it doesn't exist
-      const insertSession = this.db.prepare(`
-        INSERT INTO sdk_sessions
-        (claude_session_id, sdk_session_id, project, started_at, started_at_epoch, status)
-        VALUES (?, ?, ?, ?, ?, 'active')
-      `);
-      insertSession.run(
-        sdkSessionId, // claude_session_id and sdk_session_id are the same
-        sdkSessionId,
-        project,
-        now.toISOString(),
-        nowEpoch
-      );
-      console.log(`[SessionStore] Auto-created session record for session_id: ${sdkSessionId}`);
-    }
+    // Use override timestamp if provided (for processing backlog messages with original timestamps)
+    const timestampEpoch = overrideTimestampEpoch ?? Date.now();
+    const timestampIso = new Date(timestampEpoch).toISOString();
 
     const stmt = this.db.prepare(`
       INSERT INTO observations
@@ -1331,19 +1181,19 @@ export class SessionStore {
       JSON.stringify(observation.files_modified),
       promptNumber || null,
       discoveryTokens,
-      now.toISOString(),
-      nowEpoch
+      timestampIso,
+      timestampEpoch
     );
 
     return {
       id: Number(result.lastInsertRowid),
-      createdAtEpoch: nowEpoch
+      createdAtEpoch: timestampEpoch
     };
   }
 
   /**
    * Store a session summary (from SDK parsing)
-   * Auto-creates session record if it doesn't exist in the index
+   * Assumes session already exists - will fail with FK error if not
    */
   storeSummary(
     sdkSessionId: string,
@@ -1357,33 +1207,12 @@ export class SessionStore {
       notes: string | null;
     },
     promptNumber?: number,
-    discoveryTokens: number = 0
+    discoveryTokens: number = 0,
+    overrideTimestampEpoch?: number
   ): { id: number; createdAtEpoch: number } {
-    const now = new Date();
-    const nowEpoch = now.getTime();
-
-    // Ensure session record exists in the index (auto-create if missing)
-    const checkStmt = this.db.prepare(`
-      SELECT id FROM sdk_sessions WHERE sdk_session_id = ?
-    `);
-    const existingSession = checkStmt.get(sdkSessionId) as { id: number } | undefined;
-
-    if (!existingSession) {
-      // Auto-create session record if it doesn't exist
-      const insertSession = this.db.prepare(`
-        INSERT INTO sdk_sessions
-        (claude_session_id, sdk_session_id, project, started_at, started_at_epoch, status)
-        VALUES (?, ?, ?, ?, ?, 'active')
-      `);
-      insertSession.run(
-        sdkSessionId, // claude_session_id and sdk_session_id are the same
-        sdkSessionId,
-        project,
-        now.toISOString(),
-        nowEpoch
-      );
-      console.log(`[SessionStore] Auto-created session record for session_id: ${sdkSessionId}`);
-    }
+    // Use override timestamp if provided (for processing backlog messages with original timestamps)
+    const timestampEpoch = overrideTimestampEpoch ?? Date.now();
+    const timestampIso = new Date(timestampEpoch).toISOString();
 
     const stmt = this.db.prepare(`
       INSERT INTO session_summaries
@@ -1403,47 +1232,17 @@ export class SessionStore {
       summary.notes,
       promptNumber || null,
       discoveryTokens,
-      now.toISOString(),
-      nowEpoch
+      timestampIso,
+      timestampEpoch
     );
 
     return {
       id: Number(result.lastInsertRowid),
-      createdAtEpoch: nowEpoch
+      createdAtEpoch: timestampEpoch
     };
   }
 
-  /**
-   * Mark SDK session as completed
-   */
-  markSessionCompleted(id: number): void {
-    const now = new Date();
-    const nowEpoch = now.getTime();
 
-    const stmt = this.db.prepare(`
-      UPDATE sdk_sessions
-      SET status = 'completed', completed_at = ?, completed_at_epoch = ?
-      WHERE id = ?
-    `);
-
-    stmt.run(now.toISOString(), nowEpoch, id);
-  }
-
-  /**
-   * Mark SDK session as failed
-   */
-  markSessionFailed(id: number): void {
-    const now = new Date();
-    const nowEpoch = now.getTime();
-
-    const stmt = this.db.prepare(`
-      UPDATE sdk_sessions
-      SET status = 'failed', completed_at = ?, completed_at_epoch = ?
-      WHERE id = ?
-    `);
-
-    stmt.run(now.toISOString(), nowEpoch, id);
-  }
 
   // REMOVED: cleanupOrphanedSessions - violates "EVERYTHING SHOULD SAVE ALWAYS"
   // There's no such thing as an "orphaned" session. Sessions are created by hooks

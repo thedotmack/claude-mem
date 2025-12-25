@@ -65,6 +65,7 @@ async function summaryHook(input?: StopInput): Promise<void> {
   });
 
   if (!response.ok) {
+    console.log(STANDARD_HOOK_RESPONSE);
     throw new Error(`Summary generation failed: ${response.status}`);
   }
 

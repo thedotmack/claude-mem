@@ -19,7 +19,7 @@ The worker service is a long-running HTTP API built with Express.js and managed 
 
 ## REST API Endpoints
 
-The worker service exposes 20 HTTP endpoints organized into five categories:
+The worker service exposes 22 HTTP endpoints organized into six categories:
 
 ### Viewer & Health Endpoints
 
@@ -385,9 +385,106 @@ POST /api/settings
 }
 ```
 
+### Queue Management Endpoints
+
+#### 16. Get Pending Queue Status
+```
+GET /api/pending-queue
+```
+
+**Purpose**: View current processing queue status and identify stuck messages
+
+**Response**:
+```json
+{
+  "queue": {
+    "messages": [
+      {
+        "id": 123,
+        "session_db_id": 45,
+        "claude_session_id": "abc123",
+        "message_type": "observation",
+        "status": "pending",
+        "retry_count": 0,
+        "created_at_epoch": 1730886600000,
+        "started_processing_at_epoch": null,
+        "completed_at_epoch": null
+      }
+    ],
+    "totalPending": 5,
+    "totalProcessing": 2,
+    "totalFailed": 0,
+    "stuckCount": 1
+  },
+  "recentlyProcessed": [
+    {
+      "id": 122,
+      "session_db_id": 44,
+      "status": "processed",
+      "completed_at_epoch": 1730886500000
+    }
+  ],
+  "sessionsWithPendingWork": [44, 45, 46]
+}
+```
+
+**Status Definitions**:
+- `pending`: Message queued, not yet processed
+- `processing`: Message currently being processed by SDK agent
+- `processed`: Message completed successfully
+- `failed`: Message failed after max retry attempts (3 by default)
+
+**Stuck Detection**: Messages in `processing` status for >5 minutes are considered stuck and included in `stuckCount`
+
+**Use Case**: Check queue health after worker crashes or restarts to identify unprocessed observations
+
+#### 17. Trigger Manual Recovery
+```
+POST /api/pending-queue/process
+```
+
+**Purpose**: Manually trigger processing of pending queues (replaces automatic recovery in v5.x+)
+
+**Request Body**:
+```json
+{
+  "sessionLimit": 10
+}
+```
+
+**Body Parameters**:
+- `sessionLimit` (optional): Maximum number of sessions to process (default: 10, max: 100)
+
+**Response**:
+```json
+{
+  "success": true,
+  "totalPendingSessions": 15,
+  "sessionsStarted": 10,
+  "sessionsSkipped": 2,
+  "startedSessionIds": [44, 45, 46, 47, 48, 49, 50, 51, 52, 53]
+}
+```
+
+**Response Fields**:
+- `totalPendingSessions`: Total sessions with pending messages in database
+- `sessionsStarted`: Number of sessions we started processing this request
+- `sessionsSkipped`: Sessions already actively processing (not restarted)
+- `startedSessionIds`: Database IDs of sessions started
+
+**Behavior**:
+- Processes up to `sessionLimit` sessions with pending work
+- Skips sessions already actively processing (prevents duplicate agents)
+- Starts non-blocking SDK agents for each session
+- Returns immediately with status (processing continues in background)
+
+**Use Case**: Manually recover stuck observations after worker crashes, or when automatic recovery was disabled
+
+**Recovery Strategy Note**: As of v5.x, automatic recovery on worker startup is disabled by default. Users must manually trigger recovery using this endpoint or the CLI tool (`bun scripts/check-pending-queue.ts`) to maintain explicit control over reprocessing.
+
 ### Session Management Endpoints
 
-#### 16. Initialize Session
+#### 19. Initialize Session
 ```
 POST /sessions/:sessionDbId/init
 ```
@@ -408,7 +505,7 @@ POST /sessions/:sessionDbId/init
 }
 ```
 
-#### 17. Add Observation
+#### 20. Add Observation
 ```
 POST /sessions/:sessionDbId/observations
 ```
@@ -431,7 +528,7 @@ POST /sessions/:sessionDbId/observations
 }
 ```
 
-#### 18. Generate Summary
+#### 21. Generate Summary
 ```
 POST /sessions/:sessionDbId/summarize
 ```
@@ -451,7 +548,7 @@ POST /sessions/:sessionDbId/summarize
 }
 ```
 
-#### 19. Session Status
+#### 22. Session Status
 ```
 GET /sessions/:sessionDbId/status
 ```
@@ -466,7 +563,7 @@ GET /sessions/:sessionDbId/status
 }
 ```
 
-#### 20. Delete Session
+#### 23. Delete Session
 ```
 DELETE /sessions/:sessionDbId
 ```

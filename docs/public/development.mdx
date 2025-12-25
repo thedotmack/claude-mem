@@ -371,44 +371,148 @@ npm test
 
 ## Testing
 
-### Running Tests
+### Testing Philosophy
 
+Claude-mem relies on **real-world usage and manual testing** rather than traditional unit tests. The project philosophy prioritizes:
+
+1. **Manual verification** - Testing features in actual Claude Code sessions
+2. **Integration testing** - Running the full system end-to-end
+3. **Database inspection** - Verifying data correctness via SQLite queries
+4. **CLI tools** - Interactive tools for checking system state
+5. **Observability** - Comprehensive logging and worker health checks
+
+This approach was chosen because:
+- Hook behavior depends heavily on Claude Code's runtime environment
+- SDK interactions require real API calls and responses
+- SQLite and Bun runtime provide stability guarantees
+- Manual testing catches integration issues that unit tests miss
+
+### Manual Testing Workflow
+
+When developing new features:
+
+1. **Build and sync**:
+   ```bash
+   npm run build
+   npm run sync-marketplace
+   claude-mem restart
+   ```
+
+2. **Test in real session**:
+   - Start Claude Code
+   - Trigger the feature you're testing
+   - Verify expected behavior
+
+3. **Check database state**:
+   ```bash
+   sqlite3 ~/.claude-mem/claude-mem.db "SELECT * FROM your_table;"
+   ```
+
+4. **Monitor worker logs**:
+   ```bash
+   npm run worker:logs
+   ```
+
+5. **Verify queue health** (for recovery features):
+   ```bash
+   bun scripts/check-pending-queue.ts
+   ```
+
+### Testing Tools
+
+**Health Checks**:
 ```bash
-# All tests
-npm test
+# Worker status
+npm run worker:status
 
-# Specific test file
-node --test tests/your-test.test.ts
+# Queue inspection
+curl http://localhost:37777/api/pending-queue
 
-# With coverage (if configured)
-npm test -- --coverage
+# Database integrity
+sqlite3 ~/.claude-mem/claude-mem.db "PRAGMA integrity_check;"
 ```
 
-### Writing Tests
+**Hook Testing**:
+```bash
+# Test context hook manually
+echo '{"session_id":"test-123","cwd":"'$(pwd)'","source":"startup"}' | node plugin/scripts/context-hook.js
 
-Create test files in `tests/`:
-
-```typescript
-import { describe, it } from 'node:test';
-import assert from 'node:assert';
-
-describe('YourFeature', () => {
-  it('should do something', () => {
-    // Test implementation
-    assert.strictEqual(result, expected);
-  });
-});
+# Test new hook
+echo '{"session_id":"test-123","cwd":"'$(pwd)'","prompt":"test"}' | node plugin/scripts/new-hook.js
 ```
 
-### Test Database
+**Data Verification**:
+```bash
+# Check recent observations
+sqlite3 ~/.claude-mem/claude-mem.db "
+  SELECT id, tool_name, created_at
+  FROM observations
+  ORDER BY created_at_epoch DESC
+  LIMIT 10;
+"
 
-Use a separate test database:
-
-```typescript
-import { SessionStore } from '../src/services/sqlite/SessionStore';
-
-const store = new SessionStore(':memory:'); // In-memory database
+# Check summaries
+sqlite3 ~/.claude-mem/claude-mem.db "
+  SELECT id, request, completed
+  FROM session_summaries
+  ORDER BY created_at_epoch DESC
+  LIMIT 5;
+"
 ```
+
+### Recovery Feature Testing
+
+For manual recovery features specifically:
+
+1. **Simulate stuck messages**:
+   ```bash
+   # Manually create stuck message (for testing only)
+   sqlite3 ~/.claude-mem/claude-mem.db "
+     UPDATE pending_messages
+     SET status = 'processing',
+         started_processing_at_epoch = strftime('%s', 'now', '-10 minutes') * 1000
+     WHERE id = 123;
+   "
+   ```
+
+2. **Test recovery**:
+   ```bash
+   bun scripts/check-pending-queue.ts
+   ```
+
+3. **Verify results**:
+   ```bash
+   curl http://localhost:37777/api/pending-queue | jq '.queue'
+   ```
+
+### Regression Testing
+
+Before releasing:
+
+1. **Test all hook triggers**:
+   - SessionStart: Start new Claude Code session
+   - UserPromptSubmit: Submit a prompt
+   - PostToolUse: Use a tool like Read
+   - Summary: Let session complete
+   - SessionEnd: Close Claude Code
+
+2. **Test core features**:
+   - Context injection (recent sessions appear)
+   - Observation processing (summaries generated)
+   - MCP search tools (search returns results)
+   - Viewer UI (loads at http://localhost:37777)
+   - Manual recovery (stuck messages recovered)
+
+3. **Test edge cases**:
+   - Worker crash recovery
+   - Database locks
+   - Port conflicts
+   - Large databases
+
+4. **Cross-platform** (if applicable):
+   - macOS
+   - Linux
+   - Windows
 
 ## Code Style
 

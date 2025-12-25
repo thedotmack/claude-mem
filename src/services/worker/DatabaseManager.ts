@@ -110,10 +110,4 @@ export class DatabaseManager {
     return session;
   }
 
-  /**
-   * Mark session as completed
-   */
-  markSessionComplete(sessionDbId: number): void {
-    this.getSessionStore().markSessionCompleted(sessionDbId);
-  }
 }
