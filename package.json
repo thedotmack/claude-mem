@@ -1,6 +1,6 @@
 {
   "name": "claude-mem",
-  "version": "8.0.6",
+  "version": "8.1.0",
   "description": "Memory compression system for Claude Code - persist context across sessions",
   "keywords": [
     "claude",
@@ -44,6 +44,8 @@
     "worker:stop": "bun plugin/scripts/worker-cli.js stop",
     "worker:restart": "bun plugin/scripts/worker-cli.js restart",
     "worker:status": "bun plugin/scripts/worker-cli.js status",
+    "queue:check": "bun scripts/check-pending-queue.ts",
+    "queue:process": "bun scripts/check-pending-queue.ts --process",
     "translate-readme": "bun scripts/translate-readme/cli.ts -v -o docs/i18n README.md",
     "translate:tier1": "npm run translate-readme -- zh ja pt-br ko es de fr",
     "translate:tier2": "npm run translate-readme -- he ar ru pl cs nl tr uk",
@@ -53,7 +55,7 @@
     "bug-report": "npx tsx scripts/bug-report/cli.ts"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.1.67",
+    "@anthropic-ai/claude-agent-sdk": "^0.1.76",
     "@modelcontextprotocol/sdk": "^1.20.1",
     "ansi-to-html": "^0.7.2",
     "express": "^4.18.2",

@@ -22,6 +22,7 @@ export interface ActiveSession {
   cumulativeInputTokens: number;   // Track input tokens for discovery cost
   cumulativeOutputTokens: number;  // Track output tokens for discovery cost
   pendingProcessingIds: Set<number>;  // Track ALL message IDs yielded but not yet processed
+  earliestPendingTimestamp: number | null;  // Original timestamp of earliest pending message (for accurate observation timestamps)
 }
 
 export interface PendingMessage {
