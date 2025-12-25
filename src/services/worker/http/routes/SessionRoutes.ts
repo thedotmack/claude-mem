@@ -33,7 +33,6 @@ export class SessionRoutes extends BaseRouteHandler {
     super();
     this.completionHandler = new SessionCompletionHandler(
       sessionManager,
-      dbManager,
       eventBroadcaster
     );
   }
@@ -72,7 +71,6 @@ export class SessionRoutes extends BaseRouteHandler {
     app.post('/api/sessions/init', this.handleSessionInitByClaudeId.bind(this));
     app.post('/api/sessions/observations', this.handleObservationsByClaudeId.bind(this));
     app.post('/api/sessions/summarize', this.handleSummarizeByClaudeId.bind(this));
-    app.post('/api/sessions/complete', this.handleSessionCompleteByClaudeId.bind(this));
   }
 
   /**
@@ -286,7 +284,7 @@ export class SessionRoutes extends BaseRouteHandler {
 
     // Get or create session
     const sessionDbId = store.createSDKSession(claudeSessionId, '', '');
-    const promptNumber = store.getPromptCounter(sessionDbId);
+    const promptNumber = store.getPromptNumberFromUserPrompts(claudeSessionId);
 
     // Privacy check: skip if user prompt was entirely private
     const userPrompt = PrivacyCheckValidator.checkUserPromptPrivacy(
@@ -353,7 +351,7 @@ export class SessionRoutes extends BaseRouteHandler {
 
     // Get or create session
     const sessionDbId = store.createSDKSession(claudeSessionId, '', '');
-    const promptNumber = store.getPromptCounter(sessionDbId);
+    const promptNumber = store.getPromptNumberFromUserPrompts(claudeSessionId);
 
     // Privacy check: skip if user prompt was entirely private
     const userPrompt = PrivacyCheckValidator.checkUserPromptPrivacy(
@@ -391,31 +389,6 @@ export class SessionRoutes extends BaseRouteHandler {
   });
 
   /**
-   * Complete session by claudeSessionId (cleanup-hook uses this)
-   * POST /api/sessions/complete
-   * Body: { claudeSessionId }
-   *
-   * Marks session complete, stops SDK agent, broadcasts status
-   */
-  private handleSessionCompleteByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const { claudeSessionId } = req.body;
-
-    if (!claudeSessionId) {
-      return this.badRequest(res, 'Missing claudeSessionId');
-    }
-
-    const found = await this.completionHandler.completeByClaudeId(claudeSessionId);
-
-    if (!found) {
-      // No active session - nothing to clean up (may have already been completed)
-      res.json({ success: true, message: 'No active session found' });
-      return;
-    }
-
-    res.json({ success: true });
-  });
-
-  /**
    * Initialize session by claudeSessionId (new-hook uses this)
    * POST /api/sessions/init
    * Body: { claudeSessionId, project, prompt }
@@ -440,8 +413,9 @@ export class SessionRoutes extends BaseRouteHandler {
     // Step 1: Create/get SDK session (idempotent INSERT OR IGNORE)
     const sessionDbId = store.createSDKSession(claudeSessionId, project, prompt);
 
-    // Step 2: Increment prompt counter
-    const promptNumber = store.incrementPromptCounter(sessionDbId);
+    // Step 2: Get next prompt number from user_prompts count
+    const currentCount = store.getPromptNumberFromUserPrompts(claudeSessionId);
+    const promptNumber = currentCount + 1;
 
     // Step 3: Strip privacy tags from prompt
     const cleanedPrompt = stripMemoryTagsFromPrompt(prompt);

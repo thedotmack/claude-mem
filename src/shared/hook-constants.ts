@@ -1,5 +1,5 @@
 export const HOOK_TIMEOUTS = {
-  DEFAULT: 5000,              // Standard HTTP timeout (up from 2000ms)
+  DEFAULT: 120000,            // Standard HTTP timeout (up from 2000ms)
   HEALTH_CHECK: 1000,         // Worker health check (up from 500ms)
   WORKER_STARTUP_WAIT: 1000,
   WORKER_STARTUP_RETRIES: 15,
