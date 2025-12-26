@@ -196,6 +196,13 @@ export class GeminiAgent {
             session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
             session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
             await this.processGeminiResponse(session, obsResponse.content, worker, tokensUsed);
+          } else {
+            // Empty response - still mark messages as processed to avoid stuck state
+            logger.warn('SDK', 'Empty Gemini response for observation, marking as processed', {
+              sessionId: session.sessionDbId,
+              toolName: message.tool_name
+            });
+            await this.markMessagesProcessed(session, worker);
           }
 
         } else if (message.type === 'summarize') {
@@ -221,6 +228,12 @@ export class GeminiAgent {
             session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
             session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
             await this.processGeminiResponse(session, summaryResponse.content, worker, tokensUsed);
+          } else {
+            // Empty response - still mark messages as processed to avoid stuck state
+            logger.warn('SDK', 'Empty Gemini response for summary, marking as processed', {
+              sessionId: session.sessionDbId
+            });
+            await this.markMessagesProcessed(session, worker);
           }
         }
       }
