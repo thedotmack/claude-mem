@@ -468,6 +468,20 @@ export class WorkerService {
         env: process.env
       });
 
+      // Add error handling for transport events to prevent silent crashes
+      transport.onerror = (error: Error) => {
+        logger.error('SYSTEM', 'MCP transport error - child process may have crashed', {
+          name: error.name,
+          message: error.message,
+          stack: error.stack,
+        });
+      };
+
+      transport.onclose = () => {
+        logger.warn('SYSTEM', 'MCP transport closed - child process disconnected');
+        this.mcpReady = false;
+      };
+
       // Add timeout guard to prevent hanging on MCP connection (15 seconds)
       const MCP_INIT_TIMEOUT_MS = 15000;
       const mcpConnectionPromise = this.mcpClient.connect(transport);
@@ -763,6 +777,25 @@ if (require.main === module || !module.parent) {
     logger.info('SYSTEM', 'Received SIGINT, shutting down gracefully');
     await worker.shutdown();
     process.exit(0);
+  });
+
+  // Catch uncaught exceptions to prevent silent crashes
+  process.on('uncaughtException', (error) => {
+    logger.error('SYSTEM', 'Uncaught exception - worker crashing', {
+      name: error.name,
+      message: error.message,
+      stack: error.stack,
+    });
+    process.exit(1);
+  });
+
+  // Catch unhandled promise rejections
+  process.on('unhandledRejection', (reason, promise) => {
+    logger.error('SYSTEM', 'Unhandled promise rejection', {
+      reason: reason instanceof Error ? reason.message : String(reason),
+      stack: reason instanceof Error ? reason.stack : undefined,
+    });
+    // Don't exit immediately - log and continue, but this helps diagnose issues
   });
 
   worker.start().catch((error) => {
