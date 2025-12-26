@@ -80,6 +80,10 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_CONTEXT_OBSERVATIONS',
       'CLAUDE_MEM_WORKER_PORT',
       'CLAUDE_MEM_WORKER_HOST',
+      // AI Provider Configuration
+      'CLAUDE_MEM_PROVIDER',
+      'CLAUDE_MEM_GEMINI_API_KEY',
+      'CLAUDE_MEM_GEMINI_MODEL',
       // System Configuration
       'CLAUDE_MEM_DATA_DIR',
       'CLAUDE_MEM_LOG_LEVEL',
@@ -210,6 +214,22 @@ export class SettingsRoutes extends BaseRouteHandler {
    * Validate all settings from request body (single source of truth)
    */
   private validateSettings(settings: any): { valid: boolean; error?: string } {
+    // Validate CLAUDE_MEM_PROVIDER
+    if (settings.CLAUDE_MEM_PROVIDER) {
+      const validProviders = ['claude', 'gemini'];
+      if (!validProviders.includes(settings.CLAUDE_MEM_PROVIDER)) {
+        return { valid: false, error: 'CLAUDE_MEM_PROVIDER must be "claude" or "gemini"' };
+      }
+    }
+
+    // Validate CLAUDE_MEM_GEMINI_MODEL
+    if (settings.CLAUDE_MEM_GEMINI_MODEL) {
+      const validGeminiModels = ['gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-3-flash'];
+      if (!validGeminiModels.includes(settings.CLAUDE_MEM_GEMINI_MODEL)) {
+        return { valid: false, error: 'CLAUDE_MEM_GEMINI_MODEL must be one of: gemini-2.5-flash-lite, gemini-2.5-flash, gemini-3-flash' };
+      }
+    }
+
     // Validate CLAUDE_MEM_CONTEXT_OBSERVATIONS
     if (settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS) {
       const obsCount = parseInt(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10);

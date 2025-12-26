@@ -13,11 +13,21 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 
 | Setting                       | Default                         | Description                           |
 |-------------------------------|---------------------------------|---------------------------------------|
-| `CLAUDE_MEM_MODEL`            | `sonnet`                        | AI model for processing observations  |
+| `CLAUDE_MEM_MODEL`            | `sonnet`                        | AI model for processing observations (when using Claude) |
+| `CLAUDE_MEM_PROVIDER`         | `claude`                        | AI provider: `claude` or `gemini` |
 | `CLAUDE_MEM_MODE`             | `code`                          | Active mode profile (e.g., `code--es`, `email-investigation`) |
 | `CLAUDE_MEM_CONTEXT_OBSERVATIONS` | `50`                        | Number of observations to inject      |
 | `CLAUDE_MEM_WORKER_PORT`      | `37777`                         | Worker service port                   |
 | `CLAUDE_MEM_SKIP_TOOLS`       | `ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion` | Comma-separated tools to exclude from observations |
+
+### Gemini Provider Settings
+
+| Setting                       | Default                         | Description                           |
+|-------------------------------|---------------------------------|---------------------------------------|
+| `CLAUDE_MEM_GEMINI_API_KEY`   | —                               | Gemini API key ([get free key](https://aistudio.google.com/app/apikey)) |
+| `CLAUDE_MEM_GEMINI_MODEL`     | `gemini-2.5-flash-lite`          | Gemini model: `gemini-2.5-flash-lite`, `gemini-2.5-flash`, `gemini-3-flash` |
+
+See [Gemini Provider](usage/gemini-provider) for detailed configuration and free tier information.
 
 ### System Configuration
 
@@ -117,7 +127,6 @@ ${CLAUDE_PLUGIN_ROOT}/
 │   ├── new-hook.js         # Session creation hook
 │   ├── save-hook.js        # Observation capture hook
 │   ├── summary-hook.js     # Summary generation hook
-│   ├── cleanup-hook.js     # Session cleanup hook
 │   ├── worker-service.cjs  # Worker service (CJS)
 │   └── mcp-server.cjs      # MCP search server (CJS)
 └── ui/
@@ -160,13 +169,6 @@ Hooks are configured in `plugin/hooks/hooks.json`:
       "hooks": [{
         "type": "command",
         "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/summary-hook.js",
-        "timeout": 120
-      }]
-    }],
-    "SessionEnd": [{
-      "hooks": [{
-        "type": "command",
-        "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/cleanup-hook.js",
         "timeout": 120
       }]
     }]
