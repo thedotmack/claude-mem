@@ -6,7 +6,6 @@
  * - Clean up old access tracking records
  * - Maintain healthy database size
  * - Provide cleanup statistics and logging
- * - Track job state with checkpoint/resume capability
  *
  * Core concept from Titans: Adaptive weight decay to manage finite capacity
  */
@@ -16,7 +15,7 @@ import { logger } from '../../utils/logger.js';
 import { ForgettingPolicy } from './ForgettingPolicy.js';
 import { AccessTracker } from './AccessTracker.js';
 import { checkpointManager } from '../batch/checkpoint.js';
-import { createBatchJobState, type BatchJobState, type BatchJobStage } from '../../types/batch-job.js';
+import { createBatchJobState, type BatchJobState } from '../../types/batch-job.js';
 
 /**
  * Cleanup job configuration
@@ -83,8 +82,6 @@ export interface CleanupResult {
  * 1. Remove low-value memories that haven't been accessed
  * 2. Clean up old access tracking records
  * 3. Recalculate importance scores for accuracy
- *
- * Features checkpoint/resume capability for long-running cleanup operations.
  */
 export class CleanupJob {
   private config: CleanupConfig;
@@ -97,40 +94,24 @@ export class CleanupJob {
   }
 
   /**
-   * Get the current job ID (if running)
-   */
-  getCurrentJobId(): string | null {
-    return this.currentJobId;
-  }
-
-  /**
-   * Get job state from checkpoint manager
-   */
-  getJobState(): BatchJobState | null {
-    if (!this.currentJobId) return null;
-    return checkpointManager.getJob(this.currentJobId);
-  }
-
-  /**
-   * Run a single cleanup pass with checkpoint tracking
+   * Run a single cleanup pass
    */
   async run(): Promise<CleanupResult> {
     const startTime = Date.now();
 
-    // Create and register batch job state
+    // Create and register job with checkpoint manager
     const jobState = createBatchJobState('cleanup', {
       options: {
         batchSize: this.config.memoryCleanupLimit,
         maxConcurrency: 1,
-        timeoutMs: 3600000, // 1 hour
+        timeoutMs: 300000,
         dryRun: this.config.memoryCleanupDryRun,
-        skipOnError: true
+        skipOnError: true,
       },
       typeConfig: {
-        retentionDays: this.config.accessCleanupOlderThanDays
-      }
+        retentionDays: this.config.accessCleanupOlderThanDays,
+      },
     });
-
     this.currentJobId = jobState.jobId;
     checkpointManager.registerJob(jobState);
     checkpointManager.startAutoCheckpoint(jobState.jobId);
@@ -159,65 +140,64 @@ export class CleanupJob {
       },
     };
 
-    // Calculate total items (estimate for progress tracking)
-    const totalPhases = [
-      this.config.enableMemoryCleanup,
-      this.config.enableAccessCleanup,
-      this.config.enableImportanceRecalc
-    ].filter(Boolean).length;
-
-    checkpointManager.updateProgress(jobState.jobId, {
-      totalItems: totalPhases,
-      processedItems: 0
-    });
-
     try {
-      // Update stage to scanning
-      checkpointManager.updateStage(jobState.jobId, 'scanning');
+      // Calculate total items for progress tracking
+      const totalSteps =
+        (this.config.enableMemoryCleanup ? 1 : 0) +
+        (this.config.enableAccessCleanup ? 1 : 0) +
+        (this.config.enableImportanceRecalc ? 1 : 0);
+
+      checkpointManager.updateProgress(jobState.jobId, { totalItems: totalSteps });
+      checkpointManager.updateStage(jobState.jobId, 'executing');
+
+      let completedSteps = 0;
 
       // Step 1: Memory cleanup (if enabled)
       if (this.config.enableMemoryCleanup) {
-        checkpointManager.updateStage(jobState.jobId, 'executing');
-        checkpointManager.updateBatchProgress(jobState.jobId, 1, totalPhases);
+        checkpointManager.updateProgress(jobState.jobId, {
+          processedItems: completedSteps,
+        });
 
         const memoryResult = await this.runMemoryCleanup();
         result.memoryCleanup.evaluated = memoryResult.evaluated;
         result.memoryCleanup.deleted = memoryResult.deleted;
         result.memoryCleanup.candidates = memoryResult.candidates;
 
-        checkpointManager.recordItemResult(jobState.jobId, 1, 'completed');
-
-        // Save checkpoint after memory cleanup
-        checkpointManager.saveCheckpoint(jobState.jobId);
+        completedSteps++;
+        checkpointManager.updateProgress(jobState.jobId, {
+          processedItems: completedSteps,
+          completedItems: completedSteps,
+        });
       }
 
       // Step 2: Access tracking cleanup (if enabled)
       if (this.config.enableAccessCleanup) {
-        checkpointManager.updateBatchProgress(jobState.jobId, 2, totalPhases);
-
         const deletedRecords = await this.runAccessCleanup();
         result.accessCleanup.deletedRecords = deletedRecords;
 
-        checkpointManager.recordItemResult(jobState.jobId, 2, 'completed');
+        completedSteps++;
+        checkpointManager.updateProgress(jobState.jobId, {
+          processedItems: completedSteps,
+          completedItems: completedSteps,
+        });
       }
 
       // Step 3: Importance score recalculation (if enabled)
       if (this.config.enableImportanceRecalc) {
-        checkpointManager.updateBatchProgress(jobState.jobId, 3, totalPhases);
-
         const recalculated = await this.runImportanceRecalc();
         result.importanceRecalc.recalculated = recalculated;
 
-        checkpointManager.recordItemResult(jobState.jobId, 3, 'completed');
+        completedSteps++;
+        checkpointManager.updateProgress(jobState.jobId, {
+          processedItems: completedSteps,
+          completedItems: completedSteps,
+        });
       }
 
-      // Finalize
-      checkpointManager.updateStage(jobState.jobId, 'finalizing');
       result.duration = Date.now() - startTime;
 
-      // Mark completed
+      // Mark job as completed
       checkpointManager.updateStage(jobState.jobId, 'completed');
-      checkpointManager.saveCheckpoint(jobState.jobId);
 
       logger.info('CleanupJob', 'Cleanup job completed', {
         jobId: jobState.jobId,
@@ -234,7 +214,7 @@ export class CleanupJob {
       result.duration = Date.now() - startTime;
 
       // Record error in checkpoint manager
-      checkpointManager.recordError(jobState.jobId, error);
+      checkpointManager.recordError(jobState.jobId, error instanceof Error ? error : new Error(String(error)));
 
       logger.error('CleanupJob', 'Cleanup job failed', { jobId: jobState.jobId }, error);
       this.currentJobId = null;
@@ -390,7 +370,6 @@ export class CleanupJob {
     config: CleanupConfig;
     databaseSize: number;
     currentJobId?: string;
-    currentJobState?: BatchJobState | null;
   } {
     const dbPath = this.db.serialize ? 'in-memory' : 'file';
 
@@ -400,23 +379,38 @@ export class CleanupJob {
       config: this.config,
       databaseSize: dbPath === 'file' ? 0 : 0, // TODO: implement file size check
       currentJobId: this.currentJobId ?? undefined,
-      currentJobState: this.currentJobId ? checkpointManager.getJob(this.currentJobId) : undefined
     };
   }
 
   /**
-   * Get audit events for the current or specified job
+   * Get current job ID if a cleanup is in progress
    */
-  getJobEvents(jobId?: string): import('../../types/batch-job.js').BatchJobEvent[] {
-    const targetJobId = jobId ?? this.currentJobId;
-    if (!targetJobId) return [];
-    return checkpointManager.getEvents(targetJobId);
+  getCurrentJobId(): string | null {
+    return this.currentJobId;
   }
 
   /**
-   * List all cleanup jobs from checkpoint manager
+   * Get state of current or specified job
    */
-  listAllJobs(): BatchJobState[] {
+  getJobState(jobId?: string): ReturnType<typeof checkpointManager.getJob> {
+    const id = jobId ?? this.currentJobId;
+    if (!id) return null;
+    return checkpointManager.getJob(id);
+  }
+
+  /**
+   * Get events for current or specified job
+   */
+  getJobEvents(jobId?: string): ReturnType<typeof checkpointManager.getEvents> {
+    const id = jobId ?? this.currentJobId;
+    if (!id) return [];
+    return checkpointManager.getEvents(id);
+  }
+
+  /**
+   * List all cleanup jobs tracked by checkpoint manager
+   */
+  listAllJobs(): ReturnType<typeof checkpointManager.listJobs> {
     return checkpointManager.listJobs({ type: 'cleanup' });
   }
 }

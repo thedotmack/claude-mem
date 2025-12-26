@@ -38,6 +38,7 @@ import { SessionRoutes } from './worker/http/routes/SessionRoutes.js';
 import { DataRoutes } from './worker/http/routes/DataRoutes.js';
 import { SearchRoutes } from './worker/http/routes/SearchRoutes.js';
 import { SettingsRoutes } from './worker/http/routes/SettingsRoutes.js';
+import { MetricsRoutes } from './worker/http/routes/MetricsRoutes.js';
 
 export class WorkerService {
   private app: express.Application;
@@ -64,6 +65,7 @@ export class WorkerService {
   private dataRoutes: DataRoutes;
   private searchRoutes: SearchRoutes | null;
   private settingsRoutes: SettingsRoutes;
+  private metricsRoutes: MetricsRoutes;
 
   // Initialization tracking
   private initializationComplete: Promise<void>;
@@ -104,6 +106,7 @@ export class WorkerService {
     // SearchRoutes needs SearchManager which requires initialized DB - will be created in initializeBackground()
     this.searchRoutes = null;
     this.settingsRoutes = new SettingsRoutes(this.settingsManager);
+    this.metricsRoutes = new MetricsRoutes(this.dbManager);
 
     this.setupMiddleware();
     this.setupRoutes();
@@ -254,6 +257,7 @@ export class WorkerService {
     this.dataRoutes.setupRoutes(this.app);
     // searchRoutes is set up after database initialization in initializeBackground()
     this.settingsRoutes.setupRoutes(this.app);
+    this.metricsRoutes.setupRoutes(this.app);
 
     // Register early handler for /api/context/inject to avoid 404 during startup
     // This handler waits for initialization to complete before delegating to SearchRoutes
