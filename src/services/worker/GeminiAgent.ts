@@ -264,6 +264,9 @@ export class GeminiAgent {
 
     const url = `${GEMINI_API_URL}/${model}:generateContent?key=${apiKey}`;
 
+    // Rate limit delay - Gemini API requires spacing between requests
+    await new Promise(resolve => setTimeout(resolve, 100));
+
     const response = await fetch(url, {
       method: 'POST',
       headers: {
