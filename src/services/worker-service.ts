@@ -16,7 +16,7 @@ import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
 import { logger } from '../utils/logger.js';
 import { exec, execSync, spawn } from 'child_process';
 import { homedir } from 'os';
-import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { createWriteStream } from 'fs';
 import { promisify } from 'util';
 
@@ -743,28 +743,13 @@ export class WorkerService {
 // Entry Point
 // ============================================================================
 
-const DATA_DIR = path.join(homedir(), '.claude-mem');
-const PID_FILE = path.join(DATA_DIR, 'worker.pid');
 const HOOK_RESPONSE = '{"continue": true, "suppressOutput": true}';
 
-interface PidInfo {
-  pid: number;
-  port: number;
-  startedAt: string;
-}
-
-function writePidFile(info: PidInfo): void {
-  mkdirSync(DATA_DIR, { recursive: true });
-  writeFileSync(PID_FILE, JSON.stringify(info, null, 2));
-}
-
-function removePidFile(): void {
-  try {
-    if (existsSync(PID_FILE)) unlinkSync(PID_FILE);
-  } catch { /* ignore */ }
-}
-
-async function isPortInUse(port: number): Promise<boolean> {
+/**
+ * Check if worker is already running by hitting the health endpoint.
+ * This is the source of truth - more reliable than PID files.
+ */
+async function isWorkerRunning(port: number): Promise<boolean> {
   try {
     const response = await fetch(`http://127.0.0.1:${port}/api/health`, {
       signal: AbortSignal.timeout(2000)
@@ -775,6 +760,9 @@ async function isPortInUse(port: number): Promise<boolean> {
   }
 }
 
+/**
+ * Stop the worker via shutdown endpoint and wait for it to exit.
+ */
 async function stopWorker(port: number): Promise<void> {
   try {
     await fetch(`http://127.0.0.1:${port}/api/admin/shutdown`, {
@@ -784,11 +772,12 @@ async function stopWorker(port: number): Promise<void> {
     // Wait for it to actually stop
     const start = Date.now();
     while (Date.now() - start < 30000) {
-      if (!(await isPortInUse(port))) break;
+      if (!(await isWorkerRunning(port))) return;
       await new Promise(r => setTimeout(r, 200));
     }
-  } catch { /* worker may already be dead */ }
-  removePidFile();
+  } catch {
+    // Worker may already be dead, that's fine
+  }
 }
 
 async function main(): Promise<void> {
@@ -809,31 +798,23 @@ async function main(): Promise<void> {
   }
 
   // For start/restart/no-command: check if already running
-  if (await isPortInUse(port)) {
+  if (await isWorkerRunning(port)) {
     console.log(HOOK_RESPONSE);
     process.exit(0);
   }
 
-  // Write PID file and start server
-  writePidFile({
-    pid: process.pid,
-    port,
-    startedAt: new Date().toISOString()
-  });
-
+  // Start the worker
   const worker = new WorkerService();
 
   process.on('SIGTERM', async () => {
     logger.info('SYSTEM', 'Received SIGTERM, shutting down gracefully');
     await worker.shutdown();
-    removePidFile();
     process.exit(0);
   });
 
   process.on('SIGINT', async () => {
     logger.info('SYSTEM', 'Received SIGINT, shutting down gracefully');
     await worker.shutdown();
-    removePidFile();
     process.exit(0);
   });
 
