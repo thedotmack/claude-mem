@@ -4,116 +4,159 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [8.2.0] - 2025-12-26
+
+## 🚀 Gemini API as Alternative AI Provider
+
+This release introduces **Google Gemini API** as an alternative to the Claude Agent SDK for observation extraction. This gives users flexibility in choosing their AI backend while maintaining full feature parity.
+
+### ✨ New Features
+
+#### Gemini Provider Integration
+- **New `GeminiAgent`**: Complete implementation using Gemini's REST API for observation and summary extraction
+- **Provider selection**: Choose between Claude or Gemini directly in the Settings UI
+- **API key management**: Configure via UI or `GEMINI_API_KEY` environment variable
+- **Multi-turn conversations**: Full conversation history tracking for context-aware extraction
+
+#### Supported Gemini Models
+- `gemini-2.5-flash-preview-05-20` (default)
+- `gemini-2.5-pro-preview-05-06`
+- `gemini-2.0-flash`
+- `gemini-2.0-flash-lite`
+
+#### Rate Limiting
+- Built-in rate limiting for Gemini free tier (15 RPM) and paid tier (1000 RPM)
+- Configurable via `gemini_has_billing` setting in the UI
+
+#### Resilience Features
+- **Graceful fallback**: Automatically falls back to Claude SDK if Gemini is selected but no API key is configured
+- **Hot-swap providers**: Switch between Claude and Gemini without restarting the worker
+- **Empty response handling**: Messages properly marked as processed even when Gemini returns empty responses (prevents stuck queue states)
+- **Timestamp preservation**: Recovered backlog messages retain their original timestamps
+
+### 🎨 UI Improvements
+
+- **Spinning favicon**: Visual indicator during observation processing
+- **Provider status**: Clear indication of which AI provider is active
+
+### 📚 Documentation
+
+- New [Gemini Provider documentation](https://docs.claude-mem.ai/usage/gemini-provider) with setup guide and troubleshooting
+
+### ⚙️ New Settings
+
+| Setting | Values | Description |
+|---------|--------|-------------|
+| `CLAUDE_MEM_PROVIDER` | `claude` \| `gemini` | AI provider for observation extraction |
+| `CLAUDE_MEM_GEMINI_API_KEY` | string | Gemini API key |
+| `CLAUDE_MEM_GEMINI_MODEL` | see above | Gemini model to use |
+| `gemini_has_billing` | boolean | Enable higher rate limits for paid accounts |
+
+---
+
+## 🙏 Contributor Shout-out
+
+Huge thanks to **Alexander Knigge** ([@AlexanderKnigge](https://x.com/AlexanderKnigge)) for contributing the Gemini provider implementation! This feature significantly expands claude-mem's flexibility and gives users more choice in their AI backend.
+
+---
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.1.0...v8.2.0
+
 ## [8.1.0] - 2025-12-25
 
-## Summary
+## The 3-Month Battle Against Complexity
 
-This minor release brings significant architectural improvements focused on **explicit user control**, **simplified session management**, and **enhanced worker reliability**. The automatic recovery system has been replaced with a manual recovery approach, giving users complete control over when observations are reprocessed.
+**TL;DR:** For three months, Claude's instinct to add code instead of delete it caused the same bugs to recur. What should have been 5 lines of code became ~1000 lines, 11 useless methods, and 7+ failed "fixes." The timestamp corruption that finally broke things was just a symptom. The real achievement: **984 lines of code deleted.**
 
-## Breaking Changes
+---
 
-**Manual Recovery Replaces Automatic Recovery**
-- Worker no longer automatically reprocesses stuck observations on startup
-- Users must explicitly trigger recovery via CLI tool or HTTP API
-- Prevents unexpected duplicate observations and processing
-- See the new Manual Recovery documentation for migration guide
+## What Actually Happened
 
-**Removed Cleanup Hook**
-- `cleanup-hook.ts` and `plugin/scripts/cleanup-hook.js` have been removed
-- Hook behavior was moved to session completion handler
+Every Claude Code hook receives a session ID. That's all you need.
 
-**Hook Timeout Increased**
-- Default hook timeout changed from 5000ms to 120000ms
-- Accommodates longer-running operations during startup
+But Claude built an entire redundant session management system on top:
+- An `sdk_sessions` table with status tracking, port assignment, and prompt counting
+- 11 methods in `SessionStore` to manage this artificial complexity
+- Auto-creation logic scattered across 3 locations
+- A cleanup hook that "completed" sessions at the end
 
-## New Features
+**Why?** Because it seemed "robust." Because "what if the session doesn't exist?" 
 
-**Queue Management API**
-- `GET /api/pending-queue` - View processing queue status, stuck messages, and session work
-- `POST /api/pending-queue/process` - Manually trigger recovery with session limits
-- Detailed queue statistics including stuck detection (>5 minute threshold)
+But the edge cases didn't exist. Hooks ALWAYS provide session IDs. The "defensive" code was solving imaginary problems while creating real ones.
 
-**CLI Recovery Tool**
-- `bun scripts/check-pending-queue.ts` - Interactive queue inspection and recovery
-- `--process` flag for non-interactive mode
-- `--limit N` to control sessions processed per batch
-- npm scripts: `npm run queue:check` and `npm run queue:process`
+---
 
-**Data Routes API**
-- New DataRoutes module for queue management endpoints
-- Session-aware pending work tracking
+## The Pattern of Failure
 
-## Bug Fixes
+Every time a bug appeared, Claude's instinct was to **ADD** more code:
 
-**Observation Timestamps Fixed**
-- Corrected timestamp handling throughout the observation lifecycle
-- Fixed `created_at_epoch` preservation in database operations
+| Bug | What Claude Added | What Should Have Happened |
+|-----|------------------|--------------------------|
+| Race conditions | Auto-create fallbacks | Delete the auto-create logic |
+| Duplicate observations | Validation layers | Delete the code path allowing duplicates |
+| UNIQUE constraint violations | Try-catch with fallbacks | Use `INSERT OR IGNORE` (5 characters) |
+| Session not found | Silent auto-creation | **FAIL LOUDLY** (it's a hook bug) |
 
-**Enhanced Worker Reliability**
-- Added error handlers to Chroma sync operations (prevents crashes on timeout)
-- Version mismatch now logs warning instead of force-restarting worker
-- Improved polling mechanism with increased retries and reduced interval
+---
 
-## Refactoring
+## The 7+ Failed Attempts
 
-**Simplified Session Management**
-- Removed 279 lines of complexity from SessionStore
-- `createSDKSession` simplified to pure `INSERT OR IGNORE`
-- Removed auto-create logic from `storeObservation` and `storeSummary`
-- Deleted 11 unused session management methods
-- `prompt_number` now derived from `user_prompts` count
+- **Nov 4**: "Always store session data regardless of pre-existence." Complexity planted.
+- **Nov 11**: `INSERT OR IGNORE` recognized. But complexity documented, not removed.
+- **Nov 21**: Duplicate observations bug. Fixed. Then broken again by endless mode.
+- **Dec 5**: "6 hours of work delivered zero value." User requests self-audit.
+- **Dec 20**: "Phase 2: Eliminated Race Conditions" — felt like progress. Complexity remained.
+- **Dec 24**: Finally, forced deletion.
 
-**Simplified Worker Utils**
-- Removed 117 lines of legacy code
-- Removed PM2 cleanup logic
-- Streamlined `ensureWorkerRunning` function
+The user stated "hooks provide session IDs, no extra management needed" **seven times** across months. Claude didn't listen.
 
-**SDK Agent Improvements**
-- Removed complex session creation retry logic
-- Cleaner prompt number retrieval from SessionRoutes
+---
 
-## Documentation
+## The Fix
 
-**New Manual Recovery Guide** (`docs/public/usage/manual-recovery.mdx`)
-- Complete 450-line guide for recovery workflows
-- Interactive CLI usage examples
-- HTTP API integration examples
-- Troubleshooting stuck messages
-- Cron job and monitoring script examples
+### Deleted (984 lines):
+- 11 `SessionStore` methods: `incrementPromptCounter`, `getPromptCounter`, `setWorkerPort`, `getWorkerPort`, `markSessionCompleted`, `markSessionFailed`, `reactivateSession`, `findActiveSDKSession`, `findAnySDKSession`, `updateSDKSessionId`
+- Auto-create logic from `storeObservation` and `storeSummary`
+- The entire cleanup hook (was aborting SDK agent and causing data loss)
+- 117 lines from `worker-utils.ts`
 
-**Enhanced Troubleshooting** (`docs/public/troubleshooting.mdx`)
-- Added 195 lines of manual recovery troubleshooting
-- Queue state explanations
-- Direct database inspection queries
+### What remains (~10 lines):
+```javascript
+createSDKSession(sessionId) {
+  db.run('INSERT OR IGNORE INTO sdk_sessions (...) VALUES (...)');
+  return db.query('SELECT id FROM sdk_sessions WHERE ...').get(sessionId);
+}
+```
 
-**Updated Development Guide**
-- Changed testing philosophy to emphasize real-world testing
-- Added manual testing workflow documentation
-- Queue health verification procedures
+**That's it.**
 
-**Worker Service Docs Updated**
-- Documented 22 HTTP endpoints (up from 20)
-- Queue management endpoint documentation
+---
+
+## Behavior Change
+
+- **Before:** Missing session? Auto-create silently. Bug hidden.
+- **After:** Missing session? Storage fails. Bug visible immediately.
+
+---
+
+## New Tools
+
+Since we're now explicit about recovery instead of silently papering over problems:
+
+- `GET /api/pending-queue` - See what's stuck
+- `POST /api/pending-queue/process` - Manually trigger recovery  
+- `npm run queue:check` / `npm run queue:process` - CLI equivalents
+
+---
 
 ## Dependencies
-
 - Upgraded `@anthropic-ai/claude-agent-sdk` from `^0.1.67` to `^0.1.76`
 
-## New Scripts
+---
 
-- `scripts/check-pending-queue.ts` - CLI tool for queue management
-- `scripts/fix-all-timestamps.ts` - Timestamp correction utility
-- `scripts/fix-corrupted-timestamps.ts` - Corrupted timestamp repair
-- `scripts/investigate-timestamps.ts` - Timestamp debugging tool
-- `scripts/validate-timestamp-logic.ts` - Timestamp validation
-- `scripts/verify-timestamp-fix.ts` - Post-fix verification
+**PR #437:** https://github.com/thedotmack/claude-mem/pull/437
 
-## Migration Guide
-
-1. **After upgrading**: Run `bun scripts/check-pending-queue.ts` to check for stuck messages
-2. **If messages found**: Run `bun scripts/check-pending-queue.ts --process` to recover
-3. **Optional**: Add recovery to your workflow (cron job, pre-shutdown script)
-4. **Note**: Automatic recovery no longer happens - you must trigger it manually
+*The evidence: Observations #3646, #6738, #7598, #12860, #12866, #13046, #15259, #20995, #21055, #30524, #31080, #32114, #32116, #32125, #32126, #32127, #32146, #32324—the complete record of a 3-month battle.*
 
 ## [8.0.6] - 2025-12-24
 
