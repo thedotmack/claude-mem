@@ -436,10 +436,11 @@ export function ContextSettingsModal({
                 >
                   <option value="claude">Claude (uses your Claude account)</option>
                   <option value="gemini">Gemini (uses API key)</option>
+                  <option value="openrouter">OpenRouter (multi-model)</option>
                 </select>
               </FormField>
 
-              {formState.CLAUDE_MEM_PROVIDER === 'claude' ? (
+              {formState.CLAUDE_MEM_PROVIDER === 'claude' && (
                 <FormField
                   label="Claude Model"
                   tooltip="Claude model used for generating observations"
@@ -453,7 +454,9 @@ export function ContextSettingsModal({
                     <option value="opus">opus (highest quality)</option>
                   </select>
                 </FormField>
-              ) : (
+              )}
+
+              {formState.CLAUDE_MEM_PROVIDER === 'gemini' && (
                 <>
                   <FormField
                     label="Gemini API Key"
@@ -488,6 +491,55 @@ export function ContextSettingsModal({
                       onChange={(checked) => updateSetting('CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED', checked ? 'true' : 'false')}
                     />
                   </div>
+                </>
+              )}
+
+              {formState.CLAUDE_MEM_PROVIDER === 'openrouter' && (
+                <>
+                  <FormField
+                    label="OpenRouter API Key"
+                    tooltip="Your OpenRouter API key from openrouter.ai (or set OPENROUTER_API_KEY env var)"
+                  >
+                    <input
+                      type="password"
+                      value={formState.CLAUDE_MEM_OPENROUTER_API_KEY || ''}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_OPENROUTER_API_KEY', e.target.value)}
+                      placeholder="Enter OpenRouter API key..."
+                    />
+                  </FormField>
+                  <FormField
+                    label="OpenRouter Model"
+                    tooltip="Model identifier from OpenRouter (e.g., anthropic/claude-3.5-sonnet, google/gemini-2.0-flash-thinking-exp)"
+                  >
+                    <input
+                      type="text"
+                      value={formState.CLAUDE_MEM_OPENROUTER_MODEL || 'anthropic/claude-3.5-sonnet'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_OPENROUTER_MODEL', e.target.value)}
+                      placeholder="e.g., anthropic/claude-3.5-sonnet"
+                    />
+                  </FormField>
+                  <FormField
+                    label="Site URL (Optional)"
+                    tooltip="Your site URL for OpenRouter analytics (optional)"
+                  >
+                    <input
+                      type="text"
+                      value={formState.CLAUDE_MEM_OPENROUTER_SITE_URL || ''}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_OPENROUTER_SITE_URL', e.target.value)}
+                      placeholder="https://yoursite.com"
+                    />
+                  </FormField>
+                  <FormField
+                    label="App Name (Optional)"
+                    tooltip="Your app name for OpenRouter analytics (optional)"
+                  >
+                    <input
+                      type="text"
+                      value={formState.CLAUDE_MEM_OPENROUTER_APP_NAME || 'claude-mem'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_OPENROUTER_APP_NAME', e.target.value)}
+                      placeholder="claude-mem"
+                    />
+                  </FormField>
                 </>
               )}
 
