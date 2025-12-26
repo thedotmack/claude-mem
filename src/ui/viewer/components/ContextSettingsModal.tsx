@@ -481,11 +481,11 @@ export function ContextSettingsModal({
                   </FormField>
                   <div className="toggle-group" style={{ marginTop: '8px' }}>
                     <ToggleSwitch
-                      id="gemini-billing-enabled"
-                      label="Billing Enabled"
-                      description="Enable if you have billing set up on Google Cloud. Skips rate limiting (1000+ RPM available)."
-                      checked={formState.CLAUDE_MEM_GEMINI_BILLING_ENABLED === 'true'}
-                      onChange={(checked) => updateSetting('CLAUDE_MEM_GEMINI_BILLING_ENABLED', checked ? 'true' : 'false')}
+                      id="gemini-rate-limiting"
+                      label="Rate Limiting"
+                      description="Enable for free tier (10-30 RPM). Disable if you have billing set up (1000+ RPM)."
+                      checked={formState.CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED === 'true'}
+                      onChange={(checked) => updateSetting('CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED', checked ? 'true' : 'false')}
                     />
                   </div>
                 </>

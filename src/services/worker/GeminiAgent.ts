@@ -18,8 +18,7 @@ import { logger } from '../../utils/logger.js';
 import { parseObservations, parseSummary } from '../../sdk/parser.js';
 import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
-import { USER_SETTINGS_PATH } from '../../shared/paths.js';
-import type { ActiveSession, PendingMessage, ConversationMessage } from '../worker-types.js';
+import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 
 // Gemini API endpoint
@@ -46,13 +45,13 @@ const GEMINI_RPM_LIMITS: Record<GeminiModel, number> = {
 let lastRequestTime = 0;
 
 /**
- * Enforce RPM rate limit for Gemini free tier (no billing).
+ * Enforce RPM rate limit for Gemini free tier.
  * Waits the required time between requests based on model's RPM limit + 100ms safety buffer.
- * Skipped entirely if billing is enabled (1000+ RPM available).
+ * Skipped entirely if rate limiting is disabled (billing users with 1000+ RPM available).
  */
-async function enforceRateLimitForModel(model: GeminiModel, billingEnabled: boolean): Promise<void> {
-  // Skip rate limiting if billing is enabled (1000+ RPM available)
-  if (billingEnabled) {
+async function enforceRateLimitForModel(model: GeminiModel, rateLimitingEnabled: boolean): Promise<void> {
+  // Skip rate limiting if disabled (billing users with 1000+ RPM)
+  if (!rateLimitingEnabled) {
     return;
   }
 
@@ -142,7 +141,7 @@ export class GeminiAgent {
   async startSession(session: ActiveSession, worker?: any): Promise<void> {
     try {
       // Get Gemini configuration
-      const { apiKey, model, billingEnabled } = this.getGeminiConfig();
+      const { apiKey, model, rateLimitingEnabled } = this.getGeminiConfig();
 
       if (!apiKey) {
         throw new Error('Gemini API key not configured. Set CLAUDE_MEM_GEMINI_API_KEY in settings or GEMINI_API_KEY environment variable.');
@@ -158,7 +157,7 @@ export class GeminiAgent {
 
       // Add to conversation history and query Gemini with full context
       session.conversationHistory.push({ role: 'user', content: initPrompt });
-      const initResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, billingEnabled);
+      const initResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, rateLimitingEnabled);
 
       if (initResponse.content) {
         // Add response to conversation history
@@ -193,7 +192,7 @@ export class GeminiAgent {
 
           // Add to conversation history and query Gemini with full context
           session.conversationHistory.push({ role: 'user', content: obsPrompt });
-          const obsResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, billingEnabled);
+          const obsResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, rateLimitingEnabled);
 
           if (obsResponse.content) {
             // Add response to conversation history
@@ -225,7 +224,7 @@ export class GeminiAgent {
 
           // Add to conversation history and query Gemini with full context
           session.conversationHistory.push({ role: 'user', content: summaryPrompt });
-          const summaryResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, billingEnabled);
+          const summaryResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, rateLimitingEnabled);
 
           if (summaryResponse.content) {
             // Add response to conversation history
@@ -307,7 +306,7 @@ export class GeminiAgent {
     history: ConversationMessage[],
     apiKey: string,
     model: GeminiModel,
-    billingEnabled: boolean
+    rateLimitingEnabled: boolean
   ): Promise<{ content: string; tokensUsed?: number }> {
     const contents = this.conversationToGeminiContents(history);
     const totalChars = history.reduce((sum, m) => sum + m.content.length, 0);
@@ -319,8 +318,8 @@ export class GeminiAgent {
 
     const url = `${GEMINI_API_URL}/${model}:generateContent?key=${apiKey}`;
 
-    // Enforce RPM rate limit for free tier (skipped if billing enabled)
-    await enforceRateLimitForModel(model, billingEnabled);
+    // Enforce RPM rate limit for free tier (skipped if rate limiting disabled)
+    await enforceRateLimitForModel(model, rateLimitingEnabled);
 
     const response = await fetch(url, {
       method: 'POST',
@@ -516,7 +515,7 @@ export class GeminiAgent {
   /**
    * Get Gemini configuration from settings or environment
    */
-  private getGeminiConfig(): { apiKey: string; model: GeminiModel; billingEnabled: boolean } {
+  private getGeminiConfig(): { apiKey: string; model: GeminiModel; rateLimitingEnabled: boolean } {
     const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
 
@@ -545,10 +544,10 @@ export class GeminiAgent {
       model = defaultModel;
     }
 
-    // Billing: if enabled, skip rate limiting (1000+ RPM available)
-    const billingEnabled = settings.CLAUDE_MEM_GEMINI_BILLING_ENABLED === 'true';
+    // Rate limiting: enabled by default for free tier users
+    const rateLimitingEnabled = settings.CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED !== 'false';
 
-    return { apiKey, model, billingEnabled };
+    return { apiKey, model, rateLimitingEnabled };
   }
 }
 
