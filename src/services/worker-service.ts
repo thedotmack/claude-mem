@@ -14,7 +14,10 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
 import { logger } from '../utils/logger.js';
-import { exec, execSync } from 'child_process';
+import { exec, execSync, spawn } from 'child_process';
+import { homedir } from 'os';
+import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync } from 'fs';
+import { createWriteStream } from 'fs';
 import { promisify } from 'util';
 
 const execAsync = promisify(exec);
@@ -737,31 +740,259 @@ export class WorkerService {
 }
 
 // ============================================================================
-// Main Entry Point
+// CLI Entry Point
 // ============================================================================
 
-/**
- * Start the worker service (if running as main module)
- * Note: Using require.main check for CJS compatibility (build outputs CJS)
- */
+const DATA_DIR = path.join(homedir(), '.claude-mem');
+const PID_FILE = path.join(DATA_DIR, 'worker.pid');
+const LOG_DIR = path.join(DATA_DIR, 'logs');
+const HOOK_RESPONSE = '{"continue": true, "suppressOutput": true}';
+
+interface PidInfo {
+  pid: number;
+  port: number;
+  startedAt: string;
+}
+
+function writePidFile(info: PidInfo): void {
+  mkdirSync(DATA_DIR, { recursive: true });
+  writeFileSync(PID_FILE, JSON.stringify(info, null, 2));
+}
+
+function readPidFile(): PidInfo | null {
+  try {
+    if (!existsSync(PID_FILE)) return null;
+    return JSON.parse(readFileSync(PID_FILE, 'utf-8'));
+  } catch {
+    return null;
+  }
+}
+
+function removePidFile(): void {
+  try {
+    if (existsSync(PID_FILE)) unlinkSync(PID_FILE);
+  } catch { /* ignore */ }
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function isPortInUse(port: number): Promise<boolean> {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/api/health`, {
+      signal: AbortSignal.timeout(2000)
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForReady(port: number, timeoutMs: number = 120000): Promise<boolean> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/api/readiness`, {
+        signal: AbortSignal.timeout(5000)
+      });
+      if (response.ok) return true;
+    } catch { /* not ready yet */ }
+    await new Promise(r => setTimeout(r, 500));
+  }
+  return false;
+}
+
+async function stopWorker(port: number): Promise<void> {
+  try {
+    await fetch(`http://127.0.0.1:${port}/api/admin/shutdown`, {
+      method: 'POST',
+      signal: AbortSignal.timeout(30000)
+    });
+    // Wait for it to actually stop
+    const start = Date.now();
+    while (Date.now() - start < 30000) {
+      if (!(await isPortInUse(port))) break;
+      await new Promise(r => setTimeout(r, 200));
+    }
+  } catch { /* worker may already be dead */ }
+  removePidFile();
+}
+
+function getLogFilePath(): string {
+  mkdirSync(LOG_DIR, { recursive: true });
+  const date = new Date().toISOString().slice(0, 10);
+  return path.join(LOG_DIR, `worker-${date}.log`);
+}
+
+async function handleCli(): Promise<void> {
+  const command = process.argv[2];
+  const port = getWorkerPort();
+  const isTTY = process.stdin.isTTY;
+
+  switch (command) {
+    case 'start': {
+      // Check if already running
+      if (await isPortInUse(port)) {
+        if (isTTY) console.log(`Worker already running on port ${port}`);
+        else console.log(HOOK_RESPONSE);
+        process.exit(0);
+      }
+
+      // Spawn self with --daemon flag, detached
+      const logFile = getLogFilePath();
+      const logStream = createWriteStream(logFile, { flags: 'a' });
+
+      const child = spawn(process.execPath, [__filename, '--daemon'], {
+        detached: true,
+        stdio: ['ignore', logStream, logStream],
+        env: { ...process.env, CLAUDE_MEM_WORKER_PORT: String(port) },
+        cwd: path.dirname(__filename)
+      });
+
+      child.unref();
+
+      if (!child.pid) {
+        console.error('Failed to spawn worker');
+        process.exit(1);
+      }
+
+      // Write PID file
+      writePidFile({
+        pid: child.pid,
+        port,
+        startedAt: new Date().toISOString()
+      });
+
+      // Wait for worker to be ready
+      const ready = await waitForReady(port);
+      if (!ready) {
+        console.error('Worker failed to become ready');
+        process.exit(1);
+      }
+
+      if (isTTY) {
+        console.log(`Worker started (PID: ${child.pid})`);
+        console.log(`Logs: ${logFile}`);
+      } else {
+        console.log(HOOK_RESPONSE);
+      }
+      process.exit(0);
+    }
+
+    case 'stop': {
+      await stopWorker(port);
+      if (isTTY) console.log('Worker stopped');
+      else console.log(HOOK_RESPONSE);
+      process.exit(0);
+    }
+
+    case 'restart': {
+      await stopWorker(port);
+      // Small delay to ensure port is released
+      await new Promise(r => setTimeout(r, 1000));
+
+      // Now start (same logic as start)
+      const logFile = getLogFilePath();
+      const logStream = createWriteStream(logFile, { flags: 'a' });
+
+      const child = spawn(process.execPath, [__filename, '--daemon'], {
+        detached: true,
+        stdio: ['ignore', logStream, logStream],
+        env: { ...process.env, CLAUDE_MEM_WORKER_PORT: String(port) },
+        cwd: path.dirname(__filename)
+      });
+
+      child.unref();
+
+      if (!child.pid) {
+        console.error('Failed to spawn worker');
+        process.exit(1);
+      }
+
+      writePidFile({
+        pid: child.pid,
+        port,
+        startedAt: new Date().toISOString()
+      });
+
+      const ready = await waitForReady(port);
+      if (!ready) {
+        console.error('Worker failed to become ready');
+        process.exit(1);
+      }
+
+      if (isTTY) {
+        console.log(`Worker restarted (PID: ${child.pid})`);
+      } else {
+        console.log(HOOK_RESPONSE);
+      }
+      process.exit(0);
+    }
+
+    case 'status': {
+      const pidInfo = readPidFile();
+      const running = await isPortInUse(port);
+
+      if (isTTY) {
+        if (running) {
+          console.log('Worker is running');
+          if (pidInfo) {
+            console.log(`  PID: ${pidInfo.pid}`);
+            console.log(`  Port: ${pidInfo.port}`);
+            console.log(`  Started: ${pidInfo.startedAt}`);
+          }
+        } else {
+          console.log('Worker is not running');
+        }
+      } else {
+        console.log(HOOK_RESPONSE);
+      }
+      process.exit(0);
+    }
+
+    case '--daemon':
+    case undefined: {
+      // Actually run the server
+      const worker = new WorkerService();
+
+      // Graceful shutdown
+      process.on('SIGTERM', async () => {
+        logger.info('SYSTEM', 'Received SIGTERM, shutting down gracefully');
+        await worker.shutdown();
+        removePidFile();
+        process.exit(0);
+      });
+
+      process.on('SIGINT', async () => {
+        logger.info('SYSTEM', 'Received SIGINT, shutting down gracefully');
+        await worker.shutdown();
+        removePidFile();
+        process.exit(0);
+      });
+
+      worker.start().catch((error) => {
+        logger.failure('SYSTEM', 'Worker failed to start', {}, error as Error);
+        process.exit(1);
+      });
+      break;
+    }
+
+    default:
+      console.log('Usage: worker-service.cjs <start|stop|restart|status>');
+      process.exit(1);
+  }
+}
+
+// Run CLI if this is the main module
 if (require.main === module || !module.parent) {
-  const worker = new WorkerService();
-
-  // Graceful shutdown
-  process.on('SIGTERM', async () => {
-    logger.info('SYSTEM', 'Received SIGTERM, shutting down gracefully');
-    await worker.shutdown();
-    process.exit(0);
-  });
-
-  process.on('SIGINT', async () => {
-    logger.info('SYSTEM', 'Received SIGINT, shutting down gracefully');
-    await worker.shutdown();
-    process.exit(0);
-  });
-
-  worker.start().catch((error) => {
-    logger.failure('SYSTEM', 'Worker failed to start', {}, error as Error);
+  handleCli().catch((error) => {
+    console.error(error);
     process.exit(1);
   });
 }
