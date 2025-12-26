@@ -25,6 +25,11 @@ import { ModeManager } from '../domain/ModeManager.js';
 // OpenRouter API endpoint
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
 
+// Context window management constants (defaults, overridable via settings)
+const DEFAULT_MAX_CONTEXT_MESSAGES = 20;  // Maximum messages to keep in conversation history
+const DEFAULT_MAX_ESTIMATED_TOKENS = 100000;  // ~100k tokens max context (safety limit)
+const CHARS_PER_TOKEN_ESTIMATE = 4;  // Conservative estimate: 1 token ≈ 4 chars
+
 // OpenAI-compatible message format
 interface OpenAIMessage {
   role: 'user' | 'assistant' | 'system';
@@ -246,6 +251,60 @@ export class OpenRouterAgent {
   }
 
   /**
+   * Estimate token count from text (conservative estimate)
+   */
+  private estimateTokens(text: string): number {
+    return Math.ceil(text.length / CHARS_PER_TOKEN_ESTIMATE);
+  }
+
+  /**
+   * Truncate conversation history to prevent runaway context costs
+   * Keeps most recent messages within token budget
+   */
+  private truncateHistory(history: ConversationMessage[]): ConversationMessage[] {
+    const settings = SettingsDefaultsManager.loadFromFile(
+      path.join(homedir(), '.claude-mem', 'settings.json')
+    );
+
+    const MAX_CONTEXT_MESSAGES = parseInt(settings.CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES) || DEFAULT_MAX_CONTEXT_MESSAGES;
+    const MAX_ESTIMATED_TOKENS = parseInt(settings.CLAUDE_MEM_OPENROUTER_MAX_TOKENS) || DEFAULT_MAX_ESTIMATED_TOKENS;
+
+    if (history.length <= MAX_CONTEXT_MESSAGES) {
+      // Check token count even if message count is ok
+      const totalTokens = history.reduce((sum, m) => sum + this.estimateTokens(m.content), 0);
+      if (totalTokens <= MAX_ESTIMATED_TOKENS) {
+        return history;
+      }
+    }
+
+    // Sliding window: keep most recent messages within limits
+    const truncated: ConversationMessage[] = [];
+    let tokenCount = 0;
+
+    // Process messages in reverse (most recent first)
+    for (let i = history.length - 1; i >= 0; i--) {
+      const msg = history[i];
+      const msgTokens = this.estimateTokens(msg.content);
+
+      if (truncated.length >= MAX_CONTEXT_MESSAGES || tokenCount + msgTokens > MAX_ESTIMATED_TOKENS) {
+        logger.warn('SDK', 'Context window truncated to prevent runaway costs', {
+          originalMessages: history.length,
+          keptMessages: truncated.length,
+          droppedMessages: i + 1,
+          estimatedTokens: tokenCount,
+          tokenLimit: MAX_ESTIMATED_TOKENS
+        });
+        break;
+      }
+
+      truncated.unshift(msg);  // Add to beginning
+      tokenCount += msgTokens;
+    }
+
+    return truncated;
+  }
+
+  /**
    * Convert shared ConversationMessage array to OpenAI-compatible message format
    */
   private conversationToOpenAIMessages(history: ConversationMessage[]): OpenAIMessage[] {
@@ -266,12 +325,16 @@ export class OpenRouterAgent {
     siteUrl?: string,
     appName?: string
   ): Promise<{ content: string; tokensUsed?: number }> {
-    const messages = this.conversationToOpenAIMessages(history);
-    const totalChars = history.reduce((sum, m) => sum + m.content.length, 0);
+    // Truncate history to prevent runaway costs
+    const truncatedHistory = this.truncateHistory(history);
+    const messages = this.conversationToOpenAIMessages(truncatedHistory);
+    const totalChars = truncatedHistory.reduce((sum, m) => sum + m.content.length, 0);
+    const estimatedTokens = this.estimateTokens(truncatedHistory.map(m => m.content).join(''));
 
     logger.debug('SDK', `Querying OpenRouter multi-turn (${model})`, {
-      turns: history.length,
-      totalChars
+      turns: truncatedHistory.length,
+      totalChars,
+      estimatedTokens
     });
 
     const response = await fetch(OPENROUTER_API_URL, {
@@ -309,6 +372,31 @@ export class OpenRouterAgent {
 
     const content = data.choices[0].message.content;
     const tokensUsed = data.usage?.total_tokens;
+
+    // Log actual token usage for cost tracking
+    if (tokensUsed) {
+      const inputTokens = data.usage?.prompt_tokens || 0;
+      const outputTokens = data.usage?.completion_tokens || 0;
+      // Rough cost estimate (Claude 3.5 Sonnet pricing: $3/MTok input, $15/MTok output)
+      const estimatedCost = (inputTokens / 1000000 * 3) + (outputTokens / 1000000 * 15);
+
+      logger.info('SDK', 'OpenRouter API usage', {
+        model,
+        inputTokens,
+        outputTokens,
+        totalTokens: tokensUsed,
+        estimatedCostUSD: estimatedCost.toFixed(4),
+        messagesInContext: truncatedHistory.length
+      });
+
+      // Warn if costs are getting high
+      if (tokensUsed > 50000) {
+        logger.warn('SDK', 'High token usage detected - consider reducing context', {
+          totalTokens: tokensUsed,
+          estimatedCost: estimatedCost.toFixed(4)
+        });
+      }
+    }
 
     return { content, tokensUsed };
   }
