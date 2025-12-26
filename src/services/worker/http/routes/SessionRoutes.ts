@@ -19,6 +19,7 @@ import { SessionCompletionHandler } from '../../session/SessionCompletionHandler
 import { PrivacyCheckValidator } from '../../validation/PrivacyCheckValidator.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
+import { getHybridOrchestrator } from '../../../pipeline/index.js';
 
 export class SessionRoutes extends BaseRouteHandler {
   private completionHandler: SessionCompletionHandler;
@@ -309,19 +310,58 @@ export class SessionRoutes extends BaseRouteHandler {
       ? stripMemoryTagsFromJson(JSON.stringify(tool_response))
       : '{}';
 
-    // Queue observation
+    const effectiveCwd = cwd || logger.happyPathError(
+      'SESSION',
+      'Missing cwd when queueing observation in SessionRoutes',
+      { sessionId: sessionDbId },
+      { tool_name },
+      ''
+    );
+
+    // Pipeline Acquire Stage: validate and check for duplicates
+    const orchestrator = getHybridOrchestrator();
+    orchestrator.acquire({
+      claudeSessionId,
+      sessionDbId,
+      toolName: tool_name,
+      toolInput: cleanedToolInput,
+      toolOutput: cleanedToolResponse,
+      cwd: effectiveCwd,
+      promptNumber,
+    }).then(acquireResult => {
+      if (acquireResult.skipped) {
+        logger.debug('PIPELINE', 'Observation skipped by acquire stage', {
+          sessionId: sessionDbId,
+          toolName: tool_name,
+          reason: acquireResult.skipReason,
+        });
+        // Note: We still queue to maintain existing behavior
+        // Future: Could skip entirely for true duplicates
+      }
+
+      if (acquireResult.output) {
+        logger.debug('PIPELINE', 'Acquire stage metadata', {
+          sessionId: sessionDbId,
+          toolCategory: acquireResult.output.metadata.toolCategory,
+          inputTokens: acquireResult.output.metadata.inputTokenEstimate,
+          outputTokens: acquireResult.output.metadata.outputTokenEstimate,
+        });
+      }
+    }).catch(error => {
+      // Non-fatal: log and continue with existing flow
+      logger.debug('PIPELINE', 'Acquire stage error (non-fatal)', {
+        sessionId: sessionDbId,
+        toolName: tool_name,
+      }, error);
+    });
+
+    // Queue observation (existing flow continues in parallel)
     this.sessionManager.queueObservation(sessionDbId, {
       tool_name,
       tool_input: cleanedToolInput,
       tool_response: cleanedToolResponse,
       prompt_number: promptNumber,
-      cwd: cwd || logger.happyPathError(
-        'SESSION',
-        'Missing cwd when queueing observation in SessionRoutes',
-        { sessionId: sessionDbId },
-        { tool_name },
-        ''
-      )
+      cwd: effectiveCwd
     });
 
     // Ensure SDK agent is running

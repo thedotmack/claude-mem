@@ -20,6 +20,7 @@ import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import type { ActiveSession, SDKUserMessage, PendingMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
+import { pipelineMetrics } from '../pipeline/metrics.js';
 
 // Import Agent SDK (assumes it's installed)
 // @ts-ignore - Agent SDK types may not be available
@@ -258,11 +259,18 @@ export class SDKAgent {
    * @param originalTimestamp - Original epoch when message was queued (for backlog processing accuracy)
    */
   private async processSDKResponse(session: ActiveSession, text: string, worker: any | undefined, discoveryTokens: number, originalTimestamp: number | null): Promise<void> {
-    // Parse observations
+    // Parse observations (with metrics)
+    const parseStart = Date.now();
     const observations = parseObservations(text, session.claudeSessionId);
+    pipelineMetrics.recordStage('parse', Date.now() - parseStart, true, {
+      observationCount: observations.length,
+      textLength: text.length
+    });
 
     // Store observations with original timestamp (if processing backlog) or current time
     for (const obs of observations) {
+      // Store observation (with metrics)
+      const renderStart = Date.now();
       const { id: obsId, createdAtEpoch } = this.dbManager.getSessionStore().storeObservation(
         session.claudeSessionId,
         session.project,
@@ -271,6 +279,10 @@ export class SDKAgent {
         discoveryTokens,
         originalTimestamp ?? undefined
       );
+      pipelineMetrics.recordStage('render', Date.now() - renderStart, true, {
+        obsId,
+        type: obs.type
+      });
 
       // Log observation details
       logger.info('SDK', 'Observation saved', {
@@ -283,7 +295,7 @@ export class SDKAgent {
         concepts: obs.concepts?.length ?? 0
       });
 
-      // Sync to Chroma
+      // Sync to Chroma (with metrics)
       const chromaStart = Date.now();
       const obsType = obs.type;
       const obsTitle = obs.title || '(untitled)';
@@ -297,6 +309,7 @@ export class SDKAgent {
         discoveryTokens
       ).then(() => {
         const chromaDuration = Date.now() - chromaStart;
+        pipelineMetrics.recordStage('chroma', chromaDuration, true, { obsId, type: obsType });
         logger.debug('CHROMA', 'Observation synced', {
           obsId,
           duration: `${chromaDuration}ms`,
@@ -304,6 +317,7 @@ export class SDKAgent {
           title: obsTitle
         });
       }).catch((error) => {
+        pipelineMetrics.recordStage('chroma', Date.now() - chromaStart, false, { obsId, type: obsType });
         logger.warn('CHROMA', 'Observation sync failed, continuing without vector search', {
           obsId,
           type: obsType,
@@ -314,28 +328,41 @@ export class SDKAgent {
       // Calculate and store surprise score (Phase 2: Titans concepts)
       this.calculateAndStoreSurpriseScore(obsId, session);
 
-      // Broadcast to SSE clients (for web UI)
+      // Broadcast to SSE clients (for web UI) with metrics
       if (worker && worker.sseBroadcaster) {
-        worker.sseBroadcaster.broadcast({
-          type: 'new_observation',
-          observation: {
-            id: obsId,
-            sdk_session_id: session.sdkSessionId,
-            session_id: session.claudeSessionId,
-            type: obs.type,
-            title: obs.title,
-            subtitle: obs.subtitle,
-            text: obs.text || null,
-            narrative: obs.narrative || null,
-            facts: JSON.stringify(obs.facts || []),
-            concepts: JSON.stringify(obs.concepts || []),
-            files_read: JSON.stringify(obs.files || []),
-            files_modified: JSON.stringify([]),
-            project: session.project,
-            prompt_number: session.lastPromptNumber,
-            created_at_epoch: createdAtEpoch
-          }
-        });
+        const broadcastStart = Date.now();
+        try {
+          worker.sseBroadcaster.broadcast({
+            type: 'new_observation',
+            observation: {
+              id: obsId,
+              sdk_session_id: session.sdkSessionId,
+              session_id: session.claudeSessionId,
+              type: obs.type,
+              title: obs.title,
+              subtitle: obs.subtitle,
+              text: obs.text || null,
+              narrative: obs.narrative || null,
+              facts: JSON.stringify(obs.facts || []),
+              concepts: JSON.stringify(obs.concepts || []),
+              files_read: JSON.stringify(obs.files || []),
+              files_modified: JSON.stringify([]),
+              project: session.project,
+              prompt_number: session.lastPromptNumber,
+              created_at_epoch: createdAtEpoch
+            }
+          });
+          pipelineMetrics.recordStage('broadcast', Date.now() - broadcastStart, true, {
+            obsId,
+            type: 'observation'
+          });
+        } catch (error) {
+          pipelineMetrics.recordStage('broadcast', Date.now() - broadcastStart, false, {
+            obsId,
+            type: 'observation',
+            error: error instanceof Error ? error.message : String(error)
+          });
+        }
       }
     }
 
@@ -375,36 +402,51 @@ export class SDKAgent {
         discoveryTokens
       ).then(() => {
         const chromaDuration = Date.now() - chromaStart;
+        pipelineMetrics.recordStage('chroma', chromaDuration, true, { summaryId, type: 'summary' });
         logger.debug('CHROMA', 'Summary synced', {
           summaryId,
           duration: `${chromaDuration}ms`,
           request: summaryRequest
         });
       }).catch((error) => {
+        pipelineMetrics.recordStage('chroma', Date.now() - chromaStart, false, { summaryId, type: 'summary' });
         logger.warn('CHROMA', 'Summary sync failed, continuing without vector search', {
           summaryId,
           request: summaryRequest
         }, error);
       });
 
-      // Broadcast to SSE clients (for web UI)
+      // Broadcast to SSE clients (for web UI) with metrics
       if (worker && worker.sseBroadcaster) {
-        worker.sseBroadcaster.broadcast({
-          type: 'new_summary',
-          summary: {
-            id: summaryId,
-            session_id: session.claudeSessionId,
-            request: summary.request,
-            investigated: summary.investigated,
-            learned: summary.learned,
-            completed: summary.completed,
-            next_steps: summary.next_steps,
-            notes: summary.notes,
-            project: session.project,
-            prompt_number: session.lastPromptNumber,
-            created_at_epoch: createdAtEpoch
-          }
-        });
+        const broadcastStart = Date.now();
+        try {
+          worker.sseBroadcaster.broadcast({
+            type: 'new_summary',
+            summary: {
+              id: summaryId,
+              session_id: session.claudeSessionId,
+              request: summary.request,
+              investigated: summary.investigated,
+              learned: summary.learned,
+              completed: summary.completed,
+              next_steps: summary.next_steps,
+              notes: summary.notes,
+              project: session.project,
+              prompt_number: session.lastPromptNumber,
+              created_at_epoch: createdAtEpoch
+            }
+          });
+          pipelineMetrics.recordStage('broadcast', Date.now() - broadcastStart, true, {
+            summaryId,
+            type: 'summary'
+          });
+        } catch (error) {
+          pipelineMetrics.recordStage('broadcast', Date.now() - broadcastStart, false, {
+            summaryId,
+            type: 'summary',
+            error: error instanceof Error ? error.message : String(error)
+          });
+        }
       }
     }
 
@@ -417,6 +459,7 @@ export class SDKAgent {
    * This runs AFTER the observation is saved to always preserve data
    */
   private async calculateAndStoreSurpriseScore(obsId: number, session: ActiveSession): Promise<void> {
+    const surpriseStart = Date.now();
     try {
       // Get settings
       const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
@@ -451,6 +494,13 @@ export class SDKAgent {
         surpriseScore: result.score,
       });
 
+      // Record success metrics
+      pipelineMetrics.recordStage('surprise', Date.now() - surpriseStart, true, {
+        obsId,
+        score: result.score,
+        method: result.method
+      });
+
       // If high surprise, boost related topics (momentum)
       if (result.score > settings.CLAUDE_MEM_SURPRISE_THRESHOLD && settings.CLAUDE_MEM_MOMENTUM_ENABLED) {
         const topics = momentumBuffer.extractTopics(obs.title || obs.text || '', 10);
@@ -467,6 +517,11 @@ export class SDKAgent {
         });
       }
     } catch (error) {
+      // Record failure metrics
+      pipelineMetrics.recordStage('surprise', Date.now() - surpriseStart, false, {
+        obsId,
+        error: error instanceof Error ? error.message : String(error)
+      });
       // Don't fail the observation save if surprise calculation fails
       logger.debug('SDK', 'Surprise calculation failed (non-fatal)', { obsId }, error as Error);
     }

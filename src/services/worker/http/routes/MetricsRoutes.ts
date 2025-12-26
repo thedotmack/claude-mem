@@ -10,6 +10,7 @@ import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { getParseMetrics, getParseSuccessRate } from '../../../../sdk/parser.js';
 import { checkpointManager } from '../../../batch/checkpoint.js';
 import { getCleanupJob } from '../../CleanupJob.js';
+import { pipelineMetrics } from '../../../pipeline/metrics.js';
 import type { DatabaseManager } from '../../DatabaseManager.js';
 
 export class MetricsRoutes extends BaseRouteHandler {
@@ -20,6 +21,9 @@ export class MetricsRoutes extends BaseRouteHandler {
   setupRoutes(app: express.Application): void {
     // Parsing metrics
     app.get('/api/metrics/parsing', this.handleParsingMetrics.bind(this));
+
+    // Pipeline stage metrics
+    app.get('/api/metrics/pipeline', this.handlePipelineMetrics.bind(this));
 
     // Job status
     app.get('/api/metrics/jobs', this.handleJobList.bind(this));
@@ -50,6 +54,36 @@ export class MetricsRoutes extends BaseRouteHandler {
       fallbackRate: metrics.totalExtractions > 0
         ? Math.round((metrics.fallbacksUsed / metrics.totalExtractions) * 1000) / 10
         : 0
+    });
+  });
+
+  /**
+   * GET /api/metrics/pipeline
+   * Returns pipeline stage timing and success metrics
+   */
+  private handlePipelineMetrics = this.wrapHandler((req: Request, res: Response): void => {
+    const windowMs = parseInt(req.query.window as string) || 3600000; // Default 1 hour
+    const stats = pipelineMetrics.getAllStats(windowMs);
+    const recent = pipelineMetrics.getRecentMetrics(parseInt(req.query.limit as string) || 50);
+
+    res.json({
+      window: {
+        ms: windowMs,
+        formatted: `${Math.round(windowMs / 60000)} minutes`
+      },
+      stages: stats.stages,
+      summary: {
+        totalExecutions: stats.totalExecutions,
+        avgTotalDurationMs: stats.avgTotalDurationMs,
+        lastExecution: stats.lastExecution
+      },
+      recent: recent.map(m => ({
+        stage: m.stage,
+        durationMs: m.durationMs,
+        success: m.success,
+        timestamp: m.timestamp,
+        metadata: m.metadata
+      }))
     });
   });
 
@@ -157,6 +191,9 @@ export class MetricsRoutes extends BaseRouteHandler {
     const parseMetrics = getParseMetrics();
     const parseSuccessRate = getParseSuccessRate();
 
+    // Pipeline stage metrics (last hour)
+    const pipelineStats = pipelineMetrics.getAllStats(3600000);
+
     // Job stats
     const jobStats = checkpointManager.getStats();
 
@@ -176,6 +213,18 @@ export class MetricsRoutes extends BaseRouteHandler {
         successRateFormatted: `${parseSuccessRate.toFixed(1)}%`,
         totalExtractions: parseMetrics.totalExtractions,
         fallbacksUsed: parseMetrics.fallbacksUsed
+      },
+      pipeline: {
+        totalExecutions: pipelineStats.totalExecutions,
+        avgTotalDurationMs: pipelineStats.avgTotalDurationMs,
+        lastExecution: pipelineStats.lastExecution,
+        stages: {
+          parse: pipelineStats.stages.parse,
+          render: pipelineStats.stages.render,
+          chroma: pipelineStats.stages.chroma,
+          surprise: pipelineStats.stages.surprise,
+          broadcast: pipelineStats.stages.broadcast
+        }
       },
       jobs: {
         total: jobStats.totalJobs,

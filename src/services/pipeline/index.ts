@@ -385,3 +385,12 @@ export const observationPipeline = new ObservationPipeline();
 
 // Re-export types
 export * from '../../types/pipeline.js';
+
+// Re-export hybrid orchestrator for gradual migration
+export {
+  HybridPipelineOrchestrator,
+  getHybridOrchestrator,
+  resetOrchestrator,
+  type RawObservationInput,
+  type AcquireResult
+} from './orchestrator.js';
