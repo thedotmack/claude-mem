@@ -168,12 +168,16 @@ export class GeminiAgent {
         session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);  // Rough estimate
         session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
 
-        // Process response
-        await this.processGeminiResponse(session, initResponse.content, worker, tokensUsed);
+        // Process response (no original timestamp for init - not from queue)
+        await this.processGeminiResponse(session, initResponse.content, worker, tokensUsed, null);
       }
 
       // Process pending messages
       for await (const message of this.sessionManager.getMessageIterator(session.sessionDbId)) {
+        // Capture earliest timestamp BEFORE processing (will be cleared after)
+        // This ensures backlog messages get their original timestamps, not current time
+        const originalTimestamp = session.earliestPendingTimestamp;
+
         if (message.type === 'observation') {
           // Update last prompt number
           if (message.prompt_number !== undefined) {
@@ -186,7 +190,7 @@ export class GeminiAgent {
             tool_name: message.tool_name!,
             tool_input: JSON.stringify(message.tool_input),
             tool_output: JSON.stringify(message.tool_response),
-            created_at_epoch: Date.now(),
+            created_at_epoch: originalTimestamp ?? Date.now(),
             cwd: message.cwd
           });
 
@@ -201,7 +205,7 @@ export class GeminiAgent {
             const tokensUsed = obsResponse.tokensUsed || 0;
             session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
             session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
-            await this.processGeminiResponse(session, obsResponse.content, worker, tokensUsed);
+            await this.processGeminiResponse(session, obsResponse.content, worker, tokensUsed, originalTimestamp);
           } else {
             // Empty response - still mark messages as processed to avoid stuck state
             logger.warn('SDK', 'Empty Gemini response for observation, marking as processed', {
@@ -233,7 +237,7 @@ export class GeminiAgent {
             const tokensUsed = summaryResponse.tokensUsed || 0;
             session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
             session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
-            await this.processGeminiResponse(session, summaryResponse.content, worker, tokensUsed);
+            await this.processGeminiResponse(session, summaryResponse.content, worker, tokensUsed, originalTimestamp);
           } else {
             // Empty response - still mark messages as processed to avoid stuck state
             logger.warn('SDK', 'Empty Gemini response for summary, marking as processed', {
@@ -355,24 +359,27 @@ export class GeminiAgent {
 
   /**
    * Process Gemini response (same format as Claude)
+   * @param originalTimestamp - Original epoch when message was queued (for backlog processing accuracy)
    */
   private async processGeminiResponse(
     session: ActiveSession,
     text: string,
     worker: any | undefined,
-    discoveryTokens: number
+    discoveryTokens: number,
+    originalTimestamp: number | null
   ): Promise<void> {
     // Parse observations (same XML format)
     const observations = parseObservations(text, session.claudeSessionId);
 
-    // Store observations
+    // Store observations with original timestamp (if processing backlog) or current time
     for (const obs of observations) {
       const { id: obsId, createdAtEpoch } = this.dbManager.getSessionStore().storeObservation(
         session.claudeSessionId,
         session.project,
         obs,
         session.lastPromptNumber,
-        discoveryTokens
+        discoveryTokens,
+        originalTimestamp ?? undefined
       );
 
       logger.info('SDK', 'Gemini observation saved', {
@@ -439,7 +446,8 @@ export class GeminiAgent {
         session.project,
         summaryForStore,
         session.lastPromptNumber,
-        discoveryTokens
+        discoveryTokens,
+        originalTimestamp ?? undefined
       );
 
       logger.info('SDK', 'Gemini summary saved', {
