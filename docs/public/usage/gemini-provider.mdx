@@ -7,9 +7,9 @@ description: "Use Google's Gemini API as an alternative to Claude for observatio
 
 Claude-mem supports Google's Gemini API as an alternative to the Claude Agent SDK for extracting observations from your sessions. This can significantly reduce costs since Gemini offers a generous free tier.
 
-<Note>
-**Free Tier Available**: Google provides 60 requests per minute and 1 million tokens per month at no cost. No billing information required.
-</Note>
+<Warning>
+**Free Tier Rate Limits**: Without billing enabled, Gemini has strict rate limits (5-10 RPM). Enable billing on your Google Cloud project to unlock 1000-4000 RPM while still using the free quota.
+</Warning>
 
 ## Why Use Gemini?
 
@@ -28,7 +28,7 @@ Claude-mem supports Google's Gemini API as an alternative to the Claude Agent SD
 6. Copy and securely store the generated API key
 
 <Tip>
-Billing information is generally not required to use the free tier.
+**No billing required** to get started, but we recommend enabling billing to unlock higher rate limits (1000-4000 RPM vs 5-10 RPM) while still using the free quota.
 </Tip>
 
 ## Configuration
@@ -39,7 +39,8 @@ Billing information is generally not required to use the free tier.
 |---------|--------|---------|-------------|
 | `CLAUDE_MEM_PROVIDER` | `claude`, `gemini` | `claude` | AI provider for observation extraction |
 | `CLAUDE_MEM_GEMINI_API_KEY` | string | — | Your Gemini API key |
-| `CLAUDE_MEM_GEMINI_MODEL` | `gemini-2.0-flash-exp`, `gemini-1.5-flash`, `gemini-1.5-pro` | `gemini-2.0-flash-exp` | Gemini model to use |
+| `CLAUDE_MEM_GEMINI_MODEL` | `gemini-2.5-flash-lite`, `gemini-2.5-flash`, `gemini-3-flash` | `gemini-2.5-flash-lite` | Gemini model to use |
+| `CLAUDE_MEM_GEMINI_BILLING_ENABLED` | `true`, `false` | `false` | Skip rate limiting if billing is enabled on Google Cloud |
 
 ### Using the Settings UI
 
@@ -59,7 +60,8 @@ Edit `~/.claude-mem/settings.json`:
 {
   "CLAUDE_MEM_PROVIDER": "gemini",
   "CLAUDE_MEM_GEMINI_API_KEY": "your-api-key-here",
-  "CLAUDE_MEM_GEMINI_MODEL": "gemini-2.0-flash-exp"
+  "CLAUDE_MEM_GEMINI_MODEL": "gemini-2.5-flash-lite",
+  "CLAUDE_MEM_GEMINI_BILLING_ENABLED": "true"
 }
 ```
 
@@ -73,11 +75,11 @@ The settings file takes precedence over the environment variable.
 
 ## Available Models
 
-| Model | Speed | Capability | Notes |
-|-------|-------|------------|-------|
-| `gemini-2.0-flash-exp` | Fastest | Good | Default, recommended for most usage |
-| `gemini-1.5-flash` | Fast | Good | Stable release |
-| `gemini-1.5-pro` | Slower | Best | Use for complex observation extraction |
+| Model | Free Tier RPM | Notes |
+|-------|--------------|-------|
+| `gemini-2.5-flash-lite` | 10 | Default, recommended for free tier (highest RPM) |
+| `gemini-2.5-flash` | 5 | Higher capability, lower rate limit |
+| `gemini-3-flash` | 5 | Latest model, lower rate limit |
 
 ## Provider Switching
 
@@ -129,9 +131,32 @@ Either:
 
 ### Rate Limiting
 
-The free tier allows 60 requests per minute. If you hit rate limits:
+Google has two rate limit tiers for free usage:
+
+**Without billing (API key only):**
+
+| Model | RPM | TPM |
+|-------|-----|-----|
+| gemini-2.5-flash-lite | 10 | 250K |
+| gemini-2.5-flash | 5 | 250K |
+| gemini-3-flash | 5 | 250K |
+
+Claude-mem enforces these limits automatically with built-in delays between requests. Processing may be slower but stays within limits.
+
+**With billing enabled (still free tier):**
+
+| Model | RPM | TPM |
+|-------|-----|-----|
+| gemini-2.5-flash-lite | 4,000 | 4M |
+| gemini-2.5-flash | 1,000 | 1M |
+| gemini-3-flash | 1,000 | 1M |
+
+<Tip>
+**Recommended**: Enable billing on your Google Cloud project to unlock much higher rate limits. You won't be charged unless you exceed the generous free quota. This allows claude-mem to process observations instantly instead of waiting between requests.
+</Tip>
+
+If you hit rate limits:
 - Claude-mem automatically falls back to Claude SDK
-- Consider upgrading to a paid Gemini plan for higher limits
 - Or switch back to Claude as your primary provider
 
 ### Observation Quality

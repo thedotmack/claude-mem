@@ -25,8 +25,44 @@ import { ModeManager } from '../domain/ModeManager.js';
 // Gemini API endpoint
 const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
 
-// Gemini model types
-export type GeminiModel = 'gemini-2.0-flash-exp' | 'gemini-1.5-flash' | 'gemini-1.5-pro';
+// Gemini model types (free tier models)
+export type GeminiModel = 'gemini-2.5-flash-lite' | 'gemini-2.5-flash' | 'gemini-3-flash';
+
+// Free tier RPM limits by model (requests per minute)
+const GEMINI_RPM_LIMITS: Record<GeminiModel, number> = {
+  'gemini-2.5-flash-lite': 10,
+  'gemini-2.5-flash': 5,
+  'gemini-3-flash': 5,
+};
+
+// Track last request time for rate limiting
+let lastRequestTime = 0;
+
+/**
+ * Enforce RPM rate limit for Gemini free tier (no billing).
+ * Waits the required time between requests based on model's RPM limit + 100ms safety buffer.
+ * Skipped entirely if billing is enabled (1000+ RPM available).
+ */
+async function enforceRateLimitForModel(model: GeminiModel, billingEnabled: boolean): Promise<void> {
+  // Skip rate limiting if billing is enabled (1000+ RPM available)
+  if (billingEnabled) {
+    return;
+  }
+
+  const rpm = GEMINI_RPM_LIMITS[model] || 5;
+  const minimumDelayMs = Math.ceil(60000 / rpm) + 100; // (60s / RPM) + 100ms safety buffer
+
+  const now = Date.now();
+  const timeSinceLastRequest = now - lastRequestTime;
+
+  if (timeSinceLastRequest < minimumDelayMs) {
+    const waitTime = minimumDelayMs - timeSinceLastRequest;
+    logger.debug('SDK', `Rate limiting: waiting ${waitTime}ms before Gemini request`, { model, rpm });
+    await new Promise(resolve => setTimeout(resolve, waitTime));
+  }
+
+  lastRequestTime = Date.now();
+}
 
 interface GeminiResponse {
   candidates?: Array<{
@@ -99,7 +135,7 @@ export class GeminiAgent {
   async startSession(session: ActiveSession, worker?: any): Promise<void> {
     try {
       // Get Gemini configuration
-      const { apiKey, model } = this.getGeminiConfig();
+      const { apiKey, model, billingEnabled } = this.getGeminiConfig();
 
       if (!apiKey) {
         throw new Error('Gemini API key not configured. Set CLAUDE_MEM_GEMINI_API_KEY in settings or GEMINI_API_KEY environment variable.');
@@ -115,7 +151,7 @@ export class GeminiAgent {
 
       // Add to conversation history and query Gemini with full context
       session.conversationHistory.push({ role: 'user', content: initPrompt });
-      const initResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model);
+      const initResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, billingEnabled);
 
       if (initResponse.content) {
         // Add response to conversation history
@@ -150,7 +186,7 @@ export class GeminiAgent {
 
           // Add to conversation history and query Gemini with full context
           session.conversationHistory.push({ role: 'user', content: obsPrompt });
-          const obsResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model);
+          const obsResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, billingEnabled);
 
           if (obsResponse.content) {
             // Add response to conversation history
@@ -175,7 +211,7 @@ export class GeminiAgent {
 
           // Add to conversation history and query Gemini with full context
           session.conversationHistory.push({ role: 'user', content: summaryPrompt });
-          const summaryResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model);
+          const summaryResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, billingEnabled);
 
           if (summaryResponse.content) {
             // Add response to conversation history
@@ -252,7 +288,8 @@ export class GeminiAgent {
   private async queryGeminiMultiTurn(
     history: ConversationMessage[],
     apiKey: string,
-    model: GeminiModel
+    model: GeminiModel,
+    billingEnabled: boolean
   ): Promise<{ content: string; tokensUsed?: number }> {
     const contents = this.conversationToGeminiContents(history);
     const totalChars = history.reduce((sum, m) => sum + m.content.length, 0);
@@ -264,8 +301,8 @@ export class GeminiAgent {
 
     const url = `${GEMINI_API_URL}/${model}:generateContent?key=${apiKey}`;
 
-    // Rate limit delay - Gemini API requires spacing between requests
-    await new Promise(resolve => setTimeout(resolve, 100));
+    // Enforce RPM rate limit for free tier (skipped if billing enabled)
+    await enforceRateLimitForModel(model, billingEnabled);
 
     const response = await fetch(url, {
       method: 'POST',
@@ -461,17 +498,20 @@ export class GeminiAgent {
   /**
    * Get Gemini configuration from settings or environment
    */
-  private getGeminiConfig(): { apiKey: string; model: GeminiModel } {
+  private getGeminiConfig(): { apiKey: string; model: GeminiModel; billingEnabled: boolean } {
     const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
 
     // API key: check settings first, then environment variable
     const apiKey = settings.CLAUDE_MEM_GEMINI_API_KEY || process.env.GEMINI_API_KEY || '';
 
-    // Model: from settings or default
-    const model = (settings.CLAUDE_MEM_GEMINI_MODEL || 'gemini-2.0-flash-exp') as GeminiModel;
+    // Model: from settings or default (gemini-2.5-flash-lite has highest free tier RPM)
+    const model = (settings.CLAUDE_MEM_GEMINI_MODEL || 'gemini-2.5-flash-lite') as GeminiModel;
 
-    return { apiKey, model };
+    // Billing: if enabled, skip rate limiting (1000+ RPM available)
+    const billingEnabled = settings.CLAUDE_MEM_GEMINI_BILLING_ENABLED === 'true';
+
+    return { apiKey, model, billingEnabled };
   }
 }
 

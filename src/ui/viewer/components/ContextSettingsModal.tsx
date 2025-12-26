@@ -471,14 +471,22 @@ export function ContextSettingsModal({
                     tooltip="Gemini model used for generating observations"
                   >
                     <select
-                      value={formState.CLAUDE_MEM_GEMINI_MODEL || 'gemini-2.0-flash-exp'}
+                      value={formState.CLAUDE_MEM_GEMINI_MODEL || 'gemini-2.5-flash-lite'}
                       onChange={(e) => updateSetting('CLAUDE_MEM_GEMINI_MODEL', e.target.value)}
                     >
-                      <option value="gemini-2.0-flash-exp">gemini-2.0-flash-exp (fastest)</option>
-                      <option value="gemini-1.5-flash">gemini-1.5-flash (balanced)</option>
-                      <option value="gemini-1.5-pro">gemini-1.5-pro (highest quality)</option>
+                      <option value="gemini-2.5-flash-lite">gemini-2.5-flash-lite (10 RPM free)</option>
+                      <option value="gemini-2.5-flash">gemini-2.5-flash (5 RPM free)</option>
+                      <option value="gemini-3-flash">gemini-3-flash (5 RPM free)</option>
                     </select>
                   </FormField>
+                  <div className="toggle-group" style={{ marginTop: '8px' }}>
+                    <ToggleSwitch
+                      label="Billing Enabled"
+                      tooltip="Enable if you have billing set up on Google Cloud. Skips rate limiting (1000+ RPM available)."
+                      checked={formState.CLAUDE_MEM_GEMINI_BILLING_ENABLED === 'true'}
+                      onChange={(checked) => updateSetting('CLAUDE_MEM_GEMINI_BILLING_ENABLED', checked ? 'true' : 'false')}
+                    />
+                  </div>
                 </>
               )}
 
