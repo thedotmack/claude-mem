@@ -481,8 +481,9 @@ export function ContextSettingsModal({
                   </FormField>
                   <div className="toggle-group" style={{ marginTop: '8px' }}>
                     <ToggleSwitch
+                      id="gemini-billing-enabled"
                       label="Billing Enabled"
-                      tooltip="Enable if you have billing set up on Google Cloud. Skips rate limiting (1000+ RPM available)."
+                      description="Enable if you have billing set up on Google Cloud. Skips rate limiting (1000+ RPM available)."
                       checked={formState.CLAUDE_MEM_GEMINI_BILLING_ENABLED === 'true'}
                       onChange={(checked) => updateSetting('CLAUDE_MEM_GEMINI_BILLING_ENABLED', checked ? 'true' : 'false')}
                     />

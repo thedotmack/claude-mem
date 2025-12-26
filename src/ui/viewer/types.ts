@@ -63,7 +63,7 @@ export interface Settings {
   // AI Provider Configuration
   CLAUDE_MEM_PROVIDER?: string;  // 'claude' | 'gemini'
   CLAUDE_MEM_GEMINI_API_KEY?: string;
-  CLAUDE_MEM_GEMINI_MODEL?: string;  // 'gemini-2.0-flash-exp' | 'gemini-1.5-flash' | 'gemini-1.5-pro'
+  CLAUDE_MEM_GEMINI_MODEL?: string;  // 'gemini-2.5-flash-lite' | 'gemini-2.5-flash' | 'gemini-3-flash'
 
   // Token Economics Display
   CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS?: string;
