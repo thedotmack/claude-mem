@@ -2,6 +2,7 @@ import React from 'react';
 import { ThemeToggle } from './ThemeToggle';
 import { ThemePreference } from '../hooks/useTheme';
 import { GitHubStarsButton } from './GitHubStarsButton';
+import { useSpinningFavicon } from '../hooks/useSpinningFavicon';
 
 interface HeaderProps {
   isConnected: boolean;
@@ -26,6 +27,8 @@ export function Header({
   onThemeChange,
   onContextPreviewToggle
 }: HeaderProps) {
+  useSpinningFavicon(isProcessing);
+
   return (
     <div className="header">
       <h1>
