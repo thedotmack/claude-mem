@@ -438,16 +438,18 @@ export class SDKAgent {
       const obs = this.dbManager.getSessionStore().getObservationById(obsId);
       if (!obs) return;
 
-      // Calculate surprise
-      const result = await surpriseMetric.calculate(obs, {
+      // Calculate surprise (with fallback to fast method if Chroma fails)
+      const result = await surpriseMetric.calculateWithFallback(obs, {
         lookbackDays: settings.CLAUDE_MEM_SURPRISE_LOOKBACK_DAYS,
         sampleSize: 50,
       });
 
-      // Update importance score with surprise factor
+      // Update importance score WITH the calculated surprise score
       const { ImportanceScorer } = await import('./ImportanceScorer.js');
       const importanceScorer = new ImportanceScorer(db);
-      await importanceScorer.updateScore(obsId);
+      await importanceScorer.updateScore(obsId, {
+        surpriseScore: result.score,
+      });
 
       // If high surprise, boost related topics (momentum)
       if (result.score > settings.CLAUDE_MEM_SURPRISE_THRESHOLD && settings.CLAUDE_MEM_MOMENTUM_ENABLED) {

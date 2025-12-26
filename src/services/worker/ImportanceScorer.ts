@@ -58,6 +58,14 @@ export interface ImportanceResult {
 }
 
 /**
+ * Options for updating importance score
+ */
+export interface UpdateScoreOptions {
+  surpriseScore?: number;    // Pre-calculated surprise score (0-1)
+  semanticRarity?: number;   // Pre-calculated semantic rarity (0-1)
+}
+
+/**
  * Calculates and manages importance scores for observations
  */
 export class ImportanceScorer {
@@ -91,9 +99,11 @@ export class ImportanceScorer {
 
   /**
    * Update importance score for an existing memory
-   * Takes into account access patterns and age
+   * Takes into account access patterns, age, and optionally pre-calculated surprise
+   * @param memoryId The observation ID to update
+   * @param options Optional pre-calculated scores (surprise, semantic rarity)
    */
-  async updateScore(memoryId: number): Promise<ImportanceResult | null> {
+  async updateScore(memoryId: number, options: UpdateScoreOptions = {}): Promise<ImportanceResult | null> {
     try {
       // Get the observation
       const obsStmt = this.db.prepare(`
@@ -109,23 +119,29 @@ export class ImportanceScorer {
       // Calculate age in days
       const ageDays = (Date.now() - observation.created_at_epoch) / (24 * 60 * 60 * 1000);
 
+      // Use provided surprise score or fall back to stored value or default
+      const surpriseScore = options.surpriseScore ??
+        (observation as any).surprise_score ??
+        0.5;
+
       const factors: ImportanceFactors = {
         initialScore: this.getInitialScore(observation.type),
         typeBonus: TYPE_WEIGHTS[observation.type] || 1.0,
-        semanticRarity: 0.5, // Will be calculated from embeddings
-        surprise: 0.5,       // Will be recalculated if needed
+        semanticRarity: options.semanticRarity ?? 0.5,
+        surprise: surpriseScore,
         accessFrequency: Math.min(accessStats.accessFrequency / 10, 1), // Normalize to 0-1
         age: this.ageDecay(ageDays),
       };
 
       const score = this.calculateScore(factors);
 
-      // Update database
+      // Update database with both importance_score and surprise_score
       this.db.prepare(`
         UPDATE observations
-        SET importance_score = ?
+        SET importance_score = ?,
+            surprise_score = ?
         WHERE id = ?
-      `).run(score, memoryId);
+      `).run(score, surpriseScore, memoryId);
 
       return {
         score,

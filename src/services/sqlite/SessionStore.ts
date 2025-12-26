@@ -623,6 +623,7 @@ export class SessionStore {
         const hasImportanceScore = tableInfo.some(col => col.name === 'importance_score');
         const hasAccessCount = tableInfo.some(col => col.name === 'access_count');
         const hasLastAccessed = tableInfo.some(col => col.name === 'last_accessed');
+        const hasSurpriseScore = tableInfo.some(col => col.name === 'surprise_score');
 
         if (!hasImportanceScore) {
           this.db.run('ALTER TABLE observations ADD COLUMN importance_score REAL DEFAULT 0.5');
@@ -637,6 +638,11 @@ export class SessionStore {
         if (!hasLastAccessed) {
           this.db.run('ALTER TABLE observations ADD COLUMN last_accessed INTEGER');
           console.log('[SessionStore] Added last_accessed column to observations');
+        }
+
+        if (!hasSurpriseScore) {
+          this.db.run('ALTER TABLE observations ADD COLUMN surprise_score REAL DEFAULT 0.5');
+          console.log('[SessionStore] Added surprise_score column to observations');
         }
 
         this.db.run('COMMIT');

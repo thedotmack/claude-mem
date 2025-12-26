@@ -68,6 +68,74 @@ export class SurpriseMetric {
   }
 
   /**
+   * Fast surprise calculation using only temporal factors (O(1) SQL query)
+   *
+   * Uses exponential decay based on time since last similar observation.
+   * This is a simpler approximation that:
+   * - Doesn't require Chroma (works when vector DB is unavailable)
+   * - Is very fast for batch operations
+   * - Captures "recency of similar type" which is a reasonable proxy for surprise
+   *
+   * Formula: surprise = 1 - exp(-0.693 * hoursSince / 24)
+   * - 24-hour half-life: if same type seen 24h ago, surprise ≈ 0.5
+   * - Never seen before: surprise = 1.0
+   * - Just seen: surprise ≈ 0
+   *
+   * @param project Project name
+   * @param type Observation type (bugfix, feature, etc.)
+   * @returns Surprise score (0-1)
+   */
+  calculateFast(project: string, type: string): number {
+    try {
+      const result = this.db.prepare(`
+        SELECT MAX(created_at_epoch) as last_seen
+        FROM observations
+        WHERE project = ? AND type = ?
+      `).get(project, type) as { last_seen: number | null } | undefined;
+
+      if (!result?.last_seen) {
+        return 1.0; // Never seen this type in project = fully surprising
+      }
+
+      const hoursSince = (Date.now() - result.last_seen) / (60 * 60 * 1000);
+
+      // Exponential decay with 24-hour half-life
+      // At 0 hours: ~0, at 24 hours: ~0.5, at 48 hours: ~0.75
+      return 1 - Math.exp(-0.693 * hoursSince / 24);
+    } catch (error) {
+      logger.debug('SurpriseMetric', 'calculateFast failed, returning default', {}, error as Error);
+      return 0.5; // Default to neutral on error
+    }
+  }
+
+  /**
+   * Calculate surprise with fallback to fast method if Chroma fails
+   */
+  async calculateWithFallback(
+    observation: ObservationRecord,
+    options: SurpriseOptions = {}
+  ): Promise<SurpriseResult> {
+    try {
+      return await this.calculate(observation, options);
+    } catch (error) {
+      // Chroma failed, use fast temporal calculation
+      const fastScore = this.calculateFast(observation.project, observation.type);
+      const typeNovelty = TYPE_RARITY[observation.type] || 0.5;
+
+      return {
+        score: fastScore * 0.7 + typeNovelty * 0.3, // Blend fast score with type
+        confidence: 0.4, // Lower confidence since we couldn't use semantic search
+        similarMemories: [],
+        factors: {
+          semanticDistance: 0.5, // Unknown
+          temporalNovelty: fastScore,
+          typeNovelty,
+        },
+      };
+    }
+  }
+
+  /**
    * Calculate surprise for a single observation
    */
   async calculate(
@@ -188,16 +256,67 @@ export class SurpriseMetric {
   }
 
   /**
+   * Get surprising memories using pre-computed surprise_score (O(1) SQL query)
+   * This is the optimized version that uses stored scores from calculateWithFallback
+   */
+  getSurprisingMemoriesOptimized(
+    threshold: number = 0.7,
+    limit: number = 50,
+    lookbackDays: number = 30,
+    project?: string
+  ): Array<{ id: number; title: string; score: number; type: string }> {
+    try {
+      const cutoff = Date.now() - (lookbackDays * 24 * 60 * 60 * 1000);
+
+      let query = `
+        SELECT id, title, type, COALESCE(surprise_score, 0.5) as score
+        FROM observations
+        WHERE created_at_epoch > ?
+          AND COALESCE(surprise_score, 0.5) >= ?
+      `;
+      const params: any[] = [cutoff, threshold];
+
+      if (project) {
+        query += ' AND project = ?';
+        params.push(project);
+      }
+
+      query += ' ORDER BY surprise_score DESC LIMIT ?';
+      params.push(limit);
+
+      const stmt = this.db.prepare(query);
+      const results = stmt.all(...params) as Array<{ id: number; title: string | null; score: number; type: string }>;
+
+      return results.map(r => ({
+        id: r.id,
+        title: r.title || `${r.type} observation`,
+        score: r.score,
+        type: r.type,
+      }));
+    } catch (error: any) {
+      logger.error('SurpriseMetric', 'Failed to get surprising memories (optimized)', {}, error);
+      return [];
+    }
+  }
+
+  /**
    * Get surprising memories (high surprise scores)
-   * Useful for identifying novel/interesting content
+   * Uses pre-computed scores when available, falls back to recalculation
+   * @deprecated Use getSurprisingMemoriesOptimized for better performance
    */
   async getSurprisingMemories(
     threshold: number = 0.7,
     limit: number = 50,
     lookbackDays: number = 30
   ): Promise<Array<{ id: number; title: string; score: number; type: string }>> {
+    // First, try the optimized path using pre-computed scores
+    const optimizedResults = this.getSurprisingMemoriesOptimized(threshold, limit, lookbackDays);
+    if (optimizedResults.length > 0) {
+      return optimizedResults;
+    }
+
+    // Fallback: calculate surprise for recent observations (legacy path)
     try {
-      // Get recent observations
       const stmt = this.db.prepare(`
         SELECT id, title, type, project, created_at_epoch
         FROM observations
@@ -209,7 +328,7 @@ export class SurpriseMetric {
       const cutoff = Date.now() - (lookbackDays * 24 * 60 * 60 * 1000);
       const observations = stmt.all(cutoff) as ObservationRecord[];
 
-      // Calculate surprise for each
+      // Calculate surprise for each (expensive!)
       const surprising: Array<{ id: number; title: string; score: number; type: string }> = [];
 
       for (const obs of observations) {

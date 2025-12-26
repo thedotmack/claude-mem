@@ -1,10 +1,24 @@
 /**
  * XML Parser Module
  * Parses observation and summary XML blocks from SDK responses
+ *
+ * Enhanced with structured parsing utilities for:
+ * - Fault-tolerant extraction with fallbacks
+ * - Parsing metrics and success rate tracking
+ * - Better validation and error handling
  */
 
 import { logger } from '../utils/logger.js';
 import { ModeManager } from '../services/domain/ModeManager.js';
+import {
+  extractSection,
+  extractEnum,
+  extractList,
+  extractAllBlocks,
+  getParseMetrics,
+  getParseSuccessRate,
+  type ParseMetrics
+} from '../utils/structured-parsing.js';
 
 export interface ParsedObservation {
   type: string;
@@ -26,72 +40,86 @@ export interface ParsedSummary {
   notes: string | null;
 }
 
+// Re-export parsing metrics utilities
+export { getParseMetrics, getParseSuccessRate, type ParseMetrics };
+
 /**
  * Parse observation XML blocks from SDK response
  * Returns all observations found in the response
+ *
+ * Enhanced with structured parsing utilities for better fault tolerance
+ * and metrics tracking.
  */
 export function parseObservations(text: string, correlationId?: string): ParsedObservation[] {
   const observations: ParsedObservation[] = [];
 
-  // Match <observation>...</observation> blocks (non-greedy)
-  const observationRegex = /<observation>([\s\S]*?)<\/observation>/g;
+  // Get valid types from active mode
+  const mode = ModeManager.getInstance().getActiveMode();
+  const validTypes = mode.observation_types.map(t => t.id);
+  const fallbackType = validTypes[0]; // First type in mode's list is the fallback
 
-  let match;
-  while ((match = observationRegex.exec(text)) !== null) {
-    const obsContent = match[1];
+  // Use extractAllBlocks for better block extraction
+  const blocks = extractAllBlocks(text, 'observation');
 
-    // Extract all fields
-    const type = extractField(obsContent, 'type');
-    const title = extractField(obsContent, 'title');
-    const subtitle = extractField(obsContent, 'subtitle');
-    const narrative = extractField(obsContent, 'narrative');
-    const facts = extractArrayElements(obsContent, 'facts', 'fact');
-    const concepts = extractArrayElements(obsContent, 'concepts', 'concept');
-    const files_read = extractArrayElements(obsContent, 'files_read', 'file');
-    const files_modified = extractArrayElements(obsContent, 'files_modified', 'file');
+  for (const block of blocks) {
+    const obsContent = block.content;
+
+    // Extract type with enum validation
+    const typeResult = extractEnum(obsContent, 'type', validTypes, fallbackType);
+    const finalType = typeResult.value;
+
+    if (typeResult.fallbackUsed) {
+      logger.warn('PARSER', `Observation type issue, using "${fallbackType}"`, {
+        correlationId,
+        extracted: typeResult.rawMatch
+      });
+    }
+
+    // Extract other fields with fallback support
+    const titleResult = extractSection(obsContent, 'title', '');
+    const subtitleResult = extractSection(obsContent, 'subtitle', '');
+    const narrativeResult = extractSection(obsContent, 'narrative', '');
+
+    // Extract arrays
+    const factsResult = extractList(obsContent, 'facts', 'fact', []);
+    const conceptsResult = extractList(obsContent, 'concepts', 'concept', []);
+    const filesReadResult = extractList(obsContent, 'files_read', 'file', []);
+    const filesModifiedResult = extractList(obsContent, 'files_modified', 'file', []);
 
     // NOTE FROM THEDOTMACK: ALWAYS save observations - never skip. 10/24/2025
     // All fields except type are nullable in schema
-    // If type is missing or invalid, use first type from mode as fallback
-
-    // Determine final type using active mode's valid types
-    const mode = ModeManager.getInstance().getActiveMode();
-    const validTypes = mode.observation_types.map(t => t.id);
-    const fallbackType = validTypes[0]; // First type in mode's list is the fallback
-    let finalType = fallbackType;
-    if (type) {
-      if (validTypes.includes(type.trim())) {
-        finalType = type.trim();
-      } else {
-        logger.warn('PARSER', `Invalid observation type: ${type}, using "${fallbackType}"`, { correlationId });
-      }
-    } else {
-      logger.warn('PARSER', `Observation missing type field, using "${fallbackType}"`, { correlationId });
-    }
-
-    // All other fields are optional - save whatever we have
 
     // Filter out type from concepts array (types and concepts are separate dimensions)
-    const cleanedConcepts = concepts.filter(c => c !== finalType);
+    const cleanedConcepts = conceptsResult.value.filter(c => c !== finalType);
 
-    if (cleanedConcepts.length !== concepts.length) {
+    if (cleanedConcepts.length !== conceptsResult.value.length) {
       logger.warn('PARSER', 'Removed observation type from concepts array', {
         correlationId,
         type: finalType,
-        originalConcepts: concepts,
+        originalConcepts: conceptsResult.value,
         cleanedConcepts
       });
     }
 
     observations.push({
       type: finalType,
-      title,
-      subtitle,
-      facts,
-      narrative,
+      title: titleResult.value || null,
+      subtitle: subtitleResult.value || null,
+      facts: factsResult.value,
+      narrative: narrativeResult.value || null,
       concepts: cleanedConcepts,
-      files_read,
-      files_modified
+      files_read: filesReadResult.value,
+      files_modified: filesModifiedResult.value
+    });
+  }
+
+  // Log parsing metrics periodically
+  const metrics = getParseMetrics();
+  if (metrics.totalAttempts > 0 && metrics.totalAttempts % 100 === 0) {
+    logger.info('PARSER', 'Parsing metrics checkpoint', {
+      successRate: `${getParseSuccessRate().toFixed(1)}%`,
+      total: metrics.totalAttempts,
+      fallbacks: metrics.fallbacksUsed
     });
   }
 
@@ -101,6 +129,8 @@ export function parseObservations(text: string, correlationId?: string): ParsedO
 /**
  * Parse summary XML block from SDK response
  * Returns null if no valid summary found or if summary was skipped
+ *
+ * Enhanced with structured parsing utilities for better fault tolerance.
  */
 export function parseSummary(text: string, sessionId?: number): ParsedSummary | null {
   // Check for skip_summary first
@@ -115,85 +145,34 @@ export function parseSummary(text: string, sessionId?: number): ParsedSummary | 
     return null;
   }
 
-  // Match <summary>...</summary> block (non-greedy)
-  const summaryRegex = /<summary>([\s\S]*?)<\/summary>/;
-  const summaryMatch = summaryRegex.exec(text);
+  // Use extractAllBlocks for consistent block extraction
+  const blocks = extractAllBlocks(text, 'summary');
 
-  if (!summaryMatch) {
+  if (blocks.length === 0) {
     return null;
   }
 
-  const summaryContent = summaryMatch[1];
+  const summaryContent = blocks[0].content;
 
-  // Extract fields
-  const request = extractField(summaryContent, 'request');
-  const investigated = extractField(summaryContent, 'investigated');
-  const learned = extractField(summaryContent, 'learned');
-  const completed = extractField(summaryContent, 'completed');
-  const next_steps = extractField(summaryContent, 'next_steps');
-  const notes = extractField(summaryContent, 'notes'); // Optional
+  // Extract fields using structured parsing utilities
+  const requestResult = extractSection(summaryContent, 'request', '');
+  const investigatedResult = extractSection(summaryContent, 'investigated', '');
+  const learnedResult = extractSection(summaryContent, 'learned', '');
+  const completedResult = extractSection(summaryContent, 'completed', '');
+  const nextStepsResult = extractSection(summaryContent, 'next_steps', '');
+  const notesResult = extractSection(summaryContent, 'notes', ''); // Optional
 
-  // NOTE FROM THEDOTMACK: 100% of the time we must SAVE the summary, even if fields are missing. 10/24/2025 
+  // NOTE FROM THEDOTMACK: 100% of the time we must SAVE the summary, even if fields are missing. 10/24/2025
   // NEVER DO THIS NONSENSE AGAIN.
 
-  // Validate required fields are present (notes is optional)
-  // if (!request || !investigated || !learned || !completed || !next_steps) {
-  //   logger.warn('PARSER', 'Summary missing required fields', {
-  //     sessionId,
-  //     hasRequest: !!request,
-  //     hasInvestigated: !!investigated,
-  //     hasLearned: !!learned,
-  //     hasCompleted: !!completed,
-  //     hasNextSteps: !!next_steps
-  //   });
-  //   return null;
-  // }
-
   return {
-    request,
-    investigated,
-    learned,
-    completed,
-    next_steps,
-    notes
+    request: requestResult.value || null,
+    investigated: investigatedResult.value || null,
+    learned: learnedResult.value || null,
+    completed: completedResult.value || null,
+    next_steps: nextStepsResult.value || null,
+    notes: notesResult.value || null
   };
 }
 
-/**
- * Extract a simple field value from XML content
- * Returns null for missing or empty/whitespace-only fields
- */
-function extractField(content: string, fieldName: string): string | null {
-  const regex = new RegExp(`<${fieldName}>([^<]*)</${fieldName}>`);
-  const match = regex.exec(content);
-  if (!match) return null;
-
-  const trimmed = match[1].trim();
-  return trimmed === '' ? null : trimmed;
-}
-
-/**
- * Extract array of elements from XML content
- */
-function extractArrayElements(content: string, arrayName: string, elementName: string): string[] {
-  const elements: string[] = [];
-
-  // Match the array block
-  const arrayRegex = new RegExp(`<${arrayName}>(.*?)</${arrayName}>`, 's');
-  const arrayMatch = arrayRegex.exec(content);
-
-  if (!arrayMatch) {
-    return elements;
-  }
-
-  const arrayContent = arrayMatch[1];
-
-  // Extract individual elements
-  const elementRegex = new RegExp(`<${elementName}>([^<]+)</${elementName}>`, 'g');
-  let elementMatch;
-  while ((elementMatch = elementRegex.exec(arrayContent)) !== null) {
-    elements.push(elementMatch[1].trim());
-  }
-
-  return elements;
-}
+// Legacy helper functions removed - now using structured-parsing.ts utilities
