@@ -19,7 +19,7 @@ const project = basename(process.cwd());
 // Fetch formatted context directly from worker API
 const response = await fetch(
   `http://127.0.0.1:${port}/api/context/inject?project=${encodeURIComponent(project)}&colors=true`,
-  { method: 'GET', signal: AbortSignal.timeout(5000) }
+  { method: 'GET', signal: AbortSignal.timeout(300000) } // 5 minutes - designed to never timeout
 );
 
 if (!response.ok) {

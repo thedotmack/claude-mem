@@ -1,8 +1,8 @@
 export const HOOK_TIMEOUTS = {
-  DEFAULT: 120000,            // Standard HTTP timeout (up from 2000ms)
-  HEALTH_CHECK: 1000,         // Worker health check (up from 500ms)
-  WORKER_STARTUP_WAIT: 1000,
-  WORKER_STARTUP_RETRIES: 15,
+  DEFAULT: 300000,            // Standard HTTP timeout (5 minutes - designed to never timeout)
+  HEALTH_CHECK: 30000,        // Worker health check (30 seconds - allow slow systems)
+  WORKER_STARTUP_WAIT: 1000,  // Wait between startup retries (1 second - responsive polling)
+  WORKER_STARTUP_RETRIES: 300, // Number of startup retries (300 retries * 1s = 5 min total)
   PRE_RESTART_SETTLE_DELAY: 2000,  // Give files time to sync before restart
   WINDOWS_MULTIPLIER: 1.5     // Platform-specific adjustment
 } as const;

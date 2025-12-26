@@ -82,7 +82,7 @@ async function killInner(): Promise<void> {
     // This ensures all children (MCP server, ChromaSync, etc.) are killed
     // which is necessary to properly release the socket
     try {
-      execSync(`taskkill /PID ${pid} /T /F`, { timeout: 10000, stdio: 'ignore' });
+      execSync(`taskkill /PID ${pid} /T /F`, { timeout: 60000, stdio: 'ignore' }); // 60 seconds - allow slow systems
       log(`taskkill completed for pid=${pid}`);
     } catch (error) {
       // Process may already be dead
@@ -102,7 +102,7 @@ async function killInner(): Promise<void> {
     });
 
     const timeoutPromise = new Promise<void>(resolve =>
-      setTimeout(() => resolve(), 5000)
+      setTimeout(() => resolve(), 30000) // 30 seconds - allow slow systems
     );
 
     await Promise.race([exitPromise, timeoutPromise]);
@@ -115,7 +115,7 @@ async function killInner(): Promise<void> {
   }
 
   // Wait for the process to fully exit
-  await waitForProcessExit(pid, 5000);
+  await waitForProcessExit(pid, 30000); // 30 seconds - allow slow systems
 
   inner = null;
   log('Inner process terminated');

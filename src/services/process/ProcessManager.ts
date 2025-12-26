@@ -99,7 +99,7 @@ export class ProcessManager {
 
         const result = spawnSync('powershell', ['-Command', psCommand], {
           stdio: 'pipe',
-          timeout: 10000,
+          timeout: 60000, // 60 seconds - allow slow Windows systems
           windowsHide: true
         });
 
@@ -164,7 +164,7 @@ export class ProcessManager {
     }
   }
 
-  static async stop(timeout: number = 5000): Promise<boolean> {
+  static async stop(timeout: number = 30000): Promise<boolean> {
     const info = this.getPidInfo();
 
     if (process.platform === 'win32') {
@@ -190,7 +190,7 @@ export class ProcessManager {
         // Use taskkill /T /F to kill entire process tree
         // This ensures the wrapper AND all its children (inner worker, MCP, ChromaSync) are killed
         // which is necessary to properly release the socket and avoid zombie ports
-        execSync(`taskkill /PID ${info.pid} /T /F`, { timeout: 10000, stdio: 'ignore' });
+        execSync(`taskkill /PID ${info.pid} /T /F`, { timeout: 60000, stdio: 'ignore' });
       } catch {
         // Process may already be dead
       }
@@ -277,7 +277,7 @@ export class ProcessManager {
       // Send shutdown request
       const response = await fetch(`http://127.0.0.1:${port}/api/admin/shutdown`, {
         method: 'POST',
-        signal: AbortSignal.timeout(2000)
+        signal: AbortSignal.timeout(30000) // 30 seconds - allow slow systems
       });
 
       if (!response.ok) {
@@ -285,7 +285,7 @@ export class ProcessManager {
       }
 
       // Wait for worker to actually stop responding
-      return await this.waitForWorkerDown(port, 5000);
+      return await this.waitForWorkerDown(port, 30000);
     } catch {
       // Worker not responding to HTTP - it may be dead or hung
       return false;
@@ -301,7 +301,7 @@ export class ProcessManager {
     while (Date.now() - startTime < timeout) {
       try {
         await fetch(`http://127.0.0.1:${port}/api/health`, {
-          signal: AbortSignal.timeout(500)
+          signal: AbortSignal.timeout(5000) // 5 seconds per poll attempt
         });
         // Still responding, wait and retry
         await new Promise(resolve => setTimeout(resolve, 100));
@@ -360,7 +360,7 @@ export class ProcessManager {
     }
   }
 
-  private static async waitForHealth(pid: number, port: number, timeoutMs: number = 10000): Promise<{ success: boolean; pid?: number; error?: string }> {
+  private static async waitForHealth(pid: number, port: number, timeoutMs: number = 120000): Promise<{ success: boolean; pid?: number; error?: string }> {
     const startTime = Date.now();
     const isWindows = process.platform === 'win32';
     // Increase timeout on Windows to account for slower process startup
@@ -378,7 +378,7 @@ export class ProcessManager {
       // Try readiness check (changed from /health to /api/readiness)
       try {
         const response = await fetch(`http://127.0.0.1:${port}/api/readiness`, {
-          signal: AbortSignal.timeout(1000)
+          signal: AbortSignal.timeout(10000) // 10 seconds per poll attempt
         });
         if (response.ok) {
           return { success: true, pid };

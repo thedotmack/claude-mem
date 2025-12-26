@@ -266,11 +266,11 @@ export class WorkerService {
     this.app.get('/api/context/inject', async (req, res, next) => {
       try {
         // Wait for initialization to complete (with timeout)
-        const timeoutMs = 30000; // 30 second timeout
-        const timeoutPromise = new Promise((_, reject) => 
+        const timeoutMs = 300000; // 5 minute timeout - designed to never timeout
+        const timeoutPromise = new Promise((_, reject) =>
           setTimeout(() => reject(new Error('Initialization timeout')), timeoutMs)
         );
-        
+
         await Promise.race([this.initializationComplete, timeoutPromise]);
 
         // If searchRoutes is still null after initialization, something went wrong
@@ -326,7 +326,7 @@ export class WorkerService {
     if (isWindows) {
       // Windows: Use PowerShell Get-CimInstance to find chroma-mcp processes
       const cmd = `powershell -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -like '*python*' -and $_.CommandLine -like '*chroma-mcp*' } | Select-Object -ExpandProperty ProcessId"`;
-      const { stdout } = await execAsync(cmd, { timeout: 5000 });
+      const { stdout } = await execAsync(cmd, { timeout: 60000 }); // 60 seconds - allow slow systems
 
       if (!stdout.trim()) {
         logger.debug('SYSTEM', 'No orphaned chroma-mcp processes found (Windows)');
@@ -381,7 +381,7 @@ export class WorkerService {
           logger.warn('SYSTEM', 'Skipping invalid PID', { pid });
           continue;
         }
-        execSync(`taskkill /PID ${pid} /T /F`, { timeout: 5000, stdio: 'ignore' });
+        execSync(`taskkill /PID ${pid} /T /F`, { timeout: 60000, stdio: 'ignore' }); // 60 seconds - allow slow systems
       }
     } else {
       await execAsync(`kill ${pids.join(' ')}`);
@@ -463,11 +463,11 @@ export class WorkerService {
         env: process.env
       });
 
-      // Add timeout guard to prevent hanging on MCP connection (15 seconds)
-      const MCP_INIT_TIMEOUT_MS = 15000;
+      // Add timeout guard to prevent hanging on MCP connection (5 minutes - designed to never timeout)
+      const MCP_INIT_TIMEOUT_MS = 300000;
       const mcpConnectionPromise = this.mcpClient.connect(transport);
       const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('MCP connection timeout after 15s')), MCP_INIT_TIMEOUT_MS)
+        setTimeout(() => reject(new Error('MCP connection timeout after 5 minutes')), MCP_INIT_TIMEOUT_MS)
       );
 
       await Promise.race([mcpConnectionPromise, timeoutPromise]);
@@ -652,7 +652,7 @@ export class WorkerService {
     }
 
     const cmd = `powershell -Command "Get-CimInstance Win32_Process | Where-Object { $_.ParentProcessId -eq ${parentPid} } | Select-Object -ExpandProperty ProcessId"`;
-    const { stdout } = await execAsync(cmd, { timeout: 5000 });
+    const { stdout } = await execAsync(cmd, { timeout: 60000 }); // 60 seconds - allow slow systems
     return stdout
       .trim()
       .split('\n')
@@ -672,7 +672,7 @@ export class WorkerService {
 
     if (process.platform === 'win32') {
       // /T kills entire process tree, /F forces termination
-      await execAsync(`taskkill /PID ${pid} /T /F`, { timeout: 5000 });
+      await execAsync(`taskkill /PID ${pid} /T /F`, { timeout: 60000 }); // 60 seconds - allow slow systems
       logger.info('SYSTEM', 'Killed process', { pid });
     } else {
       process.kill(pid, 'SIGKILL');

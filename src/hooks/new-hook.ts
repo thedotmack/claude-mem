@@ -2,6 +2,7 @@ import { stdin } from 'process';
 import { STANDARD_HOOK_RESPONSE } from './hook-response.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
 import { getProjectName } from '../utils/project-name.js';
+import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 
 export interface UserPromptSubmitInput {
   session_id: string;
@@ -35,7 +36,7 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
       project,
       prompt
     }),
-    signal: AbortSignal.timeout(5000)
+    signal: AbortSignal.timeout(HOOK_TIMEOUTS.DEFAULT)
   });
 
   if (!initResponse.ok) {
@@ -64,7 +65,7 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ userPrompt: cleanedPrompt, promptNumber }),
-    signal: AbortSignal.timeout(5000)
+    signal: AbortSignal.timeout(HOOK_TIMEOUTS.DEFAULT)
   });
 
   if (!response.ok) {
