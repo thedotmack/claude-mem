@@ -61,7 +61,14 @@ async function isPortInUse(port: number): Promise<boolean> {
 async function waitForHealth(port: number, timeoutMs: number = 30000): Promise<boolean> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    if (await isPortInUse(port)) return true;
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/api/readiness`, {
+        signal: AbortSignal.timeout(2000)
+      });
+      if (response.ok) return true;
+    } catch {
+      // Not ready yet
+    }
     await new Promise(r => setTimeout(r, 500));
   }
   return false;
