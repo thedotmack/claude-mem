@@ -12,15 +12,6 @@ interface ContextSettingsModalProps {
   saveStatus: string;
 }
 
-// Simple debounce helper
-function debounce<T extends (...args: any[]) => any>(fn: T, ms: number): T {
-  let timeoutId: NodeJS.Timeout;
-  return ((...args: any[]) => {
-    clearTimeout(timeoutId);
-    timeoutId = setTimeout(() => fn(...args), ms);
-  }) as T;
-}
-
 // Collapsible section component
 function CollapsibleSection({
   title,
@@ -195,14 +186,6 @@ export function ContextSettingsModal({
 }: ContextSettingsModalProps) {
   const [formState, setFormState] = useState<Settings>(settings);
 
-  // Create debounced save function
-  const debouncedSave = useCallback(
-    debounce((newSettings: Settings) => {
-      onSave(newSettings);
-    }, 300),
-    [onSave]
-  );
-
   // Update form state when settings prop changes
   useEffect(() => {
     setFormState(settings);
@@ -214,8 +197,11 @@ export function ContextSettingsModal({
   const updateSetting = useCallback((key: keyof Settings, value: string) => {
     const newState = { ...formState, [key]: value };
     setFormState(newState);
-    debouncedSave(newState);
-  }, [formState, debouncedSave]);
+  }, [formState]);
+
+  const handleSave = useCallback(() => {
+    onSave(formState);
+  }, [formState, onSave]);
 
   const toggleBoolean = useCallback((key: keyof Settings) => {
     const currentValue = formState[key];
@@ -574,6 +560,20 @@ export function ContextSettingsModal({
               </div>
             </CollapsibleSection>
           </div>
+        </div>
+
+        {/* Footer with Save button */}
+        <div className="modal-footer">
+          <div className="save-status">
+            {saveStatus && <span className={saveStatus.includes('✓') ? 'success' : saveStatus.includes('✗') ? 'error' : ''}>{saveStatus}</span>}
+          </div>
+          <button
+            className="save-btn"
+            onClick={handleSave}
+            disabled={isSaving}
+          >
+            {isSaving ? 'Saving...' : 'Save'}
+          </button>
         </div>
       </div>
     </div>
