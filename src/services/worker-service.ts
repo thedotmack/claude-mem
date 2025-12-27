@@ -451,7 +451,13 @@ export class WorkerService {
         execSync(`taskkill /PID ${pid} /T /F`, { timeout: 60000, stdio: 'ignore' });
       }
     } else {
-      await execAsync(`kill ${pids.join(' ')}`);
+      for (const pid of pids) {
+        try {
+          process.kill(pid, 'SIGKILL');
+        } catch {
+          // Process already exited - that's fine
+        }
+      }
     }
 
     logger.info('SYSTEM', 'Orphaned processes cleaned up', { count: pids.length });
