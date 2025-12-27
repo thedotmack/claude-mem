@@ -446,11 +446,11 @@ try {
     console.error('✅ Dependencies installed');
 
     // Auto-restart worker to pick up new code
-    const port = process.env.CLAUDE_MEM_PORT || 37777;
+    const port = process.env.CLAUDE_MEM_WORKER_PORT || 37777;
     console.error(`[claude-mem] Plugin updated to v${newVersion} - restarting worker...`);
     try {
       // Graceful shutdown via HTTP (curl is cross-platform enough)
-      execSync(`curl -s -X POST http://127.0.0.1:${port}/api/shutdown`, {
+      execSync(`curl -s -X POST http://127.0.0.1:${port}/api/admin/shutdown`, {
         stdio: 'ignore',
         shell: IS_WINDOWS,
         timeout: 5000
