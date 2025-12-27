@@ -25,11 +25,6 @@ const WORKER_SERVICE = {
   source: 'src/services/worker-service.ts'
 };
 
-const WORKER_WRAPPER = {
-  name: 'worker-wrapper',
-  source: 'src/services/worker-wrapper.ts'
-};
-
 const MCP_SERVER = {
   name: 'mcp-server',
   source: 'src/servers/mcp-server.ts'
@@ -38,11 +33,6 @@ const MCP_SERVER = {
 const CONTEXT_GENERATOR = {
   name: 'context-generator',
   source: 'src/services/context-generator.ts'
-};
-
-const WORKER_CLI = {
-  name: 'worker-cli',
-  source: 'src/cli/worker-cli.ts'
 };
 
 async function buildHooks() {
@@ -124,31 +114,6 @@ async function buildHooks() {
     const workerStats = fs.statSync(`${hooksDir}/${WORKER_SERVICE.name}.cjs`);
     console.log(`✓ worker-service built (${(workerStats.size / 1024).toFixed(2)} KB)`);
 
-    // Build worker wrapper (Windows zombie port fix)
-    console.log(`\n🔧 Building worker wrapper...`);
-    await build({
-      entryPoints: [WORKER_WRAPPER.source],
-      bundle: true,
-      platform: 'node',
-      target: 'node18',
-      format: 'cjs',
-      outfile: `${hooksDir}/${WORKER_WRAPPER.name}.cjs`,
-      minify: true,
-      logLevel: 'error',
-      external: ['bun:sqlite'],
-      define: {
-        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
-      },
-      banner: {
-        js: '#!/usr/bin/env bun'
-      }
-    });
-
-    // Make worker wrapper executable
-    fs.chmodSync(`${hooksDir}/${WORKER_WRAPPER.name}.cjs`, 0o755);
-    const wrapperStats = fs.statSync(`${hooksDir}/${WORKER_WRAPPER.name}.cjs`);
-    console.log(`✓ worker-wrapper built (${(wrapperStats.size / 1024).toFixed(2)} KB)`);
-
     // Build MCP server
     console.log(`\n🔧 Building MCP server...`);
     await build({
@@ -193,31 +158,6 @@ async function buildHooks() {
 
     const contextGenStats = fs.statSync(`${hooksDir}/${CONTEXT_GENERATOR.name}.cjs`);
     console.log(`✓ context-generator built (${(contextGenStats.size / 1024).toFixed(2)} KB)`);
-
-    // Build worker CLI
-    console.log(`\n🔧 Building worker CLI...`);
-    await build({
-      entryPoints: [WORKER_CLI.source],
-      bundle: true,
-      platform: 'node',
-      target: 'node18',
-      format: 'esm',
-      outfile: `${hooksDir}/${WORKER_CLI.name}.js`,
-      minify: true,
-      logLevel: 'error',
-      external: ['bun:sqlite'],
-      define: {
-        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
-      },
-      banner: {
-        js: '#!/usr/bin/env bun'
-      }
-    });
-
-    // Make worker CLI executable
-    fs.chmodSync(`${hooksDir}/${WORKER_CLI.name}.js`, 0o755);
-    const workerCliStats = fs.statSync(`${hooksDir}/${WORKER_CLI.name}.js`);
-    console.log(`✓ worker-cli built (${(workerCliStats.size / 1024).toFixed(2)} KB)`);
 
     // Build each hook
     for (const hook of HOOKS) {

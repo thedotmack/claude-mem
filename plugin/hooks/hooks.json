@@ -7,8 +7,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/scripts/worker-cli.js\" restart",
-            "timeout": 30
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/scripts/worker-service.cjs\" restart",
+            "timeout": 180
           },
           {
             "type": "command",
@@ -28,13 +28,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/scripts/worker-cli.js\" start",
-            "timeout": 30
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/scripts/worker-service.cjs\" start",
+            "timeout": 180
           },
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/new-hook.js\"",
-            "timeout": 120
+            "timeout": 300
           }
         ]
       }
@@ -45,13 +45,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/scripts/worker-cli.js\" start",
-            "timeout": 30
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/scripts/worker-service.cjs\" start",
+            "timeout": 180
           },
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/save-hook.js\"",
-            "timeout": 120
+            "timeout": 300
           }
         ]
       }
@@ -61,13 +61,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/scripts/worker-cli.js\" start",
-            "timeout": 30
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/scripts/worker-service.cjs\" start",
+            "timeout": 180
           },
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/summary-hook.js\"",
-            "timeout": 120
+            "timeout": 300
           }
         ]
       }
