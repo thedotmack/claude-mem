@@ -513,9 +513,9 @@ export function ContextSettingsModal({
                   >
                     <input
                       type="text"
-                      value={formState.CLAUDE_MEM_OPENROUTER_MODEL || 'anthropic/claude-3.5-sonnet'}
+                      value={formState.CLAUDE_MEM_OPENROUTER_MODEL || 'xiaomi/mimo-v2-flash:free'}
                       onChange={(e) => updateSetting('CLAUDE_MEM_OPENROUTER_MODEL', e.target.value)}
-                      placeholder="e.g., anthropic/claude-3.5-sonnet"
+                      placeholder="e.g., xiaomi/mimo-v2-flash:free"
                     />
                   </FormField>
                   <FormField
