@@ -31,7 +31,7 @@ export function getWorkerRestartInstructions(
   let message = `${prefix}${portInfo}\n\n`;
   message += `To restart the worker:\n`;
   message += `1. Exit Claude Code completely\n`;
-  message += `2. Run: claude-mem restart\n`;
+  message += `2. Run: npm run worker:restart\n`;
   message += `3. Restart Claude Code`;
 
   if (includeSkillFallback) {

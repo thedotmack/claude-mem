@@ -6,7 +6,7 @@ ${t.stack}`:t.message;if(Array.isArray(t))return`[${t.length} items]`;let r=Obje
 
 `;return E+=`To restart the worker:
 `,E+=`1. Exit Claude Code completely
-`,E+=`2. Run: claude-mem restart
+`,E+=`2. Run: npm run worker:restart
 `,E+="3. Restart Claude Code",r&&(E+=`
 
 If that doesn't work, try: /troubleshoot`),n&&(E=`Worker Error: ${n}

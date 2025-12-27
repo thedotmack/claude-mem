@@ -291,7 +291,7 @@ function installCLI() {
       console.error('📋 Add to PATH (run once in PowerShell as Admin):');
       console.error(`   [Environment]::SetEnvironmentVariable("Path", $env:Path + ";${cliDir}", "User")`);
       console.error('');
-      console.error('   Then restart your terminal and use: claude-mem start|stop|restart|status');
+      console.error('   Then restart your terminal and use: npm run worker:start|stop|restart|status');
     } catch (error) {
       console.error(`⚠️  Could not install CLI: ${error.message}`);
       console.error(`   You can still use: bun "${WORKER_CLI}" <command>`);
@@ -333,9 +333,9 @@ exec "${bunPath}" "${WORKER_CLI}" "$@"
         console.error('📋 Add to PATH (add to ~/.bashrc or ~/.zshrc):');
         console.error('   export PATH="$HOME/.local/bin:$PATH"');
         console.error('');
-        console.error('   Then restart your terminal and use: claude-mem start|stop|restart|status');
+        console.error('   Then restart your terminal and use: npm run worker:start|stop|restart|status');
       } else {
-        console.error('   Usage: claude-mem start|stop|restart|status');
+        console.error('   Usage: npm run worker:start|stop|restart|status');
       }
     } catch (error) {
       console.error(`⚠️  Could not install CLI: ${error.message}`);

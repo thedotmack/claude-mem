@@ -288,7 +288,7 @@ npm run worker:status
 If the worker is stopped, restart it:
 
 ```bash
-claude-mem restart
+npm run worker:restart
 ```
 ```
 
