@@ -448,7 +448,11 @@ export class WorkerService {
           logger.warn('SYSTEM', 'Skipping invalid PID', { pid });
           continue;
         }
-        execSync(`taskkill /PID ${pid} /T /F`, { timeout: 60000, stdio: 'ignore' });
+        try {
+          execSync(`taskkill /PID ${pid} /T /F`, { timeout: 60000, stdio: 'ignore' });
+        } catch {
+          // Process may have already exited - continue cleanup
+        }
       }
     } else {
       for (const pid of pids) {
