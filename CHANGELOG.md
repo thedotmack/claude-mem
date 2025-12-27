@@ -4,6 +4,71 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [8.2.1] - 2025-12-26
+
+## 🔧 Worker Lifecycle Hardening
+
+This patch release addresses critical bugs discovered during PR review of the self-spawn pattern introduced in 8.2.0. The worker daemon now handles edge cases robustly across both Unix and Windows platforms.
+
+### 🐛 Critical Bug Fixes
+
+#### Process Exit Detection Fixed
+The `waitForProcessesExit` function was crashing when processes exited during monitoring. The `process.kill(pid, 0)` call throws when a process no longer exists, which was not being caught. Now wrapped in try/catch to correctly identify exited processes.
+
+#### Spawn PID Validation
+The worker daemon now validates that `spawn()` actually returned a valid PID before writing to the PID file. Previously, spawn failures could leave invalid PID files that broke subsequent lifecycle operations.
+
+#### Cross-Platform Orphan Cleanup
+- **Unix**: Replaced single `kill` command with individual `process.kill()` calls wrapped in try/catch, so one already-exited process doesn't abort cleanup of remaining orphans
+- **Windows**: Wrapped `taskkill` calls in try/catch for the same reason
+
+#### Health Check Reliability
+Changed `waitForHealth` to use the `/api/readiness` endpoint (returns 503 until fully initialized) instead of just checking if the port is in use. Callers now wait for *actual* worker readiness, not just network availability.
+
+### 🔄 Refactoring
+
+#### Code Consolidation (-580 lines)
+Deleted obsolete process management infrastructure that was replaced by the self-spawn pattern:
+- `src/services/process/ProcessManager.ts` (433 lines) - PID management now in worker-service
+- `src/cli/worker-cli.ts` (81 lines) - CLI handling now in worker-service
+- `src/services/worker-wrapper.ts` (157 lines) - Replaced by `--daemon` flag
+
+#### Updated Hook Commands
+All hooks now use `worker-service.cjs` CLI directly instead of the deleted `worker-cli.js`.
+
+### ⏱️ Timeout Adjustments
+
+Increased timeouts throughout for compatibility with slow systems:
+
+| Component | Before | After |
+|-----------|--------|-------|
+| Default hook timeout | 120s | 300s |
+| Health check timeout | 1s | 30s |
+| Health check retries | 15 | 300 |
+| Context initialization | 30s | 300s |
+| MCP connection | 15s | 300s |
+| PowerShell commands | 5s | 60s |
+| Git commands | 30s | 300s |
+| NPM install | 120s | 600s |
+| Hook worker commands | 30s | 180s |
+
+### 🧪 Testing
+
+Added comprehensive test suites:
+- `tests/hook-constants.test.ts` - Validates timeout configurations
+- `tests/worker-spawn.test.ts` - Tests worker CLI and health endpoints
+
+### 🛡️ Additional Robustness
+
+- PID validation in restart command (matches start command behavior)
+- Try/catch around `forceKillProcess()` for graceful shutdown
+- Try/catch around `getChildProcesses()` for Windows failures
+- Improved logging for PID file operations and HTTP shutdown
+
+---
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.2.0...v8.2.1
+
 ## [8.2.0] - 2025-12-26
 
 ## 🚀 Gemini API as Alternative AI Provider
