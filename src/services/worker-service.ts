@@ -830,10 +830,16 @@ async function main() {
         windowsHide: true,
         env: { ...process.env, CLAUDE_MEM_WORKER_PORT: String(port) }
       });
+
+      if (child.pid === undefined) {
+        console.error('Failed to spawn worker daemon');
+        process.exit(1);
+      }
+
       child.unref();
 
       // Write PID file
-      writePidFile({ pid: child.pid!, port, startedAt: new Date().toISOString() });
+      writePidFile({ pid: child.pid, port, startedAt: new Date().toISOString() });
 
       // Wait for health
       const healthy = await waitForHealth(port, 30000);
