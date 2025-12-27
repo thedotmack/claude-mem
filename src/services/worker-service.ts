@@ -754,8 +754,12 @@ export class WorkerService {
 
     while (Date.now() - start < timeoutMs) {
       const stillAlive = pids.filter(pid => {
-        process.kill(pid, 0); // Signal 0 checks if process exists - throws if dead
-        return true;
+        try {
+          process.kill(pid, 0);
+          return true;
+        } catch {
+          return false;
+        }
       });
 
       if (stillAlive.length === 0) {
