@@ -170,6 +170,11 @@ export class GeminiAgent {
 
         // Process response (no original timestamp for init - not from queue)
         await this.processGeminiResponse(session, initResponse.content, worker, tokensUsed, null);
+      } else {
+        logger.warn('SDK', 'Empty Gemini init response - session may lack context', {
+          sessionId: session.sessionDbId,
+          model
+        });
       }
 
       // Process pending messages

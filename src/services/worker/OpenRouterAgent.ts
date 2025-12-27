@@ -11,14 +11,13 @@
  * - Support dynamic model selection across providers
  */
 
-import path from 'path';
-import { homedir } from 'os';
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
 import { parseObservations, parseSummary } from '../../sdk/parser.js';
 import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 
@@ -131,6 +130,11 @@ export class OpenRouterAgent {
 
         // Process response (no original timestamp for init - not from queue)
         await this.processOpenRouterResponse(session, initResponse.content, worker, tokensUsed, null);
+      } else {
+        logger.warn('SDK', 'Empty OpenRouter init response - session may lack context', {
+          sessionId: session.sessionDbId,
+          model
+        });
       }
 
       // Process pending messages
@@ -263,7 +267,7 @@ export class OpenRouterAgent {
    */
   private truncateHistory(history: ConversationMessage[]): ConversationMessage[] {
     const settings = SettingsDefaultsManager.loadFromFile(
-      path.join(homedir(), '.claude-mem', 'settings.json')
+      USER_SETTINGS_PATH
     );
 
     const MAX_CONTEXT_MESSAGES = parseInt(settings.CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES) || DEFAULT_MAX_CONTEXT_MESSAGES;
@@ -377,7 +381,7 @@ export class OpenRouterAgent {
     if (tokensUsed) {
       const inputTokens = data.usage?.prompt_tokens || 0;
       const outputTokens = data.usage?.completion_tokens || 0;
-      // Rough cost estimate (Claude 3.5 Sonnet pricing: $3/MTok input, $15/MTok output)
+      // Token usage (cost varies by model - many OpenRouter models are free)
       const estimatedCost = (inputTokens / 1000000 * 3) + (outputTokens / 1000000 * 15);
 
       logger.info('SDK', 'OpenRouter API usage', {
@@ -568,7 +572,7 @@ export class OpenRouterAgent {
    * Get OpenRouter configuration from settings or environment
    */
   private getOpenRouterConfig(): { apiKey: string; model: string; siteUrl?: string; appName?: string } {
-    const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+    const settingsPath = USER_SETTINGS_PATH;
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
 
     // API key: check settings first, then environment variable
@@ -589,7 +593,7 @@ export class OpenRouterAgent {
  * Check if OpenRouter is available (has API key configured)
  */
 export function isOpenRouterAvailable(): boolean {
-  const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+  const settingsPath = USER_SETTINGS_PATH;
   const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
   return !!(settings.CLAUDE_MEM_OPENROUTER_API_KEY || process.env.OPENROUTER_API_KEY);
 }
@@ -598,7 +602,7 @@ export function isOpenRouterAvailable(): boolean {
  * Check if OpenRouter is the selected provider
  */
 export function isOpenRouterSelected(): boolean {
-  const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+  const settingsPath = USER_SETTINGS_PATH;
   const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
   return settings.CLAUDE_MEM_PROVIDER === 'openrouter';
 }

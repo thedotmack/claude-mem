@@ -135,6 +135,13 @@ export class SessionRoutes extends BaseRouteHandler {
     session.currentProvider = provider;
 
     session.generatorPromise = agent.startSession(session, this.workerService)
+      .catch(error => {
+        logger.error('SESSION', `Generator failed`, {
+          sessionId: session.sessionDbId,
+          provider: provider,
+          error: error.message
+        }, error);
+      })
       .finally(() => {
         logger.info('SESSION', `Generator finished`, { sessionId: session.sessionDbId });
         session.generatorPromise = null;
