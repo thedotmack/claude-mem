@@ -42,11 +42,18 @@ function readPidFile(): PidInfo | null {
   try {
     if (!existsSync(PID_FILE)) return null;
     return JSON.parse(readFileSync(PID_FILE, 'utf-8'));
-  } catch { return null; }
+  } catch (error) {
+    logger.warn('SYSTEM', 'Failed to read PID file', { path: PID_FILE, error: (error as Error).message });
+    return null;
+  }
 }
 
 function removePidFile(): void {
-  try { if (existsSync(PID_FILE)) unlinkSync(PID_FILE); } catch {}
+  try {
+    if (existsSync(PID_FILE)) unlinkSync(PID_FILE);
+  } catch (error) {
+    logger.warn('SYSTEM', 'Failed to remove PID file', { path: PID_FILE, error: (error as Error).message });
+  }
 }
 
 async function isPortInUse(port: number): Promise<boolean> {
@@ -76,12 +83,23 @@ async function waitForHealth(port: number, timeoutMs: number = 30000): Promise<b
 
 async function httpShutdown(port: number): Promise<boolean> {
   try {
-    await fetch(`http://127.0.0.1:${port}/api/admin/shutdown`, {
+    const response = await fetch(`http://127.0.0.1:${port}/api/admin/shutdown`, {
       method: 'POST',
       signal: AbortSignal.timeout(5000)
     });
+    if (!response.ok) {
+      logger.warn('SYSTEM', 'Shutdown request returned error', { port, status: response.status });
+      return false;
+    }
     return true;
-  } catch { return false; }
+  } catch (error) {
+    // Connection refused is expected if worker already stopped
+    const isConnectionRefused = (error as Error).message?.includes('ECONNREFUSED');
+    if (!isConnectionRefused) {
+      logger.warn('SYSTEM', 'Shutdown request failed', { port, error: (error as Error).message });
+    }
+    return false;
+  }
 }
 
 async function waitForPortFree(port: number, timeoutMs: number = 10000): Promise<boolean> {
@@ -735,13 +753,18 @@ export class WorkerService {
       return [];
     }
 
-    const cmd = `powershell -Command "Get-CimInstance Win32_Process | Where-Object { $_.ParentProcessId -eq ${parentPid} } | Select-Object -ExpandProperty ProcessId"`;
-    const { stdout } = await execAsync(cmd, { timeout: 60000 });
-    return stdout
-      .trim()
-      .split('\n')
-      .map(s => parseInt(s.trim(), 10))
-      .filter(n => !isNaN(n) && Number.isInteger(n) && n > 0); // SECURITY: Validate each PID
+    try {
+      const cmd = `powershell -Command "Get-CimInstance Win32_Process | Where-Object { $_.ParentProcessId -eq ${parentPid} } | Select-Object -ExpandProperty ProcessId"`;
+      const { stdout } = await execAsync(cmd, { timeout: 60000 });
+      return stdout
+        .trim()
+        .split('\n')
+        .map(s => parseInt(s.trim(), 10))
+        .filter(n => !isNaN(n) && Number.isInteger(n) && n > 0); // SECURITY: Validate each PID
+    } catch (error) {
+      logger.warn('SYSTEM', 'Failed to enumerate child processes', { parentPid, error: (error as Error).message });
+      return []; // Fail safely - continue shutdown without child process cleanup
+    }
   }
 
   /**
@@ -754,12 +777,17 @@ export class WorkerService {
       return;
     }
 
-    if (process.platform === 'win32') {
-      // /T kills entire process tree, /F forces termination
-      await execAsync(`taskkill /PID ${pid} /T /F`, { timeout: 60000 });
+    try {
+      if (process.platform === 'win32') {
+        // /T kills entire process tree, /F forces termination
+        await execAsync(`taskkill /PID ${pid} /T /F`, { timeout: 60000 });
+      } else {
+        process.kill(pid, 'SIGKILL');
+      }
       logger.info('SYSTEM', 'Killed process', { pid });
-    } else {
-      process.kill(pid, 'SIGKILL');
+    } catch {
+      // Process may have already exited - continue shutdown
+      logger.debug('SYSTEM', 'Process already exited during force kill', { pid });
     }
   }
 
@@ -889,8 +917,14 @@ async function main() {
         windowsHide: true,
         env: { ...process.env, CLAUDE_MEM_WORKER_PORT: String(port) }
       });
+
+      if (child.pid === undefined) {
+        console.error('Failed to spawn worker daemon during restart');
+        process.exit(1);
+      }
+
       child.unref();
-      writePidFile({ pid: child.pid!, port, startedAt: new Date().toISOString() });
+      writePidFile({ pid: child.pid, port, startedAt: new Date().toISOString() });
       const healthy = await waitForHealth(port, 30000);
       if (!healthy) {
         removePidFile();
