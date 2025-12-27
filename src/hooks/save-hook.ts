@@ -11,6 +11,7 @@ import { STANDARD_HOOK_RESPONSE } from './hook-response.js';
 import { logger } from '../utils/logger.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
+import { detectCwdFromTool } from '../shared/project-detector.js';
 
 export interface PostToolUseInput {
   session_id: string;
@@ -46,6 +47,20 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
     throw new Error(`Missing cwd in PostToolUse hook input for session ${session_id}, tool ${tool_name}`);
   }
 
+  // Detect actual working directory from tool context
+  // This handles cases where user cd's during a session or operates on files in different projects
+  let actualCwd = cwd;
+  try {
+    actualCwd = detectCwdFromTool(tool_name, tool_input, cwd);
+
+    if (actualCwd !== cwd) {
+      logger.debug('HOOK', `Detected actual cwd: ${actualCwd} (was: ${cwd})`);
+    }
+  } catch (err) {
+    // If detection fails, fall back to original cwd
+    logger.debug('HOOK', `Project detection failed, using original cwd: ${err}`);
+  }
+
   // Send to worker - worker handles privacy check and database operations
   const response = await fetch(`http://127.0.0.1:${port}/api/sessions/observations`, {
     method: 'POST',
@@ -55,7 +70,7 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
       tool_name,
       tool_input,
       tool_response,
-      cwd
+      cwd: actualCwd  // Use detected cwd for accurate project attribution
     }),
     signal: AbortSignal.timeout(HOOK_TIMEOUTS.DEFAULT)
   });
