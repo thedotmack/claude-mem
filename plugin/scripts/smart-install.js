@@ -439,8 +439,31 @@ try {
 
   // Step 3: Install dependencies if needed
   if (needsInstall()) {
+    const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8'));
+    const newVersion = pkg.version;
+
     installDeps();
     console.error('✅ Dependencies installed');
+
+    // Auto-restart worker to pick up new code
+    const port = process.env.CLAUDE_MEM_WORKER_PORT || 37777;
+    console.error(`[claude-mem] Plugin updated to v${newVersion} - restarting worker...`);
+    try {
+      // Graceful shutdown via HTTP (curl is cross-platform enough)
+      execSync(`curl -s -X POST http://127.0.0.1:${port}/api/admin/shutdown`, {
+        stdio: 'ignore',
+        shell: IS_WINDOWS,
+        timeout: 5000
+      });
+      // Brief wait for port to free
+      execSync(IS_WINDOWS ? 'timeout /t 1 /nobreak >nul' : 'sleep 0.5', {
+        stdio: 'ignore',
+        shell: true
+      });
+    } catch {
+      // Worker wasn't running or already stopped - that's fine
+    }
+    // Worker will be started fresh by next hook in chain (worker-service.cjs start)
   }
 
   // Step 4: Install CLI to PATH
