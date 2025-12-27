@@ -497,6 +497,190 @@ export const migration007: Migration = {
 
 
 /**
+ * Migration 008 - Add Sleep Agent supersession and deprecation fields
+ * Supports the Sleep Agent memory consolidation system
+ */
+export const migration008: Migration = {
+  version: 18,
+  up: (db: Database) => {
+    // Add supersession tracking fields to observations table
+    db.run(`ALTER TABLE observations ADD COLUMN superseded_by INTEGER REFERENCES observations(id) ON DELETE SET NULL`);
+    db.run(`ALTER TABLE observations ADD COLUMN deprecated INTEGER DEFAULT 0`);
+    db.run(`ALTER TABLE observations ADD COLUMN deprecated_at INTEGER`);
+    db.run(`ALTER TABLE observations ADD COLUMN deprecation_reason TEXT`);
+    db.run(`ALTER TABLE observations ADD COLUMN decision_chain_id TEXT`);
+
+    // Indexes for supersession queries
+    db.run(`CREATE INDEX IF NOT EXISTS idx_observations_superseded_by ON observations(superseded_by)`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_observations_deprecated ON observations(deprecated)`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_observations_decision_chain ON observations(decision_chain_id)`);
+
+    // Sleep cycles table for tracking consolidation runs
+    db.run(`
+      CREATE TABLE IF NOT EXISTS sleep_cycles (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        started_at_epoch INTEGER NOT NULL,
+        completed_at_epoch INTEGER,
+        cycle_type TEXT CHECK(cycle_type IN ('micro', 'light', 'deep', 'manual')) NOT NULL,
+        status TEXT CHECK(status IN ('running', 'completed', 'failed', 'cancelled')) NOT NULL DEFAULT 'running',
+        observations_processed INTEGER DEFAULT 0,
+        supersessions_detected INTEGER DEFAULT 0,
+        chains_consolidated INTEGER DEFAULT 0,
+        memories_deprecated INTEGER DEFAULT 0,
+        error_message TEXT
+      )
+    `);
+
+    db.run(`CREATE INDEX IF NOT EXISTS idx_sleep_cycles_started ON sleep_cycles(started_at_epoch DESC)`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_sleep_cycles_status ON sleep_cycles(status)`);
+
+    console.log('✅ Created Sleep Agent supersession fields and sleep_cycles table');
+  },
+
+  down: (db: Database) => {
+    db.run(`DROP TABLE IF EXISTS sleep_cycles`);
+    db.run(`DROP INDEX IF EXISTS idx_observations_superseded_by`);
+    db.run(`DROP INDEX IF EXISTS idx_observations_deprecated`);
+    db.run(`DROP INDEX IF EXISTS idx_observations_decision_chain`);
+    // Note: SQLite doesn't support DROP COLUMN in all versions
+    console.log('⚠️  Warning: Column removal requires table recreation');
+  }
+};
+
+/**
+ * Migration 009 - Add Surprise metrics fields for P2 Surprise-Based Learning
+ * Inspired by Nested Learning: high surprise = increase learning rate
+ */
+export const migration009: Migration = {
+  version: 19,
+  up: (db: Database) => {
+    // Add surprise metrics to observations table
+    db.run(`ALTER TABLE observations ADD COLUMN surprise_score REAL`);
+    db.run(`ALTER TABLE observations ADD COLUMN surprise_tier TEXT CHECK(surprise_tier IN ('routine', 'notable', 'surprising', 'anomalous'))`);
+    db.run(`ALTER TABLE observations ADD COLUMN surprise_calculated_at INTEGER`);
+
+    // Indexes for surprise queries
+    db.run(`CREATE INDEX IF NOT EXISTS idx_observations_surprise_score ON observations(surprise_score)`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_observations_surprise_tier ON observations(surprise_tier)`);
+
+    console.log('✅ Added Surprise metrics columns for P2 Surprise-Based Learning');
+  },
+
+  down: (db: Database) => {
+    db.run(`DROP INDEX IF EXISTS idx_observations_surprise_score`);
+    db.run(`DROP INDEX IF EXISTS idx_observations_surprise_tier`);
+    // Note: SQLite doesn't support DROP COLUMN in all versions
+    console.log('⚠️  Warning: Column removal requires table recreation');
+  }
+};
+
+/**
+ * Migration 010 - Add Memory Tier fields for P2 Memory Hierarchical (CMS)
+ * Inspired by Nested Learning's Continuum Memory Systems
+ * Memory is a spectrum with different update frequencies
+ */
+export const migration010: Migration = {
+  version: 20,
+  up: (db: Database) => {
+    // Add memory tier fields to observations table
+    db.run(`ALTER TABLE observations ADD COLUMN memory_tier TEXT CHECK(memory_tier IN ('core', 'working', 'archive', 'ephemeral')) DEFAULT 'working'`);
+    db.run(`ALTER TABLE observations ADD COLUMN memory_tier_updated_at INTEGER`);
+    db.run(`ALTER TABLE observations ADD COLUMN reference_count INTEGER DEFAULT 0`);
+    db.run(`ALTER TABLE observations ADD COLUMN last_accessed_at INTEGER`);
+
+    // Indexes for memory tier queries
+    db.run(`CREATE INDEX IF NOT EXISTS idx_observations_memory_tier ON observations(memory_tier)`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_observations_reference_count ON observations(reference_count)`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_observations_last_accessed ON observations(last_accessed_at)`);
+
+    // Initialize reference_count based on existing superseded_by references
+    // Count how many times each observation is referenced
+    db.run(`
+      UPDATE observations
+      SET reference_count = (
+        SELECT COUNT(*)
+        FROM observations AS ref
+        WHERE ref.superseded_by = observations.id
+      )
+    `);
+
+    console.log('✅ Added Memory Tier columns for P2 Memory Hierarchical (CMS)');
+  },
+
+  down: (db: Database) => {
+    db.run(`DROP INDEX IF EXISTS idx_observations_memory_tier`);
+    db.run(`DROP INDEX IF EXISTS idx_observations_reference_count`);
+    db.run(`DROP INDEX IF EXISTS idx_observations_last_accessed`);
+    // Note: SQLite doesn't support DROP COLUMN in all versions
+    console.log('⚠️  Warning: Column removal requires table recreation');
+  }
+};
+
+/**
+ * Migration 011 - Add Supersession Training Data for P3 Regression Model
+ * Stores training examples for the learned supersession model
+ */
+export const migration011: Migration = {
+  version: 21,
+  up: (db: Database) => {
+    // Table for storing supersession training examples
+    db.run(`
+      CREATE TABLE IF NOT EXISTS supersession_training (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        older_observation_id INTEGER NOT NULL,
+        newer_observation_id INTEGER NOT NULL,
+        semantic_similarity REAL NOT NULL,
+        topic_match INTEGER NOT NULL,
+        file_overlap REAL NOT NULL,
+        type_match REAL NOT NULL,
+        time_delta_hours REAL NOT NULL,
+        priority_score REAL NOT NULL,
+        older_reference_count INTEGER NOT NULL,
+        label INTEGER NOT NULL CHECK(label IN (0, 1)),
+        confidence REAL NOT NULL,
+        created_at_epoch INTEGER NOT NULL,
+        FOREIGN KEY (older_observation_id) REFERENCES observations(id) ON DELETE CASCADE,
+        FOREIGN KEY (newer_observation_id) REFERENCES observations(id) ON DELETE CASCADE
+      )
+    `);
+
+    // Indexes for training queries
+    db.run(`CREATE INDEX IF NOT EXISTS idx_supersession_training_created ON supersession_training(created_at_epoch DESC)`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_supersession_training_label ON supersession_training(label)`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_supersession_training_older ON supersession_training(older_observation_id)`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_supersession_training_newer ON supersession_training(newer_observation_id)`);
+
+    // Table for storing learned model weights
+    db.run(`
+      CREATE TABLE IF NOT EXISTS learned_model_weights (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        weight_semantic_similarity REAL NOT NULL,
+        weight_topic_match REAL NOT NULL,
+        weight_file_overlap REAL NOT NULL,
+        weight_type_match REAL NOT NULL,
+        weight_time_decay REAL NOT NULL,
+        weight_priority_boost REAL NOT NULL,
+        weight_reference_decay REAL NOT NULL,
+        weight_bias REAL NOT NULL,
+        trained_at_epoch INTEGER NOT NULL,
+        examples_used INTEGER NOT NULL,
+        loss REAL NOT NULL,
+        accuracy REAL NOT NULL
+      )
+    `);
+
+    db.run(`CREATE INDEX IF NOT EXISTS idx_learned_model_weights_trained ON learned_model_weights(trained_at_epoch DESC)`);
+
+    console.log('✅ Added Supersession Training tables for P3 Regression Model');
+  },
+
+  down: (db: Database) => {
+    db.run(`DROP TABLE IF EXISTS learned_model_weights`);
+    db.run(`DROP TABLE IF EXISTS supersession_training`);
+  }
+};
+
+/**
  * All migrations in order
  */
 export const migrations: Migration[] = [
@@ -506,5 +690,9 @@ export const migrations: Migration[] = [
   migration004,
   migration005,
   migration006,
-  migration007
+  migration007,
+  migration008,
+  migration009,
+  migration010,
+  migration011
 ];

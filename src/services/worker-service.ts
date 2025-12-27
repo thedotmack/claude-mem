@@ -40,6 +40,8 @@ import { DataRoutes } from './worker/http/routes/DataRoutes.js';
 import { SearchRoutes } from './worker/http/routes/SearchRoutes.js';
 import { SettingsRoutes } from './worker/http/routes/SettingsRoutes.js';
 import { MetricsRoutes } from './worker/http/routes/MetricsRoutes.js';
+import { SleepRoutes } from './worker/http/routes/SleepRoutes.js';
+import { SleepAgent } from './worker/SleepAgent.js';
 
 export class WorkerService {
   private app: express.Application;
@@ -68,6 +70,8 @@ export class WorkerService {
   private searchRoutes: SearchRoutes | null;
   private settingsRoutes: SettingsRoutes;
   private metricsRoutes: MetricsRoutes;
+  private sleepRoutes: SleepRoutes | null = null;
+  private sleepAgent: SleepAgent | null = null;
 
   // Initialization tracking
   private initializationComplete: Promise<void>;
@@ -459,6 +463,19 @@ export class WorkerService {
       this.searchRoutes.setupRoutes(this.app); // Setup search routes now that SearchManager is ready
       logger.info('WORKER', 'SearchManager initialized and search routes registered');
 
+      // Initialize Sleep Agent for background memory consolidation (Titans-inspired)
+      this.sleepAgent = SleepAgent.getInstance(
+        this.dbManager.getChromaSync(),
+        this.dbManager.getSessionStore()
+      );
+      this.sleepRoutes = new SleepRoutes(
+        this.sleepAgent,
+        this.sleepAgent.getSupersessionDetector()
+      );
+      this.sleepRoutes.setupRoutes(this.app);
+      this.sleepAgent.startIdleDetection(); // Auto-start idle detection
+      logger.info('WORKER', 'SleepAgent initialized with idle detection enabled');
+
       // Initialize cleanup job for memory management (Phase 3: Titans concepts)
       // Using lazy import to avoid initialization timing issues
       // The actual job instance is created on-demand in the API routes
@@ -644,6 +661,13 @@ export class WorkerService {
       logger.info('SYSTEM', 'MCP client closed');
     }
 
+    // STEP 4.5: Stop SleepAgent idle detection
+    if (this.sleepAgent) {
+      this.sleepAgent.stopIdleDetection();
+      SleepAgent.resetInstance();
+      logger.info('SYSTEM', 'SleepAgent stopped');
+    }
+
     // STEP 5: Close database connection (includes ChromaSync cleanup)
     await this.dbManager.close();
 
@@ -732,6 +756,15 @@ export class WorkerService {
    */
   private summarizeRequestBody(method: string, path: string, body: any): string {
     return summarizeBody(method, path, body);
+  }
+
+  /**
+   * Get the SleepAgent instance (for micro cycle triggering from SessionRoutes)
+   *
+   * PUBLIC: Called by route handlers
+   */
+  getSleepAgent(): SleepAgent | null {
+    return this.sleepAgent;
   }
 
   /**

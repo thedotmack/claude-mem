@@ -484,6 +484,17 @@ export class SessionRoutes extends BaseRouteHandler {
     // Broadcast summarize queued event
     this.eventBroadcaster.broadcastSummarizeQueued();
 
+    // Trigger micro cycle for this session (fire-and-forget, non-blocking)
+    // This runs supersession detection for the session's observations
+    const sleepAgent = this.workerService.getSleepAgent();
+    if (sleepAgent) {
+      sleepAgent.runMicroCycle(claudeSessionId).catch(error => {
+        logger.warn('SESSION', 'Micro cycle failed (non-fatal)', {
+          claudeSessionId,
+        }, error as Error);
+      });
+    }
+
     res.json({ status: 'queued' });
   });
 

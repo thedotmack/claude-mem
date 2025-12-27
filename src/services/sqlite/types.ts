@@ -218,6 +218,21 @@ export interface ObservationRow {
   discovery_tokens: number; // ROI metrics: tokens spent discovering this observation
   created_at: string;
   created_at_epoch: number;
+  // Sleep Agent fields (migration008)
+  superseded_by: number | null;
+  deprecated: number; // 0 or 1
+  deprecated_at: number | null;
+  deprecation_reason: string | null;
+  decision_chain_id: string | null;
+  // Sleep Agent fields (migration009) - Surprise metrics
+  surprise_score: number | null;
+  surprise_tier: 'routine' | 'notable' | 'surprising' | 'anomalous' | null;
+  surprise_calculated_at: number | null;
+  // Sleep Agent fields (migration010) - Memory Tier (CMS)
+  memory_tier: 'core' | 'working' | 'archive' | 'ephemeral' | null;
+  memory_tier_updated_at: number | null;
+  reference_count: number | null;
+  last_accessed_at: number | null;
 }
 
 export interface SessionSummaryRow {
