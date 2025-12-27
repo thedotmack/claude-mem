@@ -227,8 +227,9 @@ export class SDKAgent {
         const obsPrompt = buildObservationPrompt({
           id: 0, // Not used in prompt
           tool_name: message.tool_name!,
-          tool_input: JSON.stringify(message.tool_input),
-          tool_output: JSON.stringify(message.tool_response),
+          // tool_input and tool_response are already JSON strings from SessionRoutes
+          tool_input: message.tool_input as string,
+          tool_output: message.tool_response as string,
           created_at_epoch: Date.now(),
           cwd: message.cwd
         });
