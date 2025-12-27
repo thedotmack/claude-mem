@@ -13,6 +13,7 @@ import { SessionManager } from '../../SessionManager.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
 import { SDKAgent } from '../../SDKAgent.js';
 import { GeminiAgent, isGeminiSelected, isGeminiAvailable } from '../../GeminiAgent.js';
+import { OpenRouterAgent, isOpenRouterSelected, isOpenRouterAvailable } from '../../OpenRouterAgent.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { SessionEventBroadcaster } from '../../events/SessionEventBroadcaster.js';
@@ -29,6 +30,7 @@ export class SessionRoutes extends BaseRouteHandler {
     private dbManager: DatabaseManager,
     private sdkAgent: SDKAgent,
     private geminiAgent: GeminiAgent,
+    private openRouterAgent: OpenRouterAgent,
     private eventBroadcaster: SessionEventBroadcaster,
     private workerService: WorkerService
   ) {
@@ -41,12 +43,20 @@ export class SessionRoutes extends BaseRouteHandler {
 
   /**
    * Get the appropriate agent based on settings
-   * Throws error if Gemini is selected but not configured (no silent fallback)
+   * Throws error if provider is selected but not configured (no silent fallback)
    *
    * Note: Session linking via claudeSessionId allows provider switching mid-session.
    * The conversationHistory on ActiveSession maintains context across providers.
    */
-  private getActiveAgent(): SDKAgent | GeminiAgent {
+  private getActiveAgent(): SDKAgent | GeminiAgent | OpenRouterAgent {
+    if (isOpenRouterSelected()) {
+      if (isOpenRouterAvailable()) {
+        logger.debug('SESSION', 'Using OpenRouter agent');
+        return this.openRouterAgent;
+      } else {
+        throw new Error('OpenRouter provider selected but no API key configured. Set CLAUDE_MEM_OPENROUTER_API_KEY in settings or OPENROUTER_API_KEY environment variable.');
+      }
+    }
     if (isGeminiSelected()) {
       if (isGeminiAvailable()) {
         logger.debug('SESSION', 'Using Gemini agent');
@@ -61,7 +71,10 @@ export class SessionRoutes extends BaseRouteHandler {
   /**
    * Get the currently selected provider name
    */
-  private getSelectedProvider(): 'claude' | 'gemini' {
+  private getSelectedProvider(): 'claude' | 'gemini' | 'openrouter' {
+    if (isOpenRouterSelected() && isOpenRouterAvailable()) {
+      return 'openrouter';
+    }
     return (isGeminiSelected() && isGeminiAvailable()) ? 'gemini' : 'claude';
   }
 
@@ -104,13 +117,13 @@ export class SessionRoutes extends BaseRouteHandler {
    */
   private startGeneratorWithProvider(
     session: ReturnType<typeof this.sessionManager.getSession>,
-    provider: 'claude' | 'gemini',
+    provider: 'claude' | 'gemini' | 'openrouter',
     source: string
   ): void {
     if (!session) return;
 
-    const agent = provider === 'gemini' ? this.geminiAgent : this.sdkAgent;
-    const agentName = provider === 'gemini' ? 'Gemini' : 'Claude SDK';
+    const agent = provider === 'openrouter' ? this.openRouterAgent : (provider === 'gemini' ? this.geminiAgent : this.sdkAgent);
+    const agentName = provider === 'openrouter' ? 'OpenRouter' : (provider === 'gemini' ? 'Gemini' : 'Claude SDK');
 
     logger.info('SESSION', `Generator auto-starting (${source}) using ${agentName}`, {
       sessionId: session.sessionDbId,
@@ -122,6 +135,13 @@ export class SessionRoutes extends BaseRouteHandler {
     session.currentProvider = provider;
 
     session.generatorPromise = agent.startSession(session, this.workerService)
+      .catch(error => {
+        logger.error('SESSION', `Generator failed`, {
+          sessionId: session.sessionDbId,
+          provider: provider,
+          error: error.message
+        }, error);
+      })
       .finally(() => {
         logger.info('SESSION', `Generator finished`, { sessionId: session.sessionDbId });
         session.generatorPromise = null;

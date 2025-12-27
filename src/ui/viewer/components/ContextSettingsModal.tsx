@@ -12,15 +12,6 @@ interface ContextSettingsModalProps {
   saveStatus: string;
 }
 
-// Simple debounce helper
-function debounce<T extends (...args: any[]) => any>(fn: T, ms: number): T {
-  let timeoutId: NodeJS.Timeout;
-  return ((...args: any[]) => {
-    clearTimeout(timeoutId);
-    timeoutId = setTimeout(() => fn(...args), ms);
-  }) as T;
-}
-
 // Collapsible section component
 function CollapsibleSection({
   title,
@@ -195,14 +186,6 @@ export function ContextSettingsModal({
 }: ContextSettingsModalProps) {
   const [formState, setFormState] = useState<Settings>(settings);
 
-  // Create debounced save function
-  const debouncedSave = useCallback(
-    debounce((newSettings: Settings) => {
-      onSave(newSettings);
-    }, 300),
-    [onSave]
-  );
-
   // Update form state when settings prop changes
   useEffect(() => {
     setFormState(settings);
@@ -214,8 +197,11 @@ export function ContextSettingsModal({
   const updateSetting = useCallback((key: keyof Settings, value: string) => {
     const newState = { ...formState, [key]: value };
     setFormState(newState);
-    debouncedSave(newState);
-  }, [formState, debouncedSave]);
+  }, [formState]);
+
+  const handleSave = useCallback(() => {
+    onSave(formState);
+  }, [formState, onSave]);
 
   const toggleBoolean = useCallback((key: keyof Settings) => {
     const currentValue = formState[key];
@@ -436,10 +422,11 @@ export function ContextSettingsModal({
                 >
                   <option value="claude">Claude (uses your Claude account)</option>
                   <option value="gemini">Gemini (uses API key)</option>
+                  <option value="openrouter">OpenRouter (multi-model)</option>
                 </select>
               </FormField>
 
-              {formState.CLAUDE_MEM_PROVIDER === 'claude' ? (
+              {formState.CLAUDE_MEM_PROVIDER === 'claude' && (
                 <FormField
                   label="Claude Model"
                   tooltip="Claude model used for generating observations"
@@ -453,7 +440,9 @@ export function ContextSettingsModal({
                     <option value="opus">opus (highest quality)</option>
                   </select>
                 </FormField>
-              ) : (
+              )}
+
+              {formState.CLAUDE_MEM_PROVIDER === 'gemini' && (
                 <>
                   <FormField
                     label="Gemini API Key"
@@ -491,6 +480,55 @@ export function ContextSettingsModal({
                 </>
               )}
 
+              {formState.CLAUDE_MEM_PROVIDER === 'openrouter' && (
+                <>
+                  <FormField
+                    label="OpenRouter API Key"
+                    tooltip="Your OpenRouter API key from openrouter.ai (or set OPENROUTER_API_KEY env var)"
+                  >
+                    <input
+                      type="password"
+                      value={formState.CLAUDE_MEM_OPENROUTER_API_KEY || ''}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_OPENROUTER_API_KEY', e.target.value)}
+                      placeholder="Enter OpenRouter API key..."
+                    />
+                  </FormField>
+                  <FormField
+                    label="OpenRouter Model"
+                    tooltip="Model identifier from OpenRouter (e.g., anthropic/claude-3.5-sonnet, google/gemini-2.0-flash-thinking-exp)"
+                  >
+                    <input
+                      type="text"
+                      value={formState.CLAUDE_MEM_OPENROUTER_MODEL || 'xiaomi/mimo-v2-flash:free'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_OPENROUTER_MODEL', e.target.value)}
+                      placeholder="e.g., xiaomi/mimo-v2-flash:free"
+                    />
+                  </FormField>
+                  <FormField
+                    label="Site URL (Optional)"
+                    tooltip="Your site URL for OpenRouter analytics (optional)"
+                  >
+                    <input
+                      type="text"
+                      value={formState.CLAUDE_MEM_OPENROUTER_SITE_URL || ''}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_OPENROUTER_SITE_URL', e.target.value)}
+                      placeholder="https://yoursite.com"
+                    />
+                  </FormField>
+                  <FormField
+                    label="App Name (Optional)"
+                    tooltip="Your app name for OpenRouter analytics (optional)"
+                  >
+                    <input
+                      type="text"
+                      value={formState.CLAUDE_MEM_OPENROUTER_APP_NAME || 'claude-mem'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_OPENROUTER_APP_NAME', e.target.value)}
+                      placeholder="claude-mem"
+                    />
+                  </FormField>
+                </>
+              )}
+
               <FormField
                 label="Worker Port"
                 tooltip="Port for the background worker service"
@@ -522,6 +560,20 @@ export function ContextSettingsModal({
               </div>
             </CollapsibleSection>
           </div>
+        </div>
+
+        {/* Footer with Save button */}
+        <div className="modal-footer">
+          <div className="save-status">
+            {saveStatus && <span className={saveStatus.includes('✓') ? 'success' : saveStatus.includes('✗') ? 'error' : ''}>{saveStatus}</span>}
+          </div>
+          <button
+            className="save-btn"
+            onClick={handleSave}
+            disabled={isSaving}
+          >
+            {isSaving ? 'Saving...' : 'Save'}
+          </button>
         </div>
       </div>
     </div>
