@@ -56,6 +56,99 @@ function removePidFile(): void {
   }
 }
 
+// Lockfile for CLI command mutual exclusion (prevents race conditions on Windows)
+const LOCK_FILE = path.join(DATA_DIR, 'worker.lock');
+const LOCK_STALE_MS = 120000; // Lock considered stale after 2 minutes
+
+interface LockInfo {
+  pid: number;
+  command: string;
+  startedAt: string;
+}
+
+/**
+ * Clean up stale lock from crashed processes
+ */
+function cleanupStaleLock(): void {
+  try {
+    if (!existsSync(LOCK_FILE)) return;
+    const lockData = readFileSync(LOCK_FILE, 'utf-8');
+    const lockInfo: LockInfo = JSON.parse(lockData);
+    const lockAge = Date.now() - new Date(lockInfo.startedAt).getTime();
+    if (lockAge > LOCK_STALE_MS) {
+      logger.warn('SYSTEM', 'Removing stale lock', {
+        lockAge: Math.round(lockAge / 1000) + 's',
+        originalPid: lockInfo.pid,
+        originalCommand: lockInfo.command
+      });
+      unlinkSync(LOCK_FILE);
+    }
+  } catch {
+    // If we can't read the lock, it's likely corrupted - remove it
+    try { unlinkSync(LOCK_FILE); } catch {}
+  }
+}
+
+/**
+ * Acquire exclusive lock for worker operations
+ * Uses atomic file creation (O_EXCL) for cross-process safety
+ */
+function acquireLock(command: string): boolean {
+  mkdirSync(DATA_DIR, { recursive: true });
+  cleanupStaleLock();
+
+  const lockInfo: LockInfo = {
+    pid: process.pid,
+    command,
+    startedAt: new Date().toISOString()
+  };
+
+  try {
+    // O_EXCL ensures atomic creation - fails if file exists
+    const fd = fs.openSync(LOCK_FILE, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY);
+    fs.writeSync(fd, JSON.stringify(lockInfo, null, 2));
+    fs.closeSync(fd);
+    return true;
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+      return false;
+    }
+    logger.warn('SYSTEM', 'Lock acquisition error', { error: (error as Error).message });
+    return false;
+  }
+}
+
+/**
+ * Release lock file
+ */
+function releaseLock(): void {
+  try {
+    if (existsSync(LOCK_FILE)) unlinkSync(LOCK_FILE);
+  } catch (error) {
+    logger.warn('SYSTEM', 'Lock release error', { error: (error as Error).message });
+  }
+}
+
+/**
+ * Wait for lock with timeout
+ */
+async function waitForLock(command: string, timeoutMs: number): Promise<boolean> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (acquireLock(command)) return true;
+    await new Promise(r => setTimeout(r, 200));
+  }
+  return false;
+}
+
+/**
+ * Get platform-adjusted timeout (Windows socket cleanup is slower)
+ */
+function getPlatformTimeout(baseMs: number): number {
+  const WINDOWS_MULTIPLIER = 2.0;
+  return process.platform === 'win32' ? Math.round(baseMs * WINDOWS_MULTIPLIER) : baseMs;
+}
+
 async function isPortInUse(port: number): Promise<boolean> {
   try {
     const response = await fetch(`http://127.0.0.1:${port}/api/health`, {
@@ -866,77 +959,137 @@ async function main() {
 
   switch (command) {
     case 'start': {
-      // Already running?
-      if (await isPortInUse(port)) {
+      // Acquire lock BEFORE checking port to prevent race condition
+      // If we can't get lock, another session is spawning - wait for health instead
+      if (!acquireLock('start')) {
+        logger.info('SYSTEM', 'Another session is spawning worker, waiting for health');
+        const healthy = await waitForHealth(port, getPlatformTimeout(30000));
+        if (healthy) {
+          console.log(HOOK_RESPONSE);
+          process.exit(0);
+        }
+        // Still not healthy after wait - try to acquire lock and spawn
+        const gotLock = await waitForLock('start', 5000);
+        if (!gotLock) {
+          console.error('Failed to acquire lock after timeout');
+          process.exit(1);
+        }
+      }
+
+      try {
+        // Re-check port AFTER acquiring lock
+        if (await isPortInUse(port)) {
+          releaseLock();
+          console.log(HOOK_RESPONSE);
+          process.exit(0);
+        }
+
+        // Spawn self as daemon
+        const child = spawn(process.execPath, [__filename, '--daemon'], {
+          detached: true,
+          stdio: 'ignore',
+          windowsHide: true,
+          env: { ...process.env, CLAUDE_MEM_WORKER_PORT: String(port) }
+        });
+
+        if (child.pid === undefined) {
+          releaseLock();
+          console.error('Failed to spawn worker daemon');
+          process.exit(1);
+        }
+
+        child.unref();
+
+        // Write PID file
+        writePidFile({ pid: child.pid, port, startedAt: new Date().toISOString() });
+
+        // Wait for health with platform-adjusted timeout
+        const healthy = await waitForHealth(port, getPlatformTimeout(30000));
+        releaseLock();
+
+        if (!healthy) {
+          removePidFile();
+          console.error('Worker failed to start');
+          process.exit(1);
+        }
+
         console.log(HOOK_RESPONSE);
         process.exit(0);
+      } catch (error) {
+        releaseLock();
+        throw error;
       }
-
-      // Spawn self as daemon
-      const child = spawn(process.execPath, [__filename, '--daemon'], {
-        detached: true,
-        stdio: 'ignore',
-        windowsHide: true,
-        env: { ...process.env, CLAUDE_MEM_WORKER_PORT: String(port) }
-      });
-
-      if (child.pid === undefined) {
-        console.error('Failed to spawn worker daemon');
-        process.exit(1);
-      }
-
-      child.unref();
-
-      // Write PID file
-      writePidFile({ pid: child.pid, port, startedAt: new Date().toISOString() });
-
-      // Wait for health
-      const healthy = await waitForHealth(port, 30000);
-      if (!healthy) {
-        removePidFile();
-        console.error('Worker failed to start');
-        process.exit(1);
-      }
-
-      console.log(HOOK_RESPONSE);
-      process.exit(0);
     }
 
     case 'stop': {
-      await httpShutdown(port);
-      await waitForPortFree(port, 10000);
-      removePidFile();
-      console.log(HOOK_RESPONSE);
-      process.exit(0);
+      // Acquire lock for stop operation
+      if (!acquireLock('stop')) {
+        // Wait briefly for concurrent operation to complete
+        await new Promise(r => setTimeout(r, 2000));
+      }
+
+      try {
+        await httpShutdown(port);
+        await waitForPortFree(port, getPlatformTimeout(15000));
+        removePidFile();
+        releaseLock();
+        console.log(HOOK_RESPONSE);
+        process.exit(0);
+      } catch (error) {
+        releaseLock();
+        throw error;
+      }
     }
 
     case 'restart': {
-      await httpShutdown(port);
-      await waitForPortFree(port, 10000);
-      removePidFile();
-      // Fall through to start a new instance
-      const child = spawn(process.execPath, [__filename, '--daemon'], {
-        detached: true,
-        stdio: 'ignore',
-        windowsHide: true,
-        env: { ...process.env, CLAUDE_MEM_WORKER_PORT: String(port) }
-      });
-
-      if (child.pid === undefined) {
-        console.error('Failed to spawn worker daemon during restart');
+      // Acquire lock for restart operation
+      if (!acquireLock('restart')) {
+        // Another session is already restarting - wait for health
+        logger.info('SYSTEM', 'Another session is restarting worker, waiting');
+        const healthy = await waitForHealth(port, getPlatformTimeout(45000));
+        if (healthy) {
+          console.log(HOOK_RESPONSE);
+          process.exit(0);
+        }
+        console.error('Worker failed to restart (concurrent operation)');
         process.exit(1);
       }
 
-      child.unref();
-      writePidFile({ pid: child.pid, port, startedAt: new Date().toISOString() });
-      const healthy = await waitForHealth(port, 30000);
-      if (!healthy) {
+      try {
+        await httpShutdown(port);
+        await waitForPortFree(port, getPlatformTimeout(15000));
         removePidFile();
-        console.error('Worker failed to restart');
-        process.exit(1);
+
+        const child = spawn(process.execPath, [__filename, '--daemon'], {
+          detached: true,
+          stdio: 'ignore',
+          windowsHide: true,
+          env: { ...process.env, CLAUDE_MEM_WORKER_PORT: String(port) }
+        });
+
+        if (child.pid === undefined) {
+          releaseLock();
+          console.error('Failed to spawn worker daemon during restart');
+          process.exit(1);
+        }
+
+        child.unref();
+        writePidFile({ pid: child.pid, port, startedAt: new Date().toISOString() });
+
+        const healthy = await waitForHealth(port, getPlatformTimeout(30000));
+        releaseLock();
+
+        if (!healthy) {
+          removePidFile();
+          console.error('Worker failed to restart');
+          process.exit(1);
+        }
+        console.log(HOOK_RESPONSE);
+        process.exit(0);
+      } catch (error) {
+        releaseLock();
+        throw error;
       }
-      console.log(HOOK_RESPONSE);
-      process.exit(0);
     }
 
     case 'status': {
