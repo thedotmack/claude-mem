@@ -22,6 +22,46 @@ import {
 import { getProjectName } from '../utils/project-name.js';
 import { ModeManager } from './domain/ModeManager.js';
 
+/**
+ * Session savings data - stored per project for statusline display
+ */
+export interface SessionSavings {
+  project: string;
+  totalObservations: number;
+  totalReadTokens: number;
+  totalDiscoveryTokens: number;
+  savings: number;
+  savingsPercent: number;
+  calculatedAt: number;
+}
+
+// Per-project savings storage (updated on each context generation)
+const projectSavings = new Map<string, SessionSavings>();
+
+/**
+ * Get the current session savings for a project
+ */
+export function getSessionSavings(project?: string): SessionSavings | null {
+  if (project) {
+    return projectSavings.get(project) || null;
+  }
+  // Return most recent savings if no project specified
+  let mostRecent: SessionSavings | null = null;
+  for (const savings of projectSavings.values()) {
+    if (!mostRecent || savings.calculatedAt > mostRecent.calculatedAt) {
+      mostRecent = savings;
+    }
+  }
+  return mostRecent;
+}
+
+/**
+ * Get all session savings across projects
+ */
+export function getAllSessionSavings(): SessionSavings[] {
+  return Array.from(projectSavings.values());
+}
+
 // Version marker path - use homedir-based path that works in both CJS and ESM contexts
 const VERSION_MARKER_PATH = path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack', 'plugin', '.install-version');
 
@@ -134,6 +174,102 @@ interface Observation {
   discovery_tokens: number | null;
   created_at: string;
   created_at_epoch: number;
+}
+
+/**
+ * Generate feature status summary - groups observations by type for quick reference
+ * This helps Claude answer "what's done/pending" questions without using tools
+ */
+function generateFeatureStatusSummary(observations: Observation[], useColors: boolean): string[] {
+  const output: string[] = [];
+
+  // Group by type
+  const byType = new Map<string, Observation[]>();
+  for (const obs of observations) {
+    const type = obs.type;
+    if (!byType.has(type)) {
+      byType.set(type, []);
+    }
+    byType.get(type)!.push(obs);
+  }
+
+  // Only show if we have meaningful data
+  if (byType.size === 0) return output;
+
+  // Type priority order for display
+  const typePriority = ['feature', 'bugfix', 'decision', 'refactor', 'change', 'discovery'];
+  const sortedTypes = Array.from(byType.keys()).sort((a, b) => {
+    const aIdx = typePriority.indexOf(a);
+    const bIdx = typePriority.indexOf(b);
+    return (aIdx === -1 ? 999 : aIdx) - (bIdx === -1 ? 999 : bIdx);
+  });
+
+  // Get type icons from ModeManager
+  const mode = ModeManager.getInstance().getActiveMode();
+  const typeIcons = new Map(mode.observation_types.map(t => [t.id, t.emoji]));
+
+  if (useColors) {
+    output.push(`${colors.bright}${colors.green}📋 Quick Status Reference${colors.reset}`);
+    output.push(`${colors.dim}(Use this to answer "what's done/pending" questions without running searches)${colors.reset}`);
+    output.push('');
+  } else {
+    output.push(`📋 **Quick Status Reference**`);
+    output.push(`*(Use this to answer "what's done/pending" questions without running searches)*`);
+    output.push('');
+  }
+
+  for (const type of sortedTypes) {
+    const obs = byType.get(type)!;
+    const icon = typeIcons.get(type) || '📝';
+    const recentTitles = obs.slice(0, 5).map(o => o.title || 'Untitled');
+
+    if (useColors) {
+      output.push(`${icon} **${type}** (${obs.length}): ${recentTitles.join(', ')}${obs.length > 5 ? '...' : ''}`);
+    } else {
+      output.push(`- ${icon} **${type}** (${obs.length}): ${recentTitles.join(', ')}${obs.length > 5 ? '...' : ''}`);
+    }
+  }
+
+  output.push('');
+  return output;
+}
+
+/**
+ * Generate usage hints - static guidance on when to use context vs tools
+ * This reminds Claude to check injected context before running searches
+ */
+function generateUsageHints(totalObservations: number, totalReadTokens: number, useColors: boolean): string[] {
+  const output: string[] = [];
+
+  if (useColors) {
+    output.push(`${colors.bright}${colors.yellow}⚡ Context Usage Guide${colors.reset}`);
+    output.push(`${colors.dim}┌─────────────────────────────────────────────────────────────┐${colors.reset}`);
+    output.push(`${colors.dim}│ ✅ USE THIS CONTEXT for:                                     │${colors.reset}`);
+    output.push(`${colors.dim}│    • "What's been done?" / "What's completed?"              │${colors.reset}`);
+    output.push(`${colors.dim}│    • "What did we decide about X?"                          │${colors.reset}`);
+    output.push(`${colors.dim}│    • "What bugs were fixed?"                                │${colors.reset}`);
+    output.push(`${colors.dim}│    • History/status questions → 0 additional tokens         │${colors.reset}`);
+    output.push(`${colors.dim}│                                                             │${colors.reset}`);
+    output.push(`${colors.dim}│ 🔧 USE TOOLS only for:                                      │${colors.reset}`);
+    output.push(`${colors.dim}│    • Reading actual code implementation                     │${colors.reset}`);
+    output.push(`${colors.dim}│    • Searching for specific patterns in files               │${colors.reset}`);
+    output.push(`${colors.dim}│    • Making code changes                                    │${colors.reset}`);
+    output.push(`${colors.dim}└─────────────────────────────────────────────────────────────┘${colors.reset}`);
+  } else {
+    output.push(`⚡ **Context Usage Guide**`);
+    output.push('');
+    output.push(`| Question Type | Action | Cost |`);
+    output.push(`|---------------|--------|------|`);
+    output.push(`| "What's done/pending?" | ✅ Use this context | 0 tokens |`);
+    output.push(`| "What did we decide?" | ✅ Use this context | 0 tokens |`);
+    output.push(`| "Review past work" | ✅ Use this context | 0 tokens |`);
+    output.push(`| Read code details | 🔧 Use tools | ~5-10k tokens |`);
+    output.push(`| Search for patterns | 🔧 Use tools | ~5-10k tokens |`);
+    output.push(`| Make code changes | 🔧 Use tools | varies |`);
+  }
+
+  output.push('');
+  return output;
 }
 
 interface SessionSummary {
@@ -370,6 +506,17 @@ export async function generateContext(input?: ContextInput, useColors: boolean =
       ? Math.round((savings / totalDiscoveryTokens) * 100)
       : 0;
 
+    // Store savings for statusline display
+    projectSavings.set(project, {
+      project,
+      totalObservations,
+      totalReadTokens,
+      totalDiscoveryTokens,
+      savings,
+      savingsPercent,
+      calculatedAt: Date.now()
+    });
+
     const showContextEconomics = config.showReadTokens || config.showWorkTokens ||
                                    config.showSavingsAmount || config.showSavingsPercent;
 
@@ -408,6 +555,12 @@ export async function generateContext(input?: ContextInput, useColors: boolean =
         output.push('');
       }
     }
+
+    // Add usage hints (guidance on when to use context vs tools)
+    output.push(...generateUsageHints(totalObservations, totalReadTokens, useColors));
+
+    // Add feature status summary (quick reference for what's done)
+    output.push(...generateFeatureStatusSummary(observations, useColors));
 
     // Prepare summaries for timeline display
     const mostRecentSummaryId = recentSummaries[0]?.id;
