@@ -8,7 +8,6 @@
  * - Sync to database and Chroma
  */
 
-import { execSync } from 'child_process';
 import { homedir } from 'os';
 import path from 'path';
 import { DatabaseManager } from './DatabaseManager.js';
@@ -40,9 +39,6 @@ export class SDKAgent {
    */
   async startSession(session: ActiveSession, worker?: any): Promise<void> {
     try {
-      // Find Claude executable
-      const claudePath = this.findClaudeExecutable();
-
       // Get model ID and disallowed tools
       const modelId = this.getModelId();
       // Memory agent is OBSERVER ONLY - no tools allowed
@@ -78,8 +74,7 @@ export class SDKAgent {
           model: modelId,
           resume: session.claudeSessionId,
           disallowedTools,
-          abortController: session.abortController,
-          pathToClaudeCodeExecutable: claudePath
+          abortController: session.abortController
         }
       });
 
@@ -493,37 +488,6 @@ export class SDKAgent {
   // ============================================================================
   // Configuration Helpers
   // ============================================================================
-
-  /**
-   * Find Claude executable (inline, called once per session)
-   */
-  private findClaudeExecutable(): string {
-    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-    
-    // 1. Check configured path
-    if (settings.CLAUDE_CODE_PATH) {
-      // Lazy load fs to keep startup fast
-      const { existsSync } = require('fs');
-      if (!existsSync(settings.CLAUDE_CODE_PATH)) {
-        throw new Error(`CLAUDE_CODE_PATH is set to "${settings.CLAUDE_CODE_PATH}" but the file does not exist.`);
-      }
-      return settings.CLAUDE_CODE_PATH;
-    }
-
-    // 2. Try auto-detection
-    try {
-      const claudePath = execSync(
-        process.platform === 'win32' ? 'where claude' : 'which claude', 
-        { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }
-      ).trim().split('\n')[0].trim();
-      
-      if (claudePath) return claudePath;
-    } catch (error) {
-      logger.debug('SDK', 'Claude executable auto-detection failed', error);
-    }
-
-    throw new Error('Claude executable not found. Please either:\n1. Add "claude" to your system PATH, or\n2. Set CLAUDE_CODE_PATH in ~/.claude-mem/settings.json');
-  }
 
   /**
    * Get model ID from settings or environment
