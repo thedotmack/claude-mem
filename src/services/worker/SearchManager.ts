@@ -114,92 +114,164 @@ export class SearchManager {
             prompts = this.sessionSearch.searchUserPrompts(undefined, options);
           }
         }
-        // PATH 2: CHROMA SEMANTIC SEARCH (query text + Chroma available)
-        else if (this.chromaSync) {
-          let chromaSucceeded = false;
-          try {
-            logger.debug('SEARCH', 'Using ChromaDB semantic search', { typeFilter: type || 'all' });
-
-            // Build Chroma where filter for doc_type
-            let whereFilter: Record<string, any> | undefined;
-            if (type === 'observations') {
-              whereFilter = { doc_type: 'observation' };
-            } else if (type === 'sessions') {
-              whereFilter = { doc_type: 'session_summary' };
-            } else if (type === 'prompts') {
-              whereFilter = { doc_type: 'user_prompt' };
-            }
-
-            // Step 1: Chroma semantic search with optional type filter
-            const chromaResults = await this.queryChroma(query, 100, whereFilter);
-            chromaSucceeded = true; // Chroma didn't throw error
-            logger.debug('SEARCH', 'ChromaDB returned semantic matches', { matchCount: chromaResults.ids.length });
-
-            if (chromaResults.ids.length > 0) {
-              // Step 2: Filter by recency (90 days)
-              const ninetyDaysAgo = Date.now() - RECENCY_WINDOW_MS;
-              const recentMetadata = chromaResults.metadatas.map((meta, idx) => ({
-                id: chromaResults.ids[idx],
-                meta,
-                isRecent: meta && meta.created_at_epoch > ninetyDaysAgo
-              })).filter(item => item.isRecent);
-
-              logger.debug('SEARCH', 'Results within 90-day window', { count: recentMetadata.length });
-
-              // Step 3: Categorize IDs by document type
-              const obsIds: number[] = [];
-              const sessionIds: number[] = [];
-              const promptIds: number[] = [];
-
-              for (const item of recentMetadata) {
-                const docType = item.meta?.doc_type;
-                if (docType === 'observation' && searchObservations) {
-                  obsIds.push(item.id);
-                } else if (docType === 'session_summary' && searchSessions) {
-                  sessionIds.push(item.id);
-                } else if (docType === 'user_prompt' && searchPrompts) {
-                  promptIds.push(item.id);
-                }
-              }
-
-              logger.debug('SEARCH', 'Categorized results by type', { observations: obsIds.length, sessions: sessionIds.length, prompts: promptIds.length });
-
-              // Step 4: Hydrate from SQLite with additional filters
-              if (obsIds.length > 0) {
-                // Apply obs_type, concepts, files filters if provided
-                const obsOptions = { ...options, type: obs_type, concepts, files };
-                observations = this.sessionStore.getObservationsByIds(obsIds, obsOptions);
-              }
-              if (sessionIds.length > 0) {
-                sessions = this.sessionStore.getSessionSummariesByIds(sessionIds, { orderBy: 'date_desc', limit: options.limit, project: options.project });
-              }
-              if (promptIds.length > 0) {
-                prompts = this.sessionStore.getUserPromptsByIds(promptIds, { orderBy: 'date_desc', limit: options.limit, project: options.project });
-              }
-
-              logger.debug('SEARCH', 'Hydrated results from SQLite', { observations: observations.length, sessions: sessions.length, prompts: prompts.length });
-            } else {
-              // Chroma returned 0 results - this is the correct answer, don't fall back to FTS5
-              logger.debug('SEARCH', 'ChromaDB found no matches (final result, no FTS5 fallback)', {});
-            }
-          } catch (chromaError: any) {
-            chromaFailed = true;
-            logger.debug('SEARCH', 'ChromaDB failed - semantic search unavailable', { error: chromaError.message });
-            logger.debug('SEARCH', 'Install UVX/Python to enable vector search', { url: 'https://docs.astral.sh/uv/getting-started/installation/' });
-            // Set empty results - will show error message to user
-            observations = [];
-            sessions = [];
-            prompts = [];
-          }
-        }
-        // ChromaDB not initialized - mark as failed to show proper error message
+        // PATH 2: HYBRID SEARCH (Chroma vector + FTS5 exact match)
         else if (query) {
-          chromaFailed = true;
-          logger.debug('SEARCH', 'ChromaDB not initialized - semantic search unavailable', {});
-          logger.debug('SEARCH', 'Install UVX/Python to enable vector search', { url: 'https://docs.astral.sh/uv/getting-started/installation/' });
-          observations = [];
-          sessions = [];
-          prompts = [];
+          logger.debug('SEARCH', 'Using hybrid search (Chroma + FTS5)', { typeFilter: type || 'all' });
+
+          // Track IDs from each source for scoring
+          const chromaObsIds = new Set<number>();
+          const chromaSessionIds = new Set<number>();
+          const chromaPromptIds = new Set<number>();
+          const ftsObsIds = new Set<number>();
+          const ftsSessionIds = new Set<number>();
+
+          // === STEP 1: Chroma semantic search ===
+          if (this.chromaSync) {
+            try {
+              // Build Chroma where filter for doc_type
+              let whereFilter: Record<string, any> | undefined;
+              if (type === 'observations') {
+                whereFilter = { doc_type: 'observation' };
+              } else if (type === 'sessions') {
+                whereFilter = { doc_type: 'session_summary' };
+              } else if (type === 'prompts') {
+                whereFilter = { doc_type: 'user_prompt' };
+              }
+
+              const chromaResults = await this.queryChroma(query, 100, whereFilter);
+              logger.debug('SEARCH', 'ChromaDB returned semantic matches', { matchCount: chromaResults.ids.length });
+
+              if (chromaResults.ids.length > 0) {
+                // Filter by recency (90 days)
+                const ninetyDaysAgo = Date.now() - RECENCY_WINDOW_MS;
+                const recentMetadata = chromaResults.metadatas.map((meta, idx) => ({
+                  id: chromaResults.ids[idx],
+                  meta,
+                  isRecent: meta && meta.created_at_epoch > ninetyDaysAgo
+                })).filter(item => item.isRecent);
+
+                // Categorize IDs by document type
+                for (const item of recentMetadata) {
+                  const docType = item.meta?.doc_type;
+                  if (docType === 'observation' && searchObservations) {
+                    chromaObsIds.add(item.id);
+                  } else if (docType === 'session_summary' && searchSessions) {
+                    chromaSessionIds.add(item.id);
+                  } else if (docType === 'user_prompt' && searchPrompts) {
+                    chromaPromptIds.add(item.id);
+                  }
+                }
+
+                logger.debug('SEARCH', 'Chroma results (recency-filtered)', {
+                  observations: chromaObsIds.size,
+                  sessions: chromaSessionIds.size,
+                  prompts: chromaPromptIds.size
+                });
+              }
+            } catch (chromaError: any) {
+              chromaFailed = true;
+              logger.debug('SEARCH', 'ChromaDB failed - using FTS5 only', { error: chromaError.message });
+            }
+          } else {
+            chromaFailed = true;
+            logger.debug('SEARCH', 'ChromaDB not initialized - using FTS5 only', {});
+          }
+
+          // === STEP 2: FTS5 exact text search ===
+          try {
+            const searchOptions = { ...options, type: obs_type, concepts, files };
+
+            if (searchObservations) {
+              const ftsObs = this.sessionSearch.searchObservationsFTS(query, searchOptions);
+              ftsObs.forEach(obs => ftsObsIds.add(obs.id));
+              logger.debug('SEARCH', 'FTS5 observation matches', { count: ftsObs.length });
+            }
+
+            if (searchSessions) {
+              const ftsSessions = this.sessionSearch.searchSessionsFTS(query, { project: options.project });
+              ftsSessions.forEach(sess => ftsSessionIds.add(sess.id));
+              logger.debug('SEARCH', 'FTS5 session matches', { count: ftsSessions.length });
+            }
+          } catch (ftsError: any) {
+            logger.debug('SEARCH', 'FTS5 search failed', { error: ftsError.message });
+          }
+
+          // === STEP 3: Merge and rank results ===
+          // Items in BOTH Chroma and FTS5 rank highest (hybrid boost)
+          // Then Chroma-only (semantic), then FTS5-only (exact match)
+
+          const allObsIds = new Set([...chromaObsIds, ...ftsObsIds]);
+          const allSessionIds = new Set([...chromaSessionIds, ...ftsSessionIds]);
+          const allPromptIds = new Set([...chromaPromptIds]);
+
+          logger.debug('SEARCH', 'Merged unique IDs', {
+            observations: allObsIds.size,
+            sessions: allSessionIds.size,
+            prompts: allPromptIds.size
+          });
+
+          // Hydrate from SQLite
+          if (allObsIds.size > 0 && searchObservations) {
+            const obsOptions = { ...options, type: obs_type, concepts, files };
+            const allObs = this.sessionStore.getObservationsByIds([...allObsIds], obsOptions);
+
+            // Sort by hybrid score: both sources > chroma-only > fts5-only > date
+            observations = allObs.sort((a, b) => {
+              const aInBoth = chromaObsIds.has(a.id) && ftsObsIds.has(a.id);
+              const bInBoth = chromaObsIds.has(b.id) && ftsObsIds.has(b.id);
+              const aInChroma = chromaObsIds.has(a.id);
+              const bInChroma = chromaObsIds.has(b.id);
+
+              // Both sources = highest priority
+              if (aInBoth && !bInBoth) return -1;
+              if (!aInBoth && bInBoth) return 1;
+
+              // Chroma-only = second priority (semantic match)
+              if (aInChroma && !bInChroma) return -1;
+              if (!aInChroma && bInChroma) return 1;
+
+              // Fall back to date (newest first)
+              return b.created_at_epoch - a.created_at_epoch;
+            });
+          }
+
+          if (allSessionIds.size > 0 && searchSessions) {
+            const allSess = this.sessionStore.getSessionSummariesByIds([...allSessionIds], {
+              orderBy: 'date_desc',
+              limit: options.limit,
+              project: options.project
+            });
+
+            // Sort by hybrid score
+            sessions = allSess.sort((a, b) => {
+              const aInBoth = chromaSessionIds.has(a.id) && ftsSessionIds.has(a.id);
+              const bInBoth = chromaSessionIds.has(b.id) && ftsSessionIds.has(b.id);
+              const aInChroma = chromaSessionIds.has(a.id);
+              const bInChroma = chromaSessionIds.has(b.id);
+
+              if (aInBoth && !bInBoth) return -1;
+              if (!aInBoth && bInBoth) return 1;
+              if (aInChroma && !bInChroma) return -1;
+              if (!aInChroma && bInChroma) return 1;
+
+              return b.created_at_epoch - a.created_at_epoch;
+            });
+          }
+
+          if (allPromptIds.size > 0 && searchPrompts) {
+            prompts = this.sessionStore.getUserPromptsByIds([...allPromptIds], {
+              orderBy: 'date_desc',
+              limit: options.limit,
+              project: options.project
+            });
+          }
+
+          logger.debug('SEARCH', 'Hybrid search complete', {
+            observations: observations.length,
+            sessions: sessions.length,
+            prompts: prompts.length,
+            chromaFailed
+          });
         }
 
         const totalResults = observations.length + sessions.length + prompts.length;
@@ -220,7 +292,7 @@ export class SearchManager {
             return {
               content: [{
                 type: 'text' as const,
-                text: `⚠️  Vector search failed - semantic search unavailable.\n\nTo enable semantic search:\n1. Install uv: https://docs.astral.sh/uv/getting-started/installation/\n2. Restart the worker: npm run worker:restart\n\nNote: You can still use filter-only searches (date ranges, types, files) without a query term.`
+                text: `⚠️  Vector search unavailable - using FTS5 text search only.\n\nNo results found for "${query}" in FTS5 index.\n\nTo enable semantic search (finds related concepts, not just exact words):\n1. Install uv: https://docs.astral.sh/uv/getting-started/installation/\n2. Restart the worker: npm run worker:restart\n\nNote: You can still use filter-only searches (date ranges, types, files) without a query term.`
               }]
             };
           }

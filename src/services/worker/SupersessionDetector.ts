@@ -1098,4 +1098,104 @@ export class SupersessionDetector {
       logger.debug('SLEEP_AGENT', 'Failed to save model weights', {}, error as Error);
     }
   }
+
+  /**
+   * Generate training examples from existing supersession relationships
+   * This allows the model to learn from historical supersession decisions
+   *
+   * @param project Optional project filter
+   * @param limit Maximum number of examples to generate
+   * @returns Number of training examples generated
+   */
+  async generateTrainingDataFromExistingSupersessions(
+    project?: string,
+    limit: number = 1000
+  ): Promise<number> {
+    // Get existing supersession pairs
+    const query = `
+      SELECT
+        o1.id as older_id, o1.type as older_type, o1.narrative as older_narrative,
+        o1.title as older_title, o1.files_modified as older_files, o1.concepts as older_concepts,
+        o1.access_count as older_ref_count, o1.created_at_epoch as older_created,
+        o2.id as newer_id, o2.type as newer_type, o2.narrative as newer_narrative,
+        o2.title as newer_title, o2.files_modified as newer_files, o2.concepts as newer_concepts,
+        o2.created_at_epoch as newer_created
+      FROM observations o1
+      JOIN observations o2 ON o1.superseded_by = o2.id
+      WHERE o1.deprecated = 0
+        ${project ? 'AND o1.project = ?' : ''}
+      ORDER BY o1.created_at_epoch DESC
+      LIMIT ?
+    `;
+
+    const rows = this.sessionStore.db.prepare(query)
+      .all(...(project ? [project, limit] : [limit])) as Array<{
+        older_id: number;
+        older_type: string;
+        older_narrative: string;
+        older_title: string;
+        older_files: string;
+        older_concepts: string;
+        older_ref_count: number;
+        older_created: number;
+        newer_id: number;
+        newer_type: string;
+        newer_narrative: string;
+        newer_title: string;
+        newer_files: string;
+        newer_concepts: string;
+        newer_created: number;
+      }>;
+
+    let generated = 0;
+
+    for (const row of rows) {
+      try {
+        // Calculate features (same as in detectSupersession)
+        const semanticSimilarity = await this.calculateSemanticSimilarity(
+          { id: row.older_id, narrative: row.older_narrative, title: row.older_title } as ObservationRow,
+          { id: row.newer_id, narrative: row.newer_narrative, title: row.newer_title } as ObservationRow
+        );
+
+        const topicMatch = this.checkTopicMatch(
+          { concepts: row.older_concepts } as ObservationRow,
+          { concepts: row.newer_concepts } as ObservationRow
+        );
+
+        const fileOverlap = this.calculateFileOverlap(
+          { files_modified: row.older_files } as ObservationRow,
+          { files_modified: row.newer_files } as ObservationRow
+        );
+
+        const typeMatch = row.older_type === row.newer_type ? 1.0 : 0.0;
+        const timeDeltaHours = (row.newer_created - row.older_created) / 3600000;
+        const priority = getObservationPriority(row.newer_type);
+
+        // Record as positive training example (label = true, supersession was valid)
+        this.recordTrainingExample(
+          row.older_id,
+          row.newer_id,
+          [semanticSimilarity, topicMatch, fileOverlap, typeMatch, timeDeltaHours, priority, row.older_ref_count],
+          true,  // label = true (valid supersession)
+          0.8    // assume high confidence for historical data
+        );
+
+        generated++;
+      } catch (error) {
+        // Skip failed examples
+        logger.debug('SLEEP_AGENT', 'Failed to generate training example', {
+          older_id: row.older_id,
+          newer_id: row.newer_id,
+        }, error as Error);
+      }
+    }
+
+    logger.debug('SLEEP_AGENT', 'Generated training examples from existing supersessions', {
+      project,
+      total: rows.length,
+      generated,
+    });
+
+    return generated;
+  }
 }

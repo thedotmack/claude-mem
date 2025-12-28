@@ -206,7 +206,7 @@ export interface ObservationRow {
   sdk_session_id: string;
   project: string;
   text: string | null;
-  type: 'decision' | 'bugfix' | 'feature' | 'refactor' | 'discovery' | 'change';
+  type: 'decision' | 'bugfix' | 'feature' | 'refactor' | 'discovery' | 'change' | 'handoff';
   title: string | null;
   subtitle: string | null;
   facts: string | null; // JSON array

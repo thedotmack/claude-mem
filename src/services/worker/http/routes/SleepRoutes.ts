@@ -48,6 +48,7 @@ export class SleepRoutes extends BaseRouteHandler {
     app.post('/api/sleep/learned-model/train', this.handleTrainLearnedModel.bind(this));
     app.post('/api/sleep/learned-model/enable', this.handleSetLearnedModelEnabled.bind(this));
     app.post('/api/sleep/learned-model/reset', this.handleResetLearnedModel.bind(this));
+    app.post('/api/sleep/learned-model/generate-training-data', this.handleGenerateTrainingData.bind(this));
 
     // Idle detection control
     app.post('/api/sleep/idle-detection/start', this.handleStartIdleDetection.bind(this));
@@ -408,6 +409,41 @@ export class SleepRoutes extends BaseRouteHandler {
     res.json({
       success: true,
       message: 'Model reset to initial weights',
+    });
+  });
+
+  /**
+   * POST /api/sleep/learned-model/generate-training-data
+   * Generate training examples from existing supersession relationships
+   *
+   * Body: {
+   *   project: string (optional)
+   *   limit: number (optional, defaults to 1000)
+   * }
+   */
+  private handleGenerateTrainingData = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const { project, limit = 1000 } = req.body;
+
+    if (limit && typeof limit !== 'number') {
+      this.badRequest(res, 'limit must be a number');
+      return;
+    }
+
+    logger.debug('SLEEP_ROUTES', 'Generating training data from existing supersessions', {
+      project,
+      limit,
+    });
+
+    const generated = await this.supersessionDetector.generateTrainingDataFromExistingSupersessions(
+      project,
+      limit
+    );
+
+    res.json({
+      success: true,
+      generated,
+      project,
+      limit,
     });
   });
 }

@@ -681,6 +681,120 @@ export const migration011: Migration = {
 };
 
 /**
+ * Migration 012 - Add Handoff observation type for PreCompact continuity
+ * Inspired by Continuous Claude v2's handoff pattern
+ */
+export const migration012: Migration = {
+  version: 22,
+  up: (db: Database) => {
+    // SQLite requires table recreation to modify CHECK constraints
+    // Use transaction for safety
+    db.run('BEGIN TRANSACTION');
+
+    try {
+      // Get current columns from observations table
+      const tableInfo = db.query(`PRAGMA table_info(observations)`).all() as { name: string }[];
+      const columns = tableInfo.map(col => col.name).filter(n => n !== 'id');
+
+      // Create new table with updated CHECK constraint (adding 'handoff')
+      db.run(`
+        CREATE TABLE observations_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          sdk_session_id TEXT NOT NULL,
+          project TEXT NOT NULL,
+          text TEXT,
+          type TEXT NOT NULL CHECK(type IN ('decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change', 'handoff')),
+          title TEXT,
+          subtitle TEXT,
+          facts TEXT,
+          narrative TEXT,
+          concepts TEXT,
+          files_read TEXT,
+          files_modified TEXT,
+          prompt_number INTEGER,
+          discovery_tokens INTEGER DEFAULT 0,
+          created_at TEXT NOT NULL,
+          created_at_epoch INTEGER NOT NULL,
+          superseded_by INTEGER,
+          deprecated INTEGER DEFAULT 0,
+          deprecated_at INTEGER,
+          deprecation_reason TEXT,
+          decision_chain_id TEXT,
+          surprise_score REAL,
+          surprise_tier TEXT CHECK(surprise_tier IN ('routine', 'notable', 'surprising', 'anomalous')),
+          surprise_calculated_at INTEGER,
+          memory_tier TEXT CHECK(memory_tier IN ('core', 'working', 'archive', 'ephemeral')) DEFAULT 'working',
+          memory_tier_updated_at INTEGER,
+          reference_count INTEGER DEFAULT 0,
+          last_accessed_at INTEGER,
+          FOREIGN KEY(sdk_session_id) REFERENCES sdk_sessions(sdk_session_id) ON DELETE CASCADE,
+          FOREIGN KEY(superseded_by) REFERENCES observations(id) ON DELETE SET NULL
+        )
+      `);
+
+      // Copy data from old table
+      const columnList = columns.join(', ');
+      db.run(`
+        INSERT INTO observations_new (${columnList})
+        SELECT ${columnList} FROM observations
+      `);
+
+      // Drop old table and rename new one
+      db.run('DROP TABLE observations');
+      db.run('ALTER TABLE observations_new RENAME TO observations');
+
+      // Recreate indexes
+      db.run(`CREATE INDEX IF NOT EXISTS idx_observations_sdk_session ON observations(sdk_session_id)`);
+      db.run(`CREATE INDEX IF NOT EXISTS idx_observations_project ON observations(project)`);
+      db.run(`CREATE INDEX IF NOT EXISTS idx_observations_type ON observations(type)`);
+      db.run(`CREATE INDEX IF NOT EXISTS idx_observations_created ON observations(created_at_epoch DESC)`);
+      db.run(`CREATE INDEX IF NOT EXISTS idx_observations_superseded_by ON observations(superseded_by)`);
+      db.run(`CREATE INDEX IF NOT EXISTS idx_observations_deprecated ON observations(deprecated)`);
+      db.run(`CREATE INDEX IF NOT EXISTS idx_observations_memory_tier ON observations(memory_tier)`);
+      db.run(`CREATE INDEX IF NOT EXISTS idx_observations_reference_count ON observations(reference_count DESC)`);
+      db.run(`CREATE INDEX IF NOT EXISTS idx_observations_last_accessed ON observations(last_accessed_at DESC)`);
+
+      // Recreate FTS5 triggers
+      db.run(`DROP TRIGGER IF EXISTS observations_ai`);
+      db.run(`DROP TRIGGER IF EXISTS observations_ad`);
+      db.run(`DROP TRIGGER IF EXISTS observations_au`);
+
+      db.run(`
+        CREATE TRIGGER observations_ai AFTER INSERT ON observations BEGIN
+          INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
+          VALUES (NEW.id, NEW.title, NEW.subtitle, NEW.narrative, NEW.text, NEW.facts, NEW.concepts);
+        END
+      `);
+      db.run(`
+        CREATE TRIGGER observations_ad AFTER DELETE ON observations BEGIN
+          INSERT INTO observations_fts(observations_fts, rowid, title, subtitle, narrative, text, facts, concepts)
+          VALUES ('delete', OLD.id, OLD.title, OLD.subtitle, OLD.narrative, OLD.text, OLD.facts, OLD.concepts);
+        END
+      `);
+      db.run(`
+        CREATE TRIGGER observations_au AFTER UPDATE ON observations BEGIN
+          INSERT INTO observations_fts(observations_fts, rowid, title, subtitle, narrative, text, facts, concepts)
+          VALUES ('delete', OLD.id, OLD.title, OLD.subtitle, OLD.narrative, OLD.text, OLD.facts, OLD.concepts);
+          INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
+          VALUES (NEW.id, NEW.title, NEW.subtitle, NEW.narrative, NEW.text, NEW.facts, NEW.concepts);
+        END
+      `);
+
+      db.run('COMMIT');
+      console.log('✅ Added handoff observation type for PreCompact continuity');
+    } catch (error) {
+      db.run('ROLLBACK');
+      throw error;
+    }
+  },
+
+  down: (db: Database) => {
+    // Note: Downgrade would require removing handoff type - complex to do safely
+    console.log('⚠️  Warning: handoff type removal requires manual intervention');
+  }
+};
+
+/**
  * All migrations in order
  */
 export const migrations: Migration[] = [
@@ -694,5 +808,6 @@ export const migrations: Migration[] = [
   migration008,
   migration009,
   migration010,
-  migration011
+  migration011,
+  migration012
 ];

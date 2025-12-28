@@ -275,6 +275,164 @@ export class SessionSearch {
   }
 
   /**
+   * Search observations using FTS5 full-text search.
+   * Used as part of hybrid search (FTS5 + Chroma vector) for exact text matching.
+   * Returns results with FTS5 rank score (lower is better match).
+   */
+  searchObservationsFTS(query: string, options: SearchOptions = {}): ObservationSearchResult[] {
+    const params: any[] = [];
+    const { limit = 50, offset = 0, ...filters } = options;
+
+    if (!query || !query.trim()) {
+      return [];
+    }
+
+    try {
+      // Build filter conditions
+      const filterConditions: string[] = [];
+
+      if (filters.project) {
+        filterConditions.push('o.project = ?');
+        params.push(filters.project);
+      }
+
+      if (filters.type) {
+        if (Array.isArray(filters.type)) {
+          const placeholders = filters.type.map(() => '?').join(',');
+          filterConditions.push(`o.type IN (${placeholders})`);
+          params.push(...filters.type);
+        } else {
+          filterConditions.push('o.type = ?');
+          params.push(filters.type);
+        }
+      }
+
+      if (filters.dateRange) {
+        const { start, end } = filters.dateRange;
+        if (start) {
+          const startEpoch = typeof start === 'number' ? start : new Date(start).getTime();
+          filterConditions.push('o.created_at_epoch >= ?');
+          params.push(startEpoch);
+        }
+        if (end) {
+          const endEpoch = typeof end === 'number' ? end : new Date(end).getTime();
+          filterConditions.push('o.created_at_epoch <= ?');
+          params.push(endEpoch);
+        }
+      }
+
+      // FTS5 query - escape special characters and use MATCH
+      const ftsQuery = this.escapeFTS5Query(query);
+
+      const whereClause = filterConditions.length > 0
+        ? `AND ${filterConditions.join(' AND ')}`
+        : '';
+
+      const sql = `
+        SELECT o.*, o.discovery_tokens, observations_fts.rank as rank
+        FROM observations_fts
+        JOIN observations o ON observations_fts.rowid = o.id
+        WHERE observations_fts MATCH ?
+        ${whereClause}
+        ORDER BY observations_fts.rank
+        LIMIT ? OFFSET ?
+      `;
+
+      params.unshift(ftsQuery); // FTS query goes first
+      params.push(limit, offset);
+
+      return this.db.prepare(sql).all(...params) as ObservationSearchResult[];
+    } catch (error) {
+      // FTS5 table might not exist or query syntax error
+      console.warn('[SessionSearch] FTS5 search failed:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Search session summaries using FTS5 full-text search.
+   * Used as part of hybrid search for exact text matching.
+   */
+  searchSessionsFTS(query: string, options: SearchOptions = {}): SessionSummarySearchResult[] {
+    const params: any[] = [];
+    const { limit = 50, offset = 0, ...filters } = options;
+
+    if (!query || !query.trim()) {
+      return [];
+    }
+
+    try {
+      // Build filter conditions
+      const filterConditions: string[] = [];
+
+      if (filters.project) {
+        filterConditions.push('s.project = ?');
+        params.push(filters.project);
+      }
+
+      if (filters.dateRange) {
+        const { start, end } = filters.dateRange;
+        if (start) {
+          const startEpoch = typeof start === 'number' ? start : new Date(start).getTime();
+          filterConditions.push('s.created_at_epoch >= ?');
+          params.push(startEpoch);
+        }
+        if (end) {
+          const endEpoch = typeof end === 'number' ? end : new Date(end).getTime();
+          filterConditions.push('s.created_at_epoch <= ?');
+          params.push(endEpoch);
+        }
+      }
+
+      // FTS5 query
+      const ftsQuery = this.escapeFTS5Query(query);
+
+      const whereClause = filterConditions.length > 0
+        ? `AND ${filterConditions.join(' AND ')}`
+        : '';
+
+      const sql = `
+        SELECT s.*, s.discovery_tokens, session_summaries_fts.rank as rank
+        FROM session_summaries_fts
+        JOIN session_summaries s ON session_summaries_fts.rowid = s.id
+        WHERE session_summaries_fts MATCH ?
+        ${whereClause}
+        ORDER BY session_summaries_fts.rank
+        LIMIT ? OFFSET ?
+      `;
+
+      params.unshift(ftsQuery);
+      params.push(limit, offset);
+
+      return this.db.prepare(sql).all(...params) as SessionSummarySearchResult[];
+    } catch (error) {
+      console.warn('[SessionSearch] FTS5 session search failed:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Escape special characters in FTS5 query to prevent syntax errors.
+   * Converts user input into a safe FTS5 query string.
+   */
+  private escapeFTS5Query(query: string): string {
+    // Remove or escape FTS5 special characters: * " - + OR AND NOT ( ) :
+    // For simple queries, wrap each word in quotes to do exact phrase matching
+    const words = query.trim().split(/\s+/).filter(w => w.length > 0);
+
+    // Escape quotes within words and join with OR for broader matching
+    const escaped = words.map(word => {
+      // Remove special FTS5 operators
+      const cleaned = word.replace(/["*\-+():]/g, '');
+      if (!cleaned) return null;
+      return `"${cleaned}"`;
+    }).filter(Boolean);
+
+    // Join with OR for broader matching (any word matches)
+    return escaped.join(' OR ');
+  }
+
+  /**
    * Search session summaries using filter-only direct SQLite query.
    * Vector search is handled by ChromaDB - this only supports filtering without query text.
    */
