@@ -23,3 +23,6 @@ src/ui/viewer.html
 
 # osgrep cache
 .osgrep/
+
+# Analysis docs (private)
+docs/analysis/continuous-claude-v2-comparison.md
