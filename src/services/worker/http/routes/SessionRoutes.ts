@@ -173,6 +173,12 @@ export class SessionRoutes extends BaseRouteHandler {
     if (sessionDbId === null) return;
 
     const { userPrompt, promptNumber } = req.body;
+    console.log('[SESSION-ROUTES] handleSessionInit called:', {
+      sessionDbId,
+      promptNumber,
+      has_userPrompt: !!userPrompt
+    });
+
     const session = this.sessionManager.initializeSession(sessionDbId, userPrompt, promptNumber);
 
     // Get the latest user_prompt for this session to sync to Chroma
@@ -482,6 +488,12 @@ export class SessionRoutes extends BaseRouteHandler {
   private handleSessionInitByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
     const { claudeSessionId, project, prompt } = req.body;
 
+    console.log('[SESSION-ROUTES] handleSessionInitByClaudeId called:', {
+      claudeSessionId,
+      project,
+      prompt_length: prompt?.length
+    });
+
     // Validate required parameters
     if (!this.validateRequired(req, res, ['claudeSessionId', 'project', 'prompt'])) {
       return;
@@ -492,9 +504,20 @@ export class SessionRoutes extends BaseRouteHandler {
     // Step 1: Create/get SDK session (idempotent INSERT OR IGNORE)
     const sessionDbId = store.createSDKSession(claudeSessionId, project, prompt);
 
+    console.log('[SESSION-ROUTES] createSDKSession returned:', {
+      sessionDbId,
+      claudeSessionId
+    });
+
     // Step 2: Get next prompt number from user_prompts count
     const currentCount = store.getPromptNumberFromUserPrompts(claudeSessionId);
     const promptNumber = currentCount + 1;
+
+    console.log('[SESSION-ROUTES] Calculated promptNumber:', {
+      sessionDbId,
+      promptNumber,
+      currentCount
+    });
 
     // Step 3: Strip privacy tags from prompt
     const cleanedPrompt = stripMemoryTagsFromPrompt(prompt);

@@ -47,9 +47,21 @@ export class SessionManager {
    * Initialize a new session or return existing one
    */
   initializeSession(sessionDbId: number, currentUserPrompt?: string, promptNumber?: number): ActiveSession {
+    console.log('[SESSION-MANAGER] initializeSession called:', {
+      sessionDbId,
+      promptNumber,
+      has_currentUserPrompt: !!currentUserPrompt
+    });
+
     // Check if already active
     let session = this.sessions.get(sessionDbId);
     if (session) {
+      console.log('[SESSION-MANAGER] Returning cached session:', {
+        sessionDbId,
+        claudeSessionId: session.claudeSessionId,
+        lastPromptNumber: session.lastPromptNumber
+      });
+
       // Refresh project from database in case it was updated by new-hook
       // This fixes the bug where sessions created with empty project get updated
       // in the database but the in-memory session still has the stale empty value
@@ -85,6 +97,12 @@ export class SessionManager {
 
     // Fetch from database
     const dbSession = this.dbManager.getSessionById(sessionDbId);
+
+    console.log('[SESSION-MANAGER] Fetched session from database:', {
+      sessionDbId,
+      claude_session_id: dbSession.claude_session_id,
+      sdk_session_id: dbSession.sdk_session_id
+    });
 
     // Use currentUserPrompt if provided, otherwise fall back to database (first prompt)
     const userPrompt = currentUserPrompt || dbSession.user_prompt;
@@ -122,6 +140,12 @@ export class SessionManager {
       conversationHistory: [],  // Initialize empty - will be populated by agents
       currentProvider: null  // Will be set when generator starts
     };
+
+    console.log('[SESSION-MANAGER] Creating new session object:', {
+      sessionDbId,
+      claudeSessionId: dbSession.claude_session_id,
+      lastPromptNumber: promptNumber || this.dbManager.getSessionStore().getPromptNumberFromUserPrompts(dbSession.claude_session_id)
+    });
 
     this.sessions.set(sessionDbId, session);
 

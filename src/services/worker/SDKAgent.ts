@@ -64,6 +64,13 @@ export class SDKAgent {
       // Create message generator (event-driven)
       const messageGenerator = this.createMessageGenerator(session);
 
+      console.log('[SDK-AGENT] Starting SDK query with:', {
+        sessionDbId: session.sessionDbId,
+        claudeSessionId: session.claudeSessionId,
+        resume_parameter: session.claudeSessionId,
+        lastPromptNumber: session.lastPromptNumber
+      });
+
       // Run Agent SDK query loop
       const queryResult = query({
         prompt: messageGenerator,
@@ -197,7 +204,16 @@ export class SDKAgent {
     const mode = ModeManager.getInstance().getActiveMode();
 
     // Build initial prompt
-    const initPrompt = session.lastPromptNumber === 1
+    const isInitPrompt = session.lastPromptNumber === 1;
+    console.log('[SDK-AGENT] Creating message generator:', {
+      sessionDbId: session.sessionDbId,
+      claudeSessionId: session.claudeSessionId,
+      lastPromptNumber: session.lastPromptNumber,
+      isInitPrompt,
+      promptType: isInitPrompt ? 'INIT' : 'CONTINUATION'
+    });
+
+    const initPrompt = isInitPrompt
       ? buildInitPrompt(session.project, session.claudeSessionId, session.userPrompt, mode)
       : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.claudeSessionId, mode);
 
