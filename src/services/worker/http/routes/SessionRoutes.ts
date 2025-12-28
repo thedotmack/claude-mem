@@ -136,6 +136,9 @@ export class SessionRoutes extends BaseRouteHandler {
 
     session.generatorPromise = agent.startSession(session, this.workerService)
       .catch(error => {
+        // Only log non-abort errors
+        if (session.abortController.signal.aborted) return;
+        
         logger.error('SESSION', `Generator failed`, {
           sessionId: session.sessionDbId,
           provider: provider,
@@ -144,47 +147,64 @@ export class SessionRoutes extends BaseRouteHandler {
 
         // Mark all processing messages as failed so they can be retried or abandoned
         const pendingStore = this.sessionManager.getPendingMessageStore();
-        const db = this.dbManager.getDatabase();
-        const stmt = db.prepare(`
-          SELECT id FROM pending_messages
-          WHERE session_db_id = ? AND status = 'processing'
-        `);
-        const processingMessages = stmt.all(session.sessionDbId) as { id: number }[];
+        const db = this.dbManager.getSessionStore().db;
+        try {
+          const stmt = db.prepare(`
+            SELECT id FROM pending_messages
+            WHERE session_db_id = ? AND status = 'processing'
+          `);
+          const processingMessages = stmt.all(session.sessionDbId) as { id: number }[];
 
-        for (const msg of processingMessages) {
-          pendingStore.markFailed(msg.id);
-          logger.warn('SESSION', `Marked message as failed after generator error`, {
-            sessionId: session.sessionDbId,
-            messageId: msg.id
-          });
+          for (const msg of processingMessages) {
+            pendingStore.markFailed(msg.id);
+            logger.warn('SESSION', `Marked message as failed after generator error`, {
+              sessionId: session.sessionDbId,
+              messageId: msg.id
+            });
+          }
+        } catch (dbError) {
+          logger.error('SESSION', 'Failed to mark messages as failed', { sessionId: session.sessionDbId }, dbError as Error);
         }
       })
       .finally(() => {
         const sessionDbId = session.sessionDbId;
-        logger.info('SESSION', `Generator finished`, { sessionId: sessionDbId });
+        
+        if (session.abortController.signal.aborted) {
+          logger.info('SESSION', `Generator aborted`, { sessionId: sessionDbId });
+        } else {
+          logger.warn('SESSION', `Generator exited unexpectedly`, { sessionId: sessionDbId });
+        }
+
         session.generatorPromise = null;
         session.currentProvider = null;
         this.workerService.broadcastProcessingStatus();
 
-        // Check if there's more work pending
-        const pendingStore = this.sessionManager.getPendingMessageStore();
-        const pendingCount = pendingStore.getPendingCount(sessionDbId);
-        if (pendingCount > 0) {
-          // Auto-restart for pending work
-          logger.info('SESSION', `Auto-restarting generator for pending work`, {
-            sessionId: sessionDbId,
-            pendingCount
-          });
-          setTimeout(() => {
-            const stillExists = this.sessionManager.getSession(sessionDbId);
-            if (stillExists && !stillExists.generatorPromise) {
-              this.startGeneratorWithProvider(stillExists, this.getSelectedProvider(), 'auto-restart');
+        // Crash recovery: If not aborted and still has work, restart
+        if (!session.abortController.signal.aborted) {
+          try {
+            const pendingStore = this.sessionManager.getPendingMessageStore();
+            const pendingCount = pendingStore.getPendingCount(sessionDbId);
+            
+            if (pendingCount > 0) {
+              logger.info('SESSION', `Restarting generator after crash/exit with pending work`, {
+                sessionId: sessionDbId,
+                pendingCount
+              });
+              // Small delay before restart
+              setTimeout(() => {
+                const stillExists = this.sessionManager.getSession(sessionDbId);
+                if (stillExists && !stillExists.generatorPromise) {
+                  this.startGeneratorWithProvider(stillExists, this.getSelectedProvider(), 'crash-recovery');
+                }
+              }, 1000);
             }
-          }, 0);
-        } else {
-          // No more work - clean up session
-          this.sessionManager.deleteSession(sessionDbId).catch(() => {});
+          } catch (e) {
+            // Ignore errors during recovery check
+          }
         }
+        // NOTE: We do NOT delete the session here anymore. 
+        // The generator waits for events, so if it exited, it's either aborted or crashed.
+        // Idle sessions stay in memory (ActiveSession is small) to listen for future events.
       });
   }
 

@@ -82,17 +82,41 @@ export class PendingMessageStore {
   }
 
   /**
-   * Peek at oldest pending message for session (does NOT change status)
-   * @returns The oldest pending message or null if none
+   * Atomically claim the next pending message for processing
+   * Finds oldest pending -> marks processing -> returns it
+   * Uses a transaction to prevent race conditions
    */
-  peekPending(sessionDbId: number): PersistentPendingMessage | null {
-    const stmt = this.db.prepare(`
-      SELECT * FROM pending_messages
-      WHERE session_db_id = ? AND status = 'pending'
-      ORDER BY id ASC
-      LIMIT 1
-    `);
-    return stmt.get(sessionDbId) as PersistentPendingMessage | null;
+  claimNextMessage(sessionDbId: number): PersistentPendingMessage | null {
+    const now = Date.now();
+    
+    const claimTx = this.db.transaction((sessionId: number, timestamp: number) => {
+      const peekStmt = this.db.prepare(`
+        SELECT * FROM pending_messages
+        WHERE session_db_id = ? AND status = 'pending'
+        ORDER BY id ASC
+        LIMIT 1
+      `);
+      const msg = peekStmt.get(sessionId) as PersistentPendingMessage | null;
+      
+      if (msg) {
+        const updateStmt = this.db.prepare(`
+          UPDATE pending_messages
+          SET status = 'processing', started_processing_at_epoch = ?
+          WHERE id = ?
+        `);
+        updateStmt.run(timestamp, msg.id);
+        
+        // Return updated object
+        return {
+          ...msg,
+          status: 'processing',
+          started_processing_at_epoch: timestamp
+        } as PersistentPendingMessage;
+      }
+      return null;
+    });
+
+    return claimTx(sessionDbId, now) as PersistentPendingMessage | null;
   }
 
   /**

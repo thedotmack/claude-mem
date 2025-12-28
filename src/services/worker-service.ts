@@ -690,24 +690,25 @@ export class WorkerService {
   }
 
   /**
-   * Start a session with auto-restart and cleanup logic
-   * Recursively restarts the generator if there's pending work
+   * Start a session processor
+   * It will run continuously until the session is deleted/aborted
    */
-  private startSessionWithAutoRestart(
+  private startSessionProcessor(
     session: ReturnType<typeof this.sessionManager.getSession>,
-    getPendingCount: (sid: number) => number,
     source: string
   ): void {
     if (!session) return;
 
     const sid = session.sessionDbId;
     logger.info('SYSTEM', `Starting generator (${source})`, {
-      sessionId: sid,
-      pendingCount: getPendingCount(sid)
+      sessionId: sid
     });
 
     session.generatorPromise = this.sdkAgent.startSession(session, this)
       .catch(error => {
+        // Only log if not aborted
+        if (session.abortController.signal.aborted) return;
+        
         logger.error('SYSTEM', `Generator failed (${source})`, {
           sessionId: sid,
           error: error.message
@@ -716,24 +717,13 @@ export class WorkerService {
       .finally(() => {
         session.generatorPromise = null;
         this.broadcastProcessingStatus();
-
-        // Check if there's more work pending
-        const stillPending = getPendingCount(sid);
-        if (stillPending > 0) {
-          logger.info('SYSTEM', `Auto-restarting generator for pending work`, {
-            sessionId: sid,
-            pendingCount: stillPending
-          });
-          setTimeout(() => {
-            const stillExists = this.sessionManager.getSession(sid);
-            if (stillExists && !stillExists.generatorPromise) {
-              // Recursive call for continuous processing
-              this.startSessionWithAutoRestart(stillExists, getPendingCount, 'auto-restart');
-            }
-          }, 0);
-        } else {
-          // No more work - clean up session
-          this.sessionManager.deleteSession(sid).catch(() => {});
+        
+        // Crash recovery: if not aborted, check if we should restart
+        if (!session.abortController.signal.aborted) {
+           // We can check if there are pending messages to decide if restart is urgent
+           // But generally, if it crashed, we might want to restart?
+           // For now, let's just log. The user/system can trigger restart if needed.
+           logger.warn('SYSTEM', `Session processor exited unexpectedly`, { sessionId: sid });
         }
       });
   }
@@ -789,12 +779,8 @@ export class WorkerService {
           pendingCount: pendingStore.getPendingCount(sessionDbId)
         });
 
-        // Start SDK agent (non-blocking) using shared helper
-        this.startSessionWithAutoRestart(
-          session,
-          (sid) => pendingStore.getPendingCount(sid),
-          'startup-recovery'
-        );
+        // Start SDK agent (non-blocking)
+        this.startSessionProcessor(session, 'startup-recovery');
 
         result.sessionsStarted++;
         result.startedSessionIds.push(sessionDbId);
