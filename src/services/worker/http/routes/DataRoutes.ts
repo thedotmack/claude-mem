@@ -17,6 +17,7 @@ import { SessionManager } from '../../SessionManager.js';
 import { SSEBroadcaster } from '../../SSEBroadcaster.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
+import { getSessionSavings, getAllSessionSavings } from '../../../context-generator.js';
 
 export class DataRoutes extends BaseRouteHandler {
   constructor(
@@ -40,6 +41,7 @@ export class DataRoutes extends BaseRouteHandler {
     app.get('/api/observation/:id', this.handleGetObservationById.bind(this));
     app.post('/api/observations/batch', this.handleGetObservationsByIds.bind(this));
     app.get('/api/session/:id', this.handleGetSessionById.bind(this));
+    app.get('/api/session/:sdkSessionId/stats', this.handleGetSessionStats.bind(this));
     app.post('/api/sdk-sessions/batch', this.handleGetSdkSessionsByIds.bind(this));
     app.get('/api/prompt/:id', this.handleGetPromptById.bind(this));
 
@@ -180,6 +182,61 @@ export class DataRoutes extends BaseRouteHandler {
   });
 
   /**
+   * Get session-specific statistics
+   * GET /api/session/:sdkSessionId/stats
+   * Returns: observations count, tokens, duration for this session
+   */
+  private handleGetSessionStats = this.wrapHandler((req: Request, res: Response): void => {
+    const sdkSessionId = req.params.sdkSessionId;
+
+    if (!sdkSessionId) {
+      this.badRequest(res, 'Missing sdkSessionId');
+      return;
+    }
+
+    const db = this.dbManager.getSessionStore().db;
+
+    // Get session stats
+    const sessionStats = db.prepare(`
+      SELECT
+        COUNT(*) as observations_count,
+        COALESCE(SUM(discovery_tokens), 0) as total_tokens,
+        MIN(created_at_epoch) as first_observation_at,
+        MAX(created_at_epoch) as last_observation_at
+      FROM observations
+      WHERE sdk_session_id = ?
+    `).get(sdkSessionId) as {
+      observations_count: number;
+      total_tokens: number;
+      first_observation_at: number | null;
+      last_observation_at: number | null;
+    };
+
+    // Get user prompts count for this session
+    const promptStats = db.prepare(`
+      SELECT COUNT(*) as prompts_count
+      FROM user_prompts
+      WHERE claude_session_id = ?
+    `).get(sdkSessionId) as { prompts_count: number };
+
+    // Calculate session duration
+    let durationMs = 0;
+    if (sessionStats.first_observation_at && sessionStats.last_observation_at) {
+      durationMs = sessionStats.last_observation_at - sessionStats.first_observation_at;
+    }
+
+    res.json({
+      sdkSessionId,
+      observationsCount: sessionStats.observations_count,
+      totalTokens: sessionStats.total_tokens,
+      promptsCount: promptStats.prompts_count,
+      durationMs,
+      firstObservationAt: sessionStats.first_observation_at,
+      lastObservationAt: sessionStats.last_observation_at
+    });
+  });
+
+  /**
    * Get SDK sessions by SDK session IDs
    * POST /api/sdk-sessions/batch
    * Body: { sdkSessionIds: string[] }
@@ -245,6 +302,11 @@ export class DataRoutes extends BaseRouteHandler {
     const activeSessions = this.sessionManager.getActiveSessionCount();
     const sseClients = this.sseBroadcaster.getClientCount();
 
+    // Get session savings (from most recent context generation)
+    const project = req.query.project as string | undefined;
+    const currentSavings = getSessionSavings(project);
+    const allSavings = getAllSessionSavings();
+
     res.json({
       worker: {
         version,
@@ -259,7 +321,24 @@ export class DataRoutes extends BaseRouteHandler {
         observations: totalObservations.count,
         sessions: totalSessions.count,
         summaries: totalSummaries.count
-      }
+      },
+      savings: currentSavings ? {
+        current: {
+          project: currentSavings.project,
+          savings: currentSavings.savings,
+          savingsPercent: currentSavings.savingsPercent,
+          totalReadTokens: currentSavings.totalReadTokens,
+          totalDiscoveryTokens: currentSavings.totalDiscoveryTokens,
+          totalObservations: currentSavings.totalObservations,
+          calculatedAt: currentSavings.calculatedAt
+        },
+        allProjects: allSavings.map(s => ({
+          project: s.project,
+          savings: s.savings,
+          savingsPercent: s.savingsPercent,
+          calculatedAt: s.calculatedAt
+        }))
+      } : null
     });
   });
 

@@ -144,6 +144,7 @@ export class SessionRoutes extends BaseRouteHandler {
     app.post('/api/sessions/init', this.handleSessionInitByClaudeId.bind(this));
     app.post('/api/sessions/observations', this.handleObservationsByClaudeId.bind(this));
     app.post('/api/sessions/summarize', this.handleSummarizeByClaudeId.bind(this));
+    app.post('/api/sessions/handoff', this.handleHandoff.bind(this));
   }
 
   /**
@@ -560,6 +561,115 @@ export class SessionRoutes extends BaseRouteHandler {
       sessionDbId,
       promptNumber,
       skipped: false
+    });
+  });
+
+  /**
+   * Create handoff observation before context compaction (PreCompact hook)
+   * POST /api/sessions/handoff
+   * Body: { claudeSessionId, trigger, customInstructions, lastUserMessage, lastAssistantMessage }
+   *
+   * Creates a 'handoff' type observation that captures:
+   * - Current session goals and context
+   * - Pending tasks
+   * - Key decisions made
+   * - Files being worked on
+   * - Resume instructions for post-compaction
+   *
+   * Inspired by Continuous Claude v2's handoff pattern.
+   */
+  private handleHandoff = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const { claudeSessionId, trigger, customInstructions, lastUserMessage, lastAssistantMessage } = req.body;
+
+    if (!claudeSessionId) {
+      return this.badRequest(res, 'Missing claudeSessionId');
+    }
+
+    const store = this.dbManager.getSessionStore();
+
+    // Get session info
+    const sessionDbId = store.createSDKSession(claudeSessionId, '', '');
+    const session = this.sessionManager.getSession(sessionDbId);
+
+    // Get recent observations for this session to summarize current work
+    const recentObservations = store.getObservationsForSession(claudeSessionId);
+
+    // Get session summary if exists
+    const existingSummary = store.getSummaryForSession(claudeSessionId);
+
+    // Get files from session
+    const sessionFiles = store.getFilesForSession(claudeSessionId);
+
+    // Build handoff content
+    const handoffData = {
+      trigger: trigger || 'unknown',
+      customInstructions: customInstructions || '',
+      lastUserMessage: lastUserMessage || '',
+      lastAssistantMessage: lastAssistantMessage?.substring(0, 500) || '',
+      pendingQueue: session?.pendingMessages?.length || 0,
+      recentObservationsCount: recentObservations.length,
+      hasExistingSummary: !!existingSummary
+    };
+
+    // Extract key info from recent observations (last 5)
+    const recentTitles = recentObservations
+      .filter(o => o.title)
+      .map(o => o.title)
+      .slice(-5);
+
+    // Use aggregated files from session
+    const recentFiles = sessionFiles.filesModified.slice(0, 10);
+
+    // Create handoff observation
+    const handoffTitle = `Context Handoff (${trigger === 'auto' ? 'Auto-Compact' : 'Manual Compact'})`;
+    const handoffNarrative = [
+      `Session state preserved before ${trigger === 'auto' ? 'automatic' : 'manual'} context compaction.`,
+      recentTitles.length > 0 ? `Recent work: ${recentTitles.join(', ')}` : '',
+      recentFiles.length > 0 ? `Active files: ${recentFiles.slice(0, 5).join(', ')}` : '',
+      customInstructions ? `User notes: ${customInstructions}` : '',
+      existingSummary?.next_steps ? `Pending: ${existingSummary.next_steps}` : ''
+    ].filter(Boolean).join(' ');
+
+    // Get project from session or fallback
+    const project = session?.project || process.cwd();
+
+    // Store handoff observation using existing method
+    const result = store.storeObservation(
+      claudeSessionId,
+      project,
+      {
+        type: 'handoff',
+        title: handoffTitle,
+        subtitle: `Trigger: ${trigger}, Queue: ${handoffData.pendingQueue}`,
+        narrative: handoffNarrative,
+        facts: [
+          `Trigger: ${trigger}`,
+          `Pending messages: ${handoffData.pendingQueue}`,
+          `Recent observations: ${handoffData.recentObservationsCount}`
+        ],
+        concepts: ['context-continuity', 'session-handoff', 'compaction'],
+        files_read: [],
+        files_modified: recentFiles
+      },
+      store.getPromptNumberFromUserPrompts(claudeSessionId),
+      0 // discovery_tokens
+    );
+
+    logger.info('SESSION', 'Handoff observation created', {
+      handoffId: result.id,
+      trigger,
+      recentObservations: recentObservations.length,
+      activeFiles: recentFiles.length
+    });
+
+    // Broadcast event
+    this.eventBroadcaster.broadcastObservationQueued(sessionDbId);
+
+    res.json({
+      success: true,
+      handoffId: result.id,
+      tasksCount: handoffData.pendingQueue,
+      trigger
     });
   });
 }
