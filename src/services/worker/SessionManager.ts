@@ -406,60 +406,36 @@ export class SessionManager {
       throw new Error(`No emitter for session ${sessionDbId}`);
     }
 
-    // Linger timeout: how long to wait for new messages before exiting
-    // This keeps the agent alive between messages, reducing "No active agent" windows
-    const LINGER_TIMEOUT_MS = 5000; // 5 seconds
-
     while (!session.abortController.signal.aborted) {
       // Check for pending messages in persistent store
       const persistentMessage = this.getPendingStore().peekPending(sessionDbId);
 
       if (!persistentMessage) {
-        // Wait for new messages with timeout
-        const gotMessage = await new Promise<boolean>(resolve => {
-          let resolved = false;
-
+        // Wait for new message event
+        await new Promise<void>(resolve => {
           const messageHandler = () => {
-            if (!resolved) {
-              resolved = true;
-              clearTimeout(timeoutId);
-              resolve(true);
-            }
+            emitter.off('message', messageHandler);
+            resolve();
           };
 
-          const timeoutHandler = () => {
-            if (!resolved) {
-              resolved = true;
-              emitter.off('message', messageHandler);
-              resolve(false);
-            }
+          const abortHandler = () => {
+            emitter.off('message', messageHandler);
+            resolve();
           };
-
-          const timeoutId = setTimeout(timeoutHandler, LINGER_TIMEOUT_MS);
 
           emitter.once('message', messageHandler);
-
-          // Also listen for abort
-          session.abortController.signal.addEventListener('abort', () => {
-            if (!resolved) {
-              resolved = true;
-              clearTimeout(timeoutId);
-              emitter.off('message', messageHandler);
-              resolve(false);
-            }
-          }, { once: true });
+          session.abortController.signal.addEventListener('abort', abortHandler, { once: true });
         });
 
         // Re-check for messages after waking up (handles race condition)
         const recheckMessage = this.getPendingStore().peekPending(sessionDbId);
         if (recheckMessage) {
-          // Got a message, continue processing
-          continue;
+          continue; // Got a message, process it
         }
 
-        if (!gotMessage) {
-          // Timeout or abort - exit the loop
-          logger.info('SESSION', `Generator exiting after linger timeout`, { sessionId: sessionDbId });
+        // Woke up due to abort
+        if (session.abortController.signal.aborted) {
+          logger.info('SESSION', 'Generator exiting due to abort', { sessionId: sessionDbId });
           return;
         }
 

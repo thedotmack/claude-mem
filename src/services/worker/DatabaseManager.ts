@@ -27,13 +27,8 @@ export class DatabaseManager {
     this.sessionStore = new SessionStore();
     this.sessionSearch = new SessionSearch();
 
-    // Initialize ChromaSync
+    // Initialize ChromaSync (lazy - connects on first search, not at startup)
     this.chromaSync = new ChromaSync('claude-mem');
-
-    // Start background backfill (fire-and-forget)
-    this.chromaSync.ensureBackfilled().catch(error => {
-      logger.error('DB', 'Chroma backfill failed (non-fatal)', {}, error);
-    });
 
     logger.info('DB', 'Database initialized');
   }
