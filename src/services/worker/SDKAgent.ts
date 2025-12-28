@@ -69,6 +69,7 @@ export class SDKAgent {
         prompt: messageGenerator,
         options: {
           model: modelId,
+          resume: session.claudeSessionId,
           disallowedTools,
           abortController: session.abortController,
           pathToClaudeCodeExecutable: claudePath
