@@ -39,12 +39,101 @@ export interface SessionSavings {
 const projectSavings = new Map<string, SessionSavings>();
 
 /**
+ * Calculate savings from database on-demand (used when cache is empty)
+ * This ensures StatusLine can display savings even after worker restart
+ */
+function calculateSavingsFromDb(project: string): SessionSavings | null {
+  let db: SessionStore | null = null;
+  try {
+    db = new SessionStore();
+    const config = loadContextConfig();
+
+    // Build SQL WHERE clause for observation types
+    const typeArray = Array.from(config.observationTypes);
+    const typePlaceholders = typeArray.map(() => '?').join(',');
+
+    // Build SQL WHERE clause for concepts
+    const conceptArray = Array.from(config.observationConcepts);
+    const conceptPlaceholders = conceptArray.map(() => '?').join(',');
+
+    // Get recent observations (same query as generateContext)
+    const observations = db.db.prepare(`
+      SELECT
+        id, title, subtitle, narrative, facts, discovery_tokens
+      FROM observations
+      WHERE project = ?
+        AND type IN (${typePlaceholders})
+        AND EXISTS (
+          SELECT 1 FROM json_each(concepts)
+          WHERE value IN (${conceptPlaceholders})
+        )
+      ORDER BY created_at_epoch DESC
+      LIMIT ?
+    `).all(project, ...typeArray, ...conceptArray, config.totalObservationCount) as Array<{
+      id: number;
+      title: string | null;
+      subtitle: string | null;
+      narrative: string | null;
+      facts: string | null;
+      discovery_tokens: number | null;
+    }>;
+
+    if (observations.length === 0) {
+      db.close();
+      return null;
+    }
+
+    // Calculate savings (same logic as generateContext)
+    const totalObservations = observations.length;
+    const totalReadTokens = observations.reduce((sum, obs) => {
+      const obsSize = (obs.title?.length || 0) +
+                      (obs.subtitle?.length || 0) +
+                      (obs.narrative?.length || 0) +
+                      JSON.stringify(obs.facts || []).length;
+      return sum + Math.ceil(obsSize / CHARS_PER_TOKEN_ESTIMATE);
+    }, 0);
+    const totalDiscoveryTokens = observations.reduce((sum, obs) => sum + (obs.discovery_tokens || 0), 0);
+    const savings = totalDiscoveryTokens - totalReadTokens;
+    const savingsPercent = totalDiscoveryTokens > 0
+      ? Math.round((savings / totalDiscoveryTokens) * 100)
+      : 0;
+
+    db.close();
+
+    const result: SessionSavings = {
+      project,
+      totalObservations,
+      totalReadTokens,
+      totalDiscoveryTokens,
+      savings,
+      savingsPercent,
+      calculatedAt: Date.now()
+    };
+
+    // Cache the result for subsequent calls
+    projectSavings.set(project, result);
+
+    return result;
+  } catch (error) {
+    db?.close();
+    return null;
+  }
+}
+
+/**
  * Get the current session savings for a project
+ * Falls back to on-demand DB calculation when cache is empty
  */
 export function getSessionSavings(project?: string): SessionSavings | null {
   if (project) {
-    return projectSavings.get(project) || null;
+    // Try cache first
+    const cached = projectSavings.get(project);
+    if (cached) return cached;
+
+    // Cache miss - calculate from DB on-demand
+    return calculateSavingsFromDb(project);
   }
+
   // Return most recent savings if no project specified
   let mostRecent: SessionSavings | null = null;
   for (const savings of projectSavings.values()) {

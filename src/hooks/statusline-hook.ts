@@ -100,14 +100,29 @@ interface SessionStats {
 }
 
 /**
- * Get stats from claude-mem worker (non-blocking)
+ * Extract project name from path (simple inline version for hook)
  */
-async function getWorkerStats(): Promise<WorkerStats> {
+function getProjectFromPath(cwd: string | undefined): string | null {
+  if (!cwd || cwd.trim() === '') return null;
+  const parts = cwd.split('/').filter(Boolean);
+  return parts.length > 0 ? parts[parts.length - 1] : null;
+}
+
+/**
+ * Get stats from claude-mem worker (non-blocking)
+ * Passes project parameter to enable on-demand savings calculation
+ */
+async function getWorkerStats(project: string | null): Promise<WorkerStats> {
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 500); // 500ms timeout
 
-    const response = await fetch('http://127.0.0.1:37777/api/stats', {
+    // Pass project parameter to enable on-demand DB calculation when cache is empty
+    const url = project
+      ? `http://127.0.0.1:37777/api/stats?project=${encodeURIComponent(project)}`
+      : 'http://127.0.0.1:37777/api/stats';
+
+    const response = await fetch(url, {
       signal: controller.signal
     });
 
@@ -188,9 +203,12 @@ async function formatStatusLine(input: StatusLineInput): Promise<string> {
     parts.push(`${indicator} ${percentUsed}%`);
   }
 
+  // Extract project from workspace for API calls
+  const project = getProjectFromPath(input.workspace?.current_dir);
+
   // Fetch both global and session stats in parallel
   const [globalStats, sessionStats] = await Promise.all([
-    getWorkerStats(),
+    getWorkerStats(project),
     getSessionStats(input.session_id)
   ]);
 
