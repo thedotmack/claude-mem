@@ -225,6 +225,8 @@ import { SessionRoutes } from './worker/http/routes/SessionRoutes.js';
 import { DataRoutes } from './worker/http/routes/DataRoutes.js';
 import { SearchRoutes } from './worker/http/routes/SearchRoutes.js';
 import { SettingsRoutes } from './worker/http/routes/SettingsRoutes.js';
+import { JanusRoutes } from './worker/http/routes/JanusRoutes.js';
+import { authMiddleware } from './worker/http/authMiddleware.js';
 
 export class WorkerService {
   private app: express.Application;
@@ -253,6 +255,7 @@ export class WorkerService {
   private dataRoutes: DataRoutes;
   private searchRoutes: SearchRoutes | null;
   private settingsRoutes: SettingsRoutes;
+  private janusRoutes: JanusRoutes;
 
   // Initialization tracking
   private initializationComplete: Promise<void>;
@@ -297,6 +300,7 @@ export class WorkerService {
     // SearchRoutes needs SearchManager which requires initialized DB - will be created in initializeBackground()
     this.searchRoutes = null;
     this.settingsRoutes = new SettingsRoutes(this.settingsManager);
+    this.janusRoutes = new JanusRoutes();
 
     this.setupMiddleware();
     this.setupRoutes();
@@ -308,6 +312,10 @@ export class WorkerService {
   private setupMiddleware(): void {
     const middlewares = createMiddleware(this.summarizeRequestBody.bind(this));
     middlewares.forEach(mw => this.app.use(mw));
+
+    // Add authentication middleware for remote access
+    // Only active when CLAUDE_MEM_REMOTE_AUTH=true and request is not from localhost
+    this.app.use(authMiddleware);
   }
 
   /**
@@ -445,6 +453,7 @@ export class WorkerService {
     this.viewerRoutes.setupRoutes(this.app);
     this.sessionRoutes.setupRoutes(this.app);
     this.dataRoutes.setupRoutes(this.app);
+    this.janusRoutes.setupRoutes(this.app);
     // searchRoutes is set up after database initialization in initializeBackground()
     this.settingsRoutes.setupRoutes(this.app);
 
