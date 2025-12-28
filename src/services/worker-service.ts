@@ -671,6 +671,9 @@ export class WorkerService {
       logger.info('SYSTEM', 'Background initialization complete');
 
       // Auto-recover orphaned queues on startup (process pending work from previous sessions)
+      // DISABLED: User feedback indicates this consumes excessive usage if there's a large backlog.
+      // Users can manually trigger processing via scripts/check-pending-queue.ts
+      /*
       this.processPendingQueues(50).then(result => {
         if (result.sessionsStarted > 0) {
           logger.info('SYSTEM', `Auto-recovered ${result.sessionsStarted} sessions with pending work`, {
@@ -682,6 +685,7 @@ export class WorkerService {
       }).catch(error => {
         logger.warn('SYSTEM', 'Auto-recovery of pending queues failed', {}, error as Error);
       });
+      */
     } catch (error) {
       logger.error('SYSTEM', 'Background initialization failed', {}, error as Error);
       // Don't resolve - let the promise remain pending so readiness check continues to fail

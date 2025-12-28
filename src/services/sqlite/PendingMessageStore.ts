@@ -363,6 +363,16 @@ export class PendingMessageStore {
   }
 
   /**
+   * Purge all messages from the queue (pending, processing, failed)
+   * @returns Number of messages deleted
+   */
+  purgeAll(): number {
+    const stmt = this.db.prepare("DELETE FROM pending_messages WHERE status IN ('pending', 'processing', 'failed')");
+    const result = stmt.run();
+    return result.changes;
+  }
+
+  /**
    * Cleanup old processed messages (retention policy)
    * Keeps the most recent N processed messages, deletes the rest
    * @param retentionCount Number of processed messages to keep (default: 100)
