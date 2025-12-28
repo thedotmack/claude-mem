@@ -464,17 +464,17 @@ export class WorkerService {
     this.settingsRoutes.setupRoutes(this.app);
 
     // Register early handler for /api/context/inject to avoid 404 during startup
-    // This handler waits for initialization to complete before delegating to SearchRoutes
-    // NOTE: This duplicates logic from SearchRoutes.handleContextInject by design,
-    // as we need the route available immediately before SearchRoutes is initialized
-    this.app.get('/api/context/inject', async (req, res, next) => {
+    // This handler waits for initialization to complete, then handles the request directly
+    // NOTE: We implement the logic here instead of using next() because Express's next()
+    // moves to the next middleware in the chain, not to routes registered later
+    this.app.get('/api/context/inject', async (req, res) => {
       try {
         // Wait for initialization to complete (with timeout)
         const timeoutMs = 300000; // 5 minute timeout for slow systems
-        const timeoutPromise = new Promise((_, reject) => 
+        const timeoutPromise = new Promise((_, reject) =>
           setTimeout(() => reject(new Error('Initialization timeout')), timeoutMs)
         );
-        
+
         await Promise.race([this.initializationComplete, timeoutPromise]);
 
         // If searchRoutes is still null after initialization, something went wrong
@@ -483,11 +483,38 @@ export class WorkerService {
           return;
         }
 
-        // Delegate to the SearchRoutes handler which is registered after this one
-        // This avoids code duplication and "headers already sent" errors
-        next();
+        // Handle the request directly (don't use next() - it won't find later-registered routes)
+        const projectName = req.query.project as string;
+        const useColors = req.query.colors === 'true';
+
+        if (!projectName) {
+          res.status(400).json({ error: 'Project parameter is required' });
+          return;
+        }
+
+        // Import context generator (runs in worker, has access to database)
+        const { generateContext } = await import('./context-generator.js');
+
+        // Use project name as CWD (generateContext uses path.basename to get project)
+        const cwd = `/context/${projectName}`;
+
+        // Generate context
+        const contextText = await generateContext(
+          {
+            session_id: 'context-inject-' + Date.now(),
+            cwd: cwd
+          },
+          useColors
+        );
+
+        // Return as plain text
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+        res.send(contextText);
       } catch (error) {
-        logger.error('WORKER', 'Context inject handler failed', {}, error as Error);
+        logger.error('WORKER', 'Context inject handler failed', {
+          query: req.query,
+          path: req.path
+        }, error as Error);
         if (!res.headersSent) {
           res.status(500).json({ error: error instanceof Error ? error.message : 'Internal server error' });
         }
