@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [8.2.4] - 2025-12-28
+
+Patch release v8.2.4
+
 ## [8.2.3] - 2025-12-27
 
 ## Bug Fixes
