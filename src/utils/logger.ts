@@ -257,21 +257,17 @@ class Logger {
 
     const logLine = `[${timestamp}] [${levelStr}] [${componentStr}] ${correlationStr}${message}${contextStr}${dataStr}`;
 
-    // Output to console
-    if (level === LogLevel.ERROR) {
-      console.error(logLine);
-    } else {
-      console.log(logLine);
-    }
-
-    // Output to log file
+    // Output to log file ONLY (worker runs in background, console is useless)
     if (this.logFilePath) {
       try {
         appendFileSync(this.logFilePath, logLine + '\n', 'utf8');
       } catch (error) {
-        // If file write fails, just continue (don't crash)
-        console.error('[LOGGER] Failed to write to log file:', error);
+        // If file write fails, write to stderr as last resort
+        process.stderr.write(`[LOGGER] Failed to write to log file: ${error}\n`);
       }
+    } else {
+      // If no log file available, write to stderr as fallback
+      process.stderr.write(logLine + '\n');
     }
   }
 
