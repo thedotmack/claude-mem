@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [8.2.5] - 2025-12-28
+
+## Bug Fixes
+
+- **Logger**: Enhanced Error object handling in debug mode to prevent empty JSON serialization
+- **ChromaSync**: Refactored DatabaseManager to initialize ChromaSync lazily, removing background backfill on startup
+- **SessionManager**: Simplified message handling and removed linger timeout that was blocking completion
+
+## Technical Details
+
+This patch release addresses several issues discovered after the session continuity fix:
+
+1. Logger now properly serializes Error objects with stack traces in debug mode
+2. ChromaSync initialization is now lazy to prevent silent failures during startup
+3. Session linger timeout removed to eliminate artificial 5-second delays on session completion
+
+Full changelog: https://github.com/thedotmack/claude-mem/compare/v8.2.4...v8.2.5
+
 ## [8.2.4] - 2025-12-28
 
 Patch release v8.2.4
