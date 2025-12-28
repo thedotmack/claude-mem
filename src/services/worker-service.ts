@@ -103,19 +103,34 @@ function acquireLock(command: string): boolean {
     startedAt: new Date().toISOString()
   };
 
-  try {
-    // O_EXCL ensures atomic creation - fails if file exists
-    const fd = fs.openSync(LOCK_FILE, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY);
-    fs.writeSync(fd, JSON.stringify(lockInfo, null, 2));
-    fs.closeSync(fd);
-    return true;
-  } catch (error: unknown) {
-    if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+  let retries = 3;
+  while (retries > 0) {
+    try {
+      // O_EXCL ensures atomic creation - fails if file exists
+      const fd = fs.openSync(LOCK_FILE, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY);
+      fs.writeSync(fd, JSON.stringify(lockInfo, null, 2));
+      fs.closeSync(fd);
+      return true;
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+        return false;
+      }
+      // Retry on ENOENT (can happen on Windows if file/dir state is in flux)
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        retries--;
+        if (retries === 0) {
+          logger.warn('SYSTEM', 'Lock acquisition error (ENOENT)', { error: (error as Error).message });
+          return false;
+        }
+        // Ensure directory exists and try again
+        try { mkdirSync(DATA_DIR, { recursive: true }); } catch {}
+        continue;
+      }
+      logger.warn('SYSTEM', 'Lock acquisition error', { error: (error as Error).message });
       return false;
     }
-    logger.warn('SYSTEM', 'Lock acquisition error', { error: (error as Error).message });
-    return false;
   }
+  return false;
 }
 
 /**
@@ -468,37 +483,14 @@ export class WorkerService {
           return;
         }
 
-        // Delegate to the proper handler by re-processing the request
-        // Since we're already in the middleware chain, we need to call the handler directly
-        const projectName = req.query.project as string;
-        const useColors = req.query.colors === 'true';
-
-        if (!projectName) {
-          res.status(400).json({ error: 'Project parameter is required' });
-          return;
-        }
-
-        // Import context generator (runs in worker, has access to database)
-        const { generateContext } = await import('./context-generator.js');
-
-        // Use project name as CWD (generateContext uses path.basename to get project)
-        const cwd = `/context/${projectName}`;
-
-        // Generate context
-        const contextText = await generateContext(
-          {
-            session_id: 'context-inject-' + Date.now(),
-            cwd: cwd
-          },
-          useColors
-        );
-
-        // Return as plain text
-        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-        res.send(contextText);
+        // Delegate to the SearchRoutes handler which is registered after this one
+        // This avoids code duplication and "headers already sent" errors
+        next();
       } catch (error) {
         logger.error('WORKER', 'Context inject handler failed', {}, error as Error);
-        res.status(500).json({ error: error instanceof Error ? error.message : 'Internal server error' });
+        if (!res.headersSent) {
+          res.status(500).json({ error: error instanceof Error ? error.message : 'Internal server error' });
+        }
       }
     });
   }
@@ -1030,7 +1022,13 @@ async function main() {
 
       try {
         await httpShutdown(port);
-        await waitForPortFree(port, getPlatformTimeout(15000));
+        const freed = await waitForPortFree(port, getPlatformTimeout(15000));
+        
+        if (!freed) {
+          logger.warn('SYSTEM', 'Port did not free up after shutdown', { port });
+          // Could force kill here if we knew the PID, but for now just warn
+        }
+        
         removePidFile();
         releaseLock();
         logger.info('SYSTEM', 'Worker stopped successfully');
@@ -1057,7 +1055,14 @@ async function main() {
 
       try {
         await httpShutdown(port);
-        await waitForPortFree(port, getPlatformTimeout(15000));
+        const freed = await waitForPortFree(port, getPlatformTimeout(15000));
+        
+        if (!freed) {
+          releaseLock();
+          logger.error('SYSTEM', 'Port did not free up after shutdown, aborting restart', { port });
+          process.exit(1);
+        }
+        
         removePidFile();
 
         const child = spawn(process.execPath, [__filename, '--daemon'], {
