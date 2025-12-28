@@ -34,6 +34,7 @@ export interface CleanupConfig {
   // Importance score recalculation
   enableImportanceRecalc: boolean;
   importanceRecalcLimit: number;          // Max memories to recalculate per run
+  importanceRecalcLookbackDays: number;   // How far back to look for recalculation
 }
 
 /**
@@ -50,6 +51,7 @@ const DEFAULT_CONFIG: CleanupConfig = {
 
   enableImportanceRecalc: true,
   importanceRecalcLimit: 500,
+  importanceRecalcLookbackDays: 180,    // 6 months lookback window
 };
 
 /**
@@ -269,8 +271,8 @@ export class CleanupJob {
       LIMIT ?
     `);
 
-    // Look back 6 months
-    const cutoff = Date.now() - (180 * 24 * 60 * 60 * 1000);
+    // Look back configurable window (default: 6 months)
+    const cutoff = Date.now() - (this.config.importanceRecalcLookbackDays * 24 * 60 * 60 * 1000);
     const rows = stmt.all(cutoff, this.config.importanceRecalcLimit) as Array<{ id: number }>;
 
     let recalculated = 0;

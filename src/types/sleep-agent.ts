@@ -744,6 +744,12 @@ export const DEFAULT_IDLE_CONFIG: IdleConfig = {
   requireNoActiveSessions: true,
 };
 
+/**
+ * Minimum intervals between sleep cycles (prevents thrashing)
+ */
+export const MIN_LIGHT_CYCLE_INTERVAL_MS = 5 * 60 * 1000;   // 5 minutes
+export const MIN_DEEP_CYCLE_INTERVAL_MS = 30 * 60 * 1000;   // 30 minutes
+
 // ============================================================================
 // Sleep Agent Status Types
 // ============================================================================

@@ -326,9 +326,12 @@ export class SupersessionDetector {
         const similarity = Math.max(0, 1 - distance / 2.0);
 
         return similarity;
-      } catch (error) {
+      } catch (error: unknown) {
         logger.debug('SLEEP_AGENT', 'Chroma query failed, using text fallback', {
-          error: (error as Error).message,
+          olderId: older.id,
+          newerId: newer.id,
+          error: error instanceof Error ? error.message : String(error),
+          stack: error instanceof Error ? error.stack : undefined,
         });
       }
     }
@@ -549,7 +552,11 @@ export class SupersessionDetector {
     try {
       const parsed = JSON.parse(conceptsJson);
       return Array.isArray(parsed) ? parsed : [];
-    } catch {
+    } catch (error: unknown) {
+      logger.debug('SUPERSESSION', 'Failed to parse concepts JSON', {
+        input: conceptsJson.substring(0, 100),  // Truncate for logging
+        error: error instanceof Error ? error.message : String(error)
+      });
       return [];
     }
   }
@@ -562,7 +569,11 @@ export class SupersessionDetector {
     try {
       const parsed = JSON.parse(filesJson);
       return Array.isArray(parsed) ? parsed : [];
-    } catch {
+    } catch (error: unknown) {
+      logger.debug('SUPERSESSION', 'Failed to parse files JSON', {
+        input: filesJson.substring(0, 100),  // Truncate for logging
+        error: error instanceof Error ? error.message : String(error)
+      });
       return [];
     }
   }

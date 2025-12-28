@@ -23,6 +23,8 @@ import {
   DEFAULT_MEMORY_TIER_CONFIG,
   MemoryTierConfig,
   getPriorityTier,
+  MIN_LIGHT_CYCLE_INTERVAL_MS,
+  MIN_DEEP_CYCLE_INTERVAL_MS,
 } from '../../types/sleep-agent.js';
 import { logger } from '../../utils/logger.js';
 
@@ -181,7 +183,7 @@ export class SleepAgent {
     // Check if we recently ran a cycle of this type
     if (this.lastCycle && this.lastCycle.type === type) {
       const timeSinceLast = Date.now() - this.lastCycle.completedAt;
-      const minInterval = type === 'light' ? 5 * 60 * 1000 : 30 * 60 * 1000;
+      const minInterval = type === 'light' ? MIN_LIGHT_CYCLE_INTERVAL_MS : MIN_DEEP_CYCLE_INTERVAL_MS;
       if (timeSinceLast < minInterval) {
         return;
       }

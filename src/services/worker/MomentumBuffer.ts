@@ -235,14 +235,20 @@ export class MomentumBuffer {
   getActiveBoosts(): BoostedTopic[] {
     const now = Date.now();
     const active: BoostedTopic[] = [];
+    const expired: string[] = [];
 
+    // First pass: collect active and expired (don't modify during iteration)
     for (const [topic, boost] of this.boosts.entries()) {
       if (now <= boost.expiry) {
         active.push(boost);
       } else {
-        // Cleanup expired
-        this.boosts.delete(topic);
+        expired.push(topic);
       }
+    }
+
+    // Second pass: cleanup expired entries
+    for (const topic of expired) {
+      this.boosts.delete(topic);
     }
 
     // Sort by expiry (soonest expiring first)

@@ -121,7 +121,7 @@ export class ImportanceScorer {
 
       // Use provided surprise score or fall back to stored value or default
       const surpriseScore = options.surpriseScore ??
-        (observation as any).surprise_score ??
+        observation.surprise_score ??
         0.5;
 
       const factors: ImportanceFactors = {

@@ -59,8 +59,8 @@ export class AccessTracker {
       `).run(now, memoryId);
 
       logger.debug('AccessTracker', `Recorded access for memory ${memoryId}`);
-    } catch (error: any) {
-      logger.error('AccessTracker', `Failed to record access for memory ${memoryId}`, {}, error);
+    } catch (error: unknown) {
+      logger.error('AccessTracker', `Failed to record access for memory ${memoryId}`, {}, error instanceof Error ? error : new Error(String(error)));
     }
   }
 

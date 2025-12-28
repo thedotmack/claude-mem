@@ -78,11 +78,13 @@ const DEFAULT_CONFIG: ForgettingConfig = {
  * 4. Semantic rarity (unique content = keep)
  */
 export class ForgettingPolicy {
+  private db: Database;
   private importanceScorer: ImportanceScorer;
   private accessTracker: AccessTracker;
   private config: ForgettingConfig;
 
   constructor(db: Database, config?: Partial<ForgettingConfig>) {
+    this.db = db;  // Store directly instead of accessing via importanceScorer
     this.importanceScorer = new ImportanceScorer(db);
     this.accessTracker = new AccessTracker(db);
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -101,8 +103,8 @@ export class ForgettingPolicy {
       if (!obs) return null;
 
       return await this.evaluateObservation(obs);
-    } catch (error: any) {
-      logger.error('ForgettingPolicy', `Failed to evaluate memory ${memoryId}`, {}, error);
+    } catch (error: unknown) {
+      logger.error('ForgettingPolicy', `Failed to evaluate memory ${memoryId}`, {}, error instanceof Error ? error : new Error(String(error)));
       return null;
     }
   }
@@ -378,10 +380,4 @@ export class ForgettingPolicy {
     return Math.exp(-Math.log(2) * ageDays / this.config.ageDecayHalfLife);
   }
 
-  /**
-   * Get database reference
-   */
-  private get db(): Database {
-    return (this.importanceScorer as any).db;
-  }
 }

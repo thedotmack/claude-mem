@@ -13,6 +13,18 @@
 import { logger } from './logger';
 
 // ============================================================================
+// Utilities
+// ============================================================================
+
+/**
+ * Escape special regex characters in a string
+ * Prevents ReDoS attacks when constructing dynamic patterns from user input
+ */
+function escapeRegExp(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// ============================================================================
 // Types
 // ============================================================================
 
@@ -112,19 +124,22 @@ export function extractSection<T extends string>(
   fieldName: string,
   fallback: T
 ): ParseResult<T> {
+  // Escape fieldName to prevent ReDoS attacks from special regex characters
+  const escapedFieldName = escapeRegExp(fieldName);
+
   // Try standard XML tag first
-  const simpleRegex = new RegExp(`<${fieldName}>([\\s\\S]*?)</${fieldName}>`, 'i');
+  const simpleRegex = new RegExp(`<${escapedFieldName}>([\\s\\S]*?)</${escapedFieldName}>`, 'i');
   let match = simpleRegex.exec(content);
 
   // Try with potential whitespace/newlines
   if (!match) {
-    const flexibleRegex = new RegExp(`<${fieldName}[^>]*>\\s*([\\s\\S]*?)\\s*</${fieldName}>`, 'i');
+    const flexibleRegex = new RegExp(`<${escapedFieldName}[^>]*>\\s*([\\s\\S]*?)\\s*</${escapedFieldName}>`, 'i');
     match = flexibleRegex.exec(content);
   }
 
   // Try markdown-style section headers as fallback (## FIELDNAME)
   if (!match) {
-    const markdownRegex = new RegExp(`##\\s*${fieldName}[\\s\\n]+([^#]+?)(?=##|$)`, 'i');
+    const markdownRegex = new RegExp(`##\\s*${escapedFieldName}[\\s\\n]+([^#]+?)(?=##|$)`, 'i');
     match = markdownRegex.exec(content);
   }
 
@@ -219,8 +234,12 @@ export function extractList(
   elementName: string,
   fallback: string[] = []
 ): ParseResult<string[]> {
+  // Escape names to prevent ReDoS attacks from special regex characters
+  const escapedArrayName = escapeRegExp(arrayName);
+  const escapedElementName = escapeRegExp(elementName);
+
   // Find the container
-  const containerRegex = new RegExp(`<${arrayName}>([\\s\\S]*?)</${arrayName}>`, 'i');
+  const containerRegex = new RegExp(`<${escapedArrayName}>([\\s\\S]*?)</${escapedArrayName}>`, 'i');
   const containerMatch = containerRegex.exec(content);
 
   if (!containerMatch) {
@@ -237,7 +256,7 @@ export function extractList(
   const elements: string[] = [];
 
   // Extract elements
-  const elementRegex = new RegExp(`<${elementName}>([^<]+)</${elementName}>`, 'gi');
+  const elementRegex = new RegExp(`<${escapedElementName}>([^<]+)</${escapedElementName}>`, 'gi');
   let elementMatch;
 
   while ((elementMatch = elementRegex.exec(containerContent)) !== null) {

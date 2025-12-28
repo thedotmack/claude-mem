@@ -134,8 +134,8 @@ export class SessionStore {
 
         logger.info('DB', 'Migration004 applied successfully');
       }
-    } catch (error: any) {
-      logger.error('DB', 'Schema initialization error', undefined, error);
+    } catch (error: unknown) {
+      logger.error('DB', 'Schema initialization error', undefined, error instanceof Error ? error : new Error(String(error)));
       throw error;
     }
   }
