@@ -7,12 +7,36 @@
  */
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { execSync, spawnSync } from 'child_process';
-import { join } from 'path';
+import { join, isAbsolute } from 'path';
 import { homedir } from 'os';
 
 const ROOT = join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
 const MARKER = join(ROOT, '.install-version');
 const IS_WINDOWS = process.platform === 'win32';
+
+/**
+ * Determines if shell should be used for spawnSync on Windows.
+ *
+ * On Windows, using shell: true with spawnSync can cause:
+ * - DEP0190 deprecation warnings about unescaped arguments
+ * - libuv assertion failures (UV_HANDLE_CLOSING race condition)
+ *
+ * We only need shell: true when:
+ * - Running a bare command name that requires PATH resolution
+ * - The executable path is not absolute
+ *
+ * When we have a full path to an .exe, we can run it directly without shell.
+ *
+ * @param {string} executablePath - The path or command to execute
+ * @returns {boolean} - Whether to use shell option
+ */
+function needsShell(executablePath) {
+  if (!IS_WINDOWS) return false;
+  // If it's an absolute path (like C:\Users\...\bun.exe), no shell needed
+  if (isAbsolute(executablePath)) return false;
+  // Bare command names need shell for PATH resolution on Windows
+  return true;
+}
 
 // Common installation paths (handles fresh installs before PATH reload)
 const BUN_COMMON_PATHS = IS_WINDOWS
@@ -25,22 +49,26 @@ const UV_COMMON_PATHS = IS_WINDOWS
 
 /**
  * Get the Bun executable path (from PATH or common install locations)
+ * Prioritizes full paths to avoid shell usage on Windows.
  */
 function getBunPath() {
-  // Try PATH first
+  // Check common installation paths first (preferred - avoids shell on Windows)
+  const fullPath = BUN_COMMON_PATHS.find(existsSync);
+  if (fullPath) return fullPath;
+
+  // Fall back to PATH resolution (requires shell on Windows)
   try {
     const result = spawnSync('bun', ['--version'], {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
-      shell: IS_WINDOWS
+      shell: needsShell('bun')
     });
     if (result.status === 0) return 'bun';
   } catch {
     // Not in PATH
   }
 
-  // Check common installation paths
-  return BUN_COMMON_PATHS.find(existsSync) || null;
+  return null;
 }
 
 /**
@@ -61,7 +89,7 @@ function getBunVersion() {
     const result = spawnSync(bunPath, ['--version'], {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
-      shell: IS_WINDOWS
+      shell: needsShell(bunPath)
     });
     return result.status === 0 ? result.stdout.trim() : null;
   } catch {
@@ -71,22 +99,26 @@ function getBunVersion() {
 
 /**
  * Get the uv executable path (from PATH or common install locations)
+ * Prioritizes full paths to avoid shell usage on Windows.
  */
 function getUvPath() {
-  // Try PATH first
+  // Check common installation paths first (preferred - avoids shell on Windows)
+  const fullPath = UV_COMMON_PATHS.find(existsSync);
+  if (fullPath) return fullPath;
+
+  // Fall back to PATH resolution (requires shell on Windows)
   try {
     const result = spawnSync('uv', ['--version'], {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
-      shell: IS_WINDOWS
+      shell: needsShell('uv')
     });
     if (result.status === 0) return 'uv';
   } catch {
     // Not in PATH
   }
 
-  // Check common installation paths
-  return UV_COMMON_PATHS.find(existsSync) || null;
+  return null;
 }
 
 /**
@@ -107,7 +139,7 @@ function getUvVersion() {
     const result = spawnSync(uvPath, ['--version'], {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
-      shell: IS_WINDOWS
+      shell: needsShell(uvPath)
     });
     return result.status === 0 ? result.stdout.trim() : null;
   } catch {
@@ -230,10 +262,22 @@ function installDeps() {
 
   console.error('📦 Installing dependencies with Bun...');
 
-  // Quote path for Windows paths with spaces
-  const bunCmd = IS_WINDOWS && bunPath.includes(' ') ? `"${bunPath}"` : bunPath;
-
-  execSync(`${bunCmd} install`, { cwd: ROOT, stdio: 'inherit', shell: IS_WINDOWS });
+  // Use spawnSync with array args when we have a full path (avoids shell on Windows)
+  // This prevents DEP0190 warnings and libuv assertion failures
+  if (isAbsolute(bunPath)) {
+    const result = spawnSync(bunPath, ['install'], {
+      cwd: ROOT,
+      stdio: 'inherit',
+      shell: false
+    });
+    if (result.status !== 0) {
+      throw new Error(`Bun install failed with exit code ${result.status}`);
+    }
+  } else {
+    // Bare command needs shell for PATH resolution
+    const bunCmd = IS_WINDOWS && bunPath.includes(' ') ? `"${bunPath}"` : bunPath;
+    execSync(`${bunCmd} install`, { cwd: ROOT, stdio: 'inherit', shell: needsShell(bunPath) });
+  }
 
   // Write version marker
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8'));
