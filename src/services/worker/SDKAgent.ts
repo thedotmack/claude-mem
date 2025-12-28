@@ -75,6 +75,9 @@ export class SDKAgent {
           resume: session.claudeSessionId,
           disallowedTools,
           abortController: session.abortController
+          // No, you don't need to explicitly provide the Claude Code executable path. 
+          // The Agent SDK uses Claude Code by default, but the `pathToClaudeCodeExecutable` option is optional.
+          // Ref: https://platform.claude.com/docs/en/agent-sdk/typescript#types
         }
       });
 
@@ -488,6 +491,9 @@ export class SDKAgent {
   // ============================================================================
   // Configuration Helpers
   // ============================================================================
+
+  // Note: pathToClaudeCodeExecutable is optional and handled automatically by the Agent SDK.
+  // Ref: https://platform.claude.com/docs/en/agent-sdk/typescript#types
 
   /**
    * Get model ID from settings or environment
