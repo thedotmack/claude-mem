@@ -237,7 +237,12 @@ class Logger {
     // Build data part
     let dataStr = '';
     if (data !== undefined && data !== null) {
-      if (this.getLevel() === LogLevel.DEBUG && typeof data === 'object') {
+      // Handle Error objects specially - they don't JSON.stringify properly
+      if (data instanceof Error) {
+        dataStr = this.getLevel() === LogLevel.DEBUG
+          ? `\n${data.message}\n${data.stack}`
+          : ` ${data.message}`;
+      } else if (this.getLevel() === LogLevel.DEBUG && typeof data === 'object') {
         // In debug mode, show full JSON for objects
         dataStr = '\n' + JSON.stringify(data, null, 2);
       } else {
