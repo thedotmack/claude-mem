@@ -141,12 +141,50 @@ export class SessionRoutes extends BaseRouteHandler {
           provider: provider,
           error: error.message
         }, error);
+
+        // Mark all processing messages as failed so they can be retried or abandoned
+        const pendingStore = this.sessionManager.getPendingMessageStore();
+        const db = this.dbManager.getDatabase();
+        const stmt = db.prepare(`
+          SELECT id FROM pending_messages
+          WHERE session_db_id = ? AND status = 'processing'
+        `);
+        const processingMessages = stmt.all(session.sessionDbId) as { id: number }[];
+
+        for (const msg of processingMessages) {
+          pendingStore.markFailed(msg.id);
+          logger.warn('SESSION', `Marked message as failed after generator error`, {
+            sessionId: session.sessionDbId,
+            messageId: msg.id
+          });
+        }
       })
       .finally(() => {
-        logger.info('SESSION', `Generator finished`, { sessionId: session.sessionDbId });
+        const sessionDbId = session.sessionDbId;
+        logger.info('SESSION', `Generator finished`, { sessionId: sessionDbId });
         session.generatorPromise = null;
         session.currentProvider = null;
         this.workerService.broadcastProcessingStatus();
+
+        // Check if there's more work pending
+        const pendingStore = this.sessionManager.getPendingMessageStore();
+        const pendingCount = pendingStore.getPendingCount(sessionDbId);
+        if (pendingCount > 0) {
+          // Auto-restart for pending work
+          logger.info('SESSION', `Auto-restarting generator for pending work`, {
+            sessionId: sessionDbId,
+            pendingCount
+          });
+          setTimeout(() => {
+            const stillExists = this.sessionManager.getSession(sessionDbId);
+            if (stillExists && !stillExists.generatorPromise) {
+              this.startGeneratorWithProvider(stillExists, this.getSelectedProvider(), 'auto-restart');
+            }
+          }, 0);
+        } else {
+          // No more work - clean up session
+          this.sessionManager.deleteSession(sessionDbId).catch(() => {});
+        }
       });
   }
 

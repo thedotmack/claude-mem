@@ -472,11 +472,7 @@ export class SessionManager {
       // Remove from in-memory queue after yielding
       session.pendingMessages.shift();
 
-      // If we just yielded a summary, that's the end of this batch - stop the iterator
-      if (message.type === 'summarize') {
-        logger.info('SESSION', `Summary yielded - ending generator`, { sessionId: sessionDbId });
-        return;
-      }
+      // Continue processing - don't stop after summary, let the queue drain completely
     }
   }
 

@@ -670,12 +670,72 @@ export class WorkerService {
       this.resolveInitialization();
       logger.info('SYSTEM', 'Background initialization complete');
 
-      // Note: Auto-recovery of orphaned queues disabled - use /api/pending-queue/process endpoint instead
+      // Auto-recover orphaned queues on startup (process pending work from previous sessions)
+      this.processPendingQueues(50).then(result => {
+        if (result.sessionsStarted > 0) {
+          logger.info('SYSTEM', `Auto-recovered ${result.sessionsStarted} sessions with pending work`, {
+            totalPending: result.totalPendingSessions,
+            started: result.sessionsStarted,
+            sessionIds: result.startedSessionIds
+          });
+        }
+      }).catch(error => {
+        logger.warn('SYSTEM', 'Auto-recovery of pending queues failed', {}, error as Error);
+      });
     } catch (error) {
       logger.error('SYSTEM', 'Background initialization failed', {}, error as Error);
       // Don't resolve - let the promise remain pending so readiness check continues to fail
       throw error;
     }
+  }
+
+  /**
+   * Start a session with auto-restart and cleanup logic
+   * Recursively restarts the generator if there's pending work
+   */
+  private startSessionWithAutoRestart(
+    session: ReturnType<typeof this.sessionManager.getSession>,
+    getPendingCount: (sid: number) => number,
+    source: string
+  ): void {
+    if (!session) return;
+
+    const sid = session.sessionDbId;
+    logger.info('SYSTEM', `Starting generator (${source})`, {
+      sessionId: sid,
+      pendingCount: getPendingCount(sid)
+    });
+
+    session.generatorPromise = this.sdkAgent.startSession(session, this)
+      .catch(error => {
+        logger.error('SYSTEM', `Generator failed (${source})`, {
+          sessionId: sid,
+          error: error.message
+        }, error);
+      })
+      .finally(() => {
+        session.generatorPromise = null;
+        this.broadcastProcessingStatus();
+
+        // Check if there's more work pending
+        const stillPending = getPendingCount(sid);
+        if (stillPending > 0) {
+          logger.info('SYSTEM', `Auto-restarting generator for pending work`, {
+            sessionId: sid,
+            pendingCount: stillPending
+          });
+          setTimeout(() => {
+            const stillExists = this.sessionManager.getSession(sid);
+            if (stillExists && !stillExists.generatorPromise) {
+              // Recursive call for continuous processing
+              this.startSessionWithAutoRestart(stillExists, getPendingCount, 'auto-restart');
+            }
+          }, 0);
+        } else {
+          // No more work - clean up session
+          this.sessionManager.deleteSession(sid).catch(() => {});
+        }
+      });
   }
 
   /**
@@ -729,12 +789,12 @@ export class WorkerService {
           pendingCount: pendingStore.getPendingCount(sessionDbId)
         });
 
-        // Start SDK agent (non-blocking)
-        session.generatorPromise = this.sdkAgent.startSession(session, this)
-          .finally(() => {
-            session.generatorPromise = null;
-            this.broadcastProcessingStatus();
-          });
+        // Start SDK agent (non-blocking) using shared helper
+        this.startSessionWithAutoRestart(
+          session,
+          (sid) => pendingStore.getPendingCount(sid),
+          'startup-recovery'
+        );
 
         result.sessionsStarted++;
         result.startedSessionIds.push(sessionDbId);

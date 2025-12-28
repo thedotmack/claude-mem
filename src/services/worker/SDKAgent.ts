@@ -164,8 +164,8 @@ export class SDKAgent {
       }
       throw error;
     } finally {
-      // Cleanup
-      this.sessionManager.deleteSession(session.sessionDbId).catch(() => {});
+      // NOTE: Do NOT delete session here - SessionRoutes.finally() handles cleanup
+      // and auto-restart logic. Deleting here races with pending work checks.
     }
   }
 
