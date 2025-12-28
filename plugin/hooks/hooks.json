@@ -56,6 +56,22 @@
         ]
       }
     ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/scripts/worker-cli.js\" start",
+            "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/precompact-hook.js\"",
+            "timeout": 120
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [
