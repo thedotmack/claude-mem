@@ -5,6 +5,7 @@
 
 import { ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../sqlite/types.js';
 import { ModeManager } from '../domain/ModeManager.js';
+import { logger } from '../../utils/logger.js';
 
 // Token estimation constant (matches context-generator)
 const CHARS_PER_TOKEN_ESTIMATE = 4;

@@ -9,6 +9,7 @@
 import { basename } from "path";
 import { ensureWorkerRunning, getWorkerPort } from "../shared/worker-utils.js";
 import { HOOK_EXIT_CODES } from "../shared/hook-constants.js";
+import { logger } from "../utils/logger.js";
 
 // Ensure worker is running
 await ensureWorkerRunning();

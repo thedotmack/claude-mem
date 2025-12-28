@@ -10,6 +10,7 @@ import { stdin } from "process";
 import { ensureWorkerRunning, getWorkerPort } from "../shared/worker-utils.js";
 import { HOOK_TIMEOUTS } from "../shared/hook-constants.js";
 import { getProjectName } from "../utils/project-name.js";
+import { logger } from "../utils/logger.js";
 
 export interface SessionStartInput {
   session_id: string;

@@ -965,13 +965,13 @@ async function main() {
         logger.info('SYSTEM', 'Another session is spawning worker, waiting for health');
         const healthy = await waitForHealth(port, getPlatformTimeout(30000));
         if (healthy) {
-          console.log(HOOK_RESPONSE);
+          logger.info('SYSTEM', 'Worker healthy, returning success');
           process.exit(0);
         }
         // Still not healthy after wait - try to acquire lock and spawn
         const gotLock = await waitForLock('start', 5000);
         if (!gotLock) {
-          console.error('Failed to acquire lock after timeout');
+          logger.error('SYSTEM', 'Failed to acquire lock after timeout');
           process.exit(1);
         }
       }
@@ -980,7 +980,7 @@ async function main() {
         // Re-check port AFTER acquiring lock
         if (await isPortInUse(port)) {
           releaseLock();
-          console.log(HOOK_RESPONSE);
+          logger.info('SYSTEM', 'Port already in use, worker already running');
           process.exit(0);
         }
 
@@ -994,7 +994,7 @@ async function main() {
 
         if (child.pid === undefined) {
           releaseLock();
-          console.error('Failed to spawn worker daemon');
+          logger.error('SYSTEM', 'Failed to spawn worker daemon');
           process.exit(1);
         }
 
@@ -1009,11 +1009,11 @@ async function main() {
 
         if (!healthy) {
           removePidFile();
-          console.error('Worker failed to start');
+          logger.error('SYSTEM', 'Worker failed to start');
           process.exit(1);
         }
 
-        console.log(HOOK_RESPONSE);
+        logger.info('SYSTEM', 'Worker started successfully');
         process.exit(0);
       } catch (error) {
         releaseLock();
@@ -1033,7 +1033,7 @@ async function main() {
         await waitForPortFree(port, getPlatformTimeout(15000));
         removePidFile();
         releaseLock();
-        console.log(HOOK_RESPONSE);
+        logger.info('SYSTEM', 'Worker stopped successfully');
         process.exit(0);
       } catch (error) {
         releaseLock();
@@ -1048,10 +1048,10 @@ async function main() {
         logger.info('SYSTEM', 'Another session is restarting worker, waiting');
         const healthy = await waitForHealth(port, getPlatformTimeout(45000));
         if (healthy) {
-          console.log(HOOK_RESPONSE);
+          logger.info('SYSTEM', 'Worker healthy after restart');
           process.exit(0);
         }
-        console.error('Worker failed to restart (concurrent operation)');
+        logger.error('SYSTEM', 'Worker failed to restart (concurrent operation)');
         process.exit(1);
       }
 
@@ -1069,7 +1069,7 @@ async function main() {
 
         if (child.pid === undefined) {
           releaseLock();
-          console.error('Failed to spawn worker daemon during restart');
+          logger.error('SYSTEM', 'Failed to spawn worker daemon during restart');
           process.exit(1);
         }
 
@@ -1081,10 +1081,10 @@ async function main() {
 
         if (!healthy) {
           removePidFile();
-          console.error('Worker failed to restart');
+          logger.error('SYSTEM', 'Worker failed to restart');
           process.exit(1);
         }
-        console.log(HOOK_RESPONSE);
+        logger.info('SYSTEM', 'Worker restarted successfully');
         process.exit(0);
       } catch (error) {
         releaseLock();
@@ -1096,9 +1096,9 @@ async function main() {
       const running = await isPortInUse(port);
       const pidInfo = readPidFile();
       if (running && pidInfo) {
-        console.log(`Worker running (PID: ${pidInfo.pid}, Port: ${pidInfo.port})`);
+        logger.info('SYSTEM', `Worker running (PID: ${pidInfo.pid}, Port: ${pidInfo.port})`);
       } else {
-        console.log('Worker not running');
+        logger.info('SYSTEM', 'Worker not running');
       }
       process.exit(0);
     }

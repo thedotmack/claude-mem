@@ -48,9 +48,6 @@ export class SessionStore {
   /**
    * Initialize database schema using migrations (migration004)
    * This runs the core SDK tables migration if no tables exist
-   *
-   * Note: Using console.log for migration messages since they run during constructor
-   * before structured logger is available. Actual errors use console.error.
    */
   private initializeSchema(): void {
     try {
@@ -70,7 +67,7 @@ export class SessionStore {
       // Only run migration004 if no migrations have been applied
       // This creates the sdk_sessions, observations, and session_summaries tables
       if (maxApplied === 0) {
-        console.log('[SessionStore] Initializing fresh database with migration004...');
+        logger.info('DB', 'Initializing fresh database with migration004');
 
         // Migration004: SDK agent architecture tables
         this.db.run(`
@@ -134,10 +131,10 @@ export class SessionStore {
         // Record migration004 as applied
         this.db.prepare('INSERT INTO schema_versions (version, applied_at) VALUES (?, ?)').run(4, new Date().toISOString());
 
-        console.log('[SessionStore] Migration004 applied successfully');
+        logger.info('DB', 'Migration004 applied successfully');
       }
     } catch (error: any) {
-      console.error('[SessionStore] Schema initialization error:', error.message);
+      logger.error('DB', 'Schema initialization error', undefined, error);
       throw error;
     }
   }
@@ -156,7 +153,7 @@ export class SessionStore {
 
     if (!hasWorkerPort) {
       this.db.run('ALTER TABLE sdk_sessions ADD COLUMN worker_port INTEGER');
-      console.log('[SessionStore] Added worker_port column to sdk_sessions table');
+      logger.info('DB', 'Added worker_port column to sdk_sessions table');
     }
 
     // Record migration
@@ -177,7 +174,7 @@ export class SessionStore {
 
     if (!hasPromptCounter) {
       this.db.run('ALTER TABLE sdk_sessions ADD COLUMN prompt_counter INTEGER DEFAULT 0');
-      console.log('[SessionStore] Added prompt_counter column to sdk_sessions table');
+      logger.info('DB', 'Added prompt_counter column to sdk_sessions table');
     }
 
     // Check observations for prompt_number
@@ -186,7 +183,7 @@ export class SessionStore {
 
     if (!obsHasPromptNumber) {
       this.db.run('ALTER TABLE observations ADD COLUMN prompt_number INTEGER');
-      console.log('[SessionStore] Added prompt_number column to observations table');
+      logger.info('DB', 'Added prompt_number column to observations table');
     }
 
     // Check session_summaries for prompt_number
@@ -195,7 +192,7 @@ export class SessionStore {
 
     if (!sumHasPromptNumber) {
       this.db.run('ALTER TABLE session_summaries ADD COLUMN prompt_number INTEGER');
-      console.log('[SessionStore] Added prompt_number column to session_summaries table');
+      logger.info('DB', 'Added prompt_number column to session_summaries table');
     }
 
     // Record migration
@@ -220,7 +217,7 @@ export class SessionStore {
       return;
     }
 
-    console.log('[SessionStore] Removing UNIQUE constraint from session_summaries.sdk_session_id...');
+    logger.info('DB', 'Removing UNIQUE constraint from session_summaries.sdk_session_id');
 
     // Begin transaction
     this.db.run('BEGIN TRANSACTION');
@@ -275,7 +272,7 @@ export class SessionStore {
       // Record migration
       this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(7, new Date().toISOString());
 
-      console.log('[SessionStore] Successfully removed UNIQUE constraint from session_summaries.sdk_session_id');
+      logger.info('DB', 'Successfully removed UNIQUE constraint from session_summaries.sdk_session_id');
     } catch (error: any) {
       // Rollback on error
       this.db.run('ROLLBACK');
@@ -301,7 +298,7 @@ export class SessionStore {
       return;
     }
 
-    console.log('[SessionStore] Adding hierarchical fields to observations table...');
+    logger.info('DB', 'Adding hierarchical fields to observations table');
 
     // Add new columns
     this.db.run(`
@@ -317,7 +314,7 @@ export class SessionStore {
     // Record migration
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(8, new Date().toISOString());
 
-    console.log('[SessionStore] Successfully added hierarchical fields to observations table');
+    logger.info('DB', 'Successfully added hierarchical fields to observations table');
   }
 
   /**
@@ -339,7 +336,7 @@ export class SessionStore {
       return;
     }
 
-    console.log('[SessionStore] Making observations.text nullable...');
+    logger.info('DB', 'Making observations.text nullable');
 
     // Begin transaction
     this.db.run('BEGIN TRANSACTION');
@@ -396,7 +393,7 @@ export class SessionStore {
       // Record migration
       this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(9, new Date().toISOString());
 
-      console.log('[SessionStore] Successfully made observations.text nullable');
+      logger.info('DB', 'Successfully made observations.text nullable');
     } catch (error: any) {
       // Rollback on error
       this.db.run('ROLLBACK');
@@ -420,7 +417,7 @@ export class SessionStore {
       return;
     }
 
-    console.log('[SessionStore] Creating user_prompts table with FTS5 support...');
+    logger.info('DB', 'Creating user_prompts table with FTS5 support');
 
     // Begin transaction
     this.db.run('BEGIN TRANSACTION');
@@ -479,7 +476,7 @@ export class SessionStore {
       // Record migration
       this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(10, new Date().toISOString());
 
-      console.log('[SessionStore] Successfully created user_prompts table with FTS5 support');
+      logger.info('DB', 'Successfully created user_prompts table with FTS5 support');
     } catch (error: any) {
       // Rollback on error
       this.db.run('ROLLBACK');
@@ -504,7 +501,7 @@ export class SessionStore {
 
       if (!obsHasDiscoveryTokens) {
         this.db.run('ALTER TABLE observations ADD COLUMN discovery_tokens INTEGER DEFAULT 0');
-        console.log('[SessionStore] Added discovery_tokens column to observations table');
+        logger.info('DB', 'Added discovery_tokens column to observations table');
       }
 
       // Check if discovery_tokens column exists in session_summaries table
@@ -513,13 +510,13 @@ export class SessionStore {
 
       if (!sumHasDiscoveryTokens) {
         this.db.run('ALTER TABLE session_summaries ADD COLUMN discovery_tokens INTEGER DEFAULT 0');
-        console.log('[SessionStore] Added discovery_tokens column to session_summaries table');
+        logger.info('DB', 'Added discovery_tokens column to session_summaries table');
       }
 
       // Record migration only after successful column verification/addition
       this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(11, new Date().toISOString());
     } catch (error: any) {
-      console.error('[SessionStore] Discovery tokens migration error:', error.message);
+      logger.error('DB', 'Discovery tokens migration error', undefined, error);
       throw error; // Re-throw to prevent silent failures
     }
   }
@@ -542,7 +539,7 @@ export class SessionStore {
         return;
       }
 
-      console.log('[SessionStore] Creating pending_messages table...');
+      logger.info('DB', 'Creating pending_messages table');
 
       this.db.run(`
         CREATE TABLE pending_messages (
@@ -572,9 +569,9 @@ export class SessionStore {
 
       this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(16, new Date().toISOString());
 
-      console.log('[SessionStore] pending_messages table created successfully');
+      logger.info('DB', 'pending_messages table created successfully');
     } catch (error: any) {
-      console.error('[SessionStore] Pending messages table migration error:', error.message);
+      logger.error('DB', 'Pending messages table migration error', undefined, error);
       throw error;
     }
   }
@@ -1387,7 +1384,7 @@ export class SessionStore {
         startEpoch = beforeRecords.length > 0 ? beforeRecords[beforeRecords.length - 1].created_at_epoch : anchorEpoch;
         endEpoch = afterRecords.length > 0 ? afterRecords[afterRecords.length - 1].created_at_epoch : anchorEpoch;
       } catch (err: any) {
-        console.error('[SessionStore] Error getting boundary observations:', err.message, project ? `(project: ${project})` : '(all projects)');
+        logger.error('DB', 'Error getting boundary observations', undefined, { error: err, project });
         return { observations: [], sessions: [], prompts: [] };
       }
     } else {
@@ -1419,7 +1416,7 @@ export class SessionStore {
         startEpoch = beforeRecords.length > 0 ? beforeRecords[beforeRecords.length - 1].created_at_epoch : anchorEpoch;
         endEpoch = afterRecords.length > 0 ? afterRecords[afterRecords.length - 1].created_at_epoch : anchorEpoch;
       } catch (err: any) {
-        console.error('[SessionStore] Error getting boundary timestamps:', err.message, project ? `(project: ${project})` : '(all projects)');
+        logger.error('DB', 'Error getting boundary timestamps', undefined, { error: err, project });
         return { observations: [], sessions: [], prompts: [] };
       }
     }
@@ -1475,7 +1472,7 @@ export class SessionStore {
         }))
       };
     } catch (err: any) {
-      console.error('[SessionStore] Error querying timeline records:', err.message, project ? `(project: ${project})` : '(all projects)');
+      logger.error('DB', 'Error querying timeline records', undefined, { error: err, project });
       return { observations: [], sessions: [], prompts: [] };
     }
   }

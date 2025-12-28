@@ -11,6 +11,7 @@
 
 import { SessionManager } from '../SessionManager.js';
 import { SessionEventBroadcaster } from '../events/SessionEventBroadcaster.js';
+import { logger } from '../../../utils/logger.js';
 
 export class SessionCompletionHandler {
   constructor(
