@@ -173,7 +173,7 @@ export class SessionRoutes extends BaseRouteHandler {
     if (sessionDbId === null) return;
 
     const { userPrompt, promptNumber } = req.body;
-    console.log('[SESSION-ROUTES] handleSessionInit called:', {
+    logger.info('HTTP', 'SessionRoutes: handleSessionInit called', {
       sessionDbId,
       promptNumber,
       has_userPrompt: !!userPrompt
@@ -488,7 +488,7 @@ export class SessionRoutes extends BaseRouteHandler {
   private handleSessionInitByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
     const { claudeSessionId, project, prompt } = req.body;
 
-    console.log('[SESSION-ROUTES] handleSessionInitByClaudeId called:', {
+    logger.info('HTTP', 'SessionRoutes: handleSessionInitByClaudeId called', {
       claudeSessionId,
       project,
       prompt_length: prompt?.length
@@ -504,7 +504,7 @@ export class SessionRoutes extends BaseRouteHandler {
     // Step 1: Create/get SDK session (idempotent INSERT OR IGNORE)
     const sessionDbId = store.createSDKSession(claudeSessionId, project, prompt);
 
-    console.log('[SESSION-ROUTES] createSDKSession returned:', {
+    logger.info('HTTP', 'SessionRoutes: createSDKSession returned', {
       sessionDbId,
       claudeSessionId
     });
@@ -513,7 +513,7 @@ export class SessionRoutes extends BaseRouteHandler {
     const currentCount = store.getPromptNumberFromUserPrompts(claudeSessionId);
     const promptNumber = currentCount + 1;
 
-    console.log('[SESSION-ROUTES] Calculated promptNumber:', {
+    logger.info('HTTP', 'SessionRoutes: Calculated promptNumber', {
       sessionDbId,
       promptNumber,
       currentCount

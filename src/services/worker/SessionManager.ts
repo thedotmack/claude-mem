@@ -47,7 +47,7 @@ export class SessionManager {
    * Initialize a new session or return existing one
    */
   initializeSession(sessionDbId: number, currentUserPrompt?: string, promptNumber?: number): ActiveSession {
-    console.log('[SESSION-MANAGER] initializeSession called:', {
+    logger.info('SESSION', 'initializeSession called', {
       sessionDbId,
       promptNumber,
       has_currentUserPrompt: !!currentUserPrompt
@@ -56,7 +56,7 @@ export class SessionManager {
     // Check if already active
     let session = this.sessions.get(sessionDbId);
     if (session) {
-      console.log('[SESSION-MANAGER] Returning cached session:', {
+      logger.info('SESSION', 'Returning cached session', {
         sessionDbId,
         claudeSessionId: session.claudeSessionId,
         lastPromptNumber: session.lastPromptNumber
@@ -98,7 +98,7 @@ export class SessionManager {
     // Fetch from database
     const dbSession = this.dbManager.getSessionById(sessionDbId);
 
-    console.log('[SESSION-MANAGER] Fetched session from database:', {
+    logger.info('SESSION', 'Fetched session from database', {
       sessionDbId,
       claude_session_id: dbSession.claude_session_id,
       sdk_session_id: dbSession.sdk_session_id
@@ -141,7 +141,7 @@ export class SessionManager {
       currentProvider: null  // Will be set when generator starts
     };
 
-    console.log('[SESSION-MANAGER] Creating new session object:', {
+    logger.info('SESSION', 'Creating new session object', {
       sessionDbId,
       claudeSessionId: dbSession.claude_session_id,
       lastPromptNumber: promptNumber || this.dbManager.getSessionStore().getPromptNumberFromUserPrompts(dbSession.claude_session_id)

@@ -2,6 +2,7 @@ import { stdin } from 'process';
 import { STANDARD_HOOK_RESPONSE } from './hook-response.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
 import { getProjectName } from '../utils/project-name.js';
+import { logger } from '../utils/logger.js';
 
 export interface UserPromptSubmitInput {
   session_id: string;
@@ -24,19 +25,11 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
   const { session_id, cwd, prompt } = input;
   const project = getProjectName(cwd);
 
-  console.log('[NEW-HOOK] Received hook input:', {
-    session_id: session_id,
-    has_prompt: !!prompt,
-    cwd: cwd
-  });
+  logger.info('HOOK', 'new-hook: Received hook input', { session_id, has_prompt: !!prompt, cwd });
 
   const port = getWorkerPort();
 
-  console.log('[NEW-HOOK] Calling /api/sessions/init:', {
-    claudeSessionId: session_id,
-    project,
-    prompt_length: prompt?.length
-  });
+  logger.info('HOOK', 'new-hook: Calling /api/sessions/init', { claudeSessionId: session_id, project, prompt_length: prompt?.length });
 
   // Initialize session via HTTP - handles DB operations and privacy checks
   const initResponse = await fetch(`http://127.0.0.1:${port}/api/sessions/init`, {
@@ -58,30 +51,22 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
   const sessionDbId = initResult.sessionDbId;
   const promptNumber = initResult.promptNumber;
 
-  console.log('[NEW-HOOK] Received from /api/sessions/init:', {
-    sessionDbId: sessionDbId,
-    promptNumber: promptNumber,
-    skipped: initResult.skipped
-  });
+  logger.info('HOOK', 'new-hook: Received from /api/sessions/init', { sessionDbId, promptNumber, skipped: initResult.skipped });
 
   // Check if prompt was entirely private (worker performs privacy check)
   if (initResult.skipped && initResult.reason === 'private') {
-    console.error(`[new-hook] Session ${sessionDbId}, prompt #${promptNumber} (fully private - skipped)`);
+    logger.info('HOOK', `new-hook: Session ${sessionDbId}, prompt #${promptNumber} (fully private - skipped)`);
     console.log(STANDARD_HOOK_RESPONSE);
     return;
   }
 
-  console.error(`[new-hook] Session ${sessionDbId}, prompt #${promptNumber}`);
+  logger.info('HOOK', `new-hook: Session ${sessionDbId}, prompt #${promptNumber}`);
 
   // Strip leading slash from commands for memory agent
   // /review 101 → review 101 (more semantic for observations)
   const cleanedPrompt = prompt.startsWith('/') ? prompt.substring(1) : prompt;
 
-  console.log('[NEW-HOOK] Calling /sessions/{sessionDbId}/init:', {
-    sessionDbId: sessionDbId,
-    promptNumber: promptNumber,
-    userPrompt_length: cleanedPrompt?.length
-  });
+  logger.info('HOOK', 'new-hook: Calling /sessions/{sessionDbId}/init', { sessionDbId, promptNumber, userPrompt_length: cleanedPrompt?.length });
 
   // Initialize SDK agent session via HTTP (starts the agent!)
   const response = await fetch(`http://127.0.0.1:${port}/sessions/${sessionDbId}/init`, {
