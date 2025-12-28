@@ -801,6 +801,21 @@ export class WorkerService {
   }
 
   /**
+   * Purge all pending messages from the database
+   * @returns Number of messages deleted
+   */
+  async purgePendingQueues(): Promise<number> {
+    const { PendingMessageStore } = await import('./sqlite/PendingMessageStore.js');
+    const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
+    const count = pendingStore.purgeAll();
+    
+    logger.info('SYSTEM', 'Queue purged', { deletedCount: count });
+    this.broadcastProcessingStatus();
+    
+    return count;
+  }
+
+  /**
    * Extract a specific section from instruction content
    * Used by /api/instructions endpoint for progressive instruction loading
    */

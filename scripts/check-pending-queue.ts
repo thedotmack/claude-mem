@@ -5,6 +5,7 @@
  * Usage:
  *   bun scripts/check-pending-queue.ts           # Check status and prompt to process
  *   bun scripts/check-pending-queue.ts --process # Auto-process without prompting
+ *   bun scripts/check-pending-queue.ts --purge   # Purge all pending messages
  *   bun scripts/check-pending-queue.ts --limit 5 # Process up to 5 sessions
  */
 
@@ -70,6 +71,16 @@ async function processQueue(limit: number): Promise<ProcessResponse> {
   return res.json();
 }
 
+async function purgeQueue(): Promise<{ success: boolean; deletedCount: number }> {
+  const res = await fetch(`${WORKER_URL}/api/pending-queue/purge`, {
+    method: 'POST'
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to purge queue: ${res.status}`);
+  }
+  return res.json();
+}
+
 function formatAge(epochMs: number): string {
   const ageMs = Date.now() - epochMs;
   const minutes = Math.floor(ageMs / 60000);
@@ -115,11 +126,15 @@ Usage:
 Options:
   --help, -h     Show this help message
   --process      Auto-process without prompting
+  --purge        Purge all pending messages from the queue
   --limit N      Process up to N sessions (default: 10)
 
 Examples:
   # Check queue status interactively
   bun scripts/check-pending-queue.ts
+
+  # Purge all messages
+  bun scripts/check-pending-queue.ts --purge
 
   # Auto-process up to 10 sessions
   bun scripts/check-pending-queue.ts --process
@@ -137,6 +152,7 @@ What is this for?
   }
 
   const autoProcess = args.includes('--process');
+  const doPurge = args.includes('--purge');
   const limitArg = args.find((_, i) => args[i - 1] === '--limit');
   const limit = limitArg ? parseInt(limitArg, 10) : 10;
 
@@ -150,6 +166,20 @@ What is this for?
     process.exit(1);
   }
   console.log('Worker status: Running\n');
+
+  // Handle Purge
+  if (doPurge) {
+    const answer = await prompt(`Are you sure you want to purge ALL pending messages? [y/N]: `);
+    if (answer.toLowerCase() !== 'y') {
+      console.log('\nCancelled.\n');
+      process.exit(0);
+    }
+    
+    console.log('\nPurging queue...');
+    const result = await purgeQueue();
+    console.log(`Successfully deleted ${result.deletedCount} messages from the queue.\n`);
+    process.exit(0);
+  }
 
   // Get queue status
   const status = await getQueueStatus();

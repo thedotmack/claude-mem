@@ -55,6 +55,7 @@ export class DataRoutes extends BaseRouteHandler {
     // Pending queue management endpoints
     app.get('/api/pending-queue', this.handleGetPendingQueue.bind(this));
     app.post('/api/pending-queue/process', this.handleProcessPendingQueue.bind(this));
+    app.post('/api/pending-queue/purge', this.handlePurgePendingQueue.bind(this));
 
     // Import endpoint
     app.post('/api/import', this.handleImport.bind(this));
@@ -282,6 +283,19 @@ export class DataRoutes extends BaseRouteHandler {
     const activeSessions = this.sessionManager.getActiveSessionCount();
 
     res.json({ status: 'ok', isProcessing, queueDepth, activeSessions });
+  });
+
+  /**
+   * Purge all pending messages from the queue
+   * POST /api/pending-queue/purge
+   */
+  private handlePurgePendingQueue = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const deletedCount = await this.workerService.purgePendingQueues();
+
+    res.json({
+      success: true,
+      deletedCount
+    });
   });
 
   /**
