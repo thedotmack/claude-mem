@@ -14,10 +14,195 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
 import { logger } from '../utils/logger.js';
-import { exec, execSync } from 'child_process';
+import { exec, execSync, spawn } from 'child_process';
+import { homedir } from 'os';
+import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync } from 'fs';
 import { promisify } from 'util';
 
 const execAsync = promisify(exec);
+
+// PID file management for self-spawn pattern
+const DATA_DIR = path.join(homedir(), '.claude-mem');
+const PID_FILE = path.join(DATA_DIR, 'worker.pid');
+const HOOK_RESPONSE = '{"continue": true, "suppressOutput": true}';
+
+interface PidInfo {
+  pid: number;
+  port: number;
+  startedAt: string;
+}
+
+// PID file utility functions
+function writePidFile(info: PidInfo): void {
+  mkdirSync(DATA_DIR, { recursive: true });
+  writeFileSync(PID_FILE, JSON.stringify(info, null, 2));
+}
+
+function readPidFile(): PidInfo | null {
+  try {
+    if (!existsSync(PID_FILE)) return null;
+    return JSON.parse(readFileSync(PID_FILE, 'utf-8'));
+  } catch (error) {
+    logger.warn('SYSTEM', 'Failed to read PID file', { path: PID_FILE, error: (error as Error).message });
+    return null;
+  }
+}
+
+function removePidFile(): void {
+  try {
+    if (existsSync(PID_FILE)) unlinkSync(PID_FILE);
+  } catch (error) {
+    logger.warn('SYSTEM', 'Failed to remove PID file', { path: PID_FILE, error: (error as Error).message });
+  }
+}
+
+// Lockfile for CLI command mutual exclusion (prevents race conditions on Windows)
+const LOCK_FILE = path.join(DATA_DIR, 'worker.lock');
+const LOCK_STALE_MS = 120000; // Lock considered stale after 2 minutes
+
+interface LockInfo {
+  pid: number;
+  command: string;
+  startedAt: string;
+}
+
+/**
+ * Clean up stale lock from crashed processes
+ */
+function cleanupStaleLock(): void {
+  try {
+    if (!existsSync(LOCK_FILE)) return;
+    const lockData = readFileSync(LOCK_FILE, 'utf-8');
+    const lockInfo: LockInfo = JSON.parse(lockData);
+    const lockAge = Date.now() - new Date(lockInfo.startedAt).getTime();
+    if (lockAge > LOCK_STALE_MS) {
+      logger.warn('SYSTEM', 'Removing stale lock', {
+        lockAge: Math.round(lockAge / 1000) + 's',
+        originalPid: lockInfo.pid,
+        originalCommand: lockInfo.command
+      });
+      unlinkSync(LOCK_FILE);
+    }
+  } catch {
+    // If we can't read the lock, it's likely corrupted - remove it
+    try { unlinkSync(LOCK_FILE); } catch {}
+  }
+}
+
+/**
+ * Acquire exclusive lock for worker operations
+ * Uses atomic file creation (O_EXCL) for cross-process safety
+ */
+function acquireLock(command: string): boolean {
+  mkdirSync(DATA_DIR, { recursive: true });
+  cleanupStaleLock();
+
+  const lockInfo: LockInfo = {
+    pid: process.pid,
+    command,
+    startedAt: new Date().toISOString()
+  };
+
+  try {
+    // O_EXCL ensures atomic creation - fails if file exists
+    const fd = fs.openSync(LOCK_FILE, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY);
+    fs.writeSync(fd, JSON.stringify(lockInfo, null, 2));
+    fs.closeSync(fd);
+    return true;
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+      return false;
+    }
+    logger.warn('SYSTEM', 'Lock acquisition error', { error: (error as Error).message });
+    return false;
+  }
+}
+
+/**
+ * Release lock file
+ */
+function releaseLock(): void {
+  try {
+    if (existsSync(LOCK_FILE)) unlinkSync(LOCK_FILE);
+  } catch (error) {
+    logger.warn('SYSTEM', 'Lock release error', { error: (error as Error).message });
+  }
+}
+
+/**
+ * Wait for lock with timeout
+ */
+async function waitForLock(command: string, timeoutMs: number): Promise<boolean> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (acquireLock(command)) return true;
+    await new Promise(r => setTimeout(r, 200));
+  }
+  return false;
+}
+
+/**
+ * Get platform-adjusted timeout (Windows socket cleanup is slower)
+ */
+function getPlatformTimeout(baseMs: number): number {
+  const WINDOWS_MULTIPLIER = 2.0;
+  return process.platform === 'win32' ? Math.round(baseMs * WINDOWS_MULTIPLIER) : baseMs;
+}
+
+async function isPortInUse(port: number): Promise<boolean> {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/api/health`, {
+      signal: AbortSignal.timeout(2000)
+    });
+    return response.ok;
+  } catch { return false; }
+}
+
+async function waitForHealth(port: number, timeoutMs: number = 30000): Promise<boolean> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/api/readiness`, {
+        signal: AbortSignal.timeout(2000)
+      });
+      if (response.ok) return true;
+    } catch {
+      // Not ready yet
+    }
+    await new Promise(r => setTimeout(r, 500));
+  }
+  return false;
+}
+
+async function httpShutdown(port: number): Promise<boolean> {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/api/admin/shutdown`, {
+      method: 'POST',
+      signal: AbortSignal.timeout(5000)
+    });
+    if (!response.ok) {
+      logger.warn('SYSTEM', 'Shutdown request returned error', { port, status: response.status });
+      return false;
+    }
+    return true;
+  } catch (error) {
+    // Connection refused is expected if worker already stopped
+    const isConnectionRefused = (error as Error).message?.includes('ECONNREFUSED');
+    if (!isConnectionRefused) {
+      logger.warn('SYSTEM', 'Shutdown request failed', { port, error: (error as Error).message });
+    }
+    return false;
+  }
+}
+
+async function waitForPortFree(port: number, timeoutMs: number = 10000): Promise<boolean> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (!(await isPortInUse(port))) return true;
+    await new Promise(r => setTimeout(r, 500));
+  }
+  return false;
+}
 
 // Import composed service layer
 import { DatabaseManager } from './worker/DatabaseManager.js';
@@ -25,6 +210,7 @@ import { SessionManager } from './worker/SessionManager.js';
 import { SSEBroadcaster } from './worker/SSEBroadcaster.js';
 import { SDKAgent } from './worker/SDKAgent.js';
 import { GeminiAgent } from './worker/GeminiAgent.js';
+import { OpenRouterAgent } from './worker/OpenRouterAgent.js';
 import { PaginationHelper } from './worker/PaginationHelper.js';
 import { SettingsManager } from './worker/SettingsManager.js';
 import { SearchManager } from './worker/SearchManager.js';
@@ -59,6 +245,7 @@ export class WorkerService {
   private sseBroadcaster: SSEBroadcaster;
   private sdkAgent: SDKAgent;
   private geminiAgent: GeminiAgent;
+  private openRouterAgent: OpenRouterAgent;
   private paginationHelper: PaginationHelper;
   private settingsManager: SettingsManager;
   private sessionEventBroadcaster: SessionEventBroadcaster;
@@ -92,6 +279,8 @@ export class WorkerService {
     this.sdkAgent = new SDKAgent(this.dbManager, this.sessionManager);
     this.geminiAgent = new GeminiAgent(this.dbManager, this.sessionManager);
     this.geminiAgent.setFallbackAgent(this.sdkAgent);  // Enable fallback to Claude on Gemini API failure
+    this.openRouterAgent = new OpenRouterAgent(this.dbManager, this.sessionManager);
+    this.openRouterAgent.setFallbackAgent(this.sdkAgent);  // Enable fallback to Claude on OpenRouter API failure
     this.paginationHelper = new PaginationHelper(this.dbManager);
     this.settingsManager = new SettingsManager(this.dbManager);
     this.sessionEventBroadcaster = new SessionEventBroadcaster(this.sseBroadcaster, this);
@@ -109,7 +298,7 @@ export class WorkerService {
 
     // Initialize route handlers (SearchRoutes will use MCP client initially, then switch to SearchManager after DB init)
     this.viewerRoutes = new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager);
-    this.sessionRoutes = new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.sessionEventBroadcaster, this);
+    this.sessionRoutes = new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.sessionEventBroadcaster, this);
     this.dataRoutes = new DataRoutes(this.paginationHelper, this.dbManager, this.sessionManager, this.sseBroadcaster, this, this.startTime);
     // SearchRoutes needs SearchManager which requires initialized DB - will be created in initializeBackground()
     this.searchRoutes = null;
@@ -274,7 +463,7 @@ export class WorkerService {
     this.app.get('/api/context/inject', async (req, res, next) => {
       try {
         // Wait for initialization to complete (with timeout)
-        const timeoutMs = 30000; // 30 second timeout
+        const timeoutMs = 300000; // 5 minute timeout for slow systems
         const timeoutPromise = new Promise((_, reject) => 
           setTimeout(() => reject(new Error('Initialization timeout')), timeoutMs)
         );
@@ -334,7 +523,7 @@ export class WorkerService {
     if (isWindows) {
       // Windows: Use PowerShell Get-CimInstance to find chroma-mcp processes
       const cmd = `powershell -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -like '*python*' -and $_.CommandLine -like '*chroma-mcp*' } | Select-Object -ExpandProperty ProcessId"`;
-      const { stdout } = await execAsync(cmd, { timeout: 5000 });
+      const { stdout } = await execAsync(cmd, { timeout: 60000 });
 
       if (!stdout.trim()) {
         logger.debug('SYSTEM', 'No orphaned chroma-mcp processes found (Windows)');
@@ -389,10 +578,20 @@ export class WorkerService {
           logger.warn('SYSTEM', 'Skipping invalid PID', { pid });
           continue;
         }
-        execSync(`taskkill /PID ${pid} /T /F`, { timeout: 5000, stdio: 'ignore' });
+        try {
+          execSync(`taskkill /PID ${pid} /T /F`, { timeout: 60000, stdio: 'ignore' });
+        } catch {
+          // Process may have already exited - continue cleanup
+        }
       }
     } else {
-      await execAsync(`kill ${pids.join(' ')}`);
+      for (const pid of pids) {
+        try {
+          process.kill(pid, 'SIGKILL');
+        } catch {
+          // Process already exited - that's fine
+        }
+      }
     }
 
     logger.info('SYSTEM', 'Orphaned processes cleaned up', { count: pids.length });
@@ -503,11 +702,11 @@ export class WorkerService {
         this.mcpReady = false;
       };
 
-      // Add timeout guard to prevent hanging on MCP connection (15 seconds)
-      const MCP_INIT_TIMEOUT_MS = 15000;
+      // Add timeout guard to prevent hanging on MCP connection (5 minutes for slow systems)
+      const MCP_INIT_TIMEOUT_MS = 300000;
       const mcpConnectionPromise = this.mcpClient.connect(transport);
       const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('MCP connection timeout after 15s')), MCP_INIT_TIMEOUT_MS)
+        setTimeout(() => reject(new Error('MCP connection timeout after 5 minutes')), MCP_INIT_TIMEOUT_MS)
       );
 
       await Promise.race([mcpConnectionPromise, timeoutPromise]);
@@ -698,13 +897,18 @@ export class WorkerService {
       return [];
     }
 
-    const cmd = `powershell -Command "Get-CimInstance Win32_Process | Where-Object { $_.ParentProcessId -eq ${parentPid} } | Select-Object -ExpandProperty ProcessId"`;
-    const { stdout } = await execAsync(cmd, { timeout: 5000 });
-    return stdout
-      .trim()
-      .split('\n')
-      .map(s => parseInt(s.trim(), 10))
-      .filter(n => !isNaN(n) && Number.isInteger(n) && n > 0); // SECURITY: Validate each PID
+    try {
+      const cmd = `powershell -Command "Get-CimInstance Win32_Process | Where-Object { $_.ParentProcessId -eq ${parentPid} } | Select-Object -ExpandProperty ProcessId"`;
+      const { stdout } = await execAsync(cmd, { timeout: 60000 });
+      return stdout
+        .trim()
+        .split('\n')
+        .map(s => parseInt(s.trim(), 10))
+        .filter(n => !isNaN(n) && Number.isInteger(n) && n > 0); // SECURITY: Validate each PID
+    } catch (error) {
+      logger.warn('SYSTEM', 'Failed to enumerate child processes', { parentPid, error: (error as Error).message });
+      return []; // Fail safely - continue shutdown without child process cleanup
+    }
   }
 
   /**
@@ -717,12 +921,17 @@ export class WorkerService {
       return;
     }
 
-    if (process.platform === 'win32') {
-      // /T kills entire process tree, /F forces termination
-      await execAsync(`taskkill /PID ${pid} /T /F`, { timeout: 5000 });
+    try {
+      if (process.platform === 'win32') {
+        // /T kills entire process tree, /F forces termination
+        await execAsync(`taskkill /PID ${pid} /T /F`, { timeout: 60000 });
+      } else {
+        process.kill(pid, 'SIGKILL');
+      }
       logger.info('SYSTEM', 'Killed process', { pid });
-    } else {
-      process.kill(pid, 'SIGKILL');
+    } catch {
+      // Process may have already exited - continue shutdown
+      logger.debug('SYSTEM', 'Process already exited during force kill', { pid });
     }
   }
 
@@ -734,8 +943,12 @@ export class WorkerService {
 
     while (Date.now() - start < timeoutMs) {
       const stillAlive = pids.filter(pid => {
-        process.kill(pid, 0); // Signal 0 checks if process exists - throws if dead
-        return true;
+        try {
+          process.kill(pid, 0);
+          return true;
+        } catch {
+          return false;
+        }
       });
 
       if (stillAlive.length === 0) {
@@ -793,50 +1006,206 @@ export class WorkerService {
 }
 
 // ============================================================================
-// Main Entry Point
+// CLI Entry Point
 // ============================================================================
 
-/**
- * Start the worker service (if running as main module)
- * Note: Using require.main check for CJS compatibility (build outputs CJS)
- */
+async function main() {
+  const command = process.argv[2];
+  const port = getWorkerPort();
+
+  switch (command) {
+    case 'start': {
+      // Acquire lock BEFORE checking port to prevent race condition
+      // If we can't get lock, another session is spawning - wait for health instead
+      if (!acquireLock('start')) {
+        logger.info('SYSTEM', 'Another session is spawning worker, waiting for health');
+        const healthy = await waitForHealth(port, getPlatformTimeout(30000));
+        if (healthy) {
+          logger.info('SYSTEM', 'Worker healthy, returning success');
+          process.exit(0);
+        }
+        // Still not healthy after wait - try to acquire lock and spawn
+        const gotLock = await waitForLock('start', 5000);
+        if (!gotLock) {
+          logger.error('SYSTEM', 'Failed to acquire lock after timeout');
+          process.exit(1);
+        }
+      }
+
+      try {
+        // Re-check port AFTER acquiring lock
+        if (await isPortInUse(port)) {
+          releaseLock();
+          logger.info('SYSTEM', 'Port already in use, worker already running');
+          process.exit(0);
+        }
+
+        // Spawn self as daemon
+        const child = spawn(process.execPath, [__filename, '--daemon'], {
+          detached: true,
+          stdio: 'ignore',
+          windowsHide: true,
+          env: { ...process.env, CLAUDE_MEM_WORKER_PORT: String(port) }
+        });
+
+        if (child.pid === undefined) {
+          releaseLock();
+          logger.error('SYSTEM', 'Failed to spawn worker daemon');
+          process.exit(1);
+        }
+
+        child.unref();
+
+        // Write PID file
+        writePidFile({ pid: child.pid, port, startedAt: new Date().toISOString() });
+
+        // Wait for health with platform-adjusted timeout
+        const healthy = await waitForHealth(port, getPlatformTimeout(30000));
+        releaseLock();
+
+        if (!healthy) {
+          removePidFile();
+          logger.error('SYSTEM', 'Worker failed to start');
+          process.exit(1);
+        }
+
+        logger.info('SYSTEM', 'Worker started successfully');
+        process.exit(0);
+      } catch (error) {
+        releaseLock();
+        throw error;
+      }
+    }
+
+    case 'stop': {
+      // Acquire lock for stop operation
+      if (!acquireLock('stop')) {
+        // Wait briefly for concurrent operation to complete
+        await new Promise(r => setTimeout(r, 2000));
+      }
+
+      try {
+        await httpShutdown(port);
+        await waitForPortFree(port, getPlatformTimeout(15000));
+        removePidFile();
+        releaseLock();
+        logger.info('SYSTEM', 'Worker stopped successfully');
+        process.exit(0);
+      } catch (error) {
+        releaseLock();
+        throw error;
+      }
+    }
+
+    case 'restart': {
+      // Acquire lock for restart operation
+      if (!acquireLock('restart')) {
+        // Another session is already restarting - wait for health
+        logger.info('SYSTEM', 'Another session is restarting worker, waiting');
+        const healthy = await waitForHealth(port, getPlatformTimeout(45000));
+        if (healthy) {
+          logger.info('SYSTEM', 'Worker healthy after restart');
+          process.exit(0);
+        }
+        logger.error('SYSTEM', 'Worker failed to restart (concurrent operation)');
+        process.exit(1);
+      }
+
+      try {
+        await httpShutdown(port);
+        await waitForPortFree(port, getPlatformTimeout(15000));
+        removePidFile();
+
+        const child = spawn(process.execPath, [__filename, '--daemon'], {
+          detached: true,
+          stdio: 'ignore',
+          windowsHide: true,
+          env: { ...process.env, CLAUDE_MEM_WORKER_PORT: String(port) }
+        });
+
+        if (child.pid === undefined) {
+          releaseLock();
+          logger.error('SYSTEM', 'Failed to spawn worker daemon during restart');
+          process.exit(1);
+        }
+
+        child.unref();
+        writePidFile({ pid: child.pid, port, startedAt: new Date().toISOString() });
+
+        const healthy = await waitForHealth(port, getPlatformTimeout(30000));
+        releaseLock();
+
+        if (!healthy) {
+          removePidFile();
+          logger.error('SYSTEM', 'Worker failed to restart');
+          process.exit(1);
+        }
+        logger.info('SYSTEM', 'Worker restarted successfully');
+        process.exit(0);
+      } catch (error) {
+        releaseLock();
+        throw error;
+      }
+    }
+
+    case 'status': {
+      const running = await isPortInUse(port);
+      const pidInfo = readPidFile();
+      if (running && pidInfo) {
+        logger.info('SYSTEM', `Worker running (PID: ${pidInfo.pid}, Port: ${pidInfo.port})`);
+      } else {
+        logger.info('SYSTEM', 'Worker not running');
+      }
+      process.exit(0);
+    }
+
+    case '--daemon':
+    default: {
+      // Run server directly
+      const worker = new WorkerService();
+
+      process.on('SIGTERM', async () => {
+        logger.info('SYSTEM', 'Received SIGTERM');
+        await worker.shutdown();
+        removePidFile();
+        process.exit(0);
+      });
+
+      process.on('SIGINT', async () => {
+        logger.info('SYSTEM', 'Received SIGINT');
+        await worker.shutdown();
+        removePidFile();
+        process.exit(0);
+      });
+
+      // Catch uncaught exceptions to prevent silent crashes
+      process.on('uncaughtException', (error) => {
+        logger.error('SYSTEM', 'Uncaught exception - worker crashing', {
+          name: error.name,
+          message: error.message,
+          stack: error.stack,
+        });
+        process.exit(1);
+      });
+
+      // Catch unhandled promise rejections
+      process.on('unhandledRejection', (reason, promise) => {
+        logger.error('SYSTEM', 'Unhandled promise rejection', {
+          reason: reason instanceof Error ? reason.message : String(reason),
+          stack: reason instanceof Error ? reason.stack : undefined,
+        });
+        // Don't exit immediately - log and continue, but this helps diagnose issues
+      });
+
+      worker.start().catch((error) => {
+        logger.failure('SYSTEM', 'Worker failed to start', {}, error as Error);
+        removePidFile();
+        process.exit(1);
+      });
+    }
+  }
+}
+
 if (require.main === module || !module.parent) {
-  const worker = new WorkerService();
-
-  // Graceful shutdown
-  process.on('SIGTERM', async () => {
-    logger.info('SYSTEM', 'Received SIGTERM, shutting down gracefully');
-    await worker.shutdown();
-    process.exit(0);
-  });
-
-  process.on('SIGINT', async () => {
-    logger.info('SYSTEM', 'Received SIGINT, shutting down gracefully');
-    await worker.shutdown();
-    process.exit(0);
-  });
-
-  // Catch uncaught exceptions to prevent silent crashes
-  process.on('uncaughtException', (error) => {
-    logger.error('SYSTEM', 'Uncaught exception - worker crashing', {
-      name: error.name,
-      message: error.message,
-      stack: error.stack,
-    });
-    process.exit(1);
-  });
-
-  // Catch unhandled promise rejections
-  process.on('unhandledRejection', (reason, promise) => {
-    logger.error('SYSTEM', 'Unhandled promise rejection', {
-      reason: reason instanceof Error ? reason.message : String(reason),
-      stack: reason instanceof Error ? reason.stack : undefined,
-    });
-    // Don't exit immediately - log and continue, but this helps diagnose issues
-  });
-
-  worker.start().catch((error) => {
-    logger.failure('SYSTEM', 'Worker failed to start', {}, error as Error);
-    process.exit(1);
-  });
+  main();
 }

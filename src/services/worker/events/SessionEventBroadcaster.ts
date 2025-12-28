@@ -7,6 +7,7 @@
 
 import { SSEBroadcaster } from '../SSEBroadcaster.js';
 import type { WorkerService } from '../../worker-service.js';
+import { logger } from '../../../utils/logger.js';
 
 export class SessionEventBroadcaster {
   constructor(

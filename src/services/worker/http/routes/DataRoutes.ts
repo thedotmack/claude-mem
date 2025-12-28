@@ -8,6 +8,7 @@
 import express, { Request, Response } from 'express';
 import path from 'path';
 import { readFileSync, statSync, existsSync } from 'fs';
+import { logger } from '../../../../utils/logger.js';
 import { homedir } from 'os';
 import { getPackageRoot } from '../../../../shared/paths.js';
 import { getWorkerPort } from '../../../../shared/worker-utils.js';

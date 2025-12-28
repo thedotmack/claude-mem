@@ -1817,6 +1817,49 @@
       min-height: 0;
     }
 
+    .modal-footer {
+      display: flex;
+      justify-content: flex-end;
+      align-items: center;
+      gap: 16px;
+      padding: 16px 24px;
+      border-top: 1px solid var(--modal-border);
+      background: var(--modal-header-bg);
+    }
+
+    .modal-footer .save-status {
+      font-size: 13px;
+    }
+
+    .modal-footer .save-status .success {
+      color: var(--success-color, #22c55e);
+    }
+
+    .modal-footer .save-status .error {
+      color: var(--error-color, #ef4444);
+    }
+
+    .modal-footer .save-btn {
+      padding: 8px 24px;
+      background: var(--accent-color, #3b82f6);
+      color: white;
+      border: none;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.15s ease;
+    }
+
+    .modal-footer .save-btn:hover:not(:disabled) {
+      background: var(--accent-hover, #2563eb);
+    }
+
+    .modal-footer .save-btn:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
     /* Preview Column - Terminal Style */
     .preview-column {
       padding: 20px;

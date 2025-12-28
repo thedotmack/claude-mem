@@ -8,6 +8,7 @@
 import express, { Request, Response } from 'express';
 import { SearchManager } from '../../SearchManager.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
+import { logger } from '../../../../utils/logger.js';
 
 export class SearchRoutes extends BaseRouteHandler {
   constructor(

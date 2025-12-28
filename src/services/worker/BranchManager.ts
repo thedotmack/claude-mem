@@ -28,9 +28,9 @@ function isValidBranchName(branchName: string): boolean {
   return validBranchRegex.test(branchName) && !branchName.includes('..');
 }
 
-// Timeout constants
-const GIT_COMMAND_TIMEOUT_MS = 30_000;
-const NPM_INSTALL_TIMEOUT_MS = 120_000;
+// Timeout constants (increased for slow systems)
+const GIT_COMMAND_TIMEOUT_MS = 300_000;
+const NPM_INSTALL_TIMEOUT_MS = 600_000;
 const DEFAULT_SHELL_TIMEOUT_MS = 60_000;
 
 export interface BranchInfo {

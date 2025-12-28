@@ -36,6 +36,7 @@
           "introduction",
           "installation",
           "usage/getting-started",
+          "usage/openrouter-provider",
           "usage/gemini-provider",
           "usage/search-tools",
           "usage/claude-desktop",

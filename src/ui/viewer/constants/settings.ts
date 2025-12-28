@@ -12,6 +12,10 @@ export const DEFAULT_SETTINGS = {
   CLAUDE_MEM_PROVIDER: 'claude',
   CLAUDE_MEM_GEMINI_API_KEY: '',
   CLAUDE_MEM_GEMINI_MODEL: 'gemini-2.5-flash-lite',
+  CLAUDE_MEM_OPENROUTER_API_KEY: '',
+  CLAUDE_MEM_OPENROUTER_MODEL: 'xiaomi/mimo-v2-flash:free',
+  CLAUDE_MEM_OPENROUTER_SITE_URL: '',
+  CLAUDE_MEM_OPENROUTER_APP_NAME: 'claude-mem',
   CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: 'true',
 
   // Token Economics (all true for backwards compatibility)

@@ -1,97 +1,57 @@
 /**
- * GeminiAgent: Gemini-based observation extraction
+ * OpenRouterAgent: OpenRouter-based observation extraction
  *
- * Alternative to SDKAgent that uses Google's Gemini API directly
- * for extracting observations from tool usage.
+ * Alternative to SDKAgent that uses OpenRouter's unified API
+ * for accessing 100+ models from different providers.
  *
  * Responsibility:
- * - Call Gemini REST API for observation extraction
- * - Parse XML responses (same format as Claude)
+ * - Call OpenRouter REST API for observation extraction
+ * - Parse XML responses (same format as Claude/Gemini)
  * - Sync to database and Chroma
+ * - Support dynamic model selection across providers
  */
 
-import path from 'path';
-import { homedir } from 'os';
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
 import { parseObservations, parseSummary } from '../../sdk/parser.js';
 import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 
-// Gemini API endpoint
-const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
+// OpenRouter API endpoint
+const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
 
-// Gemini model types (available via API)
-export type GeminiModel =
-  | 'gemini-2.5-flash-lite'
-  | 'gemini-2.5-flash'
-  | 'gemini-2.5-pro'
-  | 'gemini-2.0-flash'
-  | 'gemini-2.0-flash-lite';
+// Context window management constants (defaults, overridable via settings)
+const DEFAULT_MAX_CONTEXT_MESSAGES = 20;  // Maximum messages to keep in conversation history
+const DEFAULT_MAX_ESTIMATED_TOKENS = 100000;  // ~100k tokens max context (safety limit)
+const CHARS_PER_TOKEN_ESTIMATE = 4;  // Conservative estimate: 1 token ≈ 4 chars
 
-// Free tier RPM limits by model (requests per minute)
-const GEMINI_RPM_LIMITS: Record<GeminiModel, number> = {
-  'gemini-2.5-flash-lite': 10,
-  'gemini-2.5-flash': 10,
-  'gemini-2.5-pro': 5,
-  'gemini-2.0-flash': 15,
-  'gemini-2.0-flash-lite': 30,
-};
-
-// Track last request time for rate limiting
-let lastRequestTime = 0;
-
-/**
- * Enforce RPM rate limit for Gemini free tier.
- * Waits the required time between requests based on model's RPM limit + 100ms safety buffer.
- * Skipped entirely if rate limiting is disabled (billing users with 1000+ RPM available).
- */
-async function enforceRateLimitForModel(model: GeminiModel, rateLimitingEnabled: boolean): Promise<void> {
-  // Skip rate limiting if disabled (billing users with 1000+ RPM)
-  if (!rateLimitingEnabled) {
-    return;
-  }
-
-  const rpm = GEMINI_RPM_LIMITS[model] || 5;
-  const minimumDelayMs = Math.ceil(60000 / rpm) + 100; // (60s / RPM) + 100ms safety buffer
-
-  const now = Date.now();
-  const timeSinceLastRequest = now - lastRequestTime;
-
-  if (timeSinceLastRequest < minimumDelayMs) {
-    const waitTime = minimumDelayMs - timeSinceLastRequest;
-    logger.debug('SDK', `Rate limiting: waiting ${waitTime}ms before Gemini request`, { model, rpm });
-    await new Promise(resolve => setTimeout(resolve, waitTime));
-  }
-
-  lastRequestTime = Date.now();
+// OpenAI-compatible message format
+interface OpenAIMessage {
+  role: 'user' | 'assistant' | 'system';
+  content: string;
 }
 
-interface GeminiResponse {
-  candidates?: Array<{
-    content?: {
-      parts?: Array<{
-        text?: string;
-      }>;
+interface OpenRouterResponse {
+  choices?: Array<{
+    message?: {
+      role?: string;
+      content?: string;
     };
+    finish_reason?: string;
   }>;
-  usageMetadata?: {
-    promptTokenCount?: number;
-    candidatesTokenCount?: number;
-    totalTokenCount?: number;
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
   };
-}
-
-/**
- * Gemini content message format
- * role: "user" or "model" (Gemini uses "model" not "assistant")
- */
-interface GeminiContent {
-  role: 'user' | 'model';
-  parts: Array<{ text: string }>;
+  error?: {
+    message?: string;
+    code?: string;
+  };
 }
 
 // Forward declaration for fallback agent type
@@ -99,7 +59,7 @@ type FallbackAgent = {
   startSession(session: ActiveSession, worker?: any): Promise<void>;
 };
 
-export class GeminiAgent {
+export class OpenRouterAgent {
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
   private fallbackAgent: FallbackAgent | null = null;
@@ -110,7 +70,7 @@ export class GeminiAgent {
   }
 
   /**
-   * Set the fallback agent (Claude SDK) for when Gemini API fails
+   * Set the fallback agent (Claude SDK) for when OpenRouter API fails
    * Must be set after construction to avoid circular dependency
    */
   setFallbackAgent(agent: FallbackAgent): void {
@@ -135,16 +95,16 @@ export class GeminiAgent {
   }
 
   /**
-   * Start Gemini agent for a session
+   * Start OpenRouter agent for a session
    * Uses multi-turn conversation to maintain context across messages
    */
   async startSession(session: ActiveSession, worker?: any): Promise<void> {
     try {
-      // Get Gemini configuration
-      const { apiKey, model, rateLimitingEnabled } = this.getGeminiConfig();
+      // Get OpenRouter configuration
+      const { apiKey, model, siteUrl, appName } = this.getOpenRouterConfig();
 
       if (!apiKey) {
-        throw new Error('Gemini API key not configured. Set CLAUDE_MEM_GEMINI_API_KEY in settings or GEMINI_API_KEY environment variable.');
+        throw new Error('OpenRouter API key not configured. Set CLAUDE_MEM_OPENROUTER_API_KEY in settings or OPENROUTER_API_KEY environment variable.');
       }
 
       // Load active mode
@@ -155,9 +115,9 @@ export class GeminiAgent {
         ? buildInitPrompt(session.project, session.claudeSessionId, session.userPrompt, mode)
         : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.claudeSessionId, mode);
 
-      // Add to conversation history and query Gemini with full context
+      // Add to conversation history and query OpenRouter with full context
       session.conversationHistory.push({ role: 'user', content: initPrompt });
-      const initResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, rateLimitingEnabled);
+      const initResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, siteUrl, appName);
 
       if (initResponse.content) {
         // Add response to conversation history
@@ -169,9 +129,9 @@ export class GeminiAgent {
         session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
 
         // Process response (no original timestamp for init - not from queue)
-        await this.processGeminiResponse(session, initResponse.content, worker, tokensUsed, null);
+        await this.processOpenRouterResponse(session, initResponse.content, worker, tokensUsed, null);
       } else {
-        logger.warn('SDK', 'Empty Gemini init response - session may lack context', {
+        logger.warn('SDK', 'Empty OpenRouter init response - session may lack context', {
           sessionId: session.sessionDbId,
           model
         });
@@ -180,7 +140,6 @@ export class GeminiAgent {
       // Process pending messages
       for await (const message of this.sessionManager.getMessageIterator(session.sessionDbId)) {
         // Capture earliest timestamp BEFORE processing (will be cleared after)
-        // This ensures backlog messages get their original timestamps, not current time
         const originalTimestamp = session.earliestPendingTimestamp;
 
         if (message.type === 'observation') {
@@ -199,9 +158,9 @@ export class GeminiAgent {
             cwd: message.cwd
           });
 
-          // Add to conversation history and query Gemini with full context
+          // Add to conversation history and query OpenRouter with full context
           session.conversationHistory.push({ role: 'user', content: obsPrompt });
-          const obsResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, rateLimitingEnabled);
+          const obsResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, siteUrl, appName);
 
           if (obsResponse.content) {
             // Add response to conversation history
@@ -210,10 +169,10 @@ export class GeminiAgent {
             const tokensUsed = obsResponse.tokensUsed || 0;
             session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
             session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
-            await this.processGeminiResponse(session, obsResponse.content, worker, tokensUsed, originalTimestamp);
+            await this.processOpenRouterResponse(session, obsResponse.content, worker, tokensUsed, originalTimestamp);
           } else {
             // Empty response - still mark messages as processed to avoid stuck state
-            logger.warn('SDK', 'Empty Gemini response for observation, marking as processed', {
+            logger.warn('SDK', 'Empty OpenRouter response for observation, marking as processed', {
               sessionId: session.sessionDbId,
               toolName: message.tool_name
             });
@@ -231,9 +190,9 @@ export class GeminiAgent {
             last_assistant_message: message.last_assistant_message || ''
           }, mode);
 
-          // Add to conversation history and query Gemini with full context
+          // Add to conversation history and query OpenRouter with full context
           session.conversationHistory.push({ role: 'user', content: summaryPrompt });
-          const summaryResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, rateLimitingEnabled);
+          const summaryResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, siteUrl, appName);
 
           if (summaryResponse.content) {
             // Add response to conversation history
@@ -242,10 +201,10 @@ export class GeminiAgent {
             const tokensUsed = summaryResponse.tokensUsed || 0;
             session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
             session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
-            await this.processGeminiResponse(session, summaryResponse.content, worker, tokensUsed, originalTimestamp);
+            await this.processOpenRouterResponse(session, summaryResponse.content, worker, tokensUsed, originalTimestamp);
           } else {
             // Empty response - still mark messages as processed to avoid stuck state
-            logger.warn('SDK', 'Empty Gemini response for summary, marking as processed', {
+            logger.warn('SDK', 'Empty OpenRouter response for summary, marking as processed', {
               sessionId: session.sessionDbId
             });
             await this.markMessagesProcessed(session, worker);
@@ -255,28 +214,28 @@ export class GeminiAgent {
 
       // Mark session complete
       const sessionDuration = Date.now() - session.startTime;
-      logger.success('SDK', 'Gemini agent completed', {
+      logger.success('SDK', 'OpenRouter agent completed', {
         sessionId: session.sessionDbId,
         duration: `${(sessionDuration / 1000).toFixed(1)}s`,
-        historyLength: session.conversationHistory.length
+        historyLength: session.conversationHistory.length,
+        model
       });
 
     } catch (error: any) {
       if (error.name === 'AbortError') {
-        logger.warn('SDK', 'Gemini agent aborted', { sessionId: session.sessionDbId });
+        logger.warn('SDK', 'OpenRouter agent aborted', { sessionId: session.sessionDbId });
         throw error;
       }
 
       // Check if we should fall back to Claude
       if (this.shouldFallbackToClaude(error) && this.fallbackAgent) {
-        logger.warn('SDK', 'Gemini API failed, falling back to Claude SDK', {
+        logger.warn('SDK', 'OpenRouter API failed, falling back to Claude SDK', {
           sessionDbId: session.sessionDbId,
           error: error.message,
           historyLength: session.conversationHistory.length
         });
 
         // Reset any 'processing' messages back to 'pending' so Claude can retry them
-        // This handles the case where Gemini failed mid-processing a message
         const pendingStore = this.sessionManager.getPendingMessageStore();
         const resetCount = pendingStore.resetStuckMessages(0);  // 0 = reset ALL processing messages
         if (resetCount > 0) {
@@ -287,86 +246,170 @@ export class GeminiAgent {
         }
 
         // Fall back to Claude - it will use the same session with shared conversationHistory
-        // Note: Claude SDK will continue processing from current state
         return this.fallbackAgent.startSession(session, worker);
       }
 
-      logger.failure('SDK', 'Gemini agent error', { sessionDbId: session.sessionDbId }, error);
+      logger.failure('SDK', 'OpenRouter agent error', { sessionDbId: session.sessionDbId }, error);
       throw error;
     }
   }
 
   /**
-   * Convert shared ConversationMessage array to Gemini's contents format
-   * Maps 'assistant' role to 'model' for Gemini API compatibility
+   * Estimate token count from text (conservative estimate)
    */
-  private conversationToGeminiContents(history: ConversationMessage[]): GeminiContent[] {
+  private estimateTokens(text: string): number {
+    return Math.ceil(text.length / CHARS_PER_TOKEN_ESTIMATE);
+  }
+
+  /**
+   * Truncate conversation history to prevent runaway context costs
+   * Keeps most recent messages within token budget
+   */
+  private truncateHistory(history: ConversationMessage[]): ConversationMessage[] {
+    const settings = SettingsDefaultsManager.loadFromFile(
+      USER_SETTINGS_PATH
+    );
+
+    const MAX_CONTEXT_MESSAGES = parseInt(settings.CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES) || DEFAULT_MAX_CONTEXT_MESSAGES;
+    const MAX_ESTIMATED_TOKENS = parseInt(settings.CLAUDE_MEM_OPENROUTER_MAX_TOKENS) || DEFAULT_MAX_ESTIMATED_TOKENS;
+
+    if (history.length <= MAX_CONTEXT_MESSAGES) {
+      // Check token count even if message count is ok
+      const totalTokens = history.reduce((sum, m) => sum + this.estimateTokens(m.content), 0);
+      if (totalTokens <= MAX_ESTIMATED_TOKENS) {
+        return history;
+      }
+    }
+
+    // Sliding window: keep most recent messages within limits
+    const truncated: ConversationMessage[] = [];
+    let tokenCount = 0;
+
+    // Process messages in reverse (most recent first)
+    for (let i = history.length - 1; i >= 0; i--) {
+      const msg = history[i];
+      const msgTokens = this.estimateTokens(msg.content);
+
+      if (truncated.length >= MAX_CONTEXT_MESSAGES || tokenCount + msgTokens > MAX_ESTIMATED_TOKENS) {
+        logger.warn('SDK', 'Context window truncated to prevent runaway costs', {
+          originalMessages: history.length,
+          keptMessages: truncated.length,
+          droppedMessages: i + 1,
+          estimatedTokens: tokenCount,
+          tokenLimit: MAX_ESTIMATED_TOKENS
+        });
+        break;
+      }
+
+      truncated.unshift(msg);  // Add to beginning
+      tokenCount += msgTokens;
+    }
+
+    return truncated;
+  }
+
+  /**
+   * Convert shared ConversationMessage array to OpenAI-compatible message format
+   */
+  private conversationToOpenAIMessages(history: ConversationMessage[]): OpenAIMessage[] {
     return history.map(msg => ({
-      role: msg.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: msg.content }]
+      role: msg.role === 'assistant' ? 'assistant' : 'user',
+      content: msg.content
     }));
   }
 
   /**
-   * Query Gemini via REST API with full conversation history (multi-turn)
+   * Query OpenRouter via REST API with full conversation history (multi-turn)
    * Sends the entire conversation context for coherent responses
    */
-  private async queryGeminiMultiTurn(
+  private async queryOpenRouterMultiTurn(
     history: ConversationMessage[],
     apiKey: string,
-    model: GeminiModel,
-    rateLimitingEnabled: boolean
+    model: string,
+    siteUrl?: string,
+    appName?: string
   ): Promise<{ content: string; tokensUsed?: number }> {
-    const contents = this.conversationToGeminiContents(history);
-    const totalChars = history.reduce((sum, m) => sum + m.content.length, 0);
+    // Truncate history to prevent runaway costs
+    const truncatedHistory = this.truncateHistory(history);
+    const messages = this.conversationToOpenAIMessages(truncatedHistory);
+    const totalChars = truncatedHistory.reduce((sum, m) => sum + m.content.length, 0);
+    const estimatedTokens = this.estimateTokens(truncatedHistory.map(m => m.content).join(''));
 
-    logger.debug('SDK', `Querying Gemini multi-turn (${model})`, {
-      turns: history.length,
-      totalChars
+    logger.debug('SDK', `Querying OpenRouter multi-turn (${model})`, {
+      turns: truncatedHistory.length,
+      totalChars,
+      estimatedTokens
     });
 
-    const url = `${GEMINI_API_URL}/${model}:generateContent?key=${apiKey}`;
-
-    // Enforce RPM rate limit for free tier (skipped if rate limiting disabled)
-    await enforceRateLimitForModel(model, rateLimitingEnabled);
-
-    const response = await fetch(url, {
+    const response = await fetch(OPENROUTER_API_URL, {
       method: 'POST',
       headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'HTTP-Referer': siteUrl || 'https://github.com/thedotmack/claude-mem',
+        'X-Title': appName || 'claude-mem',
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        contents,
-        generationConfig: {
-          temperature: 0.3,  // Lower temperature for structured extraction
-          maxOutputTokens: 4096,
-        },
+        model,
+        messages,
+        temperature: 0.3,  // Lower temperature for structured extraction
+        max_tokens: 4096,
       }),
     });
 
     if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`Gemini API error: ${response.status} - ${error}`);
+      const errorText = await response.text();
+      throw new Error(`OpenRouter API error: ${response.status} - ${errorText}`);
     }
 
-    const data = await response.json() as GeminiResponse;
+    const data = await response.json() as OpenRouterResponse;
 
-    if (!data.candidates?.[0]?.content?.parts?.[0]?.text) {
-      logger.warn('SDK', 'Empty response from Gemini');
+    // Check for API error in response body
+    if (data.error) {
+      throw new Error(`OpenRouter API error: ${data.error.code} - ${data.error.message}`);
+    }
+
+    if (!data.choices?.[0]?.message?.content) {
+      logger.warn('SDK', 'Empty response from OpenRouter');
       return { content: '' };
     }
 
-    const content = data.candidates[0].content.parts[0].text;
-    const tokensUsed = data.usageMetadata?.totalTokenCount;
+    const content = data.choices[0].message.content;
+    const tokensUsed = data.usage?.total_tokens;
+
+    // Log actual token usage for cost tracking
+    if (tokensUsed) {
+      const inputTokens = data.usage?.prompt_tokens || 0;
+      const outputTokens = data.usage?.completion_tokens || 0;
+      // Token usage (cost varies by model - many OpenRouter models are free)
+      const estimatedCost = (inputTokens / 1000000 * 3) + (outputTokens / 1000000 * 15);
+
+      logger.info('SDK', 'OpenRouter API usage', {
+        model,
+        inputTokens,
+        outputTokens,
+        totalTokens: tokensUsed,
+        estimatedCostUSD: estimatedCost.toFixed(4),
+        messagesInContext: truncatedHistory.length
+      });
+
+      // Warn if costs are getting high
+      if (tokensUsed > 50000) {
+        logger.warn('SDK', 'High token usage detected - consider reducing context', {
+          totalTokens: tokensUsed,
+          estimatedCost: estimatedCost.toFixed(4)
+        });
+      }
+    }
 
     return { content, tokensUsed };
   }
 
   /**
-   * Process Gemini response (same format as Claude)
+   * Process OpenRouter response (same format as Claude/Gemini)
    * @param originalTimestamp - Original epoch when message was queued (for backlog processing accuracy)
    */
-  private async processGeminiResponse(
+  private async processOpenRouterResponse(
     session: ActiveSession,
     text: string,
     worker: any | undefined,
@@ -387,7 +430,7 @@ export class GeminiAgent {
         originalTimestamp ?? undefined
       );
 
-      logger.info('SDK', 'Gemini observation saved', {
+      logger.info('SDK', 'OpenRouter observation saved', {
         sessionId: session.sessionDbId,
         obsId,
         type: obs.type,
@@ -404,7 +447,7 @@ export class GeminiAgent {
         createdAtEpoch,
         discoveryTokens
       ).catch(err => {
-        logger.warn('SDK', 'Gemini chroma sync failed', { obsId }, err);
+        logger.warn('SDK', 'OpenRouter chroma sync failed', { obsId }, err);
       });
 
       // Broadcast to SSE clients
@@ -455,7 +498,7 @@ export class GeminiAgent {
         originalTimestamp ?? undefined
       );
 
-      logger.info('SDK', 'Gemini summary saved', {
+      logger.info('SDK', 'OpenRouter summary saved', {
         sessionId: session.sessionDbId,
         summaryId,
         request: summary.request || '(no request)'
@@ -471,7 +514,7 @@ export class GeminiAgent {
         createdAtEpoch,
         discoveryTokens
       ).catch(err => {
-        logger.warn('SDK', 'Gemini chroma sync failed', { summaryId }, err);
+        logger.warn('SDK', 'OpenRouter chroma sync failed', { summaryId }, err);
       });
 
       // Broadcast to SSE clients
@@ -508,7 +551,7 @@ export class GeminiAgent {
       for (const messageId of session.pendingProcessingIds) {
         pendingMessageStore.markProcessed(messageId);
       }
-      logger.debug('SDK', 'Gemini messages marked as processed', {
+      logger.debug('SDK', 'OpenRouter messages marked as processed', {
         sessionId: session.sessionDbId,
         count: session.pendingProcessingIds.size
       });
@@ -516,7 +559,7 @@ export class GeminiAgent {
 
       const deletedCount = pendingMessageStore.cleanupProcessed(100);
       if (deletedCount > 0) {
-        logger.debug('SDK', 'Gemini cleaned up old processed messages', { deletedCount });
+        logger.debug('SDK', 'OpenRouter cleaned up old processed messages', { deletedCount });
       }
     }
 
@@ -526,58 +569,40 @@ export class GeminiAgent {
   }
 
   /**
-   * Get Gemini configuration from settings or environment
+   * Get OpenRouter configuration from settings or environment
    */
-  private getGeminiConfig(): { apiKey: string; model: GeminiModel; rateLimitingEnabled: boolean } {
-    const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+  private getOpenRouterConfig(): { apiKey: string; model: string; siteUrl?: string; appName?: string } {
+    const settingsPath = USER_SETTINGS_PATH;
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
 
     // API key: check settings first, then environment variable
-    const apiKey = settings.CLAUDE_MEM_GEMINI_API_KEY || process.env.GEMINI_API_KEY || '';
+    const apiKey = settings.CLAUDE_MEM_OPENROUTER_API_KEY || process.env.OPENROUTER_API_KEY || '';
 
-    // Model: from settings or default, with validation
-    const defaultModel: GeminiModel = 'gemini-2.5-flash';
-    const configuredModel = settings.CLAUDE_MEM_GEMINI_MODEL || defaultModel;
-    const validModels: GeminiModel[] = [
-      'gemini-2.5-flash-lite',
-      'gemini-2.5-flash',
-      'gemini-2.5-pro',
-      'gemini-2.0-flash',
-      'gemini-2.0-flash-lite',
-    ];
+    // Model: from settings or default
+    const model = settings.CLAUDE_MEM_OPENROUTER_MODEL || 'xiaomi/mimo-v2-flash:free';
 
-    let model: GeminiModel;
-    if (validModels.includes(configuredModel as GeminiModel)) {
-      model = configuredModel as GeminiModel;
-    } else {
-      logger.warn('SDK', `Invalid Gemini model "${configuredModel}", falling back to ${defaultModel}`, {
-        configured: configuredModel,
-        validModels,
-      });
-      model = defaultModel;
-    }
+    // Optional analytics headers
+    const siteUrl = settings.CLAUDE_MEM_OPENROUTER_SITE_URL || '';
+    const appName = settings.CLAUDE_MEM_OPENROUTER_APP_NAME || 'claude-mem';
 
-    // Rate limiting: enabled by default for free tier users
-    const rateLimitingEnabled = settings.CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED !== 'false';
-
-    return { apiKey, model, rateLimitingEnabled };
+    return { apiKey, model, siteUrl, appName };
   }
 }
 
 /**
- * Check if Gemini is available (has API key configured)
+ * Check if OpenRouter is available (has API key configured)
  */
-export function isGeminiAvailable(): boolean {
-  const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+export function isOpenRouterAvailable(): boolean {
+  const settingsPath = USER_SETTINGS_PATH;
   const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-  return !!(settings.CLAUDE_MEM_GEMINI_API_KEY || process.env.GEMINI_API_KEY);
+  return !!(settings.CLAUDE_MEM_OPENROUTER_API_KEY || process.env.OPENROUTER_API_KEY);
 }
 
 /**
- * Check if Gemini is the selected provider
+ * Check if OpenRouter is the selected provider
  */
-export function isGeminiSelected(): boolean {
-  const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+export function isOpenRouterSelected(): boolean {
+  const settingsPath = USER_SETTINGS_PATH;
   const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-  return settings.CLAUDE_MEM_PROVIDER === 'gemini';
+  return settings.CLAUDE_MEM_PROVIDER === 'openrouter';
 }

@@ -7,12 +7,17 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/scripts/worker-cli.js\" restart",
-            "timeout": 30
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/smart-install.js\"",
+            "timeout": 300
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/smart-install.js\" && node \"${CLAUDE_PLUGIN_ROOT}/scripts/context-hook.js\"",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/scripts/worker-service.cjs\" start",
+            "timeout": 180
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/context-hook.js\"",
             "timeout": 300
           },
           {
@@ -28,13 +33,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/scripts/worker-cli.js\" start",
-            "timeout": 30
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/scripts/worker-service.cjs\" start",
+            "timeout": 180
           },
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/new-hook.js\"",
-            "timeout": 120
+            "timeout": 300
           }
         ]
       }
@@ -45,13 +50,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/scripts/worker-cli.js\" start",
-            "timeout": 30
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/scripts/worker-service.cjs\" start",
+            "timeout": 180
           },
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/save-hook.js\"",
-            "timeout": 120
+            "timeout": 300
           }
         ]
       }
@@ -77,13 +82,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/scripts/worker-cli.js\" start",
-            "timeout": 30
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/scripts/worker-service.cjs\" start",
+            "timeout": 180
           },
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/summary-hook.js\"",
-            "timeout": 120
+            "timeout": 300
           }
         ]
       }

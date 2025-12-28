@@ -258,7 +258,7 @@ sqlite3 ~/.claude-mem/claude-mem.db "
 
 3. **Restart worker**:
    ```bash
-   claude-mem restart
+   npm run worker:restart
    ```
 
 4. **Check database integrity**:
@@ -308,7 +308,7 @@ bun scripts/check-pending-queue.ts --process
 4. **Increase worker memory** (if using custom runner):
    ```bash
    export NODE_OPTIONS="--max-old-space-size=4096"
-   claude-mem restart
+   npm run worker:restart
    ```
 
 ## Advanced Usage

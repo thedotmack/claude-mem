@@ -48,14 +48,14 @@ The skill includes comprehensive diagnostics, automated repair sequences, and de
 
 4. Restart worker service:
    ```bash
-   claude-mem restart
+   npm run worker:restart
    ```
 
 5. Check for port conflicts:
    ```bash
    # If port 37777 is in use by another service
    export CLAUDE_MEM_WORKER_PORT=38000
-   claude-mem restart
+   npm run worker:restart
    ```
 
 ### Theme Toggle Not Persisting
@@ -110,7 +110,7 @@ The skill includes comprehensive diagnostics, automated repair sequences, and de
 
 5. Restart worker and refresh browser:
    ```bash
-   claude-mem restart
+   npm run worker:restart
    ```
 
 ### Chroma/Python Dependency Issues (v5.0.0+)
@@ -225,7 +225,7 @@ The skill includes comprehensive diagnostics, automated repair sequences, and de
 3. Or use a different port:
    ```bash
    export CLAUDE_MEM_WORKER_PORT=38000
-   claude-mem restart
+   npm run worker:restart
    ```
 
 4. Verify new port:
@@ -282,7 +282,7 @@ The skill includes comprehensive diagnostics, automated repair sequences, and de
 
 4. Restart worker:
    ```bash
-   claude-mem restart
+   npm run worker:restart
    ```
 
 ### Manual Recovery for Stuck Observations
@@ -839,7 +839,7 @@ sqlite3 ~/.claude-mem/claude-mem.db "
 
 2. Restart worker:
    ```bash
-   claude-mem restart
+   npm run worker:restart
    ```
 
 3. Clean up old data (see "Database Too Large" above)
@@ -916,7 +916,7 @@ sqlite3 ~/.claude-mem/claude-mem.db "
 
 ```bash
 export DEBUG=claude-mem:*
-claude-mem restart
+npm run worker:restart
 npm run worker:logs
 ```
 
@@ -976,7 +976,7 @@ SELECT created_at, tool_name FROM observations ORDER BY created_at DESC LIMIT 10
 
 **Cause**: Worker not running or port mismatch.
 
-**Solution**: Restart worker with `claude-mem restart`.
+**Solution**: Restart worker with `npm run worker:restart`.
 
 ### "Database is locked"
 

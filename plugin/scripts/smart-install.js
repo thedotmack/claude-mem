@@ -291,7 +291,7 @@ function installCLI() {
       console.error('📋 Add to PATH (run once in PowerShell as Admin):');
       console.error(`   [Environment]::SetEnvironmentVariable("Path", $env:Path + ";${cliDir}", "User")`);
       console.error('');
-      console.error('   Then restart your terminal and use: claude-mem start|stop|restart|status');
+      console.error('   Then restart your terminal and use: npm run worker:start|stop|restart|status');
     } catch (error) {
       console.error(`⚠️  Could not install CLI: ${error.message}`);
       console.error(`   You can still use: bun "${WORKER_CLI}" <command>`);
@@ -333,9 +333,9 @@ exec "${bunPath}" "${WORKER_CLI}" "$@"
         console.error('📋 Add to PATH (add to ~/.bashrc or ~/.zshrc):');
         console.error('   export PATH="$HOME/.local/bin:$PATH"');
         console.error('');
-        console.error('   Then restart your terminal and use: claude-mem start|stop|restart|status');
+        console.error('   Then restart your terminal and use: npm run worker:start|stop|restart|status');
       } else {
-        console.error('   Usage: claude-mem start|stop|restart|status');
+        console.error('   Usage: npm run worker:start|stop|restart|status');
       }
     } catch (error) {
       console.error(`⚠️  Could not install CLI: ${error.message}`);
@@ -439,8 +439,31 @@ try {
 
   // Step 3: Install dependencies if needed
   if (needsInstall()) {
+    const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8'));
+    const newVersion = pkg.version;
+
     installDeps();
     console.error('✅ Dependencies installed');
+
+    // Auto-restart worker to pick up new code
+    const port = process.env.CLAUDE_MEM_WORKER_PORT || 37777;
+    console.error(`[claude-mem] Plugin updated to v${newVersion} - restarting worker...`);
+    try {
+      // Graceful shutdown via HTTP (curl is cross-platform enough)
+      execSync(`curl -s -X POST http://127.0.0.1:${port}/api/admin/shutdown`, {
+        stdio: 'ignore',
+        shell: IS_WINDOWS,
+        timeout: 5000
+      });
+      // Brief wait for port to free
+      execSync(IS_WINDOWS ? 'timeout /t 1 /nobreak >nul' : 'sleep 0.5', {
+        stdio: 'ignore',
+        shell: true
+      });
+    } catch {
+      // Worker wasn't running or already stopped - that's fine
+    }
+    // Worker will be started fresh by next hook in chain (worker-service.cjs start)
   }
 
   // Step 4: Install CLI to PATH

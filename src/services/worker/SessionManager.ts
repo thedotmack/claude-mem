@@ -47,9 +47,21 @@ export class SessionManager {
    * Initialize a new session or return existing one
    */
   initializeSession(sessionDbId: number, currentUserPrompt?: string, promptNumber?: number): ActiveSession {
+    logger.info('SESSION', 'initializeSession called', {
+      sessionDbId,
+      promptNumber,
+      has_currentUserPrompt: !!currentUserPrompt
+    });
+
     // Check if already active
     let session = this.sessions.get(sessionDbId);
     if (session) {
+      logger.info('SESSION', 'Returning cached session', {
+        sessionDbId,
+        claudeSessionId: session.claudeSessionId,
+        lastPromptNumber: session.lastPromptNumber
+      });
+
       // Refresh project from database in case it was updated by new-hook
       // This fixes the bug where sessions created with empty project get updated
       // in the database but the in-memory session still has the stale empty value
@@ -85,6 +97,12 @@ export class SessionManager {
 
     // Fetch from database
     const dbSession = this.dbManager.getSessionById(sessionDbId);
+
+    logger.info('SESSION', 'Fetched session from database', {
+      sessionDbId,
+      claude_session_id: dbSession.claude_session_id,
+      sdk_session_id: dbSession.sdk_session_id
+    });
 
     // Use currentUserPrompt if provided, otherwise fall back to database (first prompt)
     const userPrompt = currentUserPrompt || dbSession.user_prompt;
@@ -122,6 +140,12 @@ export class SessionManager {
       conversationHistory: [],  // Initialize empty - will be populated by agents
       currentProvider: null  // Will be set when generator starts
     };
+
+    logger.info('SESSION', 'Creating new session object', {
+      sessionDbId,
+      claudeSessionId: dbSession.claude_session_id,
+      lastPromptNumber: promptNumber || this.dbManager.getSessionStore().getPromptNumberFromUserPrompts(dbSession.claude_session_id)
+    });
 
     this.sessions.set(sessionDbId, session);
 
@@ -382,60 +406,36 @@ export class SessionManager {
       throw new Error(`No emitter for session ${sessionDbId}`);
     }
 
-    // Linger timeout: how long to wait for new messages before exiting
-    // This keeps the agent alive between messages, reducing "No active agent" windows
-    const LINGER_TIMEOUT_MS = 5000; // 5 seconds
-
     while (!session.abortController.signal.aborted) {
       // Check for pending messages in persistent store
       const persistentMessage = this.getPendingStore().peekPending(sessionDbId);
 
       if (!persistentMessage) {
-        // Wait for new messages with timeout
-        const gotMessage = await new Promise<boolean>(resolve => {
-          let resolved = false;
-
+        // Wait for new message event
+        await new Promise<void>(resolve => {
           const messageHandler = () => {
-            if (!resolved) {
-              resolved = true;
-              clearTimeout(timeoutId);
-              resolve(true);
-            }
+            emitter.off('message', messageHandler);
+            resolve();
           };
 
-          const timeoutHandler = () => {
-            if (!resolved) {
-              resolved = true;
-              emitter.off('message', messageHandler);
-              resolve(false);
-            }
+          const abortHandler = () => {
+            emitter.off('message', messageHandler);
+            resolve();
           };
-
-          const timeoutId = setTimeout(timeoutHandler, LINGER_TIMEOUT_MS);
 
           emitter.once('message', messageHandler);
-
-          // Also listen for abort
-          session.abortController.signal.addEventListener('abort', () => {
-            if (!resolved) {
-              resolved = true;
-              clearTimeout(timeoutId);
-              emitter.off('message', messageHandler);
-              resolve(false);
-            }
-          }, { once: true });
+          session.abortController.signal.addEventListener('abort', abortHandler, { once: true });
         });
 
         // Re-check for messages after waking up (handles race condition)
         const recheckMessage = this.getPendingStore().peekPending(sessionDbId);
         if (recheckMessage) {
-          // Got a message, continue processing
-          continue;
+          continue; // Got a message, process it
         }
 
-        if (!gotMessage) {
-          // Timeout or abort - exit the loop
-          logger.info('SESSION', `Generator exiting after linger timeout`, { sessionId: sessionDbId });
+        // Woke up due to abort
+        if (session.abortController.signal.aborted) {
+          logger.info('SESSION', 'Generator exiting due to abort', { sessionId: sessionDbId });
           return;
         }
 

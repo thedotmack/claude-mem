@@ -165,7 +165,7 @@ npm run build
 1. Make changes to React components in `src/ui/viewer/`
 2. Build: `npm run build`
 3. Sync to installed plugin: `npm run sync-marketplace`
-4. Restart worker: `claude-mem restart`
+4. Restart worker: `npm run worker:restart`
 5. Refresh browser at http://localhost:37777
 
 **Hot Reload**: Not currently supported. Full rebuild + restart required for changes.
@@ -395,7 +395,7 @@ When developing new features:
    ```bash
    npm run build
    npm run sync-marketplace
-   claude-mem restart
+   npm run worker:restart
    ```
 
 2. **Test in real session**:
@@ -560,7 +560,7 @@ export async function createObservation(
 
 ```bash
 export DEBUG=claude-mem:*
-claude-mem restart
+npm run worker:restart
 npm run worker:logs
 ```
 

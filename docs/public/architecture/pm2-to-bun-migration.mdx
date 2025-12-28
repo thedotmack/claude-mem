@@ -106,7 +106,7 @@ pm2 logs claude-mem-worker    # View logs
 ```bash
 npm run worker:start    # Start worker
 npm run worker:stop     # Stop worker
-claude-mem restart  # Restart worker
+npm run worker:restart  # Restart worker
 npm run worker:status   # Check status
 npm run worker:logs     # View logs
 ```
@@ -305,7 +305,7 @@ No migration logic runs on subsequent sessions.
 | `pm2 list` | `npm run worker:status` | Shows worker status |
 | `pm2 start <script>` | `npm run worker:start` | Start worker |
 | `pm2 stop claude-mem-worker` | `npm run worker:stop` | Stop worker |
-| `pm2 restart claude-mem-worker` | `claude-mem restart` | Restart worker |
+| `pm2 restart claude-mem-worker` | `npm run worker:restart` | Restart worker |
 | `pm2 delete claude-mem-worker` | `npm run worker:stop` | Remove worker |
 | `pm2 logs claude-mem-worker` | `npm run worker:logs` | View logs |
 | `pm2 describe claude-mem-worker` | `npm run worker:status` | Detailed status |
@@ -451,7 +451,7 @@ pm2 save  # Persist the deletion
 rm ~/.claude-mem/.pm2-migrated
 
 # Restart worker
-claude-mem restart
+npm run worker:restart
 ```
 
 ### Scenario 2: Stale PID File (Process Dead)
@@ -483,7 +483,7 @@ lsof -i :37777
 kill -9 <PID>
 
 # Restart worker
-claude-mem restart
+npm run worker:restart
 ```
 
 ### Common Error Messages

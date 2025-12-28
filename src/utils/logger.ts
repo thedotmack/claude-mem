@@ -4,6 +4,8 @@
  */
 
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
+import { appendFileSync, existsSync, mkdirSync } from 'fs';
+import { join } from 'path';
 
 export enum LogLevel {
   DEBUG = 0,
@@ -25,19 +27,55 @@ interface LogContext {
 class Logger {
   private level: LogLevel | null = null;
   private useColor: boolean;
+  private logFilePath: string | null = null;
 
   constructor() {
     // Disable colors when output is not a TTY (e.g., PM2 logs)
     this.useColor = process.stdout.isTTY ?? false;
+    this.initializeLogFile();
   }
 
   /**
-   * Lazy-load log level from settings (breaks circular dependency with SettingsDefaultsManager)
+   * Initialize log file path and ensure directory exists
+   */
+  private initializeLogFile(): void {
+    try {
+      // Get data directory from settings
+      const dataDir = SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR');
+      const logsDir = join(dataDir, 'logs');
+
+      // Ensure logs directory exists
+      if (!existsSync(logsDir)) {
+        mkdirSync(logsDir, { recursive: true });
+      }
+
+      // Create log file path with date
+      const date = new Date().toISOString().split('T')[0];
+      this.logFilePath = join(logsDir, `claude-mem-${date}.log`);
+    } catch (error) {
+      // If log file initialization fails, just log to console
+      console.error('[LOGGER] Failed to initialize log file:', error);
+      this.logFilePath = null;
+    }
+  }
+
+  /**
+   * Lazy-load log level from settings file (not hardcoded defaults!)
    */
   private getLevel(): LogLevel {
     if (this.level === null) {
-      const envLevel = SettingsDefaultsManager.get('CLAUDE_MEM_LOG_LEVEL').toUpperCase();
-      this.level = LogLevel[envLevel as keyof typeof LogLevel] ?? LogLevel.INFO;
+      try {
+        // Load settings from file to get user's actual log level
+        const dataDir = SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR');
+        const settingsPath = join(dataDir, 'settings.json');
+        const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+        const envLevel = settings.CLAUDE_MEM_LOG_LEVEL.toUpperCase();
+        this.level = LogLevel[envLevel as keyof typeof LogLevel] ?? LogLevel.INFO;
+      } catch (error) {
+        // Fallback to INFO if settings can't be loaded
+        console.error('[LOGGER] Failed to load settings, using INFO level:', error);
+        this.level = LogLevel.INFO;
+      }
     }
     return this.level;
   }
@@ -199,7 +237,12 @@ class Logger {
     // Build data part
     let dataStr = '';
     if (data !== undefined && data !== null) {
-      if (this.getLevel() === LogLevel.DEBUG && typeof data === 'object') {
+      // Handle Error objects specially - they don't JSON.stringify properly
+      if (data instanceof Error) {
+        dataStr = this.getLevel() === LogLevel.DEBUG
+          ? `\n${data.message}\n${data.stack}`
+          : ` ${data.message}`;
+      } else if (this.getLevel() === LogLevel.DEBUG && typeof data === 'object') {
         // In debug mode, show full JSON for objects
         dataStr = '\n' + JSON.stringify(data, null, 2);
       } else {
@@ -219,11 +262,17 @@ class Logger {
 
     const logLine = `[${timestamp}] [${levelStr}] [${componentStr}] ${correlationStr}${message}${contextStr}${dataStr}`;
 
-    // Output to appropriate stream
-    if (level === LogLevel.ERROR) {
-      console.error(logLine);
+    // Output to log file ONLY (worker runs in background, console is useless)
+    if (this.logFilePath) {
+      try {
+        appendFileSync(this.logFilePath, logLine + '\n', 'utf8');
+      } catch (error) {
+        // If file write fails, write to stderr as last resort
+        process.stderr.write(`[LOGGER] Failed to write to log file: ${error}\n`);
+      }
     } else {
-      console.log(logLine);
+      // If no log file available, write to stderr as fallback
+      process.stderr.write(logLine + '\n');
     }
   }
 
