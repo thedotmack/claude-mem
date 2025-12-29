@@ -1376,13 +1376,13 @@ export class SearchManager {
         lines.push('');
 
         for (const session of sessions) {
-          if (!session.sdk_session_id) continue;
+          if (!session.memory_session_id) continue;
 
           lines.push('---');
           lines.push('');
 
           if (session.has_summary) {
-            const summary = this.sessionStore.getSummaryForSession(session.sdk_session_id);
+            const summary = this.sessionStore.getSummaryForSession(session.memory_session_id);
             if (summary) {
               const promptLabel = summary.prompt_number ? ` (Prompt #${summary.prompt_number})` : '';
               lines.push(`**Summary${promptLabel}**`);
@@ -1432,7 +1432,7 @@ export class SearchManager {
               lines.push(`**Request:** ${session.user_prompt}`);
             }
 
-            const observations = this.sessionStore.getObservationsForSession(session.sdk_session_id);
+            const observations = this.sessionStore.getObservationsForSession(session.memory_session_id);
             if (observations.length > 0) {
               lines.push('');
               lines.push(`**Observations (${observations.length}):**`);
