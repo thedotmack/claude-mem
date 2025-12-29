@@ -248,6 +248,164 @@ search_observations({
 
 ---
 
+## MCP Architecture Simplification (December 2025)
+
+### The Problem: Complex MCP Implementation
+
+**Before:**
+```
+9+ MCP tools registered at session start:
+- search_observations
+- find_by_type
+- find_by_file
+- find_by_concept
+- get_recent_context
+- get_observation
+- get_session
+- get_prompt
+- help
+
+Problems:
+- Overlapping operations (search_observations vs find_by_type)
+- Complex parameter schemas (~2,500 tokens in tool definitions)
+- No built-in workflow guidance
+- High cognitive load for Claude (which tool to use?)
+- Code size: ~2,718 lines in mcp-server.ts
+```
+
+**The Insight:** Progressive disclosure should be built into tool design itself, not something Claude has to remember.
+
+### The Solution: 3-Layer Workflow
+
+**After:**
+```
+4 MCP tools following 3-layer workflow:
+
+1. __IMPORTANT - Workflow documentation (always visible)
+   "3-LAYER WORKFLOW (ALWAYS FOLLOW):
+    1. search(query) → Get index with IDs
+    2. timeline(anchor=ID) → Get context
+    3. get_observations([IDs]) → Fetch details
+    NEVER fetch full details without filtering first."
+
+2. search - Layer 1: Get index with IDs (~50-100 tokens/result)
+3. timeline - Layer 2: Get chronological context
+4. get_observations - Layer 3: Fetch full details (~500-1,000 tokens/result)
+
+Benefits:
+- Progressive disclosure enforced by tool structure
+- No overlapping operations
+- Simple schemas (additionalProperties: true)
+- Clear workflow pattern
+- Code size: ~312 lines in mcp-server.ts (88% reduction)
+- ~10x token savings
+```
+
+### Migration: Skill-Based Search Removed
+
+**Previously:** Used skill-based search
+- mem-search skill invoked via natural language
+- HTTP API called directly via curl
+- Progressive disclosure through skill loading
+- 17 skill documentation files
+
+**Now:** Removed skill-based approach
+- MCP-only architecture
+- Native MCP protocol (better Claude integration)
+- Works with both Claude Desktop and Claude Code
+- Simpler to maintain (no skill files)
+- All 19 mem-search skill files removed (~2,744 lines)
+
+### Key Architectural Changes
+
+**MCP Server Refactor:**
+
+Before:
+```typescript
+// Complex parameter schemas
+{
+  name: "search_observations",
+  inputSchema: {
+    type: "object",
+    properties: {
+      query: { type: "string", description: "..." },
+      type: { type: "array", items: { enum: [...] } },
+      format: { enum: ["index", "full"] },
+      limit: { type: "number", minimum: 1, maximum: 100 },
+      // ... many more parameters
+    }
+  }
+}
+```
+
+After:
+```typescript
+// Simple schemas with workflow guidance
+{
+  name: "search",
+  description: "Step 1: Search memory. Returns index with IDs.",
+  inputSchema: {
+    type: "object",
+    properties: {},
+    additionalProperties: true  // Accept any parameters
+  }
+}
+```
+
+**Workflow Enforcement:**
+
+Before: Claude had to remember progressive disclosure pattern
+
+After: Tool structure makes it impossible to skip steps
+- Can't get details without IDs from search
+- Can't search without seeing __IMPORTANT reminder
+- Timeline provides middle ground (context without full details)
+
+### Impact
+
+**Token Efficiency:**
+```
+Traditional: Fetch 20 observations upfront
+→ 10,000-20,000 tokens
+→ Only 2 observations relevant (90% waste)
+
+3-Layer Workflow:
+→ search (20 results): ~1,000-2,000 tokens
+→ Review index, identify 3 relevant IDs
+→ get_observations (3 IDs): ~1,500-3,000 tokens
+→ Total: 2,500-5,000 tokens (50-75% savings)
+```
+
+**Code Simplicity:**
+- MCP server: 2,718 lines → 312 lines (88% reduction)
+- Removed: 19 skill files (~2,744 lines)
+- Net reduction: ~5,150 lines of code removed
+
+**User Experience:**
+- Same natural language interaction
+- Better token efficiency
+- Clearer architecture
+- Works identically on Claude Desktop and Claude Code
+
+### Design Philosophy
+
+**Progressive Disclosure Through Structure:**
+
+The 3-layer workflow embodies progressive disclosure at the architectural level:
+
+1. **Layer 1 (Index)** - "What exists?" - Cheap survey of options
+2. **Layer 2 (Timeline)** - "What was happening?" - Context around specific points
+3. **Layer 3 (Details)** - "Tell me everything" - Full details only when justified
+
+Each layer provides a decision point where Claude can:
+- Stop if irrelevant
+- Get more context if uncertain
+- Dive deep if confident
+
+This makes it structurally difficult to waste tokens.
+
+---
+
 ## v1-v2: The Naive Approach
 
 ### The First Attempt: Dump Everything

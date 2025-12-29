@@ -1,403 +1,454 @@
 ---
-title: "mem-search Skill"
-description: "Query your project history with natural language"
+title: "Memory Search"
+description: "Search your project history with MCP tools"
 ---
 
-# mem-search Skill Usage
+# Memory Search with MCP Tools
 
-Once claude-mem is installed as a plugin, you can search your project history using natural language. Claude automatically invokes the mem-search skill when you ask about past work.
+Claude-mem provides persistent memory across sessions through **4 MCP tools** that follow a token-efficient **3-layer workflow pattern**.
 
-## How It Works
+## Overview
 
-**v5.5.0 Enhancement**: The search skill was renamed to "mem-search" for better scope differentiation, with effectiveness increased from 67% to 100% and enhanced concrete triggers (85% vs 44%).
+Instead of fetching all historical data upfront (expensive), claude-mem uses a progressive disclosure approach:
 
-**v5.4.0 Architecture**: Claude-Mem uses a skill-based search architecture instead of MCP tools, saving ~2,250 tokens per session start through progressive disclosure.
+1. **Search** → Get a compact index with IDs (~50-100 tokens/result)
+2. **Timeline** → Get context around interesting results
+3. **Get Observations** → Fetch full details ONLY for filtered IDs
 
-**Simple Usage:**
-- Just ask naturally: *"What did we do last session?"*
-- Claude recognizes the intent and invokes the mem-search skill
-- The skill uses HTTP API endpoints to query your memory
-- Results are formatted and presented to you
+This achieves **~10x token savings** compared to traditional RAG approaches.
 
-**Benefits:**
-- **Token Efficient**: ~250 tokens (skill frontmatter) vs ~2,500 tokens (MCP tool definitions)
-- **Natural Language**: No need to learn specific tool syntax
-- **Progressive Disclosure**: Only loads detailed instructions when needed
-- **Auto-Invoked**: Claude knows when to search based on your questions
-- **Scope Differentiation**: "mem-search" clearly distinguishes from native conversation memory
+## The 3-Layer Workflow
 
-## Quick Reference
+### Layer 1: Search (Index)
 
-| Operation               | Purpose                                      |
-|-------------------------|----------------------------------------------|
-| Search Observations     | Full-text search across observations         |
-| Search Sessions         | Full-text search across session summaries    |
-| Search Prompts          | Full-text search across raw user prompts     |
-| By Concept              | Find observations tagged with concepts       |
-| By File                 | Find observations referencing files          |
-| By Type                 | Find observations by type                    |
-| Recent Context          | Get recent session context                   |
-| Timeline                | Get unified timeline around a specific point |
-| Timeline by Query       | Search and get timeline context in one step  |
-| API Help                | Get search API documentation                 |
-
-## Example Queries
-
-### Natural Language Queries
-
-**Search Observations:**
-```
-"What bugs did we fix related to authentication?"
-"Show me all decisions about the build system"
-"Find refactoring work on the database"
-```
-
-**Search Sessions:**
-```
-"What did we learn about hooks?"
-"What was accomplished in the API implementation?"
-"Show me recent work on this project"
-```
-
-**Search Prompts:**
-```
-"When did I ask about authentication features?"
-"Find all my requests about dark mode"
-```
-
-**Note**: Claude automatically translates your natural language queries into the appropriate search operations.
-
-### Search by File
+Start by searching to get a lightweight index of results:
 
 ```
-"Show me everything related to worker-service.ts"
-"What changes were made to migrations.ts?"
-"Find all work on the database file"
+search(query="authentication bug", type="bugfix", limit=10)
 ```
 
-### Search by Concept
+**Returns:** Compact table with IDs, titles, dates, types
+**Cost:** ~50-100 tokens per result
+**Purpose:** Survey what exists before fetching details
+
+### Layer 2: Timeline (Context)
+
+Get chronological context around specific observations:
 
 ```
-"Show observations tagged with architecture"
-"Find all security-related observations"
-"What patterns have we used?"
+timeline(anchor=<observation_id>, depth_before=3, depth_after=3)
 ```
 
-### Search by Type
+Or search and get timeline in one step:
 
 ```
-"Find all feature implementations"
-"Show me all decisions and discoveries"
-"What bugs have we fixed?"
+timeline(query="authentication", depth_before=2, depth_after=2)
 ```
 
-### Recent Context
+**Returns:** Chronological view showing what was happening before/after
+**Cost:** Variable, depends on depth
+**Purpose:** Understand narrative arc and context
+
+### Layer 3: Get Observations (Details)
+
+Fetch full details only for relevant observations:
 
 ```
-"Show me what we've been working on"
-"Get context from the last 5 sessions"
-"What happened recently on this project?"
+get_observations(ids=[123, 456, 789])
 ```
 
-### Timeline Queries
+**Returns:** Complete observation details (narrative, facts, files, concepts)
+**Cost:** ~500-1000 tokens per observation
+**Purpose:** Deep dive on specific, validated items
 
-**Get timeline around a specific point:**
+### Why This Works
+
+**Traditional Approach:**
+- Fetch everything upfront: 20,000 tokens
+- Relevance: ~10% (2,000 tokens actually useful)
+- Waste: 18,000 tokens on irrelevant context
+
+**3-Layer Approach:**
+- Search index: 1,000 tokens (10 results)
+- Timeline context: 500 tokens (around 2 key results)
+- Fetch details: 1,500 tokens (3 observations)
+- **Total: 3,000 tokens, 100% relevant**
+
+## Available Tools
+
+### `__IMPORTANT` - Workflow Documentation
+
+Always visible reminder of the 3-layer workflow pattern. Helps Claude understand how to use the search tools efficiently.
+
+**Usage:** Automatically shown, no need to invoke
+
+### `search` - Search Memory Index
+
+Search your memory and get a compact index with IDs.
+
+**Parameters:**
+- `query` - Full-text search query (supports AND, OR, NOT, phrase searches)
+- `limit` - Maximum results (default: 20)
+- `offset` - Skip first N results for pagination
+- `type` - Filter by observation type (bugfix, feature, decision, discovery, refactor, change)
+- `obs_type` - Filter by record type (observation, session, prompt)
+- `project` - Filter by project name
+- `dateStart` - Filter by start date (YYYY-MM-DD)
+- `dateEnd` - Filter by end date (YYYY-MM-DD)
+- `orderBy` - Sort order (date_desc, date_asc, relevance)
+
+**Returns:** Compact index table with IDs, titles, dates, types
+
+**Example:**
 ```
-"What was happening when we implemented authentication?"
-"Show me the context around that bug fix"
-"What led to the decision to refactor the database?"
-```
-
-**Timeline by query:**
-```
-"Find when we added the viewer UI and show what happened around that time"
-"Search for authentication work and show the timeline"
-```
-
-**Benefits:**
-- See the complete narrative arc around key events
-- All record types (observations, sessions, prompts) in chronological view
-- Understand what was happening before and after important changes
-
-## Search Strategy
-
-The mem-search skill uses a progressive disclosure pattern to efficiently retrieve information:
-
-### 1. Ask Naturally
-
-Start with a natural language question:
-```
-"What bugs did we fix related to authentication?"
-```
-
-### 2. Claude Invokes mem-search Skill
-
-Claude recognizes your intent and loads the mem-search skill (~250 tokens for skill frontmatter).
-
-### 3. Skill Uses HTTP API
-
-The skill calls the appropriate HTTP endpoint (e.g., `/api/search/observations`) with the query.
-
-### 4. Results Formatted
-
-Results are formatted and presented to you, usually starting with an index/summary format.
-
-### 5. Deep Dive if Needed
-
-If you need more details, ask follow-up questions:
-```
-"Tell me more about observation #123"
-"Show me the full details of that decision"
+search(query="database migration", type="bugfix", limit=5, orderBy="date_desc")
 ```
 
-**Benefits of This Approach:**
-- **Token Efficient**: Only loads what you need, when you need it
-- **Natural**: No syntax to learn
-- **Progressive**: Start with overview, drill down as needed
-- **Automatic**: Claude handles the search invocation
+### `timeline` - Get Chronological Context
+
+Get a chronological view of observations around a specific point or query.
+
+**Parameters:**
+- `anchor` - Observation ID to center timeline around (optional if query provided)
+- `query` - Search query to find anchor automatically (optional if anchor provided)
+- `depth_before` - Number of observations before anchor (default: 3)
+- `depth_after` - Number of observations after anchor (default: 3)
+- `project` - Filter by project name
+
+**Returns:** Chronological list showing what happened before/during/after
+
+**Example:**
+```
+timeline(anchor=12345, depth_before=5, depth_after=5)
+```
+
+Or search-based:
+```
+timeline(query="implemented JWT auth", depth_before=3, depth_after=3)
+```
+
+### `get_observations` - Fetch Full Details
+
+Fetch complete observation details by IDs. **Always batch multiple IDs in a single call for efficiency.**
+
+**Parameters:**
+- `ids` - Array of observation IDs (required)
+- `orderBy` - Sort order (date_desc, date_asc)
+- `limit` - Maximum observations to return
+- `project` - Filter by project name
+
+**Returns:** Complete observation details including narrative, facts, files, concepts
+
+**Example:**
+```
+get_observations(ids=[123, 456, 789, 1011])
+```
+
+**Important:** Always batch IDs instead of making separate calls per observation.
+
+## Common Use Cases
+
+### Debugging Issues
+
+**Scenario:** Find what went wrong with database connections
+
+```
+Step 1: search(query="error database connection", type="bugfix", limit=10)
+  → Review index, identify observations #245, #312, #489
+
+Step 2: timeline(anchor=312, depth_before=3, depth_after=3)
+  → See what was happening around the fix
+
+Step 3: get_observations(ids=[312, 489])
+  → Get full details on relevant fixes
+```
+
+### Understanding Decisions
+
+**Scenario:** Review architectural choices about authentication
+
+```
+Step 1: search(query="authentication", type="decision", limit=5)
+  → Find decision observations
+
+Step 2: get_observations(ids=[<relevant_ids>])
+  → Get full decision rationale, trade-offs, facts
+```
+
+### Code Archaeology
+
+**Scenario:** Find when a specific file was modified
+
+```
+Step 1: search(query="worker-service.ts", limit=20)
+  → Get all observations mentioning that file
+
+Step 2: timeline(query="worker-service.ts refactor", depth_before=2, depth_after=2)
+  → See what led to and followed from the refactor
+
+Step 3: get_observations(ids=[<specific_observation_ids>])
+  → Get implementation details
+```
+
+### Feature History
+
+**Scenario:** Track how a feature evolved
+
+```
+Step 1: search(query="dark mode", type="feature", orderBy="date_asc")
+  → Chronological view of feature work
+
+Step 2: timeline(anchor=<first_observation_id>, depth_after=10)
+  → See the full development timeline
+
+Step 3: get_observations(ids=[<key_milestones>])
+  → Deep dive on critical implementation points
+```
+
+### Learning from Past Work
+
+**Scenario:** Review refactoring patterns
+
+```
+Step 1: search(type="refactor", limit=10, orderBy="date_desc")
+  → Recent refactoring work
+
+Step 2: get_observations(ids=[<interesting_ids>])
+  → Study the patterns and approaches used
+```
+
+### Context Recovery
+
+**Scenario:** Restore context after time away from project
+
+```
+Step 1: search(query="project-name", limit=10, orderBy="date_desc")
+  → See recent work
+
+Step 2: timeline(anchor=<most_recent_id>, depth_before=10)
+  → Understand what led to current state
+
+Step 3: get_observations(ids=[<critical_observations>])
+  → Refresh memory on key decisions
+```
+
+## Search Query Syntax
+
+The `query` parameter supports SQLite FTS5 full-text search syntax:
+
+### Boolean Operators
+
+```
+query="authentication AND JWT"           # Both terms must appear
+query="OAuth OR JWT"                      # Either term can appear
+query="security NOT deprecated"           # Exclude deprecated items
+```
+
+### Phrase Searches
+
+```
+query='"database migration"'             # Exact phrase match
+```
+
+### Column-Specific Searches
+
+```
+query="title:authentication"             # Search in title only
+query="content:database"                  # Search in content only
+query="concepts:security"                 # Search in concepts only
+```
+
+### Combining Operators
+
+```
+query='"user auth" AND (JWT OR session) NOT deprecated'
+```
+
+## Token Management
+
+### Token Efficiency Best Practices
+
+1. **Always start with search** - Get index first (~50-100 tokens/result)
+2. **Use small limits** - Start with 3-5 results, increase if needed
+3. **Filter before fetching** - Use type, date, project filters
+4. **Batch get_observations** - Always group multiple IDs in one call
+5. **Use timeline strategically** - Get context only when narrative matters
+
+### Token Cost Estimates
+
+| Operation | Tokens per Result |
+|-----------|-------------------|
+| search (index) | 50-100 |
+| timeline (per observation) | 100-200 |
+| get_observations (full details) | 500-1,000 |
+
+**Example Comparison:**
+
+**Inefficient:**
+```
+# Fetching 20 full observations upfront: 10,000-20,000 tokens
+get_observations(ids=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20])
+```
+
+**Efficient:**
+```
+# Search index: ~1,000 tokens
+search(query="bug fix", limit=20)
+
+# Review IDs, identify 3 relevant observations
+
+# Fetch only relevant: ~1,500-3,000 tokens
+get_observations(ids=[5, 12, 18])
+
+# Total: 2,500-4,000 tokens (vs 10,000-20,000)
+```
 
 ## Advanced Filtering
-
-You can refine searches using natural language filters:
 
 ### Date Ranges
 
 ```
-"What bugs did we fix in October?"
-"Show me work from last week"
-"Find decisions made between October 1-31"
+search(
+  query="performance optimization",
+  dateStart="2025-10-01",
+  dateEnd="2025-10-31"
+)
 ```
 
 ### Multiple Types
 
-```
-"Show me all decisions and features"
-"Find bugfixes and refactorings"
-```
-
-### Concepts
+For observations of multiple types, make multiple searches or use broader query:
 
 ```
-"Find database work related to architecture and performance"
-"Show security observations"
+search(query="database", type="bugfix", limit=10)
+search(query="database", type="feature", limit=10)
 ```
 
-### File-Specific
+### Project-Specific
 
 ```
-"Show refactoring work that touched worker-service.ts"
-"Find changes to auth files"
+search(query="API", project="my-app", limit=15)
 ```
 
-### Project Filtering
+### Pagination
 
 ```
-"Show authentication work on my-app project"
-"What have we done on this codebase?"
+# First page
+search(query="refactor", limit=10, offset=0)
+
+# Second page
+search(query="refactor", limit=10, offset=10)
+
+# Third page
+search(query="refactor", limit=10, offset=20)
 ```
-
-**Note**: Claude translates your natural language into the appropriate API filters automatically.
-
-## Under the Hood: HTTP API
-
-The mem-search skill uses HTTP endpoints on the worker service (port 37777):
-
-- `GET /api/search/observations` - Full-text search observations
-- `GET /api/search/sessions` - Full-text search session summaries
-- `GET /api/search/prompts` - Full-text search user prompts
-- `GET /api/search/by-concept` - Find observations by concept tag
-- `GET /api/search/by-file` - Find work related to specific files
-- `GET /api/search/by-type` - Find observations by type
-- `GET /api/context/recent` - Get recent session context
-- `GET /api/context/timeline` - Get timeline around specific point
-- `GET /api/timeline/by-query` - Search + timeline in one call
-- `GET /api/search/help` - API documentation
-
-These endpoints use FTS5 full-text search with support for:
-- Boolean operators (AND, OR, NOT)
-- Phrase searches
-- Column-specific searches
-- Date range filtering
-- Project filtering
 
 ## Result Metadata
 
-All results include rich metadata:
+All observations include rich metadata:
 
-```
-## JWT authentication decision
-
-**Type**: decision
-**Date**: 2025-10-21 14:23:45
-**Concepts**: authentication, security, architecture
-**Files Read**: src/auth/middleware.ts, src/utils/jwt.ts
-**Files Modified**: src/auth/jwt-strategy.ts
-
-**Narrative**:
-Decided to implement JWT-based authentication instead of session-based
-authentication for better scalability and stateless design...
-
-**Facts**:
-• JWT tokens expire after 1 hour
-• Refresh tokens stored in httpOnly cookies
-• Token signing uses RS256 algorithm
-• Public keys rotated every 30 days
-```
-
-## Citations
-
-All search results include observation IDs that can be accessed via the HTTP API:
-
-- `http://localhost:37777/api/observation/{id}` - Get specific observation by ID
-- View all observations in the web viewer at `http://localhost:37777`
-
-These citations enable referencing specific historical context in your work.
-
-## Token Management
-
-### Token Efficiency Tips
-
-1. **Start with index format**: ~50-100 tokens per result
-2. **Use small limits**: Start with 3-5 results
-3. **Apply filters**: Narrow results before searching
-4. **Paginate**: Use offset to browse results in batches
-
-### Token Estimates
-
-| Format | Tokens per Result |
-|--------|-------------------|
-| Index  | 50-100            |
-| Full   | 500-1000          |
-
-**Example**:
-- 20 results in index format: ~1,000-2,000 tokens
-- 20 results in full format: ~10,000-20,000 tokens
-
-## Common Use Cases
-
-### 1. Debugging Issues
-
-Find what went wrong:
-```
-search_observations with query="error database connection" and type="bugfix"
-```
-
-### 2. Understanding Decisions
-
-Review architectural choices:
-```
-find_by_type with type="decision" and format="index"
-```
-
-Then deep dive on specific decisions:
-```
-search_observations with query="[DECISION TITLE]" and format="full"
-```
-
-### 3. Code Archaeology
-
-Find when a file was modified:
-```
-find_by_file with filePath="worker-service.ts"
-```
-
-### 4. Feature History
-
-Track feature development:
-```
-search_sessions with query="authentication feature"
-search_user_prompts with query="add authentication"
-```
-
-### 5. Learning from Past Work
-
-Review refactoring patterns:
-```
-find_by_type with type="refactor" and limit=10
-```
-
-### 6. Context Recovery
-
-Restore context after time away:
-```
-get_recent_context with limit=5
-search_sessions with query="[YOUR PROJECT NAME]" and orderBy="date_desc"
-```
-
-## Best Practices
-
-1. **Index first, full later**: Always start with index format
-2. **Small limits**: Start with 3-5 results to avoid token limits
-3. **Use filters**: Narrow results before searching
-4. **Specific queries**: More specific = better results
-5. **Review citations**: Use citations to reference past decisions
-6. **Date filtering**: Use date ranges for time-based searches
-7. **Type filtering**: Use types to categorize searches
-8. **Concept tags**: Use concepts for thematic searches
+- **ID** - Unique observation identifier
+- **Type** - bugfix, feature, decision, discovery, refactor, change
+- **Date** - When the work occurred
+- **Title** - Concise description
+- **Concepts** - Tagged themes (e.g., security, performance, architecture)
+- **Files Read** - Files examined during work
+- **Files Modified** - Files changed during work
+- **Narrative** - Story of what happened and why
+- **Facts** - Key factual points (decisions made, patterns used, metrics)
 
 ## Troubleshooting
 
 ### No Results Found
 
-1. Check database has data:
+1. **Broaden your search:**
+   ```
+   # Too specific
+   search(query="JWT authentication implementation with RS256")
+
+   # Better
+   search(query="authentication")
+   ```
+
+2. **Check database has data:**
    ```bash
-   sqlite3 ~/.claude-mem/claude-mem.db "SELECT COUNT(*) FROM observations;"
+   curl "http://localhost:37777/api/search?query=test"
    ```
 
-2. Try broader natural language query:
+3. **Try without filters:**
    ```
-   "Show me anything about authentication"  # Broader
-   vs
-   "Find exact JWT authentication implementation"  # Too specific
-   ```
-
-3. Ask without filters first:
-   ```
-   "What do we have about auth?"
-   # Then narrow down
-   "Show me auth-related decisions"
+   # Remove type/date filters to see if data exists
+   search(query="your-search-term")
    ```
 
-### Worker Service Not Running
+### IDs Not Found in get_observations
 
-If search isn't working, check the worker service:
+**Error:** "Observation IDs not found: [123, 456]"
 
-```bash
-npm run worker:status       # Check worker status
-npm run worker:restart      # Restart if needed
-npm run worker:logs         # View logs
+**Causes:**
+- IDs from different project (use `project` parameter)
+- IDs were deleted
+- Typo in ID numbers
+
+**Solution:**
+```
+# Verify IDs exist
+search(query="<related-search>")
+
+# Use correct project filter
+get_observations(ids=[123, 456], project="correct-project-name")
 ```
 
-Or describe the issue to Claude and the troubleshoot skill will automatically activate to provide diagnosis.
+### Token Limit Errors
 
-### Performance Issues
+**Error:** Response exceeds token limits
+
+**Solution:** Use the 3-layer workflow to reduce upfront costs:
+
+```
+# Instead of fetching 50 full observations:
+# get_observations(ids=[1,2,3,...,50])  # 25,000-50,000 tokens!
+
+# Do this:
+search(query="<your-query>", limit=50)  # ~2,500-5,000 tokens
+# Review index, identify 5 relevant observations
+get_observations(ids=[<5-most-relevant>])  # ~2,500-5,000 tokens
+# Total: 5,000-10,000 tokens (50-80% savings)
+```
+
+### Search Performance
 
 If searches seem slow:
-1. Be more specific in your queries
-2. Ask for recent work (naturally filters by date)
-3. Specify the project you're interested in
-4. Ask for fewer results initially
+1. Be more specific in queries (helps FTS5 index)
+2. Use date range filters to narrow scope
+3. Specify project filter when possible
+4. Use smaller limit values
+
+## Best Practices
+
+1. **Index First, Details Later** - Always start with search to survey options
+2. **Filter Before Fetching** - Use search parameters to narrow results
+3. **Batch ID Fetches** - Group multiple IDs in one get_observations call
+4. **Use Timeline for Context** - When narrative matters, timeline shows the story
+5. **Specific Queries** - More specific = better relevance
+6. **Small Limits Initially** - Start with 3-5 results, expand if needed
+7. **Review Before Deep Dive** - Check index before fetching full details
 
 ## Technical Details
 
-**Architecture Change (v5.4.0)**:
-- **Before**: 9 MCP tools (~2,500 tokens in tool definitions per session start)
-- **After**: 1 mem-search skill (~250 tokens in frontmatter, full instructions loaded on-demand)
-- **Savings**: ~2,250 tokens per session start
-- **Migration**: Transparent - users don't need to change how they ask questions
+**Architecture:** MCP tools are a thin wrapper over the Worker HTTP API (localhost:37777). The MCP server translates tool calls into HTTP requests to the worker service, which handles all business logic, database queries, and Chroma vector search.
 
-**v5.5.0 Enhancement**: Renamed from "search" to "mem-search" with improved effectiveness (67% → 100%) and enhanced triggers (44% → 85%).
+**MCP Server:** Located at `~/.claude/plugins/marketplaces/thedotmack/plugin/scripts/mcp-server.cjs`
 
-**How the Skill Works:**
-1. User asks a question about past work
-2. Claude recognizes the intent matches the mem-search skill description
-3. Skill loads full instructions from `plugin/skills/mem-search/SKILL.md`
-4. Skill uses `curl` to call HTTP API endpoints
-5. Results formatted and returned to Claude
-6. Claude presents results to user
+**Worker Service:** Express API on port 37777, managed by Bun
+
+**Database:** SQLite FTS5 full-text search on `~/.claude-mem/claude-mem.db`
+
+**Vector Search:** Chroma embeddings for semantic search (underlying implementation)
 
 ## Next Steps
 
+- [Progressive Disclosure](/progressive-disclosure) - Philosophy behind 3-layer workflow
 - [Architecture Overview](/architecture/overview) - System components
-- [Database Schema](/architecture/database) - Understanding the data
-- [Getting Started](/usage/getting-started) - Automatic operation
+- [Database Schema](/architecture/database) - Understanding the data structure
+- [Claude Desktop Setup](/usage/claude-desktop) - Installation and configuration

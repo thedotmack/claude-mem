@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "mem-search": {
+    "mcp-search": {
       "type": "stdio",
       "command": "${CLAUDE_PLUGIN_ROOT}/scripts/mcp-server.cjs"
     }

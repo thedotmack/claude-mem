@@ -1,448 +1,497 @@
 ---
 title: "Search Architecture"
-description: "mem-search skill with HTTP API and progressive disclosure"
+description: "MCP tools with 3-layer workflow for token-efficient memory retrieval"
 ---
 
 # Search Architecture
 
-Claude-Mem uses a skill-based search architecture that provides intelligent memory retrieval through natural language queries. This replaced the MCP-based approach in v5.4.0 with a more efficient implementation. The skill was enhanced and renamed to "mem-search" in v5.5.0 for better scope differentiation.
+Claude-mem uses an **MCP-based search architecture** that provides intelligent memory retrieval through 4 streamlined tools following a 3-layer workflow pattern.
 
 ## Overview
 
-**Architecture**: Skill-Based Search + HTTP API + Progressive Disclosure
+**Architecture**: MCP Tools → MCP Protocol → HTTP API → Worker Service
 
 **Key Components**:
-1. **mem-search Skill** (`plugin/skills/mem-search/SKILL.md`) - Auto-invoked when users ask about past work
-2. **HTTP API Endpoints** (10 routes) - Fast, efficient search operations on port 37777
-3. **Worker Service** - Express.js server with FTS5 full-text search
-4. **SQLite Database** - Persistent storage with FTS5 virtual tables
-5. **Chroma Vector DB** - Semantic search with hybrid retrieval
+1. **MCP Tools** (4 tools) - `search`, `timeline`, `get_observations`, `__IMPORTANT`
+2. **MCP Server** (`plugin/scripts/mcp-server.cjs`) - Thin wrapper over HTTP API
+3. **HTTP API Endpoints** - Fast search operations on Worker Service (port 37777)
+4. **Worker Service** - Express.js server with FTS5 full-text search
+5. **SQLite Database** - Persistent storage with FTS5 virtual tables
+6. **Chroma Vector DB** - Semantic search with hybrid retrieval
 
-**v5.5.0 Enhancement**: Renamed from "search" to "mem-search" with:
-- Effectiveness increased from 67% to 100%
-- Concrete triggers increased from 44% to 85%
-- 5+ unique identifiers for better scope differentiation
-- Comprehensive documentation (17 files, 12 operation guides)
+**Token Efficiency**: ~10x savings through 3-layer workflow pattern
 
 ## How It Works
 
-### 1. User Query (Natural Language)
+### 1. User Query
+
+Claude has access to 4 MCP tools. When searching memory, Claude follows the 3-layer workflow:
 
 ```
-User: "What bugs did we fix last session?"
+Step 1: search(query="authentication bug", type="bugfix", limit=10)
+Step 2: timeline(anchor=<observation_id>, depth_before=3, depth_after=3)
+Step 3: get_observations(ids=[123, 456, 789])
 ```
 
-### 2. Skill Invocation
+### 2. MCP Protocol
 
-Claude recognizes the intent and invokes the mem-search skill:
-- Skill frontmatter (~250 tokens) loaded at session start
-- Full skill instructions loaded on-demand when skill is invoked
-- Progressive disclosure pattern minimizes context overhead
-- "mem-search" naming provides clear scope differentiation from native memory
+MCP server receives tool call via JSON-RPC over stdio:
+
+```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "search",
+    "arguments": {
+      "query": "authentication bug",
+      "type": "bugfix",
+      "limit": 10
+    }
+  }
+}
+```
 
 ### 3. HTTP API Call
 
-The skill uses `curl` to call the HTTP API:
+MCP server translates to HTTP request:
 
-```bash
-curl "http://localhost:37777/api/search/observations?query=bugs&type=bugfix&limit=5"
+```typescript
+const url = `http://localhost:37777/api/search?query=authentication%20bug&type=bugfix&limit=10`;
+const response = await fetch(url);
 ```
 
-### 4. FTS5 Search
+### 4. Worker Processing
 
-Worker service queries SQLite FTS5 virtual tables:
+Worker service executes FTS5 query:
 
 ```sql
 SELECT * FROM observations_fts
 WHERE observations_fts MATCH ?
 AND type = 'bugfix'
 ORDER BY rank
-LIMIT 5
+LIMIT 10
 ```
 
-### 5. Results Formatted
+### 5. Results Returned
 
-Skill formats results and returns to Claude:
+Worker returns structured data → MCP server → Claude:
 
-```
-## Recent Bugfixes
-
-1. [bugfix] Fixed authentication token expiry
-   Date: 2025-11-08 14:23:45
-   Files: src/auth/jwt.ts
-
-2. [bugfix] Resolved database connection leak
-   Date: 2025-11-08 13:15:22
-   Files: src/services/database.ts
-```
-
-### 6. User Sees Answer
-
-Claude presents the formatted results naturally in conversation.
-
-## Architecture Change (v5.4.0)
-
-### Before: MCP-Based Search
-
-**Approach**: 9 MCP tools registered at session start
-
-**Token Cost**: ~2,500 tokens in tool definitions per session
-- Each tool's schema, parameters, descriptions loaded
-- All 9 tools available whether needed or not
-- No progressive disclosure
-
-**Example MCP Tool**:
 ```json
 {
-  "name": "search_observations",
-  "description": "Full-text search across observations...",
-  "inputSchema": {
-    "type": "object",
-    "properties": {
-      "query": { "type": "string", "description": "..." },
-      "type": { "type": "array", "items": { "enum": [...] } },
-      "format": { "enum": ["index", "full"] },
-      // ... many more parameters
+  "content": [{
+    "type": "text",
+    "text": "| ID | Time | Title | Type |\n|---|---|---|---|\n| #123 | 2:15 PM | Fixed auth token expiry | bugfix |"
+  }]
+}
+```
+
+### 6. Claude Processes Results
+
+Claude reviews the index, decides which observations are relevant, and can:
+- Use `timeline` to get context
+- Use `get_observations` to fetch full details for selected IDs
+
+## The 4 MCP Tools
+
+### `__IMPORTANT` - Workflow Documentation
+
+Always visible to Claude. Explains the 3-layer workflow pattern.
+
+**Description:**
+```
+3-LAYER WORKFLOW (ALWAYS FOLLOW):
+1. search(query) → Get index with IDs (~50-100 tokens/result)
+2. timeline(anchor=ID) → Get context around interesting results
+3. get_observations([IDs]) → Fetch full details ONLY for filtered IDs
+NEVER fetch full details without filtering first. 10x token savings.
+```
+
+**Purpose:** Ensures Claude follows token-efficient pattern
+
+### `search` - Search Memory Index
+
+**Tool Definition:**
+```typescript
+{
+  name: 'search',
+  description: 'Step 1: Search memory. Returns index with IDs. Params: query, limit, project, type, obs_type, dateStart, dateEnd, offset, orderBy',
+  inputSchema: {
+    type: 'object',
+    properties: {},
+    additionalProperties: true  // Accepts any parameters
+  }
+}
+```
+
+**HTTP Endpoint:** `GET /api/search`
+
+**Parameters:**
+- `query` - Full-text search query
+- `limit` - Maximum results (default: 20)
+- `type` - Filter by observation type
+- `project` - Filter by project name
+- `dateStart`, `dateEnd` - Date range filters
+- `offset` - Pagination offset
+- `orderBy` - Sort order
+
+**Returns:** Compact index with IDs, titles, dates, types (~50-100 tokens per result)
+
+### `timeline` - Get Chronological Context
+
+**Tool Definition:**
+```typescript
+{
+  name: 'timeline',
+  description: 'Step 2: Get context around results. Params: anchor (observation ID) OR query (finds anchor automatically), depth_before, depth_after, project',
+  inputSchema: {
+    type: 'object',
+    properties: {},
+    additionalProperties: true
+  }
+}
+```
+
+**HTTP Endpoint:** `GET /api/timeline`
+
+**Parameters:**
+- `anchor` - Observation ID to center timeline around (optional if query provided)
+- `query` - Search query to find anchor automatically (optional if anchor provided)
+- `depth_before` - Number of observations before anchor (default: 3)
+- `depth_after` - Number of observations after anchor (default: 3)
+- `project` - Filter by project name
+
+**Returns:** Chronological view showing what happened before/during/after
+
+### `get_observations` - Fetch Full Details
+
+**Tool Definition:**
+```typescript
+{
+  name: 'get_observations',
+  description: 'Step 3: Fetch full details for filtered IDs. Params: ids (array of observation IDs, required), orderBy, limit, project',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      ids: {
+        type: 'array',
+        items: { type: 'number' },
+        description: 'Array of observation IDs to fetch (required)'
+      }
+    },
+    required: ['ids'],
+    additionalProperties: true
+  }
+}
+```
+
+**HTTP Endpoint:** `POST /api/observations/batch`
+
+**Body:**
+```json
+{
+  "ids": [123, 456, 789],
+  "orderBy": "date_desc",
+  "project": "my-app"
+}
+```
+
+**Returns:** Complete observation details (~500-1,000 tokens per observation)
+
+## MCP Server Implementation
+
+**Location:** `/Users/YOUR_USERNAME/.claude/plugins/marketplaces/thedotmack/plugin/scripts/mcp-server.cjs`
+
+**Role:** Thin wrapper that translates MCP protocol to HTTP API calls
+
+**Key Characteristics:**
+- ~312 lines of code (reduced from ~2,718 lines in old implementation)
+- No business logic - just protocol translation
+- Single source of truth: Worker HTTP API
+- Simple schemas with `additionalProperties: true`
+
+**Handler Example:**
+```typescript
+{
+  name: 'search',
+  handler: async (args: any) => {
+    const endpoint = '/api/search';
+    const searchParams = new URLSearchParams();
+
+    for (const [key, value] of Object.entries(args)) {
+      searchParams.append(key, String(value));
+    }
+
+    const url = `http://localhost:37777${endpoint}?${searchParams}`;
+    const response = await fetch(url);
+    return await response.json();
+  }
+}
+```
+
+## Worker HTTP API
+
+**Location:** `src/services/worker-service.ts`
+
+**Port:** 37777
+
+**Search Endpoints:**
+```typescript
+GET  /api/search           # Main search (used by MCP search tool)
+GET  /api/timeline         # Timeline context (used by MCP timeline tool)
+POST /api/observations/batch  # Fetch by IDs (used by MCP get_observations tool)
+GET  /api/health           # Health check
+```
+
+**Database Access:**
+- Uses `SessionSearch` service for FTS5 queries
+- Uses `SessionStore` for structured queries
+- Hybrid search with ChromaDB for semantic similarity
+
+**FTS5 Full-Text Search:**
+```typescript
+// search tool → HTTP GET → FTS5 query
+SELECT * FROM observations_fts
+WHERE observations_fts MATCH ?
+AND type = ?
+AND date >= ? AND date <= ?
+ORDER BY rank
+LIMIT ? OFFSET ?
+```
+
+## The 3-Layer Workflow Pattern
+
+### Design Philosophy
+
+The 3-layer workflow embodies **progressive disclosure** - a core principle of claude-mem's architecture.
+
+**Layer 1: Index (Search)**
+- **What:** Compact table with IDs, titles, dates, types
+- **Cost:** ~50-100 tokens per result
+- **Purpose:** Survey what exists before committing tokens
+- **Decision Point:** "Which observations are relevant?"
+
+**Layer 2: Context (Timeline)**
+- **What:** Chronological view of observations around a point
+- **Cost:** Variable based on depth
+- **Purpose:** Understand narrative arc, see what led to/from a point
+- **Decision Point:** "Do I need full details?"
+
+**Layer 3: Details (Get Observations)**
+- **What:** Complete observation data (narrative, facts, files, concepts)
+- **Cost:** ~500-1,000 tokens per observation
+- **Purpose:** Deep dive on validated, relevant observations
+- **Decision Point:** "Apply knowledge to current task"
+
+### Token Efficiency
+
+**Traditional RAG Approach:**
+```
+Fetch 20 observations upfront: 10,000-20,000 tokens
+Relevance: ~10% (only 2 observations actually useful)
+Waste: 18,000 tokens on irrelevant context
+```
+
+**3-Layer Workflow:**
+```
+Step 1: search (20 results)        ~1,000-2,000 tokens
+Step 2: Review index, filter to 3 relevant IDs
+Step 3: get_observations (3 IDs)   ~1,500-3,000 tokens
+Total: 2,500-5,000 tokens (50-75% savings)
+```
+
+**10x Savings:** By filtering at index level before fetching full details
+
+## Architecture Evolution
+
+### Before: Complex MCP Implementation
+
+**Approach:** 9 MCP tools with detailed parameter schemas
+
+**Token Cost:** ~2,500 tokens in tool definitions per session
+- `search_observations` - Full-text search
+- `find_by_type` - Filter by type
+- `find_by_file` - Filter by file
+- `find_by_concept` - Filter by concept
+- `get_recent_context` - Recent sessions
+- `get_observation` - Fetch single observation
+- `get_session` - Fetch session
+- `get_prompt` - Fetch prompt
+- `help` - API documentation
+
+**Problems:**
+- Overlapping operations (search_observations vs find_by_type)
+- Complex parameter schemas
+- No built-in workflow guidance
+- High token cost at session start
+
+**Code Size:** ~2,718 lines in mcp-server.ts
+
+### After: Streamlined MCP Implementation
+
+**Approach:** 4 MCP tools following 3-layer workflow
+
+**Token Cost:** ~312 lines of code, simplified tool definitions
+
+**Tools:**
+1. `__IMPORTANT` - Workflow guidance (always visible)
+2. `search` - Step 1 (index)
+3. `timeline` - Step 2 (context)
+4. `get_observations` - Step 3 (details)
+
+**Benefits:**
+- Progressive disclosure built into tool design
+- No overlapping operations
+- Simple schemas (`additionalProperties: true`)
+- Clear workflow pattern
+- ~10x token savings
+
+**Code Size:** ~312 lines in mcp-server.ts (88% reduction)
+
+### Key Insight
+
+**Before:** Progressive disclosure was something Claude had to remember
+
+**After:** Progressive disclosure is enforced by tool design itself
+
+The 3-layer workflow pattern makes it structurally difficult to waste tokens:
+- Can't fetch details without first getting IDs from search
+- Can't search without seeing workflow reminder (`__IMPORTANT`)
+- Timeline provides middle ground between index and full details
+
+## Configuration
+
+### Claude Desktop
+
+Add to `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "mcp-search": {
+      "command": "node",
+      "args": [
+        "/Users/YOUR_USERNAME/.claude/plugins/marketplaces/thedotmack/plugin/scripts/mcp-server.cjs"
+      ]
     }
   }
 }
 ```
 
-### After: Skill-Based Search
+### Claude Code
 
-**Approach**: 1 mem-search skill with progressive disclosure
+MCP server is automatically configured via plugin installation. No manual setup required.
 
-**Token Cost**: ~250 tokens in skill frontmatter per session
-- Only skill description loaded at session start
-- Full instructions loaded on-demand when skill is invoked
-- HTTP API endpoints instead of MCP protocol
+**Both clients use the same MCP tools** - the architecture works identically for Claude Desktop and Claude Code.
 
-**Example Skill Frontmatter**:
-```markdown
-# Claude-Mem mem-search Skill
+## Security
 
-Access claude-mem's persistent memory through a comprehensive HTTP API.
-Search for past work, understand context, and learn from previous decisions.
+### FTS5 Injection Prevention
 
-## When to Use This Skill
+All search queries are escaped before FTS5 processing:
 
-Invoke this skill when users ask about:
-- Past work: "What did we do last session?"
-- Bug fixes: "Did we fix this before?"
-- Features: "How did we implement authentication?"
-...
-```
-
-**Token Efficiency**: Minimal frontmatter at session start with progressive disclosure
-
-## HTTP API Endpoints
-
-The worker service exposes 10 search endpoints:
-
-### Full-Text Search
-
-```
-GET /api/search/observations
-GET /api/search/sessions
-GET /api/search/prompts
-```
-
-**Parameters**:
-- `query` - FTS5 search query (required)
-- `type` - Filter by type (bugfix, feature, refactor, etc.)
-- `project` - Filter by project name
-- `limit` - Maximum results (default: 20)
-- `offset` - Pagination offset
-- `format` - Response format (index or full)
-
-**Example**:
-```bash
-curl "http://localhost:37777/api/search/observations?query=authentication&type=decision&limit=5"
-```
-
-### Filtered Search
-
-```
-GET /api/search/by-type
-GET /api/search/by-concept
-GET /api/search/by-file
-```
-
-**Parameters**:
-- `type` / `concept` / `filePath` - Filter criteria (required)
-- `project` - Filter by project
-- `limit` - Maximum results
-- `format` - Response format
-
-**Example**:
-```bash
-curl "http://localhost:37777/api/search/by-file?filePath=worker-service.ts&limit=10"
-```
-
-### Context Retrieval
-
-```
-GET /api/context/recent
-GET /api/context/timeline
-GET /api/timeline/by-query
-```
-
-**Parameters**:
-- `project` - Filter by project
-- `limit` - Number of sessions/records
-- `anchor` - Timeline anchor point (ID or timestamp)
-- `depth_before` - Records before anchor
-- `depth_after` - Records after anchor
-
-**Example**:
-```bash
-curl "http://localhost:37777/api/context/recent?project=claude-mem&limit=5"
-```
-
-### Documentation
-
-```
-GET /api/search/help
-```
-
-Returns API documentation in JSON format.
-
-## Progressive Disclosure Pattern
-
-The mem-search skill uses progressive disclosure to minimize token usage:
-
-### Layer 1: Skill Frontmatter (Session Start)
-
-**What's Loaded**: Skill description and when to use it (~250 tokens)
-
-**Purpose**: Claude can recognize when to invoke the skill
-
-**Example**:
-```markdown
-# Claude-Mem mem-search Skill
-
-Access claude-mem's persistent memory through a comprehensive HTTP API.
-
-## When to Use This Skill
-Invoke this skill when users ask about:
-- Past work: "What did we do last session?"
-- Bug fixes: "Did we fix this before?"
-...
-```
-
-### Layer 2: Full Skill Instructions (On-Demand)
-
-**What's Loaded**: Complete operation documentation (~2,500 tokens)
-
-**Purpose**: Detailed instructions for each search operation
-
-**When Loaded**: Only when Claude invokes the skill
-
-**Example Structure**:
-```
-/skills/search/
-├── SKILL.md (main frontmatter)
-├── operations/
-│   ├── observations.md (detailed instructions)
-│   ├── sessions.md
-│   ├── prompts.md
-│   ├── by-type.md
-│   ├── by-concept.md
-│   ├── by-file.md
-│   ├── recent-context.md
-│   ├── timeline.md
-│   ├── timeline-by-query.md
-│   ├── help.md
-│   ├── formatting.md
-│   └── common-workflows.md
-```
-
-### Layer 3: API Response
-
-**What's Returned**: Search results in requested format
-
-**Format Options**:
-- `index` - Titles, dates, IDs only (~50-100 tokens per result)
-- `full` - Complete details (~500-1000 tokens per result)
-
-**Progressive Usage**: Start with `index`, drill down with `full` as needed
-
-## Implementation Details
-
-### mem-search Skill Structure
-
-```
-plugin/skills/mem-search/
-├── SKILL.md                           # Main frontmatter (~250 tokens)
-├── operations/
-│   ├── observations.md                # Search observations
-│   ├── sessions.md                    # Search sessions
-│   ├── prompts.md                     # Search prompts
-│   ├── by-type.md                     # Filter by type
-│   ├── by-concept.md                  # Filter by concept
-│   ├── by-file.md                     # Filter by file
-│   ├── recent-context.md              # Get recent context
-│   ├── timeline.md                    # Timeline around point
-│   ├── timeline-by-query.md           # Search + timeline
-│   ├── help.md                        # API documentation
-│   ├── formatting.md                  # Result formatting guide
-│   └── common-workflows.md            # Usage patterns
-```
-
-### Worker Service Integration
-
-**File**: `src/services/worker-service.ts`
-
-**Search Routes**:
-```typescript
-// Full-text search
-app.get('/api/search/observations', handleSearchObservations);
-app.get('/api/search/sessions', handleSearchSessions);
-app.get('/api/search/prompts', handleSearchPrompts);
-
-// Filtered search
-app.get('/api/search/by-type', handleSearchByType);
-app.get('/api/search/by-concept', handleSearchByConcept);
-app.get('/api/search/by-file', handleSearchByFile);
-
-// Context retrieval
-app.get('/api/context/recent', handleRecentContext);
-app.get('/api/context/timeline', handleTimeline);
-app.get('/api/timeline/by-query', handleTimelineByQuery);
-
-// Documentation
-app.get('/api/search/help', handleHelp);
-```
-
-**Database Access**:
-- Uses `SessionSearch` service for FTS5 queries
-- Uses `SessionStore` for structured queries
-- Hybrid search with ChromaDB for semantic similarity
-
-### Security
-
-**FTS5 Injection Prevention** (v4.2.3):
 ```typescript
 function escapeFTS5Query(query: string): string {
   return query.replace(/"/g, '""');
 }
 ```
 
-All user-provided search queries are properly escaped to prevent SQL injection.
+**Testing:** 332 injection attack tests covering special characters, SQL keywords, quote escaping, and boolean operators.
 
-**Comprehensive Testing**: 332 injection attack tests covering:
-- Special characters
-- SQL keywords
-- Quote escaping
-- Boolean operators
+### MCP Protocol Security
 
-## Benefits
+- Stdio transport (no network exposure)
+- Local-only HTTP API (localhost:37777)
+- No authentication needed (local development only)
 
-### 1. Token Efficiency
+## Performance
 
-**Before (MCP)**:
-- Session start: All tool definitions loaded upfront
-- Every session pays this cost
-- No progressive disclosure
+**FTS5 Full-Text Search:** Sub-10ms for typical queries
 
-**After (Skill)**:
-- Session start: Minimal token cost for skill frontmatter
-- Full instructions loaded only when invoked (progressive disclosure)
-- More efficient than loading all tool definitions upfront
+**MCP Overhead:** Minimal - simple protocol translation
 
-### 2. Natural Language Interface
+**Caching:** HTTP layer allows response caching (future enhancement)
 
-**Before**: Users needed to learn MCP tool syntax
-```
-search_observations with query="authentication" and type="decision"
-```
+**Pagination:** Efficient with offset/limit
 
-**After**: Users ask naturally
-```
-"What decisions did we make about authentication?"
-```
+**Batching:** `get_observations` accepts multiple IDs in single call
 
-Claude translates to appropriate API call.
+## Benefits Over Alternative Approaches
 
-### 3. Flexibility
+### vs. Traditional RAG
 
-**HTTP API Benefits**:
-- Can be called from skills, MCP tools, or other clients
-- Easy to test with curl
-- Standard REST conventions
-- JSON responses
+**Traditional RAG:**
+- Fetches everything upfront
+- High token cost
+- Low relevance ratio
 
-**Progressive Disclosure**:
-- Loads only what's needed
-- Can add more operations without increasing base cost
-- Documentation co-located with operations
+**3-Layer MCP:**
+- Fetches only what's needed
+- ~10x token savings
+- 100% relevance (Claude chooses what to fetch)
 
-### 4. Performance
+### vs. Previous MCP Implementation (v5.x)
 
-**Fast Queries**: FTS5 full-text search under 10ms for typical queries
+**Previous (9 tools):**
+- Complex schemas
+- Overlapping operations
+- No workflow guidance
+- ~2,500 tokens in definitions
 
-**Caching**: HTTP layer allows response caching
+**Current (4 tools):**
+- Simple schemas
+- Clear workflow
+- Built-in guidance
+- ~312 lines of code
 
-**Pagination**: Efficient result pagination with offset/limit
+### vs. Skill-Based Approach (Previously)
 
-## Migration Notes
+**Skill approach:**
+- Required separate skill files
+- HTTP API called directly via curl
+- Progressive disclosure through skill loading
 
-### For Users
+**MCP approach:**
+- Native MCP protocol (better Claude integration)
+- Cleaner architecture (protocol translation layer)
+- Works with both Claude Desktop and Claude Code
+- Simpler to maintain (no skill files)
 
-**No Action Required**: The migration from MCP to skill-based search is transparent.
-
-**Same Questions Work**: Natural language queries work exactly the same way.
-
-**Invisible Change**: Users won't notice any difference except better performance.
-
-### For Developers
-
-**Renamed**: MCP server (formerly `search-server.ts`, now `src/servers/mcp-server.ts`)
-- Source file kept for reference
-- No longer built or registered
-- MCP configuration removed from `plugin/.mcp.json`
-
-**New Implementation**: Skill-based search
-- Skill files: `plugin/skills/mem-search/`
-- HTTP endpoints: `src/services/worker-service.ts` (lines 200-400)
-- Build script: `npm run build` includes skill files
-- Sync script: `npm run sync-marketplace` copies to plugin directory
+**Migration:** Skill-based search was removed in favor of streamlined MCP architecture.
 
 ## Troubleshooting
 
+### MCP Server Not Connected
+
+**Symptoms:** Tools not appearing in Claude
+
+**Solution:**
+1. Check MCP server path in configuration
+2. Verify worker service is running: `curl http://localhost:37777/api/health`
+3. Restart Claude Desktop/Code
+
 ### Worker Service Not Running
 
-If searches fail, check worker service:
+**Symptoms:** MCP tools fail with connection errors
 
+**Solution:**
 ```bash
 npm run worker:status       # Check status
 npm run worker:restart      # Restart worker
 npm run worker:logs         # View logs
 ```
 
-### HTTP Endpoints Not Responding
+### Empty Search Results
 
-Test endpoints directly:
+**Symptoms:** search() returns no results
 
-```bash
-# Health check
-curl http://localhost:37777/health
-
-# Search test
-curl "http://localhost:37777/api/search/observations?query=test&limit=1"
-```
-
-### Skill Not Invoking
-
-If Claude doesn't invoke the mem-search skill automatically:
-
-1. Check skill files exist: `ls ~/.claude/plugins/marketplaces/thedotmack/plugin/skills/mem-search/`
-2. Restart Claude Code session to reload skill definitions
-3. Try more explicit phrasing: "Search past sessions for bug fixes" or "What did we do in yesterday's session?"
-4. Ensure your question is about previous sessions (not current conversation context)
+**Troubleshooting:**
+1. Test API directly: `curl "http://localhost:37777/api/search?query=test"`
+2. Check database: `ls ~/.claude-mem/claude-mem.db`
+3. Verify observations exist: `curl "http://localhost:37777/api/health"`
 
 ## Next Steps
 
-- [Search Tools Usage](/usage/search-tools) - User guide with examples
+- [Memory Search Usage](/usage/search-tools) - User guide with examples
+- [Progressive Disclosure](/progressive-disclosure) - Philosophy behind 3-layer workflow
 - [Worker Service Architecture](/architecture/worker-service) - HTTP API details
 - [Database Schema](/architecture/database) - FTS5 tables and indexes
