@@ -5,7 +5,7 @@
  * Ensures Bun runtime and uv (Python package manager) are installed
  * (auto-installs if missing) and handles dependency installation when needed.
  */
-import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync } from 'fs';
 import { execSync, spawnSync } from 'child_process';
 import { join } from 'path';
 import { homedir } from 'os';
@@ -268,8 +268,13 @@ function getBunCompileTarget() {
 function needsWorkerBuild() {
   const executablePath = join(ROOT, 'plugin', 'scripts', IS_WINDOWS ? 'worker-service.exe' : 'worker-service');
 
+  // Build if executable doesn't exist
   if (!existsSync(executablePath)) return true;
 
+  // Build if marker doesn't exist (executable exists but no version tracking)
+  if (!existsSync(WORKER_MARKER)) return true;
+
+  // Compare versions only if both executable and marker exist
   try {
     const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8'));
     const marker = JSON.parse(readFileSync(WORKER_MARKER, 'utf-8'));
@@ -277,6 +282,7 @@ function needsWorkerBuild() {
            process.platform !== marker.platform ||
            process.arch !== marker.arch;
   } catch {
+    // Build if marker is corrupt/unreadable
     return true;
   }
 }
@@ -328,6 +334,40 @@ function buildWorkerExecutable() {
   }
 }
 
+/**
+ * Copy worker executable to cache folder
+ */
+function copyWorkerToCache() {
+  const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8'));
+  const pluginName = pkg.name; // 'claude-mem'
+  const version = pkg.version;
+  const marketplace = 'thedotmack';
+
+  const cacheDir = join(homedir(), '.claude', 'plugins', 'cache', marketplace, pluginName, version, 'scripts');
+  const executableName = IS_WINDOWS ? 'worker-service.exe' : 'worker-service';
+  const sourcePath = join(ROOT, 'plugin', 'scripts', executableName);
+  const targetPath = join(cacheDir, executableName);
+
+  // Skip if source doesn't exist
+  if (!existsSync(sourcePath)) {
+    console.error('⚠️  Worker executable not found, skipping cache copy');
+    return;
+  }
+
+  try {
+    // Ensure cache directory exists
+    mkdirSync(cacheDir, { recursive: true });
+
+    // Copy executable to cache
+    copyFileSync(sourcePath, targetPath);
+
+    console.error(`✅ Worker executable copied to cache (${version})`);
+  } catch (error) {
+    console.error('❌ Failed to copy worker to cache:', error.message);
+    // Don't throw - this is not critical enough to fail installation
+  }
+}
+
 // Main execution
 try {
   if (!isBunInstalled()) installBun();
@@ -338,6 +378,7 @@ try {
   }
   if (needsWorkerBuild()) {
     buildWorkerExecutable();
+    copyWorkerToCache();
   }
 } catch (e) {
   console.error('❌ Installation failed:', e.message);
