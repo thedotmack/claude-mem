@@ -311,7 +311,7 @@ export class WorkerService {
 
     // Initialize route handlers (SearchRoutes will use MCP client initially, then switch to SearchManager after DB init)
     this.viewerRoutes = new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager);
-    this.sessionRoutes = new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.sessionEventBroadcaster, this);
+    this.sessionRoutes = new SessionRoutes(this.sessionManager, this.dbManager, this.sessionEventBroadcaster, this);
     this.dataRoutes = new DataRoutes(this.paginationHelper, this.dbManager, this.sessionManager, this.sseBroadcaster, this, this.startTime);
     // SearchRoutes needs SearchManager which requires initialized DB - will be created in initializeBackground()
     this.searchRoutes = null;

@@ -11,14 +11,10 @@ import { logger } from '../../../../utils/logger.js';
 import { stripMemoryTagsFromJson, stripMemoryTagsFromPrompt } from '../../../../utils/tag-stripping.js';
 import { SessionManager } from '../../SessionManager.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
-import { SDKAgent } from '../../SDKAgent.js';
-import { GeminiAgent, isGeminiSelected, isGeminiAvailable } from '../../GeminiAgent.js';
-import { OpenRouterAgent, isOpenRouterSelected, isOpenRouterAvailable } from '../../OpenRouterAgent.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { SessionEventBroadcaster } from '../../events/SessionEventBroadcaster.js';
 import { SessionCompletionHandler } from '../../session/SessionCompletionHandler.js';
-import { PrivacyCheckValidator } from '../../validation/PrivacyCheckValidator.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 
@@ -28,9 +24,6 @@ export class SessionRoutes extends BaseRouteHandler {
   constructor(
     private sessionManager: SessionManager,
     private dbManager: DatabaseManager,
-    private sdkAgent: SDKAgent,
-    private geminiAgent: GeminiAgent,
-    private openRouterAgent: OpenRouterAgent,
     private eventBroadcaster: SessionEventBroadcaster,
     private workerService: WorkerService
   ) {
@@ -39,173 +32,6 @@ export class SessionRoutes extends BaseRouteHandler {
       sessionManager,
       eventBroadcaster
     );
-  }
-
-  /**
-   * Get the appropriate agent based on settings
-   * Throws error if provider is selected but not configured (no silent fallback)
-   *
-   * Note: Session linking via claudeSessionId allows provider switching mid-session.
-   * The conversationHistory on ActiveSession maintains context across providers.
-   */
-  private getActiveAgent(): SDKAgent | GeminiAgent | OpenRouterAgent {
-    if (isOpenRouterSelected()) {
-      if (isOpenRouterAvailable()) {
-        logger.debug('SESSION', 'Using OpenRouter agent');
-        return this.openRouterAgent;
-      } else {
-        throw new Error('OpenRouter provider selected but no API key configured. Set CLAUDE_MEM_OPENROUTER_API_KEY in settings or OPENROUTER_API_KEY environment variable.');
-      }
-    }
-    if (isGeminiSelected()) {
-      if (isGeminiAvailable()) {
-        logger.debug('SESSION', 'Using Gemini agent');
-        return this.geminiAgent;
-      } else {
-        throw new Error('Gemini provider selected but no API key configured. Set CLAUDE_MEM_GEMINI_API_KEY in settings or GEMINI_API_KEY environment variable.');
-      }
-    }
-    return this.sdkAgent;
-  }
-
-  /**
-   * Get the currently selected provider name
-   */
-  private getSelectedProvider(): 'claude' | 'gemini' | 'openrouter' {
-    if (isOpenRouterSelected() && isOpenRouterAvailable()) {
-      return 'openrouter';
-    }
-    return (isGeminiSelected() && isGeminiAvailable()) ? 'gemini' : 'claude';
-  }
-
-  /**
-   * Ensures agent generator is running for a session
-   * Auto-starts if not already running to process pending queue
-   * Uses either Claude SDK or Gemini based on settings
-   *
-   * Provider switching: If provider setting changed while generator is running,
-   * we let the current generator finish naturally (max 5s linger timeout).
-   * The next generator will use the new provider with shared conversationHistory.
-   */
-  private ensureGeneratorRunning(sessionDbId: number, source: string): void {
-    const session = this.sessionManager.getSession(sessionDbId);
-    if (!session) return;
-
-    const selectedProvider = this.getSelectedProvider();
-
-    // Start generator if not running
-    if (!session.generatorPromise) {
-      this.startGeneratorWithProvider(session, selectedProvider, source);
-      return;
-    }
-
-    // Generator is running - check if provider changed
-    if (session.currentProvider && session.currentProvider !== selectedProvider) {
-      logger.info('SESSION', `Provider changed, will switch after current generator finishes`, {
-        sessionId: sessionDbId,
-        currentProvider: session.currentProvider,
-        selectedProvider,
-        historyLength: session.conversationHistory.length
-      });
-      // Let current generator finish naturally, next one will use new provider
-      // The shared conversationHistory ensures context is preserved
-    }
-  }
-
-  /**
-   * Start a generator with the specified provider
-   */
-  private startGeneratorWithProvider(
-    session: ReturnType<typeof this.sessionManager.getSession>,
-    provider: 'claude' | 'gemini' | 'openrouter',
-    source: string
-  ): void {
-    if (!session) return;
-
-    const agent = provider === 'openrouter' ? this.openRouterAgent : (provider === 'gemini' ? this.geminiAgent : this.sdkAgent);
-    const agentName = provider === 'openrouter' ? 'OpenRouter' : (provider === 'gemini' ? 'Gemini' : 'Claude SDK');
-
-    logger.info('SESSION', `Generator auto-starting (${source}) using ${agentName}`, {
-      sessionId: session.sessionDbId,
-      queueDepth: session.pendingMessages.length,
-      historyLength: session.conversationHistory.length
-    });
-
-    // Track which provider is running
-    session.currentProvider = provider;
-
-    session.generatorPromise = agent.startSession(session, this.workerService)
-      .catch(error => {
-        // Only log non-abort errors
-        if (session.abortController.signal.aborted) return;
-        
-        logger.error('SESSION', `Generator failed`, {
-          sessionId: session.sessionDbId,
-          provider: provider,
-          error: error.message
-        }, error);
-
-        // Mark all processing messages as failed so they can be retried or abandoned
-        const pendingStore = this.sessionManager.getPendingMessageStore();
-        const db = this.dbManager.getSessionStore().db;
-        try {
-          const stmt = db.prepare(`
-            SELECT id FROM pending_messages
-            WHERE session_db_id = ? AND status = 'processing'
-          `);
-          const processingMessages = stmt.all(session.sessionDbId) as { id: number }[];
-
-          for (const msg of processingMessages) {
-            pendingStore.markFailed(msg.id);
-            logger.warn('SESSION', `Marked message as failed after generator error`, {
-              sessionId: session.sessionDbId,
-              messageId: msg.id
-            });
-          }
-        } catch (dbError) {
-          logger.error('SESSION', 'Failed to mark messages as failed', { sessionId: session.sessionDbId }, dbError as Error);
-        }
-      })
-      .finally(() => {
-        const sessionDbId = session.sessionDbId;
-        
-        if (session.abortController.signal.aborted) {
-          logger.info('SESSION', `Generator aborted`, { sessionId: sessionDbId });
-        } else {
-          logger.warn('SESSION', `Generator exited unexpectedly`, { sessionId: sessionDbId });
-        }
-
-        session.generatorPromise = null;
-        session.currentProvider = null;
-        this.workerService.broadcastProcessingStatus();
-
-        // Crash recovery: If not aborted and still has work, restart
-        if (!session.abortController.signal.aborted) {
-          try {
-            const pendingStore = this.sessionManager.getPendingMessageStore();
-            const pendingCount = pendingStore.getPendingCount(sessionDbId);
-            
-            if (pendingCount > 0) {
-              logger.info('SESSION', `Restarting generator after crash/exit with pending work`, {
-                sessionId: sessionDbId,
-                pendingCount
-              });
-              // Small delay before restart
-              setTimeout(() => {
-                const stillExists = this.sessionManager.getSession(sessionDbId);
-                if (stillExists && !stillExists.generatorPromise) {
-                  this.startGeneratorWithProvider(stillExists, this.getSelectedProvider(), 'crash-recovery');
-                }
-              }, 1000);
-            }
-          } catch (e) {
-            logger.warn('SESSION', 'Error during crash recovery check', { sessionId: sessionDbId }, e as Error);
-          }
-        }
-        // NOTE: We do NOT delete the session here anymore. 
-        // The generator waits for events, so if it exited, it's either aborted or crashed.
-        // Idle sessions stay in memory (ActiveSession is small) to listen for future events.
-      });
   }
 
   setupRoutes(app: express.Application): void {
@@ -281,8 +107,8 @@ export class SessionRoutes extends BaseRouteHandler {
       });
     }
 
-    // Start agent in background using the helper method
-    this.startGeneratorWithProvider(session, this.getSelectedProvider(), 'init');
+    // Note: No generator start needed here. QueueProcessor handles message processing globally.
+    // Messages are enqueued and processed by the polling loop in WorkerService.
 
     // Broadcast session started event
     this.eventBroadcaster.broadcastSessionStarted(sessionDbId, session.project);
@@ -442,20 +268,6 @@ export class SessionRoutes extends BaseRouteHandler {
     const sessionDbId = store.createSDKSession(claudeSessionId, '', '');
     const promptNumber = store.getPromptNumberFromUserPrompts(claudeSessionId);
 
-    // Privacy check: skip if user prompt was entirely private
-    const userPrompt = PrivacyCheckValidator.checkUserPromptPrivacy(
-      store,
-      claudeSessionId,
-      promptNumber,
-      'observation',
-      sessionDbId,
-      { tool_name }
-    );
-    if (!userPrompt) {
-      res.json({ status: 'skipped', reason: 'private' });
-      return;
-    }
-
     // Strip memory tags from tool_input and tool_response
     const cleanedToolInput = tool_input !== undefined
       ? stripMemoryTagsFromJson(JSON.stringify(tool_input))
@@ -506,19 +318,6 @@ export class SessionRoutes extends BaseRouteHandler {
     // Get or create session
     const sessionDbId = store.createSDKSession(claudeSessionId, '', '');
     const promptNumber = store.getPromptNumberFromUserPrompts(claudeSessionId);
-
-    // Privacy check: skip if user prompt was entirely private
-    const userPrompt = PrivacyCheckValidator.checkUserPromptPrivacy(
-      store,
-      claudeSessionId,
-      promptNumber,
-      'summarize',
-      sessionDbId
-    );
-    if (!userPrompt) {
-      res.json({ status: 'skipped', reason: 'private' });
-      return;
-    }
 
     // Use new SimpleQueue via enqueueMessage
     this.sessionManager.enqueueMessage(sessionDbId, claudeSessionId, {

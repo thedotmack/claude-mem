@@ -7,12 +7,38 @@ import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
 
 // Get __dirname that works in both ESM (hooks) and CJS (worker) contexts
 function getDirname(): string {
-  // CJS context - __dirname exists
-  if (typeof __dirname !== 'undefined') {
-    return __dirname;
+  // First try CJS context - __dirname exists
+  try {
+    // Check if __dirname is defined and is a string (not a shim)
+    if (typeof __dirname === 'string' && __dirname.length > 0) {
+      return __dirname;
+    }
+  } catch {
+    // __dirname not available
   }
-  // ESM context - use import.meta.url
-  return dirname(fileURLToPath(import.meta.url));
+
+  // Try ESM context - import.meta.url
+  try {
+    // Check if import.meta.url is actually defined
+    if (typeof import.meta?.url === 'string') {
+      return dirname(fileURLToPath(import.meta.url));
+    }
+  } catch {
+    // import.meta not available
+  }
+
+  // Fallback: use process.argv[1] directory or current working directory
+  try {
+    const scriptPath = process.argv[1];
+    if (scriptPath) {
+      return dirname(scriptPath);
+    }
+  } catch {
+    // process.argv not available
+  }
+
+  // Last resort: current working directory
+  return process.cwd();
 }
 
 const _dirname = getDirname();

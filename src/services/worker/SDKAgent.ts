@@ -33,6 +33,57 @@ export class SDKAgent {
   }
 
   /**
+   * Find the Claude executable path
+   * Required in CJS bundles where import.meta.url is undefined
+   */
+  private findClaudeExecutable(): string {
+    const { execSync } = require('child_process');
+    const { existsSync } = require('fs');
+    const { join } = require('path');
+    const { homedir } = require('os');
+    const isWindows = process.platform === 'win32';
+
+    // Try 'which claude' (macOS/Linux) or 'where claude' (Windows) first
+    try {
+      const whichCommand = isWindows ? 'where claude' : 'which claude';
+      const result = execSync(whichCommand, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }).trim();
+      // 'where' on Windows may return multiple lines, take the first one
+      const firstResult = result.split('\n')[0].trim();
+      if (firstResult && existsSync(firstResult)) {
+        return firstResult;
+      }
+    } catch {
+      // which/where failed, try other locations
+    }
+
+    // Common installation locations
+    const possiblePaths = isWindows ? [
+      // Windows locations
+      join(homedir(), 'AppData', 'Local', 'Programs', 'claude', 'claude.exe'),
+      join(homedir(), 'AppData', 'Roaming', 'npm', 'claude.cmd'),
+      join(homedir(), 'AppData', 'Roaming', 'npm', 'claude'),
+      'C:\\Program Files\\Claude\\claude.exe',
+    ] : [
+      // macOS/Linux native installer locations
+      '/usr/local/bin/claude',
+      join(homedir(), '.claude', 'local', 'claude'),
+      // npm global install locations
+      join(homedir(), '.nvm', 'versions', 'node', process.version.replace('v', ''), 'bin', 'claude'),
+      '/usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js',
+      join(homedir(), '.npm-global', 'bin', 'claude'),
+    ];
+
+    for (const path of possiblePaths) {
+      if (existsSync(path)) {
+        return path;
+      }
+    }
+
+    // Fallback to 'claude' and let the SDK handle the error
+    return 'claude';
+  }
+
+  /**
    * Process a single message from the SimpleQueue
    * This is the new simplified processing path - one message at a time.
    *
@@ -95,13 +146,17 @@ export class SDKAgent {
       });
 
       // Run Agent SDK query
+      // Note: pathToClaudeCodeExecutable is required in CJS bundles because
+      // import.meta.url is undefined and the SDK can't auto-detect the path.
+      // Each observation is processed independently (no resume) since we're just
+      // extracting structured data, not maintaining a conversation.
       const queryResult = query({
         prompt: messageGenerator,
         options: {
           model: modelId,
-          resume: session.claudeSessionId,
           disallowedTools,
-          abortController: session.abortController
+          abortController: session.abortController,
+          pathToClaudeCodeExecutable: this.findClaudeExecutable()
         }
       });
 
@@ -151,7 +206,18 @@ export class SDKAgent {
       if (error.name === 'AbortError') {
         logger.warn('SDK', 'Message processing aborted', { messageId: message.id });
       } else {
-        logger.failure('SDK', 'Message processing error', { messageId: message.id }, error);
+        logger.failure('SDK', 'Message processing error', {
+          messageId: message.id,
+          errorName: error.name,
+          errorMessage: error.message,
+          errorStack: error.stack,
+          errorCode: error.code,
+          errorStatus: error.status,
+          errorType: error.type,
+          sessionDbId: session.sessionDbId,
+          claudeSessionId: session.claudeSessionId,
+          messageType: message.message_type
+        }, error);
       }
       throw error;
     }
