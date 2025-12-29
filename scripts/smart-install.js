@@ -12,6 +12,7 @@ import { homedir } from 'os';
 
 const ROOT = join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
 const MARKER = join(ROOT, '.install-version');
+const WORKER_MARKER = join(ROOT, '.worker-binary-version');
 const IS_WINDOWS = process.platform === 'win32';
 
 // Common installation paths (handles fresh installs before PATH reload)
@@ -245,6 +246,88 @@ function installDeps() {
   }));
 }
 
+/**
+ * Get platform-specific Bun compile target
+ */
+function getBunCompileTarget() {
+  const platform = process.platform;
+  const arch = process.arch;
+
+  if (platform === 'win32') return 'bun-windows-x64';
+  if (platform === 'darwin') {
+    return arch === 'arm64' ? 'bun-darwin-arm64' : 'bun-darwin-x64';
+  }
+  if (platform === 'linux') return 'bun-linux-x64';
+
+  throw new Error(`Unsupported platform: ${platform}-${arch}`);
+}
+
+/**
+ * Check if worker executable needs to be built
+ */
+function needsWorkerBuild() {
+  const executablePath = join(ROOT, 'plugin', 'scripts', IS_WINDOWS ? 'worker-service.exe' : 'worker-service');
+
+  if (!existsSync(executablePath)) return true;
+
+  try {
+    const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8'));
+    const marker = JSON.parse(readFileSync(WORKER_MARKER, 'utf-8'));
+    return pkg.version !== marker.version ||
+           process.platform !== marker.platform ||
+           process.arch !== marker.arch;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Build worker service executable using bun build --compile
+ */
+function buildWorkerExecutable() {
+  const bunPath = getBunPath();
+  if (!bunPath) {
+    throw new Error('Bun executable not found');
+  }
+
+  console.error('🔨 Building worker service executable...');
+
+  const sourcePath = join(ROOT, 'src', 'services', 'worker-service.ts');
+  const outputPath = join(ROOT, 'plugin', 'scripts', IS_WINDOWS ? 'worker-service.exe' : 'worker-service');
+  const target = getBunCompileTarget();
+
+  if (!existsSync(sourcePath)) {
+    throw new Error(`Worker source not found: ${sourcePath}`);
+  }
+
+  const bunCmd = IS_WINDOWS && bunPath.includes(' ') ? `"${bunPath}"` : bunPath;
+  const sourceArg = sourcePath.includes(' ') ? `"${sourcePath}"` : sourcePath;
+  const outputArg = outputPath.includes(' ') ? `"${outputPath}"` : outputPath;
+
+  try {
+    execSync(`${bunCmd} build --compile --target=${target} ${sourceArg} --outfile ${outputArg}`, {
+      cwd: ROOT,
+      stdio: 'inherit',
+      shell: IS_WINDOWS
+    });
+
+    // Write version marker
+    const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8'));
+    writeFileSync(WORKER_MARKER, JSON.stringify({
+      version: pkg.version,
+      platform: process.platform,
+      arch: process.arch,
+      target: target,
+      builtAt: new Date().toISOString()
+    }));
+
+    console.error(`✅ Worker executable built (${target})`);
+  } catch (error) {
+    console.error('❌ Failed to build worker executable');
+    throw error;
+  }
+}
+
 // Main execution
 try {
   if (!isBunInstalled()) installBun();
@@ -252,6 +335,9 @@ try {
   if (needsInstall()) {
     installDeps();
     console.error('✅ Dependencies installed');
+  }
+  if (needsWorkerBuild()) {
+    buildWorkerExecutable();
   }
 } catch (e) {
   console.error('❌ Installation failed:', e.message);

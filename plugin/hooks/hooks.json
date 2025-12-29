@@ -12,7 +12,7 @@
           },
           {
             "type": "command",
-            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/scripts/worker-service.cjs\" start",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/worker-service\" start",
             "timeout": 180
           },
           {
@@ -33,7 +33,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/scripts/worker-service.cjs\" start",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/worker-service\" start",
             "timeout": 180
           },
           {
@@ -50,7 +50,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/scripts/worker-service.cjs\" start",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/worker-service\" start",
             "timeout": 180
           },
           {
@@ -66,7 +66,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/scripts/worker-service.cjs\" start",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/worker-service\" start",
             "timeout": 180
           },
           {
