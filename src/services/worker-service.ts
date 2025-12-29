@@ -464,17 +464,15 @@ export class WorkerService {
     this.settingsRoutes.setupRoutes(this.app);
 
     // Register early handler for /api/context/inject to avoid 404 during startup
-    // This handler waits for initialization to complete before delegating to SearchRoutes
-    // NOTE: This duplicates logic from SearchRoutes.handleContextInject by design,
-    // as we need the route available immediately before SearchRoutes is initialized
-    this.app.get('/api/context/inject', async (req, res, next) => {
+    // This handler waits for initialization to complete before calling SearchRoutes directly
+    this.app.get('/api/context/inject', async (req, res) => {
       try {
         // Wait for initialization to complete (with timeout)
         const timeoutMs = 300000; // 5 minute timeout for slow systems
-        const timeoutPromise = new Promise((_, reject) => 
+        const timeoutPromise = new Promise((_, reject) =>
           setTimeout(() => reject(new Error('Initialization timeout')), timeoutMs)
         );
-        
+
         await Promise.race([this.initializationComplete, timeoutPromise]);
 
         // If searchRoutes is still null after initialization, something went wrong
@@ -483,11 +481,14 @@ export class WorkerService {
           return;
         }
 
-        // Delegate to the SearchRoutes handler which is registered after this one
-        // This avoids code duplication and "headers already sent" errors
-        next();
+        // Directly call the SearchRoutes handler instead of using next()
+        // This avoids Express route chain issues where next() might not find later-registered routes
+        await this.searchRoutes.handleContextInject(req, res);
       } catch (error) {
-        logger.error('WORKER', 'Context inject handler failed', {}, error as Error);
+        logger.error('WORKER', 'Context inject handler failed', {
+          query: req.query,
+          path: req.path
+        }, error as Error);
         if (!res.headersSent) {
           res.status(500).json({ error: error instanceof Error ? error.message : 'Internal server error' });
         }
@@ -696,6 +697,7 @@ export class WorkerService {
   /**
    * Start a session processor
    * It will run continuously until the session is deleted/aborted
+   * Includes crash recovery: marks failed messages and auto-restarts if work remains
    */
   private startSessionProcessor(
     session: ReturnType<typeof this.sessionManager.getSession>,
@@ -710,24 +712,63 @@ export class WorkerService {
 
     session.generatorPromise = this.sdkAgent.startSession(session, this)
       .catch(error => {
-        // Only log if not aborted
+        // Only log and handle if not aborted
         if (session.abortController.signal.aborted) return;
-        
+
         logger.error('SYSTEM', `Generator failed (${source})`, {
           sessionId: sid,
           error: error.message
         }, error);
+
+        // Mark all processing messages as failed so they can be retried or abandoned
+        try {
+          const pendingStore = this.sessionManager.getPendingMessageStore();
+          const db = this.dbManager.getSessionStore().db;
+          const stmt = db.prepare(`
+            SELECT id FROM pending_messages
+            WHERE session_db_id = ? AND status = 'processing'
+          `);
+          const processingMessages = stmt.all(sid) as { id: number }[];
+
+          for (const msg of processingMessages) {
+            pendingStore.markFailed(msg.id);
+            logger.warn('SYSTEM', `Marked message as failed after generator error`, {
+              sessionId: sid,
+              messageId: msg.id
+            });
+          }
+        } catch (dbError) {
+          logger.error('SYSTEM', 'Failed to mark messages as failed', { sessionId: sid }, dbError as Error);
+        }
       })
       .finally(() => {
         session.generatorPromise = null;
         this.broadcastProcessingStatus();
-        
-        // Crash recovery: if not aborted, check if we should restart
+
+        // Crash recovery: if not aborted and still has work, restart
         if (!session.abortController.signal.aborted) {
-           // We can check if there are pending messages to decide if restart is urgent
-           // But generally, if it crashed, we might want to restart?
-           // For now, let's just log. The user/system can trigger restart if needed.
-           logger.warn('SYSTEM', `Session processor exited unexpectedly`, { sessionId: sid });
+          logger.warn('SYSTEM', `Session processor exited unexpectedly`, { sessionId: sid });
+
+          try {
+            const pendingStore = this.sessionManager.getPendingMessageStore();
+            const pendingCount = pendingStore.getPendingCount(sid);
+
+            if (pendingCount > 0) {
+              logger.info('SYSTEM', `Restarting generator after crash/exit with pending work`, {
+                sessionId: sid,
+                pendingCount
+              });
+              // Small delay before restart to avoid tight crash loops
+              setTimeout(() => {
+                const stillExists = this.sessionManager.getSession(sid);
+                if (stillExists && !stillExists.generatorPromise) {
+                  this.startSessionProcessor(stillExists, 'crash-recovery');
+                }
+              }, 1000);
+            }
+          } catch (e) {
+            // Ignore errors during recovery check
+          }
         }
       });
   }

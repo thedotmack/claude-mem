@@ -200,7 +200,7 @@ export class SearchRoutes extends BaseRouteHandler {
    * Returns pre-formatted context string ready for display.
    * Use colors=true for ANSI-colored terminal output.
    */
-  private handleContextInject = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+  public handleContextInject = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const projectName = req.query.project as string;
     const useColors = req.query.colors === 'true';
 
