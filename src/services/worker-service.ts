@@ -250,6 +250,7 @@ export class WorkerService {
   // Initialization flags for MCP/SDK readiness tracking
   private mcpReady: boolean = false;
   private initializationCompleteFlag: boolean = false;
+  private isShuttingDown: boolean = false;
 
   // Service layer
   private dbManager: DatabaseManager;
@@ -315,6 +316,36 @@ export class WorkerService {
 
     this.setupMiddleware();
     this.setupRoutes();
+
+    // Register signal handlers early to ensure cleanup even if start() hasn't completed
+    // The shutdown() method is defensive and safe to call at any initialization stage
+    this.registerSignalHandlers();
+  }
+
+  /**
+   * Register signal handlers for graceful shutdown
+   * Called in constructor to ensure cleanup even if start() hasn't completed
+   */
+  private registerSignalHandlers(): void {
+    const handleShutdown = async (signal: string) => {
+      if (this.isShuttingDown) {
+        logger.warn('SYSTEM', `Received ${signal} but shutdown already in progress`);
+        return;
+      }
+      this.isShuttingDown = true;
+
+      logger.info('SYSTEM', `Received ${signal}, shutting down...`);
+      try {
+        await this.shutdown();
+        process.exit(0);
+      } catch (error) {
+        logger.error('SYSTEM', 'Error during shutdown', {}, error as Error);
+        process.exit(1);
+      }
+    };
+
+    process.on('SIGTERM', () => handleShutdown('SIGTERM'));
+    process.on('SIGINT', () => handleShutdown('SIGINT'));
   }
 
   /**
@@ -835,6 +866,9 @@ export class WorkerService {
   async shutdown(): Promise<void> {
     logger.info('SYSTEM', 'Shutdown initiated');
 
+    // Clean up PID file on shutdown
+    removePidFile();
+
     // STEP 1: Enumerate all child processes BEFORE we start closing things
     const childPids = await this.getChildProcesses(process.pid);
     logger.info('SYSTEM', 'Found child processes', { count: childPids.length, pids: childPids });
@@ -1158,20 +1192,6 @@ async function main() {
     default: {
       // Run server directly
       const worker = new WorkerService();
-
-      process.on('SIGTERM', async () => {
-        logger.info('SYSTEM', 'Received SIGTERM');
-        await worker.shutdown();
-        removePidFile();
-        process.exit(0);
-      });
-
-      process.on('SIGINT', async () => {
-        logger.info('SYSTEM', 'Received SIGINT');
-        await worker.shutdown();
-        removePidFile();
-        process.exit(0);
-      });
 
       worker.start().catch((error) => {
         logger.failure('SYSTEM', 'Worker failed to start', {}, error as Error);
