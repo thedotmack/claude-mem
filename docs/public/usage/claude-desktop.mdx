@@ -17,7 +17,7 @@ Claude Desktop can access your claude-mem memory database through the **mem-sear
 Before installing the skill, ensure:
 
 1. **claude-mem is installed** and the worker service is running
-2. **MCP server is configured** in Claude Desktop (the skill uses the `mem-search` MCP server)
+2. **MCP server is configured** in Claude Desktop (the skill uses the `mcp-search` MCP server)
 
 ### Verify Worker is Running
 
@@ -52,7 +52,7 @@ npm run build  # Generates plugin/skills/mem-search.zip
 
 ### Step 3: Configure MCP Server
 
-The skill requires the `mem-search` MCP server. Add this to your Claude Desktop configuration:
+The skill requires the `mcp-search` MCP server. Add this to your Claude Desktop configuration:
 
 <Tabs>
   <Tab title="macOS">
@@ -61,7 +61,7 @@ The skill requires the `mem-search` MCP server. Add this to your Claude Desktop 
     ```json
     {
       "mcpServers": {
-        "mem-search": {
+        "mcp-search": {
           "command": "node",
           "args": [
             "/Users/YOUR_USERNAME/.claude/plugins/marketplaces/thedotmack/plugin/scripts/mcp-server.cjs"
@@ -77,7 +77,7 @@ The skill requires the `mem-search` MCP server. Add this to your Claude Desktop 
     ```json
     {
       "mcpServers": {
-        "mem-search": {
+        "mcp-search": {
           "command": "node",
           "args": [
             "C:\\Users\\YOUR_USERNAME\\.claude\\plugins\\marketplaces\\thedotmack\\plugin\\scripts\\mcp-server.cjs"

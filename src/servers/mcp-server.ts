@@ -435,7 +435,7 @@ const tools = [
 // Create the MCP server
 const server = new Server(
   {
-    name: 'mem-search-server',
+    name: 'mcp-search-server',
     version: '1.0.0',
   },
   {

@@ -3,6 +3,33 @@ name: mem-search
 description: Search claude-mem's persistent cross-session memory database. Use when user asks "did we already solve this?", "how did we do X last time?", or needs work from previous sessions.
 ---
 
+<!-- TL;DR - Essential Workflow -->
+## Quick Reference
+
+**The 3-Layer Pattern (ALWAYS follow this):**
+
+1. **Search** - Get index of results with IDs
+   ```
+   search(query="...", limit=20, project="...")
+   ```
+   Returns: Table with IDs, titles, dates (~50-100 tokens/result)
+
+2. **Timeline** - Get context around interesting results
+   ```
+   timeline(anchor=<ID>, depth_before=3, depth_after=3, project="...")
+   ```
+   Returns: Chronological context showing what was happening
+
+3. **Fetch** - Get full details ONLY for relevant IDs
+   ```
+   get_observations(ids=[...])  # ALWAYS batch for 2+ items
+   ```
+   Returns: Complete details (~500-1000 tokens/result)
+
+**Why:** 10x token savings. Never fetch full details without filtering first.
+
+---
+
 # Memory Search
 
 Search past work across all sessions. Simple workflow: search → get IDs → fetch details by ID.
