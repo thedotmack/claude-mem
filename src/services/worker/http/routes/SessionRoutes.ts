@@ -45,7 +45,7 @@ export class SessionRoutes extends BaseRouteHandler {
    * Get the appropriate agent based on settings
    * Throws error if provider is selected but not configured (no silent fallback)
    *
-   * Note: Session linking via claudeSessionId allows provider switching mid-session.
+   * Note: Session linking via contentSessionId allows provider switching mid-session.
    * The conversationHistory on ActiveSession maintains context across providers.
    */
   private getActiveAgent(): SDKAgent | GeminiAgent | OpenRouterAgent {
@@ -217,7 +217,7 @@ export class SessionRoutes extends BaseRouteHandler {
     app.delete('/sessions/:sessionDbId', this.handleSessionDelete.bind(this));
     app.post('/sessions/:sessionDbId/complete', this.handleSessionComplete.bind(this));
 
-    // New session endpoints (use claudeSessionId)
+    // New session endpoints (use contentSessionId)
     app.post('/api/sessions/init', this.handleSessionInitByClaudeId.bind(this));
     app.post('/api/sessions/observations', this.handleObservationsByClaudeId.bind(this));
     app.post('/api/sessions/summarize', this.handleSummarizeByClaudeId.bind(this));
@@ -240,13 +240,13 @@ export class SessionRoutes extends BaseRouteHandler {
     const session = this.sessionManager.initializeSession(sessionDbId, userPrompt, promptNumber);
 
     // Get the latest user_prompt for this session to sync to Chroma
-    const latestPrompt = this.dbManager.getSessionStore().getLatestUserPrompt(session.claudeSessionId);
+    const latestPrompt = this.dbManager.getSessionStore().getLatestUserPrompt(session.contentSessionId);
 
     // Broadcast new prompt to SSE clients (for web UI)
     if (latestPrompt) {
       this.eventBroadcaster.broadcastNewPrompt({
         id: latestPrompt.id,
-        claude_session_id: latestPrompt.claude_session_id,
+        content_session_id: latestPrompt.content_session_id,
         project: latestPrompt.project,
         prompt_number: latestPrompt.prompt_number,
         prompt_text: latestPrompt.prompt_text,
@@ -258,7 +258,7 @@ export class SessionRoutes extends BaseRouteHandler {
       const promptText = latestPrompt.prompt_text;
       this.dbManager.getChromaSync().syncUserPrompt(
         latestPrompt.id,
-        latestPrompt.sdk_session_id,
+        latestPrompt.memory_session_id,
         latestPrompt.project,
         promptText,
         latestPrompt.prompt_number,
@@ -387,15 +387,15 @@ export class SessionRoutes extends BaseRouteHandler {
   });
 
   /**
-   * Queue observations by claudeSessionId (post-tool-use-hook uses this)
+   * Queue observations by contentSessionId (post-tool-use-hook uses this)
    * POST /api/sessions/observations
-   * Body: { claudeSessionId, tool_name, tool_input, tool_response, cwd }
+   * Body: { contentSessionId, tool_name, tool_input, tool_response, cwd }
    */
   private handleObservationsByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
-    const { claudeSessionId, tool_name, tool_input, tool_response, cwd } = req.body;
+    const { contentSessionId, tool_name, tool_input, tool_response, cwd } = req.body;
 
-    if (!claudeSessionId) {
-      return this.badRequest(res, 'Missing claudeSessionId');
+    if (!contentSessionId) {
+      return this.badRequest(res, 'Missing contentSessionId');
     }
 
     // Load skip tools from settings
@@ -426,13 +426,13 @@ export class SessionRoutes extends BaseRouteHandler {
     const store = this.dbManager.getSessionStore();
 
     // Get or create session
-    const sessionDbId = store.createSDKSession(claudeSessionId, '', '');
-    const promptNumber = store.getPromptNumberFromUserPrompts(claudeSessionId);
+    const sessionDbId = store.createSDKSession(contentSessionId, '', '');
+    const promptNumber = store.getPromptNumberFromUserPrompts(contentSessionId);
 
     // Privacy check: skip if user prompt was entirely private
     const userPrompt = PrivacyCheckValidator.checkUserPromptPrivacy(
       store,
-      claudeSessionId,
+      contentSessionId,
       promptNumber,
       'observation',
       sessionDbId,
@@ -477,29 +477,29 @@ export class SessionRoutes extends BaseRouteHandler {
   });
 
   /**
-   * Queue summarize by claudeSessionId (summary-hook uses this)
+   * Queue summarize by contentSessionId (summary-hook uses this)
    * POST /api/sessions/summarize
-   * Body: { claudeSessionId, last_user_message, last_assistant_message }
+   * Body: { contentSessionId, last_user_message, last_assistant_message }
    *
    * Checks privacy, queues summarize request for SDK agent
    */
   private handleSummarizeByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
-    const { claudeSessionId, last_user_message, last_assistant_message } = req.body;
+    const { contentSessionId, last_user_message, last_assistant_message } = req.body;
 
-    if (!claudeSessionId) {
-      return this.badRequest(res, 'Missing claudeSessionId');
+    if (!contentSessionId) {
+      return this.badRequest(res, 'Missing contentSessionId');
     }
 
     const store = this.dbManager.getSessionStore();
 
     // Get or create session
-    const sessionDbId = store.createSDKSession(claudeSessionId, '', '');
-    const promptNumber = store.getPromptNumberFromUserPrompts(claudeSessionId);
+    const sessionDbId = store.createSDKSession(contentSessionId, '', '');
+    const promptNumber = store.getPromptNumberFromUserPrompts(contentSessionId);
 
     // Privacy check: skip if user prompt was entirely private
     const userPrompt = PrivacyCheckValidator.checkUserPromptPrivacy(
       store,
-      claudeSessionId,
+      contentSessionId,
       promptNumber,
       'summarize',
       sessionDbId
@@ -532,9 +532,9 @@ export class SessionRoutes extends BaseRouteHandler {
   });
 
   /**
-   * Initialize session by claudeSessionId (new-hook uses this)
+   * Initialize session by contentSessionId (new-hook uses this)
    * POST /api/sessions/init
-   * Body: { claudeSessionId, project, prompt }
+   * Body: { contentSessionId, project, prompt }
    *
    * Performs all session initialization DB operations:
    * - Creates/gets SDK session (idempotent)
@@ -544,31 +544,31 @@ export class SessionRoutes extends BaseRouteHandler {
    * Returns: { sessionDbId, promptNumber, skipped: boolean, reason?: string }
    */
   private handleSessionInitByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
-    const { claudeSessionId, project, prompt } = req.body;
+    const { contentSessionId, project, prompt } = req.body;
 
     logger.info('HTTP', 'SessionRoutes: handleSessionInitByClaudeId called', {
-      claudeSessionId,
+      contentSessionId,
       project,
       prompt_length: prompt?.length
     });
 
     // Validate required parameters
-    if (!this.validateRequired(req, res, ['claudeSessionId', 'project', 'prompt'])) {
+    if (!this.validateRequired(req, res, ['contentSessionId', 'project', 'prompt'])) {
       return;
     }
 
     const store = this.dbManager.getSessionStore();
 
     // Step 1: Create/get SDK session (idempotent INSERT OR IGNORE)
-    const sessionDbId = store.createSDKSession(claudeSessionId, project, prompt);
+    const sessionDbId = store.createSDKSession(contentSessionId, project, prompt);
 
     logger.info('HTTP', 'SessionRoutes: createSDKSession returned', {
       sessionDbId,
-      claudeSessionId
+      contentSessionId
     });
 
     // Step 2: Get next prompt number from user_prompts count
-    const currentCount = store.getPromptNumberFromUserPrompts(claudeSessionId);
+    const currentCount = store.getPromptNumberFromUserPrompts(contentSessionId);
     const promptNumber = currentCount + 1;
 
     logger.info('HTTP', 'SessionRoutes: Calculated promptNumber', {
@@ -598,7 +598,7 @@ export class SessionRoutes extends BaseRouteHandler {
     }
 
     // Step 5: Save cleaned user prompt
-    store.saveUserPrompt(claudeSessionId, promptNumber, cleanedPrompt);
+    store.saveUserPrompt(contentSessionId, promptNumber, cleanedPrompt);
 
     logger.info('SESSION', 'Session initialized via HTTP', {
       sessionId: sessionDbId,

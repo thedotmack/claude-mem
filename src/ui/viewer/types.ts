@@ -1,6 +1,6 @@
 export interface Observation {
   id: number;
-  sdk_session_id: string;
+  memory_session_id: string;
   project: string;
   type: string;
   title: string | null;
@@ -30,7 +30,7 @@ export interface Summary {
 
 export interface UserPrompt {
   id: number;
-  claude_session_id: string;
+  content_session_id: string;
   project: string;
   prompt_number: number;
   prompt_text: string;

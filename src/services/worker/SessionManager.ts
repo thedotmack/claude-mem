@@ -59,7 +59,7 @@ export class SessionManager {
     if (session) {
       logger.info('SESSION', 'Returning cached session', {
         sessionDbId,
-        claudeSessionId: session.claudeSessionId,
+        contentSessionId: session.contentSessionId,
         lastPromptNumber: session.lastPromptNumber
       });
 
@@ -101,8 +101,8 @@ export class SessionManager {
 
     logger.info('SESSION', 'Fetched session from database', {
       sessionDbId,
-      claude_session_id: dbSession.claude_session_id,
-      sdk_session_id: dbSession.sdk_session_id
+      content_session_id: dbSession.content_session_id,
+      memory_session_id: dbSession.memory_session_id
     });
 
     // Use currentUserPrompt if provided, otherwise fall back to database (first prompt)
@@ -123,16 +123,17 @@ export class SessionManager {
     }
 
     // Create active session
+    // Load memorySessionId from database if previously captured (enables resume across restarts)
     session = {
       sessionDbId,
-      claudeSessionId: dbSession.claude_session_id,
-      sdkSessionId: null,
+      contentSessionId: dbSession.content_session_id,
+      memorySessionId: dbSession.memory_session_id || null,
       project: dbSession.project,
       userPrompt,
       pendingMessages: [],
       abortController: new AbortController(),
       generatorPromise: null,
-      lastPromptNumber: promptNumber || this.dbManager.getSessionStore().getPromptNumberFromUserPrompts(dbSession.claude_session_id),
+      lastPromptNumber: promptNumber || this.dbManager.getSessionStore().getPromptNumberFromUserPrompts(dbSession.content_session_id),
       startTime: Date.now(),
       cumulativeInputTokens: 0,
       cumulativeOutputTokens: 0,
@@ -144,8 +145,9 @@ export class SessionManager {
 
     logger.info('SESSION', 'Creating new session object', {
       sessionDbId,
-      claudeSessionId: dbSession.claude_session_id,
-      lastPromptNumber: promptNumber || this.dbManager.getSessionStore().getPromptNumberFromUserPrompts(dbSession.claude_session_id)
+      contentSessionId: dbSession.content_session_id,
+      memorySessionId: dbSession.memory_session_id || '(none - fresh session)',
+      lastPromptNumber: promptNumber || this.dbManager.getSessionStore().getPromptNumberFromUserPrompts(dbSession.content_session_id)
     });
 
     this.sessions.set(sessionDbId, session);
@@ -157,7 +159,7 @@ export class SessionManager {
     logger.info('SESSION', 'Session initialized', {
       sessionId: sessionDbId,
       project: session.project,
-      claudeSessionId: session.claudeSessionId,
+      contentSessionId: session.contentSessionId,
       queueDepth: 0,
       hasGenerator: false
     });
@@ -197,7 +199,7 @@ export class SessionManager {
     };
 
     try {
-      const messageId = this.getPendingStore().enqueue(sessionDbId, session.claudeSessionId, message);
+      const messageId = this.getPendingStore().enqueue(sessionDbId, session.contentSessionId, message);
       logger.debug('SESSION', `Observation persisted to DB`, {
         sessionId: sessionDbId,
         messageId,
@@ -247,7 +249,7 @@ export class SessionManager {
     };
 
     try {
-      const messageId = this.getPendingStore().enqueue(sessionDbId, session.claudeSessionId, message);
+      const messageId = this.getPendingStore().enqueue(sessionDbId, session.contentSessionId, message);
       logger.debug('SESSION', `Summarize persisted to DB`, {
         sessionId: sessionDbId,
         messageId

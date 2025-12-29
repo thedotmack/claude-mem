@@ -8,7 +8,7 @@ import { logger } from '../../utils/logger.js';
 export interface PersistentPendingMessage {
   id: number;
   session_db_id: number;
-  claude_session_id: string;
+  content_session_id: string;
   message_type: 'observation' | 'summarize';
   tool_name: string | null;
   tool_input: string | null;
@@ -53,11 +53,11 @@ export class PendingMessageStore {
    * Enqueue a new message (persist before processing)
    * @returns The database ID of the persisted message
    */
-  enqueue(sessionDbId: number, claudeSessionId: string, message: PendingMessage): number {
+  enqueue(sessionDbId: number, contentSessionId: string, message: PendingMessage): number {
     const now = Date.now();
     const stmt = this.db.prepare(`
       INSERT INTO pending_messages (
-        session_db_id, claude_session_id, message_type,
+        session_db_id, content_session_id, message_type,
         tool_name, tool_input, tool_response, cwd,
         last_user_message, last_assistant_message,
         prompt_number, status, retry_count, created_at_epoch
@@ -66,7 +66,7 @@ export class PendingMessageStore {
 
     const result = stmt.run(
       sessionDbId,
-      claudeSessionId,
+      contentSessionId,
       message.type,
       message.tool_name || null,
       message.tool_input ? JSON.stringify(message.tool_input) : null,
@@ -140,7 +140,7 @@ export class PendingMessageStore {
     const stmt = this.db.prepare(`
       SELECT pm.*, ss.project
       FROM pending_messages pm
-      LEFT JOIN sdk_sessions ss ON pm.claude_session_id = ss.claude_session_id
+      LEFT JOIN sdk_sessions ss ON pm.content_session_id = ss.content_session_id
       WHERE pm.status IN ('pending', 'processing', 'failed')
       ORDER BY
         CASE pm.status
@@ -226,7 +226,7 @@ export class PendingMessageStore {
     const stmt = this.db.prepare(`
       SELECT pm.*, ss.project
       FROM pending_messages pm
-      LEFT JOIN sdk_sessions ss ON pm.claude_session_id = ss.claude_session_id
+      LEFT JOIN sdk_sessions ss ON pm.content_session_id = ss.content_session_id
       WHERE pm.status = 'processed' AND pm.completed_at_epoch > ?
       ORDER BY pm.completed_at_epoch DESC
       LIMIT ?
@@ -354,12 +354,12 @@ export class PendingMessageStore {
   /**
    * Get session info for a pending message (for recovery)
    */
-  getSessionInfoForMessage(messageId: number): { sessionDbId: number; claudeSessionId: string } | null {
+  getSessionInfoForMessage(messageId: number): { sessionDbId: number; contentSessionId: string } | null {
     const stmt = this.db.prepare(`
-      SELECT session_db_id, claude_session_id FROM pending_messages WHERE id = ?
+      SELECT session_db_id, content_session_id FROM pending_messages WHERE id = ?
     `);
-    const result = stmt.get(messageId) as { session_db_id: number; claude_session_id: string } | undefined;
-    return result ? { sessionDbId: result.session_db_id, claudeSessionId: result.claude_session_id } : null;
+    const result = stmt.get(messageId) as { session_db_id: number; content_session_id: string } | undefined;
+    return result ? { sessionDbId: result.session_db_id, contentSessionId: result.content_session_id } : null;
   }
 
   /**

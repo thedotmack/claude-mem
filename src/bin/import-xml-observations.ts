@@ -216,18 +216,18 @@ function main() {
 
       // Try to find existing session first
       const existingQuery = db['db'].prepare(`
-        SELECT sdk_session_id
+        SELECT memory_session_id
         FROM sdk_sessions
-        WHERE claude_session_id = ?
+        WHERE content_session_id = ?
       `);
-      const existing = existingQuery.get(sessionMeta.sessionId) as { sdk_session_id: string | null } | undefined;
+      const existing = existingQuery.get(sessionMeta.sessionId) as { memory_session_id: string | null } | undefined;
 
-      if (existing && existing.sdk_session_id) {
+      if (existing && existing.memory_session_id) {
         // Use existing SDK session ID
-        claudeSessionToSdkSession.set(sessionMeta.sessionId, existing.sdk_session_id);
-      } else if (existing && !existing.sdk_session_id) {
-        // Session exists but sdk_session_id is NULL, update it
-        db['db'].prepare('UPDATE sdk_sessions SET sdk_session_id = ? WHERE claude_session_id = ?')
+        claudeSessionToSdkSession.set(sessionMeta.sessionId, existing.memory_session_id);
+      } else if (existing && !existing.memory_session_id) {
+        // Session exists but memory_session_id is NULL, update it
+        db['db'].prepare('UPDATE sdk_sessions SET memory_session_id = ? WHERE content_session_id = ?')
           .run(syntheticSdkSessionId, sessionMeta.sessionId);
         claudeSessionToSdkSession.set(sessionMeta.sessionId, syntheticSdkSessionId);
       } else {
@@ -239,7 +239,7 @@ function main() {
         );
 
         // Update with synthetic SDK session ID
-        db['db'].prepare('UPDATE sdk_sessions SET sdk_session_id = ? WHERE claude_session_id = ?')
+        db['db'].prepare('UPDATE sdk_sessions SET memory_session_id = ? WHERE content_session_id = ?')
           .run(syntheticSdkSessionId, sessionMeta.sessionId);
 
         claudeSessionToSdkSession.set(sessionMeta.sessionId, syntheticSdkSessionId);
@@ -289,8 +289,8 @@ function main() {
     }
 
     // Get SDK session ID
-    const sdkSessionId = claudeSessionToSdkSession.get(sessionMeta.sessionId);
-    if (!sdkSessionId) {
+    const memorySessionId = claudeSessionToSdkSession.get(sessionMeta.sessionId);
+    if (!memorySessionId) {
       skipped++;
       continue;
     }
@@ -301,8 +301,8 @@ function main() {
       // Check for duplicate
       const existingObs = db['db'].prepare(`
         SELECT id FROM observations
-        WHERE sdk_session_id = ? AND title = ? AND subtitle = ? AND type = ?
-      `).get(sdkSessionId, observation.title, observation.subtitle, observation.type);
+        WHERE memory_session_id = ? AND title = ? AND subtitle = ? AND type = ?
+      `).get(memorySessionId, observation.title, observation.subtitle, observation.type);
 
       if (existingObs) {
         duplicateObs++;
@@ -311,7 +311,7 @@ function main() {
 
       try {
         db.storeObservation(
-          sdkSessionId,
+          memorySessionId,
           sessionMeta.project,
           observation
         );
@@ -333,8 +333,8 @@ function main() {
       // Check for duplicate
       const existingSum = db['db'].prepare(`
         SELECT id FROM session_summaries
-        WHERE sdk_session_id = ? AND request = ? AND completed = ? AND learned = ?
-      `).get(sdkSessionId, summary.request, summary.completed, summary.learned);
+        WHERE memory_session_id = ? AND request = ? AND completed = ? AND learned = ?
+      `).get(memorySessionId, summary.request, summary.completed, summary.learned);
 
       if (existingSum) {
         duplicateSum++;
@@ -343,7 +343,7 @@ function main() {
 
       try {
         db.storeSummary(
-          sdkSessionId,
+          memorySessionId,
           sessionMeta.project,
           summary
         );

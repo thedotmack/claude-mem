@@ -158,18 +158,18 @@ export class DataRoutes extends BaseRouteHandler {
   /**
    * Get SDK sessions by SDK session IDs
    * POST /api/sdk-sessions/batch
-   * Body: { sdkSessionIds: string[] }
+   * Body: { memorySessionIds: string[] }
    */
   private handleGetSdkSessionsByIds = this.wrapHandler((req: Request, res: Response): void => {
-    const { sdkSessionIds } = req.body;
+    const { memorySessionIds } = req.body;
 
-    if (!Array.isArray(sdkSessionIds)) {
-      this.badRequest(res, 'sdkSessionIds must be an array');
+    if (!Array.isArray(memorySessionIds)) {
+      this.badRequest(res, 'memorySessionIds must be an array');
       return;
     }
 
     const store = this.dbManager.getSessionStore();
-    const sessions = store.getSdkSessionsBySessionIds(sdkSessionIds);
+    const sessions = store.getSdkSessionsBySessionIds(memorySessionIds);
     res.json(sessions);
   });
 

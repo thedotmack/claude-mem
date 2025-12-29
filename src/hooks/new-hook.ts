@@ -29,14 +29,14 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
 
   const port = getWorkerPort();
 
-  logger.info('HOOK', 'new-hook: Calling /api/sessions/init', { claudeSessionId: session_id, project, prompt_length: prompt?.length });
+  logger.info('HOOK', 'new-hook: Calling /api/sessions/init', { contentSessionId: session_id, project, prompt_length: prompt?.length });
 
   // Initialize session via HTTP - handles DB operations and privacy checks
   const initResponse = await fetch(`http://127.0.0.1:${port}/api/sessions/init`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      claudeSessionId: session_id,
+      contentSessionId: session_id,
       project,
       prompt
     }),

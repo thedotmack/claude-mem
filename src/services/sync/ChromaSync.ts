@@ -26,7 +26,7 @@ interface ChromaDocument {
 
 interface StoredObservation {
   id: number;
-  sdk_session_id: string;
+  memory_session_id: string;
   project: string;
   text: string | null;
   type: string;
@@ -45,7 +45,7 @@ interface StoredObservation {
 
 interface StoredSummary {
   id: number;
-  sdk_session_id: string;
+  memory_session_id: string;
   project: string;
   request: string | null;
   investigated: string | null;
@@ -61,12 +61,12 @@ interface StoredSummary {
 
 interface StoredUserPrompt {
   id: number;
-  claude_session_id: string;
+  content_session_id: string;
   prompt_number: number;
   prompt_text: string;
   created_at: string;
   created_at_epoch: number;
-  sdk_session_id: string;
+  memory_session_id: string;
   project: string;
 }
 
@@ -201,7 +201,7 @@ export class ChromaSync {
     const baseMetadata: Record<string, string | number> = {
       sqlite_id: obs.id,
       doc_type: 'observation',
-      sdk_session_id: obs.sdk_session_id,
+      memory_session_id: obs.memory_session_id,
       project: obs.project,
       created_at_epoch: obs.created_at_epoch,
       type: obs.type || 'discovery',
@@ -262,7 +262,7 @@ export class ChromaSync {
     const baseMetadata: Record<string, string | number> = {
       sqlite_id: summary.id,
       doc_type: 'session_summary',
-      sdk_session_id: summary.sdk_session_id,
+      memory_session_id: summary.memory_session_id,
       project: summary.project,
       created_at_epoch: summary.created_at_epoch,
       prompt_number: summary.prompt_number || 0
@@ -368,7 +368,7 @@ export class ChromaSync {
    */
   async syncObservation(
     observationId: number,
-    sdkSessionId: string,
+    memorySessionId: string,
     project: string,
     obs: ParsedObservation,
     promptNumber: number,
@@ -378,7 +378,7 @@ export class ChromaSync {
     // Convert ParsedObservation to StoredObservation format
     const stored: StoredObservation = {
       id: observationId,
-      sdk_session_id: sdkSessionId,
+      memory_session_id: memorySessionId,
       project: project,
       text: null, // Legacy field, not used
       type: obs.type,
@@ -412,7 +412,7 @@ export class ChromaSync {
    */
   async syncSummary(
     summaryId: number,
-    sdkSessionId: string,
+    memorySessionId: string,
     project: string,
     summary: ParsedSummary,
     promptNumber: number,
@@ -422,7 +422,7 @@ export class ChromaSync {
     // Convert ParsedSummary to StoredSummary format
     const stored: StoredSummary = {
       id: summaryId,
-      sdk_session_id: sdkSessionId,
+      memory_session_id: memorySessionId,
       project: project,
       request: summary.request,
       investigated: summary.investigated,
@@ -458,7 +458,7 @@ export class ChromaSync {
       metadata: {
         sqlite_id: prompt.id,
         doc_type: 'user_prompt',
-        sdk_session_id: prompt.sdk_session_id,
+        memory_session_id: prompt.memory_session_id,
         project: prompt.project,
         created_at_epoch: prompt.created_at_epoch,
         prompt_number: prompt.prompt_number
@@ -472,7 +472,7 @@ export class ChromaSync {
    */
   async syncUserPrompt(
     promptId: number,
-    sdkSessionId: string,
+    memorySessionId: string,
     project: string,
     promptText: string,
     promptNumber: number,
@@ -481,12 +481,12 @@ export class ChromaSync {
     // Create StoredUserPrompt format
     const stored: StoredUserPrompt = {
       id: promptId,
-      claude_session_id: '', // Not needed for Chroma sync
+      content_session_id: '', // Not needed for Chroma sync
       prompt_number: promptNumber,
       prompt_text: promptText,
       created_at: new Date(createdAtEpoch * 1000).toISOString(),
       created_at_epoch: createdAtEpoch,
-      sdk_session_id: sdkSessionId,
+      memory_session_id: memorySessionId,
       project: project
     };
 
@@ -697,9 +697,9 @@ export class ChromaSync {
         SELECT
           up.*,
           s.project,
-          s.sdk_session_id
+          s.memory_session_id
         FROM user_prompts up
-        JOIN sdk_sessions s ON up.claude_session_id = s.claude_session_id
+        JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
         WHERE s.project = ? ${promptExclusionClause}
         ORDER BY up.id ASC
       `).all(this.project) as StoredUserPrompt[];
@@ -707,7 +707,7 @@ export class ChromaSync {
       const totalPromptCount = db.db.prepare(`
         SELECT COUNT(*) as count
         FROM user_prompts up
-        JOIN sdk_sessions s ON up.claude_session_id = s.claude_session_id
+        JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
         WHERE s.project = ?
       `).get(this.project) as { count: number };
 

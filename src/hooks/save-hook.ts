@@ -51,7 +51,7 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      claudeSessionId: session_id,
+      contentSessionId: session_id,
       tool_name,
       tool_input,
       tool_response,
