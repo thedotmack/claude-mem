@@ -93,8 +93,8 @@ export class DatabaseManager {
    */
   getSessionById(sessionDbId: number): {
     id: number;
-    claude_session_id: string;
-    sdk_session_id: string | null;
+    content_session_id: string;
+    memory_session_id: string | null;
     project: string;
     user_prompt: string;
   } {

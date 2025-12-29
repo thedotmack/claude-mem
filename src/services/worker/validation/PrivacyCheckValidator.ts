@@ -12,20 +12,20 @@ export class PrivacyCheckValidator {
    * Check if user prompt is public (not entirely private)
    *
    * @param store - SessionStore instance
-   * @param claudeSessionId - Claude session ID
+   * @param contentSessionId - Claude session ID
    * @param promptNumber - Prompt number within session
    * @param operationType - Type of operation being validated ('observation' or 'summarize')
    * @returns User prompt text if public, null if private
    */
   static checkUserPromptPrivacy(
     store: SessionStore,
-    claudeSessionId: string,
+    contentSessionId: string,
     promptNumber: number,
     operationType: 'observation' | 'summarize',
     sessionDbId: number,
     additionalContext?: Record<string, any>
   ): string | null {
-    const userPrompt = store.getUserPrompt(claudeSessionId, promptNumber);
+    const userPrompt = store.getUserPrompt(contentSessionId, promptNumber);
 
     if (!userPrompt || userPrompt.trim() === '') {
       logger.debug('HOOK', `Skipping ${operationType} - user prompt was entirely private`, {

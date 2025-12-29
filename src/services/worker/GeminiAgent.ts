@@ -152,8 +152,8 @@ export class GeminiAgent {
 
       // Build initial prompt
       const initPrompt = session.lastPromptNumber === 1
-        ? buildInitPrompt(session.project, session.claudeSessionId, session.userPrompt, mode)
-        : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.claudeSessionId, mode);
+        ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode)
+        : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode);
 
       // Add to conversation history and query Gemini with full context
       session.conversationHistory.push({ role: 'user', content: initPrompt });
@@ -224,7 +224,7 @@ export class GeminiAgent {
           // Build summary prompt
           const summaryPrompt = buildSummaryPrompt({
             id: session.sessionDbId,
-            sdk_session_id: session.sdkSessionId,
+            memory_session_id: session.memorySessionId,
             project: session.project,
             user_prompt: session.userPrompt,
             last_user_message: message.last_user_message || '',
@@ -374,12 +374,12 @@ export class GeminiAgent {
     originalTimestamp: number | null
   ): Promise<void> {
     // Parse observations (same XML format)
-    const observations = parseObservations(text, session.claudeSessionId);
+    const observations = parseObservations(text, session.contentSessionId);
 
     // Store observations with original timestamp (if processing backlog) or current time
     for (const obs of observations) {
       const { id: obsId, createdAtEpoch } = this.dbManager.getSessionStore().storeObservation(
-        session.claudeSessionId,
+        session.contentSessionId,
         session.project,
         obs,
         session.lastPromptNumber,
@@ -397,7 +397,7 @@ export class GeminiAgent {
       // Sync to Chroma
       this.dbManager.getChromaSync().syncObservation(
         obsId,
-        session.claudeSessionId,
+        session.contentSessionId,
         session.project,
         obs,
         session.lastPromptNumber,
@@ -413,8 +413,8 @@ export class GeminiAgent {
           type: 'new_observation',
           observation: {
             id: obsId,
-            sdk_session_id: session.sdkSessionId,
-            session_id: session.claudeSessionId,
+            memory_session_id: session.memorySessionId,
+            session_id: session.contentSessionId,
             type: obs.type,
             title: obs.title,
             subtitle: obs.subtitle,
@@ -447,7 +447,7 @@ export class GeminiAgent {
       };
 
       const { id: summaryId, createdAtEpoch } = this.dbManager.getSessionStore().storeSummary(
-        session.claudeSessionId,
+        session.contentSessionId,
         session.project,
         summaryForStore,
         session.lastPromptNumber,
@@ -464,7 +464,7 @@ export class GeminiAgent {
       // Sync to Chroma
       this.dbManager.getChromaSync().syncSummary(
         summaryId,
-        session.claudeSessionId,
+        session.contentSessionId,
         session.project,
         summaryForStore,
         session.lastPromptNumber,
@@ -480,7 +480,7 @@ export class GeminiAgent {
           type: 'new_summary',
           summary: {
             id: summaryId,
-            session_id: session.claudeSessionId,
+            session_id: session.contentSessionId,
             request: summary.request,
             investigated: summary.investigated,
             learned: summary.learned,

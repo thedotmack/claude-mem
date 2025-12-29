@@ -57,7 +57,7 @@ async function summaryHook(input?: StopInput): Promise<void> {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      claudeSessionId: session_id,
+      contentSessionId: session_id,
       last_user_message: lastUserMessage,
       last_assistant_message: lastAssistantMessage
     }),
