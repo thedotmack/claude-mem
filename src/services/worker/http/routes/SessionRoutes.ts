@@ -300,16 +300,21 @@ export class SessionRoutes extends BaseRouteHandler {
 
     const { tool_name, tool_input, tool_response, prompt_number, cwd } = req.body;
 
-    this.sessionManager.queueObservation(sessionDbId, {
+    // Get session to get claudeSessionId for new queue
+    const session = this.sessionManager.getSession(sessionDbId);
+    if (!session) {
+      return this.badRequest(res, 'Session not found');
+    }
+
+    // Use new SimpleQueue via enqueueMessage
+    this.sessionManager.enqueueMessage(sessionDbId, session.claudeSessionId, {
+      type: 'observation',
       tool_name,
       tool_input,
       tool_response,
       prompt_number,
       cwd
     });
-
-    // CRITICAL: Ensure SDK agent is running to consume the queue
-    this.ensureGeneratorRunning(sessionDbId, 'observation');
 
     // Broadcast observation queued event
     this.eventBroadcaster.broadcastObservationQueued(sessionDbId);
@@ -327,10 +332,18 @@ export class SessionRoutes extends BaseRouteHandler {
 
     const { last_user_message, last_assistant_message } = req.body;
 
-    this.sessionManager.queueSummarize(sessionDbId, last_user_message, last_assistant_message);
+    // Get session to get claudeSessionId for new queue
+    const session = this.sessionManager.getSession(sessionDbId);
+    if (!session) {
+      return this.badRequest(res, 'Session not found');
+    }
 
-    // CRITICAL: Ensure SDK agent is running to consume the queue
-    this.ensureGeneratorRunning(sessionDbId, 'summarize');
+    // Use new SimpleQueue via enqueueMessage
+    this.sessionManager.enqueueMessage(sessionDbId, session.claudeSessionId, {
+      type: 'summarize',
+      last_user_message,
+      last_assistant_message
+    });
 
     // Broadcast summarize queued event
     this.eventBroadcaster.broadcastSummarizeQueued();
@@ -452,8 +465,9 @@ export class SessionRoutes extends BaseRouteHandler {
       ? stripMemoryTagsFromJson(JSON.stringify(tool_response))
       : '{}';
 
-    // Queue observation
-    this.sessionManager.queueObservation(sessionDbId, {
+    // Use new SimpleQueue via enqueueMessage
+    this.sessionManager.enqueueMessage(sessionDbId, claudeSessionId, {
+      type: 'observation',
       tool_name,
       tool_input: cleanedToolInput,
       tool_response: cleanedToolResponse,
@@ -466,9 +480,6 @@ export class SessionRoutes extends BaseRouteHandler {
         ''
       )
     });
-
-    // Ensure SDK agent is running
-    this.ensureGeneratorRunning(sessionDbId, 'observation');
 
     // Broadcast observation queued event
     this.eventBroadcaster.broadcastObservationQueued(sessionDbId);
@@ -509,10 +520,10 @@ export class SessionRoutes extends BaseRouteHandler {
       return;
     }
 
-    // Queue summarize
-    this.sessionManager.queueSummarize(
-      sessionDbId,
-      last_user_message || logger.happyPathError(
+    // Use new SimpleQueue via enqueueMessage
+    this.sessionManager.enqueueMessage(sessionDbId, claudeSessionId, {
+      type: 'summarize',
+      last_user_message: last_user_message || logger.happyPathError(
         'SESSION',
         'Missing last_user_message when queueing summary in SessionRoutes',
         { sessionId: sessionDbId },
@@ -520,10 +531,7 @@ export class SessionRoutes extends BaseRouteHandler {
         ''
       ),
       last_assistant_message
-    );
-
-    // Ensure SDK agent is running
-    this.ensureGeneratorRunning(sessionDbId, 'summarize');
+    });
 
     // Broadcast summarize queued event
     this.eventBroadcaster.broadcastSummarizeQueued();

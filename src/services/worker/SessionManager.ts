@@ -14,6 +14,7 @@ import { logger } from '../../utils/logger.js';
 import type { ActiveSession, PendingMessage, PendingMessageWithId, ObservationData } from '../worker-types.js';
 import { PendingMessageStore } from '../sqlite/PendingMessageStore.js';
 import { SessionQueueProcessor } from '../queue/SessionQueueProcessor.js';
+import { SimpleQueue, type EnqueuePayload } from '../queue/index.js';
 
 export class SessionManager {
   private dbManager: DatabaseManager;
@@ -21,6 +22,7 @@ export class SessionManager {
   private sessionQueues: Map<number, EventEmitter> = new Map();
   private onSessionDeletedCallback?: () => void;
   private pendingStore: PendingMessageStore | null = null;
+  private simpleQueue: SimpleQueue | null = null;
 
   constructor(dbManager: DatabaseManager) {
     this.dbManager = dbManager;
@@ -35,6 +37,34 @@ export class SessionManager {
       this.pendingStore = new PendingMessageStore(sessionStore.db, 3);
     }
     return this.pendingStore;
+  }
+
+  /**
+   * Get or create SimpleQueue (lazy initialization)
+   */
+  getSimpleQueue(): SimpleQueue {
+    if (!this.simpleQueue) {
+      const sessionStore = this.dbManager.getSessionStore();
+      this.simpleQueue = new SimpleQueue(sessionStore.db);
+    }
+    return this.simpleQueue;
+  }
+
+  /**
+   * Enqueue a message using the new SimpleQueue system
+   * This is the replacement for queueObservation/queueSummarize
+   */
+  enqueueMessage(sessionDbId: number, claudeSessionId: string, payload: EnqueuePayload): number {
+    const messageId = this.getSimpleQueue().enqueue(sessionDbId, claudeSessionId, payload);
+
+    logger.info('SESSION', `Message enqueued via SimpleQueue`, {
+      sessionId: sessionDbId,
+      messageId,
+      type: payload.type,
+      tool: payload.tool_name
+    });
+
+    return messageId;
   }
 
   /**

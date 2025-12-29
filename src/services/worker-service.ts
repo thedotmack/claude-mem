@@ -232,6 +232,7 @@ import { SearchManager } from './worker/SearchManager.js';
 import { FormattingService } from './worker/FormattingService.js';
 import { TimelineService } from './worker/TimelineService.js';
 import { SessionEventBroadcaster } from './worker/events/SessionEventBroadcaster.js';
+import { QueueProcessor, type QueueMessage } from './queue/index.js';
 
 // Import HTTP layer
 import { createMiddleware, summarizeRequestBody as summarizeBody, requireLocalhost } from './worker/http/middleware.js';
@@ -268,6 +269,9 @@ export class WorkerService {
   private dataRoutes: DataRoutes;
   private searchRoutes: SearchRoutes | null;
   private settingsRoutes: SettingsRoutes;
+
+  // Queue processor
+  private queueProcessor: QueueProcessor | null = null;
 
   // Initialization tracking
   private initializationComplete: Promise<void>;
@@ -666,6 +670,24 @@ export class WorkerService {
       this.mcpReady = true;
       logger.success('WORKER', 'Connected to MCP server');
 
+      // Start the queue processor (simple polling loop)
+      const simpleQueue = this.sessionManager.getSimpleQueue();
+      this.queueProcessor = new QueueProcessor(
+        simpleQueue,
+        async (message: QueueMessage) => {
+          // Placeholder processing - just log for now
+          // Phase 3 will implement actual message processing via SDKAgent
+          logger.info('QueueProcessor', `Processing message`, {
+            id: message.id,
+            type: message.message_type,
+            sessionDbId: message.session_db_id,
+            tool: message.tool_name
+          });
+        }
+      );
+      this.queueProcessor.start();
+      logger.info('SYSTEM', 'Queue processor started');
+
       // Signal that initialization is complete
       this.initializationCompleteFlag = true;
       this.resolveInitialization();
@@ -894,6 +916,12 @@ export class WorkerService {
    */
   async shutdown(): Promise<void> {
     logger.info('SYSTEM', 'Shutdown initiated');
+
+    // STEP 0: Stop the queue processor first
+    if (this.queueProcessor) {
+      this.queueProcessor.stop();
+      logger.info('SYSTEM', 'Queue processor stopped');
+    }
 
     // STEP 1: Enumerate all child processes BEFORE we start closing things
     const childPids = await this.getChildProcesses(process.pid);
