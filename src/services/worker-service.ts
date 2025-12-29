@@ -675,14 +675,7 @@ export class WorkerService {
       this.queueProcessor = new QueueProcessor(
         simpleQueue,
         async (message: QueueMessage) => {
-          // Placeholder processing - just log for now
-          // Phase 3 will implement actual message processing via SDKAgent
-          logger.info('QueueProcessor', `Processing message`, {
-            id: message.id,
-            type: message.message_type,
-            sessionDbId: message.session_db_id,
-            tool: message.tool_name
-          });
+          await this.processQueueMessage(message);
         }
       );
       this.queueProcessor.start();
@@ -861,6 +854,25 @@ export class WorkerService {
     }
 
     return result;
+  }
+
+  /**
+   * Process a single queue message
+   * Called by QueueProcessor for each message in the SimpleQueue.
+   * Initializes session if needed and delegates to SDKAgent.
+   */
+  async processQueueMessage(message: QueueMessage): Promise<void> {
+    // Get or initialize session
+    let session = this.sessionManager.getSession(message.session_db_id);
+    if (!session) {
+      session = this.sessionManager.initializeSession(message.session_db_id);
+    }
+
+    // Delegate to SDKAgent for actual processing
+    await this.sdkAgent.processMessage(session, message, this);
+
+    // Broadcast status update after processing
+    this.broadcastProcessingStatus();
   }
 
   /**
