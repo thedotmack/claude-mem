@@ -259,7 +259,7 @@ function installUv() {
  */
 function installCLI() {
   const CLI_NAME = 'claude-mem';
-  const WORKER_CLI = join(ROOT, 'plugin', 'scripts', 'worker-cli.js');
+  const WORKER_SERVICE = join(ROOT, 'plugin', 'scripts', 'worker-service.cjs');
 
   if (IS_WINDOWS) {
     // Windows: Create .cmd file in LocalAppData
@@ -281,7 +281,7 @@ function installCLI() {
 
       // Create the wrapper script
       const cmdContent = `@echo off
-"${bunPath}" "${WORKER_CLI}" %*
+"${bunPath}" "${WORKER_SERVICE}" %*
 `;
       writeFileSync(cliPath, cmdContent);
       writeFileSync(markerPath, new Date().toISOString());
@@ -294,7 +294,7 @@ function installCLI() {
       console.error('   Then restart your terminal and use: npm run worker:start|stop|restart|status');
     } catch (error) {
       console.error(`⚠️  Could not install CLI: ${error.message}`);
-      console.error(`   You can still use: bun "${WORKER_CLI}" <command>`);
+      console.error(`   You can still use: bun "${WORKER_SERVICE}" <command>`);
     }
   } else {
     // Unix: Create shell script in ~/.local/bin
@@ -317,7 +317,7 @@ function installCLI() {
       // Create the wrapper script
       const shContent = `#!/usr/bin/env bash
 # claude-mem CLI wrapper - manages the worker service
-exec "${bunPath}" "${WORKER_CLI}" "$@"
+exec "${bunPath}" "${WORKER_SERVICE}" "$@"
 `;
       writeFileSync(cliPath, shContent, { mode: 0o755 });
       writeFileSync(markerPath, new Date().toISOString());
@@ -339,7 +339,7 @@ exec "${bunPath}" "${WORKER_CLI}" "$@"
       }
     } catch (error) {
       console.error(`⚠️  Could not install CLI: ${error.message}`);
-      console.error(`   You can still use: bun "${WORKER_CLI}" <command>`);
+      console.error(`   You can still use: bun "${WORKER_SERVICE}" <command>`);
     }
   }
 }

@@ -112,7 +112,7 @@ async function checkWorkerVersion(): Promise<void> {
 
 /**
  * Ensure worker service is running
- * Polls until worker is ready (assumes worker-cli.js start was called by hooks.json)
+ * Polls until worker is ready (assumes worker-service.cjs start was called by hooks.json)
  */
 export async function ensureWorkerRunning(): Promise<void> {
   const maxRetries = 25;  // 5 seconds total

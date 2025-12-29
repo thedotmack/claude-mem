@@ -505,7 +505,7 @@ git checkout <pre-7.1.0-tag>
 npm install && npm run build && npm run sync-marketplace
 
 # 2. Start PM2 worker
-pm2 start plugin/scripts/worker-cli.js --name claude-mem-worker
+pm2 start plugin/scripts/worker-service.cjs --name claude-mem-worker
 
 # 3. Update to new version
 git checkout main
