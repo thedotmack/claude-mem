@@ -67,16 +67,18 @@ export class SDKAgent {
       logger.info('SDK', 'Starting SDK query', {
         sessionDbId: session.sessionDbId,
         claudeSessionId: session.claudeSessionId,
-        resume_parameter: session.claudeSessionId,
         lastPromptNumber: session.lastPromptNumber
       });
 
       // Run Agent SDK query loop
+      // NOTE: Do NOT use 'resume' parameter - it expects an SDK session ID, not a Claude Code session ID
+      // The claudeSessionId from hooks is the user's Claude Code session, not an SDK-created session
+      // Using it with 'resume' causes "Claude Code process exited with code 1" errors
+      // Each SDK agent call starts fresh for observation processing, which is correct
       const queryResult = query({
         prompt: messageGenerator,
         options: {
           model: modelId,
-          resume: session.claudeSessionId,
           disallowedTools,
           abortController: session.abortController,
           pathToClaudeCodeExecutable: claudePath
