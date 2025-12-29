@@ -89,30 +89,18 @@ async function buildHooks() {
       });
     });
 
-    // Build worker service
-    console.log(`\n🔧 Building worker service...`);
-    await build({
-      entryPoints: [WORKER_SERVICE.source],
-      bundle: true,
-      platform: 'node',
-      target: 'node18',
-      format: 'cjs',
-      outfile: `${hooksDir}/${WORKER_SERVICE.name}.cjs`,
-      minify: true,
-      logLevel: 'error', // Suppress warnings (import.meta warning is benign)
-      external: ['bun:sqlite'],
-      define: {
-        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
-      },
-      banner: {
-        js: '#!/usr/bin/env bun'
-      }
-    });
+    // Copy worker service TypeScript source for install-time compilation
+    console.log(`\n📋 Copying worker service source...`);
+    const workerSourceDir = 'plugin/src';
+    if (!fs.existsSync(workerSourceDir)) {
+      fs.mkdirSync(workerSourceDir, { recursive: true });
+    }
 
-    // Make worker service executable
-    fs.chmodSync(`${hooksDir}/${WORKER_SERVICE.name}.cjs`, 0o755);
-    const workerStats = fs.statSync(`${hooksDir}/${WORKER_SERVICE.name}.cjs`);
-    console.log(`✓ worker-service built (${(workerStats.size / 1024).toFixed(2)} KB)`);
+    const workerSourcePath = path.join(workerSourceDir, 'worker-service.ts');
+    fs.copyFileSync(WORKER_SERVICE.source, workerSourcePath);
+
+    const workerStats = fs.statSync(workerSourcePath);
+    console.log(`✓ worker-service source copied (${(workerStats.size / 1024).toFixed(2)} KB)`);
 
     // Build MCP server
     console.log(`\n🔧 Building MCP server...`);
@@ -191,10 +179,10 @@ async function buildHooks() {
       console.log(`✓ ${hook.name} built (${sizeInKB} KB)`);
     }
 
-    console.log('\n✅ All hooks, worker service, and MCP server built successfully!');
+    console.log('\n✅ All hooks and services built successfully!');
     console.log(`   Output: ${hooksDir}/`);
     console.log(`   - Hooks: *-hook.js`);
-    console.log(`   - Worker: worker-service.cjs`);
+    console.log(`   - Worker source: plugin/src/worker-service.ts (compiled at install-time)`);
     console.log(`   - MCP Server: mcp-server.cjs`);
     console.log('\n💡 Note: Dependencies will be auto-installed on first hook execution');
 
