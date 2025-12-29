@@ -28,29 +28,7 @@ curl http://localhost:37777/api/health
 
 ## Installation
 
-### Step 1: Download the Skill
-
-Download the skill package from the repository:
-
-<Card title="mem-search.zip" icon="download" href="https://github.com/thedotmack/claude-mem/raw/main/plugin/skills/mem-search.zip">
-  Download the mem-search skill for Claude Desktop
-</Card>
-
-Or build from source:
-
-```bash
-npm run build  # Generates plugin/skills/mem-search.zip
-```
-
-### Step 2: Install in Claude Desktop
-
-1. Open **Claude Desktop**
-2. Go to **Settings** (gear icon)
-3. Navigate to **Skills**
-4. Click **Install Skill** or drag the `mem-search.zip` file
-5. Confirm installation
-
-### Step 3: Configure MCP Server
+### Step 1: Configure MCP Server
 
 The skill requires the `mcp-search` MCP server. Add this to your Claude Desktop configuration:
 
@@ -93,7 +71,7 @@ The skill requires the `mcp-search` MCP server. Add this to your Claude Desktop 
 Replace `YOUR_USERNAME` with your actual username. Restart Claude Desktop after editing the configuration.
 </Warning>
 
-### Step 4: Restart Claude Desktop
+### Step 2: Restart Claude Desktop
 
 Close and reopen Claude Desktop for the MCP server configuration to take effect.
 
@@ -111,19 +89,21 @@ Once installed, the skill auto-activates when you ask about past work:
 
 ## Available MCP Tools
 
-The skill provides access to these MCP tools:
+The skill provides three core MCP tools following a 3-layer workflow pattern:
 
 | Tool | Description |
 |------|-------------|
-| `search` | Unified search across observations, sessions, and prompts |
+| `search` | Search memory index. Returns compact results with IDs for filtering |
 | `timeline` | Get chronological context around a query or observation ID |
-| `get_observation` | Fetch a single observation by ID |
-| `get_observations` | Fetch multiple observations efficiently |
-| `get_session` | Fetch session summary by ID |
-| `get_prompt` | Fetch user prompt by ID |
-| `get_recent_context` | Get recent timeline items |
-| `get_context_timeline` | Get timeline around a specific observation |
-| `help` | Load detailed usage instructions |
+| `get_observations` | Fetch full observation details by ID (use after filtering with search/timeline) |
+
+### Token-Efficient Workflow
+
+1. **Search** → Get index with IDs (~50-100 tokens/result)
+2. **Timeline** → Get context around interesting results
+3. **Get Observations** → Fetch full details ONLY for filtered IDs
+
+This 3-layer approach provides ~10x token savings compared to fetching full details upfront.
 
 ## Troubleshooting
 
