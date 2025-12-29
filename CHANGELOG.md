@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [8.2.9] - 2025-12-29
+
+## Bug Fixes
+
+- **Worker Service**: Remove file-based locking and improve Windows stability
+  - Replaced file-based locking with health-check-first approach for cleaner mutual exclusion
+  - Removed AbortSignal.timeout() calls to reduce Bun libuv assertion errors on Windows
+  - Added 500ms shutdown delays on Windows to prevent zombie ports
+  - Reduced hook timeout values for improved responsiveness
+  - Increased worker readiness polling duration from 5s to 15s
+
+## Internal Changes
+
+- Updated worker CLI scripts to reference worker-service.cjs directly
+- Simplified hook command configurations
+
 ## [8.2.8] - 2025-12-29
 
 ## Bug Fixes
