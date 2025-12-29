@@ -62,9 +62,8 @@ export function clearPortCache(): void {
  */
 async function isWorkerHealthy(): Promise<boolean> {
   const port = getWorkerPort();
-  const response = await fetch(`http://127.0.0.1:${port}/api/readiness`, {
-    signal: AbortSignal.timeout(HEALTH_CHECK_TIMEOUT_MS)
-  });
+  // Note: Removed AbortSignal.timeout to avoid Windows Bun cleanup issue (libuv assertion)
+  const response = await fetch(`http://127.0.0.1:${port}/api/readiness`);
   return response.ok;
 }
 
@@ -82,9 +81,8 @@ function getPluginVersion(): string {
  */
 async function getWorkerVersion(): Promise<string> {
   const port = getWorkerPort();
-  const response = await fetch(`http://127.0.0.1:${port}/api/version`, {
-    signal: AbortSignal.timeout(HEALTH_CHECK_TIMEOUT_MS)
-  });
+  // Note: Removed AbortSignal.timeout to avoid Windows Bun cleanup issue (libuv assertion)
+  const response = await fetch(`http://127.0.0.1:${port}/api/version`);
   if (!response.ok) {
     throw new Error(`Failed to get worker version: ${response.status}`);
   }
@@ -112,10 +110,10 @@ async function checkWorkerVersion(): Promise<void> {
 
 /**
  * Ensure worker service is running
- * Polls until worker is ready (assumes worker-cli.js start was called by hooks.json)
+ * Polls until worker is ready (assumes worker-service.cjs start was called by hooks.json)
  */
 export async function ensureWorkerRunning(): Promise<void> {
-  const maxRetries = 25;  // 5 seconds total
+  const maxRetries = 75;  // 15 seconds total
   const pollInterval = 200;
 
   for (let i = 0; i < maxRetries; i++) {
@@ -132,6 +130,6 @@ export async function ensureWorkerRunning(): Promise<void> {
 
   throw new Error(getWorkerRestartInstructions({
     port: getWorkerPort(),
-    customPrefix: 'Worker did not become ready within 5 seconds.'
+    customPrefix: 'Worker did not become ready within 15 seconds.'
   }));
 }
