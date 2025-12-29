@@ -857,6 +857,9 @@ export class WorkerService {
   async shutdown(): Promise<void> {
     logger.info('SYSTEM', 'Shutdown initiated');
 
+    // Clean up PID file on shutdown
+    removePidFile();
+
     // STEP 1: Enumerate all child processes BEFORE we start closing things
     const childPids = await this.getChildProcesses(process.pid);
     logger.info('SYSTEM', 'Found child processes', { count: childPids.length, pids: childPids });
@@ -1180,20 +1183,6 @@ async function main() {
     default: {
       // Run server directly
       const worker = new WorkerService();
-
-      process.on('SIGTERM', async () => {
-        logger.info('SYSTEM', 'Received SIGTERM');
-        await worker.shutdown();
-        removePidFile();
-        process.exit(0);
-      });
-
-      process.on('SIGINT', async () => {
-        logger.info('SYSTEM', 'Received SIGINT');
-        await worker.shutdown();
-        removePidFile();
-        process.exit(0);
-      });
 
       worker.start().catch((error) => {
         logger.failure('SYSTEM', 'Worker failed to start', {}, error as Error);
