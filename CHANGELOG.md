@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [8.2.8] - 2025-12-29
+
+## Bug Fixes
+
+- Fixed orphaned chroma-mcp processes during shutdown (#489)
+  - Added graceful shutdown handling with signal handlers registered early in WorkerService lifecycle
+  - Ensures ChromaSync subprocess cleanup even when interrupted during initialization
+  - Removes PID file during shutdown to prevent stale process tracking
+
+## Technical Details
+
+This patch release addresses a race condition where SIGTERM/SIGINT signals arriving during ChromaSync initialization could leave orphaned chroma-mcp processes. The fix moves signal handler registration from the start() method to the constructor, ensuring cleanup handlers exist throughout the entire initialization lifecycle.
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.2.7...v8.2.8
+
 ## [8.2.7] - 2025-12-29
 
 ## What's Changed
