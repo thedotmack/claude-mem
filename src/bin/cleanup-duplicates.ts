@@ -15,14 +15,14 @@ function main() {
   console.log('Finding duplicate observations...');
 
   const duplicateObsQuery = db['db'].prepare(`
-    SELECT sdk_session_id, title, subtitle, type, COUNT(*) as count, GROUP_CONCAT(id) as ids
+    SELECT memory_session_id, title, subtitle, type, COUNT(*) as count, GROUP_CONCAT(id) as ids
     FROM observations
-    GROUP BY sdk_session_id, title, subtitle, type
+    GROUP BY memory_session_id, title, subtitle, type
     HAVING count > 1
   `);
 
   const duplicateObs = duplicateObsQuery.all() as Array<{
-    sdk_session_id: string;
+    memory_session_id: string;
     title: string;
     subtitle: string;
     type: string;
@@ -50,14 +50,14 @@ function main() {
   console.log('\n\nFinding duplicate summaries...');
 
   const duplicateSumQuery = db['db'].prepare(`
-    SELECT sdk_session_id, request, completed, learned, COUNT(*) as count, GROUP_CONCAT(id) as ids
+    SELECT memory_session_id, request, completed, learned, COUNT(*) as count, GROUP_CONCAT(id) as ids
     FROM session_summaries
-    GROUP BY sdk_session_id, request, completed, learned
+    GROUP BY memory_session_id, request, completed, learned
     HAVING count > 1
   `);
 
   const duplicateSum = duplicateSumQuery.all() as Array<{
-    sdk_session_id: string;
+    memory_session_id: string;
     request: string;
     completed: string;
     learned: string;

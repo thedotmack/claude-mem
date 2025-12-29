@@ -44,6 +44,7 @@ export class SessionStore {
     this.ensureDiscoveryTokensColumn();
     this.createPendingMessagesTable();
     this.renameSessionIdColumns();
+    this.repairSessionIdColumnRename();
   }
 
   /**
@@ -627,6 +628,75 @@ export class SessionStore {
   }
 
   /**
+   * Repair session ID column renames (migration 19)
+   * Migration 17 may have been recorded but failed to actually rename columns.
+   * This migration checks each table and renames if needed (idempotent).
+   */
+  private repairSessionIdColumnRename(): void {
+    try {
+      const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(19) as SchemaVersion | undefined;
+      if (applied) return;
+
+      logger.info('DB', 'Checking session ID column renames (repair migration)');
+
+      let repairsNeeded = false;
+
+      // Check and fix sdk_sessions
+      const sessionsInfo = this.db.query('PRAGMA table_info(sdk_sessions)').all() as TableColumnInfo[];
+      if (sessionsInfo.some(col => col.name === 'claude_session_id')) {
+        logger.info('DB', 'Repairing sdk_sessions columns');
+        this.db.run('ALTER TABLE sdk_sessions RENAME COLUMN claude_session_id TO content_session_id');
+        this.db.run('ALTER TABLE sdk_sessions RENAME COLUMN sdk_session_id TO memory_session_id');
+        repairsNeeded = true;
+      }
+
+      // Check and fix pending_messages
+      const pendingInfo = this.db.query('PRAGMA table_info(pending_messages)').all() as TableColumnInfo[];
+      if (pendingInfo.some(col => col.name === 'claude_session_id')) {
+        logger.info('DB', 'Repairing pending_messages columns');
+        this.db.run('ALTER TABLE pending_messages RENAME COLUMN claude_session_id TO content_session_id');
+        repairsNeeded = true;
+      }
+
+      // Check and fix observations
+      const obsInfo = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+      if (obsInfo.some(col => col.name === 'sdk_session_id')) {
+        logger.info('DB', 'Repairing observations columns');
+        this.db.run('ALTER TABLE observations RENAME COLUMN sdk_session_id TO memory_session_id');
+        repairsNeeded = true;
+      }
+
+      // Check and fix session_summaries
+      const summariesInfo = this.db.query('PRAGMA table_info(session_summaries)').all() as TableColumnInfo[];
+      if (summariesInfo.some(col => col.name === 'sdk_session_id')) {
+        logger.info('DB', 'Repairing session_summaries columns');
+        this.db.run('ALTER TABLE session_summaries RENAME COLUMN sdk_session_id TO memory_session_id');
+        repairsNeeded = true;
+      }
+
+      // Check and fix user_prompts
+      const promptsInfo = this.db.query('PRAGMA table_info(user_prompts)').all() as TableColumnInfo[];
+      if (promptsInfo.some(col => col.name === 'claude_session_id')) {
+        logger.info('DB', 'Repairing user_prompts columns');
+        this.db.run('ALTER TABLE user_prompts RENAME COLUMN claude_session_id TO content_session_id');
+        repairsNeeded = true;
+      }
+
+      // Record migration
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(19, new Date().toISOString());
+
+      if (repairsNeeded) {
+        logger.info('DB', 'Session ID column rename repairs completed');
+      } else {
+        logger.info('DB', 'No session ID column repairs needed');
+      }
+    } catch (error: any) {
+      logger.error('DB', 'Session ID column rename repair error', undefined, error);
+      throw error;
+    }
+  }
+
+  /**
    * Update the memory session ID for a session
    * Called by SDKAgent when it captures the session ID from the first SDK message
    */
@@ -1147,6 +1217,10 @@ export class SessionStore {
     const nowEpoch = now.getTime();
 
     // Pure INSERT OR IGNORE - no updates, no complexity
+    // NOTE: memory_session_id is initialized to contentSessionId as a placeholder for FK purposes.
+    // The REAL memory session ID is captured by SDKAgent from the first SDK response
+    // and stored via updateMemorySessionId(). The resume logic checks if memorySessionId
+    // differs from contentSessionId before using it - see SDKAgent.startSession().
     this.db.prepare(`
       INSERT OR IGNORE INTO sdk_sessions
       (content_session_id, memory_session_id, project, user_prompt, started_at, started_at_epoch, status)

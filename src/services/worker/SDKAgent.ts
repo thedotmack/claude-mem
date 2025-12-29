@@ -64,22 +64,29 @@ export class SDKAgent {
       // Create message generator (event-driven)
       const messageGenerator = this.createMessageGenerator(session);
 
+      // CRITICAL: Only resume if memorySessionId is a REAL captured SDK session ID,
+      // not the placeholder (which equals contentSessionId). The placeholder is set
+      // for FK purposes but would cause the bug where we try to resume the USER's session!
+      const hasRealMemorySessionId = session.memorySessionId &&
+        session.memorySessionId !== session.contentSessionId;
+
       logger.info('SDK', 'Starting SDK query', {
         sessionDbId: session.sessionDbId,
         contentSessionId: session.contentSessionId,
         memorySessionId: session.memorySessionId,
-        resume_parameter: session.memorySessionId || '(none - fresh start)',
+        hasRealMemorySessionId,
+        resume_parameter: hasRealMemorySessionId ? session.memorySessionId : '(none - fresh start)',
         lastPromptNumber: session.lastPromptNumber
       });
 
       // Run Agent SDK query loop
-      // Use memorySessionId for resume (captured from previous SDK response) if available
+      // Only resume if we have a REAL captured memory session ID (not the placeholder)
       const queryResult = query({
         prompt: messageGenerator,
         options: {
           model: modelId,
-          // Only resume if we have a captured memory session ID from previous SDK interaction
-          ...(session.memorySessionId && { resume: session.memorySessionId }),
+          // Only resume if memorySessionId differs from contentSessionId (meaning it was captured)
+          ...(hasRealMemorySessionId && { resume: session.memorySessionId }),
           disallowedTools,
           abortController: session.abortController,
           pathToClaudeCodeExecutable: claudePath
