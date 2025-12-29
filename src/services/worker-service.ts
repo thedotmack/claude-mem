@@ -316,6 +316,36 @@ export class WorkerService {
 
     this.setupMiddleware();
     this.setupRoutes();
+
+    // Register signal handlers early to ensure cleanup even if start() hasn't completed
+    // The shutdown() method is defensive and safe to call at any initialization stage
+    this.registerSignalHandlers();
+  }
+
+  /**
+   * Register signal handlers for graceful shutdown
+   * Called in constructor to ensure cleanup even if start() hasn't completed
+   */
+  private registerSignalHandlers(): void {
+    const handleShutdown = async (signal: string) => {
+      if (this.isShuttingDown) {
+        logger.warn('SYSTEM', `Received ${signal} but shutdown already in progress`);
+        return;
+      }
+      this.isShuttingDown = true;
+
+      logger.info('SYSTEM', `Received ${signal}, shutting down...`);
+      try {
+        await this.shutdown();
+        process.exit(0);
+      } catch (error) {
+        logger.error('SYSTEM', 'Error during shutdown', {}, error as Error);
+        process.exit(1);
+      }
+    };
+
+    process.on('SIGTERM', () => handleShutdown('SIGTERM'));
+    process.on('SIGINT', () => handleShutdown('SIGINT'));
   }
 
   /**
@@ -595,27 +625,6 @@ export class WorkerService {
     });
 
     logger.info('SYSTEM', 'Worker started', { host, port, pid: process.pid });
-
-    // Register signal handlers to ensure cleanup on exit
-    const handleShutdown = async (signal: string) => {
-      if (this.isShuttingDown) {
-        logger.warn('SYSTEM', `Received ${signal} but shutdown already in progress`);
-        return;
-      }
-      this.isShuttingDown = true;
-
-      logger.info('SYSTEM', `Received ${signal}, shutting down...`);
-      try {
-        await this.shutdown();
-        process.exit(0);
-      } catch (error) {
-        logger.error('SYSTEM', 'Error during shutdown', {}, error as Error);
-        process.exit(1);
-      }
-    };
-
-    process.on('SIGTERM', () => handleShutdown('SIGTERM'));
-    process.on('SIGINT', () => handleShutdown('SIGINT'));
 
     // Do slow initialization in background (non-blocking)
     this.initializeBackground().catch((error) => {
