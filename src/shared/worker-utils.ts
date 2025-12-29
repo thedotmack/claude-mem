@@ -110,10 +110,10 @@ async function checkWorkerVersion(): Promise<void> {
 
 /**
  * Ensure worker service is running
- * Polls until worker is ready (assumes worker-cli.js start was called by hooks.json)
+ * Polls until worker is ready (assumes worker-service.cjs start was called by hooks.json)
  */
 export async function ensureWorkerRunning(): Promise<void> {
-  const maxRetries = 25;  // 5 seconds total
+  const maxRetries = 75;  // 15 seconds total
   const pollInterval = 200;
 
   for (let i = 0; i < maxRetries; i++) {
@@ -130,6 +130,6 @@ export async function ensureWorkerRunning(): Promise<void> {
 
   throw new Error(getWorkerRestartInstructions({
     port: getWorkerPort(),
-    customPrefix: 'Worker did not become ready within 5 seconds.'
+    customPrefix: 'Worker did not become ready within 15 seconds.'
   }));
 }
