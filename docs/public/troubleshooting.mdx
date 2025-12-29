@@ -742,17 +742,17 @@ sqlite3 ~/.claude-mem/claude-mem.db "
 
 3. Test simple query:
    ```bash
-   # In Claude Code
-   search_observations with query="test"
+   # Test MCP search tool
+   search(query="test", limit=5)
    ```
 
 4. Check query syntax:
    ```bash
-   # Bad: Special characters
-   search_observations with query="[test]"
+   # Bad: Special characters may cause issues
+   search(query="[test]")
 
    # Good: Simple words
-   search_observations with query="test"
+   search(query="test")
    ```
 
 ### Token Limit Errors
@@ -761,28 +761,40 @@ sqlite3 ~/.claude-mem/claude-mem.db "
 
 **Solutions**:
 
-1. Use index format:
+1. Follow 3-layer workflow (don't skip to get_observations):
    ```bash
-   search_observations with query="..." and format="index"
+   # Start with search to get index
+   search(query="...", limit=10)
+
+   # Review IDs, then fetch only relevant ones
+   get_observations(ids=[<2-3 relevant IDs>])
    ```
 
-2. Reduce limit:
+2. Reduce limit in search:
    ```bash
-   search_observations with query="..." and limit=3
+   search(query="...", limit=3)
    ```
 
 3. Use filters to narrow results:
    ```bash
-   search_observations with query="..." and type="decision" and limit=5
+   search(query="...", type="decision", limit=5)
    ```
 
 4. Paginate results:
    ```bash
    # First page
-   search_observations with query="..." and limit=5 and offset=0
+   search(query="...", limit=5, offset=0)
 
    # Second page
-   search_observations with query="..." and limit=5 and offset=5
+   search(query="...", limit=5, offset=5)
+   ```
+
+5. Batch IDs in get_observations:
+   ```bash
+   # Always batch multiple IDs in one call
+   get_observations(ids=[123, 456, 789])
+
+   # Don't make separate calls per ID
    ```
 
 ## Performance Issues

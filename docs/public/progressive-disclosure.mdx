@@ -260,14 +260,12 @@ The index is useless without retrieval mechanisms:
 *Use claude-mem MCP search to access records with the given ID*
 ```
 
-**Available tools:**
-- `search_observations` - Full-text search
-- `find_by_concept` - Concept-based retrieval
-- `find_by_file` - File-based retrieval
-- `find_by_type` - Type-based retrieval
-- `get_recent_context` - Recent session summaries
+**Available MCP tools:**
+- `search` - Search memory index (Layer 1: Get IDs)
+- `timeline` - Get chronological context (Layer 2: See narrative arc)
+- `get_observations` - Fetch full details (Layer 3: Deep dive)
 
-Each tool supports `format: "index"` (default) and `format: "full"`.
+The 3-layer workflow ensures progressive disclosure: index → context → details.
 
 ---
 
@@ -318,16 +316,18 @@ Is my task related to npm? → YES
 
 ---
 
-## The Two-Tier Search Strategy
+## The Three-Layer Workflow
 
-Claude-Mem implements progressive disclosure in search results too:
+Claude-Mem implements progressive disclosure through a 3-layer workflow pattern:
 
-### Tier 1: Index Format (Default)
+### Layer 1: Search (Index)
+
+Start by searching to get a compact index with IDs:
 
 ```typescript
-search_observations({
+search({
   query: "hook timeout",
-  format: "index"  // Default
+  limit: 10
 })
 ```
 
@@ -335,23 +335,40 @@ search_observations({
 ```
 Found 3 observations matching "hook timeout":
 
-| ID | Date | Type | Title | Tokens |
-|----|------|------|-------|--------|
-| #2543 | Oct 26 | gotcha | Hook timeout: 60s too short | ~155 |
-| #2891 | Oct 25 | how-it-works | Hook timeout configuration | ~203 |
-| #2102 | Oct 20 | problem-solution | Fixed timeout in CI | ~89 |
+| ID | Date | Type | Title |
+|----|------|------|-------|
+| #2543 | Oct 26 | gotcha | Hook timeout: 60s too short |
+| #2891 | Oct 25 | how-it-works | Hook timeout configuration |
+| #2102 | Oct 20 | problem-solution | Fixed timeout in CI |
 ```
 
-**Cost:** ~100 tokens for 3 results
-**Value:** Agent can scan and decide which to fetch
+**Cost:** ~50-100 tokens per result
+**Value:** Agent can scan and decide which observations are relevant
 
-### Tier 2: Full Format (On-Demand)
+### Layer 2: Timeline (Context)
+
+Get chronological context around interesting observations:
 
 ```typescript
-search_observations({
-  query: "hook timeout",
-  format: "full",
-  limit: 1  // Fetch just the most relevant
+timeline({
+  anchor: 2543,  // Observation ID from search
+  depth_before: 3,
+  depth_after: 3
+})
+```
+
+**Returns:** Chronological view showing what happened before/during/after observation #2543
+
+**Cost:** Variable based on depth
+**Value:** Understand narrative arc and context
+
+### Layer 3: Get Observations (Details)
+
+Fetch full details only for relevant observations:
+
+```typescript
+get_observations({
+  ids: [2543, 2102]  // Selected from search results
 })
 ```
 
@@ -463,29 +480,30 @@ Here are 10 observations.
 *Use MCP search tools to fetch full observation details on-demand*
 ```
 
-### ❌ Defaulting to Full Format
+### ❌ Skipping the Index Layer
 
 **Bad:**
 ```typescript
-search_observations({
-  query: "hooks",
-  format: "full"  // Fetches everything
+// Fetching full details immediately
+get_observations({
+  ids: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]  // Guessing which are relevant
 })
 ```
 
 **Good:**
 ```typescript
-search_observations({
+// Follow the 3-layer workflow
+// Layer 1: Search for index
+search({
   query: "hooks",
-  format: "index",  // Scan first
   limit: 20
 })
 
-// Then, if needed:
-search_observations({
-  query: "hooks",
-  format: "full",
-  limit: 1  // Just the most relevant
+// Layer 2: Review index, identify 2-3 relevant IDs
+
+// Layer 3: Fetch only relevant observations
+get_observations({
+  ids: [2543, 2891]  // Just the most relevant
 })
 ```
 
@@ -595,10 +613,9 @@ SessionStart({ source: "compact" }):
 
 ```typescript
 // Use embeddings to pre-sort index by relevance
-search_observations({
+search({
   query: "authentication bug",
-  format: "index",
-  sort: "relevance"  // Based on semantic similarity
+  orderBy: "relevance"  // Based on semantic similarity (future enhancement)
 })
 ```
 
