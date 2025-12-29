@@ -199,7 +199,7 @@ export class SessionRoutes extends BaseRouteHandler {
               }, 1000);
             }
           } catch (e) {
-            // Ignore errors during recovery check
+            logger.warn('SESSION', 'Error during crash recovery check', { sessionId: sessionDbId }, e as Error);
           }
         }
         // NOTE: We do NOT delete the session here anymore. 

@@ -767,7 +767,7 @@ export class WorkerService {
               }, 1000);
             }
           } catch (e) {
-            // Ignore errors during recovery check
+            logger.warn('SYSTEM', 'Error during crash recovery check', { sessionId: sid }, e as Error);
           }
         }
       });
