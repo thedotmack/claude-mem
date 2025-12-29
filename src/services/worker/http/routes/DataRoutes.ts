@@ -289,8 +289,8 @@ export class DataRoutes extends BaseRouteHandler {
    * Purge all pending messages from the queue
    * POST /api/pending-queue/purge
    */
-  private handlePurgePendingQueue = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const deletedCount = await this.workerService.purgePendingQueues();
+  private handlePurgePendingQueue = this.wrapHandler((req: Request, res: Response): void => {
+    const deletedCount = this.workerService.purgePendingQueues();
 
     res.json({
       success: true,
@@ -387,54 +387,33 @@ export class DataRoutes extends BaseRouteHandler {
   /**
    * Get pending queue contents
    * GET /api/pending-queue
-   * Returns all pending, processing, and failed messages with optional recently processed
+   * Returns queue count from SimpleQueue
    */
   private handleGetPendingQueue = this.wrapHandler((req: Request, res: Response): void => {
-    const { PendingMessageStore } = require('../../../sqlite/PendingMessageStore.js');
-    const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
-
-    // Get queue contents (pending, processing, failed)
-    const queueMessages = pendingStore.getQueueMessages();
-
-    // Get recently processed (last 30 min, up to 20)
-    const recentlyProcessed = pendingStore.getRecentlyProcessed(20, 30);
-
-    // Get stuck message count (processing > 5 min)
-    const stuckCount = pendingStore.getStuckCount(5 * 60 * 1000);
-
-    // Get sessions with pending work
-    const sessionsWithPending = pendingStore.getSessionsWithPendingMessages();
+    const queue = this.sessionManager.getSimpleQueue();
+    const count = queue.count();
 
     res.json({
       queue: {
-        messages: queueMessages,
-        totalPending: queueMessages.filter((m: { status: string }) => m.status === 'pending').length,
-        totalProcessing: queueMessages.filter((m: { status: string }) => m.status === 'processing').length,
-        totalFailed: queueMessages.filter((m: { status: string }) => m.status === 'failed').length,
-        stuckCount
-      },
-      recentlyProcessed,
-      sessionsWithPendingWork: sessionsWithPending
+        totalPending: count,
+        totalProcessing: 0,
+        totalFailed: 0
+      }
     });
   });
 
   /**
-   * Process pending queue
+   * Process pending queue - no longer needed as QueueProcessor runs automatically
    * POST /api/pending-queue/process
-   * Body: { sessionLimit?: number } - defaults to 10
-   * Starts SDK agents for sessions with pending messages
    */
-  private handleProcessPendingQueue = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const sessionLimit = Math.min(
-      Math.max(parseInt(req.body.sessionLimit, 10) || 10, 1),
-      100 // Max 100 sessions at once
-    );
-
-    const result = await this.workerService.processPendingQueues(sessionLimit);
+  private handleProcessPendingQueue = this.wrapHandler((req: Request, res: Response): void => {
+    // QueueProcessor now handles processing automatically
+    const count = this.sessionManager.getSimpleQueue().count();
 
     res.json({
       success: true,
-      ...result
+      message: 'Queue processing is now automatic',
+      pendingCount: count
     });
   });
 }

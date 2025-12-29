@@ -32,7 +32,6 @@ export interface SettingsDefaults {
   CLAUDE_MEM_DATA_DIR: string;
   CLAUDE_MEM_LOG_LEVEL: string;
   CLAUDE_MEM_PYTHON_VERSION: string;
-  CLAUDE_CODE_PATH: string;
   CLAUDE_MEM_MODE: string;
   // Token Economics
   CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: string;
@@ -76,7 +75,6 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_DATA_DIR: join(homedir(), '.claude-mem'),
     CLAUDE_MEM_LOG_LEVEL: 'INFO',
     CLAUDE_MEM_PYTHON_VERSION: '3.13',
-    CLAUDE_CODE_PATH: '', // Empty means auto-detect via 'which claude'
     CLAUDE_MEM_MODE: 'code', // Default mode profile
     // Token Economics
     CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: 'true',

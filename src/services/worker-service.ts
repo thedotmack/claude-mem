@@ -627,16 +627,6 @@ export class WorkerService {
       // Initialize database (once, stays open)
       await this.dbManager.initialize();
 
-      // Recover stuck messages from previous crashes
-      // Messages stuck in 'processing' state are reset to 'pending' for reprocessing
-      const { PendingMessageStore } = await import('./sqlite/PendingMessageStore.js');
-      const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
-      const STUCK_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
-      const resetCount = pendingStore.resetStuckMessages(STUCK_THRESHOLD_MS);
-      if (resetCount > 0) {
-        logger.info('SYSTEM', `Recovered ${resetCount} stuck messages from previous session`, { thresholdMinutes: 5 });
-      }
-
       // Initialize search services (requires initialized database)
       const formattingService = new FormattingService();
       const timelineService = new TimelineService();
@@ -685,175 +675,11 @@ export class WorkerService {
       this.initializationCompleteFlag = true;
       this.resolveInitialization();
       logger.info('SYSTEM', 'Background initialization complete');
-
-      // Auto-recover orphaned queues on startup (process pending work from previous sessions)
-      // DISABLED: User feedback indicates this consumes excessive usage if there's a large backlog.
-      // Users can manually trigger processing via scripts/check-pending-queue.ts
-      /*
-      this.processPendingQueues(50).then(result => {
-        if (result.sessionsStarted > 0) {
-          logger.info('SYSTEM', `Auto-recovered ${result.sessionsStarted} sessions with pending work`, {
-            totalPending: result.totalPendingSessions,
-            started: result.sessionsStarted,
-            sessionIds: result.startedSessionIds
-          });
-        }
-      }).catch(error => {
-        logger.warn('SYSTEM', 'Auto-recovery of pending queues failed', {}, error as Error);
-      });
-      */
     } catch (error) {
       logger.error('SYSTEM', 'Background initialization failed', {}, error as Error);
       // Don't resolve - let the promise remain pending so readiness check continues to fail
       throw error;
     }
-  }
-
-  /**
-   * Start a session processor
-   * It will run continuously until the session is deleted/aborted
-   * Includes crash recovery: marks failed messages and auto-restarts if work remains
-   */
-  private startSessionProcessor(
-    session: ReturnType<typeof this.sessionManager.getSession>,
-    source: string
-  ): void {
-    if (!session) return;
-
-    const sid = session.sessionDbId;
-    logger.info('SYSTEM', `Starting generator (${source})`, {
-      sessionId: sid
-    });
-
-    session.generatorPromise = this.sdkAgent.startSession(session, this)
-      .catch(error => {
-        // Only log and handle if not aborted
-        if (session.abortController.signal.aborted) return;
-
-        logger.error('SYSTEM', `Generator failed (${source})`, {
-          sessionId: sid,
-          error: error.message
-        }, error);
-
-        // Mark all processing messages as failed so they can be retried or abandoned
-        try {
-          const pendingStore = this.sessionManager.getPendingMessageStore();
-          const db = this.dbManager.getSessionStore().db;
-          const stmt = db.prepare(`
-            SELECT id FROM pending_messages
-            WHERE session_db_id = ? AND status = 'processing'
-          `);
-          const processingMessages = stmt.all(sid) as { id: number }[];
-
-          for (const msg of processingMessages) {
-            pendingStore.markFailed(msg.id);
-            logger.warn('SYSTEM', `Marked message as failed after generator error`, {
-              sessionId: sid,
-              messageId: msg.id
-            });
-          }
-        } catch (dbError) {
-          logger.error('SYSTEM', 'Failed to mark messages as failed', { sessionId: sid }, dbError as Error);
-        }
-      })
-      .finally(() => {
-        session.generatorPromise = null;
-        this.broadcastProcessingStatus();
-
-        // Crash recovery: if not aborted and still has work, restart
-        if (!session.abortController.signal.aborted) {
-          logger.warn('SYSTEM', `Session processor exited unexpectedly`, { sessionId: sid });
-
-          try {
-            const pendingStore = this.sessionManager.getPendingMessageStore();
-            const pendingCount = pendingStore.getPendingCount(sid);
-
-            if (pendingCount > 0) {
-              logger.info('SYSTEM', `Restarting generator after crash/exit with pending work`, {
-                sessionId: sid,
-                pendingCount
-              });
-              // Small delay before restart to avoid tight crash loops
-              setTimeout(() => {
-                const stillExists = this.sessionManager.getSession(sid);
-                if (stillExists && !stillExists.generatorPromise) {
-                  this.startSessionProcessor(stillExists, 'crash-recovery');
-                }
-              }, 1000);
-            }
-          } catch (e) {
-            logger.warn('SYSTEM', 'Error during crash recovery check', { sessionId: sid }, e as Error);
-          }
-        }
-      });
-  }
-
-  /**
-   * Process pending session queues
-   * Starts SDK agents for sessions that have pending messages but no active processor
-   * @param sessionLimit Maximum number of sessions to start processing (default: 10)
-   * @returns Info about what was started
-   */
-  async processPendingQueues(sessionLimit: number = 10): Promise<{
-    totalPendingSessions: number;
-    sessionsStarted: number;
-    sessionsSkipped: number;
-    startedSessionIds: number[];
-  }> {
-    const { PendingMessageStore } = await import('./sqlite/PendingMessageStore.js');
-    const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
-    const orphanedSessionIds = pendingStore.getSessionsWithPendingMessages();
-
-    const result = {
-      totalPendingSessions: orphanedSessionIds.length,
-      sessionsStarted: 0,
-      sessionsSkipped: 0,
-      startedSessionIds: [] as number[]
-    };
-
-    if (orphanedSessionIds.length === 0) {
-      return result;
-    }
-
-    logger.info('SYSTEM', `Processing up to ${sessionLimit} of ${orphanedSessionIds.length} pending session queues`);
-
-    // Process each session sequentially up to the limit
-    for (const sessionDbId of orphanedSessionIds) {
-      if (result.sessionsStarted >= sessionLimit) {
-        break;
-      }
-
-      try {
-        // Skip if session already has an active generator
-        const existingSession = this.sessionManager.getSession(sessionDbId);
-        if (existingSession?.generatorPromise) {
-          result.sessionsSkipped++;
-          continue;
-        }
-
-        // Initialize session and start SDK agent
-        const session = this.sessionManager.initializeSession(sessionDbId);
-
-        logger.info('SYSTEM', `Starting processor for session ${sessionDbId}`, {
-          project: session.project,
-          pendingCount: pendingStore.getPendingCount(sessionDbId)
-        });
-
-        // Start SDK agent (non-blocking)
-        this.startSessionProcessor(session, 'startup-recovery');
-
-        result.sessionsStarted++;
-        result.startedSessionIds.push(sessionDbId);
-
-        // Small delay between sessions to avoid rate limiting
-        await new Promise(resolve => setTimeout(resolve, 100));
-      } catch (error) {
-        logger.warn('SYSTEM', `Failed to process session ${sessionDbId}`, {}, error as Error);
-        result.sessionsSkipped++;
-      }
-    }
-
-    return result;
   }
 
   /**
@@ -876,17 +702,15 @@ export class WorkerService {
   }
 
   /**
-   * Purge all pending messages from the database
+   * Purge all pending messages from the queue
    * @returns Number of messages deleted
    */
-  async purgePendingQueues(): Promise<number> {
-    const { PendingMessageStore } = await import('./sqlite/PendingMessageStore.js');
-    const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
-    const count = pendingStore.purgeAll();
-    
+  purgePendingQueues(): number {
+    const count = this.sessionManager.getSimpleQueue().purge();
+
     logger.info('SYSTEM', 'Queue purged', { deletedCount: count });
     this.broadcastProcessingStatus();
-    
+
     return count;
   }
 

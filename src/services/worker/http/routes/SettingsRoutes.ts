@@ -105,7 +105,6 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_DATA_DIR',
       'CLAUDE_MEM_LOG_LEVEL',
       'CLAUDE_MEM_PYTHON_VERSION',
-      'CLAUDE_CODE_PATH',
       // Token Economics
       'CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS',
       'CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS',
