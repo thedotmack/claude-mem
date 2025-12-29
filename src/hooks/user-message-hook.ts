@@ -18,9 +18,10 @@ const port = getWorkerPort();
 const project = basename(process.cwd());
 
 // Fetch formatted context directly from worker API
+// Note: Removed AbortSignal.timeout to avoid Windows Bun cleanup issue (libuv assertion)
 const response = await fetch(
   `http://127.0.0.1:${port}/api/context/inject?project=${encodeURIComponent(project)}&colors=true`,
-  { method: 'GET', signal: AbortSignal.timeout(5000) }
+  { method: 'GET' }
 );
 
 if (!response.ok) {

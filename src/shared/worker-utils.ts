@@ -62,9 +62,8 @@ export function clearPortCache(): void {
  */
 async function isWorkerHealthy(): Promise<boolean> {
   const port = getWorkerPort();
-  const response = await fetch(`http://127.0.0.1:${port}/api/readiness`, {
-    signal: AbortSignal.timeout(HEALTH_CHECK_TIMEOUT_MS)
-  });
+  // Note: Removed AbortSignal.timeout to avoid Windows Bun cleanup issue (libuv assertion)
+  const response = await fetch(`http://127.0.0.1:${port}/api/readiness`);
   return response.ok;
 }
 
@@ -82,9 +81,8 @@ function getPluginVersion(): string {
  */
 async function getWorkerVersion(): Promise<string> {
   const port = getWorkerPort();
-  const response = await fetch(`http://127.0.0.1:${port}/api/version`, {
-    signal: AbortSignal.timeout(HEALTH_CHECK_TIMEOUT_MS)
-  });
+  // Note: Removed AbortSignal.timeout to avoid Windows Bun cleanup issue (libuv assertion)
+  const response = await fetch(`http://127.0.0.1:${port}/api/version`);
   if (!response.ok) {
     throw new Error(`Failed to get worker version: ${response.status}`);
   }

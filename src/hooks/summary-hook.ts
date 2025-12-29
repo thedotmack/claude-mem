@@ -60,8 +60,8 @@ async function summaryHook(input?: StopInput): Promise<void> {
       contentSessionId: session_id,
       last_user_message: lastUserMessage,
       last_assistant_message: lastAssistantMessage
-    }),
-    signal: AbortSignal.timeout(HOOK_TIMEOUTS.DEFAULT)
+    })
+    // Note: Removed signal to avoid Windows Bun cleanup issue (libuv assertion)
   });
 
   if (!response.ok) {
