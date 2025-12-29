@@ -103,19 +103,34 @@ function acquireLock(command: string): boolean {
     startedAt: new Date().toISOString()
   };
 
-  try {
-    // O_EXCL ensures atomic creation - fails if file exists
-    const fd = fs.openSync(LOCK_FILE, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY);
-    fs.writeSync(fd, JSON.stringify(lockInfo, null, 2));
-    fs.closeSync(fd);
-    return true;
-  } catch (error: unknown) {
-    if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+  let retries = 3;
+  while (retries > 0) {
+    try {
+      // O_EXCL ensures atomic creation - fails if file exists
+      const fd = fs.openSync(LOCK_FILE, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY);
+      fs.writeSync(fd, JSON.stringify(lockInfo, null, 2));
+      fs.closeSync(fd);
+      return true;
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+        return false;
+      }
+      // Retry on ENOENT (can happen on Windows if file/dir state is in flux)
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        retries--;
+        if (retries === 0) {
+          logger.warn('SYSTEM', 'Lock acquisition error (ENOENT)', { error: (error as Error).message });
+          return false;
+        }
+        // Ensure directory exists and try again
+        try { mkdirSync(DATA_DIR, { recursive: true }); } catch {}
+        continue;
+      }
+      logger.warn('SYSTEM', 'Lock acquisition error', { error: (error as Error).message });
       return false;
     }
-    logger.warn('SYSTEM', 'Lock acquisition error', { error: (error as Error).message });
-    return false;
   }
+  return false;
 }
 
 /**
@@ -468,37 +483,14 @@ export class WorkerService {
           return;
         }
 
-        // Delegate to the proper handler by re-processing the request
-        // Since we're already in the middleware chain, we need to call the handler directly
-        const projectName = req.query.project as string;
-        const useColors = req.query.colors === 'true';
-
-        if (!projectName) {
-          res.status(400).json({ error: 'Project parameter is required' });
-          return;
-        }
-
-        // Import context generator (runs in worker, has access to database)
-        const { generateContext } = await import('./context-generator.js');
-
-        // Use project name as CWD (generateContext uses path.basename to get project)
-        const cwd = `/context/${projectName}`;
-
-        // Generate context
-        const contextText = await generateContext(
-          {
-            session_id: 'context-inject-' + Date.now(),
-            cwd: cwd
-          },
-          useColors
-        );
-
-        // Return as plain text
-        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-        res.send(contextText);
+        // Delegate to the SearchRoutes handler which is registered after this one
+        // This avoids code duplication and "headers already sent" errors
+        next();
       } catch (error) {
         logger.error('WORKER', 'Context inject handler failed', {}, error as Error);
-        res.status(500).json({ error: error instanceof Error ? error.message : 'Internal server error' });
+        if (!res.headersSent) {
+          res.status(500).json({ error: error instanceof Error ? error.message : 'Internal server error' });
+        }
       }
     });
   }
@@ -678,12 +670,62 @@ export class WorkerService {
       this.resolveInitialization();
       logger.info('SYSTEM', 'Background initialization complete');
 
-      // Note: Auto-recovery of orphaned queues disabled - use /api/pending-queue/process endpoint instead
+      // Auto-recover orphaned queues on startup (process pending work from previous sessions)
+      this.processPendingQueues(50).then(result => {
+        if (result.sessionsStarted > 0) {
+          logger.info('SYSTEM', `Auto-recovered ${result.sessionsStarted} sessions with pending work`, {
+            totalPending: result.totalPendingSessions,
+            started: result.sessionsStarted,
+            sessionIds: result.startedSessionIds
+          });
+        }
+      }).catch(error => {
+        logger.warn('SYSTEM', 'Auto-recovery of pending queues failed', {}, error as Error);
+      });
     } catch (error) {
       logger.error('SYSTEM', 'Background initialization failed', {}, error as Error);
       // Don't resolve - let the promise remain pending so readiness check continues to fail
       throw error;
     }
+  }
+
+  /**
+   * Start a session processor
+   * It will run continuously until the session is deleted/aborted
+   */
+  private startSessionProcessor(
+    session: ReturnType<typeof this.sessionManager.getSession>,
+    source: string
+  ): void {
+    if (!session) return;
+
+    const sid = session.sessionDbId;
+    logger.info('SYSTEM', `Starting generator (${source})`, {
+      sessionId: sid
+    });
+
+    session.generatorPromise = this.sdkAgent.startSession(session, this)
+      .catch(error => {
+        // Only log if not aborted
+        if (session.abortController.signal.aborted) return;
+        
+        logger.error('SYSTEM', `Generator failed (${source})`, {
+          sessionId: sid,
+          error: error.message
+        }, error);
+      })
+      .finally(() => {
+        session.generatorPromise = null;
+        this.broadcastProcessingStatus();
+        
+        // Crash recovery: if not aborted, check if we should restart
+        if (!session.abortController.signal.aborted) {
+           // We can check if there are pending messages to decide if restart is urgent
+           // But generally, if it crashed, we might want to restart?
+           // For now, let's just log. The user/system can trigger restart if needed.
+           logger.warn('SYSTEM', `Session processor exited unexpectedly`, { sessionId: sid });
+        }
+      });
   }
 
   /**
@@ -738,11 +780,7 @@ export class WorkerService {
         });
 
         // Start SDK agent (non-blocking)
-        session.generatorPromise = this.sdkAgent.startSession(session, this)
-          .finally(() => {
-            session.generatorPromise = null;
-            this.broadcastProcessingStatus();
-          });
+        this.startSessionProcessor(session, 'startup-recovery');
 
         result.sessionsStarted++;
         result.startedSessionIds.push(sessionDbId);
@@ -1030,7 +1068,13 @@ async function main() {
 
       try {
         await httpShutdown(port);
-        await waitForPortFree(port, getPlatformTimeout(15000));
+        const freed = await waitForPortFree(port, getPlatformTimeout(15000));
+        
+        if (!freed) {
+          logger.warn('SYSTEM', 'Port did not free up after shutdown', { port });
+          // Could force kill here if we knew the PID, but for now just warn
+        }
+        
         removePidFile();
         releaseLock();
         logger.info('SYSTEM', 'Worker stopped successfully');
@@ -1057,7 +1101,14 @@ async function main() {
 
       try {
         await httpShutdown(port);
-        await waitForPortFree(port, getPlatformTimeout(15000));
+        const freed = await waitForPortFree(port, getPlatformTimeout(15000));
+        
+        if (!freed) {
+          releaseLock();
+          logger.error('SYSTEM', 'Port did not free up after shutdown, aborting restart', { port });
+          process.exit(1);
+        }
+        
         removePidFile();
 
         const child = spawn(process.execPath, [__filename, '--daemon'], {

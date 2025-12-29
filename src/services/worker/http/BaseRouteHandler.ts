@@ -74,9 +74,12 @@ export abstract class BaseRouteHandler {
 
   /**
    * Centralized error logging and response
+   * Checks headersSent to avoid "Cannot set headers after they are sent" errors
    */
   protected handleError(res: Response, error: Error, context?: string): void {
     logger.failure('WORKER', context || 'Request failed', {}, error);
-    res.status(500).json({ error: error.message });
+    if (!res.headersSent) {
+      res.status(500).json({ error: error.message });
+    }
   }
 }

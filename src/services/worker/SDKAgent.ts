@@ -66,17 +66,20 @@ export class SDKAgent {
 
       logger.info('SDK', 'Starting SDK query', {
         sessionDbId: session.sessionDbId,
-        claudeSessionId: session.claudeSessionId,
-        resume_parameter: session.claudeSessionId,
+        contentSessionId: session.contentSessionId,
+        memorySessionId: session.memorySessionId,
+        resume_parameter: session.memorySessionId || '(none - fresh start)',
         lastPromptNumber: session.lastPromptNumber
       });
 
       // Run Agent SDK query loop
+      // Use memorySessionId for resume (captured from previous SDK response) if available
       const queryResult = query({
         prompt: messageGenerator,
         options: {
           model: modelId,
-          resume: session.claudeSessionId,
+          // Only resume if we have a captured memory session ID from previous SDK interaction
+          ...(session.memorySessionId && { resume: session.memorySessionId }),
           disallowedTools,
           abortController: session.abortController,
           pathToClaudeCodeExecutable: claudePath
@@ -85,6 +88,21 @@ export class SDKAgent {
 
       // Process SDK messages
       for await (const message of queryResult) {
+        // Capture memory session ID from first SDK message (any type has session_id)
+        // This enables resume for subsequent generator starts within the same user session
+        if (!session.memorySessionId && message.session_id) {
+          session.memorySessionId = message.session_id;
+          // Persist to database for cross-restart recovery
+          this.dbManager.getSessionStore().updateMemorySessionId(
+            session.sessionDbId,
+            message.session_id
+          );
+          logger.info('SDK', 'Captured memory session ID', {
+            sessionDbId: session.sessionDbId,
+            memorySessionId: message.session_id
+          });
+        }
+
         // Handle assistant messages
         if (message.type === 'assistant') {
           const content = message.message.content;
@@ -164,8 +182,8 @@ export class SDKAgent {
       }
       throw error;
     } finally {
-      // Cleanup
-      this.sessionManager.deleteSession(session.sessionDbId).catch(() => {});
+      // NOTE: Do NOT delete session here - SessionRoutes.finally() handles cleanup
+      // and auto-restart logic. Deleting here races with pending work checks.
     }
   }
 
@@ -184,7 +202,7 @@ export class SDKAgent {
    *   - Continuation prompt for same session
    *   - Includes session context and prompt number
    *
-   * BOTH prompts receive session.claudeSessionId:
+   * BOTH prompts receive session.contentSessionId:
    * - This comes from the hook's session_id (see new-hook.ts)
    * - Same session_id used by SAVE hook to store observations
    * - This is how everything stays connected in one unified session
@@ -207,28 +225,28 @@ export class SDKAgent {
     const isInitPrompt = session.lastPromptNumber === 1;
     logger.info('SDK', 'Creating message generator', {
       sessionDbId: session.sessionDbId,
-      claudeSessionId: session.claudeSessionId,
+      contentSessionId: session.contentSessionId,
       lastPromptNumber: session.lastPromptNumber,
       isInitPrompt,
       promptType: isInitPrompt ? 'INIT' : 'CONTINUATION'
     });
 
     const initPrompt = isInitPrompt
-      ? buildInitPrompt(session.project, session.claudeSessionId, session.userPrompt, mode)
-      : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.claudeSessionId, mode);
+      ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode)
+      : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode);
 
     // Add to shared conversation history for provider interop
     session.conversationHistory.push({ role: 'user', content: initPrompt });
 
     // Yield initial user prompt with context (or continuation if prompt #2+)
-    // CRITICAL: Both paths use session.claudeSessionId from the hook
+    // CRITICAL: Both paths use session.contentSessionId from the hook
     yield {
       type: 'user',
       message: {
         role: 'user',
         content: initPrompt
       },
-      session_id: session.claudeSessionId,
+      session_id: session.contentSessionId,
       parent_tool_use_id: null,
       isSynthetic: true
     };
@@ -259,14 +277,14 @@ export class SDKAgent {
             role: 'user',
             content: obsPrompt
           },
-          session_id: session.claudeSessionId,
+          session_id: session.contentSessionId,
           parent_tool_use_id: null,
           isSynthetic: true
         };
       } else if (message.type === 'summarize') {
         const summaryPrompt = buildSummaryPrompt({
           id: session.sessionDbId,
-          sdk_session_id: session.sdkSessionId,
+          memory_session_id: session.memorySessionId,
           project: session.project,
           user_prompt: session.userPrompt,
           last_user_message: message.last_user_message || '',
@@ -282,7 +300,7 @@ export class SDKAgent {
             role: 'user',
             content: summaryPrompt
           },
-          session_id: session.claudeSessionId,
+          session_id: session.contentSessionId,
           parent_tool_use_id: null,
           isSynthetic: true
         };
@@ -305,12 +323,12 @@ export class SDKAgent {
     }
 
     // Parse observations
-    const observations = parseObservations(text, session.claudeSessionId);
+    const observations = parseObservations(text, session.contentSessionId);
 
     // Store observations with original timestamp (if processing backlog) or current time
     for (const obs of observations) {
       const { id: obsId, createdAtEpoch } = this.dbManager.getSessionStore().storeObservation(
-        session.claudeSessionId,
+        session.contentSessionId,
         session.project,
         obs,
         session.lastPromptNumber,
@@ -335,7 +353,7 @@ export class SDKAgent {
       const obsTitle = obs.title || '(untitled)';
       this.dbManager.getChromaSync().syncObservation(
         obsId,
-        session.claudeSessionId,
+        session.contentSessionId,
         session.project,
         obs,
         session.lastPromptNumber,
@@ -363,8 +381,8 @@ export class SDKAgent {
           type: 'new_observation',
           observation: {
             id: obsId,
-            sdk_session_id: session.sdkSessionId,
-            session_id: session.claudeSessionId,
+            memory_session_id: session.memorySessionId,
+            session_id: session.contentSessionId,
             type: obs.type,
             title: obs.title,
             subtitle: obs.subtitle,
@@ -388,7 +406,7 @@ export class SDKAgent {
     // Store summary with original timestamp (if processing backlog) or current time
     if (summary) {
       const { id: summaryId, createdAtEpoch } = this.dbManager.getSessionStore().storeSummary(
-        session.claudeSessionId,
+        session.contentSessionId,
         session.project,
         summary,
         session.lastPromptNumber,
@@ -410,7 +428,7 @@ export class SDKAgent {
       const summaryRequest = summary.request || '(no request)';
       this.dbManager.getChromaSync().syncSummary(
         summaryId,
-        session.claudeSessionId,
+        session.contentSessionId,
         session.project,
         summary,
         session.lastPromptNumber,
@@ -436,7 +454,7 @@ export class SDKAgent {
           type: 'new_summary',
           summary: {
             id: summaryId,
-            session_id: session.claudeSessionId,
+            session_id: session.contentSessionId,
             request: summary.request,
             investigated: summary.investigated,
             learned: summary.learned,

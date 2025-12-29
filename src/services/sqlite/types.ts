@@ -188,8 +188,8 @@ export function normalizeTimestamp(timestamp: string | Date | number | undefined
  */
 export interface SDKSessionRow {
   id: number;
-  claude_session_id: string;
-  sdk_session_id: string | null;
+  content_session_id: string;
+  memory_session_id: string | null;
   project: string;
   user_prompt: string | null;
   started_at: string;
@@ -203,7 +203,7 @@ export interface SDKSessionRow {
 
 export interface ObservationRow {
   id: number;
-  sdk_session_id: string;
+  memory_session_id: string;
   project: string;
   text: string | null;
   type: 'decision' | 'bugfix' | 'feature' | 'refactor' | 'discovery' | 'change';
@@ -222,7 +222,7 @@ export interface ObservationRow {
 
 export interface SessionSummaryRow {
   id: number;
-  sdk_session_id: string;
+  memory_session_id: string;
   project: string;
   request: string | null;
   investigated: string | null;
@@ -240,7 +240,7 @@ export interface SessionSummaryRow {
 
 export interface UserPromptRow {
   id: number;
-  claude_session_id: string;
+  content_session_id: string;
   prompt_number: number;
   prompt_text: string;
   created_at: string;

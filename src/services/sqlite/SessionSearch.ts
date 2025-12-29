@@ -481,7 +481,7 @@ export class SessionSearch {
       const sql = `
         SELECT up.*
         FROM user_prompts up
-        JOIN sdk_sessions s ON up.claude_session_id = s.claude_session_id
+        JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
         ${whereClause}
         ${orderClause}
         LIMIT ? OFFSET ?
@@ -498,23 +498,23 @@ export class SessionSearch {
   }
 
   /**
-   * Get all prompts for a session by claude_session_id
+   * Get all prompts for a session by content_session_id
    */
-  getUserPromptsBySession(claudeSessionId: string): UserPromptRow[] {
+  getUserPromptsBySession(contentSessionId: string): UserPromptRow[] {
     const stmt = this.db.prepare(`
       SELECT
         id,
-        claude_session_id,
+        content_session_id,
         prompt_number,
         prompt_text,
         created_at,
         created_at_epoch
       FROM user_prompts
-      WHERE claude_session_id = ?
+      WHERE content_session_id = ?
       ORDER BY prompt_number ASC
     `);
 
-    return stmt.all(claudeSessionId) as UserPromptRow[];
+    return stmt.all(contentSessionId) as UserPromptRow[];
   }
 
   /**
