@@ -172,35 +172,40 @@ See [Architecture Overview](https://docs.claude-mem.ai/architecture/overview) fo
 
 ---
 
-## mem-search Skill
+## MCP Search Tools
 
-Claude-Mem provides intelligent search through the mem-search skill that auto-invokes when you ask about past work:
+Claude-Mem provides intelligent memory search through **4 MCP tools** following a token-efficient **3-layer workflow pattern**:
+
+**The 3-Layer Workflow:**
+
+1. **`search`** - Get compact index with IDs (~50-100 tokens/result)
+2. **`timeline`** - Get chronological context around interesting results
+3. **`get_observations`** - Fetch full details ONLY for filtered IDs (~500-1,000 tokens/result)
 
 **How It Works:**
-- Just ask naturally: *"What did we do last session?"* or *"Did we fix this bug before?"*
-- Claude automatically invokes the mem-search skill to find relevant context
+- Claude uses MCP tools to search your memory
+- Start with `search` to get an index of results
+- Use `timeline` to see what was happening around specific observations
+- Use `get_observations` to fetch full details for relevant IDs
+- **~10x token savings** by filtering before fetching details
 
-**Available Search Operations:**
+**Available MCP Tools:**
 
-1. **Search Observations** - Full-text search across observations
-2. **Search Sessions** - Full-text search across session summaries
-3. **Search Prompts** - Search raw user requests
-4. **By Concept** - Find by concept tags (discovery, problem-solution, pattern, etc.)
-5. **By File** - Find observations referencing specific files
-6. **By Type** - Find by type (decision, bugfix, feature, refactor, discovery, change)
-7. **Recent Context** - Get recent session context for a project
-8. **Timeline** - Get unified timeline of context around a specific point in time
-9. **Timeline by Query** - Search for observations and get timeline context around best match
-10. **API Help** - Get search API documentation
+1. **`search`** - Search memory index with full-text queries, filters by type/date/project
+2. **`timeline`** - Get chronological context around a specific observation or query
+3. **`get_observations`** - Fetch full observation details by IDs (always batch multiple IDs)
+4. **`__IMPORTANT`** - Workflow documentation (always visible to Claude)
 
-**Example Natural Language Queries:**
+**Example Usage:**
 
-```
-"What bugs did we fix last session?"
-"How did we implement authentication?"
-"What changes were made to worker-service.ts?"
-"Show me recent work on this project"
-"What was happening when we added the viewer UI?"
+```typescript
+// Step 1: Search for index
+search(query="authentication bug", type="bugfix", limit=10)
+
+// Step 2: Review index, identify relevant IDs (e.g., #123, #456)
+
+// Step 3: Fetch full details
+get_observations(ids=[123, 456])
 ```
 
 See [Search Tools Guide](https://docs.claude-mem.ai/usage/search-tools) for detailed examples.
