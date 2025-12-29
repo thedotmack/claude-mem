@@ -465,7 +465,7 @@ export class SessionRoutes extends BaseRouteHandler {
     // Pipeline Acquire Stage: validate and check for duplicates
     const orchestrator = getHybridOrchestrator();
     orchestrator.acquire({
-      claudeSessionId,
+      claudeSessionId: contentSessionId,
       sessionDbId,
       toolName: tool_name,
       toolInput: cleanedToolInput,
@@ -573,9 +573,9 @@ export class SessionRoutes extends BaseRouteHandler {
     // This runs supersession detection for the session's observations
     const sleepAgent = this.workerService.getSleepAgent();
     if (sleepAgent) {
-      sleepAgent.runMicroCycle(claudeSessionId).catch(error => {
+      sleepAgent.runMicroCycle(contentSessionId).catch(error => {
         logger.warn('SESSION', 'Micro cycle failed (non-fatal)', {
-          claudeSessionId,
+          contentSessionId,
         }, error as Error);
       });
     }

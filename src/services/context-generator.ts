@@ -251,7 +251,7 @@ const colors = {
 
 interface Observation {
   id: number;
-  sdk_session_id: string;
+  memory_session_id: string;
   type: string;
   title: string | null;
   subtitle: string | null;
@@ -363,7 +363,7 @@ function generateUsageHints(totalObservations: number, totalReadTokens: number, 
 
 interface SessionSummary {
   id: number;
-  sdk_session_id: string;
+  memory_session_id: string;
   request: string | null;
   investigated: string | null;
   learned: string | null;
@@ -471,7 +471,7 @@ export async function generateContext(input?: ContextInput, useColors: boolean =
   // Get recent observations
   const observations = db.db.prepare(`
     SELECT
-      id, sdk_session_id, type, title, subtitle, narrative,
+      id, memory_session_id, type, title, subtitle, narrative,
       facts, concepts, files_read, files_modified, discovery_tokens,
       created_at, created_at_epoch
     FROM observations
@@ -487,7 +487,7 @@ export async function generateContext(input?: ContextInput, useColors: boolean =
 
   // Get recent summaries
   const recentSummaries = db.db.prepare(`
-    SELECT id, sdk_session_id, request, investigated, learned, completed, next_steps, created_at, created_at_epoch
+    SELECT id, memory_session_id, request, investigated, learned, completed, next_steps, created_at, created_at_epoch
     FROM session_summaries
     WHERE project = ?
     ORDER BY created_at_epoch DESC
@@ -500,10 +500,10 @@ export async function generateContext(input?: ContextInput, useColors: boolean =
 
   if (config.showLastMessage && observations.length > 0) {
     const currentSessionId = input?.session_id;
-    const priorSessionObs = observations.find(obs => obs.sdk_session_id !== currentSessionId);
+    const priorSessionObs = observations.find(obs => obs.memory_session_id !== currentSessionId);
 
     if (priorSessionObs) {
-      const priorSessionId = priorSessionObs.sdk_session_id;
+      const priorSessionId = priorSessionObs.memory_session_id;
       const dashedCwd = cwdToDashed(cwd);
       const transcriptPath = path.join(homedir(), '.claude', 'projects', dashedCwd, `${priorSessionId}.jsonl`);
       const messages = extractPriorMessages(transcriptPath);

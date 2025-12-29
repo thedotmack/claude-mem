@@ -205,7 +205,7 @@ export class DataRoutes extends BaseRouteHandler {
         MIN(created_at_epoch) as first_observation_at,
         MAX(created_at_epoch) as last_observation_at
       FROM observations
-      WHERE sdk_session_id = ?
+      WHERE memory_session_id = ?
     `).get(sdkSessionId) as {
       observations_count: number;
       total_tokens: number;
@@ -217,7 +217,7 @@ export class DataRoutes extends BaseRouteHandler {
     const promptStats = db.prepare(`
       SELECT COUNT(*) as prompts_count
       FROM user_prompts
-      WHERE claude_session_id = ?
+      WHERE content_session_id = ?
     `).get(sdkSessionId) as { prompts_count: number };
 
     // Calculate session duration

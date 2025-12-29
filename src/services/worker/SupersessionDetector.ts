@@ -597,8 +597,8 @@ export class SupersessionDetector {
     // Get observations from this session
     let sessionObs = this.sessionStore.db.prepare(`
       SELECT o.* FROM observations o
-      JOIN sdk_sessions s ON o.sdk_session_id = s.id
-      WHERE s.claude_session_id = ?
+      JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
+      WHERE s.content_session_id = ?
         AND o.deprecated = 0
         AND o.superseded_by IS NULL
       ORDER BY o.created_at_epoch ASC
