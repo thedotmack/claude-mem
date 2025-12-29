@@ -37,76 +37,7 @@ const WORKER_BASE_URL = `http://${WORKER_HOST}:${WORKER_PORT}`;
  */
 const TOOL_ENDPOINT_MAP: Record<string, string> = {
   'search': '/api/search',
-  'timeline': '/api/timeline',
-  'get_recent_context': '/api/context/recent',
-  'get_context_timeline': '/api/context/timeline',
-  'help': '/api/instructions'
-};
-
-/**
- * Detailed parameter schemas for each tool
- */
-const TOOL_SCHEMAS: Record<string, any> = {
-  search: {
-    query: { type: 'string', description: 'Full-text search query' },
-    type: { type: 'string', description: 'Filter by type: tool_use, tool_result, prompt, summary' },
-    obs_type: { type: 'string', description: 'Observation type filter' },
-    concepts: { type: 'string', description: 'Comma-separated concept tags' },
-    files: { type: 'string', description: 'Comma-separated file paths' },
-    project: { type: 'string', description: 'Project name filter' },
-    dateStart: { type: ['string', 'number'], description: 'Start date (ISO or timestamp)' },
-    dateEnd: { type: ['string', 'number'], description: 'End date (ISO or timestamp)' },
-    limit: { type: 'number', description: 'Max results (default: 10)' },
-    offset: { type: 'number', description: 'Result offset for pagination' },
-    orderBy: { type: 'string', description: 'Sort order: created_at, relevance' }
-  },
-  timeline: {
-    query: { type: 'string', description: 'Search query to find anchor point' },
-    anchor: { type: 'number', description: 'Observation ID as timeline center' },
-    depth_before: { type: 'number', description: 'Observations before anchor (default: 5)' },
-    depth_after: { type: 'number', description: 'Observations after anchor (default: 5)' },
-    type: { type: 'string', description: 'Filter by type' },
-    concepts: { type: 'string', description: 'Comma-separated concept tags' },
-    files: { type: 'string', description: 'Comma-separated file paths' },
-    project: { type: 'string', description: 'Project name filter' }
-  },
-  get_recent_context: {
-    limit: { type: 'number', description: 'Max results (default: 20)' },
-    type: { type: 'string', description: 'Filter by type' },
-    concepts: { type: 'string', description: 'Comma-separated concept tags' },
-    files: { type: 'string', description: 'Comma-separated file paths' },
-    project: { type: 'string', description: 'Project name filter' },
-    dateStart: { type: ['string', 'number'], description: 'Start date' },
-    dateEnd: { type: ['string', 'number'], description: 'End date' }
-  },
-  get_context_timeline: {
-    anchor: { type: 'number', description: 'Observation ID (required)', required: true },
-    depth_before: { type: 'number', description: 'Observations before anchor' },
-    depth_after: { type: 'number', description: 'Observations after anchor' },
-    type: { type: 'string', description: 'Filter by type' },
-    concepts: { type: 'string', description: 'Comma-separated concept tags' },
-    files: { type: 'string', description: 'Comma-separated file paths' },
-    project: { type: 'string', description: 'Project name filter' }
-  },
-  get_observations: {
-    ids: { type: 'array', items: { type: 'number' }, description: 'Array of observation IDs (required)', required: true },
-    orderBy: { type: 'string', description: 'Sort order' },
-    limit: { type: 'number', description: 'Max results' },
-    project: { type: 'string', description: 'Project filter' }
-  },
-  help: {
-    operation: { type: 'string', description: 'Operation type: "observations", "timeline", "sessions", etc.' },
-    topic: { type: 'string', description: 'Specific topic for help' }
-  },
-  get_observation: {
-    id: { type: 'number', description: 'Observation ID (required)', required: true }
-  },
-  get_session: {
-    id: { type: 'number', description: 'Session ID (required)', required: true }
-  },
-  get_prompt: {
-    id: { type: 'number', description: 'Prompt ID (required)', required: true }
-  }
+  'timeline': '/api/timeline'
 };
 
 /**
@@ -144,47 +75,6 @@ async function callWorkerAPI(
     return data;
   } catch (error: any) {
     logger.error('SYSTEM', '← Worker API error', undefined, { endpoint, error: error.message });
-    return {
-      content: [{
-        type: 'text' as const,
-        text: `Error calling Worker API: ${error.message}`
-      }],
-      isError: true
-    };
-  }
-}
-
-/**
- * Call Worker HTTP API with path parameter (GET)
- */
-async function callWorkerAPIWithPath(
-  endpoint: string,
-  id: number
-): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
-  logger.debug('HTTP', 'Worker API request (path)', undefined, { endpoint, id });
-
-  try {
-    const url = `${WORKER_BASE_URL}${endpoint}/${id}`;
-    const response = await fetch(url);
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Worker API error (${response.status}): ${errorText}`);
-    }
-
-    const data = await response.json();
-
-    logger.debug('HTTP', 'Worker API success (path)', undefined, { endpoint, id });
-
-    // Wrap raw data in MCP format
-    return {
-      content: [{
-        type: 'text' as const,
-        text: JSON.stringify(data, null, 2)
-      }]
-    };
-  } catch (error: any) {
-    logger.error('HTTP', 'Worker API error (path)', undefined, { endpoint, id, error: error.message });
     return {
       content: [{
         type: 'text' as const,
@@ -260,38 +150,42 @@ async function verifyWorkerConnection(): Promise<boolean> {
  */
 const tools = [
   {
-    name: 'get_schema',
-    description: 'Get parameter schema for a tool. Call get_schema(tool_name) for details',
+    name: '__IMPORTANT',
+    description: `3-LAYER WORKFLOW (ALWAYS FOLLOW):
+1. search(query) → Get index with IDs (~50-100 tokens/result)
+2. timeline(anchor=ID) → Get context around interesting results
+3. get_observations([IDs]) → Fetch full details ONLY for filtered IDs
+NEVER fetch full details without filtering first. 10x token savings.`,
     inputSchema: {
       type: 'object',
-      properties: { tool_name: { type: 'string' } },
-      required: ['tool_name']
+      properties: {}
     },
-    handler: async (args: any) => {
-      // Validate tool_name to prevent prototype pollution
-      const toolName = args.tool_name;
-      if (typeof toolName !== 'string' || !Object.hasOwn(TOOL_SCHEMAS, toolName)) {
-        return {
-          content: [{
-            type: 'text' as const,
-            text: `Unknown tool: ${toolName}\n\nAvailable tools: ${Object.keys(TOOL_SCHEMAS).join(', ')}`
-          }],
-          isError: true
-        };
-      }
+    handler: async () => ({
+      content: [{
+        type: 'text' as const,
+        text: `# Memory Search Workflow
 
-      const schema = TOOL_SCHEMAS[toolName];
-      return {
-        content: [{
-          type: 'text' as const,
-          text: `# ${toolName} Parameters\n\n${JSON.stringify(schema, null, 2)}`
-        }]
-      };
-    }
+**3-Layer Pattern (ALWAYS follow this):**
+
+1. **Search** - Get index of results with IDs
+   \`search(query="...", limit=20, project="...")\`
+   Returns: Table with IDs, titles, dates (~50-100 tokens/result)
+
+2. **Timeline** - Get context around interesting results
+   \`timeline(anchor=<ID>, depth_before=3, depth_after=3)\`
+   Returns: Chronological context showing what was happening
+
+3. **Fetch** - Get full details ONLY for relevant IDs
+   \`get_observations(ids=[...])\`  # ALWAYS batch for 2+ items
+   Returns: Complete details (~500-1000 tokens/result)
+
+**Why:** 10x token savings. Never fetch full details without filtering first.`
+      }]
+    })
   },
   {
     name: 'search',
-    description: 'Search memory. All parameters optional - call get_schema("search") for details',
+    description: 'Step 1: Search memory. Returns index with IDs. Params: query, limit, project, type, obs_type, dateStart, dateEnd',
     inputSchema: {
       type: 'object',
       properties: {},
@@ -304,7 +198,7 @@ const tools = [
   },
   {
     name: 'timeline',
-    description: 'Timeline context. All parameters optional - call get_schema("timeline") for details',
+    description: 'Step 2: Get context around results. Params: anchor (observation ID), depth_before, depth_after, project',
     inputSchema: {
       type: 'object',
       properties: {},
@@ -316,77 +210,15 @@ const tools = [
     }
   },
   {
-    name: 'get_recent_context',
-    description: 'Recent context. All parameters optional - call get_schema("get_recent_context") for details',
-    inputSchema: {
-      type: 'object',
-      properties: {},
-      additionalProperties: true
-    },
-    handler: async (args: any) => {
-      const endpoint = TOOL_ENDPOINT_MAP['get_recent_context'];
-      return await callWorkerAPI(endpoint, args);
-    }
-  },
-  {
-    name: 'get_context_timeline',
-    description: 'Timeline around observation ID',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        anchor: {
-          type: 'number',
-          description: 'Observation ID (required). Optional params: get_schema("get_context_timeline")'
-        }
-      },
-      required: ['anchor'],
-      additionalProperties: true
-    },
-    handler: async (args: any) => {
-      const endpoint = TOOL_ENDPOINT_MAP['get_context_timeline'];
-      return await callWorkerAPI(endpoint, args);
-    }
-  },
-  {
-    name: 'help',
-    description: 'Get detailed docs. All parameters optional - call get_schema("help") for details',
-    inputSchema: {
-      type: 'object',
-      properties: {},
-      additionalProperties: true
-    },
-    handler: async (args: any) => {
-      const endpoint = TOOL_ENDPOINT_MAP['help'];
-      return await callWorkerAPI(endpoint, args);
-    }
-  },
-  {
-    name: 'get_observation',
-    description: 'Fetch observation by ID',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        id: {
-          type: 'number',
-          description: 'Observation ID (required)'
-        }
-      },
-      required: ['id']
-    },
-    handler: async (args: any) => {
-      return await callWorkerAPIWithPath('/api/observation', args.id);
-    }
-  },
-  {
     name: 'get_observations',
-    description: 'Batch fetch observations',
+    description: 'Step 3: Fetch full details for filtered IDs. Params: ids (array of observation IDs), project',
     inputSchema: {
       type: 'object',
       properties: {
         ids: {
           type: 'array',
           items: { type: 'number' },
-          description: 'Array of observation IDs (required). Optional params: get_schema("get_observations")'
+          description: 'Array of observation IDs to fetch (required)'
         }
       },
       required: ['ids'],
@@ -394,40 +226,6 @@ const tools = [
     },
     handler: async (args: any) => {
       return await callWorkerAPIPost('/api/observations/batch', args);
-    }
-  },
-  {
-    name: 'get_session',
-    description: 'Fetch session by ID',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        id: {
-          type: 'number',
-          description: 'Session ID (required)'
-        }
-      },
-      required: ['id']
-    },
-    handler: async (args: any) => {
-      return await callWorkerAPIWithPath('/api/session', args.id);
-    }
-  },
-  {
-    name: 'get_prompt',
-    description: 'Fetch prompt by ID',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        id: {
-          type: 'number',
-          description: 'Prompt ID (required)'
-        }
-      },
-      required: ['id']
-    },
-    handler: async (args: any) => {
-      return await callWorkerAPIWithPath('/api/prompt', args.id);
     }
   }
 ];
