@@ -23,6 +23,35 @@ This:
 2. Creates `hooks.json` configuration
 3. Fetches existing context from claude-mem and writes to `.cursor/rules/claude-mem-context.mdc`
 
+### Context Updates at Three Points
+
+Context is refreshed **three times** per session for maximum freshness:
+
+1. **Before prompt submission** (`context-inject.sh`): Ensures you start with the latest context from previous sessions
+2. **After summary completes** (worker auto-update): Immediately after the summary is saved, worker updates the context file
+3. **After session ends** (`session-summary.sh`): Fallback update in case worker update was missed
+
+### Before Prompt Hook Updates Context
+
+When you submit a prompt, `context-inject.sh`:
+
+```bash
+# 1. Ensure worker is running
+ensure_worker_running "$worker_port"
+
+# 2. Fetch fresh context
+context=$(curl -s ".../api/context/inject?project=...")
+
+# 3. Write to rules file (used immediately by Cursor)
+cat > .cursor/rules/claude-mem-context.mdc << EOF
+---
+alwaysApply: true
+---
+# Memory Context
+${context}
+EOF
+```
+
 ### Stop Hook Updates Context
 
 After each session ends, `session-summary.sh`:
@@ -64,19 +93,41 @@ description: "Claude-mem context from past sessions (auto-updated)"
 
 ### Update Flow
 
-Context updates **after each session ends**:
-1. User has a conversation
-2. Agent completes (loop ends)
-3. `stop` hook runs `session-summary.sh`
-4. Summary generated + context file updated
-5. **Next session** sees the updated context
+Context updates at **three points**:
+
+**Before each prompt:**
+1. User submits a prompt
+2. `beforeSubmitPrompt` hook runs `context-inject.sh`
+3. Context file refreshed with latest observations from previous sessions
+4. Cursor reads the updated rules file
+
+**After summary completes (worker auto-update):**
+1. Summary is saved to database
+2. Worker checks if project is registered for Cursor
+3. If yes, immediately writes updated context file with new observations
+4. No hook involved - happens in the worker process
+
+**After session ends (fallback):**
+1. Agent completes (loop ends)
+2. `stop` hook runs `session-summary.sh`
+3. Context file updated (ensures nothing was missed)
+4. Ready for next session
+
+## Project Registry
+
+When you run `claude-mem cursor install`, the project is registered in `~/.claude-mem/cursor-projects.json`. This allows the worker to automatically update your context file whenever a new summary is generated - even if it happens from Claude Code or another IDE working on the same project.
+
+To see registered projects:
+```bash
+cat ~/.claude-mem/cursor-projects.json
+```
 
 ## Comparison with Claude Code
 
 | Feature | Claude Code | Cursor |
 |---------|-------------|--------|
 | Context injection | ✅ `additionalContext` in hook output | ✅ Auto-updated rules file |
-| Injection timing | Immediate (same prompt) | Next session (after stop hook) |
+| Injection timing | Immediate (same prompt) | Before prompt + after summary + after session |
 | Persistence | Session only | File-based (persists across restarts) |
 | Initial setup | Automatic | `claude-mem cursor install` creates initial context |
 | MCP tool access | ✅ Full support | ✅ Full support |
@@ -88,7 +139,9 @@ When you run `claude-mem cursor install`:
 - If worker is running with existing memory → initial context is generated
 - If no existing memory → placeholder file created
 
-After each session ends, context is updated for the next session.
+Context is then automatically refreshed:
+- Before each prompt (ensures latest observations are included)
+- After each session ends (captures new observations from the session)
 
 ## Additional Access Methods
 

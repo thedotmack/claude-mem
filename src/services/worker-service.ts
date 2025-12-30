@@ -30,6 +30,7 @@ const BUILT_IN_VERSION = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined'
 // PID file management for self-spawn pattern
 const DATA_DIR = path.join(homedir(), '.claude-mem');
 const PID_FILE = path.join(DATA_DIR, 'worker.pid');
+const CURSOR_REGISTRY_FILE = path.join(DATA_DIR, 'cursor-projects.json');
 const HOOK_RESPONSE = '{"continue": true, "suppressOutput": true}';
 
 interface PidInfo {
@@ -59,6 +60,100 @@ function removePidFile(): void {
     if (existsSync(PID_FILE)) unlinkSync(PID_FILE);
   } catch (error) {
     logger.warn('SYSTEM', 'Failed to remove PID file', { path: PID_FILE, error: (error as Error).message });
+  }
+}
+
+// ============================================================================
+// Cursor Project Registry
+// Tracks which projects have Cursor hooks installed for auto-context updates
+// ============================================================================
+
+interface CursorProjectRegistry {
+  [projectName: string]: {
+    workspacePath: string;
+    installedAt: string;
+  };
+}
+
+function readCursorRegistry(): CursorProjectRegistry {
+  try {
+    if (!existsSync(CURSOR_REGISTRY_FILE)) return {};
+    return JSON.parse(readFileSync(CURSOR_REGISTRY_FILE, 'utf-8'));
+  } catch {
+    return {};
+  }
+}
+
+function writeCursorRegistry(registry: CursorProjectRegistry): void {
+  mkdirSync(DATA_DIR, { recursive: true });
+  writeFileSync(CURSOR_REGISTRY_FILE, JSON.stringify(registry, null, 2));
+}
+
+function registerCursorProject(projectName: string, workspacePath: string): void {
+  const registry = readCursorRegistry();
+  registry[projectName] = {
+    workspacePath,
+    installedAt: new Date().toISOString()
+  };
+  writeCursorRegistry(registry);
+  logger.info('CURSOR', 'Registered project for auto-context updates', { projectName, workspacePath });
+}
+
+function unregisterCursorProject(projectName: string): void {
+  const registry = readCursorRegistry();
+  if (registry[projectName]) {
+    delete registry[projectName];
+    writeCursorRegistry(registry);
+    logger.info('CURSOR', 'Unregistered project', { projectName });
+  }
+}
+
+/**
+ * Update Cursor context files for all registered projects matching this project name.
+ * Called by SDK agents after saving a summary.
+ */
+export async function updateCursorContextForProject(projectName: string, port: number): Promise<void> {
+  const registry = readCursorRegistry();
+  const entry = registry[projectName];
+  
+  if (!entry) return; // Project doesn't have Cursor hooks installed
+  
+  try {
+    // Fetch fresh context from worker
+    const response = await fetch(
+      `http://127.0.0.1:${port}/api/context/inject?project=${encodeURIComponent(projectName)}`
+    );
+    
+    if (!response.ok) return;
+    
+    const context = await response.text();
+    if (!context || !context.trim()) return;
+    
+    // Write to the project's Cursor rules file
+    const rulesDir = path.join(entry.workspacePath, '.cursor', 'rules');
+    const rulesFile = path.join(rulesDir, 'claude-mem-context.mdc');
+    
+    mkdirSync(rulesDir, { recursive: true });
+    
+    const content = `---
+alwaysApply: true
+description: "Claude-mem context from past sessions (auto-updated)"
+---
+
+# Memory Context from Past Sessions
+
+The following context is from claude-mem, a persistent memory system that tracks your coding sessions.
+
+${context}
+
+---
+*Updated after last session. Use claude-mem's MCP search tools for more detailed queries.*
+`;
+    
+    writeFileSync(rulesFile, content);
+    logger.debug('CURSOR', 'Updated context file', { projectName, rulesFile });
+  } catch (error) {
+    logger.warn('CURSOR', 'Failed to update context file', { projectName, error: (error as Error).message });
   }
 }
 
@@ -1205,6 +1300,10 @@ Use claude-mem's MCP search tools for manual memory queries.
         writeFileSync(rulesFile, placeholderContent);
         console.log(`  ✓ Created placeholder context file (will populate after first session)`);
       }
+      
+      // Register project for automatic context updates after summaries
+      registerCursorProject(projectName, workspaceRoot);
+      console.log(`  ✓ Registered for auto-context updates`);
     }
     
     console.log(`
@@ -1285,13 +1384,18 @@ function uninstallCursorHooks(target: string): number {
       console.log(`  ✓ Removed hooks.json`);
     }
     
-    // Remove context file if project-level
+    // Remove context file and unregister if project-level
     if (target === 'project') {
       const contextFile = path.join(targetDir, 'rules', 'claude-mem-context.mdc');
       if (existsSync(contextFile)) {
         unlinkSync(contextFile);
         console.log(`  ✓ Removed context file`);
       }
+      
+      // Unregister from auto-context updates
+      const projectName = path.basename(process.cwd());
+      unregisterCursorProject(projectName);
+      console.log(`  ✓ Unregistered from auto-context updates`);
     }
     
     console.log(`\n✅ Uninstallation complete!\n`);
