@@ -336,7 +336,7 @@ export class SDKAgent {
             narrative: obs.narrative || null,
             facts: JSON.stringify(obs.facts || []),
             concepts: JSON.stringify(obs.concepts || []),
-            files_read: JSON.stringify(obs.files || []),
+            files_read: JSON.stringify(obs.files_read || []),
             files_modified: JSON.stringify([]),
             project: session.project,
             prompt_number: session.lastPromptNumber,
