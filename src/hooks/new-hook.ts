@@ -39,8 +39,8 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
       contentSessionId: session_id,
       project,
       prompt
-    }),
-    signal: AbortSignal.timeout(5000)
+    })
+    // Note: Removed signal to avoid Windows Bun cleanup issue (libuv assertion)
   });
 
   if (!initResponse.ok) {
@@ -72,8 +72,8 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
   const response = await fetch(`http://127.0.0.1:${port}/sessions/${sessionDbId}/init`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ userPrompt: cleanedPrompt, promptNumber }),
-    signal: AbortSignal.timeout(5000)
+    body: JSON.stringify({ userPrompt: cleanedPrompt, promptNumber })
+    // Note: Removed signal to avoid Windows Bun cleanup issue (libuv assertion)
   });
 
   if (!response.ok) {

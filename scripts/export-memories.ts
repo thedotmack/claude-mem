@@ -12,7 +12,7 @@ import { SettingsDefaultsManager } from '../src/shared/SettingsDefaultsManager';
 
 interface ObservationRecord {
   id: number;
-  sdk_session_id: string;
+  memory_session_id: string;
   project: string;
   text: string | null;
   type: string;
@@ -31,8 +31,8 @@ interface ObservationRecord {
 
 interface SdkSessionRecord {
   id: number;
-  claude_session_id: string;
-  sdk_session_id: string;
+  content_session_id: string;
+  memory_session_id: string;
   project: string;
   user_prompt: string;
   started_at: string;
@@ -44,7 +44,7 @@ interface SdkSessionRecord {
 
 interface SessionSummaryRecord {
   id: number;
-  sdk_session_id: string;
+  memory_session_id: string;
   project: string;
   request: string | null;
   investigated: string | null;
@@ -62,7 +62,7 @@ interface SessionSummaryRecord {
 
 interface UserPromptRecord {
   id: number;
-  claude_session_id: string;
+  content_session_id: string;
   prompt_number: number;
   prompt_text: string;
   created_at: string;
@@ -117,23 +117,23 @@ async function exportMemories(query: string, outputFile: string, project?: strin
     console.log(`✅ Found ${summaries.length} session summaries`);
     console.log(`✅ Found ${prompts.length} user prompts`);
 
-    // Get unique SDK session IDs from observations and summaries
-    const sdkSessionIds = new Set<string>();
+    // Get unique memory session IDs from observations and summaries
+    const memorySessionIds = new Set<string>();
     observations.forEach((o) => {
-      if (o.sdk_session_id) sdkSessionIds.add(o.sdk_session_id);
+      if (o.memory_session_id) memorySessionIds.add(o.memory_session_id);
     });
     summaries.forEach((s) => {
-      if (s.sdk_session_id) sdkSessionIds.add(s.sdk_session_id);
+      if (s.memory_session_id) memorySessionIds.add(s.memory_session_id);
     });
 
     // Get SDK sessions metadata via API
     console.log('📡 Fetching SDK sessions metadata...');
     let sessions: SdkSessionRecord[] = [];
-    if (sdkSessionIds.size > 0) {
+    if (memorySessionIds.size > 0) {
       const sessionsResponse = await fetch(`${baseUrl}/api/sdk-sessions/batch`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sdkSessionIds: Array.from(sdkSessionIds) })
+        body: JSON.stringify({ sdkSessionIds: Array.from(memorySessionIds) })
       });
       if (sessionsResponse.ok) {
         sessions = await sessionsResponse.json();

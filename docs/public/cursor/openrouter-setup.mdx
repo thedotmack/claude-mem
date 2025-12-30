@@ -1,0 +1,191 @@
+---
+title: "Cursor + OpenRouter Setup"
+description: "Use Claude-Mem in Cursor with OpenRouter's 100+ AI models"
+---
+
+# Cursor + OpenRouter Setup
+
+This guide walks you through setting up Claude-Mem in Cursor using OpenRouter. OpenRouter provides access to 100+ AI models from various providers, including several free options.
+
+<Info>
+**Model variety:** Access Claude, GPT-4, Gemini, Llama, Mistral, and many more through a single API key.
+</Info>
+
+## Step 1: Get an OpenRouter API Key
+
+1. Go to [OpenRouter](https://openrouter.ai)
+2. Sign up or sign in
+3. Navigate to [API Keys](https://openrouter.ai/keys)
+4. Click **Create Key**
+5. Copy your API key - you'll need it in Step 3
+
+<Tip>
+**Free models available:** OpenRouter offers free versions of several models including Gemini Flash and others. Check the [model list](https://openrouter.ai/models?show_free=true) for current free options.
+</Tip>
+
+## Step 2: Clone and Build Claude-Mem
+
+```bash
+# Clone the repository
+git clone https://github.com/thedotmack/claude-mem.git
+cd claude-mem
+
+# Install dependencies
+bun install
+
+# Build the project
+bun run build
+```
+
+## Step 3: Configure OpenRouter Provider
+
+### Option A: Interactive Setup (Recommended)
+
+Run the setup wizard which guides you through everything:
+
+```bash
+bun run cursor:setup
+```
+
+When prompted for provider, select **OpenRouter**.
+
+### Option B: Manual Configuration
+
+Create the settings file manually:
+
+```bash
+# Create settings directory
+mkdir -p ~/.claude-mem
+
+# Create settings file with OpenRouter configuration
+cat > ~/.claude-mem/settings.json << 'EOF'
+{
+  "CLAUDE_MEM_PROVIDER": "openrouter",
+  "CLAUDE_MEM_OPENROUTER_API_KEY": "YOUR_OPENROUTER_API_KEY"
+}
+EOF
+```
+
+Replace `YOUR_OPENROUTER_API_KEY` with your actual API key.
+
+Then install hooks and start the worker:
+
+```bash
+bun run cursor:install
+bun run worker:start
+```
+
+## Step 4: Restart Cursor
+
+Close and reopen Cursor IDE for the hooks to take effect.
+
+## Step 5: Verify Installation
+
+```bash
+# Check worker is running
+bun run worker:status
+
+# Check hooks are installed
+bun run cursor:status
+```
+
+Open http://localhost:37777 to see the memory viewer.
+
+## Recommended Models
+
+### Free Models
+
+| Model | Provider | Notes |
+|-------|----------|-------|
+| `google/gemini-2.0-flash-exp:free` | Google | Fast, capable |
+| `xiaomi/mimo-v2-flash:free` | Xiaomi | Good general purpose |
+
+### Paid Models (Low Cost)
+
+| Model | Approx. Cost | Notes |
+|-------|--------------|-------|
+| `anthropic/claude-3-haiku` | ~$0.25/1M tokens | Fast, efficient |
+| `google/gemini-flash-1.5` | ~$0.075/1M tokens | Great value |
+| `mistralai/mistral-7b-instruct` | ~$0.07/1M tokens | Budget option |
+
+To specify a model, add to your settings:
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openrouter",
+  "CLAUDE_MEM_OPENROUTER_API_KEY": "your-key",
+  "CLAUDE_MEM_OPENROUTER_MODEL": "google/gemini-2.0-flash-exp:free"
+}
+```
+
+## Cost Management
+
+OpenRouter charges per token. To manage costs:
+
+1. **Use free models:** Several high-quality free models are available
+2. **Monitor usage:** Check your [OpenRouter dashboard](https://openrouter.ai/activity)
+3. **Set spending limits:** Configure limits in OpenRouter settings
+
+<Warning>
+**Cost awareness:** Unlike Gemini's free tier, OpenRouter paid models charge per request. Monitor your usage if using paid models.
+</Warning>
+
+## Troubleshooting
+
+### "OpenRouter API key not configured"
+
+Ensure your settings file exists with the correct format:
+
+```bash
+cat ~/.claude-mem/settings.json
+```
+
+Should output something like:
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openrouter",
+  "CLAUDE_MEM_OPENROUTER_API_KEY": "sk-or-..."
+}
+```
+
+### Model not found
+
+1. Check the model ID is correct at [OpenRouter Models](https://openrouter.ai/models)
+2. Some models may require payment - check if you have credits
+3. Free models have `:free` suffix in their ID
+
+### Rate limits
+
+OpenRouter rate limits vary by model and your account tier. If you hit limits:
+1. Wait briefly and retry
+2. Consider upgrading your OpenRouter account tier
+3. Switch to a less popular model
+
+### API errors
+
+Check the worker logs for details:
+
+```bash
+bun run worker:logs
+```
+
+Common issues:
+- Invalid API key (regenerate at OpenRouter)
+- Insufficient credits for paid models
+- Model temporarily unavailable
+
+## Switching Providers Later
+
+You can switch between OpenRouter, Gemini, and Claude SDK at any time by updating your settings. No restart required - changes take effect on the next observation.
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "gemini"
+}
+```
+
+## Next Steps
+
+- [Cursor Integration Overview](/cursor/index) - All Cursor features
+- [Gemini Setup](/cursor/gemini-setup) - Alternative free provider
+- [Configuration Reference](../configuration) - All settings options

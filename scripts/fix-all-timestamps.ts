@@ -18,7 +18,7 @@ interface CorruptedObservation {
   obs_created: number;
   session_started: number;
   session_completed: number | null;
-  sdk_session_id: string;
+  memory_session_id: string;
 }
 
 function formatTimestamp(epoch: number): string {
@@ -54,9 +54,9 @@ function main() {
         o.created_at_epoch as obs_created,
         s.started_at_epoch as session_started,
         s.completed_at_epoch as session_completed,
-        s.sdk_session_id
+        s.memory_session_id
       FROM observations o
-      JOIN sdk_sessions s ON o.sdk_session_id = s.sdk_session_id
+      JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
       WHERE o.created_at_epoch < s.started_at_epoch  -- Observation older than session
          OR (s.completed_at_epoch IS NOT NULL
              AND o.created_at_epoch > (s.completed_at_epoch + 3600000))  -- More than 1hr after session

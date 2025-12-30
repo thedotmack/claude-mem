@@ -20,9 +20,4 @@ src/ui/viewer.html
 
 # Local MCP server config (for development only)
 .mcp.json
-
-# osgrep cache
-.osgrep/
-
-# Analysis docs (private)
-docs/analysis/continuous-claude-v2-comparison.md
+.cursor/

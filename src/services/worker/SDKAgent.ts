@@ -20,7 +20,12 @@ import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import type { ActiveSession, SDKUserMessage, PendingMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
+<<<<<<< HEAD
 import { pipelineMetrics } from '../pipeline/metrics.js';
+=======
+import { updateCursorContextForProject } from '../worker-service.js';
+import { getWorkerPort } from '../../shared/worker-utils.js';
+>>>>>>> origin/main
 
 // Import Agent SDK (assumes it's installed)
 // @ts-ignore - Agent SDK types may not be available
@@ -519,6 +524,9 @@ export class SDKAgent {
           });
         }
       }
+      
+      // Update Cursor context file for registered projects (fire-and-forget)
+      updateCursorContextForProject(session.project, getWorkerPort()).catch(() => {});
     }
 
     // Mark messages as processed after successful observation/summary storage

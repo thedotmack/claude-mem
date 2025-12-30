@@ -1,0 +1,180 @@
+---
+title: "Cursor Integration"
+description: "Persistent AI memory for Cursor IDE - free tier options available"
+---
+
+# Cursor Integration
+
+> **Your AI stops forgetting. Give Cursor persistent memory.**
+
+Every Cursor session starts fresh - your AI doesn't remember what it worked on yesterday. Claude-mem changes that. Your agent builds cumulative knowledge about your codebase, decisions, and patterns over time.
+
+<CardGroup cols={2}>
+  <Card title="Free to Start" icon="dollar-sign">
+    Works with Gemini's free tier (1500 req/day) - no subscription required
+  </Card>
+  <Card title="Automatic Capture" icon="bolt">
+    MCP tools, shell commands, and file edits logged without effort
+  </Card>
+  <Card title="Smart Context" icon="brain">
+    Relevant history injected into every chat session
+  </Card>
+  <Card title="Works Everywhere" icon="check">
+    With or without Claude Code subscription
+  </Card>
+</CardGroup>
+
+<Info>
+**No Claude Code subscription required.** Use Gemini (free tier) or OpenRouter as your AI provider.
+</Info>
+
+## How It Works
+
+Claude-mem integrates with Cursor through native hooks:
+
+1. **Session hooks** capture tool usage, file edits, and shell commands
+2. **AI extraction** compresses observations into semantic summaries
+3. **Context injection** loads relevant history into each new session
+4. **Memory viewer** at http://localhost:37777 shows your knowledge base
+
+## Installation Paths
+
+Choose the installation method that fits your setup:
+
+### Path A: Cursor-Only Users (No Claude Code)
+
+If you're using Cursor without a Claude Code subscription:
+
+```bash
+# Clone and build
+git clone https://github.com/thedotmack/claude-mem.git
+cd claude-mem && bun install && bun run build
+
+# Run interactive setup wizard
+bun run cursor:setup
+```
+
+The setup wizard will:
+- Detect you don't have Claude Code
+- Help you choose and configure a free AI provider (Gemini recommended)
+- Install hooks automatically
+- Start the worker service
+
+**Detailed guides:**
+- [Gemini Setup](/cursor/gemini-setup) - Recommended free option (1500 req/day)
+- [OpenRouter Setup](/cursor/openrouter-setup) - 100+ models including free options
+
+### Path B: Claude Code Users
+
+If you have Claude Code installed:
+
+```bash
+# Install the plugin (if not already)
+/plugin marketplace add thedotmack/claude-mem
+/plugin install claude-mem
+
+# Install Cursor hooks
+claude-mem cursor install
+```
+
+The plugin uses Claude's SDK by default but you can switch to Gemini or OpenRouter anytime.
+
+## Prerequisites
+
+<AccordionGroup>
+  <Accordion title="macOS">
+    - [Bun](https://bun.sh): `curl -fsSL https://bun.sh/install | bash`
+    - Cursor IDE
+    - jq and curl: `brew install jq curl`
+  </Accordion>
+  <Accordion title="Linux">
+    - [Bun](https://bun.sh): `curl -fsSL https://bun.sh/install | bash`
+    - Cursor IDE
+    - jq and curl: `apt install jq curl` or `dnf install jq curl`
+  </Accordion>
+  <Accordion title="Windows">
+    - [Bun](https://bun.sh): `powershell -c "irm bun.sh/install.ps1 | iex"`
+    - Cursor IDE
+    - PowerShell 5.1+ (included in Windows 10/11)
+    - Git for Windows
+  </Accordion>
+</AccordionGroup>
+
+## Quick Commands Reference
+
+After installation, these commands are available from the claude-mem directory:
+
+| Command | Description |
+|---------|-------------|
+| `bun run cursor:setup` | Interactive setup wizard |
+| `bun run cursor:install` | Install Cursor hooks |
+| `bun run cursor:uninstall` | Remove Cursor hooks |
+| `bun run cursor:status` | Check hook installation status |
+| `bun run worker:start` | Start the worker service |
+| `bun run worker:stop` | Stop the worker service |
+| `bun run worker:status` | Check worker status |
+
+## Verifying Installation
+
+After setup, verify everything is working:
+
+1. **Check worker status:**
+   ```bash
+   bun run worker:status
+   ```
+
+2. **Check hook installation:**
+   ```bash
+   bun run cursor:status
+   ```
+
+3. **Open the memory viewer:**
+   Open http://localhost:37777 in your browser
+
+4. **Restart Cursor** and start a coding session - you should see context being captured
+
+## Provider Comparison
+
+| Provider | Cost | Rate Limit | Best For |
+|----------|------|------------|----------|
+| Gemini | Free tier | 1500 req/day | Individual use, getting started |
+| OpenRouter | Pay-per-use + free models | Varies by model | Model variety, high volume |
+| Claude SDK | Included with Claude Code | Unlimited | Claude Code subscribers |
+
+<Tip>
+**Recommendation:** Start with Gemini's free tier. It handles typical individual usage well. Switch to OpenRouter or Claude SDK if you need higher limits.
+</Tip>
+
+## Troubleshooting
+
+### Worker not starting
+
+```bash
+# Check if port is in use
+lsof -i :37777
+
+# Force restart
+bun run worker:stop && bun run worker:start
+
+# Check logs
+bun run worker:logs
+```
+
+### Hooks not firing
+
+1. Restart Cursor IDE after installation
+2. Check hooks are installed: `bun run cursor:status`
+3. Verify hooks.json exists in `.cursor/` directory
+
+### No context appearing
+
+1. Ensure worker is running: `bun run worker:status`
+2. Check that you have observations: visit http://localhost:37777
+3. Verify your API key is configured correctly
+
+## Next Steps
+
+- [Gemini Setup Guide](/cursor/gemini-setup) - Detailed free tier setup
+- [OpenRouter Setup Guide](/cursor/openrouter-setup) - Configure OpenRouter
+- [Configuration Reference](../configuration) - All settings options
+- [Troubleshooting](../troubleshooting) - Common issues and solutions

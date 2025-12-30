@@ -254,93 +254,57 @@ function installUv() {
 }
 
 /**
- * Install the claude-mem CLI command to PATH
- * Creates a wrapper script in ~/.local/bin (Unix) or %LOCALAPPDATA%\Programs\claude-mem (Windows)
+ * Add shell alias for claude-mem command
  */
 function installCLI() {
-  const CLI_NAME = 'claude-mem';
-  const WORKER_CLI = join(ROOT, 'plugin', 'scripts', 'worker-cli.js');
+  const WORKER_CLI = join(ROOT, 'plugin', 'scripts', 'worker-service.cjs');
+  const bunPath = getBunPath() || 'bun';
+  const aliasLine = `alias claude-mem='${bunPath} "${WORKER_CLI}"'`;
+  const markerPath = join(ROOT, '.cli-installed');
 
-  if (IS_WINDOWS) {
-    // Windows: Create .cmd file in LocalAppData
-    const cliDir = join(process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local'), 'Programs', 'claude-mem');
-    const cliPath = join(cliDir, `${CLI_NAME}.cmd`);
-    const markerPath = join(cliDir, '.cli-installed');
+  // Skip if already installed
+  if (existsSync(markerPath)) return;
 
-    // Skip if already installed
-    if (existsSync(markerPath)) return;
+  try {
+    if (IS_WINDOWS) {
+      // Windows: Add to PATH via PowerShell profile
+      const profilePath = join(process.env.USERPROFILE || homedir(), 'Documents', 'PowerShell', 'Microsoft.PowerShell_profile.ps1');
+      const profileDir = join(process.env.USERPROFILE || homedir(), 'Documents', 'PowerShell');
+      const functionDef = `function claude-mem { & "${bunPath}" "${WORKER_CLI}" $args }\n`;
 
-    try {
-      // Create directory if needed
-      if (!existsSync(cliDir)) {
-        execSync(`mkdir "${cliDir}"`, { stdio: 'ignore', shell: true });
+      if (!existsSync(profileDir)) {
+        execSync(`mkdir "${profileDir}"`, { stdio: 'ignore', shell: true });
       }
 
-      // Get Bun path for the wrapper
-      const bunPath = getBunPath() || 'bun';
+      const existingContent = existsSync(profilePath) ? readFileSync(profilePath, 'utf-8') : '';
+      if (!existingContent.includes('function claude-mem')) {
+        writeFileSync(profilePath, existingContent + '\n' + functionDef);
+        console.error(`✅ PowerShell function added to profile`);
+        console.error('   Restart your terminal to use: claude-mem <command>');
+      }
+    } else {
+      // Unix: Add alias to shell configs
+      const shellConfigs = [
+        join(homedir(), '.bashrc'),
+        join(homedir(), '.zshrc')
+      ];
 
-      // Create the wrapper script
-      const cmdContent = `@echo off
-"${bunPath}" "${WORKER_CLI}" %*
-`;
-      writeFileSync(cliPath, cmdContent);
-      writeFileSync(markerPath, new Date().toISOString());
-
-      console.error(`✅ CLI installed: ${cliPath}`);
-      console.error('');
-      console.error('📋 Add to PATH (run once in PowerShell as Admin):');
-      console.error(`   [Environment]::SetEnvironmentVariable("Path", $env:Path + ";${cliDir}", "User")`);
-      console.error('');
-      console.error('   Then restart your terminal and use: npm run worker:start|stop|restart|status');
-    } catch (error) {
-      console.error(`⚠️  Could not install CLI: ${error.message}`);
-      console.error(`   You can still use: bun "${WORKER_CLI}" <command>`);
+      for (const config of shellConfigs) {
+        if (existsSync(config)) {
+          const content = readFileSync(config, 'utf-8');
+          if (!content.includes('alias claude-mem=')) {
+            writeFileSync(config, content + '\n' + aliasLine + '\n');
+            console.error(`✅ Alias added to ${config}`);
+          }
+        }
+      }
+      console.error('   Restart your terminal to use: claude-mem <command>');
     }
-  } else {
-    // Unix: Create shell script in ~/.local/bin
-    const cliDir = join(homedir(), '.local', 'bin');
-    const cliPath = join(cliDir, CLI_NAME);
-    const markerPath = join(ROOT, '.cli-installed');
 
-    // Skip if already installed
-    if (existsSync(markerPath) && existsSync(cliPath)) return;
-
-    try {
-      // Create directory if needed
-      if (!existsSync(cliDir)) {
-        execSync(`mkdir -p "${cliDir}"`, { stdio: 'ignore', shell: true });
-      }
-
-      // Get Bun path for the wrapper
-      const bunPath = getBunPath() || 'bun';
-
-      // Create the wrapper script
-      const shContent = `#!/usr/bin/env bash
-# claude-mem CLI wrapper - manages the worker service
-exec "${bunPath}" "${WORKER_CLI}" "$@"
-`;
-      writeFileSync(cliPath, shContent, { mode: 0o755 });
-      writeFileSync(markerPath, new Date().toISOString());
-
-      console.error(`✅ CLI installed: ${cliPath}`);
-
-      // Check if ~/.local/bin is in PATH
-      const pathDirs = (process.env.PATH || '').split(':');
-      const localBinInPath = pathDirs.some(p => p === cliDir || p === '$HOME/.local/bin' || p.endsWith('/.local/bin'));
-
-      if (!localBinInPath) {
-        console.error('');
-        console.error('📋 Add to PATH (add to ~/.bashrc or ~/.zshrc):');
-        console.error('   export PATH="$HOME/.local/bin:$PATH"');
-        console.error('');
-        console.error('   Then restart your terminal and use: npm run worker:start|stop|restart|status');
-      } else {
-        console.error('   Usage: npm run worker:start|stop|restart|status');
-      }
-    } catch (error) {
-      console.error(`⚠️  Could not install CLI: ${error.message}`);
-      console.error(`   You can still use: bun "${WORKER_CLI}" <command>`);
-    }
+    writeFileSync(markerPath, new Date().toISOString());
+  } catch (error) {
+    console.error(`⚠️  Could not add shell alias: ${error.message}`);
+    console.error(`   Use directly: ${bunPath} "${WORKER_CLI}" <command>`);
   }
 }
 

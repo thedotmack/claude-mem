@@ -37,9 +37,9 @@ describe('SessionStore', () => {
     const claudeId = 'claude-sess-obs';
     const sdkId = store.createSDKSession(claudeId, 'test-project', 'initial prompt');
     
-    // Get the sdk_session_id string (createSDKSession returns number ID, need string for FK)
-    // Wait, createSDKSession inserts using sdk_session_id = claude_session_id in the current implementation
-    // "VALUES (?, ?, ?, ?, ?, ?, 'active')" -> claudeSessionId, claudeSessionId, ...
+    // Get the memory_session_id string (createSDKSession returns number ID, need string for FK)
+    // createSDKSession inserts using memory_session_id = content_session_id in the current implementation
+    // "VALUES (?, ?, ?, ?, ?, ?, 'active')" -> contentSessionId, contentSessionId, ...
     
     const obs = {
       type: 'discovery',

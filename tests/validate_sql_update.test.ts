@@ -7,11 +7,12 @@ describe('Refactor Validation: SQL Updates', () => {
   beforeEach(() => {
     db = new Database(':memory:');
     // Minimal schema for sdk_sessions based on SessionStore.ts migration004
+    // Uses new column names: content_session_id and memory_session_id
     db.run(`
       CREATE TABLE sdk_sessions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        claude_session_id TEXT UNIQUE NOT NULL,
-        sdk_session_id TEXT UNIQUE,
+        content_session_id TEXT UNIQUE NOT NULL,
+        memory_session_id TEXT UNIQUE,
         project TEXT NOT NULL,
         user_prompt TEXT,
         started_at TEXT,
@@ -27,28 +28,26 @@ describe('Refactor Validation: SQL Updates', () => {
     db.close();
   });
 
-  it('should update sdk_session_id using direct SQL (replacing updateSDKSessionId)', () => {
-    // Setup initial state: A session without an sdk_session_id
-    const claudeId = 'claude-session-123';
-    const syntheticId = 'sdk-session-456';
-    
+  it('should update memory_session_id using direct SQL (replacing updateSDKSessionId)', () => {
+    // Setup initial state: A session without a memory_session_id
+    const contentId = 'content-session-123';
+    const memoryId = 'memory-session-456';
+
     db.prepare(`
-      INSERT INTO sdk_sessions (claude_session_id, project, started_at, started_at_epoch)
+      INSERT INTO sdk_sessions (content_session_id, project, started_at, started_at_epoch)
       VALUES (?, ?, ?, ?)
-    `).run(claudeId, 'test-project', '2025-01-01T00:00:00Z', 1735689600000);
+    `).run(contentId, 'test-project', '2025-01-01T00:00:00Z', 1735689600000);
 
     // Verify initial state
-    const before = db.prepare('SELECT sdk_session_id FROM sdk_sessions WHERE claude_session_id = ?').get(claudeId) as any;
-    expect(before.sdk_session_id).toBeNull();
+    const before = db.prepare('SELECT memory_session_id FROM sdk_sessions WHERE content_session_id = ?').get(contentId) as any;
+    expect(before.memory_session_id).toBeNull();
 
-    // EXECUTE: The exact SQL statement from the refactor in import-xml-observations.ts
-    // Original code: db['db'].prepare('UPDATE sdk_sessions SET sdk_session_id = ? WHERE claude_session_id = ?').run(syntheticSdkSessionId, sessionMeta.sessionId);
-    
-    const stmt = db.prepare('UPDATE sdk_sessions SET sdk_session_id = ? WHERE claude_session_id = ?');
-    stmt.run(syntheticId, claudeId);
+    // EXECUTE: The exact SQL statement from the refactor
+    const stmt = db.prepare('UPDATE sdk_sessions SET memory_session_id = ? WHERE content_session_id = ?');
+    stmt.run(memoryId, contentId);
 
     // VERIFY: The update happened
-    const after = db.prepare('SELECT sdk_session_id FROM sdk_sessions WHERE claude_session_id = ?').get(claudeId) as any;
-    expect(after.sdk_session_id).toBe(syntheticId);
+    const after = db.prepare('SELECT memory_session_id FROM sdk_sessions WHERE content_session_id = ?').get(contentId) as any;
+    expect(after.memory_session_id).toBe(memoryId);
   });
 });
