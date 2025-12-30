@@ -391,8 +391,13 @@ export class SleepAgent {
     _project: string,
     _config: SleepCycleConfig
   ): Promise<ChainDetectionResult | null> {
-    // TODO: Implement decision chain detection
-    // This requires semantic clustering of decision-type observations
+    // NOTE: Decision chain detection not yet implemented
+    // Future implementation will require:
+    // 1. Semantic clustering of decision-type observations using Chroma
+    // 2. Temporal analysis to identify sequences of related decisions
+    // 3. Pattern matching for common decision chains (refactor → test → deploy)
+    // 4. Integration with SupersessionDetector for chain consolidation
+    // See: https://github.com/thedotmack/claude-mem/issues for tracking
     return null;
   }
 
