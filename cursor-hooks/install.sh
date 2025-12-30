@@ -56,18 +56,23 @@ echo "Copying hooks.json..."
 cp "$SCRIPT_DIR/hooks.json" "$TARGET_DIR/hooks.json"
 
 # Update paths in hooks.json if needed
+# Use portable sed approach that works on both BSD (macOS) and GNU (Linux) sed
 if [ "$INSTALL_TYPE" = "project" ]; then
   # For project-level, paths should be relative
-  sed -i.bak 's|\./cursor-hooks/|\./\.cursor/hooks/|g' "$TARGET_DIR/hooks.json"
-  rm -f "$TARGET_DIR/hooks.json.bak"
+  # Create temp file, modify, then move (portable across sed variants)
+  tmp_file=$(mktemp)
+  sed 's|\./cursor-hooks/|\./\.cursor/hooks/|g' "$TARGET_DIR/hooks.json" > "$tmp_file"
+  mv "$tmp_file" "$TARGET_DIR/hooks.json"
 elif [ "$INSTALL_TYPE" = "user" ]; then
   # For user-level, use absolute paths
-  sed -i.bak "s|\./cursor-hooks/|${HOOKS_DIR}/|g" "$TARGET_DIR/hooks.json"
-  rm -f "$TARGET_DIR/hooks.json.bak"
+  tmp_file=$(mktemp)
+  sed "s|\./cursor-hooks/|${HOOKS_DIR}/|g" "$TARGET_DIR/hooks.json" > "$tmp_file"
+  mv "$tmp_file" "$TARGET_DIR/hooks.json"
 elif [ "$INSTALL_TYPE" = "enterprise" ]; then
   # For enterprise, use absolute paths
-  sed -i.bak "s|\./cursor-hooks/|${HOOKS_DIR}/|g" "$TARGET_DIR/hooks.json"
-  rm -f "$TARGET_DIR/hooks.json.bak"
+  tmp_file=$(mktemp)
+  sed "s|\./cursor-hooks/|${HOOKS_DIR}/|g" "$TARGET_DIR/hooks.json" > "$tmp_file"
+  mv "$tmp_file" "$TARGET_DIR/hooks.json"
 fi
 
 echo ""

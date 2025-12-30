@@ -1,7 +1,6 @@
 # Common utility functions for Cursor hooks (PowerShell)
 # Dot-source this file in hook scripts: . "$PSScriptRoot\common.ps1"
-
-$ErrorActionPreference = "SilentlyContinue"
+# Note: ErrorActionPreference should be set in each script, not globally here
 
 # Get worker port from settings with validation
 function Get-WorkerPort {

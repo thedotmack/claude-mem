@@ -116,26 +116,28 @@ function unregisterCursorProject(projectName: string): void {
 export async function updateCursorContextForProject(projectName: string, port: number): Promise<void> {
   const registry = readCursorRegistry();
   const entry = registry[projectName];
-  
+
   if (!entry) return; // Project doesn't have Cursor hooks installed
-  
+
   try {
     // Fetch fresh context from worker
     const response = await fetch(
       `http://127.0.0.1:${port}/api/context/inject?project=${encodeURIComponent(projectName)}`
     );
-    
+
     if (!response.ok) return;
-    
+
     const context = await response.text();
     if (!context || !context.trim()) return;
-    
+
     // Write to the project's Cursor rules file
     const rulesDir = path.join(entry.workspacePath, '.cursor', 'rules');
     const rulesFile = path.join(rulesDir, 'claude-mem-context.mdc');
-    
+
     mkdirSync(rulesDir, { recursive: true });
-    
+
+    // Write to temp file first, then atomically move (prevents corruption)
+    const tempFile = `${rulesFile}.tmp`;
     const content = `---
 alwaysApply: true
 description: "Claude-mem context from past sessions (auto-updated)"
@@ -150,8 +152,9 @@ ${context}
 ---
 *Updated after last session. Use claude-mem's MCP search tools for more detailed queries.*
 `;
-    
-    writeFileSync(rulesFile, content);
+
+    writeFileSync(tempFile, content);
+    fs.renameSync(tempFile, rulesFile);
     logger.debug('CURSOR', 'Updated context file', { projectName, rulesFile });
   } catch (error) {
     logger.warn('CURSOR', 'Failed to update context file', { projectName, error: (error as Error).message });
