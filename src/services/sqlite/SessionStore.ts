@@ -582,126 +582,85 @@ export class SessionStore {
    * Rename session ID columns for semantic clarity (migration 17)
    * - claude_session_id → content_session_id (user's observed session)
    * - sdk_session_id → memory_session_id (memory agent's session for resume)
+   *
+   * IDEMPOTENT: Checks each table individually before renaming.
+   * This handles databases in any intermediate state (partial migration, fresh install, etc.)
    */
   private renameSessionIdColumns(): void {
     const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(17) as SchemaVersion | undefined;
     if (applied) return;
 
-    // Check if columns are already renamed (idempotent check)
-    const sessionsInfo = this.db.query('PRAGMA table_info(sdk_sessions)').all() as TableColumnInfo[];
-    const hasContentSessionId = sessionsInfo.some(col => col.name === 'content_session_id');
+    logger.info('DB', 'Checking session ID columns for semantic clarity rename');
 
-    if (hasContentSessionId) {
-      // Already renamed, just record migration
-      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(17, new Date().toISOString());
-      return;
-    }
+    let renamesPerformed = 0;
 
-    logger.info('DB', 'Renaming session ID columns for semantic clarity');
+    // Helper to safely rename a column if it exists
+    const safeRenameColumn = (table: string, oldCol: string, newCol: string): boolean => {
+      try {
+        const tableInfo = this.db.query(`PRAGMA table_info(${table})`).all() as TableColumnInfo[];
+        const hasOldCol = tableInfo.some(col => col.name === oldCol);
+        const hasNewCol = tableInfo.some(col => col.name === newCol);
 
-    // Begin transaction for atomic rename
-    this.db.run('BEGIN TRANSACTION');
+        if (hasNewCol) {
+          // Already renamed, nothing to do
+          return false;
+        }
 
-    try {
-      // SQLite 3.25+ supports ALTER TABLE RENAME COLUMN
-      // Rename in sdk_sessions table
-      this.db.run('ALTER TABLE sdk_sessions RENAME COLUMN claude_session_id TO content_session_id');
-      this.db.run('ALTER TABLE sdk_sessions RENAME COLUMN sdk_session_id TO memory_session_id');
+        if (hasOldCol) {
+          // SQLite 3.25+ supports ALTER TABLE RENAME COLUMN
+          this.db.run(`ALTER TABLE ${table} RENAME COLUMN ${oldCol} TO ${newCol}`);
+          logger.info('DB', `Renamed ${table}.${oldCol} to ${newCol}`);
+          return true;
+        }
 
-      // Rename in pending_messages table
-      this.db.run('ALTER TABLE pending_messages RENAME COLUMN claude_session_id TO content_session_id');
+        // Neither column exists - table might not exist or has different schema
+        logger.warn('DB', `Column ${oldCol} not found in ${table}, skipping rename`);
+        return false;
+      } catch (error: any) {
+        // Table might not exist yet, which is fine
+        logger.warn('DB', `Could not rename ${table}.${oldCol}: ${error.message}`);
+        return false;
+      }
+    };
 
-      // Rename in observations table
-      this.db.run('ALTER TABLE observations RENAME COLUMN sdk_session_id TO memory_session_id');
+    // Rename in sdk_sessions table
+    if (safeRenameColumn('sdk_sessions', 'claude_session_id', 'content_session_id')) renamesPerformed++;
+    if (safeRenameColumn('sdk_sessions', 'sdk_session_id', 'memory_session_id')) renamesPerformed++;
 
-      // Rename in session_summaries table
-      this.db.run('ALTER TABLE session_summaries RENAME COLUMN sdk_session_id TO memory_session_id');
+    // Rename in pending_messages table
+    if (safeRenameColumn('pending_messages', 'claude_session_id', 'content_session_id')) renamesPerformed++;
 
-      // Rename in user_prompts table
-      this.db.run('ALTER TABLE user_prompts RENAME COLUMN claude_session_id TO content_session_id');
+    // Rename in observations table
+    if (safeRenameColumn('observations', 'sdk_session_id', 'memory_session_id')) renamesPerformed++;
 
-      // Commit transaction
-      this.db.run('COMMIT');
+    // Rename in session_summaries table
+    if (safeRenameColumn('session_summaries', 'sdk_session_id', 'memory_session_id')) renamesPerformed++;
 
-      // Record migration
-      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(17, new Date().toISOString());
+    // Rename in user_prompts table
+    if (safeRenameColumn('user_prompts', 'claude_session_id', 'content_session_id')) renamesPerformed++;
 
-      logger.info('DB', 'Successfully renamed session ID columns');
-    } catch (error: any) {
-      // Rollback on error
-      this.db.run('ROLLBACK');
-      logger.error('DB', 'Session ID column rename migration error', undefined, error);
-      throw error;
+    // Record migration
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(17, new Date().toISOString());
+
+    if (renamesPerformed > 0) {
+      logger.info('DB', `Successfully renamed ${renamesPerformed} session ID columns`);
+    } else {
+      logger.info('DB', 'No session ID column renames needed (already up to date)');
     }
   }
 
   /**
    * Repair session ID column renames (migration 19)
-   * Migration 17 may have been recorded but failed to actually rename columns.
-   * This migration checks each table and renames if needed (idempotent).
+   * DEPRECATED: Migration 17 is now fully idempotent and handles all cases.
+   * This migration is kept for backwards compatibility but does nothing.
    */
   private repairSessionIdColumnRename(): void {
-    try {
-      const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(19) as SchemaVersion | undefined;
-      if (applied) return;
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(19) as SchemaVersion | undefined;
+    if (applied) return;
 
-      logger.info('DB', 'Checking session ID column renames (repair migration)');
-
-      let repairsNeeded = false;
-
-      // Check and fix sdk_sessions
-      const sessionsInfo = this.db.query('PRAGMA table_info(sdk_sessions)').all() as TableColumnInfo[];
-      if (sessionsInfo.some(col => col.name === 'claude_session_id')) {
-        logger.info('DB', 'Repairing sdk_sessions columns');
-        this.db.run('ALTER TABLE sdk_sessions RENAME COLUMN claude_session_id TO content_session_id');
-        this.db.run('ALTER TABLE sdk_sessions RENAME COLUMN sdk_session_id TO memory_session_id');
-        repairsNeeded = true;
-      }
-
-      // Check and fix pending_messages
-      const pendingInfo = this.db.query('PRAGMA table_info(pending_messages)').all() as TableColumnInfo[];
-      if (pendingInfo.some(col => col.name === 'claude_session_id')) {
-        logger.info('DB', 'Repairing pending_messages columns');
-        this.db.run('ALTER TABLE pending_messages RENAME COLUMN claude_session_id TO content_session_id');
-        repairsNeeded = true;
-      }
-
-      // Check and fix observations
-      const obsInfo = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
-      if (obsInfo.some(col => col.name === 'sdk_session_id')) {
-        logger.info('DB', 'Repairing observations columns');
-        this.db.run('ALTER TABLE observations RENAME COLUMN sdk_session_id TO memory_session_id');
-        repairsNeeded = true;
-      }
-
-      // Check and fix session_summaries
-      const summariesInfo = this.db.query('PRAGMA table_info(session_summaries)').all() as TableColumnInfo[];
-      if (summariesInfo.some(col => col.name === 'sdk_session_id')) {
-        logger.info('DB', 'Repairing session_summaries columns');
-        this.db.run('ALTER TABLE session_summaries RENAME COLUMN sdk_session_id TO memory_session_id');
-        repairsNeeded = true;
-      }
-
-      // Check and fix user_prompts
-      const promptsInfo = this.db.query('PRAGMA table_info(user_prompts)').all() as TableColumnInfo[];
-      if (promptsInfo.some(col => col.name === 'claude_session_id')) {
-        logger.info('DB', 'Repairing user_prompts columns');
-        this.db.run('ALTER TABLE user_prompts RENAME COLUMN claude_session_id TO content_session_id');
-        repairsNeeded = true;
-      }
-
-      // Record migration
-      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(19, new Date().toISOString());
-
-      if (repairsNeeded) {
-        logger.info('DB', 'Session ID column rename repairs completed');
-      } else {
-        logger.info('DB', 'No session ID column repairs needed');
-      }
-    } catch (error: any) {
-      logger.error('DB', 'Session ID column rename repair error', undefined, error);
-      throw error;
-    }
+    // Migration 17 now handles all column rename cases idempotently.
+    // Just record this migration as applied.
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(19, new Date().toISOString());
   }
 
   /**

@@ -59,7 +59,7 @@ function main() {
         pm.tool_name,
         pm.created_at_epoch as msg_created,
         pm.status,
-        s.sdk_session_id,
+        s.memory_session_id,
         s.started_at_epoch as session_started,
         s.project
       FROM pending_messages pm
