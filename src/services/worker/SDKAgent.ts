@@ -340,26 +340,34 @@ export class SDKAgent {
 
       // Broadcast to SSE clients (for web UI)
       if (worker && worker.sseBroadcaster) {
-        worker.sseBroadcaster.broadcast({
-          type: 'new_observation',
-          observation: {
-            id: obsId,
-            memory_session_id: session.memorySessionId,
-            session_id: session.contentSessionId,
-            type: obs.type,
-            title: obs.title,
-            subtitle: obs.subtitle,
-            text: obs.text || null,
-            narrative: obs.narrative || null,
-            facts: JSON.stringify(obs.facts || []),
-            concepts: JSON.stringify(obs.concepts || []),
-            files_read: JSON.stringify(obs.files_read || []),
-            files_modified: JSON.stringify([]),
-            project: session.project,
-            prompt_number: session.lastPromptNumber,
-            created_at_epoch: createdAtEpoch
-          }
-        });
+        try {
+          worker.sseBroadcaster.broadcast({
+            type: 'new_observation',
+            observation: {
+              id: obsId,
+              memory_session_id: session.memorySessionId,
+              session_id: session.contentSessionId,
+              type: obs.type,
+              title: obs.title,
+              subtitle: obs.subtitle,
+              text: obs.text || null,
+              narrative: obs.narrative || null,
+              facts: JSON.stringify(obs.facts || []),
+              concepts: JSON.stringify(obs.concepts || []),
+              files_read: JSON.stringify(obs.files_read || []),
+              files_modified: JSON.stringify([]),
+              project: session.project,
+              prompt_number: session.lastPromptNumber,
+              created_at_epoch: createdAtEpoch
+            }
+          });
+        } catch (broadcastError) {
+          logger.warn('SSE', 'Failed to broadcast observation to UI', {
+            sessionId: session.sessionDbId,
+            obsId,
+            type: obs.type
+          }, broadcastError);
+        }
       }
     }
 
@@ -413,22 +421,29 @@ export class SDKAgent {
 
       // Broadcast to SSE clients (for web UI)
       if (worker && worker.sseBroadcaster) {
-        worker.sseBroadcaster.broadcast({
-          type: 'new_summary',
-          summary: {
-            id: summaryId,
-            session_id: session.contentSessionId,
-            request: summary.request,
-            investigated: summary.investigated,
-            learned: summary.learned,
-            completed: summary.completed,
-            next_steps: summary.next_steps,
-            notes: summary.notes,
-            project: session.project,
-            prompt_number: session.lastPromptNumber,
-            created_at_epoch: createdAtEpoch
-          }
-        });
+        try {
+          worker.sseBroadcaster.broadcast({
+            type: 'new_summary',
+            summary: {
+              id: summaryId,
+              session_id: session.contentSessionId,
+              request: summary.request,
+              investigated: summary.investigated,
+              learned: summary.learned,
+              completed: summary.completed,
+              next_steps: summary.next_steps,
+              notes: summary.notes,
+              project: session.project,
+              prompt_number: session.lastPromptNumber,
+              created_at_epoch: createdAtEpoch
+            }
+          });
+        } catch (broadcastError) {
+          logger.warn('SSE', 'Failed to broadcast summary to UI', {
+            sessionId: session.sessionDbId,
+            summaryId
+          }, broadcastError);
+        }
       }
       
       // Update Cursor context file for registered projects (fire-and-forget)
