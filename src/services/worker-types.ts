@@ -167,8 +167,8 @@ export interface DBSession {
 // SDK Types
 // ============================================================================
 
-// Re-export the actual SDK type to ensure compatibility
-export type { SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+// Note: Agent SDK V2 uses message types directly in receive() iterator
+// No re-exports needed as V2 messages are handled inline
 
 export interface ParsedObservation {
   type: string;
