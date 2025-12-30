@@ -20,6 +20,8 @@ import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildConti
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
+import { updateCursorContextForProject } from '../worker-service.js';
+import { getWorkerPort } from '../../shared/worker-utils.js';
 
 // Gemini API endpoint
 const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
@@ -493,6 +495,9 @@ export class GeminiAgent {
           }
         });
       }
+      
+      // Update Cursor context file for registered projects (fire-and-forget)
+      updateCursorContextForProject(session.project, getWorkerPort()).catch(() => {});
     }
 
     // Mark messages as processed

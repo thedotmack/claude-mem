@@ -20,3 +20,4 @@ src/ui/viewer.html
 
 # Local MCP server config (for development only)
 .mcp.json
+.cursor/

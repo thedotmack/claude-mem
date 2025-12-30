@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "hooks": {
+    "beforeSubmitPrompt": [
+      {
+        "command": "./cursor-hooks/session-init.sh"
+      },
+      {
+        "command": "./cursor-hooks/context-inject.sh"
+      }
+    ],
+    "afterMCPExecution": [
+      {
+        "command": "./cursor-hooks/save-observation.sh"
+      }
+    ],
+    "afterShellExecution": [
+      {
+        "command": "./cursor-hooks/save-observation.sh"
+      }
+    ],
+    "afterFileEdit": [
+      {
+        "command": "./cursor-hooks/save-file-edit.sh"
+      }
+    ],
+    "stop": [
+      {
+        "command": "./cursor-hooks/session-summary.sh"
+      }
+    ]
+  }
+}
+
