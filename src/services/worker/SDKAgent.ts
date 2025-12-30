@@ -310,71 +310,16 @@ export class SDKAgent {
         concepts: obs.concepts?.length ?? 0
       });
 
-      // Sync to Chroma with circuit breaker
-      if (session.chromaAvailable !== false) {
-        const chromaStart = Date.now();
-        const obsType = obs.type;
-        const obsTitle = obs.title || '(untitled)';
-        this.dbManager.getChromaSync().syncObservation(
-          obsId,
-          session.contentSessionId,
-          session.project,
-          obs,
-          session.lastPromptNumber,
-          createdAtEpoch,
-          discoveryTokens
-        ).then(() => {
-          const chromaDuration = Date.now() - chromaStart;
-          logger.debug('CHROMA', 'Observation synced', {
-            obsId,
-            duration: `${chromaDuration}ms`,
-            type: obsType,
-            title: obsTitle
-          });
-        }).catch((error) => {
-          logger.failure('CHROMA', 'Observation sync failed', {
-            obsId,
-            sessionId: session.sessionDbId
-          }, error);
-          session.chromaAvailable = false; // Circuit breaker
-        });
-      } else {
-        logger.debug('CHROMA', 'Skipping observation sync - service marked unavailable', {
-          sessionId: session.sessionDbId
-        });
-      }
-
-      // Broadcast to SSE clients (for web UI)
-      if (worker && worker.sseBroadcaster) {
-        try {
-          worker.sseBroadcaster.broadcast({
-            type: 'new_observation',
-            observation: {
-              id: obsId,
-              memory_session_id: session.memorySessionId,
-              session_id: session.contentSessionId,
-              type: obs.type,
-              title: obs.title,
-              subtitle: obs.subtitle,
-              text: obs.text || null,
-              narrative: obs.narrative || null,
-              facts: JSON.stringify(obs.facts || []),
-              concepts: JSON.stringify(obs.concepts || []),
-              files_read: JSON.stringify(obs.files_read || []),
-              files_modified: JSON.stringify([]),
-              project: session.project,
-              prompt_number: session.lastPromptNumber,
-              created_at_epoch: createdAtEpoch
-            }
-          });
-        } catch (broadcastError) {
-          logger.warn('SSE', 'Failed to broadcast observation to UI', {
-            sessionId: session.sessionDbId,
-            obsId,
-            type: obs.type
-          }, broadcastError);
-        }
-      }
+      // Broadcast and sync observation
+      await this.broadcastAndSyncDiscovery(
+        obsId,
+        'observation',
+        session,
+        obs,
+        worker,
+        createdAtEpoch,
+        discoveryTokens
+      );
     }
 
     // Parse summary
@@ -400,71 +345,135 @@ export class SDKAgent {
         hasNextSteps: !!summary.next_steps
       });
 
-      // Sync to Chroma with circuit breaker
-      if (session.chromaAvailable !== false) {
-        const chromaStart = Date.now();
-        const summaryRequest = summary.request || '(no request)';
-        this.dbManager.getChromaSync().syncSummary(
-          summaryId,
-          session.contentSessionId,
-          session.project,
-          summary,
-          session.lastPromptNumber,
-          createdAtEpoch,
-          discoveryTokens
-        ).then(() => {
-          const chromaDuration = Date.now() - chromaStart;
-          logger.debug('CHROMA', 'Summary synced', {
-            summaryId,
-            duration: `${chromaDuration}ms`,
-            request: summaryRequest
-          });
-        }).catch((error) => {
-          logger.failure('CHROMA', 'Summary sync failed', {
-            summaryId,
-            sessionId: session.sessionDbId
-          }, error);
-          session.chromaAvailable = false; // Circuit breaker
-        });
-      } else {
-        logger.debug('CHROMA', 'Skipping summary sync - service marked unavailable', {
-          sessionId: session.sessionDbId
-        });
-      }
+      // Broadcast and sync summary
+      await this.broadcastAndSyncDiscovery(
+        summaryId,
+        'summary',
+        session,
+        summary,
+        worker,
+        createdAtEpoch,
+        discoveryTokens
+      );
 
-      // Broadcast to SSE clients (for web UI)
-      if (worker && worker.sseBroadcaster) {
-        try {
-          worker.sseBroadcaster.broadcast({
-            type: 'new_summary',
-            summary: {
-              id: summaryId,
-              session_id: session.contentSessionId,
-              request: summary.request,
-              investigated: summary.investigated,
-              learned: summary.learned,
-              completed: summary.completed,
-              next_steps: summary.next_steps,
-              notes: summary.notes,
-              project: session.project,
-              prompt_number: session.lastPromptNumber,
-              created_at_epoch: createdAtEpoch
-            }
-          });
-        } catch (broadcastError) {
-          logger.warn('SSE', 'Failed to broadcast summary to UI', {
-            sessionId: session.sessionDbId,
-            summaryId
-          }, broadcastError);
-        }
-      }
-      
       // Update Cursor context file for registered projects (fire-and-forget)
       updateCursorContextForProject(session.project, getWorkerPort()).catch(() => {});
     }
 
     // Mark messages as processed after successful observation/summary storage
     await this.markMessagesProcessed(session, worker);
+  }
+
+  /**
+   * Broadcast and sync a discovery (observation or summary) to Chroma and SSE
+   * Consolidates the duplicate broadcast/sync logic for observations and summaries
+   */
+  private async broadcastAndSyncDiscovery(
+    discoveryId: number,
+    discoveryType: 'observation' | 'summary',
+    session: ActiveSession,
+    discoveryData: any,
+    worker: any | undefined,
+    createdAtEpoch: number,
+    discoveryTokens: number
+  ): Promise<void> {
+    // 1. Sync to Chroma with circuit breaker
+    if (session.chromaAvailable !== false) {
+      const chromaStart = Date.now();
+      const displayInfo = discoveryType === 'observation'
+        ? { type: discoveryData.type, title: discoveryData.title || '(untitled)' }
+        : { request: discoveryData.request || '(no request)' };
+
+      const syncPromise = discoveryType === 'observation'
+        ? this.dbManager.getChromaSync().syncObservation(
+            discoveryId,
+            session.contentSessionId,
+            session.project,
+            discoveryData,
+            session.lastPromptNumber,
+            createdAtEpoch,
+            discoveryTokens
+          )
+        : this.dbManager.getChromaSync().syncSummary(
+            discoveryId,
+            session.contentSessionId,
+            session.project,
+            discoveryData,
+            session.lastPromptNumber,
+            createdAtEpoch,
+            discoveryTokens
+          );
+
+      syncPromise.then(() => {
+        const chromaDuration = Date.now() - chromaStart;
+        logger.debug('CHROMA', `${discoveryType === 'observation' ? 'Observation' : 'Summary'} synced`, {
+          [discoveryType === 'observation' ? 'obsId' : 'summaryId']: discoveryId,
+          duration: `${chromaDuration}ms`,
+          ...displayInfo
+        });
+      }).catch((error) => {
+        logger.failure('CHROMA', `${discoveryType === 'observation' ? 'Observation' : 'Summary'} sync failed`, {
+          [discoveryType === 'observation' ? 'obsId' : 'summaryId']: discoveryId,
+          sessionId: session.sessionDbId
+        }, error);
+        session.chromaAvailable = false; // Circuit breaker
+      });
+    } else {
+      logger.debug('CHROMA', `Skipping ${discoveryType} sync - service marked unavailable`, {
+        sessionId: session.sessionDbId
+      });
+    }
+
+    // 2. Broadcast to SSE with error handling
+    if (worker && worker.sseBroadcaster) {
+      try {
+        const broadcastPayload = discoveryType === 'observation'
+          ? {
+              type: 'new_observation',
+              observation: {
+                id: discoveryId,
+                memory_session_id: session.memorySessionId,
+                session_id: session.contentSessionId,
+                type: discoveryData.type,
+                title: discoveryData.title,
+                subtitle: discoveryData.subtitle,
+                text: discoveryData.text || null,
+                narrative: discoveryData.narrative || null,
+                facts: JSON.stringify(discoveryData.facts || []),
+                concepts: JSON.stringify(discoveryData.concepts || []),
+                files_read: JSON.stringify(discoveryData.files_read || []),
+                files_modified: JSON.stringify([]),
+                project: session.project,
+                prompt_number: session.lastPromptNumber,
+                created_at_epoch: createdAtEpoch
+              }
+            }
+          : {
+              type: 'new_summary',
+              summary: {
+                id: discoveryId,
+                session_id: session.contentSessionId,
+                request: discoveryData.request,
+                investigated: discoveryData.investigated,
+                learned: discoveryData.learned,
+                completed: discoveryData.completed,
+                next_steps: discoveryData.next_steps,
+                notes: discoveryData.notes,
+                project: session.project,
+                prompt_number: session.lastPromptNumber,
+                created_at_epoch: createdAtEpoch
+              }
+            };
+
+        worker.sseBroadcaster.broadcast(broadcastPayload);
+      } catch (broadcastError) {
+        logger.warn('SSE', `Failed to broadcast ${discoveryType} to UI`, {
+          sessionId: session.sessionDbId,
+          [discoveryType === 'observation' ? 'obsId' : 'summaryId']: discoveryId,
+          ...(discoveryType === 'observation' ? { type: discoveryData.type } : {})
+        }, broadcastError);
+      }
+    }
   }
 
   /**
