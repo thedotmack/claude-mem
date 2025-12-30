@@ -179,6 +179,7 @@ export class AccessTracker {
 
   /**
    * Get access statistics for multiple memories
+   * OPTIMIZATION: Single query with LEFT JOIN to avoid N+1 problem
    */
   getAccessStatsBatch(memoryIds: number[], days: number = 30): Map<number, AccessStats> {
     const stats = new Map<number, AccessStats>();
@@ -187,24 +188,47 @@ export class AccessTracker {
 
     try {
       const placeholders = memoryIds.map(() => '?').join(',');
+      const cutoffTime = Date.now() - (days * 24 * 60 * 60 * 1000);
 
+      // OPTIMIZATION: Single query with LEFT JOIN to get access frequencies in batch
+      // This eliminates the N+1 query pattern where we previously called getAccessFrequency() for each memory
       const stmt = this.db.prepare(`
         SELECT
           o.id as memoryId,
           COALESCE(o.access_count, 0) as accessCount,
-          o.last_accessed as lastAccessed
+          o.last_accessed as lastAccessed,
+          COALESCE(freq.access_count, 0) / ? as accessFrequency
         FROM observations o
+        LEFT JOIN (
+          SELECT memory_id, COUNT(*) as access_count
+          FROM memory_access
+          WHERE memory_id IN (${placeholders})
+            AND timestamp >= ?
+          GROUP BY memory_id
+        ) freq ON o.id = freq.memory_id
         WHERE o.id IN (${placeholders})
       `);
 
-      const results = stmt.all(...memoryIds) as AccessStats[];
+      // Build params: cutoffTime for division, memoryIds for subquery, cutoffTime for subquery, memoryIds for outer query
+      const params = [1 / days, ...memoryIds, cutoffTime, ...memoryIds];
+
+      const results = stmt.all(...params) as Array<{
+        memoryId: number;
+        accessCount: number;
+        lastAccessed: number | null;
+        accessFrequency: number;
+      }>;
 
       for (const result of results) {
-        result.accessFrequency = this.getAccessFrequency(result.memoryId, days);
-        stats.set(result.memoryId, result);
+        stats.set(result.memoryId, {
+          memoryId: result.memoryId,
+          accessCount: result.accessCount,
+          lastAccessed: result.lastAccessed,
+          accessFrequency: result.accessFrequency,
+        });
       }
-    } catch (error: any) {
-      logger.error('AccessTracker', 'Failed to get batch access stats', {}, error);
+    } catch (error: unknown) {
+      logger.error('AccessTracker', 'Failed to get batch access stats', {}, error instanceof Error ? error : new Error(String(error)));
     }
 
     return stats;

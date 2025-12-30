@@ -415,6 +415,15 @@ export class MomentumBuffer {
 
 /**
  * Global singleton instance for use across the worker
+ *
+ * LIFECYCLE MANAGEMENT:
+ * - getMomentumBuffer() creates instance on first call
+ * - destroyMomentumBuffer() should be called on shutdown to prevent memory leaks
+ * - The MAX_BOOSTS limit (default: 1000) prevents unbounded growth
+ * - Periodic cleanup removes expired boosts automatically
+ *
+ * NOTE: This is a module-level singleton that persists for the lifetime of the worker process.
+ * Consider dependency injection for better testability in future refactoring.
  */
 let globalInstance: MomentumBuffer | null = null;
 

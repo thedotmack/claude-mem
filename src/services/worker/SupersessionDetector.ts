@@ -136,6 +136,11 @@ export class SupersessionDetector {
       });
     }
 
+    // OPTIMIZATION: Early termination when we have enough high-confidence candidates
+    // This prevents O(N²) explosion on large observation sets
+    const MAX_CANDIDATES_PER_OBSERVATION = 5;
+    const HIGH_CONFIDENCE_THRESHOLD = 0.85;
+
     // For each observation, check if any newer observations supersede it
     for (let i = 0; i < observations.length; i++) {
       const older = observations[i];
@@ -144,9 +149,12 @@ export class SupersessionDetector {
       if (older.superseded_by !== null) continue;
 
       // Find potential superseding observations (newer ones with similar content)
+      // OPTIMIZATION: Limit to top 50 newer observations to prevent O(N²) behavior
       const newerObs = observations.filter(
         o => o.id > older.id && o.created_at_epoch > older.created_at_epoch
-      );
+      ).slice(0, 50);
+
+      let candidatesForThisObs = 0;
 
       for (const newer of newerObs) {
         const candidate = await this.checkSupersessionPair(older, newer);
@@ -160,6 +168,13 @@ export class SupersessionDetector {
 
           if (candidate.confidence >= adjustedThreshold) {
             candidates.push(candidate);
+            candidatesForThisObs++;
+
+            // Early termination: if we found high-confidence candidates, move to next observation
+            if (candidate.confidence >= HIGH_CONFIDENCE_THRESHOLD ||
+                candidatesForThisObs >= MAX_CANDIDATES_PER_OBSERVATION) {
+              break;
+            }
           }
         }
       }
@@ -313,6 +328,19 @@ export class SupersessionDetector {
           doc_type: 'observation'
         });
 
+        // VALIDATION: Check result structure before accessing to prevent crashes
+        if (!results || !results.ids || !Array.isArray(results.ids) ||
+            !results.distances || !Array.isArray(results.distances)) {
+          logger.debug('SLEEP_AGENT', 'Chroma query returned unexpected structure', {
+            olderId: older.id,
+            newerId: newer.id,
+            hasResults: !!results,
+            hasIds: !!(results?.ids),
+            hasDistances: !!(results?.distances),
+          });
+          return 0;
+        }
+
         // Check if older observation is in the results
         const olderIndex = results.ids.indexOf(older.id);
         if (olderIndex === -1) {
@@ -321,7 +349,7 @@ export class SupersessionDetector {
 
         // Convert distance to similarity (Chroma uses L2 distance)
         // Lower distance = higher similarity
-        const distance = results.distances[olderIndex] || 2.0;
+        const distance = results.distances[olderIndex] ?? 2.0;
         // Normalize: distance of 0 = similarity 1.0, distance of 2.0 = similarity 0.0
         const similarity = Math.max(0, 1 - distance / 2.0);
 
@@ -650,12 +678,21 @@ export class SupersessionDetector {
       priorityEnabled: this.priorityConfig.enabled,
     });
 
+    // OPTIMIZATION: Early termination and batch limits to prevent O(N*M) explosion
+    const MAX_CANDIDATES_PER_OBSERVATION = 5;
+    const HIGH_CONFIDENCE_THRESHOLD = 0.85;
+    const MAX_EXISTING_TO_CHECK = 100; // Limit existing obs to check against
+
     // For each new session observation, check if it supersedes any existing observation
     for (const newObs of sessionObs) {
-      for (const oldObs of existingObs) {
-        // New observation must be newer
-        if (newObs.created_at_epoch <= oldObs.created_at_epoch) continue;
+      // Filter to only older observations that could potentially be superseded
+      const potentialOldObs = existingObs
+        .filter(o => newObs.created_at_epoch > o.created_at_epoch)
+        .slice(0, MAX_EXISTING_TO_CHECK);
 
+      let candidatesForThisObs = 0;
+
+      for (const oldObs of potentialOldObs) {
         const candidate = await this.checkSupersessionPair(oldObs, newObs);
         if (candidate) {
           // P1: Apply priority boost to confidence threshold
@@ -667,6 +704,13 @@ export class SupersessionDetector {
 
           if (candidate.confidence >= adjustedThreshold) {
             candidates.push(candidate);
+            candidatesForThisObs++;
+
+            // Early termination for high-confidence matches
+            if (candidate.confidence >= HIGH_CONFIDENCE_THRESHOLD ||
+                candidatesForThisObs >= MAX_CANDIDATES_PER_OBSERVATION) {
+              break;
+            }
           }
         }
       }
@@ -1080,9 +1124,20 @@ export class SupersessionDetector {
         });
         logger.debug('SLEEP_AGENT', 'Loaded saved model weights from database');
       }
-    } catch (error) {
-      // Table might not exist yet, ignore
-      logger.debug('SLEEP_AGENT', 'No saved weights found, using initial weights');
+    } catch (error: unknown) {
+      // Check if this is a "table doesn't exist" error (expected during initial setup)
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      const isTableNotFoundError = errorMsg.includes('no such table') ||
+                                    errorMsg.includes('does not exist');
+
+      if (isTableNotFoundError) {
+        logger.debug('SLEEP_AGENT', 'Learned model weights table does not exist yet, using initial weights');
+      } else {
+        // Log unexpected errors with full context
+        logger.debug('SLEEP_AGENT', 'Failed to load saved model weights, using initial weights', {
+          error: errorMsg,
+        }, error instanceof Error ? error : undefined);
+      }
     }
   }
 
@@ -1160,44 +1215,59 @@ export class SupersessionDetector {
 
     let generated = 0;
 
-    for (const row of rows) {
-      try {
-        // Calculate features (same as in detectSupersession)
-        const semanticSimilarity = await this.calculateSemanticSimilarity(
-          { id: row.older_id, narrative: row.older_narrative, title: row.older_title } as ObservationRow,
-          { id: row.newer_id, narrative: row.newer_narrative, title: row.newer_title } as ObservationRow
-        );
+    // OPTIMIZATION: Process training examples in parallel batches with concurrency limit
+    const CONCURRENCY_LIMIT = 10;
+    const batchSize = CONCURRENCY_LIMIT;
 
-        const topicMatch = this.checkTopicMatch(
-          { concepts: row.older_concepts } as ObservationRow,
-          { concepts: row.newer_concepts } as ObservationRow
-        );
+    for (let i = 0; i < rows.length; i += batchSize) {
+      const batch = rows.slice(i, i + batchSize);
 
-        const fileOverlap = this.calculateFileOverlap(
-          { files_modified: row.older_files } as ObservationRow,
-          { files_modified: row.newer_files } as ObservationRow
-        );
+      const results = await Promise.allSettled(
+        batch.map(async (row) => {
+          // Calculate features (same as in detectSupersession)
+          const semanticSimilarity = await this.calculateSemanticSimilarity(
+            { id: row.older_id, narrative: row.older_narrative, title: row.older_title } as ObservationRow,
+            { id: row.newer_id, narrative: row.newer_narrative, title: row.newer_title } as ObservationRow
+          );
 
-        const typeMatch = row.older_type === row.newer_type ? 1.0 : 0.0;
-        const timeDeltaHours = (row.newer_created - row.older_created) / 3600000;
-        const priority = getObservationPriority(row.newer_type);
+          const topicMatch = this.checkTopicMatch(
+            { concepts: row.older_concepts } as ObservationRow,
+            { concepts: row.newer_concepts } as ObservationRow
+          );
 
-        // Record as positive training example (label = true, supersession was valid)
-        this.recordTrainingExample(
-          row.older_id,
-          row.newer_id,
-          [semanticSimilarity, topicMatch, fileOverlap, typeMatch, timeDeltaHours, priority, row.older_ref_count],
-          true,  // label = true (valid supersession)
-          0.8    // assume high confidence for historical data
-        );
+          const fileOverlap = this.calculateFileOverlap(
+            { files_modified: row.older_files } as ObservationRow,
+            { files_modified: row.newer_files } as ObservationRow
+          );
 
-        generated++;
-      } catch (error) {
-        // Skip failed examples
-        logger.debug('SLEEP_AGENT', 'Failed to generate training example', {
-          older_id: row.older_id,
-          newer_id: row.newer_id,
-        }, error as Error);
+          const typeMatch = row.older_type === row.newer_type ? 1.0 : 0.0;
+          const timeDeltaHours = (row.newer_created - row.older_created) / 3600000;
+          const priority = getObservationPriority(row.newer_type);
+
+          // Record as positive training example (label = true, supersession was valid)
+          this.recordTrainingExample(
+            row.older_id,
+            row.newer_id,
+            [semanticSimilarity, topicMatch, fileOverlap, typeMatch, timeDeltaHours, priority, row.older_ref_count],
+            true,  // label = true (valid supersession)
+            0.8    // assume high confidence for historical data
+          );
+
+          return { success: true };
+        })
+      );
+
+      // Count successful generations
+      for (const result of results) {
+        if (result.status === 'fulfilled' && result.value.success) {
+          generated++;
+        } else if (result.status === 'rejected') {
+          // Log failed examples with limited info
+          const batchIndex = results.indexOf(result);
+          logger.debug('SLEEP_AGENT', 'Failed to generate training example', {
+            batch_index: batchIndex,
+          }, result.reason instanceof Error ? result.reason : undefined);
+        }
       }
     }
 

@@ -54,6 +54,23 @@ export interface FieldMetrics {
 // Metrics Tracking
 // ============================================================================
 
+/**
+ * MODULE-LEVEL STATE NOTIFICATION:
+ *
+ * This module maintains a global `metrics` object that accumulates parsing statistics
+ * across all operations. This is intentional for debugging and monitoring purposes.
+ *
+ * LIFECYCLE MANAGEMENT:
+ * - Metrics accumulate indefinitely during the worker process lifetime
+ * - Call resetParseMetrics() periodically to prevent memory growth (e.g., between sessions)
+ * - getParseMetrics() returns a snapshot (copy) for safe inspection
+ *
+ * For long-running workers, consider calling resetParseMetrics():
+ * - After each Claude session
+ * - At regular intervals (e.g., daily)
+ * - When memory usage becomes a concern
+ */
+
 let metrics: ParseMetrics = {
   totalAttempts: 0,
   successfulExtractions: 0,
@@ -91,6 +108,10 @@ export function getParseMetrics(): ParseMetrics {
   return { ...metrics };
 }
 
+/**
+ * Reset parsing metrics to prevent unbounded memory growth
+ * Call this periodically (e.g., between sessions or daily)
+ */
 export function resetParseMetrics(): void {
   metrics = {
     totalAttempts: 0,

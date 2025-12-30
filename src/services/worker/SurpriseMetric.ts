@@ -20,6 +20,8 @@ import { ChromaSync } from '../sync/ChromaSync.js';
 export interface SurpriseResult {
   score: number;              // 0-1, higher = more surprising
   confidence: number;         // How confident we are in this score
+  error?: boolean;            // True if calculation failed
+  errorMessage?: string;      // Error message if calculation failed
   similarMemories: Array<{
     id: number;
     distance: number;
@@ -196,11 +198,16 @@ export class SurpriseMetric {
           typeNovelty,
         },
       };
-    } catch (error: any) {
-      logger.error('SurpriseMetric', `Failed to calculate surprise for observation ${observation.id}`, {}, error);
+    } catch (error: unknown) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      logger.error('SurpriseMetric', `Failed to calculate surprise for observation ${observation.id}`, {}, error instanceof Error ? error : undefined);
+
+      // Return error indicator so callers can distinguish failures from neutral results
       return {
         score: 0.5, // Default to neutral on error
         confidence: 0,
+        error: true,
+        errorMessage: errorMsg,
         similarMemories: [],
         factors: {
           semanticDistance: 0.5,
@@ -213,6 +220,7 @@ export class SurpriseMetric {
 
   /**
    * Batch calculate surprise for multiple observations
+   * OPTIMIZATION: Process in parallel batches with concurrency limit
    */
   async calculateBatch(
     observations: ObservationRecord[],
@@ -220,9 +228,30 @@ export class SurpriseMetric {
   ): Promise<Map<number, SurpriseResult>> {
     const results = new Map<number, SurpriseResult>();
 
-    for (const obs of observations) {
-      const result = await this.calculate(obs, options);
-      results.set(obs.id, result);
+    // OPTIMIZATION: Process in parallel batches with concurrency limit
+    const CONCURRENCY_LIMIT = 10;
+    const batchSize = CONCURRENCY_LIMIT;
+
+    for (let i = 0; i < observations.length; i += batchSize) {
+      const batch = observations.slice(i, i + batchSize);
+
+      const batchResults = await Promise.allSettled(
+        batch.map(async (obs) => ({
+          id: obs.id,
+          result: await this.calculate(obs, options),
+        }))
+      );
+
+      for (const outcome of batchResults) {
+        if (outcome.status === 'fulfilled') {
+          results.set(outcome.value.id, outcome.value.result);
+        } else {
+          // Log failed batch items
+          logger.debug('SurpriseMetric', 'Failed to calculate surprise in batch', {
+            error: outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason),
+          }, outcome.reason instanceof Error ? outcome.reason : undefined);
+        }
+      }
     }
 
     return results;
@@ -346,8 +375,16 @@ export class SurpriseMetric {
       }
 
       return surprising.sort((a, b) => b.score - a.score);
-    } catch (error: any) {
-      logger.error('SurpriseMetric', 'Failed to get surprising memories', {}, error);
+    } catch (error: unknown) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      logger.error('SurpriseMetric', 'Failed to get surprising memories', {}, error instanceof Error ? error : undefined);
+
+      // NOTE: Returning empty array makes it impossible to distinguish "no results" from "error"
+      // Consider using error-first callback or throwing for critical failures
+      // For now, we re-throw on database errors but return empty for calculation errors
+      if (errorMsg.includes('SQLITE') || errorMsg.includes('database')) {
+        throw error; // Database errors should propagate
+      }
       return [];
     }
   }
@@ -534,14 +571,36 @@ export class SurpriseMetric {
       const scores: number[] = [];
       const byType: Record<string, number[]> = {};
 
-      for (const obs of observations) {
-        const result = await this.calculate(obs, { sampleSize: 30 });
-        scores.push(result.score);
+      // OPTIMIZATION: Process in parallel batches instead of sequential loop
+      const CONCURRENCY_LIMIT = 10;
+      const batchSize = CONCURRENCY_LIMIT;
 
-        if (!byType[obs.type]) {
-          byType[obs.type] = [];
+      for (let i = 0; i < observations.length; i += batchSize) {
+        const batch = observations.slice(i, i + batchSize);
+
+        const batchResults = await Promise.allSettled(
+          batch.map(async (obs) => ({
+            obs,
+            result: await this.calculate(obs, { sampleSize: 30 }),
+          }))
+        );
+
+        for (const outcome of batchResults) {
+          if (outcome.status === 'fulfilled') {
+            const { obs, result } = outcome.value;
+            scores.push(result.score);
+
+            if (!byType[obs.type]) {
+              byType[obs.type] = [];
+            }
+            byType[obs.type].push(result.score);
+          } else {
+            // Log failed calculations
+            logger.debug('SurpriseMetric', 'Failed to calculate surprise in getProjectSurpriseStats', {
+              error: outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason),
+            }, outcome.reason instanceof Error ? outcome.reason : undefined);
+          }
         }
-        byType[obs.type].push(result.score);
       }
 
       scores.sort((a, b) => a - b);

@@ -166,20 +166,32 @@ export class SemanticRarity {
    * Get memories that are semantically rare (good candidates for retention)
    * @param threshold Minimum rarity score (0-1)
    * @param limit Maximum results
+   * @param project Optional project filter
    */
-  async getRareMemories(threshold: number = 0.7, limit: number = 50): Promise<Array<{ id: number; title: string; score: number }>> {
+  async getRareMemories(
+    threshold: number = 0.7,
+    limit: number = 50,
+    project?: string
+  ): Promise<Array<{ id: number; title: string; score: number }>> {
     try {
       // Get recent observations
-      const stmt = this.db.prepare(`
+      // OPTIMIZATION: Filter by project at SQL level to avoid double query
+      let query = `
         SELECT id, title, type, created_at_epoch
         FROM observations
         WHERE created_at_epoch > ?
-        ORDER BY created_at_epoch DESC
-        LIMIT 200
-      `);
+      `;
+      const params: any[] = [Date.now() - (90 * 24 * 60 * 60 * 1000)]; // 90 days
 
-      const cutoff = Date.now() - (90 * 24 * 60 * 60 * 1000); // 90 days
-      const observations = stmt.all(cutoff) as ObservationRecord[];
+      if (project) {
+        query += ' AND project = ?';
+        params.push(project);
+      }
+
+      query += ' ORDER BY created_at_epoch DESC LIMIT 200';
+
+      const stmt = this.db.prepare(query);
+      const observations = stmt.all(...params) as ObservationRecord[];
 
       // Calculate rarity for each
       const rareMemories: Array<{ id: number; title: string; score: number }> = [];
@@ -198,8 +210,8 @@ export class SemanticRarity {
       }
 
       return rareMemories.sort((a, b) => b.score - a.score);
-    } catch (error: any) {
-      logger.error('SemanticRarity', 'Failed to get rare memories', {}, error);
+    } catch (error: unknown) {
+      logger.error('SemanticRarity', 'Failed to get rare memories', {}, error instanceof Error ? error : new Error(String(error)));
       return [];
     }
   }

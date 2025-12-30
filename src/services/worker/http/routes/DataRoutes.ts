@@ -536,9 +536,26 @@ export class DataRoutes extends BaseRouteHandler {
     const id = this.parseIntParam(req, res, 'id');
     if (id === null) return;
 
-    const { AccessTracker } = await import('../../AccessTracker.js');
-    const { ImportanceScorer } = await import('../../ImportanceScorer.js');
-    const { SemanticRarity } = await import('../../SemanticRarity.js');
+    // ERROR HANDLING: Wrap dynamic imports in try-catch
+    let AccessTracker: typeof import('../../AccessTracker.js').AccessTracker;
+    let ImportanceScorer: typeof import('../../ImportanceScorer.js').ImportanceScorer;
+    let SemanticRarity: typeof import('../../SemanticRarity.js').SemanticRarity;
+
+    try {
+      const imports = await Promise.all([
+        import('../../AccessTracker.js'),
+        import('../../ImportanceScorer.js'),
+        import('../../SemanticRarity.js'),
+      ]);
+
+      AccessTracker = imports[0].AccessTracker;
+      ImportanceScorer = imports[1].ImportanceScorer;
+      SemanticRarity = imports[2].SemanticRarity;
+    } catch (error: unknown) {
+      logger.error('DataRoutes', 'Failed to import required modules', {}, error instanceof Error ? error : new Error(String(error)));
+      res.status(500).json({ error: 'Failed to load required modules' });
+      return;
+    }
 
     const db = this.dbManager.getSessionStore().db;
     const accessTracker = new AccessTracker(db);
@@ -618,18 +635,9 @@ export class DataRoutes extends BaseRouteHandler {
     const db = this.dbManager.getSessionStore().db;
     const semanticRarity = new SemanticRarity(db);
 
-    // Get rare memories
-    let rareMemories = await semanticRarity.getRareMemories(threshold, limit);
-
-    // Filter by project if specified
-    if (project) {
-      const store = this.dbManager.getSessionStore();
-      const projectObsIds = new Set(
-        store.getObservationsByIds(rareMemories.map(m => m.id), { project })
-          .map(o => o.id)
-      );
-      rareMemories = rareMemories.filter(m => projectObsIds.has(m.id));
-    }
+    // OPTIMIZATION: Pass project parameter to getRareMemories for SQL-level filtering
+    // This eliminates the double query pattern (fetch all, then filter by project)
+    const rareMemories = await semanticRarity.getRareMemories(threshold, limit, project);
 
     res.json({
       threshold,

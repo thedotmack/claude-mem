@@ -29,9 +29,17 @@ export class CheckpointManager {
   private events: Map<string, BatchJobEvent[]> = new Map();
   private checkpointInterval: number;
   private autoCheckpointTimers: Map<string, NodeJS.Timeout> = new Map();
+  private autoCleanupTimer: NodeJS.Timeout | null = null;
+  private readonly CLEANUP_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
+  private readonly DEFAULT_CLEANUP_AGE_DAYS = 7; // Clean up jobs older than 7 days
 
-  constructor(options: { checkpointIntervalMs?: number } = {}) {
+  constructor(options: { checkpointIntervalMs?: number; autoCleanup?: boolean } = {}) {
     this.checkpointInterval = options.checkpointIntervalMs ?? 30000; // 30 seconds default
+
+    // OPTIMIZATION: Start automatic cleanup timer to prevent unbounded Map growth
+    if (options.autoCleanup !== false) {
+      this.startAutoCleanup();
+    }
   }
 
   // ============================================================================
@@ -424,6 +432,25 @@ export class CheckpointManager {
   // ============================================================================
 
   /**
+   * Start automatic cleanup of old jobs
+   */
+  private startAutoCleanup(): void {
+    // Clear any existing timer
+    if (this.autoCleanupTimer) {
+      clearInterval(this.autoCleanupTimer);
+    }
+
+    this.autoCleanupTimer = setInterval(() => {
+      this.cleanupOldJobs(this.DEFAULT_CLEANUP_AGE_DAYS);
+    }, this.CLEANUP_INTERVAL_MS);
+
+    logger.debug('CHECKPOINT', 'Auto-cleanup timer started', {
+      intervalMs: this.CLEANUP_INTERVAL_MS,
+      cleanupAgeDays: this.DEFAULT_CLEANUP_AGE_DAYS,
+    });
+  }
+
+  /**
    * Remove completed jobs older than specified days
    */
   cleanupOldJobs(olderThanDays: number): number {
@@ -441,10 +468,13 @@ export class CheckpointManager {
       }
     }
 
-    logger.info('CHECKPOINT', 'Cleaned up old jobs', {
-      removed,
-      olderThanDays
-    });
+    if (removed > 0) {
+      logger.info('CHECKPOINT', 'Cleaned up old jobs', {
+        removed,
+        olderThanDays,
+        remainingJobs: this.jobs.size,
+      });
+    }
 
     return removed;
   }
@@ -457,6 +487,11 @@ export class CheckpointManager {
       clearInterval(timer);
     }
     this.autoCheckpointTimers.clear();
+
+    if (this.autoCleanupTimer) {
+      clearInterval(this.autoCleanupTimer);
+      this.autoCleanupTimer = null;
+    }
   }
 }
 
