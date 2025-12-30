@@ -1,0 +1,163 @@
+---
+title: "Cursor Integration"
+description: "Use Claude-Mem's persistent memory in Cursor IDE - with free provider options"
+---
+
+# Cursor Integration
+
+Claude-mem brings persistent AI memory to Cursor IDE. Your coding sessions remember context across restarts, helping the AI understand your codebase deeply over time.
+
+<Info>
+**No Claude Code subscription required.** Use Gemini (free tier) or OpenRouter as your AI provider.
+</Info>
+
+## How It Works
+
+Claude-mem integrates with Cursor through native hooks:
+
+1. **Session hooks** capture tool usage, file edits, and shell commands
+2. **AI extraction** compresses observations into semantic summaries
+3. **Context injection** loads relevant history into each new session
+4. **Memory viewer** at http://localhost:37777 shows your knowledge base
+
+## Installation Paths
+
+Choose the installation method that fits your setup:
+
+### Path A: Cursor-Only Users (No Claude Code)
+
+If you're using Cursor without a Claude Code subscription:
+
+```bash
+# Clone and build
+git clone https://github.com/thedotmack/claude-mem.git
+cd claude-mem && npm install && npm run build
+
+# Run interactive setup wizard
+npm run cursor:setup
+```
+
+The setup wizard will:
+- Detect you don't have Claude Code
+- Help you choose and configure a free AI provider (Gemini recommended)
+- Install hooks automatically
+- Start the worker service
+
+**Detailed guides:**
+- [Gemini Setup](gemini-setup) - Recommended free option (1500 req/day)
+- [OpenRouter Setup](openrouter-setup) - 100+ models including free options
+
+### Path B: Claude Code Users
+
+If you have Claude Code installed:
+
+```bash
+# Install the plugin (if not already)
+/plugin marketplace add thedotmack/claude-mem
+/plugin install claude-mem
+
+# Install Cursor hooks
+claude-mem cursor install
+```
+
+The plugin uses Claude's SDK by default but you can switch to Gemini or OpenRouter anytime.
+
+## Prerequisites
+
+<AccordionGroup>
+  <Accordion title="macOS">
+    - Node.js 18+
+    - Cursor IDE
+    - jq and curl: `brew install jq curl`
+  </Accordion>
+  <Accordion title="Linux">
+    - Node.js 18+
+    - Cursor IDE
+    - jq and curl: `apt install jq curl` or `dnf install jq curl`
+  </Accordion>
+  <Accordion title="Windows">
+    - Node.js 18+
+    - Cursor IDE
+    - PowerShell 5.1+ (included in Windows 10/11)
+    - Git for Windows
+  </Accordion>
+</AccordionGroup>
+
+## Quick Commands Reference
+
+After installation, these commands are available from the claude-mem directory:
+
+| Command | Description |
+|---------|-------------|
+| `npm run cursor:setup` | Interactive setup wizard |
+| `npm run cursor:install` | Install Cursor hooks |
+| `npm run cursor:uninstall` | Remove Cursor hooks |
+| `npm run cursor:status` | Check hook installation status |
+| `npm run worker:start` | Start the worker service |
+| `npm run worker:stop` | Stop the worker service |
+| `npm run worker:status` | Check worker status |
+
+## Verifying Installation
+
+After setup, verify everything is working:
+
+1. **Check worker status:**
+   ```bash
+   npm run worker:status
+   ```
+
+2. **Check hook installation:**
+   ```bash
+   npm run cursor:status
+   ```
+
+3. **Open the memory viewer:**
+   Open http://localhost:37777 in your browser
+
+4. **Restart Cursor** and start a coding session - you should see context being captured
+
+## Provider Comparison
+
+| Provider | Cost | Rate Limit | Best For |
+|----------|------|------------|----------|
+| Gemini | Free tier | 1500 req/day | Individual use, getting started |
+| OpenRouter | Pay-per-use + free models | Varies by model | Model variety, high volume |
+| Claude SDK | Included with Claude Code | Unlimited | Claude Code subscribers |
+
+<Tip>
+**Recommendation:** Start with Gemini's free tier. It handles typical individual usage well. Switch to OpenRouter or Claude SDK if you need higher limits.
+</Tip>
+
+## Troubleshooting
+
+### Worker not starting
+
+```bash
+# Check if port is in use
+lsof -i :37777
+
+# Force restart
+npm run worker:stop && npm run worker:start
+
+# Check logs
+npm run worker:logs
+```
+
+### Hooks not firing
+
+1. Restart Cursor IDE after installation
+2. Check hooks are installed: `npm run cursor:status`
+3. Verify hooks.json exists in `.cursor/` directory
+
+### No context appearing
+
+1. Ensure worker is running: `npm run worker:status`
+2. Check that you have observations: visit http://localhost:37777
+3. Verify your API key is configured correctly
+
+## Next Steps
+
+- [Gemini Setup Guide](gemini-setup) - Detailed free tier setup
+- [OpenRouter Setup Guide](openrouter-setup) - Configure OpenRouter
+- [Configuration Reference](../configuration) - All settings options
+- [Troubleshooting](../troubleshooting) - Common issues and solutions
