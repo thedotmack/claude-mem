@@ -27,6 +27,16 @@ import { getWorkerPort } from '../../shared/worker-utils.js';
 // @ts-ignore - Agent SDK types
 import { unstable_v2_createSession, unstable_v2_resumeSession } from '@anthropic-ai/claude-agent-sdk';
 
+interface SDKMessage {
+  type: string;
+  subtype?: string;
+  session_id?: string;
+  message?: {
+    content?: any;
+    usage?: any;
+  };
+}
+
 export class SDKAgent {
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
@@ -178,11 +188,18 @@ export class SDKAgent {
    * Extracts text, tracks tokens, and processes observations/summaries
    */
   private async handleSDKMessage(
-    message: any,
+    message: SDKMessage,
     session: ActiveSession,
     worker?: any,
     originalTimestamp?: number | null
   ): Promise<void> {
+    // Validate message structure
+    if (!message?.type) {
+      logger.failure('SDK', 'Invalid message structure: missing type', {
+        sessionId: session.sessionDbId
+      }, new Error('Message type is required'));
+      return;
+    }
     // Capture session ID from system/init message (V2 pattern)
     if (message.type === 'system' && message.subtype === 'init' && message.session_id) {
       if (!session.memorySessionId || session.memorySessionId === session.contentSessionId) {
@@ -200,7 +217,7 @@ export class SDKAgent {
     }
 
     // Handle assistant messages
-    if (message.type === 'assistant') {
+    if (message.type === 'assistant' && message.message?.content) {
       const content = message.message.content;
       const textContent = Array.isArray(content)
         ? content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n')
