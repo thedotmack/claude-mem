@@ -1,8 +1,4 @@
-import {
-  query,
-  type SDKMessage,
-  type SDKResultMessage,
-} from "@anthropic-ai/claude-agent-sdk";
+import { unstable_v2_prompt } from "@anthropic-ai/claude-agent-sdk";
 import {
   collectDiagnostics,
   formatDiagnostics,
@@ -43,61 +39,16 @@ export async function generateBugReport(
     );
 
     // Use Agent SDK to generate formatted issue
-    let generatedMarkdown = "";
-    let charCount = 0;
-    const startTime = Date.now();
+    process.stdout.write("   Generating bug report...");
 
-    const stream = query({
-      prompt,
-      options: {
-        model: "sonnet",
-        systemPrompt: `You are a GitHub issue formatter. Format bug reports clearly and professionally.`,
-        permissionMode: "bypassPermissions",
-        allowDangerouslySkipPermissions: true,
-        includePartialMessages: true,
-      },
+    const result = await unstable_v2_prompt(prompt, {
+      model: "sonnet",
+      systemPrompt: `You are a GitHub issue formatter. Format bug reports clearly and professionally.`,
     });
 
-    // Progress spinner frames
-    const spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-    let spinnerIdx = 0;
-
-    // Stream the response
-    for await (const message of stream) {
-      if (message.type === "stream_event") {
-        const event = message.event as { type: string; delta?: { type: string; text?: string } };
-        if (event.type === "content_block_delta" && event.delta?.type === "text_delta" && event.delta.text) {
-          generatedMarkdown += event.delta.text;
-          charCount += event.delta.text.length;
-
-          const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-          const spinner = spinnerFrames[spinnerIdx++ % spinnerFrames.length];
-          process.stdout.write(`\r   ${spinner} Generating... ${charCount} chars (${elapsed}s)`);
-        }
-      }
-
-      // Handle full assistant messages (fallback)
-      if (message.type === "assistant") {
-        for (const block of message.message.content) {
-          if (block.type === "text" && !generatedMarkdown) {
-            generatedMarkdown = block.text;
-            charCount = generatedMarkdown.length;
-          }
-        }
-      }
-
-      // Handle result
-      if (message.type === "result") {
-        const result = message as SDKResultMessage;
-        if (result.subtype === "success" && !generatedMarkdown && result.result) {
-          generatedMarkdown = result.result;
-          charCount = generatedMarkdown.length;
-        }
-      }
-    }
-
-    // Clear the progress line
     process.stdout.write("\r" + " ".repeat(60) + "\r");
+
+    const generatedMarkdown = result.result;
 
     // Extract title from markdown (first heading)
     const titleMatch = generatedMarkdown.match(/^#\s+(.+)$/m);

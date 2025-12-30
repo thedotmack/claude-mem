@@ -1,4 +1,4 @@
-import { query, type SDKMessage, type SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
+import { unstable_v2_prompt } from "@anthropic-ai/claude-agent-sdk";
 import * as fs from "fs/promises";
 import * as path from "path";
 import { createHash } from "crypto";
@@ -160,71 +160,23 @@ CRITICAL OUTPUT RULES:
 - Start directly with the translation note, then the content
 - The output will be saved directly to a .md file`;
 
-  let translation = "";
-  let costUsd = 0;
-  let charCount = 0;
-  const startTime = Date.now();
-
-  const stream = query({
-    prompt,
-    options: {
-      model: options.model || "sonnet",
-      systemPrompt: `You are an expert technical translator specializing in software documentation.
-You translate README files while preserving Markdown formatting and technical accuracy.
-Always output only the translated content without any surrounding explanation.`,
-      permissionMode: "bypassPermissions",
-      allowDangerouslySkipPermissions: true,
-      includePartialMessages: true, // Enable streaming events
-    },
-  });
-
-  // Progress spinner frames
-  const spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-  let spinnerIdx = 0;
-
-  for await (const message of stream) {
-    // Handle streaming text deltas
-    if (message.type === "stream_event") {
-      const event = message.event as { type: string; delta?: { type: string; text?: string } };
-      if (event.type === "content_block_delta" && event.delta?.type === "text_delta" && event.delta.text) {
-        translation += event.delta.text;
-        charCount += event.delta.text.length;
-
-        if (options.verbose) {
-          const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-          const spinner = spinnerFrames[spinnerIdx++ % spinnerFrames.length];
-          process.stdout.write(`\r   ${spinner} Translating... ${charCount} chars (${elapsed}s)`);
-        }
-      }
-    }
-
-    // Handle full assistant messages (fallback)
-    if (message.type === "assistant") {
-      for (const block of message.message.content) {
-        if (block.type === "text" && !translation) {
-          translation = block.text;
-          charCount = translation.length;
-        }
-      }
-    }
-
-    if (message.type === "result") {
-      const result = message as SDKResultMessage;
-      if (result.subtype === "success") {
-        costUsd = result.total_cost_usd;
-        // Use the result text if we didn't get it from streaming
-        if (!translation && result.result) {
-          translation = result.result;
-          charCount = translation.length;
-        }
-      }
-    }
+  if (options.verbose) {
+    process.stdout.write(`   Translating to ${languageName}...`);
   }
 
-  // Clear the progress line
+  const result = await unstable_v2_prompt(prompt, {
+    model: options.model || "sonnet",
+    systemPrompt: `You are an expert technical translator specializing in software documentation.
+You translate README files while preserving Markdown formatting and technical accuracy.
+Always output only the translated content without any surrounding explanation.`,
+  });
+
   if (options.verbose) {
     process.stdout.write("\r" + " ".repeat(60) + "\r");
   }
+
+  const translation = result.result;
+  const costUsd = result.total_cost_usd;
 
   // Strip markdown code fences if Claude wrapped the output
   let cleaned = translation.trim();
