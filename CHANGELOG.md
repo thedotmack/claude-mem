@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [8.2.10] - 2025-12-30
+
+## Bug Fixes
+
+- **Auto-restart worker on version mismatch** (#484): When the plugin updates but the worker was already running on the old version, the worker now automatically restarts instead of failing with 400 errors.
+
+### Changes
+- `/api/version` endpoint now returns the built-in version (compiled at build time) instead of reading from disk
+- `worker-service start` command checks for version mismatch and auto-restarts if needed
+- Downgraded hook version mismatch warning to debug logging (now handled by auto-restart)
+
+Thanks @yungweng for the detailed bug report!
+
 ## [8.2.9] - 2025-12-29
 
 ## Bug Fixes
