@@ -3,9 +3,15 @@
 ## What This Does
 
 Connects claude-mem to Cursor so that:
-- ✅ Agent actions (MCP tools, shell commands, file edits) are automatically saved
-- ✅ Context from past sessions is automatically injected via `.cursor/rules/`
-- ✅ Sessions are summarized for future reference
+- Agent actions (MCP tools, shell commands, file edits) are automatically saved
+- Context from past sessions is automatically injected via `.cursor/rules/`
+- Sessions are summarized for future reference
+
+## Don't Have Claude Code?
+
+If you're using Cursor without Claude Code, see [STANDALONE-SETUP.md](STANDALONE-SETUP.md) for setup with free-tier providers like Gemini or OpenRouter.
+
+---
 
 ## Installation (1 minute)
 
@@ -19,6 +25,24 @@ claude-mem cursor install user
 # Check installation status
 claude-mem cursor status
 ```
+
+## Configure Provider (Required for Standalone)
+
+If you don't have Claude Code, configure a provider for AI summarization:
+
+```bash
+# Option A: Gemini (free tier available - recommended)
+claude-mem settings set CLAUDE_MEM_PROVIDER gemini
+claude-mem settings set CLAUDE_MEM_GEMINI_API_KEY your-api-key
+
+# Option B: OpenRouter (free models available)
+claude-mem settings set CLAUDE_MEM_PROVIDER openrouter
+claude-mem settings set CLAUDE_MEM_OPENROUTER_API_KEY your-api-key
+```
+
+**Get free API keys**:
+- Gemini: https://aistudio.google.com/apikey
+- OpenRouter: https://openrouter.ai/keys
 
 ## Start Worker
 

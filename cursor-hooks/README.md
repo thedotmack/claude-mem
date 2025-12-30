@@ -2,6 +2,14 @@
 
 This directory contains Cursor hooks that connect claude-mem to Cursor, enabling persistent memory across Cursor sessions.
 
+## Quick Start for Cursor Users
+
+**Using Claude Code?** Skip to [Installation](#installation) - everything works automatically.
+
+**Cursor-only (no Claude Code)?** See [STANDALONE-SETUP.md](STANDALONE-SETUP.md) for free-tier options using Gemini or OpenRouter.
+
+---
+
 ## Overview
 
 The hooks bridge Cursor's hook system to claude-mem's worker API, allowing:
@@ -172,8 +180,7 @@ Install on Ubuntu: `apt-get install jq curl`
 
 3. Restart worker:
    ```bash
-   cd ~/.claude/plugins/marketplaces/thedotmack
-   npm run worker:restart
+   claude-mem restart
    ```
 
 ### Observations not being saved
