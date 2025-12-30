@@ -4,9 +4,13 @@
   "description": "OpenCode plugin for Claude-Mem persistent memory",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "bin": {
+    "claude-mem-note": "./src/cli.ts"
+  },
   "scripts": {
     "build": "tsc",
-    "test": "bun test"
+    "test": "bun test",
+    "note": "bun run src/cli.ts"
   },
   "dependencies": {
     "@opencode-ai/plugin": "latest"
