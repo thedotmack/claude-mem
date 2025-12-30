@@ -62,11 +62,11 @@ See [CONTEXT-INJECTION.md](CONTEXT-INJECTION.md) for details.
 ### Quick Install (Recommended)
 
 ```bash
-# Install for current project
-claude-mem cursor install
-
-# Or install globally for all projects
+# Install globally for all projects (recommended)
 claude-mem cursor install user
+
+# Or install for current project only
+claude-mem cursor install
 ```
 
 ### Manual Installation
@@ -74,7 +74,18 @@ claude-mem cursor install user
 <details>
 <summary>Click to expand manual installation steps</summary>
 
-**Project-level** (recommended for team sharing):
+**User-level** (recommended - applies to all projects):
+```bash
+# Copy hooks.json to your home directory
+cp cursor-hooks/hooks.json ~/.cursor/hooks.json
+
+# Copy hook scripts
+mkdir -p ~/.cursor/hooks
+cp cursor-hooks/*.sh ~/.cursor/hooks/
+chmod +x ~/.cursor/hooks/*.sh
+```
+
+**Project-level** (for per-project hooks):
 ```bash
 # Copy hooks.json to your project
 mkdir -p .cursor
@@ -84,17 +95,6 @@ cp cursor-hooks/hooks.json .cursor/hooks.json
 mkdir -p .cursor/hooks
 cp cursor-hooks/*.sh .cursor/hooks/
 chmod +x .cursor/hooks/*.sh
-```
-
-**User-level** (applies to all projects):
-```bash
-# Copy hooks.json to your home directory
-cp cursor-hooks/hooks.json ~/.cursor/hooks.json
-
-# Copy hook scripts
-mkdir -p ~/.cursor/hooks
-cp cursor-hooks/*.sh ~/.cursor/hooks/
-chmod +x ~/.cursor/hooks/*.sh
 ```
 
 </details>

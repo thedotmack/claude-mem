@@ -4,7 +4,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-INSTALL_TYPE="${1:-user}"  # 'user', 'project', or 'enterprise'
+INSTALL_TYPE="${1:-user}"  # 'user' (recommended) or 'project'
 
 echo "Installing claude-mem Cursor hooks (${INSTALL_TYPE} level)..."
 
@@ -20,25 +20,9 @@ case "$INSTALL_TYPE" in
     TARGET_DIR="${HOME}/.cursor"
     HOOKS_DIR="${HOME}/.cursor/hooks"
     ;;
-  "enterprise")
-    if [[ "$OSTYPE" == "darwin"* ]]; then
-      TARGET_DIR="/Library/Application Support/Cursor"
-      HOOKS_DIR="/Library/Application Support/Cursor/hooks"
-    elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
-      TARGET_DIR="/etc/cursor"
-      HOOKS_DIR="/etc/cursor/hooks"
-    else
-      echo "Enterprise installation not supported on this OS"
-      exit 1
-    fi
-    if [ "$EUID" -ne 0 ]; then
-      echo "Enterprise installation requires root privileges"
-      exit 1
-    fi
-    ;;
   *)
     echo "Invalid install type: $INSTALL_TYPE"
-    echo "Usage: $0 [user|project|enterprise]"
+    echo "Usage: $0 [user (recommended)|project]"
     exit 1
     ;;
 esac
@@ -63,13 +47,8 @@ if [ "$INSTALL_TYPE" = "project" ]; then
   tmp_file=$(mktemp)
   sed 's|\./cursor-hooks/|\./\.cursor/hooks/|g' "$TARGET_DIR/hooks.json" > "$tmp_file"
   mv "$tmp_file" "$TARGET_DIR/hooks.json"
-elif [ "$INSTALL_TYPE" = "user" ]; then
+else
   # For user-level, use absolute paths
-  tmp_file=$(mktemp)
-  sed "s|\./cursor-hooks/|${HOOKS_DIR}/|g" "$TARGET_DIR/hooks.json" > "$tmp_file"
-  mv "$tmp_file" "$TARGET_DIR/hooks.json"
-elif [ "$INSTALL_TYPE" = "enterprise" ]; then
-  # For enterprise, use absolute paths
   tmp_file=$(mktemp)
   sed "s|\./cursor-hooks/|${HOOKS_DIR}/|g" "$TARGET_DIR/hooks.json" > "$tmp_file"
   mv "$tmp_file" "$TARGET_DIR/hooks.json"

@@ -106,11 +106,11 @@ EOF
 ## Step 3: Install Cursor Hooks
 
 ```bash
-# From the claude-mem repo directory
-bun run cursor:install
-
-# Or for user-level (all projects):
+# From the claude-mem repo directory (recommended - all projects)
 bun run cursor:install -- user
+
+# Or for project-level only:
+bun run cursor:install
 ```
 
 This installs:
@@ -196,8 +196,8 @@ If you hit the 1500 requests/day limit:
 
 | Command | Purpose |
 |---------|---------|
-| `bun run cursor:install` | Install hooks for current project |
-| `bun run cursor:install -- user` | Install hooks for all projects |
+| `bun run cursor:install -- user` | Install hooks for all projects (recommended) |
+| `bun run cursor:install` | Install hooks for current project only |
 | `bun run cursor:status` | Check installation status |
 | `bun run worker:start` | Start the background worker |
 | `bun run worker:stop` | Stop the background worker |

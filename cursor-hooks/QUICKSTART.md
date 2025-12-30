@@ -20,11 +20,11 @@ If you're using Cursor without Claude Code, see [STANDALONE-SETUP.md](STANDALONE
 ## Installation (1 minute)
 
 ```bash
-# Install for current project
-claude-mem cursor install
-
-# Or install globally for all projects
+# Install globally for all projects (recommended)
 claude-mem cursor install user
+
+# Or install for current project only
+claude-mem cursor install
 
 # Check installation status
 claude-mem cursor status
