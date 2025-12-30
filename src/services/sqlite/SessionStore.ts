@@ -1158,6 +1158,27 @@ export class SessionStore {
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
     const timestampIso = new Date(timestampEpoch).toISOString();
 
+    // Deduplication check: prevent duplicate observations from multiple hook executions
+    // Check for existing observation with same session, title, and timestamp (within 1 second)
+    if (observation.title) {
+      const existing = this.db.prepare(`
+        SELECT id, created_at_epoch FROM observations
+        WHERE sdk_session_id = ? AND title = ? AND ABS(created_at_epoch - ?) < 1000
+      `).get(sdkSessionId, observation.title, timestampEpoch) as { id: number; created_at_epoch: number } | undefined;
+
+      if (existing) {
+        logger.debug('DATABASE', 'Duplicate observation detected, returning existing', {
+          existingId: existing.id,
+          title: observation.title,
+          timestampDiff: Math.abs(existing.created_at_epoch - timestampEpoch)
+        });
+        return {
+          id: existing.id,
+          createdAtEpoch: existing.created_at_epoch
+        };
+      }
+    }
+
     const stmt = this.db.prepare(`
       INSERT INTO observations
       (sdk_session_id, project, type, title, subtitle, facts, narrative, concepts,
