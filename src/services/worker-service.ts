@@ -974,6 +974,397 @@ export class WorkerService {
 }
 
 // ============================================================================
+// Cursor Hooks Installation
+// ============================================================================
+
+/**
+ * Find cursor-hooks directory
+ * Searches in order: marketplace install, source repo
+ */
+function findCursorHooksDir(): string | null {
+  const possiblePaths = [
+    // Marketplace install location
+    path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack', 'cursor-hooks'),
+    // Development/source location (relative to built worker-service.cjs in plugin/scripts/)
+    path.join(path.dirname(__filename), '..', '..', 'cursor-hooks'),
+    // Alternative dev location
+    path.join(process.cwd(), 'cursor-hooks'),
+  ];
+  
+  for (const p of possiblePaths) {
+    if (existsSync(path.join(p, 'common.sh'))) {
+      return p;
+    }
+  }
+  return null;
+}
+
+/**
+ * Handle cursor subcommand for hooks installation
+ */
+async function handleCursorCommand(subcommand: string, args: string[]): Promise<number> {
+  switch (subcommand) {
+    case 'install': {
+      const target = args[0] || 'project';
+      const cursorHooksDir = findCursorHooksDir();
+      
+      if (!cursorHooksDir) {
+        console.error('❌ Could not find cursor-hooks directory');
+        console.error('   Expected at: ~/.claude/plugins/marketplaces/thedotmack/cursor-hooks/');
+        return 1;
+      }
+      
+      return installCursorHooks(cursorHooksDir, target);
+    }
+    
+    case 'uninstall': {
+      const target = args[0] || 'project';
+      return uninstallCursorHooks(target);
+    }
+    
+    case 'status': {
+      return checkCursorHooksStatus();
+    }
+    
+    default: {
+      console.log(`
+Claude-Mem Cursor Integration
+
+Usage: claude-mem cursor <command> [options]
+
+Commands:
+  install [target]    Install Cursor hooks
+                      target: project (default), user, or enterprise
+  
+  uninstall [target]  Remove Cursor hooks
+                      target: project (default), user, or enterprise
+  
+  status              Check installation status
+
+Examples:
+  claude-mem cursor install              # Install for current project
+  claude-mem cursor install user         # Install globally for user
+  claude-mem cursor uninstall            # Remove from current project
+  claude-mem cursor status               # Check if hooks are installed
+
+For more info: https://docs.claude-mem.ai/cursor
+      `);
+      return 0;
+    }
+  }
+}
+
+/**
+ * Install Cursor hooks
+ */
+async function installCursorHooks(sourceDir: string, target: string): Promise<number> {
+  console.log(`\n📦 Installing Claude-Mem Cursor hooks (${target} level)...\n`);
+  
+  let targetDir: string;
+  let hooksDir: string;
+  let workspaceRoot: string = process.cwd();
+  
+  switch (target) {
+    case 'project':
+      targetDir = path.join(process.cwd(), '.cursor');
+      hooksDir = path.join(targetDir, 'hooks');
+      break;
+    case 'user':
+      targetDir = path.join(homedir(), '.cursor');
+      hooksDir = path.join(targetDir, 'hooks');
+      break;
+    case 'enterprise':
+      if (process.platform === 'darwin') {
+        targetDir = '/Library/Application Support/Cursor';
+        hooksDir = path.join(targetDir, 'hooks');
+      } else if (process.platform === 'linux') {
+        targetDir = '/etc/cursor';
+        hooksDir = path.join(targetDir, 'hooks');
+      } else {
+        console.error('❌ Enterprise installation not yet supported on Windows');
+        return 1;
+      }
+      break;
+    default:
+      console.error(`❌ Invalid target: ${target}. Use: project, user, or enterprise`);
+      return 1;
+  }
+  
+  try {
+    // Create directories
+    mkdirSync(hooksDir, { recursive: true });
+    
+    // Copy hook scripts
+    const scripts = ['common.sh', 'session-init.sh', 'context-inject.sh', 
+                     'save-observation.sh', 'save-file-edit.sh', 'session-summary.sh'];
+    
+    for (const script of scripts) {
+      const srcPath = path.join(sourceDir, script);
+      const dstPath = path.join(hooksDir, script);
+      
+      if (existsSync(srcPath)) {
+        const content = readFileSync(srcPath, 'utf-8');
+        writeFileSync(dstPath, content, { mode: 0o755 });
+        console.log(`  ✓ Copied ${script}`);
+      } else {
+        console.warn(`  ⚠ ${script} not found in source`);
+      }
+    }
+    
+    // Generate hooks.json with correct paths
+    const hooksJsonPath = path.join(targetDir, 'hooks.json');
+    const hookPrefix = target === 'project' ? './.cursor/hooks/' : `${hooksDir}/`;
+    
+    const hooksJson = {
+      version: 1,
+      hooks: {
+        beforeSubmitPrompt: [
+          { command: `${hookPrefix}session-init.sh` },
+          { command: `${hookPrefix}context-inject.sh` }
+        ],
+        afterMCPExecution: [
+          { command: `${hookPrefix}save-observation.sh` }
+        ],
+        afterShellExecution: [
+          { command: `${hookPrefix}save-observation.sh` }
+        ],
+        afterFileEdit: [
+          { command: `${hookPrefix}save-file-edit.sh` }
+        ],
+        stop: [
+          { command: `${hookPrefix}session-summary.sh` }
+        ]
+      }
+    };
+    
+    writeFileSync(hooksJsonPath, JSON.stringify(hooksJson, null, 2));
+    console.log(`  ✓ Created hooks.json`);
+    
+    // For project-level: create initial context file
+    if (target === 'project') {
+      const rulesDir = path.join(targetDir, 'rules');
+      mkdirSync(rulesDir, { recursive: true });
+      
+      // Try to generate initial context from existing memory
+      const port = getWorkerPort();
+      const projectName = path.basename(workspaceRoot);
+      let contextGenerated = false;
+      
+      console.log(`  ⏳ Generating initial context...`);
+      
+      try {
+        // Check if worker is running
+        const healthResponse = await fetch(`http://127.0.0.1:${port}/api/readiness`);
+        if (healthResponse.ok) {
+          // Fetch context
+          const contextResponse = await fetch(
+            `http://127.0.0.1:${port}/api/context/inject?project=${encodeURIComponent(projectName)}`
+          );
+          if (contextResponse.ok) {
+            const context = await contextResponse.text();
+            if (context && context.trim()) {
+              const rulesFile = path.join(rulesDir, 'claude-mem-context.mdc');
+              const contextContent = `---
+alwaysApply: true
+description: "Claude-mem context from past sessions (auto-updated)"
+---
+
+# Memory Context from Past Sessions
+
+The following context is from claude-mem, a persistent memory system that tracks your coding sessions.
+
+${context}
+
+---
+*This context is updated after each session. Use claude-mem's MCP search tools for more detailed queries.*
+`;
+              writeFileSync(rulesFile, contextContent);
+              contextGenerated = true;
+              console.log(`  ✓ Generated initial context from existing memory`);
+            }
+          }
+        }
+      } catch {
+        // Worker not running - that's ok, context will be generated after first session
+      }
+      
+      if (!contextGenerated) {
+        // Create placeholder context file
+        const rulesFile = path.join(rulesDir, 'claude-mem-context.mdc');
+        const placeholderContent = `---
+alwaysApply: true
+description: "Claude-mem context from past sessions (auto-updated)"
+---
+
+# Memory Context from Past Sessions
+
+*No context yet. Complete your first session and context will appear here.*
+
+Use claude-mem's MCP search tools for manual memory queries.
+`;
+        writeFileSync(rulesFile, placeholderContent);
+        console.log(`  ✓ Created placeholder context file (will populate after first session)`);
+      }
+    }
+    
+    console.log(`
+✅ Installation complete!
+
+Hooks installed to: ${targetDir}/hooks.json
+Scripts installed to: ${hooksDir}
+
+Next steps:
+  1. Start claude-mem worker: claude-mem start
+  2. Restart Cursor to load the hooks
+  3. Check Cursor Settings → Hooks tab to verify
+
+Context Injection:
+  Context from past sessions is stored in .cursor/rules/claude-mem-context.mdc
+  and automatically included in every chat. It updates after each session ends.
+`);
+    
+    return 0;
+  } catch (error) {
+    console.error(`\n❌ Installation failed: ${(error as Error).message}`);
+    if (target === 'enterprise') {
+      console.error('   Tip: Enterprise installation may require sudo/admin privileges');
+    }
+    return 1;
+  }
+}
+
+/**
+ * Uninstall Cursor hooks
+ */
+function uninstallCursorHooks(target: string): number {
+  console.log(`\n🗑️  Uninstalling Claude-Mem Cursor hooks (${target} level)...\n`);
+  
+  let targetDir: string;
+  
+  switch (target) {
+    case 'project':
+      targetDir = path.join(process.cwd(), '.cursor');
+      break;
+    case 'user':
+      targetDir = path.join(homedir(), '.cursor');
+      break;
+    case 'enterprise':
+      if (process.platform === 'darwin') {
+        targetDir = '/Library/Application Support/Cursor';
+      } else if (process.platform === 'linux') {
+        targetDir = '/etc/cursor';
+      } else {
+        console.error('❌ Enterprise not supported on Windows');
+        return 1;
+      }
+      break;
+    default:
+      console.error(`❌ Invalid target: ${target}`);
+      return 1;
+  }
+  
+  try {
+    const hooksDir = path.join(targetDir, 'hooks');
+    const hooksJsonPath = path.join(targetDir, 'hooks.json');
+    
+    // Remove hook scripts
+    const scripts = ['common.sh', 'session-init.sh', 'context-inject.sh', 
+                     'save-observation.sh', 'save-file-edit.sh', 'session-summary.sh'];
+    
+    for (const script of scripts) {
+      const scriptPath = path.join(hooksDir, script);
+      if (existsSync(scriptPath)) {
+        unlinkSync(scriptPath);
+        console.log(`  ✓ Removed ${script}`);
+      }
+    }
+    
+    // Remove hooks.json
+    if (existsSync(hooksJsonPath)) {
+      unlinkSync(hooksJsonPath);
+      console.log(`  ✓ Removed hooks.json`);
+    }
+    
+    // Remove context file if project-level
+    if (target === 'project') {
+      const contextFile = path.join(targetDir, 'rules', 'claude-mem-context.mdc');
+      if (existsSync(contextFile)) {
+        unlinkSync(contextFile);
+        console.log(`  ✓ Removed context file`);
+      }
+    }
+    
+    console.log(`\n✅ Uninstallation complete!\n`);
+    console.log('Restart Cursor to apply changes.');
+    
+    return 0;
+  } catch (error) {
+    console.error(`\n❌ Uninstallation failed: ${(error as Error).message}`);
+    return 1;
+  }
+}
+
+/**
+ * Check Cursor hooks installation status
+ */
+function checkCursorHooksStatus(): number {
+  console.log('\n🔍 Claude-Mem Cursor Hooks Status\n');
+  
+  const locations = [
+    { name: 'Project', dir: path.join(process.cwd(), '.cursor') },
+    { name: 'User', dir: path.join(homedir(), '.cursor') },
+  ];
+  
+  if (process.platform === 'darwin') {
+    locations.push({ name: 'Enterprise', dir: '/Library/Application Support/Cursor' });
+  } else if (process.platform === 'linux') {
+    locations.push({ name: 'Enterprise', dir: '/etc/cursor' });
+  }
+  
+  let anyInstalled = false;
+  
+  for (const loc of locations) {
+    const hooksJson = path.join(loc.dir, 'hooks.json');
+    const hooksDir = path.join(loc.dir, 'hooks');
+    
+    if (existsSync(hooksJson)) {
+      anyInstalled = true;
+      console.log(`✅ ${loc.name}: Installed`);
+      console.log(`   Config: ${hooksJson}`);
+      
+      // Check for hook scripts
+      const scripts = ['session-init.sh', 'context-inject.sh', 'save-observation.sh'];
+      const missing = scripts.filter(s => !existsSync(path.join(hooksDir, s)));
+      
+      if (missing.length > 0) {
+        console.log(`   ⚠ Missing scripts: ${missing.join(', ')}`);
+      } else {
+        console.log(`   Scripts: All present`);
+      }
+      
+      // Check for context file (project only)
+      if (loc.name === 'Project') {
+        const contextFile = path.join(loc.dir, 'rules', 'claude-mem-context.mdc');
+        if (existsSync(contextFile)) {
+          console.log(`   Context: Active`);
+        } else {
+          console.log(`   Context: Not yet generated (will be created on first prompt)`);
+        }
+      }
+    } else {
+      console.log(`❌ ${loc.name}: Not installed`);
+    }
+    console.log('');
+  }
+  
+  if (!anyInstalled) {
+    console.log('No hooks installed. Run: claude-mem cursor install\n');
+  }
+  
+  return 0;
+}
+
+// ============================================================================
 // CLI Entry Point
 // ============================================================================
 
@@ -1128,6 +1519,13 @@ async function main() {
         console.log('Worker is not running');
       }
       process.exit(0);
+    }
+
+    case 'cursor': {
+      // Cursor hooks installation subcommand
+      const subcommand = process.argv[3];
+      const cursorResult = await handleCursorCommand(subcommand, process.argv.slice(4));
+      process.exit(cursorResult);
     }
 
     case '--daemon':

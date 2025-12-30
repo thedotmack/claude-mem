@@ -1,0 +1,84 @@
+# Quick Start: Claude-Mem + Cursor Integration
+
+## What This Does
+
+Connects claude-mem to Cursor so that:
+- ✅ Agent actions (MCP tools, shell commands, file edits) are automatically saved
+- ✅ Context from past sessions is automatically injected via `.cursor/rules/`
+- ✅ Sessions are summarized for future reference
+
+## Installation (1 minute)
+
+```bash
+# Install for current project
+claude-mem cursor install
+
+# Or install globally for all projects
+claude-mem cursor install user
+
+# Check installation status
+claude-mem cursor status
+```
+
+## Start Worker
+
+```bash
+claude-mem start
+
+# Verify it's running
+claude-mem status
+```
+
+## Restart Cursor
+
+Restart Cursor to load the hooks.
+
+## Verify It's Working
+
+1. Open Cursor Settings → Hooks tab
+2. You should see the hooks listed
+3. Submit a prompt in Cursor
+4. Check the web viewer: http://localhost:37777
+5. You should see observations appearing
+
+## What Gets Captured
+
+- **MCP Tool Usage**: All MCP tool executions
+- **Shell Commands**: All terminal commands
+- **File Edits**: All file modifications
+- **Sessions**: Each conversation is tracked
+
+## Accessing Memory
+
+### Via Web Viewer
+- Open http://localhost:37777
+- Browse sessions, observations, and summaries
+- Search your project history
+
+### Via MCP Tools (if enabled)
+- claude-mem provides search tools via MCP
+- Use `search`, `timeline`, and `get_observations` tools
+
+## Troubleshooting
+
+**Hooks not running?**
+- Check Cursor Settings → Hooks tab for errors
+- Verify scripts are executable: `chmod +x ~/.cursor/hooks/*.sh`
+- Check Hooks output channel in Cursor
+
+**Worker not responding?**
+- Check if worker is running: `curl http://127.0.0.1:37777/api/readiness`
+- Check logs: `tail -f ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log`
+- Restart worker: `npm run worker:restart`
+
+**Observations not saving?**
+- Check worker logs for errors
+- Verify session was initialized in web viewer
+- Test API directly: `curl -X POST http://127.0.0.1:37777/api/sessions/observations ...`
+
+## Next Steps
+
+- Read [README.md](README.md) for detailed documentation
+- Read [INTEGRATION.md](INTEGRATION.md) for architecture details
+- Visit [claude-mem docs](https://docs.claude-mem.ai) for full feature set
+
