@@ -180,6 +180,10 @@ export class SDKAgent {
 
       // Mark session complete
       const sessionDuration = Date.now() - session.startTime;
+
+      // Mark session as completed in database
+      this.dbManager.getSessionStore().completeSession(session.sessionDbId, 'completed');
+
       logger.success('SDK', 'Agent completed', {
         sessionId: session.sessionDbId,
         duration: `${(sessionDuration / 1000).toFixed(1)}s`
@@ -194,7 +198,10 @@ export class SDKAgent {
         errorMessage: error?.message,
         errorStack: error?.stack?.slice(0, 500)
       });
+
+      // Mark session as failed/completed in database
       if (error.name === 'AbortError') {
+        this.dbManager.getSessionStore().completeSession(session.sessionDbId, 'completed');
         logger.warn('SDK', 'Agent aborted by user', {
           sessionId: session.sessionDbId,
           lastPromptNumber: session.lastPromptNumber,
@@ -202,6 +209,7 @@ export class SDKAgent {
           duration: Date.now() - (session.startTime || Date.now())
         });
       } else {
+        this.dbManager.getSessionStore().completeSession(session.sessionDbId, 'failed');
         logger.failure('SDK', 'Agent error', { sessionDbId: session.sessionDbId }, error);
       }
       throw error;

@@ -1204,6 +1204,21 @@ export class SessionStore {
 
 
   /**
+   * Mark a session as completed
+   * Called when SDK agent finishes or session is manually deleted
+   */
+  completeSession(sessionDbId: number, status: 'completed' | 'failed' = 'completed'): void {
+    const now = new Date();
+    const nowEpoch = now.getTime();
+
+    this.db.prepare(`
+      UPDATE sdk_sessions
+      SET status = ?, completed_at = ?, completed_at_epoch = ?
+      WHERE id = ? AND status = 'active'
+    `).run(status, now.toISOString(), nowEpoch, sessionDbId);
+  }
+
+  /**
    * Save a user prompt
    */
   saveUserPrompt(contentSessionId: string, promptNumber: number, promptText: string): number {

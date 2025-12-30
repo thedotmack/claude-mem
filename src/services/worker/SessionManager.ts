@@ -290,6 +290,9 @@ export class SessionManager {
       await session.generatorPromise.catch(() => {});
     }
 
+    // Mark session as completed in database
+    this.dbManager.getSessionStore().completeSession(sessionDbId, 'completed');
+
     // Cleanup
     this.sessions.delete(sessionDbId);
     this.sessionQueues.delete(sessionDbId);
