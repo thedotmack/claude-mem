@@ -23,9 +23,10 @@ import { ModeManager } from '../domain/ModeManager.js';
 import { updateCursorContextForProject } from '../worker-service.js';
 import { getWorkerPort } from '../../shared/worker-utils.js';
 
-// Import Agent SDK (assumes it's installed)
-// @ts-ignore - Agent SDK types may not be available
-import { query } from '@anthropic-ai/claude-agent-sdk';
+// Agent SDK V2 imports
+// @ts-ignore - Agent SDK types
+import { query, unstable_v2_createSession, unstable_v2_resumeSession } from '@anthropic-ai/claude-agent-sdk';
+import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 
 export class SDKAgent {
   private dbManager: DatabaseManager;
