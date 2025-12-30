@@ -197,6 +197,7 @@ async function buildHooks() {
     console.log(`   - Worker: worker-service.cjs`);
     console.log(`   - MCP Server: mcp-server.cjs`);
     console.log('\n💡 Note: Dependencies will be auto-installed on first hook execution');
+    console.log('📝 Cursor hooks are in cursor-hooks/ (no build needed - plain shell scripts)');
 
   } catch (error) {
     console.error('\n❌ Build failed:', error.message);

@@ -4,6 +4,145 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [8.5.0] - 2025-12-30
+
+# Cursor Support Now Available 🎉
+
+This is a major release introducing **full Cursor IDE support**. Claude-mem now works with Cursor, bringing persistent AI memory to Cursor users with or without a Claude Code subscription.
+
+## Highlights
+
+**Give Cursor persistent memory.** Every Cursor session starts fresh - your AI doesn't remember what it worked on yesterday. Claude-mem changes that. Your agent builds cumulative knowledge about your codebase, decisions, and patterns over time.
+
+### Works Without Claude Code
+
+You can now use claude-mem with Cursor using free AI providers:
+- **Gemini** (recommended): 1,500 free requests/day, no credit card required
+- **OpenRouter**: Access to 100+ models including free options
+- **Claude SDK**: For Claude Code subscribers
+
+### Cross-Platform Support
+
+Full support for all major platforms:
+- **macOS**: Bash scripts with `jq` and `curl`
+- **Linux**: Same toolchain as macOS
+- **Windows**: Native PowerShell scripts, no WSL required
+
+## New Features
+
+### Interactive Setup Wizard (`bun run cursor:setup`)
+A guided installer that:
+- Detects your environment (Claude Code present or not)
+- Helps you choose and configure an AI provider
+- Installs Cursor hooks automatically
+- Starts the worker service
+- Verifies everything is working
+
+### Cursor Lifecycle Hooks
+Complete hook integration with Cursor's native hook system:
+- `session-init.sh/.ps1` - Session start with context injection
+- `user-message.sh/.ps1` - User prompt capture
+- `save-observation.sh/.ps1` - Tool usage logging
+- `save-file-edit.sh/.ps1` - File edit tracking
+- `session-summary.sh/.ps1` - Session end summary
+- `context-inject.sh/.ps1` - Load relevant history
+
+### Context Injection via `.cursor/rules`
+Relevant past context is automatically injected into Cursor sessions via the `.cursor/rules/claude-mem-context.mdc` file, giving your AI immediate awareness of prior work.
+
+### Project Registry
+Multi-project support with automatic project detection:
+- Projects registered in `~/.claude-mem/cursor-projects.json`
+- Context automatically scoped to current project
+- Works across multiple workspaces simultaneously
+
+### MCP Search Tools
+Full MCP server integration for Cursor:
+- `search` - Find observations by query, date, type
+- `timeline` - Get context around specific observations
+- `get_observations` - Fetch full details for filtered IDs
+
+## New Commands
+
+| Command | Description |
+|---------|-------------|
+| `bun run cursor:setup` | Interactive setup wizard |
+| `bun run cursor:install` | Install Cursor hooks |
+| `bun run cursor:uninstall` | Remove Cursor hooks |
+| `bun run cursor:status` | Check hook installation status |
+
+## Documentation
+
+Full documentation available at [docs.claude-mem.ai/cursor](https://docs.claude-mem.ai/cursor):
+- Cursor Integration Overview
+- Gemini Setup Guide (free tier)
+- OpenRouter Setup Guide
+- Troubleshooting
+
+## Getting Started
+
+### For Cursor-Only Users (No Claude Code)
+
+```bash
+git clone https://github.com/thedotmack/claude-mem.git
+cd claude-mem && bun install && bun run build
+bun run cursor:setup
+```
+
+### For Claude Code Users
+
+```bash
+/plugin marketplace add thedotmack/claude-mem
+/plugin install claude-mem
+claude-mem cursor install
+```
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.2.10...v8.5.0
+
+## [8.2.10] - 2025-12-30
+
+## Bug Fixes
+
+- **Auto-restart worker on version mismatch** (#484): When the plugin updates but the worker was already running on the old version, the worker now automatically restarts instead of failing with 400 errors.
+
+### Changes
+- `/api/version` endpoint now returns the built-in version (compiled at build time) instead of reading from disk
+- `worker-service start` command checks for version mismatch and auto-restarts if needed
+- Downgraded hook version mismatch warning to debug logging (now handled by auto-restart)
+
+Thanks @yungweng for the detailed bug report!
+
+## [8.2.9] - 2025-12-29
+
+## Bug Fixes
+
+- **Worker Service**: Remove file-based locking and improve Windows stability
+  - Replaced file-based locking with health-check-first approach for cleaner mutual exclusion
+  - Removed AbortSignal.timeout() calls to reduce Bun libuv assertion errors on Windows
+  - Added 500ms shutdown delays on Windows to prevent zombie ports
+  - Reduced hook timeout values for improved responsiveness
+  - Increased worker readiness polling duration from 5s to 15s
+
+## Internal Changes
+
+- Updated worker CLI scripts to reference worker-service.cjs directly
+- Simplified hook command configurations
+
+## [8.2.8] - 2025-12-29
+
+## Bug Fixes
+
+- Fixed orphaned chroma-mcp processes during shutdown (#489)
+  - Added graceful shutdown handling with signal handlers registered early in WorkerService lifecycle
+  - Ensures ChromaSync subprocess cleanup even when interrupted during initialization
+  - Removes PID file during shutdown to prevent stale process tracking
+
+## Technical Details
+
+This patch release addresses a race condition where SIGTERM/SIGINT signals arriving during ChromaSync initialization could leave orphaned chroma-mcp processes. The fix moves signal handler registration from the start() method to the constructor, ensuring cleanup handlers exist throughout the entire initialization lifecycle.
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.2.7...v8.2.8
+
 ## [8.2.7] - 2025-12-29
 
 ## What's Changed

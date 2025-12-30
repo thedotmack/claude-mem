@@ -56,8 +56,8 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
       tool_input,
       tool_response,
       cwd
-    }),
-    signal: AbortSignal.timeout(HOOK_TIMEOUTS.DEFAULT)
+    })
+    // Note: Removed signal to avoid Windows Bun cleanup issue (libuv assertion)
   });
 
   if (!response.ok) {

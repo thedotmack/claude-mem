@@ -17,13 +17,27 @@ import { logger } from '../utils/logger.js';
 import { exec, execSync, spawn } from 'child_process';
 import { homedir } from 'os';
 import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync } from 'fs';
+import * as readline from 'readline';
 import { promisify } from 'util';
+import {
+  readCursorRegistry as readCursorRegistryFromFile,
+  writeCursorRegistry as writeCursorRegistryToFile,
+  writeContextFile,
+  type CursorProjectRegistry
+} from '../utils/cursor-utils.js';
 
 const execAsync = promisify(exec);
+
+// Build-time injected version constant (set by esbuild define)
+declare const __DEFAULT_PACKAGE_VERSION__: string;
+const BUILT_IN_VERSION = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined'
+  ? __DEFAULT_PACKAGE_VERSION__
+  : 'development';
 
 // PID file management for self-spawn pattern
 const DATA_DIR = path.join(homedir(), '.claude-mem');
 const PID_FILE = path.join(DATA_DIR, 'worker.pid');
+const CURSOR_REGISTRY_FILE = path.join(DATA_DIR, 'cursor-projects.json');
 const HOOK_RESPONSE = '{"continue": true, "suppressOutput": true}';
 
 interface PidInfo {
@@ -56,105 +70,69 @@ function removePidFile(): void {
   }
 }
 
-// Lockfile for CLI command mutual exclusion (prevents race conditions on Windows)
-const LOCK_FILE = path.join(DATA_DIR, 'worker.lock');
-const LOCK_STALE_MS = 120000; // Lock considered stale after 2 minutes
+// ============================================================================
+// Cursor Project Registry
+// Tracks which projects have Cursor hooks installed for auto-context updates
+// Uses pure functions from cursor-utils.ts for testability
+// ============================================================================
 
-interface LockInfo {
-  pid: number;
-  command: string;
-  startedAt: string;
+function readCursorRegistry(): CursorProjectRegistry {
+  return readCursorRegistryFromFile(CURSOR_REGISTRY_FILE);
 }
 
-/**
- * Clean up stale lock from crashed processes
- */
-function cleanupStaleLock(): void {
-  try {
-    if (!existsSync(LOCK_FILE)) return;
-    const lockData = readFileSync(LOCK_FILE, 'utf-8');
-    const lockInfo: LockInfo = JSON.parse(lockData);
-    const lockAge = Date.now() - new Date(lockInfo.startedAt).getTime();
-    if (lockAge > LOCK_STALE_MS) {
-      logger.warn('SYSTEM', 'Removing stale lock', {
-        lockAge: Math.round(lockAge / 1000) + 's',
-        originalPid: lockInfo.pid,
-        originalCommand: lockInfo.command
-      });
-      unlinkSync(LOCK_FILE);
-    }
-  } catch {
-    // If we can't read the lock, it's likely corrupted - remove it
-    try { unlinkSync(LOCK_FILE); } catch {}
-  }
+function writeCursorRegistry(registry: CursorProjectRegistry): void {
+  writeCursorRegistryToFile(CURSOR_REGISTRY_FILE, registry);
 }
 
-/**
- * Acquire exclusive lock for worker operations
- * Uses atomic file creation (O_EXCL) for cross-process safety
- */
-function acquireLock(command: string): boolean {
-  mkdirSync(DATA_DIR, { recursive: true });
-  cleanupStaleLock();
-
-  const lockInfo: LockInfo = {
-    pid: process.pid,
-    command,
-    startedAt: new Date().toISOString()
+function registerCursorProject(projectName: string, workspacePath: string): void {
+  const registry = readCursorRegistry();
+  registry[projectName] = {
+    workspacePath,
+    installedAt: new Date().toISOString()
   };
+  writeCursorRegistry(registry);
+  logger.info('CURSOR', 'Registered project for auto-context updates', { projectName, workspacePath });
+}
 
-  let retries = 3;
-  while (retries > 0) {
-    try {
-      // O_EXCL ensures atomic creation - fails if file exists
-      const fd = fs.openSync(LOCK_FILE, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY);
-      fs.writeSync(fd, JSON.stringify(lockInfo, null, 2));
-      fs.closeSync(fd);
-      return true;
-    } catch (error: unknown) {
-      if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
-        return false;
-      }
-      // Retry on ENOENT (can happen on Windows if file/dir state is in flux)
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        retries--;
-        if (retries === 0) {
-          logger.warn('SYSTEM', 'Lock acquisition error (ENOENT)', { error: (error as Error).message });
-          return false;
-        }
-        // Ensure directory exists and try again
-        try { mkdirSync(DATA_DIR, { recursive: true }); } catch {}
-        continue;
-      }
-      logger.warn('SYSTEM', 'Lock acquisition error', { error: (error as Error).message });
-      return false;
-    }
+function unregisterCursorProject(projectName: string): void {
+  const registry = readCursorRegistry();
+  if (registry[projectName]) {
+    delete registry[projectName];
+    writeCursorRegistry(registry);
+    logger.info('CURSOR', 'Unregistered project', { projectName });
   }
-  return false;
 }
 
 /**
- * Release lock file
+ * Update Cursor context files for all registered projects matching this project name.
+ * Called by SDK agents after saving a summary.
  */
-function releaseLock(): void {
+export async function updateCursorContextForProject(projectName: string, port: number): Promise<void> {
+  const registry = readCursorRegistry();
+  const entry = registry[projectName];
+
+  if (!entry) return; // Project doesn't have Cursor hooks installed
+
   try {
-    if (existsSync(LOCK_FILE)) unlinkSync(LOCK_FILE);
+    // Fetch fresh context from worker
+    const response = await fetch(
+      `http://127.0.0.1:${port}/api/context/inject?project=${encodeURIComponent(projectName)}`
+    );
+
+    if (!response.ok) return;
+
+    const context = await response.text();
+    if (!context || !context.trim()) return;
+
+    // Write to the project's Cursor rules file using shared utility
+    writeContextFile(entry.workspacePath, context);
+    logger.debug('CURSOR', 'Updated context file', { projectName, workspacePath: entry.workspacePath });
   } catch (error) {
-    logger.warn('SYSTEM', 'Lock release error', { error: (error as Error).message });
+    logger.warn('CURSOR', 'Failed to update context file', { projectName, error: (error as Error).message });
   }
 }
 
-/**
- * Wait for lock with timeout
- */
-async function waitForLock(command: string, timeoutMs: number): Promise<boolean> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    if (acquireLock(command)) return true;
-    await new Promise(r => setTimeout(r, 200));
-  }
-  return false;
-}
+// No lock file needed - health checks and port binding provide coordination
 
 /**
  * Get platform-adjusted timeout (Windows socket cleanup is slower)
@@ -166,9 +144,8 @@ function getPlatformTimeout(baseMs: number): number {
 
 async function isPortInUse(port: number): Promise<boolean> {
   try {
-    const response = await fetch(`http://127.0.0.1:${port}/api/health`, {
-      signal: AbortSignal.timeout(2000)
-    });
+    // Note: Removed AbortSignal.timeout to avoid Windows Bun cleanup issue (libuv assertion)
+    const response = await fetch(`http://127.0.0.1:${port}/api/health`);
     return response.ok;
   } catch { return false; }
 }
@@ -177,9 +154,8 @@ async function waitForHealth(port: number, timeoutMs: number = 30000): Promise<b
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     try {
-      const response = await fetch(`http://127.0.0.1:${port}/api/readiness`, {
-        signal: AbortSignal.timeout(2000)
-      });
+      // Note: Removed AbortSignal.timeout to avoid Windows Bun cleanup issue (libuv assertion)
+      const response = await fetch(`http://127.0.0.1:${port}/api/readiness`);
       if (response.ok) return true;
     } catch {
       // Not ready yet
@@ -191,9 +167,9 @@ async function waitForHealth(port: number, timeoutMs: number = 30000): Promise<b
 
 async function httpShutdown(port: number): Promise<boolean> {
   try {
+    // Note: Removed AbortSignal.timeout to avoid Windows Bun cleanup issue (libuv assertion)
     const response = await fetch(`http://127.0.0.1:${port}/api/admin/shutdown`, {
-      method: 'POST',
-      signal: AbortSignal.timeout(5000)
+      method: 'POST'
     });
     if (!response.ok) {
       logger.warn('SYSTEM', 'Shutdown request returned error', { port, status: response.status });
@@ -217,6 +193,46 @@ async function waitForPortFree(port: number, timeoutMs: number = 10000): Promise
     await new Promise(r => setTimeout(r, 500));
   }
   return false;
+}
+
+/**
+ * Get the plugin version from the installed marketplace package.json
+ */
+function getInstalledPluginVersion(): string {
+  const marketplaceRoot = path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
+  const packageJsonPath = path.join(marketplaceRoot, 'package.json');
+  const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
+  return packageJson.version;
+}
+
+/**
+ * Get the running worker's version via API
+ */
+async function getRunningWorkerVersion(port: number): Promise<string | null> {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/api/version`);
+    if (!response.ok) return null;
+    const data = await response.json() as { version: string };
+    return data.version;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Check if worker version matches plugin version
+ * Returns true if versions match or if we can't determine (assume match)
+ */
+async function checkVersionMatch(port: number): Promise<{ matches: boolean; pluginVersion: string; workerVersion: string | null }> {
+  const pluginVersion = getInstalledPluginVersion();
+  const workerVersion = await getRunningWorkerVersion(port);
+
+  // If we can't get worker version, assume it matches (graceful degradation)
+  if (!workerVersion) {
+    return { matches: true, pluginVersion, workerVersion };
+  }
+
+  return { matches: pluginVersion === workerVersion, pluginVersion, workerVersion };
 }
 
 // Import composed service layer
@@ -250,6 +266,7 @@ export class WorkerService {
   // Initialization flags for MCP/SDK readiness tracking
   private mcpReady: boolean = false;
   private initializationCompleteFlag: boolean = false;
+  private isShuttingDown: boolean = false;
 
   // Service layer
   private dbManager: DatabaseManager;
@@ -315,6 +332,36 @@ export class WorkerService {
 
     this.setupMiddleware();
     this.setupRoutes();
+
+    // Register signal handlers early to ensure cleanup even if start() hasn't completed
+    // The shutdown() method is defensive and safe to call at any initialization stage
+    this.registerSignalHandlers();
+  }
+
+  /**
+   * Register signal handlers for graceful shutdown
+   * Called in constructor to ensure cleanup even if start() hasn't completed
+   */
+  private registerSignalHandlers(): void {
+    const handleShutdown = async (signal: string) => {
+      if (this.isShuttingDown) {
+        logger.warn('SYSTEM', `Received ${signal} but shutdown already in progress`);
+        return;
+      }
+      this.isShuttingDown = true;
+
+      logger.info('SYSTEM', `Received ${signal}, shutting down...`);
+      try {
+        await this.shutdown();
+        process.exit(0);
+      } catch (error) {
+        logger.error('SYSTEM', 'Error during shutdown', {}, error as Error);
+        process.exit(1);
+      }
+    };
+
+    process.on('SIGTERM', () => handleShutdown('SIGTERM'));
+    process.on('SIGINT', () => handleShutdown('SIGINT'));
   }
 
   /**
@@ -361,16 +408,10 @@ export class WorkerService {
       }
     });
 
-    // Version endpoint - returns the worker's current version
+    // Version endpoint - returns the worker's built-in version (compiled at build time)
+    // This is critical for detecting version mismatch when plugin is updated but worker is still running old code
     this.app.get('/api/version', (_req, res) => {
-      const { homedir } = require('os');
-      const { readFileSync } = require('fs');
-      const marketplaceRoot = path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
-      const packageJsonPath = path.join(marketplaceRoot, 'package.json');
-
-      // Read version from marketplace package.json
-      const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
-      res.status(200).json({ version: packageJson.version });
+      res.status(200).json({ version: BUILT_IN_VERSION });
     });
 
     // Instructions endpoint - loads SKILL.md sections on-demand for progressive instruction loading
@@ -835,6 +876,9 @@ export class WorkerService {
   async shutdown(): Promise<void> {
     logger.info('SYSTEM', 'Shutdown initiated');
 
+    // Clean up PID file on shutdown
+    removePidFile();
+
     // STEP 1: Enumerate all child processes BEFORE we start closing things
     const childPids = await this.getChildProcesses(process.pid);
     logger.info('SYSTEM', 'Found child processes', { count: childPids.length, pids: childPids });
@@ -842,11 +886,23 @@ export class WorkerService {
     // STEP 2: Close HTTP server first
     if (this.server) {
       this.server.closeAllConnections();
+
+      // Give Windows time to close connections before closing server (prevents zombie ports)
+      if (process.platform === 'win32') {
+        await new Promise(r => setTimeout(r, 500));
+      }
+
       await new Promise<void>((resolve, reject) => {
         this.server!.close(err => err ? reject(err) : resolve());
       });
       this.server = null;
       logger.info('SYSTEM', 'HTTP server closed');
+
+      // Extra delay on Windows to ensure port is fully released
+      if (process.platform === 'win32') {
+        await new Promise(r => setTimeout(r, 500));
+        logger.info('SYSTEM', 'Waited for Windows port cleanup');
+      }
     }
 
     // STEP 3: Shutdown active sessions
@@ -988,6 +1044,830 @@ export class WorkerService {
 }
 
 // ============================================================================
+// Cursor Hooks Installation
+// ============================================================================
+
+/**
+ * Interactive setup wizard for Cursor users
+ * Guides through provider selection and API key configuration
+ */
+async function runInteractiveSetup(): Promise<number> {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
+
+  const question = (prompt: string): Promise<string> => {
+    return new Promise(resolve => rl.question(prompt, resolve));
+  };
+
+  console.log(`
+╔══════════════════════════════════════════════════════════════════╗
+║           Claude-Mem Cursor Setup Wizard                         ║
+║                                                                  ║
+║  This wizard will guide you through setting up claude-mem        ║
+║  for use with Cursor IDE.                                        ║
+╚══════════════════════════════════════════════════════════════════╝
+`);
+
+  try {
+    // Step 1: Check environment
+    console.log('Step 1: Checking environment...\n');
+
+    const hasClaudeCode = await detectClaudeCode();
+    const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+    let settings: Record<string, unknown> = {};
+
+    // Load existing settings if present
+    if (existsSync(settingsPath)) {
+      try {
+        settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+      } catch {
+        // Start fresh if corrupt
+      }
+    }
+
+    const currentProvider = settings['CLAUDE_MEM_PROVIDER'] as string || (hasClaudeCode ? 'claude-sdk' : 'none');
+
+    if (hasClaudeCode) {
+      console.log('✅ Claude Code detected\n');
+    } else {
+      console.log('ℹ️  Claude Code not detected\n');
+    }
+
+    console.log(`Current provider: ${currentProvider}\n`);
+
+    // Step 2: Provider selection (always show)
+    console.log('Step 2: Choose AI Provider\n');
+    if (hasClaudeCode) {
+      console.log('  [1] Claude SDK (Recommended - uses your Claude Code subscription)');
+    } else {
+      console.log('  [1] Claude SDK (requires Claude Code subscription)');
+    }
+    console.log('  [2] Gemini (1500 free requests/day)');
+    console.log('  [3] OpenRouter (100+ models, some free)');
+    console.log('  [4] Keep current settings\n');
+
+    const providerChoice = await question('Enter choice [1-4]: ');
+
+    if (providerChoice === '1') {
+      settings['CLAUDE_MEM_PROVIDER'] = 'claude-sdk';
+      mkdirSync(path.dirname(settingsPath), { recursive: true });
+      writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+      console.log('\n✅ Claude SDK configured!\n');
+    } else if (providerChoice === '2') {
+      console.log('\n📝 Configuring Gemini...\n');
+      console.log('   Get your free API key at: https://aistudio.google.com/apikey\n');
+
+      const apiKey = await question('Enter your Gemini API key: ');
+
+      if (!apiKey.trim()) {
+        console.log('\n⚠️  No API key provided. You can add it later in ~/.claude-mem/settings.json\n');
+      } else {
+        settings['CLAUDE_MEM_PROVIDER'] = 'gemini';
+        settings['CLAUDE_MEM_GEMINI_API_KEY'] = apiKey.trim();
+
+        mkdirSync(path.dirname(settingsPath), { recursive: true });
+        writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+        console.log('\n✅ Gemini configured successfully!\n');
+      }
+    } else if (providerChoice === '3') {
+      console.log('\n📝 Configuring OpenRouter...\n');
+      console.log('   Get your API key at: https://openrouter.ai/keys\n');
+
+      const apiKey = await question('Enter your OpenRouter API key: ');
+
+      if (!apiKey.trim()) {
+        console.log('\n⚠️  No API key provided. You can add it later in ~/.claude-mem/settings.json\n');
+      } else {
+        settings['CLAUDE_MEM_PROVIDER'] = 'openrouter';
+        settings['CLAUDE_MEM_OPENROUTER_API_KEY'] = apiKey.trim();
+
+        mkdirSync(path.dirname(settingsPath), { recursive: true });
+        writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+        console.log('\n✅ OpenRouter configured successfully!\n');
+      }
+    } else {
+      console.log('\n✅ Keeping current settings.\n');
+    }
+
+    // Step 3: Install location
+    console.log('Step 3: Choose installation scope\n');
+    console.log('  [1] Project (current directory only) - Recommended');
+    console.log('  [2] User (all projects for current user)');
+    console.log('  [3] Skip hook installation\n');
+
+    const scopeChoice = await question('Enter choice [1-3]: ');
+
+    let installTarget: string | null = null;
+    if (scopeChoice === '1') {
+      installTarget = 'project';
+    } else if (scopeChoice === '2') {
+      installTarget = 'user';
+    } else {
+      console.log('\n⚠️  Skipping hook installation.\n');
+    }
+
+    // Step 4: Install hooks (if target selected)
+    if (installTarget) {
+      console.log(`Step 4: Installing Cursor hooks (${installTarget})...\n`);
+
+      const cursorHooksDir = findCursorHooksDir();
+      if (!cursorHooksDir) {
+        console.error('❌ Could not find cursor-hooks directory');
+        console.error('   Make sure you ran npm run build first.');
+        rl.close();
+        return 1;
+      }
+
+      const installResult = await installCursorHooks(cursorHooksDir, installTarget);
+
+      if (installResult !== 0) {
+        rl.close();
+        return installResult;
+      }
+
+      // Step 5: Configure MCP server for memory search
+      console.log('\nStep 5: Configuring MCP server for memory search...\n');
+
+      const mcpResult = configureCursorMcp(installTarget);
+      if (mcpResult !== 0) {
+        console.warn('⚠️  MCP configuration failed, but hooks are installed.');
+        console.warn('   You can manually configure MCP later.\n');
+      } else {
+        console.log('');
+      }
+    }
+
+    // Step 6: Start worker
+    console.log('\nStep 6: Starting claude-mem worker...\n');
+
+    const port = getWorkerPort();
+    const alreadyRunning = await waitForHealth(port, 1000);
+
+    if (alreadyRunning) {
+      console.log('✅ Worker is already running!\n');
+    } else {
+      console.log('   Starting worker in background...');
+
+      // Spawn worker daemon
+      const child = spawn(process.execPath, [__filename, '--daemon'], {
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+        env: { ...process.env, CLAUDE_MEM_WORKER_PORT: String(port) }
+      });
+
+      if (child.pid === undefined) {
+        console.error('❌ Failed to start worker');
+        rl.close();
+        return 1;
+      }
+
+      child.unref();
+      writePidFile({ pid: child.pid, port, startedAt: new Date().toISOString() });
+
+      // Wait for health
+      const healthy = await waitForHealth(port, getPlatformTimeout(30000));
+
+      if (!healthy) {
+        removePidFile();
+        console.error('❌ Worker failed to start');
+        rl.close();
+        return 1;
+      }
+
+      console.log('✅ Worker started successfully!\n');
+    }
+
+    // Final summary
+    console.log(`
+╔══════════════════════════════════════════════════════════════════╗
+║                    Setup Complete! 🎉                            ║
+╚══════════════════════════════════════════════════════════════════╝
+
+What's installed:
+  ✓ Cursor hooks - Automatically capture sessions
+  ✓ Context injection - Past work injected into new chats
+  ✓ MCP search server - Ask "what did I work on last week?"
+
+Next steps:
+  1. Restart Cursor to load the hooks and MCP server
+  2. Start chatting - your sessions will be remembered!
+  3. Use natural language to search: "find where I fixed the auth bug"
+
+Useful commands:
+  npm run cursor:status     Check installation status
+  npm run worker:status     Check worker status
+  npm run worker:logs       View worker logs
+
+Memory viewer:
+  http://localhost:${port}
+
+Documentation:
+  https://docs.claude-mem.ai/cursor
+`);
+
+    rl.close();
+    return 0;
+  } catch (error) {
+    rl.close();
+    console.error(`\n❌ Setup failed: ${(error as Error).message}`);
+    return 1;
+  }
+}
+
+/**
+ * Detect if Claude Code is available
+ * Checks for the Claude Code CLI and plugin directory
+ */
+async function detectClaudeCode(): Promise<boolean> {
+  try {
+    // Check for Claude Code CLI
+    const { stdout } = await execAsync('which claude || where claude', { timeout: 5000 });
+    if (stdout.trim()) {
+      return true;
+    }
+  } catch {
+    // CLI not found
+  }
+
+  // Check for Claude Code plugin directory
+  const pluginDir = path.join(homedir(), '.claude', 'plugins');
+  if (existsSync(pluginDir)) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Find cursor-hooks directory
+ * Searches in order: marketplace install, source repo
+ * Checks for both bash (common.sh) and PowerShell (common.ps1) scripts
+ */
+function findCursorHooksDir(): string | null {
+  const possiblePaths = [
+    // Marketplace install location
+    path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack', 'cursor-hooks'),
+    // Development/source location (relative to built worker-service.cjs in plugin/scripts/)
+    path.join(path.dirname(__filename), '..', '..', 'cursor-hooks'),
+    // Alternative dev location
+    path.join(process.cwd(), 'cursor-hooks'),
+  ];
+
+  for (const p of possiblePaths) {
+    // Check for either bash or PowerShell common script
+    if (existsSync(path.join(p, 'common.sh')) || existsSync(path.join(p, 'common.ps1'))) {
+      return p;
+    }
+  }
+  return null;
+}
+
+/**
+ * Find MCP server script path
+ * Searches in order: marketplace install, source repo
+ */
+function findMcpServerPath(): string | null {
+  const possiblePaths = [
+    // Marketplace install location
+    path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack', 'plugin', 'scripts', 'mcp-server.cjs'),
+    // Development/source location (relative to built worker-service.cjs in plugin/scripts/)
+    path.join(path.dirname(__filename), 'mcp-server.cjs'),
+    // Alternative dev location
+    path.join(process.cwd(), 'plugin', 'scripts', 'mcp-server.cjs'),
+  ];
+
+  for (const p of possiblePaths) {
+    if (existsSync(p)) {
+      return p;
+    }
+  }
+  return null;
+}
+
+interface CursorMcpConfig {
+  mcpServers: {
+    [name: string]: {
+      command: string;
+      args?: string[];
+      env?: Record<string, string>;
+    };
+  };
+}
+
+/**
+ * Configure MCP server in Cursor's mcp.json
+ * @param target 'project' or 'user'
+ * @returns 0 on success, 1 on failure
+ */
+function configureCursorMcp(target: string): number {
+  const mcpServerPath = findMcpServerPath();
+
+  if (!mcpServerPath) {
+    console.error('❌ Could not find MCP server script');
+    console.error('   Expected at: ~/.claude/plugins/marketplaces/thedotmack/plugin/scripts/mcp-server.cjs');
+    return 1;
+  }
+
+  let mcpJsonDir: string;
+  let mcpJsonPath: string;
+
+  switch (target) {
+    case 'project':
+      mcpJsonDir = path.join(process.cwd(), '.cursor');
+      mcpJsonPath = path.join(mcpJsonDir, 'mcp.json');
+      break;
+    case 'user':
+      mcpJsonDir = path.join(homedir(), '.cursor');
+      mcpJsonPath = path.join(mcpJsonDir, 'mcp.json');
+      break;
+    default:
+      console.error(`❌ Invalid target: ${target}. Use: project or user`);
+      return 1;
+  }
+
+  try {
+    // Create directory if needed
+    mkdirSync(mcpJsonDir, { recursive: true });
+
+    // Load existing config or create new
+    let config: CursorMcpConfig = { mcpServers: {} };
+    if (existsSync(mcpJsonPath)) {
+      try {
+        config = JSON.parse(readFileSync(mcpJsonPath, 'utf-8'));
+        if (!config.mcpServers) {
+          config.mcpServers = {};
+        }
+      } catch {
+        // Start fresh if corrupt
+        config = { mcpServers: {} };
+      }
+    }
+
+    // Add claude-mem MCP server
+    config.mcpServers['claude-mem'] = {
+      command: 'node',
+      args: [mcpServerPath]
+    };
+
+    writeFileSync(mcpJsonPath, JSON.stringify(config, null, 2));
+    console.log(`  ✓ Configured MCP server in ${target === 'user' ? '~/.cursor' : '.cursor'}/mcp.json`);
+    console.log(`    Server path: ${mcpServerPath}`);
+
+    return 0;
+  } catch (error) {
+    console.error(`❌ Failed to configure MCP: ${(error as Error).message}`);
+    return 1;
+  }
+}
+
+/**
+ * Handle cursor subcommand for hooks installation
+ */
+async function handleCursorCommand(subcommand: string, args: string[]): Promise<number> {
+  switch (subcommand) {
+    case 'install': {
+      const target = args[0] || 'project';
+      const cursorHooksDir = findCursorHooksDir();
+      
+      if (!cursorHooksDir) {
+        console.error('❌ Could not find cursor-hooks directory');
+        console.error('   Expected at: ~/.claude/plugins/marketplaces/thedotmack/cursor-hooks/');
+        return 1;
+      }
+      
+      return installCursorHooks(cursorHooksDir, target);
+    }
+    
+    case 'uninstall': {
+      const target = args[0] || 'project';
+      return uninstallCursorHooks(target);
+    }
+    
+    case 'status': {
+      return checkCursorHooksStatus();
+    }
+
+    case 'setup': {
+      // Interactive guided setup for Cursor users
+      return await runInteractiveSetup();
+    }
+
+    default: {
+      console.log(`
+Claude-Mem Cursor Integration
+
+Usage: claude-mem cursor <command> [options]
+
+Commands:
+  setup               Interactive guided setup (recommended for first-time users)
+
+  install [target]    Install Cursor hooks
+                      target: project (default), user, or enterprise
+
+  uninstall [target]  Remove Cursor hooks
+                      target: project (default), user, or enterprise
+
+  status              Check installation status
+
+Examples:
+  npm run cursor:setup                   # Interactive wizard (recommended)
+  npm run cursor:install                 # Install for current project
+  claude-mem cursor install user         # Install globally for user
+  claude-mem cursor uninstall            # Remove from current project
+  claude-mem cursor status               # Check if hooks are installed
+
+For more info: https://docs.claude-mem.ai/cursor
+      `);
+      return 0;
+    }
+  }
+}
+
+/**
+ * Detect platform for script selection
+ */
+function detectPlatform(): 'windows' | 'unix' {
+  return process.platform === 'win32' ? 'windows' : 'unix';
+}
+
+/**
+ * Get script extension based on platform
+ */
+function getScriptExtension(): string {
+  return detectPlatform() === 'windows' ? '.ps1' : '.sh';
+}
+
+/**
+ * Install Cursor hooks
+ */
+async function installCursorHooks(sourceDir: string, target: string): Promise<number> {
+  const platform = detectPlatform();
+  const scriptExt = getScriptExtension();
+
+  console.log(`\n📦 Installing Claude-Mem Cursor hooks (${target} level, ${platform})...\n`);
+
+  let targetDir: string;
+  let hooksDir: string;
+  let workspaceRoot: string = process.cwd();
+
+  switch (target) {
+    case 'project':
+      targetDir = path.join(process.cwd(), '.cursor');
+      hooksDir = path.join(targetDir, 'hooks');
+      break;
+    case 'user':
+      targetDir = path.join(homedir(), '.cursor');
+      hooksDir = path.join(targetDir, 'hooks');
+      break;
+    case 'enterprise':
+      if (process.platform === 'darwin') {
+        targetDir = '/Library/Application Support/Cursor';
+        hooksDir = path.join(targetDir, 'hooks');
+      } else if (process.platform === 'linux') {
+        targetDir = '/etc/cursor';
+        hooksDir = path.join(targetDir, 'hooks');
+      } else if (process.platform === 'win32') {
+        targetDir = path.join(process.env.ProgramData || 'C:\\ProgramData', 'Cursor');
+        hooksDir = path.join(targetDir, 'hooks');
+      } else {
+        console.error('❌ Enterprise installation not supported on this platform');
+        return 1;
+      }
+      break;
+    default:
+      console.error(`❌ Invalid target: ${target}. Use: project, user, or enterprise`);
+      return 1;
+  }
+
+  try {
+    // Create directories
+    mkdirSync(hooksDir, { recursive: true });
+
+    // Determine which scripts to copy based on platform
+    const commonScript = platform === 'windows' ? 'common.ps1' : 'common.sh';
+    const hookScripts = [
+      `session-init${scriptExt}`,
+      `context-inject${scriptExt}`,
+      `save-observation${scriptExt}`,
+      `save-file-edit${scriptExt}`,
+      `session-summary${scriptExt}`
+    ];
+
+    const scripts = [commonScript, ...hookScripts];
+
+    for (const script of scripts) {
+      const srcPath = path.join(sourceDir, script);
+      const dstPath = path.join(hooksDir, script);
+
+      if (existsSync(srcPath)) {
+        const content = readFileSync(srcPath, 'utf-8');
+        // Unix scripts need execute permission; Windows PowerShell doesn't need it
+        const mode = platform === 'windows' ? undefined : 0o755;
+        writeFileSync(dstPath, content, mode ? { mode } : undefined);
+        console.log(`  ✓ Copied ${script}`);
+      } else {
+        console.warn(`  ⚠ ${script} not found in source`);
+      }
+    }
+
+    // Generate hooks.json with correct paths and platform-appropriate commands
+    const hooksJsonPath = path.join(targetDir, 'hooks.json');
+    const hookPrefix = target === 'project' ? './.cursor/hooks/' : `${hooksDir}/`;
+
+    // For PowerShell, we need to invoke via powershell.exe
+    const makeHookCommand = (scriptName: string) => {
+      const scriptPath = `${hookPrefix}${scriptName}${scriptExt}`;
+      if (platform === 'windows') {
+        // PowerShell execution: use -ExecutionPolicy Bypass to ensure scripts run
+        return `powershell.exe -ExecutionPolicy Bypass -File "${scriptPath}"`;
+      }
+      return scriptPath;
+    };
+
+    const hooksJson = {
+      version: 1,
+      hooks: {
+        beforeSubmitPrompt: [
+          { command: makeHookCommand('session-init') },
+          { command: makeHookCommand('context-inject') }
+        ],
+        afterMCPExecution: [
+          { command: makeHookCommand('save-observation') }
+        ],
+        afterShellExecution: [
+          { command: makeHookCommand('save-observation') }
+        ],
+        afterFileEdit: [
+          { command: makeHookCommand('save-file-edit') }
+        ],
+        stop: [
+          { command: makeHookCommand('session-summary') }
+        ]
+      }
+    };
+
+    writeFileSync(hooksJsonPath, JSON.stringify(hooksJson, null, 2));
+    console.log(`  ✓ Created hooks.json (${platform} mode)`);
+    
+    // For project-level: create initial context file
+    if (target === 'project') {
+      const rulesDir = path.join(targetDir, 'rules');
+      mkdirSync(rulesDir, { recursive: true });
+      
+      // Try to generate initial context from existing memory
+      const port = getWorkerPort();
+      const projectName = path.basename(workspaceRoot);
+      let contextGenerated = false;
+      
+      console.log(`  ⏳ Generating initial context...`);
+      
+      try {
+        // Check if worker is running
+        const healthResponse = await fetch(`http://127.0.0.1:${port}/api/readiness`);
+        if (healthResponse.ok) {
+          // Fetch context
+          const contextResponse = await fetch(
+            `http://127.0.0.1:${port}/api/context/inject?project=${encodeURIComponent(projectName)}`
+          );
+          if (contextResponse.ok) {
+            const context = await contextResponse.text();
+            if (context && context.trim()) {
+              const rulesFile = path.join(rulesDir, 'claude-mem-context.mdc');
+              const contextContent = `---
+alwaysApply: true
+description: "Claude-mem context from past sessions (auto-updated)"
+---
+
+# Memory Context from Past Sessions
+
+The following context is from claude-mem, a persistent memory system that tracks your coding sessions.
+
+${context}
+
+---
+*This context is updated after each session. Use claude-mem's MCP search tools for more detailed queries.*
+`;
+              writeFileSync(rulesFile, contextContent);
+              contextGenerated = true;
+              console.log(`  ✓ Generated initial context from existing memory`);
+            }
+          }
+        }
+      } catch {
+        // Worker not running - that's ok, context will be generated after first session
+      }
+      
+      if (!contextGenerated) {
+        // Create placeholder context file
+        const rulesFile = path.join(rulesDir, 'claude-mem-context.mdc');
+        const placeholderContent = `---
+alwaysApply: true
+description: "Claude-mem context from past sessions (auto-updated)"
+---
+
+# Memory Context from Past Sessions
+
+*No context yet. Complete your first session and context will appear here.*
+
+Use claude-mem's MCP search tools for manual memory queries.
+`;
+        writeFileSync(rulesFile, placeholderContent);
+        console.log(`  ✓ Created placeholder context file (will populate after first session)`);
+      }
+      
+      // Register project for automatic context updates after summaries
+      registerCursorProject(projectName, workspaceRoot);
+      console.log(`  ✓ Registered for auto-context updates`);
+    }
+    
+    console.log(`
+✅ Installation complete!
+
+Hooks installed to: ${targetDir}/hooks.json
+Scripts installed to: ${hooksDir}
+
+Next steps:
+  1. Start claude-mem worker: claude-mem start
+  2. Restart Cursor to load the hooks
+  3. Check Cursor Settings → Hooks tab to verify
+
+Context Injection:
+  Context from past sessions is stored in .cursor/rules/claude-mem-context.mdc
+  and automatically included in every chat. It updates after each session ends.
+`);
+    
+    return 0;
+  } catch (error) {
+    console.error(`\n❌ Installation failed: ${(error as Error).message}`);
+    if (target === 'enterprise') {
+      console.error('   Tip: Enterprise installation may require sudo/admin privileges');
+    }
+    return 1;
+  }
+}
+
+/**
+ * Uninstall Cursor hooks
+ */
+function uninstallCursorHooks(target: string): number {
+  console.log(`\n🗑️  Uninstalling Claude-Mem Cursor hooks (${target} level)...\n`);
+  
+  let targetDir: string;
+  
+  switch (target) {
+    case 'project':
+      targetDir = path.join(process.cwd(), '.cursor');
+      break;
+    case 'user':
+      targetDir = path.join(homedir(), '.cursor');
+      break;
+    case 'enterprise':
+      if (process.platform === 'darwin') {
+        targetDir = '/Library/Application Support/Cursor';
+      } else if (process.platform === 'linux') {
+        targetDir = '/etc/cursor';
+      } else {
+        console.error('❌ Enterprise not supported on Windows');
+        return 1;
+      }
+      break;
+    default:
+      console.error(`❌ Invalid target: ${target}`);
+      return 1;
+  }
+  
+  try {
+    const hooksDir = path.join(targetDir, 'hooks');
+    const hooksJsonPath = path.join(targetDir, 'hooks.json');
+
+    // Remove hook scripts for both platforms (in case user switches platforms)
+    const bashScripts = ['common.sh', 'session-init.sh', 'context-inject.sh',
+                        'save-observation.sh', 'save-file-edit.sh', 'session-summary.sh'];
+    const psScripts = ['common.ps1', 'session-init.ps1', 'context-inject.ps1',
+                       'save-observation.ps1', 'save-file-edit.ps1', 'session-summary.ps1'];
+
+    const allScripts = [...bashScripts, ...psScripts];
+
+    for (const script of allScripts) {
+      const scriptPath = path.join(hooksDir, script);
+      if (existsSync(scriptPath)) {
+        unlinkSync(scriptPath);
+        console.log(`  ✓ Removed ${script}`);
+      }
+    }
+    
+    // Remove hooks.json
+    if (existsSync(hooksJsonPath)) {
+      unlinkSync(hooksJsonPath);
+      console.log(`  ✓ Removed hooks.json`);
+    }
+    
+    // Remove context file and unregister if project-level
+    if (target === 'project') {
+      const contextFile = path.join(targetDir, 'rules', 'claude-mem-context.mdc');
+      if (existsSync(contextFile)) {
+        unlinkSync(contextFile);
+        console.log(`  ✓ Removed context file`);
+      }
+      
+      // Unregister from auto-context updates
+      const projectName = path.basename(process.cwd());
+      unregisterCursorProject(projectName);
+      console.log(`  ✓ Unregistered from auto-context updates`);
+    }
+    
+    console.log(`\n✅ Uninstallation complete!\n`);
+    console.log('Restart Cursor to apply changes.');
+    
+    return 0;
+  } catch (error) {
+    console.error(`\n❌ Uninstallation failed: ${(error as Error).message}`);
+    return 1;
+  }
+}
+
+/**
+ * Check Cursor hooks installation status
+ */
+function checkCursorHooksStatus(): number {
+  console.log('\n🔍 Claude-Mem Cursor Hooks Status\n');
+  
+  const locations = [
+    { name: 'Project', dir: path.join(process.cwd(), '.cursor') },
+    { name: 'User', dir: path.join(homedir(), '.cursor') },
+  ];
+  
+  if (process.platform === 'darwin') {
+    locations.push({ name: 'Enterprise', dir: '/Library/Application Support/Cursor' });
+  } else if (process.platform === 'linux') {
+    locations.push({ name: 'Enterprise', dir: '/etc/cursor' });
+  }
+  
+  let anyInstalled = false;
+  
+  for (const loc of locations) {
+    const hooksJson = path.join(loc.dir, 'hooks.json');
+    const hooksDir = path.join(loc.dir, 'hooks');
+
+    if (existsSync(hooksJson)) {
+      anyInstalled = true;
+      console.log(`✅ ${loc.name}: Installed`);
+      console.log(`   Config: ${hooksJson}`);
+
+      // Detect which platform's scripts are installed
+      const bashScripts = ['session-init.sh', 'context-inject.sh', 'save-observation.sh'];
+      const psScripts = ['session-init.ps1', 'context-inject.ps1', 'save-observation.ps1'];
+
+      const hasBash = bashScripts.some(s => existsSync(path.join(hooksDir, s)));
+      const hasPs = psScripts.some(s => existsSync(path.join(hooksDir, s)));
+
+      if (hasBash && hasPs) {
+        console.log(`   Platform: Both (bash + PowerShell)`);
+      } else if (hasBash) {
+        console.log(`   Platform: Unix (bash)`);
+      } else if (hasPs) {
+        console.log(`   Platform: Windows (PowerShell)`);
+      } else {
+        console.log(`   ⚠ No hook scripts found`);
+      }
+
+      // Check for appropriate scripts based on current platform
+      const platform = detectPlatform();
+      const scripts = platform === 'windows' ? psScripts : bashScripts;
+      const missing = scripts.filter(s => !existsSync(path.join(hooksDir, s)));
+
+      if (missing.length > 0) {
+        console.log(`   ⚠ Missing ${platform} scripts: ${missing.join(', ')}`);
+      } else {
+        console.log(`   Scripts: All present for ${platform}`);
+      }
+
+      // Check for context file (project only)
+      if (loc.name === 'Project') {
+        const contextFile = path.join(loc.dir, 'rules', 'claude-mem-context.mdc');
+        if (existsSync(contextFile)) {
+          console.log(`   Context: Active`);
+        } else {
+          console.log(`   Context: Not yet generated (will be created on first prompt)`);
+        }
+      }
+    } else {
+      console.log(`❌ ${loc.name}: Not installed`);
+    }
+    console.log('');
+  }
+  
+  if (!anyInstalled) {
+    console.log('No hooks installed. Run: claude-mem cursor install\n');
+  }
+  
+  return 0;
+}
+
+// ============================================================================
 // CLI Entry Point
 // ============================================================================
 
@@ -997,181 +1877,164 @@ async function main() {
 
   switch (command) {
     case 'start': {
-      // Acquire lock BEFORE checking port to prevent race condition
-      // If we can't get lock, another session is spawning - wait for health instead
-      if (!acquireLock('start')) {
-        logger.info('SYSTEM', 'Another session is spawning worker, waiting for health');
-        const healthy = await waitForHealth(port, getPlatformTimeout(30000));
-        if (healthy) {
-          logger.info('SYSTEM', 'Worker healthy, returning success');
-          process.exit(0);
-        }
-        // Still not healthy after wait - try to acquire lock and spawn
-        const gotLock = await waitForLock('start', 5000);
-        if (!gotLock) {
-          logger.error('SYSTEM', 'Failed to acquire lock after timeout');
-          process.exit(1);
-        }
-      }
+      // Health-check-first approach: simple, fast, reliable
+      // Check if worker is already healthy
+      if (await waitForHealth(port, 1000)) {
+        // Worker is healthy - check for version mismatch (issue #484)
+        const versionCheck = await checkVersionMatch(port);
+        if (!versionCheck.matches) {
+          logger.info('SYSTEM', 'Worker version mismatch detected - auto-restarting', {
+            pluginVersion: versionCheck.pluginVersion,
+            workerVersion: versionCheck.workerVersion
+          });
 
-      try {
-        // Re-check port AFTER acquiring lock
-        if (await isPortInUse(port)) {
-          releaseLock();
-          logger.info('SYSTEM', 'Port already in use, worker already running');
-          process.exit(0);
-        }
+          // Shutdown the old worker
+          await httpShutdown(port);
+          const freed = await waitForPortFree(port, getPlatformTimeout(15000));
 
-        // Spawn self as daemon
-        const child = spawn(process.execPath, [__filename, '--daemon'], {
-          detached: true,
-          stdio: 'ignore',
-          windowsHide: true,
-          env: { ...process.env, CLAUDE_MEM_WORKER_PORT: String(port) }
-        });
+          if (!freed) {
+            logger.error('SYSTEM', 'Port did not free up after shutdown for version mismatch restart', { port });
+            process.exit(1);
+          }
 
-        if (child.pid === undefined) {
-          releaseLock();
-          logger.error('SYSTEM', 'Failed to spawn worker daemon');
-          process.exit(1);
-        }
-
-        child.unref();
-
-        // Write PID file
-        writePidFile({ pid: child.pid, port, startedAt: new Date().toISOString() });
-
-        // Wait for health with platform-adjusted timeout
-        const healthy = await waitForHealth(port, getPlatformTimeout(30000));
-        releaseLock();
-
-        if (!healthy) {
           removePidFile();
-          logger.error('SYSTEM', 'Worker failed to start');
-          process.exit(1);
-        }
-
-        logger.info('SYSTEM', 'Worker started successfully');
-        process.exit(0);
-      } catch (error) {
-        releaseLock();
-        throw error;
-      }
-    }
-
-    case 'stop': {
-      // Acquire lock for stop operation
-      if (!acquireLock('stop')) {
-        // Wait briefly for concurrent operation to complete
-        await new Promise(r => setTimeout(r, 2000));
-      }
-
-      try {
-        await httpShutdown(port);
-        const freed = await waitForPortFree(port, getPlatformTimeout(15000));
-        
-        if (!freed) {
-          logger.warn('SYSTEM', 'Port did not free up after shutdown', { port });
-          // Could force kill here if we knew the PID, but for now just warn
-        }
-        
-        removePidFile();
-        releaseLock();
-        logger.info('SYSTEM', 'Worker stopped successfully');
-        process.exit(0);
-      } catch (error) {
-        releaseLock();
-        throw error;
-      }
-    }
-
-    case 'restart': {
-      // Acquire lock for restart operation
-      if (!acquireLock('restart')) {
-        // Another session is already restarting - wait for health
-        logger.info('SYSTEM', 'Another session is restarting worker, waiting');
-        const healthy = await waitForHealth(port, getPlatformTimeout(45000));
-        if (healthy) {
-          logger.info('SYSTEM', 'Worker healthy after restart');
+          // Fall through to spawn new daemon below
+        } else {
+          logger.info('SYSTEM', 'Worker already running and healthy');
           process.exit(0);
         }
-        logger.error('SYSTEM', 'Worker failed to restart (concurrent operation)');
+      }
+
+      // Worker not healthy - check if port is in use
+      const portInUse = await isPortInUse(port);
+
+      if (portInUse) {
+        // Port in use but not healthy - wait a bit longer in case it's starting up
+        logger.info('SYSTEM', 'Port in use, waiting for worker to become healthy');
+        const healthy = await waitForHealth(port, getPlatformTimeout(15000));
+        if (healthy) {
+          logger.info('SYSTEM', 'Worker is now healthy');
+          process.exit(0);
+        }
+        logger.error('SYSTEM', 'Port in use but worker not responding to health checks');
         process.exit(1);
       }
 
-      try {
-        await httpShutdown(port);
-        const freed = await waitForPortFree(port, getPlatformTimeout(15000));
-        
-        if (!freed) {
-          releaseLock();
-          logger.error('SYSTEM', 'Port did not free up after shutdown, aborting restart', { port });
-          process.exit(1);
-        }
-        
-        removePidFile();
+      // Port not in use - spawn daemon
+      logger.info('SYSTEM', 'Starting worker daemon');
+      const child = spawn(process.execPath, [__filename, '--daemon'], {
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+        env: { ...process.env, CLAUDE_MEM_WORKER_PORT: String(port) }
+      });
 
-        const child = spawn(process.execPath, [__filename, '--daemon'], {
-          detached: true,
-          stdio: 'ignore',
-          windowsHide: true,
-          env: { ...process.env, CLAUDE_MEM_WORKER_PORT: String(port) }
-        });
-
-        if (child.pid === undefined) {
-          releaseLock();
-          logger.error('SYSTEM', 'Failed to spawn worker daemon during restart');
-          process.exit(1);
-        }
-
-        child.unref();
-        writePidFile({ pid: child.pid, port, startedAt: new Date().toISOString() });
-
-        const healthy = await waitForHealth(port, getPlatformTimeout(30000));
-        releaseLock();
-
-        if (!healthy) {
-          removePidFile();
-          logger.error('SYSTEM', 'Worker failed to restart');
-          process.exit(1);
-        }
-        logger.info('SYSTEM', 'Worker restarted successfully');
-        process.exit(0);
-      } catch (error) {
-        releaseLock();
-        throw error;
+      if (child.pid === undefined) {
+        logger.error('SYSTEM', 'Failed to spawn worker daemon');
+        process.exit(1);
       }
+
+      child.unref();
+
+      // Write PID file
+      writePidFile({ pid: child.pid, port, startedAt: new Date().toISOString() });
+
+      // Wait for health with platform-adjusted timeout
+      const healthy = await waitForHealth(port, getPlatformTimeout(30000));
+
+      if (!healthy) {
+        removePidFile();
+        logger.error('SYSTEM', 'Worker failed to start (health check timeout)');
+        process.exit(1);
+      }
+
+      logger.info('SYSTEM', 'Worker started successfully');
+      process.exit(0);
+    }
+
+    case 'stop': {
+      // Simple stop: send shutdown request, wait for port to free
+      await httpShutdown(port);
+      const freed = await waitForPortFree(port, getPlatformTimeout(15000));
+
+      if (!freed) {
+        logger.warn('SYSTEM', 'Port did not free up after shutdown', { port });
+        // Could force kill here if we knew the PID, but for now just warn
+      }
+
+      removePidFile();
+      logger.info('SYSTEM', 'Worker stopped successfully');
+      process.exit(0);
+    }
+
+    case 'restart': {
+      // Simple restart: stop, then start
+      logger.info('SYSTEM', 'Restarting worker');
+
+      await httpShutdown(port);
+      const freed = await waitForPortFree(port, getPlatformTimeout(15000));
+
+      if (!freed) {
+        logger.error('SYSTEM', 'Port did not free up after shutdown, aborting restart', { port });
+        process.exit(1);
+      }
+
+      removePidFile();
+
+      // Spawn new daemon
+      const child = spawn(process.execPath, [__filename, '--daemon'], {
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+        env: { ...process.env, CLAUDE_MEM_WORKER_PORT: String(port) }
+      });
+
+      if (child.pid === undefined) {
+        logger.error('SYSTEM', 'Failed to spawn worker daemon during restart');
+        process.exit(1);
+      }
+
+      child.unref();
+      writePidFile({ pid: child.pid, port, startedAt: new Date().toISOString() });
+
+      // Wait for health
+      const healthy = await waitForHealth(port, getPlatformTimeout(30000));
+
+      if (!healthy) {
+        removePidFile();
+        logger.error('SYSTEM', 'Worker failed to restart');
+        process.exit(1);
+      }
+
+      logger.info('SYSTEM', 'Worker restarted successfully');
+      process.exit(0);
     }
 
     case 'status': {
       const running = await isPortInUse(port);
       const pidInfo = readPidFile();
       if (running && pidInfo) {
-        logger.info('SYSTEM', `Worker running (PID: ${pidInfo.pid}, Port: ${pidInfo.port})`);
+        console.log('Worker is running');
+        console.log(`  PID: ${pidInfo.pid}`);
+        console.log(`  Port: ${pidInfo.port}`);
+        console.log(`  Started: ${pidInfo.startedAt}`);
       } else {
-        logger.info('SYSTEM', 'Worker not running');
+        console.log('Worker is not running');
       }
       process.exit(0);
+    }
+
+    case 'cursor': {
+      // Cursor hooks installation subcommand
+      const subcommand = process.argv[3];
+      const cursorResult = await handleCursorCommand(subcommand, process.argv.slice(4));
+      process.exit(cursorResult);
     }
 
     case '--daemon':
     default: {
       // Run server directly
       const worker = new WorkerService();
-
-      process.on('SIGTERM', async () => {
-        logger.info('SYSTEM', 'Received SIGTERM');
-        await worker.shutdown();
-        removePidFile();
-        process.exit(0);
-      });
-
-      process.on('SIGINT', async () => {
-        logger.info('SYSTEM', 'Received SIGINT');
-        await worker.shutdown();
-        removePidFile();
-        process.exit(0);
-      });
 
       worker.start().catch((error) => {
         logger.failure('SYSTEM', 'Worker failed to start', {}, error as Error);

@@ -1,6 +1,6 @@
 {
   "name": "claude-mem",
-  "version": "8.2.7",
+  "version": "8.5.0",
   "description": "Memory compression system for Claude Code - persist context across sessions",
   "keywords": [
     "claude",
@@ -41,10 +41,10 @@
     "worker:tail": "tail -f 50 ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log",
     "changelog:generate": "node scripts/generate-changelog.js",
     "discord:notify": "node scripts/discord-release-notify.js",
-    "worker:start": "bun plugin/scripts/worker-cli.js start",
-    "worker:stop": "bun plugin/scripts/worker-cli.js stop",
-    "worker:restart": "bun plugin/scripts/worker-cli.js restart",
-    "worker:status": "bun plugin/scripts/worker-cli.js status",
+    "worker:start": "bun plugin/scripts/worker-service.cjs start",
+    "worker:stop": "bun plugin/scripts/worker-service.cjs stop",
+    "worker:restart": "bun plugin/scripts/worker-service.cjs restart",
+    "worker:status": "bun plugin/scripts/worker-service.cjs status",
     "queue:check": "bun scripts/check-pending-queue.ts",
     "queue:process": "bun scripts/check-pending-queue.ts --process",
     "translate-readme": "bun scripts/translate-readme/cli.ts -v -o docs/i18n README.md",
@@ -53,7 +53,11 @@
     "translate:tier3": "npm run translate-readme -- vi id th hi bn ro sv",
     "translate:tier4": "npm run translate-readme -- it el hu fi da no",
     "translate:all": "npm run translate:tier1 & npm run translate:tier2 & npm run translate:tier3 & npm run translate:tier4 & wait",
-    "bug-report": "npx tsx scripts/bug-report/cli.ts"
+    "bug-report": "npx tsx scripts/bug-report/cli.ts",
+    "cursor:install": "bun plugin/scripts/worker-service.cjs cursor install",
+    "cursor:uninstall": "bun plugin/scripts/worker-service.cjs cursor uninstall",
+    "cursor:status": "bun plugin/scripts/worker-service.cjs cursor status",
+    "cursor:setup": "bun plugin/scripts/worker-service.cjs cursor setup"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.1.76",

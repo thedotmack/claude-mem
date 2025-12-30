@@ -20,6 +20,8 @@ import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
+import { updateCursorContextForProject } from '../worker-service.js';
+import { getWorkerPort } from '../../shared/worker-utils.js';
 
 // OpenRouter API endpoint
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
@@ -536,6 +538,9 @@ export class OpenRouterAgent {
           }
         });
       }
+      
+      // Update Cursor context file for registered projects (fire-and-forget)
+      updateCursorContextForProject(session.project, getWorkerPort()).catch(() => {});
     }
 
     // Mark messages as processed
