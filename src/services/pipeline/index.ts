@@ -107,7 +107,10 @@ export class ObservationPipeline {
       const prepareInput: PrepareInput = {
         rawObservation: acquireResult.data.rawObservation,
         context: {
-          project: 'default', // TODO: Get from session
+          // NOTE: Project extraction from session requires dbManager access
+          // Pipeline currently doesn't store dbManager reference (only passed to RenderStage)
+          // Future: Add getProjectFromSession() helper that queries sdk_sessions table
+          project: 'default',
           modeConfig: null
         }
       };
@@ -165,7 +168,8 @@ export class ObservationPipeline {
         observations: parseResult.data.observations,
         summary: parseResult.data.summary,
         sessionId: input.sessionId,
-        project: 'default', // TODO: Get from session
+        // NOTE: Using 'default' project - see Prepare stage comment for details
+        project: 'default',
         promptNumber: input.promptNumber,
         discoveryTokens: processResult.data.usage.totalTokens
       };
@@ -238,8 +242,11 @@ export class ObservationPipeline {
           observations: parseResult.data.observations,
           summary: parseResult.data.summary,
           sessionId: execution.sessionId,
+          // NOTE: Using 'default' project - see Prepare stage comment for details
           project: 'default',
-          promptNumber: 0, // TODO: Get from original input
+          // NOTE: Retry path doesn't have access to original input; using 0 as placeholder
+          // Future: Store original input in execution record for retry scenarios
+          promptNumber: 0,
           discoveryTokens: execution.stages.process.data.usage.totalTokens
         };
 
