@@ -31,10 +31,10 @@ git clone https://github.com/thedotmack/claude-mem.git
 cd claude-mem
 
 # Install dependencies
-npm install
+bun install
 
 # Build the project
-npm run build
+bun run build
 ```
 
 ## Step 3: Configure OpenRouter Provider
@@ -44,7 +44,7 @@ npm run build
 Run the setup wizard which guides you through everything:
 
 ```bash
-npm run cursor:setup
+bun run cursor:setup
 ```
 
 When prompted for provider, select **OpenRouter**.
@@ -71,8 +71,8 @@ Replace `YOUR_OPENROUTER_API_KEY` with your actual API key.
 Then install hooks and start the worker:
 
 ```bash
-npm run cursor:install
-npm run worker:start
+bun run cursor:install
+bun run worker:start
 ```
 
 ## Step 4: Restart Cursor
@@ -83,10 +83,10 @@ Close and reopen Cursor IDE for the hooks to take effect.
 
 ```bash
 # Check worker is running
-npm run worker:status
+bun run worker:status
 
 # Check hooks are installed
-npm run cursor:status
+bun run cursor:status
 ```
 
 Open http://localhost:37777 to see the memory viewer.
@@ -166,7 +166,7 @@ OpenRouter rate limits vary by model and your account tier. If you hit limits:
 Check the worker logs for details:
 
 ```bash
-npm run worker:logs
+bun run worker:logs
 ```
 
 Common issues:

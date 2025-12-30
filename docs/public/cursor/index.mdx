@@ -48,10 +48,10 @@ If you're using Cursor without a Claude Code subscription:
 ```bash
 # Clone and build
 git clone https://github.com/thedotmack/claude-mem.git
-cd claude-mem && npm install && npm run build
+cd claude-mem && bun install && bun run build
 
 # Run interactive setup wizard
-npm run cursor:setup
+bun run cursor:setup
 ```
 
 The setup wizard will:
@@ -83,17 +83,17 @@ The plugin uses Claude's SDK by default but you can switch to Gemini or OpenRout
 
 <AccordionGroup>
   <Accordion title="macOS">
-    - Node.js 18+
+    - [Bun](https://bun.sh): `curl -fsSL https://bun.sh/install | bash`
     - Cursor IDE
     - jq and curl: `brew install jq curl`
   </Accordion>
   <Accordion title="Linux">
-    - Node.js 18+
+    - [Bun](https://bun.sh): `curl -fsSL https://bun.sh/install | bash`
     - Cursor IDE
     - jq and curl: `apt install jq curl` or `dnf install jq curl`
   </Accordion>
   <Accordion title="Windows">
-    - Node.js 18+
+    - [Bun](https://bun.sh): `powershell -c "irm bun.sh/install.ps1 | iex"`
     - Cursor IDE
     - PowerShell 5.1+ (included in Windows 10/11)
     - Git for Windows
@@ -106,13 +106,13 @@ After installation, these commands are available from the claude-mem directory:
 
 | Command | Description |
 |---------|-------------|
-| `npm run cursor:setup` | Interactive setup wizard |
-| `npm run cursor:install` | Install Cursor hooks |
-| `npm run cursor:uninstall` | Remove Cursor hooks |
-| `npm run cursor:status` | Check hook installation status |
-| `npm run worker:start` | Start the worker service |
-| `npm run worker:stop` | Stop the worker service |
-| `npm run worker:status` | Check worker status |
+| `bun run cursor:setup` | Interactive setup wizard |
+| `bun run cursor:install` | Install Cursor hooks |
+| `bun run cursor:uninstall` | Remove Cursor hooks |
+| `bun run cursor:status` | Check hook installation status |
+| `bun run worker:start` | Start the worker service |
+| `bun run worker:stop` | Stop the worker service |
+| `bun run worker:status` | Check worker status |
 
 ## Verifying Installation
 
@@ -120,12 +120,12 @@ After setup, verify everything is working:
 
 1. **Check worker status:**
    ```bash
-   npm run worker:status
+   bun run worker:status
    ```
 
 2. **Check hook installation:**
    ```bash
-   npm run cursor:status
+   bun run cursor:status
    ```
 
 3. **Open the memory viewer:**
@@ -154,21 +154,21 @@ After setup, verify everything is working:
 lsof -i :37777
 
 # Force restart
-npm run worker:stop && npm run worker:start
+bun run worker:stop && bun run worker:start
 
 # Check logs
-npm run worker:logs
+bun run worker:logs
 ```
 
 ### Hooks not firing
 
 1. Restart Cursor IDE after installation
-2. Check hooks are installed: `npm run cursor:status`
+2. Check hooks are installed: `bun run cursor:status`
 3. Verify hooks.json exists in `.cursor/` directory
 
 ### No context appearing
 
-1. Ensure worker is running: `npm run worker:status`
+1. Ensure worker is running: `bun run worker:status`
 2. Check that you have observations: visit http://localhost:37777
 3. Verify your API key is configured correctly
 

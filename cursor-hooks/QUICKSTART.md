@@ -97,7 +97,7 @@ Restart Cursor to load the hooks.
 **Worker not responding?**
 - Check if worker is running: `curl http://127.0.0.1:37777/api/readiness`
 - Check logs: `tail -f ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log`
-- Restart worker: `npm run worker:restart`
+- Restart worker: `bun run worker:restart`
 
 **Observations not saving?**
 - Check worker logs for errors
