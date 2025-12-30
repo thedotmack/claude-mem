@@ -11,6 +11,7 @@
  */
 
 import { Database } from 'bun:sqlite';
+import { statSync } from 'node:fs';
 import { logger } from '../../utils/logger.js';
 import { ForgettingPolicy } from './ForgettingPolicy.js';
 import { AccessTracker } from './AccessTracker.js';
@@ -373,13 +374,25 @@ export class CleanupJob {
     databaseSize: number;
     currentJobId?: string;
   } {
-    const dbPath = this.db.serialize ? 'in-memory' : 'file';
+    let databaseSize = 0;
+
+    // Get database file size for file-based databases
+    try {
+      const filename = (this.db as any).filename;
+      if (filename && filename !== ':memory:') {
+        const stats = statSync(filename);
+        databaseSize = stats.size;
+      }
+    } catch (error) {
+      // File doesn't exist or can't be accessed, size remains 0
+      logger.debug('CLEANUP', 'Could not get database file size', { error });
+    }
 
     return {
       isScheduled: this.scheduledTimer !== null,
       lastRun: this.lastRun ?? undefined,
       config: this.config,
-      databaseSize: dbPath === 'file' ? 0 : 0, // TODO: implement file size check
+      databaseSize,
       currentJobId: this.currentJobId ?? undefined,
     };
   }
