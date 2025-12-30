@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [8.5.0] - 2025-12-30
 
-# Cursor Support Now Available
+# Cursor Support Now Available 🎉
 
 This is a major release introducing **full Cursor IDE support**. Claude-mem now works with Cursor, bringing persistent AI memory to Cursor users with or without a Claude Code subscription.
 
@@ -79,27 +79,6 @@ Full documentation available at [docs.claude-mem.ai/cursor](https://docs.claude-
 - OpenRouter Setup Guide
 - Troubleshooting
 
-## Technical Improvements
-
-### New Utilities Module (`src/utils/cursor-utils.ts`)
-Extracted testable pure functions for:
-- Project registry management
-- Context file operations
-- MCP configuration
-- JSON utilities with array access support
-- Cross-platform path handling
-
-### Comprehensive Test Suite
-New test files validating Cursor integration:
-- `cursor-registry.test.ts` - Project registry operations
-- `cursor-context-update.test.ts` - Context file management
-- `cursor-hooks-json-utils.test.ts` - JSON parsing utilities
-- `cursor-mcp-config.test.ts` - MCP configuration
-- `cursor-hook-outputs.test.ts` - Hook script output validation
-
-### Atomic File Writes
-Context files use temp-file-plus-rename pattern to prevent corruption during updates.
-
 ## Getting Started
 
 ### For Cursor-Only Users (No Claude Code)
@@ -118,7 +97,7 @@ bun run cursor:setup
 claude-mem cursor install
 ```
 
----
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.2.10...v8.5.0
 
 ## [8.2.10] - 2025-12-30
 
