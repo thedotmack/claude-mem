@@ -573,7 +573,8 @@ export class SessionRoutes extends BaseRouteHandler {
     // This runs supersession detection for the session's observations
     const sleepAgent = this.workerService.getSleepAgent();
     if (sleepAgent) {
-      sleepAgent.runMicroCycle(contentSessionId).catch(error => {
+      // Explicit void prefix makes fire-and-forget intentional
+      void sleepAgent.runMicroCycle(contentSessionId).catch(error => {
         logger.warn('SESSION', 'Micro cycle failed (non-fatal)', {
           contentSessionId,
         }, error as Error);

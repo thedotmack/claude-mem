@@ -44,21 +44,32 @@ export class AccessTracker {
     try {
       const now = Date.now();
 
-      // Insert into memory_access table
-      this.db.prepare(`
-        INSERT INTO memory_access (memory_id, timestamp, context)
-        VALUES (?, ?, ?)
-      `).run(memoryId, now, context || null);
+      // IMPROVEMENT: Wrap both writes in a transaction for atomicity
+      // This matches the pattern used in recordAccessBatch
+      this.db.run('BEGIN TRANSACTION');
 
-      // Update observations table for quick access
-      this.db.prepare(`
-        UPDATE observations
-        SET access_count = COALESCE(access_count, 0) + 1,
-            last_accessed = ?
-        WHERE id = ?
-      `).run(now, memoryId);
+      try {
+        // Insert into memory_access table
+        this.db.prepare(`
+          INSERT INTO memory_access (memory_id, timestamp, context)
+          VALUES (?, ?, ?)
+        `).run(memoryId, now, context || null);
 
-      logger.debug('AccessTracker', `Recorded access for memory ${memoryId}`);
+        // Update observations table for quick access
+        this.db.prepare(`
+          UPDATE observations
+          SET access_count = COALESCE(access_count, 0) + 1,
+              last_accessed = ?
+          WHERE id = ?
+        `).run(now, memoryId);
+
+        this.db.run('COMMIT');
+
+        logger.debug('AccessTracker', `Recorded access for memory ${memoryId}`);
+      } catch (error) {
+        this.db.run('ROLLBACK');
+        throw error;
+      }
     } catch (error: unknown) {
       logger.error('AccessTracker', `Failed to record access for memory ${memoryId}`, {}, error instanceof Error ? error : new Error(String(error)));
     }

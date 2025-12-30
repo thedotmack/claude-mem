@@ -598,6 +598,10 @@ export class SleepAgent {
 
   /**
    * Get all projects from database
+   *
+   * PERFORMANCE NOTE: DISTINCT query on (deprecated, project)
+   * Consider adding composite index: CREATE INDEX idx_obs_project_active
+   * ON observations(deprecated, project) if this becomes a bottleneck
    */
   private getAllProjects(): string[] {
     const rows = this.sessionStore.db.prepare(`
