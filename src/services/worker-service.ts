@@ -19,6 +19,12 @@ import { homedir } from 'os';
 import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync } from 'fs';
 import * as readline from 'readline';
 import { promisify } from 'util';
+import {
+  readCursorRegistry as readCursorRegistryFromFile,
+  writeCursorRegistry as writeCursorRegistryToFile,
+  writeContextFile,
+  type CursorProjectRegistry
+} from '../utils/cursor-utils.js';
 
 const execAsync = promisify(exec);
 
@@ -67,27 +73,15 @@ function removePidFile(): void {
 // ============================================================================
 // Cursor Project Registry
 // Tracks which projects have Cursor hooks installed for auto-context updates
+// Uses pure functions from cursor-utils.ts for testability
 // ============================================================================
 
-interface CursorProjectRegistry {
-  [projectName: string]: {
-    workspacePath: string;
-    installedAt: string;
-  };
-}
-
 function readCursorRegistry(): CursorProjectRegistry {
-  try {
-    if (!existsSync(CURSOR_REGISTRY_FILE)) return {};
-    return JSON.parse(readFileSync(CURSOR_REGISTRY_FILE, 'utf-8'));
-  } catch {
-    return {};
-  }
+  return readCursorRegistryFromFile(CURSOR_REGISTRY_FILE);
 }
 
 function writeCursorRegistry(registry: CursorProjectRegistry): void {
-  mkdirSync(DATA_DIR, { recursive: true });
-  writeFileSync(CURSOR_REGISTRY_FILE, JSON.stringify(registry, null, 2));
+  writeCursorRegistryToFile(CURSOR_REGISTRY_FILE, registry);
 }
 
 function registerCursorProject(projectName: string, workspacePath: string): void {
@@ -130,32 +124,9 @@ export async function updateCursorContextForProject(projectName: string, port: n
     const context = await response.text();
     if (!context || !context.trim()) return;
 
-    // Write to the project's Cursor rules file
-    const rulesDir = path.join(entry.workspacePath, '.cursor', 'rules');
-    const rulesFile = path.join(rulesDir, 'claude-mem-context.mdc');
-
-    mkdirSync(rulesDir, { recursive: true });
-
-    // Write to temp file first, then atomically move (prevents corruption)
-    const tempFile = `${rulesFile}.tmp`;
-    const content = `---
-alwaysApply: true
-description: "Claude-mem context from past sessions (auto-updated)"
----
-
-# Memory Context from Past Sessions
-
-The following context is from claude-mem, a persistent memory system that tracks your coding sessions.
-
-${context}
-
----
-*Updated after last session. Use claude-mem's MCP search tools for more detailed queries.*
-`;
-
-    writeFileSync(tempFile, content);
-    fs.renameSync(tempFile, rulesFile);
-    logger.debug('CURSOR', 'Updated context file', { projectName, rulesFile });
+    // Write to the project's Cursor rules file using shared utility
+    writeContextFile(entry.workspacePath, context);
+    logger.debug('CURSOR', 'Updated context file', { projectName, workspacePath: entry.workspacePath });
   } catch (error) {
     logger.warn('CURSOR', 'Failed to update context file', { projectName, error: (error as Error).message });
   }
