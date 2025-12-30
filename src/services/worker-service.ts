@@ -1286,6 +1286,7 @@ async function detectClaudeCode(): Promise<boolean> {
 /**
  * Find cursor-hooks directory
  * Searches in order: marketplace install, source repo
+ * Checks for both bash (common.sh) and PowerShell (common.ps1) scripts
  */
 function findCursorHooksDir(): string | null {
   const possiblePaths = [
@@ -1296,9 +1297,10 @@ function findCursorHooksDir(): string | null {
     // Alternative dev location
     path.join(process.cwd(), 'cursor-hooks'),
   ];
-  
+
   for (const p of possiblePaths) {
-    if (existsSync(path.join(p, 'common.sh'))) {
+    // Check for either bash or PowerShell common script
+    if (existsSync(path.join(p, 'common.sh')) || existsSync(path.join(p, 'common.ps1'))) {
       return p;
     }
   }
@@ -1369,15 +1371,32 @@ For more info: https://docs.claude-mem.ai/cursor
 }
 
 /**
+ * Detect platform for script selection
+ */
+function detectPlatform(): 'windows' | 'unix' {
+  return process.platform === 'win32' ? 'windows' : 'unix';
+}
+
+/**
+ * Get script extension based on platform
+ */
+function getScriptExtension(): string {
+  return detectPlatform() === 'windows' ? '.ps1' : '.sh';
+}
+
+/**
  * Install Cursor hooks
  */
 async function installCursorHooks(sourceDir: string, target: string): Promise<number> {
-  console.log(`\n📦 Installing Claude-Mem Cursor hooks (${target} level)...\n`);
-  
+  const platform = detectPlatform();
+  const scriptExt = getScriptExtension();
+
+  console.log(`\n📦 Installing Claude-Mem Cursor hooks (${target} level, ${platform})...\n`);
+
   let targetDir: string;
   let hooksDir: string;
   let workspaceRoot: string = process.cwd();
-  
+
   switch (target) {
     case 'project':
       targetDir = path.join(process.cwd(), '.cursor');
@@ -1394,8 +1413,11 @@ async function installCursorHooks(sourceDir: string, target: string): Promise<nu
       } else if (process.platform === 'linux') {
         targetDir = '/etc/cursor';
         hooksDir = path.join(targetDir, 'hooks');
+      } else if (process.platform === 'win32') {
+        targetDir = path.join(process.env.ProgramData || 'C:\\ProgramData', 'Cursor');
+        hooksDir = path.join(targetDir, 'hooks');
       } else {
-        console.error('❌ Enterprise installation not yet supported on Windows');
+        console.error('❌ Enterprise installation not supported on this platform');
         return 1;
       }
       break;
@@ -1403,56 +1425,76 @@ async function installCursorHooks(sourceDir: string, target: string): Promise<nu
       console.error(`❌ Invalid target: ${target}. Use: project, user, or enterprise`);
       return 1;
   }
-  
+
   try {
     // Create directories
     mkdirSync(hooksDir, { recursive: true });
-    
-    // Copy hook scripts
-    const scripts = ['common.sh', 'session-init.sh', 'context-inject.sh', 
-                     'save-observation.sh', 'save-file-edit.sh', 'session-summary.sh'];
-    
+
+    // Determine which scripts to copy based on platform
+    const commonScript = platform === 'windows' ? 'common.ps1' : 'common.sh';
+    const hookScripts = [
+      `session-init${scriptExt}`,
+      `context-inject${scriptExt}`,
+      `save-observation${scriptExt}`,
+      `save-file-edit${scriptExt}`,
+      `session-summary${scriptExt}`
+    ];
+
+    const scripts = [commonScript, ...hookScripts];
+
     for (const script of scripts) {
       const srcPath = path.join(sourceDir, script);
       const dstPath = path.join(hooksDir, script);
-      
+
       if (existsSync(srcPath)) {
         const content = readFileSync(srcPath, 'utf-8');
-        writeFileSync(dstPath, content, { mode: 0o755 });
+        // Unix scripts need execute permission; Windows PowerShell doesn't need it
+        const mode = platform === 'windows' ? undefined : 0o755;
+        writeFileSync(dstPath, content, mode ? { mode } : undefined);
         console.log(`  ✓ Copied ${script}`);
       } else {
         console.warn(`  ⚠ ${script} not found in source`);
       }
     }
-    
-    // Generate hooks.json with correct paths
+
+    // Generate hooks.json with correct paths and platform-appropriate commands
     const hooksJsonPath = path.join(targetDir, 'hooks.json');
     const hookPrefix = target === 'project' ? './.cursor/hooks/' : `${hooksDir}/`;
-    
+
+    // For PowerShell, we need to invoke via powershell.exe
+    const makeHookCommand = (scriptName: string) => {
+      const scriptPath = `${hookPrefix}${scriptName}${scriptExt}`;
+      if (platform === 'windows') {
+        // PowerShell execution: use -ExecutionPolicy Bypass to ensure scripts run
+        return `powershell.exe -ExecutionPolicy Bypass -File "${scriptPath}"`;
+      }
+      return scriptPath;
+    };
+
     const hooksJson = {
       version: 1,
       hooks: {
         beforeSubmitPrompt: [
-          { command: `${hookPrefix}session-init.sh` },
-          { command: `${hookPrefix}context-inject.sh` }
+          { command: makeHookCommand('session-init') },
+          { command: makeHookCommand('context-inject') }
         ],
         afterMCPExecution: [
-          { command: `${hookPrefix}save-observation.sh` }
+          { command: makeHookCommand('save-observation') }
         ],
         afterShellExecution: [
-          { command: `${hookPrefix}save-observation.sh` }
+          { command: makeHookCommand('save-observation') }
         ],
         afterFileEdit: [
-          { command: `${hookPrefix}save-file-edit.sh` }
+          { command: makeHookCommand('save-file-edit') }
         ],
         stop: [
-          { command: `${hookPrefix}session-summary.sh` }
+          { command: makeHookCommand('session-summary') }
         ]
       }
     };
-    
+
     writeFileSync(hooksJsonPath, JSON.stringify(hooksJson, null, 2));
-    console.log(`  ✓ Created hooks.json`);
+    console.log(`  ✓ Created hooks.json (${platform} mode)`);
     
     // For project-level: create initial context file
     if (target === 'project') {
@@ -1584,12 +1626,16 @@ function uninstallCursorHooks(target: string): number {
   try {
     const hooksDir = path.join(targetDir, 'hooks');
     const hooksJsonPath = path.join(targetDir, 'hooks.json');
-    
-    // Remove hook scripts
-    const scripts = ['common.sh', 'session-init.sh', 'context-inject.sh', 
-                     'save-observation.sh', 'save-file-edit.sh', 'session-summary.sh'];
-    
-    for (const script of scripts) {
+
+    // Remove hook scripts for both platforms (in case user switches platforms)
+    const bashScripts = ['common.sh', 'session-init.sh', 'context-inject.sh',
+                        'save-observation.sh', 'save-file-edit.sh', 'session-summary.sh'];
+    const psScripts = ['common.ps1', 'session-init.ps1', 'context-inject.ps1',
+                       'save-observation.ps1', 'save-file-edit.ps1', 'session-summary.ps1'];
+
+    const allScripts = [...bashScripts, ...psScripts];
+
+    for (const script of allScripts) {
       const scriptPath = path.join(hooksDir, script);
       if (existsSync(scriptPath)) {
         unlinkSync(scriptPath);
@@ -1649,22 +1695,40 @@ function checkCursorHooksStatus(): number {
   for (const loc of locations) {
     const hooksJson = path.join(loc.dir, 'hooks.json');
     const hooksDir = path.join(loc.dir, 'hooks');
-    
+
     if (existsSync(hooksJson)) {
       anyInstalled = true;
       console.log(`✅ ${loc.name}: Installed`);
       console.log(`   Config: ${hooksJson}`);
-      
-      // Check for hook scripts
-      const scripts = ['session-init.sh', 'context-inject.sh', 'save-observation.sh'];
-      const missing = scripts.filter(s => !existsSync(path.join(hooksDir, s)));
-      
-      if (missing.length > 0) {
-        console.log(`   ⚠ Missing scripts: ${missing.join(', ')}`);
+
+      // Detect which platform's scripts are installed
+      const bashScripts = ['session-init.sh', 'context-inject.sh', 'save-observation.sh'];
+      const psScripts = ['session-init.ps1', 'context-inject.ps1', 'save-observation.ps1'];
+
+      const hasBash = bashScripts.some(s => existsSync(path.join(hooksDir, s)));
+      const hasPs = psScripts.some(s => existsSync(path.join(hooksDir, s)));
+
+      if (hasBash && hasPs) {
+        console.log(`   Platform: Both (bash + PowerShell)`);
+      } else if (hasBash) {
+        console.log(`   Platform: Unix (bash)`);
+      } else if (hasPs) {
+        console.log(`   Platform: Windows (PowerShell)`);
       } else {
-        console.log(`   Scripts: All present`);
+        console.log(`   ⚠ No hook scripts found`);
       }
-      
+
+      // Check for appropriate scripts based on current platform
+      const platform = detectPlatform();
+      const scripts = platform === 'windows' ? psScripts : bashScripts;
+      const missing = scripts.filter(s => !existsSync(path.join(hooksDir, s)));
+
+      if (missing.length > 0) {
+        console.log(`   ⚠ Missing ${platform} scripts: ${missing.join(', ')}`);
+      } else {
+        console.log(`   Scripts: All present for ${platform}`);
+      }
+
       // Check for context file (project only)
       if (loc.name === 'Project') {
         const contextFile = path.join(loc.dir, 'rules', 'claude-mem-context.mdc');

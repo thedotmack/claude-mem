@@ -16,12 +16,19 @@ Use claude-mem's persistent memory in Cursor without a Claude Code subscription.
 
 ## Prerequisites
 
+### macOS / Linux
 - Cursor IDE
 - Node.js 18+
 - Git
 - `jq` and `curl`:
   - **macOS**: `brew install jq curl`
   - **Linux**: `apt install jq curl`
+
+### Windows
+- Cursor IDE
+- Node.js 18+
+- Git
+- PowerShell 5.1+ (included with Windows 10/11)
 
 ## Step 1: Clone Claude-Mem
 
@@ -195,3 +202,92 @@ If you hit the 1500 requests/day limit:
 | `npm run worker:start` | Start the background worker |
 | `npm run worker:stop` | Stop the background worker |
 | `npm run worker:restart` | Restart the worker |
+
+---
+
+## Windows Installation
+
+Windows users get full support via PowerShell scripts. The installer automatically detects Windows and installs the appropriate scripts.
+
+### Enable Script Execution (if needed)
+
+PowerShell may require you to enable script execution:
+
+```powershell
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+```
+
+### Step-by-Step for Windows
+
+```powershell
+# Clone and build
+git clone https://github.com/thedotmack/claude-mem.git
+cd claude-mem
+npm install
+npm run build
+
+# Configure provider (Gemini example)
+$settingsDir = "$env:USERPROFILE\.claude-mem"
+New-Item -ItemType Directory -Force -Path $settingsDir
+
+@"
+{
+  "CLAUDE_MEM_PROVIDER": "gemini",
+  "CLAUDE_MEM_GEMINI_API_KEY": "YOUR_GEMINI_API_KEY"
+}
+"@ | Out-File -FilePath "$settingsDir\settings.json" -Encoding UTF8
+
+# Interactive setup (recommended - walks you through everything)
+npm run cursor:setup
+
+# Or manual installation
+npm run cursor:install
+npm run worker:start
+```
+
+### What Gets Installed on Windows
+
+The installer copies these PowerShell scripts to `.cursor\hooks\`:
+
+| Script | Purpose |
+|--------|---------|
+| `common.ps1` | Shared utilities |
+| `session-init.ps1` | Initialize session on prompt |
+| `context-inject.ps1` | Inject memory context |
+| `save-observation.ps1` | Capture MCP/shell usage |
+| `save-file-edit.ps1` | Capture file edits |
+| `session-summary.ps1` | Generate summary on stop |
+
+The `hooks.json` file is configured to invoke PowerShell with `-ExecutionPolicy Bypass` to ensure scripts run without additional configuration.
+
+### Windows Troubleshooting
+
+**"Execution of scripts is disabled on this system"**
+
+Run as Administrator:
+```powershell
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope LocalMachine
+```
+
+**PowerShell scripts not running**
+
+Verify the hooks.json contains PowerShell invocations:
+```powershell
+Get-Content .cursor\hooks.json
+```
+
+Should show commands like:
+```
+powershell.exe -ExecutionPolicy Bypass -File "./.cursor/hooks/session-init.ps1"
+```
+
+**Worker not responding**
+
+Check if port 37777 is in use:
+```powershell
+Get-NetTCPConnection -LocalPort 37777
+```
+
+**Antivirus blocking scripts**
+
+Some antivirus software may block PowerShell scripts. Add an exception for the `.cursor\hooks\` directory if needed.
