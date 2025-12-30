@@ -17,6 +17,7 @@ import { logger } from '../utils/logger.js';
 import { exec, execSync, spawn } from 'child_process';
 import { homedir } from 'os';
 import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync } from 'fs';
+import * as readline from 'readline';
 import { promisify } from 'util';
 
 const execAsync = promisify(exec);
@@ -1073,6 +1074,216 @@ export class WorkerService {
 // ============================================================================
 
 /**
+ * Interactive setup wizard for Cursor users
+ * Guides through provider selection and API key configuration
+ */
+async function runInteractiveSetup(): Promise<number> {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
+
+  const question = (prompt: string): Promise<string> => {
+    return new Promise(resolve => rl.question(prompt, resolve));
+  };
+
+  console.log(`
+╔══════════════════════════════════════════════════════════════════╗
+║           Claude-Mem Cursor Setup Wizard                         ║
+║                                                                  ║
+║  This wizard will guide you through setting up claude-mem        ║
+║  for use with Cursor IDE.                                        ║
+╚══════════════════════════════════════════════════════════════════╝
+`);
+
+  try {
+    // Step 1: Check if Claude Code is available
+    console.log('Step 1: Checking for Claude Code...\n');
+
+    const hasClaudeCode = await detectClaudeCode();
+
+    if (hasClaudeCode) {
+      console.log('✅ Claude Code detected! Claude SDK will be used for AI processing.\n');
+      console.log('   You can skip provider configuration and proceed with hook installation.\n');
+    } else {
+      console.log('ℹ️  Claude Code not detected. Setting up standalone mode...\n');
+      console.log('   You\'ll need to configure an AI provider for memory compression.\n');
+
+      // Step 2: Provider selection
+      console.log('Step 2: Choose AI Provider\n');
+      console.log('  [1] Gemini (Recommended - 1500 free requests/day)');
+      console.log('  [2] OpenRouter (100+ models, some free)');
+      console.log('  [3] Skip (use Claude SDK if available later)\n');
+
+      const providerChoice = await question('Enter choice [1-3]: ');
+
+      const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+      let settings: Record<string, unknown> = {};
+
+      // Load existing settings if present
+      if (existsSync(settingsPath)) {
+        try {
+          settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+        } catch {
+          // Start fresh if corrupt
+        }
+      }
+
+      if (providerChoice === '1') {
+        console.log('\n📝 Configuring Gemini...\n');
+        console.log('   Get your free API key at: https://aistudio.google.com/apikey\n');
+
+        const apiKey = await question('Enter your Gemini API key: ');
+
+        if (!apiKey.trim()) {
+          console.log('\n⚠️  No API key provided. You can add it later in ~/.claude-mem/settings.json\n');
+        } else {
+          settings['CLAUDE_MEM_PROVIDER'] = 'gemini';
+          settings['CLAUDE_MEM_GEMINI_API_KEY'] = apiKey.trim();
+
+          // Save settings
+          mkdirSync(path.dirname(settingsPath), { recursive: true });
+          writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+          console.log('\n✅ Gemini configured successfully!\n');
+        }
+      } else if (providerChoice === '2') {
+        console.log('\n📝 Configuring OpenRouter...\n');
+        console.log('   Get your API key at: https://openrouter.ai/keys\n');
+
+        const apiKey = await question('Enter your OpenRouter API key: ');
+
+        if (!apiKey.trim()) {
+          console.log('\n⚠️  No API key provided. You can add it later in ~/.claude-mem/settings.json\n');
+        } else {
+          settings['CLAUDE_MEM_PROVIDER'] = 'openrouter';
+          settings['CLAUDE_MEM_OPENROUTER_API_KEY'] = apiKey.trim();
+
+          // Save settings
+          mkdirSync(path.dirname(settingsPath), { recursive: true });
+          writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+          console.log('\n✅ OpenRouter configured successfully!\n');
+        }
+      } else {
+        console.log('\n⚠️  Skipping provider configuration.');
+        console.log('   Claude SDK will be used if Claude Code is installed later.\n');
+      }
+    }
+
+    // Step 3: Install hooks
+    console.log('Step 3: Installing Cursor hooks...\n');
+
+    const cursorHooksDir = findCursorHooksDir();
+    if (!cursorHooksDir) {
+      console.error('❌ Could not find cursor-hooks directory');
+      console.error('   Make sure you ran npm run build first.');
+      rl.close();
+      return 1;
+    }
+
+    const installResult = await installCursorHooks(cursorHooksDir, 'project');
+
+    if (installResult !== 0) {
+      rl.close();
+      return installResult;
+    }
+
+    // Step 4: Start worker
+    console.log('\nStep 4: Starting claude-mem worker...\n');
+
+    const port = getWorkerPort();
+    const alreadyRunning = await waitForHealth(port, 1000);
+
+    if (alreadyRunning) {
+      console.log('✅ Worker is already running!\n');
+    } else {
+      console.log('   Starting worker in background...');
+
+      // Spawn worker daemon
+      const child = spawn(process.execPath, [__filename, '--daemon'], {
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+        env: { ...process.env, CLAUDE_MEM_WORKER_PORT: String(port) }
+      });
+
+      if (child.pid === undefined) {
+        console.error('❌ Failed to start worker');
+        rl.close();
+        return 1;
+      }
+
+      child.unref();
+      writePidFile({ pid: child.pid, port, startedAt: new Date().toISOString() });
+
+      // Wait for health
+      const healthy = await waitForHealth(port, getPlatformTimeout(30000));
+
+      if (!healthy) {
+        removePidFile();
+        console.error('❌ Worker failed to start');
+        rl.close();
+        return 1;
+      }
+
+      console.log('✅ Worker started successfully!\n');
+    }
+
+    // Final summary
+    console.log(`
+╔══════════════════════════════════════════════════════════════════╗
+║                    Setup Complete! 🎉                            ║
+╚══════════════════════════════════════════════════════════════════╝
+
+Next steps:
+  1. Restart Cursor to load the hooks
+  2. Start chatting - your sessions will be remembered!
+
+Useful commands:
+  npm run cursor:status     Check installation status
+  npm run worker:status     Check worker status
+  npm run worker:logs       View worker logs
+
+Memory viewer:
+  http://localhost:${port}
+
+Documentation:
+  https://docs.claude-mem.ai/cursor
+`);
+
+    rl.close();
+    return 0;
+  } catch (error) {
+    rl.close();
+    console.error(`\n❌ Setup failed: ${(error as Error).message}`);
+    return 1;
+  }
+}
+
+/**
+ * Detect if Claude Code is available
+ * Checks for the Claude Code CLI and plugin directory
+ */
+async function detectClaudeCode(): Promise<boolean> {
+  try {
+    // Check for Claude Code CLI
+    const { stdout } = await execAsync('which claude || where claude', { timeout: 5000 });
+    if (stdout.trim()) {
+      return true;
+    }
+  } catch {
+    // CLI not found
+  }
+
+  // Check for Claude Code plugin directory
+  const pluginDir = path.join(homedir(), '.claude', 'plugins');
+  if (existsSync(pluginDir)) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
  * Find cursor-hooks directory
  * Searches in order: marketplace install, source repo
  */
@@ -1120,7 +1331,12 @@ async function handleCursorCommand(subcommand: string, args: string[]): Promise<
     case 'status': {
       return checkCursorHooksStatus();
     }
-    
+
+    case 'setup': {
+      // Interactive guided setup for Cursor users
+      return await runInteractiveSetup();
+    }
+
     default: {
       console.log(`
 Claude-Mem Cursor Integration
@@ -1128,16 +1344,19 @@ Claude-Mem Cursor Integration
 Usage: claude-mem cursor <command> [options]
 
 Commands:
+  setup               Interactive guided setup (recommended for first-time users)
+
   install [target]    Install Cursor hooks
                       target: project (default), user, or enterprise
-  
+
   uninstall [target]  Remove Cursor hooks
                       target: project (default), user, or enterprise
-  
+
   status              Check installation status
 
 Examples:
-  claude-mem cursor install              # Install for current project
+  npm run cursor:setup                   # Interactive wizard (recommended)
+  npm run cursor:install                 # Install for current project
   claude-mem cursor install user         # Install globally for user
   claude-mem cursor uninstall            # Remove from current project
   claude-mem cursor status               # Check if hooks are installed
