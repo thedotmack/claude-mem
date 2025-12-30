@@ -2092,7 +2092,6 @@ async function main() {
       // Run server directly
       const worker = new WorkerService();
 
-<<<<<<< HEAD
       process.on('SIGTERM', async () => {
         logger.info('SYSTEM', 'Received SIGTERM');
         await worker.shutdown();
@@ -2126,8 +2125,6 @@ async function main() {
         // Don't exit immediately - log and continue, but this helps diagnose issues
       });
 
-=======
->>>>>>> origin/main
       worker.start().catch((error) => {
         logger.failure('SYSTEM', 'Worker failed to start', {}, error as Error);
         removePidFile();
