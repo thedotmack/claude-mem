@@ -1097,98 +1097,136 @@ async function runInteractiveSetup(): Promise<number> {
 `);
 
   try {
-    // Step 1: Check if Claude Code is available
-    console.log('Step 1: Checking for Claude Code...\n');
+    // Step 1: Check environment
+    console.log('Step 1: Checking environment...\n');
 
     const hasClaudeCode = await detectClaudeCode();
+    const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+    let settings: Record<string, unknown> = {};
+
+    // Load existing settings if present
+    if (existsSync(settingsPath)) {
+      try {
+        settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+      } catch {
+        // Start fresh if corrupt
+      }
+    }
+
+    const currentProvider = settings['CLAUDE_MEM_PROVIDER'] as string || (hasClaudeCode ? 'claude-sdk' : 'none');
 
     if (hasClaudeCode) {
-      console.log('✅ Claude Code detected! Claude SDK will be used for AI processing.\n');
-      console.log('   You can skip provider configuration and proceed with hook installation.\n');
+      console.log('✅ Claude Code detected\n');
     } else {
-      console.log('ℹ️  Claude Code not detected. Setting up standalone mode...\n');
-      console.log('   You\'ll need to configure an AI provider for memory compression.\n');
+      console.log('ℹ️  Claude Code not detected\n');
+    }
 
-      // Step 2: Provider selection
-      console.log('Step 2: Choose AI Provider\n');
-      console.log('  [1] Gemini (Recommended - 1500 free requests/day)');
-      console.log('  [2] OpenRouter (100+ models, some free)');
-      console.log('  [3] Skip (use Claude SDK if available later)\n');
+    console.log(`Current provider: ${currentProvider}\n`);
 
-      const providerChoice = await question('Enter choice [1-3]: ');
+    // Step 2: Provider selection (always show)
+    console.log('Step 2: Choose AI Provider\n');
+    if (hasClaudeCode) {
+      console.log('  [1] Claude SDK (Recommended - uses your Claude Code subscription)');
+    } else {
+      console.log('  [1] Claude SDK (requires Claude Code subscription)');
+    }
+    console.log('  [2] Gemini (1500 free requests/day)');
+    console.log('  [3] OpenRouter (100+ models, some free)');
+    console.log('  [4] Keep current settings\n');
 
-      const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
-      let settings: Record<string, unknown> = {};
+    const providerChoice = await question('Enter choice [1-4]: ');
 
-      // Load existing settings if present
-      if (existsSync(settingsPath)) {
-        try {
-          settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
-        } catch {
-          // Start fresh if corrupt
-        }
-      }
+    if (providerChoice === '1') {
+      settings['CLAUDE_MEM_PROVIDER'] = 'claude-sdk';
+      mkdirSync(path.dirname(settingsPath), { recursive: true });
+      writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+      console.log('\n✅ Claude SDK configured!\n');
+    } else if (providerChoice === '2') {
+      console.log('\n📝 Configuring Gemini...\n');
+      console.log('   Get your free API key at: https://aistudio.google.com/apikey\n');
 
-      if (providerChoice === '1') {
-        console.log('\n📝 Configuring Gemini...\n');
-        console.log('   Get your free API key at: https://aistudio.google.com/apikey\n');
+      const apiKey = await question('Enter your Gemini API key: ');
 
-        const apiKey = await question('Enter your Gemini API key: ');
-
-        if (!apiKey.trim()) {
-          console.log('\n⚠️  No API key provided. You can add it later in ~/.claude-mem/settings.json\n');
-        } else {
-          settings['CLAUDE_MEM_PROVIDER'] = 'gemini';
-          settings['CLAUDE_MEM_GEMINI_API_KEY'] = apiKey.trim();
-
-          // Save settings
-          mkdirSync(path.dirname(settingsPath), { recursive: true });
-          writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
-          console.log('\n✅ Gemini configured successfully!\n');
-        }
-      } else if (providerChoice === '2') {
-        console.log('\n📝 Configuring OpenRouter...\n');
-        console.log('   Get your API key at: https://openrouter.ai/keys\n');
-
-        const apiKey = await question('Enter your OpenRouter API key: ');
-
-        if (!apiKey.trim()) {
-          console.log('\n⚠️  No API key provided. You can add it later in ~/.claude-mem/settings.json\n');
-        } else {
-          settings['CLAUDE_MEM_PROVIDER'] = 'openrouter';
-          settings['CLAUDE_MEM_OPENROUTER_API_KEY'] = apiKey.trim();
-
-          // Save settings
-          mkdirSync(path.dirname(settingsPath), { recursive: true });
-          writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
-          console.log('\n✅ OpenRouter configured successfully!\n');
-        }
+      if (!apiKey.trim()) {
+        console.log('\n⚠️  No API key provided. You can add it later in ~/.claude-mem/settings.json\n');
       } else {
-        console.log('\n⚠️  Skipping provider configuration.');
-        console.log('   Claude SDK will be used if Claude Code is installed later.\n');
+        settings['CLAUDE_MEM_PROVIDER'] = 'gemini';
+        settings['CLAUDE_MEM_GEMINI_API_KEY'] = apiKey.trim();
+
+        mkdirSync(path.dirname(settingsPath), { recursive: true });
+        writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+        console.log('\n✅ Gemini configured successfully!\n');
+      }
+    } else if (providerChoice === '3') {
+      console.log('\n📝 Configuring OpenRouter...\n');
+      console.log('   Get your API key at: https://openrouter.ai/keys\n');
+
+      const apiKey = await question('Enter your OpenRouter API key: ');
+
+      if (!apiKey.trim()) {
+        console.log('\n⚠️  No API key provided. You can add it later in ~/.claude-mem/settings.json\n');
+      } else {
+        settings['CLAUDE_MEM_PROVIDER'] = 'openrouter';
+        settings['CLAUDE_MEM_OPENROUTER_API_KEY'] = apiKey.trim();
+
+        mkdirSync(path.dirname(settingsPath), { recursive: true });
+        writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+        console.log('\n✅ OpenRouter configured successfully!\n');
+      }
+    } else {
+      console.log('\n✅ Keeping current settings.\n');
+    }
+
+    // Step 3: Install location
+    console.log('Step 3: Choose installation scope\n');
+    console.log('  [1] Project (current directory only) - Recommended');
+    console.log('  [2] User (all projects for current user)');
+    console.log('  [3] Skip hook installation\n');
+
+    const scopeChoice = await question('Enter choice [1-3]: ');
+
+    let installTarget: string | null = null;
+    if (scopeChoice === '1') {
+      installTarget = 'project';
+    } else if (scopeChoice === '2') {
+      installTarget = 'user';
+    } else {
+      console.log('\n⚠️  Skipping hook installation.\n');
+    }
+
+    // Step 4: Install hooks (if target selected)
+    if (installTarget) {
+      console.log(`Step 4: Installing Cursor hooks (${installTarget})...\n`);
+
+      const cursorHooksDir = findCursorHooksDir();
+      if (!cursorHooksDir) {
+        console.error('❌ Could not find cursor-hooks directory');
+        console.error('   Make sure you ran npm run build first.');
+        rl.close();
+        return 1;
+      }
+
+      const installResult = await installCursorHooks(cursorHooksDir, installTarget);
+
+      if (installResult !== 0) {
+        rl.close();
+        return installResult;
+      }
+
+      // Step 5: Configure MCP server for memory search
+      console.log('\nStep 5: Configuring MCP server for memory search...\n');
+
+      const mcpResult = configureCursorMcp(installTarget);
+      if (mcpResult !== 0) {
+        console.warn('⚠️  MCP configuration failed, but hooks are installed.');
+        console.warn('   You can manually configure MCP later.\n');
+      } else {
+        console.log('');
       }
     }
 
-    // Step 3: Install hooks
-    console.log('Step 3: Installing Cursor hooks...\n');
-
-    const cursorHooksDir = findCursorHooksDir();
-    if (!cursorHooksDir) {
-      console.error('❌ Could not find cursor-hooks directory');
-      console.error('   Make sure you ran npm run build first.');
-      rl.close();
-      return 1;
-    }
-
-    const installResult = await installCursorHooks(cursorHooksDir, 'project');
-
-    if (installResult !== 0) {
-      rl.close();
-      return installResult;
-    }
-
-    // Step 4: Start worker
-    console.log('\nStep 4: Starting claude-mem worker...\n');
+    // Step 6: Start worker
+    console.log('\nStep 6: Starting claude-mem worker...\n');
 
     const port = getWorkerPort();
     const alreadyRunning = await waitForHealth(port, 1000);
@@ -1234,9 +1272,15 @@ async function runInteractiveSetup(): Promise<number> {
 ║                    Setup Complete! 🎉                            ║
 ╚══════════════════════════════════════════════════════════════════╝
 
+What's installed:
+  ✓ Cursor hooks - Automatically capture sessions
+  ✓ Context injection - Past work injected into new chats
+  ✓ MCP search server - Ask "what did I work on last week?"
+
 Next steps:
-  1. Restart Cursor to load the hooks
+  1. Restart Cursor to load the hooks and MCP server
   2. Start chatting - your sessions will be remembered!
+  3. Use natural language to search: "find where I fixed the auth bug"
 
 Useful commands:
   npm run cursor:status     Check installation status
@@ -1305,6 +1349,104 @@ function findCursorHooksDir(): string | null {
     }
   }
   return null;
+}
+
+/**
+ * Find MCP server script path
+ * Searches in order: marketplace install, source repo
+ */
+function findMcpServerPath(): string | null {
+  const possiblePaths = [
+    // Marketplace install location
+    path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack', 'plugin', 'scripts', 'mcp-server.cjs'),
+    // Development/source location (relative to built worker-service.cjs in plugin/scripts/)
+    path.join(path.dirname(__filename), 'mcp-server.cjs'),
+    // Alternative dev location
+    path.join(process.cwd(), 'plugin', 'scripts', 'mcp-server.cjs'),
+  ];
+
+  for (const p of possiblePaths) {
+    if (existsSync(p)) {
+      return p;
+    }
+  }
+  return null;
+}
+
+interface CursorMcpConfig {
+  mcpServers: {
+    [name: string]: {
+      command: string;
+      args?: string[];
+      env?: Record<string, string>;
+    };
+  };
+}
+
+/**
+ * Configure MCP server in Cursor's mcp.json
+ * @param target 'project' or 'user'
+ * @returns 0 on success, 1 on failure
+ */
+function configureCursorMcp(target: string): number {
+  const mcpServerPath = findMcpServerPath();
+
+  if (!mcpServerPath) {
+    console.error('❌ Could not find MCP server script');
+    console.error('   Expected at: ~/.claude/plugins/marketplaces/thedotmack/plugin/scripts/mcp-server.cjs');
+    return 1;
+  }
+
+  let mcpJsonDir: string;
+  let mcpJsonPath: string;
+
+  switch (target) {
+    case 'project':
+      mcpJsonDir = path.join(process.cwd(), '.cursor');
+      mcpJsonPath = path.join(mcpJsonDir, 'mcp.json');
+      break;
+    case 'user':
+      mcpJsonDir = path.join(homedir(), '.cursor');
+      mcpJsonPath = path.join(mcpJsonDir, 'mcp.json');
+      break;
+    default:
+      console.error(`❌ Invalid target: ${target}. Use: project or user`);
+      return 1;
+  }
+
+  try {
+    // Create directory if needed
+    mkdirSync(mcpJsonDir, { recursive: true });
+
+    // Load existing config or create new
+    let config: CursorMcpConfig = { mcpServers: {} };
+    if (existsSync(mcpJsonPath)) {
+      try {
+        config = JSON.parse(readFileSync(mcpJsonPath, 'utf-8'));
+        if (!config.mcpServers) {
+          config.mcpServers = {};
+        }
+      } catch {
+        // Start fresh if corrupt
+        config = { mcpServers: {} };
+      }
+    }
+
+    // Add claude-mem MCP server
+    config.mcpServers['claude-mem'] = {
+      command: 'node',
+      args: [mcpServerPath]
+    };
+
+    writeFileSync(mcpJsonPath, JSON.stringify(config, null, 2));
+    console.log(`  ✓ Configured MCP server in ${target === 'user' ? '~/.cursor' : '.cursor'}/mcp.json`);
+    console.log(`    Server path: ${mcpServerPath}`);
+
+    return 0;
+  } catch (error) {
+    console.error(`❌ Failed to configure MCP: ${(error as Error).message}`);
+    return 1;
+  }
 }
 
 /**
