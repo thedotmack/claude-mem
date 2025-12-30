@@ -54,10 +54,10 @@
     "translate:tier4": "npm run translate-readme -- it el hu fi da no",
     "translate:all": "npm run translate:tier1 & npm run translate:tier2 & npm run translate:tier3 & npm run translate:tier4 & wait",
     "bug-report": "npx tsx scripts/bug-report/cli.ts",
-    "cursor:install": "node plugin/scripts/worker-service.cjs cursor install",
-    "cursor:uninstall": "node plugin/scripts/worker-service.cjs cursor uninstall",
-    "cursor:status": "node plugin/scripts/worker-service.cjs cursor status",
-    "cursor:setup": "node plugin/scripts/worker-service.cjs cursor setup"
+    "cursor:install": "bun plugin/scripts/worker-service.cjs cursor install",
+    "cursor:uninstall": "bun plugin/scripts/worker-service.cjs cursor uninstall",
+    "cursor:status": "bun plugin/scripts/worker-service.cjs cursor status",
+    "cursor:setup": "bun plugin/scripts/worker-service.cjs cursor setup"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.1.76",
