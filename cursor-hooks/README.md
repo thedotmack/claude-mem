@@ -1,6 +1,28 @@
 # Claude-Mem Cursor Hooks Integration
 
-This directory contains Cursor hooks that connect claude-mem to Cursor, enabling persistent memory across Cursor sessions.
+> **Persistent AI Memory for Cursor - Free Options Available**
+
+Give your Cursor AI persistent memory across sessions. Your agent remembers what it worked on, the decisions it made, and the patterns in your codebase - automatically.
+
+### Why Claude-Mem?
+
+- **Remember context across sessions**: No more re-explaining your codebase every time
+- **Automatic capture**: MCP tools, shell commands, and file edits are logged without effort
+- **Free tier options**: Works with Gemini (1500 free req/day) or OpenRouter (free models available)
+- **Works with or without Claude Code**: Full functionality either way
+
+### Quick Install (5 minutes)
+
+```bash
+# Clone and build
+git clone https://github.com/thedotmack/claude-mem.git
+cd claude-mem && npm install && npm run build
+
+# Interactive setup (configures provider + installs hooks)
+npm run cursor:setup
+```
+
+---
 
 ## Quick Start for Cursor Users
 

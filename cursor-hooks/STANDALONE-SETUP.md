@@ -1,14 +1,18 @@
 # Claude-Mem for Cursor (No Claude Code Required)
 
+> **Persistent AI Memory for Cursor - Zero Cost to Start**
+
 ## Overview
 
 Use claude-mem's persistent memory in Cursor without a Claude Code subscription. Choose between free-tier providers (Gemini, OpenRouter) or paid options.
 
 **What You Get**:
-- AI memory that persists across Cursor sessions
-- Automatic capture of MCP tools, shell commands, and file edits
-- Context injection via `.cursor/rules/` for every chat
-- Web viewer at http://localhost:37777
+- **Persistent memory** that survives across sessions - your AI remembers what it worked on
+- **Automatic capture** of MCP tools, shell commands, and file edits
+- **Context injection** via `.cursor/rules/` - relevant history included in every chat
+- **Web viewer** at http://localhost:37777 - browse and search your project history
+
+**Why This Matters**: Every Cursor session starts fresh. Claude-mem bridges that gap - your AI agent builds cumulative knowledge about your codebase, decisions, and patterns over time.
 
 ## Prerequisites
 

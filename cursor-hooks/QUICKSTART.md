@@ -1,11 +1,15 @@
 # Quick Start: Claude-Mem + Cursor Integration
 
+> **Give your Cursor AI persistent memory in under 5 minutes**
+
 ## What This Does
 
 Connects claude-mem to Cursor so that:
-- Agent actions (MCP tools, shell commands, file edits) are automatically saved
-- Context from past sessions is automatically injected via `.cursor/rules/`
-- Sessions are summarized for future reference
+- **Agent actions** (MCP tools, shell commands, file edits) are automatically saved
+- **Context from past sessions** is automatically injected via `.cursor/rules/`
+- **Sessions are summarized** for future reference
+
+Your AI stops forgetting. It remembers the patterns, decisions, and context from previous sessions.
 
 ## Don't Have Claude Code?
 
