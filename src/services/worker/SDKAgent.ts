@@ -310,33 +310,39 @@ export class SDKAgent {
         concepts: obs.concepts?.length ?? 0
       });
 
-      // Sync to Chroma
-      const chromaStart = Date.now();
-      const obsType = obs.type;
-      const obsTitle = obs.title || '(untitled)';
-      this.dbManager.getChromaSync().syncObservation(
-        obsId,
-        session.contentSessionId,
-        session.project,
-        obs,
-        session.lastPromptNumber,
-        createdAtEpoch,
-        discoveryTokens
-      ).then(() => {
-        const chromaDuration = Date.now() - chromaStart;
-        logger.debug('CHROMA', 'Observation synced', {
+      // Sync to Chroma with circuit breaker
+      if (session.chromaAvailable !== false) {
+        const chromaStart = Date.now();
+        const obsType = obs.type;
+        const obsTitle = obs.title || '(untitled)';
+        this.dbManager.getChromaSync().syncObservation(
           obsId,
-          duration: `${chromaDuration}ms`,
-          type: obsType,
-          title: obsTitle
+          session.contentSessionId,
+          session.project,
+          obs,
+          session.lastPromptNumber,
+          createdAtEpoch,
+          discoveryTokens
+        ).then(() => {
+          const chromaDuration = Date.now() - chromaStart;
+          logger.debug('CHROMA', 'Observation synced', {
+            obsId,
+            duration: `${chromaDuration}ms`,
+            type: obsType,
+            title: obsTitle
+          });
+        }).catch((error) => {
+          logger.failure('CHROMA', 'Observation sync failed', {
+            obsId,
+            sessionId: session.sessionDbId
+          }, error);
+          session.chromaAvailable = false; // Circuit breaker
         });
-      }).catch((error) => {
-        logger.warn('CHROMA', 'Observation sync failed, continuing without vector search', {
-          obsId,
-          type: obsType,
-          title: obsTitle
-        }, error);
-      });
+      } else {
+        logger.debug('CHROMA', 'Skipping observation sync - service marked unavailable', {
+          sessionId: session.sessionDbId
+        });
+      }
 
       // Broadcast to SSE clients (for web UI)
       if (worker && worker.sseBroadcaster) {
@@ -394,30 +400,37 @@ export class SDKAgent {
         hasNextSteps: !!summary.next_steps
       });
 
-      // Sync to Chroma
-      const chromaStart = Date.now();
-      const summaryRequest = summary.request || '(no request)';
-      this.dbManager.getChromaSync().syncSummary(
-        summaryId,
-        session.contentSessionId,
-        session.project,
-        summary,
-        session.lastPromptNumber,
-        createdAtEpoch,
-        discoveryTokens
-      ).then(() => {
-        const chromaDuration = Date.now() - chromaStart;
-        logger.debug('CHROMA', 'Summary synced', {
+      // Sync to Chroma with circuit breaker
+      if (session.chromaAvailable !== false) {
+        const chromaStart = Date.now();
+        const summaryRequest = summary.request || '(no request)';
+        this.dbManager.getChromaSync().syncSummary(
           summaryId,
-          duration: `${chromaDuration}ms`,
-          request: summaryRequest
+          session.contentSessionId,
+          session.project,
+          summary,
+          session.lastPromptNumber,
+          createdAtEpoch,
+          discoveryTokens
+        ).then(() => {
+          const chromaDuration = Date.now() - chromaStart;
+          logger.debug('CHROMA', 'Summary synced', {
+            summaryId,
+            duration: `${chromaDuration}ms`,
+            request: summaryRequest
+          });
+        }).catch((error) => {
+          logger.failure('CHROMA', 'Summary sync failed', {
+            summaryId,
+            sessionId: session.sessionDbId
+          }, error);
+          session.chromaAvailable = false; // Circuit breaker
         });
-      }).catch((error) => {
-        logger.warn('CHROMA', 'Summary sync failed, continuing without vector search', {
-          summaryId,
-          request: summaryRequest
-        }, error);
-      });
+      } else {
+        logger.debug('CHROMA', 'Skipping summary sync - service marked unavailable', {
+          sessionId: session.sessionDbId
+        });
+      }
 
       // Broadcast to SSE clients (for web UI)
       if (worker && worker.sseBroadcaster) {

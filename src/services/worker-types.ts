@@ -34,6 +34,7 @@ export interface ActiveSession {
   earliestPendingTimestamp: number | null;  // Original timestamp of earliest pending message (for accurate observation timestamps)
   conversationHistory: ConversationMessage[];  // Shared conversation history for provider switching
   currentProvider: 'claude' | 'gemini' | 'openrouter' | null;  // Track which provider is currently running
+  chromaAvailable?: boolean;  // Circuit breaker for Chroma sync failures
 }
 
 export interface PendingMessage {

@@ -140,7 +140,8 @@ export class SessionManager {
       pendingProcessingIds: new Set(),
       earliestPendingTimestamp: null,
       conversationHistory: [],  // Initialize empty - will be populated by agents
-      currentProvider: null  // Will be set when generator starts
+      currentProvider: null,  // Will be set when generator starts
+      chromaAvailable: true  // Assume Chroma is available initially - circuit breaker will disable if sync fails
     };
 
     logger.info('SESSION', 'Creating new session object', {
