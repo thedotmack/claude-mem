@@ -1061,7 +1061,7 @@ async function runInteractiveSetup(): Promise<number> {
     return new Promise(resolve => rl.question(prompt, resolve));
   };
 
-  console.log(`
+  process.stdout.write(`
 ╔══════════════════════════════════════════════════════════════════╗
 ║           Claude-Mem Cursor Setup Wizard                         ║
 ║                                                                  ║
@@ -1072,7 +1072,7 @@ async function runInteractiveSetup(): Promise<number> {
 
   try {
     // Step 1: Check environment
-    console.log('Step 1: Checking environment...\n');
+    process.stdout.write('Step 1: Checking environment...\n');
 
     const hasClaudeCode = await detectClaudeCode();
     const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
@@ -1090,23 +1090,23 @@ async function runInteractiveSetup(): Promise<number> {
     const currentProvider = settings['CLAUDE_MEM_PROVIDER'] as string || (hasClaudeCode ? 'claude-sdk' : 'none');
 
     if (hasClaudeCode) {
-      console.log('✅ Claude Code detected\n');
+      process.stdout.write('✅ Claude Code detected\n');
     } else {
-      console.log('ℹ️  Claude Code not detected\n');
+      process.stdout.write('ℹ️  Claude Code not detected\n');
     }
 
-    console.log(`Current provider: ${currentProvider}\n`);
+    process.stdout.write(`Current provider: ${currentProvider}\n`);
 
     // Step 2: Provider selection (always show)
-    console.log('Step 2: Choose AI Provider\n');
+    process.stdout.write('Step 2: Choose AI Provider\n');
     if (hasClaudeCode) {
-      console.log('  [1] Claude SDK (Recommended - uses your Claude Code subscription)');
+      process.stdout.write('  [1] Claude SDK (Recommended - uses your Claude Code subscription)\n');
     } else {
-      console.log('  [1] Claude SDK (requires Claude Code subscription)');
+      process.stdout.write('  [1] Claude SDK (requires Claude Code subscription)\n');
     }
-    console.log('  [2] Gemini (1500 free requests/day)');
-    console.log('  [3] OpenRouter (100+ models, some free)');
-    console.log('  [4] Keep current settings\n');
+    process.stdout.write('  [2] Gemini (1500 free requests/day)\n');
+    process.stdout.write('  [3] OpenRouter (100+ models, some free)\n');
+    process.stdout.write('  [4] Keep current settings\n');
 
     const providerChoice = await question('Enter choice [1-4]: ');
 
@@ -1114,48 +1114,48 @@ async function runInteractiveSetup(): Promise<number> {
       settings['CLAUDE_MEM_PROVIDER'] = 'claude-sdk';
       mkdirSync(path.dirname(settingsPath), { recursive: true });
       writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
-      console.log('\n✅ Claude SDK configured!\n');
+      process.stdout.write('\n✅ Claude SDK configured!\n');
     } else if (providerChoice === '2') {
-      console.log('\n📝 Configuring Gemini...\n');
-      console.log('   Get your free API key at: https://aistudio.google.com/apikey\n');
+      process.stdout.write('\n📝 Configuring Gemini...\n');
+      process.stdout.write('   Get your free API key at: https://aistudio.google.com/apikey\n');
 
       const apiKey = await question('Enter your Gemini API key: ');
 
       if (!apiKey.trim()) {
-        console.log('\n⚠️  No API key provided. You can add it later in ~/.claude-mem/settings.json\n');
+        process.stdout.write('\n⚠️  No API key provided. You can add it later in ~/.claude-mem/settings.json\n');
       } else {
         settings['CLAUDE_MEM_PROVIDER'] = 'gemini';
         settings['CLAUDE_MEM_GEMINI_API_KEY'] = apiKey.trim();
 
         mkdirSync(path.dirname(settingsPath), { recursive: true });
         writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
-        console.log('\n✅ Gemini configured successfully!\n');
+        process.stdout.write('\n✅ Gemini configured successfully!\n');
       }
     } else if (providerChoice === '3') {
-      console.log('\n📝 Configuring OpenRouter...\n');
-      console.log('   Get your API key at: https://openrouter.ai/keys\n');
+      process.stdout.write('\n📝 Configuring OpenRouter...\n');
+      process.stdout.write('   Get your API key at: https://openrouter.ai/keys\n');
 
       const apiKey = await question('Enter your OpenRouter API key: ');
 
       if (!apiKey.trim()) {
-        console.log('\n⚠️  No API key provided. You can add it later in ~/.claude-mem/settings.json\n');
+        process.stdout.write('\n⚠️  No API key provided. You can add it later in ~/.claude-mem/settings.json\n');
       } else {
         settings['CLAUDE_MEM_PROVIDER'] = 'openrouter';
         settings['CLAUDE_MEM_OPENROUTER_API_KEY'] = apiKey.trim();
 
         mkdirSync(path.dirname(settingsPath), { recursive: true });
         writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
-        console.log('\n✅ OpenRouter configured successfully!\n');
+        process.stdout.write('\n✅ OpenRouter configured successfully!\n');
       }
     } else {
-      console.log('\n✅ Keeping current settings.\n');
+      process.stdout.write('\n✅ Keeping current settings.\n');
     }
 
     // Step 3: Install location
-    console.log('Step 3: Choose installation scope\n');
-    console.log('  [1] Project (current directory only) - Recommended');
-    console.log('  [2] User (all projects for current user)');
-    console.log('  [3] Skip hook installation\n');
+    process.stdout.write('Step 3: Choose installation scope\n');
+    process.stdout.write('  [1] Project (current directory only) - Recommended\n');
+    process.stdout.write('  [2] User (all projects for current user)\n');
+    process.stdout.write('  [3] Skip hook installation\n');
 
     const scopeChoice = await question('Enter choice [1-3]: ');
 
@@ -1165,17 +1165,17 @@ async function runInteractiveSetup(): Promise<number> {
     } else if (scopeChoice === '2') {
       installTarget = 'user';
     } else {
-      console.log('\n⚠️  Skipping hook installation.\n');
+      process.stdout.write('\n⚠️  Skipping hook installation.\n');
     }
 
     // Step 4: Install hooks (if target selected)
     if (installTarget) {
-      console.log(`Step 4: Installing Cursor hooks (${installTarget})...\n`);
+      process.stdout.write(`Step 4: Installing Cursor hooks (${installTarget})...\n`);
 
       const cursorHooksDir = findCursorHooksDir();
       if (!cursorHooksDir) {
-        console.error('❌ Could not find cursor-hooks directory');
-        console.error('   Make sure you ran npm run build first.');
+        process.stderr.write('❌ Could not find cursor-hooks directory\n');
+        process.stderr.write('   Make sure you ran npm run build first.\n');
         rl.close();
         return 1;
       }
@@ -1188,27 +1188,27 @@ async function runInteractiveSetup(): Promise<number> {
       }
 
       // Step 5: Configure MCP server for memory search
-      console.log('\nStep 5: Configuring MCP server for memory search...\n');
+      process.stdout.write('\nStep 5: Configuring MCP server for memory search...\n');
 
       const mcpResult = configureCursorMcp(installTarget);
       if (mcpResult !== 0) {
-        console.warn('⚠️  MCP configuration failed, but hooks are installed.');
-        console.warn('   You can manually configure MCP later.\n');
+        process.stderr.write('⚠️  MCP configuration failed, but hooks are installed.\n');
+        process.stderr.write('   You can manually configure MCP later.\n');
       } else {
-        console.log('');
+        process.stdout.write('\n');
       }
     }
 
     // Step 6: Start worker
-    console.log('\nStep 6: Starting claude-mem worker...\n');
+    process.stdout.write('\nStep 6: Starting claude-mem worker...\n');
 
     const port = getWorkerPort();
     const alreadyRunning = await waitForHealth(port, 1000);
 
     if (alreadyRunning) {
-      console.log('✅ Worker is already running!\n');
+      process.stdout.write('✅ Worker is already running!\n');
     } else {
-      console.log('   Starting worker in background...');
+      process.stdout.write('   Starting worker in background...\n');
 
       // Spawn worker daemon
       const child = spawn(process.execPath, [__filename, '--daemon'], {
@@ -1219,7 +1219,7 @@ async function runInteractiveSetup(): Promise<number> {
       });
 
       if (child.pid === undefined) {
-        console.error('❌ Failed to start worker');
+        process.stderr.write('❌ Failed to start worker\n');
         rl.close();
         return 1;
       }
@@ -1232,16 +1232,16 @@ async function runInteractiveSetup(): Promise<number> {
 
       if (!healthy) {
         removePidFile();
-        console.error('❌ Worker failed to start');
+        process.stderr.write('❌ Worker failed to start\n');
         rl.close();
         return 1;
       }
 
-      console.log('✅ Worker started successfully!\n');
+      process.stdout.write('✅ Worker started successfully!\n');
     }
 
     // Final summary
-    console.log(`
+    process.stdout.write(`
 ╔══════════════════════════════════════════════════════════════════╗
 ║                    Setup Complete! 🎉                            ║
 ╚══════════════════════════════════════════════════════════════════╝
@@ -1272,7 +1272,7 @@ Documentation:
     return 0;
   } catch (error) {
     rl.close();
-    console.error(`\n❌ Setup failed: ${(error as Error).message}`);
+    process.stderr.write(`\n❌ Setup failed: ${(error as Error).message}`);
     return 1;
   }
 }
@@ -1366,8 +1366,8 @@ function configureCursorMcp(target: string): number {
   const mcpServerPath = findMcpServerPath();
 
   if (!mcpServerPath) {
-    console.error('❌ Could not find MCP server script');
-    console.error('   Expected at: ~/.claude/plugins/marketplaces/thedotmack/plugin/scripts/mcp-server.cjs');
+    process.stderr.write('❌ Could not find MCP server script\n');
+    process.stderr.write('   Expected at: ~/.claude/plugins/marketplaces/thedotmack/plugin/scripts/mcp-server.cjs\n');
     return 1;
   }
 
@@ -1384,7 +1384,7 @@ function configureCursorMcp(target: string): number {
       mcpJsonPath = path.join(mcpJsonDir, 'mcp.json');
       break;
     default:
-      console.error(`❌ Invalid target: ${target}. Use: project or user`);
+      process.stderr.write(`❌ Invalid target: ${target}. Use: project or user`);
       return 1;
   }
 
@@ -1413,12 +1413,12 @@ function configureCursorMcp(target: string): number {
     };
 
     writeFileSync(mcpJsonPath, JSON.stringify(config, null, 2));
-    console.log(`  ✓ Configured MCP server in ${target === 'user' ? '~/.cursor' : '.cursor'}/mcp.json`);
-    console.log(`    Server path: ${mcpServerPath}`);
+    process.stdout.write(`  ✓ Configured MCP server in ${target === 'user' ? '~/.cursor' : '.cursor'}/mcp.json`);
+    process.stdout.write(`    Server path: ${mcpServerPath}`);
 
     return 0;
   } catch (error) {
-    console.error(`❌ Failed to configure MCP: ${(error as Error).message}`);
+    process.stderr.write(`❌ Failed to configure MCP: ${(error as Error).message}`);
     return 1;
   }
 }
@@ -1433,8 +1433,8 @@ async function handleCursorCommand(subcommand: string, args: string[]): Promise<
       const cursorHooksDir = findCursorHooksDir();
       
       if (!cursorHooksDir) {
-        console.error('❌ Could not find cursor-hooks directory');
-        console.error('   Expected at: ~/.claude/plugins/marketplaces/thedotmack/cursor-hooks/');
+        process.stderr.write('❌ Could not find cursor-hooks directory\n');
+        process.stderr.write('   Expected at: ~/.claude/plugins/marketplaces/thedotmack/cursor-hooks/\n');
         return 1;
       }
       
@@ -1456,7 +1456,7 @@ async function handleCursorCommand(subcommand: string, args: string[]): Promise<
     }
 
     default: {
-      console.log(`
+      process.stdout.write(`
 Claude-Mem Cursor Integration
 
 Usage: claude-mem cursor <command> [options]
@@ -1507,7 +1507,7 @@ async function installCursorHooks(sourceDir: string, target: string): Promise<nu
   const platform = detectPlatform();
   const scriptExt = getScriptExtension();
 
-  console.log(`\n📦 Installing Claude-Mem Cursor hooks (${target} level, ${platform})...\n`);
+  process.stdout.write(`\n📦 Installing Claude-Mem Cursor hooks (${target} level, ${platform})...\n`);
 
   let targetDir: string;
   let hooksDir: string;
@@ -1533,12 +1533,12 @@ async function installCursorHooks(sourceDir: string, target: string): Promise<nu
         targetDir = path.join(process.env.ProgramData || 'C:\\ProgramData', 'Cursor');
         hooksDir = path.join(targetDir, 'hooks');
       } else {
-        console.error('❌ Enterprise installation not supported on this platform');
+        process.stderr.write('❌ Enterprise installation not supported on this platform\n');
         return 1;
       }
       break;
     default:
-      console.error(`❌ Invalid target: ${target}. Use: project, user, or enterprise`);
+      process.stderr.write(`❌ Invalid target: ${target}. Use: project, user, or enterprise`);
       return 1;
   }
 
@@ -1567,9 +1567,9 @@ async function installCursorHooks(sourceDir: string, target: string): Promise<nu
         // Unix scripts need execute permission; Windows PowerShell doesn't need it
         const mode = platform === 'windows' ? undefined : 0o755;
         writeFileSync(dstPath, content, mode ? { mode } : undefined);
-        console.log(`  ✓ Copied ${script}`);
+        process.stdout.write(`  ✓ Copied ${script}`);
       } else {
-        console.warn(`  ⚠ ${script} not found in source`);
+        process.stderr.write(`  ⚠ ${script} not found in source`);
       }
     }
 
@@ -1610,7 +1610,7 @@ async function installCursorHooks(sourceDir: string, target: string): Promise<nu
     };
 
     writeFileSync(hooksJsonPath, JSON.stringify(hooksJson, null, 2));
-    console.log(`  ✓ Created hooks.json (${platform} mode)`);
+    process.stdout.write(`  ✓ Created hooks.json (${platform} mode)`);
     
     // For project-level: create initial context file
     if (target === 'project') {
@@ -1622,7 +1622,7 @@ async function installCursorHooks(sourceDir: string, target: string): Promise<nu
       const projectName = path.basename(workspaceRoot);
       let contextGenerated = false;
       
-      console.log(`  ⏳ Generating initial context...`);
+      process.stdout.write(`  ⏳ Generating initial context...`);
       
       try {
         // Check if worker is running
@@ -1652,7 +1652,7 @@ ${context}
 `;
               writeFileSync(rulesFile, contextContent);
               contextGenerated = true;
-              console.log(`  ✓ Generated initial context from existing memory`);
+              process.stdout.write(`  ✓ Generated initial context from existing memory`);
             }
           }
         }
@@ -1675,15 +1675,15 @@ description: "Claude-mem context from past sessions (auto-updated)"
 Use claude-mem's MCP search tools for manual memory queries.
 `;
         writeFileSync(rulesFile, placeholderContent);
-        console.log(`  ✓ Created placeholder context file (will populate after first session)`);
+        process.stdout.write(`  ✓ Created placeholder context file (will populate after first session)`);
       }
       
       // Register project for automatic context updates after summaries
       registerCursorProject(projectName, workspaceRoot);
-      console.log(`  ✓ Registered for auto-context updates`);
+      process.stdout.write(`  ✓ Registered for auto-context updates`);
     }
     
-    console.log(`
+    process.stdout.write(`
 ✅ Installation complete!
 
 Hooks installed to: ${targetDir}/hooks.json
@@ -1701,9 +1701,9 @@ Context Injection:
     
     return 0;
   } catch (error) {
-    console.error(`\n❌ Installation failed: ${(error as Error).message}`);
+    process.stderr.write(`\n❌ Installation failed: ${(error as Error).message}`);
     if (target === 'enterprise') {
-      console.error('   Tip: Enterprise installation may require sudo/admin privileges');
+      process.stderr.write('   Tip: Enterprise installation may require sudo/admin privileges\n');
     }
     return 1;
   }
@@ -1713,7 +1713,7 @@ Context Injection:
  * Uninstall Cursor hooks
  */
 function uninstallCursorHooks(target: string): number {
-  console.log(`\n🗑️  Uninstalling Claude-Mem Cursor hooks (${target} level)...\n`);
+  process.stdout.write(`\n🗑️  Uninstalling Claude-Mem Cursor hooks (${target} level)...\n`);
   
   let targetDir: string;
   
@@ -1730,12 +1730,12 @@ function uninstallCursorHooks(target: string): number {
       } else if (process.platform === 'linux') {
         targetDir = '/etc/cursor';
       } else {
-        console.error('❌ Enterprise not supported on Windows');
+        process.stderr.write('❌ Enterprise not supported on Windows\n');
         return 1;
       }
       break;
     default:
-      console.error(`❌ Invalid target: ${target}`);
+      process.stderr.write(`❌ Invalid target: ${target}`);
       return 1;
   }
   
@@ -1755,14 +1755,14 @@ function uninstallCursorHooks(target: string): number {
       const scriptPath = path.join(hooksDir, script);
       if (existsSync(scriptPath)) {
         unlinkSync(scriptPath);
-        console.log(`  ✓ Removed ${script}`);
+        process.stdout.write(`  ✓ Removed ${script}`);
       }
     }
     
     // Remove hooks.json
     if (existsSync(hooksJsonPath)) {
       unlinkSync(hooksJsonPath);
-      console.log(`  ✓ Removed hooks.json`);
+      process.stdout.write(`  ✓ Removed hooks.json`);
     }
     
     // Remove context file and unregister if project-level
@@ -1770,21 +1770,21 @@ function uninstallCursorHooks(target: string): number {
       const contextFile = path.join(targetDir, 'rules', 'claude-mem-context.mdc');
       if (existsSync(contextFile)) {
         unlinkSync(contextFile);
-        console.log(`  ✓ Removed context file`);
+        process.stdout.write(`  ✓ Removed context file`);
       }
       
       // Unregister from auto-context updates
       const projectName = path.basename(process.cwd());
       unregisterCursorProject(projectName);
-      console.log(`  ✓ Unregistered from auto-context updates`);
+      process.stdout.write(`  ✓ Unregistered from auto-context updates`);
     }
     
-    console.log(`\n✅ Uninstallation complete!\n`);
-    console.log('Restart Cursor to apply changes.');
+    process.stdout.write(`\n✅ Uninstallation complete!\n`);
+    process.stdout.write('Restart Cursor to apply changes.\n');
     
     return 0;
   } catch (error) {
-    console.error(`\n❌ Uninstallation failed: ${(error as Error).message}`);
+    process.stderr.write(`\n❌ Uninstallation failed: ${(error as Error).message}`);
     return 1;
   }
 }
@@ -1793,7 +1793,7 @@ function uninstallCursorHooks(target: string): number {
  * Check Cursor hooks installation status
  */
 function checkCursorHooksStatus(): number {
-  console.log('\n🔍 Claude-Mem Cursor Hooks Status\n');
+  process.stdout.write('\n🔍 Claude-Mem Cursor Hooks Status\n');
   
   const locations = [
     { name: 'Project', dir: path.join(process.cwd(), '.cursor') },
@@ -1814,8 +1814,8 @@ function checkCursorHooksStatus(): number {
 
     if (existsSync(hooksJson)) {
       anyInstalled = true;
-      console.log(`✅ ${loc.name}: Installed`);
-      console.log(`   Config: ${hooksJson}`);
+      process.stdout.write(`✅ ${loc.name}: Installed`);
+      process.stdout.write(`   Config: ${hooksJson}`);
 
       // Detect which platform's scripts are installed
       const bashScripts = ['session-init.sh', 'context-inject.sh', 'save-observation.sh'];
@@ -1825,13 +1825,13 @@ function checkCursorHooksStatus(): number {
       const hasPs = psScripts.some(s => existsSync(path.join(hooksDir, s)));
 
       if (hasBash && hasPs) {
-        console.log(`   Platform: Both (bash + PowerShell)`);
+        process.stdout.write(`   Platform: Both (bash + PowerShell)`);
       } else if (hasBash) {
-        console.log(`   Platform: Unix (bash)`);
+        process.stdout.write(`   Platform: Unix (bash)`);
       } else if (hasPs) {
-        console.log(`   Platform: Windows (PowerShell)`);
+        process.stdout.write(`   Platform: Windows (PowerShell)`);
       } else {
-        console.log(`   ⚠ No hook scripts found`);
+        process.stdout.write(`   ⚠ No hook scripts found`);
       }
 
       // Check for appropriate scripts based on current platform
@@ -1840,28 +1840,28 @@ function checkCursorHooksStatus(): number {
       const missing = scripts.filter(s => !existsSync(path.join(hooksDir, s)));
 
       if (missing.length > 0) {
-        console.log(`   ⚠ Missing ${platform} scripts: ${missing.join(', ')}`);
+        process.stdout.write(`   ⚠ Missing ${platform} scripts: ${missing.join(', ')}`);
       } else {
-        console.log(`   Scripts: All present for ${platform}`);
+        process.stdout.write(`   Scripts: All present for ${platform}`);
       }
 
       // Check for context file (project only)
       if (loc.name === 'Project') {
         const contextFile = path.join(loc.dir, 'rules', 'claude-mem-context.mdc');
         if (existsSync(contextFile)) {
-          console.log(`   Context: Active`);
+          process.stdout.write(`   Context: Active`);
         } else {
-          console.log(`   Context: Not yet generated (will be created on first prompt)`);
+          process.stdout.write(`   Context: Not yet generated (will be created on first prompt)`);
         }
       }
     } else {
-      console.log(`❌ ${loc.name}: Not installed`);
+      process.stdout.write(`❌ ${loc.name}: Not installed`);
     }
-    console.log('');
+    process.stdout.write('\n');
   }
   
   if (!anyInstalled) {
-    console.log('No hooks installed. Run: claude-mem cursor install\n');
+    process.stdout.write('No hooks installed. Run: claude-mem cursor install\n');
   }
   
   return 0;
@@ -2014,12 +2014,12 @@ async function main() {
       const running = await isPortInUse(port);
       const pidInfo = readPidFile();
       if (running && pidInfo) {
-        console.log('Worker is running');
-        console.log(`  PID: ${pidInfo.pid}`);
-        console.log(`  Port: ${pidInfo.port}`);
-        console.log(`  Started: ${pidInfo.startedAt}`);
+        process.stdout.write('Worker is running\n');
+        process.stdout.write(`  PID: ${pidInfo.pid}`);
+        process.stdout.write(`  Port: ${pidInfo.port}`);
+        process.stdout.write(`  Started: ${pidInfo.startedAt}`);
       } else {
-        console.log('Worker is not running');
+        process.stdout.write('Worker is not running\n');
       }
       process.exit(0);
     }

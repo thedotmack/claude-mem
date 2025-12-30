@@ -27,15 +27,11 @@ import { getWorkerPort } from '../../shared/worker-utils.js';
 // @ts-ignore - Agent SDK types
 import { unstable_v2_createSession, unstable_v2_resumeSession } from '@anthropic-ai/claude-agent-sdk';
 
-interface SDKMessage {
-  type: string;
-  subtype?: string;
-  session_id?: string;
-  message?: {
-    content?: any;
-    usage?: any;
-  };
-}
+type SDKMessage =
+  | { type: 'system'; subtype: 'init'; session_id: string; message?: any }
+  | { type: 'assistant'; message: { content: any; usage?: any } }
+  | { type: 'error'; subtype: string; message?: string }
+  | { type: string; [key: string]: any }; // Fallback for unknown types
 
 export class SDKAgent {
   private dbManager: DatabaseManager;
@@ -174,7 +170,12 @@ export class SDKAgent {
 
     } catch (error: any) {
       if (error.name === 'AbortError') {
-        logger.warn('SDK', 'Agent aborted', { sessionId: session.sessionDbId });
+        logger.warn('SDK', 'Agent aborted by user', {
+          sessionId: session.sessionDbId,
+          lastPromptNumber: session.lastPromptNumber,
+          tokensUsed: session.cumulativeInputTokens + session.cumulativeOutputTokens,
+          duration: Date.now() - (session.startTime || Date.now())
+        });
       } else {
         logger.failure('SDK', 'Agent error', { sessionDbId: session.sessionDbId }, error);
       }
