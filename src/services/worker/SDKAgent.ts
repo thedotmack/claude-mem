@@ -48,11 +48,15 @@ export class SDKAgent {
    */
   async startSession(session: ActiveSession, worker?: any): Promise<void> {
     try {
+      logger.debug('SDK', '>>> STARTING SDK AGENT <<<', { sessionDbId: session.sessionDbId });
+
       // Find Claude executable
       const claudePath = this.findClaudeExecutable();
+      logger.debug('SDK', 'Found Claude executable', { claudePath });
 
       // Get model ID and disallowed tools
       const modelId = this.getModelId();
+      logger.debug('SDK', 'Got model ID', { modelId });
       // Memory agent is OBSERVER ONLY - no tools allowed
       const disallowedTools = [
         'Bash',           // Prevent infinite loops
@@ -92,9 +96,16 @@ export class SDKAgent {
         pathToClaudeCodeExecutable: claudePath
       };
 
+      logger.debug('SDK', 'Creating SDK session', {
+        hasRealMemorySessionId,
+        resuming: hasRealMemorySessionId ? session.memorySessionId : false
+      });
+
       await using sdkSession = hasRealMemorySessionId
         ? unstable_v2_resumeSession(session.memorySessionId!, sdkSessionOptions)
         : unstable_v2_createSession(sdkSessionOptions);
+
+      logger.debug('SDK', 'SDK session created successfully');
 
       // Load active mode and build initial prompt
       const mode = ModeManager.getInstance().getActiveMode();
@@ -107,16 +118,24 @@ export class SDKAgent {
       // Add to shared conversation history for provider interop
       session.conversationHistory.push({ role: 'user', content: initPrompt });
 
+      logger.debug('SDK', 'Sending initial prompt', { promptLength: initPrompt.length });
+
       // V2: Send initial prompt
       await sdkSession.send(initPrompt);
 
-      // V2: Receive and process initial response
-      for await (const message of sdkSession.receive()) {
+      logger.debug('SDK', 'Initial prompt sent, waiting for response');
+
+      // V2: Stream and process initial response
+      for await (const message of sdkSession.stream()) {
+        logger.debug('SDK', 'Received message from SDK', { type: message?.type });
         await this.handleSDKMessage(message, session, worker);
       }
 
+      logger.debug('SDK', 'Initial response processed, entering message loop');
+
       // Process pending messages from queue using V2 send/receive pattern
       for await (const pendingMsg of this.sessionManager.getMessageIterator(session.sessionDbId)) {
+        logger.debug('SDK', 'Got message from iterator', { type: pendingMsg.type, id: pendingMsg._persistentId });
         // Capture earliest timestamp BEFORE processing (will be cleared after)
         const originalTimestamp = session.earliestPendingTimestamp;
 
@@ -154,7 +173,7 @@ export class SDKAgent {
 
         // V2: Send and receive for this message
         await sdkSession.send(prompt);
-        for await (const message of sdkSession.receive()) {
+        for await (const message of sdkSession.stream()) {
           await this.handleSDKMessage(message, session, worker, originalTimestamp);
         }
       }
@@ -169,6 +188,12 @@ export class SDKAgent {
       // Note: Session cleanup is automatic via await using
 
     } catch (error: any) {
+      logger.error('SDK', '>>> SDK AGENT FAILED <<<', {
+        sessionDbId: session.sessionDbId,
+        errorName: error?.name,
+        errorMessage: error?.message,
+        errorStack: error?.stack?.slice(0, 500)
+      });
       if (error.name === 'AbortError') {
         logger.warn('SDK', 'Agent aborted by user', {
           sessionId: session.sessionDbId,
