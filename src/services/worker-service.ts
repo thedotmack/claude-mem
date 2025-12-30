@@ -21,6 +21,12 @@ import { promisify } from 'util';
 
 const execAsync = promisify(exec);
 
+// Build-time injected version constant (set by esbuild define)
+declare const __DEFAULT_PACKAGE_VERSION__: string;
+const BUILT_IN_VERSION = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined'
+  ? __DEFAULT_PACKAGE_VERSION__
+  : 'development';
+
 // PID file management for self-spawn pattern
 const DATA_DIR = path.join(homedir(), '.claude-mem');
 const PID_FILE = path.join(DATA_DIR, 'worker.pid');
@@ -117,6 +123,46 @@ async function waitForPortFree(port: number, timeoutMs: number = 10000): Promise
     await new Promise(r => setTimeout(r, 500));
   }
   return false;
+}
+
+/**
+ * Get the plugin version from the installed marketplace package.json
+ */
+function getInstalledPluginVersion(): string {
+  const marketplaceRoot = path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
+  const packageJsonPath = path.join(marketplaceRoot, 'package.json');
+  const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
+  return packageJson.version;
+}
+
+/**
+ * Get the running worker's version via API
+ */
+async function getRunningWorkerVersion(port: number): Promise<string | null> {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/api/version`);
+    if (!response.ok) return null;
+    const data = await response.json() as { version: string };
+    return data.version;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Check if worker version matches plugin version
+ * Returns true if versions match or if we can't determine (assume match)
+ */
+async function checkVersionMatch(port: number): Promise<{ matches: boolean; pluginVersion: string; workerVersion: string | null }> {
+  const pluginVersion = getInstalledPluginVersion();
+  const workerVersion = await getRunningWorkerVersion(port);
+
+  // If we can't get worker version, assume it matches (graceful degradation)
+  if (!workerVersion) {
+    return { matches: true, pluginVersion, workerVersion };
+  }
+
+  return { matches: pluginVersion === workerVersion, pluginVersion, workerVersion };
 }
 
 // Import composed service layer
@@ -292,16 +338,10 @@ export class WorkerService {
       }
     });
 
-    // Version endpoint - returns the worker's current version
+    // Version endpoint - returns the worker's built-in version (compiled at build time)
+    // This is critical for detecting version mismatch when plugin is updated but worker is still running old code
     this.app.get('/api/version', (_req, res) => {
-      const { homedir } = require('os');
-      const { readFileSync } = require('fs');
-      const marketplaceRoot = path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
-      const packageJsonPath = path.join(marketplaceRoot, 'package.json');
-
-      // Read version from marketplace package.json
-      const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
-      res.status(200).json({ version: packageJson.version });
+      res.status(200).json({ version: BUILT_IN_VERSION });
     });
 
     // Instructions endpoint - loads SKILL.md sections on-demand for progressive instruction loading
@@ -946,8 +986,29 @@ async function main() {
       // Health-check-first approach: simple, fast, reliable
       // Check if worker is already healthy
       if (await waitForHealth(port, 1000)) {
-        logger.info('SYSTEM', 'Worker already running and healthy');
-        process.exit(0);
+        // Worker is healthy - check for version mismatch (issue #484)
+        const versionCheck = await checkVersionMatch(port);
+        if (!versionCheck.matches) {
+          logger.info('SYSTEM', 'Worker version mismatch detected - auto-restarting', {
+            pluginVersion: versionCheck.pluginVersion,
+            workerVersion: versionCheck.workerVersion
+          });
+
+          // Shutdown the old worker
+          await httpShutdown(port);
+          const freed = await waitForPortFree(port, getPlatformTimeout(15000));
+
+          if (!freed) {
+            logger.error('SYSTEM', 'Port did not free up after shutdown for version mismatch restart', { port });
+            process.exit(1);
+          }
+
+          removePidFile();
+          // Fall through to spawn new daemon below
+        } else {
+          logger.info('SYSTEM', 'Worker already running and healthy');
+          process.exit(0);
+        }
       }
 
       // Worker not healthy - check if port is in use

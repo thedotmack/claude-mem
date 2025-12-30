@@ -92,17 +92,19 @@ async function getWorkerVersion(): Promise<string> {
 
 /**
  * Check if worker version matches plugin version
- * Logs a warning if mismatch is detected
+ * Note: Auto-restart on version mismatch is now handled in worker-service.ts start command (issue #484)
+ * This function logs for informational purposes only
  */
 async function checkWorkerVersion(): Promise<void> {
   const pluginVersion = getPluginVersion();
   const workerVersion = await getWorkerVersion();
 
   if (pluginVersion !== workerVersion) {
-    logger.warn('SYSTEM', 'Worker version mismatch', {
+    // Just log debug info - auto-restart handles the mismatch in worker-service.ts
+    logger.debug('SYSTEM', 'Version check', {
       pluginVersion,
       workerVersion,
-      hint: 'Restart worker with: claude-mem worker restart'
+      note: 'Mismatch will be auto-restarted by worker-service start command'
     });
   }
 }
