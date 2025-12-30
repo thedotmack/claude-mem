@@ -18,15 +18,14 @@ import { parseObservations, parseSummary } from '../../sdk/parser.js';
 import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
-import type { ActiveSession, SDKUserMessage, PendingMessage } from '../worker-types.js';
+import type { ActiveSession } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import { updateCursorContextForProject } from '../worker-service.js';
 import { getWorkerPort } from '../../shared/worker-utils.js';
 
 // Agent SDK V2 imports
 // @ts-ignore - Agent SDK types
-import { query, unstable_v2_createSession, unstable_v2_resumeSession } from '@anthropic-ai/claude-agent-sdk';
-import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import { unstable_v2_createSession, unstable_v2_resumeSession } from '@anthropic-ai/claude-agent-sdk';
 
 export class SDKAgent {
   private dbManager: DatabaseManager;
@@ -38,7 +37,7 @@ export class SDKAgent {
   }
 
   /**
-   * Start SDK agent for a session (event-driven, no polling)
+   * Start SDK agent for a session using V2 send/receive pattern
    * @param worker WorkerService reference for spinner control (optional)
    */
   async startSession(session: ActiveSession, worker?: any): Promise<void> {
@@ -64,16 +63,13 @@ export class SDKAgent {
         'TodoWrite'       // No todo management
       ];
 
-      // Create message generator (event-driven)
-      const messageGenerator = this.createMessageGenerator(session);
-
       // CRITICAL: Only resume if memorySessionId is a REAL captured SDK session ID,
       // not the placeholder (which equals contentSessionId). The placeholder is set
       // for FK purposes but would cause the bug where we try to resume the USER's session!
       const hasRealMemorySessionId = session.memorySessionId &&
         session.memorySessionId !== session.contentSessionId;
 
-      logger.info('SDK', 'Starting SDK query', {
+      logger.info('SDK', 'Starting SDK V2 session', {
         sessionDbId: session.sessionDbId,
         contentSessionId: session.contentSessionId,
         memorySessionId: session.memorySessionId,
@@ -82,98 +78,78 @@ export class SDKAgent {
         lastPromptNumber: session.lastPromptNumber
       });
 
-      // Run Agent SDK query loop
-      // Only resume if we have a REAL captured memory session ID (not the placeholder)
-      const queryResult = query({
-        prompt: messageGenerator,
-        options: {
-          model: modelId,
-          // Only resume if memorySessionId differs from contentSessionId (meaning it was captured)
-          ...(hasRealMemorySessionId && { resume: session.memorySessionId }),
-          disallowedTools,
-          abortController: session.abortController,
-          pathToClaudeCodeExecutable: claudePath
-        }
-      });
+      // V2: Create or resume session with await using for automatic cleanup
+      // This solves Issue #499 - orphaned processes are cleaned up automatically
+      const sdkSessionOptions = {
+        model: modelId,
+        disallowedTools,
+        pathToClaudeCodeExecutable: claudePath
+      };
 
-      // Process SDK messages
-      for await (const message of queryResult) {
-        // Capture memory session ID from first SDK message (any type has session_id)
-        // This enables resume for subsequent generator starts within the same user session
-        if (!session.memorySessionId && message.session_id) {
-          session.memorySessionId = message.session_id;
-          // Persist to database for cross-restart recovery
-          this.dbManager.getSessionStore().updateMemorySessionId(
-            session.sessionDbId,
-            message.session_id
-          );
-          logger.info('SDK', 'Captured memory session ID', {
-            sessionDbId: session.sessionDbId,
-            memorySessionId: message.session_id
+      await using sdkSession = hasRealMemorySessionId
+        ? unstable_v2_resumeSession(session.memorySessionId!, sdkSessionOptions)
+        : unstable_v2_createSession(sdkSessionOptions);
+
+      // Load active mode and build initial prompt
+      const mode = ModeManager.getInstance().getActiveMode();
+      const isInitPrompt = session.lastPromptNumber === 1;
+
+      const initPrompt = isInitPrompt
+        ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode)
+        : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode);
+
+      // Add to shared conversation history for provider interop
+      session.conversationHistory.push({ role: 'user', content: initPrompt });
+
+      // V2: Send initial prompt
+      await sdkSession.send(initPrompt);
+
+      // V2: Receive and process initial response
+      for await (const message of sdkSession.receive()) {
+        await this.handleSDKMessage(message, session, worker);
+      }
+
+      // Process pending messages from queue using V2 send/receive pattern
+      for await (const pendingMsg of this.sessionManager.getMessageIterator(session.sessionDbId)) {
+        // Capture earliest timestamp BEFORE processing (will be cleared after)
+        const originalTimestamp = session.earliestPendingTimestamp;
+
+        // Build prompt based on message type
+        let prompt: string;
+        if (pendingMsg.type === 'observation') {
+          // Update last prompt number
+          if (pendingMsg.prompt_number !== undefined) {
+            session.lastPromptNumber = pendingMsg.prompt_number;
+          }
+
+          prompt = buildObservationPrompt({
+            id: 0, // Not used in prompt
+            tool_name: pendingMsg.tool_name!,
+            tool_input: JSON.stringify(pendingMsg.tool_input),
+            tool_output: JSON.stringify(pendingMsg.tool_response),
+            created_at_epoch: originalTimestamp ?? Date.now(),
+            cwd: pendingMsg.cwd
           });
+        } else if (pendingMsg.type === 'summarize') {
+          prompt = buildSummaryPrompt({
+            id: session.sessionDbId,
+            memory_session_id: session.memorySessionId,
+            project: session.project,
+            user_prompt: session.userPrompt,
+            last_user_message: pendingMsg.last_user_message || '',
+            last_assistant_message: pendingMsg.last_assistant_message || ''
+          }, mode);
+        } else {
+          continue; // Unknown message type
         }
 
-        // Handle assistant messages
-        if (message.type === 'assistant') {
-          const content = message.message.content;
-          const textContent = Array.isArray(content)
-            ? content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n')
-            : typeof content === 'string' ? content : '';
+        // Add to shared conversation history for provider interop
+        session.conversationHistory.push({ role: 'user', content: prompt });
 
-          const responseSize = textContent.length;
-
-          // Capture token state BEFORE updating (for delta calculation)
-          const tokensBeforeResponse = session.cumulativeInputTokens + session.cumulativeOutputTokens;
-
-          // Extract and track token usage
-          const usage = message.message.usage;
-          if (usage) {
-            session.cumulativeInputTokens += usage.input_tokens || 0;
-            session.cumulativeOutputTokens += usage.output_tokens || 0;
-
-            // Cache creation counts as discovery, cache read doesn't
-            if (usage.cache_creation_input_tokens) {
-              session.cumulativeInputTokens += usage.cache_creation_input_tokens;
-            }
-
-            logger.debug('SDK', 'Token usage captured', {
-              sessionId: session.sessionDbId,
-              inputTokens: usage.input_tokens,
-              outputTokens: usage.output_tokens,
-              cacheCreation: usage.cache_creation_input_tokens || 0,
-              cacheRead: usage.cache_read_input_tokens || 0,
-              cumulativeInput: session.cumulativeInputTokens,
-              cumulativeOutput: session.cumulativeOutputTokens
-            });
-          }
-
-          // Calculate discovery tokens (delta for this response only)
-          const discoveryTokens = (session.cumulativeInputTokens + session.cumulativeOutputTokens) - tokensBeforeResponse;
-
-          // Process response (empty or not) and mark messages as processed
-          // Capture earliest timestamp BEFORE processing (will be cleared after)
-          const originalTimestamp = session.earliestPendingTimestamp;
-
-          if (responseSize > 0) {
-            const truncatedResponse = responseSize > 100
-              ? textContent.substring(0, 100) + '...'
-              : textContent;
-            logger.dataOut('SDK', `Response received (${responseSize} chars)`, {
-              sessionId: session.sessionDbId,
-              promptNumber: session.lastPromptNumber
-            }, truncatedResponse);
-
-            // Parse and process response with discovery token delta and original timestamp
-            await this.processSDKResponse(session, textContent, worker, discoveryTokens, originalTimestamp);
-          } else {
-            // Empty response - still need to mark pending messages as processed
-            await this.markMessagesProcessed(session, worker);
-          }
-        }
-
-        // Log result messages
-        if (message.type === 'result' && message.subtype === 'success') {
-          // Usage telemetry is captured at SDK level
+        // V2: Send and receive for this message
+        await sdkSession.send(prompt);
+        for await (const message of sdkSession.receive()) {
+          await this.handleSDKMessage(message, session, worker, originalTimestamp);
         }
       }
 
@@ -184,6 +160,8 @@ export class SDKAgent {
         duration: `${(sessionDuration / 1000).toFixed(1)}s`
       });
 
+      // Note: Session cleanup is automatic via await using
+
     } catch (error: any) {
       if (error.name === 'AbortError') {
         logger.warn('SDK', 'Agent aborted', { sessionId: session.sessionDbId });
@@ -191,129 +169,87 @@ export class SDKAgent {
         logger.failure('SDK', 'Agent error', { sessionDbId: session.sessionDbId }, error);
       }
       throw error;
-    } finally {
-      // NOTE: Do NOT delete session here - SessionRoutes.finally() handles cleanup
-      // and auto-restart logic. Deleting here races with pending work checks.
     }
+    // Note: No finally block needed - await using handles cleanup automatically
   }
 
   /**
-   * Create event-driven message generator (yields messages from SessionManager)
-   *
-   * CRITICAL: CONTINUATION PROMPT LOGIC
-   * ====================================
-   * This is where NEW hook's dual-purpose nature comes together:
-   *
-   * - Prompt #1 (lastPromptNumber === 1): buildInitPrompt
-   *   - Full initialization prompt with instructions
-   *   - Sets up the SDK agent's context
-   *
-   * - Prompt #2+ (lastPromptNumber > 1): buildContinuationPrompt
-   *   - Continuation prompt for same session
-   *   - Includes session context and prompt number
-   *
-   * BOTH prompts receive session.contentSessionId:
-   * - This comes from the hook's session_id (see new-hook.ts)
-   * - Same session_id used by SAVE hook to store observations
-   * - This is how everything stays connected in one unified session
-   *
-   * NO SESSION EXISTENCE CHECKS NEEDED:
-   * - SessionManager.initializeSession already fetched this from database
-   * - Database row was created by new-hook's createSDKSession call
-   * - We just use the session_id we're given - simple and reliable
-   *
-   * SHARED CONVERSATION HISTORY:
-   * - Each user message is added to session.conversationHistory
-   * - This allows provider switching (Claude→Gemini) with full context
-   * - SDK manages its own internal state, but we mirror it for interop
+   * Handle a single SDK message (V2 pattern)
+   * Extracts text, tracks tokens, and processes observations/summaries
    */
-  private async *createMessageGenerator(session: ActiveSession): AsyncIterableIterator<SDKUserMessage> {
-    // Load active mode
-    const mode = ModeManager.getInstance().getActiveMode();
+  private async handleSDKMessage(
+    message: any,
+    session: ActiveSession,
+    worker?: any,
+    originalTimestamp?: number | null
+  ): Promise<void> {
+    // Capture session ID from system/init message (V2 pattern)
+    if (message.type === 'system' && message.subtype === 'init' && message.session_id) {
+      if (!session.memorySessionId || session.memorySessionId === session.contentSessionId) {
+        session.memorySessionId = message.session_id;
+        // Persist to database for cross-restart recovery
+        this.dbManager.getSessionStore().updateMemorySessionId(
+          session.sessionDbId,
+          message.session_id
+        );
+        logger.info('SDK', 'Captured memory session ID', {
+          sessionDbId: session.sessionDbId,
+          memorySessionId: message.session_id
+        });
+      }
+    }
 
-    // Build initial prompt
-    const isInitPrompt = session.lastPromptNumber === 1;
-    logger.info('SDK', 'Creating message generator', {
-      sessionDbId: session.sessionDbId,
-      contentSessionId: session.contentSessionId,
-      lastPromptNumber: session.lastPromptNumber,
-      isInitPrompt,
-      promptType: isInitPrompt ? 'INIT' : 'CONTINUATION'
-    });
+    // Handle assistant messages
+    if (message.type === 'assistant') {
+      const content = message.message.content;
+      const textContent = Array.isArray(content)
+        ? content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n')
+        : typeof content === 'string' ? content : '';
 
-    const initPrompt = isInitPrompt
-      ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode)
-      : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode);
+      const responseSize = textContent.length;
 
-    // Add to shared conversation history for provider interop
-    session.conversationHistory.push({ role: 'user', content: initPrompt });
+      // Capture token state BEFORE updating (for delta calculation)
+      const tokensBeforeResponse = session.cumulativeInputTokens + session.cumulativeOutputTokens;
 
-    // Yield initial user prompt with context (or continuation if prompt #2+)
-    // CRITICAL: Both paths use session.contentSessionId from the hook
-    yield {
-      type: 'user',
-      message: {
-        role: 'user',
-        content: initPrompt
-      },
-      session_id: session.contentSessionId,
-      parent_tool_use_id: null,
-      isSynthetic: true
-    };
+      // Extract and track token usage
+      const usage = message.message.usage;
+      if (usage) {
+        session.cumulativeInputTokens += usage.input_tokens || 0;
+        session.cumulativeOutputTokens += usage.output_tokens || 0;
 
-    // Consume pending messages from SessionManager (event-driven, no polling)
-    for await (const message of this.sessionManager.getMessageIterator(session.sessionDbId)) {
-      if (message.type === 'observation') {
-        // Update last prompt number
-        if (message.prompt_number !== undefined) {
-          session.lastPromptNumber = message.prompt_number;
+        // Cache creation counts as discovery, cache read doesn't
+        if (usage.cache_creation_input_tokens) {
+          session.cumulativeInputTokens += usage.cache_creation_input_tokens;
         }
 
-        const obsPrompt = buildObservationPrompt({
-          id: 0, // Not used in prompt
-          tool_name: message.tool_name!,
-          tool_input: JSON.stringify(message.tool_input),
-          tool_output: JSON.stringify(message.tool_response),
-          created_at_epoch: Date.now(),
-          cwd: message.cwd
+        logger.debug('SDK', 'Token usage captured', {
+          sessionId: session.sessionDbId,
+          inputTokens: usage.input_tokens,
+          outputTokens: usage.output_tokens,
+          cacheCreation: usage.cache_creation_input_tokens || 0,
+          cacheRead: usage.cache_read_input_tokens || 0,
+          cumulativeInput: session.cumulativeInputTokens,
+          cumulativeOutput: session.cumulativeOutputTokens
         });
+      }
 
-        // Add to shared conversation history for provider interop
-        session.conversationHistory.push({ role: 'user', content: obsPrompt });
+      // Calculate discovery tokens (delta for this response only)
+      const discoveryTokens = (session.cumulativeInputTokens + session.cumulativeOutputTokens) - tokensBeforeResponse;
 
-        yield {
-          type: 'user',
-          message: {
-            role: 'user',
-            content: obsPrompt
-          },
-          session_id: session.contentSessionId,
-          parent_tool_use_id: null,
-          isSynthetic: true
-        };
-      } else if (message.type === 'summarize') {
-        const summaryPrompt = buildSummaryPrompt({
-          id: session.sessionDbId,
-          memory_session_id: session.memorySessionId,
-          project: session.project,
-          user_prompt: session.userPrompt,
-          last_user_message: message.last_user_message || '',
-          last_assistant_message: message.last_assistant_message || ''
-        }, mode);
+      if (responseSize > 0) {
+        const truncatedResponse = responseSize > 100
+          ? textContent.substring(0, 100) + '...'
+          : textContent;
+        logger.dataOut('SDK', `Response received (${responseSize} chars)`, {
+          sessionId: session.sessionDbId,
+          promptNumber: session.lastPromptNumber
+        }, truncatedResponse);
 
-        // Add to shared conversation history for provider interop
-        session.conversationHistory.push({ role: 'user', content: summaryPrompt });
-
-        yield {
-          type: 'user',
-          message: {
-            role: 'user',
-            content: summaryPrompt
-          },
-          session_id: session.contentSessionId,
-          parent_tool_use_id: null,
-          isSynthetic: true
-        };
+        // Parse and process response with discovery token delta and original timestamp
+        await this.processSDKResponse(session, textContent, worker, discoveryTokens, originalTimestamp ?? null);
+      } else {
+        // Empty response - still need to mark pending messages as processed
+        await this.markMessagesProcessed(session, worker);
       }
     }
   }
