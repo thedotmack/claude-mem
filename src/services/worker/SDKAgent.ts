@@ -125,8 +125,8 @@ export class SDKAgent {
 
       logger.debug('SDK', 'Initial prompt sent, waiting for response');
 
-      // V2: Stream and process initial response
-      for await (const message of sdkSession.stream()) {
+      // V2: Receive and process initial response
+      for await (const message of sdkSession.receive()) {
         logger.debug('SDK', 'Received message from SDK', { type: message?.type });
         await this.handleSDKMessage(message, session, worker);
       }
@@ -173,7 +173,7 @@ export class SDKAgent {
 
         // V2: Send and receive for this message
         await sdkSession.send(prompt);
-        for await (const message of sdkSession.stream()) {
+        for await (const message of sdkSession.receive()) {
           await this.handleSDKMessage(message, session, worker, originalTimestamp);
         }
       }
