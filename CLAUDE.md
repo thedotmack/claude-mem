@@ -36,6 +36,27 @@ Claude-mem is a Claude Code plugin providing persistent memory across sessions. 
 npm run build-and-sync        # Build, sync to marketplace, restart worker
 ```
 
+## Version Management
+
+Switch between stable and development versions to avoid instability during active development.
+
+```bash
+npm run version:status        # Show current branch, installed version, cached versions
+npm run version:stable        # Switch to main branch (stable)
+npm run version:dev           # Switch to dev branch (auto-stashes changes)
+```
+
+**Workflow**:
+- When your local version is stable, stay on that branch
+- Use `version:stable` to quickly rollback if updates cause issues
+- The script handles worker restart and git stash automatically
+
+**Local Settings Preservation**: `sync-marketplace` preserves these files during sync:
+- `/.mcp.json` - MCP server configuration
+- `/local/` - User customizations directory
+- `*.local.*` - Any file with .local. in name
+- `/.env.local` - Local environment variables
+
 ## Configuration
 
 Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created with defaults on first run.

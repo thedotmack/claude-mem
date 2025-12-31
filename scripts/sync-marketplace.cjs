@@ -4,6 +4,13 @@
  *
  * Prevents accidental rsync overwrite when installed plugin is on beta branch.
  * If on beta, the user should use the UI to update instead.
+ *
+ * Local Settings Preservation:
+ * - .mcp.json: MCP server configuration
+ * - local/: User customizations directory
+ * - *.local.*: Any file with .local. in the name
+ *
+ * These files are excluded from --delete to preserve user customizations.
  */
 
 const { execSync } = require('child_process');
@@ -13,6 +20,16 @@ const os = require('os');
 
 const INSTALLED_PATH = path.join(os.homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
 const CACHE_BASE_PATH = path.join(os.homedir(), '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem');
+
+// Files and directories to preserve during sync (not deleted by --delete)
+const PRESERVE_PATTERNS = [
+  '.git',           // Git repository
+  '/.mcp.json',     // MCP server configuration
+  '/local/',        // User customizations directory
+  '*.local.*',      // Any file with .local. in name (e.g., config.local.json)
+  '/.env.local',    // Local environment variables
+  '/node_modules/', // Dependencies (reinstalled separately)
+];
 
 function getCurrentBranch() {
   try {
@@ -57,11 +74,19 @@ function getPluginVersion() {
   }
 }
 
+// Build rsync exclude arguments from preserve patterns
+function buildExcludeArgs(patterns) {
+  return patterns.map(p => `--exclude='${p}'`).join(' ');
+}
+
+const excludeArgs = buildExcludeArgs(PRESERVE_PATTERNS);
+
 // Normal rsync for main branch or fresh install
 console.log('Syncing to marketplace...');
+console.log('Preserving local settings:', PRESERVE_PATTERNS.filter(p => p !== '.git' && p !== '/node_modules/').join(', '));
 try {
   execSync(
-    'rsync -av --delete --exclude=.git --exclude=/.mcp.json ./ ~/.claude/plugins/marketplaces/thedotmack/',
+    `rsync -av --delete ${excludeArgs} ./ ~/.claude/plugins/marketplaces/thedotmack/`,
     { stdio: 'inherit' }
   );
 
@@ -75,9 +100,11 @@ try {
   const version = getPluginVersion();
   const CACHE_VERSION_PATH = path.join(CACHE_BASE_PATH, version);
 
+  // For cache, we use fewer exclusions since it should be a clean copy
+  const cacheExcludeArgs = buildExcludeArgs(['.git']);
   console.log(`Syncing to cache folder (version ${version})...`);
   execSync(
-    `rsync -av --delete --exclude=.git plugin/ "${CACHE_VERSION_PATH}/"`,
+    `rsync -av --delete ${cacheExcludeArgs} plugin/ "${CACHE_VERSION_PATH}/"`,
     { stdio: 'inherit' }
   );
 
