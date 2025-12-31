@@ -168,8 +168,9 @@ export class SessionRoutes extends BaseRouteHandler {
       })
       .finally(() => {
         const sessionDbId = session.sessionDbId;
-        
-        if (session.abortController.signal.aborted) {
+        const wasAborted = session.abortController.signal.aborted;
+
+        if (wasAborted) {
           logger.info('SESSION', `Generator aborted`, { sessionId: sessionDbId });
         } else {
           logger.warn('SESSION', `Generator exited unexpectedly`, { sessionId: sessionDbId });
@@ -180,16 +181,20 @@ export class SessionRoutes extends BaseRouteHandler {
         this.workerService.broadcastProcessingStatus();
 
         // Crash recovery: If not aborted and still has work, restart
-        if (!session.abortController.signal.aborted) {
+        if (!wasAborted) {
           try {
             const pendingStore = this.sessionManager.getPendingMessageStore();
             const pendingCount = pendingStore.getPendingCount(sessionDbId);
-            
+
             if (pendingCount > 0) {
               logger.info('SESSION', `Restarting generator after crash/exit with pending work`, {
                 sessionId: sessionDbId,
                 pendingCount
               });
+
+              // Create new AbortController for the restarted generator
+              session.abortController = new AbortController();
+
               // Small delay before restart
               setTimeout(() => {
                 const stillExists = this.sessionManager.getSession(sessionDbId);
@@ -197,12 +202,19 @@ export class SessionRoutes extends BaseRouteHandler {
                   this.startGeneratorWithProvider(stillExists, this.getSelectedProvider(), 'crash-recovery');
                 }
               }, 1000);
+            } else {
+              // No pending work - abort to kill the child process
+              session.abortController.abort();
+              logger.debug('SESSION', 'Aborted controller after natural completion', {
+                sessionId: sessionDbId
+              });
             }
           } catch (e) {
-            // Ignore errors during recovery check
+            // Ignore errors during recovery check, but still abort to prevent leaks
+            session.abortController.abort();
           }
         }
-        // NOTE: We do NOT delete the session here anymore. 
+        // NOTE: We do NOT delete the session here anymore.
         // The generator waits for events, so if it exited, it's either aborted or crashed.
         // Idle sessions stay in memory (ActiveSession is small) to listen for future events.
       });
