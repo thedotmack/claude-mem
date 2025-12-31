@@ -1,4 +1,36 @@
-## [v8.5.1](https://github.com/thedotmack/claude-mem/releases/tag/v8.5.1) - 2025-12-30
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
+
+## [8.5.2] - 2025-12-31
+
+## Bug Fixes
+
+### Fixed SDK Agent Memory Leak (#499)
+
+Fixed a critical memory leak where Claude SDK child processes were never terminated after sessions completed. Over extended usage, this caused hundreds of orphaned processes consuming 40GB+ of RAM.
+
+**Root Cause:**
+- When the SDK agent generator completed naturally (no more messages to process), the `AbortController` was never aborted
+- Child processes spawned by the Agent SDK remained running indefinitely
+- Sessions stayed in memory (by design for future events) but underlying processes were never cleaned up
+
+**Fix:**
+- Added proper cleanup to SessionRoutes finally block
+- Now calls `abortController.abort()` when generator completes with no pending work
+- Creates new `AbortController` when crash recovery restarts generators
+- Ensures cleanup happens even if recovery logic fails
+
+**Impact:**
+- Prevents orphaned `claude` processes from accumulating
+- Eliminates multi-gigabyte memory leaks during normal usage
+- Maintains crash recovery functionality with proper resource cleanup
+
+Thanks to @yonnock for the detailed bug report and investigation in #499!
+
+## [8.5.1] - 2025-12-30
 
 ## Bug Fix
 
@@ -19,11 +51,7 @@ Migration 17 renamed session ID columns but used a single check to determine if 
 - Users whose migration was interrupted (crash, restart, etc.)
 - Users who restored database from backup
 
----
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-## [v8.5.0](https://github.com/thedotmack/claude-mem/releases/tag/v8.5.0) - 2025-12-30
+## [8.5.0] - 2025-12-30
 
 # Cursor Support Now Available 🎉
 
@@ -118,7 +146,7 @@ claude-mem cursor install
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.2.10...v8.5.0
 
-## [v8.2.10](https://github.com/thedotmack/claude-mem/releases/tag/v8.2.10) - 2025-12-30
+## [8.2.10] - 2025-12-30
 
 ## Bug Fixes
 
@@ -131,7 +159,7 @@ claude-mem cursor install
 
 Thanks @yungweng for the detailed bug report!
 
-## [v8.2.9](https://github.com/thedotmack/claude-mem/releases/tag/v8.2.9) - 2025-12-29
+## [8.2.9] - 2025-12-29
 
 ## Bug Fixes
 
@@ -147,7 +175,7 @@ Thanks @yungweng for the detailed bug report!
 - Updated worker CLI scripts to reference worker-service.cjs directly
 - Simplified hook command configurations
 
-## [v8.2.8](https://github.com/thedotmack/claude-mem/releases/tag/v8.2.8) - 2025-12-29
+## [8.2.8] - 2025-12-29
 
 ## Bug Fixes
 
@@ -162,7 +190,7 @@ This patch release addresses a race condition where SIGTERM/SIGINT signals arriv
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.2.7...v8.2.8
 
-## [v8.2.7](https://github.com/thedotmack/claude-mem/releases/tag/v8.2.7) - 2025-12-29
+## [8.2.7] - 2025-12-29
 
 ## What's Changed
 
@@ -176,7 +204,7 @@ This release significantly reduces the token footprint of the plugin's MCP tools
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.2.6...v8.2.7
 
-## [v8.2.6](https://github.com/thedotmack/claude-mem/releases/tag/v8.2.6) - 2025-12-29
+## [8.2.6] - 2025-12-29
 
 ## What's Changed
 
@@ -188,7 +216,7 @@ This release significantly reduces the token footprint of the plugin's MCP tools
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.2.5...v8.2.6
 
-## [v8.2.5](https://github.com/thedotmack/claude-mem/releases/tag/v8.2.5) - 2025-12-28
+## [8.2.5] - 2025-12-28
 
 ## Bug Fixes
 
@@ -206,11 +234,11 @@ This patch release addresses several issues discovered after the session continu
 
 Full changelog: https://github.com/thedotmack/claude-mem/compare/v8.2.4...v8.2.5
 
-## [v8.2.4](https://github.com/thedotmack/claude-mem/releases/tag/v8.2.4) - 2025-12-28
+## [8.2.4] - 2025-12-28
 
 Patch release v8.2.4
 
-## [v8.2.3](https://github.com/thedotmack/claude-mem/releases/tag/v8.2.3) - 2025-12-27
+## [8.2.3] - 2025-12-27
 
 ## Bug Fixes
 
@@ -218,7 +246,7 @@ Patch release v8.2.4
 - Implement file-based locking mechanism for worker operations to prevent race conditions
 - Fix restart command references in documentation (changed from `claude-mem restart` to `npm run worker:restart`)
 
-## [v8.2.2](https://github.com/thedotmack/claude-mem/releases/tag/v8.2.2) - 2025-12-27
+## [8.2.2] - 2025-12-27
 
 ## What's Changed
 
@@ -241,7 +269,7 @@ Patch release v8.2.4
 - Update hooks.json to use worker-service.cjs CLI
 - Add comprehensive tests for hook constants and worker spawn functionality
 
-## [v8.2.1](https://github.com/thedotmack/claude-mem/releases/tag/v8.2.1) - 2025-12-27
+## [8.2.1] - 2025-12-27
 
 ## 🔧 Worker Lifecycle Hardening
 
@@ -306,7 +334,7 @@ Added comprehensive test suites:
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.2.0...v8.2.1
 
-## [v8.2.0](https://github.com/thedotmack/claude-mem/releases/tag/v8.2.0) - 2025-12-26
+## [8.2.0] - 2025-12-26
 
 ## 🚀 Gemini API as Alternative AI Provider
 
@@ -364,7 +392,7 @@ Huge thanks to **Alexander Knigge** ([@AlexanderKnigge](https://x.com/AlexanderK
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.1.0...v8.2.0
 
-## [v8.1.0](https://github.com/thedotmack/claude-mem/releases/tag/v8.1.0) - 2025-12-25
+## [8.1.0] - 2025-12-25
 
 ## The 3-Month Battle Against Complexity
 
@@ -460,7 +488,7 @@ Since we're now explicit about recovery instead of silently papering over proble
 
 *The evidence: Observations #3646, #6738, #7598, #12860, #12866, #13046, #15259, #20995, #21055, #30524, #31080, #32114, #32116, #32125, #32126, #32127, #32146, #32324—the complete record of a 3-month battle.*
 
-## [v8.0.6](https://github.com/thedotmack/claude-mem/releases/tag/v8.0.6) - 2025-12-24
+## [8.0.6] - 2025-12-24
 
 ## Bug Fixes
 
@@ -468,7 +496,7 @@ Since we're now explicit about recovery instead of silently papering over proble
 
 This patch release improves stability by adding proper error handling to Chroma vector database sync operations, preventing worker crashes when sync operations timeout.
 
-## [v8.0.5](https://github.com/thedotmack/claude-mem/releases/tag/v8.0.5) - 2025-12-24
+## [8.0.5] - 2025-12-24
 
 ## Bug Fixes
 
@@ -478,19 +506,17 @@ This patch release improves stability by adding proper error handling to Chroma 
 
 Refactored context loading logic to differentiate between code and non-code modes, resolving issues where mode-specific observations were filtered by stale settings.
 
-## [v8.0.4](https://github.com/thedotmack/claude-mem/releases/tag/v8.0.4) - 2025-12-23
+## [8.0.4] - 2025-12-23
 
 ## Changes
 
 - Changed worker start script
 
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-## [v8.0.3](https://github.com/thedotmack/claude-mem/releases/tag/v8.0.3) - 2025-12-23
+## [8.0.3] - 2025-12-23
 
 Fix critical worker crashes on startup (v8.0.2 regression)
 
-## [v8.0.2](https://github.com/thedotmack/claude-mem/releases/tag/v8.0.2) - 2025-12-23
+## [8.0.2] - 2025-12-23
 
 New "chill" remix of code mode for users who want fewer, more selective observations.
 
@@ -515,7 +541,7 @@ Set in ~/.claude-mem/settings.json:
 }
 ```
 
-## [v8.0.1](https://github.com/thedotmack/claude-mem/releases/tag/v8.0.1) - 2025-12-23
+## [8.0.1] - 2025-12-23
 
 ## 🎨 UI Improvements
 
@@ -523,11 +549,7 @@ Set in ~/.claude-mem/settings.json:
 - **Removed Product Hunt Badge**: Cleaned up header layout by removing the Product Hunt badge
 - **Icon Reorganization**: Reordered header icons for improved UX flow (Docs → X → Discord → GitHub)
 
----
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-## [v8.0.0](https://github.com/thedotmack/claude-mem/releases/tag/v8.0.0) - 2025-12-23
+## [8.0.0] - 2025-12-23
 
 ## 🌍 Major Features
 
@@ -572,15 +594,13 @@ Set in ~/.claude-mem/settings.json:
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.4.5...v8.0.0
 **View PR**: https://github.com/thedotmack/claude-mem/pull/412
 
-## [v7.4.5](https://github.com/thedotmack/claude-mem/releases/tag/v7.4.5) - 2025-12-21
+## [7.4.5] - 2025-12-21
 
 ## Bug Fixes
 
 - Fix missing `formatDateTime` import in SearchManager that broke `get_context_timeline` mem-search function
 
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-## [v7.4.4](https://github.com/thedotmack/claude-mem/releases/tag/v7.4.4) - 2025-12-21
+## [7.4.4] - 2025-12-21
 
 ## What's Changed
 
@@ -588,7 +608,7 @@ Set in ~/.claude-mem/settings.json:
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.4.3...v7.4.4
 
-## [v7.4.3](https://github.com/thedotmack/claude-mem/releases/tag/v7.4.3) - 2025-12-20
+## [7.4.3] - 2025-12-20
 
 Added Discord notification script for release announcements.
 
@@ -600,11 +620,7 @@ Added Discord notification script for release announcements.
 ### Configuration
 Set `DISCORD_UPDATES_WEBHOOK` in your `.env` file to enable release notifications.
 
----
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-## [v7.4.2](https://github.com/thedotmack/claude-mem/releases/tag/v7.4.2) - 2025-12-20
+## [7.4.2] - 2025-12-20
 
 Patch release v7.4.2
 
@@ -614,7 +630,7 @@ Patch release v7.4.2
 - Fixed Windows worker stop/restart reliability (#395)
 - Simplified build commands section in CLAUDE.md
 
-## [v7.4.1](https://github.com/thedotmack/claude-mem/releases/tag/v7.4.1) - 2025-12-19
+## [7.4.1] - 2025-12-19
 
 ## Bug Fixes
 
@@ -622,7 +638,7 @@ Patch release v7.4.2
   - MCP uses stdio transport where stdout is reserved for JSON-RPC messages
   - Console.log was writing startup logs to stdout, causing Claude Desktop to parse log lines as JSON and fail
 
-## [v7.4.0](https://github.com/thedotmack/claude-mem/releases/tag/v7.4.0) - 2025-12-18
+## [7.4.0] - 2025-12-18
 
 ## What's New
 
@@ -637,11 +653,7 @@ Optimized MCP tool definitions for reduced token consumption in Claude Code sess
 
 This release improves session efficiency by reducing the token overhead of MCP tool definitions while maintaining full functionality through progressive disclosure.
 
----
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-## [v7.3.9](https://github.com/thedotmack/claude-mem/releases/tag/v7.3.9) - 2025-12-18
+## [7.3.9] - 2025-12-18
 
 ## Fixes
 
@@ -649,7 +661,7 @@ This release improves session efficiency by reducing the token overhead of MCP t
 
 This patch release addresses compatibility issues with the MCP server and resolves path resolution problems in the web UI.
 
-## [v7.3.8](https://github.com/thedotmack/claude-mem/releases/tag/v7.3.8) - 2025-12-18
+## [7.3.8] - 2025-12-18
 
 ## Security Fix
 
@@ -665,7 +677,7 @@ Prevents unauthorized shutdown/restart of worker service when exposed on network
 
 Fixes security concern raised in #368.
 
-## [v7.3.7](https://github.com/thedotmack/claude-mem/releases/tag/v7.3.7) - 2025-12-17
+## [7.3.7] - 2025-12-17
 
 ## Windows Platform Stabilization
 
@@ -692,13 +704,13 @@ This represents a major reliability improvement for Windows users, eliminating c
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.3.6...v7.3.7
 
-## [v7.3.6](https://github.com/thedotmack/claude-mem/releases/tag/v7.3.6) - 2025-12-17
+## [7.3.6] - 2025-12-17
 
 ## Bug Fixes
 
 - Enhanced SDKAgent response handling and message processing
 
-## [v7.3.5](https://github.com/thedotmack/claude-mem/releases/tag/v7.3.5) - 2025-12-17
+## [7.3.5] - 2025-12-17
 
 ## What's Changed
 * fix(windows): solve zombie port problem with wrapper architecture by @ToxMox in https://github.com/thedotmack/claude-mem/pull/372
@@ -709,11 +721,11 @@ This represents a major reliability improvement for Windows users, eliminating c
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.3.4...v7.3.5
 
-## [v7.3.4](https://github.com/thedotmack/claude-mem/releases/tag/v7.3.4) - 2025-12-17
+## [7.3.4] - 2025-12-17
 
 Patch release for bug fixes and minor improvements
 
-## [v7.3.3](https://github.com/thedotmack/claude-mem/releases/tag/v7.3.3) - 2025-12-16
+## [7.3.3] - 2025-12-16
 
 ## What's Changed
 
@@ -721,7 +733,7 @@ Patch release for bug fixes and minor improvements
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.3.2...v7.3.3
 
-## [v7.3.2](https://github.com/thedotmack/claude-mem/releases/tag/v7.3.2) - 2025-12-16
+## [7.3.2] - 2025-12-16
 
 ## 🪟 Windows Console Fix
 
@@ -757,7 +769,7 @@ None - fully backward compatible.
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.3.1...v7.3.2
 
-## [v7.3.1](https://github.com/thedotmack/claude-mem/releases/tag/v7.3.1) - 2025-12-16
+## [7.3.1] - 2025-12-16
 
 ## 🐛 Bug Fixes
 
@@ -795,7 +807,7 @@ Fixed unbounded database growth in the `pending_messages` table by implementing 
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.3.0...v7.3.1
 
-## [v7.3.0](https://github.com/thedotmack/claude-mem/releases/tag/v7.3.0) - 2025-12-16
+## [7.3.0] - 2025-12-16
 
 ## Features
 
@@ -817,7 +829,7 @@ Fixed unbounded database growth in the `pending_messages` table by implementing 
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.2.4...v7.3.0
 
-## [v7.2.4](https://github.com/thedotmack/claude-mem/releases/tag/v7.2.4) - 2025-12-15
+## [7.2.4] - 2025-12-15
 
 ## What's Changed
 
@@ -826,7 +838,7 @@ Fixed unbounded database growth in the `pending_messages` table by implementing 
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.2.3...v7.2.4
 
-## [v7.2.3](https://github.com/thedotmack/claude-mem/releases/tag/v7.2.3) - 2025-12-15
+## [7.2.3] - 2025-12-15
 
 ## Bug Fixes
 
@@ -838,10 +850,7 @@ Fixed unbounded database growth in the `pending_messages` table by implementing 
 - Add delay before `ProcessManager.restart()` call in `worker-utils.ts`
 - Fix pre-existing bug where `port` variable was undefined in error logging
 
----
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-## [v7.2.2](https://github.com/thedotmack/claude-mem/releases/tag/v7.2.2) - 2025-12-15
+## [7.2.2] - 2025-12-15
 
 ## Changes
 
@@ -851,7 +860,7 @@ Fixed unbounded database growth in the `pending_messages` table by implementing 
   - Update docs with correct MCP tool list and new download path
   - Single source of truth for Claude Desktop skill
 
-## [v7.2.1](https://github.com/thedotmack/claude-mem/releases/tag/v7.2.1) - 2025-12-14
+## [7.2.1] - 2025-12-14
 
 ## Translation Script Enhancements
 
@@ -895,7 +904,7 @@ claude plugin install thedotmack/claude-mem
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.2.0...v7.2.1
 
-## [v7.2.0](https://github.com/thedotmack/claude-mem/releases/tag/v7.2.0) - 2025-12-14
+## [7.2.0] - 2025-12-14
 
 ## 🎉 New Features
 
@@ -960,7 +969,7 @@ npm run bug-report --help       # Show help
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.1.15...v7.2.0
 
-## [v7.1.15](https://github.com/thedotmack/claude-mem/releases/tag/v7.1.15) - 2025-12-14
+## [7.1.15] - 2025-12-14
 
 ## 🐛 Bug Fixes
 
@@ -986,7 +995,7 @@ The context hook was failing with `Cannot GET /api/context/inject` because the r
 Fixes #305
 Related: PR #310
 
-## [v7.1.14](https://github.com/thedotmack/claude-mem/releases/tag/v7.1.14) - 2025-12-14
+## [7.1.14] - 2025-12-14
 
 ## Enhanced Error Handling & Logging
 
@@ -1043,9 +1052,7 @@ Added comprehensive test suites:
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.1.12...v7.1.14
 
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-## [v7.1.13](https://github.com/thedotmack/claude-mem/releases/tag/v7.1.13) - 2025-12-14
+## [7.1.13] - 2025-12-14
 
 ## Enhanced Error Handling & Logging
 
@@ -1100,9 +1107,7 @@ Added comprehensive test suites:
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.1.12...v7.1.13
 
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-## [v7.1.12](https://github.com/thedotmack/claude-mem/releases/tag/v7.1.12) - 2025-12-14
+## [7.1.12] - 2025-12-14
 
 ## What's Fixed
 
@@ -1118,7 +1123,7 @@ Added comprehensive test suites:
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.1.11...v7.1.12
 
-## [v7.1.11](https://github.com/thedotmack/claude-mem/releases/tag/v7.1.11) - 2025-12-14
+## [7.1.11] - 2025-12-14
 
 ## What's Changed
 
@@ -1138,7 +1143,7 @@ Hooks are compiled to standard JavaScript and work perfectly with Node. The bun-
 
 **Full Changelog:** https://github.com/thedotmack/claude-mem/compare/v7.1.10...v7.1.11
 
-## [v7.1.10](https://github.com/thedotmack/claude-mem/releases/tag/v7.1.10) - 2025-12-14
+## [7.1.10] - 2025-12-14
 
 ## Enhancement
 
@@ -1174,7 +1179,7 @@ Upgrade from v7.1.9 to get automatic orphan cleanup. Combined with v7.1.9's prop
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.1.9...v7.1.10
 
-## [v7.1.9](https://github.com/thedotmack/claude-mem/releases/tag/v7.1.9) - 2025-12-14
+## [7.1.9] - 2025-12-14
 
 ## Critical Bugfix
 
@@ -1203,7 +1208,7 @@ This patch release fixes a critical memory leak that caused chroma-mcp processes
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.1.8...v7.1.9
 
-## [v7.1.8](https://github.com/thedotmack/claude-mem/releases/tag/v7.1.8) - 2025-12-13
+## [7.1.8] - 2025-12-13
 
 ## Memory Export/Import Scripts
 
@@ -1237,13 +1242,7 @@ npx tsx scripts/import-memories.ts windows-work.json
 - Enhanced project filtering in ChromaDB hybrid search result hydration
 - Duplicate detection using composite keys (session ID + title + timestamp)
 
----
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>
-
-## [v7.1.7](https://github.com/thedotmack/claude-mem/releases/tag/v7.1.7) - 2025-12-13
+## [7.1.7] - 2025-12-13
 
 ## Fixed
 - Removed Windows workaround that was causing libuv assertion failures
@@ -1254,7 +1253,7 @@ Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.1.6...v7.1.7
 
-## [v7.1.6](https://github.com/thedotmack/claude-mem/releases/tag/v7.1.6) - 2025-12-13
+## [7.1.6] - 2025-12-13
 
 ## What's Changed
 
@@ -1262,7 +1261,7 @@ Improved error messages with platform-specific worker restart instructions for b
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.1.5...v7.1.6
 
-## [v7.1.5](https://github.com/thedotmack/claude-mem/releases/tag/v7.1.5) - 2025-12-13
+## [7.1.5] - 2025-12-13
 
 ## What's Changed
 
@@ -1273,7 +1272,7 @@ Fixes Windows IPv6 issue where `localhost` resolves to `::1` (IPv6) but worker b
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.1.4...v7.1.5
 
-## [v7.1.4](https://github.com/thedotmack/claude-mem/releases/tag/v7.1.4) - 2025-12-13
+## [7.1.4] - 2025-12-13
 
 ## What's Changed
 
@@ -1281,7 +1280,7 @@ Fixes Windows IPv6 issue where `localhost` resolves to `::1` (IPv6) but worker b
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.1.3...v7.1.4
 
-## [v7.1.3](https://github.com/thedotmack/claude-mem/releases/tag/v7.1.3) - 2025-12-13
+## [7.1.3] - 2025-12-13
 
 ## Bug Fixes
 
@@ -1296,9 +1295,7 @@ Refactored the smart-install.js script to improve code quality and maintainabili
 
 This refactoring reduces code duplication and makes the installation process more maintainable while preserving the same functionality for detecting Bun and uv binaries across platforms.
 
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-## [v7.1.2](https://github.com/thedotmack/claude-mem/releases/tag/v7.1.2) - 2025-12-13
+## [7.1.2] - 2025-12-13
 
 ## 🐛 Bug Fixes
 
@@ -1318,7 +1315,7 @@ This refactoring reduces code duplication and makes the installation process mor
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.1.1...v7.1.2
 
-## [v7.1.1](https://github.com/thedotmack/claude-mem/releases/tag/v7.1.1) - 2025-12-13
+## [7.1.1] - 2025-12-13
 
 ## 🚨 Critical Fixes
 
@@ -1349,7 +1346,7 @@ This refactoring reduces code duplication and makes the installation process mor
 - [Full Changelog](https://github.com/thedotmack/claude-mem/blob/main/CHANGELOG.md#711---2025-12-12)
 - [Documentation](https://docs.claude-mem.ai)
 
-## [v7.1.0](https://github.com/thedotmack/claude-mem/releases/tag/v7.1.0) - 2025-12-13
+## [7.1.0] - 2025-12-13
 
 ## Major Architectural Migration
 
@@ -1380,15 +1377,11 @@ This release completely replaces PM2 with native Bun-based process management an
 
 Complete technical documentation in `docs/PM2-TO-BUN-MIGRATION.md`
 
----
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-## [v7.0.11](https://github.com/thedotmack/claude-mem/releases/tag/v7.0.11) - 2025-12-12
+## [7.0.11] - 2025-12-12
 
 Patch release adding feature/bun-executable to experimental branch selector for testing Bun runtime integration.
 
-## [v7.0.9](https://github.com/thedotmack/claude-mem/releases/tag/v7.0.9) - 2025-12-10
+## [7.0.9] - 2025-12-10
 
 ## Bug Fixes
 
@@ -1398,7 +1391,7 @@ Patch release adding feature/bun-executable to experimental branch selector for 
 
 - `SearchRoutes.ts`: Updated all route handlers to return full result object instead of extracted content property
 
-## [v7.0.8](https://github.com/thedotmack/claude-mem/releases/tag/v7.0.8) - 2025-12-10
+## [7.0.8] - 2025-12-10
 
 ## Bug Fixes
 
@@ -1412,7 +1405,7 @@ Patch release adding feature/bun-executable to experimental branch selector for 
 
 Added filtering logic in SessionRoutes.ts to detect and skip file operations on session-memory files before observations are queued to the SDK agent. This prevents the memory agent from observing its own observation metadata files.
 
-## [v7.0.7](https://github.com/thedotmack/claude-mem/releases/tag/v7.0.7) - 2025-12-10
+## [7.0.7] - 2025-12-10
 
 ## What's Changed
 
@@ -1433,7 +1426,7 @@ Added filtering logic in SessionRoutes.ts to detect and skip file operations on 
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.0.6...v7.0.7
 
-## [v7.0.6](https://github.com/thedotmack/claude-mem/releases/tag/v7.0.6) - 2025-12-10
+## [7.0.6] - 2025-12-10
 
 ## Bug Fixes
 
@@ -1444,7 +1437,7 @@ Added filtering logic in SessionRoutes.ts to detect and skip file operations on 
 
 Thanks to @CrystallDEV for this contribution!
 
-## [v7.0.5](https://github.com/thedotmack/claude-mem/releases/tag/v7.0.5) - 2025-12-09
+## [7.0.5] - 2025-12-09
 
 ## What's Changed
 
@@ -1463,7 +1456,7 @@ Thanks to @CrystallDEV for this contribution!
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.0.4...v7.0.5
 
-## [v7.0.4](https://github.com/thedotmack/claude-mem/releases/tag/v7.0.4) - 2025-12-09
+## [7.0.4] - 2025-12-09
 
 ## What's Changed
 
@@ -1475,7 +1468,7 @@ Thanks to @kat-bell for the excellent contributions!
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.0.3...v7.0.4
 
-## [v7.0.3](https://github.com/thedotmack/claude-mem/releases/tag/v7.0.3) - 2025-12-09
+## [7.0.3] - 2025-12-09
 
 ## What's Changed
 
@@ -1487,7 +1480,7 @@ Thanks to @kat-bell for the excellent contributions!
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.0.2...v7.0.3
 
-## [v7.0.2](https://github.com/thedotmack/claude-mem/releases/tag/v7.0.2) - 2025-12-09
+## [7.0.2] - 2025-12-09
 
 ## What's Changed
 
@@ -1496,7 +1489,7 @@ Thanks to @kat-bell for the excellent contributions!
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.0.1...v7.0.2
 
-## [v7.0.1](https://github.com/thedotmack/claude-mem/releases/tag/v7.0.1) - 2025-12-09
+## [7.0.1] - 2025-12-09
 
 ## Bug Fixes
 
@@ -1514,7 +1507,7 @@ Thanks to @kat-bell for the excellent contributions!
 
 This ensures more reliable worker startup and clearer error messages when the worker fails to start.
 
-## [v7.0.0](https://github.com/thedotmack/claude-mem/releases/tag/v7.0.0) - 2025-12-08
+## [7.0.0] - 2025-12-08
 
 # Major Architectural Refactor
 
@@ -1575,7 +1568,7 @@ This major release represents a complete architectural transformation of claude-
 
 No migration required! Update and continue using claude-mem as before.
 
-## [v6.5.3](https://github.com/thedotmack/claude-mem/releases/tag/v6.5.3) - 2025-12-05
+## [6.5.3] - 2025-12-05
 
 ## Bug Fixes
 
@@ -1585,7 +1578,7 @@ No migration required! Update and continue using claude-mem as before.
 
 Reference: https://nodejs.org/api/child_process.html (windowsHide option)
 
-## [v6.5.2](https://github.com/thedotmack/claude-mem/releases/tag/v6.5.2) - 2025-12-04
+## [6.5.2] - 2025-12-04
 
 ## What's Changed
 
@@ -1594,11 +1587,7 @@ Reference: https://nodejs.org/api/child_process.html (windowsHide option)
 ### Fixes
 - Resolves compilation errors when installing on Node.js 25.x (#164)
 
----
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-## [v6.5.1](https://github.com/thedotmack/claude-mem/releases/tag/v6.5.1) - 2025-12-04
+## [6.5.1] - 2025-12-04
 
 ## What's New
 
@@ -1610,7 +1599,7 @@ Reference: https://nodejs.org/api/child_process.html (windowsHide option)
 
 This is a temporary launch day update. The announcement will auto-expire at midnight EST.
 
-## [v6.5.0](https://github.com/thedotmack/claude-mem/releases/tag/v6.5.0) - 2025-12-04
+## [6.5.0] - 2025-12-04
 
 ## Documentation Overhaul
 
@@ -1643,9 +1632,7 @@ This release brings comprehensive documentation updates to reflect all features 
 
 📚 Full documentation available at [docs.claude-mem.ai](https://docs.claude-mem.ai)
 
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-## [v6.4.9](https://github.com/thedotmack/claude-mem/releases/tag/v6.4.9) - 2025-12-02
+## [6.4.9] - 2025-12-02
 
 ## New Features
 
@@ -1683,9 +1670,7 @@ All settings have sensible defaults and are fully backwards compatible.
 - Worker service settings validation
 - Viewer UI controls for all settings
 
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-## [v6.4.1](https://github.com/thedotmack/claude-mem/releases/tag/v6.4.1) - 2025-12-01
+## [6.4.1] - 2025-12-01
 
 ## Hey there, claude-mem community! 👋
 
@@ -1738,7 +1723,7 @@ We're excited to meet you and hear what you're building!
 
 Looking forward to seeing you at the AMA! 🎉
 
-## [v6.4.0](https://github.com/thedotmack/claude-mem/releases/tag/v6.4.0) - 2025-12-01
+## [6.4.0] - 2025-12-01
 
 ## 🎯 Highlights
 
@@ -1781,7 +1766,7 @@ This release introduces a powerful **dual-tag privacy system** that gives you fi
 
 💡 **Try it now**: Wrap sensitive data with `<private>your-secret-data</private>` in any message to Claude Code!
 
-## [v6.3.7](https://github.com/thedotmack/claude-mem/releases/tag/v6.3.7) - 2025-12-01
+## [6.3.7] - 2025-12-01
 
 ## Bug Fixes
 
@@ -1793,7 +1778,7 @@ Fixed a syntax error in `scripts/smart-install.js` where an extra closing brace 
 
 This bug was introduced in a recent release and prevented the plugin from loading correctly for users.
 
-## [v6.3.6](https://github.com/thedotmack/claude-mem/releases/tag/v6.3.6) - 2025-11-30
+## [6.3.6] - 2025-11-30
 
 ## Auto-detect and rebuild native modules on Node.js version changes
 
@@ -1816,7 +1801,7 @@ This release fixes a critical issue where upgrading Node.js (e.g., v22 → v25) 
 ### Merged PRs
 - #149 - feat: Auto-detect and rebuild native modules on Node.js version changes
 
-## [v6.3.5](https://github.com/thedotmack/claude-mem/releases/tag/v6.3.5) - 2025-11-30
+## [6.3.5] - 2025-11-30
 
 ## Changes
 
@@ -1834,7 +1819,7 @@ This release fixes a critical issue where upgrading Node.js (e.g., v22 → v25) 
 
 Full changelog: https://github.com/thedotmack/claude-mem/compare/v6.3.4...v6.3.5
 
-## [v6.3.4](https://github.com/thedotmack/claude-mem/releases/tag/v6.3.4) - 2025-11-30
+## [6.3.4] - 2025-11-30
 
 ## Bug Fixes
 
@@ -1852,11 +1837,7 @@ These changes significantly improve the first-time installation experience, elim
 
 **Special thanks to @dreamiurg for identifying and fixing this critical UX issue!** 🙏
 
----
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-## [v6.3.3](https://github.com/thedotmack/claude-mem/releases/tag/v6.3.3) - 2025-11-30
+## [6.3.3] - 2025-11-30
 
 Bug fixes and improvements to timeline context feature:
 
@@ -1867,7 +1848,7 @@ Bug fixes and improvements to timeline context feature:
 
 Full changes: https://github.com/thedotmack/claude-mem/compare/v6.3.2...v6.3.3
 
-## [v6.3.2](https://github.com/thedotmack/claude-mem/releases/tag/v6.3.2) - 2025-11-25
+## [6.3.2] - 2025-11-25
 
 ## What's Changed
 
@@ -1883,13 +1864,13 @@ curl "http://localhost:37777/api/decisions?query=architecture&format=full&limit=
 curl "http://localhost:37777/api/decisions?format=index&limit=10"
 ```
 
-## [v6.3.1](https://github.com/thedotmack/claude-mem/releases/tag/v6.3.1) - 2025-11-25
+## [6.3.1] - 2025-11-25
 
 ## What's New
 
 - Add script to help estimate token savings from on-the-fly replacements
 
-## [v6.3.0](https://github.com/thedotmack/claude-mem/releases/tag/v6.3.0) - 2025-11-25
+## [6.3.0] - 2025-11-25
 
 ## What's New
 
@@ -1910,7 +1891,7 @@ Added Version Channel section to Settings sidebar allowing users to switch betwe
 ## Installation
 To update, restart Claude Code or run the plugin installer.
 
-## [v6.2.1](https://github.com/thedotmack/claude-mem/releases/tag/v6.2.1) - 2025-11-23
+## [6.2.1] - 2025-11-23
 
 ## 🐛 Bug Fixes
 
@@ -1944,7 +1925,7 @@ To update, restart Claude Code or run the plugin installer.
 - `54ef149` - fix: Refresh in-memory session project when updated in database
 - `5d23c60` - fix: Update project name when session already exists in createSDKSession
 
-## [v6.2.0](https://github.com/thedotmack/claude-mem/releases/tag/v6.2.0) - 2025-11-22
+## [6.2.0] - 2025-11-22
 
 ## Major Features
 
@@ -1988,9 +1969,7 @@ Users with auto-update enabled will receive this update automatically. To manual
 npm run sync-marketplace
 \`\`\`
 
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-## [v6.1.1](https://github.com/thedotmack/claude-mem/releases/tag/v6.1.1) - 2025-11-21
+## [6.1.1] - 2025-11-21
 
 ## Bug Fixes
 
@@ -2013,7 +1992,7 @@ Users with auto-update enabled will receive this patch automatically. To manuall
 npm run sync-marketplace
 \`\`\`
 
-## [v6.1.0](https://github.com/thedotmack/claude-mem/releases/tag/v6.1.0) - 2025-11-19
+## [6.1.0] - 2025-11-19
 
 ## Viewer UI: Responsive Layout Improvements
 
@@ -2025,7 +2004,7 @@ The viewer UI now handles narrow screens better with responsive breakpoints:
 
 Makes the viewer usable on phones and narrow browser windows.
 
-## [v6.0.9](https://github.com/thedotmack/claude-mem/releases/tag/v6.0.9) - 2025-11-17
+## [6.0.9] - 2025-11-17
 
 ## Queue Depth Indicator Feature
 
@@ -2055,7 +2034,7 @@ Added a real-time queue depth indicator to the viewer UI that displays the count
 Original implementation by @thedotmack in PR #96
 Bug fix by @copilot-swe-agent in PR #97
 
-## [v6.0.8](https://github.com/thedotmack/claude-mem/releases/tag/v6.0.8) - 2025-11-17
+## [6.0.8] - 2025-11-17
 
 ## Critical Fix
 
@@ -2078,11 +2057,7 @@ Run `pm2 info claude-mem-worker` to verify:
 - **exec cwd** should be: `/Users/[username]/.claude/plugins/marketplaces/thedotmack`
 - **script path** should be: `/Users/[username]/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs`
 
----
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-## [v6.0.7](https://github.com/thedotmack/claude-mem/releases/tag/v6.0.7) - 2025-11-17
+## [6.0.7] - 2025-11-17
 
 ## Critical Hotfix: Database Migration Issue (#121)
 
@@ -2132,7 +2107,7 @@ See [CHANGELOG.md](https://github.com/thedotmack/claude-mem/blob/main/CHANGELOG.
 
 Thanks to everyone who reported this issue with detailed error logs! 🙏
 
-## [v6.0.6](https://github.com/thedotmack/claude-mem/releases/tag/v6.0.6) - 2025-11-17
+## [6.0.6] - 2025-11-17
 
 ## Critical Bugfix Release
 
@@ -2153,11 +2128,7 @@ Thanks to everyone who reported this issue with detailed error logs! 🙏
 
 **Affected Users**: All users who upgraded to v6.0.5 and experienced the migration error
 
----
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-## [v6.0.5](https://github.com/thedotmack/claude-mem/releases/tag/v6.0.5) - 2025-11-17
+## [6.0.5] - 2025-11-17
 
 ## Changes
 
@@ -2179,7 +2150,7 @@ Thanks to everyone who reported this issue with detailed error logs! 🙏
 **Release Date**: November 16, 2025
 **Plugin Version**: 6.0.5
 
-## [v6.0.4](https://github.com/thedotmack/claude-mem/releases/tag/v6.0.4) - 2025-11-17
+## [6.0.4] - 2025-11-17
 
 **Patch Release**
 
@@ -2191,7 +2162,7 @@ Fixes memory leaks from orphaned uvx/python processes that could accumulate duri
 
 **Full Changelog:** https://github.com/thedotmack/claude-mem/compare/v6.0.3...v6.0.4
 
-## [v6.0.3](https://github.com/thedotmack/claude-mem/releases/tag/v6.0.3) - 2025-11-16
+## [6.0.3] - 2025-11-16
 
 ## What's Changed
 
@@ -2204,7 +2175,7 @@ Documentation alignment release - merged PR #116 fixing hybrid search architectu
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v6.0.2...v6.0.3
 
-## [v6.0.2](https://github.com/thedotmack/claude-mem/releases/tag/v6.0.2) - 2025-11-14
+## [6.0.2] - 2025-11-14
 
 ## Changes
 
@@ -2215,7 +2186,7 @@ Documentation alignment release - merged PR #116 fixing hybrid search architectu
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v6.0.1...v6.0.2
 
-## [v6.0.1](https://github.com/thedotmack/claude-mem/releases/tag/v6.0.1) - 2025-11-14
+## [6.0.1] - 2025-11-14
 
 ## UI Enhancements
 
@@ -2233,7 +2204,7 @@ Documentation alignment release - merged PR #116 fixing hybrid search architectu
 
 Full changelog: https://github.com/thedotmack/claude-mem/compare/v6.0.0...v6.0.1
 
-## [v6.0.0](https://github.com/thedotmack/claude-mem/releases/tag/v6.0.0) - 2025-11-13
+## [6.0.0] - 2025-11-13
 
 ## What's New
 
@@ -2271,9 +2242,7 @@ This is a major version bump due to significant architectural changes in session
 📦 Install via Claude Code: `~/.claude/plugins/marketplaces/thedotmack/`
 📖 Documentation: [CLAUDE.md](https://github.com/thedotmack/claude-mem/blob/main/CLAUDE.md)
 
-## [v5.5.1](https://github.com/thedotmack/claude-mem/releases/tag/v5.5.1) - 2025-11-11
-
-## v5.5.1 (2025-11-11)
+## [5.5.1] - 2025-11-11
 
 **Breaking Changes**: None (patch version)
 
@@ -2298,9 +2267,7 @@ This is a major version bump due to significant architectural changes in session
 **What Changed**:
 The summary hook now reads Claude Code transcript files to extract the last user message before generating session summaries. This provides better context for AI-powered session summarization. The activity indicator now accurately reflects both active sessions and queued work, giving users better feedback about what's happening behind the scenes.
 
-## [v5.5.0](https://github.com/thedotmack/claude-mem/releases/tag/v5.5.0) - 2025-11-11
-
-## v5.5.0 (2025-11-11)
+## [5.5.0] - 2025-11-11
 
 **Breaking Changes**: None (minor version)
 
@@ -2323,21 +2290,11 @@ The summary hook now reads Claude Code transcript files to extract the last user
 **Credits**:
 - Skill design and enhancement by @basher83
 
----
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-## [v5.4.5](https://github.com/thedotmack/claude-mem/releases/tag/v5.4.5) - 2025-11-11
-
-## v5.4.5 (2025-11-11)
+## [5.4.5] - 2025-11-11
 
 **Patch Release**: Bugfixes and minor improvements
 
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-## [v5.4.4](https://github.com/thedotmack/claude-mem/releases/tag/v5.4.4) - 2025-11-10
-
-## v5.4.4 (2025-11-10)
+## [5.4.4] - 2025-11-10
 
 **Breaking Changes**: None (patch version)
 
@@ -2359,9 +2316,7 @@ The summary hook now reads Claude Code transcript files to extract the last user
 
 Merged via PR #86
 
-## [v5.4.3](https://github.com/thedotmack/claude-mem/releases/tag/v5.4.3) - 2025-11-10
-
-## v5.4.3 (2025-11-10)
+## [5.4.3] - 2025-11-10
 
 **Breaking Changes**: None (patch version)
 
@@ -2384,9 +2339,7 @@ Merged via PR #86
 
 **Upgrade Notes**: No action required. PM2 watch mode will automatically restart the worker on plugin updates.
 
-## [v5.4.2](https://github.com/thedotmack/claude-mem/releases/tag/v5.4.2) - 2025-11-10
-
-## v5.4.2 (2025-11-10)
+## [5.4.2] - 2025-11-10
 
 **Bugfix Release**: CWD spatial awareness for SDK agent
 
@@ -2462,9 +2415,7 @@ Or restart Claude Code to auto-update.
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v5.4.1...v5.4.2
 
-## [v5.4.1](https://github.com/thedotmack/claude-mem/releases/tag/v5.4.1) - 2025-11-10
-
-## v5.4.1 (2025-11-10)
+## [5.4.1] - 2025-11-10
 
 **Breaking Changes**: None (patch version)
 
@@ -2488,9 +2439,7 @@ Or restart Claude Code to auto-update.
 
 **Upgrade Notes**: No breaking changes. Upgrade by running standard update process.
 
-## [v5.4.0](https://github.com/thedotmack/claude-mem/releases/tag/v5.4.0) - 2025-11-10
-
-## v5.4.0 - Skill-Based Search Migration & Progressive Disclosure (2025-11-09)
+## [5.4.0] - 2025-11-10
 
 ### ⚠️ BREAKING CHANGE: MCP Search Tools Removed
 
@@ -2607,9 +2556,7 @@ Restart Claude Code to start using v5.4.0.
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v5.3.0...v5.4.0
 
-## [v5.3.0](https://github.com/thedotmack/claude-mem/releases/tag/v5.3.0) - 2025-11-09
-
-## v5.3.0 (2025-11-09)
+## [5.3.0] - 2025-11-09
 
 **Breaking Changes**: None (minor version)
 
@@ -2641,9 +2588,7 @@ Restart Claude Code to start using v5.4.0.
 
 **Upgrade Notes**: No breaking changes. Worker will automatically pick up improvements on restart.
 
-## [v5.2.3](https://github.com/thedotmack/claude-mem/releases/tag/v5.2.3) - 2025-11-09
-
-## v5.2.3 (2025-11-08)
+## [5.2.3] - 2025-11-09
 
 **Breaking Changes**: None (patch version)
 
@@ -2670,11 +2615,7 @@ The skill provides systematic checks for:
 - Viewer UI endpoints
 - Full system diagnostic report
 
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-## [v5.2.2](https://github.com/thedotmack/claude-mem/releases/tag/v5.2.2) - 2025-11-08
-
-## v5.2.2 (2025-11-08)
+## [5.2.2] - 2025-11-08
 
 **Breaking Changes**: None (patch version)
 
@@ -2693,9 +2634,7 @@ The skill provides systematic checks for:
 
 **Impact**: Users will now see more comprehensive session summary information at startup, providing better context about what was investigated and learned in previous sessions.
 
-## [v5.2.1](https://github.com/thedotmack/claude-mem/releases/tag/v5.2.1) - 2025-11-08
-
-## v5.2.1 (2025-11-07)
+## [5.2.1] - 2025-11-08
 
 **Breaking Changes**: None (patch version)
 
@@ -2734,11 +2673,7 @@ Verified fixes work correctly:
 3. ✅ Rapid switching between projects → No race conditions or stale data
 4. ✅ Switch back to "All Projects" → All data appears correctly with SSE updates
 
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-## [v5.2.0](https://github.com/thedotmack/claude-mem/releases/tag/v5.2.0) - 2025-11-07
-
-## v5.2.0 (2025-11-07)
+## [5.2.0] - 2025-11-07
 
 This release delivers a comprehensive architectural refactor of the worker service, extensive UI enhancements, and significant code cleanup. Merges PR #69.
 
@@ -2909,13 +2844,7 @@ To activate:
 - **Previous Version**: 5.1.4
 - **Semantic Version**: MINOR (backward compatible features & improvements)
 
----
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-## [v5.1.4](https://github.com/thedotmack/claude-mem/releases/tag/v5.1.4) - 2025-11-07
-
-## v5.1.4 (2025-11-07)
+## [5.1.4] - 2025-11-07
 
 **Bugfix Release**: PostToolUse Hook Schema Compliance
 
@@ -2933,11 +2862,7 @@ To activate:
 
 **Why This Matters**: The Claude Code PostToolUse hook API provides `tool_response` not `tool_output`. This fix ensures proper schema compliance and prevents potential errors when capturing tool executions.
 
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-## [v5.1.2](https://github.com/thedotmack/claude-mem/releases/tag/v5.1.2) - 2025-11-06
-
-## v5.1.2 (2025-11-06)
+## [5.1.2] - 2025-11-06
 
 **Breaking Changes**: None (patch version)
 
@@ -2955,11 +2880,7 @@ To activate:
 **Usage**:
 Access the viewer at http://localhost:37777 and use the theme toggle to switch between light mode, dark mode, or system preference.
 
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-## [v5.1.1](https://github.com/thedotmack/claude-mem/releases/tag/v5.1.1) - 2025-11-06
-
-## v5.1.1 (2025-11-06)
+## [5.1.1] - 2025-11-06
 
 **Breaking Changes**: None (patch version)
 
@@ -2977,9 +2898,7 @@ Access the viewer at http://localhost:37777 and use the theme toggle to switch b
 **Installation**:
 Users on Windows will now have a smoother installation experience with automatic PM2 worker startup working correctly.
 
-## [v5.1.0](https://github.com/thedotmack/claude-mem/releases/tag/v5.1.0) - 2025-11-06
-
-## v5.1.0 (2025-11-05)
+## [5.1.0] - 2025-11-06
 
 ### 🎉 Major Feature: Web-Based Viewer UI
 
@@ -3094,9 +3013,7 @@ Built with:
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v5.0.3...v5.1.0
 
-## [v5.0.3](https://github.com/thedotmack/claude-mem/releases/tag/v5.0.3) - 2025-11-05
-
-## v5.0.3 (2025-11-05)
+## [5.0.3] - 2025-11-05
 
 **Breaking Changes**: None (patch version)
 
@@ -3128,9 +3045,7 @@ This release should completely resolve installation issues. The smart installer 
 2. Guide you to install VS Build Tools if needed (though you probably won't need them)
 3. Only run once on first launch, then be instant on subsequent launches
 
-## [v5.0.2](https://github.com/thedotmack/claude-mem/releases/tag/v5.0.2) - 2025-11-05
-
-## v5.0.2 (2025-11-04)
+## [5.0.2] - 2025-11-05
 
 **Breaking Changes**: None (patch version)
 
@@ -3158,9 +3073,7 @@ Install via Claude Code marketplace:
 ## Full Changelog
 [View all changes](https://github.com/thedotmack/claude-mem/compare/v5.0.1...v5.0.2)
 
-## [v5.0.1](https://github.com/thedotmack/claude-mem/releases/tag/v5.0.1) - 2025-11-04
-
-## v5.0.1 (2025-11-04)
+## [5.0.1] - 2025-11-04
 
 **Breaking Changes**: None (patch version)
 
@@ -3192,9 +3105,7 @@ Install via Claude Code marketplace:
 
 **Installation**: See [README](https://github.com/thedotmack/claude-mem#readme) for installation instructions.
 
-## [v5.0.0](https://github.com/thedotmack/claude-mem/releases/tag/v5.0.0) - 2025-11-04
-
-## v5.0.0 (2025-11-03)
+## [5.0.0] - 2025-11-04
 
 ### BREAKING CHANGES
 - **Python dependency for optimal performance**: While the plugin works without Python, installing Python 3.8+ and the Chroma MCP server unlocks semantic search capabilities. Without Python, the system falls back to SQLite FTS5 keyword search.
@@ -3255,9 +3166,7 @@ Install via Claude Code marketplace:
 - Validation: 1,390 observations synced to 8,279 vector documents
 - Performance: Semantic search with 90-day window returns results in <200ms
 
-## [v4.3.4](https://github.com/thedotmack/claude-mem/releases/tag/v4.3.4) - 2025-11-02
-
-## v4.3.4 (2025-11-01)
+## [4.3.4] - 2025-11-02
 
 **Breaking Changes**: None (patch version)
 
@@ -3270,9 +3179,7 @@ Install via Claude Code marketplace:
 - Modified: plugin/hooks/hooks.json:4 (added `"matcher": "startup|clear|compact"`)
 - Impact: Hooks now skip execution when resuming existing sessions
 
-## [v4.3.3](https://github.com/thedotmack/claude-mem/releases/tag/v4.3.3) - 2025-10-27
-
-## v4.3.3 (2025-10-27)
+## [4.3.3] - 2025-10-27
 
 **Breaking Changes**: None (patch version)
 
@@ -3291,9 +3198,7 @@ Install via Claude Code marketplace:
 - Modified: plugin/scripts/context-hook.js (rebuilt)
 - Modified: plugin/scripts/user-message-hook.js (rebuilt)
 
-## [v4.3.2](https://github.com/thedotmack/claude-mem/releases/tag/v4.3.2) - 2025-10-27
-
-## v4.3.2 (2025-10-27)
+## [4.3.2] - 2025-10-27
 
 **Breaking Changes**: None (patch version)
 
@@ -3317,7 +3222,7 @@ Install via Claude Code marketplace:
   - scripts/build-hooks.js (build support for new hook)
 - Design rationale: Error messages don't get added to context, so we intentionally duplicate context output via stderr for user visibility. This is a temporary workaround until Claude Code potentially adds ability to share messages with both user and context simultaneously.
 
-## [v4.3.1](https://github.com/thedotmack/claude-mem/releases/tag/v4.3.1) - 2025-10-26
+## [4.3.1] - 2025-10-26
 
 ## Fixes
 
@@ -3341,7 +3246,7 @@ None (patch version)
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v4.3.0...v4.3.1
 
-## [v4.3.0](https://github.com/thedotmack/claude-mem/releases/tag/v4.3.0) - 2025-10-25
+## [4.3.0] - 2025-10-25
 
 ## What's Changed
 * feat: Enhanced context hook with session observations and cross-platform improvements by @thedotmack in https://github.com/thedotmack/claude-mem/pull/25
@@ -3351,7 +3256,7 @@ None (patch version)
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v4.2.11...v4.3.0
 
-## [v4.2.10](https://github.com/thedotmack/claude-mem/releases/tag/v4.2.10) - 2025-10-25
+## [4.2.10] - 2025-10-25
 
 ## Fixed
 - **Windows compatibility**: Removed hardcoded macOS-specific Claude executable path that prevented worker service from running on Windows
@@ -3377,15 +3282,11 @@ None (patch version)
 - `src/services/worker-service.ts`
 - `plugin/scripts/worker-service.cjs` (rebuilt)
 
-## [4.2.3](https://github.com/thedotmack/claude-mem/releases/tag/4.2.3) - 2025-10-24
+## [4.2.3] - 2025-10-24
 
+## [4.2.1] - 2025-10-23
 
-
-## [v4.2.1](https://github.com/thedotmack/claude-mem/releases/tag/v4.2.1) - 2025-10-23
-
-
-
-## [v3.9.16](https://github.com/thedotmack/claude-mem/releases/tag/v3.9.16) - 2025-10-07
+## [3.9.16] - 2025-10-07
 
 ## What's New
 
@@ -3403,7 +3304,7 @@ claude-mem install
 
 For full documentation, visit the [README](https://github.com/thedotmack/claude-mem#readme).
 
-## [v3.9.14](https://github.com/thedotmack/claude-mem/releases/tag/v3.9.14) - 2025-10-04
+## [3.9.14] - 2025-10-04
 
 ## What's New
 
@@ -3421,7 +3322,7 @@ claude-mem install
 
 For full documentation, visit the [README](https://github.com/thedotmack/claude-mem#readme).
 
-## [v3.9.13](https://github.com/thedotmack/claude-mem/releases/tag/v3.9.13) - 2025-10-04
+## [3.9.13] - 2025-10-04
 
 ## What's New
 
@@ -3439,7 +3340,7 @@ claude-mem install
 
 For full documentation, visit the [README](https://github.com/thedotmack/claude-mem#readme).
 
-## [v3.9.12](https://github.com/thedotmack/claude-mem/releases/tag/v3.9.12) - 2025-10-04
+## [3.9.12] - 2025-10-04
 
 ## What's New
 
@@ -3457,7 +3358,7 @@ claude-mem install
 
 For full documentation, visit the [README](https://github.com/thedotmack/claude-mem#readme).
 
-## [v3.9.11](https://github.com/thedotmack/claude-mem/releases/tag/v3.9.11) - 2025-10-04
+## [3.9.11] - 2025-10-04
 
 ## What's New
 
@@ -3475,7 +3376,7 @@ claude-mem install
 
 For full documentation, visit the [README](https://github.com/thedotmack/claude-mem#readme).
 
-## [v3.9.10](https://github.com/thedotmack/claude-mem/releases/tag/v3.9.10) - 2025-10-03
+## [3.9.10] - 2025-10-03
 
 ## What's New
 
@@ -3493,7 +3394,7 @@ claude-mem install
 
 For full documentation, visit the [README](https://github.com/thedotmack/claude-mem#readme).
 
-## [v3.9.9](https://github.com/thedotmack/claude-mem/releases/tag/v3.9.9) - 2025-10-03
+## [3.9.9] - 2025-10-03
 
 ## What's New
 
@@ -3511,7 +3412,7 @@ claude-mem install
 
 For full documentation, visit the [README](https://github.com/thedotmack/claude-mem#readme).
 
-## [v3.7.2](https://github.com/thedotmack/claude-mem/releases/tag/v3.7.2) - 2025-09-22
+## [3.7.2] - 2025-09-22
 
 ## What's New
 
@@ -3529,7 +3430,7 @@ claude-mem install
 
 For full documentation, visit the [README](https://github.com/thedotmack/claude-mem#readme).
 
-## [v3.7.1](https://github.com/thedotmack/claude-mem/releases/tag/v3.7.1) - 2025-09-18
+## [3.7.1] - 2025-09-18
 
 ## What's New
 
@@ -3547,7 +3448,7 @@ claude-mem install
 
 For full documentation, visit the [README](https://github.com/thedotmack/claude-mem#readme).
 
-## [v3.7.0](https://github.com/thedotmack/claude-mem/releases/tag/v3.7.0) - 2025-09-18
+## [3.7.0] - 2025-09-18
 
 ## What's New
 
@@ -3565,7 +3466,7 @@ claude-mem install
 
 For full documentation, visit the [README](https://github.com/thedotmack/claude-mem#readme).
 
-## [v3.6.10](https://github.com/thedotmack/claude-mem/releases/tag/v3.6.10) - 2025-09-17
+## [3.6.10] - 2025-09-17
 
 ## What's New
 
@@ -3583,7 +3484,7 @@ claude-mem install
 
 For full documentation, visit the [README](https://github.com/thedotmack/claude-mem#readme).
 
-## [v3.6.9](https://github.com/thedotmack/claude-mem/releases/tag/v3.6.9) - 2025-09-15
+## [3.6.9] - 2025-09-15
 
 ## What's New
 
@@ -3601,7 +3502,7 @@ claude-mem install
 
 For full documentation, visit the [README](https://github.com/thedotmack/claude-mem#readme).
 
-## [v3.6.8](https://github.com/thedotmack/claude-mem/releases/tag/v3.6.8) - 2025-09-14
+## [3.6.8] - 2025-09-14
 
 ## What's New
 
@@ -3619,7 +3520,7 @@ claude-mem install
 
 For full documentation, visit the [README](https://github.com/thedotmack/claude-mem#readme).
 
-## [v3.6.6](https://github.com/thedotmack/claude-mem/releases/tag/v3.6.6) - 2025-09-14
+## [3.6.6] - 2025-09-14
 
 ## What's New
 
@@ -3637,7 +3538,7 @@ claude-mem install
 
 For full documentation, visit the [README](https://github.com/thedotmack/claude-mem#readme).
 
-## [v3.6.5](https://github.com/thedotmack/claude-mem/releases/tag/v3.6.5) - 2025-09-14
+## [3.6.5] - 2025-09-14
 
 ## What's New
 
@@ -3655,7 +3556,7 @@ claude-mem install
 
 For full documentation, visit the [README](https://github.com/thedotmack/claude-mem#readme).
 
-## [v3.6.4](https://github.com/thedotmack/claude-mem/releases/tag/v3.6.4) - 2025-09-14
+## [3.6.4] - 2025-09-14
 
 ## What's New
 
@@ -3673,7 +3574,7 @@ claude-mem install
 
 For full documentation, visit the [README](https://github.com/thedotmack/claude-mem#readme).
 
-## [v3.6.3](https://github.com/thedotmack/claude-mem/releases/tag/v3.6.3) - 2025-09-11
+## [3.6.3] - 2025-09-11
 
 ## What's New
 
@@ -3691,7 +3592,7 @@ claude-mem install
 
 For full documentation, visit the [README](https://github.com/thedotmack/claude-mem#readme).
 
-## [v3.6.2](https://github.com/thedotmack/claude-mem/releases/tag/v3.6.2) - 2025-09-11
+## [3.6.2] - 2025-09-11
 
 ## What's New
 
@@ -3709,7 +3610,7 @@ claude-mem install
 
 For full documentation, visit the [README](https://github.com/thedotmack/claude-mem#readme).
 
-## [v3.6.1](https://github.com/thedotmack/claude-mem/releases/tag/v3.6.1) - 2025-09-10
+## [3.6.1] - 2025-09-10
 
 ## What's New
 
@@ -3727,7 +3628,7 @@ claude-mem install
 
 For full documentation, visit the [README](https://github.com/thedotmack/claude-mem#readme).
 
-## [v3.6.0](https://github.com/thedotmack/claude-mem/releases/tag/v3.6.0) - 2025-09-10
+## [3.6.0] - 2025-09-10
 
 ## What's New
 
@@ -3745,7 +3646,7 @@ claude-mem install
 
 For full documentation, visit the [README](https://github.com/thedotmack/claude-mem#readme).
 
-## [v3.5.9](https://github.com/thedotmack/claude-mem/releases/tag/v3.5.9) - 2025-09-10
+## [3.5.9] - 2025-09-10
 
 ## What's New
 
@@ -3763,7 +3664,7 @@ claude-mem install
 
 For full documentation, visit the [README](https://github.com/thedotmack/claude-mem#readme).
 
-## [v3.5.8](https://github.com/thedotmack/claude-mem/releases/tag/v3.5.8) - 2025-09-10
+## [3.5.8] - 2025-09-10
 
 ## What's New
 
@@ -3781,7 +3682,7 @@ claude-mem install
 
 For full documentation, visit the [README](https://github.com/thedotmack/claude-mem#readme).
 
-## [v3.5.7](https://github.com/thedotmack/claude-mem/releases/tag/v3.5.7) - 2025-09-10
+## [3.5.7] - 2025-09-10
 
 ## What's New
 
@@ -3799,7 +3700,7 @@ claude-mem install
 
 For full documentation, visit the [README](https://github.com/thedotmack/claude-mem#readme).
 
-## [v3.5.6](https://github.com/thedotmack/claude-mem/releases/tag/v3.5.6) - 2025-09-09
+## [3.5.6] - 2025-09-09
 
 ## What's New
 
@@ -3817,7 +3718,7 @@ claude-mem install
 
 For full documentation, visit the [README](https://github.com/thedotmack/claude-mem#readme).
 
-## [v3.5.5](https://github.com/thedotmack/claude-mem/releases/tag/v3.5.5) - 2025-09-09
+## [3.5.5] - 2025-09-09
 
 ## What's New
 
@@ -3835,7 +3736,7 @@ claude-mem install
 
 For full documentation, visit the [README](https://github.com/thedotmack/claude-mem#readme).
 
-## [v3.5.4](https://github.com/thedotmack/claude-mem/releases/tag/v3.5.4) - 2025-09-09
+## [3.5.4] - 2025-09-09
 
 ## 🎉 claude-mem v3.5.4
 
@@ -3871,4 +3772,3 @@ claude-mem install
 - uv (automatically installed if missing)
 
 For documentation and support, visit the [GitHub repository](https://github.com/thedotmack/claude-mem).
-
