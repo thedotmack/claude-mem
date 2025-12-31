@@ -73,12 +73,13 @@ async function callWorkerAPI(
 
     // Worker returns { content: [...] } format directly
     return data;
-  } catch (error: any) {
-    logger.error('SYSTEM', '← Worker API error', undefined, { endpoint, error: error.message });
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    logger.error('SYSTEM', '← Worker API error', undefined, { endpoint, error: errorMessage });
     return {
       content: [{
         type: 'text' as const,
-        text: `Error calling Worker API: ${error.message}`
+        text: `Error calling Worker API: ${errorMessage}`
       }],
       isError: true
     };
@@ -120,12 +121,13 @@ async function callWorkerAPIPost(
         text: JSON.stringify(data, null, 2)
       }]
     };
-  } catch (error: any) {
-    logger.error('HTTP', 'Worker API error (POST)', undefined, { endpoint, error: error.message });
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    logger.error('HTTP', 'Worker API error (POST)', undefined, { endpoint, error: errorMessage });
     return {
       content: [{
         type: 'text' as const,
-        text: `Error calling Worker API: ${error.message}`
+        text: `Error calling Worker API: ${errorMessage}`
       }],
       isError: true
     };
@@ -264,11 +266,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   try {
     return await tool.handler(request.params.arguments || {});
-  } catch (error: any) {
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
     return {
       content: [{
         type: 'text' as const,
-        text: `Tool execution failed: ${error.message}`
+        text: `Tool execution failed: ${errorMessage}`
       }],
       isError: true
     };

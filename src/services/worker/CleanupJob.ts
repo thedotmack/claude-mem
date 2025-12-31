@@ -213,13 +213,13 @@ export class CleanupJob {
       this.lastRun = result;
       this.currentJobId = null;
       return result;
-    } catch (error: any) {
+    } catch (error: unknown) {
       result.duration = Date.now() - startTime;
 
       // Record error in checkpoint manager
       checkpointManager.recordError(jobState.jobId, error instanceof Error ? error : new Error(String(error)));
 
-      logger.error('CleanupJob', 'Cleanup job failed', { jobId: jobState.jobId }, error);
+      logger.error('CleanupJob', 'Cleanup job failed', { jobId: jobState.jobId }, error instanceof Error ? error : new Error(String(error)));
       this.currentJobId = null;
       throw error;
     }

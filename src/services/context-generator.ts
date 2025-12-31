@@ -447,8 +447,8 @@ export async function generateContext(input?: ContextInput, useColors: boolean =
   let db: SessionStore | null = null;
   try {
     db = new SessionStore();
-  } catch (error: any) {
-    if (error.code === 'ERR_DLOPEN_FAILED') {
+  } catch (error: unknown) {
+    if (error instanceof Error && (error as NodeJS.ErrnoException).code === 'ERR_DLOPEN_FAILED') {
       try {
         unlinkSync(VERSION_MARKER_PATH);
       } catch (unlinkError) {

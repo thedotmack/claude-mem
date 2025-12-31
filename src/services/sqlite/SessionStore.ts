@@ -276,7 +276,7 @@ export class SessionStore {
       this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(7, new Date().toISOString());
 
       logger.info('DB', 'Successfully removed UNIQUE constraint from session_summaries.memory_session_id');
-    } catch (error: any) {
+    } catch (error: unknown) {
       // Rollback on error
       this.db.run('ROLLBACK');
       throw error;
@@ -397,7 +397,7 @@ export class SessionStore {
       this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(9, new Date().toISOString());
 
       logger.info('DB', 'Successfully made observations.text nullable');
-    } catch (error: any) {
+    } catch (error: unknown) {
       // Rollback on error
       this.db.run('ROLLBACK');
       throw error;
@@ -480,7 +480,7 @@ export class SessionStore {
       this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(10, new Date().toISOString());
 
       logger.info('DB', 'Successfully created user_prompts table with FTS5 support');
-    } catch (error: any) {
+    } catch (error: unknown) {
       // Rollback on error
       this.db.run('ROLLBACK');
       throw error;
@@ -518,8 +518,8 @@ export class SessionStore {
 
       // Record migration only after successful column verification/addition
       this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(11, new Date().toISOString());
-    } catch (error: any) {
-      logger.error('DB', 'Discovery tokens migration error', undefined, error);
+    } catch (error: unknown) {
+      logger.error('DB', 'Discovery tokens migration error', undefined, error instanceof Error ? error : new Error(String(error)));
       throw error; // Re-throw to prevent silent failures
     }
   }
@@ -573,8 +573,8 @@ export class SessionStore {
       this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(16, new Date().toISOString());
 
       logger.info('DB', 'pending_messages table created successfully');
-    } catch (error: any) {
-      logger.error('DB', 'Pending messages table migration error', undefined, error);
+    } catch (error: unknown) {
+      logger.error('DB', 'Pending messages table migration error', undefined, error instanceof Error ? error : new Error(String(error)));
       throw error;
     }
   }
@@ -698,9 +698,9 @@ export class SessionStore {
         // Neither column exists - table might not exist or has different schema
         logger.warn('DB', `Column ${oldCol} not found in ${table}, skipping rename`);
         return false;
-      } catch (error: any) {
+      } catch (error: unknown) {
         // Table might not exist yet, which is fine
-        logger.warn('DB', `Could not rename ${table}.${oldCol}: ${error.message}`);
+        logger.warn('DB', `Could not rename ${table}.${oldCol}: ${error instanceof Error ? error.message : String(error)}`);
         return false;
       }
     };
@@ -1568,8 +1568,8 @@ export class SessionStore {
 
         startEpoch = beforeRecords.length > 0 ? beforeRecords[beforeRecords.length - 1].created_at_epoch : anchorEpoch;
         endEpoch = afterRecords.length > 0 ? afterRecords[afterRecords.length - 1].created_at_epoch : anchorEpoch;
-      } catch (err: any) {
-        logger.error('DB', 'Error getting boundary observations', undefined, { error: err, project });
+      } catch (err: unknown) {
+        logger.error('DB', 'Error getting boundary observations', undefined, { error: err instanceof Error ? err.message : String(err), project });
         return { observations: [], sessions: [], prompts: [] };
       }
     } else {
@@ -1600,8 +1600,8 @@ export class SessionStore {
 
         startEpoch = beforeRecords.length > 0 ? beforeRecords[beforeRecords.length - 1].created_at_epoch : anchorEpoch;
         endEpoch = afterRecords.length > 0 ? afterRecords[afterRecords.length - 1].created_at_epoch : anchorEpoch;
-      } catch (err: any) {
-        logger.error('DB', 'Error getting boundary timestamps', undefined, { error: err, project });
+      } catch (err: unknown) {
+        logger.error('DB', 'Error getting boundary timestamps', undefined, { error: err instanceof Error ? err.message : String(err), project });
         return { observations: [], sessions: [], prompts: [] };
       }
     }
@@ -1656,8 +1656,8 @@ export class SessionStore {
           created_at_epoch: p.created_at_epoch
         }))
       };
-    } catch (err: any) {
-      logger.error('DB', 'Error querying timeline records', undefined, { error: err, project });
+    } catch (err: unknown) {
+      logger.error('DB', 'Error querying timeline records', undefined, { error: err instanceof Error ? err.message : String(err), project });
       return { observations: [], sessions: [], prompts: [] };
     }
   }

@@ -111,8 +111,8 @@ export class AccessTracker {
         this.db.run('ROLLBACK');
         throw error;
       }
-    } catch (error: any) {
-      logger.error('AccessTracker', 'Failed to record batch access', {}, error);
+    } catch (error: unknown) {
+      logger.error('AccessTracker', 'Failed to record batch access', {}, error instanceof Error ? error : new Error(String(error)));
     }
   }
 
@@ -132,8 +132,8 @@ export class AccessTracker {
       `);
 
       return stmt.all(memoryId, limit) as MemoryAccess[];
-    } catch (error: any) {
-      logger.error('AccessTracker', `Failed to get access history for memory ${memoryId}`, {}, error);
+    } catch (error: unknown) {
+      logger.error('AccessTracker', `Failed to get access history for memory ${memoryId}`, {}, error instanceof Error ? error : new Error(String(error)));
       return [];
     }
   }
@@ -155,8 +155,8 @@ export class AccessTracker {
 
       const result = stmt.get(memoryId, cutoffTime) as { count: number };
       return result.count / days; // accesses per day
-    } catch (error: any) {
-      logger.error('AccessTracker', `Failed to get access frequency for memory ${memoryId}`, {}, error);
+    } catch (error: unknown) {
+      logger.error('AccessTracker', `Failed to get access frequency for memory ${memoryId}`, {}, error instanceof Error ? error : new Error(String(error)));
       return 0;
     }
   }
@@ -182,8 +182,8 @@ export class AccessTracker {
       result.accessFrequency = this.getAccessFrequency(memoryId, days);
 
       return result;
-    } catch (error: any) {
-      logger.error('AccessTracker', `Failed to get access stats for memory ${memoryId}`, {}, error);
+    } catch (error: unknown) {
+      logger.error('AccessTracker', `Failed to get access stats for memory ${memoryId}`, {}, error instanceof Error ? error : new Error(String(error)));
       return null;
     }
   }
@@ -266,8 +266,8 @@ export class AccessTracker {
       }
 
       return deletedCount;
-    } catch (error: any) {
-      logger.error('AccessTracker', 'Failed to cleanup old access records', {}, error);
+    } catch (error: unknown) {
+      logger.error('AccessTracker', 'Failed to cleanup old access records', {}, error instanceof Error ? error : new Error(String(error)));
       return 0;
     }
   }

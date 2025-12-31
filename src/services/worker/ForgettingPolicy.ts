@@ -335,8 +335,8 @@ export class ForgettingPolicy {
           title: candidate.title,
           reason: candidate.reason,
         });
-      } catch (error: any) {
-        logger.error('ForgettingPolicy', `Failed to delete memory ${candidate.id}`, {}, error);
+      } catch (error: unknown) {
+        logger.error('ForgettingPolicy', `Failed to delete memory ${candidate.id}`, {}, error instanceof Error ? error : new Error(String(error)));
       }
     }
 

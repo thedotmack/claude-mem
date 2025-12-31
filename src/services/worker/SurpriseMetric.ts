@@ -322,8 +322,8 @@ export class SurpriseMetric {
         score: r.score,
         type: r.type,
       }));
-    } catch (error: any) {
-      logger.error('SurpriseMetric', 'Failed to get surprising memories (optimized)', {}, error);
+    } catch (error: unknown) {
+      logger.error('SurpriseMetric', 'Failed to get surprising memories (optimized)', {}, error instanceof Error ? error : new Error(String(error)));
       return [];
     }
   }
@@ -414,8 +414,8 @@ export class SurpriseMetric {
           type: r.type,
           created_at: r.created_at,
         }));
-    } catch (error: any) {
-      logger.debug('SurpriseMetric', 'Chroma query failed, using database fallback', {}, error);
+    } catch (error: unknown) {
+      logger.debug('SurpriseMetric', 'Chroma query failed, using database fallback', {}, error instanceof Error ? error : new Error(String(error)));
 
       // Fallback: Get random recent observations from database
       const cutoff = Date.now() - (lookbackDays * 24 * 60 * 60 * 1000);
@@ -621,8 +621,8 @@ export class SurpriseMetric {
         sampleCount: scores.length,
         byType: byTypeStats,
       };
-    } catch (error: any) {
-      logger.error('SurpriseMetric', `Failed to get surprise stats for project ${project}`, {}, error);
+    } catch (error: unknown) {
+      logger.error('SurpriseMetric', `Failed to get surprise stats for project ${project}`, {}, error instanceof Error ? error : new Error(String(error)));
       return {
         mean: 0,
         median: 0,

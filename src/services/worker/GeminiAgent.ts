@@ -122,8 +122,8 @@ export class GeminiAgent {
   /**
    * Check if an error should trigger fallback to Claude
    */
-  private shouldFallbackToClaude(error: any): boolean {
-    const message = error?.message || '';
+  private shouldFallbackToClaude(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error);
     // Fall back on rate limit (429), server errors (5xx), or network issues
     return (
       message.includes('429') ||
@@ -263,8 +263,8 @@ export class GeminiAgent {
         historyLength: session.conversationHistory.length
       });
 
-    } catch (error: any) {
-      if (error.name === 'AbortError') {
+    } catch (error: unknown) {
+      if (error instanceof Error && error.name === 'AbortError') {
         logger.warn('SDK', 'Gemini agent aborted', { sessionId: session.sessionDbId });
         throw error;
       }
@@ -273,7 +273,7 @@ export class GeminiAgent {
       if (this.shouldFallbackToClaude(error) && this.fallbackAgent) {
         logger.warn('SDK', 'Gemini API failed, falling back to Claude SDK', {
           sessionDbId: session.sessionDbId,
-          error: error.message,
+          error: error instanceof Error ? error.message : String(error),
           historyLength: session.conversationHistory.length
         });
 

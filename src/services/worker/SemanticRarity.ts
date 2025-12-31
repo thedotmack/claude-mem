@@ -97,8 +97,8 @@ export class SemanticRarity {
           type: m.type,
         })),
       };
-    } catch (error: any) {
-      logger.error('SemanticRarity', `Failed to calculate rarity for observation ${observation.id}`, {}, error);
+    } catch (error: unknown) {
+      logger.error('SemanticRarity', `Failed to calculate rarity for observation ${observation.id}`, {}, error instanceof Error ? error : new Error(String(error)));
       return {
         score: 0.5,
         confidence: 0,
@@ -239,8 +239,8 @@ export class SemanticRarity {
           distance: 1 - r.score, // Convert similarity to distance
           type: r.type,
         }));
-    } catch (error: any) {
-      logger.debug('SemanticRarity', 'Chroma query failed, using database fallback', {}, error);
+    } catch (error: unknown) {
+      logger.debug('SemanticRarity', 'Chroma query failed, using database fallback', {}, error instanceof Error ? error : new Error(String(error)));
 
       // Fallback: Get random recent observations from database
       const cutoff = Date.now() - (lookbackDays * 24 * 60 * 60 * 1000);
@@ -304,8 +304,8 @@ export class SemanticRarity {
         max: scores[scores.length - 1],
         sampleCount: scores.length,
       };
-    } catch (error: any) {
-      logger.error('SemanticRarity', `Failed to get rarity stats for project ${project}`, {}, error);
+    } catch (error: unknown) {
+      logger.error('SemanticRarity', `Failed to get rarity stats for project ${project}`, {}, error instanceof Error ? error : new Error(String(error)));
       return { mean: 0, median: 0, min: 0, max: 0, sampleCount: 0 };
     }
   }

@@ -168,9 +168,9 @@ export class SearchManager {
                   prompts: chromaPromptIds.size
                 });
               }
-            } catch (chromaError: any) {
+            } catch (chromaError: unknown) {
               chromaFailed = true;
-              logger.debug('SEARCH', 'ChromaDB failed - using FTS5 only', { error: chromaError.message });
+              logger.debug('SEARCH', 'ChromaDB failed - using FTS5 only', { error: chromaError instanceof Error ? chromaError.message : String(chromaError) });
             }
           } else {
             chromaFailed = true;
@@ -192,8 +192,8 @@ export class SearchManager {
               ftsSessions.forEach(sess => ftsSessionIds.add(sess.id));
               logger.debug('SEARCH', 'FTS5 session matches', { count: ftsSessions.length });
             }
-          } catch (ftsError: any) {
-            logger.debug('SEARCH', 'FTS5 search failed', { error: ftsError.message });
+          } catch (ftsError: unknown) {
+            logger.debug('SEARCH', 'FTS5 search failed', { error: ftsError instanceof Error ? ftsError.message : String(ftsError) });
           }
 
           // === STEP 3: Merge and rank results ===
@@ -401,11 +401,11 @@ export class SearchManager {
             text: lines.join('\n')
           }]
         };
-      } catch (error: any) {
+      } catch (error: unknown) {
         return {
           content: [{
             type: 'text' as const,
-            text: `Search failed: ${error.message}`
+            text: `Search failed: ${error instanceof Error ? error.message : String(error)}`
           }],
           isError: true
         };
@@ -467,8 +467,8 @@ export class SearchManager {
                   results = this.sessionStore.getObservationsByIds(recentIds, { orderBy: 'date_desc', limit: 1 });
                 }
               }
-            } catch (chromaError: any) {
-              logger.debug('SEARCH', 'Chroma query failed - no results (FTS5 fallback removed)', { error: chromaError.message });
+            } catch (chromaError: unknown) {
+              logger.debug('SEARCH', 'Chroma query failed - no results (FTS5 fallback removed)', { error: chromaError instanceof Error ? chromaError.message : String(chromaError) });
             }
           }
 
@@ -689,11 +689,11 @@ export class SearchManager {
             text: lines.join('\n')
           }]
         };
-      } catch (error: any) {
+      } catch (error: unknown) {
         return {
           content: [{
             type: 'text' as const,
-            text: `Timeline query failed: ${error.message}`
+            text: `Timeline query failed: ${error instanceof Error ? error.message : String(error)}`
           }],
           isError: true
         };
@@ -745,8 +745,8 @@ export class SearchManager {
                 }
               }
             }
-          } catch (chromaError: any) {
-            logger.debug('SEARCH', 'Chroma search failed, using SQLite fallback', { error: chromaError.message });
+          } catch (chromaError: unknown) {
+            logger.debug('SEARCH', 'Chroma search failed, using SQLite fallback', { error: chromaError instanceof Error ? chromaError.message : String(chromaError) });
           }
         }
 
@@ -773,11 +773,11 @@ export class SearchManager {
             text: header + '\n' + formattedResults.join('\n')
           }]
         };
-      } catch (error: any) {
+      } catch (error: unknown) {
         return {
           content: [{
             type: 'text' as const,
-            text: `Search failed: ${error.message}`
+            text: `Search failed: ${error instanceof Error ? error.message : String(error)}`
           }],
           isError: true
         };
@@ -823,8 +823,8 @@ export class SearchManager {
                 results.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
               }
             }
-          } catch (chromaError: any) {
-            logger.debug('SEARCH', 'Chroma ranking failed, using SQLite order', { error: chromaError.message });
+          } catch (chromaError: unknown) {
+            logger.debug('SEARCH', 'Chroma ranking failed, using SQLite order', { error: chromaError instanceof Error ? chromaError.message : String(chromaError) });
           }
         }
 
@@ -865,11 +865,11 @@ export class SearchManager {
             text: header + '\n' + formattedResults.join('\n')
           }]
         };
-      } catch (error: any) {
+      } catch (error: unknown) {
         return {
           content: [{
             type: 'text' as const,
-            text: `Search failed: ${error.message}`
+            text: `Search failed: ${error instanceof Error ? error.message : String(error)}`
           }],
           isError: true
         };
@@ -907,8 +907,8 @@ export class SearchManager {
                 results.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
               }
             }
-          } catch (chromaError: any) {
-            logger.debug('SEARCH', 'Chroma ranking failed, using SQLite order', { error: chromaError.message });
+          } catch (chromaError: unknown) {
+            logger.debug('SEARCH', 'Chroma ranking failed, using SQLite order', { error: chromaError instanceof Error ? chromaError.message : String(chromaError) });
           }
         }
 
@@ -935,11 +935,11 @@ export class SearchManager {
             text: header + '\n' + formattedResults.join('\n')
           }]
         };
-      } catch (error: any) {
+      } catch (error: unknown) {
         return {
           content: [{
             type: 'text' as const,
-            text: `Search failed: ${error.message}`
+            text: `Search failed: ${error instanceof Error ? error.message : String(error)}`
           }],
           isError: true
         };
@@ -981,8 +981,8 @@ export class SearchManager {
                 logger.debug('SEARCH', 'Hydrated observations from SQLite', { count: results.length });
               }
             }
-          } catch (chromaError: any) {
-            logger.debug('SEARCH', 'Chroma query failed - no results (FTS5 fallback removed)', { error: chromaError.message });
+          } catch (chromaError: unknown) {
+            logger.debug('SEARCH', 'Chroma query failed - no results (FTS5 fallback removed)', { error: chromaError instanceof Error ? chromaError.message : String(chromaError) });
           }
         }
 
@@ -1005,11 +1005,11 @@ export class SearchManager {
             text: header + '\n' + formattedResults.join('\n')
           }]
         };
-      } catch (error: any) {
+      } catch (error: unknown) {
         return {
           content: [{
             type: 'text' as const,
-            text: `Search failed: ${error.message}`
+            text: `Search failed: ${error instanceof Error ? error.message : String(error)}`
           }],
           isError: true
         };
@@ -1051,8 +1051,8 @@ export class SearchManager {
                 logger.debug('SEARCH', 'Hydrated sessions from SQLite', { count: results.length });
               }
             }
-          } catch (chromaError: any) {
-            logger.debug('SEARCH', 'Chroma query failed - no results (FTS5 fallback removed)', { error: chromaError.message });
+          } catch (chromaError: unknown) {
+            logger.debug('SEARCH', 'Chroma query failed - no results (FTS5 fallback removed)', { error: chromaError instanceof Error ? chromaError.message : String(chromaError) });
           }
         }
 
@@ -1075,11 +1075,11 @@ export class SearchManager {
             text: header + '\n' + formattedResults.join('\n')
           }]
         };
-      } catch (error: any) {
+      } catch (error: unknown) {
         return {
           content: [{
             type: 'text' as const,
-            text: `Search failed: ${error.message}`
+            text: `Search failed: ${error instanceof Error ? error.message : String(error)}`
           }],
           isError: true
         };
@@ -1121,8 +1121,8 @@ export class SearchManager {
                 logger.debug('SEARCH', 'Hydrated user prompts from SQLite', { count: results.length });
               }
             }
-          } catch (chromaError: any) {
-            logger.debug('SEARCH', 'Chroma query failed - no results (FTS5 fallback removed)', { error: chromaError.message });
+          } catch (chromaError: unknown) {
+            logger.debug('SEARCH', 'Chroma query failed - no results (FTS5 fallback removed)', { error: chromaError instanceof Error ? chromaError.message : String(chromaError) });
           }
         }
 
@@ -1145,11 +1145,11 @@ export class SearchManager {
             text: header + '\n' + formattedResults.join('\n')
           }]
         };
-      } catch (error: any) {
+      } catch (error: unknown) {
         return {
           content: [{
             type: 'text' as const,
-            text: `Search failed: ${error.message}`
+            text: `Search failed: ${error instanceof Error ? error.message : String(error)}`
           }],
           isError: true
         };
@@ -1196,8 +1196,8 @@ export class SearchManager {
                 results.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
               }
             }
-          } catch (chromaError: any) {
-            logger.debug('SEARCH', 'Chroma ranking failed, using SQLite order', { error: chromaError.message });
+          } catch (chromaError: unknown) {
+            logger.debug('SEARCH', 'Chroma ranking failed, using SQLite order', { error: chromaError instanceof Error ? chromaError.message : String(chromaError) });
             // Fall through to SQLite fallback
           }
         }
@@ -1227,11 +1227,11 @@ export class SearchManager {
             text: header + '\n' + formattedResults.join('\n')
           }]
         };
-      } catch (error: any) {
+      } catch (error: unknown) {
         return {
           content: [{
             type: 'text' as const,
-            text: `Search failed: ${error.message}`
+            text: `Search failed: ${error instanceof Error ? error.message : String(error)}`
           }],
           isError: true
         };
@@ -1283,8 +1283,8 @@ export class SearchManager {
                 observations.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
               }
             }
-          } catch (chromaError: any) {
-            logger.debug('SEARCH', 'Chroma ranking failed, using SQLite order', { error: chromaError.message });
+          } catch (chromaError: unknown) {
+            logger.debug('SEARCH', 'Chroma ranking failed, using SQLite order', { error: chromaError instanceof Error ? chromaError.message : String(chromaError) });
             // Fall through to SQLite fallback
           }
         }
@@ -1328,11 +1328,11 @@ export class SearchManager {
             text: header + '\n' + formattedResults.join('\n')
           }]
         };
-      } catch (error: any) {
+      } catch (error: unknown) {
         return {
           content: [{
             type: 'text' as const,
-            text: `Search failed: ${error.message}`
+            text: `Search failed: ${error instanceof Error ? error.message : String(error)}`
           }],
           isError: true
         };
@@ -1380,8 +1380,8 @@ export class SearchManager {
                 results.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
               }
             }
-          } catch (chromaError: any) {
-            logger.debug('SEARCH', 'Chroma ranking failed, using SQLite order', { error: chromaError.message });
+          } catch (chromaError: unknown) {
+            logger.debug('SEARCH', 'Chroma ranking failed, using SQLite order', { error: chromaError instanceof Error ? chromaError.message : String(chromaError) });
             // Fall through to SQLite fallback
           }
         }
@@ -1411,11 +1411,11 @@ export class SearchManager {
             text: header + '\n' + formattedResults.join('\n')
           }]
         };
-      } catch (error: any) {
+      } catch (error: unknown) {
         return {
           content: [{
             type: 'text' as const,
-            text: `Search failed: ${error.message}`
+            text: `Search failed: ${error instanceof Error ? error.message : String(error)}`
           }],
           isError: true
         };
@@ -1545,11 +1545,11 @@ export class SearchManager {
             text: lines.join('\n')
           }]
         };
-      } catch (error: any) {
+      } catch (error: unknown) {
         return {
           content: [{
             type: 'text' as const,
-            text: `Failed to get recent context: ${error.message}`
+            text: `Failed to get recent context: ${error instanceof Error ? error.message : String(error)}`
           }],
           isError: true
         };
@@ -1767,11 +1767,11 @@ export class SearchManager {
             text: lines.join('\n')
           }]
         };
-      } catch (error: any) {
+      } catch (error: unknown) {
         return {
           content: [{
             type: 'text' as const,
-            text: `Timeline query failed: ${error.message}`
+            text: `Timeline query failed: ${error instanceof Error ? error.message : String(error)}`
           }],
           isError: true
         };
@@ -1811,8 +1811,8 @@ export class SearchManager {
                 logger.debug('SEARCH', 'Hydrated observations from SQLite', { count: results.length });
               }
             }
-          } catch (chromaError: any) {
-            logger.debug('SEARCH', 'Chroma query failed - no results (FTS5 fallback removed)', { error: chromaError.message });
+          } catch (chromaError: unknown) {
+            logger.debug('SEARCH', 'Chroma query failed - no results (FTS5 fallback removed)', { error: chromaError instanceof Error ? chromaError.message : String(chromaError) });
           }
         }
 
@@ -2012,11 +2012,11 @@ export class SearchManager {
             }]
           };
         }
-      } catch (error: any) {
+      } catch (error: unknown) {
         return {
           content: [{
             type: 'text' as const,
-            text: `Timeline query failed: ${error.message}`
+            text: `Timeline query failed: ${error instanceof Error ? error.message : String(error)}`
           }],
           isError: true
         };

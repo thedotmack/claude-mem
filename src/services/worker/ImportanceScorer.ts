@@ -148,8 +148,8 @@ export class ImportanceScorer {
         factors,
         confidence: this.calculateConfidence(factors),
       };
-    } catch (error: any) {
-      logger.error('ImportanceScorer', `Failed to update score for memory ${memoryId}`, {}, error);
+    } catch (error: unknown) {
+      logger.error('ImportanceScorer', `Failed to update score for memory ${memoryId}`, {}, error instanceof Error ? error : new Error(String(error)));
       return null;
     }
   }
@@ -208,8 +208,8 @@ export class ImportanceScorer {
       for (const result of results) {
         scores.set(result.id, result.score);
       }
-    } catch (error: any) {
-      logger.error('ImportanceScorer', 'Failed to get batch scores', {}, error);
+    } catch (error: unknown) {
+      logger.error('ImportanceScorer', 'Failed to get batch scores', {}, error instanceof Error ? error : new Error(String(error)));
     }
 
     return scores;
@@ -238,8 +238,8 @@ export class ImportanceScorer {
       `);
 
       return stmt.all(cutoffEpoch, threshold, limit) as Array<{ id: number; score: number; age: number }>;
-    } catch (error: any) {
-      logger.error('ImportanceScorer', 'Failed to get low importance memories', {}, error);
+    } catch (error: unknown) {
+      logger.error('ImportanceScorer', 'Failed to get low importance memories', {}, error instanceof Error ? error : new Error(String(error)));
       return [];
     }
   }
