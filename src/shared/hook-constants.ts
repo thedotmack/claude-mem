@@ -13,7 +13,11 @@ export const HOOK_TIMEOUTS = {
 export const HOOK_EXIT_CODES = {
   SUCCESS: 0,
   FAILURE: 1,
-  /** Show user message that Claude does NOT receive as context */
+  /**
+   * @deprecated Exit code 3 is not documented in Claude Code's hooks API.
+   * Use SUCCESS (0) with stdout for informational messages instead.
+   * See: https://docs.anthropic.com/en/docs/claude-code/hooks
+   */
   USER_MESSAGE_ONLY: 3,
 } as const;
 

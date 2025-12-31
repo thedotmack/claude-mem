@@ -1,10 +1,10 @@
 /**
  * User Message Hook - SessionStart
- * Displays context information to the user via stderr
+ * Displays context information to the user via stdout
  *
  * This hook runs in parallel with context-hook to show users what context
- * has been loaded into their session. Uses stderr as the communication channel
- * since it's currently the only way to display messages in Claude Code UI.
+ * has been loaded into their session. Uses stdout with exit code 0 as per
+ * Claude Code's hooks documentation for informational messages.
  */
 import { basename } from "path";
 import { ensureWorkerRunning, getWorkerPort } from "../shared/worker-utils.js";
@@ -30,13 +30,12 @@ if (!response.ok) {
 
 const output = await response.text();
 
-console.error(
-  "\n\n📝 Claude-Mem Context Loaded\n" +
-  "   ℹ️  Note: This appears as stderr but is informational only\n\n" +
+console.log(
+  "\n\n📝 Claude-Mem Context Loaded\n\n" +
   output +
   "\n\n💡 New! Wrap all or part of any message with <private> ... </private> to prevent storing sensitive information in your observation history.\n" +
   "\n💬 Community https://discord.gg/J4wttp9vDu" +
   `\n📺 Watch live in browser http://localhost:${port}/\n`
 );
 
-process.exit(HOOK_EXIT_CODES.USER_MESSAGE_ONLY);
+process.exit(HOOK_EXIT_CODES.SUCCESS);
