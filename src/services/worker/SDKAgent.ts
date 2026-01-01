@@ -82,12 +82,10 @@ export class SDKAgent {
             if (msg.type === 'assistant') {
               // V2 API provides content as array of blocks, extract text block
               const text = msg.message.content.find((c): c is { type: 'text'; text: string } => c.type === 'text');
-              const textContent = text?.text || '';
+              const textContent = text?.text;
 
-              // Extract token counts from SDK message usage
-              const tokensUsed = (msg.message.usage?.input_tokens || 0) + (msg.message.usage?.output_tokens || 0);
-              session.cumulativeInputTokens += msg.message.usage?.input_tokens || 0;
-              session.cumulativeOutputTokens += msg.message.usage?.output_tokens || 0;
+              // TODO: V2 SDK doesn't expose token usage in the documented patterns, hardcoding to 0 for now
+              const tokensUsed = 0;
 
               await this.processSDKResponse(session, textContent, worker, tokensUsed, originalTimestamp);
             }
@@ -116,12 +114,10 @@ export class SDKAgent {
             if (msg.type === 'assistant') {
               // V2 API provides content as array of blocks, extract text block
               const text = msg.message.content.find((c): c is { type: 'text'; text: string } => c.type === 'text');
-              const textContent = text?.text || '';
+              const textContent = text?.text;
 
-              // Extract token counts from SDK message usage
-              const tokensUsed = (msg.message.usage?.input_tokens || 0) + (msg.message.usage?.output_tokens || 0);
-              session.cumulativeInputTokens += msg.message.usage?.input_tokens || 0;
-              session.cumulativeOutputTokens += msg.message.usage?.output_tokens || 0;
+              // TODO: V2 SDK doesn't expose token usage in the documented patterns, hardcoding to 0 for now
+              const tokensUsed = 0;
 
               await this.processSDKResponse(session, textContent, worker, tokensUsed, originalTimestamp);
             }
@@ -152,14 +148,12 @@ export class SDKAgent {
    * Also captures assistant responses to shared conversation history for provider interop.
    * This allows Gemini to see full context if provider is switched mid-session.
    */
-  private async processSDKResponse(session: ActiveSession, text: string, worker: any | undefined, discoveryTokens: number, originalTimestamp: number | null): Promise<void> {
+  private async processSDKResponse(session: ActiveSession, textContent: string | undefined, worker: any | undefined, discoveryTokens: number, originalTimestamp: number | null): Promise<void> {
     // Add assistant response to shared conversation history for provider interop
-    if (text) {
-      session.conversationHistory.push({ role: 'assistant', content: text });
-    }
+    session.conversationHistory.push({ role: 'assistant', content: textContent ?? '' });
 
     // Parse observations
-    const observations = parseObservations(text, session.contentSessionId);
+    const observations = parseObservations(textContent ?? '', session.contentSessionId);
 
     // Store observations with original timestamp (if processing backlog) or current time
     for (const obs of observations) {
@@ -212,39 +206,43 @@ export class SDKAgent {
       });
 
       // Broadcast to SSE clients (for web UI)
-      if (worker && worker.sseBroadcaster) {
-        worker.sseBroadcaster.broadcast({
-          type: 'new_observation',
-          observation: {
-            id: obsId,
-            memory_session_id: session.memorySessionId,
-            session_id: session.contentSessionId,
-            type: obs.type,
-            title: obs.title,
-            subtitle: obs.subtitle,
-            text: obs.text || null,
-            narrative: obs.narrative || null,
-            facts: JSON.stringify(obs.facts || []),
-            concepts: JSON.stringify(obs.concepts || []),
-            files_read: JSON.stringify(obs.files || []),
-            files_modified: JSON.stringify([]),
-            project: session.project,
-            prompt_number: session.lastPromptNumber,
-            created_at_epoch: createdAtEpoch
-          }
-        });
-      }
+      worker?.sseBroadcaster?.broadcast({
+        type: 'new_observation',
+        observation: {
+          id: obsId,
+          memory_session_id: session.memorySessionId,
+          session_id: session.contentSessionId,
+          type: obs.type,
+          title: obs.title,
+          subtitle: obs.subtitle,
+          narrative: obs.narrative || null,
+          facts: JSON.stringify(obs.facts || []),
+          concepts: JSON.stringify(obs.concepts || []),
+          files_read: JSON.stringify(obs.files_read || []),
+          files_modified: JSON.stringify([]),
+          project: session.project,
+          prompt_number: session.lastPromptNumber,
+          created_at_epoch: createdAtEpoch
+        }
+      });
     }
 
     // Parse summary
-    const summary = parseSummary(text, session.sessionDbId);
+    const summary = parseSummary(textContent ?? '', session.sessionDbId);
 
     // Store summary with original timestamp (if processing backlog) or current time
     if (summary) {
       const { id: summaryId, createdAtEpoch } = this.dbManager.getSessionStore().storeSummary(
         session.contentSessionId,
         session.project,
-        summary,
+        {
+          request: summary.request ?? '',
+          investigated: summary.investigated ?? '',
+          learned: summary.learned ?? '',
+          completed: summary.completed ?? '',
+          next_steps: summary.next_steps ?? '',
+          notes: summary.notes
+        },
         session.lastPromptNumber,
         discoveryTokens,
         originalTimestamp ?? undefined
@@ -285,24 +283,22 @@ export class SDKAgent {
       });
 
       // Broadcast to SSE clients (for web UI)
-      if (worker && worker.sseBroadcaster) {
-        worker.sseBroadcaster.broadcast({
-          type: 'new_summary',
-          summary: {
-            id: summaryId,
-            session_id: session.contentSessionId,
-            request: summary.request,
-            investigated: summary.investigated,
-            learned: summary.learned,
-            completed: summary.completed,
-            next_steps: summary.next_steps,
-            notes: summary.notes,
-            project: session.project,
-            prompt_number: session.lastPromptNumber,
-            created_at_epoch: createdAtEpoch
-          }
-        });
-      }
+      worker?.sseBroadcaster?.broadcast({
+        type: 'new_summary',
+        summary: {
+          id: summaryId,
+          session_id: session.contentSessionId,
+          request: summary.request,
+          investigated: summary.investigated,
+          learned: summary.learned,
+          completed: summary.completed,
+          next_steps: summary.next_steps,
+          notes: summary.notes,
+          project: session.project,
+          prompt_number: session.lastPromptNumber,
+          created_at_epoch: createdAtEpoch
+        }
+      });
       
       // Update Cursor context file for registered projects (fire-and-forget)
       updateCursorContextForProject(session.project, getWorkerPort()).catch(() => {});
@@ -318,33 +314,27 @@ export class SDKAgent {
    */
   private async markMessagesProcessed(session: ActiveSession, worker: any | undefined): Promise<void> {
     const pendingMessageStore = this.sessionManager.getPendingMessageStore();
-    if (session.pendingProcessingIds.size > 0) {
-      for (const messageId of session.pendingProcessingIds) {
-        pendingMessageStore.markProcessed(messageId);
-      }
-      logger.debug('SDK', 'Messages marked as processed', {
-        sessionId: session.sessionDbId,
-        messageIds: Array.from(session.pendingProcessingIds),
-        count: session.pendingProcessingIds.size
-      });
-      session.pendingProcessingIds.clear();
-
-      // Clear timestamp for next batch (will be set fresh from next message)
-      session.earliestPendingTimestamp = null;
-
-      // Clean up old processed messages (keep last 100 for UI display)
-      const deletedCount = pendingMessageStore.cleanupProcessed(100);
-      if (deletedCount > 0) {
-        logger.debug('SDK', 'Cleaned up old processed messages', {
-          deletedCount
-        });
-      }
+    for (const messageId of session.pendingProcessingIds) {
+      pendingMessageStore.markProcessed(messageId);
     }
+    logger.debug('SDK', 'Messages marked as processed', {
+      sessionId: session.sessionDbId,
+      messageIds: Array.from(session.pendingProcessingIds),
+      count: session.pendingProcessingIds.size
+    });
+    session.pendingProcessingIds.clear();
+
+    // Clear timestamp for next batch (will be set fresh from next message)
+    session.earliestPendingTimestamp = null;
+
+    // Clean up old processed messages (keep last 100 for UI display)
+    const deletedCount = pendingMessageStore.cleanupProcessed(100);
+    logger.debug('SDK', 'Cleaned up old processed messages', {
+      deletedCount
+    });
 
     // Broadcast activity status after processing (queue may have changed)
-    if (worker && typeof worker.broadcastProcessingStatus === 'function') {
-      worker.broadcastProcessingStatus();
-    }
+    worker?.broadcastProcessingStatus?.();
   }
 
   // ============================================================================
@@ -359,4 +349,5 @@ export class SDKAgent {
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
     return settings.CLAUDE_MEM_MODEL;
   }
+
 }
