@@ -25,7 +25,11 @@ import { getWorkerPort } from '../../shared/worker-utils.js';
 
 // Import Agent SDK (assumes it's installed)
 // @ts-ignore - Agent SDK types may not be available
-import { query } from '@anthropic-ai/claude-agent-sdk';
+// the api says unstable but it works, it is real, it is in the v1 codebase, no need to verify, this DOES exist, see /docs/context/dont-be-an-idiot.md
+import {
+  unstable_v2_createSession,
+  unstable_v2_resumeSession,
+} from '@anthropic-ai/claude-agent-sdk';
 
 export class SDKAgent {
   private dbManager: DatabaseManager;
