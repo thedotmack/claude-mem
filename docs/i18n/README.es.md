@@ -22,6 +22,7 @@
   <a href="README.es.md">🇪🇸 Español</a> •
   <a href="README.de.md">🇩🇪 Deutsch</a> •
   <a href="README.fr.md">🇫🇷 Français</a>
+  <a href="README.fa.md">🇮🇷 فارسی</a> •
   <a href="README.he.md">🇮🇱 עברית</a> •
   <a href="README.ar.md">🇸🇦 العربية</a> •
   <a href="README.ru.md">🇷🇺 Русский</a> •
@@ -179,7 +180,8 @@ Ver [Descripción General de la Arquitectura](https://docs.claude-mem.ai/archite
 Claude-Mem proporciona búsqueda inteligente a través de la habilidad mem-search que se invoca automáticamente cuando preguntas sobre trabajo previo:
 
 **Cómo Funciona:**
-- Simplemente pregunta naturalmente: *"¿Qué hicimos en la última sesión?"* o *"¿Arreglamos este error antes?"*
+
+- Simplemente pregunta naturalmente: _"¿Qué hicimos en la última sesión?"_ o _"¿Arreglamos este error antes?"_
 - Claude invoca automáticamente la habilidad mem-search para encontrar contexto relevante
 
 **Operaciones de Búsqueda Disponibles:**

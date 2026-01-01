@@ -1,6 +1,7 @@
 🌐 Aceasta este o traducere automată. Corecțiile din partea comunității sunt binevenite!
 
 ---
+
 <h1 align="center">
   <br>
   <a href="https://github.com/thedotmack/claude-mem">
@@ -21,6 +22,7 @@
   <a href="README.es.md">🇪🇸 Español</a> •
   <a href="README.de.md">🇩🇪 Deutsch</a> •
   <a href="README.fr.md">🇫🇷 Français</a>
+  <a href="README.fa.md">🇮🇷 فارسی</a> •
   <a href="README.he.md">🇮🇱 עברית</a> •
   <a href="README.ar.md">🇸🇦 العربية</a> •
   <a href="README.ru.md">🇷🇺 Русский</a> •
@@ -178,7 +180,8 @@ Consultați [Prezentarea Generală a Arhitecturii](https://docs.claude-mem.ai/ar
 Claude-Mem oferă căutare inteligentă prin abilitatea mem-search care se invocă automat când întrebați despre lucrul trecut:
 
 **Cum Funcționează:**
-- Întrebați natural: *"Ce am făcut în sesiunea trecută?"* sau *"Am rezolvat acest bug înainte?"*
+
+- Întrebați natural: _"Ce am făcut în sesiunea trecută?"_ sau _"Am rezolvat acest bug înainte?"_
 - Claude invocă automat abilitatea mem-search pentru a găsi contextul relevant
 
 **Operații de Căutare Disponibile:**

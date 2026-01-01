@@ -1,6 +1,7 @@
 🌐 Detta är en automatiserad översättning. Bidrag från gemenskapen är välkomna!
 
 ---
+
 <h1 align="center">
   <br>
   <a href="https://github.com/thedotmack/claude-mem">
@@ -21,6 +22,7 @@
   <a href="README.es.md">🇪🇸 Español</a> •
   <a href="README.de.md">🇩🇪 Deutsch</a> •
   <a href="README.fr.md">🇫🇷 Français</a>
+  <a href="README.fa.md">🇮🇷 فارسی</a> •
   <a href="README.he.md">🇮🇱 עברית</a> •
   <a href="README.ar.md">🇸🇦 العربية</a> •
   <a href="README.ru.md">🇷🇺 Русский</a> •
@@ -178,7 +180,8 @@ Se [Arkitekturöversikt](https://docs.claude-mem.ai/architecture/overview) för 
 Claude-Mem tillhandahåller intelligent sökning genom mem-search-färdigheten som automatiskt aktiveras när du frågar om tidigare arbete:
 
 **Hur det fungerar:**
-- Fråga bara naturligt: *"Vad gjorde vi förra sessionen?"* eller *"Fixade vi den här buggen tidigare?"*
+
+- Fråga bara naturligt: _"Vad gjorde vi förra sessionen?"_ eller _"Fixade vi den här buggen tidigare?"_
 - Claude aktiverar automatiskt mem-search-färdigheten för att hitta relevant kontext
 
 **Tillgängliga sökoperationer:**

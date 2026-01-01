@@ -1,6 +1,7 @@
 🌐 Ini adalah terjemahan otomatis. Koreksi dari komunitas sangat dipersilakan!
 
 ---
+
 <h1 align="center">
   <br>
   <a href="https://github.com/thedotmack/claude-mem">
@@ -21,6 +22,7 @@
   <a href="README.es.md">🇪🇸 Español</a> •
   <a href="README.de.md">🇩🇪 Deutsch</a> •
   <a href="README.fr.md">🇫🇷 Français</a>
+  <a href="README.fa.md">🇮🇷 فارسی</a> •
   <a href="README.he.md">🇮🇱 עברית</a> •
   <a href="README.ar.md">🇸🇦 العربية</a> •
   <a href="README.ru.md">🇷🇺 Русский</a> •
@@ -178,7 +180,8 @@ Lihat [Ringkasan Arsitektur](https://docs.claude-mem.ai/architecture/overview) u
 Claude-Mem menyediakan pencarian cerdas melalui mem-search skill yang secara otomatis dipanggil saat Anda bertanya tentang pekerjaan masa lalu:
 
 **Cara Kerja:**
-- Tanya saja secara alami: *"Apa yang kita lakukan sesi terakhir?"* atau *"Apakah kita sudah memperbaiki bug ini sebelumnya?"*
+
+- Tanya saja secara alami: _"Apa yang kita lakukan sesi terakhir?"_ atau _"Apakah kita sudah memperbaiki bug ini sebelumnya?"_
 - Claude secara otomatis memanggil mem-search skill untuk menemukan konteks yang relevan
 
 **Operasi Pencarian yang Tersedia:**

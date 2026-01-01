@@ -20,6 +20,7 @@
   <a href="README.es.md">🇪🇸 Español</a> •
   <a href="README.de.md">🇩🇪 Deutsch</a> •
   <a href="README.fr.md">🇫🇷 Français</a>
+  <a href="README.fa.md">🇮🇷 فارسی</a> •
   <a href="README.he.md">🇮🇱 עברית</a> •
   <a href="README.ar.md">🇸🇦 العربية</a> •
   <a href="README.ru.md">🇷🇺 Русский</a> •
@@ -177,7 +178,8 @@ Katso [Arkkitehtuurin yleiskatsaus](https://docs.claude-mem.ai/architecture/over
 Claude-Mem tarjoaa älykkään haun mem-search-taidon kautta, joka käynnistyy automaattisesti kun kysyt aiemmasta työstä:
 
 **Miten se toimii:**
-- Kysy vain luonnollisesti: *"Mitä teimme viime istunnossa?"* tai *"Korjasimmeko tämän bugin aiemmin?"*
+
+- Kysy vain luonnollisesti: _"Mitä teimme viime istunnossa?"_ tai _"Korjasimmeko tämän bugin aiemmin?"_
 - Claude käynnistää automaattisesti mem-search-taidon löytääkseen relevantin kontekstin
 
 **Saatavilla olevat hakutoiminnot:**

@@ -1,6 +1,7 @@
 🌐 Đây là bản dịch tự động. Chúng tôi hoan nghênh các đóng góp từ cộng đồng!
 
 ---
+
 <h1 align="center">
   <br>
   <a href="https://github.com/thedotmack/claude-mem">
@@ -21,6 +22,7 @@
   <a href="README.es.md">🇪🇸 Español</a> •
   <a href="README.de.md">🇩🇪 Deutsch</a> •
   <a href="README.fr.md">🇫🇷 Français</a>
+  <a href="README.fa.md">🇮🇷 فارسی</a> •
   <a href="README.he.md">🇮🇱 עברית</a> •
   <a href="README.ar.md">🇸🇦 العربية</a> •
   <a href="README.ru.md">🇷🇺 Русский</a> •
@@ -178,7 +180,8 @@ Xem [Tổng Quan Kiến Trúc](https://docs.claude-mem.ai/architecture/overview)
 Claude-Mem cung cấp tìm kiếm thông minh thông qua kỹ năng mem-search tự động kích hoạt khi bạn hỏi về công việc trước đây:
 
 **Cách Hoạt Động:**
-- Chỉ cần hỏi một cách tự nhiên: *"Chúng ta đã làm gì trong phiên trước?"* hoặc *"Chúng ta đã sửa lỗi này trước đây chưa?"*
+
+- Chỉ cần hỏi một cách tự nhiên: _"Chúng ta đã làm gì trong phiên trước?"_ hoặc _"Chúng ta đã sửa lỗi này trước đây chưa?"_
 - Claude tự động gọi kỹ năng mem-search để tìm ngữ cảnh liên quan
 
 **Các Thao Tác Tìm Kiếm Có Sẵn:**

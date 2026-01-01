@@ -1,5 +1,3 @@
-
-
 <h1 align="center">
   <br>
   <a href="https://github.com/thedotmack/claude-mem">
@@ -20,6 +18,7 @@
   <a href="docs/i18n/README.es.md">🇪🇸 Español</a> •
   <a href="docs/i18n/README.de.md">🇩🇪 Deutsch</a> •
   <a href="docs/i18n/README.fr.md">🇫🇷 Français</a>
+  <a href="docs/i18n/README.fa.md">🇮🇷 فارسی</a>
   <a href="docs/i18n/README.he.md">🇮🇱 עברית</a> •
   <a href="docs/i18n/README.ar.md">🇸🇦 العربية</a> •
   <a href="docs/i18n/README.ru.md">🇷🇺 Русский</a> •
@@ -183,6 +182,7 @@ Claude-Mem provides intelligent memory search through **4 MCP tools** following 
 3. **`get_observations`** - Fetch full details ONLY for filtered IDs (~500-1,000 tokens/result)
 
 **How It Works:**
+
 - Claude uses MCP tools to search your memory
 - Start with `search` to get an index of results
 - Use `timeline` to see what was happening around specific observations
@@ -200,12 +200,12 @@ Claude-Mem provides intelligent memory search through **4 MCP tools** following 
 
 ```typescript
 // Step 1: Search for index
-search(query="authentication bug", type="bugfix", limit=10)
+search((query = "authentication bug"), (type = "bugfix"), (limit = 10));
 
 // Step 2: Review index, identify relevant IDs (e.g., #123, #456)
 
 // Step 3: Fetch full details
-get_observations(ids=[123, 456])
+get_observations((ids = [123, 456]));
 ```
 
 See [Search Tools Guide](https://docs.claude-mem.ai/usage/search-tools) for detailed examples.

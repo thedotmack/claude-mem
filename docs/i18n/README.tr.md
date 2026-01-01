@@ -20,6 +20,7 @@
   <a href="README.es.md">🇪🇸 Español</a> •
   <a href="README.de.md">🇩🇪 Deutsch</a> •
   <a href="README.fr.md">🇫🇷 Français</a>
+  <a href="README.fa.md">🇮🇷 فارسی</a> •
   <a href="README.he.md">🇮🇱 עברית</a> •
   <a href="README.ar.md">🇸🇦 العربية</a> •
   <a href="README.ru.md">🇷🇺 Русский</a> •
@@ -177,7 +178,8 @@ Detaylar için [Mimari Genel Bakış](https://docs.claude-mem.ai/architecture/ov
 Claude-Mem, geçmiş çalışmalarınız hakkında sorduğunuzda otomatik olarak devreye giren mem-search becerisi aracılığıyla akıllı arama sağlar:
 
 **Nasıl Çalışır:**
-- Sadece doğal bir şekilde sorun: *"Geçen oturumda ne yaptık?"* veya *"Bu hatayı daha önce düzelttik mi?"*
+
+- Sadece doğal bir şekilde sorun: _"Geçen oturumda ne yaptık?"_ veya _"Bu hatayı daha önce düzelttik mi?"_
 - Claude, ilgili bağlamı bulmak için otomatik olarak mem-search becerisini çağırır
 
 **Mevcut Arama İşlemleri:**

@@ -1,6 +1,7 @@
 🌐 Dies ist eine automatisierte Übersetzung. Korrekturen aus der Community sind willkommen!
 
 ---
+
 <h1 align="center">
   <br>
   <a href="https://github.com/thedotmack/claude-mem">
@@ -21,6 +22,7 @@
   <a href="README.es.md">🇪🇸 Español</a> •
   <a href="README.de.md">🇩🇪 Deutsch</a> •
   <a href="README.fr.md">🇫🇷 Français</a>
+  <a href="README.fa.md">🇮🇷 فارسی</a> •
   <a href="README.he.md">🇮🇱 עברית</a> •
   <a href="README.ar.md">🇸🇦 العربية</a> •
   <a href="README.ru.md">🇷🇺 Русский</a> •
@@ -178,7 +180,8 @@ Siehe [Architekturübersicht](https://docs.claude-mem.ai/architecture/overview) 
 Claude-Mem bietet intelligente Suche durch den mem-search Skill, der sich automatisch aktiviert, wenn Sie nach früheren Arbeiten fragen:
 
 **Wie es funktioniert:**
-- Fragen Sie einfach natürlich: *"Was haben wir in der letzten Sitzung gemacht?"* oder *"Haben wir diesen Fehler schon einmal behoben?"*
+
+- Fragen Sie einfach natürlich: _"Was haben wir in der letzten Sitzung gemacht?"_ oder _"Haben wir diesen Fehler schon einmal behoben?"_
 - Claude aktiviert automatisch den mem-search Skill, um relevanten Kontext zu finden
 
 **Verfügbare Suchoperationen:**

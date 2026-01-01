@@ -1,6 +1,7 @@
 🌐 Ez egy automatikus fordítás. Közösségi javítások szívesen fogadottak!
 
 ---
+
 <h1 align="center">
   <br>
   <a href="https://github.com/thedotmack/claude-mem">
@@ -21,6 +22,7 @@
   <a href="README.es.md">🇪🇸 Español</a> •
   <a href="README.de.md">🇩🇪 Deutsch</a> •
   <a href="README.fr.md">🇫🇷 Français</a>
+  <a href="README.fa.md">🇮🇷 فارسی</a> •
   <a href="README.he.md">🇮🇱 עברית</a> •
   <a href="README.ar.md">🇸🇦 العربية</a> •
   <a href="README.ru.md">🇷🇺 Русский</a> •
@@ -178,7 +180,8 @@ További részletekért lásd az [Architektúra áttekintést](https://docs.clau
 A Claude-Mem intelligens keresést biztosít a mem-search skillen keresztül, amely automatikusan aktiválódik, amikor múltbeli munkáról kérdez:
 
 **Hogyan működik:**
-- Csak kérdezzen természetesen: *"Mit csináltunk az előző munkamenetben?"* vagy *"Javítottuk már ezt a hibát korábban?"*
+
+- Csak kérdezzen természetesen: _"Mit csináltunk az előző munkamenetben?"_ vagy _"Javítottuk már ezt a hibát korábban?"_
 - Claude automatikusan meghívja a mem-search skillet a releváns kontextus megtalálásához
 
 **Elérhető keresési műveletek:**

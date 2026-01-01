@@ -20,6 +20,7 @@
   <a href="README.es.md">🇪🇸 Español</a> •
   <a href="README.de.md">🇩🇪 Deutsch</a> •
   <a href="README.fr.md">🇫🇷 Français</a>
+  <a href="README.fa.md">🇮🇷 فارسی</a> •
   <a href="README.he.md">🇮🇱 עברית</a> •
   <a href="README.ar.md">🇸🇦 العربية</a> •
   <a href="README.ru.md">🇷🇺 Русский</a> •
@@ -177,7 +178,8 @@ Zie [Architectuuroverzicht](https://docs.claude-mem.ai/architecture/overview) vo
 Claude-Mem biedt intelligent zoeken via de mem-search vaardigheid die automatisch wordt aangeroepen wanneer je vraagt over eerder werk:
 
 **Hoe Het Werkt:**
-- Vraag gewoon natuurlijk: *"Wat hebben we vorige sessie gedaan?"* of *"Hebben we deze bug eerder opgelost?"*
+
+- Vraag gewoon natuurlijk: _"Wat hebben we vorige sessie gedaan?"_ of _"Hebben we deze bug eerder opgelost?"_
 - Claude roept automatisch de mem-search vaardigheid aan om relevante context te vinden
 
 **Beschikbare Zoekoperaties:**

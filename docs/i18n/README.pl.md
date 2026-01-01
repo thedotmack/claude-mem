@@ -20,6 +20,7 @@
   <a href="README.es.md">🇪🇸 Español</a> •
   <a href="README.de.md">🇩🇪 Deutsch</a> •
   <a href="README.fr.md">🇫🇷 Français</a>
+  <a href="README.fa.md">🇮🇷 فارسی</a> •
   <a href="README.he.md">🇮🇱 עברית</a> •
   <a href="README.ar.md">🇸🇦 العربية</a> •
   <a href="README.ru.md">🇷🇺 Русский</a> •
@@ -177,7 +178,8 @@ Zobacz [Przegląd Architektury](https://docs.claude-mem.ai/architecture/overview
 Claude-Mem zapewnia inteligentne wyszukiwanie poprzez umiejętność mem-search, która automatycznie aktywuje się, gdy pytasz o przeszłą pracę:
 
 **Jak To Działa:**
-- Po prostu pytaj naturalnie: *"Co robiliśmy w ostatniej sesji?"* lub *"Czy naprawiliśmy ten błąd wcześniej?"*
+
+- Po prostu pytaj naturalnie: _"Co robiliśmy w ostatniej sesji?"_ lub _"Czy naprawiliśmy ten błąd wcześniej?"_
 - Claude automatycznie wywołuje umiejętność mem-search, aby znaleźć odpowiedni kontekst
 
 **Dostępne Operacje Wyszukiwania:**

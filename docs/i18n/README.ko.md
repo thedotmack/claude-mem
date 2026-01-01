@@ -1,6 +1,7 @@
 🌐 이것은 자동 번역입니다. 커뮤니티의 수정 제안을 환영합니다!
 
 ---
+
 <h1 align="center">
   <br>
   <a href="https://github.com/thedotmack/claude-mem">
@@ -21,6 +22,7 @@
   <a href="README.es.md">🇪🇸 Español</a> •
   <a href="README.de.md">🇩🇪 Deutsch</a> •
   <a href="README.fr.md">🇫🇷 Français</a>
+  <a href="README.fa.md">🇮🇷 فارسی</a> •
   <a href="README.he.md">🇮🇱 עברית</a> •
   <a href="README.ar.md">🇸🇦 العربية</a> •
   <a href="README.ru.md">🇷🇺 Русский</a> •
@@ -178,7 +180,8 @@ Claude Code를 재시작하세요. 이전 세션의 컨텍스트가 자동으로
 Claude-Mem은 과거 작업에 대해 질문할 때 자동으로 호출되는 mem-search 스킬을 통해 지능형 검색을 제공합니다:
 
 **작동 방식:**
-- 자연스럽게 질문하세요: *"지난 세션에서 무엇을 했나요?"* 또는 *"이 버그를 이전에 수정했나요?"*
+
+- 자연스럽게 질문하세요: _"지난 세션에서 무엇을 했나요?"_ 또는 _"이 버그를 이전에 수정했나요?"_
 - Claude가 관련 컨텍스트를 찾기 위해 mem-search 스킬을 자동으로 호출합니다
 
 **사용 가능한 검색 작업:**

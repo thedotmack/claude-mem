@@ -1,6 +1,7 @@
 🌐 Toto je automatický překlad. Komunitní opravy jsou vítány!
 
 ---
+
 <h1 align="center">
   <br>
   <a href="https://github.com/thedotmack/claude-mem">
@@ -21,6 +22,7 @@
   <a href="README.es.md">🇪🇸 Español</a> •
   <a href="README.de.md">🇩🇪 Deutsch</a> •
   <a href="README.fr.md">🇫🇷 Français</a>
+  <a href="README.fa.md">🇮🇷 فارسی</a> •
   <a href="README.he.md">🇮🇱 עברית</a> •
   <a href="README.ar.md">🇸🇦 العربية</a> •
   <a href="README.ru.md">🇷🇺 Русский</a> •
@@ -178,7 +180,8 @@ Podrobnosti najdete v [Přehledu architektury](https://docs.claude-mem.ai/archit
 Claude-Mem poskytuje inteligentní vyhledávání prostřednictvím dovednosti mem-search, která se automaticky vyvolá, když se ptáte na minulou práci:
 
 **Jak to funguje:**
-- Stačí se zeptat přirozeně: *"Co jsme dělali minulé sezení?"* nebo *"Opravovali jsme tuto chybu dříve?"*
+
+- Stačí se zeptat přirozeně: _"Co jsme dělali minulé sezení?"_ nebo _"Opravovali jsme tuto chybu dříve?"_
 - Claude automaticky vyvolá dovednost mem-search k nalezení relevantního kontextu
 
 **Dostupné vyhledávací operace:**

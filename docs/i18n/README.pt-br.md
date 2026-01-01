@@ -1,6 +1,7 @@
 🌐 Esta é uma tradução automatizada. Correções da comunidade são bem-vindas!
 
 ---
+
 <h1 align="center">
   <br>
   <a href="https://github.com/thedotmack/claude-mem">
@@ -21,6 +22,7 @@
   <a href="README.es.md">🇪🇸 Español</a> •
   <a href="README.de.md">🇩🇪 Deutsch</a> •
   <a href="README.fr.md">🇫🇷 Français</a>
+  <a href="README.fa.md">🇮🇷 فارسی</a> •
   <a href="README.he.md">🇮🇱 עברית</a> •
   <a href="README.ar.md">🇸🇦 العربية</a> •
   <a href="README.ru.md">🇷🇺 Русский</a> •
@@ -178,7 +180,8 @@ Veja [Visão Geral da Arquitetura](https://docs.claude-mem.ai/architecture/overv
 Claude-Mem fornece busca inteligente através da skill mem-search que se auto-invoca quando você pergunta sobre trabalhos anteriores:
 
 **Como Funciona:**
-- Apenas pergunte naturalmente: *"O que fizemos na última sessão?"* ou *"Já corrigimos esse bug antes?"*
+
+- Apenas pergunte naturalmente: _"O que fizemos na última sessão?"_ ou _"Já corrigimos esse bug antes?"_
 - Claude invoca automaticamente a skill mem-search para encontrar contexto relevante
 
 **Operações de Busca Disponíveis:**
