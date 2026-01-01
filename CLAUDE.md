@@ -104,3 +104,37 @@ This architecture preserves the open-source nature of the project while enabling
 # Important
 
 No need to edit the changelog ever, it's generated automatically.
+
+## AI Auto-Fix Boundaries (YOLO Push)
+
+Define the scope of what AI can autonomously fix in CI pipelines.
+
+### ✅ Allow List (Auto-fix permitted)
+
+These mechanical issues can be fixed automatically without human review:
+
+- **Linting**: ESLint errors and warnings
+- **Formatting**: Prettier formatting issues
+- **Types**: TypeScript type errors (missing types, type mismatches)
+- **Imports**: Unused imports, import ordering, missing imports for used symbols
+- **Spelling**: Variable/function name typos caught by cspell
+- **Dependencies**: Missing peer dependencies in package.json
+
+### ❌ Deny List (Human review required)
+
+These areas require human judgment and must NOT be auto-fixed:
+
+- **Security**: Any code in authentication, authorization, or credential handling
+- **Database**: `src/services/sqlite/` - Schema changes, migrations, query logic
+- **Hooks Core**: `src/hooks/*.ts` - Hook execution flow and lifecycle
+- **API Design**: New endpoints, breaking changes to existing APIs
+- **Architecture**: New abstractions, pattern changes, dependency additions
+- **Privacy**: `src/utils/tag-stripping.ts` - Privacy tag handling logic
+- **Business Logic**: Observation compression, scoring algorithms
+- **Configuration**: `settings.json` schema changes, default values
+
+### 🔄 Retry Policy
+
+- Maximum 2 auto-fix attempts per CI failure
+- Escalate to human review after max retries
+- Never auto-fix the same file more than once per PR

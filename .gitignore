@@ -9,6 +9,8 @@ dist/
 *.temp
 .install-version
 .claude/settings.local.json
+.claude/*.local.md
+.osgrep/
 plugin/data/
 plugin/data.backup/
 package-lock.json
