@@ -66,52 +66,18 @@ export class SDKAgent {
       // Create message generator (event-driven)
       const messageGenerator = this.createMessageGenerator(session);
 
-      // CRITICAL: Only resume if memorySessionId is a REAL captured SDK session ID,
-      // not the placeholder (which equals contentSessionId). The placeholder is set
-      // for FK purposes but would cause the bug where we try to resume the USER's session!
-      const hasRealMemorySessionId = session.memorySessionId &&
-        session.memorySessionId !== session.contentSessionId;
-
-      logger.info('SDK', 'Starting SDK query', {
-        sessionDbId: session.sessionDbId,
-        contentSessionId: session.contentSessionId,
-        memorySessionId: session.memorySessionId,
-        hasRealMemorySessionId,
-        resume_parameter: hasRealMemorySessionId ? session.memorySessionId : '(none - fresh start)',
-        lastPromptNumber: session.lastPromptNumber
-      });
-
-      // Run Agent SDK query loop
-      // Only resume if we have a REAL captured memory session ID (not the placeholder)
       const queryResult = query({
         prompt: messageGenerator,
         options: {
           model: modelId,
-          // Only resume if memorySessionId differs from contentSessionId (meaning it was captured)
-          ...(hasRealMemorySessionId && { resume: session.memorySessionId }),
+          resume: session.contentSessionId,
           disallowedTools,
           abortController: session.abortController,
           pathToClaudeCodeExecutable: claudePath
         }
       });
 
-      // Process SDK messages
       for await (const message of queryResult) {
-        // Capture memory session ID from first SDK message (any type has session_id)
-        // This enables resume for subsequent generator starts within the same user session
-        if (!session.memorySessionId && message.session_id) {
-          session.memorySessionId = message.session_id;
-          // Persist to database for cross-restart recovery
-          this.dbManager.getSessionStore().updateMemorySessionId(
-            session.sessionDbId,
-            message.session_id
-          );
-          logger.info('SDK', 'Captured memory session ID', {
-            sessionDbId: session.sessionDbId,
-            memorySessionId: message.session_id
-          });
-        }
-
         // Handle assistant messages
         if (message.type === 'assistant') {
           const content = message.message.content;
