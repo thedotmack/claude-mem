@@ -140,7 +140,10 @@ export class OpenRouterAgent {
       }
 
       // Process pending messages
-      for await (const message of this.sessionManager.getMessageIterator(session.sessionDbId)) {
+      while (!session.abortController.signal.aborted) {
+        const message = await this.sessionManager.waitForNextMessage(session.sessionDbId, session.abortController.signal);
+        if (!message) break;
+
         // Capture earliest timestamp BEFORE processing (will be cleared after)
         const originalTimestamp = session.earliestPendingTimestamp;
 
@@ -178,7 +181,7 @@ export class OpenRouterAgent {
               sessionId: session.sessionDbId,
               toolName: message.tool_name
             });
-            await this.markMessagesProcessed(session, worker);
+            worker?.broadcastProcessingStatus?.();
           }
 
         } else if (message.type === 'summarize') {
@@ -209,7 +212,7 @@ export class OpenRouterAgent {
             logger.warn('SDK', 'Empty OpenRouter response for summary, marking as processed', {
               sessionId: session.sessionDbId
             });
-            await this.markMessagesProcessed(session, worker);
+            worker?.broadcastProcessingStatus?.();
           }
         }
       }
@@ -544,33 +547,7 @@ export class OpenRouterAgent {
     }
 
     // Mark messages as processed
-    await this.markMessagesProcessed(session, worker);
-  }
-
-  /**
-   * Mark pending messages as processed
-   */
-  private async markMessagesProcessed(session: ActiveSession, worker: any | undefined): Promise<void> {
-    const pendingMessageStore = this.sessionManager.getPendingMessageStore();
-    if (session.pendingProcessingIds.size > 0) {
-      for (const messageId of session.pendingProcessingIds) {
-        pendingMessageStore.markProcessed(messageId);
-      }
-      logger.debug('SDK', 'OpenRouter messages marked as processed', {
-        sessionId: session.sessionDbId,
-        count: session.pendingProcessingIds.size
-      });
-      session.pendingProcessingIds.clear();
-
-      const deletedCount = pendingMessageStore.cleanupProcessed(100);
-      if (deletedCount > 0) {
-        logger.debug('SDK', 'OpenRouter cleaned up old processed messages', { deletedCount });
-      }
-    }
-
-    if (worker && typeof worker.broadcastProcessingStatus === 'function') {
-      worker.broadcastProcessingStatus();
-    }
+    worker?.broadcastProcessingStatus?.();
   }
 
   /**

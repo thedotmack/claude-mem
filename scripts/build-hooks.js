@@ -99,8 +99,8 @@ async function buildHooks() {
       format: 'cjs',
       outfile: `${hooksDir}/${WORKER_SERVICE.name}.cjs`,
       minify: true,
-      logLevel: 'error', // Suppress warnings (import.meta warning is benign)
-      external: ['bun:sqlite'],
+      logLevel: 'error',
+      external: ['bun:sqlite', '@anthropic-ai/claude-agent-sdk'],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
       },

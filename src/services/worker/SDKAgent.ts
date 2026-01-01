@@ -14,19 +14,62 @@ import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
 import { parseObservations, parseSummary } from '../../sdk/parser.js';
-import { buildObservationPrompt, buildSummaryPrompt } from '../../sdk/prompts.js';
+import { buildObservationPrompt, buildSummaryPrompt, buildInitPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { ModeManager } from '../domain/ModeManager.js';
 import type { ActiveSession } from '../worker-types.js';
 import { updateCursorContextForProject } from '../worker-service.js';
 import { getWorkerPort } from '../../shared/worker-utils.js';
 
-// Import Agent SDK (assumes it's installed)
-// @ts-ignore - Agent SDK types may not be available
-// the api says unstable but it works, it is real, it is in the v1 codebase, no need to verify, this DOES exist, see /docs/context/dont-be-an-idiot.md
+// V2 Agent SDK - session-based API
+// @ts-ignore - SDK package may not have published .d.ts for unstable_v2_* exports yet
 import {
   unstable_v2_createSession,
   unstable_v2_resumeSession,
 } from '@anthropic-ai/claude-agent-sdk';
+
+/**
+ * Helper to wrap SDK session if it lacks V2 methods (polyfills for 0.1.76+ transitional API)
+ */
+function wrapSession(session: any) {
+  if (typeof session.receive === 'function') {
+    return session;
+  }
+
+  // Polyfill for SDK versions where unstable_v2_createSession returns a hybrid object
+  // without explicit send/receive methods, but with inputStream and query iterator.
+  return {
+    async send(text: string) {
+      if (session.inputStream && typeof session.inputStream.enqueue === 'function') {
+        session.inputStream.enqueue({
+          type: 'user',
+          message: { role: 'user', content: [{ type: 'text', text }] }
+        });
+      } else {
+        throw new Error('Session missing inputStream.enqueue');
+      }
+    },
+    async *receive() {
+      // Iterate over the session's query stream (which yields all messages)
+      // Stop when we see a completed assistant message
+      if (!session.query) throw new Error('Session missing query iterator');
+      
+      for await (const msg of session.query) {
+         yield msg;
+         // In this SDK version, assistant messages are yielded complete if includePartialMessages is false (default)
+         if (msg.type === 'assistant') {
+             return; 
+         }
+      }
+    },
+    close() {
+       if (session.abortController) session.abortController.abort();
+    },
+    [Symbol.asyncDispose]: async function() {
+        this.close();
+    }
+  };
+}
 
 export class SDKAgent {
   private dbManager: DatabaseManager;
@@ -43,101 +86,169 @@ export class SDKAgent {
    */
   async startSession(session: ActiveSession, worker?: any): Promise<void> {
     try {
-      const modelId = this.getModelId();
+      await this.runSession(session, worker);
+    } catch (error: any) {
+      // Check for resume failure (process exit or specific error)
+      const isResumeFailure = session.memorySessionId && (
+        error.message?.includes('Claude Code process exited') ||
+        error.message?.includes('exit code')
+      );
 
-      // Create or resume memory agent session
-      // Memory agent has its own session separate from user's conversation
-      const memorySessionId = `mem-${session.contentSessionId}`;
+      if (isResumeFailure) {
+        logger.warn('SDK', 'Resume failed, falling back to new session', {
+            sessionId: session.sessionDbId,
+            memorySessionId: session.memorySessionId,
+            error: error.message
+        });
+        
+        // Clear stale ID to force new session creation
+        session.memorySessionId = null; 
+        
+        // Retry with new session
+        try {
+          await this.runSession(session, worker);
+        } catch (retryError: any) {
+          logger.failure('SDK', 'Agent error after retry', { sessionDbId: session.sessionDbId }, retryError);
+          throw retryError;
+        }
+      } else {
+        logger.failure('SDK', 'Agent error', { sessionDbId: session.sessionDbId }, error);
+        throw error;
+      }
+    }
+  }
 
-      // the api says unstable but it works, it is real, it is in the v1 codebase, no need to verify, this DOES exist, see /docs/context/dont-be-an-idiot.md
-      // CRITICAL: Use 'await using' for automatic resource cleanup (prevents memory leaks)
-      await using sdkSession = session.memorySessionId
-        ? unstable_v2_resumeSession(memorySessionId, { model: modelId })
-        : unstable_v2_createSession({ model: modelId });
+  /**
+   * Run the session loop (internal)
+   */
+  private async runSession(session: ActiveSession, worker?: any): Promise<void> {
+    const modelId = this.getModelId();
+    
+    // Determine if this is a fresh session start (vs resume)
+    let isNewSession = !session.memorySessionId;
 
-      // Send messages from queue
-      for await (const message of this.sessionManager.getMessageIterator(session.sessionDbId)) {
-        // Capture earliest timestamp BEFORE processing (will be cleared after)
-        // This ensures backlog messages get their original timestamps, not current time
-        const originalTimestamp = session.earliestPendingTimestamp;
+    // Create or resume memory agent session (V2 pattern from official docs)
+    // CRITICAL: Use 'await using' for automatic resource cleanup (prevents memory leaks)
+    // Wrapped to ensure compatibility with installed SDK version
+    await using rawSession = session.memorySessionId
+      ? unstable_v2_resumeSession(session.memorySessionId, { model: modelId })
+      : unstable_v2_createSession({ model: modelId });
+      
+    const sdkSession = wrapSession(rawSession);
 
-        if (message.type === 'observation') {
-          // Update last prompt number
-          if (message.prompt_number !== undefined) {
-            session.lastPromptNumber = message.prompt_number;
-          }
+    // Send messages from queue
+    while (!session.abortController.signal.aborted) {
+      const message = await this.sessionManager.waitForNextMessage(session.sessionDbId, session.abortController.signal);
+      if (!message) break;
 
-          const obsPrompt = buildObservationPrompt({
-            id: 0,
-            tool_name: message.tool_name!,
-            tool_input: JSON.stringify(message.tool_input),
-            tool_output: JSON.stringify(message.tool_response),
-            created_at_epoch: originalTimestamp ?? Date.now(),
-            cwd: message.cwd
-          });
-          await sdkSession.send(obsPrompt);
+      // UPDATE SESSION CONTEXT from queue message if available
+      // This fixes the stale prompt issue during auto-recovery
+      if (message.last_user_message) {
+        session.userPrompt = message.last_user_message;
+      }
+      if (message.prompt_number !== undefined) {
+        session.lastPromptNumber = message.prompt_number;
+      }
 
-          // Receive and process response
-          for await (const msg of sdkSession.receive()) {
-            if (msg.type === 'assistant') {
-              // V2 API provides content as array of blocks, extract text block
-              const text = msg.message.content.find((c): c is { type: 'text'; text: string } => c.type === 'text');
-              const textContent = text?.text;
-
-              // TODO: V2 SDK doesn't expose token usage in the documented patterns, hardcoding to 0 for now
-              const tokensUsed = 0;
-
-              await this.processSDKResponse(session, textContent, worker, tokensUsed, originalTimestamp);
-            }
-          }
-
-        } else if (message.type === 'summarize') {
-          // Get mode configuration
+      // INITIALIZE SESSION if needed (send system prompt/context)
+      // Must happen AFTER updating context from first message
+      if (isNewSession) {
           const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
           const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-          const mode = settings.modes[settings.active_mode];
+          const modeId = settings.CLAUDE_MEM_MODE;
+          const mode = ModeManager.getInstance().loadMode(modeId);
 
-          // Build summary prompt
-          const summaryPrompt = buildSummaryPrompt({
-            id: session.sessionDbId,
-            memory_session_id: session.memorySessionId,
-            project: session.project,
-            user_prompt: session.userPrompt,
-            last_user_message: message.last_user_message || '',
-            last_assistant_message: message.last_assistant_message || ''
-          }, mode);
-
-          await sdkSession.send(summaryPrompt);
-
-          // Receive and process response
+          const initPrompt = session.lastPromptNumber === 1
+            ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode)
+            : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode);
+            
+          await sdkSession.send(initPrompt);
+          
+          // Consume the response to initialization (likely empty or acknowledgment)
           for await (const msg of sdkSession.receive()) {
-            if (msg.type === 'assistant') {
-              // V2 API provides content as array of blocks, extract text block
-              const text = msg.message.content.find((c): c is { type: 'text'; text: string } => c.type === 'text');
-              const textContent = text?.text;
+             if (msg.type === 'assistant') {
+                 // Add to history but don't process as observation
+                 session.conversationHistory.push({ role: 'assistant', content: '' }); 
+             }
+          }
+          
+          isNewSession = false;
+      }
 
-              // TODO: V2 SDK doesn't expose token usage in the documented patterns, hardcoding to 0 for now
-              const tokensUsed = 0;
+      // Capture earliest timestamp BEFORE processing (will be cleared after)
+      // This ensures backlog messages get their original timestamps, not current time
+      const originalTimestamp = session.earliestPendingTimestamp;
 
-              await this.processSDKResponse(session, textContent, worker, tokensUsed, originalTimestamp);
-            }
+      if (message.type === 'observation') {
+        const obsPrompt = buildObservationPrompt({
+          id: 0,
+          tool_name: message.tool_name!,
+          tool_input: JSON.stringify(message.tool_input),
+          tool_output: JSON.stringify(message.tool_response),
+          created_at_epoch: originalTimestamp ?? Date.now(),
+          cwd: message.cwd
+        });
+        await sdkSession.send(obsPrompt);
+
+        // Receive and process response (official V2 pattern: filter/map/join for text extraction)
+        for await (const msg of sdkSession.receive()) {
+          if (msg.type === 'assistant') {
+            // V2 API: extract text using official pattern from docs
+            const textContent = msg.message.content
+              .filter((block: { type: string }) => block.type === 'text')
+              .map((block: { type: 'text'; text: string }) => block.text)
+              .join('');
+
+            // V2 session API does not expose token usage (only unstable_v2_prompt does)
+            const tokensUsed = 0;
+
+            await this.processSDKResponse(session, textContent, worker, tokensUsed, originalTimestamp);
+          }
+        }
+
+      } else if (message.type === 'summarize') {
+        // Get mode configuration
+        const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+        const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+        const modeId = settings.CLAUDE_MEM_MODE;
+        const mode = ModeManager.getInstance().loadMode(modeId);
+
+        // Build summary prompt
+        const summaryPrompt = buildSummaryPrompt({
+          id: session.sessionDbId,
+          memory_session_id: session.memorySessionId,
+          project: session.project,
+          user_prompt: session.userPrompt,
+          last_user_message: message.last_user_message || '',
+          last_assistant_message: message.last_assistant_message || ''
+        }, mode);
+
+        await sdkSession.send(summaryPrompt);
+
+        // Receive and process response (official V2 pattern: filter/map/join for text extraction)
+        for await (const msg of sdkSession.receive()) {
+          if (msg.type === 'assistant') {
+            // V2 API: extract text using official pattern from docs
+            const textContent = msg.message.content
+              .filter((block: { type: string }) => block.type === 'text')
+              .map((block: { type: 'text'; text: string }) => block.text)
+              .join('');
+
+            // V2 session API does not expose token usage (only unstable_v2_prompt does)
+            const tokensUsed = 0;
+
+            await this.processSDKResponse(session, textContent, worker, tokensUsed, originalTimestamp);
           }
         }
       }
-
-      // Mark session complete
-      const sessionDuration = Date.now() - session.startTime;
-      logger.success('SDK', 'SDK agent completed', {
-        sessionId: session.sessionDbId,
-        duration: `${(sessionDuration / 1000).toFixed(1)}s`,
-        inputTokens: session.cumulativeInputTokens,
-        outputTokens: session.cumulativeOutputTokens,
-        totalTokens: session.cumulativeInputTokens + session.cumulativeOutputTokens
-      });
-    } catch (error: any) {
-      logger.failure('SDK', 'Agent error', { sessionDbId: session.sessionDbId }, error);
-      throw error;
     }
+
+    // Session completed - log duration (tokens not available in V2 session API)
+    const sessionDuration = Date.now() - session.startTime;
+    logger.success('SDK', 'Session completed', {
+      sessionId: session.sessionDbId,
+      duration: `${(sessionDuration / 1000).toFixed(1)}s`
+    });
   }
 
   /**
@@ -305,35 +416,6 @@ export class SDKAgent {
     }
 
     // Mark messages as processed after successful observation/summary storage
-    await this.markMessagesProcessed(session, worker);
-  }
-
-  /**
-   * Mark all pending messages as successfully processed
-   * CRITICAL: Prevents message loss and duplicate processing
-   */
-  private async markMessagesProcessed(session: ActiveSession, worker: any | undefined): Promise<void> {
-    const pendingMessageStore = this.sessionManager.getPendingMessageStore();
-    for (const messageId of session.pendingProcessingIds) {
-      pendingMessageStore.markProcessed(messageId);
-    }
-    logger.debug('SDK', 'Messages marked as processed', {
-      sessionId: session.sessionDbId,
-      messageIds: Array.from(session.pendingProcessingIds),
-      count: session.pendingProcessingIds.size
-    });
-    session.pendingProcessingIds.clear();
-
-    // Clear timestamp for next batch (will be set fresh from next message)
-    session.earliestPendingTimestamp = null;
-
-    // Clean up old processed messages (keep last 100 for UI display)
-    const deletedCount = pendingMessageStore.cleanupProcessed(100);
-    logger.debug('SDK', 'Cleaned up old processed messages', {
-      deletedCount
-    });
-
-    // Broadcast activity status after processing (queue may have changed)
     worker?.broadcastProcessingStatus?.();
   }
 
