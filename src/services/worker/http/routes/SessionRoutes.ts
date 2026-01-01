@@ -14,6 +14,7 @@ import { DatabaseManager } from '../../DatabaseManager.js';
 import { SDKAgent } from '../../SDKAgent.js';
 import { GeminiAgent, isGeminiSelected, isGeminiAvailable } from '../../GeminiAgent.js';
 import { OpenRouterAgent, isOpenRouterSelected, isOpenRouterAvailable } from '../../OpenRouterAgent.js';
+import { OpenAICompatibleAgent, isOpenAICompatibleSelected, isOpenAICompatibleAvailable } from '../../OpenAICompatibleAgent.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { SessionEventBroadcaster } from '../../events/SessionEventBroadcaster.js';
@@ -31,6 +32,7 @@ export class SessionRoutes extends BaseRouteHandler {
     private sdkAgent: SDKAgent,
     private geminiAgent: GeminiAgent,
     private openRouterAgent: OpenRouterAgent,
+    private openAICompatibleAgent: OpenAICompatibleAgent,
     private eventBroadcaster: SessionEventBroadcaster,
     private workerService: WorkerService
   ) {
@@ -48,13 +50,21 @@ export class SessionRoutes extends BaseRouteHandler {
    * Note: Session linking via contentSessionId allows provider switching mid-session.
    * The conversationHistory on ActiveSession maintains context across providers.
    */
-  private getActiveAgent(): SDKAgent | GeminiAgent | OpenRouterAgent {
+  private getActiveAgent(): SDKAgent | GeminiAgent | OpenRouterAgent | OpenAICompatibleAgent {
     if (isOpenRouterSelected()) {
       if (isOpenRouterAvailable()) {
         logger.debug('SESSION', 'Using OpenRouter agent');
         return this.openRouterAgent;
       } else {
         throw new Error('OpenRouter provider selected but no API key configured. Set CLAUDE_MEM_OPENROUTER_API_KEY in settings or OPENROUTER_API_KEY environment variable.');
+      }
+    }
+    if (isOpenAICompatibleSelected()) {
+      if (isOpenAICompatibleAvailable()) {
+        logger.debug('SESSION', 'Using OpenAI-compatible agent');
+        return this.openAICompatibleAgent;
+      } else {
+        throw new Error('OpenAI Compatible provider selected but not configured. Set CLAUDE_MEM_OPENAI_COMPATIBLE_PROFILES and CLAUDE_MEM_OPENAI_COMPATIBLE_ACTIVE_PROFILE in settings (or set apiKey in profile / OPENAI_API_KEY env var).');
       }
     }
     if (isGeminiSelected()) {
@@ -71,9 +81,12 @@ export class SessionRoutes extends BaseRouteHandler {
   /**
    * Get the currently selected provider name
    */
-  private getSelectedProvider(): 'claude' | 'gemini' | 'openrouter' {
+  private getSelectedProvider(): 'claude' | 'gemini' | 'openrouter' | 'openai-compatible' {
     if (isOpenRouterSelected() && isOpenRouterAvailable()) {
       return 'openrouter';
+    }
+    if (isOpenAICompatibleSelected() && isOpenAICompatibleAvailable()) {
+      return 'openai-compatible';
     }
     return (isGeminiSelected() && isGeminiAvailable()) ? 'gemini' : 'claude';
   }
@@ -117,13 +130,26 @@ export class SessionRoutes extends BaseRouteHandler {
    */
   private startGeneratorWithProvider(
     session: ReturnType<typeof this.sessionManager.getSession>,
-    provider: 'claude' | 'gemini' | 'openrouter',
+    provider: 'claude' | 'gemini' | 'openrouter' | 'openai-compatible',
     source: string
   ): void {
     if (!session) return;
 
-    const agent = provider === 'openrouter' ? this.openRouterAgent : (provider === 'gemini' ? this.geminiAgent : this.sdkAgent);
-    const agentName = provider === 'openrouter' ? 'OpenRouter' : (provider === 'gemini' ? 'Gemini' : 'Claude SDK');
+    const agent = provider === 'openrouter'
+      ? this.openRouterAgent
+      : (provider === 'openai-compatible'
+        ? this.openAICompatibleAgent
+        : (provider === 'gemini'
+          ? this.geminiAgent
+          : this.sdkAgent));
+
+    const agentName = provider === 'openrouter'
+      ? 'OpenRouter'
+      : (provider === 'openai-compatible'
+        ? 'OpenAI Compatible'
+        : (provider === 'gemini'
+          ? 'Gemini'
+          : 'Claude SDK'));
 
     logger.info('SESSION', `Generator auto-starting (${source}) using ${agentName}`, {
       sessionId: session.sessionDbId,

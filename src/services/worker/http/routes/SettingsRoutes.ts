@@ -101,6 +101,9 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_OPENROUTER_APP_NAME',
       'CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES',
       'CLAUDE_MEM_OPENROUTER_MAX_TOKENS',
+      // OpenAI Compatible (Chat Completions) Configuration
+      'CLAUDE_MEM_OPENAI_COMPATIBLE_PROFILES',
+      'CLAUDE_MEM_OPENAI_COMPATIBLE_ACTIVE_PROFILE',
       // System Configuration
       'CLAUDE_MEM_DATA_DIR',
       'CLAUDE_MEM_LOG_LEVEL',
@@ -233,9 +236,9 @@ export class SettingsRoutes extends BaseRouteHandler {
   private validateSettings(settings: any): { valid: boolean; error?: string } {
     // Validate CLAUDE_MEM_PROVIDER
     if (settings.CLAUDE_MEM_PROVIDER) {
-    const validProviders = ['claude', 'gemini', 'openrouter'];
-    if (!validProviders.includes(settings.CLAUDE_MEM_PROVIDER)) {
-      return { valid: false, error: 'CLAUDE_MEM_PROVIDER must be "claude", "gemini", or "openrouter"' };
+      const validProviders = ['claude', 'gemini', 'openrouter', 'openai-compatible'];
+      if (!validProviders.includes(settings.CLAUDE_MEM_PROVIDER)) {
+        return { valid: false, error: 'CLAUDE_MEM_PROVIDER must be "claude", "gemini", "openrouter", or "openai-compatible"' };
       }
     }
 
@@ -350,6 +353,84 @@ export class SettingsRoutes extends BaseRouteHandler {
         new URL(settings.CLAUDE_MEM_OPENROUTER_SITE_URL);
       } catch {
         return { valid: false, error: 'CLAUDE_MEM_OPENROUTER_SITE_URL must be a valid URL' };
+      }
+    }
+
+    // Validate CLAUDE_MEM_OPENAI_COMPATIBLE_PROFILES (JSON array) if provided
+    let parsedOpenAICompatibleProfiles: any[] | null = null;
+    if (settings.CLAUDE_MEM_OPENAI_COMPATIBLE_PROFILES) {
+      try {
+        const parsed = JSON.parse(settings.CLAUDE_MEM_OPENAI_COMPATIBLE_PROFILES);
+        if (!Array.isArray(parsed)) {
+          return { valid: false, error: 'CLAUDE_MEM_OPENAI_COMPATIBLE_PROFILES must be a JSON array' };
+        }
+
+        const ids = new Set<string>();
+        for (const profile of parsed) {
+          if (!profile || typeof profile !== 'object') {
+            return { valid: false, error: 'Each OpenAI compatible profile must be an object' };
+          }
+
+          const { id, baseUrl, chatCompletionsPath, model, headers, maxContextTokens } = profile as any;
+
+          if (!id || typeof id !== 'string') {
+            return { valid: false, error: 'Each OpenAI compatible profile must have a string "id"' };
+          }
+          if (ids.has(id)) {
+            return { valid: false, error: `Duplicate OpenAI compatible profile id: ${id}` };
+          }
+          ids.add(id);
+
+          if (!baseUrl || typeof baseUrl !== 'string') {
+            return { valid: false, error: `OpenAI compatible profile ${id} must have a string "baseUrl"` };
+          }
+          try {
+            new URL(baseUrl);
+          } catch {
+            return { valid: false, error: `OpenAI compatible profile ${id} baseUrl must be a valid URL` };
+          }
+
+          if (!chatCompletionsPath || typeof chatCompletionsPath !== 'string' || !chatCompletionsPath.startsWith('/')) {
+            return { valid: false, error: `OpenAI compatible profile ${id} must have "chatCompletionsPath" starting with /` };
+          }
+
+          if (!model || typeof model !== 'string') {
+            return { valid: false, error: `OpenAI compatible profile ${id} must have a string "model"` };
+          }
+
+          if (maxContextTokens !== undefined) {
+            const parsedMaxContextTokens = typeof maxContextTokens === 'number'
+              ? maxContextTokens
+              : (typeof maxContextTokens === 'string' && /^\d+$/.test(maxContextTokens)
+                ? parseInt(maxContextTokens, 10)
+                : NaN);
+
+            if (!Number.isFinite(parsedMaxContextTokens) || !Number.isInteger(parsedMaxContextTokens) || parsedMaxContextTokens < 512 || parsedMaxContextTokens > 262144) {
+              return { valid: false, error: `OpenAI compatible profile ${id} maxContextTokens must be an integer between 512 and 262144` };
+            }
+          }
+
+          if (headers !== undefined && (headers === null || typeof headers !== 'object' || Array.isArray(headers))) {
+            return { valid: false, error: `OpenAI compatible profile ${id} headers must be an object` };
+          }
+        }
+
+        parsedOpenAICompatibleProfiles = parsed;
+      } catch {
+        return { valid: false, error: 'CLAUDE_MEM_OPENAI_COMPATIBLE_PROFILES must be valid JSON' };
+      }
+    }
+
+    // Validate CLAUDE_MEM_OPENAI_COMPATIBLE_ACTIVE_PROFILE if provided
+    if (settings.CLAUDE_MEM_OPENAI_COMPATIBLE_ACTIVE_PROFILE && parsedOpenAICompatibleProfiles) {
+      const active = settings.CLAUDE_MEM_OPENAI_COMPATIBLE_ACTIVE_PROFILE;
+      if (typeof active !== 'string') {
+        return { valid: false, error: 'CLAUDE_MEM_OPENAI_COMPATIBLE_ACTIVE_PROFILE must be a string' };
+      }
+
+      const exists = parsedOpenAICompatibleProfiles.some(p => p && typeof p === 'object' && (p as any).id === active);
+      if (!exists) {
+        return { valid: false, error: 'CLAUDE_MEM_OPENAI_COMPATIBLE_ACTIVE_PROFILE must match a profile id in CLAUDE_MEM_OPENAI_COMPATIBLE_PROFILES' };
       }
     }
 

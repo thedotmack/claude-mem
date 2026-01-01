@@ -414,7 +414,7 @@ export function ContextSettingsModal({
             >
               <FormField
                 label="AI Provider"
-                tooltip="Choose between Claude (via Agent SDK) or Gemini (via REST API)"
+                tooltip="Choose which provider generates observations (Claude SDK, Gemini REST, OpenRouter, or OpenAI-compatible Chat Completions)"
               >
                 <select
                   value={formState.CLAUDE_MEM_PROVIDER || 'claude'}
@@ -423,6 +423,7 @@ export function ContextSettingsModal({
                   <option value="claude">Claude (uses your Claude account)</option>
                   <option value="gemini">Gemini (uses API key)</option>
                   <option value="openrouter">OpenRouter (multi-model)</option>
+                  <option value="openai-compatible">OpenAI Compatible (Chat Completions)</option>
                 </select>
               </FormField>
 
@@ -524,6 +525,34 @@ export function ContextSettingsModal({
                       value={formState.CLAUDE_MEM_OPENROUTER_APP_NAME || 'claude-mem'}
                       onChange={(e) => updateSetting('CLAUDE_MEM_OPENROUTER_APP_NAME', e.target.value)}
                       placeholder="claude-mem"
+                    />
+                  </FormField>
+                </>
+              )}
+
+              {formState.CLAUDE_MEM_PROVIDER === 'openai-compatible' && (
+                <>
+                  <FormField
+                    label="Active Profile"
+                    tooltip="Profile id selected from CLAUDE_MEM_OPENAI_COMPATIBLE_PROFILES"
+                  >
+                    <input
+                      type="text"
+                      value={formState.CLAUDE_MEM_OPENAI_COMPATIBLE_ACTIVE_PROFILE || ''}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_OPENAI_COMPATIBLE_ACTIVE_PROFILE', e.target.value)}
+                      placeholder="e.g., my-provider"
+                    />
+                  </FormField>
+                  <FormField
+                    label="Profiles (JSON)"
+                    tooltip="JSON array of profiles: [{id, baseUrl, chatCompletionsPath, apiKey, model, headers, maxContextTokens}] (maxContextTokens optional: total model context window in tokens)"
+                  >
+                    <textarea
+                      value={formState.CLAUDE_MEM_OPENAI_COMPATIBLE_PROFILES || '[]'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_OPENAI_COMPATIBLE_PROFILES', e.target.value)}
+                      placeholder='[{"id":"my-provider","baseUrl":"https://example.com","chatCompletionsPath":"/v1/chat/completions","apiKey":"...","model":"...","maxContextTokens":8192}]'
+                      rows={8}
+                      style={{ width: '100%', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace' }}
                     />
                   </FormField>
                 </>
