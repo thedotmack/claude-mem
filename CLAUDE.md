@@ -71,7 +71,7 @@ Claude-mem is designed with a clean separation between open-source core function
 - Pro integration points are minimal: settings for license keys, tunnel provisioning logic
 - The architecture ensures Pro features extend rather than replace core functionality
 
-**Pro Features** (coming soon, external):
+**Pro Features** (separate/external):
 
 - Enhanced UI (Memory Stream) connects to the same localhost:37777 endpoints as the open viewer
 - Additional features like advanced filtering, timeline scrubbing, and search tools

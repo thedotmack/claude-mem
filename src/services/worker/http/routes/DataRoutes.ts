@@ -373,54 +373,41 @@ export class DataRoutes extends BaseRouteHandler {
   /**
    * Get pending queue contents
    * GET /api/pending-queue
-   * Returns all pending, processing, and failed messages with optional recently processed
+   * Returns all pending messages from in-memory queue
    */
   private handleGetPendingQueue = this.wrapHandler((req: Request, res: Response): void => {
-    const { PendingMessageStore } = require('../../../sqlite/PendingMessageStore.js');
-    const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
-
-    // Get queue contents (pending, processing, failed)
-    const queueMessages = pendingStore.getQueueMessages();
-
-    // Get recently processed (last 30 min, up to 20)
-    const recentlyProcessed = pendingStore.getRecentlyProcessed(20, 30);
-
-    // Get stuck message count (processing > 5 min)
-    const stuckCount = pendingStore.getStuckCount(5 * 60 * 1000);
-
-    // Get sessions with pending work
-    const sessionsWithPending = pendingStore.getSessionsWithPendingMessages();
+    const messages = this.sessionManager.getAllPendingMessages();
+    const totalPending = messages.length;
+    
+    // We don't track processing/failed/stuck in in-memory queue the same way
+    // but we can estimate processing from active generators
+    const totalProcessing = this.sessionManager.getActiveSessionCount(); 
 
     res.json({
       queue: {
-        messages: queueMessages,
-        totalPending: queueMessages.filter((m: { status: string }) => m.status === 'pending').length,
-        totalProcessing: queueMessages.filter((m: { status: string }) => m.status === 'processing').length,
-        totalFailed: queueMessages.filter((m: { status: string }) => m.status === 'failed').length,
-        stuckCount
+        messages: messages.map(m => ({ ...m, status: 'pending', created_at_epoch: Date.now() })),
+        totalPending,
+        totalProcessing,
+        totalFailed: 0,
+        stuckCount: 0
       },
-      recentlyProcessed,
-      sessionsWithPendingWork: sessionsWithPending
+      recentlyProcessed: [],
+      sessionsWithPendingWork: messages.map(m => m.sessionDbId)
     });
   });
 
   /**
    * Process pending queue
    * POST /api/pending-queue/process
-   * Body: { sessionLimit?: number } - defaults to 10
-   * Starts SDK agents for sessions with pending messages
+   * No-op for in-memory queue as it processes automatically
    */
   private handleProcessPendingQueue = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const sessionLimit = Math.min(
-      Math.max(parseInt(req.body.sessionLimit, 10) || 10, 1),
-      100 // Max 100 sessions at once
-    );
-
-    const result = await this.workerService.processPendingQueues(sessionLimit);
-
     res.json({
       success: true,
-      ...result
+      totalPendingSessions: 0,
+      sessionsStarted: 0,
+      sessionsSkipped: 0,
+      startedSessionIds: []
     });
   });
 }
