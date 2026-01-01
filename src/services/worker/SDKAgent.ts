@@ -66,29 +66,33 @@ export class SDKAgent {
       // Create message generator (event-driven)
       const messageGenerator = this.createMessageGenerator(session);
 
-      // CRITICAL: Only resume if memorySessionId is a REAL captured SDK session ID,
-      // not the placeholder (which equals contentSessionId). The placeholder is set
-      // for FK purposes but would cause the bug where we try to resume the USER's session!
-      const hasRealMemorySessionId = session.memorySessionId &&
-        session.memorySessionId !== session.contentSessionId;
+      // Generate deterministic memory session ID if not already set
+      // This ensures we always resume the same session, preventing orphaned .jsonl files (Issue #514)
+      // If memorySessionId equals contentSessionId (placeholder), generate a new deterministic one
+      const memorySessionId = (session.memorySessionId && session.memorySessionId !== session.contentSessionId)
+        ? session.memorySessionId
+        : `mem-${session.contentSessionId}`;
+
+      // Persist immediately if we just generated it
+      if (!session.memorySessionId || session.memorySessionId === session.contentSessionId) {
+        session.memorySessionId = memorySessionId;
+        this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, memorySessionId);
+      }
 
       logger.info('SDK', 'Starting SDK query', {
         sessionDbId: session.sessionDbId,
         contentSessionId: session.contentSessionId,
-        memorySessionId: session.memorySessionId,
-        hasRealMemorySessionId,
-        resume_parameter: hasRealMemorySessionId ? session.memorySessionId : '(none - fresh start)',
+        memorySessionId: memorySessionId,
+        resume_parameter: memorySessionId,
         lastPromptNumber: session.lastPromptNumber
       });
 
-      // Run Agent SDK query loop
-      // Only resume if we have a REAL captured memory session ID (not the placeholder)
+      // Run Agent SDK query loop - always pass resume to prevent orphaned sessions
       const queryResult = query({
         prompt: messageGenerator,
         options: {
           model: modelId,
-          // Only resume if memorySessionId differs from contentSessionId (meaning it was captured)
-          ...(hasRealMemorySessionId && { resume: session.memorySessionId }),
+          resume: memorySessionId,  // Always pass - prevents orphaned sessions (Issue #514)
           disallowedTools,
           abortController: session.abortController,
           pathToClaudeCodeExecutable: claudePath
@@ -97,19 +101,20 @@ export class SDKAgent {
 
       // Process SDK messages
       for await (const message of queryResult) {
-        // Capture memory session ID from first SDK message (any type has session_id)
-        // This enables resume for subsequent generator starts within the same user session
-        if (!session.memorySessionId && message.session_id) {
+        // Check if SDK returned a different session ID than what we requested
+        // This would indicate our deterministic ID wasn't accepted (Issue #514)
+        if (message.session_id && message.session_id !== session.memorySessionId) {
+          logger.warn('SDK', 'SDK returned different session ID than requested', {
+            sessionDbId: session.sessionDbId,
+            requested: session.memorySessionId,
+            received: message.session_id
+          });
+          // Update to use SDK's session ID for future calls
           session.memorySessionId = message.session_id;
-          // Persist to database for cross-restart recovery
           this.dbManager.getSessionStore().updateMemorySessionId(
             session.sessionDbId,
             message.session_id
           );
-          logger.info('SDK', 'Captured memory session ID', {
-            sessionDbId: session.sessionDbId,
-            memorySessionId: message.session_id
-          });
         }
 
         // Handle assistant messages
