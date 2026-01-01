@@ -66,57 +66,18 @@ export class SDKAgent {
       // Create message generator (event-driven)
       const messageGenerator = this.createMessageGenerator(session);
 
-      // Generate deterministic memory session ID if not already set
-      // This ensures we always resume the same session, preventing orphaned .jsonl files (Issue #514)
-      // If memorySessionId equals contentSessionId (placeholder), generate a new deterministic one
-      const memorySessionId = (session.memorySessionId && session.memorySessionId !== session.contentSessionId)
-        ? session.memorySessionId
-        : `mem-${session.contentSessionId}`;
-
-      // Persist immediately if we just generated it
-      if (!session.memorySessionId || session.memorySessionId === session.contentSessionId) {
-        session.memorySessionId = memorySessionId;
-        this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, memorySessionId);
-      }
-
-      logger.info('SDK', 'Starting SDK query', {
-        sessionDbId: session.sessionDbId,
-        contentSessionId: session.contentSessionId,
-        memorySessionId: memorySessionId,
-        resume_parameter: memorySessionId,
-        lastPromptNumber: session.lastPromptNumber
-      });
-
-      // Run Agent SDK query loop - always pass resume to prevent orphaned sessions
       const queryResult = query({
         prompt: messageGenerator,
         options: {
           model: modelId,
-          resume: memorySessionId,  // Always pass - prevents orphaned sessions (Issue #514)
+          resume: session.contentSessionId,
           disallowedTools,
           abortController: session.abortController,
           pathToClaudeCodeExecutable: claudePath
         }
       });
 
-      // Process SDK messages
       for await (const message of queryResult) {
-        // Check if SDK returned a different session ID than what we requested
-        // This would indicate our deterministic ID wasn't accepted (Issue #514)
-        if (message.session_id && message.session_id !== session.memorySessionId) {
-          logger.warn('SDK', 'SDK returned different session ID than requested', {
-            sessionDbId: session.sessionDbId,
-            requested: session.memorySessionId,
-            received: message.session_id
-          });
-          // Update to use SDK's session ID for future calls
-          session.memorySessionId = message.session_id;
-          this.dbManager.getSessionStore().updateMemorySessionId(
-            session.sessionDbId,
-            message.session_id
-          );
-        }
-
         // Handle assistant messages
         if (message.type === 'assistant') {
           const content = message.message.content;
