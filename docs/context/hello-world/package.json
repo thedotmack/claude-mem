@@ -1,0 +1,11 @@
+{
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.1.14",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/node": "^24.7.2",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}

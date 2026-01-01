@@ -21,27 +21,26 @@ import type { ActiveSession } from '../worker-types.js';
 import { updateCursorContextForProject } from '../worker-service.js';
 import { getWorkerPort } from '../../shared/worker-utils.js';
 
-// V2 Agent SDK - session-based API
-// @ts-ignore - SDK package may not have published .d.ts for unstable_v2_* exports yet
-import {
-  unstable_v2_createSession,
-  unstable_v2_resumeSession,
-} from '@anthropic-ai/claude-agent-sdk';
+// V1 Agent SDK - query-based API
+// @ts-ignore - SDK package typing issues
+import { query } from '@anthropic-ai/claude-agent-sdk';
 
 /**
- * Helper to wrap SDK session if it lacks V2 methods (polyfills for 0.1.76+ transitional API)
+ * Helper to wrap SDK query if it lacks V2 session methods
  */
-function wrapSession(session: any) {
-  if (typeof session.receive === 'function') {
-    return session;
+function wrapQuery(q: any) {
+  // If we already have a wrapper, just return it
+  if (typeof q.receive === 'function') {
+    return q;
   }
 
-  // Polyfill for SDK versions where unstable_v2_createSession returns a hybrid object
-  // without explicit send/receive methods, but with inputStream and query iterator.
+  // Create the iterator ONCE and reuse it
+  const iterator = q[Symbol.asyncIterator]();
+
   return {
     async send(text: string) {
-      if (session.inputStream && typeof session.inputStream.enqueue === 'function') {
-        session.inputStream.enqueue({
+      if (q.inputStream && typeof q.inputStream.enqueue === 'function') {
+        q.inputStream.enqueue({
           type: 'user',
           message: { role: 'user', content: [{ type: 'text', text }] }
         });
@@ -50,20 +49,23 @@ function wrapSession(session: any) {
       }
     },
     async *receive() {
-      // Iterate over the session's query stream (which yields all messages)
+      // Iterate over the query stream using the shared iterator
       // Stop when we see a completed assistant message
-      if (!session.query) throw new Error('Session missing query iterator');
-      
-      for await (const msg of session.query) {
-         yield msg;
-         // In this SDK version, assistant messages are yielded complete if includePartialMessages is false (default)
-         if (msg.type === 'assistant') {
-             return; 
-         }
+      while (true) {
+        const { value: msg, done } = await iterator.next();
+        if (done) break;
+        
+        yield msg;
+        // In V1 query, we treat assistant messages as turn boundaries if needed,
+        // but for continuous stream we might need to handle carefully.
+        // For now, we mimic the V2 session behavior of yielding until assistant message completes.
+        if (msg.type === 'assistant') {
+            return; 
+        }
       }
     },
     close() {
-       if (session.abortController) session.abortController.abort();
+       if (q.abortController) q.abortController.abort();
     },
     [Symbol.asyncDispose]: async function() {
         this.close();
@@ -127,14 +129,7 @@ export class SDKAgent {
     // Determine if this is a fresh session start (vs resume)
     let isNewSession = !session.memorySessionId;
 
-    // Create or resume memory agent session (V2 pattern from official docs)
-    // CRITICAL: Use 'await using' for automatic resource cleanup (prevents memory leaks)
-    // Wrapped to ensure compatibility with installed SDK version
-    await using rawSession = session.memorySessionId
-      ? unstable_v2_resumeSession(session.memorySessionId, { model: modelId })
-      : unstable_v2_createSession({ model: modelId });
-      
-    const sdkSession = wrapSession(rawSession);
+    let sdkSession: any = null;
 
     // Send messages from queue
     while (!session.abortController.signal.aborted) {
@@ -150,24 +145,49 @@ export class SDKAgent {
         session.lastPromptNumber = message.prompt_number;
       }
 
-      // INITIALIZE SESSION if needed (send system prompt/context)
-      // Must happen AFTER updating context from first message
-      if (isNewSession) {
+      // INITIALIZE SESSION if needed
+      // If sdkSession is null, we need to start the query
+      if (!sdkSession) {
           const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
           const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
           const modeId = settings.CLAUDE_MEM_MODE;
           const mode = ModeManager.getInstance().loadMode(modeId);
 
-          const initPrompt = session.lastPromptNumber === 1
+          // Build start prompt (either fresh init or continuation)
+          // Since we use V1 query, we always start a "new" process with context.
+          const startPrompt = (session.lastPromptNumber === 1 || isNewSession)
             ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode)
             : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode);
             
-          await sdkSession.send(initPrompt);
+          logger.debug('SDK', 'Starting query session', { 
+             sessionDbId: session.sessionDbId,
+             isNewSession, 
+             startPromptLength: startPrompt.length 
+          });
+
+          // Create V1 Query
+          const q = query({
+              prompt: startPrompt,
+              options: {
+                  model: modelId,
+                  maxTurns: 1000, // Ensure multi-turn
+                  cwd: process.cwd(), // Important for agent tools
+              }
+          });
           
-          // Consume the response to initialization (likely empty or acknowledgment)
+          // Force multi-turn if property is accessible
+          // @ts-ignore
+          q.isSingleUserTurn = false;
+
+          sdkSession = wrapQuery(q);
+
+          // Consume initial response (ACK)
           for await (const msg of sdkSession.receive()) {
+             if (msg.type === 'system' && msg.session_id) {
+                 session.memorySessionId = msg.session_id;
+                 this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, msg.session_id);
+             }
              if (msg.type === 'assistant') {
-                 // Add to history but don't process as observation
                  session.conversationHistory.push({ role: 'assistant', content: '' }); 
              }
           }
@@ -192,6 +212,10 @@ export class SDKAgent {
 
         // Receive and process response (official V2 pattern: filter/map/join for text extraction)
         for await (const msg of sdkSession.receive()) {
+          if (msg.type === 'system' && msg.session_id && !session.memorySessionId) {
+             session.memorySessionId = msg.session_id;
+             this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, msg.session_id);
+          }
           if (msg.type === 'assistant') {
             // V2 API: extract text using official pattern from docs
             const textContent = msg.message.content
@@ -227,6 +251,10 @@ export class SDKAgent {
 
         // Receive and process response (official V2 pattern: filter/map/join for text extraction)
         for await (const msg of sdkSession.receive()) {
+          if (msg.type === 'system' && msg.session_id && !session.memorySessionId) {
+             session.memorySessionId = msg.session_id;
+             this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, msg.session_id);
+          }
           if (msg.type === 'assistant') {
             // V2 API: extract text using official pattern from docs
             const textContent = msg.message.content
@@ -241,6 +269,11 @@ export class SDKAgent {
           }
         }
       }
+    }
+
+    // Close session
+    if (sdkSession) {
+        sdkSession.close();
     }
 
     // Session completed - log duration (tokens not available in V2 session API)

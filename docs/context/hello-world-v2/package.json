@@ -1,0 +1,15 @@
+{
+  "name": "hello-world-v2",
+  "type": "module",
+  "scripts": {
+    "example": "npx tsx v2-examples.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.1.59"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}
