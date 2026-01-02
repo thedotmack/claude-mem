@@ -15,9 +15,10 @@ interface AntiPattern {
   file: string;
   line: number;
   pattern: string;
-  severity: 'CRITICAL' | 'HIGH' | 'MEDIUM';
+  severity: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'APPROVED_OVERRIDE';
   description: string;
   code: string;
+  overrideReason?: string;
 }
 
 const CRITICAL_PATHS = [
@@ -67,6 +68,50 @@ function detectAntiPatterns(filePath: string, projectRoot: string): AntiPattern[
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     const trimmed = line.trim();
+
+    // Detect standalone promise empty catch: .catch(() => {})
+    const emptyPromiseCatch = trimmed.match(/\.catch\s*\(\s*\(\s*\)\s*=>\s*\{\s*\}\s*\)/);
+    if (emptyPromiseCatch) {
+      antiPatterns.push({
+        file: relPath,
+        line: i + 1,
+        pattern: 'PROMISE_EMPTY_CATCH',
+        severity: 'CRITICAL',
+        description: 'Promise .catch() with empty handler - errors disappear into the void.',
+        code: trimmed
+      });
+    }
+
+    // Detect standalone promise catch without logging: .catch(err => ...)
+    const promiseCatchMatch = trimmed.match(/\.catch\s*\(\s*(?:\(\s*)?(\w+)(?:\s*\))?\s*=>/);
+    if (promiseCatchMatch && !emptyPromiseCatch) {
+      // Look ahead up to 10 lines to see if there's logging in the handler body
+      let catchBody = trimmed.substring(promiseCatchMatch.index || 0);
+      let braceCount = (catchBody.match(/{/g) || []).length - (catchBody.match(/}/g) || []).length;
+
+      // Collect subsequent lines if the handler spans multiple lines
+      let lookAhead = 0;
+      while (braceCount > 0 && lookAhead < 10 && i + lookAhead + 1 < lines.length) {
+        lookAhead++;
+        const nextLine = lines[i + lookAhead];
+        catchBody += '\n' + nextLine;
+        braceCount += (nextLine.match(/{/g) || []).length - (nextLine.match(/}/g) || []).length;
+      }
+
+      const hasLogging = catchBody.match(/logger\.(error|warn|debug|info)/) ||
+                        catchBody.match(/console\.(error|warn)/);
+
+      if (!hasLogging && lookAhead > 0) {  // Only flag if it's actually a multi-line handler
+        antiPatterns.push({
+          file: relPath,
+          line: i + 1,
+          pattern: 'PROMISE_CATCH_NO_LOGGING',
+          severity: 'CRITICAL',
+          description: 'Promise .catch() without logging - errors are silently swallowed.',
+          code: catchBody.trim().split('\n').slice(0, 5).join('\n')
+        });
+      }
+    }
 
     // Detect try block start
     if (trimmed.match(/^\s*try\s*{/) || trimmed.match(/}\s*try\s*{/)) {
@@ -171,20 +216,37 @@ function analyzeTryCatchBlock(
     });
   }
 
-  // CRITICAL: No logging in catch block
+  // Check for [APPROVED OVERRIDE] marker
+  const overrideMatch = catchContent.match(/\/\/\s*\[APPROVED OVERRIDE\]:\s*(.+)/i);
+  const overrideReason = overrideMatch?.[1]?.trim();
+
+  // CRITICAL: No logging in catch block (unless explicitly approved)
   const hasLogging = catchContent.match(/logger\.(error|warn|debug|info)/);
   const hasConsoleError = catchContent.match(/console\.(error|warn)/);
+  const hasStderr = catchContent.match(/process\.stderr\.write/);
   const hasThrow = catchContent.match(/throw/);
 
-  if (!hasLogging && !hasConsoleError && !hasThrow && nonCommentContent) {
-    antiPatterns.push({
-      file: relPath,
-      line: catchStartLine,
-      pattern: 'NO_LOGGING_IN_CATCH',
-      severity: 'CRITICAL',
-      description: 'Catch block has no logging - errors occur invisibly.',
-      code: catchBlock.trim()
-    });
+  if (!hasLogging && !hasConsoleError && !hasStderr && !hasThrow && nonCommentContent) {
+    if (overrideReason) {
+      antiPatterns.push({
+        file: relPath,
+        line: catchStartLine,
+        pattern: 'NO_LOGGING_IN_CATCH',
+        severity: 'APPROVED_OVERRIDE',
+        description: 'Catch block has no logging - approved override.',
+        code: catchBlock.trim(),
+        overrideReason
+      });
+    } else {
+      antiPatterns.push({
+        file: relPath,
+        line: catchStartLine,
+        pattern: 'NO_LOGGING_IN_CATCH',
+        severity: 'CRITICAL',
+        description: 'Catch block has no logging - errors occur invisibly.',
+        code: catchBlock.trim()
+      });
+    }
   }
 
   // HIGH: Large try block (>10 lines)
@@ -227,47 +289,53 @@ function analyzeTryCatchBlock(
     const continuesExecution = !hasReturn; // If no return/throw, execution continues
 
     if (continuesExecution && hasLogging) {
-      antiPatterns.push({
-        file: relPath,
-        line: catchStartLine,
-        pattern: 'CATCH_AND_CONTINUE_CRITICAL_PATH',
-        severity: 'CRITICAL',
-        description: 'Critical path continues after error - may cause silent data corruption.',
-        code: catchBlock.trim()
-      });
+      if (overrideReason) {
+        antiPatterns.push({
+          file: relPath,
+          line: catchStartLine,
+          pattern: 'CATCH_AND_CONTINUE_CRITICAL_PATH',
+          severity: 'APPROVED_OVERRIDE',
+          description: 'Critical path continues after error - approved override.',
+          code: catchBlock.trim(),
+          overrideReason
+        });
+      } else {
+        antiPatterns.push({
+          file: relPath,
+          line: catchStartLine,
+          pattern: 'CATCH_AND_CONTINUE_CRITICAL_PATH',
+          severity: 'CRITICAL',
+          description: 'Critical path continues after error - may cause silent data corruption.',
+          code: catchBlock.trim()
+        });
+      }
     }
   }
 
-  // CRITICAL: Promise.catch with empty handler
-  if (catchBlock.match(/\.catch\s*\(\s*\)/)) {
-    antiPatterns.push({
-      file: relPath,
-      line: catchStartLine,
-      pattern: 'PROMISE_EMPTY_CATCH',
-      severity: 'CRITICAL',
-      description: 'Promise .catch() with no handler - errors disappear into the void.',
-      code: catchBlock.trim()
-    });
-  }
 }
 
 function formatReport(antiPatterns: AntiPattern[]): string {
-  if (antiPatterns.length === 0) {
-    return '✅ No error handling anti-patterns detected!\n';
-  }
-
   const critical = antiPatterns.filter(a => a.severity === 'CRITICAL');
   const high = antiPatterns.filter(a => a.severity === 'HIGH');
   const medium = antiPatterns.filter(a => a.severity === 'MEDIUM');
+  const approved = antiPatterns.filter(a => a.severity === 'APPROVED_OVERRIDE');
+
+  if (antiPatterns.length === 0) {
+    return '✅ No error handling anti-patterns detected!\n';
+  }
 
   let report = '\n';
   report += '═══════════════════════════════════════════════════════════════\n';
   report += '  ERROR HANDLING ANTI-PATTERNS DETECTED\n';
   report += '═══════════════════════════════════════════════════════════════\n\n';
-  report += `Found ${antiPatterns.length} anti-patterns:\n`;
+  report += `Found ${critical.length + high.length + medium.length} anti-patterns:\n`;
   report += `  🔴 CRITICAL: ${critical.length}\n`;
   report += `  🟠 HIGH: ${high.length}\n`;
-  report += `  🟡 MEDIUM: ${medium.length}\n\n`;
+  report += `  🟡 MEDIUM: ${medium.length}\n`;
+  if (approved.length > 0) {
+    report += `  ⚪ APPROVED OVERRIDES: ${approved.length}\n`;
+  }
+  report += '\n';
 
   if (critical.length > 0) {
     report += '🔴 CRITICAL ISSUES (Fix immediately - these cause silent failures):\n';
@@ -306,6 +374,24 @@ function formatReport(antiPatterns: AntiPattern[]): string {
     }
   }
 
+  if (approved.length > 0) {
+    report += '⚪ APPROVED OVERRIDES (Review reasons for accuracy):\n';
+    report += '─────────────────────────────────────────────────────────────\n\n';
+    for (const ap of approved) {
+      report += `📁 ${ap.file}:${ap.line} - ${ap.pattern}\n`;
+      report += `   Reason: ${ap.overrideReason}\n`;
+      report += `   Code:\n`;
+      const codeLines = ap.code.split('\n');
+      for (const line of codeLines.slice(0, 3)) {
+        report += `   ${line}\n`;
+      }
+      if (codeLines.length > 3) {
+        report += `   ... (${codeLines.length - 3} more lines)\n`;
+      }
+      report += '\n';
+    }
+  }
+
   report += '═══════════════════════════════════════════════════════════════\n';
   report += 'REMINDER: Every try-catch must answer these questions:\n';
   report += '1. What SPECIFIC error am I catching? (Name it)\n';
@@ -313,6 +399,8 @@ function formatReport(antiPatterns: AntiPattern[]): string {
   report += '3. Why can\'t this error be prevented?\n';
   report += '4. What will the catch block DO? (Log + rethrow? Fallback?)\n';
   report += '5. Why shouldn\'t this error propagate to the caller?\n';
+  report += '\n';
+  report += 'To approve an anti-pattern, add: // [APPROVED OVERRIDE]: reason\n';
   report += '═══════════════════════════════════════════════════════════════\n\n';
 
   return report;

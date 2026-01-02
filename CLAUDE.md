@@ -85,7 +85,33 @@ try {
 // ✅ GOOD: Fire-and-forget with logging
 backgroundTask()
   .catch(error => logger.warn('BACKGROUND', 'Task failed', {}, error));
+
+// ✅ GOOD: Approved override for justified exceptions
+try {
+  JSON.parse(optionalField);
+} catch (error) {
+  // [APPROVED OVERRIDE]: Expected JSON parse failures for optional fields, too frequent to log
+  return [];
+}
 ```
+
+### Approved Overrides
+
+When you have a **justified reason** to violate the error handling rules (e.g., performance-critical hot paths, expected frequent failures), you can use an approved override:
+
+```typescript
+// [APPROVED OVERRIDE]: Brief explanation of why this is necessary
+```
+
+**Rules for approved overrides:**
+- Must have a **specific, technical reason** (not "seemed fine" or "works for me")
+- Reason must explain **why the violation is necessary**, not just what it does
+- Examples of valid reasons:
+  - "Expected JSON parse failures for optional fields, too frequent to log"
+  - "Logger can't log its own failures, using stderr as last resort"
+  - "Health check port scan, expected connection failures"
+- The detector will flag these as **APPROVED_OVERRIDE** (warning level) for review
+- Invalid or outdated reasons should be challenged during code review
 
 ## The Meta-Rule
 
