@@ -52,8 +52,7 @@ export class PaginationHelper {
       // Return as JSON string
       return JSON.stringify(strippedPaths);
     } catch (err) {
-      // Expected: file paths may not be valid JSON (plain string)
-      // Not logging - normal fallback for non-JSON file path strings
+      logger.debug('WORKER', 'File paths is plain string, using as-is', {}, err as Error);
       return filePathsStr;
     }
   }

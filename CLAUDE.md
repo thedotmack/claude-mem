@@ -86,32 +86,32 @@ try {
 backgroundTask()
   .catch(error => logger.warn('BACKGROUND', 'Task failed', {}, error));
 
-// ✅ GOOD: Approved override for justified exceptions
+// ✅ GOOD: Ignored anti-pattern for genuine hot paths only
 try {
-  JSON.parse(optionalField);
+  checkIfProcessAlive(pid);
 } catch (error) {
-  // [APPROVED OVERRIDE]: Expected JSON parse failures for optional fields, too frequent to log
-  return [];
+  // [ANTI-PATTERN IGNORED]: Tight loop checking 100s of PIDs during cleanup
+  return false;
 }
 ```
 
-### Approved Overrides
+### Ignoring Anti-Patterns (Rare)
 
-When you have a **justified reason** to violate the error handling rules (e.g., performance-critical hot paths, expected frequent failures), you can use an approved override:
+**Only for genuine hot paths** where logging would cause performance problems:
 
 ```typescript
-// [APPROVED OVERRIDE]: Brief explanation of why this is necessary
+// [ANTI-PATTERN IGNORED]: Reason why logging is impossible
 ```
 
-**Rules for approved overrides:**
-- Must have a **specific, technical reason** (not "seemed fine" or "works for me")
-- Reason must explain **why the violation is necessary**, not just what it does
-- Examples of valid reasons:
-  - "Expected JSON parse failures for optional fields, too frequent to log"
-  - "Logger can't log its own failures, using stderr as last resort"
-  - "Health check port scan, expected connection failures"
-- The detector will flag these as **APPROVED_OVERRIDE** (warning level) for review
-- Invalid or outdated reasons should be challenged during code review
+**Rules:**
+- **Hot paths only** - code in tight loops called 1000s of times
+- If you can add logging, ADD LOGGING - don't ignore
+- Valid examples:
+  - "Tight loop checking process exit status during cleanup"
+  - "Health check polling every 100ms"
+- Invalid examples:
+  - "Expected JSON parse failures" ← Just add logger.debug
+  - "Common fallback path" ← Just add logger.debug
 
 ## The Meta-Rule
 

@@ -6,6 +6,7 @@
  */
 
 import path from 'path';
+import { logger } from '../utils/logger.js';
 
 /**
  * Parse JSON array string, returning empty array on failure
@@ -16,7 +17,9 @@ export function parseJsonArray(json: string | null): string[] {
     const parsed = JSON.parse(json);
     return Array.isArray(parsed) ? parsed : [];
   } catch (err) {
-    // [APPROVED OVERRIDE]: Expected JSON parse failures for malformed data fields, too frequent to log
+    logger.debug('PARSER', 'Failed to parse JSON array, using empty fallback', {
+      preview: json?.substring(0, 50)
+    }, err as Error);
     return [];
   }
 }

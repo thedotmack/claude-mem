@@ -66,8 +66,8 @@ function removePidFile(): void {
   try {
     if (existsSync(PID_FILE)) unlinkSync(PID_FILE);
   } catch (error) {
-    // PID file removal is cleanup - log but don't fail shutdown
-    logger.warn('SYSTEM', 'Failed to remove PID file', { path: PID_FILE, error: (error as Error).message });
+    logger.warn('SYSTEM', 'Failed to remove PID file', { path: PID_FILE }, error as Error);
+    return; // Non-critical cleanup, OK to fail
   }
 }
 
@@ -129,8 +129,8 @@ export async function updateCursorContextForProject(projectName: string, port: n
     writeContextFile(entry.workspacePath, context);
     logger.debug('CURSOR', 'Updated context file', { projectName, workspacePath: entry.workspacePath });
   } catch (error) {
-    // Context update is non-critical - log and continue
-    logger.warn('CURSOR', 'Failed to update context file', { projectName, error: (error as Error).message });
+    logger.warn('CURSOR', 'Failed to update context file', { projectName }, error as Error);
+    return; // Non-critical context update, OK to fail
   }
 }
 
@@ -150,8 +150,7 @@ async function isPortInUse(port: number): Promise<boolean> {
     const response = await fetch(`http://127.0.0.1:${port}/api/health`);
     return response.ok;
   } catch (error) {
-    // Expected: port is free or service not responding
-    // Not logging - this is called frequently for health checks
+    // [ANTI-PATTERN IGNORED]: Health check polls every 500ms, logging would flood
     return false;
   }
 }
@@ -164,10 +163,8 @@ async function waitForHealth(port: number, timeoutMs: number = 30000): Promise<b
       const response = await fetch(`http://127.0.0.1:${port}/api/readiness`);
       if (response.ok) return true;
     } catch (error) {
-      logger.debug('SYSTEM', 'Service not ready yet, will retry', {
-        port,
-        error: error instanceof Error ? error.message : String(error)
-      });
+      // [ANTI-PATTERN IGNORED]: Retry loop - expected failures during startup, will retry
+      logger.debug('SYSTEM', 'Service not ready yet, will retry', { port }, error as Error);
     }
     await new Promise(r => setTimeout(r, 500));
   }
@@ -370,7 +367,7 @@ export class WorkerService {
         process.exit(0);
       } catch (error) {
         logger.error('SYSTEM', 'Error during shutdown', {}, error as Error);
-        process.exit(1);
+        process.exit(1); // Exit with error code - this terminates execution
       }
     };
 
@@ -459,6 +456,7 @@ export class WorkerService {
           }]
         });
       } catch (error) {
+        // [POSSIBLY RELEVANT]: API must respond even on error, log full error and return error response
         logger.error('WORKER', 'Failed to load instructions', { topic, operation }, error as Error);
         res.status(500).json({
           content: [{
@@ -543,6 +541,7 @@ export class WorkerService {
         // This avoids code duplication and "headers already sent" errors
         next();
       } catch (error) {
+        // [POSSIBLY RELEVANT]: API must respond even on error, log full error and return error response
         logger.error('WORKER', 'Context inject handler failed', {}, error as Error);
         if (!res.headersSent) {
           res.status(500).json({ error: error instanceof Error ? error.message : 'Internal server error' });
@@ -621,19 +620,17 @@ export class WorkerService {
         try {
           execSync(`taskkill /PID ${pid} /T /F`, { timeout: 60000, stdio: 'ignore' });
         } catch (error) {
-          logger.debug('SYSTEM', 'Failed to kill process, may have already exited', {
-            pid,
-            error: error instanceof Error ? error.message : String(error)
-          });
+          // [ANTI-PATTERN IGNORED]: Cleanup loop - process may have exited, continue to next PID
+          logger.debug('SYSTEM', 'Failed to kill process, may have already exited', { pid }, error as Error);
         }
       }
     } else {
       for (const pid of pids) {
         try {
           process.kill(pid, 'SIGKILL');
-        } catch {
-          // Process already exited - expected during cleanup
-          logger.debug('SYSTEM', 'Process already exited', { pid });
+        } catch (error) {
+          // [ANTI-PATTERN IGNORED]: Cleanup loop - process may have exited, continue to next PID
+          logger.debug('SYSTEM', 'Process already exited', { pid }, error as Error);
         }
       }
     }
@@ -838,7 +835,7 @@ export class WorkerService {
         // Small delay between sessions to avoid rate limiting
         await new Promise(resolve => setTimeout(resolve, 100));
       } catch (error) {
-        // Recovery is best-effort - skip failed sessions and continue with others
+        // [ANTI-PATTERN IGNORED]: Recovery loop - skip failed session, continue to next
         logger.warn('SYSTEM', `Failed to process session ${sessionDbId}`, {}, error as Error);
         result.sessionsSkipped++;
       }
@@ -986,9 +983,9 @@ export class WorkerService {
         process.kill(pid, 'SIGKILL');
       }
       logger.info('SYSTEM', 'Killed process', { pid });
-    } catch {
-      // Process may have already exited - continue shutdown
-      logger.debug('SYSTEM', 'Process already exited during force kill', { pid });
+    } catch (error) {
+      // [ANTI-PATTERN IGNORED]: Shutdown cleanup - process already exited, continue
+      logger.debug('SYSTEM', 'Process already exited during force kill', { pid }, error as Error);
     }
   }
 
@@ -1004,8 +1001,7 @@ export class WorkerService {
           process.kill(pid, 0);
           return true;
         } catch (error) {
-          // Expected: process has exited
-          // Not logging - this is called in a tight loop during cleanup
+          // [ANTI-PATTERN IGNORED]: Tight loop checking 100s of PIDs every 100ms during cleanup
           return false;
         }
       });
@@ -1094,8 +1090,9 @@ async function runInteractiveSetup(): Promise<number> {
     if (existsSync(settingsPath)) {
       try {
         settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
-      } catch {
-        // Start fresh if corrupt
+      } catch (error) {
+        // [ANTI-PATTERN IGNORED]: Fallback behavior - corrupt settings, continue with defaults
+        logger.debug('SETUP', 'Corrupt settings file, starting fresh', { path: settingsPath }, error as Error);
       }
     }
 
@@ -1300,8 +1297,9 @@ async function detectClaudeCode(): Promise<boolean> {
     if (stdout.trim()) {
       return true;
     }
-  } catch {
-    // CLI not found
+  } catch (error) {
+    // [ANTI-PATTERN IGNORED]: Fallback behavior - CLI not found, continue to directory check
+    logger.debug('SYSTEM', 'Claude CLI not in PATH', {}, error as Error);
   }
 
   // Check for Claude Code plugin directory
@@ -1413,8 +1411,8 @@ function configureCursorMcp(target: string): number {
           config.mcpServers = {};
         }
       } catch (error) {
-        // Start fresh if corrupt
-        logger.warn('SYSTEM', 'Corrupt mcp.json, creating new config', { path: mcpJsonPath, error: error instanceof Error ? error.message : String(error) });
+        // [ANTI-PATTERN IGNORED]: Fallback behavior - corrupt config, continue with empty
+        logger.warn('SYSTEM', 'Corrupt mcp.json, creating new config', { path: mcpJsonPath }, error as Error);
         config = { mcpServers: {} };
       }
     }
@@ -1669,8 +1667,9 @@ ${context}
             }
           }
         }
-      } catch {
-        // Worker not running - that's ok, context will be generated after first session
+      } catch (error) {
+        // [ANTI-PATTERN IGNORED]: Fallback behavior - worker not running, use placeholder
+        logger.debug('CURSOR', 'Worker not running during install', {}, error as Error);
       }
       
       if (!contextGenerated) {

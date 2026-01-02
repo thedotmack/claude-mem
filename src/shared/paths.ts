@@ -4,6 +4,7 @@ import { existsSync, mkdirSync } from 'fs';
 import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
+import { logger } from '../utils/logger.js';
 
 // Get __dirname that works in both ESM (hooks) and CJS (worker) contexts
 function getDirname(): string {
@@ -103,8 +104,9 @@ export function getCurrentProjectName(): string {
     }).trim();
     return basename(gitRoot);
   } catch (error) {
-    // Expected: not a git repo or git not available
-    // Not logging - this is a common fallback path
+    logger.debug('SYSTEM', 'Git root detection failed, using cwd basename', {
+      cwd: process.cwd()
+    }, error as Error);
     return basename(process.cwd());
   }
 }

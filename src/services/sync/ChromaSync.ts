@@ -165,15 +165,10 @@ export class ChromaSync {
 
       logger.debug('CHROMA_SYNC', 'Collection exists', { collection: this.collectionName });
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      // Log the FULL error - don't try to guess what type it is
+      logger.warn('CHROMA_SYNC', 'Collection check failed, attempting to create', { collection: this.collectionName }, error as Error);
 
-      // Re-throw connection errors - don't confuse them with "collection not found"
-      if (errorMessage.includes('Not connected') || errorMessage.includes('connection')) {
-        logger.error('CHROMA_SYNC', 'Connection lost while checking collection', { collection: this.collectionName }, error as Error);
-        throw error;
-      }
-
-      // Collection doesn't exist, create it
+      // Try to create collection - if this also fails, we'll see that error too
       logger.info('CHROMA_SYNC', 'Creating collection', { collection: this.collectionName });
 
       try {
