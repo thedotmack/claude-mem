@@ -385,6 +385,19 @@ export class PendingMessageStore {
   }
 
   /**
+   * Clear all failed messages from the queue
+   * @returns Number of messages deleted
+   */
+  clearFailed(): number {
+    const stmt = this.db.prepare(`
+      DELETE FROM pending_messages
+      WHERE status = 'failed'
+    `);
+    const result = stmt.run();
+    return result.changes;
+  }
+
+  /**
    * Convert a PersistentPendingMessage back to PendingMessage format
    */
   toPendingMessage(persistent: PersistentPendingMessage): PendingMessage {
