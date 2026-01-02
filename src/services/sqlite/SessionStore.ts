@@ -1276,6 +1276,14 @@ export class SessionStore {
       VALUES (?, ?, ?, ?, ?, ?, 'active')
     `).run(contentSessionId, contentSessionId, project, userPrompt, now.toISOString(), nowEpoch);
 
+    // Fix sessions with empty project: if we have a project and the existing one is empty, update it
+    // This handles the race condition where PostToolUse fires before SessionStart
+    if (project) {
+      this.db.prepare(`
+        UPDATE sdk_sessions SET project = ? WHERE content_session_id = ? AND (project IS NULL OR project = '')
+      `).run(project, contentSessionId);
+    }
+
     // Return existing or new ID
     const row = this.db.prepare('SELECT id FROM sdk_sessions WHERE content_session_id = ?')
       .get(contentSessionId) as { id: number };

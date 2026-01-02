@@ -6,6 +6,7 @@
  */
 
 import express, { Request, Response } from 'express';
+import path from 'path';
 import { getWorkerPort } from '../../../../shared/worker-utils.js';
 import { logger } from '../../../../utils/logger.js';
 import { stripMemoryTagsFromJson, stripMemoryTagsFromPrompt } from '../../../../utils/tag-stripping.js';
@@ -427,8 +428,11 @@ export class SessionRoutes extends BaseRouteHandler {
 
     const store = this.dbManager.getSessionStore();
 
-    // Get or create session
-    const sessionDbId = store.createSDKSession(contentSessionId, '', '');
+    // Extract project name from cwd
+    const project = cwd ? path.basename(cwd) : '';
+
+    // Get or create session with project from cwd
+    const sessionDbId = store.createSDKSession(contentSessionId, project, '');
     const promptNumber = store.getPromptNumberFromUserPrompts(contentSessionId);
 
     // Privacy check: skip if user prompt was entirely private
