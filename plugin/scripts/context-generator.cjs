@@ -319,8 +319,8 @@ ${i.stack}`:` ${i.message}`:this.getLevel()===0&&typeof i=="object"?u=`
     `).get(e).count}createSDKSession(e,t,s){let r=new Date,i=r.getTime();return this.db.prepare(`
       INSERT OR IGNORE INTO sdk_sessions
       (content_session_id, memory_session_id, project, user_prompt, started_at, started_at_epoch, status)
-      VALUES (?, ?, ?, ?, ?, ?, 'active')
-    `).run(e,e,t,s,r.toISOString(),i),this.db.prepare("SELECT id FROM sdk_sessions WHERE content_session_id = ?").get(e).id}saveUserPrompt(e,t,s){let r=new Date,i=r.getTime();return this.db.prepare(`
+      VALUES (?, NULL, ?, ?, ?, ?, 'active')
+    `).run(e,t,s,r.toISOString(),i),this.db.prepare("SELECT id FROM sdk_sessions WHERE content_session_id = ?").get(e).id}saveUserPrompt(e,t,s){let r=new Date,i=r.getTime();return this.db.prepare(`
       INSERT INTO user_prompts
       (content_session_id, prompt_number, prompt_text, created_at, created_at_epoch)
       VALUES (?, ?, ?, ?, ?)

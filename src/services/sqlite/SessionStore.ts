@@ -1184,15 +1184,14 @@ export class SessionStore {
     const nowEpoch = now.getTime();
 
     // Pure INSERT OR IGNORE - no updates, no complexity
-    // NOTE: memory_session_id is initialized to contentSessionId as a placeholder for FK purposes.
-    // The REAL memory session ID is captured by SDKAgent from the first SDK response
-    // and stored via updateMemorySessionId(). The resume logic checks if memorySessionId
-    // differs from contentSessionId before using it - see SDKAgent.startSession().
+    // NOTE: memory_session_id starts as NULL. It is captured by SDKAgent from the first SDK
+    // response and stored via updateMemorySessionId(). CRITICAL: memory_session_id must NEVER
+    // equal contentSessionId - that would inject memory messages into the user's transcript!
     this.db.prepare(`
       INSERT OR IGNORE INTO sdk_sessions
       (content_session_id, memory_session_id, project, user_prompt, started_at, started_at_epoch, status)
-      VALUES (?, ?, ?, ?, ?, ?, 'active')
-    `).run(contentSessionId, contentSessionId, project, userPrompt, now.toISOString(), nowEpoch);
+      VALUES (?, NULL, ?, ?, ?, ?, 'active')
+    `).run(contentSessionId, project, userPrompt, now.toISOString(), nowEpoch);
 
     // Return existing or new ID
     const row = this.db.prepare('SELECT id FROM sdk_sessions WHERE content_session_id = ?')

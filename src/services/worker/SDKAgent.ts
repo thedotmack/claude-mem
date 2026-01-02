@@ -69,11 +69,10 @@ export class SDKAgent {
       // Create message generator (event-driven)
       const messageGenerator = this.createMessageGenerator(session);
 
-      // CRITICAL: Only resume if memorySessionId is a REAL captured SDK session ID,
-      // not the placeholder (which equals contentSessionId). The placeholder is set
-      // for FK purposes but would cause the bug where we try to resume the USER's session!
-      const hasRealMemorySessionId = session.memorySessionId &&
-        session.memorySessionId !== session.contentSessionId;
+      // CRITICAL: Only resume if memorySessionId exists (was captured from a previous SDK response).
+      // memorySessionId starts as NULL and is captured on first SDK message.
+      // NEVER use contentSessionId for resume - that would inject messages into the user's transcript!
+      const hasRealMemorySessionId = !!session.memorySessionId;
 
       logger.info('SDK', 'Starting SDK query', {
         sessionDbId: session.sessionDbId,
@@ -84,13 +83,20 @@ export class SDKAgent {
         lastPromptNumber: session.lastPromptNumber
       });
 
+      // SESSION ALIGNMENT LOG: Resume decision proof - show if we're resuming with correct memorySessionId
+      if (session.lastPromptNumber > 1) {
+        logger.info('SDK', `[ALIGNMENT] Resume Decision | contentSessionId=${session.contentSessionId} | memorySessionId=${session.memorySessionId} | prompt#=${session.lastPromptNumber} | hasRealMemorySessionId=${hasRealMemorySessionId} | resumeWith=${hasRealMemorySessionId ? session.memorySessionId : 'NONE (fresh SDK session)'}`);
+      } else {
+        logger.info('SDK', `[ALIGNMENT] First Prompt | contentSessionId=${session.contentSessionId} | prompt#=${session.lastPromptNumber} | Will capture memorySessionId from first SDK response`);
+      }
+
       // Run Agent SDK query loop
-      // Only resume if we have a REAL captured memory session ID (not the placeholder)
+      // Only resume if we have a captured memory session ID
       const queryResult = query({
         prompt: messageGenerator,
         options: {
           model: modelId,
-          // Only resume if memorySessionId differs from contentSessionId (meaning it was captured)
+          // Resume with captured memorySessionId (null on first prompt, real ID on subsequent)
           ...(hasRealMemorySessionId && { resume: session.memorySessionId }),
           disallowedTools,
           abortController: session.abortController,
@@ -113,6 +119,8 @@ export class SDKAgent {
             sessionDbId: session.sessionDbId,
             memorySessionId: message.session_id
           });
+          // SESSION ALIGNMENT LOG: Memory session ID captured - now contentSessionId→memorySessionId mapping is complete
+          logger.info('SDK', `[ALIGNMENT] Captured | contentSessionId=${session.contentSessionId} → memorySessionId=${message.session_id} | Future prompts will resume with this ID`);
         }
 
         // Handle assistant messages

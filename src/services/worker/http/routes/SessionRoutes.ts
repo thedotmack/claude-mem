@@ -570,6 +570,11 @@ export class SessionRoutes extends BaseRouteHandler {
       contentSessionId
     });
 
+    // SESSION ALIGNMENT LOG: DB lookup proof - show content→memory mapping
+    const dbSession = store.getSessionById(sessionDbId);
+    const memorySessionId = dbSession?.memory_session_id || null;
+    const hasCapturedMemoryId = !!memorySessionId;
+
     // Step 2: Get next prompt number from user_prompts count
     const currentCount = store.getPromptNumberFromUserPrompts(contentSessionId);
     const promptNumber = currentCount + 1;
@@ -579,6 +584,13 @@ export class SessionRoutes extends BaseRouteHandler {
       promptNumber,
       currentCount
     });
+
+    // SESSION ALIGNMENT LOG: For prompt > 1, prove we looked up memorySessionId from contentSessionId
+    if (promptNumber > 1) {
+      logger.info('HTTP', `[ALIGNMENT] DB Lookup Proof | contentSessionId=${contentSessionId} → memorySessionId=${memorySessionId || '(not yet captured)'} | prompt#=${promptNumber} | hasCapturedMemoryId=${hasCapturedMemoryId}`);
+    } else {
+      logger.info('HTTP', `[ALIGNMENT] New Session | contentSessionId=${contentSessionId} | prompt#=${promptNumber} | memorySessionId will be captured on first SDK response`);
+    }
 
     // Step 3: Strip privacy tags from prompt
     const cleanedPrompt = stripMemoryTagsFromPrompt(prompt);
