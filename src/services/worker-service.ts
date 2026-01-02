@@ -196,6 +196,86 @@ async function waitForPortFree(port: number, timeoutMs: number = 10000): Promise
 }
 
 /**
+ * Kill ALL worker-service daemon processes (aggressive cleanup for zombies)
+ * This is more aggressive than httpShutdown - it kills all matching processes
+ * regardless of whether they respond to HTTP requests.
+ */
+async function killAllWorkerProcesses(): Promise<{ killed: number; pids: number[] }> {
+  const isWindows = process.platform === 'win32';
+  const pids: number[] = [];
+  const currentPid = process.pid;
+
+  try {
+    if (isWindows) {
+      // Windows: Use PowerShell to find worker-service processes
+      const cmd = `powershell -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*worker-service.cjs*--daemon*' } | Select-Object -ExpandProperty ProcessId"`;
+      const { stdout } = await execAsync(cmd, { timeout: 60000 });
+
+      if (stdout.trim()) {
+        const pidStrings = stdout.trim().split('\n');
+        for (const pidStr of pidStrings) {
+          const pid = parseInt(pidStr.trim(), 10);
+          // SECURITY: Validate PID and don't kill ourselves
+          if (!isNaN(pid) && Number.isInteger(pid) && pid > 0 && pid !== currentPid) {
+            pids.push(pid);
+          }
+        }
+      }
+
+      // Kill each found process
+      for (const pid of pids) {
+        try {
+          execSync(`taskkill /PID ${pid} /T /F`, { timeout: 60000, stdio: 'ignore' });
+        } catch {
+          // Process may have already exited
+        }
+      }
+    } else {
+      // Unix: Use pgrep to find and pkill to terminate
+      try {
+        const { stdout } = await execAsync('pgrep -f "worker-service.cjs.*--daemon" || true');
+        if (stdout.trim()) {
+          const pidStrings = stdout.trim().split('\n');
+          for (const pidStr of pidStrings) {
+            const pid = parseInt(pidStr.trim(), 10);
+            // SECURITY: Validate PID and don't kill ourselves
+            if (!isNaN(pid) && Number.isInteger(pid) && pid > 0 && pid !== currentPid) {
+              pids.push(pid);
+            }
+          }
+        }
+      } catch {
+        // pgrep not found or no matches
+      }
+
+      // Kill each found process (SIGKILL for force)
+      for (const pid of pids) {
+        try {
+          process.kill(pid, 'SIGKILL');
+        } catch {
+          // Process already exited
+        }
+      }
+    }
+
+    if (pids.length > 0) {
+      logger.info('SYSTEM', 'Killed zombie worker processes', {
+        platform: isWindows ? 'Windows' : 'Unix',
+        count: pids.length,
+        pids
+      });
+    }
+
+    return { killed: pids.length, pids };
+  } catch (error) {
+    logger.warn('SYSTEM', 'Failed to enumerate/kill worker processes', {
+      error: (error as Error).message
+    });
+    return { killed: 0, pids: [] };
+  }
+}
+
+/**
  * Get the plugin version from the installed marketplace package.json
  */
 function getInstalledPluginVersion(): string {
@@ -2009,13 +2089,26 @@ async function main() {
     }
 
     case 'stop': {
-      // Simple stop: send shutdown request, wait for port to free
+      // Aggressive stop: kill ALL worker processes to prevent zombies
+      logger.info('SYSTEM', 'Stopping worker (aggressive cleanup mode)');
+
+      // Step 1: Try graceful HTTP shutdown first
       await httpShutdown(port);
+
+      // Step 2: Kill ALL worker-service daemon processes (zombie cleanup)
+      const killResult = await killAllWorkerProcesses();
+      if (killResult.killed > 0) {
+        logger.info('SYSTEM', 'Cleaned up zombie processes during stop', {
+          killed: killResult.killed,
+          pids: killResult.pids
+        });
+      }
+
+      // Step 3: Wait for port to be free
       const freed = await waitForPortFree(port, getPlatformTimeout(15000));
 
       if (!freed) {
         logger.warn('SYSTEM', 'Port did not free up after shutdown', { port });
-        // Could force kill here if we knew the PID, but for now just warn
       }
 
       removePidFile();
@@ -2024,10 +2117,23 @@ async function main() {
     }
 
     case 'restart': {
-      // Simple restart: stop, then start
-      logger.info('SYSTEM', 'Restarting worker');
+      // Aggressive restart: kill ALL worker processes to prevent zombies
+      logger.info('SYSTEM', 'Restarting worker (aggressive cleanup mode)');
 
+      // Step 1: Try graceful HTTP shutdown first
       await httpShutdown(port);
+
+      // Step 2: Kill ALL worker-service daemon processes (zombie cleanup)
+      // This catches processes that don't respond to HTTP shutdown
+      const killResult = await killAllWorkerProcesses();
+      if (killResult.killed > 0) {
+        logger.info('SYSTEM', 'Cleaned up zombie processes during restart', {
+          killed: killResult.killed,
+          pids: killResult.pids
+        });
+      }
+
+      // Step 3: Wait for port to be free
       const freed = await waitForPortFree(port, getPlatformTimeout(15000));
 
       if (!freed) {
