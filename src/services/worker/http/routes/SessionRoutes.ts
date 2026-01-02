@@ -211,6 +211,7 @@ export class SessionRoutes extends BaseRouteHandler {
             }
           } catch (e) {
             // Ignore errors during recovery check, but still abort to prevent leaks
+            logger.debug('SESSION', 'Error during recovery check, aborting to prevent leaks', { sessionId: sessionDbId, error: e instanceof Error ? e.message : String(e) });
             session.abortController.abort();
           }
         }

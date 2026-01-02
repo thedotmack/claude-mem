@@ -102,7 +102,9 @@ export function getCurrentProjectName(): string {
       windowsHide: true
     }).trim();
     return basename(gitRoot);
-  } catch {
+  } catch (error) {
+    // Expected: not a git repo or git not available
+    // Not logging - this is a common fallback path
     return basename(process.cwd());
   }
 }

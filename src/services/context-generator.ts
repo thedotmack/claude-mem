@@ -200,6 +200,8 @@ function extractPriorMessages(transcriptPath: string): { userMessage: string; as
           }
         }
       } catch (parseError) {
+        // Expected: malformed JSON lines in transcript
+        // Not logging - this loops through many lines, logging each would be excessive
         continue;
       }
     }
@@ -227,7 +229,8 @@ export async function generateContext(input?: ContextInput, useColors: boolean =
       try {
         unlinkSync(VERSION_MARKER_PATH);
       } catch (unlinkError) {
-        // Marker might not exist
+        // Marker might not exist - expected during first run
+        // Not logging - this is a normal case during initial setup
       }
       logger.error('SYSTEM', 'Native module rebuild needed - restart Claude Code to auto-fix');
       return '';

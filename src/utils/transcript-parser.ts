@@ -42,6 +42,8 @@ export class TranscriptParser {
         const entry = JSON.parse(line) as TranscriptEntry;
         this.entries.push(entry);
       } catch (error) {
+        // Note: Parse errors are accumulated and accessible via getParseErrors()
+        // Not logging each individual line failure - would be too verbose for large transcripts
         this.parseErrors.push({
           lineNumber: index + 1,
           error: error instanceof Error ? error.message : String(error),

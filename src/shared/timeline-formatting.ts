@@ -16,6 +16,8 @@ export function parseJsonArray(json: string | null): string[] {
     const parsed = JSON.parse(json);
     return Array.isArray(parsed) ? parsed : [];
   } catch (err) {
+    // Expected: malformed JSON in data fields during normal operations
+    // Not logging - this utility is called frequently for optional fields
     return [];
   }
 }
