@@ -38,7 +38,7 @@ function findFilesRecursive(dir: string, pattern: RegExp): string[] {
     const stat = statSync(fullPath);
 
     if (stat.isDirectory()) {
-      if (!item.startsWith('.') && item !== 'node_modules' && item !== 'dist' && item !== 'plugin') {
+      if (!item.startsWith('.') && item !== 'node_modules' && item !== 'dist' && item !== 'plugin' && item !== 'ui') {
         files.push(...findFilesRecursive(fullPath, pattern));
       }
     } else if (pattern.test(item)) {
