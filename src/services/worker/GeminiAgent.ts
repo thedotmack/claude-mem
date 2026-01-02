@@ -495,9 +495,11 @@ export class GeminiAgent {
           }
         });
       }
-      
+
       // Update Cursor context file for registered projects (fire-and-forget)
-      updateCursorContextForProject(session.project, getWorkerPort()).catch(() => {});
+      updateCursorContextForProject(session.project, getWorkerPort()).catch(error => {
+        logger.warn('CURSOR', 'Context update failed (non-critical)', { project: session.project }, error as Error);
+      });
     }
 
     // Mark messages as processed

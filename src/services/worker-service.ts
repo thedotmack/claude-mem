@@ -66,6 +66,7 @@ function removePidFile(): void {
   try {
     if (existsSync(PID_FILE)) unlinkSync(PID_FILE);
   } catch (error) {
+    // PID file removal is cleanup - log but don't fail shutdown
     logger.warn('SYSTEM', 'Failed to remove PID file', { path: PID_FILE, error: (error as Error).message });
   }
 }
@@ -128,6 +129,7 @@ export async function updateCursorContextForProject(projectName: string, port: n
     writeContextFile(entry.workspacePath, context);
     logger.debug('CURSOR', 'Updated context file', { projectName, workspacePath: entry.workspacePath });
   } catch (error) {
+    // Context update is non-critical - log and continue
     logger.warn('CURSOR', 'Failed to update context file', { projectName, error: (error as Error).message });
   }
 }
@@ -747,6 +749,11 @@ export class WorkerService {
 
     session.generatorPromise = this.sdkAgent.startSession(session, this)
       .catch(error => {
+        logger.error('SDK', 'Session generator failed', {
+          sessionId: session.sessionDbId,
+          project: session.project
+        }, error as Error);
+        // Note: Error is logged but not rethrown - session marked as complete via finally
       })
       .finally(() => {
         session.generatorPromise = null;

@@ -286,7 +286,9 @@ export class SessionManager {
 
     // Wait for generator to finish
     if (session.generatorPromise) {
-      await session.generatorPromise.catch(() => {});
+      await session.generatorPromise.catch(error => {
+        logger.debug('SYSTEM', 'Generator already failed, cleaning up', { sessionId: session.sessionDbId });
+      });
     }
 
     // Cleanup
