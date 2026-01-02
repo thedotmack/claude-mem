@@ -11,6 +11,7 @@ import { ensureWorkerRunning, getWorkerPort } from "../shared/worker-utils.js";
 import { HOOK_TIMEOUTS } from "../shared/hook-constants.js";
 import { getProjectName } from "../utils/project-name.js";
 import { logger } from "../utils/logger.js";
+import { fetchWithRetry } from "../shared/fetch-with-retry.js";
 
 export interface SessionStartInput {
   session_id: string;
@@ -31,7 +32,8 @@ async function contextHook(input?: SessionStartInput): Promise<string> {
 
   // Note: Removed AbortSignal.timeout due to Windows Bun cleanup issue (libuv assertion)
   // Worker service has its own timeouts, so client-side timeout is redundant
-  const response = await fetch(url);
+  // Uses fetchWithRetry to handle transient ECONNRESET errors during worker restarts
+  const response = await fetchWithRetry(url);
 
   if (!response.ok) {
     throw new Error(`Context generation failed: ${response.status}`);
