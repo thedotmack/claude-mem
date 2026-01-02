@@ -13,7 +13,7 @@
           {
             "type": "command",
             "command": "bun \"${CLAUDE_PLUGIN_ROOT}/scripts/worker-service.cjs\" start",
-            "timeout": 15
+            "timeout": 45
           },
           {
             "type": "command",
@@ -34,7 +34,7 @@
           {
             "type": "command",
             "command": "bun \"${CLAUDE_PLUGIN_ROOT}/scripts/worker-service.cjs\" start",
-            "timeout": 15
+            "timeout": 45
           },
           {
             "type": "command",
@@ -51,7 +51,7 @@
           {
             "type": "command",
             "command": "bun \"${CLAUDE_PLUGIN_ROOT}/scripts/worker-service.cjs\" start",
-            "timeout": 15
+            "timeout": 45
           },
           {
             "type": "command",
@@ -67,7 +67,7 @@
           {
             "type": "command",
             "command": "bun \"${CLAUDE_PLUGIN_ROOT}/scripts/worker-service.cjs\" start",
-            "timeout": 15
+            "timeout": 45
           },
           {
             "type": "command",

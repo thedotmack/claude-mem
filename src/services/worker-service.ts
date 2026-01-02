@@ -155,7 +155,8 @@ async function waitForHealth(port: number, timeoutMs: number = 30000): Promise<b
   while (Date.now() - start < timeoutMs) {
     try {
       // Note: Removed AbortSignal.timeout to avoid Windows Bun cleanup issue (libuv assertion)
-      const response = await fetch(`http://127.0.0.1:${port}/api/readiness`);
+      // Uses /api/health (not /api/readiness) - start command just needs to know server is listening
+      const response = await fetch(`http://127.0.0.1:${port}/api/health`);
       if (response.ok) return true;
     } catch {
       // Not ready yet
@@ -263,7 +264,11 @@ export class WorkerService {
   private startTime: number = Date.now();
   private mcpClient: Client;
 
-  // Initialization flags for MCP/SDK readiness tracking
+  // Initialization flags for staged readiness tracking
+  // coreReady: Database and SearchManager initialized - hooks can work
+  // mcpReady: MCP server connected - Claude's memory tools can work
+  // initializationCompleteFlag: Everything done including background tasks
+  private coreReady: boolean = false;
   private mcpReady: boolean = false;
   private initializationCompleteFlag: boolean = false;
   private isShuttingDown: boolean = false;
@@ -387,13 +392,30 @@ export class WorkerService {
         hasIpc: typeof process.send === 'function',
         platform: process.platform,
         pid: process.pid,
-        initialized: this.initializationCompleteFlag,
+        coreReady: this.coreReady,
         mcpReady: this.mcpReady,
+        initialized: this.initializationCompleteFlag,
       });
     });
 
-    // Readiness check endpoint - returns 503 until full initialization completes
-    // Used by ProcessManager and worker-utils to ensure worker is fully ready before routing requests
+    // Core readiness check - returns 200 when database and SearchManager are initialized
+    // Used by hooks which only need core functionality (no MCP dependency)
+    this.app.get('/api/core-ready', (_req, res) => {
+      if (this.coreReady) {
+        res.status(200).json({
+          status: 'ready',
+          mcpReady: this.mcpReady,
+        });
+      } else {
+        res.status(503).json({
+          status: 'initializing',
+          message: 'Core services still initializing, please retry',
+        });
+      }
+    });
+
+    // Full readiness check endpoint - returns 503 until full initialization completes (including MCP)
+    // Used for diagnostics and anything that requires MCP to be connected
     this.app.get('/api/readiness', (_req, res) => {
       if (this.initializationCompleteFlag) {
         res.status(200).json({
@@ -686,6 +708,11 @@ export class WorkerService {
       this.searchRoutes = new SearchRoutes(searchManager);
       this.searchRoutes.setupRoutes(this.app); // Setup search routes now that SearchManager is ready
       logger.info('WORKER', 'SearchManager initialized and search routes registered');
+
+      // Core services are ready - hooks can now work (database + SearchManager)
+      // MCP connection happens next but hooks don't need it
+      this.coreReady = true;
+      logger.info('SYSTEM', 'Core services ready (hooks can now proceed)');
 
       // Connect to MCP server with timeout guard
       const mcpServerPath = path.join(__dirname, 'mcp-server.cjs');
