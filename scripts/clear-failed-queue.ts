@@ -1,9 +1,10 @@
 #!/usr/bin/env bun
 /**
- * Clear failed messages from the queue
+ * Clear messages from the queue
  *
  * Usage:
- *   bun scripts/clear-failed-queue.ts           # Interactive mode - confirm before clearing
+ *   bun scripts/clear-failed-queue.ts           # Clear failed messages (interactive)
+ *   bun scripts/clear-failed-queue.ts --all     # Clear ALL messages (pending, processing, failed)
  *   bun scripts/clear-failed-queue.ts --force   # Non-interactive - clear without prompting
  */
 
@@ -64,6 +65,16 @@ async function clearFailedQueue(): Promise<ClearResponse> {
   return res.json();
 }
 
+async function clearAllQueue(): Promise<ClearResponse> {
+  const res = await fetch(`${WORKER_URL}/api/pending-queue/all`, {
+    method: 'DELETE'
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to clear queue: ${res.status}`);
+  }
+  return res.json();
+}
+
 function formatAge(epochMs: number): string {
   const ageMs = Date.now() - epochMs;
   const minutes = Math.floor(ageMs / 60000);
@@ -99,35 +110,47 @@ async function main() {
   // Help flag
   if (args.includes('--help') || args.includes('-h')) {
     console.log(`
-Claude-Mem Failed Queue Clearer
+Claude-Mem Queue Clearer
 
-Clear all failed messages from the observation queue.
+Clear messages from the observation queue.
 
 Usage:
   bun scripts/clear-failed-queue.ts [options]
 
 Options:
   --help, -h     Show this help message
+  --all          Clear ALL messages (pending, processing, and failed)
   --force        Clear without prompting for confirmation
 
 Examples:
   # Clear failed messages interactively
   bun scripts/clear-failed-queue.ts
 
+  # Clear ALL messages (pending, processing, failed)
+  bun scripts/clear-failed-queue.ts --all
+
   # Clear without confirmation (non-interactive)
   bun scripts/clear-failed-queue.ts --force
 
+  # Clear all messages without confirmation
+  bun scripts/clear-failed-queue.ts --all --force
+
 What is this for?
   Failed messages are observations that exceeded the maximum retry count.
-  They remain in the queue for debugging but won't be processed again.
+  Processing/pending messages may be stuck or unwanted.
   This command removes them to clean up the queue.
+
+  --all is useful for a complete reset when you want to start fresh.
 `);
     process.exit(0);
   }
 
   const force = args.includes('--force');
+  const clearAll = args.includes('--all');
 
-  console.log('\n=== Claude-Mem Failed Queue Clearer ===\n');
+  console.log(clearAll
+    ? '\n=== Claude-Mem Queue Clearer (ALL) ===\n'
+    : '\n=== Claude-Mem Queue Clearer (Failed) ===\n');
 
   // Check worker health
   const healthy = await checkWorkerHealth();
@@ -148,21 +171,27 @@ What is this for?
   console.log(`  Failed:     ${queue.totalFailed}`);
   console.log('');
 
-  // Check if there are failed messages
-  if (queue.totalFailed === 0) {
-    console.log('No failed messages in queue. Nothing to clear.\n');
+  // Check if there are messages to clear
+  const totalToClear = clearAll
+    ? queue.totalPending + queue.totalProcessing + queue.totalFailed
+    : queue.totalFailed;
+
+  if (totalToClear === 0) {
+    console.log(clearAll
+      ? 'No messages in queue. Nothing to clear.\n'
+      : 'No failed messages in queue. Nothing to clear.\n');
     process.exit(0);
   }
 
-  // Show details about failed messages
-  const failedMessages = queue.messages.filter(m => m.status === 'failed');
-  if (failedMessages.length > 0) {
-    console.log('Failed Messages:');
+  // Show details about messages to clear
+  const messagesToShow = clearAll ? queue.messages : queue.messages.filter(m => m.status === 'failed');
+  if (messagesToShow.length > 0) {
+    console.log(clearAll ? 'Messages to Clear:' : 'Failed Messages:');
     console.log('─'.repeat(80));
 
     // Group by session
     const bySession = new Map<number, QueueMessage[]>();
-    for (const msg of failedMessages) {
+    for (const msg of messagesToShow) {
       const list = bySession.get(msg.session_db_id) || [];
       list.push(msg);
       bySession.set(msg.session_db_id, list);
@@ -172,19 +201,34 @@ What is this for?
       const project = messages[0].project || 'unknown';
       const oldest = Math.min(...messages.map(m => m.created_at_epoch));
 
-      console.log(`  Session ${sessionId} (${project})`);
-      console.log(`    Messages: ${messages.length} failed`);
-      console.log(`    Age:      ${formatAge(oldest)}`);
+      if (clearAll) {
+        const statuses = {
+          pending: messages.filter(m => m.status === 'pending').length,
+          processing: messages.filter(m => m.status === 'processing').length,
+          failed: messages.filter(m => m.status === 'failed').length
+        };
+        console.log(`  Session ${sessionId} (${project})`);
+        console.log(`    Messages: ${messages.length} total (${statuses.pending} pending, ${statuses.processing} processing, ${statuses.failed} failed)`);
+        console.log(`    Age:      ${formatAge(oldest)}`);
+      } else {
+        console.log(`  Session ${sessionId} (${project})`);
+        console.log(`    Messages: ${messages.length} failed`);
+        console.log(`    Age:      ${formatAge(oldest)}`);
+      }
     }
     console.log('─'.repeat(80));
     console.log('');
   }
 
   // Confirm before clearing
+  const clearMessage = clearAll
+    ? `Clear ${totalToClear} messages (pending, processing, and failed)?`
+    : `Clear ${queue.totalFailed} failed messages?`;
+
   if (force) {
-    console.log(`Clearing ${queue.totalFailed} failed messages...\n`);
+    console.log(`${clearMessage.replace('?', '')}...\n`);
   } else {
-    const answer = await prompt(`Clear ${queue.totalFailed} failed messages? [y/N]: `);
+    const answer = await prompt(`${clearMessage} [y/N]: `);
     if (answer.toLowerCase() !== 'y') {
       console.log('\nCancelled. Run with --force to skip confirmation.\n');
       process.exit(0);
@@ -192,15 +236,17 @@ What is this for?
     console.log('');
   }
 
-  // Clear the failed queue
-  const result = await clearFailedQueue();
+  // Clear the queue
+  const result = clearAll ? await clearAllQueue() : await clearFailedQueue();
 
   console.log('Clearing Result:');
   console.log(`  Messages cleared: ${result.clearedCount}`);
   console.log(`  Status:           ${result.success ? 'Success' : 'Failed'}\n`);
 
   if (result.success && result.clearedCount > 0) {
-    console.log('Failed messages have been removed from the queue.\n');
+    console.log(clearAll
+      ? 'All messages have been removed from the queue.\n'
+      : 'Failed messages have been removed from the queue.\n');
   }
 }
 

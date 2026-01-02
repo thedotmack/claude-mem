@@ -398,6 +398,20 @@ export class PendingMessageStore {
   }
 
   /**
+   * Clear all pending, processing, and failed messages from the queue
+   * Keeps only processed messages (for history)
+   * @returns Number of messages deleted
+   */
+  clearAll(): number {
+    const stmt = this.db.prepare(`
+      DELETE FROM pending_messages
+      WHERE status IN ('pending', 'processing', 'failed')
+    `);
+    const result = stmt.run();
+    return result.changes;
+  }
+
+  /**
    * Convert a PersistentPendingMessage back to PendingMessage format
    */
   toPendingMessage(persistent: PersistentPendingMessage): PendingMessage {
