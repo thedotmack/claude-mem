@@ -289,7 +289,6 @@ export class SDKAgent {
           memory_session_id: session.memorySessionId,
           project: session.project,
           user_prompt: session.userPrompt,
-          last_user_message: message.last_user_message || '',
           last_assistant_message: message.last_assistant_message || ''
         }, mode);
 

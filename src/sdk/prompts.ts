@@ -20,7 +20,6 @@ export interface SDKSession {
   memory_session_id: string | null;
   project: string;
   user_prompt: string;
-  last_user_message?: string;
   last_assistant_message?: string;
 }
 

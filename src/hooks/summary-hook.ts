@@ -42,13 +42,13 @@ async function summaryHook(input?: StopInput): Promise<void> {
     throw new Error(`Missing transcript_path in Stop hook input for session ${session_id}`);
   }
 
-  // Extract last user AND assistant messages from transcript
-  const lastUserMessage = extractLastMessage(input.transcript_path, 'user');
+  // Extract last assistant message from transcript (the work Claude did)
+  // Note: "user" messages in transcripts are mostly tool_results, not actual user input.
+  // The user's original request is already stored in user_prompts table.
   const lastAssistantMessage = extractLastMessage(input.transcript_path, 'assistant', true);
 
   logger.dataIn('HOOK', 'Stop: Requesting summary', {
     workerPort: port,
-    hasLastUserMessage: !!lastUserMessage,
     hasLastAssistantMessage: !!lastAssistantMessage
   });
 
@@ -58,7 +58,6 @@ async function summaryHook(input?: StopInput): Promise<void> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       contentSessionId: session_id,
-      last_user_message: lastUserMessage,
       last_assistant_message: lastAssistantMessage
     })
     // Note: Removed signal to avoid Windows Bun cleanup issue (libuv assertion)
