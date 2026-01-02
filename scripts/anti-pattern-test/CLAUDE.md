@@ -11,7 +11,7 @@ A single overly-broad try-catch block wasted 10 hours of debugging time by silen
 
 **RUN THIS TEST FIRST:**
 ```bash
-bun run scripts/detect-error-handling-antipatterns.ts
+bun run scripts/anti-pattern-test/detect-error-handling-antipatterns.ts
 ```
 
 **You MUST answer these 5 questions to the user BEFORE writing try-catch:**
