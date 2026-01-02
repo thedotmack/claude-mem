@@ -9,6 +9,7 @@ import { spawnSync } from 'child_process';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
+import { logger } from './logger.js';
 
 /**
  * Get the Bun executable path
@@ -28,8 +29,10 @@ export function getBunPath(): string | null {
     if (result.status === 0) {
       return 'bun'; // Available in PATH
     }
-  } catch {
-    // Not in PATH, continue to check common locations
+  } catch (e) {
+    logger.debug('SYSTEM', 'Bun not found in PATH, checking common installation locations', {
+      error: e instanceof Error ? e.message : String(e)
+    });
   }
 
   // Check common installation paths

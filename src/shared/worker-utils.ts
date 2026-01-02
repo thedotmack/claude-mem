@@ -124,8 +124,12 @@ export async function ensureWorkerRunning(): Promise<void> {
         await checkWorkerVersion();  // logs warning on mismatch, doesn't restart
         return;
       }
-    } catch {
-      // Continue polling
+    } catch (e) {
+      logger.debug('SYSTEM', 'Worker health check failed, will retry', {
+        attempt: i + 1,
+        maxRetries,
+        error: e instanceof Error ? e.message : String(e)
+      });
     }
     await new Promise(r => setTimeout(r, pollInterval));
   }
