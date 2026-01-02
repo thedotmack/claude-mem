@@ -550,7 +550,6 @@
     }
 
     .settings-btn,
-    .logs-btn,
     .theme-toggle-btn {
       background: var(--color-bg-card);
       border: 1px solid var(--color-border-primary);
@@ -568,7 +567,6 @@
     }
 
     .settings-btn:hover,
-    .logs-btn:hover,
     .theme-toggle-btn:hover {
       background: var(--color-bg-card-hover);
       border-color: var(--color-border-focus);
@@ -695,7 +693,6 @@
     }
 
     .settings-icon,
-    .logs-icon,
     .theme-toggle-btn svg {
       width: 18px;
       height: 18px;
@@ -1583,7 +1580,6 @@
       }
 
       .settings-btn,
-      .logs-btn,
       .theme-toggle-btn,
       .icon-link {
         width: 32px;
@@ -1604,7 +1600,6 @@
       }
 
       .settings-icon,
-      .logs-icon,
       .theme-toggle-btn svg,
       .icon-link svg {
         width: 16px;
@@ -2477,135 +2472,175 @@
       border-color: var(--color-bg-button-hover);
     }
 
-    /* Logs Modal */
-    .modal-overlay {
+    /* Console Drawer - Chrome DevTools Style */
+    .console-toggle-btn {
       position: fixed;
-      top: 0;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      background: rgba(0, 0, 0, 0.65);
-      backdrop-filter: blur(4px);
+      bottom: 20px;
+      left: 20px;
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      background: var(--color-bg-button);
+      border: none;
+      color: white;
+      cursor: pointer;
       display: flex;
       align-items: center;
       justify-content: center;
-      z-index: 1000;
-      animation: fadeIn 0.2s ease-out;
-      padding: 20px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+      transition: all 0.2s ease;
+      z-index: 999;
     }
 
-    .logs-modal-content {
+    .console-toggle-btn:hover {
+      background: var(--color-bg-button-hover);
+      transform: scale(1.05);
+      box-shadow: 0 6px 16px rgba(0, 0, 0, 0.3);
+    }
+
+    .console-toggle-btn svg {
+      width: 20px;
+      height: 20px;
+    }
+
+    .console-drawer {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
       background: var(--color-bg-primary);
-      border: 1px solid var(--color-border-primary);
-      border-radius: 12px;
-      width: 100%;
-      max-width: 1200px;
-      height: 90vh;
-      max-height: 800px;
+      border-top: 1px solid var(--color-border-primary);
+      box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.1);
+      z-index: 1000;
       display: flex;
       flex-direction: column;
-      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-      animation: slideUp 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-      overflow: hidden;
     }
 
-    .logs-controls {
+    .console-resize-handle {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 6px;
+      cursor: ns-resize;
       display: flex;
-      justify-content: space-between;
       align-items: center;
-      padding: 12px;
+      justify-content: center;
+    }
+
+    .console-resize-handle:hover .console-resize-bar {
+      background: var(--color-bg-button);
+    }
+
+    .console-resize-bar {
+      width: 40px;
+      height: 3px;
+      border-radius: 2px;
+      background: var(--color-border-primary);
+      transition: background 0.2s ease;
+    }
+
+    .console-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 12px;
       border-bottom: 1px solid var(--color-border-primary);
       background: var(--color-bg-header);
+      margin-top: 6px;
     }
 
-    .logs-controls-left {
+    .console-tabs {
       display: flex;
-      align-items: center;
-      gap: 12px;
+      gap: 4px;
     }
 
-    .logs-controls-right {
+    .console-tab {
+      padding: 4px 12px;
+      font-size: 12px;
+      color: var(--color-text-secondary);
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+    }
+
+    .console-tab.active {
+      color: var(--color-text-primary);
+      border-bottom-color: var(--color-bg-button);
+      font-weight: 500;
+    }
+
+    .console-controls {
       display: flex;
       align-items: center;
       gap: 8px;
     }
 
-    .auto-refresh-label {
+    .console-auto-refresh {
       display: flex;
       align-items: center;
-      gap: 6px;
-      font-size: 13px;
+      gap: 4px;
+      font-size: 11px;
       color: var(--color-text-secondary);
       cursor: pointer;
       user-select: none;
     }
 
-    .auto-refresh-label input[type="checkbox"] {
+    .console-auto-refresh input[type="checkbox"] {
       cursor: pointer;
     }
 
-    .logs-action-btn {
-      padding: 6px 16px;
-      background: var(--color-bg-button);
-      color: white;
+    .console-control-btn {
+      background: transparent;
       border: none;
-      border-radius: 6px;
-      font-size: 13px;
-      font-weight: 500;
+      color: var(--color-text-secondary);
       cursor: pointer;
-      transition: all 0.2s ease;
+      padding: 4px 8px;
+      font-size: 14px;
+      border-radius: 4px;
+      transition: all 0.15s ease;
     }
 
-    .logs-action-btn:hover:not(:disabled) {
-      background: var(--color-bg-button-hover);
-      transform: translateY(-1px);
+    .console-control-btn:hover {
+      background: var(--color-bg-card-hover);
+      color: var(--color-text-primary);
     }
 
-    .logs-action-btn:disabled {
-      opacity: 0.5;
+    .console-control-btn:disabled {
+      opacity: 0.4;
       cursor: not-allowed;
     }
 
-    .logs-clear-btn {
-      background: var(--color-accent-error);
+    .console-clear-btn:hover {
+      color: var(--color-accent-error);
     }
 
-    .logs-clear-btn:hover:not(:disabled) {
-      background: #dc2626;
-    }
-
-    .logs-viewer {
+    .console-content {
       flex: 1;
       overflow: auto;
-      padding: 0;
       background: var(--color-bg-primary);
     }
 
-    .logs-content {
+    .console-logs {
       margin: 0;
-      padding: 16px;
-      font-family: 'Monaspace Radon', 'Monaco', 'Courier New', monospace;
-      font-size: 12px;
-      line-height: 1.6;
+      padding: 8px 12px;
+      font-family: 'SF Mono', 'Monaco', 'Menlo', 'Consolas', 'Courier New', monospace;
+      font-size: 11px;
+      line-height: 1.5;
       color: var(--color-text-primary);
       white-space: pre-wrap;
       word-wrap: break-word;
       overflow-wrap: break-word;
     }
 
-    .logs-error {
-      padding: 12px;
-      margin: 12px;
-      background: rgba(239, 68, 68, 0.1);
-      border: 1px solid var(--color-accent-error);
-      border-radius: 6px;
+    .console-error {
+      padding: 8px 12px;
+      background: rgba(239, 68, 68, 0.08);
+      border-bottom: 1px solid var(--color-accent-error);
       color: var(--color-accent-error);
-      font-size: 13px;
-    }
-
-    .logs-btn,
-    .logs-icon {
-      /* Inherits from .settings-btn styles */
+      font-size: 11px;
+      font-family: 'SF Mono', 'Monaco', 'Menlo', 'Consolas', 'Courier New', monospace;
     }
 
     /* Responsive Modal */

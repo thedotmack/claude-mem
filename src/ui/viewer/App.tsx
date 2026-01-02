@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Header } from './components/Header';
 import { Feed } from './components/Feed';
 import { ContextSettingsModal } from './components/ContextSettingsModal';
-import { LogsModal } from './components/LogsModal';
+import { LogsDrawer } from './components/LogsModal';
 import { useSSE } from './hooks/useSSE';
 import { useSettings } from './hooks/useSettings';
 import { useStats } from './hooks/useStats';
@@ -104,7 +104,6 @@ export function App() {
         themePreference={preference}
         onThemeChange={setThemePreference}
         onContextPreviewToggle={toggleContextPreview}
-        onLogsToggle={toggleLogsModal}
       />
 
       <Feed
@@ -125,7 +124,18 @@ export function App() {
         saveStatus={saveStatus}
       />
 
-      <LogsModal
+      <button
+        className="console-toggle-btn"
+        onClick={toggleLogsModal}
+        title="Toggle Console"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="4 17 10 11 4 5"></polyline>
+          <line x1="12" y1="19" x2="20" y2="19"></line>
+        </svg>
+      </button>
+
+      <LogsDrawer
         isOpen={logsModalOpen}
         onClose={toggleLogsModal}
       />
