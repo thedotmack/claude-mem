@@ -5,94 +5,76 @@ description: Manage semantic version updates for claude-mem project. Handles pat
 
 # Version Bump Skill
 
-Manage semantic versioning across the claude-mem project with consistent updates to all version-tracked files.
+**IMPORTANT:** You must first ultrathink and write detailed release notes before starting the version bump workflow.
 
-## Quick Reference
+## Version Types
 
-**Files requiring updates (ALL THREE):**
+- **PATCH** (x.y.Z): Bug fixes only
+- **MINOR** (x.Y.0): New features, backward compatible
+- **MAJOR** (X.0.0): Breaking changes
+
+## Files to Update (ALL THREE)
+
 1. `package.json` (line 3)
 2. `.claude-plugin/marketplace.json` (line 13)
 3. `plugin/.claude-plugin/plugin.json` (line 3)
 
-**Semantic versioning:**
-- **PATCH** (x.y.Z): Bugfixes only
-- **MINOR** (x.Y.0): New features, backward compatible
-- **MAJOR** (X.0.0): Breaking changes
-
-## Quick Decision Guide
-
-**What changed?**
-- "Fixed a bug" → PATCH (5.3.0 → 5.3.1)
-- "Added new feature" → MINOR (5.3.0 → 5.4.0)
-- "Breaking change" → MAJOR (5.3.0 → 6.0.0)
-
-**If unclear, ASK THE USER explicitly.**
-
-## Standard Workflow
-
-See [operations/workflow.md](operations/workflow.md) for detailed step-by-step process.
-
-**Quick version:**
-1. Determine version type (PATCH/MINOR/MAJOR)
-2. Calculate new version from current
-3. Preview changes to user
-4. Update ALL THREE files
-5. Verify consistency
-6. Build and test
-7. Commit and create git tag
-8. Push and create GitHub release
-9. Generate CHANGELOG.md from releases and commit
-10. Post Discord notification
-
-## Common Scenarios
-
-See [operations/scenarios.md](operations/scenarios.md) for examples:
-- Bug fix releases
-- New feature releases
-- Breaking change releases
-
-## Critical Rules
-
-**ALWAYS:**
-- Update ALL THREE files with matching version numbers
-- Create git tag with format `vX.Y.Z`
-- Create GitHub release from the tag
-- Generate CHANGELOG.md from releases after creating release
-- Post Discord notification after release
-- Ask user if version type is unclear
-
-**NEVER:**
-- Update only one or two files
-- Skip the verification step
-- Forget to create git tag or GitHub release
-
-## Verification Checklist
-
-Before considering the task complete:
-- [ ] All THREE files have matching version numbers
-- [ ] `npm run build` succeeds
-- [ ] Git commit created with all version files
-- [ ] Git tag created (format: vX.Y.Z)
-- [ ] Commit and tags pushed to remote
-- [ ] GitHub release created from the tag
-- [ ] CHANGELOG.md generated and committed
-- [ ] Discord notification sent
-
-## Reference Commands
+## Workflow
 
 ```bash
-# View current version
-grep '"version"' package.json
-
-# Verify consistency across all version files
+# 1. Check current version
 grep '"version"' package.json .claude-plugin/marketplace.json plugin/.claude-plugin/plugin.json
 
-# View git tags
-git tag -l -n1
+# 2. Update all 3 files to new version (use Edit tool)
 
-# Check what will be committed
-git status
-git diff package.json .claude-plugin/marketplace.json plugin/.claude-plugin/plugin.json
+# 3. Verify consistency
+grep '"version"' package.json .claude-plugin/marketplace.json plugin/.claude-plugin/plugin.json
+
+# 4. Build
+npm run build
+
+# 5. Commit version files
+git add package.json .claude-plugin/marketplace.json plugin/.claude-plugin/plugin.json
+git commit -m "chore: bump version to X.Y.Z"
+
+# 6. Create tag
+git tag -a vX.Y.Z -m "Version X.Y.Z"
+
+# 7. Push
+git push origin main && git push origin vX.Y.Z
+
+# 8. Create GitHub release (use your detailed release notes here)
+gh release create vX.Y.Z --title "vX.Y.Z" --notes "RELEASE_NOTES_HERE"
+
+# 9. Generate CHANGELOG.md from releases
+gh api repos/thedotmack/claude-mem/releases --paginate | node -e "
+const releases = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+const lines = ['# Changelog', '', 'All notable changes to claude-mem.', ''];
+releases.slice(0, 50).forEach(r => {
+  const date = r.published_at.split('T')[0];
+  lines.push('## [' + r.tag_name + '] - ' + date);
+  lines.push('');
+  if (r.body) lines.push(r.body.trim());
+  lines.push('');
+});
+console.log(lines.join('\n'));
+" > CHANGELOG.md
+
+# 10. Commit CHANGELOG
+git add CHANGELOG.md
+git commit -m "docs: update CHANGELOG.md for vX.Y.Z"
+git push origin main
+
+# 11. Discord notification
+npm run discord:notify vX.Y.Z
 ```
 
-For more commands, see [operations/reference.md](operations/reference.md).
+## Checklist
+
+- [ ] Ultrathink + write detailed release notes
+- [ ] All 3 files have matching version
+- [ ] `npm run build` succeeds
+- [ ] Git tag created (vX.Y.Z format)
+- [ ] GitHub release created with detailed notes
+- [ ] CHANGELOG.md updated
+- [ ] Discord notification sent (if webhook configured)
