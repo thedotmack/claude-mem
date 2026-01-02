@@ -747,25 +747,10 @@ export class WorkerService {
 
     session.generatorPromise = this.sdkAgent.startSession(session, this)
       .catch(error => {
-        // Only log if not aborted
-        if (session.abortController.signal.aborted) return;
-        
-        logger.error('SYSTEM', `Generator failed (${source})`, {
-          sessionId: sid,
-          error: error.message
-        }, error);
       })
       .finally(() => {
         session.generatorPromise = null;
         this.broadcastProcessingStatus();
-        
-        // Crash recovery: if not aborted, check if we should restart
-        if (!session.abortController.signal.aborted) {
-           // We can check if there are pending messages to decide if restart is urgent
-           // But generally, if it crashed, we might want to restart?
-           // For now, let's just log. The user/system can trigger restart if needed.
-           logger.warn('SYSTEM', `Session processor exited unexpectedly`, { sessionId: sid });
-        }
       });
   }
 

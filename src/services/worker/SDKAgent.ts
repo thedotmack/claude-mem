@@ -41,7 +41,10 @@ export class SDKAgent {
    * @param worker WorkerService reference for spinner control (optional)
    */
   async startSession(session: ActiveSession, worker?: any): Promise<void> {
-    try {
+
+
+
+
       // Find Claude executable
       const claudePath = this.findClaudeExecutable();
 
@@ -183,18 +186,8 @@ export class SDKAgent {
         duration: `${(sessionDuration / 1000).toFixed(1)}s`
       });
 
-    } catch (error: any) {
-      if (error.name === 'AbortError') {
-        logger.warn('SDK', 'Agent aborted', { sessionId: session.sessionDbId });
-      } else {
-        logger.failure('SDK', 'Agent error', { sessionDbId: session.sessionDbId }, error);
-      }
-      throw error;
-    } finally {
-      // NOTE: Do NOT delete session here - SessionRoutes.finally() handles cleanup
-      // and auto-restart logic. Deleting here races with pending work checks.
+
     }
-  }
 
   /**
    * Create event-driven message generator (yields messages from SessionManager)
