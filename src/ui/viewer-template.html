@@ -550,6 +550,7 @@
     }
 
     .settings-btn,
+    .logs-btn,
     .theme-toggle-btn {
       background: var(--color-bg-card);
       border: 1px solid var(--color-border-primary);
@@ -567,6 +568,7 @@
     }
 
     .settings-btn:hover,
+    .logs-btn:hover,
     .theme-toggle-btn:hover {
       background: var(--color-bg-card-hover);
       border-color: var(--color-border-focus);
@@ -693,6 +695,7 @@
     }
 
     .settings-icon,
+    .logs-icon,
     .theme-toggle-btn svg {
       width: 18px;
       height: 18px;
@@ -1580,6 +1583,7 @@
       }
 
       .settings-btn,
+      .logs-btn,
       .theme-toggle-btn,
       .icon-link {
         width: 32px;
@@ -1600,6 +1604,7 @@
       }
 
       .settings-icon,
+      .logs-icon,
       .theme-toggle-btn svg,
       .icon-link svg {
         width: 16px;
@@ -2470,6 +2475,137 @@
     .chip.selected:hover {
       background: var(--color-bg-button-hover);
       border-color: var(--color-bg-button-hover);
+    }
+
+    /* Logs Modal */
+    .modal-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.65);
+      backdrop-filter: blur(4px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+      animation: fadeIn 0.2s ease-out;
+      padding: 20px;
+    }
+
+    .logs-modal-content {
+      background: var(--color-bg-primary);
+      border: 1px solid var(--color-border-primary);
+      border-radius: 12px;
+      width: 100%;
+      max-width: 1200px;
+      height: 90vh;
+      max-height: 800px;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+      animation: slideUp 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      overflow: hidden;
+    }
+
+    .logs-controls {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px;
+      border-bottom: 1px solid var(--color-border-primary);
+      background: var(--color-bg-header);
+    }
+
+    .logs-controls-left {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .logs-controls-right {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .auto-refresh-label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+      color: var(--color-text-secondary);
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .auto-refresh-label input[type="checkbox"] {
+      cursor: pointer;
+    }
+
+    .logs-action-btn {
+      padding: 6px 16px;
+      background: var(--color-bg-button);
+      color: white;
+      border: none;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .logs-action-btn:hover:not(:disabled) {
+      background: var(--color-bg-button-hover);
+      transform: translateY(-1px);
+    }
+
+    .logs-action-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .logs-clear-btn {
+      background: var(--color-accent-error);
+    }
+
+    .logs-clear-btn:hover:not(:disabled) {
+      background: #dc2626;
+    }
+
+    .logs-viewer {
+      flex: 1;
+      overflow: auto;
+      padding: 0;
+      background: var(--color-bg-primary);
+    }
+
+    .logs-content {
+      margin: 0;
+      padding: 16px;
+      font-family: 'Monaspace Radon', 'Monaco', 'Courier New', monospace;
+      font-size: 12px;
+      line-height: 1.6;
+      color: var(--color-text-primary);
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      overflow-wrap: break-word;
+    }
+
+    .logs-error {
+      padding: 12px;
+      margin: 12px;
+      background: rgba(239, 68, 68, 0.1);
+      border: 1px solid var(--color-accent-error);
+      border-radius: 6px;
+      color: var(--color-accent-error);
+      font-size: 13px;
+    }
+
+    .logs-btn,
+    .logs-icon {
+      /* Inherits from .settings-btn styles */
     }
 
     /* Responsive Modal */
