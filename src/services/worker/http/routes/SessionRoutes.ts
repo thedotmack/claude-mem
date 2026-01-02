@@ -338,9 +338,9 @@ export class SessionRoutes extends BaseRouteHandler {
     const sessionDbId = this.parseIntParam(req, res, 'sessionDbId');
     if (sessionDbId === null) return;
 
-    const { last_user_message, last_assistant_message } = req.body;
+    const { last_assistant_message } = req.body;
 
-    this.sessionManager.queueSummarize(sessionDbId, last_user_message, last_assistant_message);
+    this.sessionManager.queueSummarize(sessionDbId, last_assistant_message);
 
     // CRITICAL: Ensure SDK agent is running to consume the queue
     this.ensureGeneratorRunning(sessionDbId, 'summarize');
@@ -492,12 +492,12 @@ export class SessionRoutes extends BaseRouteHandler {
   /**
    * Queue summarize by contentSessionId (summary-hook uses this)
    * POST /api/sessions/summarize
-   * Body: { contentSessionId, last_user_message, last_assistant_message }
+   * Body: { contentSessionId, last_assistant_message }
    *
    * Checks privacy, queues summarize request for SDK agent
    */
   private handleSummarizeByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
-    const { contentSessionId, last_user_message, last_assistant_message } = req.body;
+    const { contentSessionId, last_assistant_message } = req.body;
 
     if (!contentSessionId) {
       return this.badRequest(res, 'Missing contentSessionId');
@@ -523,17 +523,7 @@ export class SessionRoutes extends BaseRouteHandler {
     }
 
     // Queue summarize
-    this.sessionManager.queueSummarize(
-      sessionDbId,
-      last_user_message || logger.happyPathError(
-        'SESSION',
-        'Missing last_user_message when queueing summary in SessionRoutes',
-        { sessionId: sessionDbId },
-        undefined,
-        ''
-      ),
-      last_assistant_message
-    );
+    this.sessionManager.queueSummarize(sessionDbId, last_assistant_message);
 
     // Ensure SDK agent is running
     this.ensureGeneratorRunning(sessionDbId, 'summarize');

@@ -289,7 +289,6 @@ export class SDKAgent {
           memory_session_id: session.memorySessionId,
           project: session.project,
           user_prompt: session.userPrompt,
-          last_user_message: message.last_user_message || '',
           last_assistant_message: message.last_assistant_message || ''
         }, mode);
 
@@ -544,7 +543,8 @@ export class SDKAgent {
       
       if (claudePath) return claudePath;
     } catch (error) {
-      logger.debug('SDK', 'Claude executable auto-detection failed', error);
+      // [ANTI-PATTERN IGNORED]: Fallback behavior - which/where failed, continue to throw clear error
+      logger.debug('SDK', 'Claude executable auto-detection failed', {}, error as Error);
     }
 
     throw new Error('Claude executable not found. Please either:\n1. Add "claude" to your system PATH, or\n2. Set CLAUDE_CODE_PATH in ~/.claude-mem/settings.json');

@@ -56,6 +56,117 @@ function detectAntiPatterns(filePath: string, projectRoot: string): AntiPattern[
   const relPath = relative(projectRoot, filePath);
   const isCriticalPath = CRITICAL_PATHS.some(cp => filePath.includes(cp));
 
+  // Detect error message string matching for type detection (line-by-line patterns)
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trim();
+
+    // Check for [ANTI-PATTERN IGNORED] on the same or previous line
+    const hasOverride = trimmed.includes('[ANTI-PATTERN IGNORED]') ||
+                       (i > 0 && lines[i - 1].includes('[ANTI-PATTERN IGNORED]'));
+    const overrideMatch = (trimmed + (i > 0 ? lines[i - 1] : '')).match(/\[ANTI-PATTERN IGNORED\]:\s*(.+)/i);
+    const overrideReason = overrideMatch?.[1]?.trim();
+
+    // CRITICAL: Error message string matching for type detection
+    // Patterns like: errorMessage.includes('connection') or error.message.includes('timeout')
+    const errorStringMatchPatterns = [
+      /error(?:Message|\.message)\s*\.includes\s*\(\s*['"`](\w+)['"`]\s*\)/i,
+      /(?:err|e)\.message\s*\.includes\s*\(\s*['"`](\w+)['"`]\s*\)/i,
+      /String\s*\(\s*(?:error|err|e)\s*\)\s*\.includes\s*\(\s*['"`](\w+)['"`]\s*\)/i,
+    ];
+
+    for (const pattern of errorStringMatchPatterns) {
+      const match = trimmed.match(pattern);
+      if (match) {
+        const matchedString = match[1];
+        // Common generic patterns that are too broad
+        const genericPatterns = ['error', 'fail', 'connection', 'timeout', 'not', 'invalid', 'unable'];
+        const isGeneric = genericPatterns.some(gp => matchedString.toLowerCase().includes(gp));
+
+        if (hasOverride && overrideReason) {
+          antiPatterns.push({
+            file: relPath,
+            line: i + 1,
+            pattern: 'ERROR_STRING_MATCHING',
+            severity: 'APPROVED_OVERRIDE',
+            description: `Error type detection via string matching on "${matchedString}" - approved override.`,
+            code: trimmed,
+            overrideReason
+          });
+        } else {
+          antiPatterns.push({
+            file: relPath,
+            line: i + 1,
+            pattern: 'ERROR_STRING_MATCHING',
+            severity: isGeneric ? 'CRITICAL' : 'HIGH',
+            description: `Error type detection via string matching on "${matchedString}" - fragile and masks the real error. Log the FULL error object. We don't care about pretty error handling, we care about SEEING what went wrong.`,
+            code: trimmed
+          });
+        }
+      }
+    }
+
+    // HIGH: Logging only error.message instead of the full error object
+    // Patterns like: logger.error('X', 'Y', {}, error.message) or console.error(error.message)
+    const partialErrorLoggingPatterns = [
+      /logger\.(error|warn|info|debug)\s*\([^)]*,\s*(?:error|err|e)\.message\s*\)/,
+      /logger\.(error|warn|info|debug)\s*\([^)]*\{\s*(?:error|err|e):\s*(?:error|err|e)\.message\s*\}/,
+      /console\.(error|warn|log)\s*\(\s*(?:error|err|e)\.message\s*\)/,
+      /console\.(error|warn|log)\s*\(\s*['"`][^'"`]+['"`]\s*,\s*(?:error|err|e)\.message\s*\)/,
+    ];
+
+    for (const pattern of partialErrorLoggingPatterns) {
+      if (pattern.test(trimmed)) {
+        if (hasOverride && overrideReason) {
+          antiPatterns.push({
+            file: relPath,
+            line: i + 1,
+            pattern: 'PARTIAL_ERROR_LOGGING',
+            severity: 'APPROVED_OVERRIDE',
+            description: 'Logging only error.message instead of full error object - approved override.',
+            code: trimmed,
+            overrideReason
+          });
+        } else {
+          antiPatterns.push({
+            file: relPath,
+            line: i + 1,
+            pattern: 'PARTIAL_ERROR_LOGGING',
+            severity: 'HIGH',
+            description: 'Logging only error.message HIDES the stack trace, error type, and all properties. ALWAYS pass the full error object - you need the complete picture, not a summary.',
+            code: trimmed
+          });
+        }
+      }
+    }
+
+    // CRITICAL: Catch-all error type guessing based on message content
+    // Pattern: if (errorMessage.includes('X') || errorMessage.includes('Y'))
+    const multipleIncludes = trimmed.match(/(?:error(?:Message|\.message)|(?:err|e)\.message).*\.includes.*\|\|.*\.includes/i);
+    if (multipleIncludes) {
+      if (hasOverride && overrideReason) {
+        antiPatterns.push({
+          file: relPath,
+          line: i + 1,
+          pattern: 'ERROR_MESSAGE_GUESSING',
+          severity: 'APPROVED_OVERRIDE',
+          description: 'Multiple string checks on error message to guess error type - approved override.',
+          code: trimmed,
+          overrideReason
+        });
+      } else {
+        antiPatterns.push({
+          file: relPath,
+          line: i + 1,
+          pattern: 'ERROR_MESSAGE_GUESSING',
+          severity: 'CRITICAL',
+          description: 'Multiple string checks on error message to guess error type. STOP GUESSING. Log the FULL error object. We don\'t care what the library throws - we care about SEEING the error when it happens.',
+          code: trimmed
+        });
+      }
+    }
+  }
+
   // Track try-catch blocks
   let inTry = false;
   let tryStartLine = 0;
@@ -98,7 +209,7 @@ function detectAntiPatterns(filePath: string, projectRoot: string): AntiPattern[
         braceCount += (nextLine.match(/{/g) || []).length - (nextLine.match(/}/g) || []).length;
       }
 
-      const hasLogging = catchBody.match(/logger\.(error|warn|debug|info)/) ||
+      const hasLogging = catchBody.match(/logger\.(error|warn|debug|info|failure)/) ||
                         catchBody.match(/console\.(error|warn)/);
 
       if (!hasLogging && lookAhead > 0) {  // Only flag if it's actually a multi-line handler
@@ -216,12 +327,12 @@ function analyzeTryCatchBlock(
     });
   }
 
-  // Check for [APPROVED OVERRIDE] marker
-  const overrideMatch = catchContent.match(/\/\/\s*\[APPROVED OVERRIDE\]:\s*(.+)/i);
+  // Check for [ANTI-PATTERN IGNORED] marker
+  const overrideMatch = catchContent.match(/\/\/\s*\[ANTI-PATTERN IGNORED\]:\s*(.+)/i);
   const overrideReason = overrideMatch?.[1]?.trim();
 
   // CRITICAL: No logging in catch block (unless explicitly approved)
-  const hasLogging = catchContent.match(/logger\.(error|warn|debug|info)/);
+  const hasLogging = catchContent.match(/logger\.(error|warn|debug|info|failure)/);
   const hasConsoleError = catchContent.match(/console\.(error|warn)/);
   const hasStderr = catchContent.match(/process\.stderr\.write/);
   const hasThrow = catchContent.match(/throw/);
@@ -286,16 +397,17 @@ function analyzeTryCatchBlock(
   // CRITICAL on critical paths: Catch-and-continue
   if (isCriticalPath && nonCommentContent && !hasThrow) {
     const hasReturn = catchContent.match(/return/);
-    const continuesExecution = !hasReturn; // If no return/throw, execution continues
+    const hasProcessExit = catchContent.match(/process\.exit/);
+    const terminatesExecution = hasReturn || hasProcessExit;
 
-    if (continuesExecution && hasLogging) {
+    if (!terminatesExecution && hasLogging) {
       if (overrideReason) {
         antiPatterns.push({
           file: relPath,
           line: catchStartLine,
           pattern: 'CATCH_AND_CONTINUE_CRITICAL_PATH',
           severity: 'APPROVED_OVERRIDE',
-          description: 'Critical path continues after error - approved override.',
+          description: 'Critical path continues after error - anti-pattern ignored.',
           code: catchBlock.trim(),
           overrideReason
         });
@@ -400,7 +512,7 @@ function formatReport(antiPatterns: AntiPattern[]): string {
   report += '4. What will the catch block DO? (Log + rethrow? Fallback?)\n';
   report += '5. Why shouldn\'t this error propagate to the caller?\n';
   report += '\n';
-  report += 'To approve an anti-pattern, add: // [APPROVED OVERRIDE]: reason\n';
+  report += 'To ignore an anti-pattern, add: // [ANTI-PATTERN IGNORED]: reason\n';
   report += '═══════════════════════════════════════════════════════════════\n\n';
 
   return report;

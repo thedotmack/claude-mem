@@ -234,7 +234,7 @@ export class SessionManager {
    * CRITICAL: Persists to database FIRST before adding to in-memory queue.
    * This ensures summarize requests survive worker crashes.
    */
-  queueSummarize(sessionDbId: number, lastUserMessage: string, lastAssistantMessage?: string): void {
+  queueSummarize(sessionDbId: number, lastAssistantMessage?: string): void {
     // Auto-initialize from database if needed (handles worker restarts)
     let session = this.sessions.get(sessionDbId);
     if (!session) {
@@ -244,7 +244,6 @@ export class SessionManager {
     // CRITICAL: Persist to database FIRST
     const message: PendingMessage = {
       type: 'summarize',
-      last_user_message: lastUserMessage,
       last_assistant_message: lastAssistantMessage
     };
 

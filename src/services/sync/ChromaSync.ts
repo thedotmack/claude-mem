@@ -165,7 +165,10 @@ export class ChromaSync {
 
       logger.debug('CHROMA_SYNC', 'Collection exists', { collection: this.collectionName });
     } catch (error) {
-      // Collection doesn't exist, create it
+      // Log the FULL error - don't try to guess what type it is
+      logger.warn('CHROMA_SYNC', 'Collection check failed, attempting to create', { collection: this.collectionName }, error as Error);
+
+      // Try to create collection - if this also fails, we'll see that error too
       logger.info('CHROMA_SYNC', 'Creating collection', { collection: this.collectionName });
 
       try {

@@ -14,7 +14,6 @@ export interface PersistentPendingMessage {
   tool_input: string | null;
   tool_response: string | null;
   cwd: string | null;
-  last_user_message: string | null;
   last_assistant_message: string | null;
   prompt_number: number | null;
   status: 'pending' | 'processing' | 'processed' | 'failed';
@@ -59,9 +58,9 @@ export class PendingMessageStore {
       INSERT INTO pending_messages (
         session_db_id, content_session_id, message_type,
         tool_name, tool_input, tool_response, cwd,
-        last_user_message, last_assistant_message,
+        last_assistant_message,
         prompt_number, status, retry_count, created_at_epoch
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?)
     `);
 
     const result = stmt.run(
@@ -72,7 +71,6 @@ export class PendingMessageStore {
       message.tool_input ? JSON.stringify(message.tool_input) : null,
       message.tool_response ? JSON.stringify(message.tool_response) : null,
       message.cwd || null,
-      message.last_user_message || null,
       message.last_assistant_message || null,
       message.prompt_number || null,
       now
@@ -422,7 +420,6 @@ export class PendingMessageStore {
       tool_response: persistent.tool_response ? JSON.parse(persistent.tool_response) : undefined,
       prompt_number: persistent.prompt_number || undefined,
       cwd: persistent.cwd || undefined,
-      last_user_message: persistent.last_user_message || undefined,
       last_assistant_message: persistent.last_assistant_message || undefined
     };
   }
