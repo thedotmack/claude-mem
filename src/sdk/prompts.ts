@@ -96,13 +96,17 @@ export function buildObservationPrompt(obs: Observation): string {
 
   try {
     toolInput = typeof obs.tool_input === 'string' ? JSON.parse(obs.tool_input) : obs.tool_input;
-  } catch {
+  } catch (error) {
+    // Expected: tool_input may not be valid JSON (e.g., plain strings)
+    // Not logging - this is a normal fallback for non-JSON tool inputs
     toolInput = obs.tool_input;  // If parse fails, use raw value
   }
 
   try {
     toolOutput = typeof obs.tool_output === 'string' ? JSON.parse(obs.tool_output) : obs.tool_output;
-  } catch {
+  } catch (error) {
+    // Expected: tool_output may not be valid JSON (e.g., plain strings)
+    // Not logging - this is a normal fallback for non-JSON tool outputs
     toolOutput = obs.tool_output;  // If parse fails, use raw value
   }
 

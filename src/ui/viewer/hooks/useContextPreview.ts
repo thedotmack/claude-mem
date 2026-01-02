@@ -58,6 +58,7 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
         setError('Failed to load preview');
       }
     } catch (err) {
+      console.warn('Failed to load context preview:', err);
       setError((err as Error).message);
     } finally {
       setIsLoading(false);

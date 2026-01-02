@@ -140,6 +140,8 @@ async function verifyWorkerConnection(): Promise<boolean> {
     const response = await fetch(`${WORKER_BASE_URL}/api/health`);
     return response.ok;
   } catch (error) {
+    // Expected during worker startup or if worker is down
+    logger.debug('SYSTEM', 'Worker health check failed', undefined, { error: error instanceof Error ? error.message : String(error) });
     return false;
   }
 }
@@ -265,6 +267,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
     return await tool.handler(request.params.arguments || {});
   } catch (error: any) {
+    logger.error('SYSTEM', 'Tool execution failed', undefined, { tool: request.params.name, error: error.message });
     return {
       content: [{
         type: 'text' as const,

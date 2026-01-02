@@ -55,6 +55,8 @@ export class DataRoutes extends BaseRouteHandler {
     // Pending queue management endpoints
     app.get('/api/pending-queue', this.handleGetPendingQueue.bind(this));
     app.post('/api/pending-queue/process', this.handleProcessPendingQueue.bind(this));
+    app.delete('/api/pending-queue/failed', this.handleClearFailedQueue.bind(this));
+    app.delete('/api/pending-queue/all', this.handleClearAllQueue.bind(this));
 
     // Import endpoint
     app.post('/api/import', this.handleImport.bind(this));
@@ -421,6 +423,44 @@ export class DataRoutes extends BaseRouteHandler {
     res.json({
       success: true,
       ...result
+    });
+  });
+
+  /**
+   * Clear all failed messages from the queue
+   * DELETE /api/pending-queue/failed
+   * Returns the number of messages cleared
+   */
+  private handleClearFailedQueue = this.wrapHandler((req: Request, res: Response): void => {
+    const { PendingMessageStore } = require('../../../sqlite/PendingMessageStore.js');
+    const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
+
+    const clearedCount = pendingStore.clearFailed();
+
+    logger.info('QUEUE', 'Cleared failed queue messages', { clearedCount });
+
+    res.json({
+      success: true,
+      clearedCount
+    });
+  });
+
+  /**
+   * Clear all messages from the queue (pending, processing, and failed)
+   * DELETE /api/pending-queue/all
+   * Returns the number of messages cleared
+   */
+  private handleClearAllQueue = this.wrapHandler((req: Request, res: Response): void => {
+    const { PendingMessageStore } = require('../../../sqlite/PendingMessageStore.js');
+    const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
+
+    const clearedCount = pendingStore.clearAll();
+
+    logger.warn('QUEUE', 'Cleared ALL queue messages (pending, processing, failed)', { clearedCount });
+
+    res.json({
+      success: true,
+      clearedCount
     });
   });
 }

@@ -267,7 +267,8 @@ class Logger {
       try {
         appendFileSync(this.logFilePath, logLine + '\n', 'utf8');
       } catch (error) {
-        // If file write fails, write to stderr as last resort
+        // Logger can't log its own failures - use stderr as last resort
+        // This is expected during disk full / permission errors
         process.stderr.write(`[LOGGER] Failed to write to log file: ${error}\n`);
       }
     } else {

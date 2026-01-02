@@ -66,6 +66,7 @@ function removePidFile(): void {
   try {
     if (existsSync(PID_FILE)) unlinkSync(PID_FILE);
   } catch (error) {
+    // PID file removal is cleanup - log but don't fail shutdown
     logger.warn('SYSTEM', 'Failed to remove PID file', { path: PID_FILE, error: (error as Error).message });
   }
 }
@@ -128,6 +129,7 @@ export async function updateCursorContextForProject(projectName: string, port: n
     writeContextFile(entry.workspacePath, context);
     logger.debug('CURSOR', 'Updated context file', { projectName, workspacePath: entry.workspacePath });
   } catch (error) {
+    // Context update is non-critical - log and continue
     logger.warn('CURSOR', 'Failed to update context file', { projectName, error: (error as Error).message });
   }
 }
@@ -147,7 +149,11 @@ async function isPortInUse(port: number): Promise<boolean> {
     // Note: Removed AbortSignal.timeout to avoid Windows Bun cleanup issue (libuv assertion)
     const response = await fetch(`http://127.0.0.1:${port}/api/health`);
     return response.ok;
-  } catch { return false; }
+  } catch (error) {
+    // Expected: port is free or service not responding
+    // Not logging - this is called frequently for health checks
+    return false;
+  }
 }
 
 async function waitForHealth(port: number, timeoutMs: number = 30000): Promise<boolean> {
@@ -157,8 +163,11 @@ async function waitForHealth(port: number, timeoutMs: number = 30000): Promise<b
       // Note: Removed AbortSignal.timeout to avoid Windows Bun cleanup issue (libuv assertion)
       const response = await fetch(`http://127.0.0.1:${port}/api/readiness`);
       if (response.ok) return true;
-    } catch {
-      // Not ready yet
+    } catch (error) {
+      logger.debug('SYSTEM', 'Service not ready yet, will retry', {
+        port,
+        error: error instanceof Error ? error.message : String(error)
+      });
     }
     await new Promise(r => setTimeout(r, 500));
   }
@@ -215,6 +224,8 @@ async function getRunningWorkerVersion(port: number): Promise<string | null> {
     const data = await response.json() as { version: string };
     return data.version;
   } catch {
+    // Expected: worker not running or version endpoint unavailable
+    logger.debug('SYSTEM', 'Could not fetch worker version', { port });
     return null;
   }
 }
@@ -256,6 +267,7 @@ import { SessionRoutes } from './worker/http/routes/SessionRoutes.js';
 import { DataRoutes } from './worker/http/routes/DataRoutes.js';
 import { SearchRoutes } from './worker/http/routes/SearchRoutes.js';
 import { SettingsRoutes } from './worker/http/routes/SettingsRoutes.js';
+import { LogsRoutes } from './worker/http/routes/LogsRoutes.js';
 
 export class WorkerService {
   private app: express.Application;
@@ -285,6 +297,7 @@ export class WorkerService {
   private dataRoutes: DataRoutes;
   private searchRoutes: SearchRoutes | null;
   private settingsRoutes: SettingsRoutes;
+  private logsRoutes: LogsRoutes;
 
   // Initialization tracking
   private initializationComplete: Promise<void>;
@@ -329,6 +342,7 @@ export class WorkerService {
     // SearchRoutes needs SearchManager which requires initialized DB - will be created in initializeBackground()
     this.searchRoutes = null;
     this.settingsRoutes = new SettingsRoutes(this.settingsManager);
+    this.logsRoutes = new LogsRoutes();
 
     this.setupMiddleware();
     this.setupRoutes();
@@ -503,6 +517,7 @@ export class WorkerService {
     this.dataRoutes.setupRoutes(this.app);
     // searchRoutes is set up after database initialization in initializeBackground()
     this.settingsRoutes.setupRoutes(this.app);
+    this.logsRoutes.setupRoutes(this.app);
 
     // Register early handler for /api/context/inject to avoid 404 during startup
     // This handler waits for initialization to complete before delegating to SearchRoutes
@@ -605,8 +620,11 @@ export class WorkerService {
         }
         try {
           execSync(`taskkill /PID ${pid} /T /F`, { timeout: 60000, stdio: 'ignore' });
-        } catch {
-          // Process may have already exited - continue cleanup
+        } catch (error) {
+          logger.debug('SYSTEM', 'Failed to kill process, may have already exited', {
+            pid,
+            error: error instanceof Error ? error.message : String(error)
+          });
         }
       }
     } else {
@@ -614,7 +632,8 @@ export class WorkerService {
         try {
           process.kill(pid, 'SIGKILL');
         } catch {
-          // Process already exited - that's fine
+          // Process already exited - expected during cleanup
+          logger.debug('SYSTEM', 'Process already exited', { pid });
         }
       }
     }
@@ -747,6 +766,11 @@ export class WorkerService {
 
     session.generatorPromise = this.sdkAgent.startSession(session, this)
       .catch(error => {
+        logger.error('SDK', 'Session generator failed', {
+          sessionId: session.sessionDbId,
+          project: session.project
+        }, error as Error);
+        // Note: Error is logged but not rethrown - session marked as complete via finally
       })
       .finally(() => {
         session.generatorPromise = null;
@@ -814,6 +838,7 @@ export class WorkerService {
         // Small delay between sessions to avoid rate limiting
         await new Promise(resolve => setTimeout(resolve, 100));
       } catch (error) {
+        // Recovery is best-effort - skip failed sessions and continue with others
         logger.warn('SYSTEM', `Failed to process session ${sessionDbId}`, {}, error as Error);
         result.sessionsSkipped++;
       }
@@ -978,7 +1003,9 @@ export class WorkerService {
         try {
           process.kill(pid, 0);
           return true;
-        } catch {
+        } catch (error) {
+          // Expected: process has exited
+          // Not logging - this is called in a tight loop during cleanup
           return false;
         }
       });
@@ -1385,8 +1412,9 @@ function configureCursorMcp(target: string): number {
         if (!config.mcpServers) {
           config.mcpServers = {};
         }
-      } catch {
+      } catch (error) {
         // Start fresh if corrupt
+        logger.warn('SYSTEM', 'Corrupt mcp.json, creating new config', { path: mcpJsonPath, error: error instanceof Error ? error.message : String(error) });
         config = { mcpServers: {} };
       }
     }

@@ -1400,7 +1400,9 @@ export class SearchManager {
                   if (Array.isArray(filesRead) && filesRead.length > 0) {
                     lines.push(`**Files Read:** ${filesRead.join(', ')}`);
                   }
-                } catch {
+                } catch (error) {
+                  // Expected: files_read may not be valid JSON (plain string)
+                  // Not logging - normal fallback for plain text file lists
                   if (summary.files_read.trim()) {
                     lines.push(`**Files Read:** ${summary.files_read}`);
                   }
@@ -1414,7 +1416,9 @@ export class SearchManager {
                   if (Array.isArray(filesEdited) && filesEdited.length > 0) {
                     lines.push(`**Files Edited:** ${filesEdited.join(', ')}`);
                   }
-                } catch {
+                } catch (error) {
+                  // Expected: files_edited may not be valid JSON (plain string)
+                  // Not logging - normal fallback for plain text file lists
                   if (summary.files_edited.trim()) {
                     lines.push(`**Files Edited:** ${summary.files_edited}`);
                   }
@@ -1696,6 +1700,7 @@ export class SearchManager {
           }]
         };
       } catch (error: any) {
+        logger.error('SEARCH', 'Timeline query failed', { query, anchor }, error);
         return {
           content: [{
             type: 'text' as const,

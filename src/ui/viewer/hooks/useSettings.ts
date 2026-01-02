@@ -78,6 +78,7 @@ export function useSettings() {
         setSaveStatus(`✗ Error: ${result.error}`);
       }
     } catch (error) {
+      console.error('Failed to save settings:', error);
       setSaveStatus(`✗ Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
     } finally {
       setIsSaving(false);

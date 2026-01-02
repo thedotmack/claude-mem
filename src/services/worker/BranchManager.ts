@@ -204,8 +204,9 @@ export async function switchBranch(targetBranch: string): Promise<SwitchResult> 
     logger.debug('BRANCH', 'Checking out branch', { branch: targetBranch });
     try {
       execGit(['checkout', targetBranch]);
-    } catch {
+    } catch (error) {
       // Branch might not exist locally, try tracking remote
+      logger.debug('BRANCH', 'Branch not local, tracking remote', { branch: targetBranch, error: error instanceof Error ? error.message : String(error) });
       execGit(['checkout', '-b', targetBranch, `origin/${targetBranch}`]);
     }
 

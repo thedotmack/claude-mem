@@ -8,6 +8,7 @@ import { readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { SessionStore } from '../services/sqlite/SessionStore.js';
+import { logger } from '../utils/logger.js';
 
 interface ObservationData {
   type: string;
@@ -56,7 +57,8 @@ function buildTimestampMap(): TimestampMapping {
     const content = readFileSync(filepath, 'utf-8');
     const lines = content.split('\n').filter(l => l.trim());
 
-    for (const line of lines) {
+    for (let index = 0; index < lines.length; index++) {
+      const line = lines[index];
       try {
         const data = JSON.parse(line);
         const timestamp = data.timestamp;
@@ -75,7 +77,11 @@ function buildTimestampMap(): TimestampMapping {
           }
         }
       } catch (e) {
-        // Skip invalid JSON lines
+        logger.debug('IMPORT', 'Skipping invalid JSON line', {
+          lineNumber: index + 1,
+          filename,
+          error: e instanceof Error ? e.message : String(e)
+        });
       }
     }
   }
