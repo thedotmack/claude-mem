@@ -240,8 +240,9 @@ export async function switchBranch(targetBranch: string): Promise<SwitchResult> 
       if (info.branch && isValidBranchName(info.branch)) {
         execGit(['checkout', info.branch]);
       }
-    } catch {
+    } catch (recoveryError) {
       // Recovery failed, user needs manual intervention
+      logger.error('GIT', 'Failed to recover branch after error', { branch: info.branch }, recoveryError as Error);
     }
 
     return {

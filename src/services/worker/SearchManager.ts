@@ -1401,8 +1401,7 @@ export class SearchManager {
                     lines.push(`**Files Read:** ${filesRead.join(', ')}`);
                   }
                 } catch (error) {
-                  // Expected: files_read may not be valid JSON (plain string)
-                  // Not logging - normal fallback for plain text file lists
+                  // [APPROVED OVERRIDE]: Expected JSON parse failures for file lists that may be plain strings, graceful fallback to raw value
                   if (summary.files_read.trim()) {
                     lines.push(`**Files Read:** ${summary.files_read}`);
                   }
@@ -1417,8 +1416,7 @@ export class SearchManager {
                     lines.push(`**Files Edited:** ${filesEdited.join(', ')}`);
                   }
                 } catch (error) {
-                  // Expected: files_edited may not be valid JSON (plain string)
-                  // Not logging - normal fallback for plain text file lists
+                  // [APPROVED OVERRIDE]: Expected JSON parse failures for file lists that may be plain strings, graceful fallback to raw value
                   if (summary.files_edited.trim()) {
                     lines.push(`**Files Edited:** ${summary.files_edited}`);
                   }

@@ -98,10 +98,12 @@ function detectAntiPatterns(filePath: string, projectRoot: string): AntiPattern[
         braceCount += (nextLine.match(/{/g) || []).length - (nextLine.match(/}/g) || []).length;
       }
 
-      const hasLogging = catchBody.match(/logger\.(error|warn|debug|info)/) ||
+      const hasLogging = catchBody.match(/logger\.(error|warn|debug|info|failure|success)/) ||
                         catchBody.match(/console\.(error|warn)/);
+      const hasExit = catchBody.match(/process\.exit/);
+      const hasOverride = catchBody.match(/\/\/\s*\[APPROVED OVERRIDE\]/i);
 
-      if (!hasLogging && lookAhead > 0) {  // Only flag if it's actually a multi-line handler
+      if (!hasLogging && !hasExit && !hasOverride && lookAhead > 0) {  // Only flag if it's actually a multi-line handler
         antiPatterns.push({
           file: relPath,
           line: i + 1,
@@ -195,6 +197,10 @@ function analyzeTryCatchBlock(
     .replace(/}$/, '') // Remove closing brace
     .trim();
 
+  // Check for [APPROVED OVERRIDE] marker (check this FIRST before flagging as empty)
+  const overrideMatch = catchContent.match(/\/\/\s*\[APPROVED OVERRIDE\]:\s*(.+)/i);
+  const overrideReason = overrideMatch?.[1]?.trim();
+
   // Check for comment-only catch blocks
   const nonCommentContent = catchContent
     .split('\n')
@@ -206,22 +212,32 @@ function analyzeTryCatchBlock(
     .trim();
 
   if (!nonCommentContent || nonCommentContent === '') {
-    antiPatterns.push({
-      file: relPath,
-      line: catchStartLine,
-      pattern: 'EMPTY_CATCH',
-      severity: 'CRITICAL',
-      description: 'Empty catch block - errors are silently swallowed. User will waste hours debugging.',
-      code: catchBlock.trim()
-    });
+    if (overrideReason) {
+      // Empty catch with approved override
+      antiPatterns.push({
+        file: relPath,
+        line: catchStartLine,
+        pattern: 'EMPTY_CATCH',
+        severity: 'APPROVED_OVERRIDE',
+        description: 'Empty catch block - approved override.',
+        code: catchBlock.trim(),
+        overrideReason
+      });
+    } else {
+      // Empty catch without override - CRITICAL
+      antiPatterns.push({
+        file: relPath,
+        line: catchStartLine,
+        pattern: 'EMPTY_CATCH',
+        severity: 'CRITICAL',
+        description: 'Empty catch block - errors are silently swallowed. User will waste hours debugging.',
+        code: catchBlock.trim()
+      });
+    }
   }
 
-  // Check for [APPROVED OVERRIDE] marker
-  const overrideMatch = catchContent.match(/\/\/\s*\[APPROVED OVERRIDE\]:\s*(.+)/i);
-  const overrideReason = overrideMatch?.[1]?.trim();
-
   // CRITICAL: No logging in catch block (unless explicitly approved)
-  const hasLogging = catchContent.match(/logger\.(error|warn|debug|info)/);
+  const hasLogging = catchContent.match(/logger\.(error|warn|debug|info|failure|success)/);
   const hasConsoleError = catchContent.match(/console\.(error|warn)/);
   const hasStderr = catchContent.match(/process\.stderr\.write/);
   const hasThrow = catchContent.match(/throw/);

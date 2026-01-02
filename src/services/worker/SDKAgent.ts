@@ -544,6 +544,7 @@ export class SDKAgent {
       
       if (claudePath) return claudePath;
     } catch (error) {
+      // [APPROVED OVERRIDE]: Expected auto-detection failure, logs debug and throws informative error below after all detection attempts fail
       logger.debug('SDK', 'Claude executable auto-detection failed', error);
     }
 

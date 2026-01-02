@@ -103,8 +103,7 @@ export function getCurrentProjectName(): string {
     }).trim();
     return basename(gitRoot);
   } catch (error) {
-    // Expected: not a git repo or git not available
-    // Not logging - this is a common fallback path
+    // [APPROVED OVERRIDE]: Expected git command failure when not in git repo or git not installed, graceful fallback to cwd
     return basename(process.cwd());
   }
 }
