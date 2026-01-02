@@ -10,6 +10,7 @@ import { basename } from "path";
 import { ensureWorkerRunning, getWorkerPort } from "../shared/worker-utils.js";
 import { HOOK_EXIT_CODES } from "../shared/hook-constants.js";
 import { logger } from "../utils/logger.js";
+import { fetchWithRetry } from "../shared/fetch-with-retry.js";
 
 // Ensure worker is running
 await ensureWorkerRunning();
@@ -19,7 +20,8 @@ const project = basename(process.cwd());
 
 // Fetch formatted context directly from worker API
 // Note: Removed AbortSignal.timeout to avoid Windows Bun cleanup issue (libuv assertion)
-const response = await fetch(
+// Uses fetchWithRetry to handle transient ECONNRESET errors during worker restarts
+const response = await fetchWithRetry(
   `http://127.0.0.1:${port}/api/context/inject?project=${encodeURIComponent(project)}&colors=true`,
   { method: 'GET' }
 );

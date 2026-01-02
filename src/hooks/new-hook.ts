@@ -3,6 +3,7 @@ import { STANDARD_HOOK_RESPONSE } from './hook-response.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
 import { getProjectName } from '../utils/project-name.js';
 import { logger } from '../utils/logger.js';
+import { fetchWithRetry } from '../shared/fetch-with-retry.js';
 
 export interface UserPromptSubmitInput {
   session_id: string;
@@ -32,7 +33,8 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
   logger.info('HOOK', 'new-hook: Calling /api/sessions/init', { contentSessionId: session_id, project, prompt_length: prompt?.length });
 
   // Initialize session via HTTP - handles DB operations and privacy checks
-  const initResponse = await fetch(`http://127.0.0.1:${port}/api/sessions/init`, {
+  // Uses fetchWithRetry to handle transient ECONNRESET errors during worker restarts
+  const initResponse = await fetchWithRetry(`http://127.0.0.1:${port}/api/sessions/init`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -69,7 +71,8 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
   logger.info('HOOK', 'new-hook: Calling /sessions/{sessionDbId}/init', { sessionDbId, promptNumber, userPrompt_length: cleanedPrompt?.length });
 
   // Initialize SDK agent session via HTTP (starts the agent!)
-  const response = await fetch(`http://127.0.0.1:${port}/sessions/${sessionDbId}/init`, {
+  // Uses fetchWithRetry to handle transient ECONNRESET errors during worker restarts
+  const response = await fetchWithRetry(`http://127.0.0.1:${port}/sessions/${sessionDbId}/init`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ userPrompt: cleanedPrompt, promptNumber })
