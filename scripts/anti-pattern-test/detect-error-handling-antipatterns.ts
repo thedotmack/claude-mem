@@ -109,8 +109,8 @@ function detectAntiPatterns(filePath: string, projectRoot: string): AntiPattern[
     // HIGH: Logging only error.message instead of the full error object
     // Patterns like: logger.error('X', 'Y', {}, error.message) or console.error(error.message)
     const partialErrorLoggingPatterns = [
-      /logger\.(error|warn|info|debug)\s*\([^)]*,\s*(?:error|err|e)\.message\s*\)/,
-      /logger\.(error|warn|info|debug)\s*\([^)]*\{\s*(?:error|err|e):\s*(?:error|err|e)\.message\s*\}/,
+      /logger\.(error|warn|info|debug|failure)\s*\([^)]*,\s*(?:error|err|e)\.message\s*\)/,
+      /logger\.(error|warn|info|debug|failure)\s*\([^)]*\{\s*(?:error|err|e):\s*(?:error|err|e)\.message\s*\}/,
       /console\.(error|warn|log)\s*\(\s*(?:error|err|e)\.message\s*\)/,
       /console\.(error|warn|log)\s*\(\s*['"`][^'"`]+['"`]\s*,\s*(?:error|err|e)\.message\s*\)/,
     ];

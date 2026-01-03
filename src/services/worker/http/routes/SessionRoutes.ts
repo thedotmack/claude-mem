@@ -147,23 +147,18 @@ export class SessionRoutes extends BaseRouteHandler {
 
         // Mark all processing messages as failed so they can be retried or abandoned
         const pendingStore = this.sessionManager.getPendingMessageStore();
-        const db = this.dbManager.getSessionStore().db;
         try {
-          const stmt = db.prepare(`
-            SELECT id FROM pending_messages
-            WHERE session_db_id = ? AND status = 'processing'
-          `);
-          const processingMessages = stmt.all(session.sessionDbId) as { id: number }[];
-
-          for (const msg of processingMessages) {
-            pendingStore.markFailed(msg.id);
-            logger.warn('SESSION', `Marked message as failed after generator error`, {
+          const failedCount = pendingStore.markSessionMessagesFailed(session.sessionDbId);
+          if (failedCount > 0) {
+            logger.warn('SESSION', `Marked messages as failed after generator error`, {
               sessionId: session.sessionDbId,
-              messageId: msg.id
+              failedCount
             });
           }
         } catch (dbError) {
-          logger.error('SESSION', 'Failed to mark messages as failed', { sessionId: session.sessionDbId }, dbError as Error);
+          logger.error('SESSION', 'Failed to mark messages as failed', {
+            sessionId: session.sessionDbId
+          }, dbError as Error);
         }
       })
       .finally(() => {
