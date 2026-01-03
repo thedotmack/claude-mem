@@ -182,11 +182,10 @@ export class SearchManager {
               // Chroma returned 0 results - this is the correct answer, don't fall back to FTS5
               logger.debug('SEARCH', 'ChromaDB found no matches (final result, no FTS5 fallback)', {});
             }
-          } catch (chromaError: any) {
+          } catch (chromaError) {
             chromaFailed = true;
-            logger.debug('SEARCH', 'ChromaDB failed - semantic search unavailable', { error: chromaError.message });
+            logger.debug('SEARCH', 'ChromaDB failed - semantic search unavailable', {}, chromaError as Error);
             logger.debug('SEARCH', 'Install UVX/Python to enable vector search', { url: 'https://docs.astral.sh/uv/getting-started/installation/' });
-            // Set empty results - will show error message to user
             observations = [];
             sessions = [];
             prompts = [];
@@ -395,8 +394,8 @@ export class SearchManager {
                   results = this.sessionStore.getObservationsByIds(recentIds, { orderBy: 'date_desc', limit: 1 });
                 }
               }
-            } catch (chromaError: any) {
-              logger.debug('SEARCH', 'Chroma query failed - no results (FTS5 fallback removed)', { error: chromaError.message });
+            } catch (chromaError) {
+              logger.debug('SEARCH', 'Chroma query failed - no results (FTS5 fallback removed)', {}, chromaError as Error);
             }
           }
 
@@ -674,7 +673,7 @@ export class SearchManager {
               }
             }
           } catch (chromaError: any) {
-            logger.debug('SEARCH', 'Chroma search failed, using SQLite fallback', { error: chromaError.message });
+            logger.debug('SEARCH', 'Chroma search failed, using SQLite fallback', {}, chromaError as Error);
           }
         }
 
@@ -752,7 +751,7 @@ export class SearchManager {
               }
             }
           } catch (chromaError: any) {
-            logger.debug('SEARCH', 'Chroma ranking failed, using SQLite order', { error: chromaError.message });
+            logger.debug('SEARCH', 'Chroma ranking failed, using SQLite order', {}, chromaError as Error);
           }
         }
 
@@ -836,7 +835,7 @@ export class SearchManager {
               }
             }
           } catch (chromaError: any) {
-            logger.debug('SEARCH', 'Chroma ranking failed, using SQLite order', { error: chromaError.message });
+            logger.debug('SEARCH', 'Chroma ranking failed, using SQLite order', {}, chromaError as Error);
           }
         }
 
@@ -910,7 +909,7 @@ export class SearchManager {
               }
             }
           } catch (chromaError: any) {
-            logger.debug('SEARCH', 'Chroma query failed - no results (FTS5 fallback removed)', { error: chromaError.message });
+            logger.debug('SEARCH', 'Chroma query failed - no results (FTS5 fallback removed)', {}, chromaError as Error);
           }
         }
 
@@ -980,7 +979,7 @@ export class SearchManager {
               }
             }
           } catch (chromaError: any) {
-            logger.debug('SEARCH', 'Chroma query failed - no results (FTS5 fallback removed)', { error: chromaError.message });
+            logger.debug('SEARCH', 'Chroma query failed - no results (FTS5 fallback removed)', {}, chromaError as Error);
           }
         }
 
@@ -1050,7 +1049,7 @@ export class SearchManager {
               }
             }
           } catch (chromaError: any) {
-            logger.debug('SEARCH', 'Chroma query failed - no results (FTS5 fallback removed)', { error: chromaError.message });
+            logger.debug('SEARCH', 'Chroma query failed - no results (FTS5 fallback removed)', {}, chromaError as Error);
           }
         }
 
@@ -1125,7 +1124,7 @@ export class SearchManager {
               }
             }
           } catch (chromaError: any) {
-            logger.debug('SEARCH', 'Chroma ranking failed, using SQLite order', { error: chromaError.message });
+            logger.debug('SEARCH', 'Chroma ranking failed, using SQLite order', {}, chromaError as Error);
             // Fall through to SQLite fallback
           }
         }
@@ -1212,7 +1211,7 @@ export class SearchManager {
               }
             }
           } catch (chromaError: any) {
-            logger.debug('SEARCH', 'Chroma ranking failed, using SQLite order', { error: chromaError.message });
+            logger.debug('SEARCH', 'Chroma ranking failed, using SQLite order', {}, chromaError as Error);
             // Fall through to SQLite fallback
           }
         }
@@ -1309,7 +1308,7 @@ export class SearchManager {
               }
             }
           } catch (chromaError: any) {
-            logger.debug('SEARCH', 'Chroma ranking failed, using SQLite order', { error: chromaError.message });
+            logger.debug('SEARCH', 'Chroma ranking failed, using SQLite order', {}, chromaError as Error);
             // Fall through to SQLite fallback
           }
         }
@@ -1743,7 +1742,7 @@ export class SearchManager {
               }
             }
           } catch (chromaError: any) {
-            logger.debug('SEARCH', 'Chroma query failed - no results (FTS5 fallback removed)', { error: chromaError.message });
+            logger.debug('SEARCH', 'Chroma query failed - no results (FTS5 fallback removed)', {}, chromaError as Error);
           }
         }
 
