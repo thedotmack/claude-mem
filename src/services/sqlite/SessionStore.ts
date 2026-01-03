@@ -569,8 +569,24 @@ export class SessionStore {
       const hasOldCol = tableInfo.some(col => col.name === oldCol);
       const hasNewCol = tableInfo.some(col => col.name === newCol);
 
-      if (hasNewCol) {
-        // Already renamed, nothing to do
+        if (hasNewCol) {
+          // Already renamed, nothing to do
+          return false;
+        }
+
+        if (hasOldCol) {
+          // SQLite 3.25+ supports ALTER TABLE RENAME COLUMN
+          this.db.run(`ALTER TABLE ${table} RENAME COLUMN ${oldCol} TO ${newCol}`);
+          logger.info('DB', `Renamed ${table}.${oldCol} to ${newCol}`);
+          return true;
+        }
+
+        // Neither column exists - table might not exist or has different schema
+        logger.warn('DB', `Column ${oldCol} not found in ${table}, skipping rename`);
+        return false;
+      } catch (error) {
+        // Table might not exist yet, which is fine
+        logger.warn('DB', `Could not rename ${table}.${oldCol}`, {}, error as Error);
         return false;
       }
 
