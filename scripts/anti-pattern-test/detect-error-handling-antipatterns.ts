@@ -15,7 +15,7 @@ interface AntiPattern {
   file: string;
   line: number;
   pattern: string;
-  severity: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'APPROVED_OVERRIDE';
+  severity: 'ISSUE' | 'APPROVED_OVERRIDE';
   description: string;
   code: string;
   overrideReason?: string;
@@ -98,7 +98,7 @@ function detectAntiPatterns(filePath: string, projectRoot: string): AntiPattern[
             file: relPath,
             line: i + 1,
             pattern: 'ERROR_STRING_MATCHING',
-            severity: isGeneric ? 'CRITICAL' : 'HIGH',
+            severity: 'ISSUE',
             description: `Error type detection via string matching on "${matchedString}" - fragile and masks the real error. Log the FULL error object. We don't care about pretty error handling, we care about SEEING what went wrong.`,
             code: trimmed
           });
@@ -109,8 +109,8 @@ function detectAntiPatterns(filePath: string, projectRoot: string): AntiPattern[
     // HIGH: Logging only error.message instead of the full error object
     // Patterns like: logger.error('X', 'Y', {}, error.message) or console.error(error.message)
     const partialErrorLoggingPatterns = [
-      /logger\.(error|warn|info|debug)\s*\([^)]*,\s*(?:error|err|e)\.message\s*\)/,
-      /logger\.(error|warn|info|debug)\s*\([^)]*\{\s*(?:error|err|e):\s*(?:error|err|e)\.message\s*\}/,
+      /logger\.(error|warn|info|debug|failure)\s*\([^)]*,\s*(?:error|err|e)\.message\s*\)/,
+      /logger\.(error|warn|info|debug|failure)\s*\([^)]*\{\s*(?:error|err|e):\s*(?:error|err|e)\.message\s*\}/,
       /console\.(error|warn|log)\s*\(\s*(?:error|err|e)\.message\s*\)/,
       /console\.(error|warn|log)\s*\(\s*['"`][^'"`]+['"`]\s*,\s*(?:error|err|e)\.message\s*\)/,
     ];
@@ -132,7 +132,7 @@ function detectAntiPatterns(filePath: string, projectRoot: string): AntiPattern[
             file: relPath,
             line: i + 1,
             pattern: 'PARTIAL_ERROR_LOGGING',
-            severity: 'HIGH',
+            severity: 'ISSUE',
             description: 'Logging only error.message HIDES the stack trace, error type, and all properties. ALWAYS pass the full error object - you need the complete picture, not a summary.',
             code: trimmed
           });
@@ -159,7 +159,7 @@ function detectAntiPatterns(filePath: string, projectRoot: string): AntiPattern[
           file: relPath,
           line: i + 1,
           pattern: 'ERROR_MESSAGE_GUESSING',
-          severity: 'CRITICAL',
+          severity: 'ISSUE',
           description: 'Multiple string checks on error message to guess error type. STOP GUESSING. Log the FULL error object. We don\'t care what the library throws - we care about SEEING the error when it happens.',
           code: trimmed
         });
@@ -187,7 +187,7 @@ function detectAntiPatterns(filePath: string, projectRoot: string): AntiPattern[
         file: relPath,
         line: i + 1,
         pattern: 'PROMISE_EMPTY_CATCH',
-        severity: 'CRITICAL',
+        severity: 'ISSUE',
         description: 'Promise .catch() with empty handler - errors disappear into the void.',
         code: trimmed
       });
@@ -217,7 +217,7 @@ function detectAntiPatterns(filePath: string, projectRoot: string): AntiPattern[
           file: relPath,
           line: i + 1,
           pattern: 'PROMISE_CATCH_NO_LOGGING',
-          severity: 'CRITICAL',
+          severity: 'ISSUE',
           description: 'Promise .catch() without logging - errors are silently swallowed.',
           code: catchBody.trim().split('\n').slice(0, 5).join('\n')
         });
@@ -353,7 +353,7 @@ function analyzeTryCatchBlock(
         file: relPath,
         line: catchStartLine,
         pattern: 'NO_LOGGING_IN_CATCH',
-        severity: 'CRITICAL',
+        severity: 'ISSUE',
         description: 'Catch block has no logging - errors occur invisibly.',
         code: catchBlock.trim()
       });
@@ -371,7 +371,7 @@ function analyzeTryCatchBlock(
       file: relPath,
       line: tryStartLine,
       pattern: 'LARGE_TRY_BLOCK',
-      severity: 'HIGH',
+      severity: 'ISSUE',
       description: `Try block has ${significantTryLines} lines - too broad. Multiple errors lumped together.`,
       code: `${tryLines.slice(0, 3).join('\n')}\n... (${significantTryLines} lines) ...`
     });
@@ -388,7 +388,7 @@ function analyzeTryCatchBlock(
       file: relPath,
       line: catchStartLine,
       pattern: 'GENERIC_CATCH',
-      severity: 'MEDIUM',
+      severity: 'ISSUE',
       description: 'Catch block handles all errors identically - no error type discrimination.',
       code: catchBlock.trim()
     });
@@ -416,7 +416,7 @@ function analyzeTryCatchBlock(
           file: relPath,
           line: catchStartLine,
           pattern: 'CATCH_AND_CONTINUE_CRITICAL_PATH',
-          severity: 'CRITICAL',
+          severity: 'ISSUE',
           description: 'Critical path continues after error - may cause silent data corruption.',
           code: catchBlock.trim()
         });
@@ -427,9 +427,7 @@ function analyzeTryCatchBlock(
 }
 
 function formatReport(antiPatterns: AntiPattern[]): string {
-  const critical = antiPatterns.filter(a => a.severity === 'CRITICAL');
-  const high = antiPatterns.filter(a => a.severity === 'HIGH');
-  const medium = antiPatterns.filter(a => a.severity === 'MEDIUM');
+  const issues = antiPatterns.filter(a => a.severity === 'ISSUE');
   const approved = antiPatterns.filter(a => a.severity === 'APPROVED_OVERRIDE');
 
   if (antiPatterns.length === 0) {
@@ -440,47 +438,16 @@ function formatReport(antiPatterns: AntiPattern[]): string {
   report += '═══════════════════════════════════════════════════════════════\n';
   report += '  ERROR HANDLING ANTI-PATTERNS DETECTED\n';
   report += '═══════════════════════════════════════════════════════════════\n\n';
-  report += `Found ${critical.length + high.length + medium.length} anti-patterns:\n`;
-  report += `  🔴 CRITICAL: ${critical.length}\n`;
-  report += `  🟠 HIGH: ${high.length}\n`;
-  report += `  🟡 MEDIUM: ${medium.length}\n`;
+  report += `Found ${issues.length} anti-patterns that must be fixed:\n`;
   if (approved.length > 0) {
     report += `  ⚪ APPROVED OVERRIDES: ${approved.length}\n`;
   }
   report += '\n';
 
-  if (critical.length > 0) {
-    report += '🔴 CRITICAL ISSUES (Fix immediately - these cause silent failures):\n';
+  if (issues.length > 0) {
+    report += '❌ ISSUES TO FIX:\n';
     report += '─────────────────────────────────────────────────────────────\n\n';
-    for (const ap of critical) {
-      report += `📁 ${ap.file}:${ap.line}\n`;
-      report += `❌ ${ap.pattern}\n`;
-      report += `   ${ap.description}\n\n`;
-      report += `   Code:\n`;
-      const codeLines = ap.code.split('\n');
-      for (const line of codeLines.slice(0, 5)) {
-        report += `   ${line}\n`;
-      }
-      if (codeLines.length > 5) {
-        report += `   ... (${codeLines.length - 5} more lines)\n`;
-      }
-      report += '\n';
-    }
-  }
-
-  if (high.length > 0) {
-    report += '🟠 HIGH PRIORITY:\n';
-    report += '─────────────────────────────────────────────────────────────\n\n';
-    for (const ap of high) {
-      report += `📁 ${ap.file}:${ap.line} - ${ap.pattern}\n`;
-      report += `   ${ap.description}\n\n`;
-    }
-  }
-
-  if (medium.length > 0) {
-    report += '🟡 MEDIUM PRIORITY:\n';
-    report += '─────────────────────────────────────────────────────────────\n\n';
-    for (const ap of medium) {
+    for (const ap of issues) {
       report += `📁 ${ap.file}:${ap.line} - ${ap.pattern}\n`;
       report += `   ${ap.description}\n\n`;
     }
@@ -537,10 +504,10 @@ for (const file of tsFiles) {
 const report = formatReport(allAntiPatterns);
 console.log(report);
 
-// Exit with error code if critical issues found
-const critical = allAntiPatterns.filter(a => a.severity === 'CRITICAL');
-if (critical.length > 0) {
-  console.error(`❌ FAILED: ${critical.length} critical error handling anti-patterns must be fixed.\n`);
+// Exit with error code if any issues found
+const issues = allAntiPatterns.filter(a => a.severity === 'ISSUE');
+if (issues.length > 0) {
+  console.error(`❌ FAILED: ${issues.length} error handling anti-patterns must be fixed.\n`);
   process.exit(1);
 }
 
