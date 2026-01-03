@@ -172,13 +172,11 @@ export class SDKAgent {
               sessionId: session.sessionDbId,
               promptNumber: session.lastPromptNumber
             }, truncatedResponse);
-
-            // Parse and process response with discovery token delta and original timestamp
-            await this.processSDKResponse(session, textContent, worker, discoveryTokens, originalTimestamp);
-          } else {
-            // Empty response - still need to mark pending messages as processed
-            await this.markMessagesProcessed(session, worker);
           }
+
+          // Parse and process response (even if empty) with discovery token delta and original timestamp
+          // Empty responses will result in empty observations array and null summary
+          await this.processSDKResponse(session, textContent, worker, discoveryTokens, originalTimestamp);
         }
 
         // Log result messages
@@ -324,6 +322,8 @@ export class SDKAgent {
    *
    * Also captures assistant responses to shared conversation history for provider interop.
    * This allows Gemini to see full context if provider is switched mid-session.
+   *
+   * CRITICAL: Uses atomic transaction to prevent observation duplication on crash recovery.
    */
   private async processSDKResponse(session: ActiveSession, text: string, worker: any | undefined, discoveryTokens: number, originalTimestamp: number | null): Promise<void> {
     // Add assistant response to shared conversation history for provider interop
@@ -331,196 +331,168 @@ export class SDKAgent {
       session.conversationHistory.push({ role: 'assistant', content: text });
     }
 
-    // Parse observations
+    // Parse observations and summary
     const observations = parseObservations(text, session.contentSessionId);
-
-    // Store observations with original timestamp (if processing backlog) or current time
-    for (const obs of observations) {
-      const { id: obsId, createdAtEpoch } = this.dbManager.getSessionStore().storeObservation(
-        session.contentSessionId,
-        session.project,
-        obs,
-        session.lastPromptNumber,
-        discoveryTokens,
-        originalTimestamp ?? undefined
-      );
-
-      // Log observation details
-      logger.info('SDK', 'Observation saved', {
-        sessionId: session.sessionDbId,
-        obsId,
-        type: obs.type,
-        title: obs.title || '(untitled)',
-        filesRead: obs.files_read?.length ?? 0,
-        filesModified: obs.files_modified?.length ?? 0,
-        concepts: obs.concepts?.length ?? 0
-      });
-
-      // Sync to Chroma
-      const chromaStart = Date.now();
-      const obsType = obs.type;
-      const obsTitle = obs.title || '(untitled)';
-      this.dbManager.getChromaSync().syncObservation(
-        obsId,
-        session.contentSessionId,
-        session.project,
-        obs,
-        session.lastPromptNumber,
-        createdAtEpoch,
-        discoveryTokens
-      ).then(() => {
-        const chromaDuration = Date.now() - chromaStart;
-        logger.debug('CHROMA', 'Observation synced', {
-          obsId,
-          duration: `${chromaDuration}ms`,
-          type: obsType,
-          title: obsTitle
-        });
-      }).catch((error) => {
-        logger.warn('CHROMA', 'Observation sync failed, continuing without vector search', {
-          obsId,
-          type: obsType,
-          title: obsTitle
-        }, error);
-      });
-
-      // Broadcast to SSE clients (for web UI)
-      if (worker && worker.sseBroadcaster) {
-        worker.sseBroadcaster.broadcast({
-          type: 'new_observation',
-          observation: {
-            id: obsId,
-            memory_session_id: session.memorySessionId,
-            session_id: session.contentSessionId,
-            type: obs.type,
-            title: obs.title,
-            subtitle: obs.subtitle,
-            text: obs.text || null,
-            narrative: obs.narrative || null,
-            facts: JSON.stringify(obs.facts || []),
-            concepts: JSON.stringify(obs.concepts || []),
-            files_read: JSON.stringify(obs.files || []),
-            files_modified: JSON.stringify([]),
-            project: session.project,
-            prompt_number: session.lastPromptNumber,
-            created_at_epoch: createdAtEpoch
-          }
-        });
-      }
-    }
-
-    // Parse summary
     const summary = parseSummary(text, session.sessionDbId);
 
-    // Store summary with original timestamp (if processing backlog) or current time
-    if (summary) {
-      const { id: summaryId, createdAtEpoch } = this.dbManager.getSessionStore().storeSummary(
-        session.contentSessionId,
-        session.project,
-        summary,
-        session.lastPromptNumber,
-        discoveryTokens,
-        originalTimestamp ?? undefined
-      );
-
-      // Log summary details
-      logger.info('SDK', 'Summary saved', {
-        sessionId: session.sessionDbId,
-        summaryId,
-        request: summary.request || '(no request)',
-        hasCompleted: !!summary.completed,
-        hasNextSteps: !!summary.next_steps
-      });
-
-      // Sync to Chroma
-      const chromaStart = Date.now();
-      const summaryRequest = summary.request || '(no request)';
-      this.dbManager.getChromaSync().syncSummary(
-        summaryId,
-        session.contentSessionId,
-        session.project,
-        summary,
-        session.lastPromptNumber,
-        createdAtEpoch,
-        discoveryTokens
-      ).then(() => {
-        const chromaDuration = Date.now() - chromaStart;
-        logger.debug('CHROMA', 'Summary synced', {
-          summaryId,
-          duration: `${chromaDuration}ms`,
-          request: summaryRequest
-        });
-      }).catch((error) => {
-        logger.warn('CHROMA', 'Summary sync failed, continuing without vector search', {
-          summaryId,
-          request: summaryRequest
-        }, error);
-      });
-
-      // Broadcast to SSE clients (for web UI)
-      if (worker && worker.sseBroadcaster) {
-        worker.sseBroadcaster.broadcast({
-          type: 'new_summary',
-          summary: {
-            id: summaryId,
-            session_id: session.contentSessionId,
-            request: summary.request,
-            investigated: summary.investigated,
-            learned: summary.learned,
-            completed: summary.completed,
-            next_steps: summary.next_steps,
-            notes: summary.notes,
-            project: session.project,
-            prompt_number: session.lastPromptNumber,
-            created_at_epoch: createdAtEpoch
-          }
-        });
-      }
-
-      // Update Cursor context file for registered projects (fire-and-forget)
-      updateCursorContextForProject(session.project, getWorkerPort()).catch(error => {
-        logger.warn('CURSOR', 'Context update failed (non-critical)', { project: session.project }, error as Error);
-      });
-    }
-
-    // Mark messages as processed after successful observation/summary storage
-    await this.markMessagesProcessed(session, worker);
-  }
-
-  /**
-   * Mark all pending messages as successfully processed
-   * CRITICAL: Prevents message loss and duplicate processing
-   */
-  private async markMessagesProcessed(session: ActiveSession, worker: any | undefined): Promise<void> {
+    // Get the pending message ID(s) for this response
+    // In normal operation, this should be ONE message (FIFO processing)
+    // But we handle multiple for safety (in case SDK batches messages)
     const pendingMessageStore = this.sessionManager.getPendingMessageStore();
-    if (session.pendingProcessingIds.size > 0) {
-      for (const messageId of session.pendingProcessingIds) {
-        pendingMessageStore.markProcessed(messageId);
-      }
-      logger.debug('SDK', 'Messages marked as processed', {
-        sessionId: session.sessionDbId,
-        messageIds: Array.from(session.pendingProcessingIds),
-        count: session.pendingProcessingIds.size
-      });
-      session.pendingProcessingIds.clear();
+    const sessionStore = this.dbManager.getSessionStore();
 
-      // Clear timestamp for next batch (will be set fresh from next message)
+    if (session.pendingProcessingIds.size > 0) {
+      // ATOMIC TRANSACTION: Store observations + summary + mark message(s) complete
+      // This prevents duplicates if the worker crashes after storing but before marking complete
+      for (const messageId of session.pendingProcessingIds) {
+        const result = sessionStore.storeObservationsAndMarkComplete(
+          session.contentSessionId,
+          session.project,
+          observations,
+          summary || null,
+          messageId,
+          pendingMessageStore,
+          session.lastPromptNumber,
+          discoveryTokens,
+          originalTimestamp ?? undefined
+        );
+
+        // Log what was saved
+        logger.info('SDK', 'Observations and summary saved atomically', {
+          sessionId: session.sessionDbId,
+          messageId,
+          observationCount: result.observationIds.length,
+          hasSummary: !!result.summaryId,
+          atomicTransaction: true
+        });
+
+        // AFTER transaction commits - async operations (can fail safely without data loss)
+        // Sync observations to Chroma
+        for (let i = 0; i < observations.length; i++) {
+          const obsId = result.observationIds[i];
+          const obs = observations[i];
+          const chromaStart = Date.now();
+
+          this.dbManager.getChromaSync().syncObservation(
+            obsId,
+            session.contentSessionId,
+            session.project,
+            obs,
+            session.lastPromptNumber,
+            result.createdAtEpoch,
+            discoveryTokens
+          ).then(() => {
+            const chromaDuration = Date.now() - chromaStart;
+            logger.debug('CHROMA', 'Observation synced', {
+              obsId,
+              duration: `${chromaDuration}ms`,
+              type: obs.type,
+              title: obs.title || '(untitled)'
+            });
+          }).catch((error) => {
+            logger.warn('CHROMA', 'Observation sync failed, continuing without vector search', {
+              obsId,
+              type: obs.type,
+              title: obs.title || '(untitled)'
+            }, error);
+          });
+
+          // Broadcast to SSE clients (for web UI)
+          if (worker && worker.sseBroadcaster) {
+            worker.sseBroadcaster.broadcast({
+              type: 'new_observation',
+              observation: {
+                id: obsId,
+                memory_session_id: session.memorySessionId,
+                session_id: session.contentSessionId,
+                type: obs.type,
+                title: obs.title,
+                subtitle: obs.subtitle,
+                text: obs.text || null,
+                narrative: obs.narrative || null,
+                facts: JSON.stringify(obs.facts || []),
+                concepts: JSON.stringify(obs.concepts || []),
+                files_read: JSON.stringify(obs.files || []),
+                files_modified: JSON.stringify([]),
+                project: session.project,
+                prompt_number: session.lastPromptNumber,
+                created_at_epoch: result.createdAtEpoch
+              }
+            });
+          }
+        }
+
+        // Sync summary to Chroma (if present)
+        if (summary && result.summaryId) {
+          const chromaStart = Date.now();
+          this.dbManager.getChromaSync().syncSummary(
+            result.summaryId,
+            session.contentSessionId,
+            session.project,
+            summary,
+            session.lastPromptNumber,
+            result.createdAtEpoch,
+            discoveryTokens
+          ).then(() => {
+            const chromaDuration = Date.now() - chromaStart;
+            logger.debug('CHROMA', 'Summary synced', {
+              summaryId: result.summaryId,
+              duration: `${chromaDuration}ms`,
+              request: summary.request || '(no request)'
+            });
+          }).catch((error) => {
+            logger.warn('CHROMA', 'Summary sync failed, continuing without vector search', {
+              summaryId: result.summaryId,
+              request: summary.request || '(no request)'
+            }, error);
+          });
+
+          // Broadcast to SSE clients (for web UI)
+          if (worker && worker.sseBroadcaster) {
+            worker.sseBroadcaster.broadcast({
+              type: 'new_summary',
+              summary: {
+                id: result.summaryId,
+                session_id: session.contentSessionId,
+                request: summary.request,
+                investigated: summary.investigated,
+                learned: summary.learned,
+                completed: summary.completed,
+                next_steps: summary.next_steps,
+                notes: summary.notes,
+                project: session.project,
+                prompt_number: session.lastPromptNumber,
+                created_at_epoch: result.createdAtEpoch
+              }
+            });
+          }
+
+          // Update Cursor context file for registered projects (fire-and-forget)
+          updateCursorContextForProject(session.project, getWorkerPort()).catch(error => {
+            logger.warn('CURSOR', 'Context update failed (non-critical)', { project: session.project }, error as Error);
+          });
+        }
+      }
+
+      // Clear the processed message IDs
+      session.pendingProcessingIds.clear();
       session.earliestPendingTimestamp = null;
 
       // Clean up old processed messages (keep last 100 for UI display)
       const deletedCount = pendingMessageStore.cleanupProcessed(100);
       if (deletedCount > 0) {
-        logger.debug('SDK', 'Cleaned up old processed messages', {
-          deletedCount
-        });
+        logger.debug('SDK', 'Cleaned up old processed messages', { deletedCount });
+      }
+
+      // Broadcast activity status after processing (queue may have changed)
+      if (worker && typeof worker.broadcastProcessingStatus === 'function') {
+        worker.broadcastProcessingStatus();
       }
     }
-
-    // Broadcast activity status after processing (queue may have changed)
-    if (worker && typeof worker.broadcastProcessingStatus === 'function') {
-      worker.broadcastProcessingStatus();
-    }
   }
+
+  // REMOVED: markMessagesProcessed() - replaced by atomic transaction in processSDKResponse()
+  // Messages are now marked complete atomically with observation storage to prevent duplicates
 
   // ============================================================================
   // Configuration Helpers

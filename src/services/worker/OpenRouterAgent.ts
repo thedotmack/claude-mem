@@ -171,15 +171,11 @@ export class OpenRouterAgent {
             const tokensUsed = obsResponse.tokensUsed || 0;
             session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
             session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
-            await this.processOpenRouterResponse(session, obsResponse.content, worker, tokensUsed, originalTimestamp);
-          } else {
-            // Empty response - still mark messages as processed to avoid stuck state
-            logger.warn('SDK', 'Empty OpenRouter response for observation, marking as processed', {
-              sessionId: session.sessionDbId,
-              toolName: message.tool_name
-            });
-            await this.markMessagesProcessed(session, worker);
           }
+
+          // Process response (even if empty) - empty responses will have no observations/summaries
+          // but messages still need to be marked complete atomically
+          await this.processOpenRouterResponse(session, obsResponse.content || '', worker, tokensUsed, originalTimestamp);
 
         } else if (message.type === 'summarize') {
           // Build summary prompt
@@ -202,14 +198,11 @@ export class OpenRouterAgent {
             const tokensUsed = summaryResponse.tokensUsed || 0;
             session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
             session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
-            await this.processOpenRouterResponse(session, summaryResponse.content, worker, tokensUsed, originalTimestamp);
-          } else {
-            // Empty response - still mark messages as processed to avoid stuck state
-            logger.warn('SDK', 'Empty OpenRouter response for summary, marking as processed', {
-              sessionId: session.sessionDbId
-            });
-            await this.markMessagesProcessed(session, worker);
           }
+
+          // Process response (even if empty) - empty responses will have no observations/summaries
+          // but messages still need to be marked complete atomically
+          await this.processOpenRouterResponse(session, summaryResponse.content || '', worker, tokensUsed, originalTimestamp);
         }
       }
 
@@ -417,162 +410,149 @@ export class OpenRouterAgent {
     discoveryTokens: number,
     originalTimestamp: number | null
   ): Promise<void> {
-    // Parse observations (same XML format)
+    // Parse observations and summary
     const observations = parseObservations(text, session.contentSessionId);
-
-    // Store observations with original timestamp (if processing backlog) or current time
-    for (const obs of observations) {
-      const { id: obsId, createdAtEpoch } = this.dbManager.getSessionStore().storeObservation(
-        session.contentSessionId,
-        session.project,
-        obs,
-        session.lastPromptNumber,
-        discoveryTokens,
-        originalTimestamp ?? undefined
-      );
-
-      logger.info('SDK', 'OpenRouter observation saved', {
-        sessionId: session.sessionDbId,
-        obsId,
-        type: obs.type,
-        title: obs.title || '(untitled)'
-      });
-
-      // Sync to Chroma
-      this.dbManager.getChromaSync().syncObservation(
-        obsId,
-        session.contentSessionId,
-        session.project,
-        obs,
-        session.lastPromptNumber,
-        createdAtEpoch,
-        discoveryTokens
-      ).catch(err => {
-        logger.warn('SDK', 'OpenRouter chroma sync failed', { obsId }, err);
-      });
-
-      // Broadcast to SSE clients
-      if (worker && worker.sseBroadcaster) {
-        worker.sseBroadcaster.broadcast({
-          type: 'new_observation',
-          observation: {
-            id: obsId,
-            memory_session_id: session.memorySessionId,
-            session_id: session.contentSessionId,
-            type: obs.type,
-            title: obs.title,
-            subtitle: obs.subtitle,
-            text: null,
-            narrative: obs.narrative || null,
-            facts: JSON.stringify(obs.facts || []),
-            concepts: JSON.stringify(obs.concepts || []),
-            files_read: JSON.stringify(obs.files_read || []),
-            files_modified: JSON.stringify(obs.files_modified || []),
-            project: session.project,
-            prompt_number: session.lastPromptNumber,
-            created_at_epoch: createdAtEpoch
-          }
-        });
-      }
-    }
-
-    // Parse summary
     const summary = parseSummary(text, session.sessionDbId);
 
-    if (summary) {
-      // Convert nullable fields to empty strings for storeSummary
-      const summaryForStore = {
-        request: summary.request || '',
-        investigated: summary.investigated || '',
-        learned: summary.learned || '',
-        completed: summary.completed || '',
-        next_steps: summary.next_steps || '',
-        notes: summary.notes
-      };
+    // Convert nullable fields to empty strings for storeSummary (if summary exists)
+    const summaryForStore = summary ? {
+      request: summary.request || '',
+      investigated: summary.investigated || '',
+      learned: summary.learned || '',
+      completed: summary.completed || '',
+      next_steps: summary.next_steps || '',
+      notes: summary.notes
+    } : null;
 
-      const { id: summaryId, createdAtEpoch } = this.dbManager.getSessionStore().storeSummary(
-        session.contentSessionId,
-        session.project,
-        summaryForStore,
-        session.lastPromptNumber,
-        discoveryTokens,
-        originalTimestamp ?? undefined
-      );
-
-      logger.info('SDK', 'OpenRouter summary saved', {
-        sessionId: session.sessionDbId,
-        summaryId,
-        request: summary.request || '(no request)'
-      });
-
-      // Sync to Chroma
-      this.dbManager.getChromaSync().syncSummary(
-        summaryId,
-        session.contentSessionId,
-        session.project,
-        summaryForStore,
-        session.lastPromptNumber,
-        createdAtEpoch,
-        discoveryTokens
-      ).catch(err => {
-        logger.warn('SDK', 'OpenRouter chroma sync failed', { summaryId }, err);
-      });
-
-      // Broadcast to SSE clients
-      if (worker && worker.sseBroadcaster) {
-        worker.sseBroadcaster.broadcast({
-          type: 'new_summary',
-          summary: {
-            id: summaryId,
-            session_id: session.contentSessionId,
-            request: summary.request,
-            investigated: summary.investigated,
-            learned: summary.learned,
-            completed: summary.completed,
-            next_steps: summary.next_steps,
-            notes: summary.notes,
-            project: session.project,
-            prompt_number: session.lastPromptNumber,
-            created_at_epoch: createdAtEpoch
-          }
-        });
-      }
-
-      // Update Cursor context file for registered projects (fire-and-forget)
-      updateCursorContextForProject(session.project, getWorkerPort()).catch(error => {
-        logger.warn('CURSOR', 'Context update failed (non-critical)', { project: session.project }, error as Error);
-      });
-    }
-
-    // Mark messages as processed
-    await this.markMessagesProcessed(session, worker);
-  }
-
-  /**
-   * Mark pending messages as processed
-   */
-  private async markMessagesProcessed(session: ActiveSession, worker: any | undefined): Promise<void> {
+    // Get the pending message ID(s) for this response
     const pendingMessageStore = this.sessionManager.getPendingMessageStore();
-    if (session.pendingProcessingIds.size > 0) {
-      for (const messageId of session.pendingProcessingIds) {
-        pendingMessageStore.markProcessed(messageId);
-      }
-      logger.debug('SDK', 'OpenRouter messages marked as processed', {
-        sessionId: session.sessionDbId,
-        count: session.pendingProcessingIds.size
-      });
-      session.pendingProcessingIds.clear();
+    const sessionStore = this.dbManager.getSessionStore();
 
+    if (session.pendingProcessingIds.size > 0) {
+      // ATOMIC TRANSACTION: Store observations + summary + mark message(s) complete
+      for (const messageId of session.pendingProcessingIds) {
+        const result = sessionStore.storeObservationsAndMarkComplete(
+          session.contentSessionId,
+          session.project,
+          observations,
+          summaryForStore,
+          messageId,
+          pendingMessageStore,
+          session.lastPromptNumber,
+          discoveryTokens,
+          originalTimestamp ?? undefined
+        );
+
+        logger.info('SDK', 'OpenRouter observations and summary saved atomically', {
+          sessionId: session.sessionDbId,
+          messageId,
+          observationCount: result.observationIds.length,
+          hasSummary: !!result.summaryId,
+          atomicTransaction: true
+        });
+
+        // AFTER transaction commits - async operations (can fail safely)
+        for (let i = 0; i < observations.length; i++) {
+          const obsId = result.observationIds[i];
+          const obs = observations[i];
+
+          this.dbManager.getChromaSync().syncObservation(
+            obsId,
+            session.contentSessionId,
+            session.project,
+            obs,
+            session.lastPromptNumber,
+            result.createdAtEpoch,
+            discoveryTokens
+          ).catch(err => {
+            logger.warn('SDK', 'OpenRouter chroma sync failed', { obsId }, err);
+          });
+
+          // Broadcast to SSE clients
+          if (worker && worker.sseBroadcaster) {
+            worker.sseBroadcaster.broadcast({
+              type: 'new_observation',
+              observation: {
+                id: obsId,
+                memory_session_id: session.memorySessionId,
+                session_id: session.contentSessionId,
+                type: obs.type,
+                title: obs.title,
+                subtitle: obs.subtitle,
+                text: null,
+                narrative: obs.narrative || null,
+                facts: JSON.stringify(obs.facts || []),
+                concepts: JSON.stringify(obs.concepts || []),
+                files_read: JSON.stringify(obs.files_read || []),
+                files_modified: JSON.stringify(obs.files_modified || []),
+                project: session.project,
+                prompt_number: session.lastPromptNumber,
+                created_at_epoch: result.createdAtEpoch
+              }
+            });
+          }
+        }
+
+        // Sync summary to Chroma (if present)
+        if (summaryForStore && result.summaryId) {
+          this.dbManager.getChromaSync().syncSummary(
+            result.summaryId,
+            session.contentSessionId,
+            session.project,
+            summaryForStore,
+            session.lastPromptNumber,
+            result.createdAtEpoch,
+            discoveryTokens
+          ).catch(err => {
+            logger.warn('SDK', 'OpenRouter chroma sync failed', { summaryId: result.summaryId }, err);
+          });
+
+          // Broadcast to SSE clients
+          if (worker && worker.sseBroadcaster) {
+            worker.sseBroadcaster.broadcast({
+              type: 'new_summary',
+              summary: {
+                id: result.summaryId,
+                session_id: session.contentSessionId,
+                request: summary!.request,
+                investigated: summary!.investigated,
+                learned: summary!.learned,
+                completed: summary!.completed,
+                next_steps: summary!.next_steps,
+                notes: summary!.notes,
+                project: session.project,
+                prompt_number: session.lastPromptNumber,
+                created_at_epoch: result.createdAtEpoch
+              }
+            });
+          }
+
+          // Update Cursor context file for registered projects (fire-and-forget)
+          updateCursorContextForProject(session.project, getWorkerPort()).catch(error => {
+            logger.warn('CURSOR', 'Context update failed (non-critical)', { project: session.project }, error as Error);
+          });
+        }
+      }
+
+      // Clear the processed message IDs
+      session.pendingProcessingIds.clear();
+      session.earliestPendingTimestamp = null;
+
+      // Clean up old processed messages
       const deletedCount = pendingMessageStore.cleanupProcessed(100);
       if (deletedCount > 0) {
-        logger.debug('SDK', 'OpenRouter cleaned up old processed messages', { deletedCount });
+        logger.debug('SDK', 'Cleaned up old processed messages', { deletedCount });
+      }
+
+      // Broadcast activity status after processing
+      if (worker && typeof worker.broadcastProcessingStatus === 'function') {
+        worker.broadcastProcessingStatus();
       }
     }
-
-    if (worker && typeof worker.broadcastProcessingStatus === 'function') {
-      worker.broadcastProcessingStatus();
-    }
   }
+
+  // REMOVED: markMessagesProcessed() - replaced by atomic transaction in processOpenRouterResponse()
+  // Messages are now marked complete atomically with observation storage to prevent duplicates
 
   /**
    * Get OpenRouter configuration from settings or environment

@@ -12,6 +12,7 @@ import {
   UserPromptRecord,
   LatestPromptResult
 } from '../../types/database.js';
+import type { PendingMessageStore } from './PendingMessageStore.js';
 
 /**
  * Session data store for SDK sessions, observations, and summaries
@@ -1300,6 +1301,138 @@ export class SessionStore {
       id: Number(result.lastInsertRowid),
       createdAtEpoch: timestampEpoch
     };
+  }
+
+  /**
+   * ATOMIC: Store observations + summary + mark pending message as processed
+   *
+   * This method wraps observation storage, summary storage, and message completion
+   * in a single database transaction to prevent race conditions. If the worker crashes
+   * during processing, either all operations succeed together or all fail together.
+   *
+   * This fixes the observation duplication bug where observations were stored but
+   * the message wasn't marked complete, causing reprocessing on crash recovery.
+   *
+   * @param memorySessionId - SDK memory session ID
+   * @param project - Project name
+   * @param observations - Array of observations to store (can be empty)
+   * @param summary - Optional summary to store
+   * @param messageId - Pending message ID to mark as processed
+   * @param pendingStore - PendingMessageStore instance for marking complete
+   * @param promptNumber - Optional prompt number
+   * @param discoveryTokens - Discovery tokens count
+   * @param overrideTimestampEpoch - Optional override timestamp
+   * @returns Object with observation IDs, optional summary ID, and timestamp
+   */
+  storeObservationsAndMarkComplete(
+    memorySessionId: string,
+    project: string,
+    observations: Array<{
+      type: string;
+      title: string | null;
+      subtitle: string | null;
+      facts: string[];
+      narrative: string | null;
+      concepts: string[];
+      files_read: string[];
+      files_modified: string[];
+    }>,
+    summary: {
+      request: string;
+      investigated: string;
+      learned: string;
+      completed: string;
+      next_steps: string;
+      notes: string | null;
+    } | null,
+    messageId: number,
+    pendingStore: PendingMessageStore,
+    promptNumber?: number,
+    discoveryTokens: number = 0,
+    overrideTimestampEpoch?: number
+  ): { observationIds: number[]; summaryId?: number; createdAtEpoch: number } {
+    // Use override timestamp if provided
+    const timestampEpoch = overrideTimestampEpoch ?? Date.now();
+    const timestampIso = new Date(timestampEpoch).toISOString();
+
+    // Create transaction that wraps all operations
+    const storeAndMarkTx = this.db.transaction(() => {
+      const observationIds: number[] = [];
+
+      // 1. Store all observations
+      const obsStmt = this.db.prepare(`
+        INSERT INTO observations
+        (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
+         files_read, files_modified, prompt_number, discovery_tokens, created_at, created_at_epoch)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+
+      for (const observation of observations) {
+        const result = obsStmt.run(
+          memorySessionId,
+          project,
+          observation.type,
+          observation.title,
+          observation.subtitle,
+          JSON.stringify(observation.facts),
+          observation.narrative,
+          JSON.stringify(observation.concepts),
+          JSON.stringify(observation.files_read),
+          JSON.stringify(observation.files_modified),
+          promptNumber || null,
+          discoveryTokens,
+          timestampIso,
+          timestampEpoch
+        );
+        observationIds.push(Number(result.lastInsertRowid));
+      }
+
+      // 2. Store summary if provided
+      let summaryId: number | undefined;
+      if (summary) {
+        const summaryStmt = this.db.prepare(`
+          INSERT INTO session_summaries
+          (memory_session_id, project, request, investigated, learned, completed,
+           next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+
+        const result = summaryStmt.run(
+          memorySessionId,
+          project,
+          summary.request,
+          summary.investigated,
+          summary.learned,
+          summary.completed,
+          summary.next_steps,
+          summary.notes,
+          promptNumber || null,
+          discoveryTokens,
+          timestampIso,
+          timestampEpoch
+        );
+        summaryId = Number(result.lastInsertRowid);
+      }
+
+      // 3. Mark pending message as processed
+      // This UPDATE is part of the same transaction, so if it fails,
+      // observations and summary will be rolled back
+      const updateStmt = this.db.prepare(`
+        UPDATE pending_messages
+        SET
+          status = 'processed',
+          completed_at_epoch = ?,
+          tool_input = NULL,
+          tool_response = NULL
+        WHERE id = ? AND status = 'processing'
+      `);
+      updateStmt.run(timestampEpoch, messageId);
+
+      return { observationIds, summaryId, createdAtEpoch: timestampEpoch };
+    });
+
+    // Execute the transaction and return results
+    return storeAndMarkTx();
   }
 
 
