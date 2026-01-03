@@ -431,13 +431,8 @@ export class OpenRouterAgent {
     if (session.pendingProcessingIds.size > 0) {
       // ATOMIC TRANSACTION: Store observations + summary + mark message(s) complete
       for (const messageId of session.pendingProcessingIds) {
-        // CRITICAL: Must use memorySessionId (not contentSessionId) for FK constraint
-        if (!session.memorySessionId) {
-          throw new Error('Cannot store observations: memorySessionId not yet captured');
-        }
-
         const result = sessionStore.storeObservationsAndMarkComplete(
-          session.memorySessionId,
+          session.contentSessionId,
           session.project,
           observations,
           summaryForStore,
