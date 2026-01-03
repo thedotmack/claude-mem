@@ -57,6 +57,64 @@ export function clearPortCache(): void {
 }
 
 /**
+ * Fetch with retry logic for transient network errors
+ * Handles ECONNRESET, ECONNREFUSED, ETIMEDOUT, and socket errors
+ */
+export async function fetchWithRetry(
+  url: string,
+  options: RequestInit,
+  config: {
+    maxRetries?: number;
+    initialDelayMs?: number;
+    maxDelayMs?: number;
+  } = {}
+): Promise<Response> {
+  const {
+    maxRetries = 3,
+    initialDelayMs = 100,
+    maxDelayMs = 1000
+  } = config;
+
+  const retryableErrors = ['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'UND_ERR_SOCKET'];
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fetch(url, options);
+    } catch (error) {
+      lastError = error as Error;
+      const errorCode = (error as any)?.cause?.code || '';
+      const errorMessage = (error as Error).message || '';
+
+      const isRetryable = retryableErrors.some(code =>
+        errorCode.includes(code) || errorMessage.includes(code)
+      );
+
+      if (!isRetryable || attempt === maxRetries) {
+        throw error;
+      }
+
+      // Exponential backoff with jitter
+      const delay = Math.min(
+        initialDelayMs * Math.pow(2, attempt) + Math.random() * 50,
+        maxDelayMs
+      );
+
+      logger.debug('SYSTEM', 'Fetch failed, retrying', {
+        attempt: attempt + 1,
+        maxRetries,
+        delay: Math.round(delay),
+        error: errorMessage
+      });
+
+      await new Promise(r => setTimeout(r, delay));
+    }
+  }
+
+  throw lastError!;
+}
+
+/**
  * Check if worker is responsive and fully initialized by trying the readiness endpoint
  * Changed from /health to /api/readiness to ensure MCP initialization is complete
  */

@@ -1,6 +1,6 @@
 import { stdin } from 'process';
 import { STANDARD_HOOK_RESPONSE } from './hook-response.js';
-import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
+import { ensureWorkerRunning, getWorkerPort, fetchWithRetry } from '../shared/worker-utils.js';
 import { getProjectName } from '../utils/project-name.js';
 import { logger } from '../utils/logger.js';
 
@@ -32,16 +32,19 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
   logger.info('HOOK', 'new-hook: Calling /api/sessions/init', { contentSessionId: session_id, project, prompt_length: prompt?.length });
 
   // Initialize session via HTTP - handles DB operations and privacy checks
-  const initResponse = await fetch(`http://127.0.0.1:${port}/api/sessions/init`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contentSessionId: session_id,
-      project,
-      prompt
-    })
-    // Note: Removed signal to avoid Windows Bun cleanup issue (libuv assertion)
-  });
+  // Uses fetchWithRetry to handle transient network errors like ECONNRESET
+  const initResponse = await fetchWithRetry(
+    `http://127.0.0.1:${port}/api/sessions/init`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contentSessionId: session_id,
+        project,
+        prompt
+      })
+    }
+  );
 
   if (!initResponse.ok) {
     throw new Error(`Session initialization failed: ${initResponse.status}`);
@@ -69,12 +72,15 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
   logger.info('HOOK', 'new-hook: Calling /sessions/{sessionDbId}/init', { sessionDbId, promptNumber, userPrompt_length: cleanedPrompt?.length });
 
   // Initialize SDK agent session via HTTP (starts the agent!)
-  const response = await fetch(`http://127.0.0.1:${port}/sessions/${sessionDbId}/init`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ userPrompt: cleanedPrompt, promptNumber })
-    // Note: Removed signal to avoid Windows Bun cleanup issue (libuv assertion)
-  });
+  // Uses fetchWithRetry to handle transient network errors like ECONNRESET
+  const response = await fetchWithRetry(
+    `http://127.0.0.1:${port}/sessions/${sessionDbId}/init`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userPrompt: cleanedPrompt, promptNumber })
+    }
+  );
 
   if (!response.ok) {
     throw new Error(`SDK agent start failed: ${response.status}`);
