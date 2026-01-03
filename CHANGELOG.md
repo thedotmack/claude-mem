@@ -2,6 +2,24 @@
 
 All notable changes to claude-mem.
 
+## [v8.5.5] - 2026-01-03
+
+## Improved Error Handling and Logging
+
+This patch release enhances error handling and logging across all worker services for better debugging and reliability.
+
+### Changes
+- **Enhanced Error Logging**: Improved error context across SessionStore, SearchManager, SDKAgent, GeminiAgent, and OpenRouterAgent
+- **SearchManager**: Restored error handling for Chroma calls with improved logging
+- **SessionStore**: Enhanced error logging throughout database operations
+- **Bug Fix**: Fixed critical bug where `memory_session_id` could incorrectly equal `content_session_id`
+- **Hooks**: Streamlined error handling and loading states for better maintainability
+
+### Investigation Reports
+- Added detailed analysis documents for generator failures and observation duplication regressions
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.5.4...v8.5.5
+
 ## [v8.5.4] - 2026-01-02
 
 ## Bug Fixes
@@ -1328,24 +1346,4 @@ Added comprehensive test suites:
 - All 52 tests passing
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.1.11...v7.1.12
-
-## [v7.1.11] - 2025-12-14
-
-## What's Changed
-
-**Refactor: Simplified hook execution by removing bun-wrapper indirection**
-
-Hooks are compiled to standard JavaScript and work perfectly with Node. The bun-wrapper was solving a problem that doesn't exist - hooks don't use Bun-specific APIs, they're just HTTP clients to the worker service.
-
-**Benefits:**
-- Removes ~100 lines of code
-- Simpler cross-platform support (especially Windows)
-- No PATH resolution needed for hooks
-- Worker still uses Bun where performance matters
-- Follows YAGNI and Simple First principles
-
-**Fixes:**
-- Fish shell compatibility issue (#264)
-
-**Full Changelog:** https://github.com/thedotmack/claude-mem/compare/v7.1.10...v7.1.11
 
