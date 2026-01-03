@@ -193,6 +193,27 @@ export class PendingMessageStore {
   }
 
   /**
+   * Mark all processing messages for a session as failed
+   * Used in error recovery when session generator crashes
+   * @returns Number of messages marked failed
+   */
+  markSessionMessagesFailed(sessionDbId: number): number {
+    const now = Date.now();
+
+    // Atomic update - all processing messages for session → failed
+    // Note: This bypasses retry logic since generator failures are session-level,
+    // not message-level. Individual message failures use markFailed() instead.
+    const stmt = this.db.prepare(`
+      UPDATE pending_messages
+      SET status = 'failed', failed_at_epoch = ?
+      WHERE session_db_id = ? AND status = 'processing'
+    `);
+
+    const result = stmt.run(now, sessionDbId);
+    return result.changes;
+  }
+
+  /**
    * Abort a specific message (delete from queue)
    */
   abortMessage(messageId: number): boolean {

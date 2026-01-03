@@ -53,6 +53,9 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
 
   logger.info('HOOK', 'new-hook: Received from /api/sessions/init', { sessionDbId, promptNumber, skipped: initResult.skipped });
 
+  // SESSION ALIGNMENT LOG: Entry point showing content session ID and prompt number
+  logger.info('HOOK', `[ALIGNMENT] Hook Entry | contentSessionId=${session_id} | prompt#=${promptNumber} | sessionDbId=${sessionDbId}`);
+
   // Check if prompt was entirely private (worker performs privacy check)
   if (initResult.skipped && initResult.reason === 'private') {
     logger.info('HOOK', `new-hook: Session ${sessionDbId}, prompt #${promptNumber} (fully private - skipped)`);
@@ -87,11 +90,17 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
 let input = '';
 stdin.on('data', (chunk) => input += chunk);
 stdin.on('end', async () => {
-  let parsed: UserPromptSubmitInput | undefined;
   try {
-    parsed = input ? JSON.parse(input) : undefined;
+    let parsed: UserPromptSubmitInput | undefined;
+    try {
+      parsed = input ? JSON.parse(input) : undefined;
+    } catch (error) {
+      throw new Error(`Failed to parse hook input: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    await newHook(parsed);
   } catch (error) {
-    throw new Error(`Failed to parse hook input: ${error instanceof Error ? error.message : String(error)}`);
+    logger.error('HOOK', 'new-hook failed', {}, error as Error);
+  } finally {
+    process.exit(0);
   }
-  await newHook(parsed);
 });

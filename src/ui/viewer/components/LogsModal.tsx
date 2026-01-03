@@ -92,6 +92,7 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
   const [activeComponents, setActiveComponents] = useState<Set<LogComponent>>(
     new Set(['HOOK', 'WORKER', 'SDK', 'PARSER', 'DB', 'SYSTEM', 'HTTP', 'SESSION', 'CHROMA'])
   );
+  const [alignmentOnly, setAlignmentOnly] = useState(false);
 
   // Parse and filter log lines
   const parsedLines = useMemo(() => {
@@ -101,11 +102,15 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
 
   const filteredLines = useMemo(() => {
     return parsedLines.filter(line => {
+      // Alignment filter - if enabled, only show [ALIGNMENT] lines
+      if (alignmentOnly) {
+        return line.raw.includes('[ALIGNMENT]');
+      }
       // Always show unparsed lines
       if (!line.level || !line.component) return true;
       return activeLevels.has(line.level) && activeComponents.has(line.component);
     });
-  }, [parsedLines, activeLevels, activeComponents]);
+  }, [parsedLines, activeLevels, activeComponents, alignmentOnly]);
 
   // Check if user is at bottom before updating
   const checkIfAtBottom = useCallback(() => {
@@ -386,6 +391,21 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
 
       {/* Filter Bar */}
       <div className="console-filters">
+        <div className="console-filter-section">
+          <span className="console-filter-label">Quick:</span>
+          <div className="console-filter-chips">
+            <button
+              className={`console-filter-chip ${alignmentOnly ? 'active' : ''}`}
+              onClick={() => setAlignmentOnly(!alignmentOnly)}
+              style={{
+                '--chip-color': '#f0883e',
+              } as React.CSSProperties}
+              title="Show only session alignment logs"
+            >
+              🔗 Alignment
+            </button>
+          </div>
+        </div>
         <div className="console-filter-section">
           <span className="console-filter-label">Levels:</span>
           <div className="console-filter-chips">

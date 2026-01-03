@@ -73,11 +73,17 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
 let input = '';
 stdin.on('data', (chunk) => input += chunk);
 stdin.on('end', async () => {
-  let parsed: PostToolUseInput | undefined;
   try {
-    parsed = input ? JSON.parse(input) : undefined;
+    let parsed: PostToolUseInput | undefined;
+    try {
+      parsed = input ? JSON.parse(input) : undefined;
+    } catch (error) {
+      throw new Error(`Failed to parse hook input: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    await saveHook(parsed);
   } catch (error) {
-    throw new Error(`Failed to parse hook input: ${error instanceof Error ? error.message : String(error)}`);
+    logger.error('HOOK', 'save-hook failed', {}, error as Error);
+  } finally {
+    process.exit(0);
   }
-  await saveHook(parsed);
 });

@@ -147,23 +147,18 @@ export class SessionRoutes extends BaseRouteHandler {
 
         // Mark all processing messages as failed so they can be retried or abandoned
         const pendingStore = this.sessionManager.getPendingMessageStore();
-        const db = this.dbManager.getSessionStore().db;
         try {
-          const stmt = db.prepare(`
-            SELECT id FROM pending_messages
-            WHERE session_db_id = ? AND status = 'processing'
-          `);
-          const processingMessages = stmt.all(session.sessionDbId) as { id: number }[];
-
-          for (const msg of processingMessages) {
-            pendingStore.markFailed(msg.id);
-            logger.warn('SESSION', `Marked message as failed after generator error`, {
+          const failedCount = pendingStore.markSessionMessagesFailed(session.sessionDbId);
+          if (failedCount > 0) {
+            logger.warn('SESSION', `Marked messages as failed after generator error`, {
               sessionId: session.sessionDbId,
-              messageId: msg.id
+              failedCount
             });
           }
         } catch (dbError) {
-          logger.error('SESSION', 'Failed to mark messages as failed', { sessionId: session.sessionDbId }, dbError as Error);
+          logger.error('SESSION', 'Failed to mark messages as failed', {
+            sessionId: session.sessionDbId
+          }, dbError as Error);
         }
       })
       .finally(() => {
@@ -570,6 +565,11 @@ export class SessionRoutes extends BaseRouteHandler {
       contentSessionId
     });
 
+    // SESSION ALIGNMENT LOG: DB lookup proof - show content→memory mapping
+    const dbSession = store.getSessionById(sessionDbId);
+    const memorySessionId = dbSession?.memory_session_id || null;
+    const hasCapturedMemoryId = !!memorySessionId;
+
     // Step 2: Get next prompt number from user_prompts count
     const currentCount = store.getPromptNumberFromUserPrompts(contentSessionId);
     const promptNumber = currentCount + 1;
@@ -579,6 +579,13 @@ export class SessionRoutes extends BaseRouteHandler {
       promptNumber,
       currentCount
     });
+
+    // SESSION ALIGNMENT LOG: For prompt > 1, prove we looked up memorySessionId from contentSessionId
+    if (promptNumber > 1) {
+      logger.info('HTTP', `[ALIGNMENT] DB Lookup Proof | contentSessionId=${contentSessionId} → memorySessionId=${memorySessionId || '(not yet captured)'} | prompt#=${promptNumber} | hasCapturedMemoryId=${hasCapturedMemoryId}`);
+    } else {
+      logger.info('HTTP', `[ALIGNMENT] New Session | contentSessionId=${contentSessionId} | prompt#=${promptNumber} | memorySessionId will be captured on first SDK response`);
+    }
 
     // Step 3: Strip privacy tags from prompt
     const cleanedPrompt = stripMemoryTagsFromPrompt(prompt);
