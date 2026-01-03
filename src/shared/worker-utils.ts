@@ -57,6 +57,68 @@ export function clearPortCache(): void {
 }
 
 /**
+ * Fetch with retry logic for transient network errors.
+ * Handles ECONNRESET, ECONNREFUSED, ETIMEDOUT, and socket errors.
+ *
+ * With default maxRetries=3, performs up to 4 total attempts:
+ * - Initial attempt
+ * - Up to 3 retries with exponential backoff (100ms, 200ms, 400ms)
+ */
+export async function fetchWithRetry(
+  url: string,
+  options: RequestInit,
+  config: {
+    maxRetries?: number;
+    initialDelayMs?: number;
+    maxDelayMs?: number;
+  } = {}
+): Promise<Response> {
+  const {
+    maxRetries = 3,
+    initialDelayMs = 100,
+    maxDelayMs = 1000
+  } = config;
+
+  const retryableErrors = ['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'UND_ERR_SOCKET'];
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fetch(url, options);
+    } catch (error) {
+      const errorCode = (error as any)?.cause?.code || '';
+      const errorMessage = (error as Error).message || '';
+
+      const isRetryable = retryableErrors.some(code =>
+        errorCode.includes(code) || errorMessage.includes(code)
+      );
+
+      // Throw immediately for non-retryable errors or if we've exhausted retries
+      if (!isRetryable || attempt === maxRetries) {
+        throw error;
+      }
+
+      // Exponential backoff with jitter
+      const delay = Math.min(
+        initialDelayMs * Math.pow(2, attempt) + Math.random() * 50,
+        maxDelayMs
+      );
+
+      logger.debug('SYSTEM', 'Fetch failed, retrying', {
+        attempt: attempt + 1,
+        maxRetries,
+        delay: Math.round(delay),
+        error: errorMessage
+      });
+
+      await new Promise(r => setTimeout(r, delay));
+    }
+  }
+
+  // This line is unreachable but satisfies TypeScript's control flow analysis
+  throw new Error('Unexpected: exhausted retries without throwing');
+}
+
+/**
  * Check if worker is responsive and fully initialized by trying the readiness endpoint
  * Changed from /health to /api/readiness to ensure MCP initialization is complete
  */

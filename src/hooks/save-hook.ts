@@ -9,7 +9,7 @@
 import { stdin } from 'process';
 import { STANDARD_HOOK_RESPONSE } from './hook-response.js';
 import { logger } from '../utils/logger.js';
-import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
+import { ensureWorkerRunning, getWorkerPort, fetchWithRetry } from '../shared/worker-utils.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 
 export interface PostToolUseInput {
@@ -47,18 +47,21 @@ async function saveHook(input?: PostToolUseInput): Promise<void> {
   }
 
   // Send to worker - worker handles privacy check and database operations
-  const response = await fetch(`http://127.0.0.1:${port}/api/sessions/observations`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contentSessionId: session_id,
-      tool_name,
-      tool_input,
-      tool_response,
-      cwd
-    })
-    // Note: Removed signal to avoid Windows Bun cleanup issue (libuv assertion)
-  });
+  // Uses fetchWithRetry to handle transient network errors like ECONNRESET
+  const response = await fetchWithRetry(
+    `http://127.0.0.1:${port}/api/sessions/observations`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contentSessionId: session_id,
+        tool_name,
+        tool_input,
+        tool_response,
+        cwd
+      })
+    }
+  );
 
   if (!response.ok) {
     throw new Error(`Observation storage failed: ${response.status}`);

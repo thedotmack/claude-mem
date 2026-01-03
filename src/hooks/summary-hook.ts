@@ -12,7 +12,7 @@
 import { stdin } from 'process';
 import { STANDARD_HOOK_RESPONSE } from './hook-response.js';
 import { logger } from '../utils/logger.js';
-import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
+import { ensureWorkerRunning, getWorkerPort, fetchWithRetry } from '../shared/worker-utils.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { extractLastMessage } from '../shared/transcript-parser.js';
 
@@ -53,15 +53,18 @@ async function summaryHook(input?: StopInput): Promise<void> {
   });
 
   // Send to worker - worker handles privacy check and database operations
-  const response = await fetch(`http://127.0.0.1:${port}/api/sessions/summarize`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contentSessionId: session_id,
-      last_assistant_message: lastAssistantMessage
-    })
-    // Note: Removed signal to avoid Windows Bun cleanup issue (libuv assertion)
-  });
+  // Uses fetchWithRetry to handle transient network errors like ECONNRESET
+  const response = await fetchWithRetry(
+    `http://127.0.0.1:${port}/api/sessions/summarize`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contentSessionId: session_id,
+        last_assistant_message: lastAssistantMessage
+      })
+    }
+  );
 
   if (!response.ok) {
     console.log(STANDARD_HOOK_RESPONSE);
