@@ -616,9 +616,9 @@ export class SessionStore {
         // Neither column exists - table might not exist or has different schema
         logger.warn('DB', `Column ${oldCol} not found in ${table}, skipping rename`);
         return false;
-      } catch (error: any) {
+      } catch (error) {
         // Table might not exist yet, which is fine
-        logger.warn('DB', `Could not rename ${table}.${oldCol}: ${error.message}`);
+        logger.warn('DB', `Could not rename ${table}.${oldCol}`, {}, error as Error);
         return false;
       }
     };
