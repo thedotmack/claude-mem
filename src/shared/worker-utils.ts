@@ -57,8 +57,12 @@ export function clearPortCache(): void {
 }
 
 /**
- * Fetch with retry logic for transient network errors
- * Handles ECONNRESET, ECONNREFUSED, ETIMEDOUT, and socket errors
+ * Fetch with retry logic for transient network errors.
+ * Handles ECONNRESET, ECONNREFUSED, ETIMEDOUT, and socket errors.
+ *
+ * With default maxRetries=3, performs up to 4 total attempts:
+ * - Initial attempt
+ * - Up to 3 retries with exponential backoff (100ms, 200ms, 400ms)
  */
 export async function fetchWithRetry(
   url: string,
@@ -76,13 +80,11 @@ export async function fetchWithRetry(
   } = config;
 
   const retryableErrors = ['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'UND_ERR_SOCKET'];
-  let lastError: Error | null = null;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       return await fetch(url, options);
     } catch (error) {
-      lastError = error as Error;
       const errorCode = (error as any)?.cause?.code || '';
       const errorMessage = (error as Error).message || '';
 
@@ -90,6 +92,7 @@ export async function fetchWithRetry(
         errorCode.includes(code) || errorMessage.includes(code)
       );
 
+      // Throw immediately for non-retryable errors or if we've exhausted retries
       if (!isRetryable || attempt === maxRetries) {
         throw error;
       }
@@ -111,7 +114,8 @@ export async function fetchWithRetry(
     }
   }
 
-  throw lastError!;
+  // This line is unreachable but satisfies TypeScript's control flow analysis
+  throw new Error('Unexpected: exhausted retries without throwing');
 }
 
 /**
