@@ -46,6 +46,7 @@ export class SessionStore {
     this.createPendingMessagesTable();
     this.renameSessionIdColumns();
     this.repairSessionIdColumnRename();
+    this.addFailedAtEpochColumn();
   }
 
   /**
@@ -623,6 +624,25 @@ export class SessionStore {
     // Migration 17 now handles all column rename cases idempotently.
     // Just record this migration as applied.
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(19, new Date().toISOString());
+  }
+
+  /**
+   * Add failed_at_epoch column to pending_messages (migration 20)
+   * Used by markSessionMessagesFailed() for error recovery tracking
+   */
+  private addFailedAtEpochColumn(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(20) as SchemaVersion | undefined;
+    if (applied) return;
+
+    const tableInfo = this.db.query('PRAGMA table_info(pending_messages)').all() as TableColumnInfo[];
+    const hasColumn = tableInfo.some(col => col.name === 'failed_at_epoch');
+
+    if (!hasColumn) {
+      this.db.run('ALTER TABLE pending_messages ADD COLUMN failed_at_epoch INTEGER');
+      logger.info('DB', 'Added failed_at_epoch column to pending_messages table');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(20, new Date().toISOString());
   }
 
   /**
@@ -1346,7 +1366,7 @@ export class SessionStore {
       notes: string | null;
     } | null,
     messageId: number,
-    pendingStore: PendingMessageStore,
+    _pendingStore: PendingMessageStore,
     promptNumber?: number,
     discoveryTokens: number = 0,
     overrideTimestampEpoch?: number
