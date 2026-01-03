@@ -440,32 +440,20 @@ export class WorkerService {
       // SKILL.md is at plugin/skills/mem-search/SKILL.md
       // Operations are at plugin/skills/mem-search/operations/*.md
 
-      try {
-        let content: string;
+      let content: string;
 
-        if (operation) {
-          const operationPath = path.join(__dirname, '../skills/mem-search/operations', `${operation}.md`);
-          content = await fs.promises.readFile(operationPath, 'utf-8');
-        } else {
-          const skillPath = path.join(__dirname, '../skills/mem-search/SKILL.md');
-          const fullContent = await fs.promises.readFile(skillPath, 'utf-8');
-          content = this.extractInstructionSection(fullContent, topic);
-        }
-
-        res.json({
-          content: [{ type: 'text', text: content }]
-        });
-      } catch (error) {
-        // API endpoint must respond even on file read errors
-        logger.error('WORKER', 'Failed to load instructions', { topic, operation }, error as Error);
-        res.status(500).json({
-          content: [{
-            type: 'text',
-            text: `Error loading instructions: ${error instanceof Error ? error.message : 'Unknown error'}`
-          }],
-          isError: true
-        });
+      if (operation) {
+        const operationPath = path.join(__dirname, '../skills/mem-search/operations', `${operation}.md`);
+        content = await fs.promises.readFile(operationPath, 'utf-8');
+      } else {
+        const skillPath = path.join(__dirname, '../skills/mem-search/SKILL.md');
+        const fullContent = await fs.promises.readFile(skillPath, 'utf-8');
+        content = this.extractInstructionSection(fullContent, topic);
       }
+
+      res.json({
+        content: [{ type: 'text', text: content }]
+      });
     });
 
     // Admin endpoints for process management (localhost-only)
@@ -522,27 +510,19 @@ export class WorkerService {
     // NOTE: This duplicates logic from SearchRoutes.handleContextInject by design,
     // as we need the route available immediately before SearchRoutes is initialized
     this.app.get('/api/context/inject', async (req, res, next) => {
-      try {
-        const timeoutMs = 300000; // 5 minute timeout for slow systems
-        const timeoutPromise = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('Initialization timeout')), timeoutMs)
-        );
+      const timeoutMs = 300000; // 5 minute timeout for slow systems
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Initialization timeout')), timeoutMs)
+      );
 
-        await Promise.race([this.initializationComplete, timeoutPromise]);
+      await Promise.race([this.initializationComplete, timeoutPromise]);
 
-        if (!this.searchRoutes) {
-          res.status(503).json({ error: 'Search routes not initialized' });
-          return;
-        }
-
-        next(); // Delegate to SearchRoutes handler
-      } catch (error) {
-        // API endpoint must respond even on initialization timeout
-        logger.error('WORKER', 'Context inject handler failed', {}, error as Error);
-        if (!res.headersSent) {
-          res.status(500).json({ error: error instanceof Error ? error.message : 'Internal server error' });
-        }
+      if (!this.searchRoutes) {
+        res.status(503).json({ error: 'Search routes not initialized' });
+        return;
       }
+
+      next(); // Delegate to SearchRoutes handler
     });
   }
 
