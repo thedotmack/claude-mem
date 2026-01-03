@@ -1366,7 +1366,7 @@ export class SessionStore {
       notes: string | null;
     } | null,
     messageId: number,
-    pendingStore: PendingMessageStore,
+    _pendingStore: PendingMessageStore,
     promptNumber?: number,
     discoveryTokens: number = 0,
     overrideTimestampEpoch?: number
