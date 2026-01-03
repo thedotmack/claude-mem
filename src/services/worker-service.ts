@@ -53,21 +53,24 @@ function writePidFile(info: PidInfo): void {
 }
 
 function readPidFile(): PidInfo | null {
+  if (!existsSync(PID_FILE)) return null;
+
   try {
-    if (!existsSync(PID_FILE)) return null;
     return JSON.parse(readFileSync(PID_FILE, 'utf-8'));
   } catch (error) {
-    logger.warn('SYSTEM', 'Failed to read PID file', { path: PID_FILE, error: (error as Error).message });
+    logger.warn('SYSTEM', 'Failed to parse PID file', { path: PID_FILE }, error as Error);
     return null;
   }
 }
 
 function removePidFile(): void {
+  if (!existsSync(PID_FILE)) return;
+
   try {
-    if (existsSync(PID_FILE)) unlinkSync(PID_FILE);
+    unlinkSync(PID_FILE);
   } catch (error) {
+    // [ANTI-PATTERN IGNORED]: Cleanup function - PID file removal failure is non-critical
     logger.warn('SYSTEM', 'Failed to remove PID file', { path: PID_FILE }, error as Error);
-    return; // Non-critical cleanup, OK to fail
   }
 }
 
@@ -129,8 +132,8 @@ export async function updateCursorContextForProject(projectName: string, port: n
     writeContextFile(entry.workspacePath, context);
     logger.debug('CURSOR', 'Updated context file', { projectName, workspacePath: entry.workspacePath });
   } catch (error) {
+    // [ANTI-PATTERN IGNORED]: Background context update - failure is non-critical, user workflow continues
     logger.warn('CURSOR', 'Failed to update context file', { projectName }, error as Error);
-    return; // Non-critical context update, OK to fail
   }
 }
 
@@ -184,10 +187,12 @@ async function httpShutdown(port: number): Promise<boolean> {
     return true;
   } catch (error) {
     // Connection refused is expected if worker already stopped
-    const isConnectionRefused = (error as Error).message?.includes('ECONNREFUSED');
-    if (!isConnectionRefused) {
-      logger.warn('SYSTEM', 'Shutdown request failed', { port, error: (error as Error).message });
+    if (error instanceof Error && error.message?.includes('ECONNREFUSED')) {
+      logger.debug('SYSTEM', 'Worker already stopped', { port }, error);
+      return false;
     }
+    // Unexpected error - log full details
+    logger.warn('SYSTEM', 'Shutdown request failed unexpectedly', { port }, error as Error);
     return false;
   }
 }
@@ -366,8 +371,9 @@ export class WorkerService {
         await this.shutdown();
         process.exit(0);
       } catch (error) {
+        // Top-level signal handler - log any shutdown error and exit
         logger.error('SYSTEM', 'Error during shutdown', {}, error as Error);
-        process.exit(1); // Exit with error code - this terminates execution
+        process.exit(1);
       }
     };
 
@@ -438,25 +444,19 @@ export class WorkerService {
         let content: string;
 
         if (operation) {
-          // Load specific operation file
           const operationPath = path.join(__dirname, '../skills/mem-search/operations', `${operation}.md`);
           content = await fs.promises.readFile(operationPath, 'utf-8');
         } else {
-          // Load SKILL.md and extract section based on topic (backward compatibility)
           const skillPath = path.join(__dirname, '../skills/mem-search/SKILL.md');
           const fullContent = await fs.promises.readFile(skillPath, 'utf-8');
           content = this.extractInstructionSection(fullContent, topic);
         }
 
-        // Return in MCP format
         res.json({
-          content: [{
-            type: 'text',
-            text: content
-          }]
+          content: [{ type: 'text', text: content }]
         });
       } catch (error) {
-        // [POSSIBLY RELEVANT]: API must respond even on error, log full error and return error response
+        // API endpoint must respond even on file read errors
         logger.error('WORKER', 'Failed to load instructions', { topic, operation }, error as Error);
         res.status(500).json({
           content: [{
@@ -523,25 +523,21 @@ export class WorkerService {
     // as we need the route available immediately before SearchRoutes is initialized
     this.app.get('/api/context/inject', async (req, res, next) => {
       try {
-        // Wait for initialization to complete (with timeout)
         const timeoutMs = 300000; // 5 minute timeout for slow systems
-        const timeoutPromise = new Promise((_, reject) => 
+        const timeoutPromise = new Promise((_, reject) =>
           setTimeout(() => reject(new Error('Initialization timeout')), timeoutMs)
         );
-        
+
         await Promise.race([this.initializationComplete, timeoutPromise]);
 
-        // If searchRoutes is still null after initialization, something went wrong
         if (!this.searchRoutes) {
           res.status(503).json({ error: 'Search routes not initialized' });
           return;
         }
 
-        // Delegate to the SearchRoutes handler which is registered after this one
-        // This avoids code duplication and "headers already sent" errors
-        next();
+        next(); // Delegate to SearchRoutes handler
       } catch (error) {
-        // [POSSIBLY RELEVANT]: API must respond even on error, log full error and return error response
+        // API endpoint must respond even on initialization timeout
         logger.error('WORKER', 'Context inject handler failed', {}, error as Error);
         if (!res.headersSent) {
           res.status(500).json({ error: error instanceof Error ? error.message : 'Internal server error' });
@@ -663,10 +659,9 @@ export class WorkerService {
    */
   private async initializeBackground(): Promise<void> {
     try {
-      // Clean up any orphaned chroma-mcp processes BEFORE starting our own
       await this.cleanupOrphanedProcesses();
 
-      // Load mode configuration (must happen before database to set observation types)
+      // Load mode configuration
       const { ModeManager } = await import('./domain/ModeManager.js');
       const { SettingsDefaultsManager } = await import('../shared/SettingsDefaultsManager.js');
       const { USER_SETTINGS_PATH } = await import('../shared/paths.js');
@@ -676,20 +671,18 @@ export class WorkerService {
       ModeManager.getInstance().loadMode(modeId);
       logger.info('SYSTEM', `Mode loaded: ${modeId}`);
 
-      // Initialize database (once, stays open)
       await this.dbManager.initialize();
 
       // Recover stuck messages from previous crashes
-      // Messages stuck in 'processing' state are reset to 'pending' for reprocessing
       const { PendingMessageStore } = await import('./sqlite/PendingMessageStore.js');
       const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
-      const STUCK_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
+      const STUCK_THRESHOLD_MS = 5 * 60 * 1000;
       const resetCount = pendingStore.resetStuckMessages(STUCK_THRESHOLD_MS);
       if (resetCount > 0) {
         logger.info('SYSTEM', `Recovered ${resetCount} stuck messages from previous session`, { thresholdMinutes: 5 });
       }
 
-      // Initialize search services (requires initialized database)
+      // Initialize search services
       const formattingService = new FormattingService();
       const timelineService = new TimelineService();
       const searchManager = new SearchManager(
@@ -700,10 +693,10 @@ export class WorkerService {
         timelineService
       );
       this.searchRoutes = new SearchRoutes(searchManager);
-      this.searchRoutes.setupRoutes(this.app); // Setup search routes now that SearchManager is ready
+      this.searchRoutes.setupRoutes(this.app);
       logger.info('WORKER', 'SearchManager initialized and search routes registered');
 
-      // Connect to MCP server with timeout guard
+      // Connect to MCP server
       const mcpServerPath = path.join(__dirname, 'mcp-server.cjs');
       const transport = new StdioClientTransport({
         command: 'node',
@@ -711,7 +704,6 @@ export class WorkerService {
         env: process.env
       });
 
-      // Add timeout guard to prevent hanging on MCP connection (5 minutes for slow systems)
       const MCP_INIT_TIMEOUT_MS = 300000;
       const mcpConnectionPromise = this.mcpClient.connect(transport);
       const timeoutPromise = new Promise<never>((_, reject) =>
@@ -722,12 +714,11 @@ export class WorkerService {
       this.mcpReady = true;
       logger.success('WORKER', 'Connected to MCP server');
 
-      // Signal that initialization is complete
       this.initializationCompleteFlag = true;
       this.resolveInitialization();
       logger.info('SYSTEM', 'Background initialization complete');
 
-      // Auto-recover orphaned queues on startup (process pending work from previous sessions)
+      // Auto-recover orphaned queues (fire-and-forget with error logging)
       this.processPendingQueues(50).then(result => {
         if (result.sessionsStarted > 0) {
           logger.info('SYSTEM', `Auto-recovered ${result.sessionsStarted} sessions with pending work`, {
@@ -740,8 +731,8 @@ export class WorkerService {
         logger.warn('SYSTEM', 'Auto-recovery of pending queues failed', {}, error as Error);
       });
     } catch (error) {
+      // Initialization failure - log and rethrow to keep readiness check failing
       logger.error('SYSTEM', 'Background initialization failed', {}, error as Error);
-      // Don't resolve - let the promise remain pending so readiness check continues to fail
       throw error;
     }
   }
@@ -958,10 +949,11 @@ export class WorkerService {
         .trim()
         .split('\n')
         .map(s => parseInt(s.trim(), 10))
-        .filter(n => !isNaN(n) && Number.isInteger(n) && n > 0); // SECURITY: Validate each PID
+        .filter(n => !isNaN(n) && Number.isInteger(n) && n > 0);
     } catch (error) {
-      logger.warn('SYSTEM', 'Failed to enumerate child processes', { parentPid, error: (error as Error).message });
-      return []; // Fail safely - continue shutdown without child process cleanup
+      // Shutdown cleanup - failure is non-critical, continue without child process cleanup
+      logger.warn('SYSTEM', 'Failed to enumerate child processes', { parentPid }, error as Error);
+      return [];
     }
   }
 
