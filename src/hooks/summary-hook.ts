@@ -77,11 +77,17 @@ async function summaryHook(input?: StopInput): Promise<void> {
 let input = '';
 stdin.on('data', (chunk) => input += chunk);
 stdin.on('end', async () => {
-  let parsed: StopInput | undefined;
   try {
-    parsed = input ? JSON.parse(input) : undefined;
+    let parsed: StopInput | undefined;
+    try {
+      parsed = input ? JSON.parse(input) : undefined;
+    } catch (error) {
+      throw new Error(`Failed to parse hook input: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    await summaryHook(parsed);
   } catch (error) {
-    throw new Error(`Failed to parse hook input: ${error instanceof Error ? error.message : String(error)}`);
+    logger.error('HOOK', 'summary-hook failed', {}, error as Error);
+  } finally {
+    process.exit(0);
   }
-  await summaryHook(parsed);
 });

@@ -90,11 +90,17 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
 let input = '';
 stdin.on('data', (chunk) => input += chunk);
 stdin.on('end', async () => {
-  let parsed: UserPromptSubmitInput | undefined;
   try {
-    parsed = input ? JSON.parse(input) : undefined;
+    let parsed: UserPromptSubmitInput | undefined;
+    try {
+      parsed = input ? JSON.parse(input) : undefined;
+    } catch (error) {
+      throw new Error(`Failed to parse hook input: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    await newHook(parsed);
   } catch (error) {
-    throw new Error(`Failed to parse hook input: ${error instanceof Error ? error.message : String(error)}`);
+    logger.error('HOOK', 'new-hook failed', {}, error as Error);
+  } finally {
+    process.exit(0);
   }
-  await newHook(parsed);
 });
