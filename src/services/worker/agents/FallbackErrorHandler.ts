@@ -7,6 +7,7 @@
  */
 
 import { FALLBACK_ERROR_PATTERNS } from './types.js';
+import { logger } from '../../../utils/logger.js';
 
 /**
  * Check if an error should trigger fallback to Claude SDK

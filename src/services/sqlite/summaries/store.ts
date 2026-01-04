@@ -2,6 +2,7 @@
  * Store session summaries in the database
  */
 import type { Database } from 'bun:sqlite';
+import { logger } from '../../../utils/logger.js';
 import type { SummaryInput, StoreSummaryResult } from './types.js';
 
 /**

@@ -4,6 +4,7 @@
  * Consolidates formatting logic from FormattingService and SearchManager.
  * Provides consistent table and text formatting for all search result types.
  */
+import { logger } from '../../../utils/logger.js';
 
 import {
   ObservationSearchResult,

@@ -7,6 +7,7 @@
  */
 
 import { Database } from 'bun:sqlite';
+import { logger } from '../../utils/logger.js';
 import type { ObservationInput } from './observations/types.js';
 import type { SummaryInput } from './summaries/types.js';
 

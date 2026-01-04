@@ -12,6 +12,7 @@
  * - src/services/context/formatters/ - Output formatting
  * - src/services/context/sections/ - Section rendering
  */
+import { logger } from '../utils/logger.js';
 
 // Re-export everything from the new context module
 export { generateContext } from './context/index.js';

@@ -3,6 +3,7 @@
  *
  * Provides utilities for filtering observations by type.
  */
+import { logger } from '../../../../utils/logger.js';
 
 type ObservationType = 'decision' | 'bugfix' | 'feature' | 'refactor' | 'discovery' | 'change';
 

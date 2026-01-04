@@ -8,6 +8,7 @@
  */
 
 import type { SearchResults, StrategySearchOptions, StrategySearchResult } from '../types.js';
+import { logger } from '../../../../utils/logger.js';
 
 /**
  * Base interface for all search strategies

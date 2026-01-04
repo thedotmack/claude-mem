@@ -3,6 +3,7 @@
  */
 
 import { Database } from 'bun:sqlite';
+import { logger } from '../../../utils/logger.js';
 
 export interface ImportResult {
   imported: boolean;

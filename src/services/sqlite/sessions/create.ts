@@ -4,6 +4,7 @@
  */
 
 import type { Database } from 'bun:sqlite';
+import { logger } from '../../../utils/logger.js';
 
 /**
  * Create a new SDK session (idempotent - returns existing session ID if already exists)

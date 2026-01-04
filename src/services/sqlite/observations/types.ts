@@ -2,6 +2,7 @@
  * Type definitions for observation operations
  * Extracted from SessionStore.ts for modular organization
  */
+import { logger } from '../../../utils/logger.js';
 
 /**
  * Input type for storeObservation function

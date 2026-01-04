@@ -5,6 +5,7 @@
  */
 
 import type { DateRange, SearchResult, CombinedResult } from '../types.js';
+import { logger } from '../../../../utils/logger.js';
 import { SEARCH_CONSTANTS } from '../types.js';
 
 /**
