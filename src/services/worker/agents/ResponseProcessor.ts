@@ -14,7 +14,7 @@
 import { logger } from '../../../utils/logger.js';
 import { parseObservations, parseSummary, type ParsedObservation, type ParsedSummary } from '../../../sdk/parser.js';
 import { updateCursorContextForProject } from '../../worker-service.js';
-import { updateFolderClaudeMd, readCursorRegistry } from '../../integrations/CursorHooksInstaller.js';
+import { updateFolderClaudeMdFiles } from '../../../utils/claude-md-utils.js';
 import { getWorkerPort } from '../../../shared/worker-utils.js';
 import type { ActiveSession } from '../../worker-types.js';
 import type { DatabaseManager } from '../DatabaseManager.js';
@@ -272,24 +272,15 @@ async function syncAndBroadcastSummary(
   });
 
   // Update folder CLAUDE.md files for touched folders (fire-and-forget)
-  // Extract file paths from the saved observations
-  const filesModified: string[] = [];
-  const filesRead: string[] = [];
-
+  const allFilePaths: string[] = [];
   for (const obs of observations) {
-    filesModified.push(...(obs.files_modified || []));
-    filesRead.push(...(obs.files_read || []));
+    allFilePaths.push(...(obs.files_modified || []));
+    allFilePaths.push(...(obs.files_read || []));
   }
 
-  // Get workspace path from project registry
-  const registry = readCursorRegistry();
-  const registryEntry = registry[session.project];
-
-  if (registryEntry && (filesModified.length > 0 || filesRead.length > 0)) {
-    updateFolderClaudeMd(
-      registryEntry.workspacePath,
-      filesModified,
-      filesRead,
+  if (allFilePaths.length > 0) {
+    updateFolderClaudeMdFiles(
+      allFilePaths,
       session.project,
       getWorkerPort()
     ).catch(error => {
