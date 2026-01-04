@@ -92,16 +92,17 @@ describe('Session ID Refactor', () => {
       expect(session.content_session_id).toBe(contentSessionId);
     });
 
-    it('should create session with memory_session_id initially equal to content_session_id', () => {
+    it('should create session with memory_session_id initially NULL', () => {
       const contentSessionId = 'user-session-456';
       const sessionDbId = store.createSDKSession(contentSessionId, 'test-project', 'Test prompt');
 
       const session = store.db.prepare(
         'SELECT content_session_id, memory_session_id FROM sdk_sessions WHERE id = ?'
-      ).get(sessionDbId) as { content_session_id: string; memory_session_id: string };
+      ).get(sessionDbId) as { content_session_id: string; memory_session_id: string | null };
 
-      // Initially they're the same - memory_session_id gets updated when SDK responds
-      expect(session.memory_session_id).toBe(contentSessionId);
+      // CRITICAL: memory_session_id starts as NULL - it must NEVER equal contentSessionId
+      // because that would inject memory messages into the user's transcript!
+      expect(session.memory_session_id).toBeNull();
     });
 
     it('should be idempotent - return same ID for same content_session_id', () => {
@@ -129,11 +130,11 @@ describe('Session ID Refactor', () => {
 
       const sessionDbId = store.createSDKSession(contentSessionId, 'test-project', 'Test');
 
-      // Initially memory_session_id equals content_session_id
+      // Initially memory_session_id is NULL
       const beforeUpdate = store.db.prepare(
         'SELECT memory_session_id FROM sdk_sessions WHERE id = ?'
-      ).get(sessionDbId) as { memory_session_id: string };
-      expect(beforeUpdate.memory_session_id).toBe(contentSessionId);
+      ).get(sessionDbId) as { memory_session_id: string | null };
+      expect(beforeUpdate.memory_session_id).toBeNull();
 
       // Update with SDK-captured memory session ID
       store.updateMemorySessionId(sessionDbId, memorySessionId);
@@ -175,21 +176,23 @@ describe('Session ID Refactor', () => {
       expect(session?.memory_session_id).toBe(memorySessionId);
     });
 
-    it('should initialize memory_session_id to content_session_id before SDK capture', () => {
+    it('should initialize memory_session_id to NULL before SDK capture', () => {
       const contentSessionId = 'never-captured-session';
       const sessionDbId = store.createSDKSession(contentSessionId, 'test-project', 'Test');
 
-      // createSDKSession sets memory_session_id = content_session_id initially
-      // The memory_session_id gets updated when SDK responds with its session ID
+      // createSDKSession sets memory_session_id = NULL initially
+      // The memory_session_id gets set when SDK responds with its session ID
       const session = store.getSessionById(sessionDbId);
-      expect(session?.memory_session_id).toBe(contentSessionId);
+      expect(session?.memory_session_id).toBeNull();
     });
   });
 
   describe('storeObservation - Memory Session ID Reference', () => {
     it('should store observation with memory_session_id as foreign key', () => {
       const contentSessionId = 'obs-test-session';
-      store.createSDKSession(contentSessionId, 'test-project', 'Test');
+      const memorySessionId = 'memory-obs-test-session';
+      const sessionDbId = store.createSDKSession(contentSessionId, 'test-project', 'Test');
+      store.updateMemorySessionId(sessionDbId, memorySessionId);
 
       const obs = {
         type: 'discovery',
@@ -202,19 +205,21 @@ describe('Session ID Refactor', () => {
         files_modified: []
       };
 
-      const result = store.storeObservation(contentSessionId, 'test-project', obs, 1);
+      const result = store.storeObservation(memorySessionId, 'test-project', obs, 1);
 
       // Verify the observation was stored with memory_session_id
       const stored = store.db.prepare(
         'SELECT memory_session_id FROM observations WHERE id = ?'
       ).get(result.id) as { memory_session_id: string };
 
-      expect(stored.memory_session_id).toBe(contentSessionId);
+      expect(stored.memory_session_id).toBe(memorySessionId);
     });
 
     it('should be retrievable by getObservationsForSession using memory_session_id', () => {
       const contentSessionId = 'obs-retrieval-session';
-      store.createSDKSession(contentSessionId, 'test-project', 'Test');
+      const memorySessionId = 'memory-retrieval-session';
+      const sessionDbId = store.createSDKSession(contentSessionId, 'test-project', 'Test');
+      store.updateMemorySessionId(sessionDbId, memorySessionId);
 
       const obs = {
         type: 'feature',
@@ -227,9 +232,9 @@ describe('Session ID Refactor', () => {
         files_modified: ['file2.ts']
       };
 
-      store.storeObservation(contentSessionId, 'test-project', obs, 1);
+      store.storeObservation(memorySessionId, 'test-project', obs, 1);
 
-      const observations = store.getObservationsForSession(contentSessionId);
+      const observations = store.getObservationsForSession(memorySessionId);
 
       expect(observations.length).toBe(1);
       expect(observations[0].title).toBe('New Feature');
@@ -239,7 +244,9 @@ describe('Session ID Refactor', () => {
   describe('storeSummary - Memory Session ID Reference', () => {
     it('should store summary with memory_session_id as foreign key', () => {
       const contentSessionId = 'summary-test-session';
-      store.createSDKSession(contentSessionId, 'test-project', 'Test');
+      const memorySessionId = 'memory-summary-test-session';
+      const sessionDbId = store.createSDKSession(contentSessionId, 'test-project', 'Test');
+      store.updateMemorySessionId(sessionDbId, memorySessionId);
 
       const summary = {
         request: 'Test request',
@@ -250,19 +257,21 @@ describe('Session ID Refactor', () => {
         notes: null
       };
 
-      const result = store.storeSummary(contentSessionId, 'test-project', summary, 1);
+      const result = store.storeSummary(memorySessionId, 'test-project', summary, 1);
 
       // Verify the summary was stored with memory_session_id
       const stored = store.db.prepare(
         'SELECT memory_session_id FROM session_summaries WHERE id = ?'
       ).get(result.id) as { memory_session_id: string };
 
-      expect(stored.memory_session_id).toBe(contentSessionId);
+      expect(stored.memory_session_id).toBe(memorySessionId);
     });
 
     it('should be retrievable by getSummaryForSession using memory_session_id', () => {
       const contentSessionId = 'summary-retrieval-session';
-      store.createSDKSession(contentSessionId, 'test-project', 'Test');
+      const memorySessionId = 'memory-summary-retrieval-session';
+      const sessionDbId = store.createSDKSession(contentSessionId, 'test-project', 'Test');
+      store.updateMemorySessionId(sessionDbId, memorySessionId);
 
       const summary = {
         request: 'My request',
@@ -273,9 +282,9 @@ describe('Session ID Refactor', () => {
         notes: 'Some notes'
       };
 
-      store.storeSummary(contentSessionId, 'test-project', summary, 1);
+      store.storeSummary(memorySessionId, 'test-project', summary, 1);
 
-      const retrieved = store.getSummaryForSession(contentSessionId);
+      const retrieved = store.getSummaryForSession(memorySessionId);
 
       expect(retrieved).not.toBeNull();
       expect(retrieved?.request).toBe('My request');
@@ -374,11 +383,13 @@ describe('Session ID Refactor', () => {
 
     it('should support multiple observations linked to same memory_session_id', () => {
       const contentSessionId = 'multi-obs-session';
-      store.createSDKSession(contentSessionId, 'test-project', 'Test');
+      const memorySessionId = 'memory-multi-obs-session';
+      const sessionDbId = store.createSDKSession(contentSessionId, 'test-project', 'Test');
+      store.updateMemorySessionId(sessionDbId, memorySessionId);
 
       // Store multiple observations
       for (let i = 1; i <= 5; i++) {
-        store.storeObservation(contentSessionId, 'test-project', {
+        store.storeObservation(memorySessionId, 'test-project', {
           type: 'discovery',
           title: `Observation ${i}`,
           subtitle: null,
@@ -390,16 +401,16 @@ describe('Session ID Refactor', () => {
         }, i);
       }
 
-      const observations = store.getObservationsForSession(contentSessionId);
+      const observations = store.getObservationsForSession(memorySessionId);
       expect(observations.length).toBe(5);
 
       // All should have the same memory_session_id
       const directQuery = store.db.prepare(
         'SELECT DISTINCT memory_session_id FROM observations WHERE memory_session_id = ?'
-      ).all(contentSessionId) as Array<{ memory_session_id: string }>;
+      ).all(memorySessionId) as Array<{ memory_session_id: string }>;
 
       expect(directQuery.length).toBe(1);
-      expect(directQuery[0].memory_session_id).toBe(contentSessionId);
+      expect(directQuery[0].memory_session_id).toBe(memorySessionId);
     });
   });
 });
