@@ -26,17 +26,14 @@ export interface PersistentPendingMessage {
 /**
  * PendingMessageStore - Persistent work queue for SDK messages
  *
- * Messages are persisted before processing and marked complete after success.
- * This enables recovery from SDK hangs and worker crashes.
+ * Messages are persisted before processing using a claim-and-delete pattern.
+ * This simplifies the lifecycle and eliminates duplicate processing bugs.
  *
  * Lifecycle:
  * 1. enqueue() - Message persisted with status 'pending'
- * 2. markProcessing() - Status changes to 'processing' when yielded to SDK
- * 3. markProcessed() - Status changes to 'processed' after successful SDK response
- * 4. markFailed() - Status changes to 'failed' if max retries exceeded
+ * 2. claimAndDelete() - Atomically claims and deletes message (process in memory)
  *
  * Recovery:
- * - resetStuckMessages() - Moves 'processing' messages back to 'pending' if stuck
  * - getSessionsWithPendingMessages() - Find sessions that need recovery on startup
  */
 export class PendingMessageStore {
@@ -80,14 +77,13 @@ export class PendingMessageStore {
   }
 
   /**
-   * Atomically claim the next pending message for processing
-   * Finds oldest pending -> marks processing -> returns it
-   * Uses a transaction to prevent race conditions
+   * Atomically claim and DELETE the next pending message.
+   * Finds oldest pending -> returns it -> deletes from queue.
+   * The queue is a pure buffer: claim it, delete it, process in memory.
+   * Uses a transaction to prevent race conditions.
    */
-  claimNextMessage(sessionDbId: number): PersistentPendingMessage | null {
-    const now = Date.now();
-    
-    const claimTx = this.db.transaction((sessionId: number, timestamp: number) => {
+  claimAndDelete(sessionDbId: number): PersistentPendingMessage | null {
+    const claimTx = this.db.transaction((sessionId: number) => {
       const peekStmt = this.db.prepare(`
         SELECT * FROM pending_messages
         WHERE session_db_id = ? AND status = 'pending'
@@ -95,26 +91,16 @@ export class PendingMessageStore {
         LIMIT 1
       `);
       const msg = peekStmt.get(sessionId) as PersistentPendingMessage | null;
-      
+
       if (msg) {
-        const updateStmt = this.db.prepare(`
-          UPDATE pending_messages
-          SET status = 'processing', started_processing_at_epoch = ?
-          WHERE id = ?
-        `);
-        updateStmt.run(timestamp, msg.id);
-        
-        // Return updated object
-        return {
-          ...msg,
-          status: 'processing',
-          started_processing_at_epoch: timestamp
-        } as PersistentPendingMessage;
+        // Delete immediately - no "processing" state needed
+        const deleteStmt = this.db.prepare('DELETE FROM pending_messages WHERE id = ?');
+        deleteStmt.run(msg.id);
       }
-      return null;
+      return msg;
     });
 
-    return claimTx(sessionDbId, now) as PersistentPendingMessage | null;
+    return claimTx(sessionDbId) as PersistentPendingMessage | null;
   }
 
   /**
@@ -254,38 +240,7 @@ export class PendingMessageStore {
   }
 
   /**
-   * Mark message as being processed (status: pending -> processing)
-   */
-  markProcessing(messageId: number): void {
-    const now = Date.now();
-    const stmt = this.db.prepare(`
-      UPDATE pending_messages
-      SET status = 'processing', started_processing_at_epoch = ?
-      WHERE id = ? AND status = 'pending'
-    `);
-    stmt.run(now, messageId);
-  }
-
-  /**
-   * Mark message as successfully processed (status: processing -> processed)
-   * Clears tool_input and tool_response to save space (observations are already saved)
-   */
-  markProcessed(messageId: number): void {
-    const now = Date.now();
-    const stmt = this.db.prepare(`
-      UPDATE pending_messages
-      SET
-        status = 'processed',
-        completed_at_epoch = ?,
-        tool_input = NULL,
-        tool_response = NULL
-      WHERE id = ? AND status = 'processing'
-    `);
-    stmt.run(now, messageId);
-  }
-
-  /**
-   * Mark message as failed (status: processing -> failed or back to pending for retry)
+   * Mark message as failed (status: pending -> failed or back to pending for retry)
    * If retry_count < maxRetries, moves back to 'pending' for retry
    * Otherwise marks as 'failed' permanently
    */
@@ -379,28 +334,6 @@ export class PendingMessageStore {
     `);
     const result = stmt.get(messageId) as { session_db_id: number; content_session_id: string } | undefined;
     return result ? { sessionDbId: result.session_db_id, contentSessionId: result.content_session_id } : null;
-  }
-
-  /**
-   * Cleanup old processed messages (retention policy)
-   * Keeps the most recent N processed messages, deletes the rest
-   * @param retentionCount Number of processed messages to keep (default: 100)
-   * @returns Number of messages deleted
-   */
-  cleanupProcessed(retentionCount: number = 100): number {
-    const stmt = this.db.prepare(`
-      DELETE FROM pending_messages
-      WHERE status = 'processed'
-      AND id NOT IN (
-        SELECT id FROM pending_messages
-        WHERE status = 'processed'
-        ORDER BY completed_at_epoch DESC
-        LIMIT ?
-      )
-    `);
-
-    const result = stmt.run(retentionCount);
-    return result.changes;
   }
 
   /**

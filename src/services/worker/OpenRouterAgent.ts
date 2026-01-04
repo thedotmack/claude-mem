@@ -23,7 +23,6 @@ import {
   processAgentResponse,
   shouldFallbackToClaude,
   isAbortError,
-  resetStuckMessagesForFallback,
   type WorkerRef,
   type FallbackAgent
 } from './agents/index.js';
@@ -239,11 +238,8 @@ export class OpenRouterAgent {
           historyLength: session.conversationHistory.length
         });
 
-        // Reset any 'processing' messages back to 'pending' so Claude can retry them
-        const pendingStore = this.sessionManager.getPendingMessageStore();
-        resetStuckMessagesForFallback(pendingStore, session.sessionDbId);
-
         // Fall back to Claude - it will use the same session with shared conversationHistory
+        // Note: With claim-and-delete queue pattern, messages are already deleted on claim
         return this.fallbackAgent.startSession(session, worker);
       }
 

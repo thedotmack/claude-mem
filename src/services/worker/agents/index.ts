@@ -32,7 +32,7 @@ export { processAgentResponse } from './ResponseProcessor.js';
 export { broadcastObservation, broadcastSummary } from './ObservationBroadcaster.js';
 
 // Session Cleanup
-export { cleanupProcessedMessages, resetStuckMessagesForFallback } from './SessionCleanupHelper.js';
+export { cleanupProcessedMessages } from './SessionCleanupHelper.js';
 
 // Error Handling
 export { shouldFallbackToClaude, isAbortError } from './FallbackErrorHandler.js';

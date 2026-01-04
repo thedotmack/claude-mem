@@ -28,7 +28,7 @@ import { cleanupProcessedMessages } from './SessionCleanupHelper.js';
  * This is the unified response processor that handles:
  * 1. Adding response to conversation history (for provider interop)
  * 2. Parsing observations and summaries from XML
- * 3. Atomic database transaction (observations + summary + mark complete)
+ * 3. Atomic database transaction to store observations + summary
  * 4. Async Chroma sync (fire-and-forget, failures are non-critical)
  * 5. SSE broadcast to web UI clients
  * 6. Session cleanup
@@ -64,70 +64,59 @@ export async function processAgentResponse(
   // Convert nullable fields to empty strings for storeSummary (if summary exists)
   const summaryForStore = normalizeSummaryForStorage(summary);
 
-  // Get stores for atomic transaction
-  const pendingMessageStore = sessionManager.getPendingMessageStore();
+  // Get session store for atomic transaction
   const sessionStore = dbManager.getSessionStore();
 
-  if (session.pendingProcessingIds.size === 0) {
-    // No pending messages to process - this can happen for init prompts
-    return;
+  // CRITICAL: Must use memorySessionId (not contentSessionId) for FK constraint
+  if (!session.memorySessionId) {
+    throw new Error('Cannot store observations: memorySessionId not yet captured');
   }
 
-  // ATOMIC TRANSACTION: Store observations + summary + mark message(s) complete
-  // This prevents duplicates if the worker crashes after storing but before marking complete
-  for (const messageId of session.pendingProcessingIds) {
-    // CRITICAL: Must use memorySessionId (not contentSessionId) for FK constraint
-    if (!session.memorySessionId) {
-      throw new Error('Cannot store observations: memorySessionId not yet captured');
-    }
+  // ATOMIC TRANSACTION: Store observations + summary ONCE
+  // Messages are already deleted from queue on claim, so no completion tracking needed
+  const result = sessionStore.storeObservations(
+    session.memorySessionId,
+    session.project,
+    observations,
+    summaryForStore,
+    session.lastPromptNumber,
+    discoveryTokens,
+    originalTimestamp ?? undefined
+  );
 
-    const result = sessionStore.storeObservationsAndMarkComplete(
-      session.memorySessionId,
-      session.project,
-      observations,
-      summaryForStore,
-      messageId,
-      pendingMessageStore,
-      session.lastPromptNumber,
-      discoveryTokens,
-      originalTimestamp ?? undefined
-    );
+  // Log what was saved
+  logger.info('SDK', `${agentName} observations and summary saved atomically`, {
+    sessionId: session.sessionDbId,
+    observationCount: result.observationIds.length,
+    hasSummary: !!result.summaryId,
+    atomicTransaction: true
+  });
 
-    // Log what was saved
-    logger.info('SDK', `${agentName} observations and summary saved atomically`, {
-      sessionId: session.sessionDbId,
-      messageId,
-      observationCount: result.observationIds.length,
-      hasSummary: !!result.summaryId,
-      atomicTransaction: true
-    });
+  // AFTER transaction commits - async operations (can fail safely without data loss)
+  await syncAndBroadcastObservations(
+    observations,
+    result,
+    session,
+    dbManager,
+    worker,
+    discoveryTokens,
+    agentName
+  );
 
-    // AFTER transaction commits - async operations (can fail safely without data loss)
-    await syncAndBroadcastObservations(
-      observations,
-      result,
-      session,
-      dbManager,
-      worker,
-      discoveryTokens,
-      agentName
-    );
+  // Sync and broadcast summary if present
+  await syncAndBroadcastSummary(
+    summary,
+    summaryForStore,
+    result,
+    session,
+    dbManager,
+    worker,
+    discoveryTokens,
+    agentName
+  );
 
-    // Sync and broadcast summary if present
-    await syncAndBroadcastSummary(
-      summary,
-      summaryForStore,
-      result,
-      session,
-      dbManager,
-      worker,
-      discoveryTokens,
-      agentName
-    );
-  }
-
-  // Clean up session state and old messages
-  cleanupProcessedMessages(session, pendingMessageStore, worker);
+  // Clean up session state
+  cleanupProcessedMessages(session, worker);
 }
 
 /**
