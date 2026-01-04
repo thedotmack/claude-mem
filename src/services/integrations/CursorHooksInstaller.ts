@@ -11,7 +11,7 @@
 
 import path from 'path';
 import { homedir } from 'os';
-import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, renameSync } from 'fs';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { logger } from '../../utils/logger.js';
@@ -119,6 +119,150 @@ export async function updateCursorContextForProject(projectName: string, port: n
     // [ANTI-PATTERN IGNORED]: Background context update - failure is non-critical, user workflow continues
     logger.warn('CURSOR', 'Failed to update context file', { projectName }, error as Error);
   }
+}
+
+/**
+ * Update CLAUDE.md files for folders touched by an observation.
+ * Called inline after observation save, similar to updateCursorContextForProject.
+ */
+export async function updateFolderClaudeMd(
+  workspacePath: string,
+  filesModified: string[],
+  filesRead: string[],
+  project: string,
+  port: number
+): Promise<void> {
+  // Extract unique folder paths from filesModified and filesRead
+  const allFiles = [...filesModified, ...filesRead];
+  const folderPaths = new Set<string>();
+
+  for (const filePath of allFiles) {
+    if (!filePath || filePath === '') continue;
+    const folderPath = path.dirname(filePath);
+    if (folderPath && folderPath !== '.') {
+      folderPaths.add(folderPath);
+    }
+  }
+
+  if (folderPaths.size === 0) return;
+
+  logger.debug('FOLDER_INDEX', 'Updating CLAUDE.md files for folders', {
+    project,
+    folderCount: folderPaths.size,
+    folders: Array.from(folderPaths)
+  });
+
+  // Process each folder
+  for (const folderPath of folderPaths) {
+    try {
+      // Fetch timeline for this folder using existing /api/search/by-file endpoint
+      const response = await fetch(
+        `http://127.0.0.1:${port}/api/search/by-file?filePath=${encodeURIComponent(folderPath)}&limit=10&project=${encodeURIComponent(project)}`
+      );
+
+      if (!response.ok) {
+        logger.warn('FOLDER_INDEX', 'Failed to fetch timeline for folder', {
+          folderPath,
+          status: response.status
+        });
+        continue;
+      }
+
+      const result = await response.json();
+
+      // Extract observations from MCP-formatted response
+      if (!result.content || !result.content[0] || !result.content[0].text) {
+        logger.debug('FOLDER_INDEX', 'No content for folder', { folderPath });
+        continue;
+      }
+
+      const timelineText = result.content[0].text;
+
+      // Format as simple timeline for CLAUDE.md
+      const formattedTimeline = formatTimelineForClaudeMd(timelineText);
+
+      // Write to <folder>/CLAUDE.md preserving content outside tags
+      await writeFolderClaudeMd(workspacePath, folderPath, formattedTimeline);
+
+      logger.debug('FOLDER_INDEX', 'Updated CLAUDE.md', {
+        folderPath,
+        project
+      });
+    } catch (error) {
+      // [ANTI-PATTERN IGNORED]: Background folder index update - failure is non-critical
+      logger.warn('FOLDER_INDEX', 'Failed to update CLAUDE.md for folder', {
+        folderPath,
+        project
+      }, error as Error);
+    }
+  }
+}
+
+/**
+ * Format timeline text for CLAUDE.md output
+ */
+function formatTimelineForClaudeMd(timelineText: string): string {
+  // Simple passthrough for now - the API already returns formatted text
+  // In the future, we can add custom formatting here
+  return `# Recent Activity\n\n${timelineText}`;
+}
+
+/**
+ * Replace tagged content in existing file, preserving content outside tags
+ */
+function replaceTaggedContent(existingContent: string, newContent: string): string {
+  const startTag = '<claude-mem-context>';
+  const endTag = '</claude-mem-context>';
+
+  // If no existing content, wrap new content in tags
+  if (!existingContent) {
+    return `${startTag}\n${newContent}\n${endTag}`;
+  }
+
+  // If existing has tags, replace only tagged section
+  const startIdx = existingContent.indexOf(startTag);
+  const endIdx = existingContent.indexOf(endTag);
+
+  if (startIdx !== -1 && endIdx !== -1) {
+    return existingContent.substring(0, startIdx) +
+           `${startTag}\n${newContent}\n${endTag}` +
+           existingContent.substring(endIdx + endTag.length);
+  }
+
+  // If no tags exist, append tagged content at end
+  return existingContent + `\n\n${startTag}\n${newContent}\n${endTag}`;
+}
+
+/**
+ * Write CLAUDE.md file to folder with atomic writes
+ */
+async function writeFolderClaudeMd(
+  workspacePath: string,
+  folderPath: string,
+  newContent: string
+): Promise<void> {
+  const absoluteFolderPath = path.isAbsolute(folderPath)
+    ? folderPath
+    : path.join(workspacePath, folderPath);
+
+  const claudeMdPath = path.join(absoluteFolderPath, 'CLAUDE.md');
+  const tempFile = `${claudeMdPath}.tmp`;
+
+  // Ensure directory exists
+  mkdirSync(absoluteFolderPath, { recursive: true });
+
+  // Read existing content if file exists
+  let existingContent = '';
+  if (existsSync(claudeMdPath)) {
+    existingContent = readFileSync(claudeMdPath, 'utf-8');
+  }
+
+  // Replace only tagged content, preserve user content
+  const finalContent = replaceTaggedContent(existingContent, newContent);
+
+  // Atomic write: temp file + rename
+  writeFileSync(tempFile, finalContent);
+  renameSync(tempFile, claudeMdPath);
 }
 
 // ============================================================================
