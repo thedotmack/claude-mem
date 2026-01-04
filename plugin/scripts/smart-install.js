@@ -7,59 +7,72 @@
  */
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { execSync, spawnSync } from 'child_process';
-import { join } from 'path';
+import { join, isAbsolute } from 'path';
 import { homedir } from 'os';
 
 const ROOT = join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
 const MARKER = join(ROOT, '.install-version');
 const IS_WINDOWS = process.platform === 'win32';
 
+// Common installation paths (handles fresh installs before PATH reload)
+const BUN_COMMON_PATHS = IS_WINDOWS
+  ? [join(homedir(), '.bun', 'bin', 'bun.exe')]
+  : [join(homedir(), '.bun', 'bin', 'bun'), '/usr/local/bin/bun'];
+
+const UV_COMMON_PATHS = IS_WINDOWS
+  ? [join(homedir(), '.local', 'bin', 'uv.exe'), join(homedir(), '.cargo', 'bin', 'uv.exe')]
+  : [join(homedir(), '.local', 'bin', 'uv'), join(homedir(), '.cargo', 'bin', 'uv'), '/usr/local/bin/uv'];
+
+/**
+ * Determines if shell should be used for spawnSync on Windows.
+ *
+ * On Windows, using shell: true with spawnSync can cause:
+ * - DEP0190 deprecation warnings about unescaped arguments
+ * - libuv assertion failures (UV_HANDLE_CLOSING race condition)
+ *
+ * We only need shell: true when:
+ * - Running a bare command name that requires PATH resolution
+ * - The executable path is not absolute
+ *
+ * When we have a full path to an .exe, we can run it directly without shell.
+ *
+ * @param {string} executablePath - The path or command to execute
+ * @returns {boolean} - Whether to use shell option
+ */
+function needsShell(executablePath) {
+  if (!IS_WINDOWS) return false;
+  // If it's an absolute path (like C:\Users\...\bun.exe), no shell needed
+  if (isAbsolute(executablePath)) return false;
+  // Bare command names need shell for PATH resolution on Windows
+  return true;
+}
+
 /**
  * Check if Bun is installed and accessible
  */
 function isBunInstalled() {
-  try {
-    const result = spawnSync('bun', ['--version'], {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      shell: IS_WINDOWS
-    });
-    if (result.status === 0) return true;
-  } catch {
-    // PATH check failed, try common installation paths
-  }
-
-  // Check common installation paths (handles fresh installs before PATH reload)
-  const bunPaths = IS_WINDOWS
-    ? [join(homedir(), '.bun', 'bin', 'bun.exe')]
-    : [join(homedir(), '.bun', 'bin', 'bun'), '/usr/local/bin/bun'];
-
-  return bunPaths.some(existsSync);
+  return getBunPath() !== null;
 }
 
 /**
  * Get the Bun executable path (from PATH or common install locations)
+ * Prioritizes full paths to avoid shell usage on Windows.
  */
 function getBunPath() {
-  // Try PATH first
+  // Check common installation paths first (preferred - avoids shell on Windows)
+  const fullPath = BUN_COMMON_PATHS.find(existsSync);
+  if (fullPath) return fullPath;
+
+  // Fall back to PATH resolution (requires shell on Windows)
   try {
     const result = spawnSync('bun', ['--version'], {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
-      shell: IS_WINDOWS
+      shell: needsShell('bun')
     });
     if (result.status === 0) return 'bun';
   } catch {
     // Not in PATH
-  }
-
-  // Check common installation paths
-  const bunPaths = IS_WINDOWS
-    ? [join(homedir(), '.bun', 'bin', 'bun.exe')]
-    : [join(homedir(), '.bun', 'bin', 'bun'), '/usr/local/bin/bun'];
-
-  for (const bunPath of bunPaths) {
-    if (existsSync(bunPath)) return bunPath;
   }
 
   return null;
@@ -76,7 +89,7 @@ function getBunVersion() {
     const result = spawnSync(bunPath, ['--version'], {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
-      shell: IS_WINDOWS
+      shell: needsShell(bunPath)
     });
     return result.status === 0 ? result.stdout.trim() : null;
   } catch {
@@ -88,34 +101,45 @@ function getBunVersion() {
  * Check if uv is installed and accessible
  */
 function isUvInstalled() {
+  return getUvPath() !== null;
+}
+
+/**
+ * Get the uv executable path (from PATH or common install locations)
+ * Prioritizes full paths to avoid shell usage on Windows.
+ */
+function getUvPath() {
+  // Check common installation paths first (preferred - avoids shell on Windows)
+  const fullPath = UV_COMMON_PATHS.find(existsSync);
+  if (fullPath) return fullPath;
+
+  // Fall back to PATH resolution (requires shell on Windows)
   try {
     const result = spawnSync('uv', ['--version'], {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
-      shell: IS_WINDOWS
+      shell: needsShell('uv')
     });
-    if (result.status === 0) return true;
+    if (result.status === 0) return 'uv';
   } catch {
-    // PATH check failed, try common installation paths
+    // Not in PATH
   }
 
-  // Check common installation paths (handles fresh installs before PATH reload)
-  const uvPaths = IS_WINDOWS
-    ? [join(homedir(), '.local', 'bin', 'uv.exe'), join(homedir(), '.cargo', 'bin', 'uv.exe')]
-    : [join(homedir(), '.local', 'bin', 'uv'), join(homedir(), '.cargo', 'bin', 'uv'), '/usr/local/bin/uv'];
-
-  return uvPaths.some(existsSync);
+  return null;
 }
 
 /**
  * Get uv version if installed
  */
 function getUvVersion() {
+  const uvPath = getUvPath();
+  if (!uvPath) return null;
+
   try {
-    const result = spawnSync('uv', ['--version'], {
+    const result = spawnSync(uvPath, ['--version'], {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
-      shell: IS_WINDOWS
+      shell: needsShell(uvPath)
     });
     return result.status === 0 ? result.stdout.trim() : null;
   } catch {
@@ -337,20 +361,47 @@ function installDeps() {
 
   console.error('📦 Installing dependencies with Bun...');
 
-  // Quote path for Windows paths with spaces
-  const bunCmd = IS_WINDOWS && bunPath.includes(' ') ? `"${bunPath}"` : bunPath;
-
   let bunSucceeded = false;
-  try {
-    execSync(`${bunCmd} install`, { cwd: ROOT, stdio: 'inherit', shell: IS_WINDOWS });
-    bunSucceeded = true;
-  } catch {
-    // First attempt failed, try with force flag
+
+  // Use spawnSync with array args when we have a full path (avoids shell on Windows)
+  // This prevents DEP0190 warnings and libuv assertion failures
+  if (isAbsolute(bunPath)) {
     try {
-      execSync(`${bunCmd} install --force`, { cwd: ROOT, stdio: 'inherit', shell: IS_WINDOWS });
+      const result = spawnSync(bunPath, ['install'], {
+        cwd: ROOT,
+        stdio: 'inherit',
+        shell: false
+      });
+      bunSucceeded = result.status === 0;
+    } catch {
+      // First attempt failed
+    }
+
+    if (!bunSucceeded) {
+      try {
+        const result = spawnSync(bunPath, ['install', '--force'], {
+          cwd: ROOT,
+          stdio: 'inherit',
+          shell: false
+        });
+        bunSucceeded = result.status === 0;
+      } catch {
+        // Force attempt also failed
+      }
+    }
+  } else {
+    // Bare command needs shell for PATH resolution
+    const bunCmd = IS_WINDOWS && bunPath.includes(' ') ? `"${bunPath}"` : bunPath;
+    try {
+      execSync(`${bunCmd} install`, { cwd: ROOT, stdio: 'inherit', shell: needsShell(bunPath) });
       bunSucceeded = true;
     } catch {
-      // Bun failed completely, will try npm fallback
+      try {
+        execSync(`${bunCmd} install --force`, { cwd: ROOT, stdio: 'inherit', shell: needsShell(bunPath) });
+        bunSucceeded = true;
+      } catch {
+        // Both attempts failed
+      }
     }
   }
 
@@ -359,7 +410,7 @@ function installDeps() {
     console.error('⚠️  Bun install failed, falling back to npm...');
     console.error('   (This can happen with npm alias packages like *-cjs)');
     try {
-      execSync('npm install', { cwd: ROOT, stdio: 'inherit', shell: IS_WINDOWS });
+      execSync('npm install', { cwd: ROOT, stdio: 'inherit', shell: needsShell('npm') });
     } catch (npmError) {
       throw new Error('Both bun and npm install failed: ' + npmError.message);
     }
@@ -416,7 +467,7 @@ try {
       // Graceful shutdown via HTTP (curl is cross-platform enough)
       execSync(`curl -s -X POST http://127.0.0.1:${port}/api/admin/shutdown`, {
         stdio: 'ignore',
-        shell: IS_WINDOWS,
+        shell: needsShell('curl'),
         timeout: 5000
       });
       // Brief wait for port to free
