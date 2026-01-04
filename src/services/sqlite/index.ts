@@ -21,7 +21,7 @@ export * from './types.js';
 export { migrations } from './migrations.js';
 
 // Export transactions
-export { storeObservationsAndMarkComplete } from './transactions.js';
+export { storeObservations, storeObservationsAndMarkComplete } from './transactions.js';
 
 // Re-export all modular functions for convenient access
 export * from './Sessions.js';
