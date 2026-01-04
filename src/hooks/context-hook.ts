@@ -9,7 +9,7 @@
 import { stdin } from "process";
 import { ensureWorkerRunning, getWorkerPort } from "../shared/worker-utils.js";
 import { HOOK_TIMEOUTS } from "../shared/hook-constants.js";
-import { getProjectName } from "../utils/project-name.js";
+import { getProjectContext } from "../utils/project-name.js";
 import { logger } from "../utils/logger.js";
 
 export interface SessionStartInput {
@@ -24,10 +24,12 @@ async function contextHook(input?: SessionStartInput): Promise<string> {
   await ensureWorkerRunning();
 
   const cwd = input?.cwd ?? process.cwd();
-  const project = getProjectName(cwd);
+  const context = getProjectContext(cwd);
   const port = getWorkerPort();
 
-  const url = `http://127.0.0.1:${port}/api/context/inject?project=${encodeURIComponent(project)}`;
+  // Pass all projects (parent + worktree if applicable) for unified timeline
+  const projectsParam = context.allProjects.join(',');
+  const url = `http://127.0.0.1:${port}/api/context/inject?projects=${encodeURIComponent(projectsParam)}`;
 
   // Note: Removed AbortSignal.timeout due to Windows Bun cleanup issue (libuv assertion)
   // Worker service has its own timeouts, so client-side timeout is redundant
