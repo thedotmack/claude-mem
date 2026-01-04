@@ -4,7 +4,8 @@
  * Provides utilities for filtering search results by date range.
  */
 
-import { DateRange, SearchResult, CombinedResult, SEARCH_CONSTANTS } from '../types.js';
+import type { DateRange, SearchResult, CombinedResult } from '../types.js';
+import { SEARCH_CONSTANTS } from '../types.js';
 
 /**
  * Parse date range values to epoch milliseconds

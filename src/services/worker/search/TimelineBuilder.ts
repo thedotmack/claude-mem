@@ -5,7 +5,7 @@
  * Used by the timeline tool and get_context_timeline tool.
  */
 
-import {
+import type {
   ObservationSearchResult,
   SessionSummarySearchResult,
   UserPromptSearchResult,
