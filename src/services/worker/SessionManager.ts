@@ -137,7 +137,6 @@ export class SessionManager {
       startTime: Date.now(),
       cumulativeInputTokens: 0,
       cumulativeOutputTokens: 0,
-      pendingProcessingIds: new Set(),
       earliestPendingTimestamp: null,
       conversationHistory: [],  // Initialize empty - will be populated by agents
       currentProvider: null  // Will be set when generator starts
@@ -382,9 +381,6 @@ export class SessionManager {
     
     // Use the robust Pump iterator
     for await (const message of processor.createIterator(sessionDbId, session.abortController.signal)) {
-      // Track this message ID for completion marking
-      session.pendingProcessingIds.add(message._persistentId);
-
       // Track earliest timestamp for accurate observation timestamps
       // This ensures backlog messages get their original timestamps, not current time
       if (session.earliestPendingTimestamp === null) {

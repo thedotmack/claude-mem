@@ -359,6 +359,9 @@ export class GeminiAgent {
   /**
    * Process Gemini response (same format as Claude)
    * @param originalTimestamp - Original epoch when message was queued (for backlog processing accuracy)
+   *
+   * FIX: Store observations ONCE per response. Messages are already deleted when claimed
+   * (see PendingMessageStore.claimNextMessage), so no need to track pendingProcessingIds.
    */
   private async processGeminiResponse(
     session: ActiveSession,
@@ -371,145 +374,151 @@ export class GeminiAgent {
     const observations = parseObservations(text, session.contentSessionId);
     const summary = parseSummary(text, session.sessionDbId);
 
-    // Convert nullable fields to empty strings for storeSummary (if summary exists)
-    const summaryForStore = summary ? {
-      request: summary.request || '',
-      investigated: summary.investigated || '',
-      learned: summary.learned || '',
-      completed: summary.completed || '',
-      next_steps: summary.next_steps || '',
-      notes: summary.notes
-    } : null;
-
-    // Get the pending message ID(s) for this response
-    const pendingMessageStore = this.sessionManager.getPendingMessageStore();
     const sessionStore = this.dbManager.getSessionStore();
 
-    if (session.pendingProcessingIds.size > 0) {
-      // ATOMIC TRANSACTION: Store observations + summary + mark message(s) complete
-      for (const messageId of session.pendingProcessingIds) {
-        // CRITICAL: Must use memorySessionId (not contentSessionId) for FK constraint
-        if (!session.memorySessionId) {
-          throw new Error('Cannot store observations: memorySessionId not yet captured');
-        }
-
-        const result = sessionStore.storeObservationsAndMarkComplete(
-          session.memorySessionId,
-          session.project,
-          observations,
-          summaryForStore,
-          messageId,
-          pendingMessageStore,
-          session.lastPromptNumber,
-          discoveryTokens,
-          originalTimestamp ?? undefined
-        );
-
-        logger.info('SDK', 'Gemini observations and summary saved atomically', {
+    // CRITICAL: Must use memorySessionId (not contentSessionId) for FK constraint
+    if (!session.memorySessionId) {
+      // No memorySessionId yet - skip storage (will be captured from first SDK message)
+      if (observations.length > 0 || summary) {
+        logger.warn('SDK', 'Cannot store observations/summary: memorySessionId not yet captured', {
           sessionId: session.sessionDbId,
-          messageId,
-          observationCount: result.observationIds.length,
-          hasSummary: !!result.summaryId,
-          atomicTransaction: true
+          observationCount: observations.length,
+          hasSummary: !!summary
         });
+      }
+      return;
+    }
 
-        // AFTER transaction commits - async operations (can fail safely)
-        for (let i = 0; i < observations.length; i++) {
-          const obsId = result.observationIds[i];
-          const obs = observations[i];
+    // Use the original timestamp from the queued message, or current time
+    const timestampEpoch = originalTimestamp ?? Date.now();
 
-          this.dbManager.getChromaSync().syncObservation(
-            obsId,
-            session.contentSessionId,
-            session.project,
-            obs,
-            session.lastPromptNumber,
-            result.createdAtEpoch,
-            discoveryTokens
-          ).catch(err => {
-            logger.warn('SDK', 'Gemini chroma sync failed', { obsId }, err);
-          });
+    // Store each observation ONCE (no loop over message IDs)
+    const observationIds: number[] = [];
+    for (const obs of observations) {
+      const result = sessionStore.storeObservation(
+        session.memorySessionId,
+        session.project,
+        {
+          type: obs.type,
+          title: obs.title,
+          subtitle: obs.subtitle,
+          facts: obs.facts || [],
+          narrative: obs.narrative,
+          concepts: obs.concepts || [],
+          files_read: obs.files_read || [],
+          files_modified: obs.files_modified || []
+        },
+        session.lastPromptNumber,
+        discoveryTokens,
+        timestampEpoch
+      );
+      observationIds.push(result.id);
 
-          // Broadcast to SSE clients
-          if (worker && worker.sseBroadcaster) {
-            worker.sseBroadcaster.broadcast({
-              type: 'new_observation',
-              observation: {
-                id: obsId,
-                memory_session_id: session.memorySessionId,
-                session_id: session.contentSessionId,
-                type: obs.type,
-                title: obs.title,
-                subtitle: obs.subtitle,
-                text: null,
-                narrative: obs.narrative || null,
-                facts: JSON.stringify(obs.facts || []),
-                concepts: JSON.stringify(obs.concepts || []),
-                files_read: JSON.stringify(obs.files_read || []),
-                files_modified: JSON.stringify(obs.files_modified || []),
-                project: session.project,
-                prompt_number: session.lastPromptNumber,
-                created_at_epoch: result.createdAtEpoch
-              }
-            });
+      // Sync to Chroma (fire-and-forget)
+      this.dbManager.getChromaSync().syncObservation(
+        result.id,
+        session.contentSessionId,
+        session.project,
+        obs,
+        session.lastPromptNumber,
+        result.createdAtEpoch,
+        discoveryTokens
+      ).catch(err => {
+        logger.warn('SDK', 'Gemini chroma sync failed', { obsId: result.id }, err);
+      });
+
+      // Broadcast to SSE clients
+      if (worker && worker.sseBroadcaster) {
+        worker.sseBroadcaster.broadcast({
+          type: 'new_observation',
+          observation: {
+            id: result.id,
+            memory_session_id: session.memorySessionId,
+            session_id: session.contentSessionId,
+            type: obs.type,
+            title: obs.title,
+            subtitle: obs.subtitle,
+            text: null,
+            narrative: obs.narrative || null,
+            facts: JSON.stringify(obs.facts || []),
+            concepts: JSON.stringify(obs.concepts || []),
+            files_read: JSON.stringify(obs.files_read || []),
+            files_modified: JSON.stringify(obs.files_modified || []),
+            project: session.project,
+            prompt_number: session.lastPromptNumber,
+            created_at_epoch: result.createdAtEpoch
           }
-        }
+        });
+      }
+    }
 
-        // Sync summary to Chroma (if present)
-        if (summaryForStore && result.summaryId) {
-          this.dbManager.getChromaSync().syncSummary(
-            result.summaryId,
-            session.contentSessionId,
-            session.project,
-            summaryForStore,
-            session.lastPromptNumber,
-            result.createdAtEpoch,
-            discoveryTokens
-          ).catch(err => {
-            logger.warn('SDK', 'Gemini chroma sync failed', { summaryId: result.summaryId }, err);
-          });
+    // Store summary ONCE (if present)
+    let summaryId: number | undefined;
+    if (summary) {
+      const result = sessionStore.storeSummary(
+        session.memorySessionId,
+        session.project,
+        summary,
+        session.lastPromptNumber,
+        discoveryTokens,
+        timestampEpoch
+      );
+      summaryId = result.id;
 
-          // Broadcast to SSE clients
-          if (worker && worker.sseBroadcaster) {
-            worker.sseBroadcaster.broadcast({
-              type: 'new_summary',
-              summary: {
-                id: result.summaryId,
-                session_id: session.contentSessionId,
-                request: summary!.request,
-                investigated: summary!.investigated,
-                learned: summary!.learned,
-                completed: summary!.completed,
-                next_steps: summary!.next_steps,
-                notes: summary!.notes,
-                project: session.project,
-                prompt_number: session.lastPromptNumber,
-                created_at_epoch: result.createdAtEpoch
-              }
-            });
+      // Sync to Chroma (fire-and-forget)
+      this.dbManager.getChromaSync().syncSummary(
+        result.id,
+        session.contentSessionId,
+        session.project,
+        summary,
+        session.lastPromptNumber,
+        result.createdAtEpoch,
+        discoveryTokens
+      ).catch(err => {
+        logger.warn('SDK', 'Gemini chroma sync failed', { summaryId: result.id }, err);
+      });
+
+      // Broadcast to SSE clients
+      if (worker && worker.sseBroadcaster) {
+        worker.sseBroadcaster.broadcast({
+          type: 'new_summary',
+          summary: {
+            id: result.id,
+            session_id: session.contentSessionId,
+            request: summary.request,
+            investigated: summary.investigated,
+            learned: summary.learned,
+            completed: summary.completed,
+            next_steps: summary.next_steps,
+            notes: summary.notes,
+            project: session.project,
+            prompt_number: session.lastPromptNumber,
+            created_at_epoch: result.createdAtEpoch
           }
-
-          // Update Cursor context file for registered projects (fire-and-forget)
-          updateCursorContextForProject(session.project, getWorkerPort()).catch(error => {
-            logger.warn('CURSOR', 'Context update failed (non-critical)', { project: session.project }, error as Error);
-          });
-        }
+        });
       }
 
-      // Clear the processed message IDs
-      session.pendingProcessingIds.clear();
-      session.earliestPendingTimestamp = null;
+      // Update Cursor context file for registered projects (fire-and-forget)
+      updateCursorContextForProject(session.project, getWorkerPort()).catch(error => {
+        logger.warn('CURSOR', 'Context update failed (non-critical)', { project: session.project }, error as Error);
+      });
+    }
 
-      // Clean up old processed messages
-      const deletedCount = pendingMessageStore.cleanupProcessed(100);
-      if (deletedCount > 0) {
-        logger.debug('SDK', 'Cleaned up old processed messages', { deletedCount });
-      }
+    // Log what was saved
+    if (observationIds.length > 0 || summaryId) {
+      logger.info('SDK', 'Gemini observations and summary saved', {
+        sessionId: session.sessionDbId,
+        observationCount: observationIds.length,
+        hasSummary: !!summaryId
+      });
+    }
 
-      // Broadcast activity status after processing
-      if (worker && typeof worker.broadcastProcessingStatus === 'function') {
-        worker.broadcastProcessingStatus();
-      }
+    // Reset timestamp tracking for next batch
+    session.earliestPendingTimestamp = null;
+
+    // Broadcast activity status after processing
+    if (worker && typeof worker.broadcastProcessingStatus === 'function') {
+      worker.broadcastProcessingStatus();
     }
   }
 

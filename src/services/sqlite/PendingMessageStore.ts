@@ -26,18 +26,18 @@ export interface PersistentPendingMessage {
 /**
  * PendingMessageStore - Persistent work queue for SDK messages
  *
- * Messages are persisted before processing and marked complete after success.
- * This enables recovery from SDK hangs and worker crashes.
+ * Messages are persisted before processing. When claimed, they are immediately
+ * deleted from the queue and processed in-memory. This prevents duplicate
+ * observations when multiple messages are processed in the same batch.
  *
  * Lifecycle:
  * 1. enqueue() - Message persisted with status 'pending'
- * 2. markProcessing() - Status changes to 'processing' when yielded to SDK
- * 3. markProcessed() - Status changes to 'processed' after successful SDK response
- * 4. markFailed() - Status changes to 'failed' if max retries exceeded
+ * 2. claimNextMessage() - Message is atomically selected and DELETED, returned for in-memory processing
+ * 3. (Processing happens in-memory, observations stored directly)
+ * 4. markFailed() - Only used if re-enqueue is needed after processing failure
  *
- * Recovery:
- * - resetStuckMessages() - Moves 'processing' messages back to 'pending' if stuck
- * - getSessionsWithPendingMessages() - Find sessions that need recovery on startup
+ * Note: The 'processing' status is legacy and no longer used in the main flow.
+ * Messages go directly from 'pending' to deleted (success) or 'failed' (error).
  */
 export class PendingMessageStore {
   private db: Database;
@@ -80,14 +80,16 @@ export class PendingMessageStore {
   }
 
   /**
-   * Atomically claim the next pending message for processing
-   * Finds oldest pending -> marks processing -> returns it
+   * Atomically claim and delete the next pending message
+   * Finds oldest pending -> deletes it -> returns the message data
    * Uses a transaction to prevent race conditions
+   *
+   * The message is deleted immediately to prevent duplicate processing.
+   * Processing happens in-memory after this call returns.
    */
   claimNextMessage(sessionDbId: number): PersistentPendingMessage | null {
-    const now = Date.now();
-    
-    const claimTx = this.db.transaction((sessionId: number, timestamp: number) => {
+    const claimAndDeleteTx = this.db.transaction((sessionId: number) => {
+      // Find the oldest pending message
       const peekStmt = this.db.prepare(`
         SELECT * FROM pending_messages
         WHERE session_db_id = ? AND status = 'pending'
@@ -95,26 +97,21 @@ export class PendingMessageStore {
         LIMIT 1
       `);
       const msg = peekStmt.get(sessionId) as PersistentPendingMessage | null;
-      
+
       if (msg) {
-        const updateStmt = this.db.prepare(`
-          UPDATE pending_messages
-          SET status = 'processing', started_processing_at_epoch = ?
-          WHERE id = ?
+        // Delete immediately - no "processing" state needed
+        const deleteStmt = this.db.prepare(`
+          DELETE FROM pending_messages WHERE id = ?
         `);
-        updateStmt.run(timestamp, msg.id);
-        
-        // Return updated object
-        return {
-          ...msg,
-          status: 'processing',
-          started_processing_at_epoch: timestamp
-        } as PersistentPendingMessage;
+        deleteStmt.run(msg.id);
+
+        // Return the message data for in-memory processing
+        return msg;
       }
       return null;
     });
 
-    return claimTx(sessionDbId, now) as PersistentPendingMessage | null;
+    return claimAndDeleteTx(sessionDbId) as PersistentPendingMessage | null;
   }
 
   /**
@@ -131,7 +128,7 @@ export class PendingMessageStore {
 
   /**
    * Get all queue messages (for UI display)
-   * Returns pending, processing, and failed messages (not processed - they're deleted)
+   * Returns pending and failed messages (messages are deleted when claimed for processing)
    * Joins with sdk_sessions to get project name
    */
   getQueueMessages(): (PersistentPendingMessage & { project: string | null })[] {
@@ -139,12 +136,11 @@ export class PendingMessageStore {
       SELECT pm.*, ss.project
       FROM pending_messages pm
       LEFT JOIN sdk_sessions ss ON pm.content_session_id = ss.content_session_id
-      WHERE pm.status IN ('pending', 'processing', 'failed')
+      WHERE pm.status IN ('pending', 'failed')
       ORDER BY
         CASE pm.status
           WHEN 'failed' THEN 0
-          WHEN 'processing' THEN 1
-          WHEN 'pending' THEN 2
+          WHEN 'pending' THEN 1
         END,
         pm.created_at_epoch ASC
     `);
@@ -153,6 +149,8 @@ export class PendingMessageStore {
 
   /**
    * Get count of stuck messages (processing longer than threshold)
+   * @deprecated The 'processing' status is no longer used - messages are deleted when claimed.
+   * This method is kept for backward compatibility but will always return 0.
    */
   getStuckCount(thresholdMs: number): number {
     const cutoff = Date.now() - thresholdMs;
@@ -166,13 +164,14 @@ export class PendingMessageStore {
 
   /**
    * Retry a specific message (reset to pending)
-   * Works for pending (re-queue), processing (reset stuck), and failed messages
+   * Works for pending (re-queue) and failed messages
+   * Note: 'processing' status no longer exists - messages are deleted when claimed
    */
   retryMessage(messageId: number): boolean {
     const stmt = this.db.prepare(`
       UPDATE pending_messages
       SET status = 'pending', started_processing_at_epoch = NULL
-      WHERE id = ? AND status IN ('pending', 'processing', 'failed')
+      WHERE id = ? AND status IN ('pending', 'failed')
     `);
     const result = stmt.run(messageId);
     return result.changes > 0;
@@ -181,6 +180,8 @@ export class PendingMessageStore {
   /**
    * Reset all processing messages for a session to pending
    * Used when force-restarting a stuck session
+   * @deprecated The 'processing' status is no longer used - messages are deleted when claimed.
+   * This method is kept for backward compatibility but will always return 0.
    */
   resetProcessingToPending(sessionDbId: number): number {
     const stmt = this.db.prepare(`
@@ -195,6 +196,8 @@ export class PendingMessageStore {
   /**
    * Mark all processing messages for a session as failed
    * Used in error recovery when session generator crashes
+   * @deprecated The 'processing' status is no longer used - messages are deleted when claimed.
+   * This method is kept for backward compatibility but will always return 0.
    * @returns Number of messages marked failed
    */
   markSessionMessagesFailed(sessionDbId: number): number {
@@ -224,6 +227,8 @@ export class PendingMessageStore {
 
   /**
    * Retry all stuck messages at once
+   * @deprecated The 'processing' status is no longer used - messages are deleted when claimed.
+   * This method is kept for backward compatibility but will always return 0.
    */
   retryAllStuck(thresholdMs: number): number {
     const cutoff = Date.now() - thresholdMs;
@@ -255,6 +260,8 @@ export class PendingMessageStore {
 
   /**
    * Mark message as being processed (status: pending -> processing)
+   * @deprecated The 'processing' status is no longer used - messages are deleted when claimed.
+   * This method is kept for backward compatibility but has no effect.
    */
   markProcessing(messageId: number): void {
     const now = Date.now();
@@ -269,6 +276,8 @@ export class PendingMessageStore {
   /**
    * Mark message as successfully processed (status: processing -> processed)
    * Clears tool_input and tool_response to save space (observations are already saved)
+   * @deprecated Messages are now deleted when claimed, so this method has no effect.
+   * This method is kept for backward compatibility.
    */
   markProcessed(messageId: number): void {
     const now = Date.now();
@@ -318,6 +327,8 @@ export class PendingMessageStore {
 
   /**
    * Reset stuck messages (processing -> pending if stuck longer than threshold)
+   * @deprecated The 'processing' status is no longer used - messages are deleted when claimed.
+   * This method is kept for backward compatibility but will always return 0.
    * @param thresholdMs Messages processing longer than this are considered stuck (0 = reset all)
    * @returns Number of messages reset
    */
@@ -336,11 +347,12 @@ export class PendingMessageStore {
 
   /**
    * Get count of pending messages for a session
+   * Note: Only counts 'pending' status - messages are deleted when claimed for processing
    */
   getPendingCount(sessionDbId: number): number {
     const stmt = this.db.prepare(`
       SELECT COUNT(*) as count FROM pending_messages
-      WHERE session_db_id = ? AND status IN ('pending', 'processing')
+      WHERE session_db_id = ? AND status = 'pending'
     `);
     const result = stmt.get(sessionDbId) as { count: number };
     return result.count;
@@ -348,11 +360,12 @@ export class PendingMessageStore {
 
   /**
    * Check if any session has pending work
+   * Note: Only checks 'pending' status - messages are deleted when claimed for processing
    */
   hasAnyPendingWork(): boolean {
     const stmt = this.db.prepare(`
       SELECT COUNT(*) as count FROM pending_messages
-      WHERE status IN ('pending', 'processing')
+      WHERE status = 'pending'
     `);
     const result = stmt.get() as { count: number };
     return result.count > 0;
@@ -360,11 +373,12 @@ export class PendingMessageStore {
 
   /**
    * Get all session IDs that have pending messages (for recovery on startup)
+   * Note: Only checks 'pending' status - messages are deleted when claimed for processing
    */
   getSessionsWithPendingMessages(): number[] {
     const stmt = this.db.prepare(`
       SELECT DISTINCT session_db_id FROM pending_messages
-      WHERE status IN ('pending', 'processing')
+      WHERE status = 'pending'
     `);
     const results = stmt.all() as { session_db_id: number }[];
     return results.map(r => r.session_db_id);
@@ -417,14 +431,15 @@ export class PendingMessageStore {
   }
 
   /**
-   * Clear all pending, processing, and failed messages from the queue
+   * Clear all pending and failed messages from the queue
    * Keeps only processed messages (for history)
+   * Note: 'processing' status no longer exists - messages are deleted when claimed
    * @returns Number of messages deleted
    */
   clearAll(): number {
     const stmt = this.db.prepare(`
       DELETE FROM pending_messages
-      WHERE status IN ('pending', 'processing', 'failed')
+      WHERE status IN ('pending', 'failed')
     `);
     const result = stmt.run();
     return result.changes;
