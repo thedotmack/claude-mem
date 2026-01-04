@@ -18,13 +18,13 @@ Claude-mem uses **two distinct session IDs** to track conversations and memory:
 │                                                              │
 │    Database state:                                          │
 │    ├─ content_session_id: "user-session-123"               │
-│    └─ memory_session_id: "user-session-123" (placeholder)  │
+│    └─ memory_session_id: NULL (not yet captured)           │
 └─────────────────────────────────────────────────────────────┘
                            ↓
 ┌─────────────────────────────────────────────────────────────┐
 │ 2. SDKAgent starts, checks hasRealMemorySessionId           │
-│    const hasReal = memorySessionId !== contentSessionId     │
-│    → FALSE (they're equal)                                  │
+│    const hasReal = memorySessionId !== null                 │
+│    → FALSE (it's NULL)                                      │
 │    → Resume NOT used (fresh SDK session)                    │
 └─────────────────────────────────────────────────────────────┘
                            ↓
@@ -39,8 +39,8 @@ Claude-mem uses **two distinct session IDs** to track conversations and memory:
                            ↓
 ┌─────────────────────────────────────────────────────────────┐
 │ 4. Subsequent prompts use resume                            │
-│    const hasReal = memorySessionId !== contentSessionId     │
-│    → TRUE (they're different)                               │
+│    const hasReal = memorySessionId !== null                 │
+│    → TRUE (it's not NULL)                                   │
 │    → Resume parameter: { resume: "sdk-gen-abc123" }         │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -65,20 +65,18 @@ Even though the parameter is named `memorySessionId`, it receives `contentSessio
 - Stored value: `contentSessionId` (the user's session ID)
 - Foreign key: References `sdk_sessions.memory_session_id`
 
-The observations are linked to the session via the initial placeholder value that never changes from the observation's perspective.
+The observations are linked to the session via `contentSessionId`, which remains constant throughout the session lifecycle.
 
 ## Key Invariants
 
-### 1. Placeholder Detection
+### 1. NULL-Based Detection
 
 ```typescript
-const hasRealMemorySessionId =
-  session.memorySessionId &&
-  session.memorySessionId !== session.contentSessionId;
+const hasRealMemorySessionId = session.memorySessionId !== null;
 ```
 
-- When `memorySessionId === contentSessionId` → Placeholder state
-- When `memorySessionId !== contentSessionId` → Real SDK session captured
+- When `memorySessionId === null` → Not yet captured
+- When `memorySessionId !== null` → Real SDK session captured
 
 ### 2. Resume Safety
 
@@ -97,15 +95,15 @@ query({
 ### 3. Session Isolation
 
 - Each `contentSessionId` maps to exactly one database session
-- Each database session has one `memorySessionId` (initially placeholder, then captured)
+- Each database session has one `memorySessionId` (initially NULL, then captured)
 - Observations from different content sessions must NEVER mix
 
 ### 4. Foreign Key Integrity
 
 - Observations reference `sdk_sessions.memory_session_id`
-- Initially, both `sdk_sessions.memory_session_id` and `observations.memory_session_id` contain `contentSessionId`
-- When SDK session ID is captured, `sdk_sessions.memory_session_id` updates but observations stay with `contentSessionId`
-- Observations remain retrievable via `contentSessionId`
+- Initially, `sdk_sessions.memory_session_id` is NULL (no observations can be stored yet)
+- When SDK session ID is captured, `sdk_sessions.memory_session_id` is set to the real value
+- Observations are stored using `contentSessionId` and remain retrievable via `contentSessionId`
 
 ## Testing Strategy
 
@@ -117,7 +115,7 @@ The test suite validates all critical invariants:
 
 ### Test Categories
 
-1. **Placeholder Detection** - Validates `hasRealMemorySessionId` logic
+1. **NULL-Based Detection** - Validates `hasRealMemorySessionId` logic
 2. **Observation Storage** - Confirms observations use `contentSessionId`
 3. **Resume Safety** - Prevents `contentSessionId` from being used for resume
 4. **Cross-Contamination Prevention** - Ensures session isolation
@@ -147,10 +145,10 @@ bun test --verbose
 storeObservation(session.memorySessionId, ...)
 ```
 
-### ❌ Resuming with placeholder value
+### ❌ Resuming without checking for NULL
 
 ```typescript
-// WRONG - Would resume user's session!
+// WRONG - memorySessionId could be NULL!
 if (session.memorySessionId) {
   query({ resume: session.memorySessionId })
 }
@@ -159,7 +157,7 @@ if (session.memorySessionId) {
 ### ❌ Assuming memorySessionId is always set
 
 ```typescript
-// WRONG - Can be NULL or equal to contentSessionId
+// WRONG - Can be NULL before SDK session is captured
 const resumeId = session.memorySessionId
 ```
 
@@ -175,9 +173,7 @@ storeObservation(session.contentSessionId, project, obs, ...)
 ### ✅ Checking for real memory session ID
 
 ```typescript
-const hasRealMemorySessionId =
-  session.memorySessionId &&
-  session.memorySessionId !== session.contentSessionId;
+const hasRealMemorySessionId = session.memorySessionId !== null;
 ```
 
 ### ✅ Using resume parameter
@@ -203,7 +199,7 @@ SELECT
   content_session_id,
   memory_session_id,
   CASE
-    WHEN memory_session_id = content_session_id THEN 'PLACEHOLDER'
+    WHEN memory_session_id IS NULL THEN 'NOT_CAPTURED'
     ELSE 'CAPTURED'
   END as state
 FROM sdk_sessions
