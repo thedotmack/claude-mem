@@ -99,6 +99,7 @@ async function buildHooks() {
       format: 'cjs',
       outfile: `${hooksDir}/${WORKER_SERVICE.name}.cjs`,
       minify: true,
+      minifyIdentifiers: false, // Prevent variable name collisions in nested scopes (fixes #536)
       logLevel: 'error', // Suppress warnings (import.meta warning is benign)
       external: ['bun:sqlite'],
       define: {
@@ -124,6 +125,7 @@ async function buildHooks() {
       format: 'cjs',
       outfile: `${hooksDir}/${MCP_SERVER.name}.cjs`,
       minify: true,
+      minifyIdentifiers: false, // Prevent variable name collisions in nested scopes
       logLevel: 'error',
       external: ['bun:sqlite'],
       define: {
@@ -149,6 +151,7 @@ async function buildHooks() {
       format: 'cjs',
       outfile: `${hooksDir}/${CONTEXT_GENERATOR.name}.cjs`,
       minify: true,
+      minifyIdentifiers: false, // Prevent variable name collisions in nested scopes
       logLevel: 'error',
       external: ['bun:sqlite'],
       define: {
