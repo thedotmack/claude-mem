@@ -15,12 +15,27 @@ import { ModeManager } from '../../domain/ModeManager.js';
 import { formatObservationTokenDisplay } from '../TokenCalculator.js';
 
 /**
+ * Format current date/time for header display
+ */
+function formatHeaderDateTime(): string {
+  const now = new Date();
+  const date = now.toLocaleDateString('en-CA'); // YYYY-MM-DD format
+  const time = now.toLocaleTimeString('en-US', {
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true
+  }).toLowerCase().replace(' ', '');
+  const tz = now.toLocaleTimeString('en-US', { timeZoneName: 'short' }).split(' ').pop();
+  return `${date} ${time} ${tz}`;
+}
+
+/**
  * Render colored header
  */
 export function renderColorHeader(project: string): string[] {
   return [
     '',
-    `${colors.bright}${colors.cyan}[${project}] recent context${colors.reset}`,
+    `${colors.bright}${colors.cyan}[${project}] recent context, ${formatHeaderDateTime()}${colors.reset}`,
     `${colors.gray}${'─'.repeat(60)}${colors.reset}`,
     ''
   ];
@@ -219,5 +234,5 @@ export function renderColorFooter(totalDiscoveryTokens: number, totalReadTokens:
  * Render colored empty state
  */
 export function renderColorEmptyState(project: string): string {
-  return `\n${colors.bright}${colors.cyan}[${project}] recent context${colors.reset}\n${colors.gray}${'─'.repeat(60)}${colors.reset}\n\n${colors.dim}No previous sessions found for this project yet.${colors.reset}\n`;
+  return `\n${colors.bright}${colors.cyan}[${project}] recent context, ${formatHeaderDateTime()}${colors.reset}\n${colors.gray}${'─'.repeat(60)}${colors.reset}\n\n${colors.dim}No previous sessions found for this project yet.${colors.reset}\n`;
 }

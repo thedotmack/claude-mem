@@ -103,7 +103,7 @@ describe('MarkdownFormatter', () => {
       const result = renderMarkdownHeader('my-project');
 
       expect(result).toHaveLength(2);
-      expect(result[0]).toBe('# [my-project] recent context');
+      expect(result[0]).toMatch(/^# \[my-project\] recent context, \d{4}-\d{2}-\d{2} \d{1,2}:\d{2}[ap]m [A-Z]{3,4}$/);
       expect(result[1]).toBe('');
     });
 
@@ -116,7 +116,7 @@ describe('MarkdownFormatter', () => {
     it('should handle empty project name', () => {
       const result = renderMarkdownHeader('');
 
-      expect(result[0]).toBe('# [] recent context');
+      expect(result[0]).toMatch(/^# \[\] recent context, \d{4}-\d{2}-\d{2} \d{1,2}:\d{2}[ap]m [A-Z]{3,4}$/);
     });
   });
 
