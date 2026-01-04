@@ -96,6 +96,11 @@ export class PendingMessageStore {
         // Delete immediately - no "processing" state needed
         const deleteStmt = this.db.prepare('DELETE FROM pending_messages WHERE id = ?');
         deleteStmt.run(msg.id);
+
+        // Log claim with minimal info (avoid logging full payload)
+        logger.info('QUEUE', `CLAIMED | sessionDbId=${sessionId} | messageId=${msg.id} | type=${msg.message_type}`, {
+          sessionId: sessionId
+        });
       }
       return msg;
     });

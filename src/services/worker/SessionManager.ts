@@ -48,7 +48,7 @@ export class SessionManager {
    * Initialize a new session or return existing one
    */
   initializeSession(sessionDbId: number, currentUserPrompt?: string, promptNumber?: number): ActiveSession {
-    logger.info('SESSION', 'initializeSession called', {
+    logger.debug('SESSION', 'initializeSession called', {
       sessionDbId,
       promptNumber,
       has_currentUserPrompt: !!currentUserPrompt
@@ -57,7 +57,7 @@ export class SessionManager {
     // Check if already active
     let session = this.sessions.get(sessionDbId);
     if (session) {
-      logger.info('SESSION', 'Returning cached session', {
+      logger.debug('SESSION', 'Returning cached session', {
         sessionDbId,
         contentSessionId: session.contentSessionId,
         lastPromptNumber: session.lastPromptNumber
@@ -99,7 +99,7 @@ export class SessionManager {
     // Fetch from database
     const dbSession = this.dbManager.getSessionById(sessionDbId);
 
-    logger.info('SESSION', 'Fetched session from database', {
+    logger.debug('SESSION', 'Fetched session from database', {
       sessionDbId,
       content_session_id: dbSession.content_session_id,
       memory_session_id: dbSession.memory_session_id
@@ -142,7 +142,7 @@ export class SessionManager {
       currentProvider: null  // Will be set when generator starts
     };
 
-    logger.info('SESSION', 'Creating new session object', {
+    logger.debug('SESSION', 'Creating new session object', {
       sessionDbId,
       contentSessionId: dbSession.content_session_id,
       memorySessionId: dbSession.memory_session_id || '(none - fresh session)',
@@ -199,10 +199,10 @@ export class SessionManager {
 
     try {
       const messageId = this.getPendingStore().enqueue(sessionDbId, session.contentSessionId, message);
-      logger.debug('SESSION', `Observation persisted to DB`, {
-        sessionId: sessionDbId,
-        messageId,
-        tool: data.tool_name
+      const queueDepth = this.getPendingStore().getPendingCount(sessionDbId);
+      const toolSummary = logger.formatTool(data.tool_name, data.tool_input);
+      logger.info('QUEUE', `ENQUEUED | sessionDbId=${sessionDbId} | messageId=${messageId} | type=observation | tool=${toolSummary} | depth=${queueDepth}`, {
+        sessionId: sessionDbId
       });
     } catch (error) {
       logger.error('SESSION', 'Failed to persist observation to DB', {
@@ -215,15 +215,6 @@ export class SessionManager {
     // Notify generator immediately (zero latency)
     const emitter = this.sessionQueues.get(sessionDbId);
     emitter?.emit('message');
-
-    // Format tool name for logging
-    const toolSummary = logger.formatTool(data.tool_name, data.tool_input);
-
-    logger.info('SESSION', `Observation queued`, {
-      sessionId: sessionDbId,
-      tool: toolSummary,
-      hasGenerator: !!session.generatorPromise
-    });
   }
 
   /**
@@ -248,9 +239,9 @@ export class SessionManager {
 
     try {
       const messageId = this.getPendingStore().enqueue(sessionDbId, session.contentSessionId, message);
-      logger.debug('SESSION', `Summarize persisted to DB`, {
-        sessionId: sessionDbId,
-        messageId
+      const queueDepth = this.getPendingStore().getPendingCount(sessionDbId);
+      logger.info('QUEUE', `ENQUEUED | sessionDbId=${sessionDbId} | messageId=${messageId} | type=summarize | depth=${queueDepth}`, {
+        sessionId: sessionDbId
       });
     } catch (error) {
       logger.error('SESSION', 'Failed to persist summarize to DB', {
@@ -261,11 +252,6 @@ export class SessionManager {
 
     const emitter = this.sessionQueues.get(sessionDbId);
     emitter?.emit('message');
-
-    logger.info('SESSION', `Summarize queued`, {
-      sessionId: sessionDbId,
-      hasGenerator: !!session.generatorPromise
-    });
   }
 
   /**
