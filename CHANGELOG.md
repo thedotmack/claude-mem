@@ -2,6 +2,37 @@
 
 All notable changes to claude-mem.
 
+## [v8.5.6] - 2026-01-04
+
+## Major Architectural Refactoring
+
+Decomposes monolithic services into modular, maintainable components:
+
+### Worker Service
+Extracted infrastructure (GracefulShutdown, HealthMonitor, ProcessManager), server layer (ErrorHandler, Middleware, Server), and integrations (CursorHooksInstaller)
+
+### Context Generator
+Split into ContextBuilder, ContextConfigLoader, ObservationCompiler, TokenCalculator, formatters (Color/Markdown), and section renderers (Header/Footer/Summary/Timeline)
+
+### Search System
+Extracted SearchOrchestrator, ResultFormatter, TimelineBuilder, and strategy pattern (Chroma/SQLite/Hybrid search strategies) with dedicated filters (Date/Project/Type)
+
+### Agent System
+Extracted shared logic into ResponseProcessor, ObservationBroadcaster, FallbackErrorHandler, and SessionCleanupHelper
+
+### SQLite Layer
+Decomposed SessionStore into domain modules (observations, prompts, sessions, summaries, timeline) with proper type exports
+
+## Bug Fixes
+- Fixed duplicate observation storage bug (observations stored multiple times when messages were batched)
+- Added duplicate observation cleanup script for production database remediation
+- Fixed FOREIGN KEY constraint and missing `failed_at_epoch` column issues
+
+## Coming Next
+Comprehensive test suite in a new PR, targeting **v8.6.0**
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
 ## [v8.5.5] - 2026-01-03
 
 ## Improved Error Handling and Logging
@@ -1330,20 +1361,4 @@ Added comprehensive test suites:
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.1.12...v7.1.13
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-## [v7.1.12] - 2025-12-14
-
-## What's Fixed
-
-- **Fix data directory creation**: Ensure `~/.claude-mem/` directory exists before writing PM2 migration marker file
-  - Fixes ENOENT errors on first-time installation (issue #259)
-  - Adds `mkdirSync(dataDir, { recursive: true })` in `startWorker()` before marker file write
-  - Resolves Windows installation failures introduced in f923c0c and exposed in 5d4e71d
-
-## Changes
-
-- Added directory creation check in `src/shared/worker-utils.ts`
-- All 52 tests passing
-
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.1.11...v7.1.12
 
