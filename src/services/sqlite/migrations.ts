@@ -1,6 +1,9 @@
 import { Database } from 'bun:sqlite';
 import { Migration } from './Database.js';
 
+// Re-export MigrationRunner for SessionStore migration extraction
+export { MigrationRunner } from './migrations/runner.js';
+
 /**
  * Initial schema migration - creates all core tables
  */
