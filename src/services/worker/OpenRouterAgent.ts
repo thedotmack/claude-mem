@@ -14,14 +14,18 @@
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
-import { parseObservations, parseSummary } from '../../sdk/parser.js';
 import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
-import { updateCursorContextForProject } from '../worker-service.js';
-import { getWorkerPort } from '../../shared/worker-utils.js';
+import {
+  processAgentResponse,
+  shouldFallbackToClaude,
+  isAbortError,
+  type WorkerRef,
+  type FallbackAgent
+} from './agents/index.js';
 
 // OpenRouter API endpoint
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
@@ -29,7 +33,7 @@ const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
 // Context window management constants (defaults, overridable via settings)
 const DEFAULT_MAX_CONTEXT_MESSAGES = 20;  // Maximum messages to keep in conversation history
 const DEFAULT_MAX_ESTIMATED_TOKENS = 100000;  // ~100k tokens max context (safety limit)
-const CHARS_PER_TOKEN_ESTIMATE = 4;  // Conservative estimate: 1 token ≈ 4 chars
+const CHARS_PER_TOKEN_ESTIMATE = 4;  // Conservative estimate: 1 token = 4 chars
 
 // OpenAI-compatible message format
 interface OpenAIMessage {
@@ -56,11 +60,6 @@ interface OpenRouterResponse {
   };
 }
 
-// Forward declaration for fallback agent type
-type FallbackAgent = {
-  startSession(session: ActiveSession, worker?: any): Promise<void>;
-};
-
 export class OpenRouterAgent {
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
@@ -80,27 +79,10 @@ export class OpenRouterAgent {
   }
 
   /**
-   * Check if an error should trigger fallback to Claude
-   */
-  private shouldFallbackToClaude(error: any): boolean {
-    const message = error?.message || '';
-    // Fall back on rate limit (429), server errors (5xx), or network issues
-    return (
-      message.includes('429') ||
-      message.includes('500') ||
-      message.includes('502') ||
-      message.includes('503') ||
-      message.includes('ECONNREFUSED') ||
-      message.includes('ETIMEDOUT') ||
-      message.includes('fetch failed')
-    );
-  }
-
-  /**
    * Start OpenRouter agent for a session
    * Uses multi-turn conversation to maintain context across messages
    */
-  async startSession(session: ActiveSession, worker?: any): Promise<void> {
+  async startSession(session: ActiveSession, worker?: WorkerRef): Promise<void> {
     try {
       // Get OpenRouter configuration
       const { apiKey, model, siteUrl, appName } = this.getOpenRouterConfig();
@@ -130,8 +112,17 @@ export class OpenRouterAgent {
         session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);  // Rough estimate
         session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
 
-        // Process response (no original timestamp for init - not from queue)
-        await this.processOpenRouterResponse(session, initResponse.content, worker, tokensUsed, null);
+        // Process response using shared ResponseProcessor (no original timestamp for init - not from queue)
+        await processAgentResponse(
+          initResponse.content,
+          session,
+          this.dbManager,
+          this.sessionManager,
+          worker,
+          tokensUsed,
+          null,
+          'OpenRouter'
+        );
       } else {
         logger.warn('SDK', 'Empty OpenRouter init response - session may lack context', {
           sessionId: session.sessionDbId,
@@ -164,18 +155,27 @@ export class OpenRouterAgent {
           session.conversationHistory.push({ role: 'user', content: obsPrompt });
           const obsResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, siteUrl, appName);
 
+          let tokensUsed = 0;
           if (obsResponse.content) {
             // Add response to conversation history
             session.conversationHistory.push({ role: 'assistant', content: obsResponse.content });
 
-            const tokensUsed = obsResponse.tokensUsed || 0;
+            tokensUsed = obsResponse.tokensUsed || 0;
             session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
             session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
           }
 
-          // Process response (even if empty) - empty responses will have no observations/summaries
-          // but messages still need to be marked complete atomically
-          await this.processOpenRouterResponse(session, obsResponse.content || '', worker, tokensUsed, originalTimestamp);
+          // Process response using shared ResponseProcessor
+          await processAgentResponse(
+            obsResponse.content || '',
+            session,
+            this.dbManager,
+            this.sessionManager,
+            worker,
+            tokensUsed,
+            originalTimestamp,
+            'OpenRouter'
+          );
 
         } else if (message.type === 'summarize') {
           // Build summary prompt
@@ -191,18 +191,27 @@ export class OpenRouterAgent {
           session.conversationHistory.push({ role: 'user', content: summaryPrompt });
           const summaryResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, siteUrl, appName);
 
+          let tokensUsed = 0;
           if (summaryResponse.content) {
             // Add response to conversation history
             session.conversationHistory.push({ role: 'assistant', content: summaryResponse.content });
 
-            const tokensUsed = summaryResponse.tokensUsed || 0;
+            tokensUsed = summaryResponse.tokensUsed || 0;
             session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
             session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
           }
 
-          // Process response (even if empty) - empty responses will have no observations/summaries
-          // but messages still need to be marked complete atomically
-          await this.processOpenRouterResponse(session, summaryResponse.content || '', worker, tokensUsed, originalTimestamp);
+          // Process response using shared ResponseProcessor
+          await processAgentResponse(
+            summaryResponse.content || '',
+            session,
+            this.dbManager,
+            this.sessionManager,
+            worker,
+            tokensUsed,
+            originalTimestamp,
+            'OpenRouter'
+          );
         }
       }
 
@@ -215,35 +224,26 @@ export class OpenRouterAgent {
         model
       });
 
-    } catch (error: any) {
-      if (error.name === 'AbortError') {
+    } catch (error: unknown) {
+      if (isAbortError(error)) {
         logger.warn('SDK', 'OpenRouter agent aborted', { sessionId: session.sessionDbId });
         throw error;
       }
 
       // Check if we should fall back to Claude
-      if (this.shouldFallbackToClaude(error) && this.fallbackAgent) {
+      if (shouldFallbackToClaude(error) && this.fallbackAgent) {
         logger.warn('SDK', 'OpenRouter API failed, falling back to Claude SDK', {
           sessionDbId: session.sessionDbId,
-          error: error.message,
+          error: error instanceof Error ? error.message : String(error),
           historyLength: session.conversationHistory.length
         });
 
-        // Reset any 'processing' messages back to 'pending' so Claude can retry them
-        const pendingStore = this.sessionManager.getPendingMessageStore();
-        const resetCount = pendingStore.resetStuckMessages(0);  // 0 = reset ALL processing messages
-        if (resetCount > 0) {
-          logger.info('SDK', 'Reset processing messages for fallback', {
-            sessionDbId: session.sessionDbId,
-            resetCount
-          });
-        }
-
         // Fall back to Claude - it will use the same session with shared conversationHistory
+        // Note: With claim-and-delete queue pattern, messages are already deleted on claim
         return this.fallbackAgent.startSession(session, worker);
       }
 
-      logger.failure('SDK', 'OpenRouter agent error', { sessionDbId: session.sessionDbId }, error);
+      logger.failure('SDK', 'OpenRouter agent error', { sessionDbId: session.sessionDbId }, error as Error);
       throw error;
     }
   }
@@ -260,9 +260,7 @@ export class OpenRouterAgent {
    * Keeps most recent messages within token budget
    */
   private truncateHistory(history: ConversationMessage[]): ConversationMessage[] {
-    const settings = SettingsDefaultsManager.loadFromFile(
-      USER_SETTINGS_PATH
-    );
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
 
     const MAX_CONTEXT_MESSAGES = parseInt(settings.CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES) || DEFAULT_MAX_CONTEXT_MESSAGES;
     const MAX_ESTIMATED_TOKENS = parseInt(settings.CLAUDE_MEM_OPENROUTER_MAX_TOKENS) || DEFAULT_MAX_ESTIMATED_TOKENS;
@@ -398,166 +396,6 @@ export class OpenRouterAgent {
 
     return { content, tokensUsed };
   }
-
-  /**
-   * Process OpenRouter response (same format as Claude/Gemini)
-   * @param originalTimestamp - Original epoch when message was queued (for backlog processing accuracy)
-   */
-  private async processOpenRouterResponse(
-    session: ActiveSession,
-    text: string,
-    worker: any | undefined,
-    discoveryTokens: number,
-    originalTimestamp: number | null
-  ): Promise<void> {
-    // Parse observations and summary
-    const observations = parseObservations(text, session.contentSessionId);
-    const summary = parseSummary(text, session.sessionDbId);
-
-    // Convert nullable fields to empty strings for storeSummary (if summary exists)
-    const summaryForStore = summary ? {
-      request: summary.request || '',
-      investigated: summary.investigated || '',
-      learned: summary.learned || '',
-      completed: summary.completed || '',
-      next_steps: summary.next_steps || '',
-      notes: summary.notes
-    } : null;
-
-    // Get the pending message ID(s) for this response
-    const pendingMessageStore = this.sessionManager.getPendingMessageStore();
-    const sessionStore = this.dbManager.getSessionStore();
-
-    if (session.pendingProcessingIds.size > 0) {
-      // ATOMIC TRANSACTION: Store observations + summary + mark message(s) complete
-      for (const messageId of session.pendingProcessingIds) {
-        // CRITICAL: Must use memorySessionId (not contentSessionId) for FK constraint
-        if (!session.memorySessionId) {
-          throw new Error('Cannot store observations: memorySessionId not yet captured');
-        }
-
-        const result = sessionStore.storeObservationsAndMarkComplete(
-          session.memorySessionId,
-          session.project,
-          observations,
-          summaryForStore,
-          messageId,
-          pendingMessageStore,
-          session.lastPromptNumber,
-          discoveryTokens,
-          originalTimestamp ?? undefined
-        );
-
-        logger.info('SDK', 'OpenRouter observations and summary saved atomically', {
-          sessionId: session.sessionDbId,
-          messageId,
-          observationCount: result.observationIds.length,
-          hasSummary: !!result.summaryId,
-          atomicTransaction: true
-        });
-
-        // AFTER transaction commits - async operations (can fail safely)
-        for (let i = 0; i < observations.length; i++) {
-          const obsId = result.observationIds[i];
-          const obs = observations[i];
-
-          this.dbManager.getChromaSync().syncObservation(
-            obsId,
-            session.contentSessionId,
-            session.project,
-            obs,
-            session.lastPromptNumber,
-            result.createdAtEpoch,
-            discoveryTokens
-          ).catch(err => {
-            logger.warn('SDK', 'OpenRouter chroma sync failed', { obsId }, err);
-          });
-
-          // Broadcast to SSE clients
-          if (worker && worker.sseBroadcaster) {
-            worker.sseBroadcaster.broadcast({
-              type: 'new_observation',
-              observation: {
-                id: obsId,
-                memory_session_id: session.memorySessionId,
-                session_id: session.contentSessionId,
-                type: obs.type,
-                title: obs.title,
-                subtitle: obs.subtitle,
-                text: null,
-                narrative: obs.narrative || null,
-                facts: JSON.stringify(obs.facts || []),
-                concepts: JSON.stringify(obs.concepts || []),
-                files_read: JSON.stringify(obs.files_read || []),
-                files_modified: JSON.stringify(obs.files_modified || []),
-                project: session.project,
-                prompt_number: session.lastPromptNumber,
-                created_at_epoch: result.createdAtEpoch
-              }
-            });
-          }
-        }
-
-        // Sync summary to Chroma (if present)
-        if (summaryForStore && result.summaryId) {
-          this.dbManager.getChromaSync().syncSummary(
-            result.summaryId,
-            session.contentSessionId,
-            session.project,
-            summaryForStore,
-            session.lastPromptNumber,
-            result.createdAtEpoch,
-            discoveryTokens
-          ).catch(err => {
-            logger.warn('SDK', 'OpenRouter chroma sync failed', { summaryId: result.summaryId }, err);
-          });
-
-          // Broadcast to SSE clients
-          if (worker && worker.sseBroadcaster) {
-            worker.sseBroadcaster.broadcast({
-              type: 'new_summary',
-              summary: {
-                id: result.summaryId,
-                session_id: session.contentSessionId,
-                request: summary!.request,
-                investigated: summary!.investigated,
-                learned: summary!.learned,
-                completed: summary!.completed,
-                next_steps: summary!.next_steps,
-                notes: summary!.notes,
-                project: session.project,
-                prompt_number: session.lastPromptNumber,
-                created_at_epoch: result.createdAtEpoch
-              }
-            });
-          }
-
-          // Update Cursor context file for registered projects (fire-and-forget)
-          updateCursorContextForProject(session.project, getWorkerPort()).catch(error => {
-            logger.warn('CURSOR', 'Context update failed (non-critical)', { project: session.project }, error as Error);
-          });
-        }
-      }
-
-      // Clear the processed message IDs
-      session.pendingProcessingIds.clear();
-      session.earliestPendingTimestamp = null;
-
-      // Clean up old processed messages
-      const deletedCount = pendingMessageStore.cleanupProcessed(100);
-      if (deletedCount > 0) {
-        logger.debug('SDK', 'Cleaned up old processed messages', { deletedCount });
-      }
-
-      // Broadcast activity status after processing
-      if (worker && typeof worker.broadcastProcessingStatus === 'function') {
-        worker.broadcastProcessingStatus();
-      }
-    }
-  }
-
-  // REMOVED: markMessagesProcessed() - replaced by atomic transaction in processOpenRouterResponse()
-  // Messages are now marked complete atomically with observation storage to prevent duplicates
 
   /**
    * Get OpenRouter configuration from settings or environment
