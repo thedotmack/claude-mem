@@ -113,8 +113,7 @@ export async function processAgentResponse(
     dbManager,
     worker,
     discoveryTokens,
-    agentName,
-    observations
+    agentName
   );
 
   // Clean up session state
@@ -206,6 +205,24 @@ async function syncAndBroadcastObservations(
       created_at_epoch: result.createdAtEpoch
     });
   }
+
+  // Update folder CLAUDE.md files for touched folders (fire-and-forget)
+  // This runs per-observation batch to ensure folders are updated as work happens
+  const allFilePaths: string[] = [];
+  for (const obs of observations) {
+    allFilePaths.push(...(obs.files_modified || []));
+    allFilePaths.push(...(obs.files_read || []));
+  }
+
+  if (allFilePaths.length > 0) {
+    updateFolderClaudeMdFiles(
+      allFilePaths,
+      session.project,
+      getWorkerPort()
+    ).catch(error => {
+      logger.warn('FOLDER_INDEX', 'CLAUDE.md update failed (non-critical)', { project: session.project }, error as Error);
+    });
+  }
 }
 
 /**
@@ -219,8 +236,7 @@ async function syncAndBroadcastSummary(
   dbManager: DatabaseManager,
   worker: WorkerRef | undefined,
   discoveryTokens: number,
-  agentName: string,
-  observations: ParsedObservation[]
+  agentName: string
 ): Promise<void> {
   if (!summaryForStore || !result.summaryId) {
     return;
@@ -270,21 +286,4 @@ async function syncAndBroadcastSummary(
   updateCursorContextForProject(session.project, getWorkerPort()).catch(error => {
     logger.warn('CURSOR', 'Context update failed (non-critical)', { project: session.project }, error as Error);
   });
-
-  // Update folder CLAUDE.md files for touched folders (fire-and-forget)
-  const allFilePaths: string[] = [];
-  for (const obs of observations) {
-    allFilePaths.push(...(obs.files_modified || []));
-    allFilePaths.push(...(obs.files_read || []));
-  }
-
-  if (allFilePaths.length > 0) {
-    updateFolderClaudeMdFiles(
-      allFilePaths,
-      session.project,
-      getWorkerPort()
-    ).catch(error => {
-      logger.warn('FOLDER_INDEX', 'CLAUDE.md update failed (non-critical)', { project: session.project }, error as Error);
-    });
-  }
 }
