@@ -49,11 +49,6 @@ export interface SettingsDefaults {
   // Feature Toggles
   CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: string;
   CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: string;
-  // Folder Index Configuration
-  CLAUDE_MEM_FOLDER_INDEX_ENABLED: string;
-  CLAUDE_MEM_FOLDER_INDEX_MAX_DEPTH: string;
-  CLAUDE_MEM_FOLDER_INDEX_EXCLUDE_FOLDERS: string;
-  CLAUDE_MEM_FOLDER_INDEX_MIN_ACTIVITY: string;
 }
 
 export class SettingsDefaultsManager {
@@ -98,11 +93,6 @@ export class SettingsDefaultsManager {
     // Feature Toggles
     CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: 'true',
     CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: 'false',
-    // Folder Index Configuration
-    CLAUDE_MEM_FOLDER_INDEX_ENABLED: 'true',
-    CLAUDE_MEM_FOLDER_INDEX_MAX_DEPTH: '3',
-    CLAUDE_MEM_FOLDER_INDEX_EXCLUDE_FOLDERS: 'node_modules,.git,dist,build,.next,coverage',
-    CLAUDE_MEM_FOLDER_INDEX_MIN_ACTIVITY: '1',
   };
 
   /**
