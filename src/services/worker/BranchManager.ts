@@ -11,7 +11,7 @@ import { homedir } from 'os';
 import { join } from 'path';
 import { logger } from '../../utils/logger.js';
 
-const INSTALLED_PLUGIN_PATH = join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
+const INSTALLED_PLUGIN_PATH = process.env.CLAUDE_PLUGIN_ROOT || join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
 
 /**
  * Validate branch name to prevent command injection
