@@ -2,6 +2,39 @@
 
 All notable changes to claude-mem.
 
+## [v8.5.9] - 2026-01-04
+
+## What's New
+
+### Context Header Timestamp
+
+The context injection header now displays the current date and time, making it easier to understand when context was generated.
+
+**Example:** `[claude-mem] recent context, 2026-01-04 2:46am EST`
+
+This appears in both terminal (colored) output and markdown format, including empty state messages.
+
+---
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.5.8...v8.5.9
+
+## [v8.5.8] - 2026-01-04
+
+## Bug Fixes
+
+- **#511**: Add `gemini-3-flash` model to GeminiAgent with proper rate limits and validation
+- **#517**: Fix Windows process management by replacing PowerShell with WMIC (fixes Git Bash/WSL compatibility)
+- **#527**: Add Apple Silicon Homebrew paths (`/opt/homebrew/bin`) for `bun` and `uv` detection
+- **#531**: Remove duplicate type definitions from `export-memories.ts` using shared bridge file
+
+## Tests
+
+- Added regression tests for PR #542 covering Gemini model support, WMIC parsing, Apple Silicon paths, and export type refactoring
+
+## Documentation
+
+- Added detailed analysis reports for GitHub issues #511, #514, #517, #520, #527, #531, #532
+
 ## [v8.5.7] - 2026-01-04
 
 ## Modular Architecture Refactor
@@ -1253,89 +1286,4 @@ npm run bug-report --help       # Show help
 ---
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.1.15...v7.2.0
-
-## [v7.1.15] - 2025-12-14
-
-## 🐛 Bug Fixes
-
-**Worker Service Initialization**
-- Fixed 404 error on `/api/context/inject` during worker startup
-- Route is now registered immediately instead of after database initialization
-- Prevents race condition on fresh installs and restarts
-- Added integration test for early context inject route access
-
-## Technical Details
-
-The context hook was failing with `Cannot GET /api/context/inject` because the route was registered only after database initialization completed. This created a race condition where the hook could attempt to access the endpoint before it existed.
-
-**Implementation:**
-- Added `initializationComplete` Promise to track async background initialization
-- Register `/api/context/inject` route immediately in `setupRoutes()`
-- Early handler blocks requests until initialization resolves (30s timeout)
-- Route handler duplicates logic from `SearchRoutes.handleContextInject` by design to prevent 404s
-
-**Testing:**
-- Added integration test verifying route registration and timeout handling
-
-Fixes #305
-Related: PR #310
-
-## [v7.1.14] - 2025-12-14
-
-## Enhanced Error Handling & Logging
-
-This patch release improves error message quality and logging across the claude-mem system.
-
-### Error Message Improvements
-
-**Standardized Hook Error Handling**
-- Created shared error handlers (`handleFetchError`, `handleWorkerError`) for consistent error messages
-- Platform-aware restart instructions (macOS, Linux, Windows) with correct commands
-- Migrated all hooks (context, new, save, summary) to use standardized handlers
-- Enhanced error logging with actionable context before throwing restart instructions
-
-**ChromaSync Error Standardization**
-- Consistent client initialization checks across all methods
-- Enhanced error messages with troubleshooting steps and restart instructions
-- Better context about which operation failed
-
-**Worker Service Improvements**
-- Enhanced version endpoint error logging with status codes and response text
-- Improved worker restart error messages with PM2 commands
-- Better context in all worker-related error scenarios
-
-### Bug Fixes
-
-- **Issue #260**: Fixed `happy_path_error__with_fallback` misuse in save-hook causing false "Missing cwd" errors
-- Removed unnecessary `happy_path_error` calls from SDKAgent that were masking real error messages
-- Cleaned up migration logging to use `console.log` instead of `console.error` for non-error events
-
-### Logging Improvements
-
-**Timezone-Aware Timestamps**
-- Worker logs now use local machine timezone instead of UTC
-- Maintains same format (`YYYY-MM-DD HH:MM:SS.mmm`) but reflects local time
-- Easier debugging and log correlation with system events
-- Enhanced worker-cli logging output format
-
-### Test Coverage
-
-Added comprehensive test suites:
-- `tests/error-handling/hook-error-logging.test.ts` - 12 tests for hook error handler behavior
-- `tests/services/chroma-sync-errors.test.ts` - ChromaSync error message consistency
-- `tests/integration/hook-execution-environments.test.ts` - Bun PATH resolution across shells
-- `docs/context/TEST_AUDIT_2025-12-13.md` - Comprehensive audit report
-
-### Files Changed
-
-27 files changed: 1,435 additions, 200 deletions
-
-**What's Changed**
-* Standardize and enhance error handling across hooks and worker service by @thedotmack in #295
-* Timezone-aware logging for worker service and CLI
-* Complete build with all plugin files included
-
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.1.12...v7.1.14
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
 
