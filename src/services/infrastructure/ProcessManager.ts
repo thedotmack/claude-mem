@@ -88,12 +88,15 @@ export async function getChildProcesses(parentPid: number): Promise<number[]> {
   }
 
   try {
-    const cmd = `powershell -Command "Get-CimInstance Win32_Process | Where-Object { $_.ParentProcessId -eq ${parentPid} } | Select-Object -ExpandProperty ProcessId"`;
+    const cmd = `wmic process where "parentprocessid=${parentPid}" get processid /format:list`;
     const { stdout } = await execAsync(cmd, { timeout: 60000 });
     return stdout
       .trim()
       .split('\n')
-      .map(s => parseInt(s.trim(), 10))
+      .map(line => {
+        const match = line.match(/ProcessId=(\d+)/i);
+        return match ? parseInt(match[1], 10) : NaN;
+      })
       .filter(n => !isNaN(n) && Number.isInteger(n) && n > 0);
   } catch (error) {
     // Shutdown cleanup - failure is non-critical, continue without child process cleanup
@@ -167,8 +170,8 @@ export async function cleanupOrphanedProcesses(): Promise<void> {
 
   try {
     if (isWindows) {
-      // Windows: Use PowerShell Get-CimInstance to find chroma-mcp processes
-      const cmd = `powershell -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -like '*python*' -and $_.CommandLine -like '*chroma-mcp*' } | Select-Object -ExpandProperty ProcessId"`;
+      // Windows: Use WMIC to find chroma-mcp processes (avoids PowerShell $_ issues in Git Bash/WSL)
+      const cmd = `wmic process where "name like '%python%' and commandline like '%chroma-mcp%'" get processid /format:list`;
       const { stdout } = await execAsync(cmd, { timeout: 60000 });
 
       if (!stdout.trim()) {
@@ -176,12 +179,15 @@ export async function cleanupOrphanedProcesses(): Promise<void> {
         return;
       }
 
-      const pidStrings = stdout.trim().split('\n');
-      for (const pidStr of pidStrings) {
-        const pid = parseInt(pidStr.trim(), 10);
-        // SECURITY: Validate PID is positive integer before adding to list
-        if (!isNaN(pid) && Number.isInteger(pid) && pid > 0) {
-          pids.push(pid);
+      const lines = stdout.trim().split('\n');
+      for (const line of lines) {
+        const match = line.match(/ProcessId=(\d+)/i);
+        if (match) {
+          const pid = parseInt(match[1], 10);
+          // SECURITY: Validate PID is positive integer before adding to list
+          if (!isNaN(pid) && Number.isInteger(pid) && pid > 0) {
+            pids.push(pid);
+          }
         }
       }
     } else {
