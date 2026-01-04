@@ -1,0 +1,29 @@
+# Claude-mem development tasks
+
+[tasks.sync]
+description = "Build, sync, and restart plugin (idempotent)"
+run = "bash scripts/dev-sync.sh"
+
+[tasks."sync:force"]
+description = "Force sync even on beta branch"
+run = "npm run sync-marketplace:force && bash scripts/dev-sync.sh"
+
+[tasks.logs]
+description = "Tail today's worker logs"
+run = "tail -f ~/.claude-mem/logs/claude-mem-$(date +%Y-%m-%d).log"
+
+[tasks."logs:recent"]
+description = "Show last 50 lines of today's logs"
+run = "tail -50 ~/.claude-mem/logs/claude-mem-$(date +%Y-%m-%d).log"
+
+[tasks.health]
+description = "Check worker health status"
+run = "curl -s http://localhost:37777/api/health | jq"
+
+[tasks.viewer]
+description = "Open viewer UI in browser"
+run = "open http://localhost:37777"
+
+[tasks."clear-update-warning"]
+description = "Clear plugin update warning (acknowledges you've restarted sessions)"
+run = "rm -f ~/.claude-mem/last-plugin-update && echo 'Update warning cleared'"
