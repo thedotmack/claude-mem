@@ -2,6 +2,55 @@
 
 All notable changes to claude-mem.
 
+## [v8.5.6] - 2026-01-04
+
+## Major Architectural Refactoring
+
+Decomposes monolithic services into modular, maintainable components:
+
+### Worker Service
+Extracted infrastructure (GracefulShutdown, HealthMonitor, ProcessManager), server layer (ErrorHandler, Middleware, Server), and integrations (CursorHooksInstaller)
+
+### Context Generator
+Split into ContextBuilder, ContextConfigLoader, ObservationCompiler, TokenCalculator, formatters (Color/Markdown), and section renderers (Header/Footer/Summary/Timeline)
+
+### Search System
+Extracted SearchOrchestrator, ResultFormatter, TimelineBuilder, and strategy pattern (Chroma/SQLite/Hybrid search strategies) with dedicated filters (Date/Project/Type)
+
+### Agent System
+Extracted shared logic into ResponseProcessor, ObservationBroadcaster, FallbackErrorHandler, and SessionCleanupHelper
+
+### SQLite Layer
+Decomposed SessionStore into domain modules (observations, prompts, sessions, summaries, timeline) with proper type exports
+
+## Bug Fixes
+- Fixed duplicate observation storage bug (observations stored multiple times when messages were batched)
+- Added duplicate observation cleanup script for production database remediation
+- Fixed FOREIGN KEY constraint and missing `failed_at_epoch` column issues
+
+## Coming Next
+Comprehensive test suite in a new PR, targeting **v8.6.0**
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+## [v8.5.5] - 2026-01-03
+
+## Improved Error Handling and Logging
+
+This patch release enhances error handling and logging across all worker services for better debugging and reliability.
+
+### Changes
+- **Enhanced Error Logging**: Improved error context across SessionStore, SearchManager, SDKAgent, GeminiAgent, and OpenRouterAgent
+- **SearchManager**: Restored error handling for Chroma calls with improved logging
+- **SessionStore**: Enhanced error logging throughout database operations
+- **Bug Fix**: Fixed critical bug where `memory_session_id` could incorrectly equal `content_session_id`
+- **Hooks**: Streamlined error handling and loading states for better maintainability
+
+### Investigation Reports
+- Added detailed analysis documents for generator failures and observation duplication regressions
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.5.4...v8.5.5
+
 ## [v8.5.4] - 2026-01-02
 
 ## Bug Fixes
@@ -1312,40 +1361,4 @@ Added comprehensive test suites:
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.1.12...v7.1.13
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-## [v7.1.12] - 2025-12-14
-
-## What's Fixed
-
-- **Fix data directory creation**: Ensure `~/.claude-mem/` directory exists before writing PM2 migration marker file
-  - Fixes ENOENT errors on first-time installation (issue #259)
-  - Adds `mkdirSync(dataDir, { recursive: true })` in `startWorker()` before marker file write
-  - Resolves Windows installation failures introduced in f923c0c and exposed in 5d4e71d
-
-## Changes
-
-- Added directory creation check in `src/shared/worker-utils.ts`
-- All 52 tests passing
-
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.1.11...v7.1.12
-
-## [v7.1.11] - 2025-12-14
-
-## What's Changed
-
-**Refactor: Simplified hook execution by removing bun-wrapper indirection**
-
-Hooks are compiled to standard JavaScript and work perfectly with Node. The bun-wrapper was solving a problem that doesn't exist - hooks don't use Bun-specific APIs, they're just HTTP clients to the worker service.
-
-**Benefits:**
-- Removes ~100 lines of code
-- Simpler cross-platform support (especially Windows)
-- No PATH resolution needed for hooks
-- Worker still uses Bun where performance matters
-- Follows YAGNI and Simple First principles
-
-**Fixes:**
-- Fish shell compatibility issue (#264)
-
-**Full Changelog:** https://github.com/thedotmack/claude-mem/compare/v7.1.10...v7.1.11
 
