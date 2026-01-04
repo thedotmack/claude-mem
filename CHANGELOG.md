@@ -2,6 +2,40 @@
 
 All notable changes to claude-mem.
 
+## [v8.5.7] - 2026-01-04
+
+## Modular Architecture Refactor
+
+This release refactors the monolithic service architecture into focused, single-responsibility modules with comprehensive test coverage.
+
+### Architecture Improvements
+
+- **SQLite Repositories** (`src/services/sqlite/`) - Modular repositories for sessions, observations, prompts, summaries, and timeline
+- **Worker Agents** (`src/services/worker/agents/`) - Extracted response processing, error handling, and session cleanup
+- **Search Strategies** (`src/services/worker/search/`) - Modular search with Chroma, SQLite, and Hybrid strategies plus orchestrator
+- **Context Generation** (`src/services/context/`) - Separated context building, token calculation, formatters, and renderers
+- **Infrastructure** (`src/services/infrastructure/`) - Graceful shutdown, health monitoring, and process management
+- **Server** (`src/services/server/`) - Express server setup, middleware, and error handling
+
+### Test Coverage
+
+- **595 tests** across 36 test files
+- **1,120 expect() assertions**
+- Coverage for SQLite repos, worker agents, search, context, infrastructure, and server modules
+
+### Session ID Refactor
+
+- Aligned tests with NULL-based memory session initialization pattern
+- Updated `SESSION_ID_ARCHITECTURE.md` documentation
+
+### Other Improvements
+
+- Added missing logger imports to 34 files for better observability
+- Updated esbuild and MCP SDK to latest versions
+- Removed `bun.lock` from version control
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.5.6...v8.5.7
+
 ## [v8.5.6] - 2026-01-04
 
 ## Major Architectural Refactoring
@@ -1302,63 +1336,6 @@ Added comprehensive test suites:
 * Complete build with all plugin files included
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.1.12...v7.1.14
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-## [v7.1.13] - 2025-12-14
-
-## Enhanced Error Handling & Logging
-
-This patch release improves error message quality and logging across the claude-mem system.
-
-### Error Message Improvements
-
-**Standardized Hook Error Handling**
-- Created shared error handlers (`handleFetchError`, `handleWorkerError`) for consistent error messages
-- Platform-aware restart instructions (macOS, Linux, Windows) with correct commands
-- Migrated all hooks (context, new, save, summary) to use standardized handlers
-- Enhanced error logging with actionable context before throwing restart instructions
-
-**ChromaSync Error Standardization**
-- Consistent client initialization checks across all methods
-- Enhanced error messages with troubleshooting steps and restart instructions
-- Better context about which operation failed
-
-**Worker Service Improvements**
-- Enhanced version endpoint error logging with status codes and response text
-- Improved worker restart error messages with PM2 commands
-- Better context in all worker-related error scenarios
-
-### Bug Fixes
-
-- **Issue #260**: Fixed `happy_path_error__with_fallback` misuse in save-hook causing false "Missing cwd" errors
-- Removed unnecessary `happy_path_error` calls from SDKAgent that were masking real error messages
-- Cleaned up migration logging to use `console.log` instead of `console.error` for non-error events
-
-### Logging Improvements
-
-**Timezone-Aware Timestamps**
-- Worker logs now use local machine timezone instead of UTC
-- Maintains same format (`YYYY-MM-DD HH:MM:SS.mmm`) but reflects local time
-- Easier debugging and log correlation with system events
-
-### Test Coverage
-
-Added comprehensive test suites:
-- `tests/error-handling/hook-error-logging.test.ts` - 12 tests for hook error handler behavior
-- `tests/services/chroma-sync-errors.test.ts` - ChromaSync error message consistency
-- `tests/integration/hook-execution-environments.test.ts` - Bun PATH resolution across shells
-- `docs/context/TEST_AUDIT_2025-12-13.md` - Comprehensive audit report
-
-### Files Changed
-
-27 files changed: 1,435 additions, 200 deletions
-
-**What's Changed**
-* Standardize and enhance error handling across hooks and worker service by @thedotmack in #295
-* Timezone-aware logging for worker service
-
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.1.12...v7.1.13
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 
