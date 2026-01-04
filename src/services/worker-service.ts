@@ -749,6 +749,11 @@ async function main() {
   }
 }
 
-if (require.main === module || !module.parent) {
+// Check if running as main module in both ESM and CommonJS
+const isMainModule = typeof require !== 'undefined' && typeof module !== 'undefined'
+  ? require.main === module || !module.parent
+  : import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith('worker-service');
+
+if (isMainModule) {
   main();
 }

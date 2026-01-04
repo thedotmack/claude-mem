@@ -12,6 +12,7 @@
  */
 
 import type { WorkerRef, ObservationSSEPayload, SummarySSEPayload } from './types.js';
+import { logger } from '../../../utils/logger.js';
 
 /**
  * Broadcast a new observation to SSE clients

@@ -4,6 +4,7 @@
  */
 
 import { Database } from 'bun:sqlite';
+import { logger } from '../../../utils/logger.js';
 import type { RecentObservationRow, AllRecentObservationRow } from './types.js';
 
 /**

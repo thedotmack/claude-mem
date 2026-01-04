@@ -12,6 +12,7 @@ dist/
 plugin/data/
 plugin/data.backup/
 package-lock.json
+bun.lock
 private/
 datasets/
 

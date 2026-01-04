@@ -4,5 +4,6 @@
  *
  * grep-friendly: Timeline, getTimelineAroundTimestamp, getTimelineAroundObservation, getAllProjects
  */
+import { logger } from '../../utils/logger.js';
 
 export * from './timeline/queries.js';

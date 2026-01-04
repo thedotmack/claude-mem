@@ -4,8 +4,9 @@
  * Builds chronological views around anchor points with depth control.
  * Used by the timeline tool and get_context_timeline tool.
  */
+import { logger } from '../../../utils/logger.js';
 
-import {
+import type {
   ObservationSearchResult,
   SessionSummarySearchResult,
   UserPromptSearchResult,

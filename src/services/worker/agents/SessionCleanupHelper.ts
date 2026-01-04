@@ -10,6 +10,7 @@
  */
 
 import type { ActiveSession } from '../../worker-types.js';
+import { logger } from '../../../utils/logger.js';
 import type { WorkerRef } from './types.js';
 
 /**

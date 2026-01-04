@@ -18,13 +18,16 @@ import { SQLiteSearchStrategy } from './strategies/SQLiteSearchStrategy.js';
 import { HybridSearchStrategy } from './strategies/HybridSearchStrategy.js';
 
 import { ResultFormatter } from './ResultFormatter.js';
-import { TimelineBuilder, TimelineItem, TimelineData } from './TimelineBuilder.js';
+import { TimelineBuilder } from './TimelineBuilder.js';
+import type { TimelineItem, TimelineData } from './TimelineBuilder.js';
 
 import {
+  SEARCH_CONSTANTS,
+} from './types.js';
+import type {
   StrategySearchOptions,
   StrategySearchResult,
   SearchResults,
-  SEARCH_CONSTANTS,
   ObservationSearchResult
 } from './types.js';
 import { logger } from '../../../utils/logger.js';

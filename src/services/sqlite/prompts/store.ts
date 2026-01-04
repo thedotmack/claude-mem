@@ -3,6 +3,7 @@
  */
 
 import type { Database } from 'bun:sqlite';
+import { logger } from '../../../utils/logger.js';
 
 /**
  * Save a user prompt to the database

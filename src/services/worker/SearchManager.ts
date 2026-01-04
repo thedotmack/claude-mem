@@ -18,8 +18,9 @@ import { SessionSearch } from '../sqlite/SessionSearch.js';
 import { SessionStore } from '../sqlite/SessionStore.js';
 import { ChromaSync } from '../sync/ChromaSync.js';
 import { FormattingService } from './FormattingService.js';
-import { TimelineService, TimelineItem } from './TimelineService.js';
-import { ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../sqlite/types.js';
+import { TimelineService } from './TimelineService.js';
+import type { TimelineItem } from './TimelineService.js';
+import type { ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../sqlite/types.js';
 import { logger } from '../../utils/logger.js';
 import { formatDate, formatTime, formatDateTime, extractFirstFile, groupByDate, estimateTokens } from '../../shared/timeline-formatting.js';
 import { ModeManager } from '../domain/ModeManager.js';
@@ -27,9 +28,9 @@ import { ModeManager } from '../domain/ModeManager.js';
 import {
   SearchOrchestrator,
   TimelineBuilder,
-  TimelineData,
   SEARCH_CONSTANTS
 } from './search/index.js';
+import type { TimelineData } from './search/index.js';
 
 export class SearchManager {
   private orchestrator: SearchOrchestrator;

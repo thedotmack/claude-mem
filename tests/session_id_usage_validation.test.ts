@@ -11,11 +11,11 @@ import { SessionStore } from '../src/services/sqlite/SessionStore.js';
  * - memorySessionId: SDK agent's session ID for resume (captured from SDK response)
  *
  * INVARIANTS TO ENFORCE:
- * 1. memorySessionId starts equal to contentSessionId (placeholder for FK)
- * 2. Resume MUST NOT be used when memorySessionId === contentSessionId
- * 3. Resume MUST ONLY be used when hasRealMemorySessionId === true
- * 4. Observations are stored with contentSessionId (not the captured SDK memorySessionId)
- * 5. updateMemorySessionId() is required before resume can work
+ * 1. memorySessionId starts as NULL (NEVER equals contentSessionId - that would inject memory into user transcript!)
+ * 2. Resume MUST NOT be used when memorySessionId is NULL
+ * 3. Resume MUST ONLY be used when hasRealMemorySessionId === true (memorySessionId is non-null)
+ * 4. Observations are stored with memorySessionId (after updateMemorySessionId has been called)
+ * 5. updateMemorySessionId() is required before storeObservation() or storeSummary() can work
  */
 describe('Session ID Usage Validation', () => {
   let store: SessionStore;
@@ -29,17 +29,18 @@ describe('Session ID Usage Validation', () => {
   });
 
   describe('Placeholder Detection - hasRealMemorySessionId Logic', () => {
-    it('should identify placeholder when memorySessionId equals contentSessionId', () => {
+    it('should identify placeholder when memorySessionId is NULL', () => {
       const contentSessionId = 'user-session-123';
       const sessionDbId = store.createSDKSession(contentSessionId, 'test-project', 'Test prompt');
 
       const session = store.getSessionById(sessionDbId);
 
-      // Initially, they're equal (placeholder state)
-      expect(session?.memory_session_id).toBe(session?.content_session_id);
+      // Initially, memory_session_id is NULL (placeholder state)
+      // CRITICAL: memory_session_id must NEVER equal contentSessionId - that would inject memory into user transcript!
+      expect(session?.memory_session_id).toBeNull();
 
-      // hasRealMemorySessionId would be FALSE
-      const hasRealMemorySessionId = session?.memory_session_id !== session?.content_session_id;
+      // hasRealMemorySessionId would be FALSE (NULL is falsy)
+      const hasRealMemorySessionId = session?.memory_session_id !== null;
       expect(hasRealMemorySessionId).toBe(false);
     });
 
@@ -52,11 +53,11 @@ describe('Session ID Usage Validation', () => {
 
       const session = store.getSessionById(sessionDbId);
 
-      // After capture, they're different (real memory session ID)
-      expect(session?.memory_session_id).not.toBe(session?.content_session_id);
+      // After capture, memory_session_id is set (non-NULL)
+      expect(session?.memory_session_id).toBe(capturedMemoryId);
 
       // hasRealMemorySessionId would be TRUE
-      const hasRealMemorySessionId = session?.memory_session_id !== session?.content_session_id;
+      const hasRealMemorySessionId = session?.memory_session_id !== null;
       expect(hasRealMemorySessionId).toBe(true);
     });
 
@@ -65,9 +66,9 @@ describe('Session ID Usage Validation', () => {
       const sessionDbId = store.createSDKSession(contentSessionId, 'test-project', 'Test');
 
       const session = store.getSessionById(sessionDbId);
-      const hasRealMemorySessionId = session?.memory_session_id !== session?.content_session_id;
+      const hasRealMemorySessionId = session?.memory_session_id !== null;
 
-      // CRITICAL: This check prevents resuming the USER'S session instead of memory session
+      // CRITICAL: This check prevents resuming when memory_session_id is not captured
       if (hasRealMemorySessionId) {
         // Safe to use for resume
         const resumeParam = session?.memory_session_id;
@@ -80,10 +81,12 @@ describe('Session ID Usage Validation', () => {
     });
   });
 
-  describe('Observation Storage - ContentSessionId Usage', () => {
-    it('should store observations with contentSessionId in memory_session_id column', () => {
+  describe('Observation Storage - MemorySessionId Usage', () => {
+    it('should store observations with memorySessionId in memory_session_id column', () => {
       const contentSessionId = 'obs-content-session-123';
-      store.createSDKSession(contentSessionId, 'test-project', 'Test');
+      const memorySessionId = 'obs-memory-session-123';
+      const sessionDbId = store.createSDKSession(contentSessionId, 'test-project', 'Test');
+      store.updateMemorySessionId(sessionDbId, memorySessionId);
 
       const obs = {
         type: 'discovery',
@@ -96,24 +99,26 @@ describe('Session ID Usage Validation', () => {
         files_modified: []
       };
 
-      // SDKAgent.ts line 332 passes session.contentSessionId here
-      const result = store.storeObservation(contentSessionId, 'test-project', obs, 1);
+      // storeObservation takes memorySessionId (after updateMemorySessionId has been called)
+      const result = store.storeObservation(memorySessionId, 'test-project', obs, 1);
 
-      // Verify it's stored in the memory_session_id column with contentSessionId value
+      // Verify it's stored in the memory_session_id column with memorySessionId value
       const stored = store.db.prepare(
         'SELECT memory_session_id FROM observations WHERE id = ?'
       ).get(result.id) as { memory_session_id: string };
 
-      // CRITICAL: memory_session_id column contains contentSessionId, not the captured SDK session ID
-      expect(stored.memory_session_id).toBe(contentSessionId);
+      // memory_session_id column contains the captured SDK session ID
+      expect(stored.memory_session_id).toBe(memorySessionId);
     });
 
-    it('should be retrievable using contentSessionId (observations use contentSessionId)', () => {
+    it('should be retrievable using memorySessionId', () => {
       const contentSessionId = 'retrieval-test-session';
+      const memorySessionId = 'retrieval-memory-session';
 
-      store.createSDKSession(contentSessionId, 'test-project', 'Test');
+      const sessionDbId = store.createSDKSession(contentSessionId, 'test-project', 'Test');
+      store.updateMemorySessionId(sessionDbId, memorySessionId);
 
-      // Store observation with contentSessionId
+      // Store observation with memorySessionId
       const obs = {
         type: 'feature',
         title: 'Observation',
@@ -124,28 +129,26 @@ describe('Session ID Usage Validation', () => {
         files_read: [],
         files_modified: []
       };
-      store.storeObservation(contentSessionId, 'test-project', obs, 1);
+      store.storeObservation(memorySessionId, 'test-project', obs, 1);
 
-      // Observations are retrievable by contentSessionId
-      // (because storeObservation receives contentSessionId and stores it in memory_session_id column)
-      const observations = store.getObservationsForSession(contentSessionId);
+      // Observations are retrievable by memorySessionId
+      const observations = store.getObservationsForSession(memorySessionId);
       expect(observations.length).toBe(1);
       expect(observations[0].title).toBe('Observation');
     });
   });
 
   describe('Resume Safety - Prevent contentSessionId Resume Bug', () => {
-    it('should prevent resume with placeholder memorySessionId', () => {
+    it('should prevent resume with NULL memorySessionId', () => {
       const contentSessionId = 'safety-test-session';
       const sessionDbId = store.createSDKSession(contentSessionId, 'test-project', 'Test');
 
       const session = store.getSessionById(sessionDbId);
 
-      // Simulate hasRealMemorySessionId check from SDKAgent.ts line 75-76
-      const hasRealMemorySessionId = session?.memory_session_id &&
-        session.memory_session_id !== session.content_session_id;
+      // Simulate hasRealMemorySessionId check - memory_session_id must be non-null
+      const hasRealMemorySessionId = session?.memory_session_id !== null;
 
-      // MUST be false in placeholder state
+      // MUST be false in placeholder state (memory_session_id is NULL)
       expect(hasRealMemorySessionId).toBe(false);
 
       // Resume parameter should NOT be set
@@ -161,10 +164,9 @@ describe('Session ID Usage Validation', () => {
 
       const sessionDbId = store.createSDKSession(contentSessionId, 'test-project', 'Test');
 
-      // Before capture - no resume
+      // Before capture - no resume (memory_session_id is NULL)
       let session = store.getSessionById(sessionDbId);
-      let hasRealMemorySessionId = session?.memory_session_id &&
-        session.memory_session_id !== session.content_session_id;
+      let hasRealMemorySessionId = session?.memory_session_id !== null;
       expect(hasRealMemorySessionId).toBe(false);
 
       // Capture memory session ID
@@ -172,8 +174,7 @@ describe('Session ID Usage Validation', () => {
 
       // After capture - resume allowed
       session = store.getSessionById(sessionDbId);
-      hasRealMemorySessionId = session?.memory_session_id &&
-        session.memory_session_id !== session.content_session_id;
+      hasRealMemorySessionId = session?.memory_session_id !== null;
       expect(hasRealMemorySessionId).toBe(true);
 
       // Resume parameter should be the captured ID
@@ -185,14 +186,18 @@ describe('Session ID Usage Validation', () => {
 
   describe('Cross-Contamination Prevention', () => {
     it('should never mix observations from different content sessions', () => {
-      const session1 = 'user-session-A';
-      const session2 = 'user-session-B';
+      const content1 = 'user-session-A';
+      const content2 = 'user-session-B';
+      const memory1 = 'memory-session-A';
+      const memory2 = 'memory-session-B';
 
-      store.createSDKSession(session1, 'project-a', 'Prompt A');
-      store.createSDKSession(session2, 'project-b', 'Prompt B');
+      const id1 = store.createSDKSession(content1, 'project-a', 'Prompt A');
+      const id2 = store.createSDKSession(content2, 'project-b', 'Prompt B');
+      store.updateMemorySessionId(id1, memory1);
+      store.updateMemorySessionId(id2, memory2);
 
-      // Store observations in each session
-      store.storeObservation(session1, 'project-a', {
+      // Store observations in each session using memorySessionId
+      store.storeObservation(memory1, 'project-a', {
         type: 'discovery',
         title: 'Observation A',
         subtitle: null,
@@ -203,7 +208,7 @@ describe('Session ID Usage Validation', () => {
         files_modified: []
       }, 1);
 
-      store.storeObservation(session2, 'project-b', {
+      store.storeObservation(memory2, 'project-b', {
         type: 'discovery',
         title: 'Observation B',
         subtitle: null,
@@ -215,8 +220,8 @@ describe('Session ID Usage Validation', () => {
       }, 1);
 
       // Verify isolation
-      const obsA = store.getObservationsForSession(session1);
-      const obsB = store.getObservationsForSession(session2);
+      const obsA = store.getObservationsForSession(memory1);
+      const obsB = store.getObservationsForSession(memory2);
 
       expect(obsA.length).toBe(1);
       expect(obsB.length).toBe(1);
@@ -249,7 +254,9 @@ describe('Session ID Usage Validation', () => {
   describe('Foreign Key Integrity', () => {
     it('should cascade delete observations when session is deleted', () => {
       const contentSessionId = 'cascade-test-session';
+      const memorySessionId = 'cascade-memory-session';
       const sessionDbId = store.createSDKSession(contentSessionId, 'test-project', 'Test');
+      store.updateMemorySessionId(sessionDbId, memorySessionId);
 
       // Store observation
       const obs = {
@@ -262,27 +269,29 @@ describe('Session ID Usage Validation', () => {
         files_read: [],
         files_modified: []
       };
-      store.storeObservation(contentSessionId, 'test-project', obs, 1);
+      store.storeObservation(memorySessionId, 'test-project', obs, 1);
 
       // Verify observation exists
-      let observations = store.getObservationsForSession(contentSessionId);
+      let observations = store.getObservationsForSession(memorySessionId);
       expect(observations.length).toBe(1);
 
       // Delete session (should cascade to observations)
       store.db.prepare('DELETE FROM sdk_sessions WHERE id = ?').run(sessionDbId);
 
       // Verify observations were deleted
-      observations = store.getObservationsForSession(contentSessionId);
+      observations = store.getObservationsForSession(memorySessionId);
       expect(observations.length).toBe(0);
     });
 
     it('should maintain FK relationship between observations and sessions', () => {
       const contentSessionId = 'fk-test-session';
-      store.createSDKSession(contentSessionId, 'test-project', 'Test');
+      const memorySessionId = 'fk-memory-session';
+      const sessionDbId = store.createSDKSession(contentSessionId, 'test-project', 'Test');
+      store.updateMemorySessionId(sessionDbId, memorySessionId);
 
       // This should succeed (FK exists)
       expect(() => {
-        store.storeObservation(contentSessionId, 'test-project', {
+        store.storeObservation(memorySessionId, 'test-project', {
           type: 'discovery',
           title: 'Valid FK',
           subtitle: null,
@@ -314,10 +323,10 @@ describe('Session ID Usage Validation', () => {
     it('should follow correct lifecycle: create → capture → resume', () => {
       const contentSessionId = 'lifecycle-session';
 
-      // STEP 1: Hook creates session (memory_session_id = content_session_id)
+      // STEP 1: Hook creates session (memory_session_id = NULL)
       const sessionDbId = store.createSDKSession(contentSessionId, 'test-project', 'First prompt');
       let session = store.getSessionById(sessionDbId);
-      expect(session?.memory_session_id).toBe(contentSessionId); // Placeholder
+      expect(session?.memory_session_id).toBeNull(); // NULL - not captured yet
 
       // STEP 2: First SDK message arrives with real session ID
       const realMemoryId = 'sdk-generated-session-xyz';
@@ -326,7 +335,7 @@ describe('Session ID Usage Validation', () => {
       expect(session?.memory_session_id).toBe(realMemoryId); // Real ID
 
       // STEP 3: Subsequent prompts can now resume
-      const hasRealMemorySessionId = session?.memory_session_id !== session?.content_session_id;
+      const hasRealMemorySessionId = session?.memory_session_id !== null;
       expect(hasRealMemorySessionId).toBe(true);
 
       // Resume parameter is safe to use
@@ -350,7 +359,7 @@ describe('Session ID Usage Validation', () => {
       expect(session?.memory_session_id).toBe(capturedMemoryId);
 
       // Resume can work immediately
-      const hasRealMemorySessionId = session?.memory_session_id !== session?.content_session_id;
+      const hasRealMemorySessionId = session?.memory_session_id !== null;
       expect(hasRealMemorySessionId).toBe(true);
     });
   });
@@ -417,8 +426,8 @@ describe('Session ID Usage Validation', () => {
       let sessionDbId = store.createSDKSession(contentSessionId, 'test-project', 'Prompt 1');
       let session = store.getSessionById(sessionDbId);
 
-      // Initially placeholder
-      expect(session?.memory_session_id).toBe(contentSessionId);
+      // Initially NULL
+      expect(session?.memory_session_id).toBeNull();
 
       // Prompt 1: Capture real memory ID
       store.updateMemorySessionId(sessionDbId, realMemoryId);
@@ -438,7 +447,7 @@ describe('Session ID Usage Validation', () => {
       expect(session?.memory_session_id).toBe(realMemoryId);
 
       // All three prompts use the SAME memorySessionId → ONE memory transcript file
-      const hasRealMemorySessionId = session?.memory_session_id !== session?.content_session_id;
+      const hasRealMemorySessionId = session?.memory_session_id !== null;
       expect(hasRealMemorySessionId).toBe(true);
     });
 
@@ -470,6 +479,7 @@ describe('Session ID Usage Validation', () => {
   describe('Edge Cases - Session ID Equality', () => {
     it('should handle case where SDK returns session ID equal to contentSessionId', () => {
       // Edge case: SDK happens to generate same ID as content session
+      // This shouldn't happen in practice, but we test it anyway
       const contentSessionId = 'same-id-123';
       const sessionDbId = store.createSDKSession(contentSessionId, 'test-project', 'Test');
 
@@ -477,26 +487,24 @@ describe('Session ID Usage Validation', () => {
       store.updateMemorySessionId(sessionDbId, contentSessionId);
 
       const session = store.getSessionById(sessionDbId);
-      const hasRealMemorySessionId = session?.memory_session_id !== session?.content_session_id;
+      // Now checking for non-null instead of comparing to content_session_id
+      const hasRealMemorySessionId = session?.memory_session_id !== null;
 
-      // Would be FALSE, so resume would not be used
-      // This is safe - worst case is a fresh session instead of resume
-      expect(hasRealMemorySessionId).toBe(false);
+      // Would be TRUE since we set a value (even if same as content)
+      // In practice, the SDK should never return the same ID as contentSessionId
+      expect(hasRealMemorySessionId).toBe(true);
     });
 
     it('should handle NULL memory_session_id gracefully', () => {
       const contentSessionId = 'null-test-session';
       const sessionDbId = store.createSDKSession(contentSessionId, 'test-project', 'Test');
 
-      // Manually set memory_session_id to NULL (shouldn't happen in practice)
-      store.db.prepare('UPDATE sdk_sessions SET memory_session_id = NULL WHERE id = ?').run(sessionDbId);
-
+      // memory_session_id is already NULL from createSDKSession
       const session = store.getSessionById(sessionDbId);
-      const hasRealMemorySessionId = session?.memory_session_id &&
-        session.memory_session_id !== session.content_session_id;
+      const hasRealMemorySessionId = session?.memory_session_id !== null;
 
-      // Should be falsy (NULL is falsy)
-      expect(hasRealMemorySessionId).toBeFalsy();
+      // Should be false (NULL means not captured yet)
+      expect(hasRealMemorySessionId).toBe(false);
     });
   });
 });

@@ -9,10 +9,12 @@ export { SearchOrchestrator } from './SearchOrchestrator.js';
 
 // Formatters
 export { ResultFormatter } from './ResultFormatter.js';
-export { TimelineBuilder, TimelineItem, TimelineData } from './TimelineBuilder.js';
+export { TimelineBuilder } from './TimelineBuilder.js';
+export type { TimelineItem, TimelineData } from './TimelineBuilder.js';
 
 // Strategies
-export { SearchStrategy, BaseSearchStrategy } from './strategies/SearchStrategy.js';
+export type { SearchStrategy } from './strategies/SearchStrategy.js';
+export { BaseSearchStrategy } from './strategies/SearchStrategy.js';
 export { ChromaSearchStrategy } from './strategies/ChromaSearchStrategy.js';
 export { SQLiteSearchStrategy } from './strategies/SQLiteSearchStrategy.js';
 export { HybridSearchStrategy } from './strategies/HybridSearchStrategy.js';

@@ -35,12 +35,13 @@ describe('SessionStore', () => {
 
   it('should store observation with timestamp override', () => {
     const claudeId = 'claude-sess-obs';
+    const memoryId = 'memory-sess-obs';
     const sdkId = store.createSDKSession(claudeId, 'test-project', 'initial prompt');
-    
-    // Get the memory_session_id string (createSDKSession returns number ID, need string for FK)
-    // createSDKSession inserts using memory_session_id = content_session_id in the current implementation
-    // "VALUES (?, ?, ?, ?, ?, ?, 'active')" -> contentSessionId, contentSessionId, ...
-    
+
+    // Set the memory_session_id before storing observations
+    // createSDKSession now initializes memory_session_id = NULL
+    store.updateMemorySessionId(sdkId, memoryId);
+
     const obs = {
       type: 'discovery',
       title: 'Test Obs',
@@ -53,9 +54,9 @@ describe('SessionStore', () => {
     };
 
     const pastTimestamp = 1600000000000; // Some time in the past
-    
+
     const result = store.storeObservation(
-      claudeId, // sdkSessionId is same as claudeSessionId in createSDKSession
+      memoryId, // Use memorySessionId for FK reference
       'test-project',
       obs,
       1,
@@ -68,14 +69,18 @@ describe('SessionStore', () => {
     const stored = store.getObservationById(result.id);
     expect(stored).not.toBeNull();
     expect(stored?.created_at_epoch).toBe(pastTimestamp);
-    
+
     // Verify ISO string matches
     expect(new Date(stored!.created_at).getTime()).toBe(pastTimestamp);
   });
 
   it('should store summary with timestamp override', () => {
     const claudeId = 'claude-sess-sum';
-    store.createSDKSession(claudeId, 'test-project', 'initial prompt');
+    const memoryId = 'memory-sess-sum';
+    const sdkId = store.createSDKSession(claudeId, 'test-project', 'initial prompt');
+
+    // Set the memory_session_id before storing summaries
+    store.updateMemorySessionId(sdkId, memoryId);
 
     const summary = {
       request: 'Do something',
@@ -89,7 +94,7 @@ describe('SessionStore', () => {
     const pastTimestamp = 1650000000000;
 
     const result = store.storeSummary(
-      claudeId,
+      memoryId, // Use memorySessionId for FK reference
       'test-project',
       summary,
       1,
@@ -99,7 +104,7 @@ describe('SessionStore', () => {
 
     expect(result.createdAtEpoch).toBe(pastTimestamp);
 
-    const stored = store.getSummaryForSession(claudeId);
+    const stored = store.getSummaryForSession(memoryId);
     expect(stored).not.toBeNull();
     expect(stored?.created_at_epoch).toBe(pastTimestamp);
   });
