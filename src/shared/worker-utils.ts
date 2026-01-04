@@ -62,9 +62,8 @@ export function clearPortCache(): void {
  */
 async function isWorkerHealthy(): Promise<boolean> {
   const port = getWorkerPort();
-  const response = await fetch(`http://127.0.0.1:${port}/api/readiness`, {
-    signal: AbortSignal.timeout(HEALTH_CHECK_TIMEOUT_MS)
-  });
+  // Note: Removed AbortSignal.timeout to avoid Windows Bun cleanup issue (libuv assertion)
+  const response = await fetch(`http://127.0.0.1:${port}/api/readiness`);
   return response.ok;
 }
 
@@ -82,9 +81,8 @@ function getPluginVersion(): string {
  */
 async function getWorkerVersion(): Promise<string> {
   const port = getWorkerPort();
-  const response = await fetch(`http://127.0.0.1:${port}/api/version`, {
-    signal: AbortSignal.timeout(HEALTH_CHECK_TIMEOUT_MS)
-  });
+  // Note: Removed AbortSignal.timeout to avoid Windows Bun cleanup issue (libuv assertion)
+  const response = await fetch(`http://127.0.0.1:${port}/api/version`);
   if (!response.ok) {
     throw new Error(`Failed to get worker version: ${response.status}`);
   }
@@ -94,17 +92,19 @@ async function getWorkerVersion(): Promise<string> {
 
 /**
  * Check if worker version matches plugin version
- * Logs a warning if mismatch is detected
+ * Note: Auto-restart on version mismatch is now handled in worker-service.ts start command (issue #484)
+ * This function logs for informational purposes only
  */
 async function checkWorkerVersion(): Promise<void> {
   const pluginVersion = getPluginVersion();
   const workerVersion = await getWorkerVersion();
 
   if (pluginVersion !== workerVersion) {
-    logger.warn('SYSTEM', 'Worker version mismatch', {
+    // Just log debug info - auto-restart handles the mismatch in worker-service.ts
+    logger.debug('SYSTEM', 'Version check', {
       pluginVersion,
       workerVersion,
-      hint: 'Restart worker with: claude-mem worker restart'
+      note: 'Mismatch will be auto-restarted by worker-service start command'
     });
   }
 }
@@ -112,10 +112,10 @@ async function checkWorkerVersion(): Promise<void> {
 
 /**
  * Ensure worker service is running
- * Polls until worker is ready (assumes worker-cli.js start was called by hooks.json)
+ * Polls until worker is ready (assumes worker-service.cjs start was called by hooks.json)
  */
 export async function ensureWorkerRunning(): Promise<void> {
-  const maxRetries = 25;  // 5 seconds total
+  const maxRetries = 75;  // 15 seconds total
   const pollInterval = 200;
 
   for (let i = 0; i < maxRetries; i++) {
@@ -124,14 +124,18 @@ export async function ensureWorkerRunning(): Promise<void> {
         await checkWorkerVersion();  // logs warning on mismatch, doesn't restart
         return;
       }
-    } catch {
-      // Continue polling
+    } catch (e) {
+      logger.debug('SYSTEM', 'Worker health check failed, will retry', {
+        attempt: i + 1,
+        maxRetries,
+        error: e instanceof Error ? e.message : String(e)
+      });
     }
     await new Promise(r => setTimeout(r, pollInterval));
   }
 
   throw new Error(getWorkerRestartInstructions({
     port: getWorkerPort(),
-    customPrefix: 'Worker did not become ready within 5 seconds.'
+    customPrefix: 'Worker did not become ready within 15 seconds.'
   }));
 }

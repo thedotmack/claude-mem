@@ -45,8 +45,8 @@ export interface SchemaVersion {
  */
 export interface SdkSessionRecord {
   id: number;
-  claude_session_id: string;
-  sdk_session_id: string | null;
+  content_session_id: string;
+  memory_session_id: string | null;
   project: string;
   user_prompt: string | null;
   started_at: string;
@@ -63,7 +63,7 @@ export interface SdkSessionRecord {
  */
 export interface ObservationRecord {
   id: number;
-  sdk_session_id: string;
+  memory_session_id: string;
   project: string;
   text: string | null;
   type: 'decision' | 'bugfix' | 'feature' | 'refactor' | 'discovery' | 'change';
@@ -81,7 +81,7 @@ export interface ObservationRecord {
  */
 export interface SessionSummaryRecord {
   id: number;
-  sdk_session_id: string;
+  memory_session_id: string;
   project: string;
   request: string | null;
   investigated: string | null;
@@ -99,9 +99,10 @@ export interface SessionSummaryRecord {
  */
 export interface UserPromptRecord {
   id: number;
-  claude_session_id: string;
+  content_session_id: string;
   prompt_number: number;
   prompt_text: string;
+  project?: string;  // From JOIN with sdk_sessions
   created_at: string;
   created_at_epoch: number;
 }
@@ -111,8 +112,8 @@ export interface UserPromptRecord {
  */
 export interface LatestPromptResult {
   id: number;
-  claude_session_id: string;
-  sdk_session_id: string;
+  content_session_id: string;
+  memory_session_id: string;
   project: string;
   prompt_number: number;
   prompt_text: string;
@@ -124,7 +125,7 @@ export interface LatestPromptResult {
  */
 export interface ObservationWithContext {
   id: number;
-  sdk_session_id: string;
+  memory_session_id: string;
   project: string;
   text: string | null;
   type: string;

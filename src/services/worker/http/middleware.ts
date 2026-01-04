@@ -29,10 +29,11 @@ export function createMiddleware(
 
   // HTTP request/response logging
   middlewares.push((req: Request, res: Response, next: NextFunction) => {
-    // Skip logging for static assets and health checks
+    // Skip logging for static assets, health checks, and polling endpoints
     const staticExtensions = ['.html', '.js', '.css', '.svg', '.png', '.jpg', '.jpeg', '.webp', '.woff', '.woff2', '.ttf', '.eot'];
     const isStaticAsset = staticExtensions.some(ext => req.path.endsWith(ext));
-    if (req.path.startsWith('/health') || req.path === '/' || isStaticAsset) {
+    const isPollingEndpoint = req.path === '/api/logs'; // Skip logs endpoint to avoid noise from auto-refresh
+    if (req.path.startsWith('/health') || req.path === '/' || isStaticAsset || isPollingEndpoint) {
       return next();
     }
 

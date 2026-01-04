@@ -21,7 +21,7 @@ export class SessionEventBroadcaster {
    */
   broadcastNewPrompt(prompt: {
     id: number;
-    claude_session_id: string;
+    content_session_id: string;
     project: string;
     prompt_number: number;
     prompt_text: string;

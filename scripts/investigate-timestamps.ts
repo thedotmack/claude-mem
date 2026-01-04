@@ -36,7 +36,7 @@ function main() {
     const dec24End = 1735113600000;   // Dec 25 00:00 PST
 
     const dec24Obs = db.query(`
-      SELECT id, sdk_session_id, created_at_epoch, title
+      SELECT id, memory_session_id, created_at_epoch, title
       FROM observations
       WHERE created_at_epoch >= ${dec24Start}
         AND created_at_epoch < ${dec24End}
@@ -59,7 +59,7 @@ function main() {
     const dec21Start = 1734768000000; // Dec 21 00:00 PST
 
     const oldObs = db.query(`
-      SELECT id, sdk_session_id, created_at_epoch, title
+      SELECT id, memory_session_id, created_at_epoch, title
       FROM observations
       WHERE created_at_epoch >= ${dec17Start}
         AND created_at_epoch < ${dec21Start}

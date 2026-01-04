@@ -4,6 +4,7 @@
  */
 
 import { readFileSync } from 'fs';
+import { logger } from './logger.js';
 import type {
   TranscriptEntry,
   UserTranscriptEntry,
@@ -42,12 +43,22 @@ export class TranscriptParser {
         const entry = JSON.parse(line) as TranscriptEntry;
         this.entries.push(entry);
       } catch (error) {
+        logger.debug('PARSER', 'Failed to parse transcript line', { lineNumber: index + 1 }, error as Error);
         this.parseErrors.push({
           lineNumber: index + 1,
           error: error instanceof Error ? error.message : String(error),
         });
       }
     });
+
+    // Log summary if there were parse errors
+    if (this.parseErrors.length > 0) {
+      logger.warn('PARSER', `Failed to parse ${this.parseErrors.length} lines`, {
+        path: transcriptPath,
+        totalLines: lines.length,
+        errorCount: this.parseErrors.length
+      });
+    }
   }
 
   /**

@@ -22,7 +22,7 @@ const ORIGINAL_WINDOW_END = 1766613600000;   // Dec 23 23:59 PST
 
 interface Observation {
   id: number;
-  sdk_session_id: string;
+  memory_session_id: string;
   created_at_epoch: number;
   created_at: string;
   title: string;
@@ -49,7 +49,7 @@ function main() {
     // Check 1: Observations still in bad window
     console.log('Check 1: Looking for observations still in bad window (Dec 24 19:45-20:31)...');
     const badWindowObs = db.query<Observation, []>(`
-      SELECT id, sdk_session_id, created_at_epoch, created_at, title
+      SELECT id, memory_session_id, created_at_epoch, created_at, title
       FROM observations
       WHERE created_at_epoch >= ${BAD_WINDOW_START}
         AND created_at_epoch <= ${BAD_WINDOW_END}
@@ -63,7 +63,7 @@ function main() {
       for (const obs of badWindowObs) {
         console.log(`  Observation #${obs.id}: ${obs.title || '(no title)'}`);
         console.log(`    Timestamp: ${formatTimestamp(obs.created_at_epoch)}`);
-        console.log(`    Session: ${obs.sdk_session_id}\n`);
+        console.log(`    Session: ${obs.memory_session_id}\n`);
       }
     }
 
@@ -81,19 +81,19 @@ function main() {
 
     // Check 3: Session distribution
     console.log('Check 3: Session distribution of corrected observations...');
-    const sessionDist = db.query<{ sdk_session_id: string; count: number }, []>(`
-      SELECT sdk_session_id, COUNT(*) as count
+    const sessionDist = db.query<{ memory_session_id: string; count: number }, []>(`
+      SELECT memory_session_id, COUNT(*) as count
       FROM observations
       WHERE created_at_epoch >= ${ORIGINAL_WINDOW_START}
         AND created_at_epoch <= ${ORIGINAL_WINDOW_END}
-      GROUP BY sdk_session_id
+      GROUP BY memory_session_id
       ORDER BY count DESC
     `).all();
 
     if (sessionDist.length > 0) {
       console.log(`Observations distributed across ${sessionDist.length} sessions:\n`);
       for (const dist of sessionDist.slice(0, 10)) {
-        console.log(`  ${dist.sdk_session_id}: ${dist.count} observations`);
+        console.log(`  ${dist.memory_session_id}: ${dist.count} observations`);
       }
       if (sessionDist.length > 10) {
         console.log(`  ... and ${sessionDist.length - 10} more sessions`);

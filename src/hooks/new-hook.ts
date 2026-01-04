@@ -29,18 +29,18 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
 
   const port = getWorkerPort();
 
-  logger.info('HOOK', 'new-hook: Calling /api/sessions/init', { claudeSessionId: session_id, project, prompt_length: prompt?.length });
+  logger.info('HOOK', 'new-hook: Calling /api/sessions/init', { contentSessionId: session_id, project, prompt_length: prompt?.length });
 
   // Initialize session via HTTP - handles DB operations and privacy checks
   const initResponse = await fetch(`http://127.0.0.1:${port}/api/sessions/init`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      claudeSessionId: session_id,
+      contentSessionId: session_id,
       project,
       prompt
-    }),
-    signal: AbortSignal.timeout(5000)
+    })
+    // Note: Removed signal to avoid Windows Bun cleanup issue (libuv assertion)
   });
 
   if (!initResponse.ok) {
@@ -52,6 +52,9 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
   const promptNumber = initResult.promptNumber;
 
   logger.info('HOOK', 'new-hook: Received from /api/sessions/init', { sessionDbId, promptNumber, skipped: initResult.skipped });
+
+  // SESSION ALIGNMENT LOG: Entry point showing content session ID and prompt number
+  logger.info('HOOK', `[ALIGNMENT] Hook Entry | contentSessionId=${session_id} | prompt#=${promptNumber} | sessionDbId=${sessionDbId}`);
 
   // Check if prompt was entirely private (worker performs privacy check)
   if (initResult.skipped && initResult.reason === 'private') {
@@ -72,8 +75,8 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
   const response = await fetch(`http://127.0.0.1:${port}/sessions/${sessionDbId}/init`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ userPrompt: cleanedPrompt, promptNumber }),
-    signal: AbortSignal.timeout(5000)
+    body: JSON.stringify({ userPrompt: cleanedPrompt, promptNumber })
+    // Note: Removed signal to avoid Windows Bun cleanup issue (libuv assertion)
   });
 
   if (!response.ok) {
@@ -87,11 +90,17 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
 let input = '';
 stdin.on('data', (chunk) => input += chunk);
 stdin.on('end', async () => {
-  let parsed: UserPromptSubmitInput | undefined;
   try {
-    parsed = input ? JSON.parse(input) : undefined;
+    let parsed: UserPromptSubmitInput | undefined;
+    try {
+      parsed = input ? JSON.parse(input) : undefined;
+    } catch (error) {
+      throw new Error(`Failed to parse hook input: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    await newHook(parsed);
   } catch (error) {
-    throw new Error(`Failed to parse hook input: ${error instanceof Error ? error.message : String(error)}`);
+    logger.error('HOOK', 'new-hook failed', {}, error as Error);
+  } finally {
+    process.exit(0);
   }
-  await newHook(parsed);
 });

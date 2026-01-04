@@ -12,6 +12,7 @@ dist/
 plugin/data/
 plugin/data.backup/
 package-lock.json
+bun.lock
 private/
 datasets/
 
@@ -20,3 +21,4 @@ src/ui/viewer.html
 
 # Local MCP server config (for development only)
 .mcp.json
+.cursor/

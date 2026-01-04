@@ -20,7 +20,7 @@ const BAD_WINDOW_END = 1766626260000;   // Dec 24 20:31 PST
 
 interface AffectedObservation {
   id: number;
-  sdk_session_id: string;
+  memory_session_id: string;
   created_at_epoch: number;
   title: string;
 }
@@ -35,7 +35,7 @@ interface ProcessedMessage {
 
 interface SessionMapping {
   session_db_id: number;
-  sdk_session_id: string;
+  memory_session_id: string;
 }
 
 interface TimestampFix {
@@ -75,7 +75,7 @@ function main() {
     // Step 1: Find affected observations
     console.log('Step 1: Finding observations created during bad window...');
     const affectedObs = db.query<AffectedObservation, []>(`
-      SELECT id, sdk_session_id, created_at_epoch, title
+      SELECT id, memory_session_id, created_at_epoch, title
       FROM observations
       WHERE created_at_epoch >= ${BAD_WINDOW_START}
         AND created_at_epoch <= ${BAD_WINDOW_END}
@@ -111,7 +111,7 @@ function main() {
       obs_title: string;
       obs_created: number;
       session_started: number;
-      sdk_session_id: string;
+      memory_session_id: string;
     }
 
     const obsWithSessions = db.query<ObsWithSession, []>(`
@@ -120,9 +120,9 @@ function main() {
         o.title as obs_title,
         o.created_at_epoch as obs_created,
         s.started_at_epoch as session_started,
-        s.sdk_session_id
+        s.memory_session_id
       FROM observations o
-      JOIN sdk_sessions s ON o.sdk_session_id = s.sdk_session_id
+      JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
       WHERE o.created_at_epoch >= ${BAD_WINDOW_START}
         AND o.created_at_epoch <= ${BAD_WINDOW_END}
         AND s.started_at_epoch < ${BAD_WINDOW_START}

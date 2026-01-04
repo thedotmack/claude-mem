@@ -2472,6 +2472,332 @@
       border-color: var(--color-bg-button-hover);
     }
 
+    /* Console Drawer - Chrome DevTools Style */
+    .console-toggle-btn {
+      position: fixed;
+      bottom: 20px;
+      left: 20px;
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      background: var(--color-bg-button);
+      border: none;
+      color: white;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+      transition: all 0.2s ease;
+      z-index: 999;
+    }
+
+    .console-toggle-btn:hover {
+      background: var(--color-bg-button-hover);
+      transform: scale(1.05);
+      box-shadow: 0 6px 16px rgba(0, 0, 0, 0.3);
+    }
+
+    .console-toggle-btn svg {
+      width: 20px;
+      height: 20px;
+    }
+
+    .console-drawer {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      background: var(--color-bg-primary);
+      border-top: 1px solid var(--color-border-primary);
+      box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.1);
+      z-index: 1000;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .console-resize-handle {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 6px;
+      cursor: ns-resize;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .console-resize-handle:hover .console-resize-bar {
+      background: var(--color-bg-button);
+    }
+
+    .console-resize-bar {
+      width: 40px;
+      height: 3px;
+      border-radius: 2px;
+      background: var(--color-border-primary);
+      transition: background 0.2s ease;
+    }
+
+    .console-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--color-border-primary);
+      background: var(--color-bg-header);
+      margin-top: 6px;
+    }
+
+    .console-tabs {
+      display: flex;
+      gap: 4px;
+    }
+
+    .console-tab {
+      padding: 4px 12px;
+      font-size: 12px;
+      color: var(--color-text-secondary);
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+    }
+
+    .console-tab.active {
+      color: var(--color-text-primary);
+      border-bottom-color: var(--color-bg-button);
+      font-weight: 500;
+    }
+
+    .console-controls {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .console-auto-refresh {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 11px;
+      color: var(--color-text-secondary);
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .console-auto-refresh input[type="checkbox"] {
+      cursor: pointer;
+    }
+
+    .console-control-btn {
+      background: transparent;
+      border: none;
+      color: var(--color-text-secondary);
+      cursor: pointer;
+      padding: 4px 8px;
+      font-size: 14px;
+      border-radius: 4px;
+      transition: all 0.15s ease;
+    }
+
+    .console-control-btn:hover {
+      background: var(--color-bg-card-hover);
+      color: var(--color-text-primary);
+    }
+
+    .console-control-btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    .console-clear-btn:hover {
+      color: var(--color-accent-error);
+    }
+
+    .console-content {
+      flex: 1;
+      overflow: auto;
+      background: var(--color-bg-primary);
+    }
+
+    .console-logs {
+      margin: 0;
+      padding: 8px 12px;
+      font-family: 'SF Mono', 'Monaco', 'Menlo', 'Consolas', 'Courier New', monospace;
+      font-size: 11px;
+      line-height: 1.5;
+      color: var(--color-text-primary);
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      overflow-wrap: break-word;
+    }
+
+    .console-error {
+      padding: 8px 12px;
+      background: rgba(239, 68, 68, 0.08);
+      border-bottom: 1px solid var(--color-accent-error);
+      color: var(--color-accent-error);
+      font-size: 11px;
+      font-family: 'SF Mono', 'Monaco', 'Menlo', 'Consolas', 'Courier New', monospace;
+    }
+
+    /* Console Filter Bar */
+    .console-filters {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      padding: 8px 12px;
+      background: var(--color-bg-secondary);
+      border-bottom: 1px solid var(--color-border-primary);
+    }
+
+    .console-filter-section {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .console-filter-label {
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--color-text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      white-space: nowrap;
+    }
+
+    .console-filter-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      align-items: center;
+    }
+
+    .console-filter-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 8px;
+      font-size: 11px;
+      font-weight: 500;
+      background: var(--color-bg-card);
+      border: 1px solid var(--color-border-primary);
+      border-radius: 4px;
+      color: var(--color-text-secondary);
+      cursor: pointer;
+      transition: all 0.15s ease;
+      white-space: nowrap;
+    }
+
+    .console-filter-chip:hover {
+      background: var(--color-bg-card-hover);
+      border-color: var(--chip-color, var(--color-border-hover));
+      color: var(--color-text-primary);
+    }
+
+    .console-filter-chip.active {
+      background: var(--chip-color, var(--color-accent-primary));
+      border-color: var(--chip-color, var(--color-accent-primary));
+      color: white;
+      text-shadow: 0 1px 1px rgba(0, 0, 0, 0.2);
+    }
+
+    .console-filter-chip.active:hover {
+      opacity: 0.9;
+    }
+
+    .console-filter-action {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 24px;
+      height: 24px;
+      font-size: 12px;
+      background: transparent;
+      border: 1px solid var(--color-border-primary);
+      border-radius: 4px;
+      color: var(--color-text-muted);
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .console-filter-action:hover {
+      background: var(--color-bg-card-hover);
+      border-color: var(--color-border-hover);
+      color: var(--color-text-primary);
+    }
+
+    /* Log Line Styles */
+    .log-line {
+      display: block;
+      padding: 2px 0;
+      font-family: 'SF Mono', 'Monaco', 'Menlo', 'Consolas', 'Courier New', monospace;
+      font-size: 11px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
+
+    .log-line-raw {
+      color: var(--color-text-secondary);
+      opacity: 0.8;
+    }
+
+    .log-line-empty {
+      color: var(--color-text-muted);
+      font-style: italic;
+      padding: 20px 0;
+      text-align: center;
+    }
+
+    .log-timestamp {
+      color: var(--color-text-muted);
+      opacity: 0.7;
+    }
+
+    .log-level {
+      font-weight: 500;
+    }
+
+    .log-component {
+      font-weight: 500;
+    }
+
+    .log-correlation {
+      color: var(--color-accent-primary);
+      opacity: 0.9;
+    }
+
+    .log-message {
+      color: inherit;
+    }
+
+    /* Log Level Colors in Dark Mode */
+    [data-theme="dark"] .log-line-raw {
+      color: #8b949e;
+    }
+
+    /* Responsive adjustments for filter bar */
+    @media (max-width: 600px) {
+      .console-filters {
+        flex-direction: column;
+        gap: 8px;
+        padding: 6px 10px;
+      }
+
+      .console-filter-section {
+        flex-wrap: wrap;
+      }
+
+      .console-filter-chip {
+        padding: 2px 6px;
+        font-size: 10px;
+      }
+    }
+
     /* Responsive Modal */
     @media (max-width: 900px) {
       .modal-body {

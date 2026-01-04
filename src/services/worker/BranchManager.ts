@@ -204,8 +204,9 @@ export async function switchBranch(targetBranch: string): Promise<SwitchResult> 
     logger.debug('BRANCH', 'Checking out branch', { branch: targetBranch });
     try {
       execGit(['checkout', targetBranch]);
-    } catch {
+    } catch (error) {
       // Branch might not exist locally, try tracking remote
+      logger.debug('BRANCH', 'Branch not local, tracking remote', { branch: targetBranch, error: error instanceof Error ? error.message : String(error) });
       execGit(['checkout', '-b', targetBranch, `origin/${targetBranch}`]);
     }
 
@@ -239,8 +240,9 @@ export async function switchBranch(targetBranch: string): Promise<SwitchResult> 
       if (info.branch && isValidBranchName(info.branch)) {
         execGit(['checkout', info.branch]);
       }
-    } catch {
-      // Recovery failed, user needs manual intervention
+    } catch (recoveryError) {
+      // [POSSIBLY RELEVANT]: Recovery checkout failed, user needs manual intervention - already logging main error above
+      logger.warn('BRANCH', 'Recovery checkout also failed', { originalBranch: info.branch }, recoveryError as Error);
     }
 
     return {

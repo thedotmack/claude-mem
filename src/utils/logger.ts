@@ -19,7 +19,7 @@ export type Component = 'HOOK' | 'WORKER' | 'SDK' | 'PARSER' | 'DB' | 'SYSTEM' |
 
 interface LogContext {
   sessionId?: number;
-  sdkSessionId?: string;
+  memorySessionId?: string;
   correlationId?: string;
   [key: string]: any;
 }
@@ -253,7 +253,7 @@ class Logger {
     // Build additional context
     let contextStr = '';
     if (context) {
-      const { sessionId, sdkSessionId, correlationId, ...rest } = context;
+      const { sessionId, memorySessionId, correlationId, ...rest } = context;
       if (Object.keys(rest).length > 0) {
         const pairs = Object.entries(rest).map(([k, v]) => `${k}=${v}`);
         contextStr = ` {${pairs.join(', ')}}`;
@@ -267,7 +267,8 @@ class Logger {
       try {
         appendFileSync(this.logFilePath, logLine + '\n', 'utf8');
       } catch (error) {
-        // If file write fails, write to stderr as last resort
+        // Logger can't log its own failures - use stderr as last resort
+        // This is expected during disk full / permission errors
         process.stderr.write(`[LOGGER] Failed to write to log file: ${error}\n`);
       }
     } else {

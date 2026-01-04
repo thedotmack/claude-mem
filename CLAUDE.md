@@ -1,8 +1,4 @@
-/* To @claude: be vigilant about only leaving evergreen context in this file, claude-mem handles working context separately. */
-
 # Claude-Mem: AI Development Instructions
-
-## What This Project Is
 
 Claude-mem is a Claude Code plugin providing persistent memory across sessions. It captures tool usage, compresses observations using the Claude Agent SDK, and injects relevant context into future sessions.
 
@@ -14,7 +10,7 @@ Claude-mem is a Claude Code plugin providing persistent memory across sessions. 
 
 **Worker Service** (`src/services/worker-service.ts`) - Express API on port 37777, Bun-managed, handles AI processing asynchronously
 
-**Database** (`src/services/sqlite/`) - SQLite3 at `~/.claude-mem/claude-mem.db` 
+**Database** (`src/services/sqlite/`) - SQLite3 at `~/.claude-mem/claude-mem.db`
 
 **Search Skill** (`plugin/skills/mem-search/SKILL.md`) - HTTP API for searching past work, auto-invoked when users ask about history
 
@@ -80,6 +76,6 @@ Claude-mem is designed with a clean separation between open-source core function
 
 This architecture preserves the open-source nature of the project while enabling sustainable development through optional paid features.
 
-# Important
+## Important
 
 No need to edit the changelog ever, it's generated automatically.

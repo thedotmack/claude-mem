@@ -19,8 +19,8 @@ export interface ConversationMessage {
 
 export interface ActiveSession {
   sessionDbId: number;
-  claudeSessionId: string;
-  sdkSessionId: string | null;
+  contentSessionId: string;      // User's Claude Code session being observed
+  memorySessionId: string | null; // Memory agent's session ID for resume
   project: string;
   userPrompt: string;
   pendingMessages: PendingMessage[];  // Deprecated: now using persistent store, kept for compatibility
@@ -30,7 +30,6 @@ export interface ActiveSession {
   startTime: number;
   cumulativeInputTokens: number;   // Track input tokens for discovery cost
   cumulativeOutputTokens: number;  // Track output tokens for discovery cost
-  pendingProcessingIds: Set<number>;  // Track ALL message IDs yielded but not yet processed
   earliestPendingTimestamp: number | null;  // Original timestamp of earliest pending message (for accurate observation timestamps)
   conversationHistory: ConversationMessage[];  // Shared conversation history for provider switching
   currentProvider: 'claude' | 'gemini' | 'openrouter' | null;  // Track which provider is currently running
@@ -43,7 +42,6 @@ export interface PendingMessage {
   tool_response?: any;
   prompt_number?: number;
   cwd?: string;
-  last_user_message?: string;
   last_assistant_message?: string;
 }
 
@@ -110,7 +108,7 @@ export interface ViewerSettings {
 
 export interface Observation {
   id: number;
-  sdk_session_id: string;
+  memory_session_id: string;  // Renamed from sdk_session_id
   project: string;
   type: string;
   title: string;
@@ -128,7 +126,7 @@ export interface Observation {
 
 export interface Summary {
   id: number;
-  session_id: string; // claude_session_id (from JOIN)
+  session_id: string; // content_session_id (from JOIN)
   project: string;
   request: string | null;
   investigated: string | null;
@@ -142,7 +140,7 @@ export interface Summary {
 
 export interface UserPrompt {
   id: number;
-  claude_session_id: string;
+  content_session_id: string;  // Renamed from claude_session_id
   project: string; // From JOIN with sdk_sessions
   prompt_number: number;
   prompt_text: string;
@@ -152,10 +150,10 @@ export interface UserPrompt {
 
 export interface DBSession {
   id: number;
-  claude_session_id: string;
+  content_session_id: string;    // Renamed from claude_session_id
   project: string;
   user_prompt: string;
-  sdk_session_id: string | null;
+  memory_session_id: string | null;  // Renamed from sdk_session_id
   status: 'active' | 'completed' | 'failed';
   started_at: string;
   started_at_epoch: number;

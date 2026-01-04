@@ -15,11 +15,17 @@ import { homedir } from 'os';
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
-import { parseObservations, parseSummary } from '../../sdk/parser.js';
 import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
+import {
+  processAgentResponse,
+  shouldFallbackToClaude,
+  isAbortError,
+  type WorkerRef,
+  type FallbackAgent
+} from './agents/index.js';
 
 // Gemini API endpoint
 const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
@@ -30,7 +36,8 @@ export type GeminiModel =
   | 'gemini-2.5-flash'
   | 'gemini-2.5-pro'
   | 'gemini-2.0-flash'
-  | 'gemini-2.0-flash-lite';
+  | 'gemini-2.0-flash-lite'
+  | 'gemini-3-flash';
 
 // Free tier RPM limits by model (requests per minute)
 const GEMINI_RPM_LIMITS: Record<GeminiModel, number> = {
@@ -39,6 +46,7 @@ const GEMINI_RPM_LIMITS: Record<GeminiModel, number> = {
   'gemini-2.5-pro': 5,
   'gemini-2.0-flash': 15,
   'gemini-2.0-flash-lite': 30,
+  'gemini-3-flash': 5,
 };
 
 // Track last request time for rate limiting
@@ -94,11 +102,6 @@ interface GeminiContent {
   parts: Array<{ text: string }>;
 }
 
-// Forward declaration for fallback agent type
-type FallbackAgent = {
-  startSession(session: ActiveSession, worker?: any): Promise<void>;
-};
-
 export class GeminiAgent {
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
@@ -118,27 +121,10 @@ export class GeminiAgent {
   }
 
   /**
-   * Check if an error should trigger fallback to Claude
-   */
-  private shouldFallbackToClaude(error: any): boolean {
-    const message = error?.message || '';
-    // Fall back on rate limit (429), server errors (5xx), or network issues
-    return (
-      message.includes('429') ||
-      message.includes('500') ||
-      message.includes('502') ||
-      message.includes('503') ||
-      message.includes('ECONNREFUSED') ||
-      message.includes('ETIMEDOUT') ||
-      message.includes('fetch failed')
-    );
-  }
-
-  /**
    * Start Gemini agent for a session
    * Uses multi-turn conversation to maintain context across messages
    */
-  async startSession(session: ActiveSession, worker?: any): Promise<void> {
+  async startSession(session: ActiveSession, worker?: WorkerRef): Promise<void> {
     try {
       // Get Gemini configuration
       const { apiKey, model, rateLimitingEnabled } = this.getGeminiConfig();
@@ -152,8 +138,8 @@ export class GeminiAgent {
 
       // Build initial prompt
       const initPrompt = session.lastPromptNumber === 1
-        ? buildInitPrompt(session.project, session.claudeSessionId, session.userPrompt, mode)
-        : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.claudeSessionId, mode);
+        ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode)
+        : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode);
 
       // Add to conversation history and query Gemini with full context
       session.conversationHistory.push({ role: 'user', content: initPrompt });
@@ -168,8 +154,17 @@ export class GeminiAgent {
         session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);  // Rough estimate
         session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
 
-        // Process response (no original timestamp for init - not from queue)
-        await this.processGeminiResponse(session, initResponse.content, worker, tokensUsed, null);
+        // Process response using shared ResponseProcessor (no original timestamp for init - not from queue)
+        await processAgentResponse(
+          initResponse.content,
+          session,
+          this.dbManager,
+          this.sessionManager,
+          worker,
+          tokensUsed,
+          null,
+          'Gemini'
+        );
       } else {
         logger.warn('SDK', 'Empty Gemini init response - session may lack context', {
           sessionId: session.sessionDbId,
@@ -203,31 +198,35 @@ export class GeminiAgent {
           session.conversationHistory.push({ role: 'user', content: obsPrompt });
           const obsResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, rateLimitingEnabled);
 
+          let tokensUsed = 0;
           if (obsResponse.content) {
             // Add response to conversation history
             session.conversationHistory.push({ role: 'assistant', content: obsResponse.content });
 
-            const tokensUsed = obsResponse.tokensUsed || 0;
+            tokensUsed = obsResponse.tokensUsed || 0;
             session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
             session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
-            await this.processGeminiResponse(session, obsResponse.content, worker, tokensUsed, originalTimestamp);
-          } else {
-            // Empty response - still mark messages as processed to avoid stuck state
-            logger.warn('SDK', 'Empty Gemini response for observation, marking as processed', {
-              sessionId: session.sessionDbId,
-              toolName: message.tool_name
-            });
-            await this.markMessagesProcessed(session, worker);
           }
+
+          // Process response using shared ResponseProcessor
+          await processAgentResponse(
+            obsResponse.content || '',
+            session,
+            this.dbManager,
+            this.sessionManager,
+            worker,
+            tokensUsed,
+            originalTimestamp,
+            'Gemini'
+          );
 
         } else if (message.type === 'summarize') {
           // Build summary prompt
           const summaryPrompt = buildSummaryPrompt({
             id: session.sessionDbId,
-            sdk_session_id: session.sdkSessionId,
+            memory_session_id: session.memorySessionId,
             project: session.project,
             user_prompt: session.userPrompt,
-            last_user_message: message.last_user_message || '',
             last_assistant_message: message.last_assistant_message || ''
           }, mode);
 
@@ -235,21 +234,27 @@ export class GeminiAgent {
           session.conversationHistory.push({ role: 'user', content: summaryPrompt });
           const summaryResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, rateLimitingEnabled);
 
+          let tokensUsed = 0;
           if (summaryResponse.content) {
             // Add response to conversation history
             session.conversationHistory.push({ role: 'assistant', content: summaryResponse.content });
 
-            const tokensUsed = summaryResponse.tokensUsed || 0;
+            tokensUsed = summaryResponse.tokensUsed || 0;
             session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
             session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
-            await this.processGeminiResponse(session, summaryResponse.content, worker, tokensUsed, originalTimestamp);
-          } else {
-            // Empty response - still mark messages as processed to avoid stuck state
-            logger.warn('SDK', 'Empty Gemini response for summary, marking as processed', {
-              sessionId: session.sessionDbId
-            });
-            await this.markMessagesProcessed(session, worker);
           }
+
+          // Process response using shared ResponseProcessor
+          await processAgentResponse(
+            summaryResponse.content || '',
+            session,
+            this.dbManager,
+            this.sessionManager,
+            worker,
+            tokensUsed,
+            originalTimestamp,
+            'Gemini'
+          );
         }
       }
 
@@ -261,37 +266,26 @@ export class GeminiAgent {
         historyLength: session.conversationHistory.length
       });
 
-    } catch (error: any) {
-      if (error.name === 'AbortError') {
+    } catch (error: unknown) {
+      if (isAbortError(error)) {
         logger.warn('SDK', 'Gemini agent aborted', { sessionId: session.sessionDbId });
         throw error;
       }
 
       // Check if we should fall back to Claude
-      if (this.shouldFallbackToClaude(error) && this.fallbackAgent) {
+      if (shouldFallbackToClaude(error) && this.fallbackAgent) {
         logger.warn('SDK', 'Gemini API failed, falling back to Claude SDK', {
           sessionDbId: session.sessionDbId,
-          error: error.message,
+          error: error instanceof Error ? error.message : String(error),
           historyLength: session.conversationHistory.length
         });
 
-        // Reset any 'processing' messages back to 'pending' so Claude can retry them
-        // This handles the case where Gemini failed mid-processing a message
-        const pendingStore = this.sessionManager.getPendingMessageStore();
-        const resetCount = pendingStore.resetStuckMessages(0);  // 0 = reset ALL processing messages
-        if (resetCount > 0) {
-          logger.info('SDK', 'Reset processing messages for fallback', {
-            sessionDbId: session.sessionDbId,
-            resetCount
-          });
-        }
-
         // Fall back to Claude - it will use the same session with shared conversationHistory
-        // Note: Claude SDK will continue processing from current state
+        // Note: With claim-and-delete queue pattern, messages are already deleted on claim
         return this.fallbackAgent.startSession(session, worker);
       }
 
-      logger.failure('SDK', 'Gemini agent error', { sessionDbId: session.sessionDbId }, error);
+      logger.failure('SDK', 'Gemini agent error', { sessionDbId: session.sessionDbId }, error as Error);
       throw error;
     }
   }
@@ -363,169 +357,6 @@ export class GeminiAgent {
   }
 
   /**
-   * Process Gemini response (same format as Claude)
-   * @param originalTimestamp - Original epoch when message was queued (for backlog processing accuracy)
-   */
-  private async processGeminiResponse(
-    session: ActiveSession,
-    text: string,
-    worker: any | undefined,
-    discoveryTokens: number,
-    originalTimestamp: number | null
-  ): Promise<void> {
-    // Parse observations (same XML format)
-    const observations = parseObservations(text, session.claudeSessionId);
-
-    // Store observations with original timestamp (if processing backlog) or current time
-    for (const obs of observations) {
-      const { id: obsId, createdAtEpoch } = this.dbManager.getSessionStore().storeObservation(
-        session.claudeSessionId,
-        session.project,
-        obs,
-        session.lastPromptNumber,
-        discoveryTokens,
-        originalTimestamp ?? undefined
-      );
-
-      logger.info('SDK', 'Gemini observation saved', {
-        sessionId: session.sessionDbId,
-        obsId,
-        type: obs.type,
-        title: obs.title || '(untitled)'
-      });
-
-      // Sync to Chroma
-      this.dbManager.getChromaSync().syncObservation(
-        obsId,
-        session.claudeSessionId,
-        session.project,
-        obs,
-        session.lastPromptNumber,
-        createdAtEpoch,
-        discoveryTokens
-      ).catch(err => {
-        logger.warn('SDK', 'Gemini chroma sync failed', { obsId }, err);
-      });
-
-      // Broadcast to SSE clients
-      if (worker && worker.sseBroadcaster) {
-        worker.sseBroadcaster.broadcast({
-          type: 'new_observation',
-          observation: {
-            id: obsId,
-            sdk_session_id: session.sdkSessionId,
-            session_id: session.claudeSessionId,
-            type: obs.type,
-            title: obs.title,
-            subtitle: obs.subtitle,
-            text: null,
-            narrative: obs.narrative || null,
-            facts: JSON.stringify(obs.facts || []),
-            concepts: JSON.stringify(obs.concepts || []),
-            files_read: JSON.stringify(obs.files_read || []),
-            files_modified: JSON.stringify(obs.files_modified || []),
-            project: session.project,
-            prompt_number: session.lastPromptNumber,
-            created_at_epoch: createdAtEpoch
-          }
-        });
-      }
-    }
-
-    // Parse summary
-    const summary = parseSummary(text, session.sessionDbId);
-
-    if (summary) {
-      // Convert nullable fields to empty strings for storeSummary
-      const summaryForStore = {
-        request: summary.request || '',
-        investigated: summary.investigated || '',
-        learned: summary.learned || '',
-        completed: summary.completed || '',
-        next_steps: summary.next_steps || '',
-        notes: summary.notes
-      };
-
-      const { id: summaryId, createdAtEpoch } = this.dbManager.getSessionStore().storeSummary(
-        session.claudeSessionId,
-        session.project,
-        summaryForStore,
-        session.lastPromptNumber,
-        discoveryTokens,
-        originalTimestamp ?? undefined
-      );
-
-      logger.info('SDK', 'Gemini summary saved', {
-        sessionId: session.sessionDbId,
-        summaryId,
-        request: summary.request || '(no request)'
-      });
-
-      // Sync to Chroma
-      this.dbManager.getChromaSync().syncSummary(
-        summaryId,
-        session.claudeSessionId,
-        session.project,
-        summaryForStore,
-        session.lastPromptNumber,
-        createdAtEpoch,
-        discoveryTokens
-      ).catch(err => {
-        logger.warn('SDK', 'Gemini chroma sync failed', { summaryId }, err);
-      });
-
-      // Broadcast to SSE clients
-      if (worker && worker.sseBroadcaster) {
-        worker.sseBroadcaster.broadcast({
-          type: 'new_summary',
-          summary: {
-            id: summaryId,
-            session_id: session.claudeSessionId,
-            request: summary.request,
-            investigated: summary.investigated,
-            learned: summary.learned,
-            completed: summary.completed,
-            next_steps: summary.next_steps,
-            notes: summary.notes,
-            project: session.project,
-            prompt_number: session.lastPromptNumber,
-            created_at_epoch: createdAtEpoch
-          }
-        });
-      }
-    }
-
-    // Mark messages as processed
-    await this.markMessagesProcessed(session, worker);
-  }
-
-  /**
-   * Mark pending messages as processed
-   */
-  private async markMessagesProcessed(session: ActiveSession, worker: any | undefined): Promise<void> {
-    const pendingMessageStore = this.sessionManager.getPendingMessageStore();
-    if (session.pendingProcessingIds.size > 0) {
-      for (const messageId of session.pendingProcessingIds) {
-        pendingMessageStore.markProcessed(messageId);
-      }
-      logger.debug('SDK', 'Gemini messages marked as processed', {
-        sessionId: session.sessionDbId,
-        count: session.pendingProcessingIds.size
-      });
-      session.pendingProcessingIds.clear();
-
-      const deletedCount = pendingMessageStore.cleanupProcessed(100);
-      if (deletedCount > 0) {
-        logger.debug('SDK', 'Gemini cleaned up old processed messages', { deletedCount });
-      }
-    }
-
-    if (worker && typeof worker.broadcastProcessingStatus === 'function') {
-      worker.broadcastProcessingStatus();
-    }
-  }
-
-  /**
    * Get Gemini configuration from settings or environment
    */
   private getGeminiConfig(): { apiKey: string; model: GeminiModel; rateLimitingEnabled: boolean } {
@@ -544,6 +375,7 @@ export class GeminiAgent {
       'gemini-2.5-pro',
       'gemini-2.0-flash',
       'gemini-2.0-flash-lite',
+      'gemini-3-flash',
     ];
 
     let model: GeminiModel;

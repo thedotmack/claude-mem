@@ -61,27 +61,23 @@ export function useSettings() {
     setIsSaving(true);
     setSaveStatus('Saving...');
 
-    try {
-      const response = await fetch(API_ENDPOINTS.SETTINGS, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newSettings)
-      });
+    const response = await fetch(API_ENDPOINTS.SETTINGS, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(newSettings)
+    });
 
-      const result = await response.json();
+    const result = await response.json();
 
-      if (result.success) {
-        setSettings(newSettings);
-        setSaveStatus('✓ Saved');
-        setTimeout(() => setSaveStatus(''), TIMING.SAVE_STATUS_DISPLAY_DURATION_MS);
-      } else {
-        setSaveStatus(`✗ Error: ${result.error}`);
-      }
-    } catch (error) {
-      setSaveStatus(`✗ Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    } finally {
-      setIsSaving(false);
+    if (result.success) {
+      setSettings(newSettings);
+      setSaveStatus('✓ Saved');
+      setTimeout(() => setSaveStatus(''), TIMING.SAVE_STATUS_DISPLAY_DURATION_MS);
+    } else {
+      setSaveStatus(`✗ Error: ${result.error}`);
     }
+
+    setIsSaving(false);
   };
 
   return { settings, saveSettings, isSaving, saveStatus };
