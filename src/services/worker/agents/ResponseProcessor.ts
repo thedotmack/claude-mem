@@ -6,7 +6,6 @@
  * - Execute atomic database transactions
  * - Orchestrate Chroma sync (fire-and-forget)
  * - Broadcast to SSE clients
- * - Regenerate folder indexes (fire-and-forget)
  * - Clean up processed messages
  *
  * This module extracts 150+ lines of duplicate code from SDKAgent, GeminiAgent, and OpenRouterAgent.
@@ -15,31 +14,14 @@
 import { logger } from '../../../utils/logger.js';
 import { parseObservations, parseSummary, type ParsedObservation, type ParsedSummary } from '../../../sdk/parser.js';
 import { updateCursorContextForProject } from '../../worker-service.js';
+import { updateFolderClaudeMd, readCursorRegistry } from '../../integrations/CursorHooksInstaller.js';
 import { getWorkerPort } from '../../../shared/worker-utils.js';
-import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
-import { USER_SETTINGS_PATH } from '../../../shared/paths.js';
-import { regenerateFolderIndexes } from '../../folder-index/index.js';
 import type { ActiveSession } from '../../worker-types.js';
 import type { DatabaseManager } from '../DatabaseManager.js';
 import type { SessionManager } from '../SessionManager.js';
 import type { WorkerRef, StorageResult } from './types.js';
-import type { FolderIndexConfig } from '../../folder-index/types.js';
 import { broadcastObservation, broadcastSummary } from './ObservationBroadcaster.js';
 import { cleanupProcessedMessages } from './SessionCleanupHelper.js';
-
-/**
- * Build FolderIndexConfig from settings
- */
-function buildFolderIndexConfig(): FolderIndexConfig {
-  const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-
-  return {
-    enabled: settings.CLAUDE_MEM_FOLDER_INDEX_ENABLED === 'true',
-    maxDepth: parseInt(settings.CLAUDE_MEM_FOLDER_INDEX_MAX_DEPTH, 10),
-    excludeFolders: settings.CLAUDE_MEM_FOLDER_INDEX_EXCLUDE_FOLDERS.split(',').map(f => f.trim()),
-    minActivityThreshold: parseInt(settings.CLAUDE_MEM_FOLDER_INDEX_MIN_ACTIVITY, 10)
-  };
-}
 
 /**
  * Process agent response text (parse XML, save to database, sync to Chroma, broadcast SSE)
@@ -122,19 +104,6 @@ export async function processAgentResponse(
     agentName
   );
 
-  // Regenerate folder indexes for saved observations (fire-and-forget, non-critical)
-  regenerateFolderIndexesForObservations(
-    session.project,
-    result.observationIds,
-    dbManager,
-    agentName
-  ).catch(error => {
-    logger.warn('FOLDER_INDEX', `${agentName} folder index regeneration failed (non-critical)`, {
-      project: session.project,
-      observationIds: result.observationIds
-    }, error);
-  });
-
   // Sync and broadcast summary if present
   await syncAndBroadcastSummary(
     summary,
@@ -144,46 +113,12 @@ export async function processAgentResponse(
     dbManager,
     worker,
     discoveryTokens,
-    agentName
+    agentName,
+    observations
   );
 
   // Clean up session state
   cleanupProcessedMessages(session, worker);
-}
-
-/**
- * Regenerate folder indexes for newly saved observations
- * Fetches observation records and calls folder index orchestrator
- */
-async function regenerateFolderIndexesForObservations(
-  project: string,
-  observationIds: number[],
-  dbManager: DatabaseManager,
-  agentName: string
-): Promise<void> {
-  if (observationIds.length === 0) {
-    return;
-  }
-
-  // Build folder index config from settings
-  const config = buildFolderIndexConfig();
-
-  if (!config.enabled) {
-    logger.debug('FOLDER_INDEX', `${agentName} folder indexing disabled, skipping`, { project });
-    return;
-  }
-
-  // Import getObservationsByIds (dynamic import to avoid circular dependency)
-  const { getObservationsByIds } = await import('../../sqlite/observations/get.js');
-  const sessionStore = dbManager.getSessionStore();
-
-  // Fetch the saved observation records
-  const observations = getObservationsByIds(sessionStore.db, observationIds);
-
-  // Regenerate folder indexes for each observation
-  for (const observation of observations) {
-    await regenerateFolderIndexes(project, observation, config);
-  }
 }
 
 /**
@@ -284,7 +219,8 @@ async function syncAndBroadcastSummary(
   dbManager: DatabaseManager,
   worker: WorkerRef | undefined,
   discoveryTokens: number,
-  agentName: string
+  agentName: string,
+  observations: ParsedObservation[]
 ): Promise<void> {
   if (!summaryForStore || !result.summaryId) {
     return;
@@ -334,4 +270,30 @@ async function syncAndBroadcastSummary(
   updateCursorContextForProject(session.project, getWorkerPort()).catch(error => {
     logger.warn('CURSOR', 'Context update failed (non-critical)', { project: session.project }, error as Error);
   });
+
+  // Update folder CLAUDE.md files for touched folders (fire-and-forget)
+  // Extract file paths from the saved observations
+  const filesModified: string[] = [];
+  const filesRead: string[] = [];
+
+  for (const obs of observations) {
+    filesModified.push(...(obs.files_modified || []));
+    filesRead.push(...(obs.files_read || []));
+  }
+
+  // Get workspace path from project registry
+  const registry = readCursorRegistry();
+  const registryEntry = registry[session.project];
+
+  if (registryEntry && (filesModified.length > 0 || filesRead.length > 0)) {
+    updateFolderClaudeMd(
+      registryEntry.workspacePath,
+      filesModified,
+      filesRead,
+      session.project,
+      getWorkerPort()
+    ).catch(error => {
+      logger.warn('FOLDER_INDEX', 'CLAUDE.md update failed (non-critical)', { project: session.project }, error as Error);
+    });
+  }
 }
