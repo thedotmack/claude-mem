@@ -22,7 +22,7 @@ Claude-mem is a Claude Code plugin providing persistent memory across sessions. 
 
 **Dual-Tag System** for meta-observation control:
 - `<private>content</private>` - User-level privacy control (manual, prevents storage)
-- `<claude-mem-context>content</claude-mem-context>` - System-level tag (auto-injected observations, prevents recursive storage)
+- `` - System-level tag (auto-injected observations, prevents recursive storage)
 
 **Implementation**: Tag stripping happens at hook layer (edge processing) before data reaches worker/database. See `src/utils/tag-stripping.ts` for shared utilities.
 
