@@ -21,8 +21,12 @@ import path from 'path';
 import os from 'os';
 import { existsSync, mkdirSync, writeFileSync, readFileSync, renameSync, unlinkSync, readdirSync } from 'fs';
 import { execSync } from 'child_process';
+import { SettingsDefaultsManager } from '../src/shared/SettingsDefaultsManager.js';
 
 const DB_PATH = path.join(os.homedir(), '.claude-mem', 'claude-mem.db');
+const SETTINGS_PATH = path.join(os.homedir(), '.claude-mem', 'settings.json');
+const settings = SettingsDefaultsManager.loadFromFile(SETTINGS_PATH);
+const OBSERVATION_LIMIT = parseInt(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10) || 50;
 
 interface ObservationRow {
   id: number;
@@ -132,10 +136,45 @@ function walkDirectoriesWithIgnore(dir: string, folders: Set<string>, depth: num
 }
 
 /**
+ * Check if a file is a direct child of a folder (not in a subfolder)
+ * @param filePath - File path like "src/services/foo.ts"
+ * @param folderPath - Folder path like "src/services"
+ * @returns true if file is directly in folder, false if in a subfolder
+ */
+function isDirectChild(filePath: string, folderPath: string): boolean {
+  if (!filePath.startsWith(folderPath + '/')) return false;
+  const remainder = filePath.slice(folderPath.length + 1);
+  // If remainder contains a slash, it's in a subfolder
+  return !remainder.includes('/');
+}
+
+/**
+ * Check if an observation has any files that are direct children of the folder
+ */
+function hasDirectChildFile(obs: ObservationRow, folderPath: string): boolean {
+  const checkFiles = (filesJson: string | null): boolean => {
+    if (!filesJson) return false;
+    try {
+      const files = JSON.parse(filesJson);
+      if (Array.isArray(files)) {
+        return files.some(f => isDirectChild(f, folderPath));
+      }
+    } catch {}
+    return false;
+  };
+
+  return checkFiles(obs.files_modified) || checkFiles(obs.files_read);
+}
+
+/**
  * Query observations for a specific folder
  * folderPath is a relative path from the project root (e.g., "src/services")
+ * Only returns observations with files directly in the folder (not in subfolders)
  */
-function findObservationsByFolder(db: Database, relativeFolderPath: string, project: string, limit: number = 10): ObservationRow[] {
+function findObservationsByFolder(db: Database, relativeFolderPath: string, project: string, limit: number): ObservationRow[] {
+  // Query more results than needed since we'll filter some out
+  const queryLimit = limit * 3;
+
   const sql = `
     SELECT o.*, o.discovery_tokens
     FROM observations o
@@ -146,46 +185,46 @@ function findObservationsByFolder(db: Database, relativeFolderPath: string, proj
   `;
 
   // Files in DB are stored as relative paths like "src/services/foo.ts"
-  // Match any file that starts with this folder path
+  // Match any file that starts with this folder path (we'll filter to direct children below)
   const likePattern = `%"${relativeFolderPath}/%`;
-  return db.prepare(sql).all(project, likePattern, likePattern, limit) as ObservationRow[];
+  const allMatches = db.prepare(sql).all(project, likePattern, likePattern, queryLimit) as ObservationRow[];
+
+  // Filter to only observations with direct child files (not in subfolders)
+  return allMatches.filter(obs => hasDirectChildFile(obs, relativeFolderPath)).slice(0, limit);
 }
 
 /**
  * Extract relevant file from an observation for display
+ * Only returns files that are direct children of the folder (not in subfolders)
  * @param obs - The observation row
  * @param relativeFolder - Relative folder path (e.g., "src/services")
  */
 function extractRelevantFile(obs: ObservationRow, relativeFolder: string): string {
-  // Try files_modified first
+  // Try files_modified first - only direct children
   if (obs.files_modified) {
     try {
       const modified = JSON.parse(obs.files_modified);
       if (Array.isArray(modified) && modified.length > 0) {
-        // Files are stored as relative paths like "src/services/foo.ts"
         for (const file of modified) {
-          if (file.startsWith(relativeFolder + '/')) {
-            // Get just the filename relative to the folder
-            return file.slice(relativeFolder.length + 1);
+          if (isDirectChild(file, relativeFolder)) {
+            // Get just the filename (no path since it's a direct child)
+            return path.basename(file);
           }
         }
-        // If no match in folder, use the basename
-        return path.basename(modified[0]);
       }
     } catch {}
   }
 
-  // Fall back to files_read
+  // Fall back to files_read - only direct children
   if (obs.files_read) {
     try {
       const read = JSON.parse(obs.files_read);
       if (Array.isArray(read) && read.length > 0) {
         for (const file of read) {
-          if (file.startsWith(relativeFolder + '/')) {
-            return file.slice(relativeFolder.length + 1);
+          if (isDirectChild(file, relativeFolder)) {
+            return path.basename(file);
           }
         }
-        return path.basename(read[0]);
       }
     } catch {}
   }
@@ -399,7 +438,7 @@ function regenerateFolder(
 ): { success: boolean; observationCount: number; error?: string } {
   try {
     // Query using relative path (matches DB storage format)
-    const observations = findObservationsByFolder(db, relativeFolder, project, 10);
+    const observations = findObservationsByFolder(db, relativeFolder, project, OBSERVATION_LIMIT);
 
     if (observations.length === 0) {
       return { success: false, observationCount: 0, error: 'No observations for folder' };
@@ -480,7 +519,7 @@ async function main() {
 
     if (dryRun) {
       // Query using relative path (matches DB storage format)
-      const observations = findObservationsByFolder(db, relativeFolder, project, 10);
+      const observations = findObservationsByFolder(db, relativeFolder, project, OBSERVATION_LIMIT);
       if (observations.length > 0) {
         console.log(`${progress} ${relativeFolder} (${observations.length} obs)`);
         successCount++;
