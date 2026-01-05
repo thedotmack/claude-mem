@@ -7,14 +7,14 @@
 
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
+| #37447 | 1:15 AM | 🔵 | Plan to Replace Hard-Coded Observation Limits with Configurable Setting | ~270 |
+| #37422 | 1:08 AM | ⚖️ | Plan approved to proceed with final isFolder parameter implementation | ~371 |
+| #37421 | 1:06 AM | 🔵 | Identified by-file API endpoint usage across codebase | ~406 |
+| #37420 | 1:05 AM | ⚖️ | Plan created for final bugfix step with verification strategy | ~460 |
 | #37392 | 12:48 AM | ✅ | Regenerated 23 CLAUDE.md files using fixed script and committed to feature branch | ~366 |
 | #37391 | " | ✅ | Staged 23 CLAUDE.md files with mix of new and modified content | ~400 |
 | #37390 | 12:47 AM | ✅ | Regenerated 23 CLAUDE.md files in budapest workspace | ~365 |
-| #37389 | 12:46 AM | ✅ | Regenerate script dry-run shows reduced folder count from 679 to 92 | ~310 |
-| #37388 | 12:36 AM | 🔴 | Fixed cleanup mode to strip tags instead of deleting files blindly | ~394 |
-| #37387 | " | ✅ | Cleaned 84 empty CLAUDE.md files from ~/.claude directory | ~378 |
-| #37386 | " | ✅ | Cleaned up 4 auto-generated CLAUDE.md files from ~/.claude-mem directory | ~262 |
-| #37385 | " | ✅ | Cleanup removed 275 empty CLAUDE.md files from ~/Scripts directory | ~385 |
-| #37384 | " | 🔵 | Cleanup script found 290 CLAUDE.md files in Scripts directory | ~362 |
-| #37383 | " | ✅ | Dry-run cleanup in ~/Scripts identifies 290 auto-generated CLAUDE.md files | ~390 |
+| #37380 | 12:35 AM | 🔵 | Cleanup mode implementation bug discovered - deletes files instead of stripping tags | ~435 |
+| #37379 | " | ⚖️ | Revised cleanup plan to fix broken --clean mode that deletes entire files | ~174 |
+| #37376 | 12:32 AM | ⚖️ | Planned smart cleanup strategy for auto-generated CLAUDE.md files | ~388 |
 </claude-mem-context>

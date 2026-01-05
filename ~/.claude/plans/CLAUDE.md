@@ -5,22 +5,16 @@
 
 ### Jan 5, 2026
 
-**README.md**
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
-| #37421 | 1:06 AM | 🔵 | Identified by-file API endpoint usage across codebase | ~406 |
-
-**SearchManager.ts**
-| ID | Time | T | Title | Read |
-|----|------|---|-------|------|
+| #37417 | 1:04 AM | ✅ | Created Implementation Summary Document for CLAUDE.md Duplicate Fix | ~488 |
 | #37416 | 1:02 AM | 🔴 | Fixed find_by_file Parameter Handling for Comma-Separated Values | ~375 |
 | #37415 | " | 🟣 | SearchManager Parameter Normalization Enhanced for Folder Queries | ~406 |
 | #37414 | 1:01 AM | 🔵 | SearchManager findByFile Uses filePath Parameter for File Search | ~429 |
 | #37413 | " | 🔵 | Hybrid Search Strategy: Metadata-First with Semantic Ranking | ~475 |
-
-**CLAUDE.md**
-| ID | Time | T | Title | Read |
-|----|------|---|-------|------|
-| #37391 | 12:48 AM | ✅ | Staged 23 CLAUDE.md files with mix of new and modified content | ~400 |
-| #37390 | 12:47 AM | ✅ | Regenerated 23 CLAUDE.md files in budapest workspace | ~365 |
+| #37412 | 1:00 AM | 🔴 | Fixed Folder Query to Return Only Direct Children Files | ~509 |
+| #37411 | " | 🟣 | Added isFolder Flag to SearchOptions Interface | ~325 |
+| #37410 | " | 🔵 | SessionSearch Class Design and FTS5 Deprecation Strategy | ~450 |
+| #37409 | 12:58 AM | 🔵 | SessionSearch Uses JSON Array Search for File Filtering | ~404 |
+| #37408 | " | 🔵 | SearchRoutes API Architecture with Worktree Support | ~543 |
 </claude-mem-context>

@@ -71,6 +71,12 @@ export class SearchManager {
   private normalizeParams(args: any): any {
     const normalized: any = { ...args };
 
+    // Map filePath to files (API uses filePath, internal uses files)
+    if (normalized.filePath && !normalized.files) {
+      normalized.files = normalized.filePath;
+      delete normalized.filePath;
+    }
+
     // Parse comma-separated concepts into array
     if (normalized.concepts && typeof normalized.concepts === 'string') {
       normalized.concepts = normalized.concepts.split(',').map((s: string) => s.trim()).filter(Boolean);
@@ -99,6 +105,13 @@ export class SearchManager {
       };
       delete normalized.dateStart;
       delete normalized.dateEnd;
+    }
+
+    // Parse isFolder boolean from string
+    if (normalized.isFolder === 'true') {
+      normalized.isFolder = true;
+    } else if (normalized.isFolder === 'false') {
+      normalized.isFolder = false;
     }
 
     return normalized;
@@ -1079,7 +1092,9 @@ export class SearchManager {
    */
   async findByFile(args: any): Promise<any> {
     const normalized = this.normalizeParams(args);
-    const { files: filePath, ...filters } = normalized;
+    const { files: rawFilePath, ...filters } = normalized;
+    // Handle both string and array (normalizeParams may split on comma)
+    const filePath = Array.isArray(rawFilePath) ? rawFilePath[0] : rawFilePath;
     let observations: ObservationSearchResult[] = [];
     let sessions: SessionSummarySearchResult[] = [];
 
