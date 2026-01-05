@@ -7,6 +7,5 @@
 
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
-| #36111 | 3:43 PM | 🔵 | Plugin Hook System Architecture | ~243 |
-| #35952 | 4:42 PM | 🔵 | Hook and Session Test Coverage Discovery | ~323 |
+| #36564 | 9:50 PM | 🟣 | Phase 4 Context Generation Tests Committed | ~406 |
 </claude-mem-context>

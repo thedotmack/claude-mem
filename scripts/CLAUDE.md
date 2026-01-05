@@ -7,14 +7,54 @@
 
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
-| #37465 | 1:21 AM | 🟣 | Phase 1 Changes Committed: Configurable Observation Limits in Batch Script | ~363 |
-| #37464 | " | 🟣 | Complete Phase 1 Git Diff Shows All Changes for Configurable Observation Limits | ~394 |
-| #37462 | 1:20 AM | 🔄 | Removed Stale Default Parameter from findObservationsByFolder | ~285 |
-| #37461 | " | ⚖️ | Phase 1 Code Quality Review Passes with Optional Improvement Suggestion | ~401 |
-| #37460 | 1:18 AM | 🔵 | Anti-Pattern Detected: Stale Default Parameter in findObservationsByFolder | ~360 |
-| #37459 | " | 🟣 | Phase 1 Implementation Verified and Complete | ~338 |
-| #37454 | 1:17 AM | 🟣 | Batch Regeneration Script Now Uses Configurable Observation Limits | ~318 |
-| #37453 | " | 🔵 | Batch Regeneration Script Successfully Updated with Configurable Limits | ~287 |
-| #37452 | 1:16 AM | ✅ | Replace Hard-Coded Limit in Dry-Run Code Path | ~229 |
-| #37451 | " | ✅ | Replace Hard-Coded Limit in regenerateFolder Function | ~234 |
+| #37547 | 4:47 PM | ✅ | Issue #557 Analysis Report Created for Plugin Startup Failure | ~491 |
+| #36933 | 2:27 AM | ✅ | Discord release notification sent for v8.5.8 | ~228 |
+| #36924 | 2:25 AM | ✅ | Merged fix/pr-538-followups branch into main with comprehensive updates | ~481 |
+| #36914 | 2:24 AM | 🔵 | Recent commit 4d0a10c fixed multiple GitHub issues | ~365 |
+| #36847 | 1:45 AM | 🔵 | Export Script Type Import Pattern | ~433 |
+| #36843 | 1:44 AM | 🔵 | Smart Install Script Structure and Path Detection Logic | ~538 |
+| #36829 | 1:40 AM | 🔵 | PR #542 Review Analysis - Multi-Issue Fix Validation | ~562 |
+| #36827 | 1:03 AM | ✅ | Branch diff shows 1,293 insertions and 98 deletions across 15 files | ~464 |
+| #36825 | 1:00 AM | 🔵 | Export Script Contains Duplicate Type Definitions | ~579 |
+| #36809 | 12:56 AM | 🟣 | GitHub Issue #527 Anti-Pattern Verification Complete - All Checks Passed | ~495 |
+| #36808 | " | 🟣 | Verified Windows Path Arrays Remain Unmodified | ~435 |
+| #36807 | " | 🟣 | Final Verification Confirms Complete Apple Silicon Homebrew Implementation | ~430 |
+| #36806 | 12:55 AM | 🟣 | Verified Apple Silicon Paths Only in Non-Windows Arrays | ~411 |
+| #36805 | " | 🟣 | Verified No Architecture Detection in Source File Implementation | ~374 |
+| #36803 | " | 🟣 | Source File Syntax Validation Passed | ~301 |
+| #36801 | 12:54 AM | 🟣 | Verified Source File Homebrew Path Count | ~283 |
+| #36795 | 12:52 AM | 🟣 | GitHub Issue #527 Completed - Apple Silicon Homebrew Path Support | ~550 |
+| #36793 | 12:51 AM | 🟣 | GitHub Issue #527 Source File Updates Complete | ~452 |
+| #36792 | 12:50 AM | 🟣 | Added Apple Silicon Homebrew Path for UV Detection | ~391 |
+| #36791 | " | 🟣 | Added Apple Silicon Homebrew Path for Bun Detection | ~399 |
+| #36772 | 12:42 AM | 🔵 | Smart Install Script Path Arrays Analysis Complete | ~448 |
+| #36770 | " | 🔵 | Export Script Type Duplication Analysis Complete | ~555 |
+| #36761 | 12:36 AM | ✅ | Created Implementation Plans for Four GitHub Issues | ~507 |
+| #36760 | 12:34 AM | ✅ | Created Issue #531 Report: Export Script Type Duplication | ~430 |
+| #36758 | " | 🔵 | Issue #531 Root Cause - 73 Lines of Duplicated Export Type Definitions | ~529 |
+| #36752 | 12:32 AM | 🔵 | Export Script Type Definitions Found | ~368 |
+| #36721 | 12:15 AM | 🔵 | Issue #527 UV Homebrew Path Missing on Apple Silicon | ~492 |
+| #36719 | " | 🔵 | Issue #527 uv Homebrew Detection Missing on Apple Silicon Macs | ~526 |
+| #36390 | 8:50 PM | 🔄 | Comprehensive Monolith Refactor with Modular Architecture | ~724 |
+| #36386 | 8:49 PM | ✅ | Committed duplicate observation cleanup script to repository | ~283 |
+| #36382 | 8:48 PM | 🟣 | Added safety checks to prevent accidental deletion of all observation copies | ~281 |
+| #36381 | " | 🔴 | Fixed duplicate group creation to use title field and dynamic window seconds | ~282 |
+| #36380 | " | 🔄 | Improved database connection initialization with explicit readonly handling | ~245 |
+| #36377 | 8:47 PM | 🔄 | Updated console output to display title instead of text | ~220 |
+| #36376 | " | 🔵 | Found sample output display also references old text field | ~210 |
+| #36375 | " | 🔴 | Fixed duplicate group creation to use title field and dynamic time bucket | ~288 |
+| #36374 | " | 🔵 | Found duplicate group creation still references old text field | ~249 |
+| #36373 | " | 🔄 | Updated DuplicateGroup interface to use title instead of text | ~192 |
+| #36372 | 8:46 PM | 🟣 | Implemented composite content hashing using title, subtitle, and narrative | ~301 |
+| #36371 | " | 🔴 | Fixed SQL query to select actual observation content columns | ~283 |
+| #36370 | " | 🔄 | Updated ObservationRow interface to use title-based schema fields | ~219 |
+| #36361 | 8:44 PM | 🟣 | Implemented dynamic fingerprint generation for aggressive mode | ~285 |
+| #36360 | " | 🟣 | Implemented command-line arguments for time window mode selection | ~255 |
+| #36359 | " | 🟣 | Added configurable time window modes for duplicate detection | ~265 |
+| #36357 | 8:43 PM | 🔄 | Added null text validation to cleanup script fingerprinting loop | ~213 |
+| #36356 | " | 🟣 | Created duplicate observation cleanup script with safe dry-run mode | ~390 |
+| #36291 | 8:03 PM | 🔄 | Build Verification: Phase 3 & 4 Refactoring Compiles Successfully | ~545 |
+| #36010 | 8:49 PM | 🔵 | Anti-pattern Test Suite Located in Scripts Directory | ~254 |
+| #35976 | 4:48 PM | ✅ | Claude-mem build and marketplace sync completed | ~335 |
+| #35952 | 4:42 PM | 🔵 | Hook and Session Test Coverage Discovery | ~323 |
 </claude-mem-context>
