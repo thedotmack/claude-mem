@@ -73,6 +73,12 @@ export async function processAgentResponse(
     throw new Error('Cannot store observations: memorySessionId not yet captured');
   }
 
+  // Log pre-storage with session ID chain for verification
+  logger.info('DB', `STORING | sessionDbId=${session.sessionDbId} | memorySessionId=${session.memorySessionId} | obsCount=${observations.length} | hasSummary=${!!summaryForStore}`, {
+    sessionId: session.sessionDbId,
+    memorySessionId: session.memorySessionId
+  });
+
   // ATOMIC TRANSACTION: Store observations + summary ONCE
   // Messages are already deleted from queue on claim, so no completion tracking needed
   const result = sessionStore.storeObservations(
@@ -85,12 +91,10 @@ export async function processAgentResponse(
     originalTimestamp ?? undefined
   );
 
-  // Log what was saved
-  logger.info('SDK', `${agentName} observations and summary saved atomically`, {
+  // Log storage result with IDs for end-to-end traceability
+  logger.info('DB', `STORED | sessionDbId=${session.sessionDbId} | memorySessionId=${session.memorySessionId} | obsCount=${result.observationIds.length} | obsIds=[${result.observationIds.join(',')}] | summaryId=${result.summaryId || 'none'}`, {
     sessionId: session.sessionDbId,
-    observationCount: result.observationIds.length,
-    hasSummary: !!result.summaryId,
-    atomicTransaction: true
+    memorySessionId: session.memorySessionId
   });
 
   // AFTER transaction commits - async operations (can fail safely without data loss)

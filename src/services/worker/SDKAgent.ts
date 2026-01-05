@@ -77,11 +77,11 @@ export class SDKAgent {
       lastPromptNumber: session.lastPromptNumber
     });
 
-    // SESSION ALIGNMENT LOG: Resume decision proof - show if we're resuming with correct memorySessionId
+    // Debug-level alignment logs for detailed tracing
     if (session.lastPromptNumber > 1) {
-      logger.info('SDK', `[ALIGNMENT] Resume Decision | contentSessionId=${session.contentSessionId} | memorySessionId=${session.memorySessionId} | prompt#=${session.lastPromptNumber} | hasRealMemorySessionId=${hasRealMemorySessionId} | resumeWith=${hasRealMemorySessionId ? session.memorySessionId : 'NONE (fresh SDK session)'}`);
+      logger.debug('SDK', `[ALIGNMENT] Resume Decision | contentSessionId=${session.contentSessionId} | memorySessionId=${session.memorySessionId} | prompt#=${session.lastPromptNumber} | hasRealMemorySessionId=${hasRealMemorySessionId} | resumeWith=${hasRealMemorySessionId ? session.memorySessionId : 'NONE (fresh SDK session)'}`);
     } else {
-      logger.info('SDK', `[ALIGNMENT] First Prompt | contentSessionId=${session.contentSessionId} | prompt#=${session.lastPromptNumber} | Will capture memorySessionId from first SDK response`);
+      logger.debug('SDK', `[ALIGNMENT] First Prompt | contentSessionId=${session.contentSessionId} | prompt#=${session.lastPromptNumber} | Will capture memorySessionId from first SDK response`);
     }
 
     // Run Agent SDK query loop
@@ -109,12 +109,20 @@ export class SDKAgent {
           session.sessionDbId,
           message.session_id
         );
-        logger.info('SDK', 'Captured memory session ID', {
-          sessionDbId: session.sessionDbId,
+        // Verify the update by reading back from DB
+        const verification = this.dbManager.getSessionStore().getSessionById(session.sessionDbId);
+        const dbVerified = verification?.memory_session_id === message.session_id;
+        logger.info('SESSION', `MEMORY_ID_CAPTURED | sessionDbId=${session.sessionDbId} | memorySessionId=${message.session_id} | dbVerified=${dbVerified}`, {
+          sessionId: session.sessionDbId,
           memorySessionId: message.session_id
         });
-        // SESSION ALIGNMENT LOG: Memory session ID captured - now contentSessionId→memorySessionId mapping is complete
-        logger.info('SDK', `[ALIGNMENT] Captured | contentSessionId=${session.contentSessionId} → memorySessionId=${message.session_id} | Future prompts will resume with this ID`);
+        if (!dbVerified) {
+          logger.error('SESSION', `MEMORY_ID_MISMATCH | sessionDbId=${session.sessionDbId} | expected=${message.session_id} | got=${verification?.memory_session_id}`, {
+            sessionId: session.sessionDbId
+          });
+        }
+        // Debug-level alignment log for detailed tracing
+        logger.debug('SDK', `[ALIGNMENT] Captured | contentSessionId=${session.contentSessionId} → memorySessionId=${message.session_id} | Future prompts will resume with this ID`);
       }
 
       // Handle assistant messages

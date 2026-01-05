@@ -136,7 +136,7 @@ export class MigrationRunner {
 
     if (!hasWorkerPort) {
       this.db.run('ALTER TABLE sdk_sessions ADD COLUMN worker_port INTEGER');
-      logger.info('DB', 'Added worker_port column to sdk_sessions table');
+      logger.debug('DB', 'Added worker_port column to sdk_sessions table');
     }
 
     // Record migration
@@ -157,7 +157,7 @@ export class MigrationRunner {
 
     if (!hasPromptCounter) {
       this.db.run('ALTER TABLE sdk_sessions ADD COLUMN prompt_counter INTEGER DEFAULT 0');
-      logger.info('DB', 'Added prompt_counter column to sdk_sessions table');
+      logger.debug('DB', 'Added prompt_counter column to sdk_sessions table');
     }
 
     // Check observations for prompt_number
@@ -166,7 +166,7 @@ export class MigrationRunner {
 
     if (!obsHasPromptNumber) {
       this.db.run('ALTER TABLE observations ADD COLUMN prompt_number INTEGER');
-      logger.info('DB', 'Added prompt_number column to observations table');
+      logger.debug('DB', 'Added prompt_number column to observations table');
     }
 
     // Check session_summaries for prompt_number
@@ -175,7 +175,7 @@ export class MigrationRunner {
 
     if (!sumHasPromptNumber) {
       this.db.run('ALTER TABLE session_summaries ADD COLUMN prompt_number INTEGER');
-      logger.info('DB', 'Added prompt_number column to session_summaries table');
+      logger.debug('DB', 'Added prompt_number column to session_summaries table');
     }
 
     // Record migration
@@ -200,7 +200,7 @@ export class MigrationRunner {
       return;
     }
 
-    logger.info('DB', 'Removing UNIQUE constraint from session_summaries.memory_session_id');
+    logger.debug('DB', 'Removing UNIQUE constraint from session_summaries.memory_session_id');
 
     // Begin transaction
     this.db.run('BEGIN TRANSACTION');
@@ -254,7 +254,7 @@ export class MigrationRunner {
     // Record migration
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(7, new Date().toISOString());
 
-    logger.info('DB', 'Successfully removed UNIQUE constraint from session_summaries.memory_session_id');
+    logger.debug('DB', 'Successfully removed UNIQUE constraint from session_summaries.memory_session_id');
   }
 
   /**
@@ -275,7 +275,7 @@ export class MigrationRunner {
       return;
     }
 
-    logger.info('DB', 'Adding hierarchical fields to observations table');
+    logger.debug('DB', 'Adding hierarchical fields to observations table');
 
     // Add new columns
     this.db.run(`
@@ -291,7 +291,7 @@ export class MigrationRunner {
     // Record migration
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(8, new Date().toISOString());
 
-    logger.info('DB', 'Successfully added hierarchical fields to observations table');
+    logger.debug('DB', 'Successfully added hierarchical fields to observations table');
   }
 
   /**
@@ -313,7 +313,7 @@ export class MigrationRunner {
       return;
     }
 
-    logger.info('DB', 'Making observations.text nullable');
+    logger.debug('DB', 'Making observations.text nullable');
 
     // Begin transaction
     this.db.run('BEGIN TRANSACTION');
@@ -369,7 +369,7 @@ export class MigrationRunner {
     // Record migration
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(9, new Date().toISOString());
 
-    logger.info('DB', 'Successfully made observations.text nullable');
+    logger.debug('DB', 'Successfully made observations.text nullable');
   }
 
   /**
@@ -388,7 +388,7 @@ export class MigrationRunner {
       return;
     }
 
-    logger.info('DB', 'Creating user_prompts table with FTS5 support');
+    logger.debug('DB', 'Creating user_prompts table with FTS5 support');
 
     // Begin transaction
     this.db.run('BEGIN TRANSACTION');
@@ -446,7 +446,7 @@ export class MigrationRunner {
     // Record migration
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(10, new Date().toISOString());
 
-    logger.info('DB', 'Successfully created user_prompts table with FTS5 support');
+    logger.debug('DB', 'Successfully created user_prompts table with FTS5 support');
   }
 
   /**
@@ -465,7 +465,7 @@ export class MigrationRunner {
 
     if (!obsHasDiscoveryTokens) {
       this.db.run('ALTER TABLE observations ADD COLUMN discovery_tokens INTEGER DEFAULT 0');
-      logger.info('DB', 'Added discovery_tokens column to observations table');
+      logger.debug('DB', 'Added discovery_tokens column to observations table');
     }
 
     // Check if discovery_tokens column exists in session_summaries table
@@ -474,7 +474,7 @@ export class MigrationRunner {
 
     if (!sumHasDiscoveryTokens) {
       this.db.run('ALTER TABLE session_summaries ADD COLUMN discovery_tokens INTEGER DEFAULT 0');
-      logger.info('DB', 'Added discovery_tokens column to session_summaries table');
+      logger.debug('DB', 'Added discovery_tokens column to session_summaries table');
     }
 
     // Record migration only after successful column verification/addition
@@ -498,7 +498,7 @@ export class MigrationRunner {
       return;
     }
 
-    logger.info('DB', 'Creating pending_messages table');
+    logger.debug('DB', 'Creating pending_messages table');
 
     this.db.run(`
       CREATE TABLE pending_messages (
@@ -528,7 +528,7 @@ export class MigrationRunner {
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(16, new Date().toISOString());
 
-    logger.info('DB', 'pending_messages table created successfully');
+    logger.debug('DB', 'pending_messages table created successfully');
   }
 
   /**
@@ -543,7 +543,7 @@ export class MigrationRunner {
     const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(17) as SchemaVersion | undefined;
     if (applied) return;
 
-    logger.info('DB', 'Checking session ID columns for semantic clarity rename');
+    logger.debug('DB', 'Checking session ID columns for semantic clarity rename');
 
     let renamesPerformed = 0;
 
@@ -561,7 +561,7 @@ export class MigrationRunner {
       if (hasOldCol) {
         // SQLite 3.25+ supports ALTER TABLE RENAME COLUMN
         this.db.run(`ALTER TABLE ${table} RENAME COLUMN ${oldCol} TO ${newCol}`);
-        logger.info('DB', `Renamed ${table}.${oldCol} to ${newCol}`);
+        logger.debug('DB', `Renamed ${table}.${oldCol} to ${newCol}`);
         return true;
       }
 
@@ -590,9 +590,9 @@ export class MigrationRunner {
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(17, new Date().toISOString());
 
     if (renamesPerformed > 0) {
-      logger.info('DB', `Successfully renamed ${renamesPerformed} session ID columns`);
+      logger.debug('DB', `Successfully renamed ${renamesPerformed} session ID columns`);
     } else {
-      logger.info('DB', 'No session ID column renames needed (already up to date)');
+      logger.debug('DB', 'No session ID column renames needed (already up to date)');
     }
   }
 
@@ -623,7 +623,7 @@ export class MigrationRunner {
 
     if (!hasColumn) {
       this.db.run('ALTER TABLE pending_messages ADD COLUMN failed_at_epoch INTEGER');
-      logger.info('DB', 'Added failed_at_epoch column to pending_messages table');
+      logger.debug('DB', 'Added failed_at_epoch column to pending_messages table');
     }
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(20, new Date().toISOString());

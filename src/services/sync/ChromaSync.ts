@@ -642,7 +642,7 @@ export class ChromaSync {
         const batch = allDocs.slice(i, i + this.BATCH_SIZE);
         await this.addDocuments(batch);
 
-        logger.info('CHROMA_SYNC', 'Backfill progress', {
+        logger.debug('CHROMA_SYNC', 'Backfill progress', {
           project: this.project,
           progress: `${Math.min(i + this.BATCH_SIZE, allDocs.length)}/${allDocs.length}`
         });
@@ -683,7 +683,7 @@ export class ChromaSync {
         const batch = summaryDocs.slice(i, i + this.BATCH_SIZE);
         await this.addDocuments(batch);
 
-        logger.info('CHROMA_SYNC', 'Backfill progress', {
+        logger.debug('CHROMA_SYNC', 'Backfill progress', {
           project: this.project,
           progress: `${Math.min(i + this.BATCH_SIZE, summaryDocs.length)}/${summaryDocs.length}`
         });
@@ -732,7 +732,7 @@ export class ChromaSync {
         const batch = promptDocs.slice(i, i + this.BATCH_SIZE);
         await this.addDocuments(batch);
 
-        logger.info('CHROMA_SYNC', 'Backfill progress', {
+        logger.debug('CHROMA_SYNC', 'Backfill progress', {
           project: this.project,
           progress: `${Math.min(i + this.BATCH_SIZE, promptDocs.length)}/${promptDocs.length}`
         });
