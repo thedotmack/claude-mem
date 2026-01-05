@@ -1,4 +1,7 @@
-import { describe, it, expect, mock, afterEach } from 'bun:test';
+import { describe, it, expect, mock, afterEach, beforeEach } from 'bun:test';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
 
 // Mock logger BEFORE imports (required pattern)
 mock.module('../../src/utils/logger.js', () => ({
@@ -11,10 +14,29 @@ mock.module('../../src/utils/logger.js', () => ({
 }));
 
 // Import after mocks
-import { replaceTaggedContent, formatTimelineForClaudeMd } from '../../src/utils/claude-md-utils.js';
+import {
+  replaceTaggedContent,
+  formatTimelineForClaudeMd,
+  writeClaudeMdToFolder,
+  updateFolderClaudeMdFiles
+} from '../../src/utils/claude-md-utils.js';
+
+let tempDir: string;
+const originalFetch = global.fetch;
+
+beforeEach(() => {
+  tempDir = join(tmpdir(), `test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  mkdirSync(tempDir, { recursive: true });
+});
 
 afterEach(() => {
   mock.restore();
+  global.fetch = originalFetch;
+  try {
+    rmSync(tempDir, { recursive: true, force: true });
+  } catch {
+    // Ignore cleanup errors
+  }
 });
 
 describe('replaceTaggedContent', () => {
@@ -121,5 +143,156 @@ describe('formatTimelineForClaudeMd', () => {
     expect(result).toContain('4:30 PM');
     expect(result).toContain('🟣');
     expect(result).toContain('Session started');
+  });
+});
+
+describe('writeClaudeMdToFolder', () => {
+  it('should create CLAUDE.md in new folder', () => {
+    const folderPath = join(tempDir, 'new-folder');
+    const content = '# Recent Activity\n\nTest content';
+
+    writeClaudeMdToFolder(folderPath, content);
+
+    const claudeMdPath = join(folderPath, 'CLAUDE.md');
+    expect(existsSync(claudeMdPath)).toBe(true);
+
+    const fileContent = readFileSync(claudeMdPath, 'utf-8');
+    expect(fileContent).toContain('<claude-mem-context>');
+    expect(fileContent).toContain('Test content');
+    expect(fileContent).toContain('</claude-mem-context>');
+  });
+
+  it('should preserve user content outside tags', () => {
+    const folderPath = join(tempDir, 'preserve-test');
+    mkdirSync(folderPath, { recursive: true });
+
+    const claudeMdPath = join(folderPath, 'CLAUDE.md');
+    const userContent = 'User-written docs\n<claude-mem-context>\nOld content\n</claude-mem-context>\nMore user docs';
+    writeFileSync(claudeMdPath, userContent);
+
+    const newContent = 'New generated content';
+    writeClaudeMdToFolder(folderPath, newContent);
+
+    const fileContent = readFileSync(claudeMdPath, 'utf-8');
+    expect(fileContent).toContain('User-written docs');
+    expect(fileContent).toContain('New generated content');
+    expect(fileContent).toContain('More user docs');
+    expect(fileContent).not.toContain('Old content');
+  });
+
+  it('should create nested directories', () => {
+    const folderPath = join(tempDir, 'deep', 'nested', 'folder');
+    const content = 'Nested content';
+
+    writeClaudeMdToFolder(folderPath, content);
+
+    const claudeMdPath = join(folderPath, 'CLAUDE.md');
+    expect(existsSync(claudeMdPath)).toBe(true);
+    expect(existsSync(join(tempDir, 'deep'))).toBe(true);
+    expect(existsSync(join(tempDir, 'deep', 'nested'))).toBe(true);
+  });
+
+  it('should not leave .tmp file after write (atomic write)', () => {
+    const folderPath = join(tempDir, 'atomic-test');
+    const content = 'Atomic write test';
+
+    writeClaudeMdToFolder(folderPath, content);
+
+    const claudeMdPath = join(folderPath, 'CLAUDE.md');
+    const tempFilePath = `${claudeMdPath}.tmp`;
+
+    expect(existsSync(claudeMdPath)).toBe(true);
+    expect(existsSync(tempFilePath)).toBe(false);
+  });
+});
+
+describe('updateFolderClaudeMdFiles', () => {
+  it('should skip when filePaths is empty', async () => {
+    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
+    global.fetch = fetchMock;
+
+    await updateFolderClaudeMdFiles([], 'test-project', 37777);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('should fetch timeline and write CLAUDE.md', async () => {
+    const folderPath = join(tempDir, 'api-test');
+    const filePath = join(folderPath, 'test.ts');
+
+    const apiResponse = {
+      content: [{
+        text: '| #123 | 4:30 PM | 🔵 | Test observation | ~100 |'
+      }]
+    };
+
+    global.fetch = mock(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve(apiResponse)
+    } as Response));
+
+    await updateFolderClaudeMdFiles([filePath], 'test-project', 37777);
+
+    const claudeMdPath = join(folderPath, 'CLAUDE.md');
+    expect(existsSync(claudeMdPath)).toBe(true);
+
+    const content = readFileSync(claudeMdPath, 'utf-8');
+    expect(content).toContain('Recent Activity');
+    expect(content).toContain('#123');
+    expect(content).toContain('Test observation');
+  });
+
+  it('should deduplicate folders from multiple files', async () => {
+    const folderPath = join(tempDir, 'dedup-test');
+    const file1 = join(folderPath, 'file1.ts');
+    const file2 = join(folderPath, 'file2.ts');
+
+    const apiResponse = {
+      content: [{
+        text: '| #123 | 4:30 PM | 🔵 | Test | ~100 |'
+      }]
+    };
+
+    const fetchMock = mock(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve(apiResponse)
+    } as Response));
+    global.fetch = fetchMock;
+
+    await updateFolderClaudeMdFiles([file1, file2], 'test-project', 37777);
+
+    // Should only fetch once for the shared folder
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('should handle API errors gracefully (404 response)', async () => {
+    const folderPath = join(tempDir, 'error-test');
+    const filePath = join(folderPath, 'test.ts');
+
+    global.fetch = mock(() => Promise.resolve({
+      ok: false,
+      status: 404
+    } as Response));
+
+    // Should not throw
+    await expect(updateFolderClaudeMdFiles([filePath], 'test-project', 37777)).resolves.toBeUndefined();
+
+    // CLAUDE.md should not be created
+    const claudeMdPath = join(folderPath, 'CLAUDE.md');
+    expect(existsSync(claudeMdPath)).toBe(false);
+  });
+
+  it('should handle network errors gracefully (fetch throws)', async () => {
+    const folderPath = join(tempDir, 'network-error-test');
+    const filePath = join(folderPath, 'test.ts');
+
+    global.fetch = mock(() => Promise.reject(new Error('Network error')));
+
+    // Should not throw
+    await expect(updateFolderClaudeMdFiles([filePath], 'test-project', 37777)).resolves.toBeUndefined();
+
+    // CLAUDE.md should not be created
+    const claudeMdPath = join(folderPath, 'CLAUDE.md');
+    expect(existsSync(claudeMdPath)).toBe(false);
   });
 });
