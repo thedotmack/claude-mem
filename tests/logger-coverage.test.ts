@@ -32,6 +32,7 @@ const EXCLUDED_PATTERNS = [
   /migrations\.ts$/,     // Database migrations (console.log for migration output)
   /worker-service\.ts$/, // CLI entry point with interactive setup wizard (console.log for user prompts)
   /integrations\/.*Installer\.ts$/, // CLI installer commands (console.log for interactive installation output)
+  /SettingsDefaultsManager\.ts$/,  // Must use console.log to avoid circular dependency with logger
 ];
 
 // Files that should always use logger (core business logic)

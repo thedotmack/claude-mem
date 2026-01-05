@@ -1,13 +1,23 @@
-import { describe, it, expect, mock, beforeEach } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, spyOn, afterEach } from 'bun:test';
+import { logger } from '../../src/utils/logger.js';
 
-// Mock the logger before importing modules that use it
-mock.module('../../src/utils/logger.js', () => ({
-  logger: {
-    debug: mock(() => {}),
-    failure: mock(() => {}),
-    error: mock(() => {}),
-  },
-}));
+// Spy on logger methods to suppress output during tests
+// Using spyOn instead of mock.module to avoid polluting global module cache
+let loggerSpies: ReturnType<typeof spyOn>[] = [];
+
+beforeEach(() => {
+  loggerSpies = [
+    spyOn(logger, 'debug').mockImplementation(() => {}),
+    spyOn(logger, 'failure').mockImplementation(() => {}),
+    spyOn(logger, 'error').mockImplementation(() => {}),
+    spyOn(logger, 'info').mockImplementation(() => {}),
+    spyOn(logger, 'warn').mockImplementation(() => {}),
+  ];
+});
+
+afterEach(() => {
+  loggerSpies.forEach(spy => spy.mockRestore());
+});
 
 import {
   queryObservations,
