@@ -51,7 +51,8 @@ export async function processAgentResponse(
   worker: WorkerRef | undefined,
   discoveryTokens: number,
   originalTimestamp: number | null,
-  agentName: string
+  agentName: string,
+  projectRoot?: string
 ): Promise<void> {
   // Add assistant response to shared conversation history for provider interop
   if (text) {
@@ -105,7 +106,8 @@ export async function processAgentResponse(
     dbManager,
     worker,
     discoveryTokens,
-    agentName
+    agentName,
+    projectRoot
   );
 
   // Sync and broadcast summary if present
@@ -157,7 +159,8 @@ async function syncAndBroadcastObservations(
   dbManager: DatabaseManager,
   worker: WorkerRef | undefined,
   discoveryTokens: number,
-  agentName: string
+  agentName: string,
+  projectRoot?: string
 ): Promise<void> {
   for (let i = 0; i < observations.length; i++) {
     const obsId = result.observationIds[i];
@@ -222,7 +225,8 @@ async function syncAndBroadcastObservations(
     updateFolderClaudeMdFiles(
       allFilePaths,
       session.project,
-      getWorkerPort()
+      getWorkerPort(),
+      projectRoot
     ).catch(error => {
       logger.warn('FOLDER_INDEX', 'CLAUDE.md update failed (non-critical)', { project: session.project }, error as Error);
     });

@@ -206,7 +206,8 @@ function isProjectRoot(folderPath: string): boolean {
 export async function updateFolderClaudeMdFiles(
   filePaths: string[],
   project: string,
-  port: number
+  port: number,
+  projectRoot?: string
 ): Promise<void> {
   // Load settings to get configurable observation limit
   const settings = SettingsDefaultsManager.loadFromFile(SETTINGS_PATH);
@@ -216,7 +217,12 @@ export async function updateFolderClaudeMdFiles(
   const folderPaths = new Set<string>();
   for (const filePath of filePaths) {
     if (!filePath || filePath === '') continue;
-    const folderPath = path.dirname(filePath);
+    // Resolve relative paths to absolute using projectRoot
+    let absoluteFilePath = filePath;
+    if (projectRoot && !path.isAbsolute(filePath)) {
+      absoluteFilePath = path.join(projectRoot, filePath);
+    }
+    const folderPath = path.dirname(absoluteFilePath);
     if (folderPath && folderPath !== '.' && folderPath !== '/') {
       // Skip project root - root CLAUDE.md should remain user-managed
       if (isProjectRoot(folderPath)) {

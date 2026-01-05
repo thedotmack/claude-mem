@@ -39,6 +39,10 @@ export class SDKAgent {
    * @param worker WorkerService reference for spinner control (optional)
    */
   async startSession(session: ActiveSession, worker?: WorkerRef): Promise<void> {
+    // Track cwd from messages for CLAUDE.md generation (worktree support)
+    // Uses mutable object so generator updates are visible in response processing
+    const cwdTracker = { lastCwd: undefined as string | undefined };
+
     // Find Claude executable
     const claudePath = this.findClaudeExecutable();
 
@@ -61,7 +65,7 @@ export class SDKAgent {
     ];
 
     // Create message generator (event-driven)
-    const messageGenerator = this.createMessageGenerator(session);
+    const messageGenerator = this.createMessageGenerator(session, cwdTracker);
 
     // CRITICAL: Only resume if:
     // 1. memorySessionId exists (was captured from a previous SDK response)
@@ -196,7 +200,8 @@ export class SDKAgent {
           worker,
           discoveryTokens,
           originalTimestamp,
-          'SDK'
+          'SDK',
+          cwdTracker.lastCwd
         );
       }
 
@@ -243,8 +248,16 @@ export class SDKAgent {
    * - Each user message is added to session.conversationHistory
    * - This allows provider switching (Claude→Gemini) with full context
    * - SDK manages its own internal state, but we mirror it for interop
+   *
+   * CWD TRACKING:
+   * - cwdTracker is a mutable object shared with startSession
+   * - As messages with cwd are processed, cwdTracker.lastCwd is updated
+   * - This enables processAgentResponse to use the correct cwd for CLAUDE.md
    */
-  private async *createMessageGenerator(session: ActiveSession): AsyncIterableIterator<SDKUserMessage> {
+  private async *createMessageGenerator(
+    session: ActiveSession,
+    cwdTracker: { lastCwd: string | undefined }
+  ): AsyncIterableIterator<SDKUserMessage> {
     // Load active mode
     const mode = ModeManager.getInstance().getActiveMode();
 
@@ -280,6 +293,11 @@ export class SDKAgent {
 
     // Consume pending messages from SessionManager (event-driven, no polling)
     for await (const message of this.sessionManager.getMessageIterator(session.sessionDbId)) {
+      // Capture cwd from each message for worktree support
+      if (message.cwd) {
+        cwdTracker.lastCwd = message.cwd;
+      }
+
       if (message.type === 'observation') {
         // Update last prompt number
         if (message.prompt_number !== undefined) {

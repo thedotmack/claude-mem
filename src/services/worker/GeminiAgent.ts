@@ -173,7 +173,14 @@ export class GeminiAgent {
       }
 
       // Process pending messages
+      // Track cwd from messages for CLAUDE.md generation
+      let lastCwd: string | undefined;
+
       for await (const message of this.sessionManager.getMessageIterator(session.sessionDbId)) {
+        // Capture cwd from each message for worktree support
+        if (message.cwd) {
+          lastCwd = message.cwd;
+        }
         // Capture earliest timestamp BEFORE processing (will be cleared after)
         // This ensures backlog messages get their original timestamps, not current time
         const originalTimestamp = session.earliestPendingTimestamp;
@@ -217,7 +224,8 @@ export class GeminiAgent {
             worker,
             tokensUsed,
             originalTimestamp,
-            'Gemini'
+            'Gemini',
+            lastCwd
           );
 
         } else if (message.type === 'summarize') {
@@ -253,7 +261,8 @@ export class GeminiAgent {
             worker,
             tokensUsed,
             originalTimestamp,
-            'Gemini'
+            'Gemini',
+            lastCwd
           );
         }
       }

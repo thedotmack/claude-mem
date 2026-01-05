@@ -295,4 +295,88 @@ describe('updateFolderClaudeMdFiles', () => {
     const claudeMdPath = join(folderPath, 'CLAUDE.md');
     expect(existsSync(claudeMdPath)).toBe(false);
   });
+
+  it('should resolve relative paths using projectRoot', async () => {
+    const apiResponse = {
+      content: [{
+        text: '| #123 | 4:30 PM | 🔵 | Test observation | ~100 |'
+      }]
+    };
+
+    const fetchMock = mock(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve(apiResponse)
+    } as Response));
+    global.fetch = fetchMock;
+
+    await updateFolderClaudeMdFiles(
+      ['src/utils/file.ts'],  // relative path
+      'test-project',
+      37777,
+      '/home/user/my-project'  // projectRoot
+    );
+
+    // Should call API with absolute path /home/user/my-project/src/utils
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const callUrl = (fetchMock.mock.calls[0] as unknown[])[0] as string;
+    expect(callUrl).toContain(encodeURIComponent('/home/user/my-project/src/utils'));
+  });
+
+  it('should not modify absolute paths even with projectRoot', async () => {
+    const folderPath = join(tempDir, 'absolute-path-test');
+    const filePath = join(folderPath, 'file.ts');
+
+    const apiResponse = {
+      content: [{
+        text: '| #123 | 4:30 PM | 🔵 | Test observation | ~100 |'
+      }]
+    };
+
+    const fetchMock = mock(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve(apiResponse)
+    } as Response));
+    global.fetch = fetchMock;
+
+    await updateFolderClaudeMdFiles(
+      [filePath],  // absolute path
+      'test-project',
+      37777,
+      '/home/user/my-project'  // projectRoot should be ignored
+    );
+
+    // Should call API with the original absolute path's folder
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const callUrl = (fetchMock.mock.calls[0] as unknown[])[0] as string;
+    expect(callUrl).toContain(encodeURIComponent(folderPath));
+  });
+
+  it('should work without projectRoot for backward compatibility', async () => {
+    const folderPath = join(tempDir, 'backward-compat-test');
+    const filePath = join(folderPath, 'file.ts');
+
+    const apiResponse = {
+      content: [{
+        text: '| #123 | 4:30 PM | 🔵 | Test observation | ~100 |'
+      }]
+    };
+
+    const fetchMock = mock(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve(apiResponse)
+    } as Response));
+    global.fetch = fetchMock;
+
+    await updateFolderClaudeMdFiles(
+      [filePath],  // absolute path
+      'test-project',
+      37777
+      // No projectRoot - backward compatibility
+    );
+
+    // Should still make API call with the folder path
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const callUrl = (fetchMock.mock.calls[0] as unknown[])[0] as string;
+    expect(callUrl).toContain(encodeURIComponent(folderPath));
+  });
 });
