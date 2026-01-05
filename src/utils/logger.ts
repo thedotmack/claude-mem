@@ -136,7 +136,15 @@ class Logger {
   formatTool(toolName: string, toolInput?: any): string {
     if (!toolInput) return toolName;
 
-    const input = typeof toolInput === 'string' ? JSON.parse(toolInput) : toolInput;
+    let input = toolInput;
+    if (typeof toolInput === 'string') {
+      try {
+        input = JSON.parse(toolInput);
+      } catch {
+        // Input is a raw string (e.g., Bash command), use as-is
+        input = toolInput;
+      }
+    }
 
     // Bash: show full command
     if (toolName === 'Bash' && input.command) {
