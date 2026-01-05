@@ -7,6 +7,7 @@
 
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
+| #37770 | 6:34 PM | 🔵 | Settings-defaults-manager test file contains tests for methods that don't exist on implementation | ~491 |
 | #37657 | 5:51 PM | 🔵 | SettingsDefaultsManager test imports SettingsDefaultsManager creating circular dependency trigger | ~434 |
 | #37640 | 5:40 PM | 🟣 | SettingsDefaultsManager Test Suite Passes All 27 Tests With Expected Warnings | ~577 |
 | #37636 | 5:39 PM | 🟣 | Created Comprehensive SettingsDefaultsManager Test Suite | ~577 |
