@@ -11,6 +11,7 @@ import { ensureWorkerRunning, getWorkerPort } from "../shared/worker-utils.js";
 import { HOOK_TIMEOUTS } from "../shared/hook-constants.js";
 import { getProjectName } from "../utils/project-name.js";
 import { logger } from "../utils/logger.js";
+import { checkPluginUpdate } from "../utils/plugin-update-check.js";
 
 export interface SessionStartInput {
   session_id: string;
@@ -37,7 +38,14 @@ async function contextHook(input?: SessionStartInput): Promise<string> {
     throw new Error(`Context generation failed: ${response.status}`);
   }
 
-  const result = await response.text();
+  let result = await response.text();
+
+  // Check if plugin was updated after this session started
+  const updateWarning = checkPluginUpdate();
+  if (updateWarning) {
+    result = updateWarning + "\n" + result;
+  }
+
   return result.trim();
 }
 
