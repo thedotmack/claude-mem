@@ -5,8 +5,8 @@
  * Provides methods to get defaults with optional environment variable overrides.
  */
 
-import { readFileSync, writeFileSync, existsSync } from 'fs';
-import { join } from 'path';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { DEFAULT_OBSERVATION_TYPES_STRING, DEFAULT_OBSERVATION_CONCEPTS_STRING } from '../constants/observation-metadata.js';
 import { logger } from '../utils/logger.js';
@@ -133,7 +133,18 @@ export class SettingsDefaultsManager {
   static loadFromFile(settingsPath: string): SettingsDefaults {
     try {
       if (!existsSync(settingsPath)) {
-        return this.getAllDefaults();
+        const defaults = this.getAllDefaults();
+        try {
+          const dir = dirname(settingsPath);
+          if (!existsSync(dir)) {
+            mkdirSync(dir, { recursive: true });
+          }
+          writeFileSync(settingsPath, JSON.stringify(defaults, null, 2), 'utf-8');
+          logger.info('SETTINGS', 'Created settings file with defaults', { settingsPath });
+        } catch (error) {
+          logger.warn('SETTINGS', 'Failed to create settings file, using in-memory defaults', { settingsPath }, error);
+        }
+        return defaults;
       }
 
       const settingsData = readFileSync(settingsPath, 'utf-8');
