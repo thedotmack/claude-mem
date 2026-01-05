@@ -7,6 +7,7 @@
 
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
+| #37738 | 6:17 PM | 🔵 | ActiveSession and PendingMessage Structures Analyzed for Phase 3 | ~327 |
 | #37701 | 6:01 PM | 🔵 | Complete cwd data flow traced from hooks through observation processing | ~447 |
 | #37691 | 5:55 PM | 🔵 | ActiveSession interface contains project name but no project root path | ~346 |
 | #37418 | 1:04 AM | 🔴 | Fixed CLAUDE.md duplicate content by filtering to direct children only | ~469 |

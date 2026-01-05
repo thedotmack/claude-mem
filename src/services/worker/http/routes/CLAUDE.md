@@ -7,29 +7,54 @@
 
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
-| #37702 | 6:01 PM | 🔵 | Codebase uses path.join() exclusively with known anchors, no project root resolution pattern exists | ~489 |
-| #37701 | " | 🔵 | Complete cwd data flow traced from hooks through observation processing | ~447 |
-| #37694 | 5:55 PM | 🔵 | Sessions initialized via SessionManager.initializeSession() with cwd from request body | ~361 |
-| #37440 | 1:13 AM | 🔵 | Comprehensive Analysis of Settings and Hard-Coded Limit | ~389 |
-| #37435 | " | 🔵 | Settings Validation Limits CLAUDE_MEM_CONTEXT_OBSERVATIONS to 1-200 | ~307 |
-| #37421 | 1:06 AM | 🔵 | Identified by-file API endpoint usage across codebase | ~406 |
-| #37408 | 12:58 AM | 🔵 | SearchRoutes API Architecture with Worktree Support | ~543 |
-| #37391 | 12:48 AM | ✅ | Staged 23 CLAUDE.md files with mix of new and modified content | ~400 |
-| #37390 | 12:47 AM | ✅ | Regenerated 23 CLAUDE.md files in budapest workspace | ~365 |
-| #37327 | 11:44 PM | ✅ | Cleaned Up Auto-Generated CLAUDE.md Files | ~352 |
-| #37326 | " | ✅ | Staged All Changes for Commit | ~386 |
-| #37325 | " | ✅ | Staged PR #554 Implementation Files | ~373 |
-| #37324 | " | ✅ | Cleaned Up Auto-Generated CLAUDE.md Files | ~392 |
-| #37323 | " | ✅ | Cleanup Completed - 31 Auto-Generated CLAUDE.md Files Deleted | ~411 |
-| #37286 | 11:07 PM | ✅ | Phase 1 Settings Patch Applied Successfully | ~249 |
-| #37282 | 11:06 PM | ✅ | Phase 1 Settings Patch Created | ~284 |
-| #37280 | " | 🔵 | Feature Branch Missing FOLDER_CLAUDEMD_ENABLED Setting | ~251 |
-| #37272 | 11:02 PM | ✅ | Phase 1 Verification Complete - All Checks Pass | ~275 |
-| #37270 | " | 🔵 | Settings Routes Already Include FOLDER_CLAUDEMD_ENABLED | ~333 |
-| #37267 | 11:00 PM | ✅ | Added CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED to Settings Validation | ~284 |
-| #37266 | 10:59 PM | 🟣 | Added FOLDER_CLAUDEMD_ENABLED to Settings Routes Handler | ~329 |
-| #37259 | 10:32 PM | ⚖️ | Implementation Plan Created for PR #554 Enhancements | ~621 |
-| #37258 | 10:31 PM | ⚖️ | Comprehensive Implementation Plan Created for PR #554 Review Fixes | ~722 |
-| #37257 | 10:29 PM | 🔵 | Regenerate Script and Settings Infrastructure Analyzed | ~563 |
-| #37255 | " | 🔵 | Folder CLAUDE.md Integration Flow Mapped | ~550 |
+| #37758 | 6:25 PM | ⚖️ | Integration Test Design for Four Critical Testing Gaps | ~729 |
+| #37665 | 5:52 PM | 🔵 | Codebase uses dependency injection and lazy initialization patterns to avoid circular dependencies | ~548 |
+| #37651 | 5:50 PM | 🔵 | SettingsRoutes uses both logger and SettingsDefaultsManager creating circular dependency exposure | ~404 |
+| #37592 | 4:56 PM | ✅ | Phase 3 Anti-Pattern Check Complete - Clean Implementation | ~434 |
+| #37548 | 4:48 PM | ✅ | Issue #543 Analysis Report Created for Slash Command Availability | ~540 |
+| #37547 | 4:47 PM | ✅ | Issue #557 Analysis Report Created for Plugin Startup Failure | ~491 |
+| #37543 | " | 🔵 | Settings File Auto-Creation Logic Found in SettingsRoutes | ~463 |
+| #36942 | 2:43 AM | 🔵 | Recent Context Feature Architecture | ~300 |
+| #36781 | 12:45 AM | 🔵 | Complete GeminiAgent Model Configuration Gap Analysis | ~552 |
+| #36768 | 12:42 AM | 🔵 | Gemini Model Validation in SettingsRoutes | ~397 |
+| #36757 | 12:33 AM | 🔵 | Issue #511 Root Cause Identified - Gemini-3-Flash Configuration Mismatch | ~416 |
+| #36755 | " | 🔵 | SettingsRoutes Validation Includes gemini-3-flash | ~344 |
+| #36754 | " | 🔵 | Gemini-3-Flash Model Already Supported | ~301 |
+| #36730 | 12:26 AM | ⚖️ | Revised Memory Leak Fix Strategy for Issue #532 | ~412 |
+| #36714 | 12:12 AM | 🔵 | Memory Leak Analysis Report for Issue #532 Generated | ~531 |
+| #36712 | 12:11 AM | 🔵 | Memory Leak Analysis for Issue #532 Documented | ~646 |
+| #36333 | 8:27 PM | 🔵 | pendingProcessingIds Tracking Across System | ~357 |
+| #36323 | 8:25 PM | 🔵 | Message Queue Architecture Scope Expanded | ~302 |
+| #36103 | 10:25 PM | 🟣 | Generator Crash Recovery with Automatic Restart | ~374 |
+| #36079 | 10:10 PM | 🔴 | Fixed Generator Crashes from Silent Chroma Vector Search Failures | ~531 |
+| #36066 | 9:55 PM | 🔵 | Session Generator Lifecycle and Error Handling Architecture | ~536 |
+| #36008 | 8:15 PM | 🔴 | Fixed Memory Leak in Generator Error Handler | ~358 |
+| #36007 | " | 🔵 | Generator Error Handler Missing pendingProcessingIds Clear | ~376 |
+| #35998 | 5:32 PM | 🔴 | Critical Session ID Placeholder Bug Fixed to Prevent Transcript Pollution | ~488 |
+| #35997 | " | 🟣 | Session Alignment Logging Implemented Across Hook, HTTP, and SDK Layers | ~342 |
+| #35994 | 5:18 PM | 🔄 | Session Alignment Logging Updated to Track Memory ID Capture Status | ~334 |
+| #35985 | 5:16 PM | 🔵 | Alignment logging implemented across session lifecycle touchpoints | ~377 |
+| #35977 | 4:48 PM | 🔵 | Existing alignment logging infrastructure found | ~353 |
+| #35971 | 4:47 PM | 🟣 | Added Session Alignment Logging to Session Initialization | ~349 |
+| #35970 | " | 🔵 | Session ID Logging Distribution Across Codebase | ~485 |
+| #35968 | 4:46 PM | 🔵 | Content-Session API Endpoint Registration | ~280 |
+| #35967 | " | 🔵 | Content-Session-Based Observation and Summarize Endpoints with Privacy and Tool Filtering | ~607 |
+| #35966 | 4:45 PM | 🔵 | Session Initialization Stage One - Database Setup with Privacy Filtering | ~554 |
+| #35964 | " | 🔵 | Session Initialization Two-Stage API Pattern | ~468 |
+| #35963 | " | 🔵 | Session Route Endpoints and Crash Recovery Logic | ~634 |
+| #35962 | " | 🔵 | Session ID Usage Pattern Distribution | ~309 |
+| #35961 | 4:44 PM | 🔵 | SessionRoutes Multi-Provider Agent Selection | ~575 |
+| #35951 | 4:42 PM | 🔵 | Multi-Layer Service Architecture Discovery | ~395 |
+| #35936 | 2:56 PM | 🔵 | SessionRoutes Has Catch Block That Marks Failed Messages After Generator Crashes | ~437 |
+| #35901 | 2:49 PM | 🔵 | PR #525 File Changes Summary | ~376 |
+| #35875 | 2:39 PM | 🔵 | Logging UI Architecture Mapped | ~599 |
+| #35854 | 2:32 PM | 🔵 | Generator Error Handler Marks Processing Messages as Failed | ~505 |
+| #35826 | 2:29 PM | 🔵 | Backend logs API implementation analyzed | ~284 |
+| #35770 | 1:23 PM | ✅ | Last User Message Field Removed Across 11 Files in Codebase | ~374 |
+| #35753 | 1:19 PM | 🔄 | Removed last_user_message from Legacy handleSummarize Endpoint | ~278 |
+| #35752 | " | 🔵 | SessionRoutes handleSummarize Accepts last_user_message from Request Body | ~321 |
+| #35751 | " | 🔵 | Inconsistent queueSummarize calls with different parameter counts | ~274 |
+| #35750 | " | 🔄 | Removed last_user_message parameter from summarize endpoint | ~324 |
+| #35748 | 1:18 PM | 🔵 | last_user_message parameter extracted but never actually used | ~356 |
+| #35733 | 1:11 PM | 🔵 | Located last_user_message usage across codebase | ~333 |
 </claude-mem-context>

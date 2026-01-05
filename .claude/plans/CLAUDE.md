@@ -7,20 +7,54 @@
 
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
-| #37707 | 6:10 PM | ⚖️ | Implementation plan created for CLAUDE.md worktree bug fix | ~451 |
-| #37447 | 1:15 AM | 🔵 | Plan to Replace Hard-Coded Observation Limits with Configurable Setting | ~270 |
-| #37422 | 1:08 AM | ⚖️ | Plan approved to proceed with final isFolder parameter implementation | ~371 |
-| #37421 | 1:06 AM | 🔵 | Identified by-file API endpoint usage across codebase | ~406 |
-| #37420 | 1:05 AM | ⚖️ | Plan created for final bugfix step with verification strategy | ~460 |
-| #37392 | 12:48 AM | ✅ | Regenerated 23 CLAUDE.md files using fixed script and committed to feature branch | ~366 |
-| #37391 | " | ✅ | Staged 23 CLAUDE.md files with mix of new and modified content | ~400 |
-| #37390 | 12:47 AM | ✅ | Regenerated 23 CLAUDE.md files in budapest workspace | ~365 |
-| #37380 | 12:35 AM | 🔵 | Cleanup mode implementation bug discovered - deletes files instead of stripping tags | ~435 |
-| #37379 | " | ⚖️ | Revised cleanup plan to fix broken --clean mode that deletes entire files | ~174 |
-| #37376 | 12:32 AM | ⚖️ | Planned smart cleanup strategy for auto-generated CLAUDE.md files | ~388 |
-| #37375 | 12:30 AM | ⚖️ | Created comprehensive cleanup plan for ~556 CLAUDE.md files across filesystem | ~422 |
-| #37262 | 10:38 PM | ✅ | Implementation Plan Refined to Simplify Cleanup Mode | ~484 |
-| #37259 | 10:32 PM | ⚖️ | Implementation Plan Created for PR #554 Enhancements | ~621 |
-| #37258 | 10:31 PM | ⚖️ | Comprehensive Implementation Plan Created for PR #554 Review Fixes | ~722 |
-| #37254 | 10:23 PM | ⚖️ | PR #554 Review Feedback Triage Plan Created | ~595 |
+| #37763 | 6:32 PM | 🔵 | Comprehensive test suite cleanup plan for claude-mem project | ~446 |
+| #37762 | 6:31 PM | ⚖️ | Test Cleanup Plan Approved: Delete 6 Harmful Tests, Add 4 Integration Tests | ~793 |
+| #37761 | 6:26 PM | ✅ | Test Cleanup Plan Updated with Detailed File Lists and Impact Summary | ~643 |
+| #37760 | " | ⚖️ | Test Plan Expanded: Four New Integration Tests Added to Cleanup Scope | ~500 |
+| #37759 | 6:25 PM | ⚖️ | Test Suite Cleanup Plan Created Based on Comprehensive Audit | ~697 |
+| #37757 | 6:22 PM | ⚖️ | Test Suite Cleanup Plan Created Based on Audit Findings | ~640 |
+| #37704 | 6:05 PM | ⚖️ | Plan Abandoned: Mock Logger Approach Rejected for Test Quality Audit | ~312 |
+| #37699 | 5:59 PM | 🔵 | Test Failure Root Cause: Incomplete Logger Mocks Polluting Module Cache | ~455 |
+| #37559 | 4:49 PM | 🔵 | GitHub Issues Fix Plan Loaded | ~428 |
+| #36762 | 12:37 AM | ✅ | Created Implementation Plan for Four GitHub Issues | ~438 |
+| #36644 | 10:59 PM | ✅ | Test Fixes Plan Updated with Logger Coverage Implementation Details | ~469 |
+| #36160 | 6:41 PM | ⚖️ | Final Architecture Approved: Grep-Optimized Progressive Disclosure with Named Re-Exports | ~757 |
+| #36159 | 6:39 PM | ⚖️ | Phase 1 Refactor Plan Finalized: Grep-Optimized Progressive Disclosure with Named Re-Exports | ~830 |
+| #36104 | 10:31 PM | ⚖️ | Database Transaction Strategy for Observation Deduplication | ~474 |
+| #35485 | 9:06 PM | ⚖️ | Comprehensive error handling remediation plan completed and submitted for approval | ~555 |
+| #35484 | 9:05 PM | ✅ | Quick reference checklist added for all 45 critical issues | ~390 |
+| #35483 | " | ✅ | Plan implementation section replaced with practical execution guidance | ~375 |
+| #35482 | " | ✅ | Verification progress metrics updated with accurate wave counts | ~313 |
+| #35481 | " | ✅ | Wave 3 Group 3C scope reduced after code verification | ~341 |
+| #35480 | " | ✅ | Wave 2 specific fixes detailed with exact code patterns | ~401 |
+| #35479 | 9:04 PM | ✅ | Wave 2 fix pattern updated to target worst offender | ~363 |
+| #35478 | " | ✅ | Plan updated with accurate Wave 2 critical path failures | ~424 |
+| #35471 | 9:02 PM | ⚖️ | Systematic plan created to fix 45 critical error handling anti-patterns | ~540 |
+| #35296 | 1:25 PM | ⚖️ | Revised implementation plan: Generate deterministic memory session IDs to prevent orphaned sessions | ~619 |
+| #35295 | " | ⚖️ | Updated Implementation Plan - Deterministic Session ID with Immediate Persistence | ~505 |
+| #35251 | 1:14 PM | ✅ | Plan updated with correct import paths for provider check functions | ~301 |
+| #35246 | " | ⚖️ | Implementation plan created: Add provider check to startup-recovery mechanism | ~525 |
+| #34411 | 1:55 PM | ⚖️ | Agent SDK V2 Migration Plan Created | ~519 |
+| #33895 | 5:13 PM | 🟣 | Implemented install-time worker executable compilation | ~423 |
+| #33883 | 5:11 PM | ⚖️ | Plan created for worker executable compilation strategy | ~432 |
+| #33873 | 4:56 PM | ⚖️ | Worker Service Migration to Standalone Executables | ~531 |
+| #33872 | " | ⚖️ | Build-time executable strategy replaced with install-time compilation approach | ~524 |
+| #33870 | 4:52 PM | ⚖️ | Migrate Worker Service from Runtime .cjs to Compiled Platform Executables | ~567 |
+| #33597 | 11:14 PM | 🔵 | MCP search tool successfully retrieving mem-search to mcp-search rename history | ~361 |
+| #33291 | 3:08 PM | ✅ | Completed PR #458 Worker Lifecycle Fix Plan - Phase 6 Build Verification | ~334 |
+| #33275 | 3:01 PM | 🔴 | Unix orphaned process cleanup error handling fixed | ~330 |
+| #33274 | " | 🔴 | Fixed waitForProcessesExit crash when child processes exit | ~312 |
+| #33273 | " | 🔴 | Added PID validation after daemon spawn to prevent invalid PID file writes | ~341 |
+| #33272 | " | 🔴 | Windows taskkill error handling in orphaned process cleanup | ~266 |
+| #33262 | 2:58 PM | ✅ | PR #456 Closed and Fresh Branch Created for Worker Lifecycle Fix | ~313 |
+| #33257 | 2:37 PM | ✅ | Plan Simplified to Minimal Fix Approach | ~320 |
+| #33132 | 7:53 PM | ⚖️ | Session Continuity Regression Investigation and Fix Plan Created | ~567 |
+| #33008 | 4:54 PM | ⚖️ | Auto-Restart Worker Strategy After Plugin Updates | ~514 |
+| #32999 | 4:43 PM | ⚖️ | Worker Update Strategy Changed from Auto-Restart to Manual | ~265 |
+| #32997 | 4:42 PM | ✅ | Implementation Plan Documented for Windows Concurrency Fix | ~597 |
+| #32927 | 10:32 PM | ⚖️ | Three-Phase Fix Plan Created for PR #448 OpenRouter Error Handling Issues | ~543 |
+| #32915 | 10:08 PM | 🔵 | OpenRouter Provider PR #448 Fix Plan Loaded | ~345 |
+| #32896 | 9:12 PM | 🔵 | PR #458 Review: Worker Lifecycle Critical Fixes | ~398 |
+| #32884 | 8:49 PM | 🔵 | Worker Lifecycle Critical Issues Identified in PR #458 | ~388 |
+| #32882 | 8:48 PM | 🔵 | PR #458 Worker Lifecycle Fix Plan Reviewed | ~389 |
 </claude-mem-context>

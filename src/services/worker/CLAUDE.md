@@ -7,6 +7,17 @@
 
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
+| #37751 | 6:21 PM | 🔴 | OpenRouterAgent Fully Updated with projectRoot Threading | ~307 |
+| #37748 | " | ✅ | OpenRouterAgent Observation Handler Updated with lastCwd | ~276 |
+| #37746 | 6:20 PM | ✅ | GeminiAgent Summary Handler Updated with lastCwd | ~278 |
+| #37745 | " | ✅ | OpenRouterAgent Init Prompt Call Updated with undefined projectRoot | ~299 |
+| #37744 | " | ✅ | GeminiAgent First processAgentResponse Updated with lastCwd | ~274 |
+| #37743 | " | ✅ | Added lastCwd Tracking to OpenRouterAgent | ~265 |
+| #37742 | 6:19 PM | ✅ | Phase 3 Started: Added lastCwd Tracking to GeminiAgent | ~291 |
+| #37741 | " | 🔵 | OpenRouterAgent Structure Analyzed for Phase 3 Implementation | ~367 |
+| #37740 | " | 🔵 | SDKAgent Structure Analyzed for Phase 3 Implementation | ~430 |
+| #37739 | 6:18 PM | 🔵 | GeminiAgent Structure Analyzed for Phase 3 Implementation | ~381 |
+| #37737 | 6:16 PM | 🔵 | Identified processAgentResponse Callers for Phase 3 | ~275 |
 | #37701 | 6:01 PM | 🔵 | Complete cwd data flow traced from hooks through observation processing | ~447 |
 | #37421 | 1:06 AM | 🔵 | Identified by-file API endpoint usage across codebase | ~406 |
 | #37416 | 1:02 AM | 🔴 | Fixed find_by_file Parameter Handling for Comma-Separated Values | ~375 |

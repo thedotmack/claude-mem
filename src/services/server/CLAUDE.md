@@ -7,6 +7,7 @@
 
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
+| #37758 | 6:25 PM | ⚖️ | Integration Test Design for Four Critical Testing Gaps | ~729 |
 | #37533 | 4:44 PM | 🔵 | Windows IPC Detection Logic and Managed Mode Handling | ~427 |
 | #36689 | 11:56 PM | 🔵 | PR #538 Review Findings - Modular Architecture Refactor | ~590 |
 | #36583 | 9:57 PM | 🟣 | Server Test Suite Created | ~485 |

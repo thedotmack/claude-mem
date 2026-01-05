@@ -7,6 +7,12 @@
 
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
+| #37733 | 6:16 PM | ✅ | Verified projectRoot Threading in ResponseProcessor | ~260 |
+| #37731 | 6:15 PM | 🔴 | Phase 2 Complete: projectRoot Now Flows to updateFolderClaudeMdFiles | ~368 |
+| #37730 | " | ✅ | Added projectRoot Parameter to syncAndBroadcastObservations Signature | ~281 |
+| #37729 | " | ✅ | Threaded projectRoot to syncAndBroadcastObservations Call | ~267 |
+| #37728 | " | ✅ | Added projectRoot Parameter to processAgentResponse | ~286 |
+| #37727 | 6:14 PM | 🔵 | ResponseProcessor Current Implementation Analyzed for Phase 2 | ~347 |
 | #37701 | 6:01 PM | 🔵 | Complete cwd data flow traced from hooks through observation processing | ~447 |
 | #37700 | " | 🔵 | updateFolderClaudeMdFiles function signature and usage pattern documented | ~416 |
 | #37675 | 5:53 PM | 🔵 | ResponseProcessor calls updateFolderClaudeMdFiles with parsed file paths from observations | ~369 |
