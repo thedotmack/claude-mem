@@ -8,8 +8,12 @@
 
 import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync } from 'fs';
 import path from 'path';
+import os from 'os';
 import { logger } from './logger.js';
 import { formatDate, groupByDate } from '../shared/timeline-formatting.js';
+import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
+
+const SETTINGS_PATH = path.join(os.homedir(), '.claude-mem', 'settings.json');
 
 /**
  * Replace tagged content in existing file, preserving content outside tags.
@@ -204,6 +208,10 @@ export async function updateFolderClaudeMdFiles(
   project: string,
   port: number
 ): Promise<void> {
+  // Load settings to get configurable observation limit
+  const settings = SettingsDefaultsManager.loadFromFile(SETTINGS_PATH);
+  const limit = parseInt(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10) || 50;
+
   // Extract unique folder paths from file paths
   const folderPaths = new Set<string>();
   for (const filePath of filePaths) {
@@ -231,7 +239,7 @@ export async function updateFolderClaudeMdFiles(
     try {
       // Fetch timeline via existing API
       const response = await fetch(
-        `http://127.0.0.1:${port}/api/search/by-file?filePath=${encodeURIComponent(folderPath)}&limit=10&project=${encodeURIComponent(project)}`
+        `http://127.0.0.1:${port}/api/search/by-file?filePath=${encodeURIComponent(folderPath)}&limit=${limit}&project=${encodeURIComponent(project)}&isFolder=true`
       );
 
       if (!response.ok) {
