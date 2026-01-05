@@ -195,31 +195,46 @@ export class SearchRoutes extends BaseRouteHandler {
 
   /**
    * Context injection endpoint for hooks
-   * GET /api/context/inject?project=...&colors=true
+   * GET /api/context/inject?projects=...&colors=true
+   * GET /api/context/inject?project=...&colors=true (legacy, single project)
    *
    * Returns pre-formatted context string ready for display.
    * Use colors=true for ANSI-colored terminal output.
+   *
+   * For worktrees, pass comma-separated projects (e.g., "main,worktree-branch")
+   * to get a unified timeline from both parent and worktree.
    */
   private handleContextInject = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const projectName = req.query.project as string;
+    // Support both legacy `project` and new `projects` parameter
+    const projectsParam = (req.query.projects as string) || (req.query.project as string);
     const useColors = req.query.colors === 'true';
 
-    if (!projectName) {
-      this.badRequest(res, 'Project parameter is required');
+    if (!projectsParam) {
+      this.badRequest(res, 'Project(s) parameter is required');
+      return;
+    }
+
+    // Parse comma-separated projects list
+    const projects = projectsParam.split(',').map(p => p.trim()).filter(Boolean);
+
+    if (projects.length === 0) {
+      this.badRequest(res, 'At least one project is required');
       return;
     }
 
     // Import context generator (runs in worker, has access to database)
     const { generateContext } = await import('../../../context-generator.js');
 
-    // Use project name as CWD (generateContext uses path.basename to get project)
-    const cwd = `/context/${projectName}`;
+    // Use first project name as CWD (for display purposes)
+    const primaryProject = projects[projects.length - 1]; // Last is the current/primary project
+    const cwd = `/context/${primaryProject}`;
 
-    // Generate context
+    // Generate context with all projects
     const contextText = await generateContext(
       {
         session_id: 'context-inject-' + Date.now(),
-        cwd: cwd
+        cwd: cwd,
+        projects: projects
       },
       useColors
     );

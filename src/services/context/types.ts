@@ -11,6 +11,8 @@ export interface ContextInput {
   cwd?: string;
   hook_event_name?: string;
   source?: "startup" | "resume" | "clear" | "compact";
+  /** Array of projects to query (for worktree support: [parent, worktree]) */
+  projects?: string[];
   [key: string]: any;
 }
 
@@ -56,6 +58,8 @@ export interface Observation {
   discovery_tokens: number | null;
   created_at: string;
   created_at_epoch: number;
+  /** Project this observation belongs to (for multi-project queries) */
+  project?: string;
 }
 
 /**
@@ -71,6 +75,8 @@ export interface SessionSummary {
   next_steps: string | null;
   created_at: string;
   created_at_epoch: number;
+  /** Project this summary belongs to (for multi-project queries) */
+  project?: string;
 }
 
 /**

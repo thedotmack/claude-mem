@@ -67,6 +67,65 @@ export function querySummaries(
 }
 
 /**
+ * Query observations from multiple projects (for worktree support)
+ *
+ * Returns observations from all specified projects, interleaved chronologically.
+ * Used when running in a worktree to show both parent repo and worktree observations.
+ */
+export function queryObservationsMulti(
+  db: SessionStore,
+  projects: string[],
+  config: ContextConfig
+): Observation[] {
+  const typeArray = Array.from(config.observationTypes);
+  const typePlaceholders = typeArray.map(() => '?').join(',');
+  const conceptArray = Array.from(config.observationConcepts);
+  const conceptPlaceholders = conceptArray.map(() => '?').join(',');
+
+  // Build IN clause for projects
+  const projectPlaceholders = projects.map(() => '?').join(',');
+
+  return db.db.prepare(`
+    SELECT
+      id, memory_session_id, type, title, subtitle, narrative,
+      facts, concepts, files_read, files_modified, discovery_tokens,
+      created_at, created_at_epoch, project
+    FROM observations
+    WHERE project IN (${projectPlaceholders})
+      AND type IN (${typePlaceholders})
+      AND EXISTS (
+        SELECT 1 FROM json_each(concepts)
+        WHERE value IN (${conceptPlaceholders})
+      )
+    ORDER BY created_at_epoch DESC
+    LIMIT ?
+  `).all(...projects, ...typeArray, ...conceptArray, config.totalObservationCount) as Observation[];
+}
+
+/**
+ * Query session summaries from multiple projects (for worktree support)
+ *
+ * Returns summaries from all specified projects, interleaved chronologically.
+ * Used when running in a worktree to show both parent repo and worktree summaries.
+ */
+export function querySummariesMulti(
+  db: SessionStore,
+  projects: string[],
+  config: ContextConfig
+): SessionSummary[] {
+  // Build IN clause for projects
+  const projectPlaceholders = projects.map(() => '?').join(',');
+
+  return db.db.prepare(`
+    SELECT id, memory_session_id, request, investigated, learned, completed, next_steps, created_at, created_at_epoch, project
+    FROM session_summaries
+    WHERE project IN (${projectPlaceholders})
+    ORDER BY created_at_epoch DESC
+    LIMIT ?
+  `).all(...projects, config.sessionCount + SUMMARY_LOOKAHEAD) as SessionSummary[];
+}
+
+/**
  * Convert cwd path to dashed format for transcript lookup
  */
 function cwdToDashed(cwd: string): string {
