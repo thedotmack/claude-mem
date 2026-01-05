@@ -9,6 +9,8 @@ dist/
 *.temp
 .install-version
 .claude/settings.local.json
+.claude/agents/
+.claude/skills/
 plugin/data/
 plugin/data.backup/
 package-lock.json

@@ -5,20 +5,16 @@
 
 ### Jan 4, 2026
 
-**SessionSearch.ts**
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
-| #37042 | 5:04 PM | 🔵 | SessionSearch.findByFile Uses SQL LIKE Pattern for File Matching | ~387 |
-| #36956 | 3:32 PM | 🔵 | Complete Codebase Architecture Exploration for Folder Index Implementation | ~880 |
-| #36952 | 3:29 PM | 🔵 | SessionSearch Service Architecture Review | ~518 |
-
-**types.ts**
-| ID | Time | T | Title | Read |
-|----|------|---|-------|------|
-| #37037 | 5:02 PM | 🔵 | Identified SearchOptions Type with File Filtering Capability | ~342 |
-
-**../folder-index/FolderTimelineCompiler.ts**
-| ID | Time | T | Title | Read |
-|----|------|---|-------|------|
-| #36975 | 3:40 PM | ⚖️ | FolderTimelineCompiler Implementation Task Completed | ~549 |
+| #37241 | 9:57 PM | 🔵 | Git Status Shows Crash Fix Files Ready for Staging | ~376 |
+| #37240 | " | ✅ | Crash Fix Deployment - Commit and Push Phase | ~364 |
+| #37239 | 9:53 PM | 🟣 | Added comprehensive test suite for SDK resume parameter logic | ~472 |
+| #37238 | 9:52 PM | 🔵 | Session initialization flow traced - reveals stale memorySessionId persistence issue | ~526 |
+| #37237 | " | 🔴 | Fixed stale session resume crash by adding prompt number check | ~439 |
+| #37236 | " | 🔵 | Claude Agent SDK resume API documentation discovered via subtask | ~494 |
+| #37235 | 9:51 PM | ⚖️ | Implementation plan created for stale session resume crash fix | ~536 |
+| #37234 | " | 🔵 | Fix implementation preparation complete - SDKAgent resume logic identified | ~496 |
+| #37233 | 9:50 PM | 🔵 | Investigation complete - ready to implement fix for stale session resume bug | ~439 |
+| #37232 | 9:44 PM | 🔵 | Root cause identified for recurring Claude Code process crashes | ~469 |
 </claude-mem-context>

@@ -7,6 +7,8 @@
 
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
+| #37249 | 10:12 PM | ⚖️ | Plan Approved for Chroma Connection Error Handling Fix | ~459 |
+| #37248 | 10:08 PM | ⚖️ | Implementation Plan Created for Chroma Connection Error Handling Fix | ~480 |
 | #37247 | 10:02 PM | 🔵 | Chroma MCP Connection Errors Still Occurring | ~351 |
 | #37246 | " | 🔵 | Chroma MCP Response Parsing Failures Identified | ~389 |
 | #37245 | 10:01 PM | 🔵 | Chroma Vector Database Integration Analysis | ~583 |
@@ -15,6 +17,4 @@
 | #37242 | " | 🔴 | Committed Stale SDK Session Resume Crash Fix | ~476 |
 | #37241 | 9:57 PM | 🔵 | Git Status Shows Crash Fix Files Ready for Staging | ~376 |
 | #37240 | " | ✅ | Crash Fix Deployment - Commit and Push Phase | ~364 |
-| #37239 | 9:53 PM | 🟣 | Added comprehensive test suite for SDK resume parameter logic | ~472 |
-| #37238 | 9:52 PM | 🔵 | Session initialization flow traced - reveals stale memorySessionId persistence issue | ~526 |
 </claude-mem-context>
