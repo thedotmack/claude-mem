@@ -180,8 +180,20 @@ export function formatTimelineForClaudeMd(timelineText: string): string {
 }
 
 /**
+ * Check if a folder is a project root (contains .git directory).
+ * Project root CLAUDE.md files should remain user-managed, not auto-updated.
+ */
+function isProjectRoot(folderPath: string): boolean {
+  const gitPath = path.join(folderPath, '.git');
+  return existsSync(gitPath);
+}
+
+/**
  * Update CLAUDE.md files for folders containing the given files.
  * Fetches timeline from worker API and writes formatted content.
+ *
+ * NOTE: Project root folders (containing .git) are excluded to preserve
+ * user-managed root CLAUDE.md files. Only subfolder CLAUDE.md files are auto-updated.
  *
  * @param filePaths - Array of absolute file paths (modified or read)
  * @param project - Project identifier for API query
@@ -198,6 +210,11 @@ export async function updateFolderClaudeMdFiles(
     if (!filePath || filePath === '') continue;
     const folderPath = path.dirname(filePath);
     if (folderPath && folderPath !== '.' && folderPath !== '/') {
+      // Skip project root - root CLAUDE.md should remain user-managed
+      if (isProjectRoot(folderPath)) {
+        logger.debug('FOLDER_INDEX', 'Skipping project root CLAUDE.md', { folderPath });
+        continue;
+      }
       folderPaths.add(folderPath);
     }
   }
