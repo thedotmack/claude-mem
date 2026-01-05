@@ -1,27 +1,28 @@
 #!/usr/bin/env bun
 /**
- * Regenerate all folder CLAUDE.md files
+ * Regenerate CLAUDE.md files for folders in the current project
  *
- * Usage: bun scripts/regenerate-claude-md.ts [--project=name] [--dry-run]
+ * Usage:
+ *   bun scripts/regenerate-claude-md.ts [--dry-run] [--clean]
  *
- * This script:
- * 1. Queries the database for all unique folder paths from observations
- * 2. Uses the existing SessionSearch and ResultFormatter to get/format data
- * 3. Writes formatted CLAUDE.md files using the timeline format
+ * Options:
+ *   --dry-run  Show what would be done without writing files
+ *   --clean    Remove auto-generated CLAUDE.md files instead of regenerating
+ *
+ * Behavior:
+ *   - Scopes to current working directory (not entire database history)
+ *   - Uses git ls-files to respect .gitignore (skips node_modules, .git, etc.)
+ *   - Only processes folders that exist within the current project
+ *   - Filters database to current project observations only
  */
 
 import { Database } from 'bun:sqlite';
 import path from 'path';
 import os from 'os';
-import { existsSync, mkdirSync, writeFileSync, readFileSync, renameSync } from 'fs';
+import { existsSync, mkdirSync, writeFileSync, readFileSync, renameSync, unlinkSync, readdirSync } from 'fs';
+import { execSync } from 'child_process';
 
 const DB_PATH = path.join(os.homedir(), '.claude-mem', 'claude-mem.db');
-
-interface FolderInfo {
-  folder: string;
-  project: string;
-  fileCount: number;
-}
 
 interface ObservationRow {
   id: number;
@@ -39,7 +40,7 @@ interface ObservationRow {
 }
 
 // Import shared formatting utilities
-import { formatTime, extractFirstFile, groupByDate } from '../src/shared/timeline-formatting.js';
+import { formatTime, groupByDate } from '../src/shared/timeline-formatting.js';
 
 // Type icon map (matches ModeManager)
 const TYPE_ICONS: Record<string, string> = {
@@ -66,66 +67,75 @@ function estimateTokens(obs: ObservationRow): number {
 }
 
 /**
- * Extract unique folder paths from observations
+ * Get tracked folders using git ls-files
+ * This respects .gitignore and only returns folders within the project
  */
-function getUniqueFolders(db: Database, projectFilter?: string): FolderInfo[] {
-  const query = projectFilter
-    ? `SELECT files_read, files_modified, project FROM observations WHERE project = ?`
-    : `SELECT files_read, files_modified, project FROM observations`;
+function getTrackedFolders(workingDir: string): Set<string> {
+  const folders = new Set<string>();
 
-  const rows = projectFilter
-    ? db.prepare(query).all(projectFilter) as { files_read: string | null; files_modified: string | null; project: string }[]
-    : db.prepare(query).all() as { files_read: string | null; files_modified: string | null; project: string }[];
+  try {
+    // Get all tracked files using git ls-files
+    const output = execSync('git ls-files', {
+      cwd: workingDir,
+      encoding: 'utf-8',
+      maxBuffer: 50 * 1024 * 1024 // 50MB buffer for large repos
+    });
 
-  const folderMap = new Map<string, { project: string; fileCount: number }>();
+    const files = output.trim().split('\n').filter(f => f);
 
-  for (const row of rows) {
-    const allFiles: string[] = [];
+    for (const file of files) {
+      // Get the absolute path, then extract directory
+      const absPath = path.join(workingDir, file);
+      let dir = path.dirname(absPath);
 
-    if (row.files_read) {
-      try {
-        const parsed = JSON.parse(row.files_read);
-        if (Array.isArray(parsed)) allFiles.push(...parsed);
-      } catch {}
-    }
-
-    if (row.files_modified) {
-      try {
-        const parsed = JSON.parse(row.files_modified);
-        if (Array.isArray(parsed)) allFiles.push(...parsed);
-      } catch {}
-    }
-
-    for (const filePath of allFiles) {
-      if (!filePath || filePath === '' || filePath === '/') continue;
-      const folder = path.dirname(filePath);
-      if (folder && folder !== '.' && folder !== '/') {
-        const key = `${row.project}:${folder}`;
-        const existing = folderMap.get(key);
-        if (existing) {
-          existing.fileCount++;
-        } else {
-          folderMap.set(key, { project: row.project, fileCount: 1 });
-        }
+      // Add all parent directories up to (but not including) the working dir
+      while (dir.length > workingDir.length && dir.startsWith(workingDir)) {
+        folders.add(dir);
+        dir = path.dirname(dir);
       }
     }
+  } catch (error) {
+    console.error('Warning: git ls-files failed, falling back to directory walk');
+    // Fallback: walk directories but skip common ignored patterns
+    walkDirectoriesWithIgnore(workingDir, folders);
   }
 
-  return Array.from(folderMap.entries())
-    .map(([key, info]) => ({
-      folder: key.split(':').slice(1).join(':'),
-      project: info.project,
-      fileCount: info.fileCount
-    }))
-    .sort((a, b) => b.fileCount - a.fileCount);
+  return folders;
 }
 
 /**
- * Query observations for a specific folder using the same logic as SessionSearch.findByFile
+ * Fallback directory walker that skips common ignored patterns
  */
-function findObservationsByFolder(db: Database, folderPath: string, project: string, limit: number = 10): ObservationRow[] {
-  // Use LIKE to match files that start with the folder path
-  // This matches the pattern used in SessionSearch.buildFilterClause for 'files' filter
+function walkDirectoriesWithIgnore(dir: string, folders: Set<string>, depth: number = 0): void {
+  if (depth > 10) return; // Prevent infinite recursion
+
+  const ignorePatterns = [
+    'node_modules', '.git', '.next', 'dist', 'build', '.cache',
+    '__pycache__', '.venv', 'venv', '.idea', '.vscode', 'coverage',
+    '.claude-mem', '.open-next', '.turbo'
+  ];
+
+  try {
+    const entries = readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (ignorePatterns.includes(entry.name)) continue;
+      if (entry.name.startsWith('.') && entry.name !== '.claude') continue;
+
+      const fullPath = path.join(dir, entry.name);
+      folders.add(fullPath);
+      walkDirectoriesWithIgnore(fullPath, folders, depth + 1);
+    }
+  } catch {
+    // Ignore permission errors
+  }
+}
+
+/**
+ * Query observations for a specific folder
+ * folderPath is a relative path from the project root (e.g., "src/services")
+ */
+function findObservationsByFolder(db: Database, relativeFolderPath: string, project: string, limit: number = 10): ObservationRow[] {
   const sql = `
     SELECT o.*, o.discovery_tokens
     FROM observations o
@@ -135,28 +145,32 @@ function findObservationsByFolder(db: Database, folderPath: string, project: str
     LIMIT ?
   `;
 
-  const likePattern = `%${folderPath}%`;
+  // Files in DB are stored as relative paths like "src/services/foo.ts"
+  // Match any file that starts with this folder path
+  const likePattern = `%"${relativeFolderPath}/%`;
   return db.prepare(sql).all(project, likePattern, likePattern, limit) as ObservationRow[];
 }
 
 /**
- * Extract first relevant file from an observation (modified OR read)
- * Falls back to "General" only if both are empty
+ * Extract relevant file from an observation for display
+ * @param obs - The observation row
+ * @param relativeFolder - Relative folder path (e.g., "src/services")
  */
-function extractRelevantFile(obs: ObservationRow, folderPath: string): string {
+function extractRelevantFile(obs: ObservationRow, relativeFolder: string): string {
   // Try files_modified first
   if (obs.files_modified) {
     try {
       const modified = JSON.parse(obs.files_modified);
       if (Array.isArray(modified) && modified.length > 0) {
-        // Find a file that's in the target folder
+        // Files are stored as relative paths like "src/services/foo.ts"
         for (const file of modified) {
-          if (file.startsWith(folderPath)) {
-            return path.relative(folderPath, file) || path.basename(file);
+          if (file.startsWith(relativeFolder + '/')) {
+            // Get just the filename relative to the folder
+            return file.slice(relativeFolder.length + 1);
           }
         }
-        // If no match in folder, use first file
-        return path.relative(folderPath, modified[0]) || path.basename(modified[0]);
+        // If no match in folder, use the basename
+        return path.basename(modified[0]);
       }
     } catch {}
   }
@@ -166,14 +180,12 @@ function extractRelevantFile(obs: ObservationRow, folderPath: string): string {
     try {
       const read = JSON.parse(obs.files_read);
       if (Array.isArray(read) && read.length > 0) {
-        // Find a file that's in the target folder
         for (const file of read) {
-          if (file.startsWith(folderPath)) {
-            return path.relative(folderPath, file) || path.basename(file);
+          if (file.startsWith(relativeFolder + '/')) {
+            return file.slice(relativeFolder.length + 1);
           }
         }
-        // If no match in folder, use first file
-        return path.relative(folderPath, read[0]) || path.basename(read[0]);
+        return path.basename(read[0]);
       }
     } catch {}
   }
@@ -182,7 +194,7 @@ function extractRelevantFile(obs: ObservationRow, folderPath: string): string {
 }
 
 /**
- * Format observations using the same logic as ResultFormatter.formatSearchResults
+ * Format observations for CLAUDE.md content
  */
 function formatObservationsForClaudeMd(observations: ObservationRow[], folderPath: string): string {
   const lines: string[] = [];
@@ -196,14 +208,12 @@ function formatObservationsForClaudeMd(observations: ObservationRow[], folderPat
     return lines.join('\n');
   }
 
-  // Group by date using the shared utility
   const byDate = groupByDate(observations, obs => obs.created_at);
 
   for (const [day, dayObs] of byDate) {
     lines.push(`### ${day}`);
     lines.push('');
 
-    // Group by file within this day - using BOTH files_modified and files_read
     const byFile = new Map<string, ObservationRow[]>();
     for (const obs of dayObs) {
       const file = extractRelevantFile(obs, folderPath);
@@ -211,7 +221,6 @@ function formatObservationsForClaudeMd(observations: ObservationRow[], folderPat
       byFile.get(file)!.push(obs);
     }
 
-    // Render each file section (same format as ResultFormatter.formatSearchResults)
     for (const [file, fileObs] of byFile) {
       lines.push(`**${file}**`);
       lines.push('| ID | Time | T | Title | Read |');
@@ -235,6 +244,22 @@ function formatObservationsForClaudeMd(observations: ObservationRow[], folderPat
   }
 
   return lines.join('\n').trim();
+}
+
+/**
+ * Check if a CLAUDE.md file was auto-generated by claude-mem
+ */
+function isAutoGeneratedClaudeMd(filePath: string): boolean {
+  if (!existsSync(filePath)) return false;
+
+  try {
+    const content = readFileSync(filePath, 'utf-8');
+    // Check for auto-generation markers
+    return content.includes('<claude-mem-context>') &&
+           content.includes('<!-- This section is auto-generated by claude-mem');
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -275,16 +300,83 @@ function writeClaudeMdToFolder(folderPath: string, newContent: string): void {
 }
 
 /**
+ * Clean up auto-generated CLAUDE.md files
+ */
+function cleanupAutoGeneratedFiles(workingDir: string, dryRun: boolean): void {
+  console.log('=== CLAUDE.md Cleanup Mode ===\n');
+  console.log(`Scanning ${workingDir} for auto-generated CLAUDE.md files...\n`);
+
+  const toDelete: string[] = [];
+
+  // Walk directories to find CLAUDE.md files
+  function walkForClaudeMd(dir: string): void {
+    const ignorePatterns = ['node_modules', '.git', '.next', 'dist', 'build'];
+
+    try {
+      const entries = readdirSync(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        const fullPath = path.join(dir, entry.name);
+
+        if (entry.isDirectory()) {
+          if (!ignorePatterns.includes(entry.name)) {
+            walkForClaudeMd(fullPath);
+          }
+        } else if (entry.name === 'CLAUDE.md') {
+          if (isAutoGeneratedClaudeMd(fullPath)) {
+            toDelete.push(fullPath);
+          }
+        }
+      }
+    } catch {
+      // Ignore permission errors
+    }
+  }
+
+  walkForClaudeMd(workingDir);
+
+  if (toDelete.length === 0) {
+    console.log('No auto-generated CLAUDE.md files found.');
+    return;
+  }
+
+  console.log(`Found ${toDelete.length} auto-generated CLAUDE.md files:\n`);
+
+  for (const file of toDelete) {
+    const relativePath = path.relative(workingDir, file);
+    if (dryRun) {
+      console.log(`  [DRY-RUN] Would delete: ${relativePath}`);
+    } else {
+      try {
+        unlinkSync(file);
+        console.log(`  Deleted: ${relativePath}`);
+      } catch (error) {
+        console.error(`  Error deleting ${relativePath}: ${error}`);
+      }
+    }
+  }
+
+  console.log(`\n${dryRun ? 'Would delete' : 'Deleted'} ${toDelete.length} files.`);
+
+  if (dryRun) {
+    console.log('\nRun without --dry-run to actually delete files.');
+  }
+}
+
+/**
  * Regenerate CLAUDE.md for a single folder
+ * @param absoluteFolder - Absolute path for writing files
+ * @param relativeFolder - Relative path for DB queries (matches storage format)
  */
 function regenerateFolder(
   db: Database,
-  folder: string,
+  absoluteFolder: string,
+  relativeFolder: string,
   project: string,
   dryRun: boolean
 ): { success: boolean; observationCount: number; error?: string } {
   try {
-    const observations = findObservationsByFolder(db, folder, project, 10);
+    // Query using relative path (matches DB storage format)
+    const observations = findObservationsByFolder(db, relativeFolder, project, 10);
 
     if (observations.length === 0) {
       return { success: false, observationCount: 0, error: 'No observations for folder' };
@@ -294,8 +386,9 @@ function regenerateFolder(
       return { success: true, observationCount: observations.length };
     }
 
-    const formatted = formatObservationsForClaudeMd(observations, folder);
-    writeClaudeMdToFolder(folder, formatted);
+    // Format using relative path for display, write to absolute path
+    const formatted = formatObservationsForClaudeMd(observations, relativeFolder);
+    writeClaudeMdToFolder(absoluteFolder, formatted);
 
     return { success: true, observationCount: observations.length };
   } catch (error) {
@@ -309,26 +402,42 @@ function regenerateFolder(
 async function main() {
   const args = process.argv.slice(2);
   const dryRun = args.includes('--dry-run');
-  const projectArg = args.find(a => a.startsWith('--project='));
-  const projectFilter = projectArg ? projectArg.split('=')[1] : undefined;
+  const cleanMode = args.includes('--clean');
+
+  const workingDir = process.cwd();
+
+  // Handle cleanup mode
+  if (cleanMode) {
+    cleanupAutoGeneratedFiles(workingDir, dryRun);
+    return;
+  }
 
   console.log('=== CLAUDE.md Regeneration Script ===\n');
+  console.log(`Working directory: ${workingDir}`);
 
-  // Open database
-  console.log('Opening database...');
-  const db = new Database(DB_PATH, { readonly: true, create: false });
+  // Determine project identifier (matches how hooks determine project - uses folder name)
+  const project = path.basename(workingDir);
+  console.log(`Project: ${project}\n`);
 
-  // Get unique folders
-  console.log('Scanning observations for folder paths...');
-  const folders = getUniqueFolders(db, projectFilter);
+  // Get tracked folders using git ls-files
+  console.log('Discovering folders (using git ls-files to respect .gitignore)...');
+  const trackedFolders = getTrackedFolders(workingDir);
 
-  if (folders.length === 0) {
-    console.log('No folders found with observations.');
-    db.close();
+  if (trackedFolders.size === 0) {
+    console.log('No folders found in project.');
     process.exit(0);
   }
 
-  console.log(`Found ${folders.length} unique folders.\n`);
+  console.log(`Found ${trackedFolders.size} folders in project.\n`);
+
+  // Open database
+  if (!existsSync(DB_PATH)) {
+    console.log('Database not found. No observations to process.');
+    process.exit(0);
+  }
+
+  console.log('Opening database...');
+  const db = new Database(DB_PATH, { readonly: true, create: false });
 
   if (dryRun) {
     console.log('[DRY RUN] Would regenerate the following folders:\n');
@@ -339,30 +448,34 @@ async function main() {
   let skipCount = 0;
   let errorCount = 0;
 
-  for (let i = 0; i < folders.length; i++) {
-    const { folder, project, fileCount } = folders[i];
-    const progress = `[${i + 1}/${folders.length}]`;
+  const foldersArray = Array.from(trackedFolders).sort();
+
+  for (let i = 0; i < foldersArray.length; i++) {
+    const absoluteFolder = foldersArray[i];
+    const progress = `[${i + 1}/${foldersArray.length}]`;
+    const relativeFolder = path.relative(workingDir, absoluteFolder);
 
     if (dryRun) {
-      const observations = findObservationsByFolder(db, folder, project, 10);
-      console.log(`${progress} ${folder} (${project}, ${fileCount} refs, ${observations.length} obs)`);
-      if (observations.length > 0) successCount++;
-      else skipCount++;
+      // Query using relative path (matches DB storage format)
+      const observations = findObservationsByFolder(db, relativeFolder, project, 10);
+      if (observations.length > 0) {
+        console.log(`${progress} ${relativeFolder} (${observations.length} obs)`);
+        successCount++;
+      } else {
+        skipCount++;
+      }
       continue;
     }
 
-    process.stdout.write(`${progress} ${folder}... `);
-
-    const result = regenerateFolder(db, folder, project, dryRun);
+    const result = regenerateFolder(db, absoluteFolder, relativeFolder, project, dryRun);
 
     if (result.success) {
-      console.log(`OK (${result.observationCount} obs)`);
+      console.log(`${progress} ${relativeFolder} - ${result.observationCount} obs`);
       successCount++;
     } else if (result.error?.includes('No observations')) {
-      console.log('skipped (no data)');
       skipCount++;
     } else {
-      console.log(`ERROR: ${result.error}`);
+      console.log(`${progress} ${relativeFolder} - ERROR: ${result.error}`);
       errorCount++;
     }
   }
@@ -371,10 +484,10 @@ async function main() {
 
   // Summary
   console.log('\n=== Summary ===');
-  console.log(`Total folders: ${folders.length}`);
-  console.log(`Regenerated:   ${successCount}`);
-  console.log(`Skipped:       ${skipCount}`);
-  console.log(`Errors:        ${errorCount}`);
+  console.log(`Total folders scanned: ${foldersArray.length}`);
+  console.log(`With observations:     ${successCount}`);
+  console.log(`No observations:       ${skipCount}`);
+  console.log(`Errors:                ${errorCount}`);
 
   if (dryRun) {
     console.log('\nRun without --dry-run to actually regenerate files.');
