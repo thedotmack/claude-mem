@@ -9,6 +9,7 @@
 import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync } from 'fs';
 import path from 'path';
 import { logger } from './logger.js';
+import { formatDate, groupByDate } from '../shared/timeline-formatting.js';
 
 /**
  * Replace tagged content in existing file, preserving content outside tags.
@@ -70,10 +71,28 @@ export function writeClaudeMdToFolder(folderPath: string, newContent: string): v
 }
 
 /**
- * Format timeline text from API response to compact CLAUDE.md format.
+ * Parsed observation from API response text
+ */
+interface ParsedObservation {
+  id: string;
+  time: string;
+  typeEmoji: string;
+  title: string;
+  tokens: string;
+  epoch: number; // For date grouping
+}
+
+/**
+ * Format timeline text from API response to timeline format.
+ *
+ * Uses the same format as search results:
+ * - Grouped by date (### Jan 4, 2026)
+ * - Grouped by file within each date (**filename**)
+ * - Table with columns: ID, Time, T (type emoji), Title, Read (tokens)
+ * - Ditto marks for repeated times
  *
  * @param timelineText - Raw API response text
- * @returns Formatted markdown with date headers and compact table
+ * @returns Formatted markdown with date/file grouping
  */
 export function formatTimelineForClaudeMd(timelineText: string): string {
   const lines: string[] = [];
@@ -85,46 +104,49 @@ export function formatTimelineForClaudeMd(timelineText: string): string {
   // Parse the API response to extract observation rows
   const apiLines = timelineText.split('\n');
 
-  // Skip header lines and find table rows (start with "| #")
-  const observations: Array<{ time: string; type: string; title: string }> = [];
+  // Note: We skip file grouping since we're querying by folder - all results are from the same folder
 
-  let lastTime = '';
+  // Parse observations: | #123 | 4:30 PM | 🔧 | Title | ~250 | ... |
+  const observations: ParsedObservation[] = [];
+  let lastTimeStr = '';
 
   for (const line of apiLines) {
-    // Match observation/session rows: | #123 | 4:30 PM | 🔧 | Title | ~250 | ... |
-    // Also handles ditto marks: | #124 | ″ | 🔧 | Title | ~250 | ... |
-    const match = line.match(/^\|\s*#[S]?\d+\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|/);
+    // Match table rows: | #123 | 4:30 PM | 🔧 | Title | ~250 | ... |
+    // Also handles ditto marks and session IDs (#S123)
+    const match = line.match(/^\|\s*(#[S]?\d+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|/);
     if (match) {
-      const [, timeStr, typeEmoji, title] = match;
-
-      // Map emoji back to type text (from code.json mode config)
-      const typeMap: Record<string, string> = {
-        '🔴': 'bugfix',
-        '🟣': 'feature',
-        '🔄': 'refactor',
-        '✅': 'change',
-        '🔵': 'discovery',
-        '⚖️': 'decision',
-        '🎯': 'session',
-        '💬': 'prompt'
-      };
-
-      const type = typeMap[typeEmoji.trim()] || 'other';
+      const [, id, timeStr, typeEmoji, title, tokens] = match;
 
       // Handle ditto mark (″) - use last time
-      let formattedTime: string;
+      let time: string;
       if (timeStr.trim() === '″' || timeStr.trim() === '"') {
-        formattedTime = lastTime;
+        time = lastTimeStr;
       } else {
-        // Convert time to lowercase format (4:30 PM -> 4:30pm)
-        formattedTime = timeStr.trim().toLowerCase().replace(/\s+/g, '');
-        lastTime = formattedTime;
+        time = timeStr.trim();
+        lastTimeStr = time;
+      }
+
+      // Parse time to epoch for date grouping (approximate - use today's date with parsed time)
+      const now = new Date();
+      const timeParts = time.match(/(\d+):(\d+)\s*(AM|PM)/i);
+      let epoch = now.getTime();
+      if (timeParts) {
+        let hours = parseInt(timeParts[1], 10);
+        const minutes = parseInt(timeParts[2], 10);
+        const isPM = timeParts[3].toUpperCase() === 'PM';
+        if (isPM && hours !== 12) hours += 12;
+        if (!isPM && hours === 12) hours = 0;
+        now.setHours(hours, minutes, 0, 0);
+        epoch = now.getTime();
       }
 
       observations.push({
-        time: formattedTime,
-        type,
-        title: title.trim()
+        id: id.trim(),
+        time,
+        typeEmoji: typeEmoji.trim(),
+        title: title.trim(),
+        tokens: tokens.trim(),
+        epoch
       });
     }
   }
@@ -134,20 +156,27 @@ export function formatTimelineForClaudeMd(timelineText: string): string {
     return lines.join('\n');
   }
 
-  // Simple approach: Group all recent observations under a single date header.
-  // Since we limit to 10 recent observations per folder, they're typically from
-  // the same day or recent days. Using "Recent" as the date header keeps it simple.
+  // Group by date
+  const byDate = groupByDate(observations, obs => new Date(obs.epoch).toISOString());
 
-  lines.push('### Recent');
-  lines.push('');
-  lines.push('| Time | Type | Title |');
-  lines.push('|------|------|-------|');
+  // Render each date group
+  for (const [day, dayObs] of byDate) {
+    lines.push(`### ${day}`);
+    lines.push('');
+    lines.push('| ID | Time | T | Title | Read |');
+    lines.push('|----|------|---|-------|------|');
 
-  for (const obs of observations) {
-    lines.push(`| ${obs.time} | ${obs.type} | ${obs.title} |`);
+    let lastTime = '';
+    for (const obs of dayObs) {
+      const timeDisplay = obs.time === lastTime ? '"' : obs.time;
+      lastTime = obs.time;
+      lines.push(`| ${obs.id} | ${timeDisplay} | ${obs.typeEmoji} | ${obs.title} | ${obs.tokens} |`);
+    }
+
+    lines.push('');
   }
 
-  return lines.join('\n');
+  return lines.join('\n').trim();
 }
 
 /**

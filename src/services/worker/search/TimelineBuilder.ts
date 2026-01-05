@@ -216,7 +216,7 @@ export class TimelineBuilder {
 
         } else if (item.type === 'observation') {
           const obs = item.data as ObservationSearchResult;
-          const file = extractFirstFile(obs.files_modified, cwd);
+          const file = extractFirstFile(obs.files_modified, cwd, obs.files_read);
 
           if (file !== currentFile) {
             if (tableOpen) {

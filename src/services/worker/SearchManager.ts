@@ -301,7 +301,7 @@ export class SearchManager {
       for (const result of dayResults) {
         let file = 'General';
         if (result.type === 'observation') {
-          file = extractFirstFile(result.data.files_modified, cwd);
+          file = extractFirstFile(result.data.files_modified, cwd, result.data.files_read);
         }
         if (!resultsByFile.has(file)) {
           resultsByFile.set(file, []);
@@ -577,7 +577,7 @@ export class SearchManager {
           lines.push('');
         } else if (item.type === 'observation') {
           const obs = item.data as ObservationSearchResult;
-          const file = extractFirstFile(obs.files_modified, cwd);
+          const file = extractFirstFile(obs.files_modified, cwd, obs.files_read);
 
           if (file !== currentFile) {
             if (tableOpen) {
@@ -1519,7 +1519,7 @@ export class SearchManager {
         } else if (item.type === 'observation') {
           // Render observation in table
           const obs = item.data as ObservationSearchResult;
-          const file = extractFirstFile(obs.files_modified, cwd);
+          const file = extractFirstFile(obs.files_modified, cwd, obs.files_read);
 
           // Check if we need a new file section
           if (file !== currentFile) {
@@ -1749,7 +1749,7 @@ export class SearchManager {
           } else if (item.type === 'observation') {
             // Render observation in table
             const obs = item.data as ObservationSearchResult;
-            const file = extractFirstFile(obs.files_modified, cwd);
+            const file = extractFirstFile(obs.files_modified, cwd, obs.files_read);
 
             // Check if we need a new file section
             if (file !== currentFile) {
