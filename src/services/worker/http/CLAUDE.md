@@ -7,6 +7,8 @@
 
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
+| #37665 | 5:52 PM | 🔵 | Codebase uses dependency injection and lazy initialization patterns to avoid circular dependencies | ~548 |
+| #37662 | " | 🔵 | BaseRouteHandler imports logger demonstrating HTTP layer dependency on logger | ~367 |
 | #37626 | 5:35 PM | 🔵 | FormatTool Function Usage Across Codebase | ~493 |
 | #37537 | 4:45 PM | 🔵 | Middleware formatTool Call Confirmed as Critical Crash Point | ~361 |
 | #36689 | 11:56 PM | 🔵 | PR #538 Review Findings - Modular Architecture Refactor | ~590 |

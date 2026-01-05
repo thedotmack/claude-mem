@@ -7,6 +7,8 @@
 
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
+| #37706 | 6:10 PM | 🔵 | Test Audit: cursor-context-update.test.ts Validates Cursor Integration File Format | ~468 |
+| #37705 | " | 🔵 | Test Audit: validate_sql_update.test.ts Validates SQL Refactor Correctness | ~374 |
 | #37629 | 5:36 PM | 🔵 | Comprehensive Testing Patterns Documentation Generated | ~629 |
 | #37620 | 5:33 PM | 🔵 | Existing Logger Coverage Test Suite Structure | ~536 |
 | #37617 | 5:32 PM | ⚖️ | PR #558 Review Requirements Categorized by Priority | ~637 |
@@ -55,6 +57,4 @@
 | #35558 | 9:52 PM | 🟣 | Comprehensive session ID validation test suite created | ~477 |
 | #35554 | 9:51 PM | 🔵 | Existing Test Coverage for Session ID Refactoring | ~431 |
 | #34626 | 3:01 PM | 🔵 | Test-Driven Validation Agent Performing Extensive Infrastructure Analysis | ~501 |
-| #34625 | 3:00 PM | 🔵 | GeminiAgent Test Suite Demonstrates Comprehensive Agent Testing Patterns | ~541 |
-| #34367 | 11:30 PM | 🔴 | Merged PR 481 column-mismatch fix to main branch | ~344 |
 </claude-mem-context>

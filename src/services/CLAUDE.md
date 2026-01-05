@@ -7,18 +7,9 @@
 
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
-| #37546 | 4:47 PM | 🔵 | Worker Service Initialization Sequence Missing Settings File Creation | ~461 |
-| #36758 | 12:34 AM | 🔵 | Issue #531 Root Cause - 73 Lines of Duplicated Export Type Definitions | ~529 |
-| #36716 | 12:13 AM | 🔵 | Issue #514 Orphaned .jsonl Session Files Analysis | ~616 |
-| #36714 | 12:12 AM | 🔵 | Memory Leak Analysis Report for Issue #532 Generated | ~531 |
-| #36713 | 12:11 AM | 🔵 | Issue #520 Stuck Messages Already Resolved | ~569 |
-| #36712 | " | 🔵 | Memory Leak Analysis for Issue #532 Documented | ~646 |
-| #36711 | " | 🔵 | Issue #520 Stuck Messages Analysis - Already Resolved | ~526 |
-| #36670 | 11:37 PM | ✅ | Resolved merge conflicts by accepting branch changes for 39 files | ~435 |
-| #36642 | 10:56 PM | 🔵 | Logger Coverage Test Requirements Analysis | ~483 |
-| #36637 | 10:47 PM | 🟣 | GeminiAgent Analysis Agent Running But Timed Out After 120 Seconds | ~521 |
-| #36631 | 10:45 PM | 🔵 | Worker Types Define ActiveSession With Refactored Session ID Properties | ~487 |
-| #36524 | 9:34 PM | 🔴 | Fixed CommonJS/ESM Module Detection in Worker Service | ~336 |
-| #36520 | " | 🔴 | Fixed CommonJS/ESM Module Compatibility | ~297 |
-| #36517 | 9:33 PM | 🔴 | Fixed CommonJS Module Check in ESM Worker Service | ~387 |
+| #37701 | 6:01 PM | 🔵 | Complete cwd data flow traced from hooks through observation processing | ~447 |
+| #37691 | 5:55 PM | 🔵 | ActiveSession interface contains project name but no project root path | ~346 |
+| #37418 | 1:04 AM | 🔴 | Fixed CLAUDE.md duplicate content by filtering to direct children only | ~469 |
+| #37391 | 12:48 AM | ✅ | Staged 23 CLAUDE.md files with mix of new and modified content | ~400 |
+| #37390 | 12:47 AM | ✅ | Regenerated 23 CLAUDE.md files in budapest workspace | ~365 |
 </claude-mem-context>

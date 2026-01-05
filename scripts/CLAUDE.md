@@ -7,54 +7,54 @@
 
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
-| #37547 | 4:47 PM | ✅ | Issue #557 Analysis Report Created for Plugin Startup Failure | ~491 |
-| #36933 | 2:27 AM | ✅ | Discord release notification sent for v8.5.8 | ~228 |
-| #36924 | 2:25 AM | ✅ | Merged fix/pr-538-followups branch into main with comprehensive updates | ~481 |
-| #36914 | 2:24 AM | 🔵 | Recent commit 4d0a10c fixed multiple GitHub issues | ~365 |
-| #36847 | 1:45 AM | 🔵 | Export Script Type Import Pattern | ~433 |
-| #36843 | 1:44 AM | 🔵 | Smart Install Script Structure and Path Detection Logic | ~538 |
-| #36829 | 1:40 AM | 🔵 | PR #542 Review Analysis - Multi-Issue Fix Validation | ~562 |
-| #36827 | 1:03 AM | ✅ | Branch diff shows 1,293 insertions and 98 deletions across 15 files | ~464 |
-| #36825 | 1:00 AM | 🔵 | Export Script Contains Duplicate Type Definitions | ~579 |
-| #36809 | 12:56 AM | 🟣 | GitHub Issue #527 Anti-Pattern Verification Complete - All Checks Passed | ~495 |
-| #36808 | " | 🟣 | Verified Windows Path Arrays Remain Unmodified | ~435 |
-| #36807 | " | 🟣 | Final Verification Confirms Complete Apple Silicon Homebrew Implementation | ~430 |
-| #36806 | 12:55 AM | 🟣 | Verified Apple Silicon Paths Only in Non-Windows Arrays | ~411 |
-| #36805 | " | 🟣 | Verified No Architecture Detection in Source File Implementation | ~374 |
-| #36803 | " | 🟣 | Source File Syntax Validation Passed | ~301 |
-| #36801 | 12:54 AM | 🟣 | Verified Source File Homebrew Path Count | ~283 |
-| #36795 | 12:52 AM | 🟣 | GitHub Issue #527 Completed - Apple Silicon Homebrew Path Support | ~550 |
-| #36793 | 12:51 AM | 🟣 | GitHub Issue #527 Source File Updates Complete | ~452 |
-| #36792 | 12:50 AM | 🟣 | Added Apple Silicon Homebrew Path for UV Detection | ~391 |
-| #36791 | " | 🟣 | Added Apple Silicon Homebrew Path for Bun Detection | ~399 |
-| #36772 | 12:42 AM | 🔵 | Smart Install Script Path Arrays Analysis Complete | ~448 |
-| #36770 | " | 🔵 | Export Script Type Duplication Analysis Complete | ~555 |
-| #36761 | 12:36 AM | ✅ | Created Implementation Plans for Four GitHub Issues | ~507 |
-| #36760 | 12:34 AM | ✅ | Created Issue #531 Report: Export Script Type Duplication | ~430 |
-| #36758 | " | 🔵 | Issue #531 Root Cause - 73 Lines of Duplicated Export Type Definitions | ~529 |
-| #36752 | 12:32 AM | 🔵 | Export Script Type Definitions Found | ~368 |
-| #36721 | 12:15 AM | 🔵 | Issue #527 UV Homebrew Path Missing on Apple Silicon | ~492 |
-| #36719 | " | 🔵 | Issue #527 uv Homebrew Detection Missing on Apple Silicon Macs | ~526 |
-| #36390 | 8:50 PM | 🔄 | Comprehensive Monolith Refactor with Modular Architecture | ~724 |
-| #36386 | 8:49 PM | ✅ | Committed duplicate observation cleanup script to repository | ~283 |
-| #36382 | 8:48 PM | 🟣 | Added safety checks to prevent accidental deletion of all observation copies | ~281 |
-| #36381 | " | 🔴 | Fixed duplicate group creation to use title field and dynamic window seconds | ~282 |
-| #36380 | " | 🔄 | Improved database connection initialization with explicit readonly handling | ~245 |
-| #36377 | 8:47 PM | 🔄 | Updated console output to display title instead of text | ~220 |
-| #36376 | " | 🔵 | Found sample output display also references old text field | ~210 |
-| #36375 | " | 🔴 | Fixed duplicate group creation to use title field and dynamic time bucket | ~288 |
-| #36374 | " | 🔵 | Found duplicate group creation still references old text field | ~249 |
-| #36373 | " | 🔄 | Updated DuplicateGroup interface to use title instead of text | ~192 |
-| #36372 | 8:46 PM | 🟣 | Implemented composite content hashing using title, subtitle, and narrative | ~301 |
-| #36371 | " | 🔴 | Fixed SQL query to select actual observation content columns | ~283 |
-| #36370 | " | 🔄 | Updated ObservationRow interface to use title-based schema fields | ~219 |
-| #36361 | 8:44 PM | 🟣 | Implemented dynamic fingerprint generation for aggressive mode | ~285 |
-| #36360 | " | 🟣 | Implemented command-line arguments for time window mode selection | ~255 |
-| #36359 | " | 🟣 | Added configurable time window modes for duplicate detection | ~265 |
-| #36357 | 8:43 PM | 🔄 | Added null text validation to cleanup script fingerprinting loop | ~213 |
-| #36356 | " | 🟣 | Created duplicate observation cleanup script with safe dry-run mode | ~390 |
-| #36291 | 8:03 PM | 🔄 | Build Verification: Phase 3 & 4 Refactoring Compiles Successfully | ~545 |
-| #36010 | 8:49 PM | 🔵 | Anti-pattern Test Suite Located in Scripts Directory | ~254 |
-| #35976 | 4:48 PM | ✅ | Claude-mem build and marketplace sync completed | ~335 |
-| #35952 | 4:42 PM | 🔵 | Hook and Session Test Coverage Discovery | ~323 |
+| #37669 | 5:53 PM | 🔵 | Regeneration script uses process.cwd() for working directory determination | ~327 |
+| #37465 | 1:21 AM | 🟣 | Phase 1 Changes Committed: Configurable Observation Limits in Batch Script | ~363 |
+| #37464 | " | 🟣 | Complete Phase 1 Git Diff Shows All Changes for Configurable Observation Limits | ~394 |
+| #37462 | 1:20 AM | 🔄 | Removed Stale Default Parameter from findObservationsByFolder | ~285 |
+| #37461 | " | ⚖️ | Phase 1 Code Quality Review Passes with Optional Improvement Suggestion | ~401 |
+| #37460 | 1:18 AM | 🔵 | Anti-Pattern Detected: Stale Default Parameter in findObservationsByFolder | ~360 |
+| #37459 | " | 🟣 | Phase 1 Implementation Verified and Complete | ~338 |
+| #37454 | 1:17 AM | 🟣 | Batch Regeneration Script Now Uses Configurable Observation Limits | ~318 |
+| #37453 | " | 🔵 | Batch Regeneration Script Successfully Updated with Configurable Limits | ~287 |
+| #37452 | 1:16 AM | ✅ | Replace Hard-Coded Limit in Dry-Run Code Path | ~229 |
+| #37451 | " | ✅ | Replace Hard-Coded Limit in regenerateFolder Function | ~234 |
+| #37450 | " | ✅ | Load Settings for Observation Limit in Batch Regeneration Script | ~266 |
+| #37448 | " | 🔵 | Hard-Coded Observation Limit in Batch Regeneration Script | ~293 |
+| #37441 | 1:14 AM | 🔵 | First Hard-Coded Limit Location in regenerateFolder Function | ~248 |
+| #37440 | 1:13 AM | 🔵 | Comprehensive Analysis of Settings and Hard-Coded Limit | ~389 |
+| #37430 | 1:12 AM | 🔵 | Regenerate Script Uses Hardcoded Limit of 10 Observations | ~343 |
+| #37418 | 1:04 AM | 🔴 | Fixed CLAUDE.md duplicate content by filtering to direct children only | ~469 |
+| #37405 | 12:58 AM | 🔄 | Refactored extractRelevantFile to Only Show Direct Child Files | ~419 |
+| #37404 | 12:57 AM | 🔴 | Fixed CLAUDE.md Duplicate Content by Filtering Subfolder Files | ~486 |
+| #37403 | " | 🔵 | Observation Query and File Extraction Logic in Regenerate Script | ~494 |
+| #37402 | 12:56 AM | 🔵 | Folder Discovery and Observation Query Logic | ~463 |
+| #37401 | " | 🔵 | CLAUDE.md File Filtering Logic Uses Folder Path Prefix Matching | ~440 |
+| #37397 | 12:51 AM | 🟣 | Regenerate CLAUDE.md Script Implementation | ~447 |
+| #37391 | 12:48 AM | ✅ | Staged 23 CLAUDE.md files with mix of new and modified content | ~400 |
+| #37390 | 12:47 AM | ✅ | Regenerated 23 CLAUDE.md files in budapest workspace | ~365 |
+| #37389 | 12:46 AM | ✅ | Regenerate script dry-run shows reduced folder count from 679 to 92 | ~310 |
+| #37388 | 12:36 AM | 🔴 | Fixed cleanup mode to strip tags instead of deleting files blindly | ~394 |
+| #37382 | " | 🔴 | Removed isAutoGeneratedClaudeMd function that was incorrectly deleting entire files | ~120 |
+| #37381 | 12:35 AM | 🟣 | Enhanced cleanup mode to strip auto-generated sections instead of deleting entire files | ~171 |
+| #37380 | " | 🔵 | Cleanup mode implementation bug discovered - deletes files instead of stripping tags | ~435 |
+| #37354 | 11:55 PM | ✅ | Commit successfully pushed to feature/live-context-integrated branch | ~247 |
+| #37353 | " | 🔴 | Committed regenerate-claude-md.ts fix to feature branch | ~345 |
+| #37352 | " | ✅ | Git staging cleaned and script re-staged successfully | ~237 |
+| #37351 | 11:54 PM | ✅ | Script staged for commit with CLAUDE.md deletions still present in working tree | ~319 |
+| #37350 | " | ✅ | Git workspace reset and regenerate script staged for commit | ~244 |
+| #37349 | " | ✅ | Regenerate script rewrite shows 226 additions and 113 deletions | ~252 |
+| #37344 | 11:52 PM | ✅ | Regenerate script successfully finds 26 folders with observations | ~394 |
+| #37343 | " | 🔴 | Updated extractRelevantFile to work with relative paths | ~355 |
+| #37342 | " | 🔴 | Updated regenerateFolder function to accept both absolute and relative paths | ~352 |
+| #37341 | " | 🔴 | Updated main loop to pass relative paths to query functions | ~322 |
+| #37340 | " | 🔴 | Updated findObservationsByFolder to use relative paths in LIKE queries | ~360 |
+| #37338 | 11:51 PM | 🔵 | Script still finds zero observations despite correct project identifier | ~314 |
+| #37337 | " | 🔴 | Fixed project identifier to use basename instead of full path | ~293 |
+| #37333 | 11:50 PM | ✅ | Regenerate script dry-run shows 679 folders scoped to current project | ~317 |
+| #37332 | " | 🔴 | Rewrote regenerate-claude-md.ts to scope to current working directory | ~536 |
+| #37331 | 11:49 PM | 🔵 | No pending changes in regenerate-claude-md.ts | ~132 |
+| #37330 | " | 🔵 | Current regenerate-claude-md.ts implementation queries all projects | ~386 |
+| #37327 | 11:44 PM | ✅ | Cleaned Up Auto-Generated CLAUDE.md Files | ~352 |
+| #37326 | " | ✅ | Staged All Changes for Commit | ~386 |
+| #37325 | " | ✅ | Staged PR #554 Implementation Files | ~373 |
 </claude-mem-context>

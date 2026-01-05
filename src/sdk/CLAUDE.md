@@ -7,7 +7,6 @@
 
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
-| #35737 | 1:12 PM | 🔵 | Summary Prompt Interface Defines Optional last_user_message | ~253 |
-| #31855 | 6:53 PM | ✅ | テストスイートの大規模削除とテスト分析レポートの追加 | ~197 |
-| #31820 | 6:20 PM | 🔵 | Prompts system architecture uses mode.prompts.format_examples field | ~305 |
+| #37703 | 6:01 PM | 🔵 | ParsedObservation files_read and files_modified are string arrays parsed from XML | ~330 |
+| #37701 | " | 🔵 | Complete cwd data flow traced from hooks through observation processing | ~447 |
 </claude-mem-context>

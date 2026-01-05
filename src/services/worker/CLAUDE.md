@@ -7,54 +7,12 @@
 
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
-| #37626 | 5:35 PM | 🔵 | FormatTool Function Usage Across Codebase | ~493 |
-| #37538 | 4:45 PM | 🔵 | SessionManager formatTool Call Occurs After Database Persistence | ~351 |
-| #36942 | 2:43 AM | 🔵 | Recent Context Feature Architecture | ~300 |
-| #36924 | 2:25 AM | ✅ | Merged fix/pr-538-followups branch into main with comprehensive updates | ~481 |
-| #36914 | 2:24 AM | 🔵 | Recent commit 4d0a10c fixed multiple GitHub issues | ~365 |
-| #36845 | 1:44 AM | 🔵 | GeminiAgent Model Configuration and Rate Limiting | ~527 |
-| #36829 | 1:40 AM | 🔵 | PR #542 Review Analysis - Multi-Issue Fix Validation | ~562 |
-| #36827 | 1:03 AM | ✅ | Branch diff shows 1,293 insertions and 98 deletions across 15 files | ~464 |
-| #36790 | 12:49 AM | 🟣 | GitHub Issue #511 Completed - gemini-3-flash Model Support Added | ~482 |
-| #36788 | " | 🟣 | Verified gemini-3-flash Three-Location Synchronization | ~331 |
-| #36787 | 12:48 AM | 🟣 | Completed gemini-3-flash Support with Runtime Validation | ~382 |
-| #36786 | " | 🟣 | Added gemini-3-flash Rate Limit to GEMINI_RPM_LIMITS | ~359 |
-| #36785 | " | 🟣 | Added gemini-3-flash Model to GeminiModel Type Union | ~344 |
-| #36784 | 12:47 AM | 🔵 | Current Gemini Model Support in GeminiAgent | ~428 |
-| #36781 | 12:45 AM | 🔵 | Complete GeminiAgent Model Configuration Gap Analysis | ~552 |
-| #36778 | 12:44 AM | 🔵 | GeminiAgent Model Type and RPM Limits Definition | ~395 |
-| #36761 | 12:36 AM | ✅ | Created Implementation Plans for Four GitHub Issues | ~507 |
-| #36757 | 12:33 AM | 🔵 | Issue #511 Root Cause Identified - Gemini-3-Flash Configuration Mismatch | ~416 |
-| #36753 | " | 🔵 | GeminiAgent Implementation Details Examined | ~361 |
-| #36730 | 12:26 AM | ⚖️ | Revised Memory Leak Fix Strategy for Issue #532 | ~412 |
-| #36716 | 12:13 AM | 🔵 | Issue #514 Orphaned .jsonl Session Files Analysis | ~616 |
-| #36714 | 12:12 AM | 🔵 | Memory Leak Analysis Report for Issue #532 Generated | ~531 |
-| #36713 | 12:11 AM | 🔵 | Issue #520 Stuck Messages Already Resolved | ~569 |
-| #36712 | " | 🔵 | Memory Leak Analysis for Issue #532 Documented | ~646 |
-| #36670 | 11:37 PM | ✅ | Resolved merge conflicts by accepting branch changes for 39 files | ~435 |
-| #36637 | 10:47 PM | 🟣 | GeminiAgent Analysis Agent Running But Timed Out After 120 Seconds | ~521 |
-| #36625 | 10:44 PM | 🔵 | Documentation and Code Reveal Placeholder Detection Pattern | ~583 |
-| #36620 | 10:43 PM | 🔵 | GeminiAgent Implementation Uses Refactored Session ID Properties | ~508 |
-| #36523 | 9:34 PM | 🔴 | Fixed TypeScript Type Import Issues in Worker Services | ~386 |
-| #36519 | " | 🔴 | Fixed Type Import Issues Preventing Worker Tests | ~308 |
-| #36516 | 9:33 PM | 🔴 | Fixed TypeScript Type Import Issues in Worker Search Modules | ~377 |
-| #36346 | 8:30 PM | 🔄 | Removed pendingProcessingIds Tracking from Message Iterator | ~306 |
-| #36345 | " | 🔄 | Removed pendingProcessingIds Initialization in SessionManager | ~281 |
-| #36340 | 8:28 PM | 🔵 | Complete Duplicate Bug Analysis via Explore Agent | ~435 |
-| #36333 | 8:27 PM | 🔵 | pendingProcessingIds Tracking Across System | ~357 |
-| #36331 | 8:26 PM | 🔵 | SDKAgent Message Processing Flow | ~366 |
-| #36323 | 8:25 PM | 🔵 | Message Queue Architecture Scope Expanded | ~302 |
-| #36314 | " | 🔵 | Message Queue Processing Duplicate Bug Investigation | ~316 |
-| #36214 | 7:30 PM | 🔄 | Refactored OpenRouterAgent to Use Shared Utilities | ~703 |
-| #36213 | 7:28 PM | 🔄 | Refactored GeminiAgent to Use Shared Utilities | ~596 |
-| #36212 | 7:27 PM | 🔄 | Refactored SDKAgent to Use Shared ResponseProcessor | ~616 |
-| #36199 | 7:21 PM | 🔵 | OpenRouterAgent Implementation Analysis for Refactoring | ~622 |
-| #36196 | 7:20 PM | 🔵 | GeminiAgent Implementation Analysis for Refactoring | ~543 |
-| #36113 | 3:58 PM | 🔴 | Fixed FOREIGN KEY Constraint Failure in Observation Storage | ~448 |
-| #36109 | 10:44 PM | 🔵 | Message Processing Pattern Across Agent Implementations | ~193 |
-| #36108 | " | 🔄 | Unified empty response handling in SDK agent | ~275 |
-| #36107 | 10:42 PM | 🔵 | SDK Agent Message Flow Architecture | ~362 |
-| #36106 | 10:40 PM | 🔵 | Database Store Access Patterns in SDKAgent | ~264 |
-| #36087 | 10:15 PM | 🔵 | SDK Message Generator Initial Prompt Routing | ~420 |
-| #36086 | " | 🔵 | Memory Session ID Capture During SDK Message Processing | ~402 |
+| #37701 | 6:01 PM | 🔵 | Complete cwd data flow traced from hooks through observation processing | ~447 |
+| #37421 | 1:06 AM | 🔵 | Identified by-file API endpoint usage across codebase | ~406 |
+| #37416 | 1:02 AM | 🔴 | Fixed find_by_file Parameter Handling for Comma-Separated Values | ~375 |
+| #37415 | " | 🟣 | SearchManager Parameter Normalization Enhanced for Folder Queries | ~406 |
+| #37414 | 1:01 AM | 🔵 | SearchManager findByFile Uses filePath Parameter for File Search | ~429 |
+| #37413 | " | 🔵 | Hybrid Search Strategy: Metadata-First with Semantic Ranking | ~475 |
+| #37391 | 12:48 AM | ✅ | Staged 23 CLAUDE.md files with mix of new and modified content | ~400 |
+| #37390 | 12:47 AM | ✅ | Regenerated 23 CLAUDE.md files in budapest workspace | ~365 |
 </claude-mem-context>

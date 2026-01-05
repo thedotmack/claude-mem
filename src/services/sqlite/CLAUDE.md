@@ -5,16 +5,12 @@
 
 ### Jan 5, 2026
 
-**types.ts**
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
+| #37701 | 6:01 PM | 🔵 | Complete cwd data flow traced from hooks through observation processing | ~447 |
 | #37418 | 1:04 AM | 🔴 | Fixed CLAUDE.md duplicate content by filtering to direct children only | ~469 |
-| #37411 | 1:00 AM | 🟣 | Added isFolder Flag to SearchOptions Interface | ~325 |
-
-**SessionSearch.ts**
-| ID | Time | T | Title | Read |
-|----|------|---|-------|------|
 | #37412 | 1:00 AM | 🔴 | Fixed Folder Query to Return Only Direct Children Files | ~509 |
+| #37411 | " | 🟣 | Added isFolder Flag to SearchOptions Interface | ~325 |
 | #37410 | " | 🔵 | SessionSearch Class Design and FTS5 Deprecation Strategy | ~450 |
 | #37409 | 12:58 AM | 🔵 | SessionSearch Uses JSON Array Search for File Filtering | ~404 |
 </claude-mem-context>

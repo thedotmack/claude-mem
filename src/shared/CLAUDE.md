@@ -7,54 +7,34 @@
 
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
-| #37632 | 5:37 PM | 🔵 | SettingsDefaultsManager Circular Dependency with Logger Confirmed | ~556 |
-| #37628 | 5:36 PM | 🔴 | Test Execution Shows Logger Circular Dependency Error | ~596 |
-| #37617 | 5:32 PM | ⚖️ | PR #558 Review Requirements Categorized by Priority | ~637 |
-| #37613 | 5:31 PM | 🔵 | PR #558 Review Feedback Analysis | ~544 |
-| #37593 | 4:56 PM | 🟣 | Phase 3 Committed - Settings Auto-Creation Implemented | ~386 |
-| #37592 | " | ✅ | Phase 3 Anti-Pattern Check Complete - Clean Implementation | ~434 |
-| #37590 | 4:55 PM | 🟣 | Phase 3 Complete - Settings Auto-Creation Implemented | ~400 |
-| #37589 | " | 🟣 | Implemented Settings File Auto-Creation in loadFromFile | ~385 |
-| #37588 | " | ✅ | Added Required Imports for Settings File Creation | ~291 |
-| #37587 | 4:54 PM | 🔵 | SettingsDefaultsManager Missing File Auto-Creation | ~374 |
-| #37558 | 4:49 PM | 🔵 | Issue #555 Windows Hook Execution Patterns and Fix Strategy Documented | ~510 |
-| #37552 | 4:48 PM | 🔵 | Hook Timeout Configuration and Windows Multiplier | ~352 |
-| #37548 | " | ✅ | Issue #543 Analysis Report Created for Slash Command Availability | ~540 |
-| #37547 | 4:47 PM | ✅ | Issue #557 Analysis Report Created for Plugin Startup Failure | ~491 |
-| #37536 | 4:44 PM | 🔵 | Path Configuration and Directory Initialization Logic | ~430 |
-| #37535 | " | 🔵 | Settings Defaults Manager Implementation Analysis | ~447 |
-| #36781 | 12:45 AM | 🔵 | Complete GeminiAgent Model Configuration Gap Analysis | ~552 |
-| #36757 | 12:33 AM | 🔵 | Issue #511 Root Cause Identified - Gemini-3-Flash Configuration Mismatch | ~416 |
-| #36754 | " | 🔵 | Gemini-3-Flash Model Already Supported | ~301 |
-| #35965 | 4:45 PM | ✅ | Removed Session Alignment Debug Mode Setting | ~249 |
-| #35900 | 2:49 PM | 🔵 | Worker Health Checks Use Fetch Without Timeout Configuration | ~397 |
-| #35901 | " | 🔵 | PR #525 File Changes Summary | ~376 |
-| #35890 | 2:47 PM | 🔵 | Hook Exit Codes Define Three States But Not All Hooks Use Them | ~362 |
-| #35865 | 2:35 PM | 🔵 | Hook Constants Define Timeouts and Exit Codes | ~445 |
-| #35746 | 1:17 PM | 🔵 | Transcript Parser extractLastMessage Implementation Examined | ~423 |
-| #35735 | 1:11 PM | 🔵 | Transcript Parser Extracts Messages and Strips System Reminders | ~360 |
-| #35666 | 11:37 PM | ✅ | Staged error handling improvements across 10 files | ~261 |
-| #35640 | 11:26 PM | ✅ | Added APPROVED OVERRIDE comment for git command error handling | ~272 |
-| #35632 | 11:14 PM | 🟣 | Approved Override Reporting Section with Detailed Justification Display | ~547 |
-| #35631 | 11:13 PM | ✅ | Applied approved override marker to JSON parsing error handler | ~292 |
-| #35630 | " | 🔵 | Timeline Formatting JSON Parsing Pattern | ~279 |
-| #35515 | 9:14 PM | ✅ | Wave 1 Extended Fixes Committed: 5 Critical Error Handling Issues Resolved | ~409 |
-| #35501 | 9:10 PM | 🔵 | Wave 1 Verification Issue: Anti-Pattern Detector Not Recognizing Fixes | ~497 |
-| #35500 | 9:09 PM | 🟣 | Wave 1 Complete: All 4 Empty Catch Blocks Fixed | ~511 |
-| #35498 | " | 🔴 | Wave 1 Fix 4/4: Worker Health Check Polling Empty Catch Block Fixed | ~416 |
-| #35490 | 9:07 PM | 🔵 | Wave 1 Target File: Worker Utilities Health Check Polling | ~451 |
-| #34384 | 1:39 PM | 🔵 | UI Provides "haiku" as Model Selection Option | ~296 |
-| #34383 | " | 🔵 | Default Memory Agent Model is claude-sonnet-4-5 | ~284 |
-| #34083 | 8:53 PM | 🔵 | Settings Management and Configuration Defaults | ~665 |
-| #34082 | 8:52 PM | 🔵 | Path Configuration System Examined | ~585 |
-| #34036 | 8:33 PM | 🔵 | Centralized settings management with multi-provider configuration | ~526 |
-| #33982 | 7:08 PM | ✅ | Staged Version Mismatch Fix Changes | ~333 |
-| #33981 | 7:06 PM | 🔴 | Version Mismatch Auto-Restart Implementation | ~507 |
-| #33969 | 7:04 PM | 🔄 | Downgraded Hook Version Check to Debug Logging | ~367 |
-| #33959 | 7:00 PM | 🔵 | Worker Version Check Implementation in worker-utils.ts | ~385 |
-| #33944 | 6:29 PM | 🔵 | Worker Utils Implementation Shows AbortSignal Removal | ~437 |
-| #33860 | 4:35 PM | 🔵 | Comprehensive Bun integration architecture and platform-specific implementation details | ~619 |
-| #33854 | 4:33 PM | 🔵 | Worker service build and execution architecture mapped | ~509 |
-| #33337 | 3:36 PM | 🔴 | Fixed logger ignoring user's DEBUG setting from settings.json | ~273 |
-| #33318 | 3:09 PM | 🔴 | Fixed Worker Auto-Restart Shutdown Endpoint and Port Configuration | ~411 |
+| #37702 | 6:01 PM | 🔵 | Codebase uses path.join() exclusively with known anchors, no project root resolution pattern exists | ~489 |
+| #37667 | 5:53 PM | 🔵 | CLAUDE_MD_PATH hardcoded to CLAUDE_CONFIG_DIR location | ~303 |
+| #37477 | 1:26 AM | ⚖️ | Phase 2 Code Quality Review Passes All Checks | ~411 |
+| #37476 | 1:25 AM | ⚖️ | Phase 2 Anti-Pattern Check Passes with Minor Path Duplication Note | ~395 |
+| #37470 | 1:23 AM | 🟣 | Phase 2 Implementation Complete: Event-Driven Updates Use Configurable Limits | ~334 |
+| #37461 | 1:20 AM | ⚖️ | Phase 1 Code Quality Review Passes with Optional Improvement Suggestion | ~401 |
+| #37460 | 1:18 AM | 🔵 | Anti-Pattern Detected: Stale Default Parameter in findObservationsByFolder | ~360 |
+| #37454 | 1:17 AM | 🟣 | Batch Regeneration Script Now Uses Configurable Observation Limits | ~318 |
+| #37449 | 1:16 AM | 🔵 | SettingsDefaultsManager Configuration Structure | ~290 |
+| #37440 | 1:13 AM | 🔵 | Comprehensive Analysis of Settings and Hard-Coded Limit | ~389 |
+| #37436 | " | 🔵 | SettingsDefaultsManager Provides Settings Loading Utilities | ~339 |
+| #37434 | 1:12 AM | 🔵 | Shared Paths Module Exports User Settings Path | ~273 |
+| #37391 | 12:48 AM | ✅ | Staged 23 CLAUDE.md files with mix of new and modified content | ~400 |
+| #37390 | 12:47 AM | ✅ | Regenerated 23 CLAUDE.md files in budapest workspace | ~365 |
+| #37327 | 11:44 PM | ✅ | Cleaned Up Auto-Generated CLAUDE.md Files | ~352 |
+| #37326 | " | ✅ | Staged All Changes for Commit | ~386 |
+| #37325 | " | ✅ | Staged PR #554 Implementation Files | ~373 |
+| #37324 | " | ✅ | Cleaned Up Auto-Generated CLAUDE.md Files | ~392 |
+| #37323 | " | ✅ | Cleanup Completed - 31 Auto-Generated CLAUDE.md Files Deleted | ~411 |
+| #37319 | 11:35 PM | ✅ | Updated Interface Comment for Folder CLAUDE.md Setting | ~293 |
+| #37316 | " | ✅ | Changed Folder CLAUDE.md Feature to Opt-In | ~300 |
+| #37286 | 11:07 PM | ✅ | Phase 1 Settings Patch Applied Successfully | ~249 |
+| #37282 | 11:06 PM | ✅ | Phase 1 Settings Patch Created | ~284 |
+| #37272 | 11:02 PM | ✅ | Phase 1 Verification Complete - All Checks Pass | ~275 |
+| #37269 | 11:01 PM | 🔵 | Settings Toggle Already Implemented | ~311 |
+| #37265 | 10:59 PM | ✅ | Added CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED Setting to Defaults | ~314 |
+| #37264 | " | 🟣 | Added FOLDER_CLAUDEMD_ENABLED Setting to Interface | ~324 |
+| #37259 | 10:32 PM | ⚖️ | Implementation Plan Created for PR #554 Enhancements | ~621 |
+| #37258 | 10:31 PM | ⚖️ | Comprehensive Implementation Plan Created for PR #554 Review Fixes | ~722 |
+| #37257 | 10:29 PM | 🔵 | Regenerate Script and Settings Infrastructure Analyzed | ~563 |
 </claude-mem-context>
