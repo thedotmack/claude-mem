@@ -10,16 +10,15 @@
 |----|------|---|-------|------|
 | #37327 | 11:44 PM | ✅ | Cleaned Up Auto-Generated CLAUDE.md Files | ~352 |
 
-**SettingsDefaultsManager.ts**
+**folder-context.mdx**
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
 | #37326 | 11:44 PM | ✅ | Staged All Changes for Commit | ~386 |
 | #37325 | " | ✅ | Staged PR #554 Implementation Files | ~373 |
 | #37324 | " | ✅ | Cleaned Up Auto-Generated CLAUDE.md Files | ~392 |
 | #37323 | " | ✅ | Cleanup Completed - 31 Auto-Generated CLAUDE.md Files Deleted | ~411 |
-| #37319 | 11:35 PM | ✅ | Updated Interface Comment for Folder CLAUDE.md Setting | ~293 |
-| #37316 | " | ✅ | Changed Folder CLAUDE.md Feature to Opt-In | ~300 |
-| #37286 | 11:07 PM | ✅ | Phase 1 Settings Patch Applied Successfully | ~249 |
-| #37282 | 11:06 PM | ✅ | Phase 1 Settings Patch Created | ~284 |
-| #37272 | 11:02 PM | ✅ | Phase 1 Verification Complete - All Checks Pass | ~275 |
+| #37320 | 11:37 PM | ✅ | Configuration Instructions Simplified for End Users | ~308 |
+| #37318 | 11:35 PM | ✅ | Documentation Updated to Reflect Opt-In Default | ~320 |
+| #37317 | " | ✅ | Documentation Updated - Folder Context Disabled by Default | ~328 |
+| #37314 | 11:34 PM | ✅ | Created Comprehensive Folder Context Documentation | ~499 |
 </claude-mem-context>

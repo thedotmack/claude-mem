@@ -5,8 +5,8 @@
 
 ### Jan 4, 2026
 
-**CursorHooksInstaller.ts**
+**viewer/hooks/useSettings.ts**
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
-| #37255 | 10:29 PM | 🔵 | Folder CLAUDE.md Integration Flow Mapped | ~550 |
+| #37257 | 10:29 PM | 🔵 | Regenerate Script and Settings Infrastructure Analyzed | ~563 |
 </claude-mem-context>

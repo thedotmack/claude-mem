@@ -5,16 +5,21 @@
 
 ### Jan 4, 2026
 
+**CLAUDE.md**
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
-| #37241 | 9:57 PM | 🔵 | Git Status Shows Crash Fix Files Ready for Staging | ~376 |
-| #37240 | " | ✅ | Crash Fix Deployment - Commit and Push Phase | ~364 |
-| #37239 | 9:53 PM | 🟣 | Added comprehensive test suite for SDK resume parameter logic | ~472 |
-| #37238 | 9:52 PM | 🔵 | Session initialization flow traced - reveals stale memorySessionId persistence issue | ~526 |
-| #37237 | " | 🔴 | Fixed stale session resume crash by adding prompt number check | ~439 |
-| #37236 | " | 🔵 | Claude Agent SDK resume API documentation discovered via subtask | ~494 |
-| #37235 | 9:51 PM | ⚖️ | Implementation plan created for stale session resume crash fix | ~536 |
-| #37234 | " | 🔵 | Fix implementation preparation complete - SDKAgent resume logic identified | ~496 |
-| #37233 | 9:50 PM | 🔵 | Investigation complete - ready to implement fix for stale session resume bug | ~439 |
-| #37232 | 9:44 PM | 🔵 | Root cause identified for recurring Claude Code process crashes | ~469 |
+| #37327 | 11:44 PM | ✅ | Cleaned Up Auto-Generated CLAUDE.md Files | ~352 |
+
+**SettingsRoutes.ts**
+| ID | Time | T | Title | Read |
+|----|------|---|-------|------|
+| #37326 | 11:44 PM | ✅ | Staged All Changes for Commit | ~386 |
+| #37325 | " | ✅ | Staged PR #554 Implementation Files | ~373 |
+| #37324 | " | ✅ | Cleaned Up Auto-Generated CLAUDE.md Files | ~392 |
+| #37323 | " | ✅ | Cleanup Completed - 31 Auto-Generated CLAUDE.md Files Deleted | ~411 |
+| #37286 | 11:07 PM | ✅ | Phase 1 Settings Patch Applied Successfully | ~249 |
+| #37282 | 11:06 PM | ✅ | Phase 1 Settings Patch Created | ~284 |
+| #37280 | " | 🔵 | Feature Branch Missing FOLDER_CLAUDEMD_ENABLED Setting | ~251 |
+| #37272 | 11:02 PM | ✅ | Phase 1 Verification Complete - All Checks Pass | ~275 |
+| #37270 | " | 🔵 | Settings Routes Already Include FOLDER_CLAUDEMD_ENABLED | ~333 |
 </claude-mem-context>

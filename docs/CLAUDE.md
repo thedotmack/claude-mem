@@ -5,16 +5,29 @@
 
 ### Jan 4, 2026
 
+**public/usage/CLAUDE.md**
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
-| #37236 | 9:52 PM | 🔵 | Claude Agent SDK resume API documentation discovered via subtask | ~494 |
-| #37235 | 9:51 PM | ⚖️ | Implementation plan created for stale session resume crash fix | ~536 |
-| #37234 | " | 🔵 | Fix implementation preparation complete - SDKAgent resume logic identified | ~496 |
-| #37233 | 9:50 PM | 🔵 | Investigation complete - ready to implement fix for stale session resume bug | ~439 |
-| #37232 | 9:44 PM | 🔵 | Root cause identified for recurring Claude Code process crashes | ~469 |
-| #37231 | 9:38 PM | 🔴 | Root CLAUDE.md Excluded from Auto-Updates | ~270 |
-| #37230 | 9:29 PM | 🔵 | Claude-Mem Project Structure and Architecture | ~358 |
-| #37229 | 9:27 PM | ✅ | Removed Auto-Generated Timeline from Root CLAUDE.md | ~301 |
-| #37228 | 9:20 PM | 🔵 | New .claude/commands Directory Created with Workflow Command Files | ~341 |
-| #37227 | " | ✅ | Workflow Commands Copied to Project .claude/commands Directory | ~309 |
+| #37327 | 11:44 PM | ✅ | Cleaned Up Auto-Generated CLAUDE.md Files | ~352 |
+
+**public/docs.json**
+| ID | Time | T | Title | Read |
+|----|------|---|-------|------|
+| #37326 | 11:44 PM | ✅ | Staged All Changes for Commit | ~386 |
+| #37315 | 11:34 PM | ✅ | Added Folder Context Documentation to Navigation | ~236 |
+
+**public/usage/folder-context.mdx**
+| ID | Time | T | Title | Read |
+|----|------|---|-------|------|
+| #37325 | 11:44 PM | ✅ | Staged PR #554 Implementation Files | ~373 |
+| #37324 | " | ✅ | Cleaned Up Auto-Generated CLAUDE.md Files | ~392 |
+| #37323 | " | ✅ | Cleanup Completed - 31 Auto-Generated CLAUDE.md Files Deleted | ~411 |
+| #37320 | 11:37 PM | ✅ | Configuration Instructions Simplified for End Users | ~308 |
+| #37318 | 11:35 PM | ✅ | Documentation Updated to Reflect Opt-In Default | ~320 |
+| #37317 | " | ✅ | Documentation Updated - Folder Context Disabled by Default | ~328 |
+
+**public/CLAUDE.md**
+| ID | Time | T | Title | Read |
+|----|------|---|-------|------|
+| #37322 | 11:43 PM | ✅ | Cleanup Mode Executed - 33 Auto-Generated Files Deleted | ~301 |
 </claude-mem-context>

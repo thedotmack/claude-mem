@@ -5,16 +5,8 @@
 
 ### Jan 4, 2026
 
+**context-generator.cjs**
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
-| #37242 | 9:58 PM | 🔴 | Committed Stale SDK Session Resume Crash Fix | ~476 |
-| #37241 | 9:57 PM | 🔵 | Git Status Shows Crash Fix Files Ready for Staging | ~376 |
-| #37240 | " | ✅ | Crash Fix Deployment - Commit and Push Phase | ~364 |
-| #37239 | 9:53 PM | 🟣 | Added comprehensive test suite for SDK resume parameter logic | ~472 |
-| #37238 | 9:52 PM | 🔵 | Session initialization flow traced - reveals stale memorySessionId persistence issue | ~526 |
-| #37237 | " | 🔴 | Fixed stale session resume crash by adding prompt number check | ~439 |
-| #37236 | " | 🔵 | Claude Agent SDK resume API documentation discovered via subtask | ~494 |
-| #37235 | 9:51 PM | ⚖️ | Implementation plan created for stale session resume crash fix | ~536 |
-| #37234 | " | 🔵 | Fix implementation preparation complete - SDKAgent resume logic identified | ~496 |
-| #37233 | 9:50 PM | 🔵 | Investigation complete - ready to implement fix for stale session resume bug | ~439 |
+| #37283 | 11:06 PM | ✅ | Phase 1 Changes Stashed and Build Artifacts Cleaned | ~258 |
 </claude-mem-context>

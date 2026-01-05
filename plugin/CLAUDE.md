@@ -5,8 +5,8 @@
 
 ### Jan 4, 2026
 
-**CursorHooksInstaller.ts**
+**scripts/context-generator.cjs**
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
-| #37255 | 10:29 PM | 🔵 | Folder CLAUDE.md Integration Flow Mapped | ~550 |
+| #37283 | 11:06 PM | ✅ | Phase 1 Changes Stashed and Build Artifacts Cleaned | ~258 |
 </claude-mem-context>
