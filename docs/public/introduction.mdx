@@ -23,15 +23,16 @@ Restart Claude Code. Context from previous sessions will automatically appear in
 ## Key Features
 
 - 🧠 **Persistent Memory** - Context survives across sessions
-- 🌐 **Multilingual Modes** - Supports 10+ languages (Spanish, Chinese, French, etc.)
-- 🎭 **Mode System** - Switch between workflows (Code, Email Investigation)
-- 🔍 **mem-search Skill** - Query your project history with natural language (~2,250 token savings)
+- 📁 **Folder Context Files** - Auto-generated `CLAUDE.md` in project folders with activity timelines
+- 🌐 **Multilingual Modes** - Supports 28 languages (Spanish, Chinese, French, Japanese, etc.)
+- 🎭 **Mode System** - Switch between workflows (Code, Email Investigation, Chill)
+- 🔍 **MCP Search Tools** - Query your project history with natural language
 - 🌐 **Web Viewer UI** - Real-time memory stream visualization at http://localhost:37777
 - 🔒 **Privacy Control** - Use `<private>` tags to exclude sensitive content from storage
 - ⚙️ **Context Configuration** - Fine-grained control over what context gets injected
 - 🤖 **Automatic Operation** - No manual intervention required
 - 📊 **FTS5 Search** - Fast full-text search across observations
-- 🔗 **Citations** - Reference past observations with IDs (access via http://localhost:37777/api/observation/{id} or view all in the web viewer at http://localhost:37777)
+- 🔗 **Citations** - Reference past observations with IDs
 
 ## How It Works
 
@@ -58,11 +59,11 @@ Restart Claude Code. Context from previous sessions will automatically appear in
 ```
 
 **Core Components:**
-1. **5 Lifecycle Hooks** - SessionStart, UserPromptSubmit, PostToolUse, Stop, SessionEnd (6 hook scripts)
+1. **4 Lifecycle Hooks** - SessionStart, UserPromptSubmit, PostToolUse, Stop
 2. **Smart Install** - Cached dependency checker (pre-hook script)
 3. **Worker Service** - HTTP API on port 37777 managed by Bun
 4. **SQLite Database** - Stores sessions, observations, summaries with FTS5 search
-5. **mem-search Skill** - Query historical context with natural language
+5. **MCP Search Tools** - Query historical context with natural language
 6. **Web Viewer UI** - Real-time visualization with SSE and infinite scroll
 
 See [Architecture Overview](architecture/overview) for details.
@@ -76,20 +77,22 @@ See [Architecture Overview](architecture/overview) for details.
 
 ## What's New
 
+**v9.0.0 - Live Context:**
+- **Folder Context Files**: Auto-generated `CLAUDE.md` in project folders with activity timelines
+- **Worktree Support**: Unified context from parent repos and git worktrees
+- **Configurable Observation Limits**: Control how many observations appear in context
+- **Windows Fixes**: Resolved IPC detection and hook execution issues
+- **Settings Auto-Creation**: `settings.json` now auto-creates on first run
+- **MCP Tools Naming**: Updated from "mem-search skill" to "MCP tools" terminology
+
 **v7.1.0 - Bun Migration:**
 - Replaced PM2 with native Bun process management
 - Switched from better-sqlite3 to bun:sqlite for faster database access
-- Automatic one-time migration on first hook trigger
 - Simplified cross-platform support
 
 **v7.0.0 - Context Configuration:**
 - 11 settings for fine-grained control over context injection
 - Dual-tag privacy system (`<private>` tags)
-
-**Previous Highlights:**
-- **v5.5.0**: mem-search skill with 100% effectiveness rate
-- **v5.4.0**: Skill-based search (~2,250 tokens saved per session)
-- **v5.1.0**: Web viewer UI at http://localhost:37777
 
 ## Next Steps
 
@@ -100,8 +103,8 @@ See [Architecture Overview](architecture/overview) for details.
   <Card title="Getting Started" icon="rocket" href="/usage/getting-started">
     Learn how Claude-Mem works automatically
   </Card>
-  <Card title="Architecture" icon="sitemap" href="/architecture/overview">
-    System components & data flow
+  <Card title="Folder Context" icon="folder-open" href="/usage/folder-context">
+    Auto-generated folder CLAUDE.md files
   </Card>
   <Card title="Search Tools" icon="magnifying-glass" href="/usage/search-tools">
     Query your project history
