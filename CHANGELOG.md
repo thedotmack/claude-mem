@@ -63,10 +63,6 @@ Version 9.0.0 introduces the **Live Context System** - a major new capability th
 - Obsolete queue analysis documents
 - Legacy worker wrapper scripts
 
-### ⚠️ Breaking Changes
-- Hook runtime changed from Bun back to Node for stability
-- Some internal API endpoints renamed for consistency
-
 ---
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.5.10...v9.0.0
