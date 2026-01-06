@@ -52,7 +52,23 @@ function join(...parts) {
 const bunPath = getBunPath();
 
 if (!bunPath) {
-  console.error('❌ Bun not found. Please install Bun:');
+  console.error('');
+  console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.error('⚠️  Bun Runtime Not Found');
+  console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.error('');
+  console.error('The claude-mem plugin requires Bun to run.');
+  console.error('');
+  console.error('If you just installed the plugin, Bun may have been');
+  console.error('installed but is not yet in your current shell PATH.');
+  console.error('');
+  console.error('📋 Next Steps:');
+  console.error('');
+  console.error('1. Restart your terminal/IDE completely');
+  console.error('2. Try again');
+  console.error('');
+  console.error('If the issue persists, install Bun manually:');
+  console.error('');
   if (IS_WINDOWS) {
     console.error('   winget install Oven-sh.Bun');
     console.error('   Or: powershell -c "irm bun.sh/install.ps1 | iex"');
@@ -60,7 +76,9 @@ if (!bunPath) {
     console.error('   curl -fsSL https://bun.sh/install | bash');
     console.error('   Or: brew install oven-sh/bun/bun');
   }
-  console.error('\nThen restart your terminal.');
+  console.error('');
+  console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.error('');
   process.exit(1);
 }
 

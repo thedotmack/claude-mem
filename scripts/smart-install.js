@@ -119,43 +119,79 @@ function getUvVersion() {
  * Install Bun automatically based on platform
  */
 function installBun() {
-  console.error('🔧 Bun not found. Installing Bun runtime...');
+  console.error('');
+  console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.error('🔧 Installing Bun Runtime');
+  console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.error('');
+  console.error('Bun is required by claude-mem but was not found.');
+  console.error('Attempting automatic installation...');
+  console.error('');
 
   try {
     if (IS_WINDOWS) {
-      console.error('   Installing via PowerShell...');
+      console.error('📥 Installing via PowerShell...');
       execSync('powershell -c "irm bun.sh/install.ps1 | iex"', {
         stdio: 'inherit',
         shell: true
       });
     } else {
-      console.error('   Installing via curl...');
+      console.error('📥 Installing via curl...');
       execSync('curl -fsSL https://bun.sh/install | bash', {
         stdio: 'inherit',
         shell: true
       });
     }
 
-    if (!isBunInstalled()) {
-      throw new Error(
-        'Bun installation completed but binary not found. ' +
-        'Please restart your terminal and try again.'
-      );
+    // Check if Bun is now accessible
+    const bunPath = getBunPath();
+    if (bunPath) {
+      const version = getBunVersion();
+      console.error('');
+      console.error(`✅ Bun ${version} installed successfully!`);
+      console.error(`   Location: ${bunPath}`);
+      console.error('');
+      console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.error('');
+      return;
     }
 
-    const version = getBunVersion();
-    console.error(`✅ Bun ${version} installed successfully`);
-  } catch (error) {
-    console.error('❌ Failed to install Bun');
-    console.error('   Please install manually:');
+    // Bun installed but not in PATH yet
+    console.error('');
+    console.error('⚠️  Bun installed but not yet in PATH');
+    console.error('');
+    console.error('The plugin will work after you:');
+    console.error('  1. Close this terminal/IDE completely');
+    console.error('  2. Reopen and try again');
+    console.error('');
+    console.error('Or add Bun to PATH manually:');
     if (IS_WINDOWS) {
-      console.error('   - winget install Oven-sh.Bun');
-      console.error('   - Or: powershell -c "irm bun.sh/install.ps1 | iex"');
+      console.error(`  $env:Path += ";${join(homedir(), '.bun', 'bin')}"`);
     } else {
-      console.error('   - curl -fsSL https://bun.sh/install | bash');
-      console.error('   - Or: brew install oven-sh/bun/bun');
+      console.error(`  export PATH="$HOME/.bun/bin:$PATH"`);
     }
-    console.error('   Then restart your terminal and try again.');
+    console.error('');
+    console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.error('');
+    
+  } catch (error) {
+    console.error('');
+    console.error('❌ Automatic installation failed');
+    console.error('');
+    console.error('Please install Bun manually:');
+    console.error('');
+    if (IS_WINDOWS) {
+      console.error('  winget install Oven-sh.Bun');
+      console.error('  Or: powershell -c "irm bun.sh/install.ps1 | iex"');
+    } else {
+      console.error('  curl -fsSL https://bun.sh/install | bash');
+      console.error('  Or: brew install oven-sh/bun/bun');
+    }
+    console.error('');
+    console.error('Then restart your terminal and try again.');
+    console.error('');
+    console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.error('');
     throw error;
   }
 }
