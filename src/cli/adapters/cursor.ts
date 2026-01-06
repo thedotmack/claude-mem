@@ -2,9 +2,10 @@ import type { PlatformAdapter, NormalizedHookInput, HookResult } from '../types.
 
 // Maps Cursor stdin format - field names differ from Claude Code
 // Cursor uses: conversation_id, workspace_roots[], result_json, command/output
+// Handle undefined input gracefully for hooks that don't receive stdin
 export const cursorAdapter: PlatformAdapter = {
   normalizeInput(raw) {
-    const r = raw as any;
+    const r = (raw ?? {}) as any;
     // Cursor-specific: shell commands come as command/output instead of tool_name/input/response
     const isShellCommand = !!r.command && !r.tool_name;
     return {
