@@ -385,4 +385,18 @@ export class SessionManager {
   getPendingMessageStore(): PendingMessageStore {
     return this.getPendingStore();
   }
+
+  /**
+   * Get all active memory session IDs (for orphan detection)
+   * Used by ProcessManager to identify which SDK processes are legitimate vs orphaned
+   */
+  getActiveMemorySessionIds(): Set<string> {
+    const ids = new Set<string>();
+    for (const session of this.sessions.values()) {
+      if (session.memorySessionId) {
+        ids.add(session.memorySessionId);
+      }
+    }
+    return ids;
+  }
 }

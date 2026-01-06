@@ -257,6 +257,169 @@ export async function cleanupOrphanedProcesses(): Promise<void> {
 }
 
 /**
+ * Detected SDK process info
+ */
+export interface SDKProcessInfo {
+  pid: number;
+  memorySessionId: string | null;
+  commandLine: string;
+}
+
+/**
+ * Detect orphaned Claude SDK processes spawned by claude-mem
+ *
+ * Claude-mem's memory agents have a unique signature: --disallowedTools flag
+ * This flag is never used by the user's Claude Code session, only by memory agents.
+ *
+ * Orphan classification:
+ * - Has --resume <id> AND id NOT in activeMemorySessionIds → ORPHAN
+ * - Has --resume <id> AND id in activeMemorySessionIds → ACTIVE (skip)
+ * - No --resume flag → STARTING (grace period, skip)
+ *
+ * @param activeMemorySessionIds - Set of currently active memory session IDs
+ * @returns Array of PIDs that are orphaned (resuming dead sessions)
+ */
+export async function detectOrphanedSDKProcesses(
+  activeMemorySessionIds: Set<string>
+): Promise<number[]> {
+  const isWindows = process.platform === 'win32';
+  const processes: SDKProcessInfo[] = [];
+
+  try {
+    if (isWindows) {
+      // Windows: Get both PID and command line to extract session ID
+      const cmd = `wmic process where "commandline like '%claude%--disallowedTools%'" get processid,commandline /format:list`;
+      const { stdout } = await execAsync(cmd, { timeout: 60000 });
+
+      if (!stdout.trim()) {
+        logger.debug('SYSTEM', 'No SDK processes found (Windows)');
+        return [];
+      }
+
+      // Parse WMIC output: CommandLine=... and ProcessId=... on separate lines
+      const entries = stdout.split(/\r?\n\r?\n/).filter(e => e.trim());
+      for (const entry of entries) {
+        const pidMatch = entry.match(/ProcessId=(\d+)/i);
+        const cmdMatch = entry.match(/CommandLine=(.+)/i);
+        if (pidMatch) {
+          const pid = parseInt(pidMatch[1], 10);
+          const commandLine = cmdMatch ? cmdMatch[1].trim() : '';
+          if (Number.isInteger(pid) && pid > 0) {
+            const sessionId = extractResumeSessionId(commandLine);
+            processes.push({ pid, memorySessionId: sessionId, commandLine });
+          }
+        }
+      }
+    } else {
+      // Unix: Use ps with full command line
+      const { stdout } = await execAsync('ps aux | grep "claude.*--disallowedTools" | grep -v grep || true');
+
+      if (!stdout.trim()) {
+        logger.debug('SYSTEM', 'No SDK processes found (Unix)');
+        return [];
+      }
+
+      const lines = stdout.trim().split('\n');
+      for (const line of lines) {
+        const parts = line.trim().split(/\s+/);
+        if (parts.length > 1) {
+          const pid = parseInt(parts[1], 10);
+          // Command line is everything after the first 10 columns (USER PID %CPU %MEM VSZ RSS TTY STAT START TIME)
+          const commandLine = parts.slice(10).join(' ');
+          if (Number.isInteger(pid) && pid > 0) {
+            const sessionId = extractResumeSessionId(commandLine);
+            processes.push({ pid, memorySessionId: sessionId, commandLine });
+          }
+        }
+      }
+    }
+  } catch (error) {
+    // Detection failure is non-critical - log and return empty
+    logger.warn('SYSTEM', 'Failed to detect SDK processes', {}, error as Error);
+    return [];
+  }
+
+  if (processes.length === 0) {
+    return [];
+  }
+
+  // Filter to orphans only
+  const orphanedPids: number[] = [];
+  for (const proc of processes) {
+    if (proc.memorySessionId === null) {
+      // No --resume flag = still starting up, grace period
+      logger.debug('SYSTEM', 'SDK process in grace period (no --resume)', { pid: proc.pid });
+      continue;
+    }
+
+    if (activeMemorySessionIds.has(proc.memorySessionId)) {
+      // Active session, not an orphan
+      logger.debug('SYSTEM', 'SDK process is active', { pid: proc.pid, sessionId: proc.memorySessionId });
+      continue;
+    }
+
+    // Orphan: resuming a session that's not in our active set
+    logger.debug('SYSTEM', 'Detected orphaned SDK process', {
+      pid: proc.pid,
+      sessionId: proc.memorySessionId
+    });
+    orphanedPids.push(proc.pid);
+  }
+
+  return orphanedPids;
+}
+
+/**
+ * Extract --resume session ID from command line
+ * Returns null if no --resume flag found
+ */
+function extractResumeSessionId(commandLine: string): string | null {
+  // Match --resume followed by a UUID-like session ID
+  const match = commandLine.match(/--resume\s+([a-f0-9-]{36})/i);
+  return match ? match[1] : null;
+}
+
+/**
+ * Clean up orphaned SDK processes by PID
+ * Separated from detection for testability and reuse
+ */
+export async function cleanupOrphanedSDKProcesses(pids: number[]): Promise<void> {
+  if (pids.length === 0) {
+    return;
+  }
+
+  const isWindows = process.platform === 'win32';
+
+  logger.info('SYSTEM', 'Cleaning up orphaned SDK processes', {
+    platform: isWindows ? 'Windows' : 'Unix',
+    count: pids.length,
+    pids
+  });
+
+  for (const pid of pids) {
+    // SECURITY: Validate PID before killing
+    if (!Number.isInteger(pid) || pid <= 0) {
+      logger.warn('SYSTEM', 'Skipping invalid PID', { pid });
+      continue;
+    }
+
+    try {
+      if (isWindows) {
+        execSync(`taskkill /PID ${pid} /T /F`, { timeout: 60000, stdio: 'ignore' });
+      } else {
+        process.kill(pid, 'SIGKILL');
+      }
+      logger.info('SYSTEM', 'Killed orphaned SDK process', { pid });
+    } catch (error) {
+      // Process may have already exited - non-critical
+      logger.debug('SYSTEM', 'SDK process already exited', { pid }, error as Error);
+    }
+  }
+
+  logger.info('SYSTEM', 'Orphaned SDK cleanup complete', { count: pids.length });
+}
+
+/**
  * Spawn a detached daemon process
  * Returns the child PID or undefined if spawn failed
  */

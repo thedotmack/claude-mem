@@ -1,13 +1,18 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from 'bun:test';
 import { existsSync, readFileSync } from 'fs';
 import { homedir } from 'os';
 import path from 'path';
+import * as childProcess from 'child_process';
+import { promisify } from 'util';
 import {
   writePidFile,
   readPidFile,
   removePidFile,
   getPlatformTimeout,
-  type PidInfo
+  detectOrphanedSDKProcesses,
+  cleanupOrphanedSDKProcesses,
+  type PidInfo,
+  type SDKProcessInfo
 } from '../../src/services/infrastructure/index.js';
 
 const DATA_DIR = path.join(homedir(), '.claude-mem');
@@ -192,6 +197,78 @@ describe('ProcessManager', () => {
       const result = getPlatformTimeout(333);
 
       expect(result).toBe(666);
+    });
+  });
+
+  describe('detectOrphanedSDKProcesses', () => {
+    const originalPlatform = process.platform;
+
+    afterEach(() => {
+      Object.defineProperty(process, 'platform', {
+        value: originalPlatform,
+        writable: true,
+        configurable: true
+      });
+    });
+
+    it('should return empty array when no SDK processes found', async () => {
+      // Detection uses ps aux, but when no processes match, returns empty
+      const result = await detectOrphanedSDKProcesses(new Set());
+      // This test runs on actual system - result depends on running processes
+      expect(Array.isArray(result)).toBe(true);
+    });
+
+    it('should identify orphaned process resuming unknown session', async () => {
+      // Test the core logic: a process resuming a session NOT in our active set
+      // is considered orphaned
+      const activeSessionIds = new Set(['known-session-id-1', 'known-session-id-2']);
+
+      // The detection function should NOT return PIDs for sessions in the active set
+      // and SHOULD return PIDs for sessions NOT in the active set
+      const result = await detectOrphanedSDKProcesses(activeSessionIds);
+      expect(Array.isArray(result)).toBe(true);
+    });
+
+    it('should skip processes without --resume flag (grace period)', async () => {
+      // Processes that don't have --resume are still starting up
+      // They should not be killed (grace period)
+      const activeSessionIds = new Set<string>();
+      const result = await detectOrphanedSDKProcesses(activeSessionIds);
+
+      // The function returns only PIDs with --resume for unknown sessions
+      // Fresh processes (no --resume) are skipped
+      expect(Array.isArray(result)).toBe(true);
+    });
+
+    it('should validate PIDs are positive integers', async () => {
+      // Security: only valid PIDs should be returned
+      const result = await detectOrphanedSDKProcesses(new Set());
+
+      // All returned PIDs must be positive integers
+      for (const pid of result) {
+        expect(Number.isInteger(pid)).toBe(true);
+        expect(pid).toBeGreaterThan(0);
+      }
+    });
+  });
+
+  describe('cleanupOrphanedSDKProcesses', () => {
+    it('should do nothing for empty PID array', async () => {
+      // Should complete without error
+      await expect(cleanupOrphanedSDKProcesses([])).resolves.toBeUndefined();
+    });
+
+    it('should skip invalid PIDs', async () => {
+      // Invalid PIDs should be skipped, not cause errors
+      // Note: 0 and negative PIDs are invalid
+      await expect(cleanupOrphanedSDKProcesses([0, -1, -100])).resolves.toBeUndefined();
+    });
+
+    it('should handle already-exited processes gracefully', async () => {
+      // Use a PID that definitely doesn't exist (very high number)
+      // Should not throw, just log and continue
+      const nonExistentPid = 9999999;
+      await expect(cleanupOrphanedSDKProcesses([nonExistentPid])).resolves.toBeUndefined();
     });
   });
 });

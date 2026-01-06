@@ -27,6 +27,8 @@ import {
   removePidFile,
   getPlatformTimeout,
   cleanupOrphanedProcesses,
+  detectOrphanedSDKProcesses,
+  cleanupOrphanedSDKProcesses,
   spawnDaemon,
   createSignalHandler
 } from './infrastructure/ProcessManager.js';
@@ -219,6 +221,13 @@ export class WorkerService {
   private async initializeBackground(): Promise<void> {
     try {
       await cleanupOrphanedProcesses();
+
+      // Cleanup orphaned SDK processes from previous worker sessions
+      const activeSessionIds = this.sessionManager.getActiveMemorySessionIds();
+      const orphanedPids = await detectOrphanedSDKProcesses(activeSessionIds);
+      if (orphanedPids.length > 0) {
+        await cleanupOrphanedSDKProcesses(orphanedPids);
+      }
 
       // Load mode configuration
       const { ModeManager } = await import('./domain/ModeManager.js');
