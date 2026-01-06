@@ -15,6 +15,7 @@ import { logger } from '../utils/logger.js';
 import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { extractLastMessage } from '../shared/transcript-parser.js';
+import { truncateLargeText } from '../shared/text-truncation.js';
 
 export interface StopInput {
   session_id: string;
@@ -45,11 +46,18 @@ async function summaryHook(input?: StopInput): Promise<void> {
   // Extract last assistant message from transcript (the work Claude did)
   // Note: "user" messages in transcripts are mostly tool_results, not actual user input.
   // The user's original request is already stored in user_prompts table.
-  const lastAssistantMessage = extractLastMessage(input.transcript_path, 'assistant', true);
+  const rawLastAssistantMessage = extractLastMessage(input.transcript_path, 'assistant', true);
+
+  // Truncate large messages to prevent ECONNRESET when sending to worker
+  // Keeps head (context) + tail (results) to preserve useful information
+  const lastAssistantMessage = truncateLargeText(rawLastAssistantMessage);
+  const wasTruncated = rawLastAssistantMessage.length !== lastAssistantMessage.length;
 
   logger.dataIn('HOOK', 'Stop: Requesting summary', {
     workerPort: port,
-    hasLastAssistantMessage: !!lastAssistantMessage
+    hasLastAssistantMessage: !!lastAssistantMessage,
+    originalLength: rawLastAssistantMessage.length,
+    truncated: wasTruncated
   });
 
   // Send to worker - worker handles privacy check and database operations

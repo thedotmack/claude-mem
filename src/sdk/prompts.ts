@@ -5,6 +5,7 @@
 
 import { logger } from '../utils/logger.js';
 import type { ModeConfig } from '../services/domain/types.js';
+import { truncateLargeText } from '../shared/text-truncation.js';
 
 export interface Observation {
   id: number;
@@ -123,13 +124,17 @@ export function buildObservationPrompt(obs: Observation): string {
  * Build prompt to generate progress summary
  */
 export function buildSummaryPrompt(session: SDKSession, mode: ModeConfig): string {
-  const lastAssistantMessage = session.last_assistant_message || logger.happyPathError(
+  const rawMessage = session.last_assistant_message || logger.happyPathError(
     'SDK',
     'Missing last_assistant_message in session for summary prompt',
     { sessionId: session.id },
     undefined,
     ''
   );
+
+  // Final fallback truncation - hook and worker should have already truncated,
+  // but this ensures we never send an oversized prompt to the AI model
+  const lastAssistantMessage = truncateLargeText(rawMessage);
 
   return `${mode.prompts.header_summary_checkpoint}
 ${mode.prompts.summary_instruction}

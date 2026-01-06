@@ -21,6 +21,7 @@ import { SessionCompletionHandler } from '../../session/SessionCompletionHandler
 import { PrivacyCheckValidator } from '../../validation/PrivacyCheckValidator.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
+import { truncateLargeText } from '../../../../shared/text-truncation.js';
 
 export class SessionRoutes extends BaseRouteHandler {
   private completionHandler: SessionCompletionHandler;
@@ -517,8 +518,12 @@ export class SessionRoutes extends BaseRouteHandler {
       return;
     }
 
+    // Truncate large messages as secondary defense against ECONNRESET/OOM
+    // Hook should have already truncated, but this ensures worker stability
+    const truncatedMessage = truncateLargeText(last_assistant_message);
+
     // Queue summarize
-    this.sessionManager.queueSummarize(sessionDbId, last_assistant_message);
+    this.sessionManager.queueSummarize(sessionDbId, truncatedMessage);
 
     // Ensure SDK agent is running
     this.ensureGeneratorRunning(sessionDbId, 'summarize');
