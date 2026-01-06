@@ -191,11 +191,18 @@ async function buildHooks() {
       console.log(`✓ ${hook.name} built (${sizeInKB} KB)`);
     }
 
+    // Copy bun-wrapper to plugin/scripts
+    console.log('\n📋 Copying bun-wrapper...');
+    fs.copyFileSync('scripts/bun-wrapper.js', `${hooksDir}/bun-wrapper.js`);
+    fs.chmodSync(`${hooksDir}/bun-wrapper.js`, 0o755);
+    console.log('✓ bun-wrapper.js copied');
+
     console.log('\n✅ All hooks, worker service, and MCP server built successfully!');
     console.log(`   Output: ${hooksDir}/`);
     console.log(`   - Hooks: *-hook.js`);
     console.log(`   - Worker: worker-service.cjs`);
     console.log(`   - MCP Server: mcp-server.cjs`);
+    console.log(`   - Wrapper: bun-wrapper.js`);
     console.log('\n💡 Note: Dependencies will be auto-installed on first hook execution');
     console.log('📝 Cursor hooks are in cursor-hooks/ (no build needed - plain shell scripts)');
 
