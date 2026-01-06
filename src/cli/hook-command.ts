@@ -10,6 +10,7 @@ export async function hookCommand(platform: string, event: string): Promise<void
 
     const rawInput = await readJsonFromStdin();
     const input = adapter.normalizeInput(rawInput);
+    input.platform = platform;  // Inject platform for handler-level decisions
     const result = await handler.execute(input);
     const output = adapter.formatOutput(result);
 

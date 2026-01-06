@@ -39,7 +39,7 @@ export const fileEditHandler: EventHandler = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         contentSessionId: sessionId,
-        tool_name: 'file_edit',
+        tool_name: 'write_file',
         tool_input: { filePath, edits },
         tool_response: { success: true },
         cwd
