@@ -12,6 +12,7 @@ import os from 'os';
 import { logger } from './logger.js';
 import { formatDate, groupByDate } from '../shared/timeline-formatting.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
+import { getWorkerHost } from '../shared/worker-utils.js';
 
 const SETTINGS_PATH = path.join(os.homedir(), '.claude-mem', 'settings.json');
 
@@ -257,8 +258,9 @@ export async function updateFolderClaudeMdFiles(
   for (const folderPath of folderPaths) {
     try {
       // Fetch timeline via existing API
+      const host = getWorkerHost();
       const response = await fetch(
-        `http://127.0.0.1:${port}/api/search/by-file?filePath=${encodeURIComponent(folderPath)}&limit=${limit}&project=${encodeURIComponent(project)}&isFolder=true`
+        `http://${host}:${port}/api/search/by-file?filePath=${encodeURIComponent(folderPath)}&limit=${limit}&project=${encodeURIComponent(project)}&isFolder=true`
       );
 
       if (!response.ok) {
@@ -278,7 +280,12 @@ export async function updateFolderClaudeMdFiles(
       logger.debug('FOLDER_INDEX', 'Updated CLAUDE.md', { folderPath });
     } catch (error) {
       // Fire-and-forget: log warning but don't fail
-      logger.warn('FOLDER_INDEX', 'Failed to update CLAUDE.md', { folderPath }, error as Error);
+      const err = error as Error;
+      logger.warn('FOLDER_INDEX', 'Failed to update CLAUDE.md', {
+        folderPath,
+        errorMessage: err.message,
+        errorStack: err.stack
+      });
     }
   }
 }

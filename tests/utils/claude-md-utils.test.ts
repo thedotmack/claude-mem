@@ -379,4 +379,109 @@ describe('updateFolderClaudeMdFiles', () => {
     const callUrl = (fetchMock.mock.calls[0] as unknown[])[0] as string;
     expect(callUrl).toContain(encodeURIComponent(folderPath));
   });
+
+  it('should handle projectRoot with trailing slash correctly', async () => {
+    const apiResponse = {
+      content: [{
+        text: '| #123 | 4:30 PM | 🔵 | Test observation | ~100 |'
+      }]
+    };
+
+    const fetchMock = mock(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve(apiResponse)
+    } as Response));
+    global.fetch = fetchMock;
+
+    // projectRoot WITH trailing slash
+    await updateFolderClaudeMdFiles(
+      ['src/utils/file.ts'],
+      'test-project',
+      37777,
+      '/home/user/my-project/'  // trailing slash
+    );
+
+    // Should call API with normalized path (no double slashes)
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const callUrl = (fetchMock.mock.calls[0] as unknown[])[0] as string;
+    // path.join normalizes the path, so /home/user/my-project/ + src/utils becomes /home/user/my-project/src/utils
+    expect(callUrl).toContain(encodeURIComponent('/home/user/my-project/src/utils'));
+    // Should NOT contain double slashes (except in http://)
+    expect(callUrl.replace('http://', '')).not.toContain('//');
+  });
+
+  it('should write CLAUDE.md to resolved projectRoot path', async () => {
+    const subfolderPath = join(tempDir, 'project-root-write-test', 'src', 'utils');
+
+    const apiResponse = {
+      content: [{
+        text: '| #456 | 5:00 PM | 🔵 | Written to correct path | ~200 |'
+      }]
+    };
+
+    global.fetch = mock(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve(apiResponse)
+    } as Response));
+
+    // Use tempDir as projectRoot with relative path src/utils/file.ts
+    await updateFolderClaudeMdFiles(
+      ['src/utils/file.ts'],
+      'test-project',
+      37777,
+      join(tempDir, 'project-root-write-test')
+    );
+
+    // Verify CLAUDE.md was written at the resolved absolute path
+    const claudeMdPath = join(subfolderPath, 'CLAUDE.md');
+    expect(existsSync(claudeMdPath)).toBe(true);
+
+    const content = readFileSync(claudeMdPath, 'utf-8');
+    expect(content).toContain('Written to correct path');
+    expect(content).toContain('#456');
+  });
+
+  it('should deduplicate relative paths from same folder with projectRoot', async () => {
+    const apiResponse = {
+      content: [{
+        text: '| #123 | 4:30 PM | 🔵 | Test | ~100 |'
+      }]
+    };
+
+    const fetchMock = mock(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve(apiResponse)
+    } as Response));
+    global.fetch = fetchMock;
+
+    // Multiple files in same folder (relative paths)
+    await updateFolderClaudeMdFiles(
+      ['src/utils/file1.ts', 'src/utils/file2.ts', 'src/utils/file3.ts'],
+      'test-project',
+      37777,
+      '/home/user/project'
+    );
+
+    // Should only fetch once for the shared folder
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const callUrl = (fetchMock.mock.calls[0] as unknown[])[0] as string;
+    expect(callUrl).toContain(encodeURIComponent('/home/user/project/src/utils'));
+  });
+
+  it('should handle empty string paths gracefully with projectRoot', async () => {
+    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
+    global.fetch = fetchMock;
+
+    await updateFolderClaudeMdFiles(
+      ['', 'src/file.ts', ''],  // includes empty strings
+      'test-project',
+      37777,
+      '/home/user/project'
+    );
+
+    // Should skip empty strings and only process valid path
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const callUrl = (fetchMock.mock.calls[0] as unknown[])[0] as string;
+    expect(callUrl).toContain(encodeURIComponent('/home/user/project/src'));
+  });
 });
