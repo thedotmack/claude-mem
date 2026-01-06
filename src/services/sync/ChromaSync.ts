@@ -165,10 +165,24 @@ export class ChromaSync {
 
       logger.debug('CHROMA_SYNC', 'Collection exists', { collection: this.collectionName });
     } catch (error) {
-      // Log the FULL error - don't try to guess what type it is
-      logger.warn('CHROMA_SYNC', 'Collection check failed, attempting to create', { collection: this.collectionName }, error as Error);
+      // Check if this is a connection error - don't try to create collection
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const isConnectionError =
+        errorMessage.includes('Not connected') ||
+        errorMessage.includes('Connection closed') ||
+        errorMessage.includes('MCP error -32000');
 
-      // Try to create collection - if this also fails, we'll see that error too
+      if (isConnectionError) {
+        // Reset connection state so next call attempts reconnect
+        this.connected = false;
+        this.client = null;
+        logger.error('CHROMA_SYNC', 'Connection lost during collection check',
+          { collection: this.collectionName }, error as Error);
+        throw new Error(`Chroma connection lost: ${errorMessage}`);
+      }
+
+      // Only attempt creation if it's genuinely a "collection not found" error
+      logger.warn('CHROMA_SYNC', 'Collection check failed, attempting to create', { collection: this.collectionName }, error as Error);
       logger.info('CHROMA_SYNC', 'Creating collection', { collection: this.collectionName });
 
       try {
@@ -642,7 +656,7 @@ export class ChromaSync {
         const batch = allDocs.slice(i, i + this.BATCH_SIZE);
         await this.addDocuments(batch);
 
-        logger.info('CHROMA_SYNC', 'Backfill progress', {
+        logger.debug('CHROMA_SYNC', 'Backfill progress', {
           project: this.project,
           progress: `${Math.min(i + this.BATCH_SIZE, allDocs.length)}/${allDocs.length}`
         });
@@ -683,7 +697,7 @@ export class ChromaSync {
         const batch = summaryDocs.slice(i, i + this.BATCH_SIZE);
         await this.addDocuments(batch);
 
-        logger.info('CHROMA_SYNC', 'Backfill progress', {
+        logger.debug('CHROMA_SYNC', 'Backfill progress', {
           project: this.project,
           progress: `${Math.min(i + this.BATCH_SIZE, summaryDocs.length)}/${summaryDocs.length}`
         });
@@ -732,7 +746,7 @@ export class ChromaSync {
         const batch = promptDocs.slice(i, i + this.BATCH_SIZE);
         await this.addDocuments(batch);
 
-        logger.info('CHROMA_SYNC', 'Backfill progress', {
+        logger.debug('CHROMA_SYNC', 'Backfill progress', {
           project: this.project,
           progress: `${Math.min(i + this.BATCH_SIZE, promptDocs.length)}/${promptDocs.length}`
         });
@@ -788,10 +802,29 @@ export class ChromaSync {
       where: whereStringified
     };
 
-    const result = await this.client.callTool({
-      name: 'chroma_query_documents',
-      arguments: arguments_obj
-    });
+    let result;
+    try {
+      result = await this.client.callTool({
+        name: 'chroma_query_documents',
+        arguments: arguments_obj
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const isConnectionError =
+        errorMessage.includes('Not connected') ||
+        errorMessage.includes('Connection closed') ||
+        errorMessage.includes('MCP error -32000');
+
+      if (isConnectionError) {
+        // Reset connection state so next call attempts reconnect
+        this.connected = false;
+        this.client = null;
+        logger.error('CHROMA_SYNC', 'Connection lost during query',
+          { project: this.project, query }, error as Error);
+        throw new Error(`Chroma query failed - connection lost: ${errorMessage}`);
+      }
+      throw error;
+    }
 
     const resultText = logger.happyPathError(
       'CHROMA',

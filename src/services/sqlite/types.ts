@@ -267,6 +267,8 @@ export interface SearchOptions extends SearchFilters {
   limit?: number;
   offset?: number;
   orderBy?: 'relevance' | 'date_desc' | 'date_asc';
+  /** When true, treats filePath as a folder and only matches direct children (not descendants) */
+  isFolder?: boolean;
 }
 
 export interface ObservationSearchResult extends ObservationRow {

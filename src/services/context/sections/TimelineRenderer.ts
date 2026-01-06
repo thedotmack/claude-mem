@@ -93,7 +93,7 @@ export function renderDayTimeline(
       }
     } else {
       const obs = item.data as Observation;
-      const file = extractFirstFile(obs.files_modified, cwd);
+      const file = extractFirstFile(obs.files_modified, cwd, obs.files_read);
       const time = formatTime(obs.created_at);
       const showTime = time !== lastTime;
       const timeDisplay = showTime ? time : '';

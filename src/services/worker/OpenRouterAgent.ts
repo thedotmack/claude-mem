@@ -121,7 +121,8 @@ export class OpenRouterAgent {
           worker,
           tokensUsed,
           null,
-          'OpenRouter'
+          'OpenRouter',
+          undefined  // No lastCwd yet - before message processing
         );
       } else {
         logger.warn('SDK', 'Empty OpenRouter init response - session may lack context', {
@@ -130,8 +131,15 @@ export class OpenRouterAgent {
         });
       }
 
+      // Track lastCwd from messages for CLAUDE.md generation
+      let lastCwd: string | undefined;
+
       // Process pending messages
       for await (const message of this.sessionManager.getMessageIterator(session.sessionDbId)) {
+        // Capture cwd from messages for proper worktree support
+        if (message.cwd) {
+          lastCwd = message.cwd;
+        }
         // Capture earliest timestamp BEFORE processing (will be cleared after)
         const originalTimestamp = session.earliestPendingTimestamp;
 
@@ -174,7 +182,8 @@ export class OpenRouterAgent {
             worker,
             tokensUsed,
             originalTimestamp,
-            'OpenRouter'
+            'OpenRouter',
+            lastCwd
           );
 
         } else if (message.type === 'summarize') {
@@ -210,7 +219,8 @@ export class OpenRouterAgent {
             worker,
             tokensUsed,
             originalTimestamp,
-            'OpenRouter'
+            'OpenRouter',
+            lastCwd
           );
         }
       }

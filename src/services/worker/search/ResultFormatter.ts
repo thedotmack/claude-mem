@@ -62,10 +62,8 @@ export class ResultFormatter {
       for (const result of dayResults) {
         let file = 'General';
         if (result.type === 'observation') {
-          file = extractFirstFile(
-            (result.data as ObservationSearchResult).files_modified,
-            cwd
-          );
+          const obs = result.data as ObservationSearchResult;
+          file = extractFirstFile(obs.files_modified, cwd, obs.files_read);
         }
         if (!resultsByFile.has(file)) {
           resultsByFile.set(file, []);

@@ -14,6 +14,7 @@
 import { logger } from '../../../utils/logger.js';
 import { parseObservations, parseSummary, type ParsedObservation, type ParsedSummary } from '../../../sdk/parser.js';
 import { updateCursorContextForProject } from '../../worker-service.js';
+import { updateFolderClaudeMdFiles } from '../../../utils/claude-md-utils.js';
 import { getWorkerPort } from '../../../shared/worker-utils.js';
 import type { ActiveSession } from '../../worker-types.js';
 import type { DatabaseManager } from '../DatabaseManager.js';
@@ -50,7 +51,8 @@ export async function processAgentResponse(
   worker: WorkerRef | undefined,
   discoveryTokens: number,
   originalTimestamp: number | null,
-  agentName: string
+  agentName: string,
+  projectRoot?: string
 ): Promise<void> {
   // Add assistant response to shared conversation history for provider interop
   if (text) {
@@ -72,6 +74,12 @@ export async function processAgentResponse(
     throw new Error('Cannot store observations: memorySessionId not yet captured');
   }
 
+  // Log pre-storage with session ID chain for verification
+  logger.info('DB', `STORING | sessionDbId=${session.sessionDbId} | memorySessionId=${session.memorySessionId} | obsCount=${observations.length} | hasSummary=${!!summaryForStore}`, {
+    sessionId: session.sessionDbId,
+    memorySessionId: session.memorySessionId
+  });
+
   // ATOMIC TRANSACTION: Store observations + summary ONCE
   // Messages are already deleted from queue on claim, so no completion tracking needed
   const result = sessionStore.storeObservations(
@@ -84,12 +92,10 @@ export async function processAgentResponse(
     originalTimestamp ?? undefined
   );
 
-  // Log what was saved
-  logger.info('SDK', `${agentName} observations and summary saved atomically`, {
+  // Log storage result with IDs for end-to-end traceability
+  logger.info('DB', `STORED | sessionDbId=${session.sessionDbId} | memorySessionId=${session.memorySessionId} | obsCount=${result.observationIds.length} | obsIds=[${result.observationIds.join(',')}] | summaryId=${result.summaryId || 'none'}`, {
     sessionId: session.sessionDbId,
-    observationCount: result.observationIds.length,
-    hasSummary: !!result.summaryId,
-    atomicTransaction: true
+    memorySessionId: session.memorySessionId
   });
 
   // AFTER transaction commits - async operations (can fail safely without data loss)
@@ -100,7 +106,8 @@ export async function processAgentResponse(
     dbManager,
     worker,
     discoveryTokens,
-    agentName
+    agentName,
+    projectRoot
   );
 
   // Sync and broadcast summary if present
@@ -152,7 +159,8 @@ async function syncAndBroadcastObservations(
   dbManager: DatabaseManager,
   worker: WorkerRef | undefined,
   discoveryTokens: number,
-  agentName: string
+  agentName: string,
+  projectRoot?: string
 ): Promise<void> {
   for (let i = 0; i < observations.length; i++) {
     const obsId = result.observationIds[i];
@@ -202,6 +210,25 @@ async function syncAndBroadcastObservations(
       project: session.project,
       prompt_number: session.lastPromptNumber,
       created_at_epoch: result.createdAtEpoch
+    });
+  }
+
+  // Update folder CLAUDE.md files for touched folders (fire-and-forget)
+  // This runs per-observation batch to ensure folders are updated as work happens
+  const allFilePaths: string[] = [];
+  for (const obs of observations) {
+    allFilePaths.push(...(obs.files_modified || []));
+    allFilePaths.push(...(obs.files_read || []));
+  }
+
+  if (allFilePaths.length > 0) {
+    updateFolderClaudeMdFiles(
+      allFilePaths,
+      session.project,
+      getWorkerPort(),
+      projectRoot
+    ).catch(error => {
+      logger.warn('FOLDER_INDEX', 'CLAUDE.md update failed (non-critical)', { project: session.project }, error as Error);
     });
   }
 }

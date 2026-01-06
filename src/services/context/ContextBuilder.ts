@@ -17,7 +17,9 @@ import { loadContextConfig } from './ContextConfigLoader.js';
 import { calculateTokenEconomics } from './TokenCalculator.js';
 import {
   queryObservations,
+  queryObservationsMulti,
   querySummaries,
+  querySummariesMulti,
   getPriorSessionMessages,
   prepareSummariesForTimeline,
   buildTimeline,
@@ -129,6 +131,9 @@ export async function generateContext(
   const cwd = input?.cwd ?? process.cwd();
   const project = getProjectName(cwd);
 
+  // Use provided projects array (for worktree support) or fall back to single project
+  const projects = input?.projects || [project];
+
   // Initialize database
   const db = initializeDatabase();
   if (!db) {
@@ -136,9 +141,13 @@ export async function generateContext(
   }
 
   try {
-    // Query data
-    const observations = queryObservations(db, project, config);
-    const summaries = querySummaries(db, project, config);
+    // Query data for all projects (supports worktree: parent + worktree combined)
+    const observations = projects.length > 1
+      ? queryObservationsMulti(db, projects, config)
+      : queryObservations(db, project, config);
+    const summaries = projects.length > 1
+      ? querySummariesMulti(db, projects, config)
+      : querySummaries(db, project, config);
 
     // Handle empty state
     if (observations.length === 0 && summaries.length === 0) {

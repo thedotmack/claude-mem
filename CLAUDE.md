@@ -19,10 +19,7 @@ Claude-mem is a Claude Code plugin providing persistent memory across sessions. 
 **Viewer UI** (`src/ui/viewer/`) - React interface at http://localhost:37777, built to `plugin/ui/viewer.html`
 
 ## Privacy Tags
-
-**Dual-Tag System** for meta-observation control:
 - `<private>content</private>` - User-level privacy control (manual, prevents storage)
-- `` - System-level tag (auto-injected observations, prevents recursive storage)
 
 **Implementation**: Tag stripping happens at hook layer (edge processing) before data reaches worker/database. See `src/utils/tag-stripping.ts` for shared utilities.
 
@@ -78,5 +75,4 @@ This architecture preserves the open-source nature of the project while enabling
 
 ## Important
 
-- **Always commit build artifacts** in `plugin/` - the plugin must work out of the box without requiring users to build from source
-- No need to edit the changelog ever, it's generated automatically.
+No need to edit the changelog ever, it's generated automatically.

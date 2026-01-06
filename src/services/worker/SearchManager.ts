@@ -71,6 +71,12 @@ export class SearchManager {
   private normalizeParams(args: any): any {
     const normalized: any = { ...args };
 
+    // Map filePath to files (API uses filePath, internal uses files)
+    if (normalized.filePath && !normalized.files) {
+      normalized.files = normalized.filePath;
+      delete normalized.filePath;
+    }
+
     // Parse comma-separated concepts into array
     if (normalized.concepts && typeof normalized.concepts === 'string') {
       normalized.concepts = normalized.concepts.split(',').map((s: string) => s.trim()).filter(Boolean);
@@ -99,6 +105,13 @@ export class SearchManager {
       };
       delete normalized.dateStart;
       delete normalized.dateEnd;
+    }
+
+    // Parse isFolder boolean from string
+    if (normalized.isFolder === 'true') {
+      normalized.isFolder = true;
+    } else if (normalized.isFolder === 'false') {
+      normalized.isFolder = false;
     }
 
     return normalized;
@@ -301,7 +314,7 @@ export class SearchManager {
       for (const result of dayResults) {
         let file = 'General';
         if (result.type === 'observation') {
-          file = extractFirstFile(result.data.files_modified, cwd);
+          file = extractFirstFile(result.data.files_modified, cwd, result.data.files_read);
         }
         if (!resultsByFile.has(file)) {
           resultsByFile.set(file, []);
@@ -577,7 +590,7 @@ export class SearchManager {
           lines.push('');
         } else if (item.type === 'observation') {
           const obs = item.data as ObservationSearchResult;
-          const file = extractFirstFile(obs.files_modified, cwd);
+          const file = extractFirstFile(obs.files_modified, cwd, obs.files_read);
 
           if (file !== currentFile) {
             if (tableOpen) {
@@ -1079,7 +1092,9 @@ export class SearchManager {
    */
   async findByFile(args: any): Promise<any> {
     const normalized = this.normalizeParams(args);
-    const { files: filePath, ...filters } = normalized;
+    const { files: rawFilePath, ...filters } = normalized;
+    // Handle both string and array (normalizeParams may split on comma)
+    const filePath = Array.isArray(rawFilePath) ? rawFilePath[0] : rawFilePath;
     let observations: ObservationSearchResult[] = [];
     let sessions: SessionSummarySearchResult[] = [];
 
@@ -1138,24 +1153,57 @@ export class SearchManager {
       };
     }
 
-    // Format as table
-    const header = `Found ${totalResults} result(s) for file "${filePath}"\n\n${this.formatter.formatTableHeader()}`;
-    const formattedResults: string[] = [];
+    // Combine observations and sessions with timestamps for date grouping
+    const combined: Array<{
+      type: 'observation' | 'session';
+      data: ObservationSearchResult | SessionSummarySearchResult;
+      epoch: number;
+      created_at: string;
+    }> = [
+      ...observations.map(obs => ({
+        type: 'observation' as const,
+        data: obs,
+        epoch: obs.created_at_epoch,
+        created_at: obs.created_at
+      })),
+      ...sessions.map(sess => ({
+        type: 'session' as const,
+        data: sess,
+        epoch: sess.created_at_epoch,
+        created_at: sess.created_at
+      }))
+    ];
 
-    // Add observations
-    observations.forEach((obs, i) => {
-      formattedResults.push(this.formatter.formatObservationIndex(obs, i));
-    });
+    // Sort by date (most recent first)
+    combined.sort((a, b) => b.epoch - a.epoch);
 
-    // Add sessions
-    sessions.forEach((session, i) => {
-      formattedResults.push(this.formatter.formatSessionIndex(session, i + observations.length));
-    });
+    // Group by date for proper timeline rendering
+    const resultsByDate = groupByDate(combined, item => item.created_at);
+
+    // Format with date headers for proper date parsing by folder CLAUDE.md generator
+    const lines: string[] = [];
+    lines.push(`Found ${totalResults} result(s) for file "${filePath}"`);
+    lines.push('');
+
+    for (const [day, dayResults] of resultsByDate) {
+      lines.push(`### ${day}`);
+      lines.push('');
+      lines.push(this.formatter.formatTableHeader());
+
+      for (const result of dayResults) {
+        if (result.type === 'observation') {
+          lines.push(this.formatter.formatObservationIndex(result.data as ObservationSearchResult, 0));
+        } else {
+          lines.push(this.formatter.formatSessionIndex(result.data as SessionSummarySearchResult, 0));
+        }
+      }
+      lines.push('');
+    }
 
     return {
       content: [{
         type: 'text' as const,
-        text: header + '\n' + formattedResults.join('\n')
+        text: lines.join('\n')
       }]
     };
   }
@@ -1519,7 +1567,7 @@ export class SearchManager {
         } else if (item.type === 'observation') {
           // Render observation in table
           const obs = item.data as ObservationSearchResult;
-          const file = extractFirstFile(obs.files_modified, cwd);
+          const file = extractFirstFile(obs.files_modified, cwd, obs.files_read);
 
           // Check if we need a new file section
           if (file !== currentFile) {
@@ -1749,7 +1797,7 @@ export class SearchManager {
           } else if (item.type === 'observation') {
             // Render observation in table
             const obs = item.data as ObservationSearchResult;
-            const file = extractFirstFile(obs.files_modified, cwd);
+            const file = extractFirstFile(obs.files_modified, cwd, obs.files_read);
 
             // Check if we need a new file section
             if (file !== currentFile) {

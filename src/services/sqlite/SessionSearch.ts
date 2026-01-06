@@ -337,14 +337,63 @@ export class SessionSearch {
   }
 
   /**
+   * Check if a file is a direct child of a folder (not in a subfolder)
+   */
+  private isDirectChild(filePath: string, folderPath: string): boolean {
+    if (!filePath.startsWith(folderPath + '/')) return false;
+    const remainder = filePath.slice(folderPath.length + 1);
+    return !remainder.includes('/');
+  }
+
+  /**
+   * Check if an observation has any files that are direct children of the folder
+   */
+  private hasDirectChildFile(obs: ObservationSearchResult, folderPath: string): boolean {
+    const checkFiles = (filesJson: string | null): boolean => {
+      if (!filesJson) return false;
+      try {
+        const files = JSON.parse(filesJson);
+        if (Array.isArray(files)) {
+          return files.some(f => this.isDirectChild(f, folderPath));
+        }
+      } catch {}
+      return false;
+    };
+
+    return checkFiles(obs.files_modified) || checkFiles(obs.files_read);
+  }
+
+  /**
+   * Check if a session has any files that are direct children of the folder
+   */
+  private hasDirectChildFileSession(session: SessionSummarySearchResult, folderPath: string): boolean {
+    const checkFiles = (filesJson: string | null): boolean => {
+      if (!filesJson) return false;
+      try {
+        const files = JSON.parse(filesJson);
+        if (Array.isArray(files)) {
+          return files.some(f => this.isDirectChild(f, folderPath));
+        }
+      } catch {}
+      return false;
+    };
+
+    return checkFiles(session.files_read) || checkFiles(session.files_edited);
+  }
+
+  /**
    * Find observations and summaries by file path
+   * When isFolder=true, only returns results with files directly in the folder (not subfolders)
    */
   findByFile(filePath: string, options: SearchOptions = {}): {
     observations: ObservationSearchResult[];
     sessions: SessionSummarySearchResult[];
   } {
     const params: any[] = [];
-    const { limit = 50, offset = 0, orderBy = 'date_desc', ...filters } = options;
+    const { limit = 50, offset = 0, orderBy = 'date_desc', isFolder = false, ...filters } = options;
+
+    // Query more results if we're filtering to direct children
+    const queryLimit = isFolder ? limit * 3 : limit;
 
     // Add file to filters
     const fileFilters = { ...filters, files: filePath };
@@ -359,9 +408,14 @@ export class SessionSearch {
       LIMIT ? OFFSET ?
     `;
 
-    params.push(limit, offset);
+    params.push(queryLimit, offset);
 
-    const observations = this.db.prepare(observationsSql).all(...params) as ObservationSearchResult[];
+    let observations = this.db.prepare(observationsSql).all(...params) as ObservationSearchResult[];
+
+    // Post-filter to direct children if isFolder mode
+    if (isFolder) {
+      observations = observations.filter(obs => this.hasDirectChildFile(obs, filePath)).slice(0, limit);
+    }
 
     // For session summaries, search files_read and files_edited
     const sessionParams: any[] = [];
@@ -403,9 +457,14 @@ export class SessionSearch {
       LIMIT ? OFFSET ?
     `;
 
-    sessionParams.push(limit, offset);
+    sessionParams.push(queryLimit, offset);
 
-    const sessions = this.db.prepare(sessionsSql).all(...sessionParams) as SessionSummarySearchResult[];
+    let sessions = this.db.prepare(sessionsSql).all(...sessionParams) as SessionSummarySearchResult[];
+
+    // Post-filter to direct children if isFolder mode
+    if (isFolder) {
+      sessions = sessions.filter(s => this.hasDirectChildFileSession(s, filePath)).slice(0, limit);
+    }
 
     return { observations, sessions };
   }

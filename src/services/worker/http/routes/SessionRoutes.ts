@@ -560,31 +560,23 @@ export class SessionRoutes extends BaseRouteHandler {
     // Step 1: Create/get SDK session (idempotent INSERT OR IGNORE)
     const sessionDbId = store.createSDKSession(contentSessionId, project, prompt);
 
-    logger.info('HTTP', 'SessionRoutes: createSDKSession returned', {
-      sessionDbId,
-      contentSessionId
-    });
-
-    // SESSION ALIGNMENT LOG: DB lookup proof - show content→memory mapping
+    // Verify session creation with DB lookup
     const dbSession = store.getSessionById(sessionDbId);
-    const memorySessionId = dbSession?.memory_session_id || null;
-    const hasCapturedMemoryId = !!memorySessionId;
+    const isNewSession = !dbSession?.memory_session_id;
+    logger.info('SESSION', `CREATED | contentSessionId=${contentSessionId} → sessionDbId=${sessionDbId} | isNew=${isNewSession} | project=${project}`, {
+      sessionId: sessionDbId
+    });
 
     // Step 2: Get next prompt number from user_prompts count
     const currentCount = store.getPromptNumberFromUserPrompts(contentSessionId);
     const promptNumber = currentCount + 1;
 
-    logger.info('HTTP', 'SessionRoutes: Calculated promptNumber', {
-      sessionDbId,
-      promptNumber,
-      currentCount
-    });
-
-    // SESSION ALIGNMENT LOG: For prompt > 1, prove we looked up memorySessionId from contentSessionId
+    // Debug-level alignment logs for detailed tracing
+    const memorySessionId = dbSession?.memory_session_id || null;
     if (promptNumber > 1) {
-      logger.info('HTTP', `[ALIGNMENT] DB Lookup Proof | contentSessionId=${contentSessionId} → memorySessionId=${memorySessionId || '(not yet captured)'} | prompt#=${promptNumber} | hasCapturedMemoryId=${hasCapturedMemoryId}`);
+      logger.debug('HTTP', `[ALIGNMENT] DB Lookup Proof | contentSessionId=${contentSessionId} → memorySessionId=${memorySessionId || '(not yet captured)'} | prompt#=${promptNumber}`);
     } else {
-      logger.info('HTTP', `[ALIGNMENT] New Session | contentSessionId=${contentSessionId} | prompt#=${promptNumber} | memorySessionId will be captured on first SDK response`);
+      logger.debug('HTTP', `[ALIGNMENT] New Session | contentSessionId=${contentSessionId} | prompt#=${promptNumber} | memorySessionId will be captured on first SDK response`);
     }
 
     // Step 3: Strip privacy tags from prompt
@@ -610,10 +602,10 @@ export class SessionRoutes extends BaseRouteHandler {
     // Step 5: Save cleaned user prompt
     store.saveUserPrompt(contentSessionId, promptNumber, cleanedPrompt);
 
-    logger.info('SESSION', 'Session initialized via HTTP', {
+    // Debug-level log since CREATED already logged the key info
+    logger.debug('SESSION', 'User prompt saved', {
       sessionId: sessionDbId,
-      promptNumber,
-      project
+      promptNumber
     });
 
     res.json({
