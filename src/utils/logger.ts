@@ -24,8 +24,8 @@ interface LogContext {
   [key: string]: any;
 }
 
-// Default data directory - matches SettingsDefaultsManager.DEFAULTS.CLAUDE_MEM_DATA_DIR
-// We inline this to avoid circular dependency with SettingsDefaultsManager
+// NOTE: This default must match DEFAULT_DATA_DIR in src/shared/SettingsDefaultsManager.ts
+// Inlined here to avoid circular dependency with SettingsDefaultsManager
 const DEFAULT_DATA_DIR = join(homedir(), '.claude-mem');
 
 class Logger {
