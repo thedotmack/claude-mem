@@ -1,3 +1,13 @@
+/**
+ * Tests for Express error handling middleware
+ *
+ * Mock Justification (~11% mock code):
+ * - Logger spies: Suppress console output during tests (standard practice)
+ * - Express req/res mocks: Required because Express middleware expects these
+ *   objects - testing the actual formatting and status code logic
+ *
+ * What's NOT mocked: AppError class, createErrorResponse function (tested directly)
+ */
 import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
 import type { Request, Response, NextFunction } from 'express';
 import { logger } from '../../src/utils/logger.js';
