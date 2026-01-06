@@ -737,6 +737,20 @@ async function main() {
       process.exit(cursorResult);
     }
 
+    case 'hook': {
+      const platform = process.argv[3];
+      const event = process.argv[4];
+      if (!platform || !event) {
+        console.error('Usage: claude-mem hook <platform> <event>');
+        console.error('Platforms: claude-code, cursor, raw');
+        console.error('Events: context, session-init, observation, summarize, user-message');
+        process.exit(1);
+      }
+      const { hookCommand } = await import('../cli/hook-command.js');
+      await hookCommand(platform, event);
+      break;
+    }
+
     case '--daemon':
     default: {
       const worker = new WorkerService();
