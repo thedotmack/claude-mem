@@ -3,9 +3,9 @@
  * Provides readable, traceable logging with correlation IDs and data flow tracking
  */
 
-import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
-import { appendFileSync, existsSync, mkdirSync } from 'fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'fs';
 import { join } from 'path';
+import { homedir } from 'os';
 
 export enum LogLevel {
   DEBUG = 0,
@@ -24,25 +24,33 @@ interface LogContext {
   [key: string]: any;
 }
 
+// NOTE: This default must match DEFAULT_DATA_DIR in src/shared/SettingsDefaultsManager.ts
+// Inlined here to avoid circular dependency with SettingsDefaultsManager
+const DEFAULT_DATA_DIR = join(homedir(), '.claude-mem');
+
 class Logger {
   private level: LogLevel | null = null;
   private useColor: boolean;
   private logFilePath: string | null = null;
+  private logFileInitialized: boolean = false;
 
   constructor() {
     // Disable colors when output is not a TTY (e.g., PM2 logs)
     this.useColor = process.stdout.isTTY ?? false;
-    this.initializeLogFile();
+    // Don't initialize log file in constructor - do it lazily to avoid circular dependency
   }
 
   /**
-   * Initialize log file path and ensure directory exists
+   * Initialize log file path and ensure directory exists (lazy initialization)
    */
-  private initializeLogFile(): void {
+  private ensureLogFileInitialized(): void {
+    if (this.logFileInitialized) return;
+    this.logFileInitialized = true;
+
     try {
-      // Get data directory from settings
-      const dataDir = SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR');
-      const logsDir = join(dataDir, 'logs');
+      // Use default data directory to avoid circular dependency with SettingsDefaultsManager
+      // The log directory is always based on the default, not user settings
+      const logsDir = join(DEFAULT_DATA_DIR, 'logs');
 
       // Ensure logs directory exists
       if (!existsSync(logsDir)) {
@@ -60,20 +68,24 @@ class Logger {
   }
 
   /**
-   * Lazy-load log level from settings file (not hardcoded defaults!)
+   * Lazy-load log level from settings file
+   * Uses direct file reading to avoid circular dependency with SettingsDefaultsManager
    */
   private getLevel(): LogLevel {
     if (this.level === null) {
       try {
-        // Load settings from file to get user's actual log level
-        const dataDir = SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR');
-        const settingsPath = join(dataDir, 'settings.json');
-        const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-        const envLevel = settings.CLAUDE_MEM_LOG_LEVEL.toUpperCase();
-        this.level = LogLevel[envLevel as keyof typeof LogLevel] ?? LogLevel.INFO;
+        // Read settings file directly to avoid circular dependency
+        const settingsPath = join(DEFAULT_DATA_DIR, 'settings.json');
+        if (existsSync(settingsPath)) {
+          const settingsData = readFileSync(settingsPath, 'utf-8');
+          const settings = JSON.parse(settingsData);
+          const envLevel = (settings.CLAUDE_MEM_LOG_LEVEL || 'INFO').toUpperCase();
+          this.level = LogLevel[envLevel as keyof typeof LogLevel] ?? LogLevel.INFO;
+        } else {
+          this.level = LogLevel.INFO;
+        }
       } catch (error) {
         // Fallback to INFO if settings can't be loaded
-        console.error('[LOGGER] Failed to load settings, using INFO level:', error);
         this.level = LogLevel.INFO;
       }
     }
@@ -136,7 +148,15 @@ class Logger {
   formatTool(toolName: string, toolInput?: any): string {
     if (!toolInput) return toolName;
 
-    const input = typeof toolInput === 'string' ? JSON.parse(toolInput) : toolInput;
+    let input = toolInput;
+    if (typeof toolInput === 'string') {
+      try {
+        input = JSON.parse(toolInput);
+      } catch {
+        // Input is a raw string (e.g., Bash command), use as-is
+        input = toolInput;
+      }
+    }
 
     // Bash: show full command
     if (toolName === 'Bash' && input.command) {
@@ -221,6 +241,9 @@ class Logger {
     data?: any
   ): void {
     if (level < this.getLevel()) return;
+
+    // Lazy initialize log file on first use
+    this.ensureLogFileInitialized();
 
     const timestamp = this.formatTimestamp(new Date());
     const levelStr = LogLevel[level].padEnd(5);

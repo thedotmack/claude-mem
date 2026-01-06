@@ -2,6 +2,25 @@
 
 All notable changes to claude-mem.
 
+## [v8.5.10] - 2026-01-06
+
+## Bug Fixes
+
+- **#545**: Fixed `formatTool` crash when parsing non-JSON tool inputs (e.g., raw Bash commands)
+- **#544**: Fixed terminology in context hints - changed "mem-search skill" to "MCP tools"
+- **#557**: Settings file now auto-creates with defaults on first run (no more "module loader" errors)
+- **#543**: Fixed hook execution by switching runtime from `node` to `bun` (resolves `bun:sqlite` issues)
+
+## Code Quality
+
+- Fixed circular dependency between Logger and SettingsDefaultsManager
+- Added 72 integration tests for critical coverage gaps
+- Cleaned up mock-heavy tests causing module cache pollution
+
+## Full Changelog
+
+See PR #558 for complete details and diagnostic reports.
+
 ## [v8.5.9] - 2026-01-04
 
 ## What's New
@@ -1221,69 +1240,4 @@ claude plugin install thedotmack/claude-mem
 ---
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.2.0...v7.2.1
-
-## [v7.2.0] - 2025-12-14
-
-## 🎉 New Features
-
-### Automated Bug Report Generator
-
-Added comprehensive bug report tool that streamlines issue reporting with AI assistance:
-
-- **Command**: `npm run bug-report`
-- **🌎 Multi-language Support**: Write in ANY language, auto-translates to English
-- **📊 Smart Diagnostics**: Automatically collects:
-  - Version information (claude-mem, Claude Code, Node.js, Bun)
-  - Platform details (OS, version, architecture)
-  - Worker status (running state, PID, port, uptime, stats)
-  - Last 50 lines of logs (worker + silent debug)
-  - Database info and configuration settings
-- **🤖 AI-Powered**: Uses Claude Agent SDK to generate professional GitHub issues
-- **📝 Interactive**: Multiline input support with intuitive prompts
-- **🔒 Privacy-Safe**: 
-  - Auto-sanitizes all file paths (replaces home directory with ~)
-  - Optional `--no-logs` flag to exclude logs
-- **⚡ Streaming Progress**: Real-time character count and animated spinner
-- **🌐 One-Click Submit**: Auto-opens GitHub with pre-filled title and body
-
-### Usage
-
-From the plugin directory:
-```bash
-cd ~/.claude/plugins/marketplaces/thedotmack
-npm run bug-report
-```
-
-**Plugin Paths:**
-- macOS/Linux: `~/.claude/plugins/marketplaces/thedotmack`
-- Windows: `%USERPROFILE%\.claude\plugins\marketplaces\thedotmack`
-
-**Options:**
-```bash
-npm run bug-report --no-logs    # Skip logs for privacy
-npm run bug-report --verbose    # Show all diagnostics
-npm run bug-report --help       # Show help
-```
-
-## 📚 Documentation
-
-- Updated README with bug report section and usage instructions
-- Enhanced GitHub issue template to feature automated tool
-- Added platform-specific directory paths
-
-## 🔧 Technical Details
-
-**Files Added:**
-- `scripts/bug-report/cli.ts` - Interactive CLI entry point
-- `scripts/bug-report/index.ts` - Core logic with Agent SDK integration
-- `scripts/bug-report/collector.ts` - System diagnostics collector
-
-**Files Modified:**
-- `package.json` - Added bug-report script
-- `README.md` - New Bug Reports section
-- `.github/ISSUE_TEMPLATE/bug_report.md` - Updated with automated tool instructions
-
----
-
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.1.15...v7.2.0
 
