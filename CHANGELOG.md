@@ -51,6 +51,7 @@ Version 9.0.0 introduces the **Live Context System** - a major new capability th
 - v9.0 release notes in introduction page
 
 ### 🐛 Bug Fixes
+- **#572**: Fixed orphaned SDK subagent processes accumulating after Claude Code crashes. Worker now detects and cleans up orphans at startup using `--disallowedTools` as unique fingerprint.
 - Fixed stale session resume crash when SDK session is orphaned
 - Fixed logger serialization bug causing silent ChromaSync failures
 - Fixed CLAUDE.md path resolution in worktree environments
