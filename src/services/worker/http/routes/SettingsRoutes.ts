@@ -348,7 +348,9 @@ export class SettingsRoutes extends BaseRouteHandler {
     if (settings.CLAUDE_MEM_OPENROUTER_SITE_URL) {
       try {
         new URL(settings.CLAUDE_MEM_OPENROUTER_SITE_URL);
-      } catch {
+      } catch (error) {
+        // Invalid URL format
+        logger.debug('SETTINGS', 'Invalid URL format', { url: settings.CLAUDE_MEM_OPENROUTER_SITE_URL, error: error instanceof Error ? error.message : String(error) });
         return { valid: false, error: 'CLAUDE_MEM_OPENROUTER_SITE_URL must be a valid URL' };
       }
     }

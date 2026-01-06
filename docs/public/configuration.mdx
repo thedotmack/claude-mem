@@ -18,6 +18,7 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 | `CLAUDE_MEM_MODE`             | `code`                          | Active mode profile (e.g., `code--es`, `email-investigation`) |
 | `CLAUDE_MEM_CONTEXT_OBSERVATIONS` | `50`                        | Number of observations to inject      |
 | `CLAUDE_MEM_WORKER_PORT`      | `37777`                         | Worker service port                   |
+| `CLAUDE_MEM_WORKER_HOST`      | `127.0.0.1`                     | Worker service host address           |
 | `CLAUDE_MEM_SKIP_TOOLS`       | `ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion` | Comma-separated tools to exclude from observations |
 
 ### Gemini Provider Settings
@@ -189,19 +190,16 @@ Hooks are configured in `plugin/hooks/hooks.json`:
 }
 ```
 
-### Search Configuration (v5.4.0+)
+### Search Configuration
 
-**Migration Note**: As of v5.4.0, Claude-Mem uses skill-based search instead of MCP tools. As of v5.5.0, the skill was renamed to "mem-search" for better scope differentiation.
+Claude-Mem provides MCP search tools for querying your project history.
 
-**Previous (v5.3.x and earlier)**: MCP search server with 9 tools (~2,500 tokens per session)
-**Current (v5.4.0+)**: mem-search skill with HTTP API (~250 tokens per session)
+**No configuration required** - MCP tools are automatically available in Claude Code sessions.
 
-**No configuration required** - the mem-search skill is automatically available in Claude Code sessions.
-
-Search operations are now provided via:
-- **Skill**: `plugin/skills/mem-search/SKILL.md` (auto-invoked when users ask about past work)
+Search operations are provided via:
+- **MCP Server**: 3 tools (search, timeline, get_observations) with progressive disclosure
 - **HTTP API**: 10 endpoints on worker service port 37777
-- **Progressive Disclosure**: Full instructions loaded on-demand only when needed
+- **Auto-Invocation**: Claude recognizes natural language queries about past work
 
 ## Version Channel
 
@@ -228,6 +226,16 @@ Endless Mode is experimental and slower than standard mode. See [Beta Features](
 ## Worker Service Management
 
 Worker service is managed by Bun as a background process. The worker auto-starts on first session and runs continuously in the background.
+
+## Folder Context Files
+
+Claude-mem can automatically generate `CLAUDE.md` files in your project folders with activity timelines. This feature is disabled by default.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED` | `false` | Enable auto-generation of folder CLAUDE.md files |
+
+See [Folder Context Files](usage/folder-context) for full documentation on how this feature works, configuration options, and git integration recommendations.
 
 ## Context Injection Configuration
 

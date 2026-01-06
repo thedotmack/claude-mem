@@ -14,15 +14,12 @@ import path from 'path';
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
-import { parseObservations, parseSummary } from '../../sdk/parser.js';
 import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
-import type { ActiveSession, SDKUserMessage, PendingMessage } from '../worker-types.js';
+import type { ActiveSession, SDKUserMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
-import { pipelineMetrics } from '../pipeline/metrics.js';
-import { updateCursorContextForProject } from '../worker-service.js';
-import { getWorkerPort } from '../../shared/worker-utils.js';
+import { processAgentResponse, type WorkerRef } from './agents/index.js';
 
 // Import Agent SDK (assumes it's installed)
 // @ts-ignore - Agent SDK types may not be available
@@ -41,160 +38,185 @@ export class SDKAgent {
    * Start SDK agent for a session (event-driven, no polling)
    * @param worker WorkerService reference for spinner control (optional)
    */
-  async startSession(session: ActiveSession, worker?: any): Promise<void> {
-    try {
-      // Find Claude executable
-      const claudePath = this.findClaudeExecutable();
+  async startSession(session: ActiveSession, worker?: WorkerRef): Promise<void> {
+    // Track cwd from messages for CLAUDE.md generation (worktree support)
+    // Uses mutable object so generator updates are visible in response processing
+    const cwdTracker = { lastCwd: undefined as string | undefined };
 
-      // Get model ID and disallowed tools
-      const modelId = this.getModelId();
-      // Memory agent is OBSERVER ONLY - no tools allowed
-      const disallowedTools = [
-        'Bash',           // Prevent infinite loops
-        'Read',           // No file reading
-        'Write',          // No file writing
-        'Edit',           // No file editing
-        'Grep',           // No code searching
-        'Glob',           // No file pattern matching
-        'WebFetch',       // No web fetching
-        'WebSearch',      // No web searching
-        'Task',           // No spawning sub-agents
-        'NotebookEdit',   // No notebook editing
-        'AskUserQuestion',// No asking questions
-        'TodoWrite'       // No todo management
-      ];
+    // Find Claude executable
+    const claudePath = this.findClaudeExecutable();
 
-      // Create message generator (event-driven)
-      const messageGenerator = this.createMessageGenerator(session);
+    // Get model ID and disallowed tools
+    const modelId = this.getModelId();
+    // Memory agent is OBSERVER ONLY - no tools allowed
+    const disallowedTools = [
+      'Bash',           // Prevent infinite loops
+      'Read',           // No file reading
+      'Write',          // No file writing
+      'Edit',           // No file editing
+      'Grep',           // No code searching
+      'Glob',           // No file pattern matching
+      'WebFetch',       // No web fetching
+      'WebSearch',      // No web searching
+      'Task',           // No spawning sub-agents
+      'NotebookEdit',   // No notebook editing
+      'AskUserQuestion',// No asking questions
+      'TodoWrite'       // No todo management
+    ];
 
-      // CRITICAL: Only resume if memorySessionId is a REAL captured SDK session ID,
-      // not the placeholder (which equals contentSessionId). The placeholder is set
-      // for FK purposes but would cause the bug where we try to resume the USER's session!
-      const hasRealMemorySessionId = session.memorySessionId &&
-        session.memorySessionId !== session.contentSessionId;
+    // Create message generator (event-driven)
+    const messageGenerator = this.createMessageGenerator(session, cwdTracker);
 
-      logger.info('SDK', 'Starting SDK query', {
-        sessionDbId: session.sessionDbId,
-        contentSessionId: session.contentSessionId,
-        memorySessionId: session.memorySessionId,
-        hasRealMemorySessionId,
-        resume_parameter: hasRealMemorySessionId ? session.memorySessionId : '(none - fresh start)',
-        lastPromptNumber: session.lastPromptNumber
-      });
+    // CRITICAL: Only resume if:
+    // 1. memorySessionId exists (was captured from a previous SDK response)
+    // 2. lastPromptNumber > 1 (this is a continuation within the same SDK session)
+    // On worker restart or crash recovery, memorySessionId may exist from a previous
+    // SDK session but we must NOT resume because the SDK context was lost.
+    // NEVER use contentSessionId for resume - that would inject messages into the user's transcript!
+    const hasRealMemorySessionId = !!session.memorySessionId;
 
-      // Run Agent SDK query loop
-      // Only resume if we have a REAL captured memory session ID (not the placeholder)
-      const queryResult = query({
-        prompt: messageGenerator,
-        options: {
-          model: modelId,
-          // Only resume if memorySessionId differs from contentSessionId (meaning it was captured)
-          ...(hasRealMemorySessionId && { resume: session.memorySessionId }),
-          disallowedTools,
-          abortController: session.abortController,
-          pathToClaudeCodeExecutable: claudePath
+    logger.info('SDK', 'Starting SDK query', {
+      sessionDbId: session.sessionDbId,
+      contentSessionId: session.contentSessionId,
+      memorySessionId: session.memorySessionId,
+      hasRealMemorySessionId,
+      resume_parameter: hasRealMemorySessionId ? session.memorySessionId : '(none - fresh start)',
+      lastPromptNumber: session.lastPromptNumber
+    });
+
+    // Debug-level alignment logs for detailed tracing
+    if (session.lastPromptNumber > 1) {
+      const willResume = hasRealMemorySessionId;
+      logger.debug('SDK', `[ALIGNMENT] Resume Decision | contentSessionId=${session.contentSessionId} | memorySessionId=${session.memorySessionId} | prompt#=${session.lastPromptNumber} | hasRealMemorySessionId=${hasRealMemorySessionId} | willResume=${willResume} | resumeWith=${willResume ? session.memorySessionId : 'NONE'}`);
+    } else {
+      // INIT prompt - never resume even if memorySessionId exists (stale from previous session)
+      const hasStaleMemoryId = hasRealMemorySessionId;
+      logger.debug('SDK', `[ALIGNMENT] First Prompt (INIT) | contentSessionId=${session.contentSessionId} | prompt#=${session.lastPromptNumber} | hasStaleMemoryId=${hasStaleMemoryId} | action=START_FRESH | Will capture new memorySessionId from SDK response`);
+      if (hasStaleMemoryId) {
+        logger.warn('SDK', `Skipping resume for INIT prompt despite existing memorySessionId=${session.memorySessionId} - SDK context was lost (worker restart or crash recovery)`);
+      }
+    }
+
+    // Run Agent SDK query loop
+    // Only resume if we have a captured memory session ID
+    const queryResult = query({
+      prompt: messageGenerator,
+      options: {
+        model: modelId,
+        // Only resume if BOTH: (1) we have a memorySessionId AND (2) this isn't the first prompt
+        // On worker restart, memorySessionId may exist from a previous SDK session but we
+        // need to start fresh since the SDK context was lost
+        ...(hasRealMemorySessionId && session.lastPromptNumber > 1 && { resume: session.memorySessionId }),
+        disallowedTools,
+        abortController: session.abortController,
+        pathToClaudeCodeExecutable: claudePath
+      }
+    });
+
+    // Process SDK messages
+    for await (const message of queryResult) {
+      // Capture memory session ID from first SDK message (any type has session_id)
+      // This enables resume for subsequent generator starts within the same user session
+      if (!session.memorySessionId && message.session_id) {
+        session.memorySessionId = message.session_id;
+        // Persist to database for cross-restart recovery
+        this.dbManager.getSessionStore().updateMemorySessionId(
+          session.sessionDbId,
+          message.session_id
+        );
+        // Verify the update by reading back from DB
+        const verification = this.dbManager.getSessionStore().getSessionById(session.sessionDbId);
+        const dbVerified = verification?.memory_session_id === message.session_id;
+        logger.info('SESSION', `MEMORY_ID_CAPTURED | sessionDbId=${session.sessionDbId} | memorySessionId=${message.session_id} | dbVerified=${dbVerified}`, {
+          sessionId: session.sessionDbId,
+          memorySessionId: message.session_id
+        });
+        if (!dbVerified) {
+          logger.error('SESSION', `MEMORY_ID_MISMATCH | sessionDbId=${session.sessionDbId} | expected=${message.session_id} | got=${verification?.memory_session_id}`, {
+            sessionId: session.sessionDbId
+          });
         }
-      });
+        // Debug-level alignment log for detailed tracing
+        logger.debug('SDK', `[ALIGNMENT] Captured | contentSessionId=${session.contentSessionId} → memorySessionId=${message.session_id} | Future prompts will resume with this ID`);
+      }
 
-      // Process SDK messages
-      for await (const message of queryResult) {
-        // Capture memory session ID from first SDK message (any type has session_id)
-        // This enables resume for subsequent generator starts within the same user session
-        if (!session.memorySessionId && message.session_id) {
-          session.memorySessionId = message.session_id;
-          // Persist to database for cross-restart recovery
-          this.dbManager.getSessionStore().updateMemorySessionId(
-            session.sessionDbId,
-            message.session_id
-          );
-          logger.info('SDK', 'Captured memory session ID', {
-            sessionDbId: session.sessionDbId,
-            memorySessionId: message.session_id
+      // Handle assistant messages
+      if (message.type === 'assistant') {
+        const content = message.message.content;
+        const textContent = Array.isArray(content)
+          ? content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n')
+          : typeof content === 'string' ? content : '';
+
+        const responseSize = textContent.length;
+
+        // Capture token state BEFORE updating (for delta calculation)
+        const tokensBeforeResponse = session.cumulativeInputTokens + session.cumulativeOutputTokens;
+
+        // Extract and track token usage
+        const usage = message.message.usage;
+        if (usage) {
+          session.cumulativeInputTokens += usage.input_tokens || 0;
+          session.cumulativeOutputTokens += usage.output_tokens || 0;
+
+          // Cache creation counts as discovery, cache read doesn't
+          if (usage.cache_creation_input_tokens) {
+            session.cumulativeInputTokens += usage.cache_creation_input_tokens;
+          }
+
+          logger.debug('SDK', 'Token usage captured', {
+            sessionId: session.sessionDbId,
+            inputTokens: usage.input_tokens,
+            outputTokens: usage.output_tokens,
+            cacheCreation: usage.cache_creation_input_tokens || 0,
+            cacheRead: usage.cache_read_input_tokens || 0,
+            cumulativeInput: session.cumulativeInputTokens,
+            cumulativeOutput: session.cumulativeOutputTokens
           });
         }
 
-        // Handle assistant messages
-        if (message.type === 'assistant') {
-          const content = message.message.content;
-          const textContent = Array.isArray(content)
-            ? content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n')
-            : typeof content === 'string' ? content : '';
+        // Calculate discovery tokens (delta for this response only)
+        const discoveryTokens = (session.cumulativeInputTokens + session.cumulativeOutputTokens) - tokensBeforeResponse;
 
-          const responseSize = textContent.length;
+        // Process response (empty or not) and mark messages as processed
+        // Capture earliest timestamp BEFORE processing (will be cleared after)
+        const originalTimestamp = session.earliestPendingTimestamp;
 
-          // Capture token state BEFORE updating (for delta calculation)
-          const tokensBeforeResponse = session.cumulativeInputTokens + session.cumulativeOutputTokens;
-
-          // Extract and track token usage
-          const usage = message.message.usage;
-          if (usage) {
-            session.cumulativeInputTokens += usage.input_tokens || 0;
-            session.cumulativeOutputTokens += usage.output_tokens || 0;
-
-            // Cache creation counts as discovery, cache read doesn't
-            if (usage.cache_creation_input_tokens) {
-              session.cumulativeInputTokens += usage.cache_creation_input_tokens;
-            }
-
-            logger.debug('SDK', 'Token usage captured', {
-              sessionId: session.sessionDbId,
-              inputTokens: usage.input_tokens,
-              outputTokens: usage.output_tokens,
-              cacheCreation: usage.cache_creation_input_tokens || 0,
-              cacheRead: usage.cache_read_input_tokens || 0,
-              cumulativeInput: session.cumulativeInputTokens,
-              cumulativeOutput: session.cumulativeOutputTokens
-            });
-          }
-
-          // Calculate discovery tokens (delta for this response only)
-          const discoveryTokens = (session.cumulativeInputTokens + session.cumulativeOutputTokens) - tokensBeforeResponse;
-
-          // Process response (empty or not) and mark messages as processed
-          // Capture earliest timestamp BEFORE processing (will be cleared after)
-          const originalTimestamp = session.earliestPendingTimestamp;
-
-          if (responseSize > 0) {
-            const truncatedResponse = responseSize > 100
-              ? textContent.substring(0, 100) + '...'
-              : textContent;
-            logger.dataOut('SDK', `Response received (${responseSize} chars)`, {
-              sessionId: session.sessionDbId,
-              promptNumber: session.lastPromptNumber
-            }, truncatedResponse);
-
-            // Parse and process response with discovery token delta and original timestamp
-            await this.processSDKResponse(session, textContent, worker, discoveryTokens, originalTimestamp);
-          } else {
-            // Empty response - still need to mark pending messages as processed
-            await this.markMessagesProcessed(session, worker);
-          }
+        if (responseSize > 0) {
+          const truncatedResponse = responseSize > 100
+            ? textContent.substring(0, 100) + '...'
+            : textContent;
+          logger.dataOut('SDK', `Response received (${responseSize} chars)`, {
+            sessionId: session.sessionDbId,
+            promptNumber: session.lastPromptNumber
+          }, truncatedResponse);
         }
 
-        // Log result messages
-        if (message.type === 'result' && message.subtype === 'success') {
-          // Usage telemetry is captured at SDK level
-        }
+        // Parse and process response using shared ResponseProcessor
+        await processAgentResponse(
+          textContent,
+          session,
+          this.dbManager,
+          this.sessionManager,
+          worker,
+          discoveryTokens,
+          originalTimestamp,
+          'SDK',
+          cwdTracker.lastCwd
+        );
       }
 
-      // Mark session complete
-      const sessionDuration = Date.now() - session.startTime;
-      logger.success('SDK', 'Agent completed', {
-        sessionId: session.sessionDbId,
-        duration: `${(sessionDuration / 1000).toFixed(1)}s`
-      });
-
-    } catch (error: unknown) {
-      if (error instanceof Error && error.name === 'AbortError') {
-        logger.warn('SDK', 'Agent aborted', { sessionId: session.sessionDbId });
-      } else {
-        logger.failure('SDK', 'Agent error', { sessionDbId: session.sessionDbId }, error instanceof Error ? error : new Error(String(error)));
+      // Log result messages
+      if (message.type === 'result' && message.subtype === 'success') {
+        // Usage telemetry is captured at SDK level
       }
-      throw error;
-    } finally {
-      // NOTE: Do NOT delete session here - SessionRoutes.finally() handles cleanup
-      // and auto-restart logic. Deleting here races with pending work checks.
     }
+
+    // Mark session complete
+    const sessionDuration = Date.now() - session.startTime;
+    logger.success('SDK', 'Agent completed', {
+      sessionId: session.sessionDbId,
+      duration: `${(sessionDuration / 1000).toFixed(1)}s`
+    });
   }
 
   /**
@@ -226,8 +248,16 @@ export class SDKAgent {
    * - Each user message is added to session.conversationHistory
    * - This allows provider switching (Claude→Gemini) with full context
    * - SDK manages its own internal state, but we mirror it for interop
+   *
+   * CWD TRACKING:
+   * - cwdTracker is a mutable object shared with startSession
+   * - As messages with cwd are processed, cwdTracker.lastCwd is updated
+   * - This enables processAgentResponse to use the correct cwd for CLAUDE.md
    */
-  private async *createMessageGenerator(session: ActiveSession): AsyncIterableIterator<SDKUserMessage> {
+  private async *createMessageGenerator(
+    session: ActiveSession,
+    cwdTracker: { lastCwd: string | undefined }
+  ): AsyncIterableIterator<SDKUserMessage> {
     // Load active mode
     const mode = ModeManager.getInstance().getActiveMode();
 
@@ -263,6 +293,11 @@ export class SDKAgent {
 
     // Consume pending messages from SessionManager (event-driven, no polling)
     for await (const message of this.sessionManager.getMessageIterator(session.sessionDbId)) {
+      // Capture cwd from each message for worktree support
+      if (message.cwd) {
+        cwdTracker.lastCwd = message.cwd;
+      }
+
       if (message.type === 'observation') {
         // Update last prompt number
         if (message.prompt_number !== undefined) {
@@ -297,7 +332,6 @@ export class SDKAgent {
           memory_session_id: session.memorySessionId,
           project: session.project,
           user_prompt: session.userPrompt,
-          last_user_message: message.last_user_message || '',
           last_assistant_message: message.last_assistant_message || ''
         }, mode);
 
@@ -318,326 +352,6 @@ export class SDKAgent {
     }
   }
 
-  /**
-   * Process SDK response text (parse XML, save to database, sync to Chroma)
-   * @param discoveryTokens - Token cost for discovering this response (delta, not cumulative)
-   * @param originalTimestamp - Original epoch when message was queued (for backlog processing accuracy)
-   *
-   * Also captures assistant responses to shared conversation history for provider interop.
-   * This allows Gemini to see full context if provider is switched mid-session.
-   */
-  private async processSDKResponse(session: ActiveSession, text: string, worker: any | undefined, discoveryTokens: number, originalTimestamp: number | null): Promise<void> {
-    // Add assistant response to shared conversation history for provider interop
-    if (text) {
-      session.conversationHistory.push({ role: 'assistant', content: text });
-    }
-
-    // Parse observations (with metrics)
-    const parseStart = Date.now();
-    const observations = parseObservations(text, session.contentSessionId);
-    pipelineMetrics.recordStage('parse', Date.now() - parseStart, true, {
-      observationCount: observations.length,
-      textLength: text.length
-    });
-
-    // Store observations with original timestamp (if processing backlog) or current time
-    for (const obs of observations) {
-      // Store observation (with metrics)
-      const renderStart = Date.now();
-      const { id: obsId, createdAtEpoch } = this.dbManager.getSessionStore().storeObservation(
-        session.contentSessionId,
-        session.project,
-        obs,
-        session.lastPromptNumber,
-        discoveryTokens,
-        originalTimestamp ?? undefined
-      );
-      pipelineMetrics.recordStage('render', Date.now() - renderStart, true, {
-        obsId,
-        type: obs.type
-      });
-
-      // Log observation details
-      logger.info('SDK', 'Observation saved', {
-        sessionId: session.sessionDbId,
-        obsId,
-        type: obs.type,
-        title: obs.title || '(untitled)',
-        filesRead: obs.files_read?.length ?? 0,
-        filesModified: obs.files_modified?.length ?? 0,
-        concepts: obs.concepts?.length ?? 0
-      });
-
-      // Sync to Chroma (with metrics)
-      const chromaStart = Date.now();
-      const obsType = obs.type;
-      const obsTitle = obs.title || '(untitled)';
-      this.dbManager.getChromaSync().syncObservation(
-        obsId,
-        session.contentSessionId,
-        session.project,
-        obs,
-        session.lastPromptNumber,
-        createdAtEpoch,
-        discoveryTokens
-      ).then(() => {
-        const chromaDuration = Date.now() - chromaStart;
-        pipelineMetrics.recordStage('chroma', chromaDuration, true, { obsId, type: obsType });
-        logger.debug('CHROMA', 'Observation synced', {
-          obsId,
-          duration: `${chromaDuration}ms`,
-          type: obsType,
-          title: obsTitle
-        });
-      }).catch((error) => {
-        pipelineMetrics.recordStage('chroma', Date.now() - chromaStart, false, { obsId, type: obsType });
-        logger.warn('CHROMA', 'Observation sync failed, continuing without vector search', {
-          obsId,
-          type: obsType,
-          title: obsTitle
-        }, error);
-      });
-
-      // Calculate and store surprise score (Phase 2: Titans concepts)
-      this.calculateAndStoreSurpriseScore(obsId, session);
-
-      // Broadcast to SSE clients (for web UI) with metrics
-      if (worker && worker.sseBroadcaster) {
-        const broadcastStart = Date.now();
-        try {
-          worker.sseBroadcaster.broadcast({
-            type: 'new_observation',
-            observation: {
-              id: obsId,
-              memory_session_id: session.memorySessionId,
-              session_id: session.contentSessionId,
-              type: obs.type,
-              title: obs.title,
-              subtitle: obs.subtitle,
-              text: obs.text || null,
-              narrative: obs.narrative || null,
-              facts: JSON.stringify(obs.facts || []),
-              concepts: JSON.stringify(obs.concepts || []),
-              files_read: JSON.stringify(obs.files || []),
-              files_modified: JSON.stringify([]),
-              project: session.project,
-              prompt_number: session.lastPromptNumber,
-              created_at_epoch: createdAtEpoch
-            }
-          });
-          pipelineMetrics.recordStage('broadcast', Date.now() - broadcastStart, true, {
-            obsId,
-            type: 'observation'
-          });
-        } catch (error) {
-          pipelineMetrics.recordStage('broadcast', Date.now() - broadcastStart, false, {
-            obsId,
-            type: 'observation',
-            error: error instanceof Error ? error.message : String(error)
-          });
-        }
-      }
-    }
-
-    // Parse summary
-    const summary = parseSummary(text, session.sessionDbId);
-
-    // Store summary with original timestamp (if processing backlog) or current time
-    if (summary) {
-      const { id: summaryId, createdAtEpoch } = this.dbManager.getSessionStore().storeSummary(
-        session.contentSessionId,
-        session.project,
-        summary,
-        session.lastPromptNumber,
-        discoveryTokens,
-        originalTimestamp ?? undefined
-      );
-
-      // Log summary details
-      logger.info('SDK', 'Summary saved', {
-        sessionId: session.sessionDbId,
-        summaryId,
-        request: summary.request || '(no request)',
-        hasCompleted: !!summary.completed,
-        hasNextSteps: !!summary.next_steps
-      });
-
-      // Sync to Chroma
-      const chromaStart = Date.now();
-      const summaryRequest = summary.request || '(no request)';
-      this.dbManager.getChromaSync().syncSummary(
-        summaryId,
-        session.contentSessionId,
-        session.project,
-        summary,
-        session.lastPromptNumber,
-        createdAtEpoch,
-        discoveryTokens
-      ).then(() => {
-        const chromaDuration = Date.now() - chromaStart;
-        pipelineMetrics.recordStage('chroma', chromaDuration, true, { summaryId, type: 'summary' });
-        logger.debug('CHROMA', 'Summary synced', {
-          summaryId,
-          duration: `${chromaDuration}ms`,
-          request: summaryRequest
-        });
-      }).catch((error) => {
-        pipelineMetrics.recordStage('chroma', Date.now() - chromaStart, false, { summaryId, type: 'summary' });
-        logger.warn('CHROMA', 'Summary sync failed, continuing without vector search', {
-          summaryId,
-          request: summaryRequest
-        }, error);
-      });
-
-      // Broadcast to SSE clients (for web UI) with metrics
-      if (worker && worker.sseBroadcaster) {
-        const broadcastStart = Date.now();
-        try {
-          worker.sseBroadcaster.broadcast({
-            type: 'new_summary',
-            summary: {
-              id: summaryId,
-              session_id: session.contentSessionId,
-              request: summary.request,
-              investigated: summary.investigated,
-              learned: summary.learned,
-              completed: summary.completed,
-              next_steps: summary.next_steps,
-              notes: summary.notes,
-              project: session.project,
-              prompt_number: session.lastPromptNumber,
-              created_at_epoch: createdAtEpoch
-            }
-          });
-          pipelineMetrics.recordStage('broadcast', Date.now() - broadcastStart, true, {
-            summaryId,
-            type: 'summary'
-          });
-        } catch (error) {
-          pipelineMetrics.recordStage('broadcast', Date.now() - broadcastStart, false, {
-            summaryId,
-            type: 'summary',
-            error: error instanceof Error ? error.message : String(error)
-          });
-        }
-      }
-      
-      // Update Cursor context file for registered projects (fire-and-forget)
-      updateCursorContextForProject(session.project, getWorkerPort()).catch(() => {});
-    }
-
-    // Mark messages as processed after successful observation/summary storage
-    await this.markMessagesProcessed(session, worker);
-  }
-
-  /**
-   * Calculate and store surprise score for an observation (Phase 2: Titans concepts)
-   * This runs AFTER the observation is saved to always preserve data
-   */
-  private async calculateAndStoreSurpriseScore(obsId: number, session: ActiveSession): Promise<void> {
-    const surpriseStart = Date.now();
-    try {
-      // Get settings
-      const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-
-      // Skip if surprise filtering is disabled
-      if (!settings.CLAUDE_MEM_SURPRISE_ENABLED) {
-        return;
-      }
-
-      // Import dynamically to avoid circular dependencies
-      const { SurpriseMetric } = await import('./SurpriseMetric.js');
-      const { getMomentumBuffer } = await import('./MomentumBuffer.js');
-
-      const db = this.dbManager.getSessionStore().db;
-      const surpriseMetric = new SurpriseMetric(db);
-      const momentumBuffer = getMomentumBuffer();
-
-      // Get the observation
-      const obs = this.dbManager.getSessionStore().getObservationById(obsId);
-      if (!obs) return;
-
-      // Calculate surprise (with fallback to fast method if Chroma fails)
-      const result = await surpriseMetric.calculateWithFallback(obs, {
-        lookbackDays: settings.CLAUDE_MEM_SURPRISE_LOOKBACK_DAYS,
-        sampleSize: 50,
-      });
-
-      // Update importance score WITH the calculated surprise score
-      const { ImportanceScorer } = await import('./ImportanceScorer.js');
-      const importanceScorer = new ImportanceScorer(db);
-      await importanceScorer.updateScore(obsId, {
-        surpriseScore: result.score,
-      });
-
-      // Record success metrics
-      pipelineMetrics.recordStage('surprise', Date.now() - surpriseStart, true, {
-        obsId,
-        score: result.score,
-        method: result.method
-      });
-
-      // If high surprise, boost related topics (momentum)
-      if (result.score > settings.CLAUDE_MEM_SURPRISE_THRESHOLD && settings.CLAUDE_MEM_MOMENTUM_ENABLED) {
-        const topics = momentumBuffer.extractTopics(obs.title || obs.text || '', 10);
-        momentumBuffer.boostFromMemory(
-          topics,
-          obsId,
-          { duration: settings.CLAUDE_MEM_MOMENTUM_DURATION_MINUTES }
-        );
-
-        logger.debug('SDK', 'High surprise detected, topics boosted', {
-          obsId,
-          surprise: result.score,
-          topics,
-        });
-      }
-    } catch (error) {
-      // Record failure metrics
-      pipelineMetrics.recordStage('surprise', Date.now() - surpriseStart, false, {
-        obsId,
-        error: error instanceof Error ? error.message : String(error)
-      });
-      // Don't fail the observation save if surprise calculation fails
-      logger.debug('SDK', 'Surprise calculation failed (non-fatal)', { obsId }, error as Error);
-    }
-  }
-
-  /**
-   * Mark all pending messages as successfully processed
-   * CRITICAL: Prevents message loss and duplicate processing
-   */
-  private async markMessagesProcessed(session: ActiveSession, worker: any | undefined): Promise<void> {
-    const pendingMessageStore = this.sessionManager.getPendingMessageStore();
-    if (session.pendingProcessingIds.size > 0) {
-      for (const messageId of session.pendingProcessingIds) {
-        pendingMessageStore.markProcessed(messageId);
-      }
-      logger.debug('SDK', 'Messages marked as processed', {
-        sessionId: session.sessionDbId,
-        messageIds: Array.from(session.pendingProcessingIds),
-        count: session.pendingProcessingIds.size
-      });
-      session.pendingProcessingIds.clear();
-
-      // Clear timestamp for next batch (will be set fresh from next message)
-      session.earliestPendingTimestamp = null;
-
-      // Clean up old processed messages (keep last 100 for UI display)
-      const deletedCount = pendingMessageStore.cleanupProcessed(100);
-      if (deletedCount > 0) {
-        logger.debug('SDK', 'Cleaned up old processed messages', {
-          deletedCount
-        });
-      }
-    }
-
-    // Broadcast activity status after processing (queue may have changed)
-    if (worker && typeof worker.broadcastProcessingStatus === 'function') {
-      worker.broadcastProcessingStatus();
-    }
-  }
-
   // ============================================================================
   // Configuration Helpers
   // ============================================================================
@@ -647,7 +361,7 @@ export class SDKAgent {
    */
   private findClaudeExecutable(): string {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-    
+
     // 1. Check configured path
     if (settings.CLAUDE_CODE_PATH) {
       // Lazy load fs to keep startup fast
@@ -661,13 +375,14 @@ export class SDKAgent {
     // 2. Try auto-detection
     try {
       const claudePath = execSync(
-        process.platform === 'win32' ? 'where claude' : 'which claude', 
+        process.platform === 'win32' ? 'where claude' : 'which claude',
         { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }
       ).trim().split('\n')[0].trim();
-      
+
       if (claudePath) return claudePath;
     } catch (error) {
-      logger.debug('SDK', 'Claude executable auto-detection failed', error);
+      // [ANTI-PATTERN IGNORED]: Fallback behavior - which/where failed, continue to throw clear error
+      logger.debug('SDK', 'Claude executable auto-detection failed', {}, error as Error);
     }
 
     throw new Error('Claude executable not found. Please either:\n1. Add "claude" to your system PATH, or\n2. Set CLAUDE_CODE_PATH in ~/.claude-mem/settings.json');

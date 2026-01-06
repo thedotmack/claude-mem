@@ -11,21 +11,22 @@ export class SessionQueueProcessor {
 
   /**
    * Create an async iterator that yields messages as they become available.
-   * Uses atomic database claiming to prevent race conditions.
+   * Uses atomic claim-and-delete to prevent duplicates.
+   * The queue is a pure buffer: claim it, delete it, process in memory.
    * Waits for 'message' event when queue is empty.
    */
   async *createIterator(sessionDbId: number, signal: AbortSignal): AsyncIterableIterator<PendingMessageWithId> {
     while (!signal.aborted) {
       try {
-        // 1. Atomically claim next message from DB
-        const persistentMessage = this.store.claimNextMessage(sessionDbId);
+        // Atomically claim AND DELETE next message from DB
+        // Message is now in memory only - no "processing" state tracking needed
+        const persistentMessage = this.store.claimAndDelete(sessionDbId);
 
         if (persistentMessage) {
-          // Yield the message for processing
+          // Yield the message for processing (it's already deleted from queue)
           yield this.toPendingMessageWithId(persistentMessage);
         } else {
-          // 2. Queue empty - wait for wake-up event
-          // We use a promise that resolves on 'message' event or abort
+          // Queue empty - wait for wake-up event
           await this.waitForMessage(signal);
         }
       } catch (error) {

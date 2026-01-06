@@ -14,7 +14,6 @@ export interface PersistentPendingMessage {
   tool_input: string | null;
   tool_response: string | null;
   cwd: string | null;
-  last_user_message: string | null;
   last_assistant_message: string | null;
   prompt_number: number | null;
   status: 'pending' | 'processing' | 'processed' | 'failed';
@@ -27,17 +26,14 @@ export interface PersistentPendingMessage {
 /**
  * PendingMessageStore - Persistent work queue for SDK messages
  *
- * Messages are persisted before processing and marked complete after success.
- * This enables recovery from SDK hangs and worker crashes.
+ * Messages are persisted before processing using a claim-and-delete pattern.
+ * This simplifies the lifecycle and eliminates duplicate processing bugs.
  *
  * Lifecycle:
  * 1. enqueue() - Message persisted with status 'pending'
- * 2. markProcessing() - Status changes to 'processing' when yielded to SDK
- * 3. markProcessed() - Status changes to 'processed' after successful SDK response
- * 4. markFailed() - Status changes to 'failed' if max retries exceeded
+ * 2. claimAndDelete() - Atomically claims and deletes message (process in memory)
  *
  * Recovery:
- * - resetStuckMessages() - Moves 'processing' messages back to 'pending' if stuck
  * - getSessionsWithPendingMessages() - Find sessions that need recovery on startup
  */
 export class PendingMessageStore {
@@ -59,9 +55,9 @@ export class PendingMessageStore {
       INSERT INTO pending_messages (
         session_db_id, content_session_id, message_type,
         tool_name, tool_input, tool_response, cwd,
-        last_user_message, last_assistant_message,
+        last_assistant_message,
         prompt_number, status, retry_count, created_at_epoch
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?)
     `);
 
     const result = stmt.run(
@@ -72,7 +68,6 @@ export class PendingMessageStore {
       message.tool_input ? JSON.stringify(message.tool_input) : null,
       message.tool_response ? JSON.stringify(message.tool_response) : null,
       message.cwd || null,
-      message.last_user_message || null,
       message.last_assistant_message || null,
       message.prompt_number || null,
       now
@@ -82,14 +77,13 @@ export class PendingMessageStore {
   }
 
   /**
-   * Atomically claim the next pending message for processing
-   * Finds oldest pending -> marks processing -> returns it
-   * Uses a transaction to prevent race conditions
+   * Atomically claim and DELETE the next pending message.
+   * Finds oldest pending -> returns it -> deletes from queue.
+   * The queue is a pure buffer: claim it, delete it, process in memory.
+   * Uses a transaction to prevent race conditions.
    */
-  claimNextMessage(sessionDbId: number): PersistentPendingMessage | null {
-    const now = Date.now();
-    
-    const claimTx = this.db.transaction((sessionId: number, timestamp: number) => {
+  claimAndDelete(sessionDbId: number): PersistentPendingMessage | null {
+    const claimTx = this.db.transaction((sessionId: number) => {
       const peekStmt = this.db.prepare(`
         SELECT * FROM pending_messages
         WHERE session_db_id = ? AND status = 'pending'
@@ -97,26 +91,21 @@ export class PendingMessageStore {
         LIMIT 1
       `);
       const msg = peekStmt.get(sessionId) as PersistentPendingMessage | null;
-      
+
       if (msg) {
-        const updateStmt = this.db.prepare(`
-          UPDATE pending_messages
-          SET status = 'processing', started_processing_at_epoch = ?
-          WHERE id = ?
-        `);
-        updateStmt.run(timestamp, msg.id);
-        
-        // Return updated object
-        return {
-          ...msg,
-          status: 'processing',
-          started_processing_at_epoch: timestamp
-        } as PersistentPendingMessage;
+        // Delete immediately - no "processing" state needed
+        const deleteStmt = this.db.prepare('DELETE FROM pending_messages WHERE id = ?');
+        deleteStmt.run(msg.id);
+
+        // Log claim with minimal info (avoid logging full payload)
+        logger.info('QUEUE', `CLAIMED | sessionDbId=${sessionId} | messageId=${msg.id} | type=${msg.message_type}`, {
+          sessionId: sessionId
+        });
       }
-      return null;
+      return msg;
     });
 
-    return claimTx(sessionDbId, now) as PersistentPendingMessage | null;
+    return claimTx(sessionDbId) as PersistentPendingMessage | null;
   }
 
   /**
@@ -195,6 +184,27 @@ export class PendingMessageStore {
   }
 
   /**
+   * Mark all processing messages for a session as failed
+   * Used in error recovery when session generator crashes
+   * @returns Number of messages marked failed
+   */
+  markSessionMessagesFailed(sessionDbId: number): number {
+    const now = Date.now();
+
+    // Atomic update - all processing messages for session → failed
+    // Note: This bypasses retry logic since generator failures are session-level,
+    // not message-level. Individual message failures use markFailed() instead.
+    const stmt = this.db.prepare(`
+      UPDATE pending_messages
+      SET status = 'failed', failed_at_epoch = ?
+      WHERE session_db_id = ? AND status = 'processing'
+    `);
+
+    const result = stmt.run(now, sessionDbId);
+    return result.changes;
+  }
+
+  /**
    * Abort a specific message (delete from queue)
    */
   abortMessage(messageId: number): boolean {
@@ -235,38 +245,7 @@ export class PendingMessageStore {
   }
 
   /**
-   * Mark message as being processed (status: pending -> processing)
-   */
-  markProcessing(messageId: number): void {
-    const now = Date.now();
-    const stmt = this.db.prepare(`
-      UPDATE pending_messages
-      SET status = 'processing', started_processing_at_epoch = ?
-      WHERE id = ? AND status = 'pending'
-    `);
-    stmt.run(now, messageId);
-  }
-
-  /**
-   * Mark message as successfully processed (status: processing -> processed)
-   * Clears tool_input and tool_response to save space (observations are already saved)
-   */
-  markProcessed(messageId: number): void {
-    const now = Date.now();
-    const stmt = this.db.prepare(`
-      UPDATE pending_messages
-      SET
-        status = 'processed',
-        completed_at_epoch = ?,
-        tool_input = NULL,
-        tool_response = NULL
-      WHERE id = ? AND status = 'processing'
-    `);
-    stmt.run(now, messageId);
-  }
-
-  /**
-   * Mark message as failed (status: processing -> failed or back to pending for retry)
+   * Mark message as failed (status: pending -> failed or back to pending for retry)
    * If retry_count < maxRetries, moves back to 'pending' for retry
    * Otherwise marks as 'failed' permanently
    */
@@ -363,24 +342,29 @@ export class PendingMessageStore {
   }
 
   /**
-   * Cleanup old processed messages (retention policy)
-   * Keeps the most recent N processed messages, deletes the rest
-   * @param retentionCount Number of processed messages to keep (default: 100)
+   * Clear all failed messages from the queue
    * @returns Number of messages deleted
    */
-  cleanupProcessed(retentionCount: number = 100): number {
+  clearFailed(): number {
     const stmt = this.db.prepare(`
       DELETE FROM pending_messages
-      WHERE status = 'processed'
-      AND id NOT IN (
-        SELECT id FROM pending_messages
-        WHERE status = 'processed'
-        ORDER BY completed_at_epoch DESC
-        LIMIT ?
-      )
+      WHERE status = 'failed'
     `);
+    const result = stmt.run();
+    return result.changes;
+  }
 
-    const result = stmt.run(retentionCount);
+  /**
+   * Clear all pending, processing, and failed messages from the queue
+   * Keeps only processed messages (for history)
+   * @returns Number of messages deleted
+   */
+  clearAll(): number {
+    const stmt = this.db.prepare(`
+      DELETE FROM pending_messages
+      WHERE status IN ('pending', 'processing', 'failed')
+    `);
+    const result = stmt.run();
     return result.changes;
   }
 
@@ -395,7 +379,6 @@ export class PendingMessageStore {
       tool_response: persistent.tool_response ? JSON.parse(persistent.tool_response) : undefined,
       prompt_number: persistent.prompt_number || undefined,
       cwd: persistent.cwd || undefined,
-      last_user_message: persistent.last_user_message || undefined,
       last_assistant_message: persistent.last_assistant_message || undefined
     };
   }

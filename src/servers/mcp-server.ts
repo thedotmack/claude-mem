@@ -73,13 +73,12 @@ async function callWorkerAPI(
 
     // Worker returns { content: [...] } format directly
     return data;
-  } catch (error: unknown) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    logger.error('SYSTEM', '← Worker API error', undefined, { endpoint, error: errorMessage });
+  } catch (error) {
+    logger.error('SYSTEM', '← Worker API error', { endpoint }, error as Error);
     return {
       content: [{
         type: 'text' as const,
-        text: `Error calling Worker API: ${errorMessage}`
+        text: `Error calling Worker API: ${error instanceof Error ? error.message : String(error)}`
       }],
       isError: true
     };
@@ -121,13 +120,12 @@ async function callWorkerAPIPost(
         text: JSON.stringify(data, null, 2)
       }]
     };
-  } catch (error: unknown) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    logger.error('HTTP', 'Worker API error (POST)', undefined, { endpoint, error: errorMessage });
+  } catch (error) {
+    logger.error('HTTP', 'Worker API error (POST)', { endpoint }, error as Error);
     return {
       content: [{
         type: 'text' as const,
-        text: `Error calling Worker API: ${errorMessage}`
+        text: `Error calling Worker API: ${error instanceof Error ? error.message : String(error)}`
       }],
       isError: true
     };
@@ -142,6 +140,8 @@ async function verifyWorkerConnection(): Promise<boolean> {
     const response = await fetch(`${WORKER_BASE_URL}/api/health`);
     return response.ok;
   } catch (error) {
+    // Expected during worker startup or if worker is down
+    logger.debug('SYSTEM', 'Worker health check failed', {}, error as Error);
     return false;
   }
 }
@@ -266,12 +266,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   try {
     return await tool.handler(request.params.arguments || {});
-  } catch (error: unknown) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
+  } catch (error) {
+    logger.error('SYSTEM', 'Tool execution failed', { tool: request.params.name }, error as Error);
     return {
       content: [{
         type: 'text' as const,
-        text: `Tool execution failed: ${errorMessage}`
+        text: `Tool execution failed: ${error instanceof Error ? error.message : String(error)}`
       }],
       isError: true
     };

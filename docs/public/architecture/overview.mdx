@@ -45,19 +45,19 @@ Hook (stdin) → Database → Worker Service → SDK Processor → Database → 
 4. **Output**: Processed summaries written back to database
 5. **Retrieval**: Next session's context hook reads summaries from database
 
-### Search Pipeline (v5.4.0+)
+### Search Pipeline
 ```
-User Query → mem-search Skill Invoked → HTTP API → SessionSearch Service → FTS5 Database → Search Results → Claude
+User Query → MCP Tools Invoked → HTTP API → SessionSearch Service → FTS5 Database → Search Results → Claude
 ```
 
 1. **User Query**: User asks naturally: "What bugs did we fix?"
-2. **Skill Invoked**: Claude recognizes intent and invokes mem-search skill
-3. **HTTP API**: Skill uses curl to call HTTP endpoint (e.g., `/api/search/observations`)
+2. **MCP Tools Invoked**: Claude recognizes intent and invokes MCP search tools
+3. **HTTP API**: MCP tools call HTTP endpoint (e.g., `/api/search/observations`)
 4. **SessionSearch**: Worker service queries FTS5 virtual tables
-5. **Format**: Results formatted and returned to skill
+5. **Format**: Results formatted and returned via MCP
 6. **Return**: Claude presents formatted results to user
 
-**Token Savings**: ~2,250 tokens per session vs MCP approach through progressive disclosure
+Uses 3-layer progressive disclosure: search → timeline → get_observations
 
 ## Session Lifecycle
 

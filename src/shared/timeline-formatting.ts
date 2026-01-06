@@ -6,6 +6,7 @@
  */
 
 import path from 'path';
+import { logger } from '../utils/logger.js';
 
 /**
  * Parse JSON array string, returning empty array on failure
@@ -16,6 +17,9 @@ export function parseJsonArray(json: string | null): string[] {
     const parsed = JSON.parse(json);
     return Array.isArray(parsed) ? parsed : [];
   } catch (err) {
+    logger.debug('PARSER', 'Failed to parse JSON array, using empty fallback', {
+      preview: json?.substring(0, 50)
+    }, err as Error);
     return [];
   }
 }
@@ -72,11 +76,30 @@ export function toRelativePath(filePath: string, cwd: string): string {
 }
 
 /**
- * Extract first file from files_modified JSON array, or return 'General'
+ * Extract first relevant file from files_modified OR files_read JSON arrays.
+ * Prefers files_modified, falls back to files_read.
+ * Returns 'General' only if both are empty.
  */
-export function extractFirstFile(filesModified: string | null, cwd: string): string {
-  const files = parseJsonArray(filesModified);
-  return files.length > 0 ? toRelativePath(files[0], cwd) : 'General';
+export function extractFirstFile(
+  filesModified: string | null,
+  cwd: string,
+  filesRead?: string | null
+): string {
+  // Try files_modified first
+  const modified = parseJsonArray(filesModified);
+  if (modified.length > 0) {
+    return toRelativePath(modified[0], cwd);
+  }
+
+  // Fall back to files_read
+  if (filesRead) {
+    const read = parseJsonArray(filesRead);
+    if (read.length > 0) {
+      return toRelativePath(read[0], cwd);
+    }
+  }
+
+  return 'General';
 }
 
 /**

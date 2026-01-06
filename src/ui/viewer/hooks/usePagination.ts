@@ -51,41 +51,35 @@ function usePaginationFor(endpoint: string, dataType: DataType, currentFilter: s
 
     setState(prev => ({ ...prev, isLoading: true }));
 
-    try {
-      // Build query params using current offset from ref
-      const params = new URLSearchParams({
-        offset: offsetRef.current.toString(),
-        limit: UI.PAGINATION_PAGE_SIZE.toString()
-      });
+    // Build query params using current offset from ref
+    const params = new URLSearchParams({
+      offset: offsetRef.current.toString(),
+      limit: UI.PAGINATION_PAGE_SIZE.toString()
+    });
 
-      // Add project filter if present
-      if (currentFilter) {
-        params.append('project', currentFilter);
-      }
-
-      const response = await fetch(`${endpoint}?${params}`);
-
-      if (!response.ok) {
-        throw new Error(`Failed to load ${dataType}: ${response.statusText}`);
-      }
-
-      const data = await response.json() as { items: DataItem[], hasMore: boolean };
-
-      setState(prev => ({
-        ...prev,
-        isLoading: false,
-        hasMore: data.hasMore
-      }));
-
-      // Increment offset after successful load
-      offsetRef.current += UI.PAGINATION_PAGE_SIZE;
-
-      return data.items;
-    } catch (error) {
-      console.error(`Failed to load ${dataType}:`, error);
-      setState(prev => ({ ...prev, isLoading: false }));
-      return [];
+    // Add project filter if present
+    if (currentFilter) {
+      params.append('project', currentFilter);
     }
+
+    const response = await fetch(`${endpoint}?${params}`);
+
+    if (!response.ok) {
+      throw new Error(`Failed to load ${dataType}: ${response.statusText}`);
+    }
+
+    const data = await response.json() as { items: DataItem[], hasMore: boolean };
+
+    setState(prev => ({
+      ...prev,
+      isLoading: false,
+      hasMore: data.hasMore
+    }));
+
+    // Increment offset after successful load
+    offsetRef.current += UI.PAGINATION_PAGE_SIZE;
+
+    return data.items;
   }, [currentFilter, endpoint, dataType]);
 
   return {

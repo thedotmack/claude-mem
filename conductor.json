@@ -1,0 +1,6 @@
+{
+    "scripts": {
+        "setup": "cp ../settings.local.json .claude/settings.local.json && npm install",
+        "run": "npm run build-and-sync"
+    }
+}

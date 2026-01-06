@@ -7,6 +7,7 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from 'fs';
 import { join, basename } from 'path';
+import { logger } from './logger.js';
 
 // ============================================================================
 // Types
@@ -40,7 +41,11 @@ export function readCursorRegistry(registryFile: string): CursorProjectRegistry 
   try {
     if (!existsSync(registryFile)) return {};
     return JSON.parse(readFileSync(registryFile, 'utf-8'));
-  } catch {
+  } catch (error) {
+    logger.warn('CONFIG', 'Failed to read Cursor registry, using empty registry', {
+      file: registryFile,
+      error: error instanceof Error ? error.message : String(error)
+    });
     return {};
   }
 }
@@ -145,8 +150,11 @@ export function configureCursorMcp(mcpJsonPath: string, mcpServerScriptPath: str
       if (!config.mcpServers) {
         config.mcpServers = {};
       }
-    } catch {
-      // Start fresh if corrupt
+    } catch (error) {
+      logger.warn('CONFIG', 'Failed to read MCP config, starting fresh', {
+        file: mcpJsonPath,
+        error: error instanceof Error ? error.message : String(error)
+      });
       config = { mcpServers: {} };
     }
   }
@@ -173,8 +181,11 @@ export function removeMcpConfig(mcpJsonPath: string): void {
       delete config.mcpServers['claude-mem'];
       writeFileSync(mcpJsonPath, JSON.stringify(config, null, 2));
     }
-  } catch {
-    // Ignore errors during cleanup
+  } catch (e) {
+    logger.warn('CURSOR', 'Failed to remove MCP config during cleanup', {
+      mcpJsonPath,
+      error: e instanceof Error ? e.message : String(e)
+    });
   }
 }
 

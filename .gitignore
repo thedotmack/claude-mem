@@ -9,11 +9,12 @@ dist/
 *.temp
 .install-version
 .claude/settings.local.json
-.claude/*.local.md
-.osgrep/
+.claude/agents/
+.claude/skills/
 plugin/data/
 plugin/data.backup/
 package-lock.json
+bun.lock
 private/
 datasets/
 

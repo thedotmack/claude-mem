@@ -1,0 +1,688 @@
+🔍 Scanning for error handling anti-patterns...
+
+Found 80 TypeScript files
+
+
+═══════════════════════════════════════════════════════════════
+  ERROR HANDLING ANTI-PATTERNS DETECTED
+═══════════════════════════════════════════════════════════════
+
+Found 153 anti-patterns:
+  🔴 CRITICAL: 26
+  🟠 HIGH: 47
+  🟡 MEDIUM: 80
+
+🔴 CRITICAL ISSUES (Fix immediately - these cause silent failures):
+─────────────────────────────────────────────────────────────
+
+📁 src/utils/transcript-parser.ts:44
+❌ NO_LOGGING_IN_CATCH
+   Catch block has no logging - errors occur invisibly.
+
+   Code:
+   } catch (error) {
+           // [POSSIBLY RELEVANT]: Parse errors accumulated in parseErrors array for batch access, logging each line would be excessive
+           this.parseErrors.push({
+             lineNumber: index + 1,
+             error: error instanceof Error ? error.message : String(error),
+   ... (2 more lines)
+
+📁 src/shared/timeline-formatting.ts:18
+❌ NO_LOGGING_IN_CATCH
+   Catch block has no logging - errors occur invisibly.
+
+   Code:
+   } catch (err) {
+       // [POSSIBLY RELEVANT]: Expected JSON parse failures for malformed data fields, too frequent to log
+       return [];
+     }
+
+📁 src/shared/paths.ts:105
+❌ NO_LOGGING_IN_CATCH
+   Catch block has no logging - errors occur invisibly.
+
+   Code:
+   } catch (error) {
+       // [POSSIBLY RELEVANT]: Expected when not in git repo or git unavailable, common fallback path
+       return basename(process.cwd());
+     }
+
+📁 src/sdk/prompts.ts:98
+❌ NO_LOGGING_IN_CATCH
+   Catch block has no logging - errors occur invisibly.
+
+   Code:
+   } catch (error) {
+       // [POSSIBLY RELEVANT]: Expected JSON parse failures for plain string tool inputs, normal fallback
+       toolInput = obs.tool_input;
+     }
+
+📁 src/sdk/prompts.ts:105
+❌ NO_LOGGING_IN_CATCH
+   Catch block has no logging - errors occur invisibly.
+
+   Code:
+   } catch (error) {
+       // [POSSIBLY RELEVANT]: Expected JSON parse failures for plain string tool outputs, normal fallback
+       toolOutput = obs.tool_output;
+     }
+
+📁 src/services/worker-service.ts:68
+❌ CATCH_AND_CONTINUE_CRITICAL_PATH
+   Critical path continues after error - may cause silent data corruption.
+
+   Code:
+   } catch (error) {
+       // [POSSIBLY RELEVANT]: PID file cleanup is non-critical, log full error and continue shutdown
+       logger.warn('SYSTEM', 'Failed to remove PID file', { path: PID_FILE }, error as Error);
+     }
+
+📁 src/services/worker-service.ts:131
+❌ CATCH_AND_CONTINUE_CRITICAL_PATH
+   Critical path continues after error - may cause silent data corruption.
+
+   Code:
+   } catch (error) {
+       // [POSSIBLY RELEVANT]: Context update is non-critical, log full error and continue
+       logger.warn('CURSOR', 'Failed to update context file', { projectName }, error as Error);
+     }
+
+📁 src/services/worker-service.ts:152
+❌ NO_LOGGING_IN_CATCH
+   Catch block has no logging - errors occur invisibly.
+
+   Code:
+   } catch (error) {
+       // [POSSIBLY RELEVANT]: Expected failure when port is free, called frequently for health checks
+       return false;
+     }
+
+📁 src/services/worker-service.ts:165
+❌ CATCH_AND_CONTINUE_CRITICAL_PATH
+   Critical path continues after error - may cause silent data corruption.
+
+   Code:
+   } catch (error) {
+         // [POSSIBLY RELEVANT]: Expected failures during startup health check, will retry
+         logger.debug('SYSTEM', 'Service not ready yet, will retry', { port }, error as Error);
+       }
+
+📁 src/services/worker-service.ts:368
+❌ CATCH_AND_CONTINUE_CRITICAL_PATH
+   Critical path continues after error - may cause silent data corruption.
+
+   Code:
+   } catch (error) {
+           // [POSSIBLY RELEVANT]: Shutdown must complete, log error and exit with failure code
+           logger.error('SYSTEM', 'Error during shutdown', {}, error as Error);
+           process.exit(1);
+         }
+
+📁 src/services/worker-service.ts:623
+❌ CATCH_AND_CONTINUE_CRITICAL_PATH
+   Critical path continues after error - may cause silent data corruption.
+
+   Code:
+   } catch (error) {
+             // [POSSIBLY RELEVANT]: Process may have already exited during cleanup, expected failure
+             logger.debug('SYSTEM', 'Failed to kill process, may have already exited', { pid }, error as Error);
+           }
+
+📁 src/services/worker-service.ts:632
+❌ CATCH_AND_CONTINUE_CRITICAL_PATH
+   Critical path continues after error - may cause silent data corruption.
+
+   Code:
+   } catch (error) {
+             // [POSSIBLY RELEVANT]: Process may have already exited during cleanup, expected failure
+             logger.debug('SYSTEM', 'Process already exited', { pid }, error as Error);
+           }
+
+📁 src/services/worker-service.ts:838
+❌ CATCH_AND_CONTINUE_CRITICAL_PATH
+   Critical path continues after error - may cause silent data corruption.
+
+   Code:
+   } catch (error) {
+           // Recovery is best-effort - skip failed sessions and continue with others
+           logger.warn('SYSTEM', `Failed to process session ${sessionDbId}`, {}, error as Error);
+           result.sessionsSkipped++;
+         }
+
+📁 src/services/worker-service.ts:987
+❌ CATCH_AND_CONTINUE_CRITICAL_PATH
+   Critical path continues after error - may cause silent data corruption.
+
+   Code:
+   } catch {
+         // Process may have already exited - continue shutdown
+         logger.debug('SYSTEM', 'Process already exited during force kill', { pid });
+       }
+
+📁 src/services/worker-service.ts:1004
+❌ NO_LOGGING_IN_CATCH
+   Catch block has no logging - errors occur invisibly.
+
+   Code:
+   } catch (error) {
+             // Expected: process has exited
+             // Not logging - this is called in a tight loop during cleanup
+             return false;
+           }
+
+📁 src/services/worker-service.ts:1095
+❌ EMPTY_CATCH
+   Empty catch block - errors are silently swallowed. User will waste hours debugging.
+
+   Code:
+   } catch {
+           // Start fresh if corrupt
+         }
+
+📁 src/services/worker-service.ts:1301
+❌ EMPTY_CATCH
+   Empty catch block - errors are silently swallowed. User will waste hours debugging.
+
+   Code:
+   } catch {
+       // CLI not found
+     }
+
+📁 src/services/worker-service.ts:1413
+❌ CATCH_AND_CONTINUE_CRITICAL_PATH
+   Critical path continues after error - may cause silent data corruption.
+
+   Code:
+   } catch (error) {
+           // Start fresh if corrupt
+           logger.warn('SYSTEM', 'Corrupt mcp.json, creating new config', { path: mcpJsonPath, error: error instanceof Error ? error.message : String(error) });
+           config = { mcpServers: {} };
+         }
+
+📁 src/services/worker-service.ts:1670
+❌ EMPTY_CATCH
+   Empty catch block - errors are silently swallowed. User will waste hours debugging.
+
+   Code:
+   } catch {
+           // Worker not running - that's ok, context will be generated after first session
+         }
+
+📁 src/services/worker-service.ts:2050
+❌ PROMISE_CATCH_NO_LOGGING
+   Promise .catch() without logging - errors are silently swallowed.
+
+   Code:
+   .catch((error) => {
+           logger.failure('SYSTEM', 'Worker failed to start', {}, error as Error);
+           removePidFile();
+           process.exit(1);
+         });
+
+📁 src/services/worker/SDKAgent.ts:545
+❌ CATCH_AND_CONTINUE_CRITICAL_PATH
+   Critical path continues after error - may cause silent data corruption.
+
+   Code:
+   } catch (error) {
+         // [POSSIBLY RELEVANT]: Expected failure when claude not in PATH, falls through to clear error message below
+         logger.debug('SDK', 'Claude executable auto-detection failed', {}, error as Error);
+       }
+
+📁 src/services/worker/SearchManager.ts:1403
+❌ NO_LOGGING_IN_CATCH
+   Catch block has no logging - errors occur invisibly.
+
+   Code:
+   } catch (error) {
+                     // [POSSIBLY RELEVANT]: Expected JSON parse failures for plain string file lists, normal fallback
+                     if (summary.files_read.trim()) {
+                       lines.push(`**Files Read:** ${summary.files_read}`);
+                     }
+   ... (1 more lines)
+
+📁 src/services/worker/SearchManager.ts:1418
+❌ NO_LOGGING_IN_CATCH
+   Catch block has no logging - errors occur invisibly.
+
+   Code:
+   } catch (error) {
+                     // [POSSIBLY RELEVANT]: Expected JSON parse failures for plain string file lists, normal fallback
+                     if (summary.files_edited.trim()) {
+                       lines.push(`**Files Edited:** ${summary.files_edited}`);
+                     }
+   ... (1 more lines)
+
+📁 src/services/worker/PaginationHelper.ts:54
+❌ NO_LOGGING_IN_CATCH
+   Catch block has no logging - errors occur invisibly.
+
+   Code:
+   } catch (err) {
+         // [POSSIBLY RELEVANT]: Expected JSON parse failures for plain string file paths, normal fallback
+         return filePathsStr;
+       }
+
+📁 src/services/context-generator.ts:202
+❌ NO_LOGGING_IN_CATCH
+   Catch block has no logging - errors occur invisibly.
+
+   Code:
+   } catch (parseError) {
+           // [POSSIBLY RELEVANT]: Expected malformed JSON lines in transcript, logging each would be excessive
+           continue;
+         }
+
+📁 src/services/context-generator.ts:226
+❌ NO_LOGGING_IN_CATCH
+   Catch block has no logging - errors occur invisibly.
+
+   Code:
+   } catch (error: any) {
+       if (error.code === 'ERR_DLOPEN_FAILED') {
+           unlinkSync(VERSION_MARKER_PATH);
+         } catch (unlinkError) {
+           // [POSSIBLY RELEVANT]: Marker file may not exist during first run, expected cleanup failure
+   ... (1 more lines)
+
+🟠 HIGH PRIORITY:
+─────────────────────────────────────────────────────────────
+
+📁 src/ui/viewer/hooks/useSSE.ts:50 - LARGE_TRY_BLOCK
+   Try block has 33 lines - too broad. Multiple errors lumped together.
+
+📁 src/ui/viewer/hooks/usePagination.ts:54 - LARGE_TRY_BLOCK
+   Try block has 19 lines - too broad. Multiple errors lumped together.
+
+📁 src/ui/viewer/hooks/useSettings.ts:64 - LARGE_TRY_BLOCK
+   Try block has 14 lines - too broad. Multiple errors lumped together.
+
+📁 src/ui/viewer/hooks/useContextPreview.ts:47 - LARGE_TRY_BLOCK
+   Try block has 11 lines - too broad. Multiple errors lumped together.
+
+📁 src/bin/import-xml-observations.ts:62 - LARGE_TRY_BLOCK
+   Try block has 12 lines - too broad. Multiple errors lumped together.
+
+📁 src/bin/import-xml-observations.ts:134 - LARGE_TRY_BLOCK
+   Try block has 15 lines - too broad. Multiple errors lumped together.
+
+📁 src/bin/import-xml-observations.ts:167 - LARGE_TRY_BLOCK
+   Try block has 13 lines - too broad. Multiple errors lumped together.
+
+📁 src/servers/mcp-server.ts:52 - LARGE_TRY_BLOCK
+   Try block has 14 lines - too broad. Multiple errors lumped together.
+
+📁 src/servers/mcp-server.ts:97 - LARGE_TRY_BLOCK
+   Try block has 21 lines - too broad. Multiple errors lumped together.
+
+📁 src/services/sqlite/SessionStore.ts:55 - LARGE_TRY_BLOCK
+   Try block has 67 lines - too broad. Multiple errors lumped together.
+
+📁 src/services/sqlite/SessionStore.ts:227 - LARGE_TRY_BLOCK
+   Try block has 38 lines - too broad. Multiple errors lumped together.
+
+📁 src/services/sqlite/SessionStore.ts:346 - LARGE_TRY_BLOCK
+   Try block has 40 lines - too broad. Multiple errors lumped together.
+
+📁 src/services/sqlite/SessionStore.ts:427 - LARGE_TRY_BLOCK
+   Try block has 43 lines - too broad. Multiple errors lumped together.
+
+📁 src/services/sqlite/SessionStore.ts:495 - LARGE_TRY_BLOCK
+   Try block has 15 lines - too broad. Multiple errors lumped together.
+
+📁 src/services/sqlite/SessionStore.ts:532 - LARGE_TRY_BLOCK
+   Try block has 35 lines - too broad. Multiple errors lumped together.
+
+📁 src/services/sqlite/SessionStore.ts:599 - LARGE_TRY_BLOCK
+   Try block has 13 lines - too broad. Multiple errors lumped together.
+
+📁 src/services/sqlite/SessionStore.ts:1550 - LARGE_TRY_BLOCK
+   Try block has 27 lines - too broad. Multiple errors lumped together.
+
+📁 src/services/worker-service.ts:438 - LARGE_TRY_BLOCK
+   Try block has 16 lines - too broad. Multiple errors lumped together.
+
+📁 src/services/worker-service.ts:526 - LARGE_TRY_BLOCK
+   Try block has 11 lines - too broad. Multiple errors lumped together.
+
+📁 src/services/worker-service.ts:666 - LARGE_TRY_BLOCK
+   Try block has 56 lines - too broad. Multiple errors lumped together.
+
+📁 src/services/worker-service.ts:814 - LARGE_TRY_BLOCK
+   Try block has 15 lines - too broad. Multiple errors lumped together.
+
+📁 src/services/worker-service.ts:1638 - LARGE_TRY_BLOCK
+   Try block has 24 lines - too broad. Multiple errors lumped together.
+
+📁 src/services/worker-service.ts:1753 - LARGE_TRY_BLOCK
+   Try block has 28 lines - too broad. Multiple errors lumped together.
+
+📁 src/services/sync/ChromaSync.ts:99 - LARGE_TRY_BLOCK
+   Try block has 28 lines - too broad. Multiple errors lumped together.
+
+📁 src/services/sync/ChromaSync.ts:344 - LARGE_TRY_BLOCK
+   Try block has 14 lines - too broad. Multiple errors lumped together.
+
+📁 src/services/sync/ChromaSync.ts:534 - LARGE_TRY_BLOCK
+   Try block has 32 lines - too broad. Multiple errors lumped together.
+
+📁 src/services/sync/ChromaSync.ts:609 - LARGE_TRY_BLOCK
+   Try block has 106 lines - too broad. Multiple errors lumped together.
+
+📁 src/services/worker/GeminiAgent.ts:144 - LARGE_TRY_BLOCK
+   Try block has 76 lines - too broad. Multiple errors lumped together.
+
+📁 src/services/worker/BranchManager.ts:120 - LARGE_TRY_BLOCK
+   Try block has 13 lines - too broad. Multiple errors lumped together.
+
+📁 src/services/worker/BranchManager.ts:268 - LARGE_TRY_BLOCK
+   Try block has 21 lines - too broad. Multiple errors lumped together.
+
+📁 src/services/worker/SearchManager.ts:120 - LARGE_TRY_BLOCK
+   Try block has 43 lines - too broad. Multiple errors lumped together.
+
+📁 src/services/worker/SearchManager.ts:382 - LARGE_TRY_BLOCK
+   Try block has 13 lines - too broad. Multiple errors lumped together.
+
+📁 src/services/worker/SearchManager.ts:642 - LARGE_TRY_BLOCK
+   Try block has 22 lines - too broad. Multiple errors lumped together.
+
+📁 src/services/worker/SearchManager.ts:726 - LARGE_TRY_BLOCK
+   Try block has 18 lines - too broad. Multiple errors lumped together.
+
+📁 src/services/worker/SearchManager.ts:818 - LARGE_TRY_BLOCK
+   Try block has 14 lines - too broad. Multiple errors lumped together.
+
+📁 src/services/worker/SearchManager.ts:888 - LARGE_TRY_BLOCK
+   Try block has 16 lines - too broad. Multiple errors lumped together.
+
+📁 src/services/worker/SearchManager.ts:958 - LARGE_TRY_BLOCK
+   Try block has 16 lines - too broad. Multiple errors lumped together.
+
+📁 src/services/worker/SearchManager.ts:1028 - LARGE_TRY_BLOCK
+   Try block has 16 lines - too broad. Multiple errors lumped together.
+
+📁 src/services/worker/SearchManager.ts:1098 - LARGE_TRY_BLOCK
+   Try block has 16 lines - too broad. Multiple errors lumped together.
+
+📁 src/services/worker/SearchManager.ts:1181 - LARGE_TRY_BLOCK
+   Try block has 17 lines - too broad. Multiple errors lumped together.
+
+📁 src/services/worker/SearchManager.ts:1282 - LARGE_TRY_BLOCK
+   Try block has 16 lines - too broad. Multiple errors lumped together.
+
+📁 src/services/worker/SearchManager.ts:1493 - LARGE_TRY_BLOCK
+   Try block has 147 lines - too broad. Multiple errors lumped together.
+
+📁 src/services/worker/SearchManager.ts:1725 - LARGE_TRY_BLOCK
+   Try block has 15 lines - too broad. Multiple errors lumped together.
+
+📁 src/services/worker/OpenRouterAgent.ts:104 - LARGE_TRY_BLOCK
+   Try block has 77 lines - too broad. Multiple errors lumped together.
+
+📁 src/services/worker/http/routes/SessionRoutes.ts:151 - LARGE_TRY_BLOCK
+   Try block has 13 lines - too broad. Multiple errors lumped together.
+
+📁 src/services/worker/http/routes/SessionRoutes.ts:185 - LARGE_TRY_BLOCK
+   Try block has 20 lines - too broad. Multiple errors lumped together.
+
+📁 src/services/context-generator.ts:182 - LARGE_TRY_BLOCK
+   Try block has 15 lines - too broad. Multiple errors lumped together.
+
+🟡 MEDIUM PRIORITY:
+─────────────────────────────────────────────────────────────
+
+📁 src/ui/viewer/hooks/useStats.ts:13 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/ui/viewer/hooks/useSSE.ts:93 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/ui/viewer/hooks/useTheme.ts:19 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/ui/viewer/hooks/useTheme.ts:64 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/ui/viewer/hooks/usePagination.ts:84 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/ui/viewer/hooks/useContextPreview.ts:31 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/ui/viewer/hooks/useContextPreview.ts:60 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/bin/import-xml-observations.ts:152 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/bin/import-xml-observations.ts:183 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/bin/import-xml-observations.ts:329 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/bin/import-xml-observations.ts:361 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/utils/logger.ts:55 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/utils/logger.ts:74 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/utils/logger.ts:269 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/shared/timeline-formatting.ts:18 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/shared/SettingsDefaultsManager.ts:152 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/shared/paths.ts:105 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/sdk/prompts.ts:98 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/sdk/prompts.ts:105 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/servers/mcp-server.ts:76 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/servers/mcp-server.ts:123 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/servers/mcp-server.ts:269 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/sqlite/SessionStore.ts:138 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/sqlite/SessionStore.ts:278 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/sqlite/SessionStore.ts:399 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/sqlite/SessionStore.ts:482 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/sqlite/SessionStore.ts:520 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/sqlite/SessionStore.ts:575 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/sqlite/SessionStore.ts:619 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/sqlite/SessionStore.ts:1489 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/sqlite/SessionStore.ts:1521 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/sqlite/SessionStore.ts:1577 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/worker-service.ts:59 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/worker-service.ts:68 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/worker-service.ts:131 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/worker-service.ts:152 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/worker-service.ts:165 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/worker-service.ts:185 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/worker-service.ts:368 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/worker-service.ts:623 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/worker-service.ts:632 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/worker-service.ts:743 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/worker-service.ts:838 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/worker-service.ts:963 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/worker-service.ts:1004 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/worker-service.ts:1797 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/queue/SessionQueueProcessor.ts:31 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/sync/ChromaSync.ts:578 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/sync/ChromaSync.ts:808 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/worker/SettingsManager.ts:45 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/worker/BranchManager.ts:138 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/worker/BranchManager.ts:243 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/worker/BranchManager.ts:300 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/worker/SDKAgent.ts:545 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/worker/SearchManager.ts:185 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/worker/SearchManager.ts:398 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/worker/SearchManager.ts:676 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/worker/SearchManager.ts:754 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/worker/SearchManager.ts:838 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/worker/SearchManager.ts:912 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/worker/SearchManager.ts:982 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/worker/SearchManager.ts:1052 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/worker/SearchManager.ts:1127 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/worker/SearchManager.ts:1214 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/worker/SearchManager.ts:1311 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/worker/SearchManager.ts:1403 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/worker/SearchManager.ts:1418 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/worker/SearchManager.ts:1700 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/worker/SearchManager.ts:1745 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/worker/PaginationHelper.ts:54 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/worker/http/BaseRouteHandler.ts:28 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/worker/http/routes/SettingsRoutes.ts:76 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/worker/http/routes/SessionRoutes.ts:165 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/worker/SessionManager.ts:208 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/worker/SessionManager.ts:256 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/domain/ModeManager.ts:146 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/domain/ModeManager.ts:163 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/domain/ModeManager.ts:173 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/context-generator.ts:202 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+📁 src/services/context-generator.ts:226 - GENERIC_CATCH
+   Catch block handles all errors identically - no error type discrimination.
+
+═══════════════════════════════════════════════════════════════
+REMINDER: Every try-catch must answer these questions:
+1. What SPECIFIC error am I catching? (Name it)
+2. Show me documentation proving this error can occur
+3. Why can't this error be prevented?
+4. What will the catch block DO? (Log + rethrow? Fallback?)
+5. Why shouldn't this error propagate to the caller?
+
+To approve an anti-pattern, add: // [APPROVED OVERRIDE]: reason
+═══════════════════════════════════════════════════════════════
+
+
+❌ FAILED: 26 critical error handling anti-patterns must be fixed.
+

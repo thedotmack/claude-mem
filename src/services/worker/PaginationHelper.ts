@@ -51,8 +51,8 @@ export class PaginationHelper {
 
       // Return as JSON string
       return JSON.stringify(strippedPaths);
-    } catch (error) {
-      // If parsing fails, return original string
+    } catch (err) {
+      logger.debug('WORKER', 'File paths is plain string, using as-is', {}, err as Error);
       return filePathsStr;
     }
   }

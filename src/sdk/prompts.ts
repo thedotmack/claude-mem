@@ -20,7 +20,6 @@ export interface SDKSession {
   memory_session_id: string | null;
   project: string;
   user_prompt: string;
-  last_user_message?: string;
   last_assistant_message?: string;
 }
 
@@ -96,14 +95,20 @@ export function buildObservationPrompt(obs: Observation): string {
 
   try {
     toolInput = typeof obs.tool_input === 'string' ? JSON.parse(obs.tool_input) : obs.tool_input;
-  } catch {
-    toolInput = obs.tool_input;  // If parse fails, use raw value
+  } catch (error) {
+    logger.debug('SDK', 'Tool input is plain string, using as-is', {
+      toolName: obs.tool_name
+    }, error as Error);
+    toolInput = obs.tool_input;
   }
 
   try {
     toolOutput = typeof obs.tool_output === 'string' ? JSON.parse(obs.tool_output) : obs.tool_output;
-  } catch {
-    toolOutput = obs.tool_output;  // If parse fails, use raw value
+  } catch (error) {
+    logger.debug('SDK', 'Tool output is plain string, using as-is', {
+      toolName: obs.tool_name
+    }, error as Error);
+    toolOutput = obs.tool_output;
   }
 
   return `<observed_from_primary_session>

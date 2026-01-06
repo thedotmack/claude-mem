@@ -18,7 +18,6 @@ import { SessionManager } from '../../SessionManager.js';
 import { SSEBroadcaster } from '../../SSEBroadcaster.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
-import { getSessionSavings, getAllSessionSavings } from '../../../context-generator.js';
 
 export class DataRoutes extends BaseRouteHandler {
   constructor(
@@ -42,7 +41,6 @@ export class DataRoutes extends BaseRouteHandler {
     app.get('/api/observation/:id', this.handleGetObservationById.bind(this));
     app.post('/api/observations/batch', this.handleGetObservationsByIds.bind(this));
     app.get('/api/session/:id', this.handleGetSessionById.bind(this));
-    app.get('/api/session/:sdkSessionId/stats', this.handleGetSessionStats.bind(this));
     app.post('/api/sdk-sessions/batch', this.handleGetSdkSessionsByIds.bind(this));
     app.get('/api/prompt/:id', this.handleGetPromptById.bind(this));
 
@@ -57,34 +55,11 @@ export class DataRoutes extends BaseRouteHandler {
     // Pending queue management endpoints
     app.get('/api/pending-queue', this.handleGetPendingQueue.bind(this));
     app.post('/api/pending-queue/process', this.handleProcessPendingQueue.bind(this));
+    app.delete('/api/pending-queue/failed', this.handleClearFailedQueue.bind(this));
+    app.delete('/api/pending-queue/all', this.handleClearAllQueue.bind(this));
 
     // Import endpoint
     app.post('/api/import', this.handleImport.bind(this));
-
-    // Memory importance and access tracking endpoints (Phase 1: Titans concepts)
-    app.get('/api/memory/:id/stats', this.handleGetMemoryStats.bind(this));
-    app.post('/api/memory/stats/batch', this.handleGetMemoryStatsBatch.bind(this));
-    app.get('/api/memory/rare', this.handleGetRareMemories.bind(this));
-    app.get('/api/memory/low-importance', this.handleGetLowImportanceMemories.bind(this));
-    app.post('/api/memory/:id/access', this.handleRecordMemoryAccess.bind(this));
-    app.post('/api/memory/access/batch', this.handleRecordMemoryAccessBatch.bind(this));
-
-    // Surprise and momentum endpoints (Phase 2: Titans concepts)
-    app.get('/api/surprise/:id', this.handleGetSurprise.bind(this));
-    app.get('/api/surprising', this.handleGetSurprisingMemories.bind(this));
-    app.get('/api/surprise/stats/:project', this.handleGetProjectSurpriseStats.bind(this));
-    app.get('/api/momentum/stats', this.handleGetMomentumStats.bind(this));
-    app.post('/api/momentum/boost', this.handleManualBoost.bind(this));
-    app.delete('/api/momentum', this.handleClearMomentum.bind(this));
-
-    // Smart management endpoints (Phase 3: Titans concepts)
-    app.post('/api/cleanup/run', this.handleRunCleanup.bind(this));
-    app.get('/api/cleanup/stats', this.handleGetCleanupStats.bind(this));
-    app.post('/api/cleanup/config', this.handleUpdateCleanupConfig.bind(this));
-    app.get('/api/cleanup/candidates', this.handleGetCleanupCandidates.bind(this));
-    app.get('/api/cleanup/retention/:project', this.handleGetRetentionStats.bind(this));
-    app.post('/api/compression/recommendation/:id', this.handleGetCompressionRecommendation.bind(this));
-    app.get('/api/compression/stats/:project', this.handleGetCompressionStats.bind(this));
   }
 
   /**
@@ -183,61 +158,6 @@ export class DataRoutes extends BaseRouteHandler {
   });
 
   /**
-   * Get session-specific statistics
-   * GET /api/session/:sdkSessionId/stats
-   * Returns: observations count, tokens, duration for this session
-   */
-  private handleGetSessionStats = this.wrapHandler((req: Request, res: Response): void => {
-    const sdkSessionId = req.params.sdkSessionId;
-
-    if (!sdkSessionId) {
-      this.badRequest(res, 'Missing sdkSessionId');
-      return;
-    }
-
-    const db = this.dbManager.getSessionStore().db;
-
-    // Get session stats
-    const sessionStats = db.prepare(`
-      SELECT
-        COUNT(*) as observations_count,
-        COALESCE(SUM(discovery_tokens), 0) as total_tokens,
-        MIN(created_at_epoch) as first_observation_at,
-        MAX(created_at_epoch) as last_observation_at
-      FROM observations
-      WHERE memory_session_id = ?
-    `).get(sdkSessionId) as {
-      observations_count: number;
-      total_tokens: number;
-      first_observation_at: number | null;
-      last_observation_at: number | null;
-    };
-
-    // Get user prompts count for this session
-    const promptStats = db.prepare(`
-      SELECT COUNT(*) as prompts_count
-      FROM user_prompts
-      WHERE content_session_id = ?
-    `).get(sdkSessionId) as { prompts_count: number };
-
-    // Calculate session duration
-    let durationMs = 0;
-    if (sessionStats.first_observation_at && sessionStats.last_observation_at) {
-      durationMs = sessionStats.last_observation_at - sessionStats.first_observation_at;
-    }
-
-    res.json({
-      sdkSessionId,
-      observationsCount: sessionStats.observations_count,
-      totalTokens: sessionStats.total_tokens,
-      promptsCount: promptStats.prompts_count,
-      durationMs,
-      firstObservationAt: sessionStats.first_observation_at,
-      lastObservationAt: sessionStats.last_observation_at
-    });
-  });
-
-  /**
    * Get SDK sessions by SDK session IDs
    * POST /api/sdk-sessions/batch
    * Body: { memorySessionIds: string[] }
@@ -303,11 +223,6 @@ export class DataRoutes extends BaseRouteHandler {
     const activeSessions = this.sessionManager.getActiveSessionCount();
     const sseClients = this.sseBroadcaster.getClientCount();
 
-    // Get session savings (from most recent context generation)
-    const project = req.query.project as string | undefined;
-    const currentSavings = getSessionSavings(project);
-    const allSavings = getAllSessionSavings();
-
     res.json({
       worker: {
         version,
@@ -322,24 +237,7 @@ export class DataRoutes extends BaseRouteHandler {
         observations: totalObservations.count,
         sessions: totalSessions.count,
         summaries: totalSummaries.count
-      },
-      savings: currentSavings ? {
-        current: {
-          project: currentSavings.project,
-          savings: currentSavings.savings,
-          savingsPercent: currentSavings.savingsPercent,
-          totalReadTokens: currentSavings.totalReadTokens,
-          totalDiscoveryTokens: currentSavings.totalDiscoveryTokens,
-          totalObservations: currentSavings.totalObservations,
-          calculatedAt: currentSavings.calculatedAt
-        },
-        allProjects: allSavings.map(s => ({
-          project: s.project,
-          savings: s.savings,
-          savingsPercent: s.savingsPercent,
-          calculatedAt: s.calculatedAt
-        }))
-      } : null
+      }
     });
   });
 
@@ -529,471 +427,40 @@ export class DataRoutes extends BaseRouteHandler {
   });
 
   /**
-   * Get memory importance and access statistics
-   * GET /api/memory/:id/stats
+   * Clear all failed messages from the queue
+   * DELETE /api/pending-queue/failed
+   * Returns the number of messages cleared
    */
-  private handleGetMemoryStats = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const id = this.parseIntParam(req, res, 'id');
-    if (id === null) return;
+  private handleClearFailedQueue = this.wrapHandler((req: Request, res: Response): void => {
+    const { PendingMessageStore } = require('../../../sqlite/PendingMessageStore.js');
+    const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
 
-    // ERROR HANDLING: Wrap dynamic imports in try-catch
-    let AccessTracker: typeof import('../../AccessTracker.js').AccessTracker;
-    let ImportanceScorer: typeof import('../../ImportanceScorer.js').ImportanceScorer;
-    let SemanticRarity: typeof import('../../SemanticRarity.js').SemanticRarity;
+    const clearedCount = pendingStore.clearFailed();
 
-    try {
-      const imports = await Promise.all([
-        import('../../AccessTracker.js'),
-        import('../../ImportanceScorer.js'),
-        import('../../SemanticRarity.js'),
-      ]);
-
-      AccessTracker = imports[0].AccessTracker;
-      ImportanceScorer = imports[1].ImportanceScorer;
-      SemanticRarity = imports[2].SemanticRarity;
-    } catch (error: unknown) {
-      logger.error('DataRoutes', 'Failed to import required modules', {}, error instanceof Error ? error : new Error(String(error)));
-      res.status(500).json({ error: 'Failed to load required modules' });
-      return;
-    }
-
-    const db = this.dbManager.getSessionStore().db;
-    const accessTracker = new AccessTracker(db);
-    const importanceScorer = new ImportanceScorer(db);
-    const semanticRarity = new SemanticRarity(db);
-
-    // Get observation
-    const observation = this.dbManager.getSessionStore().getObservationById(id);
-    if (!observation) {
-      this.notFound(res, `Observation #${id} not found`);
-      return;
-    }
-
-    // Get access stats
-    const accessStats = accessTracker.getAccessStats(id, 30);
-
-    // Update and get importance score
-    await importanceScorer.updateScore(id);
-    const importanceScore = importanceScorer.getScore(id);
-
-    // Get semantic rarity
-    const rarityResult = await semanticRarity.calculate(observation, { sampleSize: 50 });
-
-    res.json({
-      id,
-      importanceScore,
-      accessStats,
-      rarity: rarityResult.score,
-      rarityConfidence: rarityResult.confidence,
-      similarMemories: rarityResult.similarMemories.slice(0, 5), // Top 5 similar
-    });
-  });
-
-  /**
-   * Get memory statistics for multiple memories
-   * POST /api/memory/stats/batch
-   * Body: { ids: number[] }
-   */
-  private handleGetMemoryStatsBatch = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const { ids } = req.body;
-
-    if (!ids || !Array.isArray(ids)) {
-      this.badRequest(res, 'ids must be an array of numbers');
-      return;
-    }
-
-    const { AccessTracker } = await import('../../AccessTracker.js');
-    const { ImportanceScorer } = await import('../../ImportanceScorer.js');
-
-    const db = this.dbManager.getSessionStore().db;
-    const accessTracker = new AccessTracker(db);
-    const importanceScorer = new ImportanceScorer(db);
-
-    const accessStats = accessTracker.getAccessStatsBatch(ids, 30);
-    const importanceScores = importanceScorer.getScoresBatch(ids);
-
-    const results = ids.map(id => ({
-      id,
-      importanceScore: importanceScores.get(id) ?? 0.5,
-      accessStats: accessStats.get(id) ?? null,
-    }));
-
-    res.json(results);
-  });
-
-  /**
-   * Get rare memories (high semantic rarity)
-   * GET /api/memory/rare?threshold=0.7&limit=50&project=
-   */
-  private handleGetRareMemories = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const threshold = parseFloat(req.query.threshold as string) || 0.7;
-    const limit = Math.min(parseInt(req.query.limit as string, 10) || 50, 200);
-    const project = req.query.project as string | undefined;
-
-    const { SemanticRarity } = await import('../../SemanticRarity.js');
-
-    const db = this.dbManager.getSessionStore().db;
-    const semanticRarity = new SemanticRarity(db);
-
-    // OPTIMIZATION: Pass project parameter to getRareMemories for SQL-level filtering
-    // This eliminates the double query pattern (fetch all, then filter by project)
-    const rareMemories = await semanticRarity.getRareMemories(threshold, limit, project);
-
-    res.json({
-      threshold,
-      count: rareMemories.length,
-      memories: rareMemories,
-    });
-  });
-
-  /**
-   * Get low importance memories (cleanup candidates)
-   * GET /api/memory/low-importance?threshold=0.3&olderThanDays=90&limit=100
-   */
-  private handleGetLowImportanceMemories = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const threshold = parseFloat(req.query.threshold as string) || 0.3;
-    const olderThanDays = parseInt(req.query.olderThanDays as string, 10) || 90;
-    const limit = Math.min(parseInt(req.query.limit as string, 10) || 100, 500);
-
-    const { ImportanceScorer } = await import('../../ImportanceScorer.js');
-
-    const db = this.dbManager.getSessionStore().db;
-    const importanceScorer = new ImportanceScorer(db);
-
-    const lowImportanceMemories = importanceScorer.getLowImportanceMemories(
-      threshold,
-      olderThanDays,
-      limit
-    );
-
-    res.json({
-      threshold,
-      olderThanDays,
-      count: lowImportanceMemories.length,
-      memories: lowImportanceMemories,
-    });
-  });
-
-  /**
-   * Record access to a memory
-   * POST /api/memory/:id/access
-   * Body: { context?: string }
-   */
-  private handleRecordMemoryAccess = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const id = this.parseIntParam(req, res, 'id');
-    if (id === null) return;
-
-    const { context } = req.body;
-
-    const { AccessTracker } = await import('../../AccessTracker.js');
-
-    const db = this.dbManager.getSessionStore().db;
-    const accessTracker = new AccessTracker(db);
-
-    await accessTracker.recordAccess(id, context);
-
-    res.json({ success: true, id });
-  });
-
-  /**
-   * Record access to multiple memories
-   * POST /api/memory/access/batch
-   * Body: { ids: number[], context?: string }
-   */
-  private handleRecordMemoryAccessBatch = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const { ids, context } = req.body;
-
-    if (!ids || !Array.isArray(ids)) {
-      this.badRequest(res, 'ids must be an array of numbers');
-      return;
-    }
-
-    const { AccessTracker } = await import('../../AccessTracker.js');
-
-    const db = this.dbManager.getSessionStore().db;
-    const accessTracker = new AccessTracker(db);
-
-    await accessTracker.recordAccessBatch(ids, context);
-
-    res.json({ success: true, count: ids.length });
-  });
-
-  /**
-   * Get surprise score for a specific memory
-   * GET /api/surprise/:id
-   */
-  private handleGetSurprise = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const id = this.parseIntParam(req, res, 'id');
-    if (id === null) return;
-
-    const { SurpriseMetric } = await import('../../SurpriseMetric.js');
-
-    const db = this.dbManager.getSessionStore().db;
-    const surpriseMetric = new SurpriseMetric(db);
-
-    const observation = this.dbManager.getSessionStore().getObservationById(id);
-    if (!observation) {
-      this.notFound(res, `Observation #${id} not found`);
-      return;
-    }
-
-    const result = await surpriseMetric.calculate(observation, { sampleSize: 50 });
-
-    res.json({
-      id,
-      surprise: result.score,
-      confidence: result.confidence,
-      factors: result.factors,
-      similarMemories: result.similarMemories.slice(0, 5),
-    });
-  });
-
-  /**
-   * Get surprising memories (high surprise scores)
-   * GET /api/surprising?threshold=0.7&limit=50&project=
-   */
-  private handleGetSurprisingMemories = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const threshold = parseFloat(req.query.threshold as string) || 0.7;
-    const limit = Math.min(parseInt(req.query.limit as string, 10) || 50, 200);
-    const project = req.query.project as string | undefined;
-
-    const { SurpriseMetric } = await import('../../SurpriseMetric.js');
-
-    const db = this.dbManager.getSessionStore().db;
-    const surpriseMetric = new SurpriseMetric(db);
-
-    let surprisingMemories = await surpriseMetric.getSurprisingMemories(threshold, limit, 30);
-
-    // Filter by project if specified
-    if (project) {
-      const store = this.dbManager.getSessionStore();
-      const projectObsIds = new Set(
-        store.getObservationsByIds(surprisingMemories.map(m => m.id), { project })
-          .map(o => o.id)
-      );
-      surprisingMemories = surprisingMemories.filter(m => projectObsIds.has(m.id));
-    }
-
-    res.json({
-      threshold,
-      count: surprisingMemories.length,
-      memories: surprisingMemories,
-    });
-  });
-
-  /**
-   * Get surprise statistics for a project
-   * GET /api/surprise/stats/:project?lookbackDays=30
-   */
-  private handleGetProjectSurpriseStats = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const project = req.params.project;
-    const lookbackDays = parseInt(req.query.lookbackDays as string, 10) || 30;
-
-    const { SurpriseMetric } = await import('../../SurpriseMetric.js');
-
-    const db = this.dbManager.getSessionStore().db;
-    const surpriseMetric = new SurpriseMetric(db);
-
-    const stats = await surpriseMetric.getProjectSurpriseStats(project, lookbackDays);
-
-    res.json({
-      project,
-      lookbackDays,
-      stats,
-    });
-  });
-
-  /**
-   * Get momentum buffer statistics
-   * GET /api/momentum/stats
-   */
-  private handleGetMomentumStats = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const { getMomentumBuffer } = await import('../../MomentumBuffer.js');
-
-    const momentumBuffer = getMomentumBuffer();
-    const stats = momentumBuffer.getStats();
-
-    res.json(stats);
-  });
-
-  /**
-   * Manually boost a topic
-   * POST /api/momentum/boost
-   * Body: { topics: string[], duration?: number, boostFactor?: number }
-   */
-  private handleManualBoost = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const { topics, duration, boostFactor } = req.body;
-
-    if (!topics || !Array.isArray(topics)) {
-      this.badRequest(res, 'topics must be an array of strings');
-      return;
-    }
-
-    const { getMomentumBuffer } = await import('../../MomentumBuffer.js');
-
-    const momentumBuffer = getMomentumBuffer();
-    momentumBuffer.boostMultiple(topics, { duration, boostFactor });
+    logger.info('QUEUE', 'Cleared failed queue messages', { clearedCount });
 
     res.json({
       success: true,
-      topics,
-      duration: duration || 5,
-      boostFactor: boostFactor || 1.5,
+      clearedCount
     });
   });
 
   /**
-   * Clear all momentum boosts
-   * DELETE /api/momentum
+   * Clear all messages from the queue (pending, processing, and failed)
+   * DELETE /api/pending-queue/all
+   * Returns the number of messages cleared
    */
-  private handleClearMomentum = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const { getMomentumBuffer } = await import('../../MomentumBuffer.js');
+  private handleClearAllQueue = this.wrapHandler((req: Request, res: Response): void => {
+    const { PendingMessageStore } = require('../../../sqlite/PendingMessageStore.js');
+    const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
 
-    const momentumBuffer = getMomentumBuffer();
-    momentumBuffer.clearAll();
+    const clearedCount = pendingStore.clearAll();
 
-    res.json({ success: true, message: 'All momentum boosts cleared' });
-  });
-
-  /**
-   * Run cleanup job manually
-   * POST /api/cleanup/run?dryRun=true
-   */
-  private handleRunCleanup = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const dryRun = req.query.dryRun !== 'false';
-
-    const { getCleanupJob } = await import('../../CleanupJob.js');
-    const cleanupJob = getCleanupJob(this.dbManager.getSessionStore().db);
-
-    const result = await cleanupJob.run();
-
-    res.json({
-      ...result,
-      dryRun,
-    });
-  });
-
-  /**
-   * Get cleanup job statistics
-   * GET /api/cleanup/stats
-   */
-  private handleGetCleanupStats = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const { getCleanupJob } = await import('../../CleanupJob.js');
-    const cleanupJob = getCleanupJob(this.dbManager.getSessionStore().db);
-
-    const stats = cleanupJob.getStats();
-
-    res.json(stats);
-  });
-
-  /**
-   * Update cleanup job configuration
-   * POST /api/cleanup/config
-   * Body: { enableMemoryCleanup?: boolean, memoryCleanupIntervalHours?: number, ... }
-   */
-  private handleUpdateCleanupConfig = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const { getCleanupJob } = await import('../../CleanupJob.js');
-    const cleanupJob = getCleanupJob(this.dbManager.getSessionStore().db);
-
-    cleanupJob.updateConfig(req.body);
-
-    const stats = cleanupJob.getStats();
+    logger.warn('QUEUE', 'Cleared ALL queue messages (pending, processing, failed)', { clearedCount });
 
     res.json({
       success: true,
-      config: stats.config,
-    });
-  });
-
-  /**
-   * Get cleanup candidates (memories that can be forgotten)
-   * GET /api/cleanup/candidates?limit=100
-   */
-  private handleGetCleanupCandidates = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const limit = Math.min(parseInt(req.query.limit as string, 10) || 100, 500);
-
-    const { ForgettingPolicy } = await import('../../ForgettingPolicy.js');
-    const db = this.dbManager.getSessionStore().db;
-    const policy = new ForgettingPolicy(db);
-
-    const candidates = await policy.getCleanupCandidates(limit);
-
-    res.json({
-      count: candidates.length,
-      limit,
-      candidates,
-    });
-  });
-
-  /**
-   * Get retention statistics for a project
-   * GET /api/cleanup/retention/:project?lookbackDays=365
-   */
-  private handleGetRetentionStats = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const project = req.params.project;
-    const lookbackDays = parseInt(req.query.lookbackDays as string, 10) || 365;
-
-    const { ForgettingPolicy } = await import('../../ForgettingPolicy.js');
-    const db = this.dbManager.getSessionStore().db;
-    const policy = new ForgettingPolicy(db);
-
-    const stats = await policy.getProjectRetentionStats(project, lookbackDays);
-
-    res.json({
-      project,
-      lookbackDays,
-      stats,
-    });
-  });
-
-  /**
-   * Get compression recommendation for an observation
-   * POST /api/compression/recommendation/:id
-   */
-  private handleGetCompressionRecommendation = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const id = this.parseIntParam(req, res, 'id');
-    if (id === null) return;
-
-    const { CompressionOptimizer } = await import('../../CompressionOptimizer.js');
-    const db = this.dbManager.getSessionStore().db;
-    const optimizer = new CompressionOptimizer(db);
-
-    const observation = this.dbManager.getSessionStore().getObservationById(id);
-    if (!observation) {
-      this.notFound(res, `Observation #${id} not found`);
-      return;
-    }
-
-    const recommendation = await optimizer.getRecommendation(observation);
-
-    res.json({
-      id,
-      recommendation,
-    });
-  });
-
-  /**
-   * Get compression statistics for a project
-   * GET /api/compression/stats/:project?lookbackDays=90
-   */
-  private handleGetCompressionStats = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const project = req.params.project;
-    const lookbackDays = parseInt(req.query.lookbackDays as string, 10) || 90;
-
-    const { CompressionOptimizer } = await import('../../CompressionOptimizer.js');
-    const db = this.dbManager.getSessionStore().db;
-    const optimizer = new CompressionOptimizer(db);
-
-    const stats = await optimizer.getProjectCompressionStats(project, lookbackDays);
-
-    // Also estimate token savings
-    const savings = await optimizer.estimateTokenSavings(project, lookbackDays);
-
-    res.json({
-      project,
-      lookbackDays,
-      stats,
-      savings,
+      clearedCount
     });
   });
 }
