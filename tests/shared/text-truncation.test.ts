@@ -2,8 +2,6 @@ import { describe, expect, test } from 'bun:test';
 import {
   truncateLargeText,
   MAX_ASSISTANT_MESSAGE_LENGTH,
-  HEAD_KEEP_LENGTH,
-  TAIL_KEEP_LENGTH
 } from '../../src/shared/text-truncation.js';
 
 describe('truncateLargeText', () => {
@@ -29,6 +27,7 @@ describe('truncateLargeText', () => {
     const longText = 'a'.repeat(MAX_ASSISTANT_MESSAGE_LENGTH + 10000);
     const result = truncateLargeText(longText);
     expect(result.length).toBeLessThan(longText.length);
+    expect(result.length).toBeLessThanOrEqual(MAX_ASSISTANT_MESSAGE_LENGTH);
   });
 
   test('preserves head and tail portions', () => {
@@ -57,7 +56,7 @@ describe('truncateLargeText', () => {
 
   test('respects custom max length', () => {
     const text = 'a'.repeat(1000);
-    const result = truncateLargeText(text, 500, 100, 100);
+    const result = truncateLargeText(text, 500);
     expect(result.length).toBeLessThan(text.length);
     expect(result).toContain('truncated');
   });
