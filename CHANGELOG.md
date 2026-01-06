@@ -2,6 +2,77 @@
 
 All notable changes to claude-mem.
 
+## [v9.0.0] - 2026-01-06
+
+## 🚀 Live Context System
+
+Version 9.0.0 introduces the **Live Context System** - a major new capability that provides folder-level activity context through auto-generated CLAUDE.md files.
+
+### ✨ New Features
+
+#### Live Context System
+- **Folder CLAUDE.md Files**: Each directory now gets an auto-generated CLAUDE.md file containing a chronological timeline of recent development activity
+- **Activity Timelines**: Tables show observation ID, time, type, title, and estimated token cost for relevant work in each folder
+- **Worktree Support**: Proper detection of git worktrees with project-aware filtering to show only relevant observations per worktree
+- **Configurable Limits**: Control observation count via `CLAUDE_MEM_CONTEXT_OBSERVATIONS` setting
+
+#### Modular Architecture Refactor
+- **Service Layer Decomposition**: Major refactoring from monolithic worker-service to modular domain services
+- **SQLite Module Extraction**: Database operations split into dedicated modules (observations, sessions, summaries, prompts, timeline)
+- **Context Builder System**: New modular context generation with TimelineRenderer, FooterRenderer, and ObservationCompiler
+- **Error Handler Centralization**: Unified Express error handling via ErrorHandler module
+
+#### SDK Agent Improvements
+- **Session Resume**: Memory sessions can now resume across Claude conversations using SDK session IDs
+- **Memory Session ID Tracking**: Proper separation of content session IDs from memory session IDs
+- **Response Processor Refactor**: Cleaner message handling and observation extraction
+
+### 🔧 Improvements
+
+#### Windows Stability
+- Fixed Windows PowerShell variable escaping in hook execution
+- Improved IPC detection for Windows managed mode
+- Better PATH handling for Bun and uv on Windows
+
+#### Settings & Configuration
+- **Auto-Creation**: Settings file automatically created with defaults on first run
+- **Worker Host Configuration**: `CLAUDE_MEM_WORKER_HOST` setting for custom worker endpoints
+- Settings validation with helpful error messages
+
+#### MCP Tools
+- Standardized naming: "MCP tools" terminology instead of "mem-search skill"
+- Improved tool descriptions for better Claude integration
+- Context injection API now supports worktree parameter
+
+### 📚 Documentation
+- New **Folder Context Files** documentation page
+- **Worktree Support** section explaining git worktree behavior
+- Updated architecture documentation reflecting modular refactor
+- v9.0 release notes in introduction page
+
+### 🐛 Bug Fixes
+- Fixed stale session resume crash when SDK session is orphaned
+- Fixed logger serialization bug causing silent ChromaSync failures
+- Fixed CLAUDE.md path resolution in worktree environments
+- Fixed date preservation in folder timeline generation
+- Fixed foreign key constraint issues in observation storage
+- Resolved multiple TypeScript type errors across codebase
+
+### 🗑️ Removed
+- Deprecated context-generator.ts (functionality moved to modular system)
+- Obsolete queue analysis documents
+- Legacy worker wrapper scripts
+
+### ⚠️ Breaking Changes
+- Hook runtime changed from Bun back to Node for stability
+- Some internal API endpoints renamed for consistency
+
+---
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.5.10...v9.0.0
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
 ## [v8.5.10] - 2026-01-06
 
 ## Bug Fixes
@@ -1196,48 +1267,4 @@ Fixed unbounded database growth in the `pending_messages` table by implementing 
   - Generate `mem-search.zip` during build from `plugin/skills/mem-search/`
   - Update docs with correct MCP tool list and new download path
   - Single source of truth for Claude Desktop skill
-
-## [v7.2.1] - 2025-12-14
-
-## Translation Script Enhancements
-
-This release adds powerful enhancements to the README translation system, supporting 35 languages with improved efficiency and caching.
-
-### What's New
-
-**Translation Script Improvements:**
-- **Caching System**: Smart `.translation-cache.json` tracks content hashes to skip re-translating unchanged content
-- **Parallel Processing**: `--parallel <n>` flag enables concurrent translations for faster execution
-- **Force Re-translation**: `--force` flag to override cache when needed
-- **Tier-Based Scripts**: Organized translation workflows by language priority
-  - `npm run translate:tier1` - 7 major languages (Chinese, Japanese, Korean, etc.)
-  - `npm run translate:tier2` - 8 strong tech scene languages (Hebrew, Arabic, Russian, etc.)
-  - `npm run translate:tier3` - 7 emerging markets (Vietnamese, Indonesian, Thai, etc.)
-  - `npm run translate:tier4` - 6 additional languages (Italian, Greek, Hungarian, etc.)
-  - `npm run translate:all` - All 35 languages sequentially
-- **Better Output Handling**: Automatically strips markdown code fences if Claude wraps output
-- **Translation Disclaimer**: Adds community correction notice at top of translated files
-- **Performance**: Uses Bun runtime for faster execution
-
-### Supported Languages (35 Total)
-
-Arabic, Bengali, Brazilian Portuguese, Bulgarian, Chinese (Simplified), Chinese (Traditional), Czech, Danish, Dutch, Estonian, Finnish, French, German, Greek, Hebrew, Hindi, Hungarian, Indonesian, Italian, Japanese, Korean, Latvian, Lithuanian, Norwegian, Polish, Portuguese, Romanian, Russian, Slovak, Slovenian, Spanish, Swedish, Thai, Turkish, Ukrainian, Vietnamese
-
-### Breaking Changes
-
-None - fully backward compatible.
-
-### Installation
-
-```bash
-# Update via npm
-npm install -g claude-mem@7.2.1
-
-# Or reinstall plugin
-claude plugin install thedotmack/claude-mem
-```
-
----
-
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.2.0...v7.2.1
 
