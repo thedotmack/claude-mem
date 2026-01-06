@@ -78,4 +78,5 @@ This architecture preserves the open-source nature of the project while enabling
 
 ## Important
 
-No need to edit the changelog ever, it's generated automatically.
+- **Always commit build artifacts** in `plugin/` - the plugin must work out of the box without requiring users to build from source
+- No need to edit the changelog ever, it's generated automatically.

@@ -1,36 +1,18 @@
 import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
+import { writeFileSync, mkdirSync, rmSync, existsSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
 import { GeminiAgent } from '../src/services/worker/GeminiAgent';
 import { DatabaseManager } from '../src/services/worker/DatabaseManager';
 import { SessionManager } from '../src/services/worker/SessionManager';
-import { ModeManager } from '../src/services/worker/domain/ModeManager';
+import { ModeManager } from '../src/services/domain/ModeManager';
 import { SettingsDefaultsManager } from '../src/shared/SettingsDefaultsManager';
 
 // Track rate limiting setting (controls Gemini RPM throttling)
 // Set to 'false' to disable rate limiting for faster tests
 let rateLimitingEnabled = 'false';
 
-// Mock SettingsDefaultsManager - must return complete settings object
-mock.module('../src/shared/SettingsDefaultsManager', () => ({
-  SettingsDefaultsManager: {
-    loadFromFile: () => ({
-      CLAUDE_MEM_GEMINI_API_KEY: 'test-api-key',
-      CLAUDE_MEM_GEMINI_MODEL: 'gemini-2.5-flash-lite',
-      CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: rateLimitingEnabled, // This is what GeminiAgent actually checks
-      CLAUDE_MEM_LOG_LEVEL: 'INFO',
-      CLAUDE_MEM_DATA_DIR: '/tmp/claude-mem-test'
-    }),
-    get: (key: string) => {
-      if (key === 'CLAUDE_MEM_LOG_LEVEL') return 'INFO';
-      if (key === 'CLAUDE_MEM_DATA_DIR') return '/tmp/claude-mem-test';
-      if (key === 'CLAUDE_MEM_GEMINI_API_KEY') return 'test-api-key';
-      if (key === 'CLAUDE_MEM_GEMINI_MODEL') return 'gemini-2.5-flash-lite';
-      if (key === 'CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED') return rateLimitingEnabled;
-      return '';
-    }
-  }
-}));
-
-// Mock ModeManager
+// Mock mode config
 const mockMode = {
   name: 'code',
   prompts: {
@@ -42,13 +24,11 @@ const mockMode = {
   observation_concepts: []
 };
 
-mock.module('../src/services/domain/ModeManager', () => ({
-  ModeManager: {
-    getInstance: () => ({
-      getActiveMode: () => mockMode
-    })
-  }
-}));
+// Use spyOn for all dependencies to avoid affecting other test files
+// spyOn restores automatically, unlike mock.module which persists
+let loadFromFileSpy: ReturnType<typeof spyOn>;
+let getSpy: ReturnType<typeof spyOn>;
+let modeManagerSpy: ReturnType<typeof spyOn>;
 
 describe('GeminiAgent', () => {
   let agent: GeminiAgent;
@@ -70,6 +50,29 @@ describe('GeminiAgent', () => {
   beforeEach(() => {
     // Reset rate limiting to disabled by default (speeds up tests)
     rateLimitingEnabled = 'false';
+
+    // Mock ModeManager using spyOn (restores properly)
+    modeManagerSpy = spyOn(ModeManager, 'getInstance').mockImplementation(() => ({
+      getActiveMode: () => mockMode,
+      loadMode: () => {},
+    } as any));
+
+    // Mock SettingsDefaultsManager methods using spyOn (restores properly)
+    loadFromFileSpy = spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(() => ({
+      ...SettingsDefaultsManager.getAllDefaults(),
+      CLAUDE_MEM_GEMINI_API_KEY: 'test-api-key',
+      CLAUDE_MEM_GEMINI_MODEL: 'gemini-2.5-flash-lite',
+      CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: rateLimitingEnabled,
+      CLAUDE_MEM_DATA_DIR: '/tmp/claude-mem-test',
+    }));
+
+    getSpy = spyOn(SettingsDefaultsManager, 'get').mockImplementation((key: string) => {
+      if (key === 'CLAUDE_MEM_GEMINI_API_KEY') return 'test-api-key';
+      if (key === 'CLAUDE_MEM_GEMINI_MODEL') return 'gemini-2.5-flash-lite';
+      if (key === 'CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED') return rateLimitingEnabled;
+      if (key === 'CLAUDE_MEM_DATA_DIR') return '/tmp/claude-mem-test';
+      return SettingsDefaultsManager.getAllDefaults()[key as keyof ReturnType<typeof SettingsDefaultsManager.getAllDefaults>] ?? '';
+    });
 
     // Initialize mocks
     mockStoreObservation = mock(() => ({ id: 1, createdAtEpoch: Date.now() }));
@@ -122,6 +125,10 @@ describe('GeminiAgent', () => {
 
   afterEach(() => {
     global.fetch = originalFetch;
+    // Restore spied methods
+    if (modeManagerSpy) modeManagerSpy.mockRestore();
+    if (loadFromFileSpy) loadFromFileSpy.mockRestore();
+    if (getSpy) getSpy.mockRestore();
     mock.restore();
   });
 

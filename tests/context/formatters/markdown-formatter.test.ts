@@ -169,11 +169,11 @@ describe('MarkdownFormatter', () => {
       expect(result[0]).toContain('**Context Index:**');
     });
 
-    it('should mention mem-search skill', () => {
+    it('should mention MCP tools', () => {
       const result = renderMarkdownContextIndex();
       const joined = result.join('\n');
 
-      expect(joined).toContain('mem-search');
+      expect(joined).toContain('MCP tools');
     });
   });
 
@@ -488,11 +488,11 @@ describe('MarkdownFormatter', () => {
       expect(joined).toContain('500');
     });
 
-    it('should mention mem-search skill', () => {
+    it('should mention MCP', () => {
       const result = renderMarkdownFooter(5000, 100);
       const joined = result.join('\n');
 
-      expect(joined).toContain('mem-search');
+      expect(joined).toContain('MCP');
     });
 
     it('should round work tokens to nearest thousand', () => {

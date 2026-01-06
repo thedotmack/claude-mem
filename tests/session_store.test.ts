@@ -1,3 +1,13 @@
+/**
+ * Tests for SessionStore in-memory database operations
+ *
+ * Mock Justification: NONE (0% mock code)
+ * - Uses real SQLite with ':memory:' - tests actual SQL and schema
+ * - All CRUD operations are tested against real database behavior
+ * - Timestamp handling and FK relationships are validated
+ *
+ * Value: Validates core persistence layer without filesystem dependencies
+ */
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { SessionStore } from '../src/services/sqlite/SessionStore.js';
 

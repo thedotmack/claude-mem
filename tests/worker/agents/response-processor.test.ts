@@ -1,4 +1,5 @@
-import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
+import { logger } from '../../../src/utils/logger.js';
 
 // Mock modules that cause import chain issues - MUST be before imports
 // Use full paths from test file location
@@ -28,22 +29,15 @@ mock.module('../../../src/services/domain/ModeManager.js', () => ({
   },
 }));
 
-// Mock logger
-mock.module('../../../src/utils/logger.js', () => ({
-  logger: {
-    info: () => {},
-    debug: () => {},
-    warn: () => {},
-    error: () => {},
-  },
-}));
-
 // Import after mocks
 import { processAgentResponse } from '../../../src/services/worker/agents/ResponseProcessor.js';
 import type { WorkerRef, StorageResult } from '../../../src/services/worker/agents/types.js';
 import type { ActiveSession } from '../../../src/services/worker-types.js';
 import type { DatabaseManager } from '../../../src/services/worker/DatabaseManager.js';
 import type { SessionManager } from '../../../src/services/worker/SessionManager.js';
+
+// Spy on logger methods to suppress output during tests
+let loggerSpies: ReturnType<typeof spyOn>[] = [];
 
 describe('ResponseProcessor', () => {
   // Mocks
@@ -57,6 +51,14 @@ describe('ResponseProcessor', () => {
   let mockWorker: WorkerRef;
 
   beforeEach(() => {
+    // Spy on logger to suppress output
+    loggerSpies = [
+      spyOn(logger, 'info').mockImplementation(() => {}),
+      spyOn(logger, 'debug').mockImplementation(() => {}),
+      spyOn(logger, 'warn').mockImplementation(() => {}),
+      spyOn(logger, 'error').mockImplementation(() => {}),
+    ];
+
     // Create fresh mocks for each test
     mockStoreObservations = mock(() => ({
       observationIds: [1, 2],
@@ -100,6 +102,7 @@ describe('ResponseProcessor', () => {
   });
 
   afterEach(() => {
+    loggerSpies.forEach(spy => spy.mockRestore());
     mock.restore();
   });
 
