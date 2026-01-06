@@ -1153,24 +1153,57 @@ export class SearchManager {
       };
     }
 
-    // Format as table
-    const header = `Found ${totalResults} result(s) for file "${filePath}"\n\n${this.formatter.formatTableHeader()}`;
-    const formattedResults: string[] = [];
+    // Combine observations and sessions with timestamps for date grouping
+    const combined: Array<{
+      type: 'observation' | 'session';
+      data: ObservationSearchResult | SessionSummarySearchResult;
+      epoch: number;
+      created_at: string;
+    }> = [
+      ...observations.map(obs => ({
+        type: 'observation' as const,
+        data: obs,
+        epoch: obs.created_at_epoch,
+        created_at: obs.created_at
+      })),
+      ...sessions.map(sess => ({
+        type: 'session' as const,
+        data: sess,
+        epoch: sess.created_at_epoch,
+        created_at: sess.created_at
+      }))
+    ];
 
-    // Add observations
-    observations.forEach((obs, i) => {
-      formattedResults.push(this.formatter.formatObservationIndex(obs, i));
-    });
+    // Sort by date (most recent first)
+    combined.sort((a, b) => b.epoch - a.epoch);
 
-    // Add sessions
-    sessions.forEach((session, i) => {
-      formattedResults.push(this.formatter.formatSessionIndex(session, i + observations.length));
-    });
+    // Group by date for proper timeline rendering
+    const resultsByDate = groupByDate(combined, item => item.created_at);
+
+    // Format with date headers for proper date parsing by folder CLAUDE.md generator
+    const lines: string[] = [];
+    lines.push(`Found ${totalResults} result(s) for file "${filePath}"`);
+    lines.push('');
+
+    for (const [day, dayResults] of resultsByDate) {
+      lines.push(`### ${day}`);
+      lines.push('');
+      lines.push(this.formatter.formatTableHeader());
+
+      for (const result of dayResults) {
+        if (result.type === 'observation') {
+          lines.push(this.formatter.formatObservationIndex(result.data as ObservationSearchResult, 0));
+        } else {
+          lines.push(this.formatter.formatSessionIndex(result.data as SessionSummarySearchResult, 0));
+        }
+      }
+      lines.push('');
+    }
 
     return {
       content: [{
         type: 'text' as const,
-        text: header + '\n' + formattedResults.join('\n')
+        text: lines.join('\n')
       }]
     };
   }

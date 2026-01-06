@@ -113,8 +113,21 @@ export function formatTimelineForClaudeMd(timelineText: string): string {
   // Parse observations: | #123 | 4:30 PM | 🔧 | Title | ~250 | ... |
   const observations: ParsedObservation[] = [];
   let lastTimeStr = '';
+  let currentDate: Date | null = null;
 
   for (const line of apiLines) {
+    // Check for date headers: ### Jan 4, 2026
+    const dateMatch = line.match(/^###\s+(.+)$/);
+    if (dateMatch) {
+      const dateStr = dateMatch[1].trim();
+      const parsedDate = new Date(dateStr);
+      // Validate the parsed date
+      if (!isNaN(parsedDate.getTime())) {
+        currentDate = parsedDate;
+      }
+      continue;
+    }
+
     // Match table rows: | #123 | 4:30 PM | 🔧 | Title | ~250 | ... |
     // Also handles ditto marks and session IDs (#S123)
     const match = line.match(/^\|\s*(#[S]?\d+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|/);
@@ -130,18 +143,18 @@ export function formatTimelineForClaudeMd(timelineText: string): string {
         lastTimeStr = time;
       }
 
-      // Parse time to epoch for date grouping (approximate - use today's date with parsed time)
-      const now = new Date();
+      // Parse time and combine with current date header (or fallback to today)
+      const baseDate = currentDate ? new Date(currentDate) : new Date();
       const timeParts = time.match(/(\d+):(\d+)\s*(AM|PM)/i);
-      let epoch = now.getTime();
+      let epoch = baseDate.getTime();
       if (timeParts) {
         let hours = parseInt(timeParts[1], 10);
         const minutes = parseInt(timeParts[2], 10);
         const isPM = timeParts[3].toUpperCase() === 'PM';
         if (isPM && hours !== 12) hours += 12;
         if (!isPM && hours === 12) hours = 0;
-        now.setHours(hours, minutes, 0, 0);
-        epoch = now.getTime();
+        baseDate.setHours(hours, minutes, 0, 0);
+        epoch = baseDate.getTime();
       }
 
       observations.push({
