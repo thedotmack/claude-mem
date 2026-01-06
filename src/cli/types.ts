@@ -1,0 +1,28 @@
+export interface NormalizedHookInput {
+  sessionId: string;
+  cwd: string;
+  prompt?: string;
+  toolName?: string;
+  toolInput?: unknown;
+  toolResponse?: unknown;
+  transcriptPath?: string;
+  // Cursor-specific fields
+  filePath?: string;   // afterFileEdit
+  edits?: unknown[];   // afterFileEdit
+}
+
+export interface HookResult {
+  continue?: boolean;
+  suppressOutput?: boolean;
+  hookSpecificOutput?: { hookEventName: string; additionalContext: string };
+  exitCode?: number;
+}
+
+export interface PlatformAdapter {
+  normalizeInput(raw: unknown): NormalizedHookInput;
+  formatOutput(result: HookResult): unknown;
+}
+
+export interface EventHandler {
+  execute(input: NormalizedHookInput): Promise<HookResult>;
+}
