@@ -12,14 +12,6 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const HOOKS = [
-  { name: 'context-hook', source: 'src/hooks/context-hook.ts' },
-  { name: 'new-hook', source: 'src/hooks/new-hook.ts' },
-  { name: 'save-hook', source: 'src/hooks/save-hook.ts' },
-  { name: 'summary-hook', source: 'src/hooks/summary-hook.ts' },
-  { name: 'user-message-hook', source: 'src/hooks/user-message-hook.ts' }
-];
-
 const WORKER_SERVICE = {
   name: 'worker-service',
   source: 'src/services/worker-service.ts'
@@ -159,45 +151,11 @@ async function buildHooks() {
     const contextGenStats = fs.statSync(`${hooksDir}/${CONTEXT_GENERATOR.name}.cjs`);
     console.log(`✓ context-generator built (${(contextGenStats.size / 1024).toFixed(2)} KB)`);
 
-    // Build each hook
-    for (const hook of HOOKS) {
-      console.log(`\n🔧 Building ${hook.name}...`);
-
-      const outfile = `${hooksDir}/${hook.name}.js`;
-
-      await build({
-        entryPoints: [hook.source],
-        bundle: true,
-        platform: 'node',
-        target: 'node18',
-        format: 'esm',
-        outfile,
-        minify: true,
-        external: ['bun:sqlite'],
-        define: {
-          '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
-        },
-        banner: {
-          js: '#!/usr/bin/env bun'
-        }
-      });
-
-      // Make executable
-      fs.chmodSync(outfile, 0o755);
-
-      // Check file size
-      const stats = fs.statSync(outfile);
-      const sizeInKB = (stats.size / 1024).toFixed(2);
-      console.log(`✓ ${hook.name} built (${sizeInKB} KB)`);
-    }
-
-    console.log('\n✅ All hooks, worker service, and MCP server built successfully!');
+    console.log('\n✅ Worker service, MCP server, and context generator built successfully!');
     console.log(`   Output: ${hooksDir}/`);
-    console.log(`   - Hooks: *-hook.js`);
     console.log(`   - Worker: worker-service.cjs`);
     console.log(`   - MCP Server: mcp-server.cjs`);
-    console.log('\n💡 Note: Dependencies will be auto-installed on first hook execution');
-    console.log('📝 Cursor hooks are in cursor-hooks/ (no build needed - plain shell scripts)');
+    console.log(`   - Context Generator: context-generator.cjs`);
 
   } catch (error) {
     console.error('\n❌ Build failed:', error.message);
