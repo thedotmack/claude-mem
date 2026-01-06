@@ -10,6 +10,7 @@
 
 import { existsSync } from 'fs';
 import { spawnSync } from 'child_process';
+import { join } from 'path';
 import { homedir } from 'os';
 
 const IS_WINDOWS = process.platform === 'win32';
@@ -42,10 +43,6 @@ function getBunPath() {
   }
 
   return null;
-}
-
-function join(...parts) {
-  return parts.join(IS_WINDOWS ? '\\' : '/');
 }
 
 // Get Bun path
