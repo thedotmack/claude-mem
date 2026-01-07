@@ -389,9 +389,15 @@ export class SDKAgent {
   }
 
   /**
-   * Get model ID from settings or environment
+   * Get model ID from environment or settings
+   * Priority: ANTHROPIC_MODEL env var > CLAUDE_MEM_MODEL setting > default
+   * This allows CCS and other tools that set ANTHROPIC_MODEL to work seamlessly
    */
   private getModelId(): string {
+    // Check ANTHROPIC_MODEL first (set by CCS, Claude CLI, etc.)
+    if (process.env.ANTHROPIC_MODEL) {
+      return process.env.ANTHROPIC_MODEL;
+    }
     const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
     return settings.CLAUDE_MEM_MODEL;
