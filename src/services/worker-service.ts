@@ -27,6 +27,7 @@ import {
   removePidFile,
   getPlatformTimeout,
   cleanupOrphanedProcesses,
+  cleanupOrphanedSDKAgentProcesses,
   spawnDaemon,
   createSignalHandler
 } from './infrastructure/ProcessManager.js';
@@ -100,6 +101,7 @@ export class WorkerService {
 
   // Route handlers
   private searchRoutes: SearchRoutes | null = null;
+  private sdkAgentCleanupInterval: NodeJS.Timeout | null = null;
 
   // Initialization tracking
   private initializationComplete: Promise<void>;
@@ -218,7 +220,13 @@ export class WorkerService {
    */
   private async initializeBackground(): Promise<void> {
     try {
+      // Cleanup orphaned processes from previous sessions
       await cleanupOrphanedProcesses();
+      await cleanupOrphanedSDKAgentProcesses();
+
+      // Start periodic SDK agent cleanup (every 5 minutes) to catch leaked processes
+      // Issue #603: SDK abortController.abort() doesn't kill child processes
+      this.startPeriodicSDKAgentCleanup();
 
       // Load mode configuration
       const { ModeManager } = await import('./domain/ModeManager.js');
@@ -294,6 +302,39 @@ export class WorkerService {
     } catch (error) {
       logger.error('SYSTEM', 'Background initialization failed', {}, error as Error);
       throw error;
+    }
+  }
+
+  /**
+   * Start periodic cleanup of leaked SDK agent (claude) processes
+   * Issue #603: The SDK's abortController.abort() signals stop but doesn't kill child processes
+   * This runs every 5 minutes to clean up any leaked processes
+   */
+  private startPeriodicSDKAgentCleanup(): void {
+    const CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+
+    this.sdkAgentCleanupInterval = setInterval(async () => {
+      try {
+        const killedCount = await cleanupOrphanedSDKAgentProcesses();
+        if (killedCount > 0) {
+          logger.info('SYSTEM', 'Periodic SDK agent cleanup completed', { killedCount });
+        }
+      } catch (error) {
+        logger.warn('SYSTEM', 'Periodic SDK agent cleanup failed', {}, error as Error);
+      }
+    }, CLEANUP_INTERVAL_MS);
+
+    // Ensure cleanup timer doesn't prevent process exit
+    this.sdkAgentCleanupInterval.unref();
+  }
+
+  /**
+   * Stop periodic SDK agent cleanup
+   */
+  private stopPeriodicSDKAgentCleanup(): void {
+    if (this.sdkAgentCleanupInterval) {
+      clearInterval(this.sdkAgentCleanupInterval);
+      this.sdkAgentCleanupInterval = null;
     }
   }
 
@@ -380,12 +421,20 @@ export class WorkerService {
    * Shutdown the worker service
    */
   async shutdown(): Promise<void> {
+    // Stop periodic cleanup timer
+    this.stopPeriodicSDKAgentCleanup();
+
+    // Perform graceful shutdown (closes sessions, DB, etc.)
     await performGracefulShutdown({
       server: this.server.getHttpServer(),
       sessionManager: this.sessionManager,
       mcpClient: this.mcpClient,
       dbManager: this.dbManager
     });
+
+    // Final cleanup of any leaked SDK agent processes
+    // Issue #603: SDK abortController.abort() doesn't kill child processes
+    await cleanupOrphanedSDKAgentProcesses();
   }
 
   /**

@@ -161,6 +161,102 @@ export async function waitForProcessesExit(pids: number[], timeoutMs: number): P
 }
 
 /**
+ * Clean up orphaned SDK agent (claude) processes that were spawned by the worker
+ * The SDK's abortController.abort() signals stop but doesn't kill the child process
+ * This function finds and terminates leaked claude subagent processes
+ *
+ * SECURITY NOTE: Uses exec() for process enumeration (same pattern as existing cleanupOrphanedProcesses).
+ * PIDs are validated as positive integers before use in any commands.
+ */
+export async function cleanupOrphanedSDKAgentProcesses(workerPid?: number): Promise<number> {
+  const isWindows = process.platform === 'win32';
+  const pids: number[] = [];
+  const targetPid = workerPid || process.pid;
+
+  // SECURITY: Validate targetPid before using in command
+  if (!Number.isInteger(targetPid) || targetPid <= 0) {
+    logger.warn('SYSTEM', 'Invalid worker PID for SDK agent cleanup', { targetPid });
+    return 0;
+  }
+
+  try {
+    if (isWindows) {
+      // Windows: Use WMIC to find claude processes with stream-json (SDK agent pattern)
+      // Only target children of the worker process to avoid killing user's Claude sessions
+      const cmd = `wmic process where "parentprocessid=${targetPid} and commandline like '%claude%' and commandline like '%stream-json%'" get processid /format:list`;
+      const { stdout } = await execAsync(cmd, { timeout: 60000 });
+
+      if (stdout.trim()) {
+        const lines = stdout.trim().split('\n');
+        for (const line of lines) {
+          const match = line.match(/ProcessId=(\d+)/i);
+          if (match) {
+            const pid = parseInt(match[1], 10);
+            if (!isNaN(pid) && Number.isInteger(pid) && pid > 0) {
+              pids.push(pid);
+            }
+          }
+        }
+      }
+    } else {
+      // Unix: Find claude processes that are children of the worker and match SDK agent pattern
+      // The --output-format stream-json flag is unique to SDK agent spawned processes
+      const { stdout } = await execAsync(
+        `ps -o pid,ppid,args | grep "claude" | grep "stream-json" | grep -v grep || true`
+      );
+
+      if (stdout.trim()) {
+        const lines = stdout.trim().split('\n');
+        for (const line of lines) {
+          const parts = line.trim().split(/\s+/);
+          if (parts.length >= 2) {
+            const pid = parseInt(parts[0], 10);
+            const ppid = parseInt(parts[1], 10);
+            // Only kill if parent is our worker process
+            if (!isNaN(pid) && !isNaN(ppid) && ppid === targetPid && pid > 0) {
+              pids.push(pid);
+            }
+          }
+        }
+      }
+    }
+  } catch (error) {
+    logger.warn('SYSTEM', 'Failed to enumerate SDK agent processes', {}, error as Error);
+    return 0;
+  }
+
+  if (pids.length === 0) {
+    return 0;
+  }
+
+  logger.info('SYSTEM', 'Cleaning up orphaned SDK agent (claude) processes', {
+    platform: isWindows ? 'Windows' : 'Unix',
+    count: pids.length,
+    pids
+  });
+
+  let killedCount = 0;
+  for (const pid of pids) {
+    try {
+      if (isWindows) {
+        execSync(`taskkill /PID ${pid} /T /F`, { timeout: 60000, stdio: 'ignore' });
+      } else {
+        process.kill(pid, 'SIGKILL');
+      }
+      killedCount++;
+    } catch (error) {
+      // Process may have already exited
+      logger.debug('SYSTEM', 'SDK agent process already exited', { pid }, error as Error);
+    }
+  }
+
+  if (killedCount > 0) {
+    logger.info('SYSTEM', 'Orphaned SDK agent processes cleaned up', { count: killedCount });
+  }
+  return killedCount;
+}
+
+/**
  * Clean up orphaned chroma-mcp processes from previous worker sessions
  * Prevents process accumulation and memory leaks
  */
