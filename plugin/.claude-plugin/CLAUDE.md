@@ -14,9 +14,6 @@
 | #33483 | " | ✅ | Synchronized Plugin Metadata Version to 8.2.6 | ~183 |
 | #33478 | 10:34 PM | 🔵 | Plugin Metadata Configuration Structure | ~195 |
 | #33477 | " | 🔵 | Current Version Across Package Files is 8.2.5 | ~185 |
-| #33311 | 3:09 PM | ✅ | Version 8.2.3 Release Deployed with Worker Stability Improvements | ~434 |
-| #33300 | 3:08 PM | ✅ | Version 8.2.4 Released with Full Automation Pipeline | ~357 |
-| #33281 | 3:07 PM | ✅ | Released v8.2.1 with Worker Lifecycle Hardening | ~332 |
 
 ### Dec 29, 2025
 
@@ -98,6 +95,9 @@
 **plugin.json**
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
+| #38093 | 10:44 PM | ✅ | Committed version bump to 9.0.0 | ~217 |
+| #38091 | " | ✅ | Version bumped to 9.0.0 in plugin.json | ~187 |
+| #38087 | 10:43 PM | 🔵 | Current version identified as 8.5.10 across all version files | ~200 |
 | #37548 | 4:48 PM | ✅ | Issue #543 Analysis Report Created for Slash Command Availability | ~540 |
 | #37532 | 4:43 PM | 🔵 | Plugin Metadata Missing Slash Command Registration | ~372 |
 </claude-mem-context>

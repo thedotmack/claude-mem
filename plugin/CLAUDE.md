@@ -17,8 +17,6 @@
 | #33997 | 7:10 PM | ✅ | Version Bumped to 8.2.10 | ~179 |
 | #33996 | " | 🟣 | Built claude-mem v8.2.10 with all hooks and services | ~387 |
 | #33982 | 7:08 PM | ✅ | Staged Version Mismatch Fix Changes | ~333 |
-| #33951 | 6:42 PM | ✅ | Project Build Completed for Version 8.2.9 | ~326 |
-| #33877 | 5:02 PM | 🟣 | Phase 1 build process successfully tested with worker source copying | ~372 |
 
 ### Dec 30, 2025
 
@@ -76,6 +74,11 @@
 | #36701 | 12:01 AM | ✅ | Built Version 8.5.7 Plugin Artifacts | ~406 |
 
 ### Jan 5, 2026
+
+**package.json**
+| ID | Time | T | Title | Read |
+|----|------|---|-------|------|
+| #38092 | 10:44 PM | ✅ | Built version 9.0.0 with complete plugin bundle | ~329 |
 
 **.mcp.json**
 | ID | Time | T | Title | Read |

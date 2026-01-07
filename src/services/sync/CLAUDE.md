@@ -12,8 +12,6 @@
 | #31741 | 10:29 PM | 🟣 | Configurable Local Embedding Models with Multilingual Support | ~461 |
 | #31738 | 10:26 PM | 🔵 | Configurable Embedding Models Already Implemented in Feature Branch | ~622 |
 | #31737 | 10:23 PM | 🔵 | ChromaSync Embedding Architecture Investigation | ~582 |
-| #31715 | 9:42 PM | 🔵 | Multilingual Embeddings Feature Branch Found | ~371 |
-| #31591 | 8:11 PM | 🔄 | Phase 4 completed - Removed error hiding from utility files | ~441 |
 
 ### Dec 22, 2025
 
@@ -130,4 +128,12 @@
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
 | #37758 | 6:25 PM | ⚖️ | Integration Test Design for Four Critical Testing Gaps | ~729 |
+
+### Jan 6, 2026
+
+**ChromaSync.ts**
+| ID | Time | T | Title | Read |
+|----|------|---|-------|------|
+| #38108 | 12:15 AM | 🔵 | Complete Windows Zombie Port Bug Technical Deep Dive | ~935 |
+| #38105 | 12:14 AM | 🔵 | Windows Console Popup Flash Issue Documented and Fixed | ~455 |
 </claude-mem-context>

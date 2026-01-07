@@ -13,7 +13,6 @@
 | #34425 | 2:04 PM | 🔵 | Agent SDK V2 API Documentation and Migration Patterns | ~698 |
 | #34422 | 2:03 PM | ✅ | Added Agent SDK V2 Documentation Files | ~240 |
 | #34419 | 2:02 PM | ✅ | Committed Agent SDK V2 upgrade preparation | ~275 |
-| #34394 | 1:52 PM | 🔵 | Agent SDK V2 Documentation Shows session.close() Method for Cleanup | ~417 |
 
 **agent-sdk-v2-example.ts**
 | ID | Time | T | Title | Read |
@@ -104,4 +103,11 @@
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
 | #35703 | 1:01 PM | ⚖️ | Try-Catch as Anti-Pattern: Root Cause Analysis and Documentation | ~363 |
+
+### Jan 6, 2026
+
+**windows-code-evaluation.md**
+| ID | Time | T | Title | Read |
+|----|------|---|-------|------|
+| #38104 | 12:14 AM | 🔵 | Windows Compatibility Issues Documented Across 56 Memory Entries | ~509 |
 </claude-mem-context>

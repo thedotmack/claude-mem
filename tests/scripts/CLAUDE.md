@@ -5,10 +5,30 @@
 
 ### Jan 4, 2026
 
+**export-types.test.ts**
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
-| #36888 | 1:58 AM | 🟣 | Phase 4 Implementation Completed via Subagent | ~533 |
-| #36885 | 1:57 AM | 🟣 | Export Types Tests Created | ~602 |
-| #36882 | 1:56 AM | 🟣 | Phase 3 Implementation Completed via Subagent | ~552 |
-| #36879 | " | 🟣 | Smart-Install Path Detection Tests Created | ~510 |
+| #36924 | 2:25 AM | ✅ | Merged fix/pr-538-followups branch into main with comprehensive updates | ~481 |
+| #36908 | 2:01 AM | ✅ | Regression Tests Committed Successfully | ~418 |
+| #36907 | " | ✅ | Regression Test Files Staged for Commit | ~317 |
+
+### Jan 5, 2026
+
+**CLAUDE.md**
+| ID | Time | T | Title | Read |
+|----|------|---|-------|------|
+| #38082 | 10:13 PM | ✅ | Merge Conflict Resolution - Kept Feature Branch Versions | ~431 |
+
+**export-types.test.ts**
+| ID | Time | T | Title | Read |
+|----|------|---|-------|------|
+| #37777 | 6:36 PM | 🔴 | Phase 1 Test Cleanup Completed - 6 Low-Quality Test Files Deleted | ~430 |
+| #37764 | 6:32 PM | ✅ | Deleted 6 harmful test files causing mock pollution and testing zero runtime value | ~454 |
+| #37753 | 6:21 PM | 🔵 | Verification Confirms Score 1 Tests Should Be Deleted | ~627 |
+| #37714 | 6:12 PM | 🔵 | Test Audit: export-types.test.ts Validates TypeScript Type Definitions with No Runtime Logic | ~615 |
+
+**smart-install.test.ts**
+| ID | Time | T | Title | Read |
+|----|------|---|-------|------|
+| #37755 | 6:22 PM | 🔵 | Score 3 Marginal Tests Verified: Mock-Heavy Tests Validate Structure, Not Behavior | ~580 |
 </claude-mem-context>
