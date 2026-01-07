@@ -109,6 +109,20 @@ export class PendingMessageStore {
   }
 
   /**
+   * Peek at the first pending message without removing it
+   * Used to get cwd for SDK query initialization (Issue #467)
+   */
+  peekPending(sessionDbId: number): PersistentPendingMessage | null {
+    const stmt = this.db.prepare(`
+      SELECT * FROM pending_messages
+      WHERE session_db_id = ? AND status = 'pending'
+      ORDER BY id ASC
+      LIMIT 1
+    `);
+    return stmt.get(sessionDbId) as PersistentPendingMessage | null;
+  }
+
+  /**
    * Get all pending messages for session (ordered by creation time)
    */
   getAllPending(sessionDbId: number): PersistentPendingMessage[] {

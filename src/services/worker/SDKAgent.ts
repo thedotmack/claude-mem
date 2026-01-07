@@ -67,6 +67,12 @@ export class SDKAgent {
     // Create message generator (event-driven)
     const messageGenerator = this.createMessageGenerator(session, cwdTracker);
 
+    // Get cwd from first pending message for SDK initialization (Issue #467)
+    // This is required for Claude Code to locate session files when resuming
+    const pendingStore = this.sessionManager.getPendingMessageStore();
+    const firstPending = pendingStore.peekPending(session.sessionDbId);
+    const sessionCwd = firstPending?.cwd || process.cwd();
+
     // CRITICAL: Only resume if:
     // 1. memorySessionId exists (was captured from a previous SDK response)
     // 2. lastPromptNumber > 1 (this is a continuation within the same SDK session)
@@ -81,7 +87,8 @@ export class SDKAgent {
       memorySessionId: session.memorySessionId,
       hasRealMemorySessionId,
       resume_parameter: hasRealMemorySessionId ? session.memorySessionId : '(none - fresh start)',
-      lastPromptNumber: session.lastPromptNumber
+      lastPromptNumber: session.lastPromptNumber,
+      cwd: sessionCwd  // 添加 cwd 以便调试 Issue #467
     });
 
     // Debug-level alignment logs for detailed tracing
@@ -109,7 +116,8 @@ export class SDKAgent {
         ...(hasRealMemorySessionId && session.lastPromptNumber > 1 && { resume: session.memorySessionId }),
         disallowedTools,
         abortController: session.abortController,
-        pathToClaudeCodeExecutable: claudePath
+        pathToClaudeCodeExecutable: claudePath,
+        cwd: sessionCwd  // 修复 Issue #467: Claude Code 需要 cwd 来定位会话文件
       }
     });
 
