@@ -50,6 +50,7 @@
     "queue:clear": "bun scripts/clear-failed-queue.ts --all --force",
     "claude-md:regenerate": "bun scripts/regenerate-claude-md.ts",
     "claude-md:dry-run": "bun scripts/regenerate-claude-md.ts --dry-run",
+    "db:reset": "node -e \"const fs=require('fs'),p=require('path').join(require('os').homedir(),'.claude-mem','claude-mem.db');fs.existsSync(p)?(fs.unlinkSync(p),console.log('Database deleted:',p)):console.log('No database found at:',p)\"",
     "translate-readme": "bun scripts/translate-readme/cli.ts -v -o docs/i18n README.md",
     "translate:tier1": "npm run translate-readme -- zh ja pt-br ko es de fr",
     "translate:tier2": "npm run translate-readme -- he ar ru pl cs nl tr uk",

@@ -236,6 +236,27 @@ Settings are managed in `~/.claude-mem/settings.json` (auto-created with default
 
 See the **[Configuration Guide](https://docs.claude-mem.ai/configuration)** for all available settings and examples.
 
+### Git Worktree Support
+
+Claude-mem automatically identifies projects by git repository, so **all worktrees of the same repo share memory**. Project identity is determined by (in order of priority):
+
+1. **`.claude-mem` config file** in repo root (explicit override)
+2. **Git remote origin URL** (normalized, e.g., `github.com/user/repo`)
+3. **Git repo root basename** (for local repos without remotes)
+4. **Folder basename** (fallback for non-git directories)
+
+To explicitly set a project name, create `.claude-mem` in your repo root:
+```json
+{
+  "projectName": "my-project"
+}
+```
+
+To reset the database and start fresh with the new identity system:
+```bash
+npm run db:reset
+```
+
 ---
 
 ## Development
