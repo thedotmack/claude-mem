@@ -11,6 +11,37 @@ mock.module('../../../src/shared/worker-utils.js', () => ({
   getWorkerPort: () => 37777,
 }));
 
+// Mock paths for settings
+mock.module('../../../src/shared/paths.js', () => ({
+  USER_SETTINGS_PATH: '/mock/path/settings.json',
+}));
+
+// Track if updateFolderClaudeMdFiles is called
+let updateFolderClaudeMdFilesCalled = false;
+let updateFolderClaudeMdFilesArgs: any[] = [];
+
+mock.module('../../../src/utils/claude-md-utils.js', () => ({
+  updateFolderClaudeMdFiles: (...args: any[]) => {
+    updateFolderClaudeMdFilesCalled = true;
+    updateFolderClaudeMdFilesArgs = args;
+    return Promise.resolve();
+  },
+}));
+
+// Track settings mock state - default is disabled
+let mockSettingsEnabled = false;
+
+mock.module('../../../src/shared/SettingsDefaultsManager.js', () => ({
+  SettingsDefaultsManager: {
+    loadFromFile: () => ({
+      CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED: mockSettingsEnabled ? 'true' : 'false',
+    }),
+    getAllDefaults: () => ({
+      CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED: 'false',
+    }),
+  },
+}));
+
 // Mock the ModeManager
 mock.module('../../../src/services/domain/ModeManager.js', () => ({
   ModeManager: {
@@ -51,6 +82,11 @@ describe('ResponseProcessor', () => {
   let mockWorker: WorkerRef;
 
   beforeEach(() => {
+    // Reset feature flag tracking
+    updateFolderClaudeMdFilesCalled = false;
+    updateFolderClaudeMdFilesArgs = [];
+    mockSettingsEnabled = false;  // Default to disabled
+
     // Spy on logger to suppress output
     loggerSpies = [
       spyOn(logger, 'info').mockImplementation(() => {}),
@@ -633,6 +669,130 @@ describe('ResponseProcessor', () => {
           'TestAgent'
         )
       ).rejects.toThrow('Cannot store observations: memorySessionId not yet captured');
+    });
+  });
+
+  describe('CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED feature flag', () => {
+    it('should NOT call updateFolderClaudeMdFiles when feature is disabled (default)', async () => {
+      const session = createMockSession();
+      const responseText = `
+        <observation>
+          <type>discovery</type>
+          <title>Test observation</title>
+          <narrative>Test narrative</narrative>
+          <facts></facts>
+          <concepts></concepts>
+          <files_read><file>src/test.ts</file></files_read>
+          <files_modified><file>src/modified.ts</file></files_modified>
+        </observation>
+      `;
+
+      mockStoreObservations = mock(() => ({
+        observationIds: [1],
+        summaryId: null,
+        createdAtEpoch: 1700000000000,
+      }));
+      (mockDbManager.getSessionStore as any) = () => ({
+        storeObservations: mockStoreObservations,
+      });
+
+      // Feature disabled by default (mockSettingsEnabled = false in beforeEach)
+      await processAgentResponse(
+        responseText,
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      // updateFolderClaudeMdFiles should NOT be called when feature is disabled
+      expect(updateFolderClaudeMdFilesCalled).toBe(false);
+    });
+
+    it('should call updateFolderClaudeMdFiles when feature is enabled', async () => {
+      const session = createMockSession();
+      const responseText = `
+        <observation>
+          <type>discovery</type>
+          <title>Test observation</title>
+          <narrative>Test narrative</narrative>
+          <facts></facts>
+          <concepts></concepts>
+          <files_read><file>src/test.ts</file></files_read>
+          <files_modified><file>src/modified.ts</file></files_modified>
+        </observation>
+      `;
+
+      mockStoreObservations = mock(() => ({
+        observationIds: [1],
+        summaryId: null,
+        createdAtEpoch: 1700000000000,
+      }));
+      (mockDbManager.getSessionStore as any) = () => ({
+        storeObservations: mockStoreObservations,
+      });
+
+      // Enable the feature
+      mockSettingsEnabled = true;
+
+      await processAgentResponse(
+        responseText,
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      // updateFolderClaudeMdFiles SHOULD be called when feature is enabled
+      expect(updateFolderClaudeMdFilesCalled).toBe(true);
+      expect(updateFolderClaudeMdFilesArgs[1]).toBe('test-project');
+    });
+
+    it('should NOT call updateFolderClaudeMdFiles when enabled but no file paths', async () => {
+      const session = createMockSession();
+      const responseText = `
+        <observation>
+          <type>discovery</type>
+          <title>Test observation</title>
+          <narrative>Test narrative</narrative>
+          <facts></facts>
+          <concepts></concepts>
+          <files_read></files_read>
+          <files_modified></files_modified>
+        </observation>
+      `;
+
+      mockStoreObservations = mock(() => ({
+        observationIds: [1],
+        summaryId: null,
+        createdAtEpoch: 1700000000000,
+      }));
+      (mockDbManager.getSessionStore as any) = () => ({
+        storeObservations: mockStoreObservations,
+      });
+
+      // Enable the feature
+      mockSettingsEnabled = true;
+
+      await processAgentResponse(
+        responseText,
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      // updateFolderClaudeMdFiles should NOT be called - no file paths
+      expect(updateFolderClaudeMdFilesCalled).toBe(false);
     });
   });
 });

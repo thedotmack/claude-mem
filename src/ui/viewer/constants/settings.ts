@@ -36,4 +36,5 @@ export const DEFAULT_SETTINGS = {
   // Feature Toggles
   CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: 'true',
   CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: 'false',
+  CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED: 'false',
 } as const;
