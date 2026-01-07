@@ -31,6 +31,7 @@ import {
   SEARCH_CONSTANTS
 } from './search/index.js';
 import type { TimelineData } from './search/index.js';
+import type { ChromaSyncGetter } from './search/SearchOrchestrator.js';
 
 export class SearchManager {
   private orchestrator: SearchOrchestrator;
@@ -39,7 +40,7 @@ export class SearchManager {
   constructor(
     private sessionSearch: SessionSearch,
     private sessionStore: SessionStore,
-    private chromaSync: ChromaSync,
+    private chromaSyncGetter: ChromaSyncGetter,
     private formatter: FormattingService,
     private timelineService: TimelineService
   ) {
@@ -47,9 +48,24 @@ export class SearchManager {
     this.orchestrator = new SearchOrchestrator(
       sessionSearch,
       sessionStore,
-      chromaSync
+      chromaSyncGetter
     );
     this.timelineBuilder = new TimelineBuilder();
+  }
+
+  /**
+   * Get ChromaSync for a specific project (or default project)
+   * Used by legacy code paths that need direct ChromaSync access
+   */
+  private get chromaSync(): ChromaSync {
+    return this.chromaSyncGetter();
+  }
+
+  /**
+   * Get ChromaSync for a specific project
+   */
+  private getChromaSyncForProject(project?: string): ChromaSync {
+    return this.chromaSyncGetter(project);
   }
 
   /**
@@ -59,9 +75,11 @@ export class SearchManager {
   private async queryChroma(
     query: string,
     limit: number,
-    whereFilter?: Record<string, any>
+    whereFilter?: Record<string, any>,
+    project?: string
   ): Promise<{ ids: number[]; distances: number[]; metadatas: any[] }> {
-    return await this.chromaSync.queryChroma(query, limit, whereFilter);
+    const chromaSync = this.getChromaSyncForProject(project);
+    return await chromaSync.queryChroma(query, limit, whereFilter);
   }
 
   /**
@@ -165,7 +183,7 @@ export class SearchManager {
       }
 
       // Step 1: Chroma semantic search with optional type filter
-      const chromaResults = await this.queryChroma(query, 100, whereFilter);
+      const chromaResults = await this.queryChroma(query, 100, whereFilter, options.project);
       chromaSucceeded = true; // Chroma didn't throw error
       logger.debug('SEARCH', 'ChromaDB returned semantic matches', { matchCount: chromaResults.ids.length });
 
@@ -396,7 +414,7 @@ export class SearchManager {
       if (this.chromaSync) {
         try {
           logger.debug('SEARCH', 'Using hybrid semantic search for timeline query', {});
-          const chromaResults = await this.queryChroma(query, 100);
+          const chromaResults = await this.queryChroma(query, 100, undefined, project);
           logger.debug('SEARCH', 'Chroma returned semantic matches for timeline', { matchCount: chromaResults?.ids?.length ?? 0 });
 
           if (chromaResults?.ids && chromaResults.ids.length > 0) {
@@ -648,7 +666,7 @@ export class SearchManager {
         if (query) {
           // Semantic search filtered to decision type
           logger.debug('SEARCH', 'Using Chroma semantic search with type=decision filter', {});
-          const chromaResults = await this.queryChroma(query, Math.min((filters.limit || 20) * 2, 100), { type: 'decision' });
+          const chromaResults = await this.queryChroma(query, Math.min((filters.limit || 20) * 2, 100), { type: 'decision' }, filters.project);
           const obsIds = chromaResults.ids;
 
           if (obsIds.length > 0) {
@@ -663,7 +681,7 @@ export class SearchManager {
 
           if (metadataResults.length > 0) {
             const ids = metadataResults.map(obs => obs.id);
-            const chromaResults = await this.queryChroma('decision', Math.min(ids.length, 100));
+            const chromaResults = await this.queryChroma('decision', Math.min(ids.length, 100), undefined, filters.project);
 
             const rankedIds: number[] = [];
             for (const chromaId of chromaResults.ids) {
@@ -732,7 +750,7 @@ export class SearchManager {
 
         if (allIds.size > 0) {
           const idsArray = Array.from(allIds);
-          const chromaResults = await this.queryChroma('what changed', Math.min(idsArray.length, 100));
+          const chromaResults = await this.queryChroma('what changed', Math.min(idsArray.length, 100), undefined, filters.project);
 
           const rankedIds: number[] = [];
           for (const chromaId of chromaResults.ids) {
@@ -806,7 +824,7 @@ export class SearchManager {
 
       if (metadataResults.length > 0) {
         const ids = metadataResults.map(obs => obs.id);
-        const chromaResults = await this.queryChroma('how it works architecture', Math.min(ids.length, 100));
+        const chromaResults = await this.queryChroma('how it works architecture', Math.min(ids.length, 100), undefined, filters.project);
 
         const rankedIds: number[] = [];
         for (const chromaId of chromaResults.ids) {
@@ -861,7 +879,7 @@ export class SearchManager {
       logger.debug('SEARCH', 'Using hybrid semantic search (Chroma + SQLite)', {});
 
       // Step 1: Chroma semantic search (top 100)
-      const chromaResults = await this.queryChroma(query, 100);
+      const chromaResults = await this.queryChroma(query, 100, undefined, options.project);
       logger.debug('SEARCH', 'Chroma returned semantic matches', { matchCount: chromaResults.ids.length });
 
       if (chromaResults.ids.length > 0) {
@@ -918,7 +936,7 @@ export class SearchManager {
       logger.debug('SEARCH', 'Using hybrid semantic search for sessions', {});
 
       // Step 1: Chroma semantic search (top 100)
-      const chromaResults = await this.queryChroma(query, 100, { doc_type: 'session_summary' });
+      const chromaResults = await this.queryChroma(query, 100, { doc_type: 'session_summary' }, options.project);
       logger.debug('SEARCH', 'Chroma returned semantic matches for sessions', { matchCount: chromaResults.ids.length });
 
       if (chromaResults.ids.length > 0) {
@@ -975,7 +993,7 @@ export class SearchManager {
       logger.debug('SEARCH', 'Using hybrid semantic search for user prompts', {});
 
       // Step 1: Chroma semantic search (top 100)
-      const chromaResults = await this.queryChroma(query, 100, { doc_type: 'user_prompt' });
+      const chromaResults = await this.queryChroma(query, 100, { doc_type: 'user_prompt' }, options.project);
       logger.debug('SEARCH', 'Chroma returned semantic matches for prompts', { matchCount: chromaResults.ids.length });
 
       if (chromaResults.ids.length > 0) {
@@ -1038,7 +1056,7 @@ export class SearchManager {
       if (metadataResults.length > 0) {
         // Step 2: Chroma semantic ranking (rank by relevance to concept)
         const ids = metadataResults.map(obs => obs.id);
-        const chromaResults = await this.queryChroma(concept, Math.min(ids.length, 100));
+        const chromaResults = await this.queryChroma(concept, Math.min(ids.length, 100), undefined, filters.project);
 
         // Intersect: Keep only IDs that passed metadata filter, in semantic rank order
         const rankedIds: number[] = [];
@@ -1113,7 +1131,7 @@ export class SearchManager {
       if (metadataResults.observations.length > 0) {
         // Step 2: Chroma semantic ranking (rank by relevance to file path)
         const ids = metadataResults.observations.map(obs => obs.id);
-        const chromaResults = await this.queryChroma(filePath, Math.min(ids.length, 100));
+        const chromaResults = await this.queryChroma(filePath, Math.min(ids.length, 100), undefined, filters.project);
 
         // Intersect: Keep only IDs that passed metadata filter, in semantic rank order
         const rankedIds: number[] = [];
@@ -1229,7 +1247,7 @@ export class SearchManager {
       if (metadataResults.length > 0) {
         // Step 2: Chroma semantic ranking (rank by relevance to type)
         const ids = metadataResults.map(obs => obs.id);
-        const chromaResults = await this.queryChroma(typeStr, Math.min(ids.length, 100));
+        const chromaResults = await this.queryChroma(typeStr, Math.min(ids.length, 100), undefined, filters.project);
 
         // Intersect: Keep only IDs that passed metadata filter, in semantic rank order
         const rankedIds: number[] = [];
@@ -1629,7 +1647,7 @@ export class SearchManager {
     // Use hybrid search if available
     if (this.chromaSync) {
       logger.debug('SEARCH', 'Using hybrid semantic search for timeline query', {});
-      const chromaResults = await this.queryChroma(query, 100);
+      const chromaResults = await this.queryChroma(query, 100, undefined, project);
       logger.debug('SEARCH', 'Chroma returned semantic matches for timeline', { matchCount: chromaResults.ids.length });
 
       if (chromaResults.ids.length > 0) {

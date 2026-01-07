@@ -6,6 +6,7 @@
 
 // Main orchestrator
 export { SearchOrchestrator } from './SearchOrchestrator.js';
+export type { ChromaSyncGetter } from './SearchOrchestrator.js';
 
 // Formatters
 export { ResultFormatter } from './ResultFormatter.js';

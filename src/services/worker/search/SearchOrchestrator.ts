@@ -33,6 +33,11 @@ import type {
 import { logger } from '../../../utils/logger.js';
 
 /**
+ * Type for ChromaSync getter function that returns project-specific instance
+ */
+export type ChromaSyncGetter = (project?: string) => ChromaSync;
+
+/**
  * Normalized parameters from URL-friendly format
  */
 interface NormalizedParams extends StrategySearchOptions {
@@ -42,27 +47,38 @@ interface NormalizedParams extends StrategySearchOptions {
 }
 
 export class SearchOrchestrator {
-  private chromaStrategy: ChromaSearchStrategy | null = null;
   private sqliteStrategy: SQLiteSearchStrategy;
-  private hybridStrategy: HybridSearchStrategy | null = null;
   private resultFormatter: ResultFormatter;
   private timelineBuilder: TimelineBuilder;
 
   constructor(
     private sessionSearch: SessionSearch,
     private sessionStore: SessionStore,
-    private chromaSync: ChromaSync | null
+    private chromaSyncGetter: ChromaSyncGetter | null
   ) {
-    // Initialize strategies
+    // Initialize SQLite strategy (project-independent)
     this.sqliteStrategy = new SQLiteSearchStrategy(sessionSearch);
-
-    if (chromaSync) {
-      this.chromaStrategy = new ChromaSearchStrategy(chromaSync, sessionStore);
-      this.hybridStrategy = new HybridSearchStrategy(chromaSync, sessionStore, sessionSearch);
-    }
 
     this.resultFormatter = new ResultFormatter();
     this.timelineBuilder = new TimelineBuilder();
+  }
+
+  /**
+   * Get ChromaSearchStrategy for a specific project
+   */
+  private getChromaStrategy(project?: string): ChromaSearchStrategy | null {
+    if (!this.chromaSyncGetter) return null;
+    const chromaSync = this.chromaSyncGetter(project);
+    return new ChromaSearchStrategy(chromaSync, this.sessionStore);
+  }
+
+  /**
+   * Get HybridSearchStrategy for a specific project
+   */
+  private getHybridStrategy(project?: string): HybridSearchStrategy | null {
+    if (!this.chromaSyncGetter) return null;
+    const chromaSync = this.chromaSyncGetter(project);
+    return new HybridSearchStrategy(chromaSync, this.sessionStore, this.sessionSearch);
   }
 
   /**
@@ -88,9 +104,11 @@ export class SearchOrchestrator {
     }
 
     // PATH 2: CHROMA SEMANTIC SEARCH (query text + Chroma available)
-    if (this.chromaStrategy) {
-      logger.debug('SEARCH', 'Orchestrator: Using Chroma semantic search', {});
-      const result = await this.chromaStrategy.search(options);
+    // Get project-specific ChromaStrategy
+    const chromaStrategy = this.getChromaStrategy(options.project);
+    if (chromaStrategy) {
+      logger.debug('SEARCH', 'Orchestrator: Using Chroma semantic search', { project: options.project });
+      const result = await chromaStrategy.search(options);
 
       // If Chroma succeeded (even with 0 results), return
       if (result.usedChroma) {
@@ -126,8 +144,10 @@ export class SearchOrchestrator {
   async findByConcept(concept: string, args: any): Promise<StrategySearchResult> {
     const options = this.normalizeParams(args);
 
-    if (this.hybridStrategy) {
-      return await this.hybridStrategy.findByConcept(concept, options);
+    // Get project-specific HybridStrategy
+    const hybridStrategy = this.getHybridStrategy(options.project);
+    if (hybridStrategy) {
+      return await hybridStrategy.findByConcept(concept, options);
     }
 
     // Fallback to SQLite
@@ -146,8 +166,10 @@ export class SearchOrchestrator {
   async findByType(type: string | string[], args: any): Promise<StrategySearchResult> {
     const options = this.normalizeParams(args);
 
-    if (this.hybridStrategy) {
-      return await this.hybridStrategy.findByType(type, options);
+    // Get project-specific HybridStrategy
+    const hybridStrategy = this.getHybridStrategy(options.project);
+    if (hybridStrategy) {
+      return await hybridStrategy.findByType(type, options);
     }
 
     // Fallback to SQLite
@@ -170,8 +192,10 @@ export class SearchOrchestrator {
   }> {
     const options = this.normalizeParams(args);
 
-    if (this.hybridStrategy) {
-      return await this.hybridStrategy.findByFile(filePath, options);
+    // Get project-specific HybridStrategy
+    const hybridStrategy = this.getHybridStrategy(options.project);
+    if (hybridStrategy) {
+      return await hybridStrategy.findByFile(filePath, options);
     }
 
     // Fallback to SQLite

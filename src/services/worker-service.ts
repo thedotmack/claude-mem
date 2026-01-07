@@ -244,10 +244,12 @@ export class WorkerService {
       // Initialize search services
       const formattingService = new FormattingService();
       const timelineService = new TimelineService();
+      // Pass a getter function for project-specific ChromaSync instances
+      const chromaSyncGetter = (project?: string) => this.dbManager.getChromaSync(project);
       const searchManager = new SearchManager(
         this.dbManager.getSessionSearch(),
         this.dbManager.getSessionStore(),
-        this.dbManager.getChromaSync(),
+        chromaSyncGetter,
         formattingService,
         timelineService
       );
