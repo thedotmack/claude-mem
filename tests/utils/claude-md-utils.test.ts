@@ -1,6 +1,6 @@
 import { describe, it, expect, mock, afterEach, beforeEach } from 'bun:test';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'fs';
-import { join } from 'path';
+import path, { join } from 'path';
 import { tmpdir } from 'os';
 
 // Mock logger BEFORE imports (required pattern)
@@ -322,7 +322,7 @@ describe('updateFolderClaudeMdFiles', () => {
     expect(callUrl).toContain(encodeURIComponent('/home/user/my-project/src/utils'));
   });
 
-  it('should not modify absolute paths even with projectRoot', async () => {
+  it('should accept absolute paths within projectRoot and use them directly', async () => {
     const folderPath = join(tempDir, 'absolute-path-test');
     const filePath = join(folderPath, 'file.ts');
 
@@ -339,10 +339,10 @@ describe('updateFolderClaudeMdFiles', () => {
     global.fetch = fetchMock;
 
     await updateFolderClaudeMdFiles(
-      [filePath],  // absolute path
+      [filePath],  // absolute path within tempDir
       'test-project',
       37777,
-      '/home/user/my-project'  // projectRoot should be ignored
+      tempDir  // projectRoot matches the absolute path's root
     );
 
     // Should call API with the original absolute path's folder
@@ -483,5 +483,154 @@ describe('updateFolderClaudeMdFiles', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const callUrl = (fetchMock.mock.calls[0] as unknown[])[0] as string;
     expect(callUrl).toContain(encodeURIComponent('/home/user/project/src'));
+  });
+});
+
+describe('path validation in updateFolderClaudeMdFiles', () => {
+  it('should reject tilde paths', async () => {
+    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
+    global.fetch = fetchMock;
+
+    await updateFolderClaudeMdFiles(
+      ['~/.claude-mem/logs/worker.log'],
+      'test-project',
+      37777,
+      tempDir
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('should reject URLs', async () => {
+    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
+    global.fetch = fetchMock;
+
+    await updateFolderClaudeMdFiles(
+      ['https://example.com/file.ts'],
+      'test-project',
+      37777,
+      tempDir
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('should reject paths with spaces', async () => {
+    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
+    global.fetch = fetchMock;
+
+    await updateFolderClaudeMdFiles(
+      ['PR #610 on thedotmack/CLAUDE.md'],
+      'test-project',
+      37777,
+      tempDir
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('should reject paths with hash symbols', async () => {
+    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
+    global.fetch = fetchMock;
+
+    await updateFolderClaudeMdFiles(
+      ['issue#123/file.ts'],
+      'test-project',
+      37777,
+      tempDir
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('should reject path traversal outside project', async () => {
+    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
+    global.fetch = fetchMock;
+
+    await updateFolderClaudeMdFiles(
+      ['../../../etc/passwd'],
+      'test-project',
+      37777,
+      tempDir
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('should reject absolute paths outside project root', async () => {
+    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
+    global.fetch = fetchMock;
+
+    await updateFolderClaudeMdFiles(
+      ['/etc/passwd'],
+      'test-project',
+      37777,
+      tempDir
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('should accept absolute paths within project root', async () => {
+    const apiResponse = {
+      content: [{ text: '| #123 | 4:30 PM | 🔵 | Test | ~100 |' }]
+    };
+    const fetchMock = mock(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve(apiResponse)
+    } as Response));
+    global.fetch = fetchMock;
+
+    // Create an absolute path within the temp directory
+    const absolutePathInProject = path.join(tempDir, 'src', 'utils', 'file.ts');
+
+    await updateFolderClaudeMdFiles(
+      [absolutePathInProject],
+      'test-project',
+      37777,
+      tempDir
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('should accept absolute paths when no projectRoot is provided', async () => {
+    const apiResponse = {
+      content: [{ text: '| #123 | 4:30 PM | 🔵 | Test | ~100 |' }]
+    };
+    const fetchMock = mock(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve(apiResponse)
+    } as Response));
+    global.fetch = fetchMock;
+
+    await updateFolderClaudeMdFiles(
+      ['/home/user/valid/file.ts'],
+      'test-project',
+      37777
+      // No projectRoot provided
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('should accept valid relative paths', async () => {
+    const apiResponse = {
+      content: [{ text: '| #123 | 4:30 PM | 🔵 | Test | ~100 |' }]
+    };
+    const fetchMock = mock(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve(apiResponse)
+    } as Response));
+    global.fetch = fetchMock;
+
+    await updateFolderClaudeMdFiles(
+      ['src/utils/logger.ts'],
+      'test-project',
+      37777,
+      tempDir
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

@@ -242,7 +242,7 @@ export async function switchBranch(targetBranch: string): Promise<SwitchResult> 
       }
     } catch (recoveryError) {
       // [POSSIBLY RELEVANT]: Recovery checkout failed, user needs manual intervention - already logging main error above
-      logger.warn('BRANCH', 'Recovery checkout also failed', { originalBranch: info.branch }, recoveryError as Error);
+      logger.error('BRANCH', 'Recovery checkout also failed', { originalBranch: info.branch }, recoveryError as Error);
     }
 
     return {

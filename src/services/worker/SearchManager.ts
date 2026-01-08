@@ -411,7 +411,7 @@ export class SearchManager {
             }
           }
         } catch (chromaError) {
-          logger.warn('SEARCH', 'Chroma search failed for timeline, continuing without semantic results', {}, chromaError as Error);
+          logger.error('SEARCH', 'Chroma search failed for timeline, continuing without semantic results', {}, chromaError as Error);
         }
       }
 
@@ -679,7 +679,7 @@ export class SearchManager {
           }
         }
       } catch (chromaError) {
-        logger.warn('SEARCH', 'Chroma search failed for decisions, falling back to metadata search', {}, chromaError as Error);
+        logger.error('SEARCH', 'Chroma search failed for decisions, falling back to metadata search', {}, chromaError as Error);
       }
     }
 
@@ -747,7 +747,7 @@ export class SearchManager {
           }
         }
       } catch (chromaError) {
-        logger.warn('SEARCH', 'Chroma search failed for changes, falling back to metadata search', {}, chromaError as Error);
+        logger.error('SEARCH', 'Chroma search failed for changes, falling back to metadata search', {}, chromaError as Error);
       }
     }
 

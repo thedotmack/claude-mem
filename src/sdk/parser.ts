@@ -63,10 +63,10 @@ export function parseObservations(text: string, correlationId?: string): ParsedO
       if (validTypes.includes(type.trim())) {
         finalType = type.trim();
       } else {
-        logger.warn('PARSER', `Invalid observation type: ${type}, using "${fallbackType}"`, { correlationId });
+        logger.error('PARSER', `Invalid observation type: ${type}, using "${fallbackType}"`, { correlationId });
       }
     } else {
-      logger.warn('PARSER', `Observation missing type field, using "${fallbackType}"`, { correlationId });
+      logger.error('PARSER', `Observation missing type field, using "${fallbackType}"`, { correlationId });
     }
 
     // All other fields are optional - save whatever we have
@@ -75,7 +75,7 @@ export function parseObservations(text: string, correlationId?: string): ParsedO
     const cleanedConcepts = concepts.filter(c => c !== finalType);
 
     if (cleanedConcepts.length !== concepts.length) {
-      logger.warn('PARSER', 'Removed observation type from concepts array', {
+      logger.error('PARSER', 'Removed observation type from concepts array', {
         correlationId,
         type: finalType,
         originalConcepts: concepts,

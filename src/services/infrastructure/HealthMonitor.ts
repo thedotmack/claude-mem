@@ -86,7 +86,7 @@ export async function httpShutdown(port: number): Promise<boolean> {
       return false;
     }
     // Unexpected error - log full details
-    logger.warn('SYSTEM', 'Shutdown request failed unexpectedly', { port }, error as Error);
+    logger.error('SYSTEM', 'Shutdown request failed unexpectedly', { port }, error as Error);
     return false;
   }
 }

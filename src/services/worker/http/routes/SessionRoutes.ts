@@ -150,7 +150,7 @@ export class SessionRoutes extends BaseRouteHandler {
         try {
           const failedCount = pendingStore.markSessionMessagesFailed(session.sessionDbId);
           if (failedCount > 0) {
-            logger.warn('SESSION', `Marked messages as failed after generator error`, {
+            logger.error('SESSION', `Marked messages as failed after generator error`, {
               sessionId: session.sessionDbId,
               failedCount
             });
@@ -168,7 +168,7 @@ export class SessionRoutes extends BaseRouteHandler {
         if (wasAborted) {
           logger.info('SESSION', `Generator aborted`, { sessionId: sessionDbId });
         } else {
-          logger.warn('SESSION', `Generator exited unexpectedly`, { sessionId: sessionDbId });
+          logger.error('SESSION', `Generator exited unexpectedly`, { sessionId: sessionDbId });
         }
 
         session.generatorPromise = null;
@@ -187,8 +187,10 @@ export class SessionRoutes extends BaseRouteHandler {
                 pendingCount
               });
 
-              // Create new AbortController for the restarted generator
+              // Abort OLD controller before replacing to prevent child process leaks
+              const oldController = session.abortController;
               session.abortController = new AbortController();
+              oldController.abort();
 
               // Small delay before restart
               setTimeout(() => {
@@ -282,7 +284,7 @@ export class SessionRoutes extends BaseRouteHandler {
           prompt: truncatedPrompt
         });
       }).catch((error) => {
-        logger.warn('CHROMA', 'User prompt sync failed, continuing without vector search', {
+        logger.error('CHROMA', 'User prompt sync failed, continuing without vector search', {
           promptId: latestPrompt.id,
           prompt: promptText.length > 60 ? promptText.substring(0, 60) + '...' : promptText
         }, error);
@@ -466,13 +468,13 @@ export class SessionRoutes extends BaseRouteHandler {
       tool_input: cleanedToolInput,
       tool_response: cleanedToolResponse,
       prompt_number: promptNumber,
-      cwd: cwd || logger.happyPathError(
-        'SESSION',
-        'Missing cwd when queueing observation in SessionRoutes',
-        { sessionId: sessionDbId },
-        { tool_name },
-        ''
-      )
+      cwd: cwd || (() => {
+        logger.error('SESSION', 'Missing cwd when queueing observation in SessionRoutes', {
+          sessionId: sessionDbId,
+          tool_name
+        });
+        return '';
+      })()
     });
 
     // Ensure SDK agent is running

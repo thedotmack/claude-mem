@@ -177,7 +177,7 @@ graph TB
 
 | Stage | Hook | Trigger | Purpose |
 |-------|------|---------|---------|
-| **1. SessionStart** | `context-hook.js` + `user-message-hook.js` | User opens Claude Code | Inject prior context, show UI messages |
+| **1. SessionStart** | `context-hook.js` | User opens Claude Code | Inject prior context silently |
 | **2. UserPromptSubmit** | `new-hook.js` | User submits a prompt | Create/get session, save prompt, init worker |
 | **3. PostToolUse** | `save-hook.js` | Claude uses any tool | Queue observation for AI compression |
 | **4. Stop** | `summary-hook.js` | User stops asking questions | Generate session summary |
@@ -194,12 +194,16 @@ Hooks are configured in `plugin/hooks/hooks.json`:
       "matcher": "startup|clear|compact",
       "hooks": [{
         "type": "command",
-        "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/context-hook.js",
+        "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/smart-install.js",
         "timeout": 300
       }, {
         "type": "command",
-        "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/user-message-hook.js",
-        "timeout": 10
+        "command": "bun ${CLAUDE_PLUGIN_ROOT}/scripts/worker-service.cjs start",
+        "timeout": 60
+      }, {
+        "type": "command",
+        "command": "bun ${CLAUDE_PLUGIN_ROOT}/scripts/context-hook.js",
+        "timeout": 60
       }]
     }],
     "UserPromptSubmit": [{
@@ -242,8 +246,13 @@ Hooks are configured in `plugin/hooks/hooks.json`:
 **Timing**: When user opens Claude Code or resumes session
 
 **Hooks Triggered** (in order):
-1. `context-hook.js` - Fetches and injects prior session context
-2. `user-message-hook.js` - Displays context info to user via stderr
+1. `smart-install.js` - Ensures dependencies are installed
+2. `worker-service.cjs start` - Starts the worker service
+3. `context-hook.js` - Fetches and silently injects prior session context
+
+<Note>
+As of Claude Code 2.1.0 (ultrathink update), SessionStart hooks no longer display user-visible messages. Context is silently injected via `hookSpecificOutput.additionalContext`.
+</Note>
 
 ### Sequence Diagram
 
@@ -305,19 +314,6 @@ sequenceDiagram
 ```
 
 **Implementation**: `src/hooks/context-hook.ts`
-
-### User Message Hook (`user-message-hook.js`)
-
-**Purpose**: Display helpful user messages during first-time setup or when viewing context.
-
-**Behavior**:
-- Shows first-time setup message when `node_modules` is missing
-- Displays formatted context information with colors
-- Provides tips for using claude-mem effectively
-- Shows link to viewer UI (`http://localhost:37777`)
-- Uses stderr as communication channel (only output available in Claude Code UI)
-
-**Implementation**: `src/hooks/user-message-hook.ts`
 
 ---
 
