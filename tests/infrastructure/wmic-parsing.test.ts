@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 
 /**
- * Tests for WMIC output parsing logic used in Windows process enumeration.
+ * Tests for PowerShell output parsing logic used in Windows process enumeration.
  *
  * This tests the parsing behavior directly since mocking promisified exec
  * is unreliable across module boundaries. The parsing logic matches exactly
@@ -9,16 +9,14 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
  */
 
 // Extract the parsing logic from ProcessManager for direct testing
-// This matches the implementation in src/services/infrastructure/ProcessManager.ts lines 93-100
-function parseWmicOutput(stdout: string): number[] {
+// This matches the implementation in src/services/infrastructure/ProcessManager.ts lines 95-100
+function parsePowerShellOutput(stdout: string): number[] {
   return stdout
-    .trim()
     .split('\n')
-    .map(line => {
-      const match = line.match(/ProcessId=(\d+)/i);
-      return match ? parseInt(match[1], 10) : NaN;
-    })
-    .filter(n => !isNaN(n) && Number.isInteger(n) && n > 0);
+    .map(line => line.trim())
+    .filter(line => line.length > 0 && /^\d+$/.test(line))
+    .map(line => parseInt(line, 10))
+    .filter(pid => pid > 0);
 }
 
 // Validate parent PID - matches ProcessManager.getChildProcesses() lines 85-88
@@ -26,130 +24,118 @@ function isValidParentPid(parentPid: number): boolean {
   return Number.isInteger(parentPid) && parentPid > 0;
 }
 
-describe('WMIC output parsing (Windows)', () => {
-  describe('parseWmicOutput - ProcessId format parsing', () => {
-    it('should parse ProcessId=12345 format correctly', () => {
-      const stdout = 'ProcessId=12345\r\nProcessId=67890\r\n';
+describe('PowerShell output parsing (Windows)', () => {
+  describe('parsePowerShellOutput - simple number format parsing', () => {
+    it('should parse simple number format correctly', () => {
+      const stdout = '12345\r\n67890\r\n';
 
-      const result = parseWmicOutput(stdout);
+      const result = parsePowerShellOutput(stdout);
 
       expect(result).toEqual([12345, 67890]);
     });
 
-    it('should parse single PID from WMIC output', () => {
-      const stdout = 'ProcessId=54321\r\n';
+    it('should parse single PID from PowerShell output', () => {
+      const stdout = '54321\r\n';
 
-      const result = parseWmicOutput(stdout);
+      const result = parsePowerShellOutput(stdout);
 
       expect(result).toEqual([54321]);
     });
 
-    it('should handle WMIC output with mixed case', () => {
-      // WMIC output can vary in case on different Windows versions
-      const stdout = 'PROCESSID=11111\r\nprocessid=22222\r\nProcessId=33333\r\n';
-
-      const result = parseWmicOutput(stdout);
-
-      expect(result).toEqual([11111, 22222, 33333]);
-    });
-
-    it('should handle empty WMIC output', () => {
+    it('should handle empty PowerShell output', () => {
       const stdout = '';
 
-      const result = parseWmicOutput(stdout);
+      const result = parsePowerShellOutput(stdout);
 
       expect(result).toEqual([]);
     });
 
-    it('should handle WMIC output with only whitespace', () => {
+    it('should handle PowerShell output with only whitespace', () => {
       const stdout = '   \r\n  \r\n';
 
-      const result = parseWmicOutput(stdout);
+      const result = parsePowerShellOutput(stdout);
 
       expect(result).toEqual([]);
     });
 
-    it('should filter invalid PIDs from WMIC output', () => {
-      const stdout = 'ProcessId=12345\r\nProcessId=invalid\r\nProcessId=67890\r\n';
+    it('should filter invalid PIDs from PowerShell output', () => {
+      const stdout = '12345\r\ninvalid\r\n67890\r\n';
 
-      const result = parseWmicOutput(stdout);
-
-      expect(result).toEqual([12345, 67890]);
-    });
-
-    it('should filter negative PIDs from WMIC output', () => {
-      // Negative PIDs won't match the regex /ProcessId=(\d+)/i (only digits)
-      const stdout = 'ProcessId=12345\r\nProcessId=-1\r\nProcessId=67890\r\n';
-
-      const result = parseWmicOutput(stdout);
+      const result = parsePowerShellOutput(stdout);
 
       expect(result).toEqual([12345, 67890]);
     });
 
-    it('should filter zero PIDs from WMIC output', () => {
-      // Zero is filtered out by the n > 0 check
-      const stdout = 'ProcessId=0\r\nProcessId=12345\r\n';
+    it('should filter negative PIDs from PowerShell output', () => {
+      const stdout = '12345\r\n-1\r\n67890\r\n';
 
-      const result = parseWmicOutput(stdout);
+      const result = parsePowerShellOutput(stdout);
+
+      expect(result).toEqual([12345, 67890]);
+    });
+
+    it('should filter zero PIDs from PowerShell output', () => {
+      const stdout = '0\r\n12345\r\n';
+
+      const result = parsePowerShellOutput(stdout);
 
       expect(result).toEqual([12345]);
     });
 
-    it('should handle WMIC output with extra lines and noise', () => {
-      const stdout = '\r\n\r\nProcessId=12345\r\n\r\nSome other output\r\nProcessId=67890\r\n\r\n';
+    it('should handle PowerShell output with extra lines and noise', () => {
+      const stdout = '\r\n\r\n12345\r\n\r\nSome other output\r\n67890\r\n\r\n';
 
-      const result = parseWmicOutput(stdout);
+      const result = parsePowerShellOutput(stdout);
 
       expect(result).toEqual([12345, 67890]);
     });
 
     it('should handle Windows line endings (CRLF)', () => {
-      const stdout = 'ProcessId=111\r\nProcessId=222\r\nProcessId=333\r\n';
+      const stdout = '111\r\n222\r\n333\r\n';
 
-      const result = parseWmicOutput(stdout);
+      const result = parsePowerShellOutput(stdout);
 
       expect(result).toEqual([111, 222, 333]);
     });
 
     it('should handle Unix line endings (LF)', () => {
-      const stdout = 'ProcessId=111\nProcessId=222\nProcessId=333\n';
+      const stdout = '111\n222\n333\n';
 
-      const result = parseWmicOutput(stdout);
+      const result = parsePowerShellOutput(stdout);
 
       expect(result).toEqual([111, 222, 333]);
     });
 
-    it('should handle lines with extra equals signs', () => {
-      const stdout = 'ProcessId=12345\r\nSomeOther=value=with=equals\r\nProcessId=67890\r\n';
-
-      const result = parseWmicOutput(stdout);
-
-      expect(result).toEqual([12345, 67890]);
-    });
-
     it('should handle very large PIDs', () => {
       // Windows PIDs can be large but are still 32-bit integers
-      const stdout = 'ProcessId=2147483647\r\n';
+      const stdout = '2147483647\r\n';
 
-      const result = parseWmicOutput(stdout);
+      const result = parsePowerShellOutput(stdout);
 
       expect(result).toEqual([2147483647]);
     });
 
-    it('should handle typical WMIC list format output', () => {
-      // Real WMIC output often has blank lines and extra spacing
+    it('should handle typical PowerShell output with blank lines and extra spacing', () => {
       const stdout = `
 
-ProcessId=1234
+1234
 
 
-ProcessId=5678
+5678
 
 `;
 
-      const result = parseWmicOutput(stdout);
+      const result = parsePowerShellOutput(stdout);
 
       expect(result).toEqual([1234, 5678]);
+    });
+
+    it('should filter lines with text and numbers mixed', () => {
+      const stdout = '12345\r\nPID: 67890\r\n11111\r\n';
+
+      const result = parsePowerShellOutput(stdout);
+
+      expect(result).toEqual([12345, 11111]);
     });
   });
 

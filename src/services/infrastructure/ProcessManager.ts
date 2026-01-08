@@ -88,16 +88,16 @@ export async function getChildProcesses(parentPid: number): Promise<number[]> {
   }
 
   try {
-    const cmd = `wmic process where "parentprocessid=${parentPid}" get processid /format:list`;
+    // PowerShell Get-Process instead of WMIC (deprecated in Windows 11)
+    const cmd = `powershell -NoProfile -NonInteractive -Command "Get-Process | Where-Object { \\$_.ParentProcessId -eq ${parentPid} } | Select-Object -ExpandProperty Id"`;
     const { stdout } = await execAsync(cmd, { timeout: 60000 });
+    // PowerShell outputs just numbers (one per line), simpler than WMIC's "ProcessId=1234" format
     return stdout
-      .trim()
       .split('\n')
-      .map(line => {
-        const match = line.match(/ProcessId=(\d+)/i);
-        return match ? parseInt(match[1], 10) : NaN;
-      })
-      .filter(n => !isNaN(n) && Number.isInteger(n) && n > 0);
+      .map(line => line.trim())
+      .filter(line => line.length > 0 && /^\d+$/.test(line))
+      .map(line => parseInt(line, 10))
+      .filter(pid => pid > 0);
   } catch (error) {
     // Shutdown cleanup - failure is non-critical, continue without child process cleanup
     logger.error('SYSTEM', 'Failed to enumerate child processes', { parentPid }, error as Error);
@@ -170,8 +170,8 @@ export async function cleanupOrphanedProcesses(): Promise<void> {
 
   try {
     if (isWindows) {
-      // Windows: Use WMIC to find chroma-mcp processes (avoids PowerShell $_ issues in Git Bash/WSL)
-      const cmd = `wmic process where "name like '%python%' and commandline like '%chroma-mcp%'" get processid /format:list`;
+      // Windows: Use PowerShell Get-CimInstance instead of WMIC (deprecated in Windows 11)
+      const cmd = `powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process | Where-Object { \\$_.Name -like '*python*' -and \\$_.CommandLine -like '*chroma-mcp*' } | Select-Object -ExpandProperty ProcessId"`;
       const { stdout } = await execAsync(cmd, { timeout: 60000 });
 
       if (!stdout.trim()) {
@@ -179,15 +179,17 @@ export async function cleanupOrphanedProcesses(): Promise<void> {
         return;
       }
 
-      const lines = stdout.trim().split('\n');
+      // PowerShell outputs just numbers (one per line), simpler than WMIC's "ProcessId=1234" format
+      const lines = stdout
+        .split('\n')
+        .map(line => line.trim())
+        .filter(line => line.length > 0 && /^\d+$/.test(line));
+
       for (const line of lines) {
-        const match = line.match(/ProcessId=(\d+)/i);
-        if (match) {
-          const pid = parseInt(match[1], 10);
-          // SECURITY: Validate PID is positive integer before adding to list
-          if (!isNaN(pid) && Number.isInteger(pid) && pid > 0) {
-            pids.push(pid);
-          }
+        const pid = parseInt(line, 10);
+        // SECURITY: Validate PID is positive integer before adding to list
+        if (!isNaN(pid) && Number.isInteger(pid) && pid > 0) {
+          pids.push(pid);
         }
       }
     } else {
