@@ -58,8 +58,8 @@ describe('hook-constants', () => {
       expect(HOOK_EXIT_CODES.FAILURE).toBe(1);
     });
 
-    it('should define USER_MESSAGE_ONLY exit code', () => {
-      expect(HOOK_EXIT_CODES.USER_MESSAGE_ONLY).toBe(3);
+    it('should define BLOCKING_ERROR exit code', () => {
+      expect(HOOK_EXIT_CODES.BLOCKING_ERROR).toBe(2);
     });
   });
 

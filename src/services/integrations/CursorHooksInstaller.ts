@@ -117,7 +117,7 @@ export async function updateCursorContextForProject(projectName: string, port: n
     logger.debug('CURSOR', 'Updated context file', { projectName, workspacePath: entry.workspacePath });
   } catch (error) {
     // [ANTI-PATTERN IGNORED]: Background context update - failure is non-critical, user workflow continues
-    logger.warn('CURSOR', 'Failed to update context file', { projectName }, error as Error);
+    logger.error('CURSOR', 'Failed to update context file', { projectName }, error as Error);
   }
 }
 
@@ -234,7 +234,7 @@ export function configureCursorMcp(target: CursorInstallTarget): number {
         }
       } catch (error) {
         // [ANTI-PATTERN IGNORED]: Fallback behavior - corrupt config, continue with empty
-        logger.warn('SYSTEM', 'Corrupt mcp.json, creating new config', { path: mcpJsonPath }, error as Error);
+        logger.error('SYSTEM', 'Corrupt mcp.json, creating new config', { path: mcpJsonPath }, error as Error);
         config = { mcpServers: {} };
       }
     }

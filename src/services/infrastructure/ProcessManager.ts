@@ -100,7 +100,7 @@ export async function getChildProcesses(parentPid: number): Promise<number[]> {
       .filter(n => !isNaN(n) && Number.isInteger(n) && n > 0);
   } catch (error) {
     // Shutdown cleanup - failure is non-critical, continue without child process cleanup
-    logger.warn('SYSTEM', 'Failed to enumerate child processes', { parentPid }, error as Error);
+    logger.error('SYSTEM', 'Failed to enumerate child processes', { parentPid }, error as Error);
     return [];
   }
 }
@@ -213,7 +213,7 @@ export async function cleanupOrphanedProcesses(): Promise<void> {
     }
   } catch (error) {
     // Orphan cleanup is non-critical - log and continue
-    logger.warn('SYSTEM', 'Failed to enumerate orphaned processes', {}, error as Error);
+    logger.error('SYSTEM', 'Failed to enumerate orphaned processes', {}, error as Error);
     return;
   }
 

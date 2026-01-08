@@ -72,4 +72,11 @@
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
 | #34626 | 3:01 PM | 🔵 | Test-Driven Validation Agent Performing Extensive Infrastructure Analysis | ~501 |
+
+### Jan 6, 2026
+
+**windows-ci.yml**
+| ID | Time | T | Title | Read |
+|----|------|---|-------|------|
+| #38108 | 12:15 AM | 🔵 | Complete Windows Zombie Port Bug Technical Deep Dive | ~935 |
 </claude-mem-context>

@@ -182,7 +182,7 @@ export class ChromaSync {
       }
 
       // Only attempt creation if it's genuinely a "collection not found" error
-      logger.warn('CHROMA_SYNC', 'Collection check failed, attempting to create', { collection: this.collectionName }, error as Error);
+      logger.error('CHROMA_SYNC', 'Collection check failed, attempting to create', { collection: this.collectionName }, error as Error);
       logger.info('CHROMA_SYNC', 'Creating collection', { collection: this.collectionName });
 
       try {
@@ -826,13 +826,13 @@ export class ChromaSync {
       throw error;
     }
 
-    const resultText = logger.happyPathError(
-      'CHROMA',
-      'Missing text in MCP chroma_query_documents result',
-      { project: this.project },
-      { query_text: query },
-      result.content[0]?.text || ''
-    );
+    const resultText = result.content[0]?.text || (() => {
+      logger.error('CHROMA', 'Missing text in MCP chroma_query_documents result', {
+        project: this.project,
+        query_text: query
+      });
+      return '';
+    })();
 
     // Parse JSON response
     let parsed: any;

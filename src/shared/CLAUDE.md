@@ -8,7 +8,6 @@
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
 | #6295 | 1:18 PM | 🔵 | Path Configuration Structure for claude-mem | ~305 |
-| #6268 | 12:56 PM | 🔵 | Package Root Resolution Uses Relative Path from Bundle Location | ~379 |
 
 ### Dec 5, 2025
 
@@ -107,4 +106,10 @@
 |----|------|---|-------|------|
 | #32616 | 8:43 PM | 🔵 | Comprehensive analysis of "enable billing" setting and its impact on rate limiting | ~533 |
 | #32538 | 7:28 PM | ✅ | Set default Gemini billing to disabled | ~164 |
+
+### Jan 7, 2026
+
+| ID | Time | T | Title | Read |
+|----|------|---|-------|------|
+| #38175 | 7:26 PM | 🔵 | Complete Claude-Mem Hook Output Architecture Documented | ~530 |
 </claude-mem-context>

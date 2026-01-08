@@ -26,13 +26,6 @@
 | #23074 | " | ✅ | Replaced Verbose Manual Mode Help with Error in cleanup-hook.ts | ~222 |
 | #23073 | " | ✅ | Removed cwd from cleanup-hook Debug Logging | ~177 |
 | #23072 | " | ✅ | Simplified SessionEndInput Interface in cleanup-hook.ts | ~236 |
-| #23071 | 6:25 PM | 🔵 | cleanup-hook.ts Has Over-Engineered Manual Mode Help (lines 36-47) | ~399 |
-| #23070 | " | 🔵 | user-message-hook.ts Contains Expired Announcement Code (lines 31-70) | ~370 |
-| #23045 | 4:41 PM | 🔵 | "What's the Point?" Audit: Hook Code Contains 50% Dead/Duplicated Logic | ~1458 |
-| #23044 | 4:37 PM | 🔵 | Hook Architecture Audit: Purpose and Design Patterns | ~1032 |
-| #22856 | 2:27 PM | ✅ | Replaced node_modules Check with Marker File in user-message-hook | ~324 |
-| #22855 | " | 🔵 | Identified node_modules First-Run Check in user-message-hook | ~319 |
-| #22825 | 2:06 PM | 🔄 | Removed Duplicate Session Initialization Call from New Hook | ~346 |
 
 ### Dec 10, 2025
 
@@ -92,4 +85,16 @@
 | #33211 | 9:04 PM | 🔵 | User Message Hook Displays Context Info via stderr in Parallel with Context Injection | ~476 |
 | #33210 | 9:03 PM | 🔵 | Summary Hook (summary-hook.ts) Extracts Messages and Triggers Summarization | ~479 |
 | #33209 | " | 🔵 | SessionStart Hook (context-hook.ts) Fetches Context Injection via HTTP | ~520 |
+
+### Jan 7, 2026
+
+| ID | Time | T | Title | Read |
+|----|------|---|-------|------|
+| #38235 | 7:42 PM | ✅ | Deprecated User Message Hook Source File | ~399 |
+| #38176 | 7:26 PM | ⚖️ | Plan Created to Merge User Message into Context Hook JSON Output | ~536 |
+| #38175 | " | 🔵 | Complete Claude-Mem Hook Output Architecture Documented | ~530 |
+| #38174 | " | 🔵 | UserPromptSubmit Hook Initializes Sessions and Strips Slash Commands | ~480 |
+| #38173 | 7:25 PM | 🔵 | Standard Hook Response Pattern for Non-SessionStart Hooks | ~343 |
+| #38172 | 7:22 PM | 🔵 | Claude Code Hook Output Architecture Clarified - Exit Code Pattern is Correct for User-Only Display | ~523 |
+| #38170 | 7:21 PM | 🔵 | User-Message-Hook TypeScript Source Shows Exit Code 1 Strategy for User-Only Display | ~203 |
 </claude-mem-context>

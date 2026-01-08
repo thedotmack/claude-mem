@@ -111,7 +111,7 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
       return this.emptyResult('hybrid');
 
     } catch (error) {
-      logger.warn('SEARCH', 'HybridSearchStrategy: findByConcept failed', {}, error as Error);
+      logger.error('SEARCH', 'HybridSearchStrategy: findByConcept failed', {}, error as Error);
       // Fall back to metadata-only results
       const results = this.sessionSearch.findByConcept(concept, filterOptions);
       return {
@@ -176,7 +176,7 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
       return this.emptyResult('hybrid');
 
     } catch (error) {
-      logger.warn('SEARCH', 'HybridSearchStrategy: findByType failed', {}, error as Error);
+      logger.error('SEARCH', 'HybridSearchStrategy: findByType failed', {}, error as Error);
       const results = this.sessionSearch.findByType(type as any, filterOptions);
       return {
         results: { observations: results, sessions: [], prompts: [] },
@@ -242,7 +242,7 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
       return { observations: [], sessions, usedChroma: false };
 
     } catch (error) {
-      logger.warn('SEARCH', 'HybridSearchStrategy: findByFile failed', {}, error as Error);
+      logger.error('SEARCH', 'HybridSearchStrategy: findByFile failed', {}, error as Error);
       const results = this.sessionSearch.findByFile(filePath, filterOptions);
       return {
         observations: results.observations,
