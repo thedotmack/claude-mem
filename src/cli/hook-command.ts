@@ -18,6 +18,8 @@ export async function hookCommand(platform: string, event: string): Promise<void
     process.exit(result.exitCode ?? HOOK_EXIT_CODES.SUCCESS);
   } catch (error) {
     console.error(`Hook error: ${error}`);
-    process.exit(HOOK_EXIT_CODES.FAILURE);
+    // Use exit code 2 (blocking error) so users see the error message
+    // Exit code 1 only shows in verbose mode per Claude Code docs
+    process.exit(HOOK_EXIT_CODES.BLOCKING_ERROR);  // = 2
   }
 }

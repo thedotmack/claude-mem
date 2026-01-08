@@ -308,7 +308,9 @@ export function createSignalHandler(
     } catch (error) {
       // Top-level signal handler - log any shutdown error and exit
       logger.error('SYSTEM', 'Error during shutdown', {}, error as Error);
-      process.exit(1);
+      // Exit gracefully: Windows Terminal won't keep tab open on exit 0
+      // Even on shutdown errors, exit cleanly to prevent tab accumulation
+      process.exit(0);
     }
   };
 }
