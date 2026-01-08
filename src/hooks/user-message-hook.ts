@@ -3,13 +3,11 @@
  * Displays context information to the user via stderr
  *
  * This hook runs in parallel with context-hook to show users what context
- * has been loaded into their session. Uses stderr as the communication channel
- * since it's currently the only way to display messages in Claude Code UI.
+ * has been loaded into their session. Uses stderr + exit code 2, which for
+ * SessionStart hooks displays to user only without adding to Claude's context.
  */
 import { basename } from "path";
 import { ensureWorkerRunning, getWorkerPort } from "../shared/worker-utils.js";
-import { HOOK_EXIT_CODES } from "../shared/hook-constants.js";
-import { logger } from "../utils/logger.js";
 
 // Ensure worker is running
 await ensureWorkerRunning();
@@ -39,4 +37,4 @@ console.error(
   `\n📺 Watch live in browser http://localhost:${port}/\n`
 );
 
-process.exit(HOOK_EXIT_CODES.USER_MESSAGE_ONLY);
+process.exit(2); // Exit code 2 for SessionStart = show stderr to user only
