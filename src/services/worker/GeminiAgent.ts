@@ -10,43 +10,49 @@
  * - Sync to database and Chroma
  */
 
-import path from 'path';
-import { homedir } from 'os';
-import { DatabaseManager } from './DatabaseManager.js';
-import { SessionManager } from './SessionManager.js';
-import { logger } from '../../utils/logger.js';
-import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
-import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
-import type { ActiveSession, ConversationMessage } from '../worker-types.js';
-import { ModeManager } from '../domain/ModeManager.js';
+import path from "path";
+import { homedir } from "os";
+import { DatabaseManager } from "./DatabaseManager.js";
+import { SessionManager } from "./SessionManager.js";
+import { logger } from "../../utils/logger.js";
+import {
+  buildInitPrompt,
+  buildObservationPrompt,
+  buildSummaryPrompt,
+  buildContinuationPrompt,
+} from "../../sdk/prompts.js";
+import { SettingsDefaultsManager } from "../../shared/SettingsDefaultsManager.js";
+import type { ActiveSession, ConversationMessage } from "../worker-types.js";
+import { ModeManager } from "../domain/ModeManager.js";
 import {
   processAgentResponse,
   shouldFallbackToClaude,
   isAbortError,
   type WorkerRef,
-  type FallbackAgent
-} from './agents/index.js';
+  type FallbackAgent,
+} from "./agents/index.js";
 
 // Gemini API endpoint
-const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
+const GEMINI_API_URL =
+  "https://generativelanguage.googleapis.com/v1beta/models";
 
 // Gemini model types (available via API)
 export type GeminiModel =
-  | 'gemini-2.5-flash-lite'
-  | 'gemini-2.5-flash'
-  | 'gemini-2.5-pro'
-  | 'gemini-2.0-flash'
-  | 'gemini-2.0-flash-lite'
-  | 'gemini-3-flash';
+  | "gemini-2.5-flash-lite"
+  | "gemini-2.5-flash"
+  | "gemini-2.5-pro"
+  | "gemini-2.0-flash"
+  | "gemini-2.0-flash-lite"
+  | "gemini-3-flash";
 
 // Free tier RPM limits by model (requests per minute)
 const GEMINI_RPM_LIMITS: Record<GeminiModel, number> = {
-  'gemini-2.5-flash-lite': 10,
-  'gemini-2.5-flash': 10,
-  'gemini-2.5-pro': 5,
-  'gemini-2.0-flash': 15,
-  'gemini-2.0-flash-lite': 30,
-  'gemini-3-flash': 5,
+  "gemini-2.5-flash-lite": 10,
+  "gemini-2.5-flash": 10,
+  "gemini-2.5-pro": 5,
+  "gemini-2.0-flash": 15,
+  "gemini-2.0-flash-lite": 30,
+  "gemini-3-flash": 5,
 };
 
 // Track last request time for rate limiting
@@ -57,7 +63,10 @@ let lastRequestTime = 0;
  * Waits the required time between requests based on model's RPM limit + 100ms safety buffer.
  * Skipped entirely if rate limiting is disabled (billing users with 1000+ RPM available).
  */
-async function enforceRateLimitForModel(model: GeminiModel, rateLimitingEnabled: boolean): Promise<void> {
+async function enforceRateLimitForModel(
+  model: GeminiModel,
+  rateLimitingEnabled: boolean,
+): Promise<void> {
   // Skip rate limiting if disabled (billing users with 1000+ RPM)
   if (!rateLimitingEnabled) {
     return;
@@ -71,8 +80,12 @@ async function enforceRateLimitForModel(model: GeminiModel, rateLimitingEnabled:
 
   if (timeSinceLastRequest < minimumDelayMs) {
     const waitTime = minimumDelayMs - timeSinceLastRequest;
-    logger.debug('SDK', `Rate limiting: waiting ${waitTime}ms before Gemini request`, { model, rpm });
-    await new Promise(resolve => setTimeout(resolve, waitTime));
+    logger.debug(
+      "SDK",
+      `Rate limiting: waiting ${waitTime}ms before Gemini request`,
+      { model, rpm },
+    );
+    await new Promise((resolve) => setTimeout(resolve, waitTime));
   }
 
   lastRequestTime = Date.now();
@@ -98,7 +111,7 @@ interface GeminiResponse {
  * role: "user" or "model" (Gemini uses "model" not "assistant")
  */
 interface GeminiContent {
-  role: 'user' | 'model';
+  role: "user" | "model";
   parts: Array<{ text: string }>;
 }
 
@@ -124,34 +137,67 @@ export class GeminiAgent {
    * Start Gemini agent for a session
    * Uses multi-turn conversation to maintain context across messages
    */
-  async startSession(session: ActiveSession, worker?: WorkerRef): Promise<void> {
+  async startSession(
+    session: ActiveSession,
+    worker?: WorkerRef,
+  ): Promise<void> {
     try {
       // Get Gemini configuration
       const { apiKey, model, rateLimitingEnabled } = this.getGeminiConfig();
 
       if (!apiKey) {
-        throw new Error('Gemini API key not configured. Set CLAUDE_MEM_GEMINI_API_KEY in settings or GEMINI_API_KEY environment variable.');
+        throw new Error(
+          "Gemini API key not configured. Set CLAUDE_MEM_GEMINI_API_KEY in settings or GEMINI_API_KEY environment variable.",
+        );
       }
 
       // Load active mode
       const mode = ModeManager.getInstance().getActiveMode();
 
       // Build initial prompt
-      const initPrompt = session.lastPromptNumber === 1
-        ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode)
-        : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode);
+      const initPrompt =
+        session.lastPromptNumber === 1
+          ? buildInitPrompt(
+              session.project,
+              session.contentSessionId,
+              session.userPrompt,
+              mode,
+            )
+          : buildContinuationPrompt(
+              session.userPrompt,
+              session.lastPromptNumber,
+              session.contentSessionId,
+              mode,
+            );
 
       // Add to conversation history and query Gemini with full context
-      session.conversationHistory.push({ role: 'user', content: initPrompt });
-      const initResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, rateLimitingEnabled);
+      session.conversationHistory.push({ role: "user", content: initPrompt });
+      const initResponse = await this.queryGeminiMultiTurn(
+        session.conversationHistory,
+        apiKey,
+        model,
+        rateLimitingEnabled,
+      );
+
+      // Gemini doesn't return session_id like Claude SDK, generate one for FK constraint
+      if (!session.memorySessionId) {
+        const syntheticId = `gemini-${session.contentSessionId}-${Date.now()}`;
+        session.memorySessionId = syntheticId;
+        this.dbManager
+          .getSessionStore()
+          .updateMemorySessionId(session.sessionDbId, syntheticId);
+      }
 
       if (initResponse.content) {
         // Add response to conversation history
-        session.conversationHistory.push({ role: 'assistant', content: initResponse.content });
+        session.conversationHistory.push({
+          role: "assistant",
+          content: initResponse.content,
+        });
 
         // Track token usage
         const tokensUsed = initResponse.tokensUsed || 0;
-        session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);  // Rough estimate
+        session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7); // Rough estimate
         session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
 
         // Process response using shared ResponseProcessor (no original timestamp for init - not from queue)
@@ -163,20 +209,26 @@ export class GeminiAgent {
           worker,
           tokensUsed,
           null,
-          'Gemini'
+          "Gemini",
         );
       } else {
-        logger.warn('SDK', 'Empty Gemini init response - session may lack context', {
-          sessionId: session.sessionDbId,
-          model
-        });
+        logger.warn(
+          "SDK",
+          "Empty Gemini init response - session may lack context",
+          {
+            sessionId: session.sessionDbId,
+            model,
+          },
+        );
       }
 
       // Process pending messages
       // Track cwd from messages for CLAUDE.md generation
       let lastCwd: string | undefined;
 
-      for await (const message of this.sessionManager.getMessageIterator(session.sessionDbId)) {
+      for await (const message of this.sessionManager.getMessageIterator(
+        session.sessionDbId,
+      )) {
         // Capture cwd from each message for worktree support
         if (message.cwd) {
           lastCwd = message.cwd;
@@ -185,7 +237,7 @@ export class GeminiAgent {
         // This ensures backlog messages get their original timestamps, not current time
         const originalTimestamp = session.earliestPendingTimestamp;
 
-        if (message.type === 'observation') {
+        if (message.type === "observation") {
           // Update last prompt number
           if (message.prompt_number !== undefined) {
             session.lastPromptNumber = message.prompt_number;
@@ -198,17 +250,28 @@ export class GeminiAgent {
             tool_input: JSON.stringify(message.tool_input),
             tool_output: JSON.stringify(message.tool_response),
             created_at_epoch: originalTimestamp ?? Date.now(),
-            cwd: message.cwd
+            cwd: message.cwd,
           });
 
           // Add to conversation history and query Gemini with full context
-          session.conversationHistory.push({ role: 'user', content: obsPrompt });
-          const obsResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, rateLimitingEnabled);
+          session.conversationHistory.push({
+            role: "user",
+            content: obsPrompt,
+          });
+          const obsResponse = await this.queryGeminiMultiTurn(
+            session.conversationHistory,
+            apiKey,
+            model,
+            rateLimitingEnabled,
+          );
 
           let tokensUsed = 0;
           if (obsResponse.content) {
             // Add response to conversation history
-            session.conversationHistory.push({ role: 'assistant', content: obsResponse.content });
+            session.conversationHistory.push({
+              role: "assistant",
+              content: obsResponse.content,
+            });
 
             tokensUsed = obsResponse.tokensUsed || 0;
             session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
@@ -217,35 +280,48 @@ export class GeminiAgent {
 
           // Process response using shared ResponseProcessor
           await processAgentResponse(
-            obsResponse.content || '',
+            obsResponse.content || "",
             session,
             this.dbManager,
             this.sessionManager,
             worker,
             tokensUsed,
             originalTimestamp,
-            'Gemini',
-            lastCwd
+            "Gemini",
+            lastCwd,
+          );
+        } else if (message.type === "summarize") {
+          // Build summary prompt
+          const summaryPrompt = buildSummaryPrompt(
+            {
+              id: session.sessionDbId,
+              memory_session_id: session.memorySessionId,
+              project: session.project,
+              user_prompt: session.userPrompt,
+              last_assistant_message: message.last_assistant_message || "",
+            },
+            mode,
           );
 
-        } else if (message.type === 'summarize') {
-          // Build summary prompt
-          const summaryPrompt = buildSummaryPrompt({
-            id: session.sessionDbId,
-            memory_session_id: session.memorySessionId,
-            project: session.project,
-            user_prompt: session.userPrompt,
-            last_assistant_message: message.last_assistant_message || ''
-          }, mode);
-
           // Add to conversation history and query Gemini with full context
-          session.conversationHistory.push({ role: 'user', content: summaryPrompt });
-          const summaryResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, rateLimitingEnabled);
+          session.conversationHistory.push({
+            role: "user",
+            content: summaryPrompt,
+          });
+          const summaryResponse = await this.queryGeminiMultiTurn(
+            session.conversationHistory,
+            apiKey,
+            model,
+            rateLimitingEnabled,
+          );
 
           let tokensUsed = 0;
           if (summaryResponse.content) {
             // Add response to conversation history
-            session.conversationHistory.push({ role: 'assistant', content: summaryResponse.content });
+            session.conversationHistory.push({
+              role: "assistant",
+              content: summaryResponse.content,
+            });
 
             tokensUsed = summaryResponse.tokensUsed || 0;
             session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
@@ -254,39 +330,40 @@ export class GeminiAgent {
 
           // Process response using shared ResponseProcessor
           await processAgentResponse(
-            summaryResponse.content || '',
+            summaryResponse.content || "",
             session,
             this.dbManager,
             this.sessionManager,
             worker,
             tokensUsed,
             originalTimestamp,
-            'Gemini',
-            lastCwd
+            "Gemini",
+            lastCwd,
           );
         }
       }
 
       // Mark session complete
       const sessionDuration = Date.now() - session.startTime;
-      logger.success('SDK', 'Gemini agent completed', {
+      logger.success("SDK", "Gemini agent completed", {
         sessionId: session.sessionDbId,
         duration: `${(sessionDuration / 1000).toFixed(1)}s`,
-        historyLength: session.conversationHistory.length
+        historyLength: session.conversationHistory.length,
       });
-
     } catch (error: unknown) {
       if (isAbortError(error)) {
-        logger.warn('SDK', 'Gemini agent aborted', { sessionId: session.sessionDbId });
+        logger.warn("SDK", "Gemini agent aborted", {
+          sessionId: session.sessionDbId,
+        });
         throw error;
       }
 
       // Check if we should fall back to Claude
       if (shouldFallbackToClaude(error) && this.fallbackAgent) {
-        logger.warn('SDK', 'Gemini API failed, falling back to Claude SDK', {
+        logger.warn("SDK", "Gemini API failed, falling back to Claude SDK", {
           sessionDbId: session.sessionDbId,
           error: error instanceof Error ? error.message : String(error),
-          historyLength: session.conversationHistory.length
+          historyLength: session.conversationHistory.length,
         });
 
         // Fall back to Claude - it will use the same session with shared conversationHistory
@@ -294,7 +371,12 @@ export class GeminiAgent {
         return this.fallbackAgent.startSession(session, worker);
       }
 
-      logger.failure('SDK', 'Gemini agent error', { sessionDbId: session.sessionDbId }, error as Error);
+      logger.failure(
+        "SDK",
+        "Gemini agent error",
+        { sessionDbId: session.sessionDbId },
+        error as Error,
+      );
       throw error;
     }
   }
@@ -303,10 +385,12 @@ export class GeminiAgent {
    * Convert shared ConversationMessage array to Gemini's contents format
    * Maps 'assistant' role to 'model' for Gemini API compatibility
    */
-  private conversationToGeminiContents(history: ConversationMessage[]): GeminiContent[] {
-    return history.map(msg => ({
-      role: msg.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: msg.content }]
+  private conversationToGeminiContents(
+    history: ConversationMessage[],
+  ): GeminiContent[] {
+    return history.map((msg) => ({
+      role: msg.role === "assistant" ? "model" : "user",
+      parts: [{ text: msg.content }],
     }));
   }
 
@@ -318,14 +402,14 @@ export class GeminiAgent {
     history: ConversationMessage[],
     apiKey: string,
     model: GeminiModel,
-    rateLimitingEnabled: boolean
+    rateLimitingEnabled: boolean,
   ): Promise<{ content: string; tokensUsed?: number }> {
     const contents = this.conversationToGeminiContents(history);
     const totalChars = history.reduce((sum, m) => sum + m.content.length, 0);
 
-    logger.debug('SDK', `Querying Gemini multi-turn (${model})`, {
+    logger.debug("SDK", `Querying Gemini multi-turn (${model})`, {
       turns: history.length,
-      totalChars
+      totalChars,
     });
 
     const url = `${GEMINI_API_URL}/${model}:generateContent?key=${apiKey}`;
@@ -334,14 +418,14 @@ export class GeminiAgent {
     await enforceRateLimitForModel(model, rateLimitingEnabled);
 
     const response = await fetch(url, {
-      method: 'POST',
+      method: "POST",
       headers: {
-        'Content-Type': 'application/json',
+        "Content-Type": "application/json",
       },
       body: JSON.stringify({
         contents,
         generationConfig: {
-          temperature: 0.3,  // Lower temperature for structured extraction
+          temperature: 0.3, // Lower temperature for structured extraction
           maxOutputTokens: 4096,
         },
       }),
@@ -352,11 +436,11 @@ export class GeminiAgent {
       throw new Error(`Gemini API error: ${response.status} - ${error}`);
     }
 
-    const data = await response.json() as GeminiResponse;
+    const data = (await response.json()) as GeminiResponse;
 
     if (!data.candidates?.[0]?.content?.parts?.[0]?.text) {
-      logger.warn('SDK', 'Empty response from Gemini');
-      return { content: '' };
+      logger.warn("SDK", "Empty response from Gemini");
+      return { content: "" };
     }
 
     const content = data.candidates[0].content.parts[0].text;
@@ -368,38 +452,48 @@ export class GeminiAgent {
   /**
    * Get Gemini configuration from settings or environment
    */
-  private getGeminiConfig(): { apiKey: string; model: GeminiModel; rateLimitingEnabled: boolean } {
-    const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+  private getGeminiConfig(): {
+    apiKey: string;
+    model: GeminiModel;
+    rateLimitingEnabled: boolean;
+  } {
+    const settingsPath = path.join(homedir(), ".claude-mem", "settings.json");
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
 
     // API key: check settings first, then environment variable
-    const apiKey = settings.CLAUDE_MEM_GEMINI_API_KEY || process.env.GEMINI_API_KEY || '';
+    const apiKey =
+      settings.CLAUDE_MEM_GEMINI_API_KEY || process.env.GEMINI_API_KEY || "";
 
     // Model: from settings or default, with validation
-    const defaultModel: GeminiModel = 'gemini-2.5-flash';
+    const defaultModel: GeminiModel = "gemini-2.5-flash";
     const configuredModel = settings.CLAUDE_MEM_GEMINI_MODEL || defaultModel;
     const validModels: GeminiModel[] = [
-      'gemini-2.5-flash-lite',
-      'gemini-2.5-flash',
-      'gemini-2.5-pro',
-      'gemini-2.0-flash',
-      'gemini-2.0-flash-lite',
-      'gemini-3-flash',
+      "gemini-2.5-flash-lite",
+      "gemini-2.5-flash",
+      "gemini-2.5-pro",
+      "gemini-2.0-flash",
+      "gemini-2.0-flash-lite",
+      "gemini-3-flash",
     ];
 
     let model: GeminiModel;
     if (validModels.includes(configuredModel as GeminiModel)) {
       model = configuredModel as GeminiModel;
     } else {
-      logger.warn('SDK', `Invalid Gemini model "${configuredModel}", falling back to ${defaultModel}`, {
-        configured: configuredModel,
-        validModels,
-      });
+      logger.warn(
+        "SDK",
+        `Invalid Gemini model "${configuredModel}", falling back to ${defaultModel}`,
+        {
+          configured: configuredModel,
+          validModels,
+        },
+      );
       model = defaultModel;
     }
 
     // Rate limiting: enabled by default for free tier users
-    const rateLimitingEnabled = settings.CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED !== 'false';
+    const rateLimitingEnabled =
+      settings.CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED !== "false";
 
     return { apiKey, model, rateLimitingEnabled };
   }
@@ -409,7 +503,7 @@ export class GeminiAgent {
  * Check if Gemini is available (has API key configured)
  */
 export function isGeminiAvailable(): boolean {
-  const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+  const settingsPath = path.join(homedir(), ".claude-mem", "settings.json");
   const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
   return !!(settings.CLAUDE_MEM_GEMINI_API_KEY || process.env.GEMINI_API_KEY);
 }
@@ -418,7 +512,7 @@ export function isGeminiAvailable(): boolean {
  * Check if Gemini is the selected provider
  */
 export function isGeminiSelected(): boolean {
-  const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+  const settingsPath = path.join(homedir(), ".claude-mem", "settings.json");
   const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-  return settings.CLAUDE_MEM_PROVIDER === 'gemini';
+  return settings.CLAUDE_MEM_PROVIDER === "gemini";
 }
