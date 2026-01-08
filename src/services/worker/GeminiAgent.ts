@@ -145,6 +145,13 @@ export class GeminiAgent {
       session.conversationHistory.push({ role: 'user', content: initPrompt });
       const initResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, rateLimitingEnabled);
 
+      // Gemini doesn't return session_id like Claude SDK, generate one for FK constraint
+      if (!session.memorySessionId) {
+        const syntheticId = `gemini-${session.contentSessionId}-${Date.now()}`;
+        session.memorySessionId = syntheticId;
+        this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, syntheticId);
+      }
+
       if (initResponse.content) {
         // Add response to conversation history
         session.conversationHistory.push({ role: 'assistant', content: initResponse.content });

@@ -103,6 +103,13 @@ export class OpenRouterAgent {
       session.conversationHistory.push({ role: 'user', content: initPrompt });
       const initResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, siteUrl, appName);
 
+      // OpenRouter doesn't return session_id like Claude SDK, generate one for FK constraint
+      if (!session.memorySessionId) {
+        const syntheticId = `openrouter-${session.contentSessionId}-${Date.now()}`;
+        session.memorySessionId = syntheticId;
+        this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, syntheticId);
+      }
+
       if (initResponse.content) {
         // Add response to conversation history
         session.conversationHistory.push({ role: 'assistant', content: initResponse.content });
