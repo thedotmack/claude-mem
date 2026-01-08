@@ -24,6 +24,7 @@ src/ui/viewer.html
 # Local MCP server config (for development only)
 .mcp.json
 .cursor/
+.claude/rules/
 
 # Prevent literal tilde directories (path validation bug artifacts)
 ~*/
