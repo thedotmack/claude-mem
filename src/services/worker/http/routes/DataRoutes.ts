@@ -199,6 +199,7 @@ export class DataRoutes extends BaseRouteHandler {
    */
   private handleGetStats = this.wrapHandler((req: Request, res: Response): void => {
     const db = this.dbManager.getSessionStore().db;
+    const project = req.query.project as string | undefined;
 
     // Read version from package.json
     const packageRoot = getPackageRoot();
@@ -223,6 +224,55 @@ export class DataRoutes extends BaseRouteHandler {
     const activeSessions = this.sessionManager.getActiveSessionCount();
     const sseClients = this.sseBroadcaster.getClientCount();
 
+    // Calculate savings (token economics)
+    // discovery_tokens = tokens spent discovering this info
+    // read_tokens = tokens needed to read compressed observation (estimated from content size / 4)
+    // savings = discovery_tokens - read_tokens
+    const CHARS_PER_TOKEN = 4;
+    let savings = null;
+
+    try {
+      const savingsQuery = project
+        ? `SELECT
+             COALESCE(SUM(discovery_tokens), 0) as total_discovery,
+             COALESCE(SUM(
+               (COALESCE(LENGTH(title), 0) +
+                COALESCE(LENGTH(subtitle), 0) +
+                COALESCE(LENGTH(narrative), 0) +
+                COALESCE(LENGTH(facts), 0)) / ${CHARS_PER_TOKEN}
+             ), 0) as total_read
+           FROM observations
+           WHERE project = ?`
+        : `SELECT
+             COALESCE(SUM(discovery_tokens), 0) as total_discovery,
+             COALESCE(SUM(
+               (COALESCE(LENGTH(title), 0) +
+                COALESCE(LENGTH(subtitle), 0) +
+                COALESCE(LENGTH(narrative), 0) +
+                COALESCE(LENGTH(facts), 0)) / ${CHARS_PER_TOKEN}
+             ), 0) as total_read
+           FROM observations`;
+
+      const result = project
+        ? db.prepare(savingsQuery).get(project) as { total_discovery: number; total_read: number }
+        : db.prepare(savingsQuery).get() as { total_discovery: number; total_read: number };
+
+      if (result && result.total_discovery > 0) {
+        const savingsAmount = result.total_discovery - result.total_read;
+        const savingsPercent = Math.round((savingsAmount / result.total_discovery) * 100);
+        savings = {
+          current: {
+            savings: savingsAmount,
+            savingsPercent,
+            discoveryTokens: result.total_discovery,
+            readTokens: result.total_read
+          }
+        };
+      }
+    } catch (error) {
+      logger.warn('HTTP', 'Failed to calculate savings', { error });
+    }
+
     res.json({
       worker: {
         version,
@@ -237,7 +287,8 @@ export class DataRoutes extends BaseRouteHandler {
         observations: totalObservations.count,
         sessions: totalSessions.count,
         summaries: totalSummaries.count
-      }
+      },
+      ...(savings && { savings })
     });
   });
 
