@@ -26,6 +26,7 @@ import {
   type WorkerRef,
   type FallbackAgent
 } from './agents/index.js';
+import { isGeminiAvailable } from './GeminiAgent.js';
 
 // Context window management constants (defaults, overridable via settings)
 const DEFAULT_MAX_CONTEXT_MESSAGES = 20;  // Maximum messages to keep in conversation history
@@ -60,6 +61,7 @@ interface OpenRouterResponse {
 export class OpenRouterAgent {
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
+  private geminiAgent: FallbackAgent | null = null;
   private fallbackAgent: FallbackAgent | null = null;
 
   constructor(dbManager: DatabaseManager, sessionManager: SessionManager) {
@@ -68,7 +70,15 @@ export class OpenRouterAgent {
   }
 
   /**
-   * Set the fallback agent (Claude SDK) for when OpenRouter API fails
+   * Set the Gemini agent for secondary fallback
+   * Must be set after construction to avoid circular dependency
+   */
+  setGeminiAgent(agent: FallbackAgent): void {
+    this.geminiAgent = agent;
+  }
+
+  /**
+   * Set the fallback agent (Claude SDK) for when all other providers fail
    * Must be set after construction to avoid circular dependency
    */
   setFallbackAgent(agent: FallbackAgent): void {
@@ -237,17 +247,54 @@ export class OpenRouterAgent {
         throw error;
       }
 
-      // Check if we should fall back to Claude
-      if (shouldFallbackToClaude(error) && this.fallbackAgent) {
-        logger.warn('SDK', 'OpenRouter API failed, falling back to Claude SDK', {
-          sessionDbId: session.sessionDbId,
-          error: error instanceof Error ? error.message : String(error),
-          historyLength: session.conversationHistory.length
-        });
+      const errorMessage = error instanceof Error ? error.message : String(error);
 
-        // Fall back to Claude - it will use the same session with shared conversationHistory
-        // Note: With claim-and-delete queue pattern, messages are already deleted on claim
-        return this.fallbackAgent.startSession(session, worker);
+      // Multi-level fallback: OpenRouter → Gemini → Claude SDK
+      if (shouldFallbackToClaude(error)) {
+        // Try Gemini first if available
+        if (isGeminiAvailable() && this.geminiAgent) {
+          logger.warn('SDK', 'All OpenRouter models failed, falling back to Gemini', {
+            sessionDbId: session.sessionDbId,
+            error: errorMessage,
+            historyLength: session.conversationHistory.length
+          });
+
+          try {
+            // Fall back to Gemini - it will use the same session with shared conversationHistory
+            return await this.geminiAgent.startSession(session, worker);
+          } catch (geminiError: unknown) {
+            const geminiErrorMsg = geminiError instanceof Error ? geminiError.message : String(geminiError);
+            logger.warn('SDK', 'Gemini fallback also failed, falling back to Claude SDK', {
+              sessionDbId: session.sessionDbId,
+              geminiError: geminiErrorMsg,
+              originalError: errorMessage
+            });
+
+            // If Gemini also fails, try Claude SDK as last resort
+            if (this.fallbackAgent) {
+              return this.fallbackAgent.startSession(session, worker);
+            }
+
+            // No more fallback options
+            logger.failure('SDK', 'All providers failed (OpenRouter, Gemini, Claude SDK)', {
+              sessionDbId: session.sessionDbId
+            }, geminiError as Error);
+            throw geminiError;
+          }
+        }
+
+        // No Gemini available, try Claude SDK directly
+        if (this.fallbackAgent) {
+          logger.warn('SDK', 'OpenRouter API failed, falling back to Claude SDK', {
+            sessionDbId: session.sessionDbId,
+            error: errorMessage,
+            historyLength: session.conversationHistory.length
+          });
+
+          // Fall back to Claude - it will use the same session with shared conversationHistory
+          // Note: With claim-and-delete queue pattern, messages are already deleted on claim
+          return this.fallbackAgent.startSession(session, worker);
+        }
       }
 
       logger.failure('SDK', 'OpenRouter agent error', { sessionDbId: session.sessionDbId }, error as Error);
