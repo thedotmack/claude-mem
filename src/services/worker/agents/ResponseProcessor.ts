@@ -185,7 +185,7 @@ async function syncAndBroadcastObservations(
         title: obs.title || '(untitled)'
       });
     }).catch((error) => {
-      logger.warn('CHROMA', `${agentName} chroma sync failed, continuing without vector search`, {
+      logger.error('CHROMA', `${agentName} chroma sync failed, continuing without vector search`, {
         obsId,
         type: obs.type,
         title: obs.title || '(untitled)'
@@ -269,7 +269,7 @@ async function syncAndBroadcastSummary(
       request: summaryForStore.request || '(no request)'
     });
   }).catch((error) => {
-    logger.warn('CHROMA', `${agentName} chroma sync failed, continuing without vector search`, {
+    logger.error('CHROMA', `${agentName} chroma sync failed, continuing without vector search`, {
       summaryId: result.summaryId,
       request: summaryForStore.request || '(no request)'
     }, error);

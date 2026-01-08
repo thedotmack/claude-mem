@@ -7,11 +7,31 @@
 
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
-| #36827 | 1:03 AM | ✅ | Branch diff shows 1,293 insertions and 98 deletions across 15 files | ~464 |
-| #36599 | 10:37 PM | 🔵 | Reports Directory Structure Confirmed | ~203 |
-| #36748 | 12:31 AM | 🔵 | Existing GitHub Issue Reports Located | ~271 |
-| #37613 | 5:31 PM | 🔵 | PR #558 Review Feedback Analysis | ~544 |
-| #36623 | 10:44 PM | 🟣 | Logger Coverage Failures Report Generated | ~249 |
-| #36609 | 10:39 PM | 🟣 | Comprehensive Test Suite Report Generated | ~563 |
-| #36924 | 2:25 AM | ✅ | Merged fix/pr-538-followups branch into main with comprehensive updates | ~481 |
+| #37962 | 8:18 PM | 🔴 | Fixed SessionStart hook crash when stdin is undefined | ~440 |
+
+### Jan 7, 2026
+
+| ID | Time | T | Title | Read |
+|----|------|---|-------|------|
+| #38475 | 10:31 PM | ⚖️ | Log Level Philosophy: Error-Adjacent Messages Promoted to ERROR | ~412 |
+| #38467 | 10:29 PM | ⚖️ | Log Level Audit Strategy: Tighten ERROR Messages for Runtime Issue Discovery | ~464 |
+| #38445 | 10:26 PM | 🔵 | DEBUG Level Logging: SessionRoutes Line 211 Error-During-Recovery Pattern | ~500 |
+| #38442 | 10:25 PM | 🔵 | Log Audit Contains 409 Source File Log Entries | ~293 |
+| #38441 | " | 🔵 | DEBUG-level logging patterns for diagnostics and non-critical operations | ~595 |
+| #38439 | " | 🔵 | Log Audit Shows SessionRoutes.ts Has Two WARN Messages for Generator Failures | ~493 |
+| #38438 | " | 🔵 | WARN Level Log Patterns: Graceful Degradation and Fallback Behavior | ~539 |
+| #38437 | 10:24 PM | 🔵 | Claude-mem core functionality and logging patterns identified | ~710 |
+| #38428 | " | 🔵 | Log level audit report structure and content examined | ~559 |
+| #38425 | " | ⚖️ | Log Level Architecture: Fail-Critical Over Fail-Fast for Chroma | ~467 |
+| #38416 | 10:22 PM | 🔵 | ChromaDB Is Critical Not Optional - Log Audit Findings Challenged | ~405 |
+| #38405 | 10:07 PM | ⚖️ | DEBUG Log Level Analysis - One Message Requires WARN Promotion | ~819 |
+| #38404 | 10:06 PM | ⚖️ | Log Level Audit Analysis - WARN to ERROR Promotion Criteria Established | ~769 |
+| #38403 | 10:04 PM | 🔵 | Log Level Audit - INFO and DEBUG Level Messages Catalogued | ~688 |
+| #38402 | 10:03 PM | 🔵 | Log Level Audit Report Analysis - Critical Error Messages Identified | ~642 |
+| #38401 | 10:00 PM | 🔵 | Enhanced Audit Report Reveals Error Logging Patterns and Message Extraction Issues | ~498 |
+| #38394 | 9:58 PM | ✅ | Created Log Level Audit Report Documentation | ~319 |
+| #38393 | " | ✅ | Enhanced Log Audit Report Format with Component Tags and Full Logger Calls | ~393 |
+| #38386 | 9:56 PM | ✅ | Log Audit Report Generated and Saved to Documentation | ~442 |
+| #38385 | " | ✅ | Log Level Audit Report Saved to Documentation | ~379 |
+| #38251 | 7:46 PM | 🔵 | Comprehensive Windows Platform Issues Report | ~982 |
 </claude-mem-context>

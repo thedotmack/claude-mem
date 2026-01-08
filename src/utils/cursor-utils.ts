@@ -42,7 +42,7 @@ export function readCursorRegistry(registryFile: string): CursorProjectRegistry 
     if (!existsSync(registryFile)) return {};
     return JSON.parse(readFileSync(registryFile, 'utf-8'));
   } catch (error) {
-    logger.warn('CONFIG', 'Failed to read Cursor registry, using empty registry', {
+    logger.error('CONFIG', 'Failed to read Cursor registry, using empty registry', {
       file: registryFile,
       error: error instanceof Error ? error.message : String(error)
     });
@@ -151,7 +151,7 @@ export function configureCursorMcp(mcpJsonPath: string, mcpServerScriptPath: str
         config.mcpServers = {};
       }
     } catch (error) {
-      logger.warn('CONFIG', 'Failed to read MCP config, starting fresh', {
+      logger.error('CONFIG', 'Failed to read MCP config, starting fresh', {
         file: mcpJsonPath,
         error: error instanceof Error ? error.message : String(error)
       });

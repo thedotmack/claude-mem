@@ -1,3 +1,13 @@
+/**
+ * Tests for hook timeout and exit code constants
+ *
+ * Mock Justification (~12% mock code):
+ * - process.platform: Only mocked to test cross-platform timeout multiplier
+ *   logic - ensures Windows users get appropriate longer timeouts
+ *
+ * Value: Prevents regressions in timeout values that could cause
+ * hook failures on slow systems or Windows
+ */
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { HOOK_TIMEOUTS, HOOK_EXIT_CODES, getTimeout } from '../src/shared/hook-constants.js';
 
@@ -48,8 +58,8 @@ describe('hook-constants', () => {
       expect(HOOK_EXIT_CODES.FAILURE).toBe(1);
     });
 
-    it('should define USER_MESSAGE_ONLY exit code', () => {
-      expect(HOOK_EXIT_CODES.USER_MESSAGE_ONLY).toBe(3);
+    it('should define BLOCKING_ERROR exit code', () => {
+      expect(HOOK_EXIT_CODES.BLOCKING_ERROR).toBe(2);
     });
   });
 

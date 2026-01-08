@@ -26,4 +26,24 @@
 | #37413 | " | 🔵 | Hybrid Search Strategy: Metadata-First with Semantic Ranking | ~475 |
 | #37391 | 12:48 AM | ✅ | Staged 23 CLAUDE.md files with mix of new and modified content | ~400 |
 | #37390 | 12:47 AM | ✅ | Regenerated 23 CLAUDE.md files in budapest workspace | ~365 |
+
+### Jan 7, 2026
+
+| ID | Time | T | Title | Read |
+|----|------|---|-------|------|
+| #38467 | 10:29 PM | ⚖️ | Log Level Audit Strategy: Tighten ERROR Messages for Runtime Issue Discovery | ~464 |
+| #38437 | 10:24 PM | 🔵 | Claude-mem core functionality and logging patterns identified | ~710 |
+| #38433 | " | 🔵 | SessionManager Uses ERROR Logging for Database Persistence Failures | ~503 |
+| #38431 | " | 🔵 | ERROR-Level Logging Used Across 21 Source Files | ~480 |
+| #38425 | " | ⚖️ | Log Level Architecture: Fail-Critical Over Fail-Fast for Chroma | ~467 |
+| #38418 | 10:22 PM | 🔵 | ChromaDB Operates as Optional Subsystem with Graceful Degradation | ~586 |
+| #38416 | " | 🔵 | ChromaDB Is Critical Not Optional - Log Audit Findings Challenged | ~405 |
+| #38405 | 10:07 PM | ⚖️ | DEBUG Log Level Analysis - One Message Requires WARN Promotion | ~819 |
+| #38404 | 10:06 PM | ⚖️ | Log Level Audit Analysis - WARN to ERROR Promotion Criteria Established | ~769 |
+| #38372 | 9:43 PM | 🔵 | Logging Anti-Pattern Found: Critical Errors Logged as DEBUG Instead of ERROR | ~464 |
+| #38354 | 9:10 PM | 🔵 | Provider Selection Architecture and Default Settings Location | ~478 |
+| #38353 | " | 🔵 | Session ID Architecture and Message Yielding for SDK Interaction | ~536 |
+| #38253 | 7:47 PM | 🔵 | SDK Agent Implementation with Resume Logic | ~1036 |
+| #38250 | 7:46 PM | 🔵 | Session Manager Event-Driven Architecture | ~865 |
+| #38248 | 7:45 PM | 🔵 | OpenRouter Agent Implementation | ~851 |
 </claude-mem-context>

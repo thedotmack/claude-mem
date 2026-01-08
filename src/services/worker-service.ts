@@ -287,7 +287,7 @@ export class WorkerService {
           });
         }
       }).catch(error => {
-        logger.warn('SYSTEM', 'Auto-recovery of pending queues failed', {}, error as Error);
+        logger.error('SYSTEM', 'Auto-recovery of pending queues failed', {}, error as Error);
       });
     } catch (error) {
       logger.error('SYSTEM', 'Background initialization failed', {}, error as Error);
@@ -366,7 +366,7 @@ export class WorkerService {
 
         await new Promise(resolve => setTimeout(resolve, 100));
       } catch (error) {
-        logger.warn('SYSTEM', `Failed to process session ${sessionDbId}`, {}, error as Error);
+        logger.error('SYSTEM', `Failed to process session ${sessionDbId}`, {}, error as Error);
         result.sessionsSkipped++;
       }
     }

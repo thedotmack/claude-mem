@@ -22,10 +22,14 @@ Claude-Mem is fundamentally a **hook-driven system**. Every piece of functionali
 ┌─────────────────────────────────────────────────────────┐
 │                  CLAUDE-MEM SYSTEM                       │
 │                                                          │
-│  Smart      Context     User       New        Obs       │
-│  Install    Inject      Message    Session    Capture   │
+│  Smart      Worker      Context    New        Obs       │
+│  Install    Start       Inject     Session    Capture   │
 └─────────────────────────────────────────────────────────┘
 ```
+
+<Note>
+As of Claude Code 2.1.0 (ultrathink update), SessionStart hooks no longer display user-visible messages. Context is silently injected via `hookSpecificOutput.additionalContext`.
+</Note>
 
 **Key insight:** Claude-Mem doesn't interrupt or modify Claude Code's behavior. It observes from the outside and provides value through lifecycle hooks.
 
@@ -68,9 +72,9 @@ Claude Code's hook system provides exactly what we need:
 
 ---
 
-## The Six Hook Scripts + Pre-Hook
+## The Hook Scripts
 
-Claude-Mem uses 6 lifecycle hook scripts across 5 lifecycle events, plus 1 pre-hook script for dependency management. SessionStart runs 2 hooks in sequence (after the pre-hook script).
+Claude-Mem uses lifecycle hook scripts across 5 lifecycle events. SessionStart runs 3 hooks in sequence: smart-install, worker-service start, and context-hook.
 
 ### Pre-Hook: Smart Install (Before SessionStart)
 
@@ -148,63 +152,14 @@ Claude-Mem uses 6 lifecycle hook scripts across 5 lifecycle events, plus 1 pre-h
 |----|------|---|-------|--------|
 | #2586 | 12:58 AM | 🔵 | Context hook file empty | ~51 |
 
-*Use mem-search skill to access full details*
+*Use MCP search tools to access full details*
 ```
 
 **Source:** `src/hooks/context-hook.ts` → `plugin/scripts/context-hook.js`
 
 ---
 
-### Hook 2: SessionStart - User Message
-
-**Purpose:** Display helpful user messages during first-time setup
-
-**When:** Claude Code starts (runs after context-hook)
-
-**What it does:**
-1. Checks if dependencies are installed
-2. Shows first-time setup message if needed
-3. Displays formatted context information with colors
-4. Shows link to viewer UI (http://localhost:37777)
-5. Exits with code 3 (informational, not error)
-
-**Configuration:**
-```json
-{
-  "hooks": {
-    "SessionStart": [{
-      "matcher": "startup|clear|compact",
-      "hooks": [{
-        "type": "command",
-        "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/user-message-hook.js",
-        "timeout": 10
-      }]
-    }]
-  }
-}
-```
-
-**Output Example:**
-```
-📝 Claude-Mem Context Loaded
-   ℹ️  Note: This appears as stderr but is informational only
-
-[Context details with colors...]
-
-📺 Watch live in browser http://localhost:37777/ (New! v5.1)
-```
-
-**Key Features:**
-- ✅ User-friendly first-time experience
-- ✅ Visual context display
-- ✅ Links to viewer UI
-- ✅ Non-intrusive (exit code 3)
-
-**Source:** `plugin/scripts/user-message-hook.js` (minified)
-
----
-
-### Hook 3: UserPromptSubmit (New Session Hook)
+### Hook 2: UserPromptSubmit (New Session Hook)
 
 **Purpose:** Initialize session tracking when user submits a prompt
 
@@ -251,7 +206,7 @@ VALUES (?, ?, ?, ...)
 
 ---
 
-### Hook 4: PostToolUse (Save Observation Hook)
+### Hook 3: PostToolUse (Save Observation Hook)
 
 **Purpose:** Capture tool execution observations for later processing
 
@@ -312,7 +267,7 @@ VALUES (?, ?, ?, ?, ...)
 
 ---
 
-### Hook 5: Stop Hook (Summary Generation)
+### Hook 4: Stop Hook (Summary Generation)
 
 **Purpose:** Generate AI-powered session summaries during the session
 
@@ -367,7 +322,7 @@ VALUES (?, ?, ?, ?, ...)
 
 ---
 
-### Hook 6: SessionEnd (Cleanup Hook)
+### Hook 5: SessionEnd (Cleanup Hook)
 
 **Purpose:** Mark sessions as completed when they end
 
@@ -474,13 +429,17 @@ sequenceDiagram
 
 | Event | Timing | Blocking | Timeout | Output Handling |
 |-------|--------|----------|---------|-----------------|
-| **SessionStart (smart-install)** | Before session | No | 300s | stderr (info) |
-| **SessionStart (context)** | Before session | No | 300s | stdout → context |
-| **SessionStart (user-message)** | Before session | No | 10s | stderr (info) |
-| **UserPromptSubmit** | Before processing | No | 120s | stdout → context |
+| **SessionStart (smart-install)** | Before session | No | 300s | stderr (log only) |
+| **SessionStart (worker-start)** | Before session | No | 60s | stderr (log only) |
+| **SessionStart (context)** | Before session | No | 60s | JSON → additionalContext (silent) |
+| **UserPromptSubmit** | Before processing | No | 60s | stdout → context |
 | **PostToolUse** | After tool | No | 120s | Transcript only |
 | **Summary** | Worker triggered | No | 120s | Database |
 | **SessionEnd** | On exit | No | 120s | Log only |
+
+<Note>
+As of Claude Code 2.1.0 (ultrathink update), SessionStart hooks no longer display user-visible messages. Context is silently injected via `hookSpecificOutput.additionalContext`.
+</Note>
 
 ---
 

@@ -220,6 +220,27 @@ This is useful after:
 - Database recovery
 - Wanting to refresh all folder context
 
+## Worktree Support
+
+**New in v9.0**: Claude-mem now supports git worktrees with unified context.
+
+When you're working in a git worktree, context is automatically gathered from both:
+- The parent repository (where the worktree was created)
+- The worktree directory itself
+
+This means observations about shared code are visible regardless of which worktree you're in, giving you a complete picture of recent activity across all related directories.
+
+### How It Works
+
+1. When generating context, claude-mem detects if your project is a worktree
+2. It identifies the parent repository automatically
+3. Timeline queries include both locations
+4. Results are interleaved chronologically
+
+<Note>
+No configuration needed - worktree detection is automatic. If you're not using worktrees, this feature has no effect.
+</Note>
+
 ## Technical Details
 
 ### File Format

@@ -1,14 +1,5 @@
-import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
-
-// Mock logger to prevent console output during tests
-mock.module('../../src/utils/logger.js', () => ({
-  logger: {
-    info: () => {},
-    debug: () => {},
-    warn: () => {},
-    error: () => {},
-  },
-}));
+import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
+import { logger } from '../../src/utils/logger.js';
 
 // Mock middleware to avoid complex dependencies
 mock.module('../../src/services/worker/http/middleware.js', () => ({
@@ -21,11 +12,21 @@ mock.module('../../src/services/worker/http/middleware.js', () => ({
 import { Server } from '../../src/services/server/Server.js';
 import type { RouteHandler, ServerOptions } from '../../src/services/server/Server.js';
 
+// Spy on logger methods to suppress output during tests
+let loggerSpies: ReturnType<typeof spyOn>[] = [];
+
 describe('Server', () => {
   let server: Server;
   let mockOptions: ServerOptions;
 
   beforeEach(() => {
+    loggerSpies = [
+      spyOn(logger, 'info').mockImplementation(() => {}),
+      spyOn(logger, 'debug').mockImplementation(() => {}),
+      spyOn(logger, 'warn').mockImplementation(() => {}),
+      spyOn(logger, 'error').mockImplementation(() => {}),
+    ];
+
     mockOptions = {
       getInitializationComplete: () => true,
       getMcpReady: () => true,
@@ -35,6 +36,7 @@ describe('Server', () => {
   });
 
   afterEach(async () => {
+    loggerSpies.forEach(spy => spy.mockRestore());
     // Clean up server if created and still has an active http server
     if (server && server.getHttpServer()) {
       try {

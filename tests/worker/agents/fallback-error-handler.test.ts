@@ -1,3 +1,13 @@
+/**
+ * Tests for fallback error classification logic
+ *
+ * Mock Justification: NONE (0% mock code)
+ * - Tests pure functions directly with no external dependencies
+ * - shouldFallbackToClaude: Pattern matching on error messages
+ * - isAbortError: Simple type checking
+ *
+ * High-value tests: Ensure correct provider fallback behavior for transient errors
+ */
 import { describe, it, expect } from 'bun:test';
 
 // Import directly from specific files to avoid worker-service import chain

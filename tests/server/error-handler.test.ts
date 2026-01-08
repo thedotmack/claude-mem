@@ -1,17 +1,17 @@
-import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
+/**
+ * Tests for Express error handling middleware
+ *
+ * Mock Justification (~11% mock code):
+ * - Logger spies: Suppress console output during tests (standard practice)
+ * - Express req/res mocks: Required because Express middleware expects these
+ *   objects - testing the actual formatting and status code logic
+ *
+ * What's NOT mocked: AppError class, createErrorResponse function (tested directly)
+ */
+import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
 import type { Request, Response, NextFunction } from 'express';
+import { logger } from '../../src/utils/logger.js';
 
-// Mock logger to prevent console output during tests
-mock.module('../../src/utils/logger.js', () => ({
-  logger: {
-    info: () => {},
-    debug: () => {},
-    warn: () => {},
-    error: () => {},
-  },
-}));
-
-// Import after mocks
 import {
   AppError,
   createErrorResponse,
@@ -19,8 +19,22 @@ import {
   notFoundHandler,
 } from '../../src/services/server/ErrorHandler.js';
 
+// Spy on logger methods to suppress output during tests
+// Using spyOn instead of mock.module to avoid polluting global module cache
+let loggerSpies: ReturnType<typeof spyOn>[] = [];
+
 describe('ErrorHandler', () => {
+  beforeEach(() => {
+    loggerSpies = [
+      spyOn(logger, 'info').mockImplementation(() => {}),
+      spyOn(logger, 'debug').mockImplementation(() => {}),
+      spyOn(logger, 'warn').mockImplementation(() => {}),
+      spyOn(logger, 'error').mockImplementation(() => {}),
+    ];
+  });
+
   afterEach(() => {
+    loggerSpies.forEach(spy => spy.mockRestore());
     mock.restore();
   });
 

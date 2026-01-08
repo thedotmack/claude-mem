@@ -1,0 +1,1716 @@
+bun test v1.2.20 (6ad208bc)
+
+=== LOG LEVEL AUDIT REPORT ===
+
+Total logger calls found: 437
+
+
+ERROR (should be critical failures only):
+────────────────────────────────────────────────────────────
+  src/hooks/new-hook.ts:103 [HOOK]
+    message: "new-hook failed"
+    error: error as Error
+    full: logger.error('HOOK', 'new-hook failed', {}, error as Error)
+
+  src/hooks/save-hook.ts:85 [HOOK]
+    message: "save-hook failed"
+    error: error as Error
+    full: logger.error('HOOK', 'save-hook failed', {}, error as Error)
+
+  src/hooks/summary-hook.ts:89 [HOOK]
+    message: "summary-hook failed"
+    error: error as Error
+    full: logger.error('HOOK', 'summary-hook failed', {}, error as Error)
+
+  src/servers/mcp-server.ts:17 [CONSOLE]
+    message: "(message not captured)"
+    full: logger.error('CONSOLE', 'Intercepted console output (MCP protocol protection)
+
+  src/servers/mcp-server.ts:77 [SYSTEM]
+    message: "← Worker API error"
+    error: error as Error
+    full: logger.error('SYSTEM', '← Worker API error', { endpoint }, error as Error)
+
+  src/servers/mcp-server.ts:124 [HTTP]
+    message: "(message not captured)"
+    full: logger.error('HTTP', 'Worker API error (POST)
+
+  src/servers/mcp-server.ts:270 [SYSTEM]
+    message: "Tool execution failed"
+    error: error as Error
+    full: logger.error('SYSTEM', 'Tool execution failed', { tool: request.params.name }, error as Error)
+
+  src/servers/mcp-server.ts:312 [SYSTEM]
+    message: "Fatal error"
+    error: error
+    full: logger.error('SYSTEM', 'Fatal error', undefined, error)
+
+  src/services/context/ContextBuilder.ts:59 [SYSTEM]
+    message: "Native module rebuild needed - restart Claude Code to auto-fix"
+    full: logger.error('SYSTEM', 'Native module rebuild needed - restart Claude Code to auto-fix')
+
+  src/services/context/ObservationCompiler.ts:181 [WORKER]
+    message: "Failed to extract prior messages from transcript"
+    error: error as Error
+    full: logger.failure('WORKER', `Failed to extract prior messages from transcript`, { transcriptPath }, error as Error)
+
+  src/services/infrastructure/ProcessManager.ts:308 [SYSTEM]
+    message: "Error during shutdown"
+    error: error as Error
+    full: logger.error('SYSTEM', 'Error during shutdown', {}, error as Error)
+
+  src/services/queue/SessionQueueProcessor.ts:34 [SESSION]
+    message: "Error in queue processor loop"
+    error: error as Error
+    full: logger.error('SESSION', 'Error in queue processor loop', { sessionDbId }, error as Error)
+
+  src/services/server/ErrorHandler.ts:64 [HTTP]
+    message: "Error handling ${req.method} ${req.path}"
+    error: err
+    full: logger.error('HTTP', `Error handling ${req.method} ${req.path}`, { statusCode, error: err.message, code: err instanceof AppError ? err.code : undefined }, err)
+
+  src/services/sqlite/SessionStore.ts:1716 [DB]
+    message: "Error getting boundary observations"
+    full: logger.error('DB', 'Error getting boundary observations', undefined, { error: err, project })
+
+  src/services/sqlite/SessionStore.ts:1748 [DB]
+    message: "Error getting boundary timestamps"
+    full: logger.error('DB', 'Error getting boundary timestamps', undefined, { error: err, project })
+
+  src/services/sqlite/timeline/queries.ts:114 [DB]
+    message: "Error getting boundary observations"
+    full: logger.error('DB', 'Error getting boundary observations', undefined, { error: err, project })
+
+  src/services/sqlite/timeline/queries.ts:146 [DB]
+    message: "Error getting boundary timestamps"
+    full: logger.error('DB', 'Error getting boundary timestamps', undefined, { error: err, project })
+
+  src/services/sync/ChromaSync.ts:138 [CHROMA_SYNC]
+    message: "Failed to connect to Chroma MCP server"
+    error: error as Error
+    full: logger.error('CHROMA_SYNC', 'Failed to connect to Chroma MCP server', { project: this.project }, error as Error)
+
+  src/services/sync/ChromaSync.ts:179 [CHROMA_SYNC]
+    message: "Connection lost during collection check"
+    error: error as Error
+    full: logger.error('CHROMA_SYNC', 'Connection lost during collection check', { collection: this.collectionName }, error as Error)
+
+  src/services/sync/ChromaSync.ts:199 [CHROMA_SYNC]
+    message: "Failed to create collection"
+    full: logger.error('CHROMA_SYNC', 'Failed to create collection', { collection: this.collectionName }, createError as Error)
+
+  src/services/sync/ChromaSync.ts:374 [CHROMA_SYNC]
+    message: "Failed to add documents"
+    error: error as Error
+    full: logger.error('CHROMA_SYNC', 'Failed to add documents', { collection: this.collectionName, count: documents.length }, error as Error)
+
+  src/services/sync/ChromaSync.ts:593 [CHROMA_SYNC]
+    message: "Failed to fetch existing IDs"
+    error: error as Error
+    full: logger.error('CHROMA_SYNC', 'Failed to fetch existing IDs', { project: this.project }, error as Error)
+
+  src/services/sync/ChromaSync.ts:770 [CHROMA_SYNC]
+    message: "Backfill failed"
+    error: error as Error
+    full: logger.error('CHROMA_SYNC', 'Backfill failed', { project: this.project }, error as Error)
+
+  src/services/sync/ChromaSync.ts:822 [CHROMA_SYNC]
+    message: "Connection lost during query"
+    error: error as Error
+    full: logger.error('CHROMA_SYNC', 'Connection lost during query', { project: this.project, query }, error as Error)
+
+  src/services/sync/ChromaSync.ts:842 [CHROMA_SYNC]
+    message: "Failed to parse Chroma response"
+    error: error as Error
+    full: logger.error('CHROMA_SYNC', 'Failed to parse Chroma response', { project: this.project }, error as Error)
+
+  src/services/worker-service.ts:212 [SYSTEM]
+    message: "Background initialization failed"
+    error: error as Error
+    full: logger.error('SYSTEM', 'Background initialization failed', {}, error as Error)
+
+  src/services/worker-service.ts:293 [SYSTEM]
+    message: "Background initialization failed"
+    error: error as Error
+    full: logger.error('SYSTEM', 'Background initialization failed', {}, error as Error)
+
+  src/services/worker-service.ts:312 [SDK]
+    message: "Session generator failed"
+    error: error as Error
+    full: logger.error('SDK', 'Session generator failed', { sessionId: session.sessionDbId, project: session.project }, error as Error)
+
+  src/services/worker-service.ts:638 [SYSTEM]
+    message: "Port did not free up after shutdown for version mismatch restart"
+    full: logger.error('SYSTEM', 'Port did not free up after shutdown for version mismatch restart', { port })
+
+  src/services/worker-service.ts:656 [SYSTEM]
+    message: "Port in use but worker not responding to health checks"
+    full: logger.error('SYSTEM', 'Port in use but worker not responding to health checks')
+
+  src/services/worker-service.ts:663 [SYSTEM]
+    message: "Failed to spawn worker daemon"
+    full: logger.error('SYSTEM', 'Failed to spawn worker daemon')
+
+  src/services/worker-service.ts:672 [SYSTEM]
+    message: "(message not captured)"
+    full: logger.error('SYSTEM', 'Worker failed to start (health check timeout)
+
+  src/services/worker-service.ts:696 [SYSTEM]
+    message: "Port did not free up after shutdown, aborting restart"
+    full: logger.error('SYSTEM', 'Port did not free up after shutdown, aborting restart', { port })
+
+  src/services/worker-service.ts:703 [SYSTEM]
+    message: "Failed to spawn worker daemon during restart"
+    full: logger.error('SYSTEM', 'Failed to spawn worker daemon during restart')
+
+  src/services/worker-service.ts:712 [SYSTEM]
+    message: "Worker failed to restart"
+    full: logger.error('SYSTEM', 'Worker failed to restart')
+
+  src/services/worker-service.ts:744 [SYSTEM]
+    message: "Worker failed to start"
+    error: error as Error
+    full: logger.failure('SYSTEM', 'Worker failed to start', {}, error as Error)
+
+  src/services/worker/BranchManager.ts:139 [BRANCH]
+    message: "Failed to get branch info"
+    error: error as Error
+    full: logger.error('BRANCH', 'Failed to get branch info', {}, error as Error)
+
+  src/services/worker/BranchManager.ts:236 [BRANCH]
+    message: "Branch switch failed"
+    error: error as Error
+    full: logger.error('BRANCH', 'Branch switch failed', { targetBranch }, error as Error)
+
+  src/services/worker/BranchManager.ts:301 [BRANCH]
+    message: "Pull failed"
+    error: error as Error
+    full: logger.error('BRANCH', 'Pull failed', {}, error as Error)
+
+  src/services/worker/GeminiAgent.ts:297 [SDK]
+    message: "Gemini agent error"
+    error: error as Error
+    full: logger.failure('SDK', 'Gemini agent error', { sessionDbId: session.sessionDbId }, error as Error)
+
+  src/services/worker/http/BaseRouteHandler.ts:29 [HTTP]
+    message: "Route handler error"
+    error: error as Error
+    full: logger.error('HTTP', 'Route handler error', { path: req.path }, error as Error)
+
+  src/services/worker/http/BaseRouteHandler.ts:81 [WORKER]
+    message: "(message not captured)"
+    error: error
+    full: logger.failure('WORKER', context || 'Request failed', {}, error)
+
+  src/services/worker/http/routes/SessionRoutes.ts:142 [SESSION]
+    message: "Generator failed"
+    error: error
+    full: logger.error('SESSION', `Generator failed`, { sessionId: session.sessionDbId, provider: provider, error: error.message }, error)
+
+  src/services/worker/http/routes/SessionRoutes.ts:159 [SESSION]
+    message: "Failed to mark messages as failed"
+    full: logger.error('SESSION', 'Failed to mark messages as failed', { sessionId: session.sessionDbId }, dbError as Error)
+
+  src/services/worker/http/routes/SettingsRoutes.ts:77 [SETTINGS]
+    message: "Failed to parse settings file"
+    full: logger.error('SETTINGS', 'Failed to parse settings file', { settingsPath }, parseError as Error)
+
+  src/services/worker/OpenRouterAgent.ts:256 [SDK]
+    message: "OpenRouter agent error"
+    error: error as Error
+    full: logger.failure('SDK', 'OpenRouter agent error', { sessionDbId: session.sessionDbId }, error as Error)
+
+  src/services/worker/SDKAgent.ts:135 [SESSION]
+    message: "MEMORY_ID_MISMATCH | sessionDbId=${session.sessionDbId} | expected=${message.session_id} | got=${verification?.memory_session_id}"
+    full: logger.error('SESSION', `MEMORY_ID_MISMATCH | sessionDbId=${session.sessionDbId} | expected=${message.session_id} | got=${verification?.memory_session_id}`, { sessionId: session.sessionDbId })
+
+  src/services/worker/SessionManager.ts:208 [SESSION]
+    message: "Failed to persist observation to DB"
+    error: error
+    full: logger.error('SESSION', 'Failed to persist observation to DB', { sessionId: sessionDbId, tool: data.tool_name }, error)
+
+  src/services/worker/SessionManager.ts:247 [SESSION]
+    message: "Failed to persist summarize to DB"
+    error: error
+    full: logger.error('SESSION', 'Failed to persist summarize to DB', { sessionId: sessionDbId }, error)
+
+  Count: 49
+
+WARN (should be non-critical, has fallback):
+────────────────────────────────────────────────────────────
+  src/sdk/parser.ts:66 [PARSER]
+    message: "Invalid observation type: ${type}, using "${fallbackType}""
+    full: logger.warn('PARSER', `Invalid observation type: ${type}, using "${fallbackType}"`, { correlationId })
+
+  src/sdk/parser.ts:69 [PARSER]
+    message: "Observation missing type field, using "${fallbackType}""
+    full: logger.warn('PARSER', `Observation missing type field, using "${fallbackType}"`, { correlationId })
+
+  src/sdk/parser.ts:78 [PARSER]
+    message: "Removed observation type from concepts array"
+    full: logger.warn('PARSER', 'Removed observation type from concepts array', { correlationId, type: finalType, originalConcepts: concepts, cleanedConcepts })
+
+  src/sdk/parser.ts:141 [PARSER]
+    message: "Summary missing required fields"
+    full: logger.warn('PARSER', 'Summary missing required fields', { // sessionId, // hasRequest: !!request, // hasInvestigated: !!investigated, // hasLearned: !!learned, // hasCompleted: !!completed, // hasNextSteps: !!next_steps // })
+
+  src/sdk/prompts.ts:126 [SDK]
+    message: "Missing last_assistant_message in session for summary prompt"
+    full: logger.happyPathError( 'SDK', 'Missing last_assistant_message in session for summary prompt', { sessionId: session.id }, undefined, '' )
+
+  src/servers/mcp-server.ts:302 [SYSTEM]
+    message: "Worker not available"
+    full: logger.warn('SYSTEM', 'Worker not available', undefined, { workerUrl: WORKER_BASE_URL })
+
+  src/servers/mcp-server.ts:303 [SYSTEM]
+    message: "Tools will fail until Worker is started"
+    full: logger.warn('SYSTEM', 'Tools will fail until Worker is started')
+
+  src/servers/mcp-server.ts:304 [SYSTEM]
+    message: "Start Worker with: npm run worker:restart"
+    full: logger.warn('SYSTEM', 'Start Worker with: npm run worker:restart')
+
+  src/services/domain/ModeManager.ts:147 [SYSTEM]
+    message: "Mode file not found: ${modeId}, falling back to 'code'"
+    full: logger.warn('SYSTEM', `Mode file not found: ${modeId}, falling back to 'code'`)
+
+  src/services/domain/ModeManager.ts:164 [SYSTEM]
+    message: "Parent mode '${parentId}' not found for ${modeId}, falling back to 'code'"
+    full: logger.warn('SYSTEM', `Parent mode '${parentId}' not found for ${modeId}, falling back to 'code'`)
+
+  src/services/domain/ModeManager.ts:174 [SYSTEM]
+    message: "Override file '${overrideId}' not found, using parent mode '${parentId}' only"
+    full: logger.warn('SYSTEM', `Override file '${overrideId}' not found, using parent mode '${parentId}' only`)
+
+  src/services/domain/ModeManager.ts:181 [SYSTEM]
+    message: "Invalid override file: ${overrideId}, using parent mode '${parentId}' only"
+    full: logger.warn('SYSTEM', `Invalid override file: ${overrideId}, using parent mode '${parentId}' only`)
+
+  src/services/infrastructure/HealthMonitor.ts:78 [SYSTEM]
+    message: "Shutdown request returned error"
+    full: logger.warn('SYSTEM', 'Shutdown request returned error', { port, status: response.status })
+
+  src/services/infrastructure/HealthMonitor.ts:89 [SYSTEM]
+    message: "Shutdown request failed unexpectedly"
+    error: error as Error
+    full: logger.warn('SYSTEM', 'Shutdown request failed unexpectedly', { port }, error as Error)
+
+  src/services/infrastructure/ProcessManager.ts:48 [SYSTEM]
+    message: "Failed to parse PID file"
+    error: error as Error
+    full: logger.warn('SYSTEM', 'Failed to parse PID file', { path: PID_FILE }, error as Error)
+
+  src/services/infrastructure/ProcessManager.ts:63 [SYSTEM]
+    message: "Failed to remove PID file"
+    error: error as Error
+    full: logger.warn('SYSTEM', 'Failed to remove PID file', { path: PID_FILE }, error as Error)
+
+  src/services/infrastructure/ProcessManager.ts:86 [SYSTEM]
+    message: "Invalid parent PID for child process enumeration"
+    full: logger.warn('SYSTEM', 'Invalid parent PID for child process enumeration', { parentPid })
+
+  src/services/infrastructure/ProcessManager.ts:103 [SYSTEM]
+    message: "Failed to enumerate child processes"
+    error: error as Error
+    full: logger.warn('SYSTEM', 'Failed to enumerate child processes', { parentPid }, error as Error)
+
+  src/services/infrastructure/ProcessManager.ts:116 [SYSTEM]
+    message: "Invalid PID for force kill"
+    full: logger.warn('SYSTEM', 'Invalid PID for force kill', { pid })
+
+  src/services/infrastructure/ProcessManager.ts:160 [SYSTEM]
+    message: "Timeout waiting for child processes to exit"
+    full: logger.warn('SYSTEM', 'Timeout waiting for child processes to exit')
+
+  src/services/infrastructure/ProcessManager.ts:216 [SYSTEM]
+    message: "Failed to enumerate orphaned processes"
+    error: error as Error
+    full: logger.warn('SYSTEM', 'Failed to enumerate orphaned processes', {}, error as Error)
+
+  src/services/infrastructure/ProcessManager.ts:235 [SYSTEM]
+    message: "Skipping invalid PID"
+    full: logger.warn('SYSTEM', 'Skipping invalid PID', { pid })
+
+  src/services/infrastructure/ProcessManager.ts:297 [SYSTEM]
+    message: "Received ${signal} but shutdown already in progress"
+    full: logger.warn('SYSTEM', `Received ${signal} but shutdown already in progress`)
+
+  src/services/integrations/CursorHooksInstaller.ts:120 [CURSOR]
+    message: "Failed to update context file"
+    error: error as Error
+    full: logger.warn('CURSOR', 'Failed to update context file', { projectName }, error as Error)
+
+  src/services/integrations/CursorHooksInstaller.ts:237 [SYSTEM]
+    message: "Corrupt mcp.json, creating new config"
+    error: error as Error
+    full: logger.warn('SYSTEM', 'Corrupt mcp.json, creating new config', { path: mcpJsonPath }, error as Error)
+
+  src/services/sqlite/migrations/runner.ts:569 [DB]
+    message: "Column ${oldCol} not found in ${table}, skipping rename"
+    full: logger.warn('DB', `Column ${oldCol} not found in ${table}, skipping rename`)
+
+  src/services/sqlite/SessionSearch.ts:271 [DB]
+    message: "Text search not supported - use ChromaDB for vector search"
+    full: logger.warn('DB', 'Text search not supported - use ChromaDB for vector search')
+
+  src/services/sqlite/SessionSearch.ts:310 [DB]
+    message: "Text search not supported - use ChromaDB for vector search"
+    full: logger.warn('DB', 'Text search not supported - use ChromaDB for vector search')
+
+  src/services/sqlite/SessionSearch.ts:555 [DB]
+    message: "Text search not supported - use ChromaDB for vector search"
+    full: logger.warn('DB', 'Text search not supported - use ChromaDB for vector search')
+
+  src/services/sqlite/SessionStore.ts:585 [DB]
+    message: "Column ${oldCol} not found in ${table}, skipping rename"
+    full: logger.warn('DB', `Column ${oldCol} not found in ${table}, skipping rename`)
+
+  src/services/sync/ChromaSync.ts:185 [CHROMA_SYNC]
+    message: "Collection check failed, attempting to create"
+    error: error as Error
+    full: logger.warn('CHROMA_SYNC', 'Collection check failed, attempting to create', { collection: this.collectionName }, error as Error)
+
+  src/services/sync/ChromaSync.ts:829 [CHROMA]
+    message: "Missing text in MCP chroma_query_documents result"
+    full: logger.happyPathError( 'CHROMA', 'Missing text in MCP chroma_query_documents result', { project: this.project }, { query_text: query }, result.content[0]?.text || '' )
+
+  src/services/worker-service.ts:290 [SYSTEM]
+    message: "Auto-recovery of pending queues failed"
+    error: error as Error
+    full: logger.warn('SYSTEM', 'Auto-recovery of pending queues failed', {}, error as Error)
+
+  src/services/worker-service.ts:369 [SYSTEM]
+    message: "Failed to process session ${sessionDbId}"
+    error: error as Error
+    full: logger.warn('SYSTEM', `Failed to process session ${sessionDbId}`, {}, error as Error)
+
+  src/services/worker-service.ts:684 [SYSTEM]
+    message: "Port did not free up after shutdown"
+    full: logger.warn('SYSTEM', 'Port did not free up after shutdown', { port })
+
+  src/services/worker/agents/ResponseProcessor.ts:188 [CHROMA]
+    message: "${agentName} chroma sync failed, continuing without vector search"
+    full: logger.warn('CHROMA', `${agentName} chroma sync failed, continuing without vector search`, { obsId, type: obs.type, title: obs.title || '(untitled)
+
+  src/services/worker/agents/ResponseProcessor.ts:231 [FOLDER_INDEX]
+    message: "(message not captured)"
+    full: logger.warn('FOLDER_INDEX', 'CLAUDE.md update failed (non-critical)
+
+  src/services/worker/agents/ResponseProcessor.ts:272 [CHROMA]
+    message: "${agentName} chroma sync failed, continuing without vector search"
+    full: logger.warn('CHROMA', `${agentName} chroma sync failed, continuing without vector search`, { summaryId: result.summaryId, request: summaryForStore.request || '(no request)
+
+  src/services/worker/agents/ResponseProcessor.ts:295 [CURSOR]
+    message: "(message not captured)"
+    full: logger.warn('CURSOR', 'Context update failed (non-critical)
+
+  src/services/worker/BranchManager.ts:245 [BRANCH]
+    message: "Recovery checkout also failed"
+    full: logger.warn('BRANCH', 'Recovery checkout also failed', { originalBranch: info.branch }, recoveryError as Error)
+
+  src/services/worker/GeminiAgent.ts:169 [SDK]
+    message: "Empty Gemini init response - session may lack context"
+    full: logger.warn('SDK', 'Empty Gemini init response - session may lack context', { sessionId: session.sessionDbId, model })
+
+  src/services/worker/GeminiAgent.ts:280 [SDK]
+    message: "Gemini agent aborted"
+    full: logger.warn('SDK', 'Gemini agent aborted', { sessionId: session.sessionDbId })
+
+  src/services/worker/GeminiAgent.ts:286 [SDK]
+    message: "Gemini API failed, falling back to Claude SDK"
+    full: logger.warn('SDK', 'Gemini API failed, falling back to Claude SDK', { sessionDbId: session.sessionDbId, error: error instanceof Error ? error.message : String(error)
+
+  src/services/worker/GeminiAgent.ts:358 [SDK]
+    message: "Empty response from Gemini"
+    full: logger.warn('SDK', 'Empty response from Gemini')
+
+  src/services/worker/GeminiAgent.ts:394 [SDK]
+    message: "Invalid Gemini model "${configuredModel}", falling back to ${defaultModel}"
+    full: logger.warn('SDK', `Invalid Gemini model "${configuredModel}", falling back to ${defaultModel}`, { configured: configuredModel, validModels, })
+
+  src/services/worker/http/middleware.ts:79 [SECURITY]
+    message: "Admin endpoint access denied - not localhost"
+    full: logger.warn('SECURITY', 'Admin endpoint access denied - not localhost', { endpoint: req.path, clientIp, method: req.method })
+
+  src/services/worker/http/routes/DataRoutes.ts:459 [QUEUE]
+    message: "(message not captured)"
+    full: logger.warn('QUEUE', 'Cleared ALL queue messages (pending, processing, failed)
+
+  src/services/worker/http/routes/SessionRoutes.ts:153 [SESSION]
+    message: "Marked messages as failed after generator error"
+    full: logger.warn('SESSION', `Marked messages as failed after generator error`, { sessionId: session.sessionDbId, failedCount })
+
+  src/services/worker/http/routes/SessionRoutes.ts:171 [SESSION]
+    message: "Generator exited unexpectedly"
+    full: logger.warn('SESSION', `Generator exited unexpectedly`, { sessionId: sessionDbId })
+
+  src/services/worker/http/routes/SessionRoutes.ts:287 [CHROMA]
+    message: "User prompt sync failed, continuing without vector search"
+    full: logger.warn('CHROMA', 'User prompt sync failed, continuing without vector search', { promptId: latestPrompt.id, prompt: promptText.length > 60 ? promptText.substring(0, 60)
+
+  src/services/worker/http/routes/SessionRoutes.ts:471 [SESSION]
+    message: "Missing cwd when queueing observation in SessionRoutes"
+    full: logger.happyPathError( 'SESSION', 'Missing cwd when queueing observation in SessionRoutes', { sessionId: sessionDbId }, { tool_name }, '' )
+
+  src/services/worker/OpenRouterAgent.ts:128 [SDK]
+    message: "Empty OpenRouter init response - session may lack context"
+    full: logger.warn('SDK', 'Empty OpenRouter init response - session may lack context', { sessionId: session.sessionDbId, model })
+
+  src/services/worker/OpenRouterAgent.ts:239 [SDK]
+    message: "OpenRouter agent aborted"
+    full: logger.warn('SDK', 'OpenRouter agent aborted', { sessionId: session.sessionDbId })
+
+  src/services/worker/OpenRouterAgent.ts:245 [SDK]
+    message: "OpenRouter API failed, falling back to Claude SDK"
+    full: logger.warn('SDK', 'OpenRouter API failed, falling back to Claude SDK', { sessionDbId: session.sessionDbId, error: error instanceof Error ? error.message : String(error)
+
+  src/services/worker/OpenRouterAgent.ts:296 [SDK]
+    message: "Context window truncated to prevent runaway costs"
+    full: logger.warn('SDK', 'Context window truncated to prevent runaway costs', { originalMessages: history.length, keptMessages: truncated.length, droppedMessages: i + 1, estimatedTokens: tokenCount, tokenLimit: MAX_ESTIMATED_TOKENS })
+
+  src/services/worker/OpenRouterAgent.ts:375 [SDK]
+    message: "Empty response from OpenRouter"
+    full: logger.warn('SDK', 'Empty response from OpenRouter')
+
+  src/services/worker/OpenRouterAgent.ts:400 [SDK]
+    message: "High token usage detected - consider reducing context"
+    full: logger.warn('SDK', 'High token usage detected - consider reducing context', { totalTokens: tokensUsed, estimatedCost: estimatedCost.toFixed(4)
+
+  src/services/worker/SDKAgent.ts:96 [SDK]
+    message: "(message not captured)"
+    full: logger.warn('SDK', `Skipping resume for INIT prompt despite existing memorySessionId=${session.memorySessionId} - SDK context was lost (worker restart or crash recovery)
+
+  src/services/worker/search/strategies/ChromaSearchStrategy.ts:141 [SEARCH]
+    message: "ChromaSearchStrategy: Search failed"
+    error: error as Error
+    full: logger.warn('SEARCH', 'ChromaSearchStrategy: Search failed', {}, error as Error)
+
+  src/services/worker/search/strategies/HybridSearchStrategy.ts:114 [SEARCH]
+    message: "HybridSearchStrategy: findByConcept failed"
+    error: error as Error
+    full: logger.warn('SEARCH', 'HybridSearchStrategy: findByConcept failed', {}, error as Error)
+
+  src/services/worker/search/strategies/HybridSearchStrategy.ts:179 [SEARCH]
+    message: "HybridSearchStrategy: findByType failed"
+    error: error as Error
+    full: logger.warn('SEARCH', 'HybridSearchStrategy: findByType failed', {}, error as Error)
+
+  src/services/worker/search/strategies/HybridSearchStrategy.ts:245 [SEARCH]
+    message: "HybridSearchStrategy: findByFile failed"
+    error: error as Error
+    full: logger.warn('SEARCH', 'HybridSearchStrategy: findByFile failed', {}, error as Error)
+
+  src/services/worker/search/strategies/SQLiteSearchStrategy.ts:100 [SEARCH]
+    message: "SQLiteSearchStrategy: Search failed"
+    error: error as Error
+    full: logger.warn('SEARCH', 'SQLiteSearchStrategy: Search failed', {}, error as Error)
+
+  src/services/worker/SearchManager.ts:414 [SEARCH]
+    message: "Chroma search failed for timeline, continuing without semantic results"
+    full: logger.warn('SEARCH', 'Chroma search failed for timeline, continuing without semantic results', {}, chromaError as Error)
+
+  src/services/worker/SearchManager.ts:682 [SEARCH]
+    message: "Chroma search failed for decisions, falling back to metadata search"
+    full: logger.warn('SEARCH', 'Chroma search failed for decisions, falling back to metadata search', {}, chromaError as Error)
+
+  src/services/worker/SearchManager.ts:750 [SEARCH]
+    message: "Chroma search failed for changes, falling back to metadata search"
+    full: logger.warn('SEARCH', 'Chroma search failed for changes, falling back to metadata search', {}, chromaError as Error)
+
+  src/utils/claude-md-utils.ts:267 [FOLDER_INDEX]
+    message: "Failed to fetch timeline"
+    full: logger.warn('FOLDER_INDEX', 'Failed to fetch timeline', { folderPath, status: response.status })
+
+  src/utils/claude-md-utils.ts:284 [FOLDER_INDEX]
+    message: "Failed to update CLAUDE.md"
+    full: logger.warn('FOLDER_INDEX', 'Failed to update CLAUDE.md', { folderPath, errorMessage: err.message, errorStack: err.stack })
+
+  src/utils/cursor-utils.ts:45 [CONFIG]
+    message: "Failed to read Cursor registry, using empty registry"
+    full: logger.warn('CONFIG', 'Failed to read Cursor registry, using empty registry', { file: registryFile, error: error instanceof Error ? error.message : String(error)
+
+  src/utils/cursor-utils.ts:154 [CONFIG]
+    message: "Failed to read MCP config, starting fresh"
+    full: logger.warn('CONFIG', 'Failed to read MCP config, starting fresh', { file: mcpJsonPath, error: error instanceof Error ? error.message : String(error)
+
+  src/utils/cursor-utils.ts:185 [CURSOR]
+    message: "Failed to remove MCP config during cleanup"
+    full: logger.warn('CURSOR', 'Failed to remove MCP config during cleanup', { mcpJsonPath, error: e instanceof Error ? e.message : String(e)
+
+  src/utils/project-name.ts:14 [PROJECT_NAME]
+    message: "Empty cwd provided, using fallback"
+    full: logger.warn('PROJECT_NAME', 'Empty cwd provided, using fallback', { cwd })
+
+  src/utils/project-name.ts:35 [PROJECT_NAME]
+    message: "Root directory detected, using fallback"
+    full: logger.warn('PROJECT_NAME', 'Root directory detected, using fallback', { cwd })
+
+  src/utils/tag-stripping.ts:41 [SYSTEM]
+    message: "tag count exceeds limit"
+    full: logger.warn('SYSTEM', 'tag count exceeds limit', undefined, { tagCount, maxAllowed: MAX_TAG_COUNT, contentLength: content.length })
+
+  src/utils/transcript-parser.ts:56 [PARSER]
+    message: "Failed to parse ${this.parseErrors.length} lines"
+    full: logger.warn('PARSER', `Failed to parse ${this.parseErrors.length} lines`, { path: transcriptPath, totalLines: lines.length, errorCount: this.parseErrors.length })
+
+  Count: 75
+
+INFO (informational):
+────────────────────────────────────────────────────────────
+  src/hooks/new-hook.ts:58 [HOOK]
+    message: "INIT_COMPLETE | sessionDbId=${sessionDbId} | promptNumber=${promptNumber} | skipped=true | reason=private"
+    full: logger.info('HOOK', `INIT_COMPLETE | sessionDbId=${sessionDbId} | promptNumber=${promptNumber} | skipped=true | reason=private`, { sessionId: sessionDbId })
+
+  src/hooks/new-hook.ts:83 [HOOK]
+    message: "INIT_COMPLETE | sessionDbId=${sessionDbId} | promptNumber=${promptNumber} | project=${project}"
+    full: logger.info('HOOK', `INIT_COMPLETE | sessionDbId=${sessionDbId} | promptNumber=${promptNumber} | project=${project}`, { sessionId: sessionDbId })
+
+  src/hooks/save-hook.ts:40 [HOOK]
+    message: "PostToolUse: ${toolStr}"
+    full: logger.dataIn('HOOK', `PostToolUse: ${toolStr}`, { workerPort: port })
+
+  src/hooks/summary-hook.ts:50 [HOOK]
+    message: "Stop: Requesting summary"
+    full: logger.dataIn('HOOK', 'Stop: Requesting summary', { workerPort: port, hasLastAssistantMessage: !!lastAssistantMessage })
+
+  src/sdk/parser.ts:111 [PARSER]
+    message: "Summary skipped"
+    full: logger.info('PARSER', 'Summary skipped', { sessionId, reason: skipMatch[1] })
+
+  src/servers/mcp-server.ts:283 [SYSTEM]
+    message: "MCP server shutting down"
+    full: logger.info('SYSTEM', 'MCP server shutting down')
+
+  src/servers/mcp-server.ts:296 [SYSTEM]
+    message: "Claude-mem search server started"
+    full: logger.info('SYSTEM', 'Claude-mem search server started')
+
+  src/servers/mcp-server.ts:306 [SYSTEM]
+    message: "Worker available"
+    full: logger.info('SYSTEM', 'Worker available', undefined, { workerUrl: WORKER_BASE_URL })
+
+  src/services/infrastructure/GracefulShutdown.ts:50 [SYSTEM]
+    message: "Shutdown initiated"
+    full: logger.info('SYSTEM', 'Shutdown initiated')
+
+  src/services/infrastructure/GracefulShutdown.ts:57 [SYSTEM]
+    message: "Found child processes"
+    full: logger.info('SYSTEM', 'Found child processes', { count: childPids.length, pids: childPids })
+
+  src/services/infrastructure/GracefulShutdown.ts:62 [SYSTEM]
+    message: "HTTP server closed"
+    full: logger.info('SYSTEM', 'HTTP server closed')
+
+  src/services/infrastructure/GracefulShutdown.ts:71 [SYSTEM]
+    message: "MCP client closed"
+    full: logger.info('SYSTEM', 'MCP client closed')
+
+  src/services/infrastructure/GracefulShutdown.ts:81 [SYSTEM]
+    message: "Force killing remaining children"
+    full: logger.info('SYSTEM', 'Force killing remaining children')
+
+  src/services/infrastructure/GracefulShutdown.ts:89 [SYSTEM]
+    message: "Worker shutdown complete"
+    full: logger.info('SYSTEM', 'Worker shutdown complete')
+
+  src/services/infrastructure/GracefulShutdown.ts:113 [SYSTEM]
+    message: "Waited for Windows port cleanup"
+    full: logger.info('SYSTEM', 'Waited for Windows port cleanup')
+
+  src/services/infrastructure/ProcessManager.ts:127 [SYSTEM]
+    message: "Killed process"
+    full: logger.info('SYSTEM', 'Killed process', { pid })
+
+  src/services/infrastructure/ProcessManager.ts:152 [SYSTEM]
+    message: "All child processes exited"
+    full: logger.info('SYSTEM', 'All child processes exited')
+
+  src/services/infrastructure/ProcessManager.ts:224 [SYSTEM]
+    message: "Cleaning up orphaned chroma-mcp processes"
+    full: logger.info('SYSTEM', 'Cleaning up orphaned chroma-mcp processes', { platform: isWindows ? 'Windows' : 'Unix', count: pids.length, pids })
+
+  src/services/infrastructure/ProcessManager.ts:256 [SYSTEM]
+    message: "Orphaned processes cleaned up"
+    full: logger.info('SYSTEM', 'Orphaned processes cleaned up', { count: pids.length })
+
+  src/services/infrastructure/ProcessManager.ts:302 [SYSTEM]
+    message: "Received ${signal}, shutting down..."
+    full: logger.info('SYSTEM', `Received ${signal}, shutting down...`)
+
+  src/services/integrations/CursorHooksInstaller.ts:79 [CURSOR]
+    message: "Registered project for auto-context updates"
+    full: logger.info('CURSOR', 'Registered project for auto-context updates', { projectName, workspacePath })
+
+  src/services/integrations/CursorHooksInstaller.ts:90 [CURSOR]
+    message: "Unregistered project"
+    full: logger.info('CURSOR', 'Unregistered project', { projectName })
+
+  src/services/server/Server.ts:77 [SYSTEM]
+    message: "HTTP server started"
+    full: logger.info('SYSTEM', 'HTTP server started', { host, port, pid: process.pid })
+
+  src/services/server/Server.ts:109 [SYSTEM]
+    message: "HTTP server closed"
+    full: logger.info('SYSTEM', 'HTTP server closed')
+
+  src/services/server/Server.ts:215 [SYSTEM]
+    message: "Sending restart request to wrapper"
+    full: logger.info('SYSTEM', 'Sending restart request to wrapper')
+
+  src/services/server/Server.ts:234 [SYSTEM]
+    message: "Sending shutdown request to wrapper"
+    full: logger.info('SYSTEM', 'Sending shutdown request to wrapper')
+
+  src/services/sqlite/Database.ts:176 [DB]
+    message: "Applying migration ${migration.version}"
+    full: logger.info('DB', `Applying migration ${migration.version}`)
+
+  src/services/sqlite/Database.ts:186 [DB]
+    message: "Migration ${migration.version} applied successfully"
+    full: logger.info('DB', `Migration ${migration.version} applied successfully`)
+
+  src/services/sqlite/migrations/runner.ts:57 [DB]
+    message: "Initializing fresh database with migration004"
+    full: logger.info('DB', 'Initializing fresh database with migration004')
+
+  src/services/sqlite/migrations/runner.ts:121 [DB]
+    message: "Migration004 applied successfully"
+    full: logger.info('DB', 'Migration004 applied successfully')
+
+  src/services/sqlite/PendingMessageStore.ts:101 [QUEUE]
+    message: "CLAIMED | sessionDbId=${sessionId} | messageId=${msg.id} | type=${msg.message_type}"
+    full: logger.info('QUEUE', `CLAIMED | sessionDbId=${sessionId} | messageId=${msg.id} | type=${msg.message_type}`, { sessionId: sessionId })
+
+  src/services/sqlite/SessionSearch.ts:60 [DB]
+    message: "Creating FTS5 tables"
+    full: logger.info('DB', 'Creating FTS5 tables')
+
+  src/services/sqlite/SessionSearch.ts:144 [DB]
+    message: "FTS5 tables created successfully"
+    full: logger.info('DB', 'FTS5 tables created successfully')
+
+  src/services/sqlite/SessionStore.ts:73 [DB]
+    message: "Initializing fresh database with migration004"
+    full: logger.info('DB', 'Initializing fresh database with migration004')
+
+  src/services/sqlite/SessionStore.ts:137 [DB]
+    message: "Migration004 applied successfully"
+    full: logger.info('DB', 'Migration004 applied successfully')
+
+  src/services/sync/ChromaSync.ts:97 [CHROMA_SYNC]
+    message: "Connecting to Chroma MCP server..."
+    full: logger.info('CHROMA_SYNC', 'Connecting to Chroma MCP server...', { project: this.project })
+
+  src/services/sync/ChromaSync.ts:136 [CHROMA_SYNC]
+    message: "Connected to Chroma MCP server"
+    full: logger.info('CHROMA_SYNC', 'Connected to Chroma MCP server', { project: this.project })
+
+  src/services/sync/ChromaSync.ts:186 [CHROMA_SYNC]
+    message: "Creating collection"
+    full: logger.info('CHROMA_SYNC', 'Creating collection', { collection: this.collectionName })
+
+  src/services/sync/ChromaSync.ts:197 [CHROMA_SYNC]
+    message: "Collection created"
+    full: logger.info('CHROMA_SYNC', 'Collection created', { collection: this.collectionName })
+
+  src/services/sync/ChromaSync.ts:417 [CHROMA_SYNC]
+    message: "Syncing observation"
+    full: logger.info('CHROMA_SYNC', 'Syncing observation', { observationId, documentCount: documents.length, project })
+
+  src/services/sync/ChromaSync.ts:458 [CHROMA_SYNC]
+    message: "Syncing summary"
+    full: logger.info('CHROMA_SYNC', 'Syncing summary', { summaryId, documentCount: documents.length, project })
+
+  src/services/sync/ChromaSync.ts:512 [CHROMA_SYNC]
+    message: "Syncing user prompt"
+    full: logger.info('CHROMA_SYNC', 'Syncing user prompt', { promptId, project })
+
+  src/services/sync/ChromaSync.ts:545 [CHROMA_SYNC]
+    message: "Fetching existing Chroma document IDs..."
+    full: logger.info('CHROMA_SYNC', 'Fetching existing Chroma document IDs...', { project: this.project })
+
+  src/services/sync/ChromaSync.ts:598 [CHROMA_SYNC]
+    message: "Existing IDs fetched"
+    full: logger.info('CHROMA_SYNC', 'Existing IDs fetched', { project: this.project, observations: observationIds.size, summaries: summaryIds.size, prompts: promptIds.size })
+
+  src/services/sync/ChromaSync.ts:614 [CHROMA_SYNC]
+    message: "Starting smart backfill"
+    full: logger.info('CHROMA_SYNC', 'Starting smart backfill', { project: this.project })
+
+  src/services/sync/ChromaSync.ts:641 [CHROMA_SYNC]
+    message: "Backfilling observations"
+    full: logger.info('CHROMA_SYNC', 'Backfilling observations', { project: this.project, missing: observations.length, existing: existing.observations.size, total: totalObsCount.count })
+
+  src/services/sync/ChromaSync.ts:682 [CHROMA_SYNC]
+    message: "Backfilling summaries"
+    full: logger.info('CHROMA_SYNC', 'Backfilling summaries', { project: this.project, missing: summaries.length, existing: existing.summaries.size, total: totalSummaryCount.count })
+
+  src/services/sync/ChromaSync.ts:731 [CHROMA_SYNC]
+    message: "Backfilling user prompts"
+    full: logger.info('CHROMA_SYNC', 'Backfilling user prompts', { project: this.project, missing: prompts.length, existing: existing.prompts.size, total: totalPromptCount.count })
+
+  src/services/sync/ChromaSync.ts:755 [CHROMA_SYNC]
+    message: "Smart backfill complete"
+    full: logger.info('CHROMA_SYNC', 'Smart backfill complete', { project: this.project, synced: { observationDocs: allDocs.length, summaryDocs: summaryDocs.length, promptDocs: promptDocs.length }, skipped: { observations: existing.observations.size, summaries: existing.summaries.size, prompts: existing.prompts.size } })
+
+  src/services/sync/ChromaSync.ts:896 [CHROMA_SYNC]
+    message: "Chroma client and subprocess closed"
+    full: logger.info('CHROMA_SYNC', 'Chroma client and subprocess closed', { project: this.project })
+
+  src/services/worker-service.ts:208 [SYSTEM]
+    message: "Worker started"
+    full: logger.info('SYSTEM', 'Worker started', { host, port, pid: process.pid })
+
+  src/services/worker-service.ts:231 [SYSTEM]
+    message: "Mode loaded: ${modeId}"
+    full: logger.info('SYSTEM', `Mode loaded: ${modeId}`)
+
+  src/services/worker-service.ts:241 [SYSTEM]
+    message: "Recovered ${resetCount} stuck messages from previous session"
+    full: logger.info('SYSTEM', `Recovered ${resetCount} stuck messages from previous session`, { thresholdMinutes: 5 })
+
+  src/services/worker-service.ts:256 [WORKER]
+    message: "SearchManager initialized and search routes registered"
+    full: logger.info('WORKER', 'SearchManager initialized and search routes registered')
+
+  src/services/worker-service.ts:274 [WORKER]
+    message: "Connected to MCP server"
+    full: logger.success('WORKER', 'Connected to MCP server')
+
+  src/services/worker-service.ts:278 [SYSTEM]
+    message: "Background initialization complete"
+    full: logger.info('SYSTEM', 'Background initialization complete')
+
+  src/services/worker-service.ts:283 [SYSTEM]
+    message: "Auto-recovered ${result.sessionsStarted} sessions with pending work"
+    full: logger.info('SYSTEM', `Auto-recovered ${result.sessionsStarted} sessions with pending work`, { totalPending: result.totalPendingSessions, started: result.sessionsStarted, sessionIds: result.startedSessionIds })
+
+  src/services/worker-service.ts:308 [SYSTEM]
+    message: "(message not captured)"
+    full: logger.info('SYSTEM', `Starting generator (${source})
+
+  src/services/worker-service.ts:345 [SYSTEM]
+    message: "Processing up to ${sessionLimit} of ${orphanedSessionIds.length} pending session queues"
+    full: logger.info('SYSTEM', `Processing up to ${sessionLimit} of ${orphanedSessionIds.length} pending session queues`)
+
+  src/services/worker-service.ts:358 [SYSTEM]
+    message: "Starting processor for session ${sessionDbId}"
+    full: logger.info('SYSTEM', `Starting processor for session ${sessionDbId}`, { project: session.project, pendingCount: pendingStore.getPendingCount(sessionDbId)
+
+  src/services/worker-service.ts:397 [WORKER]
+    message: "Broadcasting processing status"
+    full: logger.info('WORKER', 'Broadcasting processing status', { isProcessing, queueDepth, activeSessions })
+
+  src/services/worker-service.ts:630 [SYSTEM]
+    message: "Worker version mismatch detected - auto-restarting"
+    full: logger.info('SYSTEM', 'Worker version mismatch detected - auto-restarting', { pluginVersion: versionCheck.pluginVersion, workerVersion: versionCheck.workerVersion })
+
+  src/services/worker-service.ts:643 [SYSTEM]
+    message: "Worker already running and healthy"
+    full: logger.info('SYSTEM', 'Worker already running and healthy')
+
+  src/services/worker-service.ts:650 [SYSTEM]
+    message: "Port in use, waiting for worker to become healthy"
+    full: logger.info('SYSTEM', 'Port in use, waiting for worker to become healthy')
+
+  src/services/worker-service.ts:653 [SYSTEM]
+    message: "Worker is now healthy"
+    full: logger.info('SYSTEM', 'Worker is now healthy')
+
+  src/services/worker-service.ts:660 [SYSTEM]
+    message: "Starting worker daemon"
+    full: logger.info('SYSTEM', 'Starting worker daemon')
+
+  src/services/worker-service.ts:676 [SYSTEM]
+    message: "Worker started successfully"
+    full: logger.info('SYSTEM', 'Worker started successfully')
+
+  src/services/worker-service.ts:687 [SYSTEM]
+    message: "Worker stopped successfully"
+    full: logger.info('SYSTEM', 'Worker stopped successfully')
+
+  src/services/worker-service.ts:692 [SYSTEM]
+    message: "Restarting worker"
+    full: logger.info('SYSTEM', 'Restarting worker')
+
+  src/services/worker-service.ts:716 [SYSTEM]
+    message: "Worker restarted successfully"
+    full: logger.info('SYSTEM', 'Worker restarted successfully')
+
+  src/services/worker/agents/ResponseProcessor.ts:78 [DB]
+    message: "STORING | sessionDbId=${session.sessionDbId} | memorySessionId=${session.memorySessionId} | obsCount=${observations.length} | hasSummary=${!!summaryForStore}"
+    full: logger.info('DB', `STORING | sessionDbId=${session.sessionDbId} | memorySessionId=${session.memorySessionId} | obsCount=${observations.length} | hasSummary=${!!summaryForStore}`, { sessionId: session.sessionDbId, memorySessionId: session.memorySessionId })
+
+  src/services/worker/agents/ResponseProcessor.ts:96 [DB]
+    message: "(message not captured)"
+    full: logger.info('DB', `STORED | sessionDbId=${session.sessionDbId} | memorySessionId=${session.memorySessionId} | obsCount=${result.observationIds.length} | obsIds=[${result.observationIds.join(',')
+
+  src/services/worker/BranchManager.ts:189 [BRANCH]
+    message: "Starting branch switch"
+    full: logger.info('BRANCH', 'Starting branch switch', { from: info.branch, to: targetBranch })
+
+  src/services/worker/BranchManager.ts:226 [BRANCH]
+    message: "Branch switch complete"
+    full: logger.success('BRANCH', 'Branch switch complete', { branch: targetBranch })
+
+  src/services/worker/BranchManager.ts:277 [BRANCH]
+    message: "Pulling updates"
+    full: logger.info('BRANCH', 'Pulling updates', { branch: info.branch })
+
+  src/services/worker/BranchManager.ts:293 [BRANCH]
+    message: "Updates pulled"
+    full: logger.success('BRANCH', 'Updates pulled', { branch: info.branch })
+
+  src/services/worker/DatabaseManager.ts:33 [DB]
+    message: "Database initialized"
+    full: logger.info('DB', 'Database initialized')
+
+  src/services/worker/DatabaseManager.ts:54 [DB]
+    message: "Database closed"
+    full: logger.info('DB', 'Database closed')
+
+  src/services/worker/GeminiAgent.ts:272 [SDK]
+    message: "Gemini agent completed"
+    full: logger.success('SDK', 'Gemini agent completed', { sessionId: session.sessionDbId, duration: `${(sessionDuration / 1000)
+
+  src/services/worker/http/middleware.ts:45 [HTTP]
+    message: "→ ${req.method} ${req.path}"
+    full: logger.info('HTTP', `→ ${req.method} ${req.path}`, { requestId }, bodySummary)
+
+  src/services/worker/http/middleware.ts:51 [HTTP]
+    message: "← ${res.statusCode} ${req.path}"
+    full: logger.info('HTTP', `← ${res.statusCode} ${req.path}`, { requestId, duration: `${duration}ms` })
+
+  src/services/worker/http/routes/DataRoutes.ts:440 [QUEUE]
+    message: "Cleared failed queue messages"
+    full: logger.info('QUEUE', 'Cleared failed queue messages', { clearedCount })
+
+  src/services/worker/http/routes/LogsRoutes.ts:88 [SYSTEM]
+    message: "Log file cleared via UI"
+    full: logger.info('SYSTEM', 'Log file cleared via UI', { path: logFilePath })
+
+  src/services/worker/http/routes/SessionRoutes.ts:104 [SESSION]
+    message: "Provider changed, will switch after current generator finishes"
+    full: logger.info('SESSION', `Provider changed, will switch after current generator finishes`, { sessionId: sessionDbId, currentProvider: session.currentProvider, selectedProvider, historyLength: session.conversationHistory.length })
+
+  src/services/worker/http/routes/SessionRoutes.ts:128 [SESSION]
+    message: "(message not captured)"
+    full: logger.info('SESSION', `Generator auto-starting (${source})
+
+  src/services/worker/http/routes/SessionRoutes.ts:169 [SESSION]
+    message: "Generator aborted"
+    full: logger.info('SESSION', `Generator aborted`, { sessionId: sessionDbId })
+
+  src/services/worker/http/routes/SessionRoutes.ts:185 [SESSION]
+    message: "Restarting generator after crash/exit with pending work"
+    full: logger.info('SESSION', `Restarting generator after crash/exit with pending work`, { sessionId: sessionDbId, pendingCount })
+
+  src/services/worker/http/routes/SessionRoutes.ts:244 [HTTP]
+    message: "SessionRoutes: handleSessionInit called"
+    full: logger.info('HTTP', 'SessionRoutes: handleSessionInit called', { sessionDbId, promptNumber, has_userPrompt: !!userPrompt })
+
+  src/services/worker/http/routes/SessionRoutes.ts:549 [HTTP]
+    message: "SessionRoutes: handleSessionInitByClaudeId called"
+    full: logger.info('HTTP', 'SessionRoutes: handleSessionInitByClaudeId called', { contentSessionId, project, prompt_length: prompt?.length })
+
+  src/services/worker/http/routes/SessionRoutes.ts:568 [SESSION]
+    message: "CREATED | contentSessionId=${contentSessionId} → sessionDbId=${sessionDbId} | isNew=${isNewSession} | project=${project}"
+    full: logger.info('SESSION', `CREATED | contentSessionId=${contentSessionId} → sessionDbId=${sessionDbId} | isNew=${isNewSession} | project=${project}`, { sessionId: sessionDbId })
+
+  src/services/worker/http/routes/SettingsRoutes.ts:138 [WORKER]
+    message: "Settings updated"
+    full: logger.info('WORKER', 'Settings updated')
+
+  src/services/worker/http/routes/SettingsRoutes.ts:196 [WORKER]
+    message: "Branch switch requested"
+    full: logger.info('WORKER', 'Branch switch requested', { branch })
+
+  src/services/worker/http/routes/SettingsRoutes.ts:203 [WORKER]
+    message: "Restarting worker after branch switch"
+    full: logger.info('WORKER', 'Restarting worker after branch switch')
+
+  src/services/worker/http/routes/SettingsRoutes.ts:215 [WORKER]
+    message: "Branch update requested"
+    full: logger.info('WORKER', 'Branch update requested')
+
+  src/services/worker/http/routes/SettingsRoutes.ts:222 [WORKER]
+    message: "Restarting worker after branch update"
+    full: logger.info('WORKER', 'Restarting worker after branch update')
+
+  src/services/worker/http/routes/SettingsRoutes.ts:387 [WORKER]
+    message: "MCP search server enabled"
+    full: logger.info('WORKER', 'MCP search server enabled')
+
+  src/services/worker/http/routes/SettingsRoutes.ts:391 [WORKER]
+    message: "MCP search server disabled"
+    full: logger.info('WORKER', 'MCP search server disabled')
+
+  src/services/worker/http/routes/SettingsRoutes.ts:411 [SETTINGS]
+    message: "Created settings file with defaults"
+    full: logger.info('SETTINGS', 'Created settings file with defaults', { settingsPath })
+
+  src/services/worker/OpenRouterAgent.ts:230 [SDK]
+    message: "OpenRouter agent completed"
+    full: logger.success('SDK', 'OpenRouter agent completed', { sessionId: session.sessionDbId, duration: `${(sessionDuration / 1000)
+
+  src/services/worker/OpenRouterAgent.ts:389 [SDK]
+    message: "OpenRouter API usage"
+    full: logger.info('SDK', 'OpenRouter API usage', { model, inputTokens, outputTokens, totalTokens: tokensUsed, estimatedCostUSD: estimatedCost.toFixed(4)
+
+  src/services/worker/SDKAgent.ts:78 [SDK]
+    message: "Starting SDK query"
+    full: logger.info('SDK', 'Starting SDK query', { sessionDbId: session.sessionDbId, contentSessionId: session.contentSessionId, memorySessionId: session.memorySessionId, hasRealMemorySessionId, resume_parameter: hasRealMemorySessionId ? session.memorySessionId : '(none - fresh start)
+
+  src/services/worker/SDKAgent.ts:130 [SESSION]
+    message: "MEMORY_ID_CAPTURED | sessionDbId=${session.sessionDbId} | memorySessionId=${message.session_id} | dbVerified=${dbVerified}"
+    full: logger.info('SESSION', `MEMORY_ID_CAPTURED | sessionDbId=${session.sessionDbId} | memorySessionId=${message.session_id} | dbVerified=${dbVerified}`, { sessionId: session.sessionDbId, memorySessionId: message.session_id })
+
+  src/services/worker/SDKAgent.ts:188 [SDK]
+    message: "(message not captured)"
+    full: logger.dataOut('SDK', `Response received (${responseSize} chars)
+
+  src/services/worker/SDKAgent.ts:216 [SDK]
+    message: "Agent completed"
+    full: logger.success('SDK', 'Agent completed', { sessionId: session.sessionDbId, duration: `${(sessionDuration / 1000)
+
+  src/services/worker/SDKAgent.ts:266 [SDK]
+    message: "Creating message generator"
+    full: logger.info('SDK', 'Creating message generator', { sessionDbId: session.sessionDbId, contentSessionId: session.contentSessionId, lastPromptNumber: session.lastPromptNumber, isInitPrompt, promptType: isInitPrompt ? 'INIT' : 'CONTINUATION' })
+
+  src/services/worker/SessionManager.ts:158 [SESSION]
+    message: "Session initialized"
+    full: logger.info('SESSION', 'Session initialized', { sessionId: sessionDbId, project: session.project, contentSessionId: session.contentSessionId, queueDepth: 0, hasGenerator: false })
+
+  src/services/worker/SessionManager.ts:204 [QUEUE]
+    message: "ENQUEUED | sessionDbId=${sessionDbId} | messageId=${messageId} | type=observation | tool=${toolSummary} | depth=${queueDepth}"
+    full: logger.info('QUEUE', `ENQUEUED | sessionDbId=${sessionDbId} | messageId=${messageId} | type=observation | tool=${toolSummary} | depth=${queueDepth}`, { sessionId: sessionDbId })
+
+  src/services/worker/SessionManager.ts:243 [QUEUE]
+    message: "ENQUEUED | sessionDbId=${sessionDbId} | messageId=${messageId} | type=summarize | depth=${queueDepth}"
+    full: logger.info('QUEUE', `ENQUEUED | sessionDbId=${sessionDbId} | messageId=${messageId} | type=summarize | depth=${queueDepth}`, { sessionId: sessionDbId })
+
+  src/services/worker/SessionManager.ts:282 [SESSION]
+    message: "Session deleted"
+    full: logger.info('SESSION', 'Session deleted', { sessionId: sessionDbId, duration: `${(sessionDuration / 1000)
+
+  src/utils/project-name.ts:31 [PROJECT_NAME]
+    message: "Drive root detected"
+    full: logger.info('PROJECT_NAME', 'Drive root detected', { cwd, projectName })
+
+  Count: 110
+
+DEBUG (detailed diagnostics):
+────────────────────────────────────────────────────────────
+  src/bin/import-xml-observations.ts:80 [IMPORT]
+    message: "Skipping invalid JSON line"
+    full: logger.debug('IMPORT', 'Skipping invalid JSON line', { lineNumber: index + 1, filename, error: e instanceof Error ? e.message : String(e)
+
+  src/hooks/new-hook.ts:29 [HOOK]
+    message: "new-hook: Calling /api/sessions/init"
+    full: logger.debug('HOOK', 'new-hook: Calling /api/sessions/init', { contentSessionId: session_id, project })
+
+  src/hooks/new-hook.ts:51 [HOOK]
+    message: "new-hook: Received from /api/sessions/init"
+    full: logger.debug('HOOK', 'new-hook: Received from /api/sessions/init', { sessionDbId, promptNumber, skipped: initResult.skipped })
+
+  src/hooks/new-hook.ts:54 [HOOK]
+    message: "[ALIGNMENT] Hook Entry | contentSessionId=${session_id} | prompt#=${promptNumber} | sessionDbId=${sessionDbId}"
+    full: logger.debug('HOOK', `[ALIGNMENT] Hook Entry | contentSessionId=${session_id} | prompt#=${promptNumber} | sessionDbId=${sessionDbId}`)
+
+  src/hooks/new-hook.ts:69 [HOOK]
+    message: "new-hook: Calling /sessions/{sessionDbId}/init"
+    full: logger.debug('HOOK', 'new-hook: Calling /sessions/{sessionDbId}/init', { sessionDbId, promptNumber })
+
+  src/hooks/save-hook.ts:67 [HOOK]
+    message: "Observation sent successfully"
+    full: logger.debug('HOOK', 'Observation sent successfully', { toolName: tool_name })
+
+  src/hooks/summary-hook.ts:71 [HOOK]
+    message: "Summary request sent successfully"
+    full: logger.debug('HOOK', 'Summary request sent successfully')
+
+  src/sdk/prompts.ts:99 [SDK]
+    message: "Tool input is plain string, using as-is"
+    error: error as Error
+    full: logger.debug('SDK', 'Tool input is plain string, using as-is', { toolName: obs.tool_name }, error as Error)
+
+  src/sdk/prompts.ts:108 [SDK]
+    message: "Tool output is plain string, using as-is"
+    error: error as Error
+    full: logger.debug('SDK', 'Tool output is plain string, using as-is', { toolName: obs.tool_name }, error as Error)
+
+  src/servers/mcp-server.ts:50 [SYSTEM]
+    message: "→ Worker API"
+    full: logger.debug('SYSTEM', '→ Worker API', undefined, { endpoint, params })
+
+  src/servers/mcp-server.ts:72 [SYSTEM]
+    message: "← Worker API success"
+    full: logger.debug('SYSTEM', '← Worker API success', undefined, { endpoint })
+
+  src/servers/mcp-server.ts:95 [HTTP]
+    message: "(message not captured)"
+    full: logger.debug('HTTP', 'Worker API request (POST)
+
+  src/servers/mcp-server.ts:114 [HTTP]
+    message: "(message not captured)"
+    full: logger.debug('HTTP', 'Worker API success (POST)
+
+  src/servers/mcp-server.ts:144 [SYSTEM]
+    message: "Worker health check failed"
+    error: error as Error
+    full: logger.debug('SYSTEM', 'Worker health check failed', {}, error as Error)
+
+  src/services/context/ContextBuilder.ts:57 [SYSTEM]
+    message: "(message not captured)"
+    full: logger.debug('SYSTEM', 'Marker file cleanup failed (may not exist)
+
+  src/services/context/ObservationCompiler.ts:174 [PARSER]
+    message: "Skipping malformed transcript line"
+    full: logger.debug('PARSER', 'Skipping malformed transcript line', { lineIndex: i }, parseError as Error)
+
+  src/services/domain/ModeManager.ts:141 [SYSTEM]
+    message: "(message not captured)"
+    full: logger.debug('SYSTEM', `Loaded mode: ${mode.name} (${modeId})
+
+  src/services/domain/ModeManager.ts:172 [SYSTEM]
+    message: "Loaded override file: ${overrideId} for parent ${parentId}"
+    full: logger.debug('SYSTEM', `Loaded override file: ${overrideId} for parent ${parentId}`)
+
+  src/services/domain/ModeManager.ts:190 [SYSTEM]
+    message: "(message not captured)"
+    full: logger.debug('SYSTEM', `Loaded mode with inheritance: ${mergedMode.name} (${modeId} = ${parentId} + ${overrideId})
+
+  src/services/infrastructure/HealthMonitor.ts:46 [SYSTEM]
+    message: "Service not ready yet, will retry"
+    error: error as Error
+    full: logger.debug('SYSTEM', 'Service not ready yet, will retry', { port }, error as Error)
+
+  src/services/infrastructure/HealthMonitor.ts:85 [SYSTEM]
+    message: "Worker already stopped"
+    error: error
+    full: logger.debug('SYSTEM', 'Worker already stopped', { port }, error)
+
+  src/services/infrastructure/HealthMonitor.ts:117 [SYSTEM]
+    message: "Could not fetch worker version"
+    full: logger.debug('SYSTEM', 'Could not fetch worker version', { port })
+
+  src/services/infrastructure/ProcessManager.ts:130 [SYSTEM]
+    message: "Process already exited during force kill"
+    error: error as Error
+    full: logger.debug('SYSTEM', 'Process already exited during force kill', { pid }, error as Error)
+
+  src/services/infrastructure/ProcessManager.ts:156 [SYSTEM]
+    message: "Waiting for processes to exit"
+    full: logger.debug('SYSTEM', 'Waiting for processes to exit', { stillAlive })
+
+  src/services/infrastructure/ProcessManager.ts:178 [SYSTEM]
+    message: "(message not captured)"
+    full: logger.debug('SYSTEM', 'No orphaned chroma-mcp processes found (Windows)
+
+  src/services/infrastructure/ProcessManager.ts:198 [SYSTEM]
+    message: "(message not captured)"
+    full: logger.debug('SYSTEM', 'No orphaned chroma-mcp processes found (Unix)
+
+  src/services/infrastructure/ProcessManager.ts:242 [SYSTEM]
+    message: "Failed to kill process, may have already exited"
+    error: error as Error
+    full: logger.debug('SYSTEM', 'Failed to kill process, may have already exited', { pid }, error as Error)
+
+  src/services/infrastructure/ProcessManager.ts:251 [SYSTEM]
+    message: "Process already exited"
+    error: error as Error
+    full: logger.debug('SYSTEM', 'Process already exited', { pid }, error as Error)
+
+  src/services/integrations/CursorHooksInstaller.ts:117 [CURSOR]
+    message: "Updated context file"
+    full: logger.debug('CURSOR', 'Updated context file', { projectName, workspacePath: entry.workspacePath })
+
+  src/services/integrations/CursorHooksInstaller.ts:414 [CURSOR]
+    message: "Worker not running during install"
+    error: error as Error
+    full: logger.debug('CURSOR', 'Worker not running during install', {}, error as Error)
+
+  src/services/integrations/CursorHooksInstaller.ts:593 [SYSTEM]
+    message: "Claude CLI not in PATH"
+    error: error as Error
+    full: logger.debug('SYSTEM', 'Claude CLI not in PATH', {}, error as Error)
+
+  src/services/sqlite/migrations/runner.ts:139 [DB]
+    message: "Added worker_port column to sdk_sessions table"
+    full: logger.debug('DB', 'Added worker_port column to sdk_sessions table')
+
+  src/services/sqlite/migrations/runner.ts:160 [DB]
+    message: "Added prompt_counter column to sdk_sessions table"
+    full: logger.debug('DB', 'Added prompt_counter column to sdk_sessions table')
+
+  src/services/sqlite/migrations/runner.ts:169 [DB]
+    message: "Added prompt_number column to observations table"
+    full: logger.debug('DB', 'Added prompt_number column to observations table')
+
+  src/services/sqlite/migrations/runner.ts:178 [DB]
+    message: "Added prompt_number column to session_summaries table"
+    full: logger.debug('DB', 'Added prompt_number column to session_summaries table')
+
+  src/services/sqlite/migrations/runner.ts:203 [DB]
+    message: "Removing UNIQUE constraint from session_summaries.memory_session_id"
+    full: logger.debug('DB', 'Removing UNIQUE constraint from session_summaries.memory_session_id')
+
+  src/services/sqlite/migrations/runner.ts:257 [DB]
+    message: "Successfully removed UNIQUE constraint from session_summaries.memory_session_id"
+    full: logger.debug('DB', 'Successfully removed UNIQUE constraint from session_summaries.memory_session_id')
+
+  src/services/sqlite/migrations/runner.ts:278 [DB]
+    message: "Adding hierarchical fields to observations table"
+    full: logger.debug('DB', 'Adding hierarchical fields to observations table')
+
+  src/services/sqlite/migrations/runner.ts:294 [DB]
+    message: "Successfully added hierarchical fields to observations table"
+    full: logger.debug('DB', 'Successfully added hierarchical fields to observations table')
+
+  src/services/sqlite/migrations/runner.ts:316 [DB]
+    message: "Making observations.text nullable"
+    full: logger.debug('DB', 'Making observations.text nullable')
+
+  src/services/sqlite/migrations/runner.ts:372 [DB]
+    message: "Successfully made observations.text nullable"
+    full: logger.debug('DB', 'Successfully made observations.text nullable')
+
+  src/services/sqlite/migrations/runner.ts:391 [DB]
+    message: "Creating user_prompts table with FTS5 support"
+    full: logger.debug('DB', 'Creating user_prompts table with FTS5 support')
+
+  src/services/sqlite/migrations/runner.ts:449 [DB]
+    message: "Successfully created user_prompts table with FTS5 support"
+    full: logger.debug('DB', 'Successfully created user_prompts table with FTS5 support')
+
+  src/services/sqlite/migrations/runner.ts:468 [DB]
+    message: "Added discovery_tokens column to observations table"
+    full: logger.debug('DB', 'Added discovery_tokens column to observations table')
+
+  src/services/sqlite/migrations/runner.ts:477 [DB]
+    message: "Added discovery_tokens column to session_summaries table"
+    full: logger.debug('DB', 'Added discovery_tokens column to session_summaries table')
+
+  src/services/sqlite/migrations/runner.ts:501 [DB]
+    message: "Creating pending_messages table"
+    full: logger.debug('DB', 'Creating pending_messages table')
+
+  src/services/sqlite/migrations/runner.ts:531 [DB]
+    message: "pending_messages table created successfully"
+    full: logger.debug('DB', 'pending_messages table created successfully')
+
+  src/services/sqlite/migrations/runner.ts:546 [DB]
+    message: "Checking session ID columns for semantic clarity rename"
+    full: logger.debug('DB', 'Checking session ID columns for semantic clarity rename')
+
+  src/services/sqlite/migrations/runner.ts:564 [DB]
+    message: "Renamed ${table}.${oldCol} to ${newCol}"
+    full: logger.debug('DB', `Renamed ${table}.${oldCol} to ${newCol}`)
+
+  src/services/sqlite/migrations/runner.ts:593 [DB]
+    message: "Successfully renamed ${renamesPerformed} session ID columns"
+    full: logger.debug('DB', `Successfully renamed ${renamesPerformed} session ID columns`)
+
+  src/services/sqlite/migrations/runner.ts:595 [DB]
+    message: "(message not captured)"
+    full: logger.debug('DB', 'No session ID column renames needed (already up to date)
+
+  src/services/sqlite/migrations/runner.ts:626 [DB]
+    message: "Added failed_at_epoch column to pending_messages table"
+    full: logger.debug('DB', 'Added failed_at_epoch column to pending_messages table')
+
+  src/services/sqlite/SessionStore.ts:155 [DB]
+    message: "Added worker_port column to sdk_sessions table"
+    full: logger.debug('DB', 'Added worker_port column to sdk_sessions table')
+
+  src/services/sqlite/SessionStore.ts:176 [DB]
+    message: "Added prompt_counter column to sdk_sessions table"
+    full: logger.debug('DB', 'Added prompt_counter column to sdk_sessions table')
+
+  src/services/sqlite/SessionStore.ts:185 [DB]
+    message: "Added prompt_number column to observations table"
+    full: logger.debug('DB', 'Added prompt_number column to observations table')
+
+  src/services/sqlite/SessionStore.ts:194 [DB]
+    message: "Added prompt_number column to session_summaries table"
+    full: logger.debug('DB', 'Added prompt_number column to session_summaries table')
+
+  src/services/sqlite/SessionStore.ts:219 [DB]
+    message: "Removing UNIQUE constraint from session_summaries.memory_session_id"
+    full: logger.debug('DB', 'Removing UNIQUE constraint from session_summaries.memory_session_id')
+
+  src/services/sqlite/SessionStore.ts:273 [DB]
+    message: "Successfully removed UNIQUE constraint from session_summaries.memory_session_id"
+    full: logger.debug('DB', 'Successfully removed UNIQUE constraint from session_summaries.memory_session_id')
+
+  src/services/sqlite/SessionStore.ts:294 [DB]
+    message: "Adding hierarchical fields to observations table"
+    full: logger.debug('DB', 'Adding hierarchical fields to observations table')
+
+  src/services/sqlite/SessionStore.ts:310 [DB]
+    message: "Successfully added hierarchical fields to observations table"
+    full: logger.debug('DB', 'Successfully added hierarchical fields to observations table')
+
+  src/services/sqlite/SessionStore.ts:332 [DB]
+    message: "Making observations.text nullable"
+    full: logger.debug('DB', 'Making observations.text nullable')
+
+  src/services/sqlite/SessionStore.ts:388 [DB]
+    message: "Successfully made observations.text nullable"
+    full: logger.debug('DB', 'Successfully made observations.text nullable')
+
+  src/services/sqlite/SessionStore.ts:407 [DB]
+    message: "Creating user_prompts table with FTS5 support"
+    full: logger.debug('DB', 'Creating user_prompts table with FTS5 support')
+
+  src/services/sqlite/SessionStore.ts:465 [DB]
+    message: "Successfully created user_prompts table with FTS5 support"
+    full: logger.debug('DB', 'Successfully created user_prompts table with FTS5 support')
+
+  src/services/sqlite/SessionStore.ts:484 [DB]
+    message: "Added discovery_tokens column to observations table"
+    full: logger.debug('DB', 'Added discovery_tokens column to observations table')
+
+  src/services/sqlite/SessionStore.ts:493 [DB]
+    message: "Added discovery_tokens column to session_summaries table"
+    full: logger.debug('DB', 'Added discovery_tokens column to session_summaries table')
+
+  src/services/sqlite/SessionStore.ts:517 [DB]
+    message: "Creating pending_messages table"
+    full: logger.debug('DB', 'Creating pending_messages table')
+
+  src/services/sqlite/SessionStore.ts:547 [DB]
+    message: "pending_messages table created successfully"
+    full: logger.debug('DB', 'pending_messages table created successfully')
+
+  src/services/sqlite/SessionStore.ts:562 [DB]
+    message: "Checking session ID columns for semantic clarity rename"
+    full: logger.debug('DB', 'Checking session ID columns for semantic clarity rename')
+
+  src/services/sqlite/SessionStore.ts:580 [DB]
+    message: "Renamed ${table}.${oldCol} to ${newCol}"
+    full: logger.debug('DB', `Renamed ${table}.${oldCol} to ${newCol}`)
+
+  src/services/sqlite/SessionStore.ts:609 [DB]
+    message: "Successfully renamed ${renamesPerformed} session ID columns"
+    full: logger.debug('DB', `Successfully renamed ${renamesPerformed} session ID columns`)
+
+  src/services/sqlite/SessionStore.ts:611 [DB]
+    message: "(message not captured)"
+    full: logger.debug('DB', 'No session ID column renames needed (already up to date)
+
+  src/services/sqlite/SessionStore.ts:642 [DB]
+    message: "Added failed_at_epoch column to pending_messages table"
+    full: logger.debug('DB', 'Added failed_at_epoch column to pending_messages table')
+
+  src/services/sync/ChromaSync.ts:121 [CHROMA_SYNC]
+    message: "Windows detected, attempting to hide console window"
+    full: logger.debug('CHROMA_SYNC', 'Windows detected, attempting to hide console window', { project: this.project })
+
+  src/services/sync/ChromaSync.ts:166 [CHROMA_SYNC]
+    message: "Collection exists"
+    full: logger.debug('CHROMA_SYNC', 'Collection exists', { collection: this.collectionName })
+
+  src/services/sync/ChromaSync.ts:369 [CHROMA_SYNC]
+    message: "Documents added"
+    full: logger.debug('CHROMA_SYNC', 'Documents added', { collection: this.collectionName, count: documents.length })
+
+  src/services/sync/ChromaSync.ts:587 [CHROMA_SYNC]
+    message: "Fetched batch of existing IDs"
+    full: logger.debug('CHROMA_SYNC', 'Fetched batch of existing IDs', { project: this.project, offset, batchSize: metadatas.length })
+
+  src/services/sync/ChromaSync.ts:659 [CHROMA_SYNC]
+    message: "Backfill progress"
+    full: logger.debug('CHROMA_SYNC', 'Backfill progress', { project: this.project, progress: `${Math.min(i + this.BATCH_SIZE, allDocs.length)
+
+  src/services/sync/ChromaSync.ts:700 [CHROMA_SYNC]
+    message: "Backfill progress"
+    full: logger.debug('CHROMA_SYNC', 'Backfill progress', { project: this.project, progress: `${Math.min(i + this.BATCH_SIZE, summaryDocs.length)
+
+  src/services/sync/ChromaSync.ts:749 [CHROMA_SYNC]
+    message: "Backfill progress"
+    full: logger.debug('CHROMA_SYNC', 'Backfill progress', { project: this.project, progress: `${Math.min(i + this.BATCH_SIZE, promptDocs.length)
+
+  src/services/worker-service.ts:445 [SETUP]
+    message: "Corrupt settings file, starting fresh"
+    error: error as Error
+    full: logger.debug('SETUP', 'Corrupt settings file, starting fresh', { path: settingsPath }, error as Error)
+
+  src/services/worker/agents/ResponseProcessor.ts:181 [CHROMA]
+    message: "Observation synced"
+    full: logger.debug('CHROMA', 'Observation synced', { obsId, duration: `${chromaDuration}ms`, type: obs.type, title: obs.title || '(untitled)
+
+  src/services/worker/agents/ResponseProcessor.ts:266 [CHROMA]
+    message: "Summary synced"
+    full: logger.debug('CHROMA', 'Summary synced', { summaryId: result.summaryId, duration: `${chromaDuration}ms`, request: summaryForStore.request || '(no request)
+
+  src/services/worker/BranchManager.ts:195 [BRANCH]
+    message: "Discarding local changes"
+    full: logger.debug('BRANCH', 'Discarding local changes')
+
+  src/services/worker/BranchManager.ts:200 [BRANCH]
+    message: "Fetching from origin"
+    full: logger.debug('BRANCH', 'Fetching from origin')
+
+  src/services/worker/BranchManager.ts:204 [BRANCH]
+    message: "Checking out branch"
+    full: logger.debug('BRANCH', 'Checking out branch', { branch: targetBranch })
+
+  src/services/worker/BranchManager.ts:209 [BRANCH]
+    message: "Branch not local, tracking remote"
+    full: logger.debug('BRANCH', 'Branch not local, tracking remote', { branch: targetBranch, error: error instanceof Error ? error.message : String(error)
+
+  src/services/worker/BranchManager.ts:214 [BRANCH]
+    message: "Pulling latest"
+    full: logger.debug('BRANCH', 'Pulling latest')
+
+  src/services/worker/BranchManager.ts:223 [BRANCH]
+    message: "Running npm install"
+    full: logger.debug('BRANCH', 'Running npm install')
+
+  src/services/worker/GeminiAgent.ts:74 [SDK]
+    message: "Rate limiting: waiting ${waitTime}ms before Gemini request"
+    full: logger.debug('SDK', `Rate limiting: waiting ${waitTime}ms before Gemini request`, { model, rpm })
+
+  src/services/worker/GeminiAgent.ts:326 [SDK]
+    message: "(message not captured)"
+    full: logger.debug('SDK', `Querying Gemini multi-turn (${model})
+
+  src/services/worker/http/routes/SessionRoutes.ts:54 [SESSION]
+    message: "Using OpenRouter agent"
+    full: logger.debug('SESSION', 'Using OpenRouter agent')
+
+  src/services/worker/http/routes/SessionRoutes.ts:62 [SESSION]
+    message: "Using Gemini agent"
+    full: logger.debug('SESSION', 'Using Gemini agent')
+
+  src/services/worker/http/routes/SessionRoutes.ts:205 [SESSION]
+    message: "Aborted controller after natural completion"
+    full: logger.debug('SESSION', 'Aborted controller after natural completion', { sessionId: sessionDbId })
+
+  src/services/worker/http/routes/SessionRoutes.ts:211 [SESSION]
+    message: "Error during recovery check, aborting to prevent leaks"
+    full: logger.debug('SESSION', 'Error during recovery check, aborting to prevent leaks', { sessionId: sessionDbId, error: e instanceof Error ? e.message : String(e)
+
+  src/services/worker/http/routes/SessionRoutes.ts:281 [CHROMA]
+    message: "User prompt synced"
+    full: logger.debug('CHROMA', 'User prompt synced', { promptId: latestPrompt.id, duration: `${chromaDuration}ms`, prompt: truncatedPrompt })
+
+  src/services/worker/http/routes/SessionRoutes.ts:417 [SESSION]
+    message: "Skipping observation for tool"
+    full: logger.debug('SESSION', 'Skipping observation for tool', { tool_name })
+
+  src/services/worker/http/routes/SessionRoutes.ts:427 [SESSION]
+    message: "Skipping meta-observation for session-memory file"
+    full: logger.debug('SESSION', 'Skipping meta-observation for session-memory file', { tool_name, file_path: filePath })
+
+  src/services/worker/http/routes/SessionRoutes.ts:579 [HTTP]
+    message: "(message not captured)"
+    full: logger.debug('HTTP', `[ALIGNMENT] DB Lookup Proof | contentSessionId=${contentSessionId} → memorySessionId=${memorySessionId || '(not yet captured)
+
+  src/services/worker/http/routes/SessionRoutes.ts:581 [HTTP]
+    message: "[ALIGNMENT] New Session | contentSessionId=${contentSessionId} | prompt#=${promptNumber} | memorySessionId will be captured on first SDK response"
+    full: logger.debug('HTTP', `[ALIGNMENT] New Session | contentSessionId=${contentSessionId} | prompt#=${promptNumber} | memorySessionId will be captured on first SDK response`)
+
+  src/services/worker/http/routes/SessionRoutes.ts:589 [HOOK]
+    message: "Session init - prompt entirely private"
+    full: logger.debug('HOOK', 'Session init - prompt entirely private', { sessionId: sessionDbId, promptNumber, originalLength: prompt.length })
+
+  src/services/worker/http/routes/SessionRoutes.ts:608 [SESSION]
+    message: "User prompt saved"
+    full: logger.debug('SESSION', 'User prompt saved', { sessionId: sessionDbId, promptNumber })
+
+  src/services/worker/http/routes/SettingsRoutes.ts:353 [SETTINGS]
+    message: "Invalid URL format"
+    full: logger.debug('SETTINGS', 'Invalid URL format', { url: settings.CLAUDE_MEM_OPENROUTER_SITE_URL, error: error instanceof Error ? error.message : String(error)
+
+  src/services/worker/http/routes/SettingsRoutes.ts:393 [WORKER]
+    message: "(message not captured)"
+    full: logger.debug('WORKER', 'MCP toggle no-op (already in desired state)
+
+  src/services/worker/OpenRouterAgent.ts:340 [SDK]
+    message: "(message not captured)"
+    full: logger.debug('SDK', `Querying OpenRouter multi-turn (${model})
+
+  src/services/worker/PaginationHelper.ts:55 [WORKER]
+    message: "File paths is plain string, using as-is"
+    error: err as Error
+    full: logger.debug('WORKER', 'File paths is plain string, using as-is', {}, err as Error)
+
+  src/services/worker/SDKAgent.ts:90 [SDK]
+    message: "[ALIGNMENT] Resume Decision | contentSessionId=${session.contentSessionId} | memorySessionId=${session.memorySessionId} | prompt#=${session.lastPromptNumber} | hasRealMemorySessionId=${hasRealMemorySessionId} | willResume=${willResume} | resumeWith=${willResume ? session.memorySessionId : 'NONE'}"
+    full: logger.debug('SDK', `[ALIGNMENT] Resume Decision | contentSessionId=${session.contentSessionId} | memorySessionId=${session.memorySessionId} | prompt#=${session.lastPromptNumber} | hasRealMemorySessionId=${hasRealMemorySessionId} | willResume=${willResume} | resumeWith=${willResume ? session.memorySessionId : 'NONE'}`)
+
+  src/services/worker/SDKAgent.ts:94 [SDK]
+    message: "(message not captured)"
+    full: logger.debug('SDK', `[ALIGNMENT] First Prompt (INIT)
+
+  src/services/worker/SDKAgent.ts:140 [SDK]
+    message: "[ALIGNMENT] Captured | contentSessionId=${session.contentSessionId} → memorySessionId=${message.session_id} | Future prompts will resume with this ID"
+    full: logger.debug('SDK', `[ALIGNMENT] Captured | contentSessionId=${session.contentSessionId} → memorySessionId=${message.session_id} | Future prompts will resume with this ID`)
+
+  src/services/worker/SDKAgent.ts:166 [SDK]
+    message: "Token usage captured"
+    full: logger.debug('SDK', 'Token usage captured', { sessionId: session.sessionDbId, inputTokens: usage.input_tokens, outputTokens: usage.output_tokens, cacheCreation: usage.cache_creation_input_tokens || 0, cacheRead: usage.cache_read_input_tokens || 0, cumulativeInput: session.cumulativeInputTokens, cumulativeOutput: session.cumulativeOutputTokens })
+
+  src/services/worker/SDKAgent.ts:385 [SDK]
+    message: "Claude executable auto-detection failed"
+    error: error as Error
+    full: logger.debug('SDK', 'Claude executable auto-detection failed', {}, error as Error)
+
+  src/services/worker/search/SearchOrchestrator.ts:86 [SEARCH]
+    message: "Orchestrator: Filter-only query, using SQLite"
+    full: logger.debug('SEARCH', 'Orchestrator: Filter-only query, using SQLite', {})
+
+  src/services/worker/search/SearchOrchestrator.ts:92 [SEARCH]
+    message: "Orchestrator: Using Chroma semantic search"
+    full: logger.debug('SEARCH', 'Orchestrator: Using Chroma semantic search', {})
+
+  src/services/worker/search/SearchOrchestrator.ts:101 [SEARCH]
+    message: "Orchestrator: Chroma failed, falling back to SQLite"
+    full: logger.debug('SEARCH', 'Orchestrator: Chroma failed, falling back to SQLite', {})
+
+  src/services/worker/search/SearchOrchestrator.ts:114 [SEARCH]
+    message: "Orchestrator: Chroma not available"
+    full: logger.debug('SEARCH', 'Orchestrator: Chroma not available', {})
+
+  src/services/worker/search/strategies/ChromaSearchStrategy.ts:71 [SEARCH]
+    message: "ChromaSearchStrategy: Querying Chroma"
+    full: logger.debug('SEARCH', 'ChromaSearchStrategy: Querying Chroma', { query, searchType })
+
+  src/services/worker/search/strategies/ChromaSearchStrategy.ts:78 [SEARCH]
+    message: "ChromaSearchStrategy: Chroma returned matches"
+    full: logger.debug('SEARCH', 'ChromaSearchStrategy: Chroma returned matches', { matchCount: chromaResults.ids.length })
+
+  src/services/worker/search/strategies/ChromaSearchStrategy.ts:94 [SEARCH]
+    message: "ChromaSearchStrategy: Filtered by recency"
+    full: logger.debug('SEARCH', 'ChromaSearchStrategy: Filtered by recency', { count: recentItems.length })
+
+  src/services/worker/search/strategies/ChromaSearchStrategy.ts:127 [SEARCH]
+    message: "ChromaSearchStrategy: Hydrated results"
+    full: logger.debug('SEARCH', 'ChromaSearchStrategy: Hydrated results', { observations: observations.length, sessions: sessions.length, prompts: prompts.length })
+
+  src/services/worker/search/strategies/HybridSearchStrategy.ts:72 [SEARCH]
+    message: "HybridSearchStrategy: findByConcept"
+    full: logger.debug('SEARCH', 'HybridSearchStrategy: findByConcept', { concept })
+
+  src/services/worker/search/strategies/HybridSearchStrategy.ts:76 [SEARCH]
+    message: "HybridSearchStrategy: Found metadata matches"
+    full: logger.debug('SEARCH', 'HybridSearchStrategy: Found metadata matches', { count: metadataResults.length })
+
+  src/services/worker/search/strategies/HybridSearchStrategy.ts:93 [SEARCH]
+    message: "HybridSearchStrategy: Ranked by semantic relevance"
+    full: logger.debug('SEARCH', 'HybridSearchStrategy: Ranked by semantic relevance', { count: rankedIds.length })
+
+  src/services/worker/search/strategies/HybridSearchStrategy.ts:138 [SEARCH]
+    message: "HybridSearchStrategy: findByType"
+    full: logger.debug('SEARCH', 'HybridSearchStrategy: findByType', { type: typeStr })
+
+  src/services/worker/search/strategies/HybridSearchStrategy.ts:142 [SEARCH]
+    message: "HybridSearchStrategy: Found metadata matches"
+    full: logger.debug('SEARCH', 'HybridSearchStrategy: Found metadata matches', { count: metadataResults.length })
+
+  src/services/worker/search/strategies/HybridSearchStrategy.ts:159 [SEARCH]
+    message: "HybridSearchStrategy: Ranked by semantic relevance"
+    full: logger.debug('SEARCH', 'HybridSearchStrategy: Ranked by semantic relevance', { count: rankedIds.length })
+
+  src/services/worker/search/strategies/HybridSearchStrategy.ts:205 [SEARCH]
+    message: "HybridSearchStrategy: findByFile"
+    full: logger.debug('SEARCH', 'HybridSearchStrategy: findByFile', { filePath })
+
+  src/services/worker/search/strategies/HybridSearchStrategy.ts:209 [SEARCH]
+    message: "HybridSearchStrategy: Found file matches"
+    full: logger.debug('SEARCH', 'HybridSearchStrategy: Found file matches', { observations: metadataResults.observations.length, sessions: metadataResults.sessions.length })
+
+  src/services/worker/search/strategies/HybridSearchStrategy.ts:230 [SEARCH]
+    message: "HybridSearchStrategy: Ranked observations"
+    full: logger.debug('SEARCH', 'HybridSearchStrategy: Ranked observations', { count: rankedIds.length })
+
+  src/services/worker/search/strategies/SQLiteSearchStrategy.ts:61 [SEARCH]
+    message: "SQLiteSearchStrategy: Filter-only query"
+    full: logger.debug('SEARCH', 'SQLiteSearchStrategy: Filter-only query', { searchType, hasDateRange: !!dateRange, hasProject: !!project })
+
+  src/services/worker/search/strategies/SQLiteSearchStrategy.ts:86 [SEARCH]
+    message: "SQLiteSearchStrategy: Results"
+    full: logger.debug('SEARCH', 'SQLiteSearchStrategy: Results', { observations: observations.length, sessions: sessions.length, prompts: prompts.length })
+
+  src/services/worker/SearchManager.ts:140 [SEARCH]
+    message: "(message not captured)"
+    full: logger.debug('SEARCH', 'Filter-only query (no query text)
+
+  src/services/worker/SearchManager.ts:155 [SEARCH]
+    message: "Using ChromaDB semantic search"
+    full: logger.debug('SEARCH', 'Using ChromaDB semantic search', { typeFilter: type || 'all' })
+
+  src/services/worker/SearchManager.ts:170 [SEARCH]
+    message: "ChromaDB returned semantic matches"
+    full: logger.debug('SEARCH', 'ChromaDB returned semantic matches', { matchCount: chromaResults.ids.length })
+
+  src/services/worker/SearchManager.ts:181 [SEARCH]
+    message: "Results within 90-day window"
+    full: logger.debug('SEARCH', 'Results within 90-day window', { count: recentMetadata.length })
+
+  src/services/worker/SearchManager.ts:199 [SEARCH]
+    message: "Categorized results by type"
+    full: logger.debug('SEARCH', 'Categorized results by type', { observations: obsIds.length, sessions: sessionIds.length, prompts: prompts.length })
+
+  src/services/worker/SearchManager.ts:214 [SEARCH]
+    message: "Hydrated results from SQLite"
+    full: logger.debug('SEARCH', 'Hydrated results from SQLite', { observations: observations.length, sessions: sessions.length, prompts: prompts.length })
+
+  src/services/worker/SearchManager.ts:217 [SEARCH]
+    message: "(message not captured)"
+    full: logger.debug('SEARCH', 'ChromaDB found no matches (final result, no FTS5 fallback)
+
+  src/services/worker/SearchManager.ts:223 [SEARCH]
+    message: "ChromaDB not initialized - semantic search unavailable"
+    full: logger.debug('SEARCH', 'ChromaDB not initialized - semantic search unavailable', {})
+
+  src/services/worker/SearchManager.ts:224 [SEARCH]
+    message: "Install UVX/Python to enable vector search"
+    full: logger.debug('SEARCH', 'Install UVX/Python to enable vector search', { url: 'https://docs.astral.sh/uv/getting-started/installation/' })
+
+  src/services/worker/SearchManager.ts:398 [SEARCH]
+    message: "Using hybrid semantic search for timeline query"
+    full: logger.debug('SEARCH', 'Using hybrid semantic search for timeline query', {})
+
+  src/services/worker/SearchManager.ts:400 [SEARCH]
+    message: "Chroma returned semantic matches for timeline"
+    full: logger.debug('SEARCH', 'Chroma returned semantic matches for timeline', { matchCount: chromaResults?.ids?.length ?? 0 })
+
+  src/services/worker/SearchManager.ts:431 [SEARCH]
+    message: "Query mode: Using observation as timeline anchor"
+    full: logger.debug('SEARCH', 'Query mode: Using observation as timeline anchor', { observationId: topResult.id })
+
+  src/services/worker/SearchManager.ts:650 [SEARCH]
+    message: "Using Chroma semantic search with type=decision filter"
+    full: logger.debug('SEARCH', 'Using Chroma semantic search with type=decision filter', {})
+
+  src/services/worker/SearchManager.ts:661 [SEARCH]
+    message: "Using metadata-first + semantic ranking for decisions"
+    full: logger.debug('SEARCH', 'Using metadata-first + semantic ranking for decisions', {})
+
+  src/services/worker/SearchManager.ts:722 [SEARCH]
+    message: "Using hybrid search for change-related observations"
+    full: logger.debug('SEARCH', 'Using hybrid search for change-related observations', {})
+
+  src/services/worker/SearchManager.ts:804 [SEARCH]
+    message: "Using metadata-first + semantic ranking for how-it-works"
+    full: logger.debug('SEARCH', 'Using metadata-first + semantic ranking for how-it-works', {})
+
+  src/services/worker/SearchManager.ts:861 [SEARCH]
+    message: "(message not captured)"
+    full: logger.debug('SEARCH', 'Using hybrid semantic search (Chroma + SQLite)
+
+  src/services/worker/SearchManager.ts:865 [SEARCH]
+    message: "Chroma returned semantic matches"
+    full: logger.debug('SEARCH', 'Chroma returned semantic matches', { matchCount: chromaResults.ids.length })
+
+  src/services/worker/SearchManager.ts:875 [SEARCH]
+    message: "Results within 90-day window"
+    full: logger.debug('SEARCH', 'Results within 90-day window', { count: recentIds.length })
+
+  src/services/worker/SearchManager.ts:881 [SEARCH]
+    message: "Hydrated observations from SQLite"
+    full: logger.debug('SEARCH', 'Hydrated observations from SQLite', { count: results.length })
+
+  src/services/worker/SearchManager.ts:918 [SEARCH]
+    message: "Using hybrid semantic search for sessions"
+    full: logger.debug('SEARCH', 'Using hybrid semantic search for sessions', {})
+
+  src/services/worker/SearchManager.ts:922 [SEARCH]
+    message: "Chroma returned semantic matches for sessions"
+    full: logger.debug('SEARCH', 'Chroma returned semantic matches for sessions', { matchCount: chromaResults.ids.length })
+
+  src/services/worker/SearchManager.ts:932 [SEARCH]
+    message: "Results within 90-day window"
+    full: logger.debug('SEARCH', 'Results within 90-day window', { count: recentIds.length })
+
+  src/services/worker/SearchManager.ts:938 [SEARCH]
+    message: "Hydrated sessions from SQLite"
+    full: logger.debug('SEARCH', 'Hydrated sessions from SQLite', { count: results.length })
+
+  src/services/worker/SearchManager.ts:975 [SEARCH]
+    message: "Using hybrid semantic search for user prompts"
+    full: logger.debug('SEARCH', 'Using hybrid semantic search for user prompts', {})
+
+  src/services/worker/SearchManager.ts:979 [SEARCH]
+    message: "Chroma returned semantic matches for prompts"
+    full: logger.debug('SEARCH', 'Chroma returned semantic matches for prompts', { matchCount: chromaResults.ids.length })
+
+  src/services/worker/SearchManager.ts:989 [SEARCH]
+    message: "Results within 90-day window"
+    full: logger.debug('SEARCH', 'Results within 90-day window', { count: recentIds.length })
+
+  src/services/worker/SearchManager.ts:995 [SEARCH]
+    message: "Hydrated user prompts from SQLite"
+    full: logger.debug('SEARCH', 'Hydrated user prompts from SQLite', { count: results.length })
+
+  src/services/worker/SearchManager.ts:1032 [SEARCH]
+    message: "Using metadata-first + semantic ranking for concept search"
+    full: logger.debug('SEARCH', 'Using metadata-first + semantic ranking for concept search', {})
+
+  src/services/worker/SearchManager.ts:1036 [SEARCH]
+    message: "Found observations with concept"
+    full: logger.debug('SEARCH', 'Found observations with concept', { concept, count: metadataResults.length })
+
+  src/services/worker/SearchManager.ts:1051 [SEARCH]
+    message: "Chroma ranked results by semantic relevance"
+    full: logger.debug('SEARCH', 'Chroma ranked results by semantic relevance', { count: rankedIds.length })
+
+  src/services/worker/SearchManager.ts:1064 [SEARCH]
+    message: "Using SQLite-only concept search"
+    full: logger.debug('SEARCH', 'Using SQLite-only concept search', {})
+
+  src/services/worker/SearchManager.ts:1103 [SEARCH]
+    message: "Using metadata-first + semantic ranking for file search"
+    full: logger.debug('SEARCH', 'Using metadata-first + semantic ranking for file search', {})
+
+  src/services/worker/SearchManager.ts:1107 [SEARCH]
+    message: "Found results for file"
+    full: logger.debug('SEARCH', 'Found results for file', { file: filePath, observations: metadataResults.observations.length, sessions: metadataResults.sessions.length })
+
+  src/services/worker/SearchManager.ts:1126 [SEARCH]
+    message: "Chroma ranked observations by semantic relevance"
+    full: logger.debug('SEARCH', 'Chroma ranked observations by semantic relevance', { count: rankedIds.length })
+
+  src/services/worker/SearchManager.ts:1139 [SEARCH]
+    message: "Using SQLite-only file search"
+    full: logger.debug('SEARCH', 'Using SQLite-only file search', {})
+
+  src/services/worker/SearchManager.ts:1223 [SEARCH]
+    message: "Using metadata-first + semantic ranking for type search"
+    full: logger.debug('SEARCH', 'Using metadata-first + semantic ranking for type search', {})
+
+  src/services/worker/SearchManager.ts:1227 [SEARCH]
+    message: "Found observations with type"
+    full: logger.debug('SEARCH', 'Found observations with type', { type: typeStr, count: metadataResults.length })
+
+  src/services/worker/SearchManager.ts:1242 [SEARCH]
+    message: "Chroma ranked results by semantic relevance"
+    full: logger.debug('SEARCH', 'Chroma ranked results by semantic relevance', { count: rankedIds.length })
+
+  src/services/worker/SearchManager.ts:1255 [SEARCH]
+    message: "Using SQLite-only type search"
+    full: logger.debug('SEARCH', 'Using SQLite-only type search', {})
+
+  src/services/worker/SearchManager.ts:1331 [WORKER]
+    message: "files_read is plain string, using as-is"
+    error: error as Error
+    full: logger.debug('WORKER', 'files_read is plain string, using as-is', {}, error as Error)
+
+  src/services/worker/SearchManager.ts:1346 [WORKER]
+    message: "files_edited is plain string, using as-is"
+    error: error as Error
+    full: logger.debug('WORKER', 'files_edited is plain string, using as-is', {}, error as Error)
+
+  src/services/worker/SearchManager.ts:1631 [SEARCH]
+    message: "Using hybrid semantic search for timeline query"
+    full: logger.debug('SEARCH', 'Using hybrid semantic search for timeline query', {})
+
+  src/services/worker/SearchManager.ts:1633 [SEARCH]
+    message: "Chroma returned semantic matches for timeline"
+    full: logger.debug('SEARCH', 'Chroma returned semantic matches for timeline', { matchCount: chromaResults.ids.length })
+
+  src/services/worker/SearchManager.ts:1643 [SEARCH]
+  

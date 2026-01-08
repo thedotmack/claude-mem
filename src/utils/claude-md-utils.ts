@@ -12,8 +12,46 @@ import os from 'os';
 import { logger } from './logger.js';
 import { formatDate, groupByDate } from '../shared/timeline-formatting.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
+import { getWorkerHost } from '../shared/worker-utils.js';
 
 const SETTINGS_PATH = path.join(os.homedir(), '.claude-mem', 'settings.json');
+
+/**
+ * Validate that a file path is safe for CLAUDE.md generation.
+ * Rejects tilde paths, URLs, command-like strings, and paths with invalid chars.
+ *
+ * @param filePath - The file path to validate
+ * @param projectRoot - Optional project root for boundary checking
+ * @returns true if path is valid for CLAUDE.md processing
+ */
+function isValidPathForClaudeMd(filePath: string, projectRoot?: string): boolean {
+  // Reject empty or whitespace-only
+  if (!filePath || !filePath.trim()) return false;
+
+  // Reject tilde paths (Node.js doesn't expand ~)
+  if (filePath.startsWith('~')) return false;
+
+  // Reject URLs
+  if (filePath.startsWith('http://') || filePath.startsWith('https://')) return false;
+
+  // Reject paths with spaces (likely command text or PR references)
+  if (filePath.includes(' ')) return false;
+
+  // Reject paths with # (GitHub issue/PR references)
+  if (filePath.includes('#')) return false;
+
+  // If projectRoot provided, ensure path stays within project boundaries
+  if (projectRoot) {
+    // For relative paths, resolve against projectRoot; for absolute paths, use directly
+    const resolved = path.isAbsolute(filePath) ? filePath : path.resolve(projectRoot, filePath);
+    const normalizedRoot = path.resolve(projectRoot);
+    if (!resolved.startsWith(normalizedRoot + path.sep) && resolved !== normalizedRoot) {
+      return false;
+    }
+  }
+
+  return true;
+}
 
 /**
  * Replace tagged content in existing file, preserving content outside tags.
@@ -113,8 +151,21 @@ export function formatTimelineForClaudeMd(timelineText: string): string {
   // Parse observations: | #123 | 4:30 PM | 🔧 | Title | ~250 | ... |
   const observations: ParsedObservation[] = [];
   let lastTimeStr = '';
+  let currentDate: Date | null = null;
 
   for (const line of apiLines) {
+    // Check for date headers: ### Jan 4, 2026
+    const dateMatch = line.match(/^###\s+(.+)$/);
+    if (dateMatch) {
+      const dateStr = dateMatch[1].trim();
+      const parsedDate = new Date(dateStr);
+      // Validate the parsed date
+      if (!isNaN(parsedDate.getTime())) {
+        currentDate = parsedDate;
+      }
+      continue;
+    }
+
     // Match table rows: | #123 | 4:30 PM | 🔧 | Title | ~250 | ... |
     // Also handles ditto marks and session IDs (#S123)
     const match = line.match(/^\|\s*(#[S]?\d+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|/);
@@ -130,18 +181,18 @@ export function formatTimelineForClaudeMd(timelineText: string): string {
         lastTimeStr = time;
       }
 
-      // Parse time to epoch for date grouping (approximate - use today's date with parsed time)
-      const now = new Date();
+      // Parse time and combine with current date header (or fallback to today)
+      const baseDate = currentDate ? new Date(currentDate) : new Date();
       const timeParts = time.match(/(\d+):(\d+)\s*(AM|PM)/i);
-      let epoch = now.getTime();
+      let epoch = baseDate.getTime();
       if (timeParts) {
         let hours = parseInt(timeParts[1], 10);
         const minutes = parseInt(timeParts[2], 10);
         const isPM = timeParts[3].toUpperCase() === 'PM';
         if (isPM && hours !== 12) hours += 12;
         if (!isPM && hours === 12) hours = 0;
-        now.setHours(hours, minutes, 0, 0);
-        epoch = now.getTime();
+        baseDate.setHours(hours, minutes, 0, 0);
+        epoch = baseDate.getTime();
       }
 
       observations.push({
@@ -217,6 +268,14 @@ export async function updateFolderClaudeMdFiles(
   const folderPaths = new Set<string>();
   for (const filePath of filePaths) {
     if (!filePath || filePath === '') continue;
+    // VALIDATE PATH BEFORE PROCESSING
+    if (!isValidPathForClaudeMd(filePath, projectRoot)) {
+      logger.debug('FOLDER_INDEX', 'Skipping invalid file path', {
+        filePath,
+        reason: 'Failed path validation'
+      });
+      continue;
+    }
     // Resolve relative paths to absolute using projectRoot
     let absoluteFilePath = filePath;
     if (projectRoot && !path.isAbsolute(filePath)) {
@@ -244,12 +303,13 @@ export async function updateFolderClaudeMdFiles(
   for (const folderPath of folderPaths) {
     try {
       // Fetch timeline via existing API
+      const host = getWorkerHost();
       const response = await fetch(
-        `http://127.0.0.1:${port}/api/search/by-file?filePath=${encodeURIComponent(folderPath)}&limit=${limit}&project=${encodeURIComponent(project)}&isFolder=true`
+        `http://${host}:${port}/api/search/by-file?filePath=${encodeURIComponent(folderPath)}&limit=${limit}&project=${encodeURIComponent(project)}&isFolder=true`
       );
 
       if (!response.ok) {
-        logger.warn('FOLDER_INDEX', 'Failed to fetch timeline', { folderPath, status: response.status });
+        logger.error('FOLDER_INDEX', 'Failed to fetch timeline', { folderPath, status: response.status });
         continue;
       }
 
@@ -265,7 +325,12 @@ export async function updateFolderClaudeMdFiles(
       logger.debug('FOLDER_INDEX', 'Updated CLAUDE.md', { folderPath });
     } catch (error) {
       // Fire-and-forget: log warning but don't fail
-      logger.warn('FOLDER_INDEX', 'Failed to update CLAUDE.md', { folderPath }, error as Error);
+      const err = error as Error;
+      logger.error('FOLDER_INDEX', 'Failed to update CLAUDE.md', {
+        folderPath,
+        errorMessage: err.message,
+        errorStack: err.stack
+      });
     }
   }
 }
