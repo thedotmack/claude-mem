@@ -330,4 +330,118 @@ describe('SettingsDefaultsManager', () => {
       expect(SettingsDefaultsManager.getBool('CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE')).toBe(false);
     });
   });
+
+  describe('environment variable overrides', () => {
+    const originalEnv: Record<string, string | undefined> = {};
+
+    beforeEach(() => {
+      // Save original env values
+      originalEnv.CLAUDE_MEM_WORKER_PORT = process.env.CLAUDE_MEM_WORKER_PORT;
+      originalEnv.CLAUDE_MEM_MODEL = process.env.CLAUDE_MEM_MODEL;
+      originalEnv.CLAUDE_MEM_LOG_LEVEL = process.env.CLAUDE_MEM_LOG_LEVEL;
+    });
+
+    afterEach(() => {
+      // Restore original env values
+      if (originalEnv.CLAUDE_MEM_WORKER_PORT === undefined) {
+        delete process.env.CLAUDE_MEM_WORKER_PORT;
+      } else {
+        process.env.CLAUDE_MEM_WORKER_PORT = originalEnv.CLAUDE_MEM_WORKER_PORT;
+      }
+      if (originalEnv.CLAUDE_MEM_MODEL === undefined) {
+        delete process.env.CLAUDE_MEM_MODEL;
+      } else {
+        process.env.CLAUDE_MEM_MODEL = originalEnv.CLAUDE_MEM_MODEL;
+      }
+      if (originalEnv.CLAUDE_MEM_LOG_LEVEL === undefined) {
+        delete process.env.CLAUDE_MEM_LOG_LEVEL;
+      } else {
+        process.env.CLAUDE_MEM_LOG_LEVEL = originalEnv.CLAUDE_MEM_LOG_LEVEL;
+      }
+    });
+
+    it('should prioritize env var over file setting', () => {
+      // File has port 12345, env var has 54321
+      const fileSettings = {
+        CLAUDE_MEM_WORKER_PORT: '12345',
+      };
+      writeFileSync(settingsPath, JSON.stringify(fileSettings));
+      process.env.CLAUDE_MEM_WORKER_PORT = '54321';
+
+      const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+      expect(result.CLAUDE_MEM_WORKER_PORT).toBe('54321');
+    });
+
+    it('should prioritize env var over default', () => {
+      // No file, env var set
+      process.env.CLAUDE_MEM_WORKER_PORT = '99999';
+
+      const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+      expect(result.CLAUDE_MEM_WORKER_PORT).toBe('99999');
+    });
+
+    it('should use file setting when env var is not set', () => {
+      const fileSettings = {
+        CLAUDE_MEM_WORKER_PORT: '11111',
+      };
+      writeFileSync(settingsPath, JSON.stringify(fileSettings));
+      delete process.env.CLAUDE_MEM_WORKER_PORT;
+
+      const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+      expect(result.CLAUDE_MEM_WORKER_PORT).toBe('11111');
+    });
+
+    it('should apply env var override even on file parse error', () => {
+      writeFileSync(settingsPath, 'invalid json {{{');
+      process.env.CLAUDE_MEM_WORKER_PORT = '88888';
+
+      const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+      expect(result.CLAUDE_MEM_WORKER_PORT).toBe('88888');
+    });
+
+    it('should apply multiple env var overrides', () => {
+      const fileSettings = {
+        CLAUDE_MEM_WORKER_PORT: '12345',
+        CLAUDE_MEM_MODEL: 'file-model',
+        CLAUDE_MEM_LOG_LEVEL: 'DEBUG',
+      };
+      writeFileSync(settingsPath, JSON.stringify(fileSettings));
+
+      process.env.CLAUDE_MEM_WORKER_PORT = '54321';
+      process.env.CLAUDE_MEM_MODEL = 'env-model';
+      // LOG_LEVEL not set in env, should use file value
+
+      const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+      expect(result.CLAUDE_MEM_WORKER_PORT).toBe('54321');
+      expect(result.CLAUDE_MEM_MODEL).toBe('env-model');
+      expect(result.CLAUDE_MEM_LOG_LEVEL).toBe('DEBUG'); // From file
+    });
+
+    it('should document priority: env > file > defaults', () => {
+      // This test documents the expected priority order
+      const defaults = SettingsDefaultsManager.getAllDefaults();
+
+      // Set file to something different from default
+      const fileSettings = {
+        CLAUDE_MEM_WORKER_PORT: '22222', // Different from default 37777
+      };
+      writeFileSync(settingsPath, JSON.stringify(fileSettings));
+
+      // Set env to something different from both
+      process.env.CLAUDE_MEM_WORKER_PORT = '33333';
+
+      const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+      // Priority check:
+      // Default is 37777, file is 22222, env is 33333
+      // Result should be env (33333) because env > file > default
+      expect(defaults.CLAUDE_MEM_WORKER_PORT).toBe('37777'); // Confirm default
+      expect(result.CLAUDE_MEM_WORKER_PORT).toBe('33333'); // Env wins
+    });
+  });
 });

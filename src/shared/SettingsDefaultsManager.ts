@@ -127,9 +127,28 @@ export class SettingsDefaultsManager {
   }
 
   /**
+   * Apply environment variable overrides to settings
+   * Environment variables take highest priority over file and defaults
+   */
+  private static applyEnvOverrides(settings: SettingsDefaults): SettingsDefaults {
+    const result = { ...settings };
+    for (const key of Object.keys(this.DEFAULTS) as Array<keyof SettingsDefaults>) {
+      if (process.env[key] !== undefined) {
+        result[key] = process.env[key]!;
+      }
+    }
+    return result;
+  }
+
+  /**
    * Load settings from file with fallback to defaults
-   * Returns merged settings with defaults as fallback
-   * Handles all errors (missing file, corrupted JSON, permissions) by returning defaults
+   * Returns merged settings with proper priority: process.env > settings file > defaults
+   * Handles all errors (missing file, corrupted JSON, permissions) gracefully
+   *
+   * Configuration Priority:
+   *   1. Environment variables (highest priority)
+   *   2. Settings file (~/.claude-mem/settings.json)
+   *   3. Default values (lowest priority)
    */
   static loadFromFile(settingsPath: string): SettingsDefaults {
     try {
@@ -146,7 +165,8 @@ export class SettingsDefaultsManager {
         } catch (error) {
           console.warn('[SETTINGS] Failed to create settings file, using in-memory defaults:', settingsPath, error);
         }
-        return defaults;
+        // Still apply env var overrides even when file doesn't exist
+        return this.applyEnvOverrides(defaults);
       }
 
       const settingsData = readFileSync(settingsPath, 'utf-8');
@@ -176,10 +196,12 @@ export class SettingsDefaultsManager {
         }
       }
 
-      return result;
+      // Apply environment variable overrides (highest priority)
+      return this.applyEnvOverrides(result);
     } catch (error) {
       console.warn('[SETTINGS] Failed to load settings, using defaults:', settingsPath, error);
-      return this.getAllDefaults();
+      // Still apply env var overrides even on error
+      return this.applyEnvOverrides(this.getAllDefaults());
     }
   }
 }

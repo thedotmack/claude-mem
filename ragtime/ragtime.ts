@@ -1,10 +1,32 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import * as fs from "fs";
 import * as path from "path";
+import { homedir } from "os";
 
+// Development script paths (update for your system)
 const pathToFolder = "/Users/alexnewman/Scripts/claude-mem/datasets/epstein-mode/";
 const pathToPlugin = "/Users/alexnewman/Scripts/claude-mem/plugin/";
-const WORKER_PORT = 37777;
+
+// Get worker port with priority: env > file > default
+const WORKER_PORT = (() => {
+  // Environment variable takes highest priority
+  if (process.env.CLAUDE_MEM_WORKER_PORT) {
+    return parseInt(process.env.CLAUDE_MEM_WORKER_PORT, 10);
+  }
+  // Then check settings file
+  try {
+    const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+    if (fs.existsSync(settingsPath)) {
+      const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
+      if (settings.CLAUDE_MEM_WORKER_PORT) {
+        return parseInt(settings.CLAUDE_MEM_WORKER_PORT, 10);
+      }
+    }
+  } catch {
+    // Fall back to default on any error
+  }
+  return 37777;
+})();
 
 // Or read from a directory
 const filesToProcess = fs

@@ -8,7 +8,14 @@
  *   bun scripts/clear-failed-queue.ts --force   # Non-interactive - clear without prompting
  */
 
-const WORKER_URL = 'http://localhost:37777';
+import { join } from 'path';
+import { homedir } from 'os';
+import { SettingsDefaultsManager } from '../src/shared/SettingsDefaultsManager.js';
+
+// Get worker URL from settings (respects env vars > file > defaults)
+const settingsPath = join(homedir(), '.claude-mem', 'settings.json');
+const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+const WORKER_URL = `http://127.0.0.1:${settings.CLAUDE_MEM_WORKER_PORT}`;
 
 interface QueueMessage {
   id: number;

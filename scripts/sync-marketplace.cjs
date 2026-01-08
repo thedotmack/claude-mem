@@ -14,6 +14,27 @@ const os = require('os');
 const INSTALLED_PATH = path.join(os.homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
 const CACHE_BASE_PATH = path.join(os.homedir(), '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem');
 
+// Get worker port from settings (env > file > default)
+function getWorkerPort() {
+  if (process.env.CLAUDE_MEM_WORKER_PORT) {
+    return parseInt(process.env.CLAUDE_MEM_WORKER_PORT, 10);
+  }
+  try {
+    const settingsPath = path.join(os.homedir(), '.claude-mem', 'settings.json');
+    if (existsSync(settingsPath)) {
+      const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+      if (settings.CLAUDE_MEM_WORKER_PORT) {
+        return parseInt(settings.CLAUDE_MEM_WORKER_PORT, 10);
+      }
+    }
+  } catch {
+    // Fall back to default
+  }
+  return 37777;
+}
+
+const WORKER_PORT = getWorkerPort();
+
 function getCurrentBranch() {
   try {
     if (!existsSync(path.join(INSTALLED_PATH, '.git'))) {
@@ -38,7 +59,7 @@ if (branch && branch !== 'main' && !isForce) {
   console.log('\x1b[33m%s\x1b[0m', 'Running rsync would overwrite beta code.');
   console.log('');
   console.log('Options:');
-  console.log('  1. Use UI at http://localhost:37777 to update beta');
+  console.log(`  1. Use UI at http://localhost:${WORKER_PORT} to update beta`);
   console.log('  2. Switch to stable in UI first, then run sync');
   console.log('  3. Force rsync: npm run sync-marketplace:force');
   console.log('');
@@ -88,7 +109,7 @@ try {
   const http = require('http');
   const req = http.request({
     hostname: '127.0.0.1',
-    port: 37777,
+    port: WORKER_PORT,
     path: '/api/admin/restart',
     method: 'POST',
     timeout: 2000
