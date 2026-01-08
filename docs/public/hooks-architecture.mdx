@@ -28,7 +28,7 @@ Claude-Mem is fundamentally a **hook-driven system**. Every piece of functionali
 ```
 
 <Note>
-As of Claude Code 2.1.0 (ultrathink update), SessionStart hooks no longer display any user-visible messages. Context is silently injected via `hookSpecificOutput.additionalContext`.
+As of Claude Code 2.1.0 (ultrathink update), SessionStart hooks no longer display user-visible messages. Context is silently injected via `hookSpecificOutput.additionalContext`.
 </Note>
 
 **Key insight:** Claude-Mem doesn't interrupt or modify Claude Code's behavior. It observes from the outside and provides value through lifecycle hooks.
@@ -438,7 +438,7 @@ sequenceDiagram
 | **SessionEnd** | On exit | No | 120s | Log only |
 
 <Note>
-As of Claude Code 2.1.0, SessionStart hooks output is never displayed to users. Context is injected silently via `hookSpecificOutput.additionalContext`.
+As of Claude Code 2.1.0 (ultrathink update), SessionStart hooks no longer display user-visible messages. Context is silently injected via `hookSpecificOutput.additionalContext`.
 </Note>
 
 ---

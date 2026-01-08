@@ -251,7 +251,7 @@ Hooks are configured in `plugin/hooks/hooks.json`:
 3. `context-hook.js` - Fetches and silently injects prior session context
 
 <Note>
-As of Claude Code 2.1.0 (ultrathink update), SessionStart hooks no longer display any user-visible messages. Context is still injected via `hookSpecificOutput.additionalContext` but users don't see startup output in the UI.
+As of Claude Code 2.1.0 (ultrathink update), SessionStart hooks no longer display user-visible messages. Context is silently injected via `hookSpecificOutput.additionalContext`.
 </Note>
 
 ### Sequence Diagram
