@@ -5,7 +5,7 @@
  * Provides methods to get defaults with optional environment variable overrides.
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, watch } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { DEFAULT_OBSERVATION_TYPES_STRING, DEFAULT_OBSERVATION_CONCEPTS_STRING } from '../constants/observation-metadata.js';
@@ -54,6 +54,11 @@ export interface SettingsDefaults {
 }
 
 export class SettingsDefaultsManager {
+  // Cache for settings to avoid repeated file I/O
+  private static settingsCache: Map<string, { settings: SettingsDefaults; timestamp: number }> = new Map();
+  private static readonly CACHE_TTL_MS = 5000; // 5 seconds cache TTL
+  private static fileWatchers: Map<string, any> = new Map();
+
   /**
    * Default values for all settings
    */
@@ -132,8 +137,38 @@ export class SettingsDefaultsManager {
    * Load settings from file with fallback to defaults
    * Returns merged settings with defaults as fallback
    * Handles all errors (missing file, corrupted JSON, permissions) by returning defaults
+   *
+   * Now with caching and file watching for automatic updates
    */
   static loadFromFile(settingsPath: string): SettingsDefaults {
+    // Check cache first
+    const cached = this.settingsCache.get(settingsPath);
+    const now = Date.now();
+
+    if (cached && (now - cached.timestamp) < this.CACHE_TTL_MS) {
+      return cached.settings;
+    }
+
+    // Load from file
+    const settings = this.loadSettingsFromDisk(settingsPath);
+
+    // Update cache
+    this.settingsCache.set(settingsPath, {
+      settings,
+      timestamp: now
+    });
+
+    // Setup file watcher if not already watching
+    this.setupFileWatcher(settingsPath);
+
+    return settings;
+  }
+
+  /**
+   * Load settings from disk without caching
+   * Internal method used by loadFromFile
+   */
+  private static loadSettingsFromDisk(settingsPath: string): SettingsDefaults {
     try {
       if (!existsSync(settingsPath)) {
         const defaults = this.getAllDefaults();
@@ -183,5 +218,48 @@ export class SettingsDefaultsManager {
       console.warn('[SETTINGS] Failed to load settings, using defaults:', settingsPath, error);
       return this.getAllDefaults();
     }
+  }
+
+  /**
+   * Setup file watcher to invalidate cache when settings file changes
+   */
+  private static setupFileWatcher(settingsPath: string): void {
+    // Skip if already watching
+    if (this.fileWatchers.has(settingsPath)) {
+      return;
+    }
+
+    try {
+      const watcher = watch(settingsPath, (eventType) => {
+        if (eventType === 'change') {
+          // Invalidate cache on file change
+          this.settingsCache.delete(settingsPath);
+          console.log('[SETTINGS] Configuration file changed, cache invalidated:', settingsPath);
+        }
+      });
+
+      this.fileWatchers.set(settingsPath, watcher);
+      console.log('[SETTINGS] File watcher established for:', settingsPath);
+    } catch (error) {
+      console.warn('[SETTINGS] Failed to setup file watcher:', settingsPath, error);
+      // Non-critical error, continue without watching
+    }
+  }
+
+  /**
+   * Clear all caches and stop all file watchers
+   * Useful for testing or manual cache invalidation
+   */
+  static clearCache(): void {
+    this.settingsCache.clear();
+    for (const [path, watcher] of this.fileWatchers.entries()) {
+      try {
+        watcher.close();
+      } catch (error) {
+        console.warn('[SETTINGS] Failed to close watcher for:', path, error);
+      }
+    }
+    this.fileWatchers.clear();
+    console.log('[SETTINGS] All caches cleared and watchers closed');
   }
 }

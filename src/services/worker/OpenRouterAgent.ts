@@ -544,7 +544,13 @@ export class OpenRouterAgent {
 
     // Models: parse comma-separated list from settings or use default
     const modelString = settings.CLAUDE_MEM_OPENROUTER_MODEL || 'xiaomi/mimo-v2-flash:free';
-    const models = modelString.split(',').map(m => m.trim()).filter(m => m.length > 0);
+    let models = modelString.split(',').map(m => m.trim()).filter(m => m.length > 0);
+
+    // If no valid models configured, use default
+    if (models.length === 0) {
+      models = ['gemini-3-flash-preview'];
+      logger.warn('SDK', 'No OpenRouter models configured, using default: gemini-3-flash-preview');
+    }
 
     // Base URL: from settings or default
     const baseUrl = settings.CLAUDE_MEM_OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1/chat/completions';
