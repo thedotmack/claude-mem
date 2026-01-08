@@ -40,6 +40,11 @@ export function createSDKSession(
     VALUES (?, NULL, ?, ?, ?, ?, 'active')
   `).run(contentSessionId, project, userPrompt, now.toISOString(), nowEpoch);
 
+  // Backfill project if empty on initial creation (race condition fix)
+  if (project) {
+    db.prepare(`UPDATE sdk_sessions SET project = ? WHERE content_session_id = ? AND (project IS NULL OR project = '')`).run(project, contentSessionId);
+  }
+
   // Return existing or new ID
   const row = db.prepare('SELECT id FROM sdk_sessions WHERE content_session_id = ?')
     .get(contentSessionId) as { id: number };

@@ -133,6 +133,14 @@ export class GeminiAgent {
         throw new Error('Gemini API key not configured. Set CLAUDE_MEM_GEMINI_API_KEY in settings or GEMINI_API_KEY environment variable.');
       }
 
+      // Generate synthetic memorySessionId (Gemini is stateless, doesn't return session ID)
+      if (!session.memorySessionId) {
+        const syntheticId = `gemini-${session.contentSessionId}-${Date.now()}`;
+        session.memorySessionId = syntheticId;
+        this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, syntheticId);
+        logger.info('SESSION', `MEMORY_ID_GENERATED | sessionDbId=${session.sessionDbId} | provider=Gemini`);
+      }
+
       // Load active mode
       const mode = ModeManager.getInstance().getActiveMode();
 
