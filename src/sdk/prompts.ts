@@ -123,13 +123,12 @@ export function buildObservationPrompt(obs: Observation): string {
  * Build prompt to generate progress summary
  */
 export function buildSummaryPrompt(session: SDKSession, mode: ModeConfig): string {
-  const lastAssistantMessage = session.last_assistant_message || logger.happyPathError(
-    'SDK',
-    'Missing last_assistant_message in session for summary prompt',
-    { sessionId: session.id },
-    undefined,
-    ''
-  );
+  const lastAssistantMessage = session.last_assistant_message || (() => {
+    logger.error('SDK', 'Missing last_assistant_message in session for summary prompt', {
+      sessionId: session.id
+    });
+    return '';
+  })();
 
   return `${mode.prompts.header_summary_checkpoint}
 ${mode.prompts.summary_instruction}

@@ -264,7 +264,7 @@ export async function updateFolderClaudeMdFiles(
       );
 
       if (!response.ok) {
-        logger.warn('FOLDER_INDEX', 'Failed to fetch timeline', { folderPath, status: response.status });
+        logger.error('FOLDER_INDEX', 'Failed to fetch timeline', { folderPath, status: response.status });
         continue;
       }
 
@@ -281,7 +281,7 @@ export async function updateFolderClaudeMdFiles(
     } catch (error) {
       // Fire-and-forget: log warning but don't fail
       const err = error as Error;
-      logger.warn('FOLDER_INDEX', 'Failed to update CLAUDE.md', {
+      logger.error('FOLDER_INDEX', 'Failed to update CLAUDE.md', {
         folderPath,
         errorMessage: err.message,
         errorStack: err.stack

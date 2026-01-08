@@ -53,7 +53,7 @@ export class TranscriptParser {
 
     // Log summary if there were parse errors
     if (this.parseErrors.length > 0) {
-      logger.warn('PARSER', `Failed to parse ${this.parseErrors.length} lines`, {
+      logger.error('PARSER', `Failed to parse ${this.parseErrors.length} lines`, {
         path: transcriptPath,
         totalLines: lines.length,
         errorCount: this.parseErrors.length
