@@ -2,6 +2,41 @@
 
 All notable changes to claude-mem.
 
+## [v9.0.1] - 2026-01-08
+
+## Bug Fixes
+
+### Claude Code 2.1.1 Compatibility
+- Fixed hook architecture for compatibility with Claude Code 2.1.0/2.1.1
+- Context is now injected silently via SessionStart hook
+- Removed deprecated `user-message-hook` (no longer used in CC 2.1.0+)
+
+### Path Validation for CLAUDE.md Distribution
+- Added `isValidPathForClaudeMd()` to reject malformed paths:
+  - Tilde paths (`~`) that Node.js doesn't expand
+  - URLs (`http://`, `https://`)
+  - Paths with spaces (likely command text or PR references)
+  - Paths with `#` (GitHub issue/PR references)
+  - Relative paths that escape project boundary
+- Cleaned up 12 invalid CLAUDE.md files created by bug artifacts
+- Updated `.gitignore` to prevent future accidents
+
+### Log-Level Audit
+- Promoted 38+ WARN messages to ERROR level for improved debugging:
+  - Parser: observation type errors, data contamination
+  - SDK/Agents: empty init responses (Gemini, OpenRouter)
+  - Worker/Queue: session recovery, auto-recovery failures
+  - Chroma: sync failures, search failures
+  - SQLite: search failures
+  - Session/Generator: failures, missing context
+  - Infrastructure: shutdown, process management failures
+
+## Internal Changes
+- Removed hardcoded fake token counts from context injection
+- Standardized Claude Code 2.1.0 note wording across documentation
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v9.0.0...v9.0.1
+
 ## [v9.0.0] - 2026-01-06
 
 ## 🚀 Live Context System
@@ -1253,14 +1288,4 @@ Fixed unbounded database growth in the `pending_messages` table by implementing 
 
 ---
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-## [v7.2.2] - 2025-12-15
-
-## Changes
-
-- **Refactor:** Consolidate mem-search skill, remove desktop-skill duplication
-  - Delete separate `desktop-skill/` directory (was outdated)
-  - Generate `mem-search.zip` during build from `plugin/skills/mem-search/`
-  - Update docs with correct MCP tool list and new download path
-  - Single source of truth for Claude Desktop skill
 
