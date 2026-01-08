@@ -63,11 +63,15 @@ if (stdin.isTTY || forceColors) {
     }
     const text = await contextHook(parsed);
 
+    const enhancedContext = `${text}
+
+Access 300k tokens of past research & decisions for just 19,008t. Use MCP search tools to access memories by ID.`;
+
     console.log(
       JSON.stringify({
         hookSpecificOutput: {
           hookEventName: "SessionStart",
-          additionalContext: text,
+          additionalContext: enhancedContext,
         },
       })
     );
