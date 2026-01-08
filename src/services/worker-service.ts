@@ -143,7 +143,8 @@ export class WorkerService {
     this.geminiAgent = new GeminiAgent(this.dbManager, this.sessionManager);
     this.geminiAgent.setFallbackAgent(this.sdkAgent);
     this.openRouterAgent = new OpenRouterAgent(this.dbManager, this.sessionManager);
-    this.openRouterAgent.setFallbackAgent(this.sdkAgent);
+    this.openRouterAgent.setGeminiAgent(this.geminiAgent);  // Secondary fallback
+    this.openRouterAgent.setFallbackAgent(this.sdkAgent);   // Final fallback
     this.paginationHelper = new PaginationHelper(this.dbManager);
     this.settingsManager = new SettingsManager(this.dbManager);
     this.sessionEventBroadcaster = new SessionEventBroadcaster(this.sseBroadcaster, this);
