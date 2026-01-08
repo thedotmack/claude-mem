@@ -1,10 +1,17 @@
 /**
  * User Message Hook - SessionStart
- * Displays context information to the user via stderr
  *
- * This hook runs in parallel with context-hook to show users what context
- * has been loaded into their session. Uses stderr + exit code 1, which for
- * SessionStart hooks displays to user only without adding to Claude's context.
+ * @deprecated This hook is no longer used as of Claude Code 2.1.0 (ultrathink update).
+ * SessionStart hooks no longer display any user-visible messages in the Claude Code UI.
+ * Context is still injected via hookSpecificOutput.additionalContext in context-hook.ts,
+ * but users don't see any startup output.
+ *
+ * This file is kept for reference but is not registered in hooks.json.
+ *
+ * Historical behavior:
+ * - Displayed context information to the user via stderr
+ * - Ran in parallel with context-hook to show users what context was loaded
+ * - Used stderr + exit code 1 to display to user only without adding to Claude's context
  */
 import { basename } from "path";
 import { ensureWorkerRunning, getWorkerPort } from "../shared/worker-utils.js";
