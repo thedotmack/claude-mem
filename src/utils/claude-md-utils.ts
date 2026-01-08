@@ -40,9 +40,10 @@ function isValidPathForClaudeMd(filePath: string, projectRoot?: string): boolean
   // Reject paths with # (GitHub issue/PR references)
   if (filePath.includes('#')) return false;
 
-  // If projectRoot provided, ensure resolved path stays within project (only for relative paths)
-  if (projectRoot && !path.isAbsolute(filePath)) {
-    const resolved = path.resolve(projectRoot, filePath);
+  // If projectRoot provided, ensure path stays within project boundaries
+  if (projectRoot) {
+    // For relative paths, resolve against projectRoot; for absolute paths, use directly
+    const resolved = path.isAbsolute(filePath) ? filePath : path.resolve(projectRoot, filePath);
     const normalizedRoot = path.resolve(projectRoot);
     if (!resolved.startsWith(normalizedRoot + path.sep) && resolved !== normalizedRoot) {
       return false;
