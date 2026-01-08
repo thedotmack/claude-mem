@@ -27,4 +27,4 @@ ${s}`),s}var Y=p.join(j(),".claude","plugins","marketplaces","thedotmack"),mt=d(
 
 \u{1F4AC} Community https://discord.gg/J4wttp9vDu
 \u{1F4FA} Watch live in browser http://localhost:${v}/
-`);process.exit(2);
+`);process.exit(1);

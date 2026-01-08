@@ -3,7 +3,7 @@
  * Displays context information to the user via stderr
  *
  * This hook runs in parallel with context-hook to show users what context
- * has been loaded into their session. Uses stderr + exit code 2, which for
+ * has been loaded into their session. Uses stderr + exit code 1, which for
  * SessionStart hooks displays to user only without adding to Claude's context.
  */
 import { basename } from "path";
@@ -37,4 +37,4 @@ console.error(
   `\n📺 Watch live in browser http://localhost:${port}/\n`
 );
 
-process.exit(2); // Exit code 2 for SessionStart = show stderr to user only
+process.exit(1); // Exit code 1 for SessionStart = show stderr to user only

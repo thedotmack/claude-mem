@@ -5,13 +5,141 @@
 
 ### Jan 3, 2026
 
+**context-generator.cjs**
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
-| #36111 | 3:43 PM | 🔵 | Plugin Hook System Architecture | ~243 |
+| #36687 | 11:53 PM | ✅ | MCP SDK and esbuild Dependencies Updated | ~332 |
+
+**new-hook.js**
+| ID | Time | T | Title | Read |
+|----|------|---|-------|------|
+| #36682 | 11:45 PM | 🔵 | Build System Successfully Compiles All Hooks and Services | ~290 |
+
+**worker-service.cjs**
+| ID | Time | T | Title | Read |
+|----|------|---|-------|------|
+| #36670 | 11:37 PM | ✅ | Resolved merge conflicts by accepting branch changes for 39 files | ~435 |
+
+### Jan 4, 2026
+
+**worker-service.cjs**
+| ID | Time | T | Title | Read |
+|----|------|---|-------|------|
+| #36926 | 2:26 AM | ✅ | Git rebase aborted and working directory restored | ~242 |
+| #36701 | 12:01 AM | ✅ | Built Version 8.5.7 Plugin Artifacts | ~406 |
+
+**smart-install.js**
+| ID | Time | T | Title | Read |
+|----|------|---|-------|------|
+| #36924 | 2:25 AM | ✅ | Merged fix/pr-538-followups branch into main with comprehensive updates | ~481 |
+| #36914 | 2:24 AM | 🔵 | Recent commit 4d0a10c fixed multiple GitHub issues | ~365 |
+| #36829 | 1:40 AM | 🔵 | PR #542 Review Analysis - Multi-Issue Fix Validation | ~562 |
+| #36827 | 1:03 AM | ✅ | Branch diff shows 1,293 insertions and 98 deletions across 15 files | ~464 |
+| #36809 | 12:56 AM | 🟣 | GitHub Issue #527 Anti-Pattern Verification Complete - All Checks Passed | ~495 |
+| #36807 | " | 🟣 | Final Verification Confirms Complete Apple Silicon Homebrew Implementation | ~430 |
+| #36804 | 12:55 AM | 🟣 | Built File Syntax Validation Passed - Issue #527 Complete | ~378 |
+| #36802 | " | 🟣 | Verified Built File Homebrew Path Count | ~398 |
+| #36800 | 12:54 AM | 🟣 | Completed All Five Apple Silicon Homebrew Path Updates for GitHub Issue #527 | ~563 |
+| #36799 | " | 🟣 | Added Apple Silicon Homebrew Path to plugin installBun Post-Installation Verification | ~456 |
+| #36798 | " | 🟣 | Added Apple Silicon Homebrew Path to plugin isUvInstalled Function | ~436 |
+| #36797 | 12:53 AM | 🟣 | Added Apple Silicon Homebrew Path to plugin getBunPath Function | ~443 |
+| #36796 | " | 🟣 | Added Apple Silicon Homebrew Path to plugin isBunInstalled Function | ~427 |
+| #36795 | 12:52 AM | 🟣 | GitHub Issue #527 Completed - Apple Silicon Homebrew Path Support | ~550 |
+| #36794 | 12:51 AM | 🔵 | Built File Plugin smart-install.js Requires Apple Silicon Path Updates | ~442 |
+| #36772 | 12:42 AM | 🔵 | Smart Install Script Path Arrays Analysis Complete | ~448 |
+| #36761 | 12:36 AM | ✅ | Created Implementation Plans for Four GitHub Issues | ~507 |
+| #36721 | 12:15 AM | 🔵 | Issue #527 UV Homebrew Path Missing on Apple Silicon | ~492 |
+| #36719 | " | 🔵 | Issue #527 uv Homebrew Detection Missing on Apple Silicon Macs | ~526 |
+
+**new-hook.js**
+| ID | Time | T | Title | Read |
+|----|------|---|-------|------|
+| #36921 | 2:25 AM | ✅ | Project built successfully with all hooks and services | ~240 |
 
 ### Jan 5, 2026
 
+**worker-service.cjs**
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
+| #38092 | 10:44 PM | ✅ | Built version 9.0.0 with complete plugin bundle | ~329 |
+| #38036 | 9:43 PM | 🟣 | Configurable Observation Limits and Enhanced Folder Search | ~418 |
+| #37981 | 8:34 PM | 🔴 | Fixed date parsing bug in worker assets | ~268 |
 | #37610 | 5:04 PM | ✅ | Committed Rebuilt Plugin Scripts After Source Changes | ~432 |
+
+**context-generator.cjs**
+| ID | Time | T | Title | Read |
+|----|------|---|-------|------|
+| #38082 | 10:13 PM | ✅ | Merge Conflict Resolution - Kept Feature Branch Versions | ~431 |
+| #38076 | 9:53 PM | 🟣 | Worktree-Aware Project Filtering for Unified Timeline Context | ~578 |
+| #37574 | 4:52 PM | ✅ | Phase 1 Changes Ready for Commit | ~351 |
+
+**context-hook.js**
+| ID | Time | T | Title | Read |
+|----|------|---|-------|------|
+| #38048 | 9:45 PM | 🔴 | PR #558 - Comprehensive Bug Fix and Test Quality Improvement | ~585 |
+
+**user-message-hook.js**
+| ID | Time | T | Title | Read |
+|----|------|---|-------|------|
+| #37990 | 9:00 PM | 🔵 | CLAUDE_MEM_WORKER_HOST setting used across 19 files | ~289 |
+
+**smart-install.js**
+| ID | Time | T | Title | Read |
+|----|------|---|-------|------|
+| #37558 | 4:49 PM | 🔵 | Issue #555 Windows Hook Execution Patterns and Fix Strategy Documented | ~510 |
+| #37548 | 4:48 PM | ✅ | Issue #543 Analysis Report Created for Slash Command Availability | ~540 |
+
+**worker-wrapper.cjs**
+| ID | Time | T | Title | Read |
+|----|------|---|-------|------|
+| #37553 | 4:48 PM | 🔵 | Windows Worker Wrapper Process Management Implementation | ~456 |
+
+### Jan 6, 2026
+
+**cleanup-hook.js**
+| ID | Time | T | Title | Read |
+|----|------|---|-------|------|
+| #38108 | 12:15 AM | 🔵 | Complete Windows Zombie Port Bug Technical Deep Dive | ~935 |
+
+**bun-wrapper.cjs**
+| ID | Time | T | Title | Read |
+|----|------|---|-------|------|
+| #38104 | 12:14 AM | 🔵 | Windows Compatibility Issues Documented Across 56 Memory Entries | ~509 |
+
+### Jan 7, 2026
+
+**CLAUDE.md**
+| ID | Time | T | Title | Read |
+|----|------|---|-------|------|
+| #38195 | 7:35 PM | ✅ | Context-hook enhanced with promotional footer and user-message-hook removed from SessionStart | ~376 |
+| #38194 | " | 🔵 | Working tree contains 10 modified files ready for commit | ~303 |
+
+**worker-service.cjs**
+| ID | Time | T | Title | Read |
+|----|------|---|-------|------|
+| #38186 | 7:33 PM | 🟣 | Claude-mem plugin v9.0.0 built and deployed to marketplace | ~327 |
+
+**user-message-hook.js**
+| ID | Time | T | Title | Read |
+|----|------|---|-------|------|
+| #38156 | 7:11 PM | 🔵 | Compiled User Message Hook JavaScript Implementation | ~316 |
+| #38136 | 5:59 PM | 🔵 | User Message Not Displayed - Context Injection Bug Identified | ~471 |
+| #38134 | 5:58 PM | 🔵 | User-Message-Hook Successfully Fetches and Displays Context but Exits with USER_MESSAGE_ONLY Code | ~491 |
+
+**new-hook.js**
+| ID | Time | T | Title | Read |
+|----|------|---|-------|------|
+| #38135 | 5:58 PM | 🔵 | UserPromptSubmit Hook Initializes Session and Suppresses Output | ~455 |
+
+**context-hook.js**
+| ID | Time | T | Title | Read |
+|----|------|---|-------|------|
+| #38132 | 5:57 PM | 🔵 | Claude-mem Plugin Has Five Hook Scripts Including User-Message-Hook | ~375 |
+| #38127 | 5:52 PM | 🔵 | Context hook implementation structure and worker integration | ~332 |
+| #38120 | 5:46 PM | 🔴 | Rebuilt all plugin hooks and worker service | ~278 |
+
+**startup-hook.js**
+| ID | Time | T | Title | Read |
+|----|------|---|-------|------|
+| #38110 | 5:44 PM | 🔵 | Startup hook file missing or empty | ~163 |
 </claude-mem-context>
