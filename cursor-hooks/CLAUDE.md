@@ -91,17 +91,11 @@
 |----|------|---|-------|------|
 | #34238 | 10:31 PM | 🔄 | Rollback complete: simplified over-engineered concurrency and validation code | ~434 |
 | #34231 | 10:25 PM | 🔴 | Fixed race conditions and security vulnerabilities in Cursor integration | ~562 |
-| #34149 | 9:29 PM | 🟣 | Cross-Platform Cursor Hooks with Windows PowerShell Support | ~352 |
 
 **hooks.json**
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
 | #34184 | 9:51 PM | 🔵 | Cursor Hooks Configuration Schema | ~375 |
-
-**.gitignore**
-| ID | Time | T | Title | Read |
-|----|------|---|-------|------|
-| #34148 | 9:28 PM | 🟣 | Cursor IDE Integration with Cross-Platform Hooks and Documentation | ~514 |
 
 ### Dec 31, 2025
 
@@ -126,4 +120,12 @@
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
 | #37990 | 9:00 PM | 🔵 | CLAUDE_MEM_WORKER_HOST setting used across 19 files | ~289 |
+
+### Jan 7, 2026
+
+**CLAUDE.md**
+| ID | Time | T | Title | Read |
+|----|------|---|-------|------|
+| #38195 | 7:35 PM | ✅ | Context-hook enhanced with promotional footer and user-message-hook removed from SessionStart | ~376 |
+| #38194 | " | 🔵 | Working tree contains 10 modified files ready for commit | ~303 |
 </claude-mem-context>

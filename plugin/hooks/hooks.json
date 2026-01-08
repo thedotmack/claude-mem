@@ -19,11 +19,6 @@
             "type": "command",
             "command": "bun \"${CLAUDE_PLUGIN_ROOT}/scripts/context-hook.js\"",
             "timeout": 60
-          },
-          {
-            "type": "command",
-            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/scripts/user-message-hook.js\"",
-            "timeout": 60
           }
         ]
       }

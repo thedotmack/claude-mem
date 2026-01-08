@@ -17,6 +17,42 @@ import { getWorkerHost } from '../shared/worker-utils.js';
 const SETTINGS_PATH = path.join(os.homedir(), '.claude-mem', 'settings.json');
 
 /**
+ * Validate that a file path is safe for CLAUDE.md generation.
+ * Rejects tilde paths, URLs, command-like strings, and paths with invalid chars.
+ *
+ * @param filePath - The file path to validate
+ * @param projectRoot - Optional project root for boundary checking
+ * @returns true if path is valid for CLAUDE.md processing
+ */
+function isValidPathForClaudeMd(filePath: string, projectRoot?: string): boolean {
+  // Reject empty or whitespace-only
+  if (!filePath || !filePath.trim()) return false;
+
+  // Reject tilde paths (Node.js doesn't expand ~)
+  if (filePath.startsWith('~')) return false;
+
+  // Reject URLs
+  if (filePath.startsWith('http://') || filePath.startsWith('https://')) return false;
+
+  // Reject paths with spaces (likely command text or PR references)
+  if (filePath.includes(' ')) return false;
+
+  // Reject paths with # (GitHub issue/PR references)
+  if (filePath.includes('#')) return false;
+
+  // If projectRoot provided, ensure resolved path stays within project (only for relative paths)
+  if (projectRoot && !path.isAbsolute(filePath)) {
+    const resolved = path.resolve(projectRoot, filePath);
+    const normalizedRoot = path.resolve(projectRoot);
+    if (!resolved.startsWith(normalizedRoot + path.sep) && resolved !== normalizedRoot) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+/**
  * Replace tagged content in existing file, preserving content outside tags.
  *
  * Handles three cases:
@@ -231,6 +267,14 @@ export async function updateFolderClaudeMdFiles(
   const folderPaths = new Set<string>();
   for (const filePath of filePaths) {
     if (!filePath || filePath === '') continue;
+    // VALIDATE PATH BEFORE PROCESSING
+    if (!isValidPathForClaudeMd(filePath, projectRoot)) {
+      logger.debug('FOLDER_INDEX', 'Skipping invalid file path', {
+        filePath,
+        reason: 'Failed path validation'
+      });
+      continue;
+    }
     // Resolve relative paths to absolute using projectRoot
     let absoluteFilePath = filePath;
     if (projectRoot && !path.isAbsolute(filePath)) {

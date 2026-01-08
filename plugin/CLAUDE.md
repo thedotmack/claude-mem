@@ -12,11 +12,6 @@
 | #34350 | 11:12 PM | ✅ | Version 8.5.0 Build Completed Successfully | ~425 |
 | #34214 | 10:07 PM | 🔵 | Cursor Integration Feature Set Discovered via Memory Search | ~427 |
 | #34208 | 10:00 PM | ✅ | claude-mem v8.2.10 built and synced to marketplace | ~416 |
-| #34163 | 9:38 PM | ✅ | Project rebuilt with updated interactive setup wizard | ~326 |
-| #34092 | 9:02 PM | ✅ | Built claude-mem project with updated interactive setup wizard | ~452 |
-| #33997 | 7:10 PM | ✅ | Version Bumped to 8.2.10 | ~179 |
-| #33996 | " | 🟣 | Built claude-mem v8.2.10 with all hooks and services | ~387 |
-| #33982 | 7:08 PM | ✅ | Staged Version Mismatch Fix Changes | ~333 |
 
 ### Dec 30, 2025
 
@@ -84,4 +79,12 @@
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
 | #37545 | 4:47 PM | ✅ | Issue #544 Analysis Report Created for mem-search Skill Messaging Problem | ~480 |
+
+### Jan 7, 2026
+
+**package.json**
+| ID | Time | T | Title | Read |
+|----|------|---|-------|------|
+| #38186 | 7:33 PM | 🟣 | Claude-mem plugin v9.0.0 built and deployed to marketplace | ~327 |
+| #38120 | 5:46 PM | 🔴 | Rebuilt all plugin hooks and worker service | ~278 |
 </claude-mem-context>
