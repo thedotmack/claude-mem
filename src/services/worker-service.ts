@@ -41,6 +41,7 @@ import { performGracefulShutdown } from './infrastructure/GracefulShutdown.js';
 
 // Server imports
 import { Server } from './server/Server.js';
+import { requireLocalhost } from './server/Middleware.js';
 
 // Integration imports
 import {
@@ -179,7 +180,7 @@ export class WorkerService {
     this.server.registerRoutes(new LogsRoutes());
 
     // Early handler for /api/context/inject to avoid 404 during startup
-    this.server.app.get('/api/context/inject', async (req, res, next) => {
+    this.server.app.post('/api/context/inject', requireLocalhost, async (req, res, next) => {
       const timeoutMs = 300000; // 5 minute timeout for slow systems
       const timeoutPromise = new Promise((_, reject) =>
         setTimeout(() => reject(new Error('Initialization timeout')), timeoutMs)

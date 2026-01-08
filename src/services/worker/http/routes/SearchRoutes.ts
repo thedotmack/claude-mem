@@ -37,7 +37,7 @@ export class SearchRoutes extends BaseRouteHandler {
     app.get('/api/context/recent', this.handleGetRecentContext.bind(this));
     app.get('/api/context/timeline', this.handleGetContextTimeline.bind(this));
     app.get('/api/context/preview', this.handleContextPreview.bind(this));
-    app.get('/api/context/inject', this.handleContextInject.bind(this));
+    app.post('/api/context/inject', this.handleContextInject.bind(this));
 
     // Timeline and help endpoints
     app.get('/api/timeline/by-query', this.handleGetTimelineByQuery.bind(this));
@@ -195,8 +195,12 @@ export class SearchRoutes extends BaseRouteHandler {
 
   /**
    * Context injection endpoint for hooks
-   * GET /api/context/inject?projects=...&colors=true
-   * GET /api/context/inject?project=...&colors=true (legacy, single project)
+   * POST /api/context/inject
+   *
+   * Request body parameters:
+   * - projects: comma-separated list of projects (or use legacy 'project' field)
+   * - project: single project name (legacy, use 'projects' instead)
+   * - colors: set to 'true' for ANSI-colored terminal output
    *
    * Returns pre-formatted context string ready for display.
    * Use colors=true for ANSI-colored terminal output.
@@ -205,9 +209,9 @@ export class SearchRoutes extends BaseRouteHandler {
    * to get a unified timeline from both parent and worktree.
    */
   private handleContextInject = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    // Support both legacy `project` and new `projects` parameter
-    const projectsParam = (req.query.projects as string) || (req.query.project as string);
-    const useColors = req.query.colors === 'true';
+    // Support both legacy `project` and new `projects` parameter from request body
+    const projectsParam = (req.body?.projects as string) || (req.body?.project as string);
+    const useColors = req.body?.colors === 'true' || req.body?.colors === true;
 
     if (!projectsParam) {
       this.badRequest(res, 'Project(s) parameter is required');
