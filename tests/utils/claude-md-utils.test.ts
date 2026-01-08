@@ -485,3 +485,95 @@ describe('updateFolderClaudeMdFiles', () => {
     expect(callUrl).toContain(encodeURIComponent('/home/user/project/src'));
   });
 });
+
+describe('path validation in updateFolderClaudeMdFiles', () => {
+  it('should reject tilde paths', async () => {
+    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
+    global.fetch = fetchMock;
+
+    await updateFolderClaudeMdFiles(
+      ['~/.claude-mem/logs/worker.log'],
+      'test-project',
+      37777,
+      tempDir
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('should reject URLs', async () => {
+    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
+    global.fetch = fetchMock;
+
+    await updateFolderClaudeMdFiles(
+      ['https://example.com/file.ts'],
+      'test-project',
+      37777,
+      tempDir
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('should reject paths with spaces', async () => {
+    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
+    global.fetch = fetchMock;
+
+    await updateFolderClaudeMdFiles(
+      ['PR #610 on thedotmack/CLAUDE.md'],
+      'test-project',
+      37777,
+      tempDir
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('should reject paths with hash symbols', async () => {
+    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
+    global.fetch = fetchMock;
+
+    await updateFolderClaudeMdFiles(
+      ['issue#123/file.ts'],
+      'test-project',
+      37777,
+      tempDir
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('should reject path traversal outside project', async () => {
+    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
+    global.fetch = fetchMock;
+
+    await updateFolderClaudeMdFiles(
+      ['../../../etc/passwd'],
+      'test-project',
+      37777,
+      tempDir
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('should accept valid relative paths', async () => {
+    const apiResponse = {
+      content: [{ text: '| #123 | 4:30 PM | 🔵 | Test | ~100 |' }]
+    };
+    const fetchMock = mock(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve(apiResponse)
+    } as Response));
+    global.fetch = fetchMock;
+
+    await updateFolderClaudeMdFiles(
+      ['src/utils/logger.ts'],
+      'test-project',
+      37777,
+      tempDir
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
