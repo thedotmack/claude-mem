@@ -25,6 +25,12 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
 
+// Build-time version injection (replaced by esbuild define)
+declare const __DEFAULT_PACKAGE_VERSION__: string;
+const MCP_SERVER_VERSION = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined'
+  ? __DEFAULT_PACKAGE_VERSION__
+  : '1.0.0';
+
 /**
  * Worker HTTP API configuration
  */
@@ -236,7 +242,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
 const server = new Server(
   {
     name: 'mcp-search-server',
-    version: '1.0.0',
+    version: MCP_SERVER_VERSION,
   },
   {
     capabilities: {
