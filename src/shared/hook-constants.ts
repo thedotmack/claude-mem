@@ -4,6 +4,7 @@ export const HOOK_TIMEOUTS = {
   WORKER_STARTUP_WAIT: 1000,
   WORKER_STARTUP_RETRIES: 300,
   PRE_RESTART_SETTLE_DELAY: 2000,  // Give files time to sync before restart
+  POWERSHELL_COMMAND: 10000,     // PowerShell process enumeration (10s - typically completes in <1s)
   WINDOWS_MULTIPLIER: 1.5     // Platform-specific adjustment
 } as const;
 

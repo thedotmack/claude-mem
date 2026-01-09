@@ -14,6 +14,7 @@ import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync } from '
 import { exec, execSync, spawn } from 'child_process';
 import { promisify } from 'util';
 import { logger } from '../../utils/logger.js';
+import { HOOK_TIMEOUTS } from '../../shared/hook-constants.js';
 
 const execAsync = promisify(exec);
 
@@ -90,7 +91,7 @@ export async function getChildProcesses(parentPid: number): Promise<number[]> {
   try {
     // PowerShell Get-Process instead of WMIC (deprecated in Windows 11)
     const cmd = `powershell -NoProfile -NonInteractive -Command "Get-Process | Where-Object { \\$_.ParentProcessId -eq ${parentPid} } | Select-Object -ExpandProperty Id"`;
-    const { stdout } = await execAsync(cmd, { timeout: 60000 });
+    const { stdout } = await execAsync(cmd, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND });
     // PowerShell outputs just numbers (one per line), simpler than WMIC's "ProcessId=1234" format
     return stdout
       .split('\n')
@@ -120,7 +121,7 @@ export async function forceKillProcess(pid: number): Promise<void> {
   try {
     if (process.platform === 'win32') {
       // /T kills entire process tree, /F forces termination
-      await execAsync(`taskkill /PID ${pid} /T /F`, { timeout: 60000 });
+      await execAsync(`taskkill /PID ${pid} /T /F`, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND });
     } else {
       process.kill(pid, 'SIGKILL');
     }
@@ -172,7 +173,7 @@ export async function cleanupOrphanedProcesses(): Promise<void> {
     if (isWindows) {
       // Windows: Use PowerShell Get-CimInstance instead of WMIC (deprecated in Windows 11)
       const cmd = `powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process | Where-Object { \\$_.Name -like '*python*' -and \\$_.CommandLine -like '*chroma-mcp*' } | Select-Object -ExpandProperty ProcessId"`;
-      const { stdout } = await execAsync(cmd, { timeout: 60000 });
+      const { stdout } = await execAsync(cmd, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND });
 
       if (!stdout.trim()) {
         logger.debug('SYSTEM', 'No orphaned chroma-mcp processes found (Windows)');
@@ -238,7 +239,7 @@ export async function cleanupOrphanedProcesses(): Promise<void> {
         continue;
       }
       try {
-        execSync(`taskkill /PID ${pid} /T /F`, { timeout: 60000, stdio: 'ignore' });
+        execSync(`taskkill /PID ${pid} /T /F`, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND, stdio: 'ignore' });
       } catch (error) {
         // [ANTI-PATTERN IGNORED]: Cleanup loop - process may have exited, continue to next PID
         logger.debug('SYSTEM', 'Failed to kill process, may have already exited', { pid }, error as Error);
