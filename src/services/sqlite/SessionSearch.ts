@@ -356,7 +356,12 @@ export class SessionSearch {
         if (Array.isArray(files)) {
           return files.some(f => this.isDirectChild(f, folderPath));
         }
-      } catch {}
+      } catch (error) {
+        logger.debug('SEARCH', 'Failed to parse files JSON in observation', {
+          error: error instanceof Error ? error.message : String(error),
+          preview: filesJson?.substring(0, 100)
+        });
+      }
       return false;
     };
 
@@ -374,7 +379,12 @@ export class SessionSearch {
         if (Array.isArray(files)) {
           return files.some(f => this.isDirectChild(f, folderPath));
         }
-      } catch {}
+      } catch (error) {
+        logger.debug('SEARCH', 'Failed to parse files JSON in session', {
+          error: error instanceof Error ? error.message : String(error),
+          preview: filesJson?.substring(0, 100)
+        });
+      }
       return false;
     };
 
