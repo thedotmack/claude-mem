@@ -5,10 +5,10 @@
  */
 
 import path from 'path';
-import { homedir } from 'os';
 import { existsSync, readFileSync } from 'fs';
 import { SessionStore } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
+import { CLAUDE_CONFIG_DIR } from '../../shared/paths.js';
 import type {
   ContextConfig,
   Observation,
@@ -203,7 +203,8 @@ export function getPriorSessionMessages(
 
   const priorSessionId = priorSessionObs.memory_session_id;
   const dashedCwd = cwdToDashed(cwd);
-  const transcriptPath = path.join(homedir(), '.claude', 'projects', dashedCwd, `${priorSessionId}.jsonl`);
+  // Use CLAUDE_CONFIG_DIR to support custom Claude config directories
+  const transcriptPath = path.join(CLAUDE_CONFIG_DIR, 'projects', dashedCwd, `${priorSessionId}.jsonl`);
   return extractPriorMessages(transcriptPath);
 }
 
