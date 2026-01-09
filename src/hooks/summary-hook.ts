@@ -12,7 +12,7 @@
 import { stdin } from 'process';
 import { STANDARD_HOOK_RESPONSE } from './hook-response.js';
 import { logger } from '../utils/logger.js';
-import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
+import { ensureWorkerRunning, getWorkerPort, isStdinValid } from '../shared/worker-utils.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { extractLastMessage } from '../shared/transcript-parser.js';
 
@@ -74,6 +74,13 @@ async function summaryHook(input?: StopInput): Promise<void> {
 }
 
 // Entry Point
+// Check stdin validity before accessing it (prevents Bun crash on invalid stdin fd - issue #646)
+if (!isStdinValid(stdin)) {
+  logger.error('HOOK', 'summary-hook: stdin is invalid, cannot read hook input');
+  console.log(STANDARD_HOOK_RESPONSE);
+  process.exit(0);
+}
+
 let input = '';
 stdin.on('data', (chunk) => input += chunk);
 stdin.on('end', async () => {

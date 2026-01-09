@@ -7,7 +7,7 @@
  */
 
 import { stdin } from "process";
-import { ensureWorkerRunning, getWorkerPort } from "../shared/worker-utils.js";
+import { ensureWorkerRunning, getWorkerPort, isStdinValid } from "../shared/worker-utils.js";
 import { HOOK_TIMEOUTS } from "../shared/hook-constants.js";
 import { getProjectContext } from "../utils/project-name.js";
 import { logger } from "../utils/logger.js";
@@ -46,7 +46,11 @@ async function contextHook(input?: SessionStartInput): Promise<string> {
 // Entry Point - handle stdin/stdout
 const forceColors = process.argv.includes("--colors");
 
-if (stdin.isTTY || forceColors) {
+// Use shared utility to check stdin validity before accessing it
+// This prevents Bun crashes with EINVAL on invalid stdin fd (issue #646)
+const hasValidStdin = isStdinValid(stdin);
+
+if (!hasValidStdin || stdin.isTTY || forceColors) {
   contextHook(undefined).then((text) => {
     console.log(text);
     process.exit(0);

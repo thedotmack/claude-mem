@@ -1,6 +1,6 @@
 import { stdin } from 'process';
 import { STANDARD_HOOK_RESPONSE } from './hook-response.js';
-import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
+import { ensureWorkerRunning, getWorkerPort, isStdinValid } from '../shared/worker-utils.js';
 import { getProjectName } from '../utils/project-name.js';
 import { logger } from '../utils/logger.js';
 
@@ -88,6 +88,13 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
 }
 
 // Entry Point
+// Check stdin validity before accessing it (prevents Bun crash on invalid stdin fd - issue #646)
+if (!isStdinValid(stdin)) {
+  logger.error('HOOK', 'new-hook: stdin is invalid, cannot read hook input');
+  console.log(STANDARD_HOOK_RESPONSE);
+  process.exit(0);
+}
+
 let input = '';
 stdin.on('data', (chunk) => input += chunk);
 stdin.on('end', async () => {
