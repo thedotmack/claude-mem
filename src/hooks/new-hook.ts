@@ -1,6 +1,6 @@
 import { stdin } from 'process';
 import { STANDARD_HOOK_RESPONSE } from './hook-response.js';
-import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
+import { ensureWorkerRunning, getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
 import { getProjectName } from '../utils/project-name.js';
 import { logger } from '../utils/logger.js';
 
@@ -29,7 +29,8 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
   logger.debug('HOOK', 'new-hook: Calling /api/sessions/init', { contentSessionId: session_id, project });
 
   // Initialize session via HTTP - handles DB operations and privacy checks
-  const initResponse = await fetch(`http://127.0.0.1:${port}/api/sessions/init`, {
+  const host = getWorkerHost();
+  const initResponse = await fetch(`http://${host}:${port}/api/sessions/init`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -69,7 +70,7 @@ async function newHook(input?: UserPromptSubmitInput): Promise<void> {
   logger.debug('HOOK', 'new-hook: Calling /sessions/{sessionDbId}/init', { sessionDbId, promptNumber });
 
   // Initialize SDK agent session via HTTP (starts the agent!)
-  const response = await fetch(`http://127.0.0.1:${port}/sessions/${sessionDbId}/init`, {
+  const response = await fetch(`http://${host}:${port}/sessions/${sessionDbId}/init`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ userPrompt: cleanedPrompt, promptNumber })

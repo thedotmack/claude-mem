@@ -9,16 +9,15 @@
  */
 
 import path from 'path';
-import { homedir } from 'os';
 import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync } from 'fs';
 import { exec, execSync, spawn } from 'child_process';
 import { promisify } from 'util';
 import { logger } from '../../utils/logger.js';
+import { DATA_DIR } from '../../shared/paths.js';
 
 const execAsync = promisify(exec);
 
-// Standard paths for PID file management
-const DATA_DIR = path.join(homedir(), '.claude-mem');
+// Standard paths for PID file management - use centralized DATA_DIR from paths.ts
 const PID_FILE = path.join(DATA_DIR, 'worker.pid');
 
 export interface PidInfo {

@@ -14,18 +14,19 @@
  * - Used stderr + exit code 1 to display to user only without adding to Claude's context
  */
 import { basename } from "path";
-import { ensureWorkerRunning, getWorkerPort } from "../shared/worker-utils.js";
+import { ensureWorkerRunning, getWorkerPort, getWorkerHost } from "../shared/worker-utils.js";
 
 // Ensure worker is running
 await ensureWorkerRunning();
 
 const port = getWorkerPort();
+const host = getWorkerHost();
 const project = basename(process.cwd());
 
 // Fetch formatted context directly from worker API
 // Note: Removed AbortSignal.timeout to avoid Windows Bun cleanup issue (libuv assertion)
 const response = await fetch(
-  `http://127.0.0.1:${port}/api/context/inject?project=${encodeURIComponent(project)}&colors=true`,
+  `http://${host}:${port}/api/context/inject?project=${encodeURIComponent(project)}&colors=true`,
   { method: 'GET' }
 );
 

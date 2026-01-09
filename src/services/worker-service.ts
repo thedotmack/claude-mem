@@ -18,6 +18,7 @@ import * as readline from 'readline';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
+import { USER_SETTINGS_PATH } from '../shared/paths.js';
 import { logger } from '../utils/logger.js';
 
 // Infrastructure imports
@@ -435,14 +436,13 @@ async function runInteractiveSetup(): Promise<number> {
     console.log('Step 1: Checking environment...\n');
 
     const hasClaudeCode = await detectClaudeCode();
-    const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
     let settings: Record<string, unknown> = {};
 
-    if (existsSync(settingsPath)) {
+    if (existsSync(USER_SETTINGS_PATH)) {
       try {
-        settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+        settings = JSON.parse(readFileSync(USER_SETTINGS_PATH, 'utf-8'));
       } catch (error) {
-        logger.debug('SETUP', 'Corrupt settings file, starting fresh', { path: settingsPath }, error as Error);
+        logger.debug('SETUP', 'Corrupt settings file, starting fresh', { path: USER_SETTINGS_PATH }, error as Error);
       }
     }
 
@@ -470,8 +470,8 @@ async function runInteractiveSetup(): Promise<number> {
 
     if (providerChoice === '1') {
       settings['CLAUDE_MEM_PROVIDER'] = 'claude-sdk';
-      mkdirSync(path.dirname(settingsPath), { recursive: true });
-      writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+      mkdirSync(path.dirname(USER_SETTINGS_PATH), { recursive: true });
+      writeFileSync(USER_SETTINGS_PATH, JSON.stringify(settings, null, 2));
       console.log('\nClaude SDK configured!\n');
     } else if (providerChoice === '2') {
       console.log('\nConfiguring Gemini...\n');
@@ -481,8 +481,8 @@ async function runInteractiveSetup(): Promise<number> {
       if (apiKey.trim()) {
         settings['CLAUDE_MEM_PROVIDER'] = 'gemini';
         settings['CLAUDE_MEM_GEMINI_API_KEY'] = apiKey.trim();
-        mkdirSync(path.dirname(settingsPath), { recursive: true });
-        writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+        mkdirSync(path.dirname(USER_SETTINGS_PATH), { recursive: true });
+        writeFileSync(USER_SETTINGS_PATH, JSON.stringify(settings, null, 2));
         console.log('\nGemini configured successfully!\n');
       } else {
         console.log('\nNo API key provided. You can add it later in ~/.claude-mem/settings.json\n');
@@ -495,8 +495,8 @@ async function runInteractiveSetup(): Promise<number> {
       if (apiKey.trim()) {
         settings['CLAUDE_MEM_PROVIDER'] = 'openrouter';
         settings['CLAUDE_MEM_OPENROUTER_API_KEY'] = apiKey.trim();
-        mkdirSync(path.dirname(settingsPath), { recursive: true });
-        writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+        mkdirSync(path.dirname(USER_SETTINGS_PATH), { recursive: true });
+        writeFileSync(USER_SETTINGS_PATH, JSON.stringify(settings, null, 2));
         console.log('\nOpenRouter configured successfully!\n');
       } else {
         console.log('\nNo API key provided. You can add it later in ~/.claude-mem/settings.json\n');

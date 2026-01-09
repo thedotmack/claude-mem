@@ -8,13 +8,11 @@
 
 import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync } from 'fs';
 import path from 'path';
-import os from 'os';
 import { logger } from './logger.js';
 import { formatDate, groupByDate } from '../shared/timeline-formatting.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { getWorkerHost } from '../shared/worker-utils.js';
-
-const SETTINGS_PATH = path.join(os.homedir(), '.claude-mem', 'settings.json');
+import { USER_SETTINGS_PATH } from '../shared/paths.js';
 
 /**
  * Validate that a file path is safe for CLAUDE.md generation.
@@ -261,7 +259,7 @@ export async function updateFolderClaudeMdFiles(
   projectRoot?: string
 ): Promise<void> {
   // Load settings to get configurable observation limit
-  const settings = SettingsDefaultsManager.loadFromFile(SETTINGS_PATH);
+  const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
   const limit = parseInt(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10) || 50;
 
   // Extract unique folder paths from file paths
