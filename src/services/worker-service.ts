@@ -59,6 +59,7 @@ import { SSEBroadcaster } from './worker/SSEBroadcaster.js';
 import { SDKAgent } from './worker/SDKAgent.js';
 import { GeminiAgent } from './worker/GeminiAgent.js';
 import { OpenRouterAgent } from './worker/OpenRouterAgent.js';
+import { OpenAIAgent } from './worker/OpenAIAgent.js';
 import { PaginationHelper } from './worker/PaginationHelper.js';
 import { SettingsManager } from './worker/SettingsManager.js';
 import { SearchManager } from './worker/SearchManager.js';
@@ -94,6 +95,7 @@ export class WorkerService {
   private sdkAgent: SDKAgent;
   private geminiAgent: GeminiAgent;
   private openRouterAgent: OpenRouterAgent;
+  private openAIAgent: OpenAIAgent;
   private paginationHelper: PaginationHelper;
   private settingsManager: SettingsManager;
   private sessionEventBroadcaster: SessionEventBroadcaster;
@@ -120,6 +122,8 @@ export class WorkerService {
     this.geminiAgent.setFallbackAgent(this.sdkAgent);
     this.openRouterAgent = new OpenRouterAgent(this.dbManager, this.sessionManager);
     this.openRouterAgent.setFallbackAgent(this.sdkAgent);
+    this.openAIAgent = new OpenAIAgent(this.dbManager, this.sessionManager);
+    this.openAIAgent.setFallbackAgent(this.sdkAgent);
     this.paginationHelper = new PaginationHelper(this.dbManager);
     this.settingsManager = new SettingsManager(this.dbManager);
     this.sessionEventBroadcaster = new SessionEventBroadcaster(this.sseBroadcaster, this);
@@ -173,7 +177,7 @@ export class WorkerService {
   private registerRoutes(): void {
     // Standard routes
     this.server.registerRoutes(new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager));
-    this.server.registerRoutes(new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.sessionEventBroadcaster, this));
+    this.server.registerRoutes(new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.openAIAgent, this.sessionEventBroadcaster, this));
     this.server.registerRoutes(new DataRoutes(this.paginationHelper, this.dbManager, this.sessionManager, this.sseBroadcaster, this, this.startTime));
     this.server.registerRoutes(new SettingsRoutes(this.settingsManager));
     this.server.registerRoutes(new LogsRoutes());

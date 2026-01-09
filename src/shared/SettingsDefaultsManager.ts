@@ -29,6 +29,12 @@ export interface SettingsDefaults {
   CLAUDE_MEM_OPENROUTER_APP_NAME: string;
   CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES: string;
   CLAUDE_MEM_OPENROUTER_MAX_TOKENS: string;
+  // OpenAI Configuration
+  CLAUDE_MEM_OPENAI_API_KEY: string;
+  CLAUDE_MEM_OPENAI_MODEL: string;
+  CLAUDE_MEM_OPENAI_BASE_URL: string;
+  CLAUDE_MEM_OPENAI_MAX_CONTEXT_MESSAGES: string;
+  CLAUDE_MEM_OPENAI_MAX_TOKENS: string;
   // System Configuration
   CLAUDE_MEM_DATA_DIR: string;
   CLAUDE_MEM_LOG_LEVEL: string;
@@ -73,6 +79,12 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_OPENROUTER_APP_NAME: 'claude-mem',  // App name for OpenRouter analytics
     CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES: '20',  // Max messages in context window
     CLAUDE_MEM_OPENROUTER_MAX_TOKENS: '100000',  // Max estimated tokens (~100k safety limit)
+    // OpenAI Configuration
+    CLAUDE_MEM_OPENAI_API_KEY: '',  // Empty by default, can be set via UI or env
+    CLAUDE_MEM_OPENAI_MODEL: 'gpt-4o-mini',  // Default OpenAI model
+    CLAUDE_MEM_OPENAI_BASE_URL: 'https://api.openai.com/v1/chat/completions',  // Default OpenAI API endpoint
+    CLAUDE_MEM_OPENAI_MAX_CONTEXT_MESSAGES: '20',  // Max messages in context window
+    CLAUDE_MEM_OPENAI_MAX_TOKENS: '100000',  // Max estimated tokens (~100k safety limit)
     // System Configuration
     CLAUDE_MEM_DATA_DIR: join(homedir(), '.claude-mem'),
     CLAUDE_MEM_LOG_LEVEL: 'INFO',
