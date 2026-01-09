@@ -24,7 +24,8 @@ const _dirname = getDirname();
  */
 
 // Base directories
-export const DATA_DIR = SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR');
+// Note: DATA_DIR checks env var directly because settings file is IN the data dir (circular dependency)
+export const DATA_DIR = process.env.CLAUDE_MEM_DATA_DIR || SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR');
 // Note: CLAUDE_CONFIG_DIR is a Claude Code setting, not claude-mem, so leave as env var
 export const CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
 

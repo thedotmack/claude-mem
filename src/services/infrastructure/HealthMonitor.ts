@@ -13,14 +13,16 @@ import path from 'path';
 import { homedir } from 'os';
 import { readFileSync } from 'fs';
 import { logger } from '../../utils/logger.js';
+import { getWorkerHost } from '../../shared/worker-utils.js';
 
 /**
  * Check if a port is in use by querying the health endpoint
  */
 export async function isPortInUse(port: number): Promise<boolean> {
   try {
+    const host = getWorkerHost();
     // Note: Removed AbortSignal.timeout to avoid Windows Bun cleanup issue (libuv assertion)
-    const response = await fetch(`http://127.0.0.1:${port}/api/health`);
+    const response = await fetch(`http://${host}:${port}/api/health`);
     return response.ok;
   } catch (error) {
     // [ANTI-PATTERN IGNORED]: Health check polls every 500ms, logging would flood
@@ -36,10 +38,11 @@ export async function isPortInUse(port: number): Promise<boolean> {
  */
 export async function waitForHealth(port: number, timeoutMs: number = 30000): Promise<boolean> {
   const start = Date.now();
+  const host = getWorkerHost();
   while (Date.now() - start < timeoutMs) {
     try {
       // Note: Removed AbortSignal.timeout to avoid Windows Bun cleanup issue (libuv assertion)
-      const response = await fetch(`http://127.0.0.1:${port}/api/readiness`);
+      const response = await fetch(`http://${host}:${port}/api/readiness`);
       if (response.ok) return true;
     } catch (error) {
       // [ANTI-PATTERN IGNORED]: Retry loop - expected failures during startup, will retry
@@ -70,8 +73,9 @@ export async function waitForPortFree(port: number, timeoutMs: number = 10000): 
  */
 export async function httpShutdown(port: number): Promise<boolean> {
   try {
+    const host = getWorkerHost();
     // Note: Removed AbortSignal.timeout to avoid Windows Bun cleanup issue (libuv assertion)
-    const response = await fetch(`http://127.0.0.1:${port}/api/admin/shutdown`, {
+    const response = await fetch(`http://${host}:${port}/api/admin/shutdown`, {
       method: 'POST'
     });
     if (!response.ok) {
@@ -108,7 +112,8 @@ export function getInstalledPluginVersion(): string {
  */
 export async function getRunningWorkerVersion(port: number): Promise<string | null> {
   try {
-    const response = await fetch(`http://127.0.0.1:${port}/api/version`);
+    const host = getWorkerHost();
+    const response = await fetch(`http://${host}:${port}/api/version`);
     if (!response.ok) return null;
     const data = await response.json() as { version: string };
     return data.version;

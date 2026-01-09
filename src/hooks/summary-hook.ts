@@ -12,7 +12,7 @@
 import { stdin } from 'process';
 import { STANDARD_HOOK_RESPONSE } from './hook-response.js';
 import { logger } from '../utils/logger.js';
-import { ensureWorkerRunning, getWorkerPort } from '../shared/worker-utils.js';
+import { ensureWorkerRunning, getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { extractLastMessage } from '../shared/transcript-parser.js';
 
@@ -53,7 +53,8 @@ async function summaryHook(input?: StopInput): Promise<void> {
   });
 
   // Send to worker - worker handles privacy check and database operations
-  const response = await fetch(`http://127.0.0.1:${port}/api/sessions/summarize`, {
+  const host = getWorkerHost();
+  const response = await fetch(`http://${host}:${port}/api/sessions/summarize`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({

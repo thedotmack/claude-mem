@@ -10,7 +10,7 @@ import path from 'path';
 import { readFileSync, statSync, existsSync } from 'fs';
 import { logger } from '../../../../utils/logger.js';
 import { homedir } from 'os';
-import { getPackageRoot } from '../../../../shared/paths.js';
+import { getPackageRoot, DB_PATH } from '../../../../shared/paths.js';
 import { getWorkerPort } from '../../../../shared/worker-utils.js';
 import { PaginationHelper } from '../../PaginationHelper.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
@@ -212,10 +212,9 @@ export class DataRoutes extends BaseRouteHandler {
     const totalSummaries = db.prepare('SELECT COUNT(*) as count FROM session_summaries').get() as { count: number };
 
     // Get database file size and path
-    const dbPath = path.join(homedir(), '.claude-mem', 'claude-mem.db');
     let dbSize = 0;
-    if (existsSync(dbPath)) {
-      dbSize = statSync(dbPath).size;
+    if (existsSync(DB_PATH)) {
+      dbSize = statSync(DB_PATH).size;
     }
 
     // Worker metadata
@@ -232,7 +231,7 @@ export class DataRoutes extends BaseRouteHandler {
         port: getWorkerPort()
       },
       database: {
-        path: dbPath,
+        path: DB_PATH,
         size: dbSize,
         observations: totalObservations.count,
         sessions: totalSessions.count,
