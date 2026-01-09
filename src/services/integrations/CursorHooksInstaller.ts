@@ -14,7 +14,15 @@ import { homedir } from 'os';
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from 'fs';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { fileURLToPath } from 'url';
 import { logger } from '../../utils/logger.js';
+
+// ESM/CJS compatible __dirname/__filename
+// In bundled CJS (esbuild), import.meta.url is undefined but CJS globals exist
+const __filename = (typeof globalThis.__filename !== 'undefined')
+  ? globalThis.__filename
+  : (typeof import.meta?.url !== 'undefined' ? fileURLToPath(import.meta.url) : process.argv[1]);
+const __dirname = path.dirname(__filename);
 import { getWorkerPort } from '../../shared/worker-utils.js';
 import {
   readCursorRegistry as readCursorRegistryFromFile,

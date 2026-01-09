@@ -15,7 +15,10 @@ import { fileURLToPath } from 'url';
 import { logger } from '../../utils/logger.js';
 
 // ESM __dirname equivalent
-const __filename = fileURLToPath(import.meta.url);
+// In bundled CJS (esbuild), import.meta.url is undefined but CJS globals exist
+const __filename = (typeof globalThis.__filename !== 'undefined')
+  ? globalThis.__filename
+  : (typeof import.meta?.url !== 'undefined' ? fileURLToPath(import.meta.url) : process.argv[1]);
 const __dirname = path.dirname(__filename);
 
 /**
