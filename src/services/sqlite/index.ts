@@ -30,3 +30,11 @@ export * from './Summaries.js';
 export * from './Prompts.js';
 export * from './Timeline.js';
 export * from './Import.js';
+
+// Export parsing utilities for JSON field handling
+export {
+  parseObservationFiles,
+  parseObservationsFiles,
+  parseSummaryFiles,
+  parseSummariesFiles
+} from './utils/parseObservationFiles.js';
