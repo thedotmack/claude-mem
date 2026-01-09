@@ -3,6 +3,7 @@ import { Header } from './components/Header';
 import { Feed } from './components/Feed';
 import { ContextSettingsModal } from './components/ContextSettingsModal';
 import { LogsDrawer } from './components/LogsModal';
+import { CleanupModal } from './components/CleanupModal';
 import { useSSE } from './hooks/useSSE';
 import { useSettings } from './hooks/useSettings';
 import { useStats } from './hooks/useStats';
@@ -15,6 +16,7 @@ export function App() {
   const [currentFilter, setCurrentFilter] = useState('');
   const [contextPreviewOpen, setContextPreviewOpen] = useState(false);
   const [logsModalOpen, setLogsModalOpen] = useState(false);
+  const [cleanupModalOpen, setCleanupModalOpen] = useState(false);
   const [paginatedObservations, setPaginatedObservations] = useState<Observation[]>([]);
   const [paginatedSummaries, setPaginatedSummaries] = useState<Summary[]>([]);
   const [paginatedPrompts, setPaginatedPrompts] = useState<UserPrompt[]>([]);
@@ -58,6 +60,11 @@ export function App() {
   // Toggle logs modal
   const toggleLogsModal = useCallback(() => {
     setLogsModalOpen(prev => !prev);
+  }, []);
+
+  // Toggle cleanup modal
+  const toggleCleanupModal = useCallback(() => {
+    setCleanupModalOpen(prev => !prev);
   }, []);
 
   // Handle loading more data
@@ -135,9 +142,25 @@ export function App() {
         </svg>
       </button>
 
+      <button
+        className="cleanup-toggle-btn"
+        onClick={toggleCleanupModal}
+        title="Hafıza Bakımı"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="3 6 5 6 21 6"></polyline>
+          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+        </svg>
+      </button>
+
       <LogsDrawer
         isOpen={logsModalOpen}
         onClose={toggleLogsModal}
+      />
+
+      <CleanupModal
+        isOpen={cleanupModalOpen}
+        onClose={toggleCleanupModal}
       />
     </>
   );

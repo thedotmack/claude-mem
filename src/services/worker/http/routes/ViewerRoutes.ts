@@ -66,31 +66,49 @@ export class ViewerRoutes extends BaseRouteHandler {
 
   /**
    * SSE stream endpoint
+   * Note: Not using wrapHandler because SSE is a long-lived connection
+   * that should not be closed on errors
    */
-  private handleSSEStream = this.wrapHandler((req: Request, res: Response): void => {
+  private handleSSEStream(req: Request, res: Response): void {
+    // Disable timeouts for SSE (long-lived connection)
+    req.setTimeout(0);
+    res.setTimeout(0);
+
     // Setup SSE headers
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no'); // Disable nginx buffering
+    res.flushHeaders(); // Send headers immediately
 
     // Add client to broadcaster
     this.sseBroadcaster.addClient(res);
 
-    // Send initial_load event with projects list
-    const allProjects = this.dbManager.getSessionStore().getAllProjects();
-    this.sseBroadcaster.broadcast({
-      type: 'initial_load',
-      projects: allProjects,
-      timestamp: Date.now()
+    // Handle client disconnect
+    req.on('close', () => {
+      this.sseBroadcaster.removeClient(res);
     });
 
-    // Send initial processing status (based on queue depth + active generators)
-    const isProcessing = this.sessionManager.isAnySessionProcessing();
-    const queueDepth = this.sessionManager.getTotalActiveWork(); // Includes queued + actively processing
-    this.sseBroadcaster.broadcast({
-      type: 'processing_status',
-      isProcessing,
-      queueDepth
-    });
-  });
+    // Send initial_load event with projects list
+    try {
+      const allProjects = this.dbManager.getSessionStore().getAllProjects();
+      this.sseBroadcaster.broadcast({
+        type: 'initial_load',
+        projects: allProjects,
+        timestamp: Date.now()
+      });
+
+      // Send initial processing status (based on queue depth + active generators)
+      const isProcessing = this.sessionManager.isAnySessionProcessing();
+      const queueDepth = this.sessionManager.getTotalActiveWork(); // Includes queued + actively processing
+      this.sseBroadcaster.broadcast({
+        type: 'processing_status',
+        isProcessing,
+        queueDepth
+      });
+    } catch (error) {
+      // Log error but don't close connection - client will reconnect if needed
+      logger.warn('VIEWER', 'Error sending initial SSE events', { error: (error as Error).message });
+    }
+  }
 }
