@@ -10,4 +10,8 @@ export const API_ENDPOINTS = {
   STATS: '/api/stats',
   PROCESSING_STATUS: '/api/processing-status',
   STREAM: '/stream',
+  // Maintenance endpoints
+  MAINTENANCE_CLEANUP_PREVIEW: '/api/maintenance/cleanup/preview',
+  MAINTENANCE_CLEANUP: '/api/maintenance/cleanup',
+  MAINTENANCE_STATS: '/api/maintenance/stats',
 } as const;

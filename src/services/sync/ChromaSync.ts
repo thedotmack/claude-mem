@@ -103,7 +103,21 @@ export class ChromaSync {
       const pythonVersion = settings.CLAUDE_MEM_PYTHON_VERSION;
       const isWindows = process.platform === 'win32';
 
-      const transportOptions: any = {
+      // WORKAROUND: uvx panics in macOS sandbox (Claude Code sandbox)
+      // See: https://github.com/astral-sh/uv/issues/16664
+      // Try direct chroma-mcp path first, fall back to uvx if not found
+      const directChromaMcpPath = path.join(os.homedir(), 'Library', 'Python', pythonVersion, 'bin', 'chroma-mcp');
+      const fs = await import('fs');
+      const useDirectPath = !isWindows && fs.existsSync(directChromaMcpPath);
+
+      const transportOptions: any = useDirectPath ? {
+        command: directChromaMcpPath,
+        args: [
+          '--client-type', 'persistent',
+          '--data-dir', this.VECTOR_DB_DIR
+        ],
+        stderr: 'ignore'
+      } : {
         command: 'uvx',
         args: [
           '--python', pythonVersion,
@@ -113,6 +127,10 @@ export class ChromaSync {
         ],
         stderr: 'ignore'
       };
+
+      if (useDirectPath) {
+        logger.info('CHROMA_SYNC', 'Using direct chroma-mcp path (uvx sandbox workaround)', { path: directChromaMcpPath });
+      }
 
       // CRITICAL: On Windows, try to hide console window to prevent PowerShell popups
       // Note: windowsHide may not be supported by MCP SDK's StdioClientTransport

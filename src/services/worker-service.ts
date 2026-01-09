@@ -14,6 +14,14 @@ import * as fs from 'fs';
 import { spawn } from 'child_process';
 import { homedir } from 'os';
 import { existsSync, writeFileSync, readFileSync, mkdirSync } from 'fs';
+import { fileURLToPath } from 'url';
+
+// ESM/CJS compatible __dirname/__filename
+// In bundled CJS (esbuild), import.meta.url is undefined but CJS globals exist
+const __filename = (typeof globalThis.__filename !== 'undefined')
+  ? globalThis.__filename
+  : (typeof import.meta?.url !== 'undefined' ? fileURLToPath(import.meta.url) : process.argv[1]);
+const __dirname = path.dirname(__filename);
 import * as readline from 'readline';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';

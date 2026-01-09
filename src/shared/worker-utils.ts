@@ -139,3 +139,24 @@ export async function ensureWorkerRunning(): Promise<void> {
     customPrefix: 'Worker did not become ready within 15 seconds.'
   }));
 }
+
+/**
+ * Check if stdin is valid and usable for reading
+ *
+ * WORKAROUND: Bun crashes with EINVAL when fstat() is called on invalid stdin fd
+ * This happens when Claude Code invokes hooks without a valid stdin.
+ * See: https://github.com/thedotmack/claude-mem/issues/646
+ *
+ * We must check if stdin is usable BEFORE accessing stdin.isTTY or stdin.on()
+ *
+ * @param stdin - The process.stdin stream
+ * @returns true if stdin is valid and can be read from
+ */
+export function isStdinValid(stdin: NodeJS.ReadStream): boolean {
+  try {
+    // Attempt to access stdin.fd - this will throw if stdin is invalid
+    return typeof stdin.fd === 'number' && stdin.fd >= 0;
+  } catch {
+    return false;
+  }
+}
