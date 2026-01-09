@@ -28,6 +28,9 @@ export const DATA_DIR = SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR');
 // Note: CLAUDE_CONFIG_DIR is a Claude Code setting, not claude-mem, so leave as env var
 export const CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
 
+// Plugin installation directory - respects CLAUDE_CONFIG_DIR for users with custom Claude locations
+export const MARKETPLACE_ROOT = join(CLAUDE_CONFIG_DIR, 'plugins', 'marketplaces', 'thedotmack');
+
 // Data subdirectories
 export const ARCHIVES_DIR = join(DATA_DIR, 'archives');
 export const LOGS_DIR = join(DATA_DIR, 'logs');
