@@ -10,9 +10,13 @@
  */
 
 import path from 'path';
-import { homedir } from 'os';
-import { readFileSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
+import { fileURLToPath } from 'url';
 import { logger } from '../../utils/logger.js';
+
+// ESM __dirname equivalent
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 /**
  * Check if a port is in use by querying the health endpoint
@@ -94,12 +98,35 @@ export async function httpShutdown(port: number): Promise<boolean> {
 /**
  * Get the plugin version from the installed marketplace package.json
  * This is the "expected" version that should be running
+ *
+ * Uses __dirname to resolve path relative to the running code, supporting:
+ * - Custom CLAUDE_CONFIG_DIR environments
+ * - Organization-specific directories (~/.claude-orgname/)
+ * - Standard installations (~/.claude/)
  */
 export function getInstalledPluginVersion(): string {
-  const marketplaceRoot = path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
-  const packageJsonPath = path.join(marketplaceRoot, 'package.json');
-  const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
-  return packageJson.version;
+  // Walk up from current file to find package.json
+  // This works regardless of where the plugin is installed
+  let dir = __dirname;
+  while (dir !== path.dirname(dir)) {
+    const pkgPath = path.join(dir, 'package.json');
+    if (existsSync(pkgPath)) {
+      try {
+        const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
+        // Verify it's the claude-mem package
+        if (pkg.name === 'claude-mem') {
+          return pkg.version;
+        }
+      } catch {
+        // Continue searching if JSON parse fails
+      }
+    }
+    dir = path.dirname(dir);
+  }
+
+  // Fallback: return unknown if we can't find package.json
+  logger.warn('SYSTEM', 'Could not find claude-mem package.json, version unknown');
+  return 'unknown';
 }
 
 /**
