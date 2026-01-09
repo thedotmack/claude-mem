@@ -99,6 +99,9 @@ export class SDKAgent {
 
     // Run Agent SDK query loop
     // Only resume if we have a captured memory session ID
+    // IMPORTANT: Use separate workingDirectory for memory agent sessions
+    // This prevents memory sessions from appearing in user's `claude --resume` list
+    const memoryAgentWorkDir = path.join(homedir(), '.claude-mem', 'sessions');
     const queryResult = query({
       prompt: messageGenerator,
       options: {
@@ -109,7 +112,8 @@ export class SDKAgent {
         ...(hasRealMemorySessionId && session.lastPromptNumber > 1 && { resume: session.memorySessionId }),
         disallowedTools,
         abortController: session.abortController,
-        pathToClaudeCodeExecutable: claudePath
+        pathToClaudeCodeExecutable: claudePath,
+        workingDirectory: memoryAgentWorkDir
       }
     });
 
