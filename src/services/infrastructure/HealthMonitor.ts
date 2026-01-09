@@ -169,5 +169,11 @@ export async function checkVersionMatch(port: number): Promise<VersionCheckResul
     return { matches: true, pluginVersion, workerVersion };
   }
 
+  // If plugin version is unknown (package.json not found), assume match (graceful degradation)
+  // This prevents unnecessary restarts when running from bundled code
+  if (pluginVersion === 'unknown') {
+    return { matches: true, pluginVersion, workerVersion };
+  }
+
   return { matches: pluginVersion === workerVersion, pluginVersion, workerVersion };
 }
