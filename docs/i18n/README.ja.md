@@ -286,7 +286,7 @@ Copyright (C) 2025 Alex Newman (@thedotmack). All rights reserved.
 - 派生作品もAGPL-3.0の下でライセンスする必要があります
 - このソフトウェアには保証がありません
 
-**Ragtimeに関する注意**: `ragtime/`ディレクトリは**PolyForm Noncommercial License 1.0.0**の下で個別にライセンスされています。詳細は[ragtime/LICENSE](ragtime/LICENSE)を参照してください。
+**Ragtimeに関する注意**: `ragtime/`ディレクトリは **PolyForm Noncommercial License 1.0.0** の下で個別にライセンスされています。詳細は[ragtime/LICENSE](ragtime/LICENSE)を参照してください。
 
 ---
 
