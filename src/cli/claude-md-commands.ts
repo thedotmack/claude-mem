@@ -1,32 +1,33 @@
-#!/usr/bin/env bun
 /**
- * Regenerate CLAUDE.md files for folders in the current project
+ * CLAUDE.md Generation and Cleanup Commands
  *
- * Usage:
- *   bun scripts/regenerate-claude-md.ts [--dry-run] [--clean]
+ * Shared module for CLAUDE.md file management that can be invoked from:
+ * - CLI scripts (scripts/regenerate-claude-md.ts)
+ * - Worker service API endpoints
  *
- * Options:
- *   --dry-run  Show what would be done without writing files
- *   --clean    Remove auto-generated CLAUDE.md files instead of regenerating
- *
- * Behavior:
- *   - Scopes to current working directory (not entire database history)
- *   - Uses git ls-files to respect .gitignore (skips node_modules, .git, etc.)
- *   - Only processes folders that exist within the current project
- *   - Filters database to current project observations only
+ * Provides two main operations:
+ * - generateClaudeMd: Regenerate CLAUDE.md files for folders with observations
+ * - cleanClaudeMd: Remove auto-generated content from CLAUDE.md files
  */
 
 import { Database } from 'bun:sqlite';
 import path from 'path';
 import os from 'os';
-import { existsSync, mkdirSync, writeFileSync, readFileSync, renameSync, unlinkSync, readdirSync } from 'fs';
+import {
+  existsSync,
+  writeFileSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  readdirSync
+} from 'fs';
 import { execSync } from 'child_process';
-import { SettingsDefaultsManager } from '../src/shared/SettingsDefaultsManager.js';
+import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
+import { formatTime, groupByDate } from '../shared/timeline-formatting.js';
+import { logger } from '../utils/logger.js';
 
 const DB_PATH = path.join(os.homedir(), '.claude-mem', 'claude-mem.db');
 const SETTINGS_PATH = path.join(os.homedir(), '.claude-mem', 'settings.json');
-const settings = SettingsDefaultsManager.loadFromFile(SETTINGS_PATH);
-const OBSERVATION_LIMIT = parseInt(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10) || 50;
 
 interface ObservationRow {
   id: number;
@@ -41,24 +42,6 @@ interface ObservationRow {
   files_read: string | null;
   project: string;
   discovery_tokens: number | null;
-}
-
-// Import shared formatting utilities
-import { formatTime, groupByDate } from '../src/shared/timeline-formatting.js';
-
-/**
- * Normalize a path to use forward slashes (for DB queries)
- * Database stores git-normalized paths which always use /
- */
-function toDbPath(fsPath: string): string {
-  return fsPath.split(path.sep).join('/');
-}
-
-/**
- * Convert DB path to OS-native path
- */
-function toFsPath(dbPath: string): string {
-  return dbPath.split('/').join(path.sep);
 }
 
 // Type icon map (matches ModeManager)
@@ -114,7 +97,7 @@ function getTrackedFolders(workingDir: string): Set<string> {
       }
     }
   } catch (error) {
-    console.error('Warning: git ls-files failed, falling back to directory walk');
+    logger.warn('CLAUDE_MD', 'git ls-files failed, falling back to directory walk', { error: String(error) });
     // Fallback: walk directories but skip common ignored patterns
     walkDirectoriesWithIgnore(workingDir, folders);
   }
@@ -152,9 +135,6 @@ function walkDirectoriesWithIgnore(dir: string, folders: Set<string>, depth: num
 
 /**
  * Check if a file is a direct child of a folder (not in a subfolder)
- * @param filePath - File path like "src/services/foo.ts"
- * @param folderPath - Folder path like "src/services"
- * @returns true if file is directly in folder, false if in a subfolder
  */
 function isDirectChild(filePath: string, folderPath: string): boolean {
   // Normalize paths to use OS-native separators for comparison
@@ -190,7 +170,6 @@ function hasDirectChildFile(obs: ObservationRow, folderPath: string): boolean {
 
 /**
  * Query observations for a specific folder
- * folderPath is a relative path from the project root (e.g., "src/services")
  * Only returns observations with files directly in the folder (not in subfolders)
  */
 function findObservationsByFolder(db: Database, relativeFolderPath: string, project: string, limit: number): ObservationRow[] {
@@ -219,8 +198,6 @@ function findObservationsByFolder(db: Database, relativeFolderPath: string, proj
 /**
  * Extract relevant file from an observation for display
  * Only returns files that are direct children of the folder (not in subfolders)
- * @param obs - The observation row
- * @param relativeFolder - Relative folder path (e.g., "src/services")
  */
 function extractRelevantFile(obs: ObservationRow, relativeFolder: string): string {
   // Try files_modified first - only direct children
@@ -230,7 +207,6 @@ function extractRelevantFile(obs: ObservationRow, relativeFolder: string): strin
       if (Array.isArray(modified) && modified.length > 0) {
         for (const file of modified) {
           if (isDirectChild(file, relativeFolder)) {
-            // Get just the filename (no path since it's a direct child)
             return path.basename(file);
           }
         }
@@ -308,7 +284,6 @@ function formatObservationsForClaudeMd(observations: ObservationRow[], folderPat
   return lines.join('\n').trim();
 }
 
-
 /**
  * Write CLAUDE.md file with tagged content preservation
  */
@@ -350,110 +325,7 @@ function writeClaudeMdToFolder(folderPath: string, newContent: string): void {
 }
 
 /**
- * Clean up auto-generated CLAUDE.md files
- *
- * For each file with <claude-mem-context> tags:
- * - Strip the tagged section
- * - If empty after stripping → delete the file
- * - If has remaining content → save the stripped version
- */
-function cleanupAutoGeneratedFiles(workingDir: string, dryRun: boolean): void {
-  console.log('=== CLAUDE.md Cleanup Mode ===\n');
-  console.log(`Scanning ${workingDir} for CLAUDE.md files with auto-generated content...\n`);
-
-  const filesToProcess: string[] = [];
-
-  // Walk directories to find CLAUDE.md files
-  function walkForClaudeMd(dir: string): void {
-    const ignorePatterns = ['node_modules', '.git', '.next', 'dist', 'build'];
-
-    try {
-      const entries = readdirSync(dir, { withFileTypes: true });
-      for (const entry of entries) {
-        const fullPath = path.join(dir, entry.name);
-
-        if (entry.isDirectory()) {
-          if (!ignorePatterns.includes(entry.name)) {
-            walkForClaudeMd(fullPath);
-          }
-        } else if (entry.name === 'CLAUDE.md') {
-          // Check if file contains auto-generated content
-          try {
-            const content = readFileSync(fullPath, 'utf-8');
-            if (content.includes('<claude-mem-context>')) {
-              filesToProcess.push(fullPath);
-            }
-          } catch {
-            // Skip files we can't read
-          }
-        }
-      }
-    } catch {
-      // Ignore permission errors
-    }
-  }
-
-  walkForClaudeMd(workingDir);
-
-  if (filesToProcess.length === 0) {
-    console.log('No CLAUDE.md files with auto-generated content found.');
-    return;
-  }
-
-  console.log(`Found ${filesToProcess.length} CLAUDE.md files with auto-generated content:\n`);
-
-  let deletedCount = 0;
-  let cleanedCount = 0;
-  let errorCount = 0;
-
-  for (const file of filesToProcess) {
-    const relativePath = path.relative(workingDir, file);
-
-    try {
-      const content = readFileSync(file, 'utf-8');
-
-      // Strip the claude-mem-context tagged section
-      const stripped = content.replace(/<claude-mem-context>[\s\S]*?<\/claude-mem-context>/g, '').trim();
-
-      if (stripped === '') {
-        // Empty after stripping → delete
-        if (dryRun) {
-          console.log(`  [DRY-RUN] Would delete (empty): ${relativePath}`);
-        } else {
-          unlinkSync(file);
-          console.log(`  Deleted (empty): ${relativePath}`);
-        }
-        deletedCount++;
-      } else {
-        // Has content → write stripped version
-        if (dryRun) {
-          console.log(`  [DRY-RUN] Would clean: ${relativePath}`);
-        } else {
-          writeFileSync(file, stripped);
-          console.log(`  Cleaned: ${relativePath}`);
-        }
-        cleanedCount++;
-      }
-    } catch (error) {
-      console.error(`  Error processing ${relativePath}: ${error}`);
-      errorCount++;
-    }
-  }
-
-  console.log('\n=== Summary ===');
-  console.log(`Deleted (empty): ${deletedCount}`);
-  console.log(`Cleaned:         ${cleanedCount}`);
-  console.log(`Errors:          ${errorCount}`);
-
-  if (dryRun) {
-    console.log('\nRun without --dry-run to actually process files.');
-  }
-}
-
-/**
  * Regenerate CLAUDE.md for a single folder
- * @param absoluteFolder - Absolute path for writing files
- * @param relativeFolder - Relative path for DB queries (matches storage format)
  */
 function regenerateFolder(
   db: Database,
@@ -461,15 +333,16 @@ function regenerateFolder(
   relativeFolder: string,
   project: string,
   dryRun: boolean,
-  workingDir: string
+  workingDir: string,
+  observationLimit: number
 ): { success: boolean; observationCount: number; error?: string } {
   try {
-    // NEW: Validate folder exists on disk before processing
+    // Validate folder exists on disk before processing
     if (!existsSync(absoluteFolder)) {
       return { success: false, observationCount: 0, error: 'Folder no longer exists' };
     }
 
-    // NEW: Validate folder is within project root (prevent path traversal)
+    // Validate folder is within project root (prevent path traversal)
     const resolvedFolder = path.resolve(absoluteFolder);
     const resolvedWorkingDir = path.resolve(workingDir);
     if (!resolvedFolder.startsWith(resolvedWorkingDir + path.sep)) {
@@ -477,7 +350,7 @@ function regenerateFolder(
     }
 
     // Query using relative path (matches DB storage format)
-    const observations = findObservationsByFolder(db, relativeFolder, project, OBSERVATION_LIMIT);
+    const observations = findObservationsByFolder(db, relativeFolder, project, observationLimit);
 
     if (observations.length === 0) {
       return { success: false, observationCount: 0, error: 'No observations for folder' };
@@ -498,104 +371,205 @@ function regenerateFolder(
 }
 
 /**
- * Main function
+ * Generate CLAUDE.md files for all folders with observations
+ *
+ * @param dryRun - If true, only report what would be done without writing files
+ * @returns Exit code (0 for success, 1 for error)
  */
-async function main() {
-  const args = process.argv.slice(2);
-  const dryRun = args.includes('--dry-run');
-  const cleanMode = args.includes('--clean');
+export async function generateClaudeMd(dryRun: boolean): Promise<number> {
+  try {
+    const workingDir = process.cwd();
+    const settings = SettingsDefaultsManager.loadFromFile(SETTINGS_PATH);
+    const observationLimit = parseInt(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10) || 50;
 
-  const workingDir = process.cwd();
+    logger.info('CLAUDE_MD', 'Starting CLAUDE.md generation', {
+      workingDir,
+      dryRun,
+      observationLimit
+    });
 
-  // Handle cleanup mode
-  if (cleanMode) {
-    cleanupAutoGeneratedFiles(workingDir, dryRun);
-    return;
-  }
+    // Determine project identifier (uses folder name, matching hook behavior)
+    const project = path.basename(workingDir);
 
-  console.log('=== CLAUDE.md Regeneration Script ===\n');
-  console.log(`Working directory: ${workingDir}`);
+    // Get tracked folders using git ls-files
+    const trackedFolders = getTrackedFolders(workingDir);
 
-  // Determine project identifier (matches how hooks determine project - uses folder name)
-  const project = path.basename(workingDir);
-  console.log(`Project: ${project}\n`);
+    if (trackedFolders.size === 0) {
+      logger.info('CLAUDE_MD', 'No folders found in project');
+      return 0;
+    }
 
-  // Get tracked folders using git ls-files
-  console.log('Discovering folders (using git ls-files to respect .gitignore)...');
-  const trackedFolders = getTrackedFolders(workingDir);
+    logger.info('CLAUDE_MD', `Found ${trackedFolders.size} folders in project`);
 
-  if (trackedFolders.size === 0) {
-    console.log('No folders found in project.');
-    process.exit(0);
-  }
+    // Open database
+    if (!existsSync(DB_PATH)) {
+      logger.info('CLAUDE_MD', 'Database not found, no observations to process');
+      return 0;
+    }
 
-  console.log(`Found ${trackedFolders.size} folders in project.\n`);
+    const db = new Database(DB_PATH, { readonly: true, create: false });
 
-  // Open database
-  if (!existsSync(DB_PATH)) {
-    console.log('Database not found. No observations to process.');
-    process.exit(0);
-  }
+    // Process each folder
+    let successCount = 0;
+    let skipCount = 0;
+    let errorCount = 0;
 
-  console.log('Opening database...');
-  const db = new Database(DB_PATH, { readonly: true, create: false });
+    const foldersArray = Array.from(trackedFolders).sort();
 
-  if (dryRun) {
-    console.log('[DRY RUN] Would regenerate the following folders:\n');
-  }
+    for (const absoluteFolder of foldersArray) {
+      const relativeFolder = path.relative(workingDir, absoluteFolder);
 
-  // Process each folder
-  let successCount = 0;
-  let skipCount = 0;
-  let errorCount = 0;
+      const result = regenerateFolder(
+        db,
+        absoluteFolder,
+        relativeFolder,
+        project,
+        dryRun,
+        workingDir,
+        observationLimit
+      );
 
-  const foldersArray = Array.from(trackedFolders).sort();
-
-  for (let i = 0; i < foldersArray.length; i++) {
-    const absoluteFolder = foldersArray[i];
-    const progress = `[${i + 1}/${foldersArray.length}]`;
-    const relativeFolder = path.relative(workingDir, absoluteFolder);
-
-    if (dryRun) {
-      // Query using relative path (matches DB storage format)
-      const observations = findObservationsByFolder(db, relativeFolder, project, OBSERVATION_LIMIT);
-      if (observations.length > 0) {
-        console.log(`${progress} ${relativeFolder} (${observations.length} obs)`);
+      if (result.success) {
+        logger.debug('CLAUDE_MD', `Processed folder: ${relativeFolder}`, {
+          observationCount: result.observationCount
+        });
         successCount++;
-      } else {
+      } else if (result.error?.includes('No observations')) {
         skipCount++;
+      } else {
+        logger.warn('CLAUDE_MD', `Error processing folder: ${relativeFolder}`, {
+          error: result.error
+        });
+        errorCount++;
       }
-      continue;
     }
 
-    const result = regenerateFolder(db, absoluteFolder, relativeFolder, project, dryRun, workingDir);
+    db.close();
 
-    if (result.success) {
-      console.log(`${progress} ${relativeFolder} - ${result.observationCount} obs`);
-      successCount++;
-    } else if (result.error?.includes('No observations')) {
-      skipCount++;
-    } else {
-      console.log(`${progress} ${relativeFolder} - ERROR: ${result.error}`);
-      errorCount++;
-    }
-  }
+    logger.info('CLAUDE_MD', 'CLAUDE.md generation complete', {
+      totalFolders: foldersArray.length,
+      withObservations: successCount,
+      noObservations: skipCount,
+      errors: errorCount,
+      dryRun
+    });
 
-  db.close();
-
-  // Summary
-  console.log('\n=== Summary ===');
-  console.log(`Total folders scanned: ${foldersArray.length}`);
-  console.log(`With observations:     ${successCount}`);
-  console.log(`No observations:       ${skipCount}`);
-  console.log(`Errors:                ${errorCount}`);
-
-  if (dryRun) {
-    console.log('\nRun without --dry-run to actually regenerate files.');
+    return 0;
+  } catch (error) {
+    logger.error('CLAUDE_MD', 'Fatal error during CLAUDE.md generation', {
+      error: String(error)
+    });
+    return 1;
   }
 }
 
-main().catch(error => {
-  console.error('Fatal error:', error);
-  process.exit(1);
-});
+/**
+ * Clean up auto-generated CLAUDE.md files
+ *
+ * For each file with <claude-mem-context> tags:
+ * - Strip the tagged section
+ * - If empty after stripping, delete the file
+ * - If has remaining content, save the stripped version
+ *
+ * @param dryRun - If true, only report what would be done without modifying files
+ * @returns Exit code (0 for success, 1 for error)
+ */
+export async function cleanClaudeMd(dryRun: boolean): Promise<number> {
+  try {
+    const workingDir = process.cwd();
+
+    logger.info('CLAUDE_MD', 'Starting CLAUDE.md cleanup', {
+      workingDir,
+      dryRun
+    });
+
+    const filesToProcess: string[] = [];
+
+    // Walk directories to find CLAUDE.md files
+    function walkForClaudeMd(dir: string): void {
+      const ignorePatterns = ['node_modules', '.git', '.next', 'dist', 'build'];
+
+      try {
+        const entries = readdirSync(dir, { withFileTypes: true });
+        for (const entry of entries) {
+          const fullPath = path.join(dir, entry.name);
+
+          if (entry.isDirectory()) {
+            if (!ignorePatterns.includes(entry.name)) {
+              walkForClaudeMd(fullPath);
+            }
+          } else if (entry.name === 'CLAUDE.md') {
+            // Check if file contains auto-generated content
+            try {
+              const content = readFileSync(fullPath, 'utf-8');
+              if (content.includes('<claude-mem-context>')) {
+                filesToProcess.push(fullPath);
+              }
+            } catch {
+              // Skip files we can't read
+            }
+          }
+        }
+      } catch {
+        // Ignore permission errors
+      }
+    }
+
+    walkForClaudeMd(workingDir);
+
+    if (filesToProcess.length === 0) {
+      logger.info('CLAUDE_MD', 'No CLAUDE.md files with auto-generated content found');
+      return 0;
+    }
+
+    logger.info('CLAUDE_MD', `Found ${filesToProcess.length} CLAUDE.md files with auto-generated content`);
+
+    let deletedCount = 0;
+    let cleanedCount = 0;
+    let errorCount = 0;
+
+    for (const file of filesToProcess) {
+      const relativePath = path.relative(workingDir, file);
+
+      try {
+        const content = readFileSync(file, 'utf-8');
+
+        // Strip the claude-mem-context tagged section
+        const stripped = content.replace(/<claude-mem-context>[\s\S]*?<\/claude-mem-context>/g, '').trim();
+
+        if (stripped === '') {
+          // Empty after stripping -> delete
+          if (!dryRun) {
+            unlinkSync(file);
+          }
+          logger.debug('CLAUDE_MD', `${dryRun ? '[DRY-RUN] Would delete' : 'Deleted'} (empty): ${relativePath}`);
+          deletedCount++;
+        } else {
+          // Has content -> write stripped version
+          if (!dryRun) {
+            writeFileSync(file, stripped);
+          }
+          logger.debug('CLAUDE_MD', `${dryRun ? '[DRY-RUN] Would clean' : 'Cleaned'}: ${relativePath}`);
+          cleanedCount++;
+        }
+      } catch (error) {
+        logger.warn('CLAUDE_MD', `Error processing ${relativePath}`, { error: String(error) });
+        errorCount++;
+      }
+    }
+
+    logger.info('CLAUDE_MD', 'CLAUDE.md cleanup complete', {
+      deleted: deletedCount,
+      cleaned: cleanedCount,
+      errors: errorCount,
+      dryRun
+    });
+
+    return 0;
+  } catch (error) {
+    logger.error('CLAUDE_MD', 'Fatal error during CLAUDE.md cleanup', {
+      error: String(error)
+    });
+    return 1;
+  }
+}

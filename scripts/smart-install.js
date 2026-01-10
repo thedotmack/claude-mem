@@ -5,7 +5,7 @@
  * Ensures Bun runtime and uv (Python package manager) are installed
  * (auto-installs if missing) and handles dependency installation when needed.
  */
-import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { execSync, spawnSync } from 'child_process';
 import { join } from 'path';
 import { homedir } from 'os';
@@ -245,6 +245,117 @@ function installDeps() {
   }));
 }
 
+const CLI_MARKER = join(ROOT, '.cli-installed');
+
+/**
+ * Escape a path for safe embedding in a shell single-quoted string (bash/zsh)
+ * Single quotes cannot contain single quotes, so we end the quote, add an escaped quote, and restart
+ */
+function escapeForShellSingleQuote(path) {
+  return path.replace(/'/g, "'\\''");
+}
+
+/**
+ * Escape a path for safe embedding in a PowerShell double-quoted string
+ * Backticks and dollar signs need escaping
+ */
+function escapeForPowerShell(path) {
+  return path.replace(/`/g, '``').replace(/\$/g, '`$');
+}
+
+/**
+ * Install claude-mem CLI alias for all supported platforms
+ */
+function installCLI() {
+  if (existsSync(CLI_MARKER)) return;
+
+  const bunPath = getBunPath();
+  if (!bunPath) return;
+
+  const workerCli = join(ROOT, 'plugin', 'scripts', 'worker-service.cjs');
+
+  try {
+    if (IS_WINDOWS) {
+      // Windows: PowerShell profile
+      const psProfile = join(homedir(), 'Documents', 'WindowsPowerShell', 'Microsoft.PowerShell_profile.ps1');
+      const psProfileCore = join(homedir(), 'Documents', 'PowerShell', 'Microsoft.PowerShell_profile.ps1');
+      const safeBunPath = escapeForPowerShell(bunPath);
+      const safeWorkerCli = escapeForPowerShell(workerCli);
+      const aliasCmd = `function claude-mem { & "${safeBunPath}" "${safeWorkerCli}" @args }`;
+
+      for (const profile of [psProfile, psProfileCore]) {
+        try {
+          const profileDir = join(profile, '..');
+          if (!existsSync(profileDir)) mkdirSync(profileDir, { recursive: true });
+
+          let content = existsSync(profile) ? readFileSync(profile, 'utf-8') : '';
+          if (!content.includes('function claude-mem')) {
+            writeFileSync(profile, content + '\n# claude-mem CLI\n' + aliasCmd + '\n');
+            console.error(`✅ Added claude-mem CLI to ${profile}`);
+          }
+        } catch (e) {
+          // Profile location may not be writable, try next
+        }
+      }
+    } else {
+      // macOS/Linux: Support multiple shells
+      const safeBunPath = escapeForShellSingleQuote(bunPath);
+      const safeWorkerCli = escapeForShellSingleQuote(workerCli);
+      const aliasCmd = `alias claude-mem='${safeBunPath} "${safeWorkerCli}"'`;
+
+      // Shell config files to check (in order of preference)
+      const shellConfigs = [
+        '.zshrc',      // macOS default (Catalina+), common on Linux
+        '.bashrc',     // Linux default, macOS bash users
+        '.bash_profile', // macOS bash (older)
+        '.profile',    // Generic fallback
+      ];
+
+      let installed = false;
+      for (const rcFile of shellConfigs) {
+        const rcPath = join(homedir(), rcFile);
+        if (existsSync(rcPath)) {
+          let content = readFileSync(rcPath, 'utf-8');
+          if (!content.includes("alias claude-mem=")) {
+            writeFileSync(rcPath, content + '\n# claude-mem CLI\n' + aliasCmd + '\n');
+            console.error(`✅ Added claude-mem CLI to ~/${rcFile}`);
+            installed = true;
+            break;  // Only add to one file
+          } else {
+            installed = true;  // Already installed
+            break;
+          }
+        }
+      }
+
+      // If no shell config found, create .bashrc
+      if (!installed) {
+        const bashrc = join(homedir(), '.bashrc');
+        writeFileSync(bashrc, '# claude-mem CLI\n' + aliasCmd + '\n');
+        console.error('✅ Created ~/.bashrc with claude-mem CLI');
+      }
+    }
+
+    writeFileSync(CLI_MARKER, JSON.stringify({
+      installedAt: new Date().toISOString(),
+      platform: process.platform
+    }));
+    console.error('   Restart your terminal to use: claude-mem generate');
+  } catch (error) {
+    console.error('⚠️ Could not install CLI alias:', error.message);
+    console.error('   Manual installation:');
+    if (IS_WINDOWS) {
+      const safeBun = escapeForPowerShell(bunPath);
+      const safeCli = escapeForPowerShell(workerCli);
+      console.error(`   Add to PowerShell profile: function claude-mem { & "${safeBun}" "${safeCli}" @args }`);
+    } else {
+      const safeBun = escapeForShellSingleQuote(bunPath);
+      const safeCli = escapeForShellSingleQuote(workerCli);
+      console.error(`   Add to ~/.zshrc or ~/.bashrc: alias claude-mem='${safeBun} "${safeCli}"'`);
+    }
+  }
+}
+
 // Main execution
 try {
   if (!isBunInstalled()) installBun();
@@ -253,6 +364,7 @@ try {
     installDeps();
     console.error('✅ Dependencies installed');
   }
+  installCLI();
 } catch (e) {
   console.error('❌ Installation failed:', e.message);
   process.exit(1);
