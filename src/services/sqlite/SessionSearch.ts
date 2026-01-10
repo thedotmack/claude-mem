@@ -342,7 +342,7 @@ export class SessionSearch {
       return this.db.prepare(sql).all(...params) as ObservationSearchResult[];
     } catch (error) {
       // FTS5 table might not exist or query syntax error
-      console.warn('[SessionSearch] FTS5 search failed:', error);
+      logger.warn('DB', 'FTS5 search failed', { error });
       return [];
     }
   }
@@ -404,7 +404,7 @@ export class SessionSearch {
 
       return this.db.prepare(sql).all(...params) as SessionSummarySearchResult[];
     } catch (error) {
-      console.warn('[SessionSearch] FTS5 session search failed:', error);
+      logger.warn('DB', 'FTS5 session search failed', { error });
       return [];
     }
   }

@@ -12,6 +12,7 @@ import { checkpointManager } from '../../../batch/checkpoint.js';
 import { getCleanupJob } from '../../CleanupJob.js';
 import { pipelineMetrics } from '../../../pipeline/metrics.js';
 import type { DatabaseManager } from '../../DatabaseManager.js';
+import { logger } from '../../../../utils/logger.js';
 
 export class MetricsRoutes extends BaseRouteHandler {
   constructor(private dbManager: DatabaseManager) {

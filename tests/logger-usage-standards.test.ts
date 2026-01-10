@@ -24,6 +24,7 @@ const EXCLUDED_PATTERNS = [
   /\.d\.ts$/,            // Type declaration files
   /^ui\//,               // UI components (separate logging context)
   /^bin\//,              // CLI utilities (may use console.log for output)
+  /^cli\//,              // CLI hook framework (must use console for Claude Code hook output)
   /index\.ts$/,          // Re-export files
   /logger\.ts$/,         // Logger itself
   /hook-response\.ts$/,  // Pure data structure

@@ -18,6 +18,7 @@
  */
 
 import { stdin } from 'process';
+import { logger } from '../utils/logger.js';
 
 // ANSI color codes
 const COLORS = {

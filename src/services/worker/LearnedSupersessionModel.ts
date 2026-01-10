@@ -21,6 +21,7 @@ import {
   ModelTrainingResult,
   SupersessionPrediction,
 } from '../../types/sleep-agent.js';
+import { logger } from '../../utils/logger.js';
 
 /**
  * LearnedSupersessionModel - Online learning for supersession confidence
