@@ -46,6 +46,21 @@ interface ObservationRow {
 // Import shared formatting utilities
 import { formatTime, groupByDate } from '../src/shared/timeline-formatting.js';
 
+/**
+ * Normalize a path to use forward slashes (for DB queries)
+ * Database stores git-normalized paths which always use /
+ */
+function toDbPath(fsPath: string): string {
+  return fsPath.split(path.sep).join('/');
+}
+
+/**
+ * Convert DB path to OS-native path
+ */
+function toFsPath(dbPath: string): string {
+  return dbPath.split('/').join(path.sep);
+}
+
 // Type icon map (matches ModeManager)
 const TYPE_ICONS: Record<string, string> = {
   'bugfix': '🔴',
@@ -142,10 +157,17 @@ function walkDirectoriesWithIgnore(dir: string, folders: Set<string>, depth: num
  * @returns true if file is directly in folder, false if in a subfolder
  */
 function isDirectChild(filePath: string, folderPath: string): boolean {
-  if (!filePath.startsWith(folderPath + '/')) return false;
-  const remainder = filePath.slice(folderPath.length + 1);
-  // If remainder contains a slash, it's in a subfolder
-  return !remainder.includes('/');
+  // Normalize paths to use OS-native separators for comparison
+  const normalizedFile = path.normalize(filePath);
+  const normalizedFolder = path.normalize(folderPath);
+
+  // Check if file is in folder (accounting for path separator)
+  const expectedPrefix = normalizedFolder + path.sep;
+  if (!normalizedFile.startsWith(expectedPrefix)) return false;
+
+  // Check that remainder has no additional path separators
+  const remainder = normalizedFile.slice(expectedPrefix.length);
+  return !remainder.includes(path.sep);
 }
 
 /**
@@ -184,9 +206,10 @@ function findObservationsByFolder(db: Database, relativeFolderPath: string, proj
     LIMIT ?
   `;
 
-  // Files in DB are stored as relative paths like "src/services/foo.ts"
-  // Match any file that starts with this folder path (we'll filter to direct children below)
-  const likePattern = `%"${relativeFolderPath}/%`;
+  // Database stores paths with forward slashes (git-normalized)
+  // Always query with forward slashes regardless of OS
+  const normalizedFolderPath = relativeFolderPath.split(path.sep).join('/');
+  const likePattern = `%"${normalizedFolderPath}/%`;
   const allMatches = db.prepare(sql).all(project, likePattern, likePattern, queryLimit) as ObservationRow[];
 
   // Filter to only observations with direct child files (not in subfolders)
