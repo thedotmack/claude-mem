@@ -94,18 +94,24 @@ async function getWorkerVersion(): Promise<string> {
  * Check if worker version matches plugin version
  * Note: Auto-restart on version mismatch is now handled in worker-service.ts start command (issue #484)
  * This function logs for informational purposes only
+ * Gracefully skips if not running as a plugin (package.json not found)
  */
 async function checkWorkerVersion(): Promise<void> {
-  const pluginVersion = getPluginVersion();
-  const workerVersion = await getWorkerVersion();
+  try {
+    const pluginVersion = getPluginVersion();
+    const workerVersion = await getWorkerVersion();
 
-  if (pluginVersion !== workerVersion) {
-    // Just log debug info - auto-restart handles the mismatch in worker-service.ts
-    logger.debug('SYSTEM', 'Version check', {
-      pluginVersion,
-      workerVersion,
-      note: 'Mismatch will be auto-restarted by worker-service start command'
-    });
+    if (pluginVersion !== workerVersion) {
+      // Just log debug info - auto-restart handles the mismatch in worker-service.ts
+      logger.debug('SYSTEM', 'Version check', {
+        pluginVersion,
+        workerVersion,
+        note: 'Mismatch will be auto-restarted by worker-service start command'
+      });
+    }
+  } catch {
+    // Not running as plugin (package.json not found) - skip version check
+    logger.debug('SYSTEM', 'Skipping version check (non-plugin mode)');
   }
 }
 

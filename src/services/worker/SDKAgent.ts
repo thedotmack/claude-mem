@@ -114,7 +114,8 @@ export class SDKAgent {
     });
 
     // Process SDK messages
-    for await (const message of queryResult) {
+    try {
+      for await (const message of queryResult) {
       // Capture memory session ID from first SDK message (any type has session_id)
       // This enables resume for subsequent generator starts within the same user session
       if (!session.memorySessionId && message.session_id) {
@@ -208,6 +209,17 @@ export class SDKAgent {
       // Log result messages
       if (message.type === 'result' && message.subtype === 'success') {
         // Usage telemetry is captured at SDK level
+      }
+      }
+    } finally {
+      // CRITICAL: Abort the SDK subprocess to prevent orphaned processes
+      // The Agent SDK spawns a child process that doesn't automatically terminate
+      // when the async iterator is exhausted. We must explicitly abort it.
+      if (!session.abortController.signal.aborted) {
+        logger.debug('SDK', 'Aborting SDK subprocess to prevent orphan', {
+          sessionDbId: session.sessionDbId
+        });
+        session.abortController.abort();
       }
     }
 
