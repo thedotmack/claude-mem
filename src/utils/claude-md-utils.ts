@@ -264,6 +264,13 @@ export async function updateFolderClaudeMdFiles(
   const settings = SettingsDefaultsManager.loadFromFile(SETTINGS_PATH);
   const limit = parseInt(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10) || 50;
 
+  // Check if folder CLAUDE.md feature is enabled
+  const folderClaudeMdEnabled = settings.CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED === 'true';
+  if (!folderClaudeMdEnabled) {
+    logger.debug('FOLDER_INDEX', 'Folder CLAUDE.md feature disabled via settings');
+    return;
+  }
+
   // Extract unique folder paths from file paths
   const folderPaths = new Set<string>();
   for (const filePath of filePaths) {
