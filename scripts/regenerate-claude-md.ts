@@ -293,7 +293,10 @@ function writeClaudeMdToFolder(folderPath: string, newContent: string): void {
   const claudeMdPath = path.join(folderPath, 'CLAUDE.md');
   const tempFile = `${claudeMdPath}.tmp`;
 
-  mkdirSync(folderPath, { recursive: true });
+  // Only write to folders that exist - never create them
+  if (!existsSync(folderPath)) {
+    throw new Error(`Folder does not exist: ${folderPath}`);
+  }
 
   let existingContent = '';
   if (existsSync(claudeMdPath)) {
@@ -434,9 +437,22 @@ function regenerateFolder(
   absoluteFolder: string,
   relativeFolder: string,
   project: string,
-  dryRun: boolean
+  dryRun: boolean,
+  workingDir: string
 ): { success: boolean; observationCount: number; error?: string } {
   try {
+    // NEW: Validate folder exists on disk before processing
+    if (!existsSync(absoluteFolder)) {
+      return { success: false, observationCount: 0, error: 'Folder no longer exists' };
+    }
+
+    // NEW: Validate folder is within project root (prevent path traversal)
+    const resolvedFolder = path.resolve(absoluteFolder);
+    const resolvedWorkingDir = path.resolve(workingDir);
+    if (!resolvedFolder.startsWith(resolvedWorkingDir + path.sep)) {
+      return { success: false, observationCount: 0, error: 'Path escapes project root' };
+    }
+
     // Query using relative path (matches DB storage format)
     const observations = findObservationsByFolder(db, relativeFolder, project, OBSERVATION_LIMIT);
 
@@ -529,7 +545,7 @@ async function main() {
       continue;
     }
 
-    const result = regenerateFolder(db, absoluteFolder, relativeFolder, project, dryRun);
+    const result = regenerateFolder(db, absoluteFolder, relativeFolder, project, dryRun, workingDir);
 
     if (result.success) {
       console.log(`${progress} ${relativeFolder} - ${result.observationCount} obs`);
