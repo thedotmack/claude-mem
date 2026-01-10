@@ -7,7 +7,7 @@
 
 import { basename } from 'path';
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
-import { ensureWorkerRunning, getWorkerPort } from '../../shared/worker-utils.js';
+import { ensureWorkerRunning, getWorkerPort, getWorkerHost } from '../../shared/worker-utils.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 
 export const userMessageHandler: EventHandler = {
@@ -16,12 +16,13 @@ export const userMessageHandler: EventHandler = {
     await ensureWorkerRunning();
 
     const port = getWorkerPort();
+    const host = getWorkerHost();
     const project = basename(input.cwd ?? process.cwd());
 
     // Fetch formatted context directly from worker API
     // Note: Removed AbortSignal.timeout to avoid Windows Bun cleanup issue (libuv assertion)
     const response = await fetch(
-      `http://127.0.0.1:${port}/api/context/inject?project=${encodeURIComponent(project)}&colors=true`,
+      `http://${host}:${port}/api/context/inject?project=${encodeURIComponent(project)}&colors=true`,
       { method: 'GET' }
     );
 

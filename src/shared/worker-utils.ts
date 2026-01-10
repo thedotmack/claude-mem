@@ -14,6 +14,7 @@ const HEALTH_CHECK_TIMEOUT_MS = getTimeout(HOOK_TIMEOUTS.HEALTH_CHECK);
 // Cache to avoid repeated settings file reads
 let cachedPort: number | null = null;
 let cachedHost: string | null = null;
+let cachedBind: string | null = null;
 
 /**
  * Get the worker port number from settings
@@ -32,8 +33,9 @@ export function getWorkerPort(): number {
 }
 
 /**
- * Get the worker host address
+ * Get the worker host address (for client connections)
  * Uses CLAUDE_MEM_WORKER_HOST from settings file or default (127.0.0.1)
+ * Remote clients should set this to the server's IP address
  * Caches the host value to avoid repeated file reads
  */
 export function getWorkerHost(): string {
@@ -48,12 +50,30 @@ export function getWorkerHost(): string {
 }
 
 /**
- * Clear the cached port and host values
+ * Get the worker bind address (for server-side binding)
+ * Uses CLAUDE_MEM_WORKER_BIND from settings file or default (127.0.0.1)
+ * Set to 0.0.0.0 to accept connections from remote clients
+ * Caches the bind value to avoid repeated file reads
+ */
+export function getWorkerBind(): string {
+  if (cachedBind !== null) {
+    return cachedBind;
+  }
+
+  const settingsPath = path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), 'settings.json');
+  const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+  cachedBind = settings.CLAUDE_MEM_WORKER_BIND;
+  return cachedBind;
+}
+
+/**
+ * Clear the cached port, host, and bind values
  * Call this when settings are updated to force re-reading from file
  */
 export function clearPortCache(): void {
   cachedPort = null;
   cachedHost = null;
+  cachedBind = null;
 }
 
 /**
