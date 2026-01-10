@@ -77,6 +77,30 @@ import { LogsRoutes } from './worker/http/routes/LogsRoutes.js';
 // Re-export updateCursorContextForProject for SDK agents
 export { updateCursorContextForProject };
 
+/**
+ * Build JSON status output for hook framework communication.
+ * This is a pure function extracted for testability.
+ *
+ * @param status - 'ready' for successful startup, 'error' for failures
+ * @param message - Optional error message (only included when provided)
+ * @returns JSON object with continue, suppressOutput, status, and optionally message
+ */
+export interface StatusOutput {
+  continue: true;
+  suppressOutput: true;
+  status: 'ready' | 'error';
+  message?: string;
+}
+
+export function buildStatusOutput(status: 'ready' | 'error', message?: string): StatusOutput {
+  return {
+    continue: true,
+    suppressOutput: true,
+    status,
+    ...(message && { message })
+  };
+}
+
 export class WorkerService {
   private server: Server;
   private startTime: number = Date.now();
@@ -625,7 +649,7 @@ async function main() {
   // Helper for JSON status output in 'start' command
   // Exit code 0 ensures Windows Terminal doesn't keep tabs open
   function exitWithStatus(status: 'ready' | 'error', message?: string): never {
-    const output = { continue: true, suppressOutput: true, status, ...(message && { message }) };
+    const output = buildStatusOutput(status, message);
     console.log(JSON.stringify(output));
     process.exit(0);
   }
