@@ -47,6 +47,10 @@ describe('hook-constants', () => {
     it('should define WINDOWS_MULTIPLIER', () => {
       expect(HOOK_TIMEOUTS.WINDOWS_MULTIPLIER).toBe(1.5);
     });
+
+    it('should define POWERSHELL_COMMAND timeout as 10000ms', () => {
+      expect(HOOK_TIMEOUTS.POWERSHELL_COMMAND).toBe(10000);
+    });
   });
 
   describe('HOOK_EXIT_CODES', () => {
