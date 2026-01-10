@@ -622,6 +622,14 @@ async function main() {
   const command = process.argv[2];
   const port = getWorkerPort();
 
+  // Helper for JSON status output in 'start' command
+  // Exit code 0 ensures Windows Terminal doesn't keep tabs open
+  function exitWithStatus(status: 'ready' | 'error', message?: string): never {
+    const output = { continue: true, suppressOutput: true, status, ...(message && { message }) };
+    console.log(JSON.stringify(output));
+    process.exit(0);
+  }
+
   switch (command) {
     case 'start': {
       if (await waitForHealth(port, 1000)) {
@@ -636,14 +644,12 @@ async function main() {
           const freed = await waitForPortFree(port, getPlatformTimeout(15000));
           if (!freed) {
             logger.error('SYSTEM', 'Port did not free up after shutdown for version mismatch restart', { port });
-            // Exit gracefully: Windows Terminal won't keep tab open on exit 0
-            // The wrapper/plugin will handle restart logic if needed
-            process.exit(0);
+            exitWithStatus('error', 'Port did not free after version mismatch restart');
           }
           removePidFile();
         } else {
           logger.info('SYSTEM', 'Worker already running and healthy');
-          process.exit(0);
+          exitWithStatus('ready');
         }
       }
 
@@ -653,21 +659,17 @@ async function main() {
         const healthy = await waitForHealth(port, getPlatformTimeout(15000));
         if (healthy) {
           logger.info('SYSTEM', 'Worker is now healthy');
-          process.exit(0);
+          exitWithStatus('ready');
         }
         logger.error('SYSTEM', 'Port in use but worker not responding to health checks');
-        // Exit gracefully: Windows Terminal won't keep tab open on exit 0
-        // The wrapper/plugin will handle restart logic if needed
-        process.exit(0);
+        exitWithStatus('error', 'Port in use but worker not responding');
       }
 
       logger.info('SYSTEM', 'Starting worker daemon');
       const pid = spawnDaemon(__filename, port);
       if (pid === undefined) {
         logger.error('SYSTEM', 'Failed to spawn worker daemon');
-        // Exit gracefully: Windows Terminal won't keep tab open on exit 0
-        // The wrapper/plugin will handle restart logic if needed
-        process.exit(0);
+        exitWithStatus('error', 'Failed to spawn worker daemon');
       }
 
       writePidFile({ pid, port, startedAt: new Date().toISOString() });
@@ -676,13 +678,11 @@ async function main() {
       if (!healthy) {
         removePidFile();
         logger.error('SYSTEM', 'Worker failed to start (health check timeout)');
-        // Exit gracefully: Windows Terminal won't keep tab open on exit 0
-        // The wrapper/plugin will handle restart logic if needed
-        process.exit(0);
+        exitWithStatus('error', 'Worker failed to start (health check timeout)');
       }
 
       logger.info('SYSTEM', 'Worker started successfully');
-      process.exit(0);
+      exitWithStatus('ready');
     }
 
     case 'stop': {
