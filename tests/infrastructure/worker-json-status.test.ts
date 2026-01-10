@@ -248,4 +248,199 @@ describe('worker-json-status', () => {
       });
     });
   });
+
+  /**
+   * Claude Code hook framework compatibility tests
+   *
+   * These tests verify that the worker 'start' command output conforms to
+   * Claude Code's hook output contract. Key requirements:
+   *
+   * 1. Exit code 0 - Required for Windows Terminal compatibility (prevents
+   *    tab accumulation from spawned processes)
+   *
+   * 2. JSON on stdout - Claude Code parses stdout as JSON. Logs must go to
+   *    stderr to avoid breaking JSON parsing.
+   *
+   * 3. `continue: true` - CRITICAL: This field tells Claude Code to continue
+   *    processing. If missing or false, Claude Code stops after the hook.
+   *    Per docs: "If continue is false, Claude stops processing after the
+   *    hooks run."
+   *
+   * 4. `suppressOutput: true` - Hides output from transcript mode (Ctrl-R).
+   *    Optional but recommended for non-user-facing status.
+   *
+   * Reference: private/context/claude-code/hooks.md
+   */
+  describe('Claude Code hook framework compatibility', () => {
+    /**
+     * Windows Terminal compatibility requirement
+     *
+     * When hooks run in Windows Terminal, each spawned process can open a
+     * new tab. Exit code 0 tells the terminal the process completed
+     * successfully and prevents tab accumulation.
+     *
+     * Even for error states (worker failed to start), we exit 0 and
+     * communicate the error via JSON { status: 'error', message: '...' }
+     */
+    it('should always exit with code 0', () => {
+      if (!existsSync(WORKER_SCRIPT)) {
+        console.log('Skipping CLI test - worker script not built');
+        return;
+      }
+
+      const { exitCode } = runWorkerStart();
+
+      // Per Windows Terminal compatibility requirement, exit code is always 0
+      // Error states are communicated via JSON status field, not exit codes
+      expect(exitCode).toBe(0);
+    });
+
+    /**
+     * JSON must go to stdout, not stderr
+     *
+     * Claude Code parses stdout as JSON for hook output. Any non-JSON on
+     * stdout breaks parsing. Logs, warnings, and debug info must go to
+     * stderr.
+     *
+     * Structure: { status, continue, suppressOutput, message? }
+     */
+    it('should output JSON on stdout (not stderr)', () => {
+      if (!existsSync(WORKER_SCRIPT)) {
+        console.log('Skipping CLI test - worker script not built');
+        return;
+      }
+
+      const result = spawnSync('bun', [WORKER_SCRIPT, 'start'], {
+        encoding: 'utf-8',
+        timeout: 60000
+      });
+
+      const stdout = result.stdout?.trim() || '';
+      const stderr = result.stderr?.trim() || '';
+
+      // stdout should contain valid JSON
+      expect(() => JSON.parse(stdout)).not.toThrow();
+
+      // stderr should NOT contain the JSON output (it may have logs)
+      // The JSON structure should only appear in stdout
+      const parsed = JSON.parse(stdout);
+      expect(parsed).toHaveProperty('status');
+      expect(parsed).toHaveProperty('continue');
+
+      // Verify stderr doesn't accidentally contain the JSON output
+      if (stderr) {
+        try {
+          const stderrParsed = JSON.parse(stderr);
+          // If stderr parses as JSON with our structure, that's wrong
+          expect(stderrParsed).not.toHaveProperty('suppressOutput');
+        } catch {
+          // stderr is not JSON, which is expected (logs, etc.)
+        }
+      }
+    });
+
+    /**
+     * JSON must be parseable as valid JSON
+     *
+     * This seems obvious but is critical - any extraneous output (console.log
+     * statements, warnings, etc.) will break JSON parsing and cause Claude
+     * Code to fail processing the hook output.
+     */
+    it('should be parseable as valid JSON', () => {
+      if (!existsSync(WORKER_SCRIPT)) {
+        console.log('Skipping CLI test - worker script not built');
+        return;
+      }
+
+      const { stdout } = runWorkerStart();
+
+      // Should not throw on parse
+      let parsed: unknown;
+      expect(() => {
+        parsed = JSON.parse(stdout);
+      }).not.toThrow();
+
+      // Should be an object, not a string, array, etc.
+      expect(typeof parsed).toBe('object');
+      expect(parsed).not.toBeNull();
+      expect(Array.isArray(parsed)).toBe(false);
+    });
+
+    /**
+     * `continue: true` is CRITICAL
+     *
+     * From Claude Code docs: "If continue is false, Claude stops processing
+     * after the hooks run."
+     *
+     * For SessionStart hooks (which start the worker), we MUST return
+     * continue: true so Claude Code continues to process the user's prompt.
+     * If we returned continue: false, Claude would stop immediately after
+     * starting the worker and never respond to the user.
+     *
+     * This is why continue: true is a required literal in our StatusOutput
+     * type - it can never be false.
+     */
+    it('should always include continue: true (required for Claude Code to proceed)', () => {
+      if (!existsSync(WORKER_SCRIPT)) {
+        console.log('Skipping CLI test - worker script not built');
+        return;
+      }
+
+      const { stdout } = runWorkerStart();
+      const parsed = JSON.parse(stdout);
+
+      // continue: true is CRITICAL - without it, Claude Code stops processing
+      // This is not optional; it must always be true for our hooks
+      expect(parsed.continue).toBe(true);
+
+      // Also verify it's the literal `true`, not a truthy value
+      expect(parsed.continue).toStrictEqual(true);
+    });
+
+    /**
+     * suppressOutput hides from transcript mode
+     *
+     * When suppressOutput: true, the hook output doesn't appear in transcript
+     * mode (Ctrl-R). This is useful for status messages that aren't relevant
+     * to the user's conversation history.
+     *
+     * For the worker start command, we suppress output since "worker started"
+     * is infrastructure noise, not conversation content.
+     */
+    it('should include suppressOutput: true to hide from transcript mode', () => {
+      if (!existsSync(WORKER_SCRIPT)) {
+        console.log('Skipping CLI test - worker script not built');
+        return;
+      }
+
+      const { stdout } = runWorkerStart();
+      const parsed = JSON.parse(stdout);
+
+      // suppressOutput prevents infrastructure noise from polluting transcript
+      expect(parsed.suppressOutput).toBe(true);
+    });
+
+    /**
+     * status field communicates outcome
+     *
+     * The status field tells Claude Code (and debugging tools) whether the
+     * hook succeeded. Valid values: 'ready' | 'error'
+     *
+     * Unlike exit codes (which are always 0), status can indicate failure.
+     * This allows Claude Code to potentially take remedial action or log
+     * the issue.
+     */
+    it('should include a valid status field', () => {
+      if (!existsSync(WORKER_SCRIPT)) {
+        console.log('Skipping CLI test - worker script not built');
+        return;
+      }
+
+      const { stdout } = runWorkerStart();
+      const parsed = JSON.parse(stdout);
+
+      expect(parsed).toHaveProperty('status');
+      expect(['ready', 'error']).toContain(parsed.status);
+    });
+  });
 });
