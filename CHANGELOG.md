@@ -2,6 +2,12 @@
 
 All notable changes to claude-mem.
 
+## [Unreleased]
+
+### Bug Fixes
+
+- **OpenRouter/Gemini sessions**: Generate synthetic memorySessionId for stateless APIs (fixes observation storage failures)
+
 ## [v9.0.1] - 2026-01-08
 
 ## Bug Fixes
