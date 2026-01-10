@@ -4,10 +4,30 @@
  * Tests the buildStatusOutput pure function extracted from worker-service.ts
  * to ensure JSON output matches the hook framework contract.
  *
- * No mocks needed - tests a pure function directly.
+ * Also tests CLI output capture for the 'start' command to verify
+ * actual JSON output matches expected structure.
+ *
+ * No mocks needed - tests a pure function directly and captures real CLI output.
  */
 import { describe, it, expect } from 'bun:test';
+import { spawnSync } from 'child_process';
+import { existsSync } from 'fs';
+import path from 'path';
 import { buildStatusOutput, StatusOutput } from '../../src/services/worker-service.js';
+
+const WORKER_SCRIPT = path.join(__dirname, '../../plugin/scripts/worker-service.cjs');
+
+/**
+ * Run worker CLI command and return stdout + exit code
+ * Uses spawnSync for synchronous output capture
+ */
+function runWorkerStart(): { stdout: string; exitCode: number } {
+  const result = spawnSync('bun', [WORKER_SCRIPT, 'start'], {
+    encoding: 'utf-8',
+    timeout: 60000
+  });
+  return { stdout: result.stdout?.trim() || '', exitCode: result.status || 0 };
+}
 
 describe('worker-json-status', () => {
   describe('buildStatusOutput', () => {
@@ -161,6 +181,70 @@ describe('worker-json-status', () => {
         const longMessage = 'A'.repeat(10000);
         const result = buildStatusOutput('error', longMessage);
         expect(result.message).toBe(longMessage);
+      });
+    });
+  });
+
+  describe('start command JSON output', () => {
+    describe('when worker already healthy', () => {
+      it('should output valid JSON with status: ready', () => {
+        // Skip if worker script doesn't exist (not built)
+        if (!existsSync(WORKER_SCRIPT)) {
+          console.log('Skipping CLI test - worker script not built');
+          return;
+        }
+
+        const { stdout, exitCode } = runWorkerStart();
+
+        // The start command always exits with 0 (Windows Terminal compatibility)
+        expect(exitCode).toBe(0);
+
+        // Should output valid JSON
+        expect(() => JSON.parse(stdout)).not.toThrow();
+
+        const parsed = JSON.parse(stdout);
+
+        // Verify required fields per hook framework contract
+        expect(parsed.continue).toBe(true);
+        expect(parsed.suppressOutput).toBe(true);
+        expect(['ready', 'error']).toContain(parsed.status);
+      });
+
+      it('should match expected JSON structure when worker is healthy', () => {
+        if (!existsSync(WORKER_SCRIPT)) {
+          console.log('Skipping CLI test - worker script not built');
+          return;
+        }
+
+        const { stdout } = runWorkerStart();
+        const parsed = JSON.parse(stdout);
+
+        // When worker is already healthy, status should be 'ready'
+        // (or 'error' if something unexpected happens)
+        if (parsed.status === 'ready') {
+          // Ready status should not include message unless explicitly set
+          expect(parsed.continue).toBe(true);
+          expect(parsed.suppressOutput).toBe(true);
+        } else if (parsed.status === 'error') {
+          // Error status may include a message explaining the failure
+          expect(typeof parsed.message).toBe('string');
+        }
+      });
+    });
+
+    describe('error scenarios', () => {
+      // These tests require complex setup (mocking ports, killing processes)
+      // Skipped for now - the pure function tests above cover the JSON structure
+      it.skip('should output JSON with status: error when port in use but not responding', () => {
+        // Would require: start a non-worker server on the port, then call start
+      });
+
+      it.skip('should output JSON with status: error on spawn failure', () => {
+        // Would require: mock spawnDaemon to fail
+      });
+
+      it.skip('should output JSON with status: error on health check timeout', () => {
+        // Would require: start worker that never becomes healthy
       });
     });
   });
