@@ -2,6 +2,29 @@
 
 All notable changes to claude-mem.
 
+## [v9.0.3] - 2026-01-10
+
+## Bug Fixes
+
+### Hook Framework JSON Status Output (#655)
+
+Fixed an issue where the worker service startup wasn't producing proper JSON status output for the Claude Code hook framework. This caused hooks to appear stuck or unresponsive during worker initialization.
+
+**Changes:**
+- Added `buildStatusOutput()` function for generating structured JSON status output
+- Worker now outputs JSON with `status`, `message`, and `continue` fields on stdout
+- Proper exit code 0 ensures Windows Terminal compatibility (no tab accumulation)
+- `continue: true` flag ensures Claude Code continues processing after hook execution
+
+**Technical Details:**
+- Extracted status output generation into a pure, testable function
+- Added comprehensive test coverage in `tests/infrastructure/worker-json-status.test.ts`
+- 23 passing tests covering unit, CLI integration, and hook framework compatibility
+
+## Housekeeping
+
+- Removed obsolete error handling baseline file
+
 ## [v9.0.2] - 2026-01-10
 
 ## Bug Fixes
@@ -1279,13 +1302,4 @@ Fixed unbounded database growth in the `pending_messages` table by implementing 
 - Extracted magic numbers to named constants for better code maintainability
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.2.4...v7.3.0
-
-## [v7.2.4] - 2025-12-15
-
-## What's Changed
-
-### Documentation
-- Updated endless mode setup instructions with improved configuration guidance for better user experience
-
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.2.3...v7.2.4
 
