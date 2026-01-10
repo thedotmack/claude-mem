@@ -745,6 +745,20 @@ async function main() {
       process.exit(0);
     }
 
+    case 'generate': {
+      const dryRun = process.argv.includes('--dry-run');
+      const { generateClaudeMd } = await import('../cli/claude-md-commands.js');
+      const result = await generateClaudeMd(dryRun);
+      process.exit(result);
+    }
+
+    case 'clean': {
+      const dryRun = process.argv.includes('--dry-run');
+      const { cleanClaudeMd } = await import('../cli/claude-md-commands.js');
+      const result = await cleanClaudeMd(dryRun);
+      process.exit(result);
+    }
+
     case 'cursor': {
       const subcommand = process.argv[3];
       const cursorResult = await handleCursorCommand(subcommand, process.argv.slice(4));
