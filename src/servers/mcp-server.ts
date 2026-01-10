@@ -310,5 +310,7 @@ async function main() {
 
 main().catch((error) => {
   logger.error('SYSTEM', 'Fatal error', undefined, error);
-  process.exit(1);
+  // Exit gracefully: Windows Terminal won't keep tab open on exit 0
+  // The wrapper/plugin will handle restart logic if needed
+  process.exit(0);
 });

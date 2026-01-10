@@ -636,7 +636,9 @@ async function main() {
           const freed = await waitForPortFree(port, getPlatformTimeout(15000));
           if (!freed) {
             logger.error('SYSTEM', 'Port did not free up after shutdown for version mismatch restart', { port });
-            process.exit(1);
+            // Exit gracefully: Windows Terminal won't keep tab open on exit 0
+            // The wrapper/plugin will handle restart logic if needed
+            process.exit(0);
           }
           removePidFile();
         } else {
@@ -654,14 +656,18 @@ async function main() {
           process.exit(0);
         }
         logger.error('SYSTEM', 'Port in use but worker not responding to health checks');
-        process.exit(1);
+        // Exit gracefully: Windows Terminal won't keep tab open on exit 0
+        // The wrapper/plugin will handle restart logic if needed
+        process.exit(0);
       }
 
       logger.info('SYSTEM', 'Starting worker daemon');
       const pid = spawnDaemon(__filename, port);
       if (pid === undefined) {
         logger.error('SYSTEM', 'Failed to spawn worker daemon');
-        process.exit(1);
+        // Exit gracefully: Windows Terminal won't keep tab open on exit 0
+        // The wrapper/plugin will handle restart logic if needed
+        process.exit(0);
       }
 
       writePidFile({ pid, port, startedAt: new Date().toISOString() });
@@ -670,7 +676,9 @@ async function main() {
       if (!healthy) {
         removePidFile();
         logger.error('SYSTEM', 'Worker failed to start (health check timeout)');
-        process.exit(1);
+        // Exit gracefully: Windows Terminal won't keep tab open on exit 0
+        // The wrapper/plugin will handle restart logic if needed
+        process.exit(0);
       }
 
       logger.info('SYSTEM', 'Worker started successfully');
@@ -694,14 +702,18 @@ async function main() {
       const freed = await waitForPortFree(port, getPlatformTimeout(15000));
       if (!freed) {
         logger.error('SYSTEM', 'Port did not free up after shutdown, aborting restart', { port });
-        process.exit(1);
+        // Exit gracefully: Windows Terminal won't keep tab open on exit 0
+        // The wrapper/plugin will handle restart logic if needed
+        process.exit(0);
       }
       removePidFile();
 
       const pid = spawnDaemon(__filename, port);
       if (pid === undefined) {
         logger.error('SYSTEM', 'Failed to spawn worker daemon during restart');
-        process.exit(1);
+        // Exit gracefully: Windows Terminal won't keep tab open on exit 0
+        // The wrapper/plugin will handle restart logic if needed
+        process.exit(0);
       }
 
       writePidFile({ pid, port, startedAt: new Date().toISOString() });
@@ -710,7 +722,9 @@ async function main() {
       if (!healthy) {
         removePidFile();
         logger.error('SYSTEM', 'Worker failed to restart');
-        process.exit(1);
+        // Exit gracefully: Windows Terminal won't keep tab open on exit 0
+        // The wrapper/plugin will handle restart logic if needed
+        process.exit(0);
       }
 
       logger.info('SYSTEM', 'Worker restarted successfully');
@@ -737,13 +751,29 @@ async function main() {
       process.exit(cursorResult);
     }
 
+    case 'hook': {
+      const platform = process.argv[3];
+      const event = process.argv[4];
+      if (!platform || !event) {
+        console.error('Usage: claude-mem hook <platform> <event>');
+        console.error('Platforms: claude-code, cursor, raw');
+        console.error('Events: context, session-init, observation, summarize, user-message');
+        process.exit(1);
+      }
+      const { hookCommand } = await import('../cli/hook-command.js');
+      await hookCommand(platform, event);
+      break;
+    }
+
     case '--daemon':
     default: {
       const worker = new WorkerService();
       worker.start().catch((error) => {
         logger.failure('SYSTEM', 'Worker failed to start', {}, error as Error);
         removePidFile();
-        process.exit(1);
+        // Exit gracefully: Windows Terminal won't keep tab open on exit 0
+        // The wrapper/plugin will handle restart logic if needed
+        process.exit(0);
       });
     }
   }

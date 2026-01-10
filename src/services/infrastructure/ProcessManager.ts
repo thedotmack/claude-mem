@@ -14,6 +14,7 @@ import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync } from '
 import { exec, execSync, spawn } from 'child_process';
 import { promisify } from 'util';
 import { logger } from '../../utils/logger.js';
+import { HOOK_TIMEOUTS } from '../../shared/hook-constants.js';
 
 const execAsync = promisify(exec);
 
@@ -88,16 +89,16 @@ export async function getChildProcesses(parentPid: number): Promise<number[]> {
   }
 
   try {
-    const cmd = `wmic process where "parentprocessid=${parentPid}" get processid /format:list`;
-    const { stdout } = await execAsync(cmd, { timeout: 60000 });
+    // PowerShell Get-Process instead of WMIC (deprecated in Windows 11)
+    const cmd = `powershell -NoProfile -NonInteractive -Command "Get-Process | Where-Object { \\$_.ParentProcessId -eq ${parentPid} } | Select-Object -ExpandProperty Id"`;
+    const { stdout } = await execAsync(cmd, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND });
+    // PowerShell outputs just numbers (one per line), simpler than WMIC's "ProcessId=1234" format
     return stdout
-      .trim()
       .split('\n')
-      .map(line => {
-        const match = line.match(/ProcessId=(\d+)/i);
-        return match ? parseInt(match[1], 10) : NaN;
-      })
-      .filter(n => !isNaN(n) && Number.isInteger(n) && n > 0);
+      .map(line => line.trim())
+      .filter(line => line.length > 0 && /^\d+$/.test(line))
+      .map(line => parseInt(line, 10))
+      .filter(pid => pid > 0);
   } catch (error) {
     // Shutdown cleanup - failure is non-critical, continue without child process cleanup
     logger.error('SYSTEM', 'Failed to enumerate child processes', { parentPid }, error as Error);
@@ -120,7 +121,7 @@ export async function forceKillProcess(pid: number): Promise<void> {
   try {
     if (process.platform === 'win32') {
       // /T kills entire process tree, /F forces termination
-      await execAsync(`taskkill /PID ${pid} /T /F`, { timeout: 60000 });
+      await execAsync(`taskkill /PID ${pid} /T /F`, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND });
     } else {
       process.kill(pid, 'SIGKILL');
     }
@@ -170,24 +171,26 @@ export async function cleanupOrphanedProcesses(): Promise<void> {
 
   try {
     if (isWindows) {
-      // Windows: Use WMIC to find chroma-mcp processes (avoids PowerShell $_ issues in Git Bash/WSL)
-      const cmd = `wmic process where "name like '%python%' and commandline like '%chroma-mcp%'" get processid /format:list`;
-      const { stdout } = await execAsync(cmd, { timeout: 60000 });
+      // Windows: Use PowerShell Get-CimInstance instead of WMIC (deprecated in Windows 11)
+      const cmd = `powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process | Where-Object { \\$_.Name -like '*python*' -and \\$_.CommandLine -like '*chroma-mcp*' } | Select-Object -ExpandProperty ProcessId"`;
+      const { stdout } = await execAsync(cmd, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND });
 
       if (!stdout.trim()) {
         logger.debug('SYSTEM', 'No orphaned chroma-mcp processes found (Windows)');
         return;
       }
 
-      const lines = stdout.trim().split('\n');
+      // PowerShell outputs just numbers (one per line), simpler than WMIC's "ProcessId=1234" format
+      const lines = stdout
+        .split('\n')
+        .map(line => line.trim())
+        .filter(line => line.length > 0 && /^\d+$/.test(line));
+
       for (const line of lines) {
-        const match = line.match(/ProcessId=(\d+)/i);
-        if (match) {
-          const pid = parseInt(match[1], 10);
-          // SECURITY: Validate PID is positive integer before adding to list
-          if (!isNaN(pid) && Number.isInteger(pid) && pid > 0) {
-            pids.push(pid);
-          }
+        const pid = parseInt(line, 10);
+        // SECURITY: Validate PID is positive integer before adding to list
+        if (!isNaN(pid) && Number.isInteger(pid) && pid > 0) {
+          pids.push(pid);
         }
       }
     } else {
@@ -236,7 +239,7 @@ export async function cleanupOrphanedProcesses(): Promise<void> {
         continue;
       }
       try {
-        execSync(`taskkill /PID ${pid} /T /F`, { timeout: 60000, stdio: 'ignore' });
+        execSync(`taskkill /PID ${pid} /T /F`, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND, stdio: 'ignore' });
       } catch (error) {
         // [ANTI-PATTERN IGNORED]: Cleanup loop - process may have exited, continue to next PID
         logger.debug('SYSTEM', 'Failed to kill process, may have already exited', { pid }, error as Error);
@@ -306,7 +309,9 @@ export function createSignalHandler(
     } catch (error) {
       // Top-level signal handler - log any shutdown error and exit
       logger.error('SYSTEM', 'Error during shutdown', {}, error as Error);
-      process.exit(1);
+      // Exit gracefully: Windows Terminal won't keep tab open on exit 0
+      // Even on shutdown errors, exit cleanly to prevent tab accumulation
+      process.exit(0);
     }
   };
 }

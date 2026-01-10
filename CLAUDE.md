@@ -41,6 +41,18 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 - **Database**: `~/.claude-mem/claude-mem.db`
 - **Chroma**: `~/.claude-mem/chroma/`
 
+## Exit Code Strategy
+
+Claude-mem hooks use specific exit codes per Claude Code's hook contract:
+
+- **Exit 0**: Success or graceful shutdown (Windows Terminal closes tabs)
+- **Exit 1**: Non-blocking error (stderr shown to user, continues)
+- **Exit 2**: Blocking error (stderr fed to Claude for processing)
+
+**Philosophy**: Worker/hook errors exit with code 0 to prevent Windows Terminal tab accumulation. The wrapper/plugin layer handles restart logic. ERROR-level logging is maintained for diagnostics.
+
+See `private/context/claude-code/exit-codes.md` for full hook behavior matrix.
+
 ## Requirements
 
 - **Bun** (all platforms - auto-installed if missing)
