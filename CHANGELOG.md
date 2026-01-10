@@ -2,6 +2,21 @@
 
 All notable changes to claude-mem.
 
+## [v9.0.2] - 2026-01-10
+
+## Bug Fixes
+
+- **Windows Terminal Tab Accumulation (#625, #628)**: Fixed terminal tab accumulation on Windows by implementing graceful exit strategy. All expected failure scenarios (port conflicts, version mismatches, health check timeouts) now exit with code 0 instead of code 1.
+- **Windows 11 Compatibility (#625)**: Replaced deprecated WMIC commands with PowerShell `Get-Process` and `Get-CimInstance` for process enumeration. WMIC is being removed from Windows 11.
+
+## Maintenance
+
+- **Removed Obsolete CLAUDE.md Files**: Cleaned up auto-generated CLAUDE.md files from `~/.claude/plans/` and `~/.claude/plugins/marketplaces/` directories.
+
+---
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v9.0.1...v9.0.2
+
 ## [v9.0.1] - 2026-01-08
 
 ## Bug Fixes
@@ -1273,19 +1288,4 @@ Fixed unbounded database growth in the `pending_messages` table by implementing 
 - Updated endless mode setup instructions with improved configuration guidance for better user experience
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.2.3...v7.2.4
-
-## [v7.2.3] - 2025-12-15
-
-## Bug Fixes
-
-- **Fix MCP server failures on plugin updates**: Add 2-second pre-restart delay in `ensureWorkerVersionMatches()` to give files time to sync before killing the old worker. This prevents the race condition where the worker restart happened too quickly after plugin file updates, causing "Worker service connection failed" errors.
-
-## Changes
-
-- Add `PRE_RESTART_SETTLE_DELAY` constant (2000ms) to `hook-constants.ts`
-- Add delay before `ProcessManager.restart()` call in `worker-utils.ts`
-- Fix pre-existing bug where `port` variable was undefined in error logging
-
----
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
 
