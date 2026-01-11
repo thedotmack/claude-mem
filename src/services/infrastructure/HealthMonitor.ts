@@ -94,12 +94,18 @@ export async function httpShutdown(port: number): Promise<boolean> {
 /**
  * Get the plugin version from the installed marketplace package.json
  * This is the "expected" version that should be running
+ * Returns null if not running as a plugin (non-plugin mode)
  */
-export function getInstalledPluginVersion(): string {
-  const marketplaceRoot = path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
-  const packageJsonPath = path.join(marketplaceRoot, 'package.json');
-  const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
-  return packageJson.version;
+export function getInstalledPluginVersion(): string | null {
+  try {
+    const marketplaceRoot = path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
+    const packageJsonPath = path.join(marketplaceRoot, 'package.json');
+    const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
+    return packageJson.version;
+  } catch {
+    // Not running as a plugin - package.json doesn't exist
+    return null;
+  }
 }
 
 /**
@@ -121,7 +127,7 @@ export async function getRunningWorkerVersion(port: number): Promise<string | nu
 
 export interface VersionCheckResult {
   matches: boolean;
-  pluginVersion: string;
+  pluginVersion: string | null;
   workerVersion: string | null;
 }
 
@@ -133,6 +139,11 @@ export interface VersionCheckResult {
 export async function checkVersionMatch(port: number): Promise<VersionCheckResult> {
   const pluginVersion = getInstalledPluginVersion();
   const workerVersion = await getRunningWorkerVersion(port);
+
+  // If not running as plugin, skip version check (non-plugin mode)
+  if (!pluginVersion) {
+    return { matches: true, pluginVersion, workerVersion };
+  }
 
   // If we can't get worker version, assume it matches (graceful degradation)
   if (!workerVersion) {
