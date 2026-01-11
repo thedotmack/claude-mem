@@ -1908,6 +1908,34 @@ export class SessionStore {
   }
 
   /**
+   * Get or create a manual session for storing user-created observations
+   * Manual sessions use a predictable ID format: "manual-{project}"
+   */
+  getOrCreateManualSession(project: string): string {
+    const memorySessionId = `manual-${project}`;
+    const contentSessionId = `manual-content-${project}`;
+
+    const existing = this.db.prepare(
+      'SELECT memory_session_id FROM sdk_sessions WHERE memory_session_id = ?'
+    ).get(memorySessionId) as { memory_session_id: string } | undefined;
+
+    if (existing) {
+      return memorySessionId;
+    }
+
+    // Create new manual session
+    const now = new Date();
+    this.db.prepare(`
+      INSERT INTO sdk_sessions (memory_session_id, content_session_id, project, started_at, started_at_epoch, status)
+      VALUES (?, ?, ?, ?, ?, 'active')
+    `).run(memorySessionId, contentSessionId, project, now.toISOString(), now.getTime());
+
+    logger.info('SESSION', 'Created manual session', { memorySessionId, project });
+
+    return memorySessionId;
+  }
+
+  /**
    * Close the database connection
    */
   close(): void {
