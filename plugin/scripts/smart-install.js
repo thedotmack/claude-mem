@@ -22,7 +22,8 @@ function isBunInstalled() {
     const result = spawnSync('bun', ['--version'], {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
-      shell: IS_WINDOWS
+      shell: IS_WINDOWS,
+      windowsHide: true
     });
     if (result.status === 0) return true;
   } catch {
@@ -46,7 +47,8 @@ function getBunPath() {
     const result = spawnSync('bun', ['--version'], {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
-      shell: IS_WINDOWS
+      shell: IS_WINDOWS,
+      windowsHide: true
     });
     if (result.status === 0) return 'bun';
   } catch {
@@ -76,7 +78,8 @@ function getBunVersion() {
     const result = spawnSync(bunPath, ['--version'], {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
-      shell: IS_WINDOWS
+      shell: IS_WINDOWS,
+      windowsHide: true
     });
     return result.status === 0 ? result.stdout.trim() : null;
   } catch {
@@ -92,7 +95,8 @@ function isUvInstalled() {
     const result = spawnSync('uv', ['--version'], {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
-      shell: IS_WINDOWS
+      shell: IS_WINDOWS,
+      windowsHide: true
     });
     if (result.status === 0) return true;
   } catch {
@@ -115,7 +119,8 @@ function getUvVersion() {
     const result = spawnSync('uv', ['--version'], {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
-      shell: IS_WINDOWS
+      shell: IS_WINDOWS,
+      windowsHide: true
     });
     return result.status === 0 ? result.stdout.trim() : null;
   } catch {
@@ -135,14 +140,16 @@ function installBun() {
       console.error('   Installing via PowerShell...');
       execSync('powershell -c "irm bun.sh/install.ps1 | iex"', {
         stdio: 'inherit',
-        shell: true
+        shell: true,
+        windowsHide: true
       });
     } else {
       // Unix/macOS: Use curl installer
       console.error('   Installing via curl...');
       execSync('curl -fsSL https://bun.sh/install | bash', {
         stdio: 'inherit',
-        shell: true
+        shell: true,
+        windowsHide: true
       });
     }
 
@@ -200,14 +207,16 @@ function installUv() {
       console.error('   Installing via PowerShell...');
       execSync('powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"', {
         stdio: 'inherit',
-        shell: true
+        shell: true,
+        windowsHide: true
       });
     } else {
       // Unix/macOS: Use curl installer
       console.error('   Installing via curl...');
       execSync('curl -LsSf https://astral.sh/uv/install.sh | sh', {
         stdio: 'inherit',
-        shell: true
+        shell: true,
+        windowsHide: true
       });
     }
 
@@ -273,7 +282,7 @@ function installCLI() {
       const functionDef = `function claude-mem { & "${bunPath}" "${WORKER_CLI}" $args }\n`;
 
       if (!existsSync(profileDir)) {
-        execSync(`mkdir "${profileDir}"`, { stdio: 'ignore', shell: true });
+        execSync(`mkdir "${profileDir}"`, { stdio: 'ignore', shell: true, windowsHide: true });
       }
 
       const existingContent = existsSync(profilePath) ? readFileSync(profilePath, 'utf-8') : '';
@@ -342,12 +351,12 @@ function installDeps() {
 
   let bunSucceeded = false;
   try {
-    execSync(`${bunCmd} install`, { cwd: ROOT, stdio: 'inherit', shell: IS_WINDOWS });
+    execSync(`${bunCmd} install`, { cwd: ROOT, stdio: 'inherit', shell: IS_WINDOWS, windowsHide: true });
     bunSucceeded = true;
   } catch {
     // First attempt failed, try with force flag
     try {
-      execSync(`${bunCmd} install --force`, { cwd: ROOT, stdio: 'inherit', shell: IS_WINDOWS });
+      execSync(`${bunCmd} install --force`, { cwd: ROOT, stdio: 'inherit', shell: IS_WINDOWS, windowsHide: true });
       bunSucceeded = true;
     } catch {
       // Bun failed completely, will try npm fallback
@@ -359,7 +368,7 @@ function installDeps() {
     console.error('⚠️  Bun install failed, falling back to npm...');
     console.error('   (This can happen with npm alias packages like *-cjs)');
     try {
-      execSync('npm install', { cwd: ROOT, stdio: 'inherit', shell: IS_WINDOWS });
+      execSync('npm install', { cwd: ROOT, stdio: 'inherit', shell: IS_WINDOWS, windowsHide: true });
     } catch (npmError) {
       throw new Error('Both bun and npm install failed: ' + npmError.message);
     }
@@ -417,12 +426,14 @@ try {
       execSync(`curl -s -X POST http://127.0.0.1:${port}/api/admin/shutdown`, {
         stdio: 'ignore',
         shell: IS_WINDOWS,
-        timeout: 5000
+        timeout: 5000,
+        windowsHide: true
       });
       // Brief wait for port to free
       execSync(IS_WINDOWS ? 'timeout /t 1 /nobreak >nul' : 'sleep 0.5', {
         stdio: 'ignore',
-        shell: true
+        shell: true,
+        windowsHide: true
       });
     } catch {
       // Worker wasn't running or already stopped - that's fine
