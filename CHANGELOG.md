@@ -2,6 +2,27 @@
 
 All notable changes to claude-mem.
 
+## [v9.0.4] - 2026-01-10
+
+## What's New
+
+This release adds the `/do` and `/make-plan` development commands to the plugin distribution, making them available to all users who install the plugin from the marketplace.
+
+### Features
+
+- **Development Commands Now Distributed with Plugin** (#666)
+  - `/do` command - Execute tasks with structured workflow
+  - `/make-plan` command - Create detailed implementation plans
+  - Commands now available at `plugin/commands/` for all users
+
+### Documentation
+
+- Revised Arabic README for clarity and corrections (#661)
+
+### Full Changelog
+
+https://github.com/thedotmack/claude-mem/compare/v9.0.3...v9.0.4
+
 ## [v9.0.3] - 2026-01-10
 
 ## Bug Fixes
@@ -1280,26 +1301,4 @@ Fixed unbounded database growth in the `pending_messages` table by implementing 
 ---
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.3.0...v7.3.1
-
-## [v7.3.0] - 2025-12-16
-
-## Features
-
-- **Table-based search output**: Unified timeline formatting with cleaner, more organized presentation of search results grouped by date and file
-- **Simplified API**: Removed unused format parameter from MCP search tools for cleaner interface
-- **Shared formatting utilities**: Extracted common timeline formatting logic into reusable module
-- **Batch observations endpoint**: Added `/api/observations/batch` endpoint for efficient retrieval of multiple observations by ID array
-
-## Changes
-
-- **Default model upgrade**: Changed default model from Haiku to Sonnet for better observation quality
-- **Removed fake URIs**: Replaced claude-mem:// pseudo-protocol with actual HTTP API endpoints for citations
-
-## Bug Fixes
-
-- Fixed undefined debug function calls in MCP server
-- Fixed skillPath variable scoping bug in instructions endpoint
-- Extracted magic numbers to named constants for better code maintainability
-
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.2.4...v7.3.0
 
