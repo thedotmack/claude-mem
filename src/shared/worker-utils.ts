@@ -6,7 +6,9 @@ import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
 import { SettingsDefaultsManager } from "./SettingsDefaultsManager.js";
 import { getWorkerRestartInstructions } from "../utils/error-messages.js";
 
-const MARKETPLACE_ROOT = path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
+// Support --plugin-dir installs via CLAUDE_PLUGIN_ROOT, fallback to marketplace
+const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT
+  || path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
 
 // Named constants for health checks
 const HEALTH_CHECK_TIMEOUT_MS = getTimeout(HOOK_TIMEOUTS.HEALTH_CHECK);
@@ -71,7 +73,7 @@ async function isWorkerHealthy(): Promise<boolean> {
  * Get the current plugin version from package.json
  */
 function getPluginVersion(): string {
-  const packageJsonPath = path.join(MARKETPLACE_ROOT, 'package.json');
+  const packageJsonPath = path.join(PLUGIN_ROOT, 'package.json');
   const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
   return packageJson.version;
 }

@@ -92,12 +92,15 @@ export async function httpShutdown(port: number): Promise<boolean> {
 }
 
 /**
- * Get the plugin version from the installed marketplace package.json
+ * Get the plugin version from the installed plugin's package.json
  * This is the "expected" version that should be running
+ * Supports both --plugin-dir (CLAUDE_PLUGIN_ROOT) and marketplace installs
  */
 export function getInstalledPluginVersion(): string {
-  const marketplaceRoot = path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
-  const packageJsonPath = path.join(marketplaceRoot, 'package.json');
+  // Prefer CLAUDE_PLUGIN_ROOT for --plugin-dir installs
+  const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT
+    || path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
+  const packageJsonPath = path.join(pluginRoot, 'package.json');
   const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
   return packageJson.version;
 }
