@@ -1,6 +1,7 @@
 import path from "path";
 import { homedir } from "os";
-import { readFileSync } from "fs";
+import { readFileSync, existsSync } from "fs";
+import { spawnSync } from "child_process";
 import { logger } from "../utils/logger.js";
 import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
 import { SettingsDefaultsManager } from "./SettingsDefaultsManager.js";
@@ -111,13 +112,81 @@ async function checkWorkerVersion(): Promise<void> {
 
 
 /**
+ * Get the path to Bun executable (checking common locations)
+ */
+function getBunPath(): string {
+  // Common bun paths
+  const bunPaths = process.platform === 'win32'
+    ? [path.join(homedir(), '.bun', 'bin', 'bun.exe')]
+    : [path.join(homedir(), '.bun', 'bin', 'bun'), '/usr/local/bin/bun'];
+
+  for (const bunPath of bunPaths) {
+    if (existsSync(bunPath)) {
+      return bunPath;
+    }
+  }
+
+  // Fallback to assuming bun is in PATH
+  return 'bun';
+}
+
+/**
+ * Attempt to start the worker by calling worker-service.cjs start
+ * Returns true if start command completed without error, false otherwise
+ */
+function tryStartWorker(): boolean {
+  const workerServicePath = path.join(MARKETPLACE_ROOT, 'plugin', 'scripts', 'worker-service.cjs');
+  const bunPath = getBunPath();
+
+  try {
+    logger.debug('SYSTEM', 'Attempting to start worker', { bunPath, workerServicePath });
+
+    const result = spawnSync(bunPath, [workerServicePath, 'start'], {
+      stdio: 'inherit',
+      timeout: 30000,  // 30 second timeout for start command
+      shell: process.platform === 'win32',
+      env: { ...process.env, CLAUDE_MEM_WORKER_PORT: String(getWorkerPort()) }
+    });
+
+    if (result.status === 0) {
+      logger.debug('SYSTEM', 'Worker start command completed successfully');
+      return true;
+    }
+
+    logger.debug('SYSTEM', 'Worker start command failed', { status: result.status });
+    return false;
+  } catch (error) {
+    logger.debug('SYSTEM', 'Worker start command threw error', {
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return false;
+  }
+}
+
+/**
  * Ensure worker service is running
- * Polls until worker is ready (assumes worker-service.cjs start was called by hooks.json)
+ * First tries quick health check, then attempts to start worker if not running,
+ * then polls until worker is ready.
  */
 export async function ensureWorkerRunning(): Promise<void> {
   const maxRetries = 75;  // 15 seconds total
   const pollInterval = 200;
 
+  // Quick check - if worker is already healthy, we're done
+  try {
+    if (await isWorkerHealthy()) {
+      await checkWorkerVersion();
+      return;
+    }
+  } catch {
+    // Worker not responding, will try to start it
+  }
+
+  // Try to start the worker
+  logger.debug('SYSTEM', 'Worker not healthy, attempting to start');
+  tryStartWorker();
+
+  // Now poll until worker is ready
   for (let i = 0; i < maxRetries; i++) {
     try {
       if (await isWorkerHealthy()) {

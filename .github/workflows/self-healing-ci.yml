@@ -1,0 +1,148 @@
+name: Self-Healing CI (YOLO Push)
+
+# Trigger when lint/type-check workflows fail
+on:
+  workflow_run:
+    workflows: ["CI"]  # Update this to match your CI workflow name
+    types: [completed]
+    branches: [main, dev, "feature/*"]
+
+jobs:
+  auto-fix:
+    # Only run on failure, skip if already a retry
+    if: |
+      github.event.workflow_run.conclusion == 'failure' &&
+      !contains(github.event.workflow_run.head_commit.message, '[auto-fix]')
+
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: read
+      id-token: write
+      actions: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_branch }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Get failed workflow logs
+        id: get-logs
+        run: |
+          # Fetch the failed workflow run logs
+          gh run view ${{ github.event.workflow_run.id }} --log-failed > /tmp/failed-logs.txt 2>&1 || true
+          echo "logs_file=/tmp/failed-logs.txt" >> $GITHUB_OUTPUT
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run Claude Auto-Fix
+        id: claude-fix
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            ## Self-Healing CI: Auto-Fix Mode
+
+            The CI workflow failed. Analyze the error and fix it if allowed.
+
+            ### Failed Workflow Logs
+            Check the file at /tmp/failed-logs.txt for error details.
+
+            ### STRICT BOUNDARIES (from CLAUDE.md)
+
+            ✅ **ALLOWED to auto-fix:**
+            - ESLint errors and warnings
+            - Prettier formatting issues
+            - TypeScript type errors
+            - Unused imports, import ordering
+            - Spelling errors (cspell)
+            - Missing peer dependencies
+
+            ❌ **NEVER auto-fix (escalate to human):**
+            - Security-related code
+            - Database logic (src/services/sqlite/)
+            - Hook execution flow (src/hooks/*.ts)
+            - API design changes
+            - Architecture/pattern changes
+            - Privacy tag handling (src/utils/tag-stripping.ts)
+            - Business logic changes
+
+            ### Instructions
+
+            1. Read /tmp/failed-logs.txt to understand the failure
+            2. Determine if the error is in the ALLOWED category
+            3. If ALLOWED:
+               - Make the minimal fix required
+               - Stage changes with `git add`
+               - DO NOT commit (the workflow will handle it)
+               - Output: "FIX_APPLIED=true"
+            4. If NOT ALLOWED or unclear:
+               - Output: "FIX_APPLIED=false"
+               - Explain why human review is needed
+
+            Be conservative. When in doubt, escalate to human review.
+
+          claude_args: '--allowed-tools "Bash(git add:*),Bash(git diff:*),Bash(git status:*),Bash(npm run lint:*),Bash(npm run format:*),Bash(npm run typecheck:*),Bash(cat:*),Read,Edit,Write,Glob,Grep"'
+
+      - name: Check if fix was applied
+        id: check-fix
+        run: |
+          if git diff --staged --quiet; then
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+          else
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Commit and push fix
+        if: steps.check-fix.outputs.has_changes == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Create commit with [auto-fix] tag to prevent infinite loops
+          git commit -m "[auto-fix] CI: Auto-fix lint/type errors
+
+          Automated fix applied by YOLO Push workflow.
+          Original failure: ${{ github.event.workflow_run.id }}
+
+          🤖 Generated with Claude Code"
+
+          git push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create issue if fix not possible
+        if: steps.check-fix.outputs.has_changes == 'false'
+        run: |
+          gh issue create \
+            --title "🔴 CI Failure Requires Human Review" \
+            --body "## CI Auto-Fix Failed
+
+          The self-healing CI could not automatically fix this failure.
+
+          **Failed Workflow:** ${{ github.event.workflow_run.html_url }}
+          **Branch:** ${{ github.event.workflow_run.head_branch }}
+          **Commit:** ${{ github.event.workflow_run.head_sha }}
+
+          ### Reason
+          The error is either:
+          - In a protected area (see Deny List in CLAUDE.md)
+          - Too complex for automatic resolution
+          - Requires architectural decisions
+
+          Please review and fix manually."
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

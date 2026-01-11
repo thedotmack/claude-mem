@@ -6,6 +6,7 @@
  */
 
 import express, { Request, Response } from 'express';
+import path from 'path';
 import { getWorkerPort } from '../../../../shared/worker-utils.js';
 import { logger } from '../../../../utils/logger.js';
 import { stripMemoryTagsFromJson, stripMemoryTagsFromPrompt } from '../../../../utils/tag-stripping.js';
@@ -21,6 +22,7 @@ import { SessionCompletionHandler } from '../../session/SessionCompletionHandler
 import { PrivacyCheckValidator } from '../../validation/PrivacyCheckValidator.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
+import { getHybridOrchestrator } from '../../../pipeline/index.js';
 
 export class SessionRoutes extends BaseRouteHandler {
   private completionHandler: SessionCompletionHandler;
@@ -231,6 +233,7 @@ export class SessionRoutes extends BaseRouteHandler {
     app.post('/api/sessions/init', this.handleSessionInitByClaudeId.bind(this));
     app.post('/api/sessions/observations', this.handleObservationsByClaudeId.bind(this));
     app.post('/api/sessions/summarize', this.handleSummarizeByClaudeId.bind(this));
+    app.post('/api/sessions/handoff', this.handleHandoff.bind(this));
   }
 
   /**
@@ -435,8 +438,11 @@ export class SessionRoutes extends BaseRouteHandler {
 
     const store = this.dbManager.getSessionStore();
 
-    // Get or create session
-    const sessionDbId = store.createSDKSession(contentSessionId, '', '');
+    // Extract project name from cwd
+    const project = cwd ? path.basename(cwd) : '';
+
+    // Get or create session with project from cwd
+    const sessionDbId = store.createSDKSession(contentSessionId, project, '');
     const promptNumber = store.getPromptNumberFromUserPrompts(contentSessionId);
 
     // Privacy check: skip if user prompt was entirely private
@@ -462,19 +468,58 @@ export class SessionRoutes extends BaseRouteHandler {
       ? stripMemoryTagsFromJson(JSON.stringify(tool_response))
       : '{}';
 
-    // Queue observation
+    const effectiveCwd = cwd || logger.happyPathError(
+      'SESSION',
+      'Missing cwd when queueing observation in SessionRoutes',
+      { sessionId: sessionDbId },
+      { tool_name },
+      ''
+    );
+
+    // Pipeline Acquire Stage: validate and check for duplicates
+    const orchestrator = getHybridOrchestrator();
+    orchestrator.acquire({
+      claudeSessionId: contentSessionId,
+      sessionDbId,
+      toolName: tool_name,
+      toolInput: cleanedToolInput,
+      toolOutput: cleanedToolResponse,
+      cwd: effectiveCwd,
+      promptNumber,
+    }).then(acquireResult => {
+      if (acquireResult.skipped) {
+        logger.debug('PIPELINE', 'Observation skipped by acquire stage', {
+          sessionId: sessionDbId,
+          toolName: tool_name,
+          reason: acquireResult.skipReason,
+        });
+        // Note: We still queue to maintain existing behavior
+        // Future: Could skip entirely for true duplicates
+      }
+
+      if (acquireResult.output) {
+        logger.debug('PIPELINE', 'Acquire stage metadata', {
+          sessionId: sessionDbId,
+          toolCategory: acquireResult.output.metadata.toolCategory,
+          inputTokens: acquireResult.output.metadata.inputTokenEstimate,
+          outputTokens: acquireResult.output.metadata.outputTokenEstimate,
+        });
+      }
+    }).catch(error => {
+      // Non-fatal: log and continue with existing flow
+      logger.debug('PIPELINE', 'Acquire stage error (non-fatal)', {
+        sessionId: sessionDbId,
+        toolName: tool_name,
+      }, error);
+    });
+
+    // Queue observation (existing flow continues in parallel)
     this.sessionManager.queueObservation(sessionDbId, {
       tool_name,
       tool_input: cleanedToolInput,
       tool_response: cleanedToolResponse,
       prompt_number: promptNumber,
-      cwd: cwd || (() => {
-        logger.error('SESSION', 'Missing cwd when queueing observation in SessionRoutes', {
-          sessionId: sessionDbId,
-          tool_name
-        });
-        return '';
-      })()
+      cwd: effectiveCwd
     });
 
     // Ensure SDK agent is running
@@ -527,6 +572,18 @@ export class SessionRoutes extends BaseRouteHandler {
 
     // Broadcast summarize queued event
     this.eventBroadcaster.broadcastSummarizeQueued();
+
+    // Trigger micro cycle for this session (fire-and-forget, non-blocking)
+    // This runs supersession detection for the session's observations
+    const sleepAgent = this.workerService.getSleepAgent();
+    if (sleepAgent) {
+      // Explicit void prefix makes fire-and-forget intentional
+      void sleepAgent.runMicroCycle(contentSessionId).catch(error => {
+        logger.warn('SESSION', 'Micro cycle failed (non-fatal)', {
+          contentSessionId,
+        }, error as Error);
+      });
+    }
 
     res.json({ status: 'queued' });
   });
@@ -614,6 +671,115 @@ export class SessionRoutes extends BaseRouteHandler {
       sessionDbId,
       promptNumber,
       skipped: false
+    });
+  });
+
+  /**
+   * Create handoff observation before context compaction (PreCompact hook)
+   * POST /api/sessions/handoff
+   * Body: { claudeSessionId, trigger, customInstructions, lastUserMessage, lastAssistantMessage }
+   *
+   * Creates a 'handoff' type observation that captures:
+   * - Current session goals and context
+   * - Pending tasks
+   * - Key decisions made
+   * - Files being worked on
+   * - Resume instructions for post-compaction
+   *
+   * Inspired by Continuous Claude v2's handoff pattern.
+   */
+  private handleHandoff = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const { claudeSessionId, trigger, customInstructions, lastUserMessage, lastAssistantMessage } = req.body;
+
+    if (!claudeSessionId) {
+      return this.badRequest(res, 'Missing claudeSessionId');
+    }
+
+    const store = this.dbManager.getSessionStore();
+
+    // Get session info
+    const sessionDbId = store.createSDKSession(claudeSessionId, '', '');
+    const session = this.sessionManager.getSession(sessionDbId);
+
+    // Get recent observations for this session to summarize current work
+    const recentObservations = store.getObservationsForSession(claudeSessionId);
+
+    // Get session summary if exists
+    const existingSummary = store.getSummaryForSession(claudeSessionId);
+
+    // Get files from session
+    const sessionFiles = store.getFilesForSession(claudeSessionId);
+
+    // Build handoff content
+    const handoffData = {
+      trigger: trigger || 'unknown',
+      customInstructions: customInstructions || '',
+      lastUserMessage: lastUserMessage || '',
+      lastAssistantMessage: lastAssistantMessage?.substring(0, 500) || '',
+      pendingQueue: session?.pendingMessages?.length || 0,
+      recentObservationsCount: recentObservations.length,
+      hasExistingSummary: !!existingSummary
+    };
+
+    // Extract key info from recent observations (last 5)
+    const recentTitles = recentObservations
+      .filter(o => o.title)
+      .map(o => o.title)
+      .slice(-5);
+
+    // Use aggregated files from session
+    const recentFiles = sessionFiles.filesModified.slice(0, 10);
+
+    // Create handoff observation
+    const handoffTitle = `Context Handoff (${trigger === 'auto' ? 'Auto-Compact' : 'Manual Compact'})`;
+    const handoffNarrative = [
+      `Session state preserved before ${trigger === 'auto' ? 'automatic' : 'manual'} context compaction.`,
+      recentTitles.length > 0 ? `Recent work: ${recentTitles.join(', ')}` : '',
+      recentFiles.length > 0 ? `Active files: ${recentFiles.slice(0, 5).join(', ')}` : '',
+      customInstructions ? `User notes: ${customInstructions}` : '',
+      existingSummary?.next_steps ? `Pending: ${existingSummary.next_steps}` : ''
+    ].filter(Boolean).join(' ');
+
+    // Get project from session or fallback
+    const project = session?.project || process.cwd();
+
+    // Store handoff observation using existing method
+    const result = store.storeObservation(
+      claudeSessionId,
+      project,
+      {
+        type: 'handoff',
+        title: handoffTitle,
+        subtitle: `Trigger: ${trigger}, Queue: ${handoffData.pendingQueue}`,
+        narrative: handoffNarrative,
+        facts: [
+          `Trigger: ${trigger}`,
+          `Pending messages: ${handoffData.pendingQueue}`,
+          `Recent observations: ${handoffData.recentObservationsCount}`
+        ],
+        concepts: ['context-continuity', 'session-handoff', 'compaction'],
+        files_read: [],
+        files_modified: recentFiles
+      },
+      store.getPromptNumberFromUserPrompts(claudeSessionId),
+      0 // discovery_tokens
+    );
+
+    logger.info('SESSION', 'Handoff observation created', {
+      handoffId: result.id,
+      trigger,
+      recentObservations: recentObservations.length,
+      activeFiles: recentFiles.length
+    });
+
+    // Broadcast event
+    this.eventBroadcaster.broadcastObservationQueued(sessionDbId);
+
+    res.json({
+      success: true,
+      handoffId: result.id,
+      tasksCount: handoffData.pendingQueue,
+      trigger
     });
   });
 }
