@@ -11,10 +11,10 @@ export const DEFAULT_SETTINGS = {
   // AI Provider Configuration
   CLAUDE_MEM_PROVIDER: 'claude',
   CLAUDE_MEM_GEMINI_API_KEY: '',
-  CLAUDE_MEM_GEMINI_MODEL: 'gemini-2.5-flash-lite',
+  CLAUDE_MEM_GEMINI_MODEL: 'gemini-3-flash',
   CLAUDE_MEM_OPENROUTER_API_KEY: '',
   CLAUDE_MEM_OPENROUTER_MODEL: 'xiaomi/mimo-v2-flash:free',
-  CLAUDE_MEM_OPENROUTER_BASE_URL: 'https://openrouter.ai/api/v1',
+  CLAUDE_MEM_OPENROUTER_BASE_URL: 'https://openrouter.ai/api/v1/chat/completions',
   CLAUDE_MEM_OPENROUTER_SITE_URL: '',
   CLAUDE_MEM_OPENROUTER_APP_NAME: 'claude-mem',
   CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: 'true',
