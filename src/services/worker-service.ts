@@ -373,10 +373,12 @@ export class WorkerService {
           continue;
         }
 
-        const session = this.sessionManager.initializeSession(sessionDbId);
+        // Pass isStartupRecovery=true to prevent trying to resume into stale SDK context
+        const session = this.sessionManager.initializeSession(sessionDbId, undefined, undefined, true);
         logger.info('SYSTEM', `Starting processor for session ${sessionDbId}`, {
           project: session.project,
-          pendingCount: pendingStore.getPendingCount(sessionDbId)
+          pendingCount: pendingStore.getPendingCount(sessionDbId),
+          isStartupRecovery: true
         });
 
         this.startSessionProcessor(session, 'startup-recovery');

@@ -20,6 +20,7 @@ import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import type { ActiveSession, SDKUserMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import { processAgentResponse, type WorkerRef } from './agents/index.js';
+import { shouldPassResumeParameter } from './resume-logic.js';
 
 // Import Agent SDK (assumes it's installed)
 // @ts-ignore - Agent SDK types may not be available
@@ -67,30 +68,35 @@ export class SDKAgent {
     // Create message generator (event-driven)
     const messageGenerator = this.createMessageGenerator(session, cwdTracker);
 
-    // CRITICAL: Only resume if:
-    // 1. memorySessionId exists (was captured from a previous SDK response)
-    // 2. lastPromptNumber > 1 (this is a continuation within the same SDK session)
-    // On worker restart or crash recovery, memorySessionId may exist from a previous
-    // SDK session but we must NOT resume because the SDK context was lost.
-    // NEVER use contentSessionId for resume - that would inject messages into the user's transcript!
-    const hasRealMemorySessionId = !!session.memorySessionId;
+    // Determine if we should pass the resume parameter
+    // CRITICAL: Never resume if isStartupRecovery=true (SDK context was lost when worker restarted)
+    const willResume = shouldPassResumeParameter({
+      memorySessionId: session.memorySessionId,
+      lastPromptNumber: session.lastPromptNumber,
+      isStartupRecovery: session.isStartupRecovery
+    });
 
     logger.info('SDK', 'Starting SDK query', {
       sessionDbId: session.sessionDbId,
       contentSessionId: session.contentSessionId,
       memorySessionId: session.memorySessionId,
-      hasRealMemorySessionId,
-      resume_parameter: hasRealMemorySessionId ? session.memorySessionId : '(none - fresh start)',
+      isStartupRecovery: session.isStartupRecovery,
+      willResume,
+      resume_parameter: willResume ? session.memorySessionId : '(none - fresh start)',
       lastPromptNumber: session.lastPromptNumber
     });
 
     // Debug-level alignment logs for detailed tracing
-    if (session.lastPromptNumber > 1) {
-      const willResume = hasRealMemorySessionId;
-      logger.debug('SDK', `[ALIGNMENT] Resume Decision | contentSessionId=${session.contentSessionId} | memorySessionId=${session.memorySessionId} | prompt#=${session.lastPromptNumber} | hasRealMemorySessionId=${hasRealMemorySessionId} | willResume=${willResume} | resumeWith=${willResume ? session.memorySessionId : 'NONE'}`);
+    if (session.isStartupRecovery) {
+      logger.debug('SDK', `[ALIGNMENT] Startup Recovery | contentSessionId=${session.contentSessionId} | memorySessionId=${session.memorySessionId} | prompt#=${session.lastPromptNumber} | action=START_FRESH | SDK context lost during worker restart`);
+      if (session.memorySessionId) {
+        logger.warn('SDK', `Skipping resume for startup-recovery session despite existing memorySessionId=${session.memorySessionId} - SDK context was lost (worker restart)`);
+      }
+    } else if (session.lastPromptNumber > 1) {
+      logger.debug('SDK', `[ALIGNMENT] Resume Decision | contentSessionId=${session.contentSessionId} | memorySessionId=${session.memorySessionId} | prompt#=${session.lastPromptNumber} | willResume=${willResume} | resumeWith=${willResume ? session.memorySessionId : 'NONE'}`);
     } else {
       // INIT prompt - never resume even if memorySessionId exists (stale from previous session)
-      const hasStaleMemoryId = hasRealMemorySessionId;
+      const hasStaleMemoryId = !!session.memorySessionId;
       logger.debug('SDK', `[ALIGNMENT] First Prompt (INIT) | contentSessionId=${session.contentSessionId} | prompt#=${session.lastPromptNumber} | hasStaleMemoryId=${hasStaleMemoryId} | action=START_FRESH | Will capture new memorySessionId from SDK response`);
       if (hasStaleMemoryId) {
         logger.warn('SDK', `Skipping resume for INIT prompt despite existing memorySessionId=${session.memorySessionId} - SDK context was lost (worker restart or crash recovery)`);
@@ -98,15 +104,12 @@ export class SDKAgent {
     }
 
     // Run Agent SDK query loop
-    // Only resume if we have a captured memory session ID
     const queryResult = query({
       prompt: messageGenerator,
       options: {
         model: modelId,
-        // Only resume if BOTH: (1) we have a memorySessionId AND (2) this isn't the first prompt
-        // On worker restart, memorySessionId may exist from a previous SDK session but we
-        // need to start fresh since the SDK context was lost
-        ...(hasRealMemorySessionId && session.lastPromptNumber > 1 && { resume: session.memorySessionId }),
+        // Resume only if willResume is true (checks memorySessionId, promptNumber, and NOT startup-recovery)
+        ...(willResume && { resume: session.memorySessionId }),
         disallowedTools,
         abortController: session.abortController,
         pathToClaudeCodeExecutable: claudePath
