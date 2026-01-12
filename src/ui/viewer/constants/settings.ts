@@ -17,6 +17,10 @@ export const DEFAULT_SETTINGS = {
   CLAUDE_MEM_OPENROUTER_SITE_URL: '',
   CLAUDE_MEM_OPENROUTER_APP_NAME: 'claude-mem',
   CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: 'true',
+  // OpenAI Configuration
+  CLAUDE_MEM_OPENAI_API_KEY: '',
+  CLAUDE_MEM_OPENAI_MODEL: 'gpt-4o-mini',
+  CLAUDE_MEM_OPENAI_BASE_URL: 'https://api.openai.com/v1/chat/completions',
 
   // Token Economics (all true for backwards compatibility)
   CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: 'true',
