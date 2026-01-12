@@ -211,6 +211,13 @@ export class SDKAgent {
       }
     }
 
+    // Terminate SDK subprocess - prevents orphaned processes from accumulating
+    // The subprocess stays alive waiting for input after the iterator exhausts,
+    // so we must explicitly abort to trigger cleanup
+    const oldController = session.abortController;
+    session.abortController = new AbortController();
+    oldController.abort();
+
     // Mark session complete
     const sessionDuration = Date.now() - session.startTime;
     logger.success('SDK', 'Agent completed', {
