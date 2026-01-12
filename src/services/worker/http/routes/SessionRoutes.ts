@@ -291,8 +291,8 @@ export class SessionRoutes extends BaseRouteHandler {
       });
     }
 
-    // Start agent in background using the helper method
-    this.startGeneratorWithProvider(session, this.getSelectedProvider(), 'init');
+    // Ensure agent is running (won't start duplicate if already running)
+    this.ensureGeneratorRunning(sessionDbId, 'init');
 
     // Broadcast session started event
     this.eventBroadcaster.broadcastSessionStarted(sessionDbId, session.project);
