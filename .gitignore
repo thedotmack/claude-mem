@@ -32,3 +32,8 @@ src/ui/viewer.html
 # Prevent other malformed path directories
 http*/
 https*/
+
+# Auto-generated CLAUDE.md files (keep root CLAUDE.md only)
+**/CLAUDE.md
+!CLAUDE.md
+!.claude/CLAUDE.md
