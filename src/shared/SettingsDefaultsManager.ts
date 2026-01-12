@@ -222,6 +222,7 @@ export class SettingsDefaultsManager {
 
   /**
    * Setup file watcher to invalidate cache when settings file changes
+   * Handles EMFILE (too many open files) gracefully by skipping watcher setup
    */
   private static setupFileWatcher(settingsPath: string): void {
     // Skip if already watching
@@ -240,8 +241,17 @@ export class SettingsDefaultsManager {
 
       this.fileWatchers.set(settingsPath, watcher);
       console.log('[SETTINGS] File watcher established for:', settingsPath);
-    } catch (error) {
-      console.warn('[SETTINGS] Failed to setup file watcher:', settingsPath, error);
+    } catch (error: unknown) {
+      // Handle EMFILE error gracefully - this means too many file descriptors are open
+      // The cache will still work, just won't auto-refresh on file changes
+      const isEmfile = error instanceof Error &&
+        (error.message.includes('EMFILE') || (error as NodeJS.ErrnoException).code === 'EMFILE');
+
+      if (isEmfile) {
+        console.warn('[SETTINGS] EMFILE: Too many open files - file watcher disabled. Settings changes require restart.');
+      } else {
+        console.warn('[SETTINGS] Failed to setup file watcher:', settingsPath, error);
+      }
       // Non-critical error, continue without watching
     }
   }
