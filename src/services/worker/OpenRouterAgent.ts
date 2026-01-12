@@ -23,6 +23,9 @@ import {
   processAgentResponse,
   shouldFallbackToClaude,
   isAbortError,
+  isAuthError,
+  isQuotaError,
+  getAuthErrorMessage,
   type WorkerRef,
   type FallbackAgent
 } from './agents/index.js';
@@ -249,7 +252,20 @@ export class OpenRouterAgent {
 
       const errorMessage = error instanceof Error ? error.message : String(error);
 
+      // Auth errors should NOT fallback - user needs to fix their configuration
+      if (isAuthError(error)) {
+        const userMessage = getAuthErrorMessage(error);
+        logger.error('SDK', 'OpenRouter authentication error - NOT falling back', {
+          sessionDbId: session.sessionDbId,
+          error: errorMessage,
+          userMessage
+        });
+        // Throw with user-friendly message so it's visible in logs
+        throw new Error(`[AUTH ERROR] ${userMessage}`);
+      }
+
       // Multi-level fallback: OpenRouter → Gemini → Claude SDK
+      // Only for non-auth errors (quota, server, network issues)
       if (shouldFallbackToClaude(error)) {
         // Try Gemini first if available
         if (isGeminiAvailable() && this.geminiAgent) {
@@ -407,14 +423,18 @@ export class OpenRouterAgent {
         const errorMessage = error instanceof Error ? error.message : String(error);
         errors.push({ model, error: errorMessage });
 
-        // Check if this is a quota/rate limit error that should trigger fallback
-        const isQuotaError = errorMessage.toLowerCase().includes('quota') ||
-                            errorMessage.toLowerCase().includes('rate limit') ||
-                            errorMessage.toLowerCase().includes('insufficient') ||
-                            errorMessage.toLowerCase().includes('credit') ||
-                            errorMessage.toLowerCase().includes('429');
+        // Auth errors should fail immediately - don't try other models
+        // User needs to fix their configuration, trying other models won't help
+        if (isAuthError(error)) {
+          logger.error('SDK', `OpenRouter auth error - stopping model fallback`, {
+            failedModel: model,
+            error: errorMessage
+          });
+          throw error;  // Let the caller handle with user-friendly message
+        }
 
-        if (isQuotaError && i < models.length - 1) {
+        // Check if this is a quota/rate limit error that should trigger fallback
+        if (isQuotaError(error) && i < models.length - 1) {
           // Quota error and we have more models to try
           logger.warn('SDK', `OpenRouter model quota exhausted, falling back to next model`, {
             failedModel: model,
