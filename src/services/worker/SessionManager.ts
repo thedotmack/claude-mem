@@ -46,12 +46,15 @@ export class SessionManager {
 
   /**
    * Initialize a new session or return existing one
+   * @param isStartupRecovery - True if this session is being auto-recovered at worker startup.
+   *                            When true, the SDK context was lost and we should NOT try to resume.
    */
-  initializeSession(sessionDbId: number, currentUserPrompt?: string, promptNumber?: number): ActiveSession {
+  initializeSession(sessionDbId: number, currentUserPrompt?: string, promptNumber?: number, isStartupRecovery: boolean = false): ActiveSession {
     logger.debug('SESSION', 'initializeSession called', {
       sessionDbId,
       promptNumber,
-      has_currentUserPrompt: !!currentUserPrompt
+      has_currentUserPrompt: !!currentUserPrompt,
+      isStartupRecovery
     });
 
     // Check if already active
@@ -139,7 +142,8 @@ export class SessionManager {
       cumulativeOutputTokens: 0,
       earliestPendingTimestamp: null,
       conversationHistory: [],  // Initialize empty - will be populated by agents
-      currentProvider: null  // Will be set when generator starts
+      currentProvider: null,  // Will be set when generator starts
+      isStartupRecovery  // Track if SDK context was lost (worker restart)
     };
 
     logger.debug('SESSION', 'Creating new session object', {

@@ -35,6 +35,7 @@ const EXCLUDED_PATTERNS = [
   /integrations\/.*Installer\.ts$/, // CLI installer commands (console.log for interactive installation output)
   /SettingsDefaultsManager\.ts$/,  // Must use console.log to avoid circular dependency with logger
   /user-message-hook\.ts$/,  // Deprecated - kept for reference only, not registered in hooks.json
+  /resume-logic\.ts$/,  // Pure function module for resume parameter decision logic
 ];
 
 // Files that should always use logger (core business logic)
