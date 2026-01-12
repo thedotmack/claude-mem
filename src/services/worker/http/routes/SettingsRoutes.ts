@@ -30,6 +30,9 @@ export class SettingsRoutes extends BaseRouteHandler {
     app.get('/api/settings', this.handleGetSettings.bind(this));
     app.post('/api/settings', this.handleUpdateSettings.bind(this));
 
+    // Provider diagnostics endpoint
+    app.get('/api/provider', this.handleGetProviderDiagnostics.bind(this));
+
     // MCP toggle endpoints
     app.get('/api/mcp/status', this.handleGetMcpStatus.bind(this));
     app.post('/api/mcp/toggle', this.handleToggleMcp.bind(this));
@@ -49,6 +52,96 @@ export class SettingsRoutes extends BaseRouteHandler {
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
     res.json(settings);
   });
+
+  /**
+   * GET /api/provider - Provider diagnostics endpoint
+   * Shows current provider configuration for debugging
+   */
+  private handleGetProviderDiagnostics = this.wrapHandler((req: Request, res: Response): void => {
+    const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+    this.ensureSettingsFile(settingsPath);
+    const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+    const provider = settings.CLAUDE_MEM_PROVIDER || 'claude-sdk';
+
+    // Build provider-specific info
+    const diagnostics: Record<string, unknown> = {
+      selectedProvider: provider,
+      timestamp: new Date().toISOString(),
+    };
+
+    if (provider === 'openrouter') {
+      const models = (settings.CLAUDE_MEM_OPENROUTER_MODEL || 'gemini-3-flash-preview')
+        .split(',')
+        .map((m: string) => m.trim())
+        .filter((m: string) => m.length > 0);
+
+      diagnostics.openrouter = {
+        hasApiKey: !!settings.CLAUDE_MEM_OPENROUTER_API_KEY,
+        apiKeyPrefix: settings.CLAUDE_MEM_OPENROUTER_API_KEY
+          ? settings.CLAUDE_MEM_OPENROUTER_API_KEY.substring(0, 8) + '...'
+          : null,
+        baseUrl: settings.CLAUDE_MEM_OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1/chat/completions',
+        models: models,
+        primaryModel: models[0] || 'none',
+        fallbackModels: models.slice(1),
+        maxContextMessages: settings.CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES || '20',
+        maxTokens: settings.CLAUDE_MEM_OPENROUTER_MAX_TOKENS || '100000',
+        appName: settings.CLAUDE_MEM_OPENROUTER_APP_NAME || 'claude-mem',
+      };
+    } else if (provider === 'gemini') {
+      diagnostics.gemini = {
+        hasApiKey: !!settings.CLAUDE_MEM_GEMINI_API_KEY,
+        apiKeyPrefix: settings.CLAUDE_MEM_GEMINI_API_KEY
+          ? settings.CLAUDE_MEM_GEMINI_API_KEY.substring(0, 8) + '...'
+          : null,
+        model: settings.CLAUDE_MEM_GEMINI_MODEL || 'gemini-3-flash',
+        rateLimitingEnabled: settings.CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED || 'true',
+      };
+    } else {
+      diagnostics.claudeSdk = {
+        description: 'Uses Claude Code subscription via SDK',
+        model: settings.CLAUDE_MEM_MODEL || 'sonnet',
+      };
+    }
+
+    // Add hints for common issues
+    diagnostics.hints = this.getProviderHints(provider, settings);
+
+    res.json(diagnostics);
+  });
+
+  /**
+   * Generate helpful hints based on provider configuration
+   */
+  private getProviderHints(provider: string, settings: Record<string, string>): string[] {
+    const hints: string[] = [];
+
+    if (provider === 'openrouter') {
+      if (!settings.CLAUDE_MEM_OPENROUTER_API_KEY) {
+        hints.push('❌ No API key configured - set CLAUDE_MEM_OPENROUTER_API_KEY');
+      }
+
+      const baseUrl = settings.CLAUDE_MEM_OPENROUTER_BASE_URL || '';
+      if (baseUrl && !baseUrl.includes('openrouter.ai')) {
+        hints.push(`⚠️ Using custom base URL: ${baseUrl}`);
+        hints.push('   Ensure your proxy supports Bearer token auth and OpenAI-compatible format');
+      }
+
+      if (!baseUrl || baseUrl === 'https://openrouter.ai/api/v1/chat/completions') {
+        hints.push('✅ Using official OpenRouter API');
+      }
+    } else if (provider === 'gemini') {
+      if (!settings.CLAUDE_MEM_GEMINI_API_KEY) {
+        hints.push('❌ No API key configured - set CLAUDE_MEM_GEMINI_API_KEY');
+        hints.push('   Get free key at: https://aistudio.google.com/apikey');
+      }
+    } else if (provider === 'claude-sdk' || provider === 'claude') {
+      hints.push('ℹ️ Claude SDK uses your Claude Code subscription');
+    }
+
+    return hints;
+  }
 
   /**
    * Update environment settings (in ~/.claude-mem/settings.json) with validation
