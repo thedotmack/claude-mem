@@ -19,6 +19,7 @@ describe('HealthMonitor', () => {
       const result = await isPortInUse(37777);
 
       expect(result).toBe(true);
+      // HealthMonitor uses hardcoded 127.0.0.1, not getWorkerHost()
       expect(global.fetch).toHaveBeenCalledWith('http://127.0.0.1:37777/api/health');
     });
 
@@ -105,6 +106,7 @@ describe('HealthMonitor', () => {
       await waitForHealth(37777, 1000);
 
       // waitForHealth uses /api/readiness, not /api/health
+      // HealthMonitor uses hardcoded 127.0.0.1, not getWorkerHost()
       const calls = fetchMock.mock.calls;
       expect(calls.length).toBeGreaterThan(0);
       expect(calls[0][0]).toBe('http://127.0.0.1:37777/api/readiness');

@@ -38,6 +38,7 @@ const EXCLUDED_PATTERNS = [
   /cli\/hook-command\.ts$/,  // CLI hook command uses console.log/error for hook protocol output
   /cli\/handlers\/user-message\.ts$/,  // User message handler uses console.error for user-visible context
   /resume-logic\.ts$/,  // Pure function module for resume parameter decision logic
+  /^cli\//,             // CLI entry points use console.log/console.error for user output (not background services)
 ];
 
 // Files that should always use logger (core business logic)
