@@ -42,6 +42,7 @@
   <a href="docs/i18n/README.th.md">🇹🇭 ไทย</a> •
   <a href="docs/i18n/README.hi.md">🇮🇳 हिन्दी</a> •
   <a href="docs/i18n/README.bn.md">🇧🇩 বাংলা</a> •
+  <a href="docs/i18n/README.ur.md">🇵🇰 اردو</a> •
   <a href="docs/i18n/README.ro.md">🇷🇴 Română</a> •
   <a href="docs/i18n/README.sv.md">🇸🇪 Svenska</a> •
   <a href="docs/i18n/README.it.md">🇮🇹 Italiano</a> •
