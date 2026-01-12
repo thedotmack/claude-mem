@@ -101,7 +101,6 @@ export class ChromaSync {
       // See: https://github.com/thedotmack/claude-mem/issues/170 (Python 3.14 incompatibility)
       const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
       const pythonVersion = settings.CLAUDE_MEM_PYTHON_VERSION;
-      const isWindows = process.platform === 'win32';
 
       const transportOptions: any = {
         command: 'uvx',
@@ -113,13 +112,6 @@ export class ChromaSync {
         ],
         stderr: 'ignore'
       };
-
-      // CRITICAL: On Windows, try to hide console window to prevent PowerShell popups
-      // Note: windowsHide may not be supported by MCP SDK's StdioClientTransport
-      if (isWindows) {
-        transportOptions.windowsHide = true;
-        logger.debug('CHROMA_SYNC', 'Windows detected, attempting to hide console window', { project: this.project });
-      }
 
       this.transport = new StdioClientTransport(transportOptions);
 

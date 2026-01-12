@@ -7,13 +7,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/smart-install.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/smart-install.js\" && bun \"${CLAUDE_PLUGIN_ROOT}/scripts/worker-service.cjs\" stop && bun \"${CLAUDE_PLUGIN_ROOT}/scripts/worker-service.cjs\" start",
             "timeout": 300
-          },
-          {
-            "type": "command",
-            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/scripts/worker-service.cjs\" start",
-            "timeout": 60
           },
           {
             "type": "command",
