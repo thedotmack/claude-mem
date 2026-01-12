@@ -165,6 +165,11 @@ export class SessionRoutes extends BaseRouteHandler {
         const sessionDbId = session.sessionDbId;
         const wasAborted = session.abortController.signal.aborted;
 
+        // CRITICAL: Capture the controller reference BEFORE clearing generatorPromise
+        // This prevents a race condition where a new generator starts (from new observation)
+        // and we accidentally abort its controller instead of our old one
+        const myController = session.abortController;
+
         if (wasAborted) {
           logger.info('SESSION', `Generator aborted`, { sessionId: sessionDbId });
         } else {
@@ -187,10 +192,17 @@ export class SessionRoutes extends BaseRouteHandler {
                 pendingCount
               });
 
-              // Abort OLD controller before replacing to prevent child process leaks
-              const oldController = session.abortController;
-              session.abortController = new AbortController();
-              oldController.abort();
+              // CRITICAL: Only replace controller if it hasn't been replaced by another generator
+              // (race condition: new observation may have already started a new generator)
+              if (session.abortController === myController) {
+                const oldController = session.abortController;
+                session.abortController = new AbortController();
+                oldController.abort();
+              } else {
+                logger.debug('SESSION', 'Controller already replaced by new generator, skipping abort', {
+                  sessionId: sessionDbId
+                });
+              }
 
               // Small delay before restart
               setTimeout(() => {
@@ -200,16 +212,26 @@ export class SessionRoutes extends BaseRouteHandler {
                 }
               }, 1000);
             } else {
-              // No pending work - abort to kill the child process
-              session.abortController.abort();
-              logger.debug('SESSION', 'Aborted controller after natural completion', {
-                sessionId: sessionDbId
-              });
+              // No pending work - only abort if controller hasn't been replaced
+              // (race condition: new observation may have started between generatorPromise=null and here)
+              if (session.abortController === myController) {
+                session.abortController.abort();
+                logger.debug('SESSION', 'Aborted controller after natural completion', {
+                  sessionId: sessionDbId
+                });
+              } else {
+                logger.debug('SESSION', 'Controller replaced, new generator running - skipping abort', {
+                  sessionId: sessionDbId
+                });
+              }
             }
           } catch (e) {
             // Ignore errors during recovery check, but still abort to prevent leaks
-            logger.debug('SESSION', 'Error during recovery check, aborting to prevent leaks', { sessionId: sessionDbId, error: e instanceof Error ? e.message : String(e) });
-            session.abortController.abort();
+            // Only abort if controller hasn't been replaced
+            if (session.abortController === myController) {
+              logger.debug('SESSION', 'Error during recovery check, aborting to prevent leaks', { sessionId: sessionDbId, error: e instanceof Error ? e.message : String(e) });
+              session.abortController.abort();
+            }
           }
         }
         // NOTE: We do NOT delete the session here anymore.

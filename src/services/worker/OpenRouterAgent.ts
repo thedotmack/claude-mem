@@ -336,7 +336,11 @@ export class OpenRouterAgent {
       const msg = history[i];
       const msgTokens = this.estimateTokens(msg.content);
 
-      if (truncated.length >= MAX_CONTEXT_MESSAGES || tokenCount + msgTokens > MAX_ESTIMATED_TOKENS) {
+      // CRITICAL: Always keep at least the most recent message to avoid empty API requests
+      // Even if it exceeds token limit, we need something to send
+      const isFirstMessage = truncated.length === 0;
+
+      if (!isFirstMessage && (truncated.length >= MAX_CONTEXT_MESSAGES || tokenCount + msgTokens > MAX_ESTIMATED_TOKENS)) {
         logger.warn('SDK', 'Context window truncated to prevent runaway costs', {
           originalMessages: history.length,
           keptMessages: truncated.length,
@@ -349,6 +353,14 @@ export class OpenRouterAgent {
 
       truncated.unshift(msg);  // Add to beginning
       tokenCount += msgTokens;
+
+      // Warn if single message exceeds token limit (but still keep it)
+      if (isFirstMessage && msgTokens > MAX_ESTIMATED_TOKENS) {
+        logger.warn('SDK', 'Single message exceeds token limit, keeping anyway to avoid empty request', {
+          messageTokens: msgTokens,
+          tokenLimit: MAX_ESTIMATED_TOKENS
+        });
+      }
     }
 
     return truncated;
@@ -457,6 +469,12 @@ export class OpenRouterAgent {
   ): Promise<{ content: string; tokensUsed?: number }> {
     // Truncate history to prevent runaway costs
     const truncatedHistory = this.truncateHistory(history);
+
+    // CRITICAL: Validate we have messages to send (defensive check)
+    if (truncatedHistory.length === 0) {
+      throw new Error('Cannot send API request with empty message history - truncation was too aggressive');
+    }
+
     const messages = this.conversationToOpenAIMessages(truncatedHistory);
     const totalChars = truncatedHistory.reduce((sum, m) => sum + m.content.length, 0);
     const estimatedTokens = this.estimateTokens(truncatedHistory.map(m => m.content).join(''));
