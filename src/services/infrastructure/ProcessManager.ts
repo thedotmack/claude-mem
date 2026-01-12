@@ -22,6 +22,18 @@ const execAsync = promisify(exec);
 const DATA_DIR = path.join(homedir(), '.claude-mem');
 const PID_FILE = path.join(DATA_DIR, 'worker.pid');
 
+// Process patterns to clean up (orphaned from previous sessions)
+// These are the main claude-mem processes that can accumulate if not properly terminated
+const ORPHAN_PROCESS_PATTERNS = [
+  'mcp-server',      // Main MCP server process
+  'worker-service',  // Background worker daemon
+  'claude-mem',      // Any claude-mem related process
+  'chroma-mcp'       // ChromaDB MCP subprocess
+];
+
+// Only kill processes older than this to avoid killing the current session
+const ORPHAN_MAX_AGE_MINUTES = 30;
+
 export interface PidInfo {
   pid: number;
   port: number;
@@ -162,55 +174,120 @@ export async function waitForProcessesExit(pids: number[], timeoutMs: number): P
 }
 
 /**
- * Clean up orphaned chroma-mcp processes from previous worker sessions
- * Prevents process accumulation and memory leaks
+ * Parse process elapsed time from ps output (etime format: [[DD-]HH:]MM:SS)
+ * Returns age in minutes, or -1 if parsing fails
+ */
+function parseElapsedTime(etime: string): number {
+  if (!etime || etime.trim() === '') return -1;
+  
+  const cleaned = etime.trim();
+  let totalMinutes = 0;
+  
+  // Handle DD-HH:MM:SS format
+  if (cleaned.includes('-')) {
+    const [daysPart, timePart] = cleaned.split('-');
+    totalMinutes += parseInt(daysPart, 10) * 24 * 60;
+    const [hours, minutes] = timePart.split(':').map(n => parseInt(n, 10));
+    totalMinutes += hours * 60 + minutes;
+  } else {
+    const parts = cleaned.split(':').map(n => parseInt(n, 10));
+    if (parts.length === 3) {
+      // HH:MM:SS
+      totalMinutes = parts[0] * 60 + parts[1];
+    } else if (parts.length === 2) {
+      // MM:SS
+      totalMinutes = parts[0];
+    }
+  }
+  
+  return totalMinutes;
+}
+
+/**
+ * Clean up orphaned claude-mem processes from previous sessions
+ * 
+ * This function searches for ALL claude-mem related processes (not just chroma-mcp)
+ * and kills those that are older than ORPHAN_MAX_AGE_MINUTES to prevent
+ * process accumulation and memory leaks.
+ * 
+ * Process patterns checked:
+ * - mcp-server (main MCP server)
+ * - worker-service (background daemon)
+ * - claude-mem (any claude-mem process)
+ * - chroma-mcp (ChromaDB subprocess)
  */
 export async function cleanupOrphanedProcesses(): Promise<void> {
   const isWindows = process.platform === 'win32';
-  const pids: number[] = [];
+  const currentPid = process.pid;
+  const pidsToKill: number[] = [];
 
   try {
     if (isWindows) {
       // Windows: Use PowerShell Get-CimInstance instead of WMIC (deprecated in Windows 11)
-      const cmd = `powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process | Where-Object { \\$_.Name -like '*python*' -and \\$_.CommandLine -like '*chroma-mcp*' } | Select-Object -ExpandProperty ProcessId"`;
+      // Build pattern match for all process types
+      const patternConditions = ORPHAN_PROCESS_PATTERNS
+        .map(p => `\\$_.CommandLine -like '*${p}*'`)
+        .join(' -or ');
+      
+      const cmd = `powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process | Where-Object { (${patternConditions}) -and \\$_.ProcessId -ne ${currentPid} } | Select-Object ProcessId, CreationDate | ConvertTo-Json"`;
       const { stdout } = await execAsync(cmd, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND });
 
-      if (!stdout.trim()) {
-        logger.debug('SYSTEM', 'No orphaned chroma-mcp processes found (Windows)');
+      if (!stdout.trim() || stdout.trim() === 'null') {
+        logger.debug('SYSTEM', 'No orphaned claude-mem processes found (Windows)');
         return;
       }
 
-      // PowerShell outputs just numbers (one per line), simpler than WMIC's "ProcessId=1234" format
-      const lines = stdout
-        .split('\n')
-        .map(line => line.trim())
-        .filter(line => line.length > 0 && /^\d+$/.test(line));
-
-      for (const line of lines) {
-        const pid = parseInt(line, 10);
-        // SECURITY: Validate PID is positive integer before adding to list
-        if (!isNaN(pid) && Number.isInteger(pid) && pid > 0) {
-          pids.push(pid);
+      // Parse JSON output from PowerShell
+      const processes = JSON.parse(stdout);
+      const processList = Array.isArray(processes) ? processes : [processes];
+      const now = Date.now();
+      
+      for (const proc of processList) {
+        const pid = proc.ProcessId;
+        // SECURITY: Validate PID is positive integer
+        if (!Number.isInteger(pid) || pid <= 0 || pid === currentPid) continue;
+        
+        // Parse Windows WMI date format: /Date(1234567890123)/
+        const creationMatch = proc.CreationDate?.match(/\/Date\((\d+)\)\//);
+        if (creationMatch) {
+          const creationTime = parseInt(creationMatch[1], 10);
+          const ageMinutes = (now - creationTime) / (1000 * 60);
+          
+          if (ageMinutes >= ORPHAN_MAX_AGE_MINUTES) {
+            pidsToKill.push(pid);
+            logger.debug('SYSTEM', 'Found orphaned process', { pid, ageMinutes: Math.round(ageMinutes) });
+          }
         }
       }
     } else {
-      // Unix: Use ps aux | grep
-      const { stdout } = await execAsync('ps aux | grep "chroma-mcp" | grep -v grep || true');
+      // Unix: Use ps with elapsed time to filter by age
+      // Output format: PID ELAPSED COMMAND
+      const patternRegex = ORPHAN_PROCESS_PATTERNS.join('|');
+      const { stdout } = await execAsync(
+        `ps -eo pid,etime,command | grep -E "${patternRegex}" | grep -v grep || true`
+      );
 
       if (!stdout.trim()) {
-        logger.debug('SYSTEM', 'No orphaned chroma-mcp processes found (Unix)');
+        logger.debug('SYSTEM', 'No orphaned claude-mem processes found (Unix)');
         return;
       }
 
       const lines = stdout.trim().split('\n');
       for (const line of lines) {
-        const parts = line.trim().split(/\s+/);
-        if (parts.length > 1) {
-          const pid = parseInt(parts[1], 10);
-          // SECURITY: Validate PID is positive integer before adding to list
-          if (!isNaN(pid) && Number.isInteger(pid) && pid > 0) {
-            pids.push(pid);
-          }
+        // Parse: "  1234  01:23:45 /path/to/process"
+        const match = line.trim().match(/^(\d+)\s+(\S+)\s+(.*)$/);
+        if (!match) continue;
+        
+        const pid = parseInt(match[1], 10);
+        const etime = match[2];
+        
+        // SECURITY: Validate PID is positive integer and not current process
+        if (!Number.isInteger(pid) || pid <= 0 || pid === currentPid) continue;
+        
+        const ageMinutes = parseElapsedTime(etime);
+        if (ageMinutes >= ORPHAN_MAX_AGE_MINUTES) {
+          pidsToKill.push(pid);
+          logger.debug('SYSTEM', 'Found orphaned process', { pid, ageMinutes, command: match[3].substring(0, 80) });
         }
       }
     }
@@ -220,19 +297,24 @@ export async function cleanupOrphanedProcesses(): Promise<void> {
     return;
   }
 
-  if (pids.length === 0) {
+  if (pidsToKill.length === 0) {
+    logger.debug('SYSTEM', 'No orphaned processes older than threshold', { 
+      thresholdMinutes: ORPHAN_MAX_AGE_MINUTES,
+      patternsChecked: ORPHAN_PROCESS_PATTERNS 
+    });
     return;
   }
 
-  logger.info('SYSTEM', 'Cleaning up orphaned chroma-mcp processes', {
+  logger.info('SYSTEM', 'Cleaning up orphaned claude-mem processes', {
     platform: isWindows ? 'Windows' : 'Unix',
-    count: pids.length,
-    pids
+    count: pidsToKill.length,
+    pids: pidsToKill,
+    maxAgeMinutes: ORPHAN_MAX_AGE_MINUTES
   });
 
   // Kill all found processes
   if (isWindows) {
-    for (const pid of pids) {
+    for (const pid of pidsToKill) {
       // SECURITY: Double-check PID validation before using in taskkill command
       if (!Number.isInteger(pid) || pid <= 0) {
         logger.warn('SYSTEM', 'Skipping invalid PID', { pid });
@@ -246,7 +328,7 @@ export async function cleanupOrphanedProcesses(): Promise<void> {
       }
     }
   } else {
-    for (const pid of pids) {
+    for (const pid of pidsToKill) {
       try {
         process.kill(pid, 'SIGKILL');
       } catch (error) {
@@ -256,7 +338,7 @@ export async function cleanupOrphanedProcesses(): Promise<void> {
     }
   }
 
-  logger.info('SYSTEM', 'Orphaned processes cleaned up', { count: pids.length });
+  logger.info('SYSTEM', 'Orphaned processes cleaned up', { count: pidsToKill.length });
 }
 
 /**
