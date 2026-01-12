@@ -32,7 +32,13 @@ function isUnix(): boolean {
   return process.platform !== 'win32';
 }
 
-const describeOrSkip = (hasJq() && isUnix()) ? describe : describe.skip;
+// Check if the cursor-hooks shell scripts exist (they were migrated to the new hook architecture)
+function hasShellScripts(): boolean {
+  const cursorHooksDir = join(process.cwd(), 'cursor-hooks');
+  return existsSync(join(cursorHooksDir, 'session-init.sh'));
+}
+
+const describeOrSkip = (hasJq() && isUnix() && hasShellScripts()) ? describe : describe.skip;
 
 describeOrSkip('Cursor Hook Script Outputs', () => {
   let tempDir: string;

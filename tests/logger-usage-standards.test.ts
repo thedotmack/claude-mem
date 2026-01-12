@@ -36,6 +36,7 @@ const EXCLUDED_PATTERNS = [
   /SettingsDefaultsManager\.ts$/,  // Must use console.log to avoid circular dependency with logger
   /user-message-hook\.ts$/,  // Deprecated - kept for reference only, not registered in hooks.json
   /resume-logic\.ts$/,  // Pure function module for resume parameter decision logic
+  /^cli\//,             // CLI entry points use console.log/console.error for user output (not background services)
 ];
 
 // Files that should always use logger (core business logic)
