@@ -175,31 +175,57 @@ export class SessionRoutes extends BaseRouteHandler {
         session.currentProvider = null;
         this.workerService.broadcastProcessingStatus();
 
-        // Crash recovery: If not aborted and still has work, restart
+        // Crash recovery: If not aborted and still has work, restart (with limit)
         if (!wasAborted) {
           try {
             const pendingStore = this.sessionManager.getPendingMessageStore();
             const pendingCount = pendingStore.getPendingCount(sessionDbId);
 
+            // CRITICAL: Limit consecutive restarts to prevent infinite loops
+            // This prevents runaway API costs when there's a persistent error (e.g., memorySessionId not captured)
+            const MAX_CONSECUTIVE_RESTARTS = 3;
+
             if (pendingCount > 0) {
+              session.consecutiveRestarts = (session.consecutiveRestarts || 0) + 1;
+
+              if (session.consecutiveRestarts > MAX_CONSECUTIVE_RESTARTS) {
+                logger.error('SESSION', `CRITICAL: Generator restart limit exceeded - stopping to prevent runaway costs`, {
+                  sessionId: sessionDbId,
+                  pendingCount,
+                  consecutiveRestarts: session.consecutiveRestarts,
+                  maxRestarts: MAX_CONSECUTIVE_RESTARTS,
+                  action: 'Generator will NOT restart. Check logs for root cause. Messages remain in pending state.'
+                });
+                // Don't restart - abort to prevent further API calls
+                session.abortController.abort();
+                return;
+              }
+
               logger.info('SESSION', `Restarting generator after crash/exit with pending work`, {
                 sessionId: sessionDbId,
-                pendingCount
+                pendingCount,
+                consecutiveRestarts: session.consecutiveRestarts,
+                maxRestarts: MAX_CONSECUTIVE_RESTARTS
               });
 
               // Create new AbortController for the restarted generator
               session.abortController = new AbortController();
 
-              // Small delay before restart
+              // Exponential backoff: 1s, 2s, 4s for subsequent restarts
+              const backoffMs = Math.min(1000 * Math.pow(2, session.consecutiveRestarts - 1), 8000);
+
+              // Delay before restart with exponential backoff
               setTimeout(() => {
                 const stillExists = this.sessionManager.getSession(sessionDbId);
                 if (stillExists && !stillExists.generatorPromise) {
                   this.startGeneratorWithProvider(stillExists, this.getSelectedProvider(), 'crash-recovery');
                 }
-              }, 1000);
+              }, backoffMs);
             } else {
               // No pending work - abort to kill the child process
               session.abortController.abort();
+              // Reset restart counter on successful completion (made progress, clear the slate)
+              session.consecutiveRestarts = 0;
               logger.debug('SESSION', 'Aborted controller after natural completion', {
                 sessionId: sessionDbId
               });
