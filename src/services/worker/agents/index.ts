@@ -23,7 +23,13 @@ export type {
   BaseAgentConfig,
 } from './types.js';
 
-export { FALLBACK_ERROR_PATTERNS } from './types.js';
+export {
+  FALLBACK_ERROR_PATTERNS,
+  AUTH_ERROR_PATTERNS,
+  QUOTA_ERROR_PATTERNS,
+  SERVER_ERROR_PATTERNS,
+  NETWORK_ERROR_PATTERNS
+} from './types.js';
 
 // Response Processing
 export { processAgentResponse } from './ResponseProcessor.js';
@@ -35,4 +41,10 @@ export { broadcastObservation, broadcastSummary } from './ObservationBroadcaster
 export { cleanupProcessedMessages } from './SessionCleanupHelper.js';
 
 // Error Handling
-export { shouldFallbackToClaude, isAbortError } from './FallbackErrorHandler.js';
+export {
+  shouldFallbackToClaude,
+  isAbortError,
+  isAuthError,
+  isQuotaError,
+  getAuthErrorMessage
+} from './FallbackErrorHandler.js';

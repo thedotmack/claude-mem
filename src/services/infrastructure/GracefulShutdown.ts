@@ -16,6 +16,7 @@ import {
   waitForProcessesExit,
   removePidFile
 } from './ProcessManager.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 
 export interface ShutdownableService {
   shutdownAll(): Promise<void>;
@@ -85,6 +86,10 @@ export async function performGracefulShutdown(config: GracefulShutdownConfig): P
     // Wait for children to fully exit
     await waitForProcessesExit(childPids, 5000);
   }
+
+  // STEP 7: Clean up settings file watchers to prevent EMFILE errors
+  SettingsDefaultsManager.clearCache();
+  logger.info('SYSTEM', 'Settings cache cleared');
 
   logger.info('SYSTEM', 'Worker shutdown complete');
 }

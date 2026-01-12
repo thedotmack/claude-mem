@@ -5,7 +5,7 @@
  * Provides methods to get defaults with optional environment variable overrides.
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, watch } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { DEFAULT_OBSERVATION_TYPES_STRING, DEFAULT_OBSERVATION_CONCEPTS_STRING } from '../constants/observation-metadata.js';
@@ -21,10 +21,11 @@ export interface SettingsDefaults {
   // AI Provider Configuration
   CLAUDE_MEM_PROVIDER: string;  // 'claude' | 'gemini' | 'openrouter'
   CLAUDE_MEM_GEMINI_API_KEY: string;
-  CLAUDE_MEM_GEMINI_MODEL: string;  // 'gemini-2.5-flash-lite' | 'gemini-2.5-flash' | 'gemini-3-flash'
+  CLAUDE_MEM_GEMINI_MODEL: string;  // 'gemini-3-flash' | 'gemini-3-pro' | 'gemini-2.5-flash' (deprecated)
   CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: string;  // 'true' | 'false' - enable rate limiting for free tier
   CLAUDE_MEM_OPENROUTER_API_KEY: string;
   CLAUDE_MEM_OPENROUTER_MODEL: string;
+  CLAUDE_MEM_OPENROUTER_BASE_URL: string;
   CLAUDE_MEM_OPENROUTER_SITE_URL: string;
   CLAUDE_MEM_OPENROUTER_APP_NAME: string;
   CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES: string;
@@ -53,6 +54,11 @@ export interface SettingsDefaults {
 }
 
 export class SettingsDefaultsManager {
+  // Cache for settings to avoid repeated file I/O
+  private static settingsCache: Map<string, { settings: SettingsDefaults; timestamp: number }> = new Map();
+  private static readonly CACHE_TTL_MS = 5000; // 5 seconds cache TTL
+  private static fileWatchers: Map<string, any> = new Map();
+
   /**
    * Default values for all settings
    */
@@ -65,10 +71,11 @@ export class SettingsDefaultsManager {
     // AI Provider Configuration
     CLAUDE_MEM_PROVIDER: 'claude',  // Default to Claude
     CLAUDE_MEM_GEMINI_API_KEY: '',  // Empty by default, can be set via UI or env
-    CLAUDE_MEM_GEMINI_MODEL: 'gemini-2.5-flash-lite',  // Default Gemini model (highest free tier RPM)
+    CLAUDE_MEM_GEMINI_MODEL: 'gemini-3-flash',  // Default to latest Gemini 3 Flash model
     CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: 'true',  // Rate limiting ON by default for free tier users
     CLAUDE_MEM_OPENROUTER_API_KEY: '',  // Empty by default, can be set via UI or env
     CLAUDE_MEM_OPENROUTER_MODEL: 'xiaomi/mimo-v2-flash:free',  // Default OpenRouter model (free tier)
+    CLAUDE_MEM_OPENROUTER_BASE_URL: 'https://openrouter.ai/api/v1/chat/completions',  // Default OpenRouter API endpoint
     CLAUDE_MEM_OPENROUTER_SITE_URL: '',  // Optional: for OpenRouter analytics
     CLAUDE_MEM_OPENROUTER_APP_NAME: 'claude-mem',  // App name for OpenRouter analytics
     CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES: '20',  // Max messages in context window
@@ -130,8 +137,38 @@ export class SettingsDefaultsManager {
    * Load settings from file with fallback to defaults
    * Returns merged settings with defaults as fallback
    * Handles all errors (missing file, corrupted JSON, permissions) by returning defaults
+   *
+   * Now with caching and file watching for automatic updates
    */
   static loadFromFile(settingsPath: string): SettingsDefaults {
+    // Check cache first
+    const cached = this.settingsCache.get(settingsPath);
+    const now = Date.now();
+
+    if (cached && (now - cached.timestamp) < this.CACHE_TTL_MS) {
+      return cached.settings;
+    }
+
+    // Load from file
+    const settings = this.loadSettingsFromDisk(settingsPath);
+
+    // Update cache
+    this.settingsCache.set(settingsPath, {
+      settings,
+      timestamp: now
+    });
+
+    // Setup file watcher if not already watching
+    this.setupFileWatcher(settingsPath);
+
+    return settings;
+  }
+
+  /**
+   * Load settings from disk without caching
+   * Internal method used by loadFromFile
+   */
+  private static loadSettingsFromDisk(settingsPath: string): SettingsDefaults {
     try {
       if (!existsSync(settingsPath)) {
         const defaults = this.getAllDefaults();
@@ -181,5 +218,58 @@ export class SettingsDefaultsManager {
       console.warn('[SETTINGS] Failed to load settings, using defaults:', settingsPath, error);
       return this.getAllDefaults();
     }
+  }
+
+  /**
+   * Setup file watcher to invalidate cache when settings file changes
+   * Handles EMFILE (too many open files) gracefully by skipping watcher setup
+   */
+  private static setupFileWatcher(settingsPath: string): void {
+    // Skip if already watching
+    if (this.fileWatchers.has(settingsPath)) {
+      return;
+    }
+
+    try {
+      const watcher = watch(settingsPath, (eventType) => {
+        if (eventType === 'change') {
+          // Invalidate cache on file change
+          this.settingsCache.delete(settingsPath);
+          console.log('[SETTINGS] Configuration file changed, cache invalidated:', settingsPath);
+        }
+      });
+
+      this.fileWatchers.set(settingsPath, watcher);
+      console.log('[SETTINGS] File watcher established for:', settingsPath);
+    } catch (error: unknown) {
+      // Handle EMFILE error gracefully - this means too many file descriptors are open
+      // The cache will still work, just won't auto-refresh on file changes
+      const isEmfile = error instanceof Error &&
+        (error.message.includes('EMFILE') || (error as NodeJS.ErrnoException).code === 'EMFILE');
+
+      if (isEmfile) {
+        console.warn('[SETTINGS] EMFILE: Too many open files - file watcher disabled. Settings changes require restart.');
+      } else {
+        console.warn('[SETTINGS] Failed to setup file watcher:', settingsPath, error);
+      }
+      // Non-critical error, continue without watching
+    }
+  }
+
+  /**
+   * Clear all caches and stop all file watchers
+   * Useful for testing or manual cache invalidation
+   */
+  static clearCache(): void {
+    this.settingsCache.clear();
+    for (const [path, watcher] of this.fileWatchers.entries()) {
+      try {
+        watcher.close();
+      } catch (error) {
+        console.warn('[SETTINGS] Failed to close watcher for:', path, error);
+      }
+    }
+    this.fileWatchers.clear();
+    console.log('[SETTINGS] All caches cleared and watchers closed');
   }
 }

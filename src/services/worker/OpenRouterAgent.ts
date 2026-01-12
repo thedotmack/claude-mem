@@ -23,12 +23,13 @@ import {
   processAgentResponse,
   shouldFallbackToClaude,
   isAbortError,
+  isAuthError,
+  isQuotaError,
+  getAuthErrorMessage,
   type WorkerRef,
   type FallbackAgent
 } from './agents/index.js';
-
-// OpenRouter API endpoint
-const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
+import { isGeminiAvailable } from './GeminiAgent.js';
 
 // Context window management constants (defaults, overridable via settings)
 const DEFAULT_MAX_CONTEXT_MESSAGES = 20;  // Maximum messages to keep in conversation history
@@ -63,6 +64,7 @@ interface OpenRouterResponse {
 export class OpenRouterAgent {
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
+  private geminiAgent: FallbackAgent | null = null;
   private fallbackAgent: FallbackAgent | null = null;
 
   constructor(dbManager: DatabaseManager, sessionManager: SessionManager) {
@@ -71,7 +73,15 @@ export class OpenRouterAgent {
   }
 
   /**
-   * Set the fallback agent (Claude SDK) for when OpenRouter API fails
+   * Set the Gemini agent for secondary fallback
+   * Must be set after construction to avoid circular dependency
+   */
+  setGeminiAgent(agent: FallbackAgent): void {
+    this.geminiAgent = agent;
+  }
+
+  /**
+   * Set the fallback agent (Claude SDK) for when all other providers fail
    * Must be set after construction to avoid circular dependency
    */
   setFallbackAgent(agent: FallbackAgent): void {
@@ -85,7 +95,7 @@ export class OpenRouterAgent {
   async startSession(session: ActiveSession, worker?: WorkerRef): Promise<void> {
     try {
       // Get OpenRouter configuration
-      const { apiKey, model, siteUrl, appName } = this.getOpenRouterConfig();
+      const { apiKey, models, baseUrl, siteUrl, appName } = this.getOpenRouterConfig();
 
       if (!apiKey) {
         throw new Error('OpenRouter API key not configured. Set CLAUDE_MEM_OPENROUTER_API_KEY in settings or OPENROUTER_API_KEY environment variable.');
@@ -99,9 +109,9 @@ export class OpenRouterAgent {
         ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode)
         : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode);
 
-      // Add to conversation history and query OpenRouter with full context
+      // Add to conversation history and query OpenRouter with full context (with automatic fallback)
       session.conversationHistory.push({ role: 'user', content: initPrompt });
-      const initResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, siteUrl, appName);
+      const initResponse = await this.queryOpenRouterWithFallback(session.conversationHistory, apiKey, models, baseUrl, siteUrl, appName);
 
       if (initResponse.content) {
         // Add response to conversation history
@@ -127,7 +137,7 @@ export class OpenRouterAgent {
       } else {
         logger.error('SDK', 'Empty OpenRouter init response - session may lack context', {
           sessionId: session.sessionDbId,
-          model
+          models: models.join(', ')
         });
       }
 
@@ -159,9 +169,9 @@ export class OpenRouterAgent {
             cwd: message.cwd
           });
 
-          // Add to conversation history and query OpenRouter with full context
+          // Add to conversation history and query OpenRouter with full context (with automatic fallback)
           session.conversationHistory.push({ role: 'user', content: obsPrompt });
-          const obsResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, siteUrl, appName);
+          const obsResponse = await this.queryOpenRouterWithFallback(session.conversationHistory, apiKey, models, baseUrl, siteUrl, appName);
 
           let tokensUsed = 0;
           if (obsResponse.content) {
@@ -196,9 +206,9 @@ export class OpenRouterAgent {
             last_assistant_message: message.last_assistant_message || ''
           }, mode);
 
-          // Add to conversation history and query OpenRouter with full context
+          // Add to conversation history and query OpenRouter with full context (with automatic fallback)
           session.conversationHistory.push({ role: 'user', content: summaryPrompt });
-          const summaryResponse = await this.queryOpenRouterMultiTurn(session.conversationHistory, apiKey, model, siteUrl, appName);
+          const summaryResponse = await this.queryOpenRouterWithFallback(session.conversationHistory, apiKey, models, baseUrl, siteUrl, appName);
 
           let tokensUsed = 0;
           if (summaryResponse.content) {
@@ -231,7 +241,7 @@ export class OpenRouterAgent {
         sessionId: session.sessionDbId,
         duration: `${(sessionDuration / 1000).toFixed(1)}s`,
         historyLength: session.conversationHistory.length,
-        model
+        models: models.join(', ')
       });
 
     } catch (error: unknown) {
@@ -240,17 +250,67 @@ export class OpenRouterAgent {
         throw error;
       }
 
-      // Check if we should fall back to Claude
-      if (shouldFallbackToClaude(error) && this.fallbackAgent) {
-        logger.warn('SDK', 'OpenRouter API failed, falling back to Claude SDK', {
-          sessionDbId: session.sessionDbId,
-          error: error instanceof Error ? error.message : String(error),
-          historyLength: session.conversationHistory.length
-        });
+      const errorMessage = error instanceof Error ? error.message : String(error);
 
-        // Fall back to Claude - it will use the same session with shared conversationHistory
-        // Note: With claim-and-delete queue pattern, messages are already deleted on claim
-        return this.fallbackAgent.startSession(session, worker);
+      // Auth errors should NOT fallback - user needs to fix their configuration
+      if (isAuthError(error)) {
+        const userMessage = getAuthErrorMessage(error);
+        logger.error('SDK', 'OpenRouter authentication error - NOT falling back', {
+          sessionDbId: session.sessionDbId,
+          error: errorMessage,
+          userMessage
+        });
+        // Throw with user-friendly message so it's visible in logs
+        throw new Error(`[AUTH ERROR] ${userMessage}`);
+      }
+
+      // Multi-level fallback: OpenRouter → Gemini → Claude SDK
+      // Only for non-auth errors (quota, server, network issues)
+      if (shouldFallbackToClaude(error)) {
+        // Try Gemini first if available
+        if (isGeminiAvailable() && this.geminiAgent) {
+          logger.warn('SDK', 'All OpenRouter models failed, falling back to Gemini', {
+            sessionDbId: session.sessionDbId,
+            error: errorMessage,
+            historyLength: session.conversationHistory.length
+          });
+
+          try {
+            // Fall back to Gemini - it will use the same session with shared conversationHistory
+            return await this.geminiAgent.startSession(session, worker);
+          } catch (geminiError: unknown) {
+            const geminiErrorMsg = geminiError instanceof Error ? geminiError.message : String(geminiError);
+            logger.warn('SDK', 'Gemini fallback also failed, falling back to Claude SDK', {
+              sessionDbId: session.sessionDbId,
+              geminiError: geminiErrorMsg,
+              originalError: errorMessage
+            });
+
+            // If Gemini also fails, try Claude SDK as last resort
+            if (this.fallbackAgent) {
+              return this.fallbackAgent.startSession(session, worker);
+            }
+
+            // No more fallback options
+            logger.failure('SDK', 'All providers failed (OpenRouter, Gemini, Claude SDK)', {
+              sessionDbId: session.sessionDbId
+            }, geminiError as Error);
+            throw geminiError;
+          }
+        }
+
+        // No Gemini available, try Claude SDK directly
+        if (this.fallbackAgent) {
+          logger.warn('SDK', 'OpenRouter API failed, falling back to Claude SDK', {
+            sessionDbId: session.sessionDbId,
+            error: errorMessage,
+            historyLength: session.conversationHistory.length
+          });
+
+          // Fall back to Claude - it will use the same session with shared conversationHistory
+          // Note: With claim-and-delete queue pattern, messages are already deleted on claim
+          return this.fallbackAgent.startSession(session, worker);
+        }
       }
 
       logger.failure('SDK', 'OpenRouter agent error', { sessionDbId: session.sessionDbId }, error as Error);
@@ -321,6 +381,89 @@ export class OpenRouterAgent {
   }
 
   /**
+   * Query OpenRouter with automatic fallback to next model on quota/rate limit errors
+   * Tries models in order until one succeeds or all fail
+   */
+  private async queryOpenRouterWithFallback(
+    history: ConversationMessage[],
+    apiKey: string,
+    models: string[],
+    baseUrl: string,
+    siteUrl?: string,
+    appName?: string
+  ): Promise<{ content: string; tokensUsed?: number }> {
+    const errors: Array<{ model: string; error: string }> = [];
+
+    for (let i = 0; i < models.length; i++) {
+      const model = models[i];
+      try {
+        logger.debug('SDK', `Trying OpenRouter model ${i + 1}/${models.length}: ${model}`);
+
+        const result = await this.queryOpenRouterMultiTurn(
+          history,
+          apiKey,
+          model,
+          baseUrl,
+          siteUrl,
+          appName
+        );
+
+        // Success - log if we had to fall back
+        if (i > 0) {
+          logger.success('SDK', `OpenRouter fallback successful`, {
+            failedModels: errors.map(e => e.model).join(', '),
+            successModel: model,
+            attemptNumber: i + 1
+          });
+        }
+
+        return result;
+
+      } catch (error: unknown) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        errors.push({ model, error: errorMessage });
+
+        // Auth errors should fail immediately - don't try other models
+        // User needs to fix their configuration, trying other models won't help
+        if (isAuthError(error)) {
+          logger.error('SDK', `OpenRouter auth error - stopping model fallback`, {
+            failedModel: model,
+            error: errorMessage
+          });
+          throw error;  // Let the caller handle with user-friendly message
+        }
+
+        // Check if this is a quota/rate limit error that should trigger fallback
+        if (isQuotaError(error) && i < models.length - 1) {
+          // Quota error and we have more models to try
+          logger.warn('SDK', `OpenRouter model quota exhausted, falling back to next model`, {
+            failedModel: model,
+            nextModel: models[i + 1],
+            error: errorMessage
+          });
+          continue;
+        }
+
+        // Last model or non-quota error - throw
+        if (i === models.length - 1) {
+          // All models failed
+          logger.error('SDK', 'All OpenRouter models failed', {
+            attemptedModels: models.join(', '),
+            errors: errors.map(e => `${e.model}: ${e.error}`).join(' | ')
+          });
+          throw new Error(`All OpenRouter models failed. Last error: ${errorMessage}`);
+        }
+
+        // Non-quota error - throw immediately
+        throw error;
+      }
+    }
+
+    // Should never reach here, but TypeScript needs it
+    throw new Error('OpenRouter fallback logic error: exhausted all models without result');
+  }
+
+  /**
    * Query OpenRouter via REST API with full conversation history (multi-turn)
    * Sends the entire conversation context for coherent responses
    */
@@ -328,6 +471,7 @@ export class OpenRouterAgent {
     history: ConversationMessage[],
     apiKey: string,
     model: string,
+    baseUrl: string,
     siteUrl?: string,
     appName?: string
   ): Promise<{ content: string; tokensUsed?: number }> {
@@ -343,7 +487,7 @@ export class OpenRouterAgent {
       estimatedTokens
     });
 
-    const response = await fetch(OPENROUTER_API_URL, {
+    const response = await fetch(baseUrl, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
@@ -409,22 +553,33 @@ export class OpenRouterAgent {
 
   /**
    * Get OpenRouter configuration from settings or environment
+   * Supports multiple models separated by comma for automatic fallback
    */
-  private getOpenRouterConfig(): { apiKey: string; model: string; siteUrl?: string; appName?: string } {
+  private getOpenRouterConfig(): { apiKey: string; models: string[]; baseUrl: string; siteUrl?: string; appName?: string } {
     const settingsPath = USER_SETTINGS_PATH;
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
 
     // API key: check settings first, then environment variable
     const apiKey = settings.CLAUDE_MEM_OPENROUTER_API_KEY || process.env.OPENROUTER_API_KEY || '';
 
-    // Model: from settings or default
-    const model = settings.CLAUDE_MEM_OPENROUTER_MODEL || 'xiaomi/mimo-v2-flash:free';
+    // Models: parse comma-separated list from settings or use default
+    const modelString = settings.CLAUDE_MEM_OPENROUTER_MODEL || 'xiaomi/mimo-v2-flash:free';
+    let models = modelString.split(',').map(m => m.trim()).filter(m => m.length > 0);
+
+    // If no valid models configured, use default
+    if (models.length === 0) {
+      models = ['gemini-3-flash-preview'];
+      logger.warn('SDK', 'No OpenRouter models configured, using default: gemini-3-flash-preview');
+    }
+
+    // Base URL: from settings or default
+    const baseUrl = settings.CLAUDE_MEM_OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1/chat/completions';
 
     // Optional analytics headers
     const siteUrl = settings.CLAUDE_MEM_OPENROUTER_SITE_URL || '';
     const appName = settings.CLAUDE_MEM_OPENROUTER_APP_NAME || 'claude-mem';
 
-    return { apiKey, model, siteUrl, appName };
+    return { apiKey, models, baseUrl, siteUrl, appName };
   }
 }
 

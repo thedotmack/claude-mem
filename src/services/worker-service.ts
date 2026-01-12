@@ -143,7 +143,8 @@ export class WorkerService {
     this.geminiAgent = new GeminiAgent(this.dbManager, this.sessionManager);
     this.geminiAgent.setFallbackAgent(this.sdkAgent);
     this.openRouterAgent = new OpenRouterAgent(this.dbManager, this.sessionManager);
-    this.openRouterAgent.setFallbackAgent(this.sdkAgent);
+    this.openRouterAgent.setGeminiAgent(this.geminiAgent);  // Secondary fallback
+    this.openRouterAgent.setFallbackAgent(this.sdkAgent);   // Final fallback
     this.paginationHelper = new PaginationHelper(this.dbManager);
     this.settingsManager = new SettingsManager(this.dbManager);
     this.sessionEventBroadcaster = new SessionEventBroadcaster(this.sseBroadcaster, this);
@@ -320,7 +321,7 @@ export class WorkerService {
   }
 
   /**
-   * Start a session processor
+   * Start a session processor using the configured provider
    */
   private startSessionProcessor(
     session: ReturnType<typeof this.sessionManager.getSession>,
@@ -329,19 +330,38 @@ export class WorkerService {
     if (!session) return;
 
     const sid = session.sessionDbId;
-    logger.info('SYSTEM', `Starting generator (${source})`, { sessionId: sid });
 
-    session.generatorPromise = this.sdkAgent.startSession(session, this)
-      .catch(error => {
-        logger.error('SDK', 'Session generator failed', {
-          sessionId: session.sessionDbId,
-          project: session.project
-        }, error as Error);
-      })
-      .finally(() => {
-        session.generatorPromise = null;
-        this.broadcastProcessingStatus();
+    // Import provider selection functions dynamically to avoid circular deps
+    import('./worker/OpenRouterAgent.js').then(({ isOpenRouterSelected, isOpenRouterAvailable }) => {
+      import('./worker/GeminiAgent.js').then(({ isGeminiSelected, isGeminiAvailable }) => {
+        // Select agent based on settings (same logic as SessionRoutes)
+        let agent = this.sdkAgent;
+        let agentName = 'Claude SDK';
+
+        if (isOpenRouterSelected() && isOpenRouterAvailable()) {
+          agent = this.openRouterAgent;
+          agentName = 'OpenRouter';
+        } else if (isGeminiSelected() && isGeminiAvailable()) {
+          agent = this.geminiAgent;
+          agentName = 'Gemini';
+        }
+
+        logger.info('SYSTEM', `Starting generator (${source}) using ${agentName}`, { sessionId: sid });
+
+        session.generatorPromise = agent.startSession(session, this)
+          .catch(error => {
+            logger.error('SDK', 'Session generator failed', {
+              sessionId: session.sessionDbId,
+              project: session.project,
+              provider: agentName
+            }, error as Error);
+          })
+          .finally(() => {
+            session.generatorPromise = null;
+            this.broadcastProcessingStatus();
+          });
       });
+    });
   }
 
   /**

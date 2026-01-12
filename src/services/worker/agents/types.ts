@@ -120,14 +120,58 @@ export interface BaseAgentConfig {
 }
 
 /**
- * Error codes that should trigger fallback to Claude
+ * Error categorization for intelligent fallback handling
+ *
+ * AUTH_ERRORS: Authentication/authorization failures - should NOT fallback
+ *              User needs to fix their configuration
+ *
+ * QUOTA_ERRORS: Rate limits and quota exhaustion - SHOULD fallback to next model/provider
+ *               Temporary issue, another model may work
+ *
+ * SERVER_ERRORS: Provider server issues - SHOULD fallback
+ *               Provider is having problems, try another
+ *
+ * NETWORK_ERRORS: Connection issues - SHOULD fallback
+ *                 Could be temporary network issue
  */
-export const FALLBACK_ERROR_PATTERNS = [
-  '429',           // Rate limit
+export const AUTH_ERROR_PATTERNS = [
+  '401',           // Unauthorized - invalid/missing credentials
+  '403',           // Forbidden - valid credentials but not allowed
+  'unauthorized',
+  'invalid api key',
+  'invalid_api_key',
+  'authentication',
+  'no cookie auth',
+] as const;
+
+export const QUOTA_ERROR_PATTERNS = [
+  '429',           // Rate limit / Too Many Requests
+  'quota',
+  'rate limit',
+  'rate_limit',
+  'insufficient',
+  'credit',
+  'model_cooldown',
+] as const;
+
+export const SERVER_ERROR_PATTERNS = [
   '500',           // Internal server error
   '502',           // Bad gateway
   '503',           // Service unavailable
+] as const;
+
+export const NETWORK_ERROR_PATTERNS = [
   'ECONNREFUSED',  // Connection refused
   'ETIMEDOUT',     // Timeout
   'fetch failed',  // Network failure
+] as const;
+
+/**
+ * Error codes that should trigger fallback to Claude
+ * (Excludes auth errors which should NOT fallback)
+ */
+export const FALLBACK_ERROR_PATTERNS = [
+  ...QUOTA_ERROR_PATTERNS,
+  ...SERVER_ERROR_PATTERNS,
+  ...NETWORK_ERROR_PATTERNS,
 ] as const;
