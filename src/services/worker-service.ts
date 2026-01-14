@@ -15,6 +15,10 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
 import { logger } from '../utils/logger.js';
 
+// Version injected at build time by esbuild define
+declare const __DEFAULT_PACKAGE_VERSION__: string;
+const packageVersion = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DEFAULT_PACKAGE_VERSION__ : '0.0.0-dev';
+
 // Infrastructure imports
 import {
   writePidFile,
@@ -150,9 +154,10 @@ export class WorkerService {
     });
 
     // Initialize MCP client
+    // Empty capabilities object: this client only calls tools, doesn't expose any
     this.mcpClient = new Client({
       name: 'worker-search-proxy',
-      version: '1.0.0'
+      version: packageVersion
     }, { capabilities: {} });
 
     // Initialize HTTP server with core routes
