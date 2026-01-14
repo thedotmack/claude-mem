@@ -1,5 +1,8 @@
 
-
+<div align="center">
+<a href="https://bags.fm/2TsmuYUrsctE57VLckZBYEEzdokUF8j8e1GavekWBAGS">Support Claude-Mem: Official $CMEM Token on Bags.fm</a><br>
+Official CA: 2TsmuYUrsctE57VLckZBYEEzdokUF8j8e1GavekWBAGS (on Solana)
+</div><br>
 <h1 align="center">
   <br>
   <a href="https://github.com/thedotmack/claude-mem">
