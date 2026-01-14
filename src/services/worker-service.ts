@@ -65,9 +65,6 @@ import { SearchRoutes } from './worker/http/routes/SearchRoutes.js';
 import { SettingsRoutes } from './worker/http/routes/SettingsRoutes.js';
 import { LogsRoutes } from './worker/http/routes/LogsRoutes.js';
 
-// Re-export updateCursorContextForProject for SDK agents
-export { updateCursorContextForProject };
-
 /**
  * Build JSON status output for hook framework communication.
  * This is a pure function extracted for testability.
