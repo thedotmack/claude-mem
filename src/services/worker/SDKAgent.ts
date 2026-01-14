@@ -35,23 +35,6 @@ export class SDKAgent {
   }
 
   /**
-   * Check if the Claude CLI is available.
-   * Used to determine if SDK agent can serve as fallback for other providers.
-   * NOTE: Only checks for CLI, NOT API key - Claude Code uses CLI auth, not direct API.
-   */
-  public isConfigured(): boolean {
-    try {
-      execSync(
-        process.platform === 'win32' ? 'where claude' : 'which claude',
-        { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }
-      );
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  /**
    * Start SDK agent for a session (event-driven, no polling)
    * @param worker WorkerService reference for spinner control (optional)
    */
