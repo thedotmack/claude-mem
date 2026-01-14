@@ -14,7 +14,7 @@
   <br>
 </h1>
 
-<p align="center">
+<p align="center" dir="ltr">
   <a href="README.zh.md">🇨🇳 中文</a> •
   <a href="README.ja.md">🇯🇵 日本語</a> •
   <a href="README.pt-br.md">🇧🇷 Português</a> •
