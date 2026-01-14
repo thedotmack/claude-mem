@@ -35,17 +35,11 @@ export class SDKAgent {
   }
 
   /**
-   * Check if the Claude SDK agent is configured and available.
-   * Returns true if ANTHROPIC_API_KEY is set or claude CLI is available.
+   * Check if the Claude CLI is available.
    * Used to determine if SDK agent can serve as fallback for other providers.
+   * NOTE: Only checks for CLI, NOT API key - Claude Code uses CLI auth, not direct API.
    */
   public isConfigured(): boolean {
-    // Check for API key first (fastest check)
-    if (process.env.ANTHROPIC_API_KEY) {
-      return true;
-    }
-
-    // Check for Claude CLI availability
     try {
       execSync(
         process.platform === 'win32' ? 'where claude' : 'which claude',
