@@ -1,3 +1,4 @@
+<section dir="rtl">
 🌐 یہ ایک خودکار ترجمہ ہے۔ کمیونٹی کی اصلاحات کا خیر مقدم ہے!
 
 ---
@@ -304,3 +305,7 @@ Copyright (C) 2025 Alex Newman (@thedotmack)۔ تمام حقوق محفوظ ہی
 - **مصنف**: Alex Newman ([@thedotmack](https://github.com/thedotmack))
 
 ---
+
+**Claude Agent SDK کے ساتھ بنایا گیا** | **Claude Code کے ذریعے طاقت ور** | **TypeScript کے ساتھ بنایا گیا**
+
+</section>
