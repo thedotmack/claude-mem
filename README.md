@@ -1,4 +1,6 @@
-
+<div align="center">
+  
+</div>
 
 <h1 align="center">
   <br>
@@ -11,6 +13,15 @@
   </a>
   <br>
 </h1>
+
+<h3>Support the creator! $CMEM is a fair-launch "Creator token" initiated by our community on behalf of the project. It was made using the <a target="_blank" href="https://bags.fm/2TsmuYUrsctE57VLckZBYEEzdokUF8j8e1GavekWBAGS">@BagsApp launchpad</a>, where 1% of all trading volume goes to support the project.</h3>
+
+<h4>Token Address (CA):</h4>
+
+<p>2TsmuYUrsctE57VLckZBYEEzdokUF8j8e1GavekWBAGS<br>
+(on the Solana blockchain)</p>
+
+<p>All trades actively contribute to the long-term success of Claude-Mem. Thank you all so much for the outpouring of love and support!</p>
 
 <p align="center">
   <a href="docs/i18n/README.zh.md">🇨🇳 中文</a> •
