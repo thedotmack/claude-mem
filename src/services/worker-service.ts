@@ -132,9 +132,17 @@ export class WorkerService {
     this.sseBroadcaster = new SSEBroadcaster();
     this.sdkAgent = new SDKAgent(this.dbManager, this.sessionManager);
     this.geminiAgent = new GeminiAgent(this.dbManager, this.sessionManager);
-    this.geminiAgent.setFallbackAgent(this.sdkAgent);
     this.openRouterAgent = new OpenRouterAgent(this.dbManager, this.sessionManager);
-    this.openRouterAgent.setFallbackAgent(this.sdkAgent);
+
+    // Only set SDK agent as fallback if it's configured (has API key or CLI)
+    // This prevents cascading failures when users choose third-party providers
+    // because they lack Claude credentials
+    if (this.sdkAgent.isConfigured()) {
+      this.geminiAgent.setFallbackAgent(this.sdkAgent);
+      this.openRouterAgent.setFallbackAgent(this.sdkAgent);
+    } else {
+      logger.warn('SYSTEM', 'Claude SDK not configured - fallback disabled for third-party providers');
+    }
     this.paginationHelper = new PaginationHelper(this.dbManager);
     this.settingsManager = new SettingsManager(this.dbManager);
     this.sessionEventBroadcaster = new SessionEventBroadcaster(this.sseBroadcaster, this);

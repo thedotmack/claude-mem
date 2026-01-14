@@ -35,6 +35,29 @@ export class SDKAgent {
   }
 
   /**
+   * Check if the Claude SDK agent is configured and available.
+   * Returns true if ANTHROPIC_API_KEY is set or claude CLI is available.
+   * Used to determine if SDK agent can serve as fallback for other providers.
+   */
+  public isConfigured(): boolean {
+    // Check for API key first (fastest check)
+    if (process.env.ANTHROPIC_API_KEY) {
+      return true;
+    }
+
+    // Check for Claude CLI availability
+    try {
+      execSync(
+        process.platform === 'win32' ? 'where claude' : 'which claude',
+        { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Start SDK agent for a session (event-driven, no polling)
    * @param worker WorkerService reference for spinner control (optional)
    */
