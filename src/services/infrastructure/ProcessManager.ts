@@ -11,7 +11,7 @@
 import path from 'path';
 import { homedir } from 'os';
 import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync } from 'fs';
-import { exec, execSync, spawn } from 'child_process';
+import { exec, execSync } from 'child_process';
 import { promisify } from 'util';
 import { logger } from '../../utils/logger.js';
 import { HOOK_TIMEOUTS } from '../../shared/hook-constants.js';
@@ -257,34 +257,6 @@ export async function cleanupOrphanedProcesses(): Promise<void> {
   }
 
   logger.info('SYSTEM', 'Orphaned processes cleaned up', { count: pids.length });
-}
-
-/**
- * Spawn a detached daemon process
- * Returns the child PID or undefined if spawn failed
- */
-export function spawnDaemon(
-  scriptPath: string,
-  port: number,
-  extraEnv: Record<string, string> = {}
-): number | undefined {
-  const child = spawn(process.execPath, [scriptPath, '--daemon'], {
-    detached: true,
-    stdio: 'ignore',
-    windowsHide: true,
-    env: {
-      ...process.env,
-      CLAUDE_MEM_WORKER_PORT: String(port),
-      ...extraEnv
-    }
-  });
-
-  if (child.pid === undefined) {
-    return undefined;
-  }
-
-  child.unref();
-  return child.pid;
 }
 
 /**

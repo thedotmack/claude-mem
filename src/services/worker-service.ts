@@ -11,7 +11,6 @@
 
 import path from 'path';
 import * as fs from 'fs';
-import { spawn } from 'child_process';
 import { homedir } from 'os';
 import { existsSync, writeFileSync, readFileSync, mkdirSync } from 'fs';
 import * as readline from 'readline';
@@ -27,7 +26,6 @@ import {
   removePidFile,
   getPlatformTimeout,
   cleanupOrphanedProcesses,
-  spawnDaemon,
   createSignalHandler
 } from './infrastructure/ProcessManager.js';
 import {
@@ -572,7 +570,7 @@ async function runInteractiveSetup(): Promise<number> {
       }
     }
 
-    console.log('\nStep 6: Starting claude-mem worker...\n');
+    console.log('\nStep 6: Checking worker status...\n');
 
     const port = getWorkerPort();
     const alreadyRunning = await waitForHealth(port, 1000);
@@ -580,26 +578,8 @@ async function runInteractiveSetup(): Promise<number> {
     if (alreadyRunning) {
       console.log('Worker is already running!\n');
     } else {
-      console.log('   Starting worker in background...');
-
-      const pid = spawnDaemon(__filename, port);
-      if (pid === undefined) {
-        console.error('Failed to start worker');
-        rl.close();
-        return 1;
-      }
-
-      writePidFile({ pid, port, startedAt: new Date().toISOString() });
-
-      const healthy = await waitForHealth(port, getPlatformTimeout(30000));
-      if (!healthy) {
-        removePidFile();
-        console.error('Worker failed to start');
-        rl.close();
-        return 1;
-      }
-
-      console.log('Worker started successfully!\n');
+      console.log('   Worker is not running.');
+      console.log('   It will be started automatically when you use Claude Code.\n');
     }
 
     console.log(`
@@ -656,57 +636,21 @@ async function main() {
 
   switch (command) {
     case 'start': {
-      if (await waitForHealth(port, 1000)) {
-        const versionCheck = await checkVersionMatch(port);
-        if (!versionCheck.matches) {
-          logger.info('SYSTEM', 'Worker version mismatch detected - auto-restarting', {
-            pluginVersion: versionCheck.pluginVersion,
-            workerVersion: versionCheck.workerVersion
-          });
-
-          await httpShutdown(port);
-          const freed = await waitForPortFree(port, getPlatformTimeout(15000));
-          if (!freed) {
-            logger.error('SYSTEM', 'Port did not free up after shutdown for version mismatch restart', { port });
-            exitWithStatus('error', 'Port did not free after version mismatch restart');
-          }
-          removePidFile();
-        } else {
-          logger.info('SYSTEM', 'Worker already running and healthy');
-          exitWithStatus('ready');
-        }
-      }
-
       const portInUse = await isPortInUse(port);
       if (portInUse) {
-        logger.info('SYSTEM', 'Port in use, waiting for worker to become healthy');
-        const healthy = await waitForHealth(port, getPlatformTimeout(15000));
-        if (healthy) {
-          logger.info('SYSTEM', 'Worker is now healthy');
-          exitWithStatus('ready');
-        }
-        logger.error('SYSTEM', 'Port in use but worker not responding to health checks');
-        exitWithStatus('error', 'Port in use but worker not responding');
+        logger.info('SYSTEM', 'Worker already running');
+        exitWithStatus('ready');
       }
 
-      logger.info('SYSTEM', 'Starting worker daemon');
-      const pid = spawnDaemon(__filename, port);
-      if (pid === undefined) {
-        logger.error('SYSTEM', 'Failed to spawn worker daemon');
-        exitWithStatus('error', 'Failed to spawn worker daemon');
-      }
-
-      writePidFile({ pid, port, startedAt: new Date().toISOString() });
-
-      const healthy = await waitForHealth(port, getPlatformTimeout(30000));
-      if (!healthy) {
+      // Become the daemon directly
+      logger.info('SYSTEM', 'Starting worker');
+      const worker = new WorkerService();
+      worker.start().catch((error) => {
+        logger.failure('SYSTEM', 'Worker failed to start', {}, error as Error);
         removePidFile();
-        logger.error('SYSTEM', 'Worker failed to start (health check timeout)');
-        exitWithStatus('error', 'Worker failed to start (health check timeout)');
-      }
-
-      logger.info('SYSTEM', 'Worker started successfully');
-      exitWithStatus('ready');
+        process.exit(0);
+      });
+      break;
     }
 
     case 'stop': {
@@ -717,41 +661,6 @@ async function main() {
       }
       removePidFile();
       logger.info('SYSTEM', 'Worker stopped successfully');
-      process.exit(0);
-    }
-
-    case 'restart': {
-      logger.info('SYSTEM', 'Restarting worker');
-      await httpShutdown(port);
-      const freed = await waitForPortFree(port, getPlatformTimeout(15000));
-      if (!freed) {
-        logger.error('SYSTEM', 'Port did not free up after shutdown, aborting restart', { port });
-        // Exit gracefully: Windows Terminal won't keep tab open on exit 0
-        // The wrapper/plugin will handle restart logic if needed
-        process.exit(0);
-      }
-      removePidFile();
-
-      const pid = spawnDaemon(__filename, port);
-      if (pid === undefined) {
-        logger.error('SYSTEM', 'Failed to spawn worker daemon during restart');
-        // Exit gracefully: Windows Terminal won't keep tab open on exit 0
-        // The wrapper/plugin will handle restart logic if needed
-        process.exit(0);
-      }
-
-      writePidFile({ pid, port, startedAt: new Date().toISOString() });
-
-      const healthy = await waitForHealth(port, getPlatformTimeout(30000));
-      if (!healthy) {
-        removePidFile();
-        logger.error('SYSTEM', 'Worker failed to restart');
-        // Exit gracefully: Windows Terminal won't keep tab open on exit 0
-        // The wrapper/plugin will handle restart logic if needed
-        process.exit(0);
-      }
-
-      logger.info('SYSTEM', 'Worker restarted successfully');
       process.exit(0);
     }
 
