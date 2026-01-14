@@ -2,6 +2,29 @@
 
 All notable changes to claude-mem.
 
+## [v9.0.5] - 2026-01-14
+
+## Major Worker Service Cleanup
+
+This release contains a significant refactoring of `worker-service.ts`, removing ~216 lines of dead code and simplifying the architecture.
+
+### Refactoring
+- **Removed dead code**: Deleted `runInteractiveSetup` function (defined but never called)
+- **Cleaned up imports**: Removed unused imports (fs namespace, spawn, homedir, readline, existsSync, writeFileSync, readFileSync, mkdirSync)
+- **Removed fallback agent concept**: Users who choose Gemini/OpenRouter now get those providers directly without hidden fallback behavior
+- **Eliminated re-export indirection**: ResponseProcessor now imports directly from CursorHooksInstaller instead of through worker-service
+
+### Security Fix
+- **Removed dangerous ANTHROPIC_API_KEY check**: Claude Code uses CLI authentication, not direct API calls. The previous check could accidentally use a user's API key (from other projects) which costs 20x more than Claude Code's pricing
+
+### Build Improvements
+- **Dynamic MCP version management**: MCP server and client versions now use build-time injected values from package.json instead of hardcoded strings, ensuring version synchronization
+
+### Documentation
+- Added Anti-Pattern Czar Generalization Analysis report
+- Updated README with $CMEM links and contract address
+- Added comprehensive cleanup and validation plans for worker-service.ts
+
 ## [v9.0.4] - 2026-01-10
 
 ## What's New
@@ -1263,42 +1286,4 @@ None - fully backward compatible.
 ---
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.3.1...v7.3.2
-
-## [v7.3.1] - 2025-12-16
-
-## 🐛 Bug Fixes
-
-### Pending Messages Cleanup (Issue #353)
-
-Fixed unbounded database growth in the `pending_messages` table by implementing proper cleanup logic:
-
-- **Content Clearing**: `markProcessed()` now clears `tool_input` and `tool_response` when marking messages as processed, preventing duplicate storage of transcript data that's already saved in observations
-- **Count-Based Retention**: `cleanupProcessed()` now keeps only the 100 most recent processed messages for UI display, deleting older ones automatically
-- **Automatic Cleanup**: Cleanup runs automatically after processing messages in `SDKAgent.processSDKResponse()`
-
-### What This Fixes
-
-- Prevents database from growing unbounded with duplicate transcript content
-- Keeps metadata (tool_name, status, timestamps) for recent messages
-- Maintains UI functionality while optimizing storage
-
-### Technical Details
-
-**Files Modified:**
-- `src/services/sqlite/PendingMessageStore.ts` - Cleanup logic implementation
-- `src/services/worker/SDKAgent.ts` - Periodic cleanup calls
-
-**Database Behavior:**
-- Pending/processing messages: Keep full transcript data (needed for processing)
-- Processed messages: Clear transcript, keep metadata only (observations already saved)
-- Retention: Last 100 processed messages for UI feedback
-
-### Related
-
-- Fixes #353 - Observations not being saved
-- Part of the pending messages persistence feature (from PR #335)
-
----
-
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.3.0...v7.3.1
 
