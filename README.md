@@ -307,6 +307,8 @@ See the [LICENSE](LICENSE) file for full details.
 - **Documentation**: [docs/](docs/)
 - **Issues**: [GitHub Issues](https://github.com/thedotmack/claude-mem/issues)
 - **Repository**: [github.com/thedotmack/claude-mem](https://github.com/thedotmack/claude-mem)
+- **Official X Account**: [@Claude_Memory](https://x.com/Claude_Memory)
+- **Official Discord**: [Join Discord](https://discord.com/invite/J4wttp9vDu)
 - **Author**: Alex Newman ([@thedotmack](https://github.com/thedotmack))
 
 ---
