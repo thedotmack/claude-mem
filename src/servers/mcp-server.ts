@@ -6,6 +6,10 @@
  * Maintains MCP protocol handling and tool schemas
  */
 
+// Version injected at build time by esbuild define
+declare const __DEFAULT_PACKAGE_VERSION__: string;
+const packageVersion = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DEFAULT_PACKAGE_VERSION__ : '0.0.0-dev';
+
 // Import logger first
 import { logger } from '../utils/logger.js';
 
@@ -236,11 +240,11 @@ NEVER fetch full details without filtering first. 10x token savings.`,
 const server = new Server(
   {
     name: 'mcp-search-server',
-    version: '1.0.0',
+    version: packageVersion,
   },
   {
     capabilities: {
-      tools: {},
+      tools: {},  // Exposes tools capability (handled by ListToolsRequestSchema and CallToolRequestSchema)
     },
   }
 );

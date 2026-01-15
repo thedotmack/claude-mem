@@ -5,30 +5,16 @@
 
 ### Oct 25, 2025
 
-**changelog.md**
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
-| #2491 | 10:59 PM | 🟣 | Added changelog viewer slash command | ~290 |
+| #2484 | 6:33 PM | 🔴 | Removed slash commands from incorrect root .claude/commands directory | ~268 |
 
-**terminal-shortcut.md**
+### Jan 10, 2026
+
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
-| #2480 | 6:32 PM | 🟣 | Cross-platform terminal shortcut command for claude-mem CLI | ~459 |
-
-**setup-alias.md**
-| ID | Time | T | Title | Read |
-|----|------|---|-------|------|
-| #2479 | 6:29 PM | 🟣 | Shell Alias Setup Slash Command | ~423 |
-
-**version-bump.md**
-| ID | Time | T | Title | Read |
-|----|------|---|-------|------|
-| #2358 | 1:07 PM | 🟣 | Created version-bump slash command for automated version updates | ~361 |
-
-### Jan 1, 2026
-
-**anti-pattern-czar.md**
-| ID | Time | T | Title | Read |
-|----|------|---|-------|------|
-| #35638 | 11:17 PM | 🟣 | Anti-Pattern Czar Custom Command Created | ~583 |
+| #39054 | 3:45 PM | 🔄 | Development commands removed from root .claude directory | ~249 |
+| #39053 | " | 🟣 | Added development commands to plugin distribution | ~276 |
+| #39051 | 3:44 PM | 🔵 | Development commands confirmed in .claude/commands/ | ~315 |
+| #39049 | " | 🔵 | Development commands located in .claude/commands/ directory | ~293 |
 </claude-mem-context>

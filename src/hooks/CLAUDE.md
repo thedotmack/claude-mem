@@ -25,7 +25,6 @@
 | #23075 | 6:26 PM | ✅ | Deleted Expired Announcement Code from user-message-hook.ts | ~354 |
 | #23074 | " | ✅ | Replaced Verbose Manual Mode Help with Error in cleanup-hook.ts | ~222 |
 | #23073 | " | ✅ | Removed cwd from cleanup-hook Debug Logging | ~177 |
-| #23072 | " | ✅ | Simplified SessionEndInput Interface in cleanup-hook.ts | ~236 |
 
 ### Dec 10, 2025
 
@@ -97,4 +96,10 @@
 | #38173 | 7:25 PM | 🔵 | Standard Hook Response Pattern for Non-SessionStart Hooks | ~343 |
 | #38172 | 7:22 PM | 🔵 | Claude Code Hook Output Architecture Clarified - Exit Code Pattern is Correct for User-Only Display | ~523 |
 | #38170 | 7:21 PM | 🔵 | User-Message-Hook TypeScript Source Shows Exit Code 1 Strategy for User-Only Display | ~203 |
+
+### Jan 9, 2026
+
+| ID | Time | T | Title | Read |
+|----|------|---|-------|------|
+| #38783 | 4:59 PM | 🔵 | Standard Hook Response Pattern | ~263 |
 </claude-mem-context>
