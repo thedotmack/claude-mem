@@ -59,7 +59,8 @@ export interface SdkSessionRecord {
 }
 
 /**
- * Observation database record
+ * Observation database record (raw from database)
+ * Note: files_read and files_modified are stored as JSON strings
  */
 export interface ObservationRecord {
   id: number;
@@ -69,15 +70,29 @@ export interface ObservationRecord {
   type: 'decision' | 'bugfix' | 'feature' | 'refactor' | 'discovery' | 'change';
   created_at: string;
   created_at_epoch: number;
-  title?: string;
-  concept?: string;
-  source_files?: string;
-  prompt_number?: number;
+  title?: string | null;
+  subtitle?: string | null;
+  facts?: string | null;      // JSON array as string
+  narrative?: string | null;
+  concepts?: string | null;   // JSON array as string
+  files_read?: string | null; // JSON array as string
+  files_modified?: string | null; // JSON array as string
+  prompt_number?: number | null;
   discovery_tokens?: number;
 }
 
 /**
- * Session Summary database record
+ * Observation with parsed file arrays
+ * Use parseObservationFiles() to convert from ObservationRecord
+ */
+export interface ParsedObservationRecord extends Omit<ObservationRecord, 'files_read' | 'files_modified'> {
+  files_read: string[];
+  files_modified: string[];
+}
+
+/**
+ * Session Summary database record (raw from database)
+ * Note: files_read and files_edited are stored as JSON strings
  */
 export interface SessionSummaryRecord {
   id: number;
@@ -88,10 +103,22 @@ export interface SessionSummaryRecord {
   learned: string | null;
   completed: string | null;
   next_steps: string | null;
+  files_read?: string | null;  // JSON array as string
+  files_edited?: string | null; // JSON array as string
+  notes?: string | null;
   created_at: string;
   created_at_epoch: number;
-  prompt_number?: number;
+  prompt_number?: number | null;
   discovery_tokens?: number;
+}
+
+/**
+ * Session Summary with parsed file arrays
+ * Use parseSummaryFiles() to convert from SessionSummaryRecord
+ */
+export interface ParsedSessionSummaryRecord extends Omit<SessionSummaryRecord, 'files_read' | 'files_edited'> {
+  files_read: string[];
+  files_edited: string[];
 }
 
 /**
@@ -131,9 +158,12 @@ export interface ObservationWithContext {
   type: string;
   created_at: string;
   created_at_epoch: number;
-  title?: string;
-  concept?: string;
-  source_files?: string;
-  prompt_number?: number;
+  title?: string | null;
+  subtitle?: string | null;
+  narrative?: string | null;
+  concepts?: string | null;   // JSON array as string
+  files_read?: string | null; // JSON array as string
+  files_modified?: string | null; // JSON array as string
+  prompt_number?: number | null;
   discovery_tokens?: number;
 }

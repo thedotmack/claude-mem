@@ -85,6 +85,22 @@ Claude-mem is designed with a clean separation between open-source core function
 
 This architecture preserves the open-source nature of the project while enabling sustainable development through optional paid features.
 
+## JSON Field Handling
+
+Database fields `files_read` and `files_modified` are stored as JSON strings (e.g., `'["src/foo.ts"]'`).
+
+**Parsing Utilities** (`src/services/sqlite/utils/parseObservationFiles.ts`):
+- `parseObservationFiles()` - Single observation
+- `parseObservationsFiles()` - Batch of observations
+- `parseSummaryFiles()` - Session summaries (uses `files_edited` instead of `files_modified`)
+
+**Timeline Formatting** (`src/shared/timeline-formatting.ts`):
+- `extractFirstFile()` - Correctly handles JSON strings via `parseJsonArray()`
+
+**Types** (`src/types/database.ts`):
+- `ParsedObservationRecord` - Observation with parsed array fields
+- `ParsedSessionSummaryRecord` - Summary with parsed array fields
+
 ## Important
 
 No need to edit the changelog ever, it's generated automatically.
