@@ -35,6 +35,7 @@
   <a href="README.th.md">🇹🇭 ไทย</a> •
   <a href="README.hi.md">🇮🇳 हिन्दी</a> •
   <a href="README.bn.md">🇧🇩 বাংলা</a> •
+  <a href="README.ur.md">🇵🇰 اردو</a> •
   <a href="README.ro.md">🇷🇴 Română</a> •
   <a href="README.sv.md">🇸🇪 Svenska</a> •
   <a href="README.it.md">🇮🇹 Italiano</a> •
