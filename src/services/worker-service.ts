@@ -567,11 +567,36 @@ async function main() {
       if (!platform || !event) {
         console.error('Usage: claude-mem hook <platform> <event>');
         console.error('Platforms: claude-code, cursor, raw');
-        console.error('Events: context, session-init, observation, summarize, user-message');
+        console.error('Events: context, session-init, observation, summarize');
         process.exit(1);
       }
+
+      // Check if worker is already running on port
+      const portInUse = await isPortInUse(port);
+      let startedWorkerInProcess = false;
+
+      if (!portInUse) {
+        // Port free - start worker IN THIS PROCESS (no spawn!)
+        // This process becomes the worker and stays alive
+        try {
+          logger.info('SYSTEM', 'Starting worker in-process for hook', { event });
+          const worker = new WorkerService();
+          await worker.start();
+          startedWorkerInProcess = true;
+          // Worker is now running in this process on the port
+        } catch (error) {
+          logger.failure('SYSTEM', 'Worker failed to start in hook', {}, error as Error);
+          removePidFile();
+          process.exit(0);
+        }
+      }
+      // If port in use, we'll use HTTP to the existing worker
+
       const { hookCommand } = await import('../cli/hook-command.js');
-      await hookCommand(platform, event);
+      // If we started the worker in this process, skip process.exit() so we stay alive as the worker
+      await hookCommand(platform, event, { skipExit: startedWorkerInProcess });
+      // Note: if we started worker in-process, this process stays alive as the worker
+      // The break allows the event loop to continue serving requests
       break;
     }
 
