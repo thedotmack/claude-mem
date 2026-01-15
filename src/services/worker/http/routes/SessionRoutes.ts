@@ -122,6 +122,16 @@ export class SessionRoutes extends BaseRouteHandler {
   ): void {
     if (!session) return;
 
+    // Reset AbortController if it was previously aborted
+    // This fixes the bug where a session gets stuck in an infinite "Generator aborted" loop
+    // after its AbortController was aborted (e.g., from a previous generator exit)
+    if (session.abortController.signal.aborted) {
+      logger.debug('SESSION', 'Resetting aborted AbortController before starting generator', {
+        sessionId: session.sessionDbId
+      });
+      session.abortController = new AbortController();
+    }
+
     const agent = provider === 'openrouter' ? this.openRouterAgent : (provider === 'gemini' ? this.geminiAgent : this.sdkAgent);
     const agentName = provider === 'openrouter' ? 'OpenRouter' : (provider === 'gemini' ? 'Gemini' : 'Claude SDK');
 
