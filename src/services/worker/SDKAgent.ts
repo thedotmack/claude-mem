@@ -8,9 +8,10 @@
  * - Sync to database and Chroma
  */
 
-import { execSync } from 'child_process';
+import { execSync, spawnSync } from 'child_process';
 import { homedir } from 'os';
 import path from 'path';
+import { readdirSync, readFileSync } from 'fs';
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
@@ -30,9 +31,82 @@ export class SDKAgent {
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
 
+  // Mutex to serialize subprocess spawning and PID detection
+  // Prevents race where concurrent sessions detect each other's subprocess
+  private spawnLock: Promise<void> = Promise.resolve();
+
   constructor(dbManager: DatabaseManager, sessionManager: SessionManager) {
     this.dbManager = dbManager;
     this.sessionManager = sessionManager;
+  }
+
+  /**
+   * Get child process PIDs of the current worker that match Claude SDK pattern.
+   * Used to detect the subprocess spawned by query() for cleanup.
+   */
+  private getClaudeChildPids(): Set<number> {
+    const pids = new Set<number>();
+    const workerPid = process.pid;
+
+    if (process.platform === 'win32') {
+      // Windows: Use PowerShell to find child processes
+      try {
+        const result = spawnSync('powershell', [
+          '-NoProfile', '-NonInteractive', '-Command',
+          `Get-CimInstance Win32_Process | Where-Object { $_.ParentProcessId -eq ${workerPid} -and $_.CommandLine -like '*claude*stream-json*' } | Select-Object -ExpandProperty ProcessId`
+        ], { encoding: 'utf8', timeout: 5000 });
+
+        if (result.stdout) {
+          result.stdout.split('\n').forEach(line => {
+            const pid = parseInt(line.trim(), 10);
+            if (!isNaN(pid) && pid > 0) pids.add(pid);
+          });
+        }
+      } catch (e) {
+        logger.debug('SDK', 'Failed to enumerate child processes (Windows)', {}, e as Error);
+      }
+    } else {
+      // Unix: Read /proc directly for efficiency
+      try {
+        const procDirs = readdirSync('/proc').filter(d => /^\d+$/.test(d));
+        for (const pidStr of procDirs) {
+          try {
+            const stat = readFileSync(`/proc/${pidStr}/stat`, 'utf8');
+            const parts = stat.split(' ');
+            const ppid = parseInt(parts[3], 10);
+            if (ppid === workerPid) {
+              const cmdline = readFileSync(`/proc/${pidStr}/cmdline`, 'utf8');
+              if (cmdline.includes('claude') && cmdline.includes('stream-json')) {
+                pids.add(parseInt(pidStr, 10));
+              }
+            }
+          } catch (e) {
+            // Process may have exited
+          }
+        }
+      } catch (e) {
+        logger.debug('SDK', 'Failed to enumerate child processes (Unix)', {}, e as Error);
+      }
+    }
+    return pids;
+  }
+
+  /**
+   * Kill a process by PID. Safe to call even if process already exited.
+   */
+  private killProcess(pid: number): boolean {
+    try {
+      if (process.platform === 'win32') {
+        spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { timeout: 5000 });
+      } else {
+        process.kill(pid, 'SIGTERM');
+      }
+      logger.debug('SDK', 'Killed subprocess', { pid });
+      return true;
+    } catch (e) {
+      // Process already exited - that's fine
+      return false;
+    }
   }
 
   /**
@@ -103,12 +177,20 @@ export class SDKAgent {
       }
     }
 
-    // Run Agent SDK query loop
+    // CRITICAL SECTION: Serialize subprocess spawning and PID detection
+    // Without this mutex, concurrent sessions could detect each other's subprocess
+    const prevLock = this.spawnLock;
+    let releaseLock!: () => void;
+    this.spawnLock = new Promise(resolve => { releaseLock = resolve; });
+    await prevLock;
+
+    // Inside mutex: snapshot → spawn → detect → release (don't wait for response)
+    // query() returns immediately but subprocess spawns on first iteration
+    const pidsBefore = this.getClaudeChildPids();
     const queryResult = query({
       prompt: messageGenerator,
       options: {
         model: modelId,
-        // Resume only if willResume is true (checks memorySessionId, promptNumber, and NOT startup-recovery)
         ...(willResume && { resume: session.memorySessionId }),
         disallowedTools,
         abortController: session.abortController,
@@ -116,9 +198,37 @@ export class SDKAgent {
       }
     });
 
+    // Kick off iteration (spawns subprocess) but DON'T wait for response yet
+    const iterator = queryResult[Symbol.asyncIterator]();
+    const firstPromise = iterator.next(); // Starts subprocess, returns promise
+
+    // Brief delay to let subprocess spawn (typically < 50ms)
+    await new Promise(r => setTimeout(r, 100));
+
+    // Now detect the spawned subprocess PID
+    const pidsAfter = this.getClaudeChildPids();
+    for (const pid of pidsAfter) {
+      if (!pidsBefore.has(pid)) {
+        session.sdkChildPid = pid;
+        logger.info('SDK', 'Detected subprocess PID', {
+          sessionId: session.sessionDbId,
+          pid
+        });
+        break;
+      }
+    }
+
+    // Release lock - other sessions can now spawn their subprocesses
+    releaseLock();
+
+    // NOW wait for the first message (outside the lock)
+    const firstResult = await firstPromise;
+
     // Process SDK messages - wrapped in try/finally to ensure subprocess cleanup
     try {
-      for await (const message of queryResult) {
+      // Process first message if iterator hasn't completed
+      let message = firstResult.done ? null : firstResult.value;
+      while (message) {
         // Capture memory session ID from first SDK message (any type has session_id)
         // This enables resume for subsequent generator starts within the same user session
         if (!session.memorySessionId && message.session_id) {
@@ -213,13 +323,29 @@ export class SDKAgent {
         if (message.type === 'result' && message.subtype === 'success') {
           // Usage telemetry is captured at SDK level
         }
+
+        // Get next message from iterator
+        const nextResult = await iterator.next();
+        message = nextResult.done ? null : nextResult.value;
       }
     } finally {
       // CRITICAL: Always terminate SDK subprocess to prevent orphaned processes
       // This runs even if the for-await loop throws an error or exits early
+
+      // 1. Abort the controller (signals SDK to stop, but doesn't kill subprocess)
       const oldController = session.abortController;
       session.abortController = new AbortController();
       oldController.abort();
+
+      // 2. Explicitly kill the subprocess with SIGTERM (abort() alone doesn't do this)
+      if (session.sdkChildPid) {
+        this.killProcess(session.sdkChildPid);
+        logger.info('SDK', 'Subprocess terminated', {
+          sessionId: session.sessionDbId,
+          pid: session.sdkChildPid
+        });
+        session.sdkChildPid = null;
+      }
     }
 
     // Mark session complete

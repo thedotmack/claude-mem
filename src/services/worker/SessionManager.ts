@@ -143,7 +143,8 @@ export class SessionManager {
       earliestPendingTimestamp: null,
       conversationHistory: [],  // Initialize empty - will be populated by agents
       currentProvider: null,  // Will be set when generator starts
-      isStartupRecovery  // Track if SDK context was lost (worker restart)
+      isStartupRecovery,  // Track if SDK context was lost (worker restart)
+      sdkChildPid: null  // Will be detected and tracked when SDK subprocess spawns
     };
 
     logger.debug('SESSION', 'Creating new session object', {
