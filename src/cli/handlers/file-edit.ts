@@ -8,11 +8,16 @@
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
 import { ensureWorkerRunning, getWorkerPort } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
+import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 
 export const fileEditHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
     // Ensure worker is running before any other logic
-    await ensureWorkerRunning();
+    const workerReady = await ensureWorkerRunning();
+    if (!workerReady) {
+      // Worker not available - skip file edit observation gracefully
+      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+    }
 
     const { sessionId, cwd, filePath, edits } = input;
 

@@ -93,19 +93,18 @@ describe('replaceTaggedContent', () => {
 });
 
 describe('formatTimelineForClaudeMd', () => {
-  it('should return "No recent activity" for empty input', () => {
+  it('should return empty string for empty input', () => {
     const result = formatTimelineForClaudeMd('');
 
-    expect(result).toContain('# Recent Activity');
-    expect(result).toContain('*No recent activity*');
+    expect(result).toBe('');
   });
 
-  it('should return "No recent activity" when no table rows exist', () => {
+  it('should return empty string when no table rows exist', () => {
     const input = 'Just some plain text without table rows';
 
     const result = formatTimelineForClaudeMd(input);
 
-    expect(result).toContain('*No recent activity*');
+    expect(result).toBe('');
   });
 
   it('should parse single observation row correctly', () => {

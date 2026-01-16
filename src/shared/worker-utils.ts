@@ -4,7 +4,6 @@ import { readFileSync } from "fs";
 import { logger } from "../utils/logger.js";
 import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
 import { SettingsDefaultsManager } from "./SettingsDefaultsManager.js";
-import { getWorkerRestartInstructions } from "../utils/error-messages.js";
 
 const MARKETPLACE_ROOT = path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
 
@@ -112,30 +111,25 @@ async function checkWorkerVersion(): Promise<void> {
 
 /**
  * Ensure worker service is running
- * Polls until worker is ready (assumes worker-service.cjs start was called by hooks.json)
+ * Quick health check - returns false if worker not healthy (doesn't block)
+ * Port might be in use by another process, or worker might not be started yet
  */
-export async function ensureWorkerRunning(): Promise<void> {
-  const maxRetries = 75;  // 15 seconds total
-  const pollInterval = 200;
-
-  for (let i = 0; i < maxRetries; i++) {
-    try {
-      if (await isWorkerHealthy()) {
-        await checkWorkerVersion();  // logs warning on mismatch, doesn't restart
-        return;
-      }
-    } catch (e) {
-      logger.debug('SYSTEM', 'Worker health check failed, will retry', {
-        attempt: i + 1,
-        maxRetries,
-        error: e instanceof Error ? e.message : String(e)
-      });
+export async function ensureWorkerRunning(): Promise<boolean> {
+  // Quick health check (single attempt, no polling)
+  try {
+    if (await isWorkerHealthy()) {
+      await checkWorkerVersion();  // logs warning on mismatch, doesn't restart
+      return true;  // Worker healthy
     }
-    await new Promise(r => setTimeout(r, pollInterval));
+  } catch (e) {
+    // Not healthy - log for debugging
+    logger.debug('SYSTEM', 'Worker health check failed', {
+      error: e instanceof Error ? e.message : String(e)
+    });
   }
 
-  throw new Error(getWorkerRestartInstructions({
-    port: getWorkerPort(),
-    customPrefix: 'Worker did not become ready within 15 seconds.'
-  }));
+  // Port might be in use by something else, or worker not started
+  // Return false but don't throw - let caller decide how to handle
+  logger.warn('SYSTEM', 'Worker not healthy, hook will proceed gracefully');
+  return false;
 }
