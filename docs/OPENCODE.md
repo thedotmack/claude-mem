@@ -17,16 +17,16 @@ This integration provides the **same full lifecycle hooks** as Claude Code:
 Tell OpenCode:
 
 ```
-Clone https://github.com/thedotmack/claude-mem.git to ~/.config/opencode/claude-mem, then cd into it and run npm install, then run npm run build-and-sync, then create directory ~/.config/opencode/plugin, then symlink ~/.config/opencode/claude-mem/plugin/opencode/claude-mem.js to ~/.config/opencode/plugin/claude-mem.js, then start the worker in background with 'cd ~/.config/opencode/claude-mem && npm run worker:start &', then restart opencode.
+Fetch and follow instructions from https://raw.githubusercontent.com/thedotmack/claude-mem/refs/heads/main/.opencode/INSTALL.md
 ```
 
-**Or use your fork:**
+**Or use the fork with network mode:**
 
 ```
-Clone https://github.com/nycterent/claude-mem.git to ~/.config/opencode/claude-mem, then cd into it and run npm install, then run npm run build-and-sync, then create directory ~/.config/opencode/plugin, then symlink ~/.config/opencode/claude-mem/plugin/opencode/claude-mem.js to ~/.config/opencode/plugin/claude-mem.js, then start the worker in background with 'cd ~/.config/opencode/claude-mem && npm run worker:start &', then restart opencode.
+Fetch and follow instructions from https://raw.githubusercontent.com/nycterent/claude-mem/refs/heads/main/.opencode/INSTALL.md
 ```
 
-**Already have claude-mem installed?**
+### Already have claude-mem installed?
 
 ```
 Create directory ~/.config/opencode/plugin, then symlink /path/to/your/claude-mem/plugin/opencode/claude-mem.js to ~/.config/opencode/plugin/claude-mem.js, then restart opencode.
