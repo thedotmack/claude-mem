@@ -1,10 +1,20 @@
 # OpenCode Integration Guide
 
-This guide explains how to integrate claude-mem with OpenCode, enabling persistent memory across your OpenCode sessions.
+> **⚠️ NOTE:** This guide covers the legacy MCP-only integration. For **full lifecycle integration** with automatic session tracking (same as Claude Code), see [docs/OPENCODE.md](docs/OPENCODE.md) or [plugin/opencode/README.md](plugin/opencode/README.md).
+
+This guide explains the MCP-only integration for OpenCode. This provides manual memory search tools but **does not** include automatic session tracking, context injection, or observation capture.
 
 ## Overview
 
 OpenCode is an AI coding agent that supports the Model Context Protocol (MCP) as a client. Claude-mem provides an MCP server that gives OpenCode access to searchable memory across sessions.
+
+**Limitations of MCP-only:**
+- ❌ No automatic session initialization
+- ❌ No automatic tool/file tracking
+- ❌ No automatic context injection
+- ✅ Manual memory search via MCP tools
+
+**For full integration,** use the OpenCode plugin instead: [docs/OPENCODE.md](docs/OPENCODE.md)
 
 ## Setup Options
 

@@ -4,15 +4,30 @@ Full lifecycle integration providing persistent memory across OpenCode sessions.
 
 ## Quick Install
 
+Tell OpenCode:
+
+```
+Clone https://github.com/thedotmack/claude-mem.git to ~/.config/opencode/claude-mem, then cd into it and run npm install, then run npm run build-and-sync, then create directory ~/.config/opencode/plugin, then symlink ~/.config/opencode/claude-mem/plugin/opencode/claude-mem.js to ~/.config/opencode/plugin/claude-mem.js, then start the worker in background with 'cd ~/.config/opencode/claude-mem && npm run worker:start &', then restart opencode.
+```
+
+### Manual Install
+
 ```bash
-# 1. Link plugin
-ln -sf $(pwd)/claude-mem.js ~/.config/opencode/plugin/claude-mem.js
+# 1. Clone and build
+git clone https://github.com/thedotmack/claude-mem.git ~/.config/opencode/claude-mem
+cd ~/.config/opencode/claude-mem
+npm install
+npm run build-and-sync
 
-# 2. Start worker (from claude-mem root)
-cd ../..
-npm run worker:start
+# 2. Link plugin
+mkdir -p ~/.config/opencode/plugin
+ln -sf ~/.config/opencode/claude-mem/plugin/opencode/claude-mem.js \
+  ~/.config/opencode/plugin/claude-mem.js
 
-# 3. Restart OpenCode
+# 3. Start worker
+npm run worker:start &
+
+# 4. Restart OpenCode
 ```
 
 ## Features
