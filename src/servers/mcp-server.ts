@@ -27,14 +27,15 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
+import { getWorkerBaseUrl } from '../shared/worker-utils.js';
+import { fetchWithTimeout } from '../shared/http.js';
+import { HOOK_TIMEOUTS, getTimeout } from '../shared/hook-constants.js';
 
 /**
  * Worker HTTP API configuration
  */
-const WORKER_PORT = getWorkerPort();
-const WORKER_HOST = getWorkerHost();
-const WORKER_BASE_URL = `http://${WORKER_HOST}:${WORKER_PORT}`;
+const WORKER_BASE_URL = getWorkerBaseUrl();
+const HEALTH_REQUEST_TIMEOUT_MS = getTimeout(HOOK_TIMEOUTS.HEALTH_REQUEST);
 
 /**
  * Map tool names to Worker HTTP endpoints
@@ -141,7 +142,11 @@ async function callWorkerAPIPost(
  */
 async function verifyWorkerConnection(): Promise<boolean> {
   try {
-    const response = await fetch(`${WORKER_BASE_URL}/api/health`);
+    const response = await fetchWithTimeout(
+      `${WORKER_BASE_URL}/api/health`,
+      {},
+      HEALTH_REQUEST_TIMEOUT_MS
+    );
     return response.ok;
   } catch (error) {
     // Expected during worker startup or if worker is down

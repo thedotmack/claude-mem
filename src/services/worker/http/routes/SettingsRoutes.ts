@@ -267,9 +267,9 @@ export class SettingsRoutes extends BaseRouteHandler {
     if (settings.CLAUDE_MEM_WORKER_HOST) {
       const host = settings.CLAUDE_MEM_WORKER_HOST;
       // Allow localhost variants and valid IP patterns
-      const validHostPattern = /^(127\.0\.0\.1|0\.0\.0\.0|localhost|\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/;
+      const validHostPattern = /^(127\.0\.0\.1|0\.0\.0\.0|localhost|::1|\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/;
       if (!validHostPattern.test(host)) {
-        return { valid: false, error: 'CLAUDE_MEM_WORKER_HOST must be a valid IP address (e.g., 127.0.0.1, 0.0.0.0)' };
+        return { valid: false, error: 'CLAUDE_MEM_WORKER_HOST must be a valid host (e.g., 127.0.0.1, 0.0.0.0, ::1, localhost)' };
       }
     }
 

@@ -5,11 +5,12 @@ import { logger } from "../utils/logger.js";
 import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
 import { SettingsDefaultsManager } from "./SettingsDefaultsManager.js";
 import { getWorkerRestartInstructions } from "../utils/error-messages.js";
+import { fetchWithTimeout } from "./http.js";
 
 const MARKETPLACE_ROOT = path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
 
 // Named constants for health checks
-const HEALTH_CHECK_TIMEOUT_MS = getTimeout(HOOK_TIMEOUTS.HEALTH_CHECK);
+const HEALTH_REQUEST_TIMEOUT_MS = getTimeout(HOOK_TIMEOUTS.HEALTH_REQUEST);
 
 // Cache to avoid repeated settings file reads
 let cachedPort: number | null = null;
@@ -47,6 +48,22 @@ export function getWorkerHost(): string {
   return cachedHost;
 }
 
+function formatWorkerHost(host: string): string {
+  if (host.includes(':') && !host.startsWith('[')) {
+    return `[${host}]`;
+  }
+  return host;
+}
+
+export function getWorkerBaseUrl(port: number = getWorkerPort(), host: string = getWorkerHost()): string {
+  return `http://${formatWorkerHost(host)}:${port}`;
+}
+
+export function buildWorkerUrl(pathname: string, port: number = getWorkerPort(), host: string = getWorkerHost()): string {
+  const normalizedPath = pathname.startsWith('/') ? pathname : `/${pathname}`;
+  return `${getWorkerBaseUrl(port, host)}${normalizedPath}`;
+}
+
 /**
  * Clear the cached port and host values
  * Call this when settings are updated to force re-reading from file
@@ -62,8 +79,11 @@ export function clearPortCache(): void {
  */
 async function isWorkerHealthy(): Promise<boolean> {
   const port = getWorkerPort();
-  // Note: Removed AbortSignal.timeout to avoid Windows Bun cleanup issue (libuv assertion)
-  const response = await fetch(`http://127.0.0.1:${port}/api/readiness`);
+  const response = await fetchWithTimeout(
+    buildWorkerUrl('/api/readiness', port),
+    {},
+    HEALTH_REQUEST_TIMEOUT_MS
+  );
   return response.ok;
 }
 
@@ -81,8 +101,11 @@ function getPluginVersion(): string {
  */
 async function getWorkerVersion(): Promise<string> {
   const port = getWorkerPort();
-  // Note: Removed AbortSignal.timeout to avoid Windows Bun cleanup issue (libuv assertion)
-  const response = await fetch(`http://127.0.0.1:${port}/api/version`);
+  const response = await fetchWithTimeout(
+    buildWorkerUrl('/api/version', port),
+    {},
+    HEALTH_REQUEST_TIMEOUT_MS
+  );
   if (!response.ok) {
     throw new Error(`Failed to get worker version: ${response.status}`);
   }

@@ -13,14 +13,22 @@ import path from 'path';
 import { homedir } from 'os';
 import { readFileSync } from 'fs';
 import { logger } from '../../utils/logger.js';
+import { buildWorkerUrl } from '../../shared/worker-utils.js';
+import { HOOK_TIMEOUTS, getTimeout } from '../../shared/hook-constants.js';
+import { fetchWithTimeout } from '../../shared/http.js';
+
+const HEALTH_REQUEST_TIMEOUT_MS = getTimeout(HOOK_TIMEOUTS.HEALTH_REQUEST);
 
 /**
  * Check if a port is in use by querying the health endpoint
  */
 export async function isPortInUse(port: number): Promise<boolean> {
   try {
-    // Note: Removed AbortSignal.timeout to avoid Windows Bun cleanup issue (libuv assertion)
-    const response = await fetch(`http://127.0.0.1:${port}/api/health`);
+    const response = await fetchWithTimeout(
+      buildWorkerUrl('/api/health', port),
+      {},
+      HEALTH_REQUEST_TIMEOUT_MS
+    );
     return response.ok;
   } catch (error) {
     // [ANTI-PATTERN IGNORED]: Health check polls every 500ms, logging would flood
@@ -38,8 +46,11 @@ export async function waitForHealth(port: number, timeoutMs: number = 30000): Pr
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     try {
-      // Note: Removed AbortSignal.timeout to avoid Windows Bun cleanup issue (libuv assertion)
-      const response = await fetch(`http://127.0.0.1:${port}/api/readiness`);
+      const response = await fetchWithTimeout(
+        buildWorkerUrl('/api/readiness', port),
+        {},
+        HEALTH_REQUEST_TIMEOUT_MS
+      );
       if (response.ok) return true;
     } catch (error) {
       // [ANTI-PATTERN IGNORED]: Retry loop - expected failures during startup, will retry
@@ -70,10 +81,11 @@ export async function waitForPortFree(port: number, timeoutMs: number = 10000): 
  */
 export async function httpShutdown(port: number): Promise<boolean> {
   try {
-    // Note: Removed AbortSignal.timeout to avoid Windows Bun cleanup issue (libuv assertion)
-    const response = await fetch(`http://127.0.0.1:${port}/api/admin/shutdown`, {
-      method: 'POST'
-    });
+    const response = await fetchWithTimeout(
+      buildWorkerUrl('/api/admin/shutdown', port),
+      { method: 'POST' },
+      HEALTH_REQUEST_TIMEOUT_MS
+    );
     if (!response.ok) {
       logger.warn('SYSTEM', 'Shutdown request returned error', { port, status: response.status });
       return false;
@@ -108,7 +120,11 @@ export function getInstalledPluginVersion(): string {
  */
 export async function getRunningWorkerVersion(port: number): Promise<string | null> {
   try {
-    const response = await fetch(`http://127.0.0.1:${port}/api/version`);
+    const response = await fetchWithTimeout(
+      buildWorkerUrl('/api/version', port),
+      {},
+      HEALTH_REQUEST_TIMEOUT_MS
+    );
     if (!response.ok) return null;
     const data = await response.json() as { version: string };
     return data.version;

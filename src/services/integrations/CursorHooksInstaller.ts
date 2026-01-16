@@ -15,7 +15,9 @@ import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from '
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { logger } from '../../utils/logger.js';
-import { getWorkerPort } from '../../shared/worker-utils.js';
+import { buildWorkerUrl, getWorkerPort } from '../../shared/worker-utils.js';
+import { fetchWithTimeout } from '../../shared/http.js';
+import { HOOK_TIMEOUTS, getTimeout } from '../../shared/hook-constants.js';
 import {
   readCursorRegistry as readCursorRegistryFromFile,
   writeCursorRegistry as writeCursorRegistryToFile,
@@ -25,6 +27,7 @@ import {
 import type { CursorInstallTarget, CursorHooksJson, CursorMcpConfig, Platform } from './types.js';
 
 const execAsync = promisify(exec);
+const HEALTH_REQUEST_TIMEOUT_MS = getTimeout(HOOK_TIMEOUTS.HEALTH_REQUEST);
 
 // Standard paths
 const DATA_DIR = path.join(homedir(), '.claude-mem');
@@ -104,7 +107,7 @@ export async function updateCursorContextForProject(projectName: string, port: n
   try {
     // Fetch fresh context from worker
     const response = await fetch(
-      `http://127.0.0.1:${port}/api/context/inject?project=${encodeURIComponent(projectName)}`
+      buildWorkerUrl(`/api/context/inject?project=${encodeURIComponent(projectName)}`, port)
     );
 
     if (!response.ok) return;
@@ -393,11 +396,15 @@ async function setupProjectContext(targetDir: string, workspaceRoot: string): Pr
 
   try {
     // Check if worker is running
-    const healthResponse = await fetch(`http://127.0.0.1:${port}/api/readiness`);
+    const healthResponse = await fetchWithTimeout(
+      buildWorkerUrl('/api/readiness', port),
+      {},
+      HEALTH_REQUEST_TIMEOUT_MS
+    );
     if (healthResponse.ok) {
       // Fetch context
       const contextResponse = await fetch(
-        `http://127.0.0.1:${port}/api/context/inject?project=${encodeURIComponent(projectName)}`
+        buildWorkerUrl(`/api/context/inject?project=${encodeURIComponent(projectName)}`, port)
       );
       if (contextResponse.ok) {
         const context = await contextResponse.text();
