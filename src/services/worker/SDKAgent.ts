@@ -8,9 +8,10 @@
  * - Sync to database and Chroma
  */
 
-import { execSync } from 'child_process';
+import { execSync, spawnSync } from 'child_process';
 import { homedir } from 'os';
 import path from 'path';
+import { readdirSync, readFileSync } from 'fs';
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
@@ -20,6 +21,7 @@ import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import type { ActiveSession, SDKUserMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import { processAgentResponse, type WorkerRef } from './agents/index.js';
+import { shouldPassResumeParameter } from './resume-logic.js';
 
 // Import Agent SDK (assumes it's installed)
 // @ts-ignore - Agent SDK types may not be available
@@ -29,9 +31,82 @@ export class SDKAgent {
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
 
+  // Mutex to serialize subprocess spawning and PID detection
+  // Prevents race where concurrent sessions detect each other's subprocess
+  private spawnLock: Promise<void> = Promise.resolve();
+
   constructor(dbManager: DatabaseManager, sessionManager: SessionManager) {
     this.dbManager = dbManager;
     this.sessionManager = sessionManager;
+  }
+
+  /**
+   * Get child process PIDs of the current worker that match Claude SDK pattern.
+   * Used to detect the subprocess spawned by query() for cleanup.
+   */
+  private getClaudeChildPids(): Set<number> {
+    const pids = new Set<number>();
+    const workerPid = process.pid;
+
+    if (process.platform === 'win32') {
+      // Windows: Use PowerShell to find child processes
+      try {
+        const result = spawnSync('powershell', [
+          '-NoProfile', '-NonInteractive', '-Command',
+          `Get-CimInstance Win32_Process | Where-Object { $_.ParentProcessId -eq ${workerPid} -and $_.CommandLine -like '*claude*stream-json*' } | Select-Object -ExpandProperty ProcessId`
+        ], { encoding: 'utf8', timeout: 5000 });
+
+        if (result.stdout) {
+          result.stdout.split('\n').forEach(line => {
+            const pid = parseInt(line.trim(), 10);
+            if (!isNaN(pid) && pid > 0) pids.add(pid);
+          });
+        }
+      } catch (e) {
+        logger.debug('SDK', 'Failed to enumerate child processes (Windows)', {}, e as Error);
+      }
+    } else {
+      // Unix: Read /proc directly for efficiency
+      try {
+        const procDirs = readdirSync('/proc').filter(d => /^\d+$/.test(d));
+        for (const pidStr of procDirs) {
+          try {
+            const stat = readFileSync(`/proc/${pidStr}/stat`, 'utf8');
+            const parts = stat.split(' ');
+            const ppid = parseInt(parts[3], 10);
+            if (ppid === workerPid) {
+              const cmdline = readFileSync(`/proc/${pidStr}/cmdline`, 'utf8');
+              if (cmdline.includes('claude') && cmdline.includes('stream-json')) {
+                pids.add(parseInt(pidStr, 10));
+              }
+            }
+          } catch (e) {
+            // Process may have exited
+          }
+        }
+      } catch (e) {
+        logger.debug('SDK', 'Failed to enumerate child processes (Unix)', {}, e as Error);
+      }
+    }
+    return pids;
+  }
+
+  /**
+   * Kill a process by PID. Safe to call even if process already exited.
+   */
+  private killProcess(pid: number): boolean {
+    try {
+      if (process.platform === 'win32') {
+        spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { timeout: 5000 });
+      } else {
+        process.kill(pid, 'SIGTERM');
+      }
+      logger.debug('SDK', 'Killed subprocess', { pid });
+      return true;
+    } catch (e) {
+      // Process already exited - that's fine
+      return false;
+    }
   }
 
   /**
@@ -67,147 +142,209 @@ export class SDKAgent {
     // Create message generator (event-driven)
     const messageGenerator = this.createMessageGenerator(session, cwdTracker);
 
-    // CRITICAL: Only resume if:
-    // 1. memorySessionId exists (was captured from a previous SDK response)
-    // 2. lastPromptNumber > 1 (this is a continuation within the same SDK session)
-    // On worker restart or crash recovery, memorySessionId may exist from a previous
-    // SDK session but we must NOT resume because the SDK context was lost.
-    // NEVER use contentSessionId for resume - that would inject messages into the user's transcript!
-    const hasRealMemorySessionId = !!session.memorySessionId;
+    // Determine if we should pass the resume parameter
+    // CRITICAL: Never resume if isStartupRecovery=true (SDK context was lost when worker restarted)
+    const willResume = shouldPassResumeParameter({
+      memorySessionId: session.memorySessionId,
+      lastPromptNumber: session.lastPromptNumber,
+      isStartupRecovery: session.isStartupRecovery
+    });
 
     logger.info('SDK', 'Starting SDK query', {
       sessionDbId: session.sessionDbId,
       contentSessionId: session.contentSessionId,
       memorySessionId: session.memorySessionId,
-      hasRealMemorySessionId,
-      resume_parameter: hasRealMemorySessionId ? session.memorySessionId : '(none - fresh start)',
+      isStartupRecovery: session.isStartupRecovery,
+      willResume,
+      resume_parameter: willResume ? session.memorySessionId : '(none - fresh start)',
       lastPromptNumber: session.lastPromptNumber
     });
 
     // Debug-level alignment logs for detailed tracing
-    if (session.lastPromptNumber > 1) {
-      const willResume = hasRealMemorySessionId;
-      logger.debug('SDK', `[ALIGNMENT] Resume Decision | contentSessionId=${session.contentSessionId} | memorySessionId=${session.memorySessionId} | prompt#=${session.lastPromptNumber} | hasRealMemorySessionId=${hasRealMemorySessionId} | willResume=${willResume} | resumeWith=${willResume ? session.memorySessionId : 'NONE'}`);
+    if (session.isStartupRecovery) {
+      logger.debug('SDK', `[ALIGNMENT] Startup Recovery | contentSessionId=${session.contentSessionId} | memorySessionId=${session.memorySessionId} | prompt#=${session.lastPromptNumber} | action=START_FRESH | SDK context lost during worker restart`);
+      if (session.memorySessionId) {
+        logger.warn('SDK', `Skipping resume for startup-recovery session despite existing memorySessionId=${session.memorySessionId} - SDK context was lost (worker restart)`);
+      }
+    } else if (session.lastPromptNumber > 1) {
+      logger.debug('SDK', `[ALIGNMENT] Resume Decision | contentSessionId=${session.contentSessionId} | memorySessionId=${session.memorySessionId} | prompt#=${session.lastPromptNumber} | willResume=${willResume} | resumeWith=${willResume ? session.memorySessionId : 'NONE'}`);
     } else {
       // INIT prompt - never resume even if memorySessionId exists (stale from previous session)
-      const hasStaleMemoryId = hasRealMemorySessionId;
+      const hasStaleMemoryId = !!session.memorySessionId;
       logger.debug('SDK', `[ALIGNMENT] First Prompt (INIT) | contentSessionId=${session.contentSessionId} | prompt#=${session.lastPromptNumber} | hasStaleMemoryId=${hasStaleMemoryId} | action=START_FRESH | Will capture new memorySessionId from SDK response`);
       if (hasStaleMemoryId) {
         logger.warn('SDK', `Skipping resume for INIT prompt despite existing memorySessionId=${session.memorySessionId} - SDK context was lost (worker restart or crash recovery)`);
       }
     }
 
-    // Run Agent SDK query loop
-    // Only resume if we have a captured memory session ID
+    // CRITICAL SECTION: Serialize subprocess spawning and PID detection
+    // Without this mutex, concurrent sessions could detect each other's subprocess
+    const prevLock = this.spawnLock;
+    let releaseLock!: () => void;
+    this.spawnLock = new Promise(resolve => { releaseLock = resolve; });
+    await prevLock;
+
+    // Inside mutex: snapshot → spawn → detect → release (don't wait for response)
+    // query() returns immediately but subprocess spawns on first iteration
+    const pidsBefore = this.getClaudeChildPids();
     const queryResult = query({
       prompt: messageGenerator,
       options: {
         model: modelId,
-        // Only resume if BOTH: (1) we have a memorySessionId AND (2) this isn't the first prompt
-        // On worker restart, memorySessionId may exist from a previous SDK session but we
-        // need to start fresh since the SDK context was lost
-        ...(hasRealMemorySessionId && session.lastPromptNumber > 1 && { resume: session.memorySessionId }),
+        ...(willResume && { resume: session.memorySessionId }),
         disallowedTools,
         abortController: session.abortController,
         pathToClaudeCodeExecutable: claudePath
       }
     });
 
-    // Process SDK messages
-    for await (const message of queryResult) {
-      // Capture memory session ID from first SDK message (any type has session_id)
-      // This enables resume for subsequent generator starts within the same user session
-      if (!session.memorySessionId && message.session_id) {
-        session.memorySessionId = message.session_id;
-        // Persist to database for cross-restart recovery
-        this.dbManager.getSessionStore().updateMemorySessionId(
-          session.sessionDbId,
-          message.session_id
-        );
-        // Verify the update by reading back from DB
-        const verification = this.dbManager.getSessionStore().getSessionById(session.sessionDbId);
-        const dbVerified = verification?.memory_session_id === message.session_id;
-        logger.info('SESSION', `MEMORY_ID_CAPTURED | sessionDbId=${session.sessionDbId} | memorySessionId=${message.session_id} | dbVerified=${dbVerified}`, {
+    // Kick off iteration (spawns subprocess) but DON'T wait for response yet
+    const iterator = queryResult[Symbol.asyncIterator]();
+    const firstPromise = iterator.next(); // Starts subprocess, returns promise
+
+    // Brief delay to let subprocess spawn (typically < 50ms)
+    await new Promise(r => setTimeout(r, 100));
+
+    // Now detect the spawned subprocess PID
+    const pidsAfter = this.getClaudeChildPids();
+    for (const pid of pidsAfter) {
+      if (!pidsBefore.has(pid)) {
+        session.sdkChildPid = pid;
+        logger.info('SDK', 'Detected subprocess PID', {
           sessionId: session.sessionDbId,
-          memorySessionId: message.session_id
+          pid
         });
-        if (!dbVerified) {
-          logger.error('SESSION', `MEMORY_ID_MISMATCH | sessionDbId=${session.sessionDbId} | expected=${message.session_id} | got=${verification?.memory_session_id}`, {
-            sessionId: session.sessionDbId
-          });
-        }
-        // Debug-level alignment log for detailed tracing
-        logger.debug('SDK', `[ALIGNMENT] Captured | contentSessionId=${session.contentSessionId} → memorySessionId=${message.session_id} | Future prompts will resume with this ID`);
+        break;
       }
+    }
 
-      // Handle assistant messages
-      if (message.type === 'assistant') {
-        const content = message.message.content;
-        const textContent = Array.isArray(content)
-          ? content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n')
-          : typeof content === 'string' ? content : '';
+    // Release lock - other sessions can now spawn their subprocesses
+    releaseLock();
 
-        const responseSize = textContent.length;
+    // NOW wait for the first message (outside the lock)
+    const firstResult = await firstPromise;
 
-        // Capture token state BEFORE updating (for delta calculation)
-        const tokensBeforeResponse = session.cumulativeInputTokens + session.cumulativeOutputTokens;
+    // Process SDK messages - wrapped in try/finally to ensure subprocess cleanup
+    try {
+      // Process first message if iterator hasn't completed
+      let message = firstResult.done ? null : firstResult.value;
+      while (message) {
+        // Capture memory session ID from first SDK message (any type has session_id)
+        // This enables resume for subsequent generator starts within the same user session
+        if (!session.memorySessionId && message.session_id) {
+          session.memorySessionId = message.session_id;
+          // Persist to database for cross-restart recovery
+          this.dbManager.getSessionStore().updateMemorySessionId(
+            session.sessionDbId,
+            message.session_id
+          );
+          // Verify the update by reading back from DB
+          const verification = this.dbManager.getSessionStore().getSessionById(session.sessionDbId);
+          const dbVerified = verification?.memory_session_id === message.session_id;
+          logger.info('SESSION', `MEMORY_ID_CAPTURED | sessionDbId=${session.sessionDbId} | memorySessionId=${message.session_id} | dbVerified=${dbVerified}`, {
+            sessionId: session.sessionDbId,
+            memorySessionId: message.session_id
+          });
+          if (!dbVerified) {
+            logger.error('SESSION', `MEMORY_ID_MISMATCH | sessionDbId=${session.sessionDbId} | expected=${message.session_id} | got=${verification?.memory_session_id}`, {
+              sessionId: session.sessionDbId
+            });
+          }
+          // Debug-level alignment log for detailed tracing
+          logger.debug('SDK', `[ALIGNMENT] Captured | contentSessionId=${session.contentSessionId} → memorySessionId=${message.session_id} | Future prompts will resume with this ID`);
+        }
 
-        // Extract and track token usage
-        const usage = message.message.usage;
-        if (usage) {
-          session.cumulativeInputTokens += usage.input_tokens || 0;
-          session.cumulativeOutputTokens += usage.output_tokens || 0;
+        // Handle assistant messages
+        if (message.type === 'assistant') {
+          const content = message.message.content;
+          const textContent = Array.isArray(content)
+            ? content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n')
+            : typeof content === 'string' ? content : '';
 
-          // Cache creation counts as discovery, cache read doesn't
-          if (usage.cache_creation_input_tokens) {
-            session.cumulativeInputTokens += usage.cache_creation_input_tokens;
+          const responseSize = textContent.length;
+
+          // Capture token state BEFORE updating (for delta calculation)
+          const tokensBeforeResponse = session.cumulativeInputTokens + session.cumulativeOutputTokens;
+
+          // Extract and track token usage
+          const usage = message.message.usage;
+          if (usage) {
+            session.cumulativeInputTokens += usage.input_tokens || 0;
+            session.cumulativeOutputTokens += usage.output_tokens || 0;
+
+            // Cache creation counts as discovery, cache read doesn't
+            if (usage.cache_creation_input_tokens) {
+              session.cumulativeInputTokens += usage.cache_creation_input_tokens;
+            }
+
+            logger.debug('SDK', 'Token usage captured', {
+              sessionId: session.sessionDbId,
+              inputTokens: usage.input_tokens,
+              outputTokens: usage.output_tokens,
+              cacheCreation: usage.cache_creation_input_tokens || 0,
+              cacheRead: usage.cache_read_input_tokens || 0,
+              cumulativeInput: session.cumulativeInputTokens,
+              cumulativeOutput: session.cumulativeOutputTokens
+            });
           }
 
-          logger.debug('SDK', 'Token usage captured', {
-            sessionId: session.sessionDbId,
-            inputTokens: usage.input_tokens,
-            outputTokens: usage.output_tokens,
-            cacheCreation: usage.cache_creation_input_tokens || 0,
-            cacheRead: usage.cache_read_input_tokens || 0,
-            cumulativeInput: session.cumulativeInputTokens,
-            cumulativeOutput: session.cumulativeOutputTokens
-          });
+          // Calculate discovery tokens (delta for this response only)
+          const discoveryTokens = (session.cumulativeInputTokens + session.cumulativeOutputTokens) - tokensBeforeResponse;
+
+          // Process response (empty or not) and mark messages as processed
+          // Capture earliest timestamp BEFORE processing (will be cleared after)
+          const originalTimestamp = session.earliestPendingTimestamp;
+
+          if (responseSize > 0) {
+            const truncatedResponse = responseSize > 100
+              ? textContent.substring(0, 100) + '...'
+              : textContent;
+            logger.dataOut('SDK', `Response received (${responseSize} chars)`, {
+              sessionId: session.sessionDbId,
+              promptNumber: session.lastPromptNumber
+            }, truncatedResponse);
+          }
+
+          // Parse and process response using shared ResponseProcessor
+          await processAgentResponse(
+            textContent,
+            session,
+            this.dbManager,
+            this.sessionManager,
+            worker,
+            discoveryTokens,
+            originalTimestamp,
+            'SDK',
+            cwdTracker.lastCwd
+          );
         }
 
-        // Calculate discovery tokens (delta for this response only)
-        const discoveryTokens = (session.cumulativeInputTokens + session.cumulativeOutputTokens) - tokensBeforeResponse;
-
-        // Process response (empty or not) and mark messages as processed
-        // Capture earliest timestamp BEFORE processing (will be cleared after)
-        const originalTimestamp = session.earliestPendingTimestamp;
-
-        if (responseSize > 0) {
-          const truncatedResponse = responseSize > 100
-            ? textContent.substring(0, 100) + '...'
-            : textContent;
-          logger.dataOut('SDK', `Response received (${responseSize} chars)`, {
-            sessionId: session.sessionDbId,
-            promptNumber: session.lastPromptNumber
-          }, truncatedResponse);
+        // Log result messages
+        if (message.type === 'result' && message.subtype === 'success') {
+          // Usage telemetry is captured at SDK level
         }
 
-        // Parse and process response using shared ResponseProcessor
-        await processAgentResponse(
-          textContent,
-          session,
-          this.dbManager,
-          this.sessionManager,
-          worker,
-          discoveryTokens,
-          originalTimestamp,
-          'SDK',
-          cwdTracker.lastCwd
-        );
+        // Get next message from iterator
+        const nextResult = await iterator.next();
+        message = nextResult.done ? null : nextResult.value;
       }
+    } finally {
+      // CRITICAL: Always terminate SDK subprocess to prevent orphaned processes
+      // This runs even if the for-await loop throws an error or exits early
 
-      // Log result messages
-      if (message.type === 'result' && message.subtype === 'success') {
-        // Usage telemetry is captured at SDK level
+      // 1. Abort the controller (signals SDK to stop, but doesn't kill subprocess)
+      const oldController = session.abortController;
+      session.abortController = new AbortController();
+      oldController.abort();
+
+      // 2. Explicitly kill the subprocess with SIGTERM (abort() alone doesn't do this)
+      if (session.sdkChildPid) {
+        this.killProcess(session.sdkChildPid);
+        logger.info('SDK', 'Subprocess terminated', {
+          sessionId: session.sessionDbId,
+          pid: session.sdkChildPid
+        });
+        session.sdkChildPid = null;
       }
     }
 
@@ -348,6 +485,14 @@ export class SDKAgent {
           parent_tool_use_id: null,
           isSynthetic: true
         };
+
+        // CRITICAL: Summarize is the terminal message (Stop hook).
+        // Exit the generator to trigger subprocess cleanup in finally block.
+        // Without this return, the generator waits forever for more messages.
+        logger.info('SDK', 'Summarize processed, ending generator', {
+          sessionDbId: session.sessionDbId
+        });
+        return;
       }
     }
   }

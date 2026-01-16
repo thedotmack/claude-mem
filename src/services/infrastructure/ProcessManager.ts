@@ -260,6 +260,98 @@ export async function cleanupOrphanedProcesses(): Promise<void> {
 }
 
 /**
+ * Clean up orphaned Claude SDK agent processes from previous worker sessions
+ * These are spawned by the Claude Agent SDK's query() function and may become
+ * orphaned when generators exit unexpectedly without proper cleanup.
+ *
+ * Pattern matched: claude processes with --output-format stream-json (SDK agent signature)
+ */
+export async function cleanupOrphanedClaudeProcesses(): Promise<void> {
+  const isWindows = process.platform === 'win32';
+  const pids: number[] = [];
+  const workerPid = process.pid;
+
+  try {
+    if (isWindows) {
+      // Windows: Use PowerShell Get-CimInstance to find Claude SDK agent processes
+      const cmd = `powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process | Where-Object { \\$_.CommandLine -like '*claude*' -and \\$_.CommandLine -like '*stream-json*' } | Select-Object -ExpandProperty ProcessId"`;
+      const { stdout } = await execAsync(cmd, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND });
+
+      if (!stdout.trim()) {
+        logger.debug('SYSTEM', 'No orphaned Claude SDK processes found (Windows)');
+        return;
+      }
+
+      const lines = stdout
+        .split('\n')
+        .map(line => line.trim())
+        .filter(line => line.length > 0 && /^\d+$/.test(line));
+
+      for (const line of lines) {
+        const pid = parseInt(line, 10);
+        if (!isNaN(pid) && Number.isInteger(pid) && pid > 0 && pid !== workerPid) {
+          pids.push(pid);
+        }
+      }
+    } else {
+      // Unix: Use ps aux | grep to find Claude SDK agent processes
+      // Match: claude with stream-json flag (SDK agent pattern)
+      const { stdout } = await execAsync('ps aux | grep "claude" | grep "stream-json" | grep -v grep || true');
+
+      if (!stdout.trim()) {
+        logger.debug('SYSTEM', 'No orphaned Claude SDK processes found (Unix)');
+        return;
+      }
+
+      const lines = stdout.trim().split('\n');
+      for (const line of lines) {
+        const parts = line.trim().split(/\s+/);
+        if (parts.length > 1) {
+          const pid = parseInt(parts[1], 10);
+          if (!isNaN(pid) && Number.isInteger(pid) && pid > 0 && pid !== workerPid) {
+            pids.push(pid);
+          }
+        }
+      }
+    }
+  } catch (error) {
+    logger.error('SYSTEM', 'Failed to enumerate orphaned Claude processes', {}, error as Error);
+    return;
+  }
+
+  if (pids.length === 0) {
+    return;
+  }
+
+  logger.info('SYSTEM', 'Cleaning up orphaned Claude SDK processes', {
+    platform: isWindows ? 'Windows' : 'Unix',
+    count: pids.length,
+    pids
+  });
+
+  // Kill all found processes
+  let killed = 0;
+  for (const pid of pids) {
+    if (!Number.isInteger(pid) || pid <= 0) {
+      logger.warn('SYSTEM', 'Skipping invalid PID', { pid });
+      continue;
+    }
+    try {
+      if (isWindows) {
+        execSync(`taskkill /PID ${pid} /T /F`, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND, stdio: 'ignore' });
+      } else {
+        process.kill(pid, 'SIGTERM');
+      }
+      killed++;
+    } catch (error) {
+      logger.debug('SYSTEM', 'Process already exited during cleanup', { pid }, error as Error);
+    }
+  }
+
+  logger.info('SYSTEM', 'Orphaned Claude SDK processes cleaned up', { found: pids.length, killed });
+}
+
+/**
  * Spawn a detached daemon process
  * Returns the child PID or undefined if spawn failed
  */

@@ -28,7 +28,7 @@ interface LogContext {
 // Inlined here to avoid circular dependency with SettingsDefaultsManager
 const DEFAULT_DATA_DIR = join(homedir(), '.claude-mem');
 
-class Logger {
+export class Logger {
   private level: LogLevel | null = null;
   private useColor: boolean;
   private logFilePath: string | null = null;

@@ -33,6 +33,8 @@ export interface ActiveSession {
   earliestPendingTimestamp: number | null;  // Original timestamp of earliest pending message (for accurate observation timestamps)
   conversationHistory: ConversationMessage[];  // Shared conversation history for provider switching
   currentProvider: 'claude' | 'gemini' | 'openrouter' | null;  // Track which provider is currently running
+  isStartupRecovery: boolean;  // True if session was auto-recovered at worker startup (SDK context lost)
+  sdkChildPid: number | null;  // PID of SDK subprocess for explicit cleanup (abort() doesn't kill it)
 }
 
 export interface PendingMessage {

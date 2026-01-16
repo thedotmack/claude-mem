@@ -1,5 +1,13 @@
-import { describe, it, expect } from 'bun:test';
-import { logger } from '../../src/utils/logger.js';
+import { describe, it, expect, beforeAll } from 'bun:test';
+import { Logger } from '../../src/utils/logger.js';
+
+// Create a fresh Logger instance to avoid test pollution from mock.module()
+// in other test files that may have mocked the singleton
+let logger: Logger;
+
+beforeAll(() => {
+  logger = new Logger();
+});
 
 describe('logger.formatTool()', () => {
   describe('Valid JSON string input', () => {

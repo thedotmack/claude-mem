@@ -7,6 +7,7 @@ mock.module('../../src/utils/logger.js', () => ({
     debug: () => {},
     warn: () => {},
     error: () => {},
+    formatTool: (name: string, _input?: unknown) => name,
   },
 }));
 
