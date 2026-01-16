@@ -485,6 +485,14 @@ export class SDKAgent {
           parent_tool_use_id: null,
           isSynthetic: true
         };
+
+        // CRITICAL: Summarize is the terminal message (Stop hook).
+        // Exit the generator to trigger subprocess cleanup in finally block.
+        // Without this return, the generator waits forever for more messages.
+        logger.info('SDK', 'Summarize processed, ending generator', {
+          sessionDbId: session.sessionDbId
+        });
+        return;
       }
     }
   }
