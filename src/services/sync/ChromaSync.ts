@@ -18,6 +18,10 @@ import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import path from 'path';
 import os from 'os';
 
+// Version injected at build time by esbuild define
+declare const __DEFAULT_PACKAGE_VERSION__: string;
+const packageVersion = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DEFAULT_PACKAGE_VERSION__ : '0.0.0-dev';
+
 interface ChromaDocument {
   id: string;
   document: string;
@@ -123,9 +127,10 @@ export class ChromaSync {
 
       this.transport = new StdioClientTransport(transportOptions);
 
+      // Empty capabilities object: this client only calls Chroma tools, doesn't expose any
       this.client = new Client({
         name: 'claude-mem-chroma-sync',
-        version: '1.0.0'
+        version: packageVersion
       }, {
         capabilities: {}
       });
