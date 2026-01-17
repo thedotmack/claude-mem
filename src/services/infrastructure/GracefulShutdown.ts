@@ -14,7 +14,8 @@ import {
   getChildProcesses,
   forceKillProcess,
   waitForProcessesExit,
-  removePidFile
+  removePidFile,
+  cleanupOrphanedClaudeSubprocesses
 } from './ProcessManager.js';
 
 export interface ShutdownableService {
@@ -84,6 +85,15 @@ export async function performGracefulShutdown(config: GracefulShutdownConfig): P
     }
     // Wait for children to fully exit
     await waitForProcessesExit(childPids, 5000);
+  }
+
+  // STEP 7: Clean up orphaned Claude subprocesses (zombie haiku agents)
+  // Kill any Claude haiku processes older than 5 minutes on shutdown
+  // This catches zombies that accumulated during the session
+  // @see https://github.com/thedotmack/claude-mem/issues/737
+  const orphansKilled = await cleanupOrphanedClaudeSubprocesses(5);
+  if (orphansKilled > 0) {
+    logger.info('SYSTEM', 'Cleaned up orphaned Claude subprocesses on shutdown', { count: orphansKilled });
   }
 
   logger.info('SYSTEM', 'Worker shutdown complete');

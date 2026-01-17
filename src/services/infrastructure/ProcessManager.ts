@@ -315,3 +315,174 @@ export function createSignalHandler(
     }
   };
 }
+
+/**
+ * Clean up orphaned Claude subprocess zombies
+ *
+ * The Agent SDK spawns Claude subprocesses internally without exposing PIDs.
+ * When queries hang or abort, these subprocesses become zombies because
+ * abortController.abort() only signals the async iterator, not the subprocess.
+ *
+ * This function finds and kills Claude subprocesses matching the claude-mem
+ * spawning pattern that have been running longer than maxAgeMinutes.
+ *
+ * @param maxAgeMinutes - Only kill processes older than this (default: 30 minutes)
+ * @returns Number of processes killed
+ *
+ * @see https://github.com/thedotmack/claude-mem/issues/737
+ */
+export async function cleanupOrphanedClaudeSubprocesses(maxAgeMinutes: number = 30): Promise<number> {
+  const isWindows = process.platform === 'win32';
+  let killed = 0;
+
+  try {
+    if (isWindows) {
+      // Windows: Use PowerShell to find Claude processes spawned by claude-mem
+      // Pattern: claude.exe processes with haiku model (most common zombie)
+      const cmd = `powershell -NoProfile -NonInteractive -Command "
+        Get-CimInstance Win32_Process |
+        Where-Object {
+          \\$_.CommandLine -like '*claude*' -and
+          \\$_.CommandLine -like '*haiku*' -and
+          \\$_.CreationDate -lt (Get-Date).AddMinutes(-${maxAgeMinutes})
+        } |
+        Select-Object ProcessId |
+        ForEach-Object { \\$_.ProcessId }
+      "`;
+
+      const { stdout } = await execAsync(cmd, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND });
+
+      if (!stdout.trim()) {
+        logger.debug('SYSTEM', 'No orphaned Claude subprocesses found (Windows)', { maxAgeMinutes });
+        return 0;
+      }
+
+      const pids = stdout
+        .split('\n')
+        .map(line => line.trim())
+        .filter(line => line.length > 0 && /^\d+$/.test(line))
+        .map(line => parseInt(line, 10))
+        .filter(pid => !isNaN(pid) && Number.isInteger(pid) && pid > 0);
+
+      logger.info('SYSTEM', 'Found orphaned Claude subprocesses', {
+        count: pids.length,
+        maxAgeMinutes,
+        pids
+      });
+
+      for (const pid of pids) {
+        try {
+          execSync(`taskkill /PID ${pid} /T /F`, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND, stdio: 'ignore' });
+          killed++;
+          logger.info('SYSTEM', 'Killed orphaned Claude subprocess', { pid });
+        } catch (error) {
+          // Process may have already exited
+          logger.debug('SYSTEM', 'Process already exited', { pid }, error as Error);
+        }
+      }
+    } else {
+      // Unix: Use ps with etime to find old processes
+      // Pattern: claude processes with haiku model
+      const { stdout } = await execAsync(
+        `ps -eo pid,etime,args 2>/dev/null | grep -E "claude.*haiku" | grep -v grep || true`
+      );
+
+      if (!stdout.trim()) {
+        logger.debug('SYSTEM', 'No orphaned Claude subprocesses found (Unix)', { maxAgeMinutes });
+        return 0;
+      }
+
+      const lines = stdout.trim().split('\n');
+      const processesToKill: { pid: number; etime: string }[] = [];
+
+      for (const line of lines) {
+        const parts = line.trim().split(/\s+/);
+        if (parts.length < 3) continue;
+
+        const pid = parseInt(parts[0], 10);
+        const etime = parts[1];
+
+        // Validate PID
+        if (isNaN(pid) || !Number.isInteger(pid) || pid <= 0) continue;
+
+        // Parse etime format: [[DD-]HH:]MM:SS
+        const ageMinutes = parseEtimeToMinutes(etime);
+        if (ageMinutes >= maxAgeMinutes) {
+          processesToKill.push({ pid, etime });
+        }
+      }
+
+      if (processesToKill.length === 0) {
+        logger.debug('SYSTEM', 'No Claude subprocesses older than threshold', { maxAgeMinutes });
+        return 0;
+      }
+
+      logger.info('SYSTEM', 'Found orphaned Claude subprocesses', {
+        count: processesToKill.length,
+        maxAgeMinutes,
+        processes: processesToKill
+      });
+
+      for (const { pid } of processesToKill) {
+        try {
+          // Graceful first
+          process.kill(pid, 'SIGTERM');
+          killed++;
+          logger.info('SYSTEM', 'Killed orphaned Claude subprocess', { pid });
+        } catch (error) {
+          // Process may have already exited
+          logger.debug('SYSTEM', 'Process already exited', { pid }, error as Error);
+        }
+      }
+    }
+  } catch (error) {
+    // Cleanup is non-critical - log and continue
+    logger.error('SYSTEM', 'Failed to cleanup orphaned Claude subprocesses', { maxAgeMinutes }, error as Error);
+  }
+
+  if (killed > 0) {
+    logger.info('SYSTEM', 'Orphaned Claude subprocess cleanup complete', { killed, maxAgeMinutes });
+  }
+
+  return killed;
+}
+
+/**
+ * Parse Unix etime format to minutes
+ * Formats: SS, MM:SS, HH:MM:SS, D-HH:MM:SS
+ */
+function parseEtimeToMinutes(etime: string): number {
+  try {
+    // Handle day format: D-HH:MM:SS
+    if (etime.includes('-')) {
+      const [dayPart, timePart] = etime.split('-');
+      const days = parseInt(dayPart, 10);
+      const timeMinutes = parseTimeToMinutes(timePart);
+      return days * 24 * 60 + timeMinutes;
+    }
+    return parseTimeToMinutes(etime);
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Parse HH:MM:SS or MM:SS or SS to minutes
+ */
+function parseTimeToMinutes(time: string): number {
+  if (!time || time.trim() === '') return 0;
+  const parts = time.split(':').map(p => parseInt(p, 10));
+  // Check for NaN values (invalid input)
+  if (parts.some(p => isNaN(p))) return 0;
+  if (parts.length === 3) {
+    // HH:MM:SS
+    return parts[0] * 60 + parts[1] + parts[2] / 60;
+  } else if (parts.length === 2) {
+    // MM:SS
+    return parts[0] + parts[1] / 60;
+  } else if (parts.length === 1) {
+    // SS
+    return parts[0] / 60;
+  }
+  return 0;
+}
