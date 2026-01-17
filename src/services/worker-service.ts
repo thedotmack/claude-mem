@@ -373,23 +373,32 @@ export class WorkerService {
     const staleThreshold = Date.now() - staleThresholdMs;
 
     try {
-      const staleResult = sessionStore.db.prepare(`
-        UPDATE sdk_sessions
-        SET status = 'failed', completed_at_epoch = ?
+      // First, get the IDs of stale sessions before updating them
+      const staleSessionIds = sessionStore.db.prepare(`
+        SELECT id FROM sdk_sessions
         WHERE status = 'active' AND started_at_epoch < ?
-      `).run(Date.now(), staleThreshold);
+      `).all(staleThreshold) as { id: number }[];
 
-      const staleCount = staleResult.changes;
-      if (staleCount > 0) {
-        logger.info('SYSTEM', `Marked ${staleCount} stale sessions as failed`);
+      if (staleSessionIds.length > 0) {
+        const ids = staleSessionIds.map(r => r.id);
+        const placeholders = ids.map(() => '?').join(',');
 
-        // Also mark their pending messages as failed
+        // Mark the stale sessions as failed
+        sessionStore.db.prepare(`
+          UPDATE sdk_sessions
+          SET status = 'failed', completed_at_epoch = ?
+          WHERE id IN (${placeholders})
+        `).run(Date.now(), ...ids);
+
+        logger.info('SYSTEM', `Marked ${ids.length} stale sessions as failed`);
+
+        // Only mark pending messages for these specific stale sessions as failed
         const msgResult = sessionStore.db.prepare(`
           UPDATE pending_messages
           SET status = 'failed', failed_at_epoch = ?
           WHERE status = 'pending'
-          AND session_db_id IN (SELECT id FROM sdk_sessions WHERE status = 'failed')
-        `).run(Date.now());
+          AND session_db_id IN (${placeholders})
+        `).run(Date.now(), ...ids);
 
         if (msgResult.changes > 0) {
           logger.info('SYSTEM', `Marked ${msgResult.changes} pending messages from stale sessions as failed`);
