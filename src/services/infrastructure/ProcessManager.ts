@@ -337,8 +337,11 @@ export async function cleanupOrphanedClaudeSubprocesses(maxAgeMinutes: number = 
 
   try {
     if (isWindows) {
-      // Windows: Use PowerShell to find Claude processes spawned by claude-mem
-      // Pattern: claude.exe processes with haiku model (most common zombie)
+      // Windows: Use PowerShell with age-based detection for orphaned processes
+      // Unlike Unix, Windows does NOT re-parent orphaned processes to init (PID 1)
+      // ParentProcessId becomes stale/unreliable after parent death on Windows
+      // Therefore, we use creation time threshold as the orphan indicator
+      // Pattern: claude.exe processes with haiku model older than maxAgeMinutes
       const cmd = `powershell -NoProfile -NonInteractive -Command "
         Get-CimInstance Win32_Process |
         Where-Object {
@@ -381,10 +384,12 @@ export async function cleanupOrphanedClaudeSubprocesses(maxAgeMinutes: number = 
         }
       }
     } else {
-      // Unix: Use ps with etime to find old processes
-      // Pattern: claude processes with haiku model
+      // Unix: Use ps with ppid,etime to find orphaned processes
+      // Pattern: claude processes with haiku model that are orphaned (ppid==1)
+      // On Unix/Linux, orphaned processes are re-parented to init (PID 1) per POSIX standard
+      // This ensures we only kill truly orphaned processes, not active Claude CLI sessions
       const { stdout } = await execAsync(
-        `ps -eo pid,etime,args 2>/dev/null | grep -E "claude.*haiku" | grep -v grep || true`
+        `ps -eo pid,ppid,etime,args 2>/dev/null | grep -E "claude.*haiku" | grep -v grep || true`
       );
 
       if (!stdout.trim()) {
@@ -393,22 +398,28 @@ export async function cleanupOrphanedClaudeSubprocesses(maxAgeMinutes: number = 
       }
 
       const lines = stdout.trim().split('\n');
-      const processesToKill: { pid: number; etime: string }[] = [];
+      const processesToKill: { pid: number; ppid: number; etime: string }[] = [];
 
       for (const line of lines) {
         const parts = line.trim().split(/\s+/);
-        if (parts.length < 3) continue;
+        if (parts.length < 4) continue;
 
         const pid = parseInt(parts[0], 10);
-        const etime = parts[1];
+        const ppid = parseInt(parts[1], 10);
+        const etime = parts[2];
 
-        // Validate PID
+        // Validate PID and PPID
         if (isNaN(pid) || !Number.isInteger(pid) || pid <= 0) continue;
+        if (isNaN(ppid) || !Number.isInteger(ppid) || ppid < 0) continue;
+
+        // Only target orphaned processes (ppid==1 means re-parented to init)
+        // This prevents killing legitimate Claude CLI sessions from other tools
+        if (ppid !== 1) continue;
 
         // Parse etime format: [[DD-]HH:]MM:SS
         const ageMinutes = parseEtimeToMinutes(etime);
         if (ageMinutes >= maxAgeMinutes) {
-          processesToKill.push({ pid, etime });
+          processesToKill.push({ pid, ppid, etime });
         }
       }
 
