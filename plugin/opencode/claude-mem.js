@@ -3,10 +3,11 @@
 /**
  * Claude-Mem Plugin for OpenCode
  *
- * Provides persistent memory across OpenCode sessions by:
- * - Capturing tool usage as observations
- * - Injecting relevant context from past work
- * - Generating session summaries
+ * Matches Claude Code behavior exactly:
+ * - SessionStart: Context injection on session.created
+ * - UserPromptSubmit: Session initialization on first user message
+ * - PostToolUse: Observation capture on tool execution
+ * - SessionEnd: Summary generation on session.deleted
  */
 
 import { z } from 'zod';
@@ -52,12 +53,12 @@ export const ClaudeMemPlugin = async ({ client, project, directory }) => {
   
   log('INFO', `Plugin loaded`, { project: projectName });
 
-  const initializeSession = async (contentSessionId, prompt) => {
-    log('INFO', `Initializing session`, { contentSessionId });
+  const initializeSession = async (contentSessionId, userPrompt) => {
+    log('INFO', `Initializing session (UserPromptSubmit)`, { contentSessionId });
     const result = await workerRequest('/api/sessions/init', 'POST', {
       contentSessionId,
       project: projectName,
-      prompt,
+      prompt: userPrompt,
     });
     log('INFO', `Session initialized`, { sessionDbId: result.sessionDbId });
     return result;
@@ -71,7 +72,7 @@ export const ClaudeMemPlugin = async ({ client, project, directory }) => {
       tool_response: typeof toolResponse === 'string' ? toolResponse : JSON.stringify(toolResponse || ''),
       cwd: cwd || '/unknown',
     });
-    log('INFO', `Observation saved: ${toolName}`);
+    log('INFO', `Observation saved (PostToolUse): ${toolName}`);
   };
 
   const getContext = async () => {
@@ -80,7 +81,7 @@ export const ClaudeMemPlugin = async ({ client, project, directory }) => {
   };
 
   const summarizeSession = async (contentSessionId) => {
-    log('INFO', `Summarizing session`, { contentSessionId });
+    log('INFO', `Summarizing session (SessionEnd)`, { contentSessionId });
     await workerRequest('/api/sessions/summarize', 'POST', {
       contentSessionId,
       last_assistant_message: 'Session completed',
@@ -147,20 +148,39 @@ export const ClaudeMemPlugin = async ({ client, project, directory }) => {
 
     event: async ({ event }) => {
       try {
-        // Handle session.created
+        // SessionStart equivalent - inject context immediately
         if (event.type === 'session.created') {
           const sessionID = event.properties?.info?.id || event.properties?.sessionID;
           if (sessionID) {
-            log('INFO', `Session created`, { sessionID });
+            log('INFO', `Session created (SessionStart)`, { sessionID });
+            
+            // Create session state
             sessionStates.set(sessionID, {
               initialized: false,
               project: projectName,
               cwd: event.properties?.info?.directory || projectCwd,
             });
+            
+            // Inject context immediately (like SessionStart hook)
+            try {
+              const context = await getContext();
+              if (context) {
+                await client.session.prompt({
+                  path: { id: sessionID },
+                  body: {
+                    noReply: true,
+                    parts: [{ type: 'text', text: `# Claude-Mem Context\n\n${context}`, synthetic: true }],
+                  },
+                });
+                log('INFO', `Context injected (SessionStart)`, { sessionID });
+              }
+            } catch (error) {
+              log('ERROR', `Failed to inject context`, { error: error.message });
+            }
           }
         }
         
-        // Handle message.updated - initialize on first user message
+        // UserPromptSubmit equivalent - initialize session with user prompt
         if (event.type === 'message.updated') {
           const info = event.properties?.info;
           const sessionID = info?.sessionID;
@@ -168,7 +188,7 @@ export const ClaudeMemPlugin = async ({ client, project, directory }) => {
           if (info?.role === 'user' && sessionID) {
             const state = sessionStates.get(sessionID);
             
-            // Create state if missing (plugin loaded after session created)
+            // Create state if missing (plugin loaded after session started)
             if (!state) {
               sessionStates.set(sessionID, {
                 initialized: false,
@@ -177,14 +197,15 @@ export const ClaudeMemPlugin = async ({ client, project, directory }) => {
               });
             }
             
-            // Initialize on first user message if not already done
-            if (state && !state.initialized) {
+            // Initialize on first user message
+            const currentState = sessionStates.get(sessionID);
+            if (currentState && !currentState.initialized) {
               const userText = info.parts?.filter(p => p.type === 'text').map(p => p.text).join('\n');
               if (userText) {
                 try {
                   await initializeSession(sessionID, userText);
-                  state.initialized = true;
-                  sessionStates.set(sessionID, state);
+                  currentState.initialized = true;
+                  sessionStates.set(sessionID, currentState);
                 } catch (error) {
                   log('ERROR', `Failed to initialize session`, { error: error.message });
                 }
@@ -193,7 +214,7 @@ export const ClaudeMemPlugin = async ({ client, project, directory }) => {
           }
         }
 
-        // Handle session.deleted
+        // SessionEnd equivalent - summarize on deletion
         if (event.type === 'session.deleted') {
           const sessionID = event.properties?.info?.id || event.properties?.sessionID;
           if (sessionID) {
@@ -206,29 +227,32 @@ export const ClaudeMemPlugin = async ({ client, project, directory }) => {
               }
             }
             sessionStates.delete(sessionID);
-            log('INFO', `Session deleted`, { sessionID });
+            log('INFO', `Session deleted`, { sessionID, wasInitialized: state?.initialized });
           }
         }
 
-        // Handle session.compacted - re-inject context
+        // Re-inject context after compaction
         if (event.type === 'session.compacted') {
           const sessionID = event.properties?.info?.id || event.properties?.sessionID;
           if (sessionID) {
-            try {
-              await new Promise(r => setTimeout(r, 100));
-              const context = await getContext();
-              if (context) {
-                await client.session.prompt({
-                  path: { id: sessionID },
-                  body: {
-                    noReply: true,
-                    parts: [{ type: 'text', text: `# Claude-Mem Context\n\n${context}`, synthetic: true }],
-                  },
-                });
-                log('INFO', `Context re-injected after compaction`);
+            const state = sessionStates.get(sessionID);
+            if (state?.initialized) {
+              try {
+                await new Promise(r => setTimeout(r, 100));
+                const context = await getContext();
+                if (context) {
+                  await client.session.prompt({
+                    path: { id: sessionID },
+                    body: {
+                      noReply: true,
+                      parts: [{ type: 'text', text: `# Claude-Mem Context\n\n${context}`, synthetic: true }],
+                    },
+                  });
+                  log('INFO', `Context re-injected after compaction`);
+                }
+              } catch (error) {
+                log('ERROR', `Failed to re-inject context`, { error: error.message });
               }
-            } catch (error) {
-              log('ERROR', `Failed to re-inject context`, { error: error.message });
             }
           }
         }
@@ -237,30 +261,21 @@ export const ClaudeMemPlugin = async ({ client, project, directory }) => {
       }
     },
 
+    // PostToolUse equivalent - save observations only
     'tool.execute.after': async (input, output) => {
       const { tool: toolName, sessionID } = input;
       
       try {
-        let state = sessionStates.get(sessionID);
+        const state = sessionStates.get(sessionID);
         
-        // Auto-create state if missing (plugin loaded after session started)
         if (!state) {
-          log('INFO', `Creating session state on first tool use`, { sessionID });
-          state = { initialized: false, project: projectName, cwd: projectCwd };
-          sessionStates.set(sessionID, state);
+          log('WARN', `Tool executed but no session state`, { sessionID, toolName });
+          return;
         }
         
-        // Auto-initialize if not already done
         if (!state.initialized) {
-          log('INFO', `Initializing session on tool use`, { sessionID, tool: toolName });
-          try {
-            await initializeSession(sessionID, `[Session started with tool: ${toolName}]`);
-            state.initialized = true;
-            sessionStates.set(sessionID, state);
-          } catch (error) {
-            log('ERROR', `Failed to initialize`, { error: error.message });
-            return;
-          }
+          log('WARN', `Tool executed but session not initialized (no user message yet)`, { sessionID, toolName });
+          return;
         }
         
         // Save observation
