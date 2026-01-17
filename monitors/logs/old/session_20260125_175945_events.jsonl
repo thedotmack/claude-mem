@@ -1,0 +1,476 @@
+{
+  "ts": "2026-01-25T17:59:46.013Z",
+  "event_num": 1,
+  "event": "SESSION_START",
+  "pid": "",
+  "details": "Benchmark started, duration: 4h (14400 s), poll interval: 10s",
+  "total_mem_mb": 7319,
+  "counts": "",
+  "system": {
+    "available_mb": 21136,
+    "total_mb": 31337,
+    "swap_used_mb": 371
+  }
+}
+{
+  "ts": "2026-01-25T17:59:46.246Z",
+  "event_num": 2,
+  "event": "SPAWN",
+  "pid": "1895927",
+  "details": "claude-code 700MB cpu=10.7% state=S ",
+  "total_mem_mb": 7319,
+  "counts": "",
+  "system": {
+    "available_mb": 21137,
+    "total_mb": 31337,
+    "swap_used_mb": 371
+  }
+}
+{
+  "ts": "2026-01-25T17:59:46.419Z",
+  "event_num": 3,
+  "event": "SPAWN",
+  "pid": "1896009",
+  "details": "mcp-server 67MB cpu=0.0% state=S parent=1895927(claude)",
+  "total_mem_mb": 7319,
+  "counts": "",
+  "system": {
+    "available_mb": 21136,
+    "total_mb": 31337,
+    "swap_used_mb": 371
+  }
+}
+{
+  "ts": "2026-01-25T17:59:46.575Z",
+  "event_num": 4,
+  "event": "SPAWN",
+  "pid": "2176912",
+  "details": "claude-code 783MB cpu=32.6% state=R ",
+  "total_mem_mb": 7319,
+  "counts": "",
+  "system": {
+    "available_mb": 21136,
+    "total_mb": 31337,
+    "swap_used_mb": 371
+  }
+}
+{
+  "ts": "2026-01-25T17:59:46.825Z",
+  "event_num": 5,
+  "event": "SPAWN",
+  "pid": "2176975",
+  "details": "mcp-server 67MB cpu=0.0% state=S parent=2176912(claude)",
+  "total_mem_mb": 7319,
+  "counts": "",
+  "system": {
+    "available_mb": 21134,
+    "total_mb": 31337,
+    "swap_used_mb": 371
+  }
+}
+{
+  "ts": "2026-01-25T17:59:47.017Z",
+  "event_num": 6,
+  "event": "SPAWN",
+  "pid": "2177149",
+  "details": "worker 204MB cpu=1.1% state=S ",
+  "total_mem_mb": 7319,
+  "counts": "",
+  "system": {
+    "available_mb": 21133,
+    "total_mb": 31337,
+    "swap_used_mb": 371
+  }
+}
+{
+  "ts": "2026-01-25T17:59:47.241Z",
+  "event_num": 7,
+  "event": "SPAWN",
+  "pid": "2177204",
+  "details": "mcp-server 67MB cpu=0.0% state=S parent=2177149(bun)",
+  "total_mem_mb": 7319,
+  "counts": "",
+  "system": {
+    "available_mb": 21134,
+    "total_mb": 31337,
+    "swap_used_mb": 371
+  }
+}
+{
+  "ts": "2026-01-25T17:59:47.427Z",
+  "event_num": 8,
+  "event": "SPAWN",
+  "pid": "2177439",
+  "details": "chroma 44MB cpu=0.0% state=S ",
+  "total_mem_mb": 7319,
+  "counts": "",
+  "system": {
+    "available_mb": 21134,
+    "total_mb": 31337,
+    "swap_used_mb": 371
+  }
+}
+{
+  "ts": "2026-01-25T17:59:47.613Z",
+  "event_num": 9,
+  "event": "SPAWN",
+  "pid": "2177481",
+  "details": "chroma 368MB cpu=10.8% state=S ",
+  "total_mem_mb": 7319,
+  "counts": "",
+  "system": {
+    "available_mb": 21134,
+    "total_mb": 31337,
+    "swap_used_mb": 371
+  }
+}
+{
+  "ts": "2026-01-25T17:59:47.826Z",
+  "event_num": 10,
+  "event": "SPAWN",
+  "pid": "2218628",
+  "details": "claude-code 548MB cpu=2.3% state=S ",
+  "total_mem_mb": 7319,
+  "counts": "",
+  "system": {
+    "available_mb": 21133,
+    "total_mb": 31337,
+    "swap_used_mb": 371
+  }
+}
+{
+  "ts": "2026-01-25T17:59:48.053Z",
+  "event_num": 11,
+  "event": "SPAWN",
+  "pid": "2324436",
+  "details": "claude-code 487MB cpu=1.7% state=S ",
+  "total_mem_mb": 7319,
+  "counts": "",
+  "system": {
+    "available_mb": 21135,
+    "total_mb": 31337,
+    "swap_used_mb": 371
+  }
+}
+{
+  "ts": "2026-01-25T17:59:48.229Z",
+  "event_num": 12,
+  "event": "SPAWN",
+  "pid": "2330749",
+  "details": "claude-code 487MB cpu=0.4% state=S ",
+  "total_mem_mb": 7319,
+  "counts": "",
+  "system": {
+    "available_mb": 21141,
+    "total_mb": 31337,
+    "swap_used_mb": 371
+  }
+}
+{
+  "ts": "2026-01-25T17:59:48.384Z",
+  "event_num": 13,
+  "event": "SPAWN",
+  "pid": "2333496",
+  "details": "claude-code 403MB cpu=1.0% state=S ",
+  "total_mem_mb": 7319,
+  "counts": "",
+  "system": {
+    "available_mb": 21140,
+    "total_mb": 31337,
+    "swap_used_mb": 371
+  }
+}
+{
+  "ts": "2026-01-25T17:59:48.531Z",
+  "event_num": 14,
+  "event": "SPAWN",
+  "pid": "2334120",
+  "details": "claude-code 404MB cpu=0.6% state=S ",
+  "total_mem_mb": 7319,
+  "counts": "",
+  "system": {
+    "available_mb": 21139,
+    "total_mb": 31337,
+    "swap_used_mb": 371
+  }
+}
+{
+  "ts": "2026-01-25T17:59:48.678Z",
+  "event_num": 15,
+  "event": "SPAWN",
+  "pid": "2341546",
+  "details": "claude-code 400MB cpu=0.7% state=S ",
+  "total_mem_mb": 7319,
+  "counts": "",
+  "system": {
+    "available_mb": 21138,
+    "total_mb": 31337,
+    "swap_used_mb": 371
+  }
+}
+{
+  "ts": "2026-01-25T17:59:48.832Z",
+  "event_num": 16,
+  "event": "SPAWN",
+  "pid": "2352236",
+  "details": "claude-code 417MB cpu=0.7% state=S ",
+  "total_mem_mb": 7320,
+  "counts": "",
+  "system": {
+    "available_mb": 21146,
+    "total_mb": 31337,
+    "swap_used_mb": 371
+  }
+}
+{
+  "ts": "2026-01-25T17:59:49.036Z",
+  "event_num": 17,
+  "event": "SPAWN",
+  "pid": "2354907",
+  "details": "claude-code 398MB cpu=0.6% state=S ",
+  "total_mem_mb": 7319,
+  "counts": "",
+  "system": {
+    "available_mb": 21145,
+    "total_mb": 31337,
+    "swap_used_mb": 371
+  }
+}
+{
+  "ts": "2026-01-25T17:59:49.230Z",
+  "event_num": 18,
+  "event": "SPAWN",
+  "pid": "2356757",
+  "details": "claude-code 412MB cpu=0.4% state=S ",
+  "total_mem_mb": 7319,
+  "counts": "",
+  "system": {
+    "available_mb": 21147,
+    "total_mb": 31337,
+    "swap_used_mb": 371
+  }
+}
+{
+  "ts": "2026-01-25T17:59:49.383Z",
+  "event_num": 19,
+  "event": "SPAWN",
+  "pid": "2400755",
+  "details": "claude-code 501MB cpu=0.6% state=S ",
+  "total_mem_mb": 7319,
+  "counts": "",
+  "system": {
+    "available_mb": 21146,
+    "total_mb": 31337,
+    "swap_used_mb": 371
+  }
+}
+{
+  "ts": "2026-01-25T17:59:49.537Z",
+  "event_num": 20,
+  "event": "SPAWN",
+  "pid": "2413534",
+  "details": "claude-code 482MB cpu=17.4% state=S ",
+  "total_mem_mb": 7319,
+  "counts": "",
+  "system": {
+    "available_mb": 21144,
+    "total_mb": 31337,
+    "swap_used_mb": 371
+  }
+}
+{
+  "ts": "2026-01-25T17:59:49.726Z",
+  "event_num": 21,
+  "event": "SPAWN",
+  "pid": "2413583",
+  "details": "mcp-server 67MB cpu=0.1% state=S parent=2413534(claude)",
+  "total_mem_mb": 7319,
+  "counts": "",
+  "system": {
+    "available_mb": 21146,
+    "total_mb": 31337,
+    "swap_used_mb": 371
+  }
+}
+{
+  "ts": "2026-01-25T17:59:49.933Z",
+  "event_num": 22,
+  "event": "ANOMALY",
+  "pid": "",
+  "details": "High Claude instance count: 13 (threshold: 5)",
+  "total_mem_mb": 7319,
+  "counts": "",
+  "system": {
+    "available_mb": 21145,
+    "total_mb": 31337,
+    "swap_used_mb": 371
+  }
+}
+{
+  "ts": "2026-01-25T17:59:50.047Z",
+  "event_num": 23,
+  "event": "ANOMALY",
+  "pid": "",
+  "details": "High memory usage: 7306MB (threshold: 6000MB)",
+  "total_mem_mb": 7319,
+  "counts": "",
+  "system": {
+    "available_mb": 21146,
+    "total_mb": 31337,
+    "swap_used_mb": 371
+  }
+}
+{
+  "ts": "2026-01-25T18:00:00.386Z",
+  "event_num": 24,
+  "event": "STATE_CHANGE",
+  "pid": "2176912",
+  "details": "claude-code R->S",
+  "total_mem_mb": 7329,
+  "counts": "",
+  "system": {
+    "available_mb": 20701,
+    "total_mb": 31337,
+    "swap_used_mb": 371
+  }
+}
+{
+  "ts": "2026-01-25T18:00:47.748Z",
+  "event_num": 25,
+  "event": "SPAWN",
+  "pid": "2428128",
+  "details": "claude-code 457MB cpu=69.2% state=S ",
+  "total_mem_mb": 7870,
+  "counts": "",
+  "system": {
+    "available_mb": 20326,
+    "total_mb": 31337,
+    "swap_used_mb": 371
+  }
+}
+{
+  "ts": "2026-01-25T18:00:47.972Z",
+  "event_num": 26,
+  "event": "SPAWN",
+  "pid": "2428180",
+  "details": "mcp-server 78MB cpu=5.2% state=S parent=2428128(claude)",
+  "total_mem_mb": 7870,
+  "counts": "",
+  "system": {
+    "available_mb": 20326,
+    "total_mb": 31337,
+    "swap_used_mb": 371
+  }
+}
+{
+  "ts": "2026-01-25T18:00:48.225Z",
+  "event_num": 27,
+  "event": "ANOMALY",
+  "pid": "",
+  "details": "High Claude instance count: 14 (threshold: 5)",
+  "total_mem_mb": 7870,
+  "counts": "",
+  "system": {
+    "available_mb": 20328,
+    "total_mb": 31337,
+    "swap_used_mb": 371
+  }
+}
+{
+  "ts": "2026-01-25T18:01:11.443Z",
+  "event_num": 28,
+  "event": "STATE_CHANGE",
+  "pid": "2413534",
+  "details": "claude-code S->R",
+  "total_mem_mb": 8281,
+  "counts": "",
+  "system": {
+    "available_mb": 19911,
+    "total_mb": 31337,
+    "swap_used_mb": 371
+  }
+}
+{
+  "ts": "2026-01-25T18:01:11.820Z",
+  "event_num": 29,
+  "event": "SPAWN",
+  "pid": "2431240",
+  "details": "claude-code 412MB cpu=62.2% state=S ",
+  "total_mem_mb": 8282,
+  "counts": "",
+  "system": {
+    "available_mb": 19908,
+    "total_mb": 31337,
+    "swap_used_mb": 371
+  }
+}
+{
+  "ts": "2026-01-25T18:01:12.075Z",
+  "event_num": 30,
+  "event": "ANOMALY",
+  "pid": "",
+  "details": "High Claude instance count: 15 (threshold: 5)",
+  "total_mem_mb": 8285,
+  "counts": "",
+  "system": {
+    "available_mb": 19902,
+    "total_mb": 31337,
+    "swap_used_mb": 371
+  }
+}
+{
+  "ts": "2026-01-25T18:01:12.206Z",
+  "event_num": 31,
+  "event": "ANOMALY",
+  "pid": "",
+  "details": "High memory usage: 8294MB (threshold: 6000MB)",
+  "total_mem_mb": 8287,
+  "counts": "",
+  "system": {
+    "available_mb": 19915,
+    "total_mb": 31337,
+    "swap_used_mb": 371
+  }
+}
+{
+  "ts": "2026-01-25T18:01:59.027Z",
+  "event_num": 32,
+  "event": "STATE_CHANGE",
+  "pid": "2413534",
+  "details": "claude-code R->S",
+  "total_mem_mb": 8327,
+  "counts": "",
+  "system": {
+    "available_mb": 20052,
+    "total_mb": 31337,
+    "swap_used_mb": 371
+  }
+}
+{
+  "ts": "2026-01-25T18:02:10.752Z",
+  "event_num": 33,
+  "event": "STATE_CHANGE",
+  "pid": "2413534",
+  "details": "claude-code S->R",
+  "total_mem_mb": 8357,
+  "counts": "",
+  "system": {
+    "available_mb": 20059,
+    "total_mb": 31337,
+    "swap_used_mb": 371
+  }
+}
+{
+  "ts": "2026-01-25T18:02:14.488Z",
+  "event_num": 34,
+  "event": "SESSION_END",
+  "pid": "",
+  "details": "Benchmark ABORTED by user after 00:02:28",
+  "total_mem_mb": 8333,
+  "counts": "",
+  "system": {
+    "available_mb": 20058,
+    "total_mb": 31337,
+    "swap_used_mb": 371
+  }
+}
