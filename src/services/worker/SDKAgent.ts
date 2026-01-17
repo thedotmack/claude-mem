@@ -17,6 +17,7 @@ import { logger } from '../../utils/logger.js';
 import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { hasClaudeSubscription } from '../../shared/claude-subscription.js';
 import type { ActiveSession, SDKUserMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import { processAgentResponse, type WorkerRef } from './agents/index.js';
@@ -99,6 +100,27 @@ export class SDKAgent {
 
     // Run Agent SDK query loop
     // Only resume if we have a captured memory session ID
+
+    // Prevent SDK from using ANTHROPIC_API_KEY when user has a Claude Code subscription.
+    // The SDK auto-discovers API keys from environment/.env files, which bypasses Claude Code
+    // billing. For subscribers, we strip the key to force routing through the CLI.
+    // Non-subscribers (API-only users) keep their key for direct API access.
+    // See: https://github.com/thedotmack/claude-mem/issues/733
+    let savedAnthropicApiKey: string | undefined;
+    const isSubscriber = hasClaudeSubscription();
+
+    if (isSubscriber && process.env.ANTHROPIC_API_KEY) {
+      logger.info('SDK', 'Claude subscription detected - routing through CLI billing', {
+        sessionId: session.sessionDbId
+      });
+      savedAnthropicApiKey = process.env.ANTHROPIC_API_KEY;
+      delete process.env.ANTHROPIC_API_KEY;
+    } else if (process.env.ANTHROPIC_API_KEY) {
+      logger.debug('SDK', 'No Claude subscription - using direct API key', {
+        sessionId: session.sessionDbId
+      });
+    }
+
     const queryResult = query({
       prompt: messageGenerator,
       options: {
@@ -114,7 +136,8 @@ export class SDKAgent {
     });
 
     // Process SDK messages
-    for await (const message of queryResult) {
+    try {
+      for await (const message of queryResult) {
       // Capture memory session ID from first SDK message (any type has session_id)
       // This enables resume for subsequent generator starts within the same user session
       if (!session.memorySessionId && message.session_id) {
@@ -208,6 +231,12 @@ export class SDKAgent {
       // Log result messages
       if (message.type === 'result' && message.subtype === 'success') {
         // Usage telemetry is captured at SDK level
+      }
+    }
+    } finally {
+      // Restore ANTHROPIC_API_KEY if we stripped it for a subscriber
+      if (savedAnthropicApiKey !== undefined) {
+        process.env.ANTHROPIC_API_KEY = savedAnthropicApiKey;
       }
     }
 
