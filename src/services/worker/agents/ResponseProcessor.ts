@@ -124,6 +124,24 @@ export async function processAgentResponse(
 
   // Clean up session state
   cleanupProcessedMessages(session, worker);
+
+  // CRITICAL: If summary was processed, this is the end of the session
+  // Delete the session to abort the SDK agent and kill the Claude subprocess
+  // This prevents orphaned Claude processes from accumulating (fixes OOM issues)
+  if (summaryForStore && result.summaryId) {
+    logger.info('SESSION', `Summary processed, cleaning up session`, {
+      sessionId: session.sessionDbId,
+      memorySessionId: session.memorySessionId
+    });
+
+    // Delete session asynchronously (don't await - let it clean up in background)
+    // This aborts the AbortController which stops the message iterator and kills the Claude process
+    sessionManager.deleteSession(session.sessionDbId).catch(error => {
+      logger.warn('SESSION', 'Session cleanup failed (non-critical)', {
+        sessionId: session.sessionDbId
+      }, error as Error);
+    });
+  }
 }
 
 /**
