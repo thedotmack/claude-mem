@@ -101,7 +101,7 @@ export async function getChildProcesses(parentPid: number): Promise<number[]> {
         .filter(pid => pid > 0);
     } else {
       // Unix/Linux: Use pgrep to find child processes
-      const { stdout } = await execAsync(`pgrep -P ${parentPid} || true`);
+      const { stdout } = await execAsync(`pgrep -P ${parentPid} || true`, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND });
       if (!stdout.trim()) {
         return [];
       }
@@ -181,6 +181,7 @@ export async function waitForProcessesExit(pids: number[], timeoutMs: number): P
 export async function cleanupOrphanedProcesses(): Promise<void> {
   const isWindows = process.platform === 'win32';
   const pids: number[] = [];
+  const currentPid = process.pid;
 
   try {
     if (isWindows) {
@@ -201,14 +202,14 @@ export async function cleanupOrphanedProcesses(): Promise<void> {
 
       for (const line of lines) {
         const pid = parseInt(line, 10);
-        // SECURITY: Validate PID is positive integer before adding to list
-        if (!isNaN(pid) && Number.isInteger(pid) && pid > 0) {
+        // SECURITY: Validate PID is positive integer and not ourselves
+        if (!isNaN(pid) && Number.isInteger(pid) && pid > 0 && pid !== currentPid) {
           pids.push(pid);
         }
       }
     } else {
-      // Unix: Use ps aux | grep
-      const { stdout } = await execAsync('ps aux | grep "chroma-mcp" | grep -v grep || true');
+      // Unix: Use pgrep -f for cleaner pattern matching (avoids grep -v grep anti-pattern)
+      const { stdout } = await execAsync('pgrep -f "chroma-mcp" || true', { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND });
 
       if (!stdout.trim()) {
         logger.debug('SYSTEM', 'No orphaned chroma-mcp processes found (Unix)');
@@ -217,19 +218,16 @@ export async function cleanupOrphanedProcesses(): Promise<void> {
 
       const lines = stdout.trim().split('\n');
       for (const line of lines) {
-        const parts = line.trim().split(/\s+/);
-        if (parts.length > 1) {
-          const pid = parseInt(parts[1], 10);
-          // SECURITY: Validate PID is positive integer before adding to list
-          if (!isNaN(pid) && Number.isInteger(pid) && pid > 0) {
-            pids.push(pid);
-          }
+        const pid = parseInt(line.trim(), 10);
+        // SECURITY: Validate PID is positive integer and not ourselves
+        if (!isNaN(pid) && Number.isInteger(pid) && pid > 0 && pid !== currentPid) {
+          pids.push(pid);
         }
       }
     }
   } catch (error) {
     // Orphan cleanup is non-critical - log and continue
-    logger.error('SYSTEM', 'Failed to enumerate orphaned processes', {}, error as Error);
+    logger.warn('SYSTEM', 'Failed to enumerate orphaned processes', {}, error as Error);
     return;
   }
 
@@ -309,9 +307,9 @@ export async function cleanupOrphanedClaudeProcesses(): Promise<void> {
         }
       }
     } else {
-      // Unix/Linux: Find Claude processes with the SDK signature (--output-format stream-json)
+      // Unix/Linux: Use pgrep -f for cleaner pattern matching (avoids grep -v grep anti-pattern)
       // These are spawned by @anthropic-ai/claude-agent-sdk for observation generation
-      const { stdout } = await execAsync('ps aux | grep "claude.*--output-format.*stream-json" | grep -v grep || true');
+      const { stdout } = await execAsync('pgrep -f "claude.*--output-format.*stream-json" || true', { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND });
 
       if (!stdout.trim()) {
         logger.debug('SYSTEM', 'No orphaned Claude processes found (Unix)');
@@ -320,19 +318,16 @@ export async function cleanupOrphanedClaudeProcesses(): Promise<void> {
 
       const lines = stdout.trim().split('\n');
       for (const line of lines) {
-        const parts = line.trim().split(/\s+/);
-        if (parts.length > 1) {
-          const pid = parseInt(parts[1], 10);
-          // SECURITY: Validate PID is positive integer and not ourselves
-          if (!isNaN(pid) && Number.isInteger(pid) && pid > 0 && pid !== currentPid) {
-            pids.push(pid);
-          }
+        const pid = parseInt(line.trim(), 10);
+        // SECURITY: Validate PID is positive integer and not ourselves
+        if (!isNaN(pid) && Number.isInteger(pid) && pid > 0 && pid !== currentPid) {
+          pids.push(pid);
         }
       }
     }
   } catch (error) {
     // Orphan cleanup is non-critical - log and continue
-    logger.error('SYSTEM', 'Failed to enumerate orphaned Claude processes', {}, error as Error);
+    logger.warn('SYSTEM', 'Failed to enumerate orphaned Claude processes', {}, error as Error);
     return;
   }
 
