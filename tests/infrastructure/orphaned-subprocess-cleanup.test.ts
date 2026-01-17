@@ -116,8 +116,86 @@ describe('OrphanedSubprocessCleanup', () => {
   });
 
   describe('cleanup behavior', () => {
-    it('should identify processes matching haiku pattern', () => {
-      // Simulated ps output lines
+    it('should only kill orphaned processes with ppid==1 (Unix)', () => {
+      // Simulated ps output with ppid column: pid ppid etime args
+      // On Unix, orphaned processes are re-parented to init (PID 1)
+      const testLines = [
+        '12345 1 30:00 /usr/local/bin/claude --model claude-haiku-4-5 --orphaned',      // ppid=1, old -> KILL
+        '12346 1 05:00 /usr/local/bin/claude --model claude-haiku-4-5 --young',         // ppid=1, young -> skip
+        '12347 5678 45:00 /usr/local/bin/claude --model claude-haiku-4-5 --active',     // ppid!=1, old -> skip (not orphaned)
+        '12348 1 1-12:00:00 /usr/local/bin/claude --model claude-haiku-4-5 --zombie',   // ppid=1, very old -> KILL
+        '12349 9999 30:00 /usr/local/bin/claude --model claude-haiku-4-5 --legitimate', // ppid!=1 -> skip (active session)
+      ];
+
+      const maxAgeMinutes = 30;
+      const processesToKill: { pid: number; ppid: number; etime: string }[] = [];
+
+      for (const line of testLines) {
+        const parts = line.trim().split(/\s+/);
+        if (parts.length < 4) continue;
+
+        const pid = parseInt(parts[0], 10);
+        const ppid = parseInt(parts[1], 10);
+        const etime = parts[2];
+        const args = parts.slice(3).join(' ');
+
+        // Check if it matches claude haiku pattern
+        if (!args.includes('claude') || !args.includes('haiku')) continue;
+
+        // Only target orphaned processes (ppid==1)
+        if (ppid !== 1) continue;
+
+        const ageMinutes = parseEtimeToMinutes(etime);
+        if (ageMinutes >= maxAgeMinutes) {
+          processesToKill.push({ pid, ppid, etime });
+        }
+      }
+
+      // Should only kill orphaned processes (ppid==1) that are old enough
+      // 12345 (ppid=1, 30:00) and 12348 (ppid=1, 1-12:00:00)
+      // NOT 12347 or 12349 (ppid!=1, even though old enough)
+      expect(processesToKill.length).toBe(2);
+      expect(processesToKill[0].pid).toBe(12345);
+      expect(processesToKill[0].ppid).toBe(1);
+      expect(processesToKill[1].pid).toBe(12348);
+      expect(processesToKill[1].ppid).toBe(1);
+    });
+
+    it('should preserve legitimate Claude sessions from other tools (ppid != 1)', () => {
+      // These processes have living parents (ppid != 1)
+      // They should NOT be killed even if they match the pattern and are old
+      const testLines = [
+        '12345 5678 45:00 /usr/local/bin/claude --model claude-haiku-4-5 --from-vscode',
+        '12346 9012 1-00:00:00 /usr/local/bin/claude --model claude-haiku-4-5 --from-terminal',
+        '12347 3456 02:00:00 /usr/local/bin/claude --model claude-haiku-4-5 --from-other-tool',
+      ];
+
+      const maxAgeMinutes = 30;
+      const processesToKill: { pid: number; ppid: number; etime: string }[] = [];
+
+      for (const line of testLines) {
+        const parts = line.trim().split(/\s+/);
+        if (parts.length < 4) continue;
+
+        const pid = parseInt(parts[0], 10);
+        const ppid = parseInt(parts[1], 10);
+        const etime = parts[2];
+
+        // Only target orphaned processes (ppid==1)
+        if (ppid !== 1) continue;
+
+        const ageMinutes = parseEtimeToMinutes(etime);
+        if (ageMinutes >= maxAgeMinutes) {
+          processesToKill.push({ pid, ppid, etime });
+        }
+      }
+
+      // None should be killed - all have living parents
+      expect(processesToKill.length).toBe(0);
+    });
+
+    it('should identify processes matching haiku pattern (legacy test)', () => {
+      // Legacy test format without ppid - kept for parseEtimeToMinutes coverage
       const testLines = [
         '12345 30:00 /usr/local/bin/claude --model claude-haiku-4-5 --something',
         '12346 05:00 /usr/local/bin/claude --model claude-haiku-4-5 --other',
