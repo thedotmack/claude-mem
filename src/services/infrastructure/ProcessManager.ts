@@ -74,31 +74,44 @@ export function getPlatformTimeout(baseMs: number): number {
 }
 
 /**
- * Get all child process PIDs (Windows-specific)
+ * Get all child process PIDs
  * Used for cleanup to prevent zombie ports when parent exits
+ * Now supports both Windows and Unix/Linux platforms
  */
 export async function getChildProcesses(parentPid: number): Promise<number[]> {
-  if (process.platform !== 'win32') {
-    return [];
-  }
-
   // SECURITY: Validate PID is a positive integer to prevent command injection
   if (!Number.isInteger(parentPid) || parentPid <= 0) {
     logger.warn('SYSTEM', 'Invalid parent PID for child process enumeration', { parentPid });
     return [];
   }
 
+  const isWindows = process.platform === 'win32';
+
   try {
-    // PowerShell Get-Process instead of WMIC (deprecated in Windows 11)
-    const cmd = `powershell -NoProfile -NonInteractive -Command "Get-Process | Where-Object { \\$_.ParentProcessId -eq ${parentPid} } | Select-Object -ExpandProperty Id"`;
-    const { stdout } = await execAsync(cmd, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND });
-    // PowerShell outputs just numbers (one per line), simpler than WMIC's "ProcessId=1234" format
-    return stdout
-      .split('\n')
-      .map(line => line.trim())
-      .filter(line => line.length > 0 && /^\d+$/.test(line))
-      .map(line => parseInt(line, 10))
-      .filter(pid => pid > 0);
+    if (isWindows) {
+      // PowerShell Get-Process instead of WMIC (deprecated in Windows 11)
+      const cmd = `powershell -NoProfile -NonInteractive -Command "Get-Process | Where-Object { \\$_.ParentProcessId -eq ${parentPid} } | Select-Object -ExpandProperty Id"`;
+      const { stdout } = await execAsync(cmd, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND });
+      // PowerShell outputs just numbers (one per line), simpler than WMIC's "ProcessId=1234" format
+      return stdout
+        .split('\n')
+        .map(line => line.trim())
+        .filter(line => line.length > 0 && /^\d+$/.test(line))
+        .map(line => parseInt(line, 10))
+        .filter(pid => pid > 0);
+    } else {
+      // Unix/Linux: Use pgrep to find child processes
+      const { stdout } = await execAsync(`pgrep -P ${parentPid} || true`);
+      if (!stdout.trim()) {
+        return [];
+      }
+      return stdout
+        .split('\n')
+        .map(line => line.trim())
+        .filter(line => line.length > 0 && /^\d+$/.test(line))
+        .map(line => parseInt(line, 10))
+        .filter(pid => pid > 0);
+    }
   } catch (error) {
     // Shutdown cleanup - failure is non-critical, continue without child process cleanup
     logger.error('SYSTEM', 'Failed to enumerate child processes', { parentPid }, error as Error);
@@ -257,6 +270,121 @@ export async function cleanupOrphanedProcesses(): Promise<void> {
   }
 
   logger.info('SYSTEM', 'Orphaned processes cleaned up', { count: pids.length });
+}
+
+/**
+ * Clean up orphaned Claude CLI processes spawned by SDK agents
+ * These are processes with arguments like "--output-format stream-json"
+ * that were spawned for observation generation but not properly terminated
+ *
+ * FIX: This addresses the memory leak where SDK-spawned Claude processes
+ * accumulate over time because they're not terminated when sessions end
+ */
+export async function cleanupOrphanedClaudeProcesses(): Promise<void> {
+  const isWindows = process.platform === 'win32';
+  const pids: number[] = [];
+  const currentPid = process.pid;
+
+  try {
+    if (isWindows) {
+      // Windows: Find Claude processes with stream-json output format (SDK signature)
+      const cmd = `powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process | Where-Object { \\$_.Name -like '*claude*' -and \\$_.CommandLine -like '*--output-format*stream-json*' } | Select-Object -ExpandProperty ProcessId"`;
+      const { stdout } = await execAsync(cmd, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND });
+
+      if (!stdout.trim()) {
+        logger.debug('SYSTEM', 'No orphaned Claude processes found (Windows)');
+        return;
+      }
+
+      const lines = stdout
+        .split('\n')
+        .map(line => line.trim())
+        .filter(line => line.length > 0 && /^\d+$/.test(line));
+
+      for (const line of lines) {
+        const pid = parseInt(line, 10);
+        // SECURITY: Validate PID is positive integer and not ourselves
+        if (!isNaN(pid) && Number.isInteger(pid) && pid > 0 && pid !== currentPid) {
+          pids.push(pid);
+        }
+      }
+    } else {
+      // Unix/Linux: Find Claude processes with the SDK signature (--output-format stream-json)
+      // These are spawned by @anthropic-ai/claude-agent-sdk for observation generation
+      const { stdout } = await execAsync('ps aux | grep "claude.*--output-format.*stream-json" | grep -v grep || true');
+
+      if (!stdout.trim()) {
+        logger.debug('SYSTEM', 'No orphaned Claude processes found (Unix)');
+        return;
+      }
+
+      const lines = stdout.trim().split('\n');
+      for (const line of lines) {
+        const parts = line.trim().split(/\s+/);
+        if (parts.length > 1) {
+          const pid = parseInt(parts[1], 10);
+          // SECURITY: Validate PID is positive integer and not ourselves
+          if (!isNaN(pid) && Number.isInteger(pid) && pid > 0 && pid !== currentPid) {
+            pids.push(pid);
+          }
+        }
+      }
+    }
+  } catch (error) {
+    // Orphan cleanup is non-critical - log and continue
+    logger.error('SYSTEM', 'Failed to enumerate orphaned Claude processes', {}, error as Error);
+    return;
+  }
+
+  if (pids.length === 0) {
+    return;
+  }
+
+  logger.info('SYSTEM', 'Cleaning up orphaned Claude processes', {
+    platform: isWindows ? 'Windows' : 'Unix',
+    count: pids.length,
+    pids
+  });
+
+  // Kill all found processes - use SIGTERM first for graceful shutdown, then SIGKILL
+  if (isWindows) {
+    for (const pid of pids) {
+      if (!Number.isInteger(pid) || pid <= 0) {
+        logger.warn('SYSTEM', 'Skipping invalid PID', { pid });
+        continue;
+      }
+      try {
+        execSync(`taskkill /PID ${pid} /T /F`, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND, stdio: 'ignore' });
+      } catch (error) {
+        logger.debug('SYSTEM', 'Failed to kill Claude process, may have already exited', { pid }, error as Error);
+      }
+    }
+  } else {
+    for (const pid of pids) {
+      try {
+        // Try SIGTERM first for graceful shutdown
+        process.kill(pid, 'SIGTERM');
+      } catch (error) {
+        logger.debug('SYSTEM', 'Claude process already exited', { pid }, error as Error);
+      }
+    }
+
+    // Wait a moment for graceful shutdown
+    await new Promise(r => setTimeout(r, 500));
+
+    // Force kill any remaining processes
+    for (const pid of pids) {
+      try {
+        process.kill(pid, 0); // Check if still alive
+        process.kill(pid, 'SIGKILL'); // Force kill if still running
+        logger.debug('SYSTEM', 'Force killed Claude process', { pid });
+      } catch (error) {
+        // Process already exited, which is expected
+      }
+    }
+  }
+
+  logger.info('SYSTEM', 'Orphaned Claude processes cleaned up', { count: pids.length });
 }
 
 /**
