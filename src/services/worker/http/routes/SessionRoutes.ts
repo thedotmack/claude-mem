@@ -234,6 +234,7 @@ export class SessionRoutes extends BaseRouteHandler {
     app.post('/api/sessions/observations', this.handleObservationsByClaudeId.bind(this));
     app.post('/api/sessions/summarize', this.handleSummarizeByClaudeId.bind(this));
     app.post('/api/sessions/handoff', this.handleHandoff.bind(this));
+    app.get('/api/session/:sessionId/stats', this.handleGetSessionStats.bind(this));
   }
 
   /**
@@ -780,6 +781,62 @@ export class SessionRoutes extends BaseRouteHandler {
       handoffId: result.id,
       tasksCount: handoffData.pendingQueue,
       trigger
+    });
+  });
+
+  /**
+   * Get session statistics for StatusLine display
+   * GET /api/session/:sessionId/stats
+   *
+   * Returns observation count, total tokens, and prompt count for a session
+   */
+  private handleGetSessionStats = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const sessionId = req.params.sessionId;
+
+    if (!sessionId) {
+      return this.badRequest(res, 'Missing sessionId');
+    }
+
+    const store = this.dbManager.getSessionStore();
+
+    // Get session by content_session_id to find memory_session_id
+    const sessionRow = store.db.prepare(`
+      SELECT id, memory_session_id, project
+      FROM sdk_sessions
+      WHERE content_session_id = ?
+      LIMIT 1
+    `).get(sessionId) as { id: number; memory_session_id: string | null; project: string } | undefined;
+
+    // If session doesn't exist or has no memory_session_id yet, return zeros
+    if (!sessionRow || !sessionRow.memory_session_id) {
+      res.json({
+        observationsCount: 0,
+        totalTokens: 0,
+        promptsCount: 0
+      });
+      return;
+    }
+
+    // Get observation count and total discovery tokens for this session
+    const obsStats = store.db.prepare(`
+      SELECT
+        COUNT(*) as count,
+        COALESCE(SUM(discovery_tokens), 0) as total_tokens
+      FROM observations
+      WHERE memory_session_id = ?
+    `).get(sessionRow.memory_session_id) as { count: number; total_tokens: number };
+
+    // Get prompt count from user_prompts table
+    const promptCount = store.db.prepare(`
+      SELECT COUNT(*) as count
+      FROM user_prompts
+      WHERE content_session_id = ?
+    `).get(sessionId) as { count: number };
+
+    res.json({
+      observationsCount: obsStats.count,
+      totalTokens: obsStats.total_tokens,
+      promptsCount: promptCount.count
     });
   });
 }
