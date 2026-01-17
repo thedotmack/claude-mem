@@ -91,6 +91,16 @@ export class SessionRoutes extends BaseRouteHandler {
     const session = this.sessionManager.getSession(sessionDbId);
     if (!session) return;
 
+    // RACE CONDITION FIX: If crash-recovery restart is pending, don't start a new generator
+    // The scheduled setTimeout will handle starting the generator
+    if (session.restartPending) {
+      logger.debug('SESSION', `Skipping generator start - restart already pending`, {
+        sessionId: sessionDbId,
+        source
+      });
+      return;
+    }
+
     const selectedProvider = this.getSelectedProvider();
 
     // Start generator if not running
@@ -187,6 +197,10 @@ export class SessionRoutes extends BaseRouteHandler {
                 pendingCount
               });
 
+              // RACE CONDITION FIX: Set flag to prevent ensureGeneratorRunning from starting
+              // a competing generator during the 1-second delay
+              session.restartPending = true;
+
               // Abort OLD controller before replacing to prevent child process leaks
               const oldController = session.abortController;
               session.abortController = new AbortController();
@@ -195,8 +209,13 @@ export class SessionRoutes extends BaseRouteHandler {
               // Small delay before restart
               setTimeout(() => {
                 const stillExists = this.sessionManager.getSession(sessionDbId);
-                if (stillExists && !stillExists.generatorPromise) {
-                  this.startGeneratorWithProvider(stillExists, this.getSelectedProvider(), 'crash-recovery');
+                if (stillExists) {
+                  // Clear the flag regardless of whether we start
+                  stillExists.restartPending = false;
+
+                  if (!stillExists.generatorPromise) {
+                    this.startGeneratorWithProvider(stillExists, this.getSelectedProvider(), 'crash-recovery');
+                  }
                 }
               }, 1000);
             } else {
