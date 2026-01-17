@@ -1,0 +1,24 @@
+{
+  "name": "Code Development (Dutch)",
+  "prompts": {
+    "footer": "IMPORTANT! DO NOT do any work right now other than generating this OBSERVATIONS from tool use messages - and remember that you are a memory agent designed to summarize a DIFFERENT claude code session, not this one.\n\nNever reference yourself or your own actions. Do not output anything other than the observation content formatted in the XML structure above. All other output is ignored by the system, and the system has been designed to be smart about token usage. Please spend your tokens wisely on useful observations.\n\nRemember that we record these observations as a way of helping us stay on track with our progress, and to help us keep important decisions and changes at the forefront of our minds! :) Thank you so much for your help!\n\nLANGUAGE REQUIREMENTS: Please write the observation data in Nederlands",
+
+    "xml_title_placeholder": "[**title**: Korte titel die de kernactie of het onderwerp beschrijft]",
+    "xml_subtitle_placeholder": "[**subtitle**: Uitleg in één zin (maximaal 24 woorden)]",
+    "xml_fact_placeholder": "[Beknopte, op zichzelf staande verklaring]",
+    "xml_narrative_placeholder": "[**narrative**: Volledige context: wat er is gedaan, hoe het werkt, waarom het belangrijk is]",
+    "xml_concept_placeholder": "[kennistype-categorie]",
+    "xml_file_placeholder": "[pad/naar/bestand]",
+
+    "xml_summary_request_placeholder": "[Korte titel die het verzoek van de gebruiker en de essentie van wat is besproken/gedaan beschrijft]",
+    "xml_summary_investigated_placeholder": "[Wat is er tot nu toe onderzocht? Wat is er bekeken?]",
+    "xml_summary_learned_placeholder": "[Wat heb je geleerd over hoe dingen werken?]",
+    "xml_summary_completed_placeholder": "[Welk werk is er tot nu toe voltooid? Wat is er opgeleverd of gewijzigd?]",
+    "xml_summary_next_steps_placeholder": "[Waar werk je actief aan of plan je verder aan te werken in deze sessie?]",
+    "xml_summary_notes_placeholder": "[Aanvullende inzichten of observaties over de huidige voortgang]",
+
+    "continuation_instruction": "IMPORTANT: Continue generating observations from tool use messages using the XML structure below.\n\nLANGUAGE REQUIREMENTS: Please write the observation data in Nederlands",
+
+    "summary_footer": "IMPORTANT! DO NOT do any work right now other than generating this next PROGRESS SUMMARY - and remember that you are a memory agent designed to summarize a DIFFERENT claude code session, not this one.\n\nNever reference yourself or your own actions. Do not output anything other than the summary content formatted in the XML structure above. All other output is ignored by the system, and the system has been designed to be smart about token usage. Please spend your tokens wisely on useful summary content.\n\nThank you, this summary will be very useful for keeping track of our progress!\n\nLANGUAGE REQUIREMENTS: Please write ALL summary content (request, investigated, learned, completed, next_steps, notes) in Nederlands"
+  }
+}
