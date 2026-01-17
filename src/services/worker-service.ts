@@ -26,6 +26,7 @@ import {
   removePidFile,
   getPlatformTimeout,
   cleanupOrphanedProcesses,
+  cleanupOrphanedClaudeSubprocesses,
   spawnDaemon,
   createSignalHandler
 } from './infrastructure/ProcessManager.js';
@@ -102,6 +103,10 @@ export class WorkerService {
   private mcpReady: boolean = false;
   private initializationCompleteFlag: boolean = false;
   private isShuttingDown: boolean = false;
+
+  // Cleanup interval for orphaned Claude subprocesses
+  // @see https://github.com/thedotmack/claude-mem/issues/737
+  private cleanupInterval: NodeJS.Timeout | null = null;
 
   // Service layer
   private dbManager: DatabaseManager;
@@ -235,6 +240,39 @@ export class WorkerService {
   private async initializeBackground(): Promise<void> {
     try {
       await cleanupOrphanedProcesses();
+
+      // Clean up orphaned Claude subprocesses from previous sessions
+      // This catches zombies left behind from crashes or unclean shutdowns
+      // @see https://github.com/thedotmack/claude-mem/issues/737
+      const startupCleanup = await cleanupOrphanedClaudeSubprocesses(30);
+      if (startupCleanup > 0) {
+        logger.info('SYSTEM', 'Cleaned up orphaned Claude subprocesses from previous session', {
+          count: startupCleanup
+        });
+      }
+
+      // Start periodic cleanup every 15 minutes
+      // This prevents zombie accumulation during long-running sessions
+      const CLEANUP_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
+      const CLEANUP_AGE_MINUTES = 30; // Kill processes older than 30 minutes
+      this.cleanupInterval = setInterval(async () => {
+        try {
+          const cleaned = await cleanupOrphanedClaudeSubprocesses(CLEANUP_AGE_MINUTES);
+          if (cleaned > 0) {
+            logger.info('SYSTEM', 'Periodic cleanup of orphaned Claude subprocesses', {
+              count: cleaned,
+              maxAgeMinutes: CLEANUP_AGE_MINUTES
+            });
+          }
+        } catch (error) {
+          // Periodic cleanup is non-critical
+          logger.debug('SYSTEM', 'Periodic subprocess cleanup failed', {}, error as Error);
+        }
+      }, CLEANUP_INTERVAL_MS);
+      logger.info('SYSTEM', 'Started periodic subprocess cleanup', {
+        intervalMinutes: CLEANUP_INTERVAL_MS / 60000,
+        maxAgeMinutes: CLEANUP_AGE_MINUTES
+      });
 
       // Load mode configuration
       const { ModeManager } = await import('./domain/ModeManager.js');
@@ -394,6 +432,13 @@ export class WorkerService {
    * Shutdown the worker service
    */
   async shutdown(): Promise<void> {
+    // Clear cleanup interval before shutdown
+    if (this.cleanupInterval) {
+      clearInterval(this.cleanupInterval);
+      this.cleanupInterval = null;
+      logger.debug('SYSTEM', 'Stopped periodic subprocess cleanup');
+    }
+
     await performGracefulShutdown({
       server: this.server.getHttpServer(),
       sessionManager: this.sessionManager,
