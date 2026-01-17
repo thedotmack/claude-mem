@@ -3,11 +3,14 @@
 /**
  * Claude-Mem Plugin for OpenCode
  *
- * Matches Claude Code behavior exactly:
+ * Matches Claude Code behavior with OpenCode adaptations:
  * - SessionStart: Context injection on session.created
- * - UserPromptSubmit: Session initialization on first user message
+ * - UserPromptSubmit: Session initialization on first user message OR first tool use
  * - PostToolUse: Observation capture on tool execution
  * - SessionEnd: Summary generation on session.deleted
+ *
+ * Note: OpenCode plan mode doesn't fire user message events, so we initialize
+ * on first tool execution as fallback (when switching plan -> build mid-session)
  */
 
 import { z } from 'zod';
@@ -53,14 +56,14 @@ export const ClaudeMemPlugin = async ({ client, project, directory }) => {
   
   log('INFO', `Plugin loaded`, { project: projectName });
 
-  const initializeSession = async (contentSessionId, userPrompt) => {
-    log('INFO', `Initializing session (UserPromptSubmit)`, { contentSessionId });
+  const initializeSession = async (contentSessionId, promptOrTool, source) => {
+    log('INFO', `Initializing session (${source})`, { contentSessionId });
     const result = await workerRequest('/api/sessions/init', 'POST', {
       contentSessionId,
       project: projectName,
-      prompt: userPrompt,
+      prompt: promptOrTool,
     });
-    log('INFO', `Session initialized`, { sessionDbId: result.sessionDbId });
+    log('INFO', `Session initialized`, { sessionDbId: result.sessionDbId, source });
     return result;
   };
 
@@ -72,7 +75,7 @@ export const ClaudeMemPlugin = async ({ client, project, directory }) => {
       tool_response: typeof toolResponse === 'string' ? toolResponse : JSON.stringify(toolResponse || ''),
       cwd: cwd || '/unknown',
     });
-    log('INFO', `Observation saved (PostToolUse): ${toolName}`);
+    log('INFO', `Observation saved: ${toolName}`);
   };
 
   const getContext = async () => {
@@ -81,7 +84,7 @@ export const ClaudeMemPlugin = async ({ client, project, directory }) => {
   };
 
   const summarizeSession = async (contentSessionId) => {
-    log('INFO', `Summarizing session (SessionEnd)`, { contentSessionId });
+    log('INFO', `Summarizing session`, { contentSessionId });
     await workerRequest('/api/sessions/summarize', 'POST', {
       contentSessionId,
       last_assistant_message: 'Session completed',
@@ -152,7 +155,7 @@ export const ClaudeMemPlugin = async ({ client, project, directory }) => {
         if (event.type === 'session.created') {
           const sessionID = event.properties?.info?.id || event.properties?.sessionID;
           if (sessionID) {
-            log('INFO', `Session created (SessionStart)`, { sessionID });
+            log('INFO', `Session created`, { sessionID });
             
             // Create session state
             sessionStates.set(sessionID, {
@@ -172,7 +175,7 @@ export const ClaudeMemPlugin = async ({ client, project, directory }) => {
                     parts: [{ type: 'text', text: `# Claude-Mem Context\n\n${context}`, synthetic: true }],
                   },
                 });
-                log('INFO', `Context injected (SessionStart)`, { sessionID });
+                log('INFO', `Context injected (SessionStart)`);
               }
             } catch (error) {
               log('ERROR', `Failed to inject context`, { error: error.message });
@@ -203,7 +206,7 @@ export const ClaudeMemPlugin = async ({ client, project, directory }) => {
               const userText = info.parts?.filter(p => p.type === 'text').map(p => p.text).join('\n');
               if (userText) {
                 try {
-                  await initializeSession(sessionID, userText);
+                  await initializeSession(sessionID, userText, 'UserPromptSubmit');
                   currentState.initialized = true;
                   sessionStates.set(sessionID, currentState);
                 } catch (error) {
@@ -261,21 +264,32 @@ export const ClaudeMemPlugin = async ({ client, project, directory }) => {
       }
     },
 
-    // PostToolUse equivalent - save observations only
+    // PostToolUse equivalent - save observations, with fallback initialization
     'tool.execute.after': async (input, output) => {
       const { tool: toolName, sessionID } = input;
       
       try {
-        const state = sessionStates.get(sessionID);
+        let state = sessionStates.get(sessionID);
         
+        // Create state if missing (plugin loaded after session started)
         if (!state) {
-          log('WARN', `Tool executed but no session state`, { sessionID, toolName });
-          return;
+          log('INFO', `Creating session state on tool use`, { sessionID });
+          state = { initialized: false, project: projectName, cwd: projectCwd };
+          sessionStates.set(sessionID, state);
         }
         
+        // Fallback: Initialize on first tool if not yet initialized
+        // (handles plan -> build mode switches where no user message event fired)
         if (!state.initialized) {
-          log('WARN', `Tool executed but session not initialized (no user message yet)`, { sessionID, toolName });
-          return;
+          log('INFO', `Initializing on first tool use (plan->build fallback)`, { sessionID, toolName });
+          try {
+            await initializeSession(sessionID, `[Build mode - started with ${toolName}]`, 'ToolExecuteFallback');
+            state.initialized = true;
+            sessionStates.set(sessionID, state);
+          } catch (error) {
+            log('ERROR', `Failed to initialize`, { error: error.message });
+            return;
+          }
         }
         
         // Save observation
