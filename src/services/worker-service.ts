@@ -12,7 +12,7 @@
 import path from 'path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
+import { getWorkerPort, getWorkerBind } from '../shared/worker-utils.js';
 import { logger } from '../utils/logger.js';
 
 // Version injected at build time by esbuild define
@@ -217,11 +217,11 @@ export class WorkerService {
    */
   async start(): Promise<void> {
     const port = getWorkerPort();
-    const host = getWorkerHost();
+    const bind = getWorkerBind();
 
     // Start HTTP server FIRST - make port available immediately
-    await this.server.listen(port, host);
-    logger.info('SYSTEM', 'Worker started', { host, port, pid: process.pid });
+    await this.server.listen(port, bind);
+    logger.info('SYSTEM', 'Worker started', { bind, port, pid: process.pid });
 
     // Do slow initialization in background (non-blocking)
     this.initializeBackground().catch((error) => {

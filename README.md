@@ -106,6 +106,8 @@
 
 ## Quick Start
 
+### For Claude Code
+
 Start a new Claude Code session in the terminal and enter the following commands:
 
 ```
@@ -115,6 +117,18 @@ Start a new Claude Code session in the terminal and enter the following commands
 ```
 
 Restart Claude Code. Context from previous sessions will automatically appear in new sessions.
+
+### For OpenCode
+
+Tell OpenCode:
+
+```
+Fetch and follow instructions from https://raw.githubusercontent.com/thedotmack/claude-mem/refs/heads/main/.opencode/INSTALL.md
+```
+
+Restart OpenCode. Context from previous sessions will automatically appear in new sessions.
+
+**See [OpenCode Integration Guide](docs/OPENCODE.md) for full documentation.**
 
 **Key Features:**
 
