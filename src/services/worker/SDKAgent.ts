@@ -17,6 +17,7 @@ import { logger } from '../../utils/logger.js';
 import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { buildIsolatedEnv, getAuthMethodDescription } from '../../shared/EnvManager.js';
 import type { ActiveSession, SDKUserMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import { processAgentResponse, type WorkerRef } from './agents/index.js';
@@ -75,13 +76,20 @@ export class SDKAgent {
     // NEVER use contentSessionId for resume - that would inject messages into the user's transcript!
     const hasRealMemorySessionId = !!session.memorySessionId;
 
+    // Build isolated environment from ~/.claude-mem/.env
+    // This prevents Issue #733: random ANTHROPIC_API_KEY from project .env files
+    // being used instead of the configured auth method (CLI subscription or explicit API key)
+    const isolatedEnv = buildIsolatedEnv();
+    const authMethod = getAuthMethodDescription();
+
     logger.info('SDK', 'Starting SDK query', {
       sessionDbId: session.sessionDbId,
       contentSessionId: session.contentSessionId,
       memorySessionId: session.memorySessionId,
       hasRealMemorySessionId,
       resume_parameter: hasRealMemorySessionId ? session.memorySessionId : '(none - fresh start)',
-      lastPromptNumber: session.lastPromptNumber
+      lastPromptNumber: session.lastPromptNumber,
+      authMethod
     });
 
     // Debug-level alignment logs for detailed tracing
@@ -99,6 +107,7 @@ export class SDKAgent {
 
     // Run Agent SDK query loop
     // Only resume if we have a captured memory session ID
+    // CRITICAL: Pass isolated env to prevent Issue #733 (API key pollution from project .env files)
     const queryResult = query({
       prompt: messageGenerator,
       options: {
@@ -109,7 +118,8 @@ export class SDKAgent {
         ...(hasRealMemorySessionId && session.lastPromptNumber > 1 && { resume: session.memorySessionId }),
         disallowedTools,
         abortController: session.abortController,
-        pathToClaudeCodeExecutable: claudePath
+        pathToClaudeCodeExecutable: claudePath,
+        env: isolatedEnv  // Use isolated credentials from ~/.claude-mem/.env, not process.env
       }
     });
 
