@@ -58,6 +58,13 @@
         ]
       },
       {
+        "group": "OpenCode Integration",
+        "icon": "terminal",
+        "pages": [
+          "opencode/index"
+        ]
+      },
+      {
         "group": "Best Practices",
         "icon": "lightbulb",
         "pages": [
