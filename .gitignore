@@ -30,4 +30,6 @@ src/ui/viewer.html
 
 # Prevent other malformed path directories
 http*/
-https*/
+https*/Hex/
+Tok/
+integration_test/
