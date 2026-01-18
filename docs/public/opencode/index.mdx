@@ -1,0 +1,213 @@
+---
+title: "OpenCode Integration"
+description: "Persistent AI memory for OpenCode - cross-platform memory sharing with Claude Code"
+---
+
+# OpenCode Integration
+
+> **Share memory across platforms.** Use the same persistent memory in OpenCode that you build in Claude Code.
+
+OpenCode is an open-source, terminal-based AI coding agent. Claude-mem integrates with OpenCode through its native plugin system, enabling context injection, observation capture, and memory search.
+
+<CardGroup cols={2}>
+  <Card title="Shared Database" icon="database">
+    Same memory database as Claude Code - observations flow between platforms
+  </Card>
+  <Card title="Automatic Capture" icon="bolt">
+    Tool usage captured via `tool.execute.after` hook
+  </Card>
+  <Card title="Context Injection" icon="brain">
+    Relevant history injected on session start and after compaction
+  </Card>
+  <Card title="Memory Search" icon="magnifying-glass">
+    `mem_search` tool available directly in OpenCode sessions
+  </Card>
+</CardGroup>
+
+<Info>
+**Requires Claude Code installation.** The claude-mem worker service is managed by Claude Code. OpenCode connects to the same worker on port 37777.
+</Info>
+
+## How It Works
+
+Claude-mem integrates with OpenCode through its plugin system:
+
+1. **Plugin loads** on OpenCode startup from `.opencode/plugin/`
+2. **Session hooks** capture `session.created` and `session.compacted` events
+3. **Tool hooks** capture observations via `tool.execute.after`
+4. **Context injection** uses `client.session.prompt()` to inject memory
+5. **Shared database** at `~/.claude-mem/claude-mem.db` stores all observations
+
+## Installation
+
+### Prerequisites
+
+- Claude-mem installed via Claude Code plugin
+- Worker service running (`curl localhost:37777/health`)
+- OpenCode installed
+
+### Project-Level Installation (Recommended)
+
+The plugin files are included in the claude-mem repository at `.opencode/plugin/`. When you run OpenCode in a project that has these files, the plugin loads automatically.
+
+```bash
+# Clone claude-mem (if not already)
+git clone https://github.com/thedotmack/claude-mem.git
+cd claude-mem
+
+# Start OpenCode - plugin auto-loads from .opencode/plugin/
+opencode
+```
+
+### Global Installation
+
+To use claude-mem in all OpenCode projects:
+
+```bash
+# Copy plugin to global OpenCode config
+cp -r /path/to/claude-mem/.opencode/plugin/claude-mem.ts ~/.config/opencode/plugin/
+cp /path/to/claude-mem/.opencode/package.json ~/.config/opencode/
+
+# Install dependencies
+cd ~/.config/opencode && bun install
+
+# Restart OpenCode
+```
+
+## Verification
+
+### 1. Check Worker Status
+
+```bash
+curl -s http://localhost:37777/health
+# Expected: {"status":"ok","timestamp":...}
+```
+
+### 2. Start OpenCode Session
+
+```bash
+cd /path/to/your/project
+opencode
+```
+
+### 3. Verify Context Injection
+
+On session start, you should see context from previous Claude Code or OpenCode sessions injected into the conversation.
+
+### 4. Verify Observation Capture
+
+After using any tool in OpenCode, check the database:
+
+```bash
+sqlite3 ~/.claude-mem/claude-mem.db "SELECT id, tool_name, created_at FROM observations ORDER BY id DESC LIMIT 3"
+```
+
+### 5. Test Memory Search
+
+In your OpenCode session, ask:
+```
+Use mem_search to find recent observations about [topic]
+```
+
+## Features
+
+### Context Injection
+
+On `session.created` and `session.compacted` events, the plugin:
+1. Calls the worker API to get relevant context
+2. Injects it into the session using `client.session.prompt()`
+3. Uses `noReply: true` to prevent triggering an AI response
+
+### Observation Capture
+
+The `tool.execute.after` hook captures:
+- Tool name (Read, Write, Bash, etc.)
+- Tool input (file paths, commands)
+- Tool output (results, errors)
+- Session and project context
+
+### Memory Search Tool
+
+The `mem_search` tool is registered with OpenCode and allows querying:
+- Past observations by keyword
+- Project-specific history
+- Cross-session context
+
+## Plugin Architecture
+
+```typescript
+// .opencode/plugin/claude-mem.ts
+export const ClaudeMemPlugin: Plugin = async ({ client, directory }) => {
+  return {
+    // Custom tool for memory search
+    tool: {
+      mem_search: tool({ ... })
+    },
+
+    // Event handlers for session lifecycle
+    event: async ({ event }) => {
+      // Handle session.created, session.compacted
+    },
+
+    // Observation capture after tool execution
+    "tool.execute.after": async (input, output) => {
+      // Send to worker API
+    }
+  }
+}
+```
+
+## Troubleshooting
+
+### Worker not running
+
+```bash
+# Check worker status
+curl -s http://localhost:37777/health
+
+# If no response, start via Claude Code or manually:
+cd ~/.claude/plugins/marketplaces/thedotmack/plugin
+npm run worker:start
+```
+
+### Plugin not loading
+
+1. Verify plugin exists: `ls ~/.config/opencode/plugin/claude-mem.ts`
+2. Check dependencies: `cd ~/.config/opencode && bun install`
+3. Check OpenCode logs for plugin errors
+
+### No context appearing
+
+1. Verify database has observations:
+   ```bash
+   sqlite3 ~/.claude-mem/claude-mem.db "SELECT project, COUNT(*) FROM observations GROUP BY project"
+   ```
+2. Ensure worker is responding to context requests
+3. Check that session ID is being extracted correctly
+
+### Observations not captured
+
+1. Verify worker health endpoint responds
+2. Check that `tool.execute.after` hook is firing (add logging)
+3. Verify database is writable
+
+## Cross-Platform Memory
+
+One of claude-mem's key features is shared memory across platforms:
+
+| Platform | Context Injection | Observation Capture | Memory Search |
+|----------|-------------------|---------------------|---------------|
+| Claude Code | Yes | Yes | Yes (MCP) |
+| Cursor | Yes | Yes | Yes (MCP) |
+| OpenCode | Yes | Yes | Yes (tool) |
+
+All platforms share the same `~/.claude-mem/claude-mem.db` database, enabling:
+- Start work in Claude Code, continue in OpenCode
+- Search OpenCode observations from Claude Code
+- Unified project history across all tools
+
+## Next Steps
+
+- [Configuration](../configuration) - Customize claude-mem behavior
+- [Platform Integration Guide](../platform-integration) - Build your own integration
+- [Troubleshooting](../troubleshooting) - Common issues and solutions
