@@ -14,8 +14,8 @@ const getSessionID = (event: any): string | undefined => {
 export const ClaudeMemPlugin: Plugin = async ({ client, directory }) => {
   const projectName = directory.split('/').pop() || 'unknown'
 
-  // Helper to call claude-mem worker API
-  async function callWorker(endpoint: string, body: object): Promise<any> {
+  // Helper for POST requests to claude-mem worker API
+  async function postWorker(endpoint: string, body: object): Promise<any> {
     try {
       const res = await fetch(`${WORKER_URL}${endpoint}`, {
         method: 'POST',
@@ -28,19 +28,29 @@ export const ClaudeMemPlugin: Plugin = async ({ client, directory }) => {
     }
   }
 
+  // Helper for GET requests to claude-mem worker API
+  async function getWorker(endpoint: string, params: Record<string, string>): Promise<any> {
+    try {
+      const query = new URLSearchParams(params).toString()
+      const res = await fetch(`${WORKER_URL}${endpoint}?${query}`)
+      return res.ok ? await res.json().catch(() => res.text()) : null
+    } catch {
+      return null // Worker not running
+    }
+  }
+
   // Inject context into session
   async function injectContext(sessionId: string): Promise<void> {
-    const context = await callWorker('/api/context/inject', {
-      sessionId,
-      cwd: directory,
-      project: projectName
+    // /api/context/inject is a GET endpoint
+    const contextText = await getWorker('/api/context/inject', {
+      projects: projectName
     })
-    if (context?.additionalContext) {
+    if (contextText && typeof contextText === 'string' && contextText.trim()) {
       await client.session.prompt({
         path: { id: sessionId },
         body: {
           noReply: true,
-          parts: [{ type: "text", text: context.additionalContext, synthetic: true }]
+          parts: [{ type: "text", text: contextText, synthetic: true }]
         }
       })
     }
@@ -55,10 +65,12 @@ export const ClaudeMemPlugin: Plugin = async ({ client, directory }) => {
           query: tool.schema.string().describe("Search query")
         },
         async execute(args, ctx) {
-          const result = await callWorker('/api/search', {
+          // /api/search is a GET endpoint
+          const result = await getWorker('/api/search', {
             query: args.query,
             project: projectName,
-            sessionId: ctx.sessionID
+            format: 'index',
+            limit: '20'
           })
           return result ? JSON.stringify(result, null, 2) : "No results found"
         }
@@ -71,7 +83,7 @@ export const ClaudeMemPlugin: Plugin = async ({ client, directory }) => {
       if (!sessionId) return
 
       if (event.type === 'session.created') {
-        await callWorker('/api/sessions/init', {
+        await postWorker('/api/sessions/init', {
           sessionId,
           cwd: directory,
           project: projectName
@@ -87,7 +99,7 @@ export const ClaudeMemPlugin: Plugin = async ({ client, directory }) => {
 
     // Capture tool observations
     "tool.execute.after": async (input, output) => {
-      await callWorker('/api/sessions/observations', {
+      await postWorker('/api/sessions/observations', {
         sessionId: input.sessionID,
         cwd: directory,
         toolName: input.tool,
