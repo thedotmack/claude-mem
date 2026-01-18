@@ -6,6 +6,37 @@
  * a vector database synchronized with SQLite.
  *
  * Design: Fail-fast with no fallbacks - if Chroma is unavailable, syncing fails.
+ * 
+ * ## MCP Connection Lifecycle (CRITICAL UNDERSTANDING)
+ * 
+ * **ONE CONNECTION PER WORKER LIFETIME:**
+ * - ChromaSync is instantiated ONCE in DatabaseManager.initialize()
+ * - The MCP server (uvx chroma-mcp) is spawned ONCE on first use
+ * - Connection persists for the entire worker process lifetime
+ * - Connection is only closed on worker shutdown via DatabaseManager.close()
+ * 
+ * **HOW CONNECTION REUSE WORKS:**
+ * - ensureConnection() is idempotent - checks `this.connected` flag first
+ * - If already connected, returns immediately WITHOUT spawning new process
+ * - Same StdioClientTransport and Client instances reused for all operations
+ * - Hundreds of queries can flow through a single persistent connection
+ * 
+ * **WHEN NEW CONNECTIONS ARE CREATED:**
+ * 1. Worker startup (DatabaseManager.initialize())
+ * 2. Connection loss detected (sets this.connected = false, triggers reconnect)
+ * 3. Explicit close() followed by new operation (rare, usually shutdown)
+ * 
+ * **WHY THIS IS CORRECT MCP USAGE:**
+ * - MCP SDK is designed for long-lived server connections
+ * - StdioClientTransport manages bidirectional stdio communication
+ * - Spawning uvx repeatedly would be inefficient and resource-heavy
+ * - Our pattern matches MCP best practices for persistent servers
+ * 
+ * **DEBUGGING CONNECTION BEHAVIOR:**
+ * - Watch for "Connecting to Chroma MCP server..." log (should be rare)
+ * - Each ensureConnection() call that skips spawn logs nothing
+ * - Connection loss triggers error + reconnect on next operation
+ * - Process ID (PID) of chroma-mcp should remain stable
  */
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -91,14 +122,30 @@ export class ChromaSync {
 
   /**
    * Ensure MCP client is connected to Chroma server
-   * Throws error if connection fails
+   * 
+   * IDEMPOTENT: If already connected, returns immediately without spawning new process.
+   * This is called before every Chroma operation to ensure connection is alive.
+   * 
+   * Connection lifecycle:
+   * - First call: Spawns uvx chroma-mcp subprocess, establishes MCP connection
+   * - Subsequent calls: Early return using cached connection (NO subprocess spawn)
+   * - On error: Sets this.connected = false to trigger reconnect on next call
+   * 
+   * @throws Error if connection fails (MCP SDK errors, uvx not found, etc.)
    */
   private async ensureConnection(): Promise<void> {
+    // CRITICAL: This guard prevents constant respawning of uvx subprocess
+    // If connection exists and is healthy, we reuse it for all operations
     if (this.connected && this.client) {
+      logger.debug('CHROMA_SYNC', 'Reusing existing MCP connection (no new spawn)', { 
+        project: this.project,
+        hasTransport: !!this.transport,
+        hasClient: !!this.client
+      });
       return;
     }
 
-    logger.info('CHROMA_SYNC', 'Connecting to Chroma MCP server...', { project: this.project });
+    logger.info('CHROMA_SYNC', 'Connecting to Chroma MCP server (spawning uvx chroma-mcp)...', { project: this.project });
 
     try {
       // Use Python 3.13 by default to avoid onnxruntime compatibility issues with Python 3.14+
@@ -125,6 +172,8 @@ export class ChromaSync {
         logger.debug('CHROMA_SYNC', 'Windows detected, attempting to hide console window', { project: this.project });
       }
 
+      // MCP SDK StdioClientTransport spawns and manages the subprocess
+      // This happens ONCE per ChromaSync instance, NOT on every operation
       this.transport = new StdioClientTransport(transportOptions);
 
       // Empty capabilities object: this client only calls Chroma tools, doesn't expose any
@@ -135,10 +184,17 @@ export class ChromaSync {
         capabilities: {}
       });
 
+      // Connect to the MCP server - establishes stdio communication channel
       await this.client.connect(this.transport);
       this.connected = true;
 
-      logger.info('CHROMA_SYNC', 'Connected to Chroma MCP server', { project: this.project });
+      logger.info('CHROMA_SYNC', 'MCP connection established successfully', { 
+        project: this.project,
+        command: 'uvx',
+        pythonVersion,
+        serverType: 'chroma-mcp',
+        note: 'This connection will be reused for all subsequent operations'
+      });
     } catch (error) {
       logger.error('CHROMA_SYNC', 'Failed to connect to Chroma MCP server', { project: this.project }, error as Error);
       throw new Error(`Chroma connection failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -882,25 +938,36 @@ export class ChromaSync {
 
   /**
    * Close the Chroma client connection and cleanup subprocess
+   * 
+   * This should only be called on worker shutdown.
+   * Closes the MCP client, terminates the StdioClientTransport,
+   * and kills the uvx chroma-mcp subprocess.
+   * 
+   * LIFECYCLE: Called by DatabaseManager.close() on worker shutdown only.
+   * NOT called between operations - connection persists across all queries.
    */
   async close(): Promise<void> {
     if (!this.connected && !this.client && !this.transport) {
+      logger.debug('CHROMA_SYNC', 'Close called but already disconnected', { project: this.project });
       return;
     }
 
-    // Close client first
+    logger.info('CHROMA_SYNC', 'Closing MCP connection and terminating subprocess', { project: this.project });
+
+    // Close MCP client first (graceful shutdown handshake)
     if (this.client) {
       await this.client.close();
     }
 
-    // Explicitly close transport to kill subprocess
+    // Explicitly close transport to terminate uvx subprocess
+    // StdioClientTransport.close() kills the spawned process
     if (this.transport) {
       await this.transport.close();
     }
 
-    logger.info('CHROMA_SYNC', 'Chroma client and subprocess closed', { project: this.project });
+    logger.info('CHROMA_SYNC', 'Chroma client and subprocess terminated', { project: this.project });
 
-    // Always reset state
+    // Always reset state to allow reconnection if needed
     this.connected = false;
     this.client = null;
     this.transport = null;
