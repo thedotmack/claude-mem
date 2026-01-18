@@ -29,7 +29,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          fetch-depth: 0  # Full history for better context
 
       - name: Run Claude Code Review
         id: claude-review
@@ -40,18 +40,54 @@ jobs:
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number }}
 
-            Please review this pull request and provide feedback on:
-            - Code quality and best practices
-            - Potential bugs or issues
-            - Performance considerations
-            - Security concerns
-            - Test coverage
+            ## Multi-Agent Code Review with Confidence Scoring
 
-            Use the repository's CLAUDE.md for guidance on style and conventions. Be constructive and helpful in your feedback.
+            Perform a comprehensive code review from multiple perspectives. For each finding,
+            assign a confidence score (0-100) based on evidence strength.
 
-            Use `gh pr comment` with your Bash tool to leave your review as a comment on the PR.
+            ### Review Perspectives
+
+            1. **Compliance Agent**: Check adherence to CLAUDE.md guidelines
+               - Verify code follows project conventions
+               - Check if changes respect Allow/Deny List boundaries
+
+            2. **Bug Detection Agent**: Identify potential bugs
+               - Logic errors, edge cases, null/undefined handling
+               - Race conditions, async issues
+
+            3. **Performance Agent**: Spot performance issues
+               - N+1 queries, unnecessary iterations
+               - Memory leaks, blocking operations
+
+            4. **Security Agent**: Find security vulnerabilities
+               - Input validation, injection risks
+               - Credential exposure, auth bypasses
+
+            5. **Context Agent**: Analyze git history for context
+               - Review commit messages for intent
+               - Check if changes align with PR description
+
+            ### Output Format
+
+            Only report findings with confidence >= 80. Format each finding as:
+
+            ```
+            ### [Category] Finding Title
+            **Confidence**: XX/100
+            **File**: path/to/file.ts:line
+            **Issue**: Description of the problem
+            **Suggestion**: How to fix it
+            ```
+
+            ### Summary Section
+
+            End with a summary:
+            - Total findings by category
+            - Overall code quality assessment (1-10)
+            - Recommendation: APPROVE, REQUEST_CHANGES, or COMMENT
+
+            Use `gh pr comment` with your Bash tool to post the review.
 
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://docs.claude.com/en/docs/claude-code/cli-reference for available options
           claude_args: '--allowed-tools "Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*)"'
-

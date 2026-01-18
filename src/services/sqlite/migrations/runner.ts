@@ -31,6 +31,8 @@ export class MigrationRunner {
     this.renameSessionIdColumns();
     this.repairSessionIdColumnRename();
     this.addFailedAtEpochColumn();
+    this.addSupersessionTrainingTables();
+    this.addHandoffObservationType();
   }
 
   /**
@@ -627,5 +629,196 @@ export class MigrationRunner {
     }
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(20, new Date().toISOString());
+  }
+
+  /**
+   * Add Supersession Training tables for P3 Regression Model (migration 21)
+   * Stores training examples for the learned supersession model
+   */
+  private addSupersessionTrainingTables(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(21) as SchemaVersion | undefined;
+    if (applied) return;
+
+    // Check if tables already exist
+    const tables = this.db.query("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('supersession_training', 'learned_model_weights')").all() as TableNameRow[];
+    if (tables.length >= 2) {
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(21, new Date().toISOString());
+      return;
+    }
+
+    logger.debug('DB', 'Adding Supersession Training tables for P3 Regression Model');
+
+    // Table for storing supersession training examples
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS supersession_training (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        older_observation_id INTEGER NOT NULL,
+        newer_observation_id INTEGER NOT NULL,
+        semantic_similarity REAL NOT NULL,
+        topic_match INTEGER NOT NULL,
+        file_overlap REAL NOT NULL,
+        type_match REAL NOT NULL,
+        time_delta_hours REAL NOT NULL,
+        priority_score REAL NOT NULL,
+        older_reference_count INTEGER NOT NULL,
+        label INTEGER NOT NULL CHECK(label IN (0, 1)),
+        confidence REAL NOT NULL,
+        created_at_epoch INTEGER NOT NULL,
+        FOREIGN KEY (older_observation_id) REFERENCES observations(id) ON DELETE CASCADE,
+        FOREIGN KEY (newer_observation_id) REFERENCES observations(id) ON DELETE CASCADE
+      )
+    `);
+
+    // Indexes for training queries
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_supersession_training_created ON supersession_training(created_at_epoch DESC)`);
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_supersession_training_label ON supersession_training(label)`);
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_supersession_training_older ON supersession_training(older_observation_id)`);
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_supersession_training_newer ON supersession_training(newer_observation_id)`);
+
+    // Table for storing learned model weights
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS learned_model_weights (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        weight_semantic_similarity REAL NOT NULL,
+        weight_topic_match REAL NOT NULL,
+        weight_file_overlap REAL NOT NULL,
+        weight_type_match REAL NOT NULL,
+        weight_time_decay REAL NOT NULL,
+        weight_priority_boost REAL NOT NULL,
+        weight_reference_decay REAL NOT NULL,
+        weight_bias REAL NOT NULL,
+        trained_at_epoch INTEGER NOT NULL,
+        examples_used INTEGER NOT NULL,
+        loss REAL NOT NULL,
+        accuracy REAL NOT NULL
+      )
+    `);
+
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_learned_model_weights_trained ON learned_model_weights(trained_at_epoch DESC)`);
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(21, new Date().toISOString());
+
+    logger.debug('DB', 'Successfully added Supersession Training tables');
+  }
+
+  /**
+   * Add Handoff observation type for PreCompact continuity (migration 22)
+   * Inspired by Continuous Claude v2's handoff pattern
+   */
+  private addHandoffObservationType(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(22) as SchemaVersion | undefined;
+    if (applied) return;
+
+    // Check if handoff type is already supported
+    const tableInfo = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
+    const observationsTable = this.db.query("SELECT sql FROM sqlite_master WHERE type='table' AND name='observations'").get() as { sql: string } | undefined;
+
+    if (observationsTable?.sql?.includes("'handoff'")) {
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(22, new Date().toISOString());
+      return;
+    }
+
+    logger.debug('DB', 'Adding handoff observation type for PreCompact continuity');
+
+    // SQLite requires table recreation to modify CHECK constraints
+    this.db.run('BEGIN TRANSACTION');
+
+    try {
+      // Get current columns from observations table
+      const columns = tableInfo.map(col => col.name).filter(n => n !== 'id');
+
+      // Create new table with updated CHECK constraint (adding 'handoff')
+      this.db.run(`
+        CREATE TABLE observations_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          memory_session_id TEXT NOT NULL,
+          project TEXT NOT NULL,
+          text TEXT,
+          type TEXT NOT NULL CHECK(type IN ('decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change', 'handoff')),
+          title TEXT,
+          subtitle TEXT,
+          facts TEXT,
+          narrative TEXT,
+          concepts TEXT,
+          files_read TEXT,
+          files_modified TEXT,
+          prompt_number INTEGER,
+          discovery_tokens INTEGER DEFAULT 0,
+          created_at TEXT NOT NULL,
+          created_at_epoch INTEGER NOT NULL,
+          superseded_by INTEGER,
+          deprecated INTEGER DEFAULT 0,
+          deprecated_at INTEGER,
+          deprecation_reason TEXT,
+          decision_chain_id TEXT,
+          surprise_score REAL,
+          surprise_tier TEXT CHECK(surprise_tier IN ('routine', 'notable', 'surprising', 'anomalous')),
+          surprise_calculated_at INTEGER,
+          memory_tier TEXT CHECK(memory_tier IN ('core', 'working', 'archive', 'ephemeral')) DEFAULT 'working',
+          memory_tier_updated_at INTEGER,
+          reference_count INTEGER DEFAULT 0,
+          last_accessed_at INTEGER,
+          FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE,
+          FOREIGN KEY(superseded_by) REFERENCES observations(id) ON DELETE SET NULL
+        )
+      `);
+
+      // Copy data from old table
+      const columnList = columns.join(', ');
+      this.db.run(`
+        INSERT INTO observations_new (${columnList})
+        SELECT ${columnList} FROM observations
+      `);
+
+      // Drop old table and rename new one
+      this.db.run('DROP TABLE observations');
+      this.db.run('ALTER TABLE observations_new RENAME TO observations');
+
+      // Recreate indexes
+      this.db.run(`CREATE INDEX IF NOT EXISTS idx_observations_sdk_session ON observations(memory_session_id)`);
+      this.db.run(`CREATE INDEX IF NOT EXISTS idx_observations_project ON observations(project)`);
+      this.db.run(`CREATE INDEX IF NOT EXISTS idx_observations_type ON observations(type)`);
+      this.db.run(`CREATE INDEX IF NOT EXISTS idx_observations_created ON observations(created_at_epoch DESC)`);
+      this.db.run(`CREATE INDEX IF NOT EXISTS idx_observations_superseded_by ON observations(superseded_by)`);
+      this.db.run(`CREATE INDEX IF NOT EXISTS idx_observations_deprecated ON observations(deprecated)`);
+      this.db.run(`CREATE INDEX IF NOT EXISTS idx_observations_memory_tier ON observations(memory_tier)`);
+      this.db.run(`CREATE INDEX IF NOT EXISTS idx_observations_reference_count ON observations(reference_count DESC)`);
+      this.db.run(`CREATE INDEX IF NOT EXISTS idx_observations_last_accessed ON observations(last_accessed_at DESC)`);
+
+      // Recreate FTS5 triggers
+      this.db.run(`DROP TRIGGER IF EXISTS observations_ai`);
+      this.db.run(`DROP TRIGGER IF EXISTS observations_ad`);
+      this.db.run(`DROP TRIGGER IF EXISTS observations_au`);
+
+      this.db.run(`
+        CREATE TRIGGER observations_ai AFTER INSERT ON observations BEGIN
+          INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
+          VALUES (NEW.id, NEW.title, NEW.subtitle, NEW.narrative, NEW.text, NEW.facts, NEW.concepts);
+        END
+      `);
+      this.db.run(`
+        CREATE TRIGGER observations_ad AFTER DELETE ON observations BEGIN
+          INSERT INTO observations_fts(observations_fts, rowid, title, subtitle, narrative, text, facts, concepts)
+          VALUES ('delete', OLD.id, OLD.title, OLD.subtitle, OLD.narrative, OLD.text, OLD.facts, OLD.concepts);
+        END
+      `);
+      this.db.run(`
+        CREATE TRIGGER observations_au AFTER UPDATE ON observations BEGIN
+          INSERT INTO observations_fts(observations_fts, rowid, title, subtitle, narrative, text, facts, concepts)
+          VALUES ('delete', OLD.id, OLD.title, OLD.subtitle, OLD.narrative, OLD.text, OLD.facts, OLD.concepts);
+          INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
+          VALUES (NEW.id, NEW.title, NEW.subtitle, NEW.narrative, NEW.text, NEW.facts, NEW.concepts);
+        END
+      `);
+
+      this.db.run('COMMIT');
+
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(22, new Date().toISOString());
+
+      logger.debug('DB', 'Successfully added handoff observation type');
+    } catch (error) {
+      this.db.run('ROLLBACK');
+      throw error;
+    }
   }
 }
