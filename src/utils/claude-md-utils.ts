@@ -244,6 +244,27 @@ function isProjectRoot(folderPath: string): boolean {
 }
 
 /**
+ * Check if a folder path is excluded from CLAUDE.md generation.
+ * A folder is excluded if it starts with any path in the exclude list.
+ *
+ * @param folderPath - Absolute path to check
+ * @param excludePaths - Array of paths to exclude
+ * @returns true if folder should be excluded
+ */
+function isExcludedFolder(folderPath: string, excludePaths: string[]): boolean {
+  const normalizedFolder = path.resolve(folderPath);
+  for (const excludePath of excludePaths) {
+    const normalizedExclude = path.resolve(excludePath);
+    // Check if folder is within excluded path
+    if (normalizedFolder === normalizedExclude ||
+        normalizedFolder.startsWith(normalizedExclude + path.sep)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Update CLAUDE.md files for folders containing the given files.
  * Fetches timeline from worker API and writes formatted content.
  *
@@ -260,9 +281,20 @@ export async function updateFolderClaudeMdFiles(
   port: number,
   projectRoot?: string
 ): Promise<void> {
-  // Load settings to get configurable observation limit
+  // Load settings to get configurable observation limit and exclude list
   const settings = SettingsDefaultsManager.loadFromFile(SETTINGS_PATH);
   const limit = parseInt(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10) || 50;
+
+  // Parse exclude paths from settings
+  let excludePaths: string[] = [];
+  try {
+    const parsed = JSON.parse(settings.CLAUDE_MEM_FOLDER_MD_EXCLUDE || '[]');
+    if (Array.isArray(parsed)) {
+      excludePaths = parsed.filter((p): p is string => typeof p === 'string');
+    }
+  } catch {
+    logger.warn('FOLDER_INDEX', 'Failed to parse CLAUDE_MEM_FOLDER_MD_EXCLUDE setting');
+  }
 
   // Extract unique folder paths from file paths
   const folderPaths = new Set<string>();
@@ -286,6 +318,11 @@ export async function updateFolderClaudeMdFiles(
       // Skip project root - root CLAUDE.md should remain user-managed
       if (isProjectRoot(folderPath)) {
         logger.debug('FOLDER_INDEX', 'Skipping project root CLAUDE.md', { folderPath });
+        continue;
+      }
+      // Skip folders in exclude list
+      if (excludePaths.length > 0 && isExcludedFolder(folderPath, excludePaths)) {
+        logger.debug('FOLDER_INDEX', 'Skipping excluded folder', { folderPath });
         continue;
       }
       folderPaths.add(folderPath);
