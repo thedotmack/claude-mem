@@ -51,7 +51,7 @@
   <a href="docs/i18n/README.no.md">🇳🇴 Norsk</a>
 </p>
 
-<h4 align="center">Persistent memory compression system built for <a href="https://claude.com/claude-code" target="_blank">Claude Code</a>.</h4>
+<h4 align="center">Persistent memory compression system built for <a href="https://claude.com/claude-code" target="_blank">Claude Code</a> and <a href="https://opencode.ai" target="_blank">OpenCode</a>.</h4>
 
 <p align="center">
   <a href="LICENSE">
@@ -232,6 +232,7 @@ See **[Beta Features Documentation](https://docs.claude-mem.ai/beta-features)** 
 
 - **Node.js**: 18.0.0 or higher
 - **Claude Code**: Latest version with plugin support
+- **OpenCode**: Supported via `.opencode/` plugin (see [OpenCode Installation](.opencode/INSTALL.md))
 - **Bun**: JavaScript runtime and process manager (auto-installed if missing)
 - **uv**: Python package manager for vector search (auto-installed if missing)
 - **SQLite 3**: For persistent storage (bundled)
@@ -313,4 +314,4 @@ See the [LICENSE](LICENSE) file for full details.
 
 ---
 
-**Built with Claude Agent SDK** | **Powered by Claude Code** | **Made with TypeScript**
+**Built with Claude Agent SDK** | **Powered by Claude Code & OpenCode** | **Made with TypeScript**
