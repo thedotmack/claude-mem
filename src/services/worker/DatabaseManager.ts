@@ -6,6 +6,19 @@
  * - Provide centralized access to SessionStore and SessionSearch
  * - High-level database operations
  * - ChromaSync integration
+ * 
+ * ## ChromaSync Lifecycle (CRITICAL)
+ * 
+ * ChromaSync is instantiated ONCE per worker process:
+ * - Created in initialize() 
+ * - Lives until close() on worker shutdown
+ * - NO new instances created between operations
+ * 
+ * MCP Connection Pattern:
+ * - First Chroma operation spawns uvx chroma-mcp subprocess
+ * - Subsequent operations reuse the same connection
+ * - Connection closed only on worker shutdown
+ * - See docs/architecture/mcp-connection-lifecycle.md for details
  */
 
 import { SessionStore } from '../sqlite/SessionStore.js';
@@ -21,6 +34,15 @@ export class DatabaseManager {
 
   /**
    * Initialize database connection (once, stays open)
+   * 
+   * Creates singleton instances of:
+   * - SessionStore (SQLite database)
+   * - SessionSearch (SQLite FTS5)
+   * - ChromaSync (MCP client for vector search)
+   * 
+   * ChromaSync note: The MCP connection to chroma-mcp is NOT established here.
+   * The uvx subprocess is spawned lazily on first search/sync operation.
+   * After that, the connection persists for all subsequent operations.
    */
   async initialize(): Promise<void> {
     // Open database connection (ONCE)
@@ -28,6 +50,7 @@ export class DatabaseManager {
     this.sessionSearch = new SessionSearch();
 
     // Initialize ChromaSync (lazy - connects on first search, not at startup)
+    // This creates the ChromaSync instance but doesn't spawn uvx yet
     this.chromaSync = new ChromaSync('claude-mem');
 
     logger.info('DB', 'Database initialized');
@@ -35,6 +58,12 @@ export class DatabaseManager {
 
   /**
    * Close database connection and cleanup all resources
+   * 
+   * Called ONLY on worker shutdown. Terminates:
+   * - ChromaSync MCP connection + uvx subprocess
+   * - SQLite database connections
+   * 
+   * This is the ONLY place where chromaSync.close() should be called.
    */
   async close(): Promise<void> {
     // Close ChromaSync first (terminates uvx/python processes)
