@@ -19,6 +19,9 @@ import { logger } from '../utils/logger.js';
 declare const __DEFAULT_PACKAGE_VERSION__: string;
 const packageVersion = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DEFAULT_PACKAGE_VERSION__ : '0.0.0-dev';
 
+// Periodic cleanup interval (15 minutes) - prevents orphaned process accumulation
+const ORPHAN_CLEANUP_INTERVAL_MS = 15 * 60 * 1000;
+
 // Infrastructure imports
 import {
   writePidFile,
@@ -26,6 +29,7 @@ import {
   removePidFile,
   getPlatformTimeout,
   cleanupOrphanedProcesses,
+  cleanupOrphanedClaudeProcesses,
   spawnDaemon,
   createSignalHandler
 } from './infrastructure/ProcessManager.js';
@@ -102,6 +106,9 @@ export class WorkerService {
   private mcpReady: boolean = false;
   private initializationCompleteFlag: boolean = false;
   private isShuttingDown: boolean = false;
+
+  // Periodic cleanup interval handle
+  private cleanupIntervalId: ReturnType<typeof setInterval> | null = null;
 
   // Service layer
   private dbManager: DatabaseManager;
@@ -234,7 +241,22 @@ export class WorkerService {
    */
   private async initializeBackground(): Promise<void> {
     try {
+      // Clean up orphaned processes from previous worker sessions
       await cleanupOrphanedProcesses();
+      await cleanupOrphanedClaudeProcesses();
+
+      // Start periodic cleanup to prevent orphan accumulation over long-running sessions
+      this.cleanupIntervalId = setInterval(async () => {
+        logger.info('SYSTEM', 'Running periodic orphan cleanup');
+        try {
+          await cleanupOrphanedProcesses();
+          await cleanupOrphanedClaudeProcesses();
+          logger.info('SYSTEM', 'Periodic orphan cleanup completed');
+        } catch (error) {
+          logger.warn('SYSTEM', 'Periodic orphan cleanup failed', {}, error as Error);
+        }
+      }, ORPHAN_CLEANUP_INTERVAL_MS);
+      logger.info('SYSTEM', 'Periodic orphan cleanup scheduled', { intervalMs: ORPHAN_CLEANUP_INTERVAL_MS });
 
       // Load mode configuration
       const { ModeManager } = await import('./domain/ModeManager.js');
@@ -394,6 +416,13 @@ export class WorkerService {
    * Shutdown the worker service
    */
   async shutdown(): Promise<void> {
+    // Clear periodic cleanup interval
+    if (this.cleanupIntervalId) {
+      clearInterval(this.cleanupIntervalId);
+      this.cleanupIntervalId = null;
+      logger.info('SYSTEM', 'Periodic orphan cleanup stopped');
+    }
+
     await performGracefulShutdown({
       server: this.server.getHttpServer(),
       sessionManager: this.sessionManager,
