@@ -244,6 +244,23 @@ Settings are managed in `~/.claude-mem/settings.json` (auto-created with default
 
 See the **[Configuration Guide](https://docs.claude-mem.ai/configuration)** for all available settings and examples.
 
+### Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `CLAUDE_MEM_CLEANUP_INTERVAL_MS` | Interval for orphaned process cleanup (milliseconds) | `900000` (15 min) |
+
+### Process Management
+
+Claude-Mem automatically cleans up orphaned processes (chroma-mcp, Claude SDK) that may accumulate over time. The cleanup:
+
+- Runs periodically (default: every 15 minutes)
+- Only kills truly orphaned processes (PPID = 1 or init-like)
+- Supports containerized environments (tini, dumb-init, etc.)
+- Never kills active processes with valid parents
+
+To disable periodic cleanup, set a very high interval: `CLAUDE_MEM_CLEANUP_INTERVAL_MS=999999999999`
+
 ---
 
 ## Development
