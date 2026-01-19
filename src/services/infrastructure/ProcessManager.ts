@@ -146,17 +146,53 @@ export async function forceKillProcess(pid: number): Promise<void> {
 }
 
 /**
- * Check if a process is orphaned (has PPID of 1 or init)
- * On Unix, orphaned processes are adopted by init (PID 1)
+ * Known init-like process names that adopt orphaned processes
+ * In containers, the init process may not be PID 1 (e.g., tini, dumb-init)
+ */
+const KNOWN_INIT_PROCESS_NAMES = ['init', 'systemd', 'tini', 'dumb-init', 'docker-init', 's6-svscan', 'runsv'];
+
+/**
+ * Check if a given PID is an init-like process (adopts orphans)
+ * This handles containers where init may not be PID 1
+ */
+async function isInitLikeProcess(ppid: number): Promise<boolean> {
+  // PID 1 is always init on Unix
+  if (ppid === 1) return true;
+
+  // PID 0 is the kernel scheduler, not a valid parent for user processes
+  if (ppid === 0) return true;
+
+  try {
+    // Get the process name (comm) to check if it's a known init
+    const { stdout } = await execAsync(`cat /proc/${ppid}/comm 2>/dev/null || echo "unknown"`, { timeout: 5000 });
+    const comm = stdout.trim().toLowerCase();
+
+    if (KNOWN_INIT_PROCESS_NAMES.includes(comm)) {
+      logger.debug('SYSTEM', 'Parent is init-like process', { ppid, comm });
+      return true;
+    }
+
+    return false;
+  } catch {
+    // If we can't determine, only consider PID 1 as init (safe default)
+    return ppid === 1;
+  }
+}
+
+/**
+ * Check if a process is orphaned (has PPID of 1 or init-like process)
+ * On Unix, orphaned processes are adopted by init (PID 1) or container init (tini, dumb-init, etc.)
  * On Windows, we check if the parent process exists
  *
  * CRITICAL FIX: This prevents killing ACTIVE Claude processes that have
  * a valid parent. Only truly orphaned processes (adopted by init) should be killed.
+ *
+ * SAFETY: On any error or uncertainty, returns FALSE to avoid killing active processes.
  */
 export async function isOrphanedProcess(pid: number): Promise<boolean> {
   // SECURITY: Validate PID is a positive integer
   if (!Number.isInteger(pid) || pid <= 0) {
-    return false;
+    return false; // Invalid PID, don't kill
   }
 
   const isWindows = process.platform === 'win32';
@@ -168,34 +204,49 @@ export async function isOrphanedProcess(pid: number): Promise<boolean> {
       const { stdout } = await execAsync(cmd, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND });
       const ppid = parseInt(stdout.trim(), 10);
 
+      // SAFETY: Can't determine parent = assume NOT orphaned
       if (isNaN(ppid) || ppid <= 0) {
-        return true; // Can't determine parent, consider orphaned
+        logger.debug('SYSTEM', 'Cannot determine PPID, assuming not orphaned (safe)', { pid });
+        return false;
       }
 
       // Check if parent is still alive
       try {
         const parentCheck = `powershell -NoProfile -NonInteractive -Command "Get-Process -Id ${ppid} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id"`;
         const { stdout: parentStdout } = await execAsync(parentCheck, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND });
-        return !parentStdout.trim(); // Orphaned if parent doesn't exist
+        const parentExists = !!parentStdout.trim();
+
+        if (!parentExists) {
+          logger.debug('SYSTEM', 'Parent process does not exist, process is orphaned', { pid, ppid });
+          return true;
+        }
+        return false;
       } catch {
-        return true; // Parent check failed, assume orphaned
+        // SAFETY: Parent check failed = assume NOT orphaned
+        logger.debug('SYSTEM', 'Parent check failed, assuming not orphaned (safe)', { pid, ppid });
+        return false;
       }
     } else {
-      // Unix/Linux: Get PPID and check if it's 1 (init)
-      const { stdout } = await execAsync(`ps -o ppid= -p ${pid} 2>/dev/null || echo "0"`, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND });
+      // Unix/Linux: Get PPID and check if it's init or init-like
+      const { stdout } = await execAsync(`ps -o ppid= -p ${pid} 2>/dev/null`, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND });
       const ppid = parseInt(stdout.trim(), 10);
 
-      // Process is orphaned if PPID is 1 (init/systemd)
-      // or if we couldn't determine the PPID (process may have just exited)
-      if (isNaN(ppid) || ppid <= 0) {
-        return true; // Can't determine, assume orphaned
+      // SAFETY: Can't determine PPID = assume NOT orphaned
+      if (isNaN(ppid) || ppid < 0) {
+        logger.debug('SYSTEM', 'Cannot determine PPID, assuming not orphaned (safe)', { pid });
+        return false;
       }
 
-      return ppid === 1;
+      // Check if parent is init or init-like (handles containers)
+      const isOrphaned = await isInitLikeProcess(ppid);
+      if (isOrphaned) {
+        logger.debug('SYSTEM', 'Process is orphaned (parent is init-like)', { pid, ppid });
+      }
+      return isOrphaned;
     }
   } catch (error) {
-    // If we can't check, assume NOT orphaned to avoid killing active processes
-    logger.debug('SYSTEM', 'Failed to check if process is orphaned, assuming active', { pid }, error as Error);
+    // SAFETY: Any error = assume NOT orphaned to avoid killing active processes
+    logger.debug('SYSTEM', 'Failed to check if process is orphaned, assuming active (safe)', { pid }, error as Error);
     return false;
   }
 }
