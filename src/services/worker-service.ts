@@ -19,8 +19,13 @@ import { logger } from '../utils/logger.js';
 declare const __DEFAULT_PACKAGE_VERSION__: string;
 const packageVersion = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DEFAULT_PACKAGE_VERSION__ : '0.0.0-dev';
 
-// Periodic cleanup interval (15 minutes) - prevents orphaned process accumulation
-const ORPHAN_CLEANUP_INTERVAL_MS = 15 * 60 * 1000;
+// Periodic cleanup interval - prevents orphaned process accumulation
+// Configurable via CLAUDE_MEM_CLEANUP_INTERVAL_MS env var (default: 15 minutes)
+const DEFAULT_CLEANUP_INTERVAL_MS = 15 * 60 * 1000;
+const ORPHAN_CLEANUP_INTERVAL_MS = parseInt(
+  process.env.CLAUDE_MEM_CLEANUP_INTERVAL_MS || String(DEFAULT_CLEANUP_INTERVAL_MS),
+  10
+) || DEFAULT_CLEANUP_INTERVAL_MS;
 
 // Infrastructure imports
 import {
