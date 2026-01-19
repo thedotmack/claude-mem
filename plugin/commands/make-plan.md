@@ -1,3 +1,8 @@
+---
+description: "Create an implementation plan with documentation discovery"
+argument-hint: "[feature or task description]"
+---
+
 You are an ORCHESTRATOR.
 
 Create an LLM-friendly plan in phases that can be executed consecutively in new chat contexts.

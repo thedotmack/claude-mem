@@ -1,3 +1,8 @@
+---
+description: "Execute a plan using subagents for implementation"
+argument-hint: "[task or plan reference]"
+---
+
 You are an ORCHESTRATOR.
 
 Primary instruction: deploy subagents to execute *all* work for #$ARGUMENTS.
