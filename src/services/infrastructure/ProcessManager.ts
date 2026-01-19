@@ -146,6 +146,61 @@ export async function forceKillProcess(pid: number): Promise<void> {
 }
 
 /**
+ * Check if a process is orphaned (has PPID of 1 or init)
+ * On Unix, orphaned processes are adopted by init (PID 1)
+ * On Windows, we check if the parent process exists
+ *
+ * CRITICAL FIX: This prevents killing ACTIVE Claude processes that have
+ * a valid parent. Only truly orphaned processes (adopted by init) should be killed.
+ */
+export async function isOrphanedProcess(pid: number): Promise<boolean> {
+  // SECURITY: Validate PID is a positive integer
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return false;
+  }
+
+  const isWindows = process.platform === 'win32';
+
+  try {
+    if (isWindows) {
+      // Windows: Check if parent process exists
+      const cmd = `powershell -NoProfile -NonInteractive -Command "(Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}').ParentProcessId"`;
+      const { stdout } = await execAsync(cmd, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND });
+      const ppid = parseInt(stdout.trim(), 10);
+
+      if (isNaN(ppid) || ppid <= 0) {
+        return true; // Can't determine parent, consider orphaned
+      }
+
+      // Check if parent is still alive
+      try {
+        const parentCheck = `powershell -NoProfile -NonInteractive -Command "Get-Process -Id ${ppid} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id"`;
+        const { stdout: parentStdout } = await execAsync(parentCheck, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND });
+        return !parentStdout.trim(); // Orphaned if parent doesn't exist
+      } catch {
+        return true; // Parent check failed, assume orphaned
+      }
+    } else {
+      // Unix/Linux: Get PPID and check if it's 1 (init)
+      const { stdout } = await execAsync(`ps -o ppid= -p ${pid} 2>/dev/null || echo "0"`, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND });
+      const ppid = parseInt(stdout.trim(), 10);
+
+      // Process is orphaned if PPID is 1 (init/systemd)
+      // or if we couldn't determine the PPID (process may have just exited)
+      if (isNaN(ppid) || ppid <= 0) {
+        return true; // Can't determine, assume orphaned
+      }
+
+      return ppid === 1;
+    }
+  } catch (error) {
+    // If we can't check, assume NOT orphaned to avoid killing active processes
+    logger.debug('SYSTEM', 'Failed to check if process is orphaned, assuming active', { pid }, error as Error);
+    return false;
+  }
+}
+
+/**
  * Wait for processes to fully exit
  */
 export async function waitForProcessesExit(pids: number[], timeoutMs: number): Promise<void> {
@@ -235,15 +290,36 @@ export async function cleanupOrphanedProcesses(): Promise<void> {
     return;
   }
 
+  // CRITICAL FIX: Filter to only truly orphaned processes (PPID === 1)
+  // This prevents killing ACTIVE processes that have a valid parent
+  const orphanedPids: number[] = [];
+  for (const pid of pids) {
+    const orphaned = await isOrphanedProcess(pid);
+    if (orphaned) {
+      orphanedPids.push(pid);
+    } else {
+      logger.debug('SYSTEM', 'Skipping non-orphaned chroma-mcp process', { pid });
+    }
+  }
+
+  if (orphanedPids.length === 0) {
+    logger.debug('SYSTEM', 'No truly orphaned chroma-mcp processes found', {
+      candidateCount: pids.length,
+      orphanedCount: 0
+    });
+    return;
+  }
+
   logger.info('SYSTEM', 'Cleaning up orphaned chroma-mcp processes', {
     platform: isWindows ? 'Windows' : 'Unix',
-    count: pids.length,
-    pids
+    candidateCount: pids.length,
+    orphanedCount: orphanedPids.length,
+    pids: orphanedPids
   });
 
-  // Kill all found processes
+  // Kill only verified orphaned processes
   if (isWindows) {
-    for (const pid of pids) {
+    for (const pid of orphanedPids) {
       // SECURITY: Double-check PID validation before using in taskkill command
       if (!Number.isInteger(pid) || pid <= 0) {
         logger.warn('SYSTEM', 'Skipping invalid PID', { pid });
@@ -257,7 +333,7 @@ export async function cleanupOrphanedProcesses(): Promise<void> {
       }
     }
   } else {
-    for (const pid of pids) {
+    for (const pid of orphanedPids) {
       try {
         process.kill(pid, 'SIGKILL');
       } catch (error) {
@@ -267,7 +343,7 @@ export async function cleanupOrphanedProcesses(): Promise<void> {
     }
   }
 
-  logger.info('SYSTEM', 'Orphaned processes cleaned up', { count: pids.length });
+  logger.info('SYSTEM', 'Orphaned processes cleaned up', { count: orphanedPids.length });
 }
 
 /**
@@ -335,15 +411,38 @@ export async function cleanupOrphanedClaudeProcesses(): Promise<void> {
     return;
   }
 
+  // CRITICAL FIX: Filter to only truly orphaned processes (PPID === 1)
+  // This prevents killing ACTIVE Claude Code processes that the user is interacting with!
+  // The bug was: this function was killing ALL Claude processes matching the pattern,
+  // including the ones actively being used for the current session.
+  const orphanedPids: number[] = [];
+  for (const pid of pids) {
+    const orphaned = await isOrphanedProcess(pid);
+    if (orphaned) {
+      orphanedPids.push(pid);
+    } else {
+      logger.debug('SYSTEM', 'Skipping non-orphaned Claude process (has active parent)', { pid });
+    }
+  }
+
+  if (orphanedPids.length === 0) {
+    logger.debug('SYSTEM', 'No truly orphaned Claude processes found', {
+      candidateCount: pids.length,
+      orphanedCount: 0
+    });
+    return;
+  }
+
   logger.info('SYSTEM', 'Cleaning up orphaned Claude processes', {
     platform: isWindows ? 'Windows' : 'Unix',
-    count: pids.length,
-    pids
+    candidateCount: pids.length,
+    orphanedCount: orphanedPids.length,
+    pids: orphanedPids
   });
 
-  // Kill all found processes - use SIGTERM first for graceful shutdown, then SIGKILL
+  // Kill only verified orphaned processes - use SIGTERM first for graceful shutdown, then SIGKILL
   if (isWindows) {
-    for (const pid of pids) {
+    for (const pid of orphanedPids) {
       if (!Number.isInteger(pid) || pid <= 0) {
         logger.warn('SYSTEM', 'Skipping invalid PID', { pid });
         continue;
@@ -355,7 +454,7 @@ export async function cleanupOrphanedClaudeProcesses(): Promise<void> {
       }
     }
   } else {
-    for (const pid of pids) {
+    for (const pid of orphanedPids) {
       try {
         // Try SIGTERM first for graceful shutdown
         process.kill(pid, 'SIGTERM');
@@ -368,7 +467,7 @@ export async function cleanupOrphanedClaudeProcesses(): Promise<void> {
     await new Promise(r => setTimeout(r, 500));
 
     // Force kill any remaining processes
-    for (const pid of pids) {
+    for (const pid of orphanedPids) {
       try {
         process.kill(pid, 0); // Check if still alive
         process.kill(pid, 'SIGKILL'); // Force kill if still running
@@ -379,7 +478,7 @@ export async function cleanupOrphanedClaudeProcesses(): Promise<void> {
     }
   }
 
-  logger.info('SYSTEM', 'Orphaned Claude processes cleaned up', { count: pids.length });
+  logger.info('SYSTEM', 'Orphaned Claude processes cleaned up', { count: orphanedPids.length });
 }
 
 /**
