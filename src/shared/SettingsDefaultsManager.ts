@@ -5,12 +5,31 @@
  * Provides methods to get defaults with optional environment variable overrides.
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { DEFAULT_OBSERVATION_TYPES_STRING, DEFAULT_OBSERVATION_CONCEPTS_STRING } from '../constants/observation-metadata.js';
 // NOTE: Do NOT import logger here - it creates a circular dependency
 // logger.ts depends on SettingsDefaultsManager for its initialization
+
+// SECURITY: Settings file permissions (owner read/write only)
+// Protects API keys from other users on shared systems
+const SETTINGS_FILE_MODE = 0o600;
+
+/**
+ * Write settings file with secure permissions (0600)
+ * SECURITY: Restricts file access to owner only, protecting API keys
+ */
+export function writeSettingsFileSecure(filePath: string, content: string): void {
+  writeFileSync(filePath, content, { encoding: 'utf-8', mode: SETTINGS_FILE_MODE });
+  // Ensure permissions are set even if file already existed
+  // (writeFileSync mode only applies to new files)
+  try {
+    chmodSync(filePath, SETTINGS_FILE_MODE);
+  } catch {
+    // chmod may fail on some filesystems (e.g., Windows), continue anyway
+  }
+}
 
 export interface SettingsDefaults {
   CLAUDE_MEM_MODEL: string;
@@ -140,9 +159,9 @@ export class SettingsDefaultsManager {
           if (!existsSync(dir)) {
             mkdirSync(dir, { recursive: true });
           }
-          writeFileSync(settingsPath, JSON.stringify(defaults, null, 2), 'utf-8');
+          writeSettingsFileSecure(settingsPath, JSON.stringify(defaults, null, 2));
           // Use console instead of logger to avoid circular dependency
-          console.log('[SETTINGS] Created settings file with defaults:', settingsPath);
+          console.log('[SETTINGS] Created settings file with defaults (mode 0600):', settingsPath);
         } catch (error) {
           console.warn('[SETTINGS] Failed to create settings file, using in-memory defaults:', settingsPath, error);
         }
@@ -160,8 +179,8 @@ export class SettingsDefaultsManager {
 
         // Auto-migrate the file to flat schema
         try {
-          writeFileSync(settingsPath, JSON.stringify(flatSettings, null, 2), 'utf-8');
-          console.log('[SETTINGS] Migrated settings file from nested to flat schema:', settingsPath);
+          writeSettingsFileSecure(settingsPath, JSON.stringify(flatSettings, null, 2));
+          console.log('[SETTINGS] Migrated settings file from nested to flat schema (mode 0600):', settingsPath);
         } catch (error) {
           console.warn('[SETTINGS] Failed to auto-migrate settings file:', settingsPath, error);
           // Continue with in-memory migration even if write fails

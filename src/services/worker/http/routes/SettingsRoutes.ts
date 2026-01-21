@@ -7,7 +7,7 @@
 
 import express, { Request, Response } from 'express';
 import path from 'path';
-import { readFileSync, writeFileSync, existsSync, renameSync, mkdirSync } from 'fs';
+import { readFileSync, existsSync, renameSync, mkdirSync } from 'fs';
 import { homedir } from 'os';
 import { getPackageRoot } from '../../../../shared/paths.js';
 import { logger } from '../../../../utils/logger.js';
@@ -15,7 +15,7 @@ import { SettingsManager } from '../../SettingsManager.js';
 import { getBranchInfo, switchBranch, pullUpdates } from '../../BranchManager.js';
 import { ModeManager } from '../../domain/ModeManager.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
-import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
+import { SettingsDefaultsManager, writeSettingsFileSecure } from '../../../../shared/SettingsDefaultsManager.js';
 import { clearPortCache } from '../../../../shared/worker-utils.js';
 
 export class SettingsRoutes extends BaseRouteHandler {
@@ -129,8 +129,8 @@ export class SettingsRoutes extends BaseRouteHandler {
       }
     }
 
-    // Write back
-    writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf-8');
+    // Write back with secure permissions (0600)
+    writeSettingsFileSecure(settingsPath, JSON.stringify(settings, null, 2));
 
     // Clear port cache to force re-reading from updated settings
     clearPortCache();
@@ -407,8 +407,8 @@ export class SettingsRoutes extends BaseRouteHandler {
         mkdirSync(dir, { recursive: true });
       }
 
-      writeFileSync(settingsPath, JSON.stringify(defaults, null, 2), 'utf-8');
-      logger.info('SETTINGS', 'Created settings file with defaults', { settingsPath });
+      writeSettingsFileSecure(settingsPath, JSON.stringify(defaults, null, 2));
+      logger.info('SETTINGS', 'Created settings file with defaults (mode 0600)', { settingsPath });
     }
   }
 }
