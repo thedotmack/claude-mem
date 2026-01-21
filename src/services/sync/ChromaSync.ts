@@ -200,9 +200,19 @@ export class ChromaSync {
         errorMessage.includes('MCP error -32000');
 
       if (isConnectionError) {
+        // FIX: Close transport to kill subprocess before resetting state
+        // Without this, old chroma-mcp processes leak as zombies
+        if (this.transport) {
+          try {
+            await this.transport.close();
+          } catch (closeErr) {
+            logger.debug('CHROMA_SYNC', 'Transport close error (expected if already dead)', {}, closeErr as Error);
+          }
+        }
         // Reset connection state so next call attempts reconnect
         this.connected = false;
         this.client = null;
+        this.transport = null;
         logger.error('CHROMA_SYNC', 'Connection lost during collection check',
           { collection: this.collectionName }, error as Error);
         throw new Error(`Chroma connection lost: ${errorMessage}`);
@@ -860,9 +870,18 @@ export class ChromaSync {
         errorMessage.includes('MCP error -32000');
 
       if (isConnectionError) {
+        // FIX: Close transport to kill subprocess before resetting state
+        if (this.transport) {
+          try {
+            await this.transport.close();
+          } catch (closeErr) {
+            logger.debug('CHROMA_SYNC', 'Transport close error (expected if already dead)', {}, closeErr as Error);
+          }
+        }
         // Reset connection state so next call attempts reconnect
         this.connected = false;
         this.client = null;
+        this.transport = null;
         logger.error('CHROMA_SYNC', 'Connection lost during query',
           { project: this.project, query }, error as Error);
         throw new Error(`Chroma query failed - connection lost: ${errorMessage}`);
