@@ -221,6 +221,16 @@ export class WorkerService {
 
     // Start HTTP server FIRST - make port available immediately
     await this.server.listen(port, host);
+
+    // Worker writes its own PID - reliable on all platforms
+    // This happens after listen() succeeds, ensuring the worker is actually ready
+    // On Windows, the spawner's PID is cmd.exe (useless), so worker must write its own
+    writePidFile({
+      pid: process.pid,
+      port,
+      startedAt: new Date().toISOString()
+    });
+
     logger.info('SYSTEM', 'Worker started', { host, port, pid: process.pid });
 
     // Do slow initialization in background (non-blocking)
@@ -482,7 +492,8 @@ async function main() {
         exitWithStatus('error', 'Failed to spawn worker daemon');
       }
 
-      writePidFile({ pid, port, startedAt: new Date().toISOString() });
+      // PID file is written by the worker itself after listen() succeeds
+      // This is race-free and works correctly on Windows where cmd.exe PID is useless
 
       const healthy = await waitForHealth(port, getPlatformTimeout(30000));
       if (!healthy) {
@@ -526,7 +537,8 @@ async function main() {
         process.exit(0);
       }
 
-      writePidFile({ pid, port, startedAt: new Date().toISOString() });
+      // PID file is written by the worker itself after listen() succeeds
+      // This is race-free and works correctly on Windows where cmd.exe PID is useless
 
       const healthy = await waitForHealth(port, getPlatformTimeout(30000));
       if (!healthy) {
