@@ -2,6 +2,28 @@
 
 All notable changes to claude-mem.
 
+## [v9.0.6] - 2026-01-22
+
+## Windows Console Popup Fix
+
+This release eliminates the annoying console window popups that Windows users experienced when claude-mem spawned background processes.
+
+### Fixed
+- **Windows console popups eliminated** - Daemon spawn and Chroma operations no longer create visible console windows (#748, #708, #681, #676)
+- **Race condition in PID file writing** - Worker now writes its own PID file after listen() succeeds, ensuring reliable process tracking on all platforms
+
+### Changed
+- **Chroma temporarily disabled on Windows** - Vector search is disabled on Windows while we migrate to a popup-free architecture. Keyword search and all other memory features continue to work. A follow-up release will re-enable Chroma.
+- **Slash command discoverability** - Added YAML frontmatter to `/do` and `/make-plan` commands
+
+### Technical Details
+- Uses WMIC for detached process spawning on Windows
+- PID file location unchanged, but now written by worker process
+- Cross-platform: Linux/macOS behavior unchanged
+
+### Contributors
+- @bigph00t (Alexander Knigge)
+
 ## [v9.0.5] - 2026-01-14
 
 ## Major Worker Service Cleanup
@@ -1250,40 +1272,4 @@ Patch release for bug fixes and minor improvements
 - Remove all better-sqlite3 references from codebase (#357)
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.3.2...v7.3.3
-
-## [v7.3.2] - 2025-12-16
-
-## 🪟 Windows Console Fix
-
-Fixes blank console windows appearing for Windows 11 users during claude-mem operations.
-
-### What Changed
-
-- **Windows**: Uses PowerShell `Start-Process -WindowStyle Hidden` to properly hide worker process
-- **Security**: Added PowerShell string escaping to follow security best practices
-- **Unix/Mac**: No changes (continues to work as before)
-
-### Root Cause
-
-The issue was caused by a Node.js limitation where `windowsHide: true` doesn't work with `detached: true` in `child_process.spawn()`. This affects both Bun and Node.js since Bun inherits Node.js process spawning semantics.
-
-See: https://github.com/nodejs/node/issues/21825
-
-### Security Note
-
-While all paths in the PowerShell command are application-controlled (not user input), we've added proper escaping to follow security best practices. If an attacker could modify bun installation paths or plugin directories, they would already have full filesystem access including the database.
-
-### Related
-
-- Fixes #304 (Multiple visible console windows)
-- Merged PR #339
-- Testing documented in PR #315
-
-### Breaking Changes
-
-None - fully backward compatible.
-
----
-
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.3.1...v7.3.2
 
