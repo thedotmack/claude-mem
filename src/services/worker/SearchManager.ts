@@ -1846,4 +1846,115 @@ export class SearchManager {
       };
     }
   }
+
+  /**
+   * Tool handler: recall
+   *
+   * Fetch full observation details by IDs. Used as step 2 of the /recall skill workflow:
+   * 1. Claude searches with /api/search to get an index of results
+   * 2. Claude decides which observations are relevant based on context
+   * 3. Claude fetches full details with /api/recall?ids=1,2,3
+   *
+   * GET /api/recall?ids=1,2,3&project=...
+   */
+  async recall(args: any): Promise<any> {
+    const { ids, project } = args;
+
+    if (!ids) {
+      return {
+        content: [{
+          type: 'text' as const,
+          text: 'Error: ids parameter is required. Example: /api/recall?ids=123,456,789'
+        }],
+        isError: true
+      };
+    }
+
+    // Parse IDs from comma-separated string or array
+    let idList: number[];
+    if (typeof ids === 'string') {
+      idList = ids.split(',').map((id: string) => parseInt(id.trim(), 10)).filter((id: number) => !isNaN(id));
+    } else if (Array.isArray(ids)) {
+      idList = ids.map((id: any) => parseInt(id, 10)).filter((id: number) => !isNaN(id));
+    } else {
+      idList = [parseInt(ids, 10)].filter((id: number) => !isNaN(id));
+    }
+
+    if (idList.length === 0) {
+      return {
+        content: [{
+          type: 'text' as const,
+          text: 'Error: No valid observation IDs provided. IDs should be numbers, e.g., ids=123,456,789'
+        }],
+        isError: true
+      };
+    }
+
+    // Fetch full observations by IDs
+    const observations = this.sessionStore.getObservationsByIds(
+      idList,
+      { orderBy: 'date_desc', project }
+    );
+
+    if (observations.length === 0) {
+      return {
+        content: [{
+          type: 'text' as const,
+          text: `No observations found for IDs: ${idList.join(', ')}`
+        }]
+      };
+    }
+
+    // Format full observation details for Claude
+    const lines: string[] = [];
+    lines.push(`# Retrieved Memories`);
+    lines.push('');
+    lines.push(`Fetched ${observations.length} observation(s):`);
+    lines.push('');
+
+    for (const obs of observations) {
+      const date = new Date(obs.created_at_epoch).toLocaleDateString('en-US', {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric'
+      });
+      const time = new Date(obs.created_at_epoch).toLocaleTimeString('en-US', {
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true
+      });
+      const icon = ModeManager.getInstance().getTypeIcon(obs.type);
+
+      lines.push('---');
+      lines.push('');
+      lines.push(`## ${icon} ${obs.title || 'Untitled'}`);
+      lines.push(`**ID:** #${obs.id} | **Type:** ${obs.type} | **Date:** ${date} ${time}`);
+
+      if (obs.files_modified || obs.files_read) {
+        const files = obs.files_modified || obs.files_read || '';
+        if (files) {
+          lines.push(`**Files:** ${files}`);
+        }
+      }
+
+      lines.push('');
+
+      // Include full narrative (the actual memory content)
+      if (obs.narrative) {
+        lines.push(obs.narrative);
+        lines.push('');
+      }
+    }
+
+    lines.push('---');
+    lines.push('');
+    lines.push(`*Use this context to help with the current task.*`);
+
+    return {
+      content: [{
+        type: 'text' as const,
+        text: lines.join('\n')
+      }]
+    };
+  }
 }

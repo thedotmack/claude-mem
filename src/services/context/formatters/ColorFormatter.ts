@@ -71,12 +71,20 @@ export function renderColorColumnKey(): string[] {
  */
 export function renderColorContextIndex(): string[] {
   return [
-    `${colors.dim}Context Index: This semantic index (titles, types, files, tokens) is usually sufficient to understand past work.${colors.reset}`,
+    `${colors.dim}Context Index: This semantic index (titles, types, files, tokens) shows your past work.${colors.reset}`,
     '',
-    `${colors.dim}When you need implementation details, rationale, or debugging context:${colors.reset}`,
-    `${colors.dim}  - Use MCP tools (search, get_observations) to fetch full observations on-demand${colors.reset}`,
-    `${colors.dim}  - Critical types ( bugfix, decision) often need detailed fetching${colors.reset}`,
-    `${colors.dim}  - Trust this index over re-reading code for past decisions and learnings${colors.reset}`,
+    `${colors.bright}${colors.yellow}IMPORTANT - Use /recall for Memory Retrieval:${colors.reset}`,
+    `${colors.dim}Before answering questions about past work, decisions, or implementations:${colors.reset}`,
+    `${colors.dim}  1. Use ${colors.cyan}/recall [topic]${colors.reset}${colors.dim} to check your memory first${colors.reset}`,
+    `${colors.dim}  2. This prevents repeating mistakes and leverages past learnings${colors.reset}`,
+    '',
+    `${colors.bright}Trigger conditions - Use /recall when:${colors.reset}`,
+    `${colors.dim}  - User asks "How did we...", "What was the approach for...", "Why did we..."${colors.reset}`,
+    `${colors.dim}  - You're about to implement something you may have done before${colors.reset}`,
+    `${colors.dim}  - You feel uncertain about context you should have${colors.reset}`,
+    `${colors.dim}  - User references something from a previous session${colors.reset}`,
+    '',
+    `${colors.dim}Example: ${colors.cyan}/recall how we fixed the auth bug${colors.reset}`,
     ''
   ];
 }
@@ -226,7 +234,7 @@ export function renderColorFooter(totalDiscoveryTokens: number, totalReadTokens:
   const workTokensK = Math.round(totalDiscoveryTokens / 1000);
   return [
     '',
-    `${colors.dim}Access ${workTokensK}k tokens of past research & decisions for just ${totalReadTokens.toLocaleString()}t. Use MCP search tools to access memories by ID.${colors.reset}`
+    `${colors.dim}${workTokensK}k tokens of past work available. Use ${colors.cyan}/recall [topic]${colors.reset}${colors.dim} to retrieve details.${colors.reset}`
   ];
 }
 

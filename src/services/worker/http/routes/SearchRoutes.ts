@@ -18,6 +18,9 @@ export class SearchRoutes extends BaseRouteHandler {
   }
 
   setupRoutes(app: express.Application): void {
+    // Recall endpoint (single-call memory retrieval for /recall skill)
+    app.get('/api/recall', this.handleRecall.bind(this));
+
     // Unified endpoints (new consolidated API)
     app.get('/api/search', this.handleUnifiedSearch.bind(this));
     app.get('/api/timeline', this.handleUnifiedTimeline.bind(this));
@@ -43,6 +46,20 @@ export class SearchRoutes extends BaseRouteHandler {
     app.get('/api/timeline/by-query', this.handleGetTimelineByQuery.bind(this));
     app.get('/api/search/help', this.handleSearchHelp.bind(this));
   }
+
+  /**
+   * Recall endpoint (fetch observations by IDs for /recall skill)
+   * GET /api/recall?ids=123,456,789&project=...
+   *
+   * Step 2 of the /recall skill workflow:
+   * 1. Claude searches with /api/search to get index
+   * 2. Claude decides which observations are relevant
+   * 3. Claude fetches full details with this endpoint
+   */
+  private handleRecall = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const result = await this.searchManager.recall(req.query);
+    res.json(result);
+  });
 
   /**
    * Unified search (observations + sessions + prompts)

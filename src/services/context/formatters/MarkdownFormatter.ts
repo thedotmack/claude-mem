@@ -69,12 +69,20 @@ export function renderMarkdownColumnKey(): string[] {
  */
 export function renderMarkdownContextIndex(): string[] {
   return [
-    `**Context Index:** This semantic index (titles, types, files, tokens) is usually sufficient to understand past work.`,
+    `**Context Index:** This semantic index (titles, types, files, tokens) shows your past work.`,
     '',
-    `When you need implementation details, rationale, or debugging context:`,
-    `- Use MCP tools (search, get_observations) to fetch full observations on-demand`,
-    `- Critical types ( bugfix, decision) often need detailed fetching`,
-    `- Trust this index over re-reading code for past decisions and learnings`,
+    `**IMPORTANT - Use /recall for Memory Retrieval:**`,
+    `Before answering questions about past work, decisions, or implementations:`,
+    `1. Use \`/recall [topic]\` to check your memory first`,
+    `2. This prevents repeating mistakes and leverages past learnings`,
+    '',
+    `**Trigger conditions - Use /recall when:**`,
+    `- User asks "How did we...", "What was the approach for...", "Why did we..."`,
+    `- You're about to implement something you may have done before`,
+    `- You feel uncertain about context you should have`,
+    `- User references something from a previous session`,
+    '',
+    `Example: \`/recall how we fixed the auth bug\``,
     ''
   ];
 }
@@ -229,7 +237,7 @@ export function renderMarkdownFooter(totalDiscoveryTokens: number, totalReadToke
   const workTokensK = Math.round(totalDiscoveryTokens / 1000);
   return [
     '',
-    `Access ${workTokensK}k tokens of past research & decisions for just ${totalReadTokens.toLocaleString()}t. Use MCP search tools to access memories by ID.`
+    `${workTokensK}k tokens of past work available. Use \`/recall [topic]\` to retrieve details.`
   ];
 }
 
