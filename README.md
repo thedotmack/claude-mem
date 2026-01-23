@@ -142,6 +142,10 @@ Restart Claude Code. Context from previous sessions will automatically appear in
 - **[Search Tools](https://docs.claude-mem.ai/usage/search-tools)** - Query your project history with natural language
 - **[Beta Features](https://docs.claude-mem.ai/beta-features)** - Try experimental features like Endless Mode
 
+### Deep Dive
+
+- **[MASTERCLASS](claude-mem-MASTERCLASS.md)** - Comprehensive guide answering: What, How, Why, Alternatives, and Rollback procedures
+
 ### Best Practices
 
 - **[Context Engineering](https://docs.claude-mem.ai/context-engineering)** - AI agent context optimization principles

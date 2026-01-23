@@ -88,3 +88,82 @@ This architecture preserves the open-source nature of the project while enabling
 ## Important
 
 No need to edit the changelog ever, it's generated automatically.
+
+---
+
+## Deployment Rules
+
+### Pre-Deployment Checklist
+
+Before any release:
+
+1. **Run Tests**: `bun test` - All tests must pass
+2. **Build Check**: `npm run build` - No build errors
+3. **Type Check**: Verify no TypeScript errors in build output
+4. **Manual Smoke Test**: Start worker, verify context injection works
+
+### Version Bumping
+
+```bash
+# Update version in package.json
+# Changelog is auto-generated from git commits
+npm run changelog:generate
+```
+
+### Release Process
+
+1. **Create Release Branch**: `git checkout -b release/vX.Y.Z`
+2. **Update Version**: Edit `package.json` version field
+3. **Generate Changelog**: `npm run changelog:generate`
+4. **Push and Tag**:
+   ```bash
+   git add .
+   git commit -m "chore: release vX.Y.Z"
+   git tag vX.Y.Z
+   git push origin release/vX.Y.Z --tags
+   ```
+5. **Create GitHub Release**: Use the generated changelog
+
+### Rollback Procedures
+
+**Level 1 - Worker Issues**:
+```bash
+npm run worker:restart
+```
+
+**Level 2 - Queue Stuck**:
+```bash
+npm run queue:clear -- --all --force
+```
+
+**Level 3 - Database Issues**:
+```bash
+cp ~/.claude-mem/claude-mem.db ~/.claude-mem/claude-mem.db.backup
+rm ~/.claude-mem/claude-mem.db
+npm run worker:restart
+```
+
+**Level 4 - Full Reinstall**:
+```bash
+rm -rf ~/.claude/plugins/marketplaces/thedotmack
+# In Claude Code: /plugin marketplace add thedotmack/claude-mem
+# In Claude Code: /plugin install claude-mem
+```
+
+### Emergency Contacts
+
+- **Repository**: https://github.com/thedotmack/claude-mem
+- **Issues**: https://github.com/thedotmack/claude-mem/issues
+- **Discord**: https://discord.com/invite/J4wttp9vDu
+
+---
+
+## MASTERCLASS Documentation
+
+For a comprehensive guide covering:
+- How claude-mem works
+- Why the architectural decisions were made
+- Comparison with alternatives
+- Detailed rollback procedures
+
+See: **[claude-mem-MASTERCLASS.md](./claude-mem-MASTERCLASS.md)**
