@@ -204,11 +204,8 @@ export class SessionManager {
    * This ensures observations survive worker crashes.
    */
   queueObservation(sessionDbId: number, data: ObservationData): void {
-    // Auto-initialize from database if needed (handles worker restarts)
-    let session = this.sessions.get(sessionDbId);
-    if (!session) {
-      session = this.initializeSession(sessionDbId);
-    }
+    // Always call initializeSession - handles both new sessions AND AbortController reset for existing ones
+    const session = this.initializeSession(sessionDbId);
 
     // CRITICAL: Persist to database FIRST
     const message: PendingMessage = {
@@ -248,11 +245,8 @@ export class SessionManager {
    * This ensures summarize requests survive worker crashes.
    */
   queueSummarize(sessionDbId: number, lastAssistantMessage?: string): void {
-    // Auto-initialize from database if needed (handles worker restarts)
-    let session = this.sessions.get(sessionDbId);
-    if (!session) {
-      session = this.initializeSession(sessionDbId);
-    }
+    // Always call initializeSession - handles both new sessions AND AbortController reset for existing ones
+    const session = this.initializeSession(sessionDbId);
 
     // CRITICAL: Persist to database FIRST
     const message: PendingMessage = {

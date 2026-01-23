@@ -82,6 +82,17 @@ export async function processAgentResponse(
 
   // ATOMIC TRANSACTION: Store observations + summary ONCE
   // Messages are already deleted from queue on claim, so no completion tracking needed
+  // Skip storage if memorySessionId is null (e.g., after stale resume clear, before new ID captured)
+  // This prevents FK constraint violations - observations reference sdk_sessions.memory_session_id
+  if (!session.memorySessionId) {
+    logger.warn('DB', `SKIP_STORAGE | sessionDbId=${session.sessionDbId} | reason=no memorySessionId | obsCount=${observations.length}`, {
+      sessionId: session.sessionDbId
+    });
+    // Clear pending timestamp since we processed (even if skipped storage)
+    session.earliestPendingTimestamp = null;
+    return;
+  }
+
   const result = sessionStore.storeObservations(
     session.memorySessionId,
     session.project,
