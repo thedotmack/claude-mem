@@ -70,18 +70,6 @@ export async function processAgentResponse(
   const sessionStore = dbManager.getSessionStore();
 
   // CRITICAL: Must use memorySessionId (not contentSessionId) for FK constraint
-  if (!session.memorySessionId) {
-    throw new Error('Cannot store observations: memorySessionId not yet captured');
-  }
-
-  // Log pre-storage with session ID chain for verification
-  logger.info('DB', `STORING | sessionDbId=${session.sessionDbId} | memorySessionId=${session.memorySessionId} | obsCount=${observations.length} | hasSummary=${!!summaryForStore}`, {
-    sessionId: session.sessionDbId,
-    memorySessionId: session.memorySessionId
-  });
-
-  // ATOMIC TRANSACTION: Store observations + summary ONCE
-  // Messages are already deleted from queue on claim, so no completion tracking needed
   // Skip storage if memorySessionId is null (e.g., after stale resume clear, before new ID captured)
   // This prevents FK constraint violations - observations reference sdk_sessions.memory_session_id
   if (!session.memorySessionId) {
@@ -92,6 +80,15 @@ export async function processAgentResponse(
     session.earliestPendingTimestamp = null;
     return;
   }
+
+  // Log pre-storage with session ID chain for verification
+  logger.info('DB', `STORING | sessionDbId=${session.sessionDbId} | memorySessionId=${session.memorySessionId} | obsCount=${observations.length} | hasSummary=${!!summaryForStore}`, {
+    sessionId: session.sessionDbId,
+    memorySessionId: session.memorySessionId
+  });
+
+  // ATOMIC TRANSACTION: Store observations + summary ONCE
+  // Messages are already deleted from queue on claim, so no completion tracking needed
 
   const result = sessionStore.storeObservations(
     session.memorySessionId,
