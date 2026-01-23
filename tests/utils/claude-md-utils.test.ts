@@ -147,8 +147,9 @@ describe('formatTimelineForClaudeMd', () => {
 });
 
 describe('writeClaudeMdToFolder', () => {
-  it('should create CLAUDE.md in new folder', () => {
+  it('should create CLAUDE.md in existing folder', () => {
     const folderPath = join(tempDir, 'new-folder');
+    mkdirSync(folderPath, { recursive: true });
     const content = '# Recent Activity\n\nTest content';
 
     writeClaudeMdToFolder(folderPath, content);
@@ -180,20 +181,21 @@ describe('writeClaudeMdToFolder', () => {
     expect(fileContent).not.toContain('Old content');
   });
 
-  it('should create nested directories', () => {
+  it('should skip non-existent folders (never create directories)', () => {
     const folderPath = join(tempDir, 'deep', 'nested', 'folder');
     const content = 'Nested content';
 
+    // Folder doesn't exist, so function should skip without creating anything
     writeClaudeMdToFolder(folderPath, content);
 
     const claudeMdPath = join(folderPath, 'CLAUDE.md');
-    expect(existsSync(claudeMdPath)).toBe(true);
-    expect(existsSync(join(tempDir, 'deep'))).toBe(true);
-    expect(existsSync(join(tempDir, 'deep', 'nested'))).toBe(true);
+    expect(existsSync(claudeMdPath)).toBe(false);
+    expect(existsSync(join(tempDir, 'deep'))).toBe(false);
   });
 
   it('should not leave .tmp file after write (atomic write)', () => {
     const folderPath = join(tempDir, 'atomic-test');
+    mkdirSync(folderPath, { recursive: true });
     const content = 'Atomic write test';
 
     writeClaudeMdToFolder(folderPath, content);
@@ -218,6 +220,7 @@ describe('updateFolderClaudeMdFiles', () => {
 
   it('should fetch timeline and write CLAUDE.md', async () => {
     const folderPath = join(tempDir, 'api-test');
+    mkdirSync(folderPath, { recursive: true });
     const filePath = join(folderPath, 'test.ts');
 
     const apiResponse = {
@@ -263,6 +266,30 @@ describe('updateFolderClaudeMdFiles', () => {
 
     // Should only fetch once for the shared folder
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('should skip creating CLAUDE.md when no observations exist', async () => {
+    const folderPath = join(tempDir, 'no-obs-test');
+    mkdirSync(folderPath, { recursive: true });
+    const filePath = join(folderPath, 'test.ts');
+
+    // API returns empty observation list (will format to "No recent activity")
+    const apiResponse = {
+      content: [{
+        text: '' // Empty response will produce "No recent activity" template
+      }]
+    };
+
+    global.fetch = mock(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve(apiResponse)
+    } as Response));
+
+    await updateFolderClaudeMdFiles([filePath], 'test-project', 37777);
+
+    // Should NOT create CLAUDE.md when there are no observations
+    const claudeMdPath = join(folderPath, 'CLAUDE.md');
+    expect(existsSync(claudeMdPath)).toBe(false);
   });
 
   it('should handle API errors gracefully (404 response)', async () => {
@@ -412,6 +439,7 @@ describe('updateFolderClaudeMdFiles', () => {
 
   it('should write CLAUDE.md to resolved projectRoot path', async () => {
     const subfolderPath = join(tempDir, 'project-root-write-test', 'src', 'utils');
+    mkdirSync(subfolderPath, { recursive: true });
 
     const apiResponse = {
       content: [{
