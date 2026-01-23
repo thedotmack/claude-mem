@@ -1,11 +1,14 @@
 ---
-description: "Recall past work, decisions, and context from memory"
-argument-hint: "[topic or question]"
+name: recall
+description: This skill should be used when the user asks about past work, previous decisions, how something was fixed, what was the approach for a task, or when Claude needs context from previous sessions. Use this skill when encountering questions like "How did we fix X?", "What was our approach for Y?", "Why did we decide Z?", or when feeling uncertain about context that should be available from past work.
+version: 1.0.0
 ---
 
-You have persistent memory across sessions. This skill helps you recall past work efficiently.
+# Memory Recall for Claude Code
 
-## When to Use This
+You have persistent memory across sessions. This skill helps you recall past work efficiently using a token-efficient 2-step workflow.
+
+## When to Use This Skill
 
 - User asks about past work ("How did we fix X?", "What was the approach for Y?")
 - You're struggling with a task you may have done before
@@ -19,8 +22,10 @@ You have persistent memory across sessions. This skill helps you recall past wor
 ### Step 1: Search for relevant memories
 
 ```bash
-curl -s "http://127.0.0.1:37777/api/search?query=$ARGUMENTS&limit=15"
+curl -s "http://127.0.0.1:37777/api/search?query=<topic>&limit=15"
 ```
+
+Replace `<topic>` with the search terms based on what the user is asking about.
 
 This returns an **index** of matching observations with:
 - **ID** - The observation ID (you'll need this for step 2)
