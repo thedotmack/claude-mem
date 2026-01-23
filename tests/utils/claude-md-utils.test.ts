@@ -282,6 +282,30 @@ describe('updateFolderClaudeMdFiles', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it('should skip creating CLAUDE.md when no observations exist', async () => {
+    const folderPath = join(tempDir, 'no-obs-test');
+    mkdirSync(folderPath, { recursive: true });
+    const filePath = join(folderPath, 'test.ts');
+
+    // API returns empty observation list (will format to "No recent activity")
+    const apiResponse = {
+      content: [{
+        text: '' // Empty response will produce "No recent activity" template
+      }]
+    };
+
+    global.fetch = mock(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve(apiResponse)
+    } as Response));
+
+    await updateFolderClaudeMdFiles([filePath], 'test-project', 37777);
+
+    // Should NOT create CLAUDE.md when there are no observations
+    const claudeMdPath = join(folderPath, 'CLAUDE.md');
+    expect(existsSync(claudeMdPath)).toBe(false);
+  });
+
   it('should handle API errors gracefully (404 response)', async () => {
     const folderPath = join(tempDir, 'error-test');
     const filePath = join(folderPath, 'test.ts');
