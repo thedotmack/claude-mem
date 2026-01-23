@@ -648,13 +648,70 @@ export class SessionStore {
   /**
    * Update the memory session ID for a session
    * Called by SDKAgent when it captures the session ID from the first SDK message
+   *
+   * FK Constraint Challenge:
+   * The observations and session_summaries tables have FK constraints referencing
+   * sdk_sessions.memory_session_id. SQLite FK constraints prevent both:
+   * - Updating parent first (children would reference non-existent value)
+   * - Updating children first (children would reference value that doesn't exist yet)
+   *
+   * We use PRAGMA foreign_keys = OFF within a transaction to safely perform the update.
+   * This is safe because:
+   * - Bun SQLite is synchronous and single-threaded within a process
+   * - The PRAGMA is scoped to this transaction via the try/finally pattern
+   * - We re-enable FK checks immediately after the transaction completes
+   *
+   * NOTE: user_prompts uses content_session_id, not memory_session_id
    */
-  updateMemorySessionId(sessionDbId: number, memorySessionId: string): void {
-    this.db.prepare(`
-      UPDATE sdk_sessions
-      SET memory_session_id = ?
-      WHERE id = ?
-    `).run(memorySessionId, sessionDbId);
+  updateMemorySessionId(sessionDbId: number, memorySessionId: string | null): void {
+    const session = this.getSessionById(sessionDbId);
+    const oldMemorySessionId = session?.memory_session_id;
+
+    // Log orphan count when clearing stale session ID (for monitoring)
+    if (!memorySessionId && oldMemorySessionId) {
+      const orphanedObs = this.db.prepare(
+        `SELECT COUNT(*) as count FROM observations WHERE memory_session_id = ?`
+      ).get(oldMemorySessionId) as { count: number };
+      const orphanedSummaries = this.db.prepare(
+        `SELECT COUNT(*) as count FROM session_summaries WHERE memory_session_id = ?`
+      ).get(oldMemorySessionId) as { count: number };
+      if (orphanedObs.count > 0 || orphanedSummaries.count > 0) {
+        logger.warn('DB', `ORPHANING_CHILDREN | staleId=${oldMemorySessionId} | orphanedObservations=${orphanedObs.count} | orphanedSummaries=${orphanedSummaries.count}`);
+      }
+    }
+
+    // Temporarily disable FK checks - required because we cannot update parent/children
+    // in any order without violating the FK constraint (see docstring above)
+    this.db.exec('PRAGMA foreign_keys = OFF');
+
+    try {
+      this.db.exec('BEGIN TRANSACTION');
+
+      // Update the parent session
+      this.db.prepare(`
+        UPDATE sdk_sessions
+        SET memory_session_id = ?
+        WHERE id = ?
+      `).run(memorySessionId, sessionDbId);
+
+      // Update child tables to reference the new value (if changing from old to new)
+      if (oldMemorySessionId && memorySessionId && oldMemorySessionId !== memorySessionId) {
+        this.db.prepare(`UPDATE observations SET memory_session_id = ? WHERE memory_session_id = ?`)
+          .run(memorySessionId, oldMemorySessionId);
+        this.db.prepare(`UPDATE session_summaries SET memory_session_id = ? WHERE memory_session_id = ?`)
+          .run(memorySessionId, oldMemorySessionId);
+      }
+
+      // When setting to null (clearing stale ID), children remain with old memory_session_id
+      // These become orphaned but are retained for potential forensic analysis
+
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    } finally {
+      this.db.exec('PRAGMA foreign_keys = ON');
+    }
   }
 
   /**

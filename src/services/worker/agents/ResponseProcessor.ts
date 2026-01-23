@@ -70,8 +70,15 @@ export async function processAgentResponse(
   const sessionStore = dbManager.getSessionStore();
 
   // CRITICAL: Must use memorySessionId (not contentSessionId) for FK constraint
+  // Skip storage if memorySessionId is null (e.g., after stale resume clear, before new ID captured)
+  // This prevents FK constraint violations - observations reference sdk_sessions.memory_session_id
   if (!session.memorySessionId) {
-    throw new Error('Cannot store observations: memorySessionId not yet captured');
+    logger.warn('DB', `SKIP_STORAGE | sessionDbId=${session.sessionDbId} | reason=no memorySessionId | obsCount=${observations.length}`, {
+      sessionId: session.sessionDbId
+    });
+    // Clear pending timestamp since we processed (even if skipped storage)
+    session.earliestPendingTimestamp = null;
+    return;
   }
 
   // Log pre-storage with session ID chain for verification
@@ -82,6 +89,7 @@ export async function processAgentResponse(
 
   // ATOMIC TRANSACTION: Store observations + summary ONCE
   // Messages are already deleted from queue on claim, so no completion tracking needed
+
   const result = sessionStore.storeObservations(
     session.memorySessionId,
     session.project,
