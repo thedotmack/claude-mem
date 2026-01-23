@@ -11,7 +11,7 @@ import { logger } from '../../../../utils/logger.js';
 import { stripMemoryTagsFromJson, stripMemoryTagsFromPrompt } from '../../../../utils/tag-stripping.js';
 import { SessionManager } from '../../SessionManager.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
-import { SDKAgent } from '../../SDKAgent.js';
+import { SDKAgent, isGLMSelected, isGLMAvailable } from '../../SDKAgent.js';
 import { GeminiAgent, isGeminiSelected, isGeminiAvailable } from '../../GeminiAgent.js';
 import { OpenRouterAgent, isOpenRouterSelected, isOpenRouterAvailable } from '../../OpenRouterAgent.js';
 import type { WorkerService } from '../../../worker-service.js';
@@ -65,17 +65,31 @@ export class SessionRoutes extends BaseRouteHandler {
         throw new Error('Gemini provider selected but no API key configured. Set CLAUDE_MEM_GEMINI_API_KEY in settings or GEMINI_API_KEY environment variable.');
       }
     }
+    if (isGLMSelected()) {
+      if (isGLMAvailable()) {
+        logger.debug('SESSION', 'Using GLM agent (via SDK with preset endpoint)');
+        return this.sdkAgent;
+      } else {
+        throw new Error('GLM provider selected but no API key configured. Set CLAUDE_MEM_GLM_API_KEY in settings.');
+      }
+    }
     return this.sdkAgent;
   }
 
   /**
    * Get the currently selected provider name
    */
-  private getSelectedProvider(): 'claude' | 'gemini' | 'openrouter' {
+  private getSelectedProvider(): 'claude' | 'gemini' | 'openrouter' | 'glm' {
     if (isOpenRouterSelected() && isOpenRouterAvailable()) {
       return 'openrouter';
     }
-    return (isGeminiSelected() && isGeminiAvailable()) ? 'gemini' : 'claude';
+    if (isGeminiSelected() && isGeminiAvailable()) {
+      return 'gemini';
+    }
+    if (isGLMSelected() && isGLMAvailable()) {
+      return 'glm';
+    }
+    return 'claude';
   }
 
   /**

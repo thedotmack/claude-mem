@@ -414,7 +414,7 @@ export function ContextSettingsModal({
             >
               <FormField
                 label="AI Provider"
-                tooltip="Choose between Claude (via Agent SDK) or Gemini (via REST API)"
+                tooltip="Choose between Claude, Gemini, OpenRouter, GLM, or custom provider"
               >
                 <select
                   value={formState.CLAUDE_MEM_PROVIDER || 'claude'}
@@ -423,6 +423,7 @@ export function ContextSettingsModal({
                   <option value="claude">Claude (uses your Claude account)</option>
                   <option value="gemini">Gemini (uses API key)</option>
                   <option value="openrouter">OpenRouter (multi-model)</option>
+                  <option value="glm">GLM/Z.Ai</option>
                 </select>
               </FormField>
 
@@ -525,6 +526,36 @@ export function ContextSettingsModal({
                       onChange={(e) => updateSetting('CLAUDE_MEM_OPENROUTER_APP_NAME', e.target.value)}
                       placeholder="claude-mem"
                     />
+                  </FormField>
+                </>
+              )}
+
+              {formState.CLAUDE_MEM_PROVIDER === 'glm' && (
+                <>
+                  <FormField
+                    label="GLM API Key"
+                    tooltip="Your GLM API key from open.bigmodel.cn (free tier available)"
+                  >
+                    <input
+                      type="password"
+                      value={formState.CLAUDE_MEM_GLM_API_KEY || ''}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_GLM_API_KEY', e.target.value)}
+                      placeholder="Enter GLM API key..."
+                    />
+                  </FormField>
+                  <FormField
+                    label="GLM Model"
+                    tooltip="GLM model used for generating observations"
+                  >
+                    <select
+                      value={formState.CLAUDE_MEM_GLM_MODEL || 'glm-4.7'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_GLM_MODEL', e.target.value)}
+                    >
+                      <option value="glm-4.7">glm-4.7 (recommended)</option>
+                      <option value="glm-4-plus">glm-4-plus (higher quality)</option>
+                      <option value="glm-4-air">glm-4-air (faster)</option>
+                      <option value="glm-4-flash">glm-4-flash (fastest)</option>
+                    </select>
                   </FormField>
                 </>
               )}

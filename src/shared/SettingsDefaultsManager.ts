@@ -19,7 +19,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_WORKER_HOST: string;
   CLAUDE_MEM_SKIP_TOOLS: string;
   // AI Provider Configuration
-  CLAUDE_MEM_PROVIDER: string;  // 'claude' | 'gemini' | 'openrouter'
+  CLAUDE_MEM_PROVIDER: string;  // 'claude' | 'gemini' | 'openrouter' | 'glm' | 'custom'
   CLAUDE_MEM_GEMINI_API_KEY: string;
   CLAUDE_MEM_GEMINI_MODEL: string;  // 'gemini-2.5-flash-lite' | 'gemini-2.5-flash' | 'gemini-3-flash'
   CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: string;  // 'true' | 'false' - enable rate limiting for free tier
@@ -29,6 +29,13 @@ export interface SettingsDefaults {
   CLAUDE_MEM_OPENROUTER_APP_NAME: string;
   CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES: string;
   CLAUDE_MEM_OPENROUTER_MAX_TOKENS: string;
+  // GLM Provider Configuration (preset for BigModel/Z.Ai)
+  CLAUDE_MEM_GLM_API_KEY: string;          // GLM API key from open.bigmodel.cn
+  CLAUDE_MEM_GLM_MODEL: string;            // GLM model (glm-4.7, glm-4-plus, etc.)
+  // Custom Provider Configuration (for other Anthropic-compatible APIs)
+  CLAUDE_MEM_CUSTOM_BASE_URL: string;      // Custom API endpoint (e.g., 'https://api.deepseek.com/v1')
+  CLAUDE_MEM_CUSTOM_AUTH_TOKEN: string;    // Authentication token for custom provider
+  CLAUDE_MEM_CUSTOM_MODEL: string;         // Model name for custom provider
   // System Configuration
   CLAUDE_MEM_DATA_DIR: string;
   CLAUDE_MEM_LOG_LEVEL: string;
@@ -73,6 +80,13 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_OPENROUTER_APP_NAME: 'claude-mem',  // App name for OpenRouter analytics
     CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES: '20',  // Max messages in context window
     CLAUDE_MEM_OPENROUTER_MAX_TOKENS: '100000',  // Max estimated tokens (~100k safety limit)
+    // GLM Provider Configuration
+    CLAUDE_MEM_GLM_API_KEY: '',  // Empty by default, required when provider=glm
+    CLAUDE_MEM_GLM_MODEL: 'glm-4.7',  // Default GLM model
+    // Custom Provider Configuration
+    CLAUDE_MEM_CUSTOM_BASE_URL: '',  // Empty by default, set to use custom Anthropic-compatible API
+    CLAUDE_MEM_CUSTOM_AUTH_TOKEN: '',  // Empty by default, required when using custom provider
+    CLAUDE_MEM_CUSTOM_MODEL: '',  // Empty by default, will use CLAUDE_MEM_MODEL if not set
     // System Configuration
     CLAUDE_MEM_DATA_DIR: join(homedir(), '.claude-mem'),
     CLAUDE_MEM_LOG_LEVEL: 'INFO',
