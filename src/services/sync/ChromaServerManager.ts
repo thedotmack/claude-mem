@@ -131,7 +131,7 @@ export class ChromaServerManager {
     while (Date.now() - startTime < timeoutMs) {
       try {
         const response = await fetch(
-          `http://${this.config.host}:${this.config.port}/api/v1/heartbeat`
+          `http://${this.config.host}:${this.config.port}/api/v2/heartbeat`
         );
         if (response.ok) {
           this.ready = true;
