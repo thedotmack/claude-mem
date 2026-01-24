@@ -92,7 +92,12 @@ async function buildHooks() {
       outfile: `${hooksDir}/${WORKER_SERVICE.name}.cjs`,
       minify: true,
       logLevel: 'error', // Suppress warnings (import.meta warning is benign)
-      external: ['bun:sqlite'],
+      external: [
+        'bun:sqlite',
+        // Optional chromadb embedding providers (not needed for HTTP client mode)
+        'cohere-ai',
+        'ollama'
+      ],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`
       },
