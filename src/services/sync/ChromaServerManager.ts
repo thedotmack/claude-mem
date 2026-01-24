@@ -260,9 +260,6 @@ export class ChromaServerManager {
         } else {
           proc.kill('SIGTERM');
         }
-        } else {
-          proc.kill('SIGTERM');
-        }
       }
 
       // Force kill after timeout if still running
