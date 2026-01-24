@@ -48,6 +48,7 @@ export class ChromaServerManager {
   /**
    * Start the Chroma HTTP server
    * Spawns `npx chroma run` as a background process
+   * If a server is already running (from previous worker), reuses it
    */
   async start(): Promise<void> {
     if (this.ready || this.starting) {
@@ -57,6 +58,24 @@ export class ChromaServerManager {
       });
       return;
     }
+
+    // Check if a server is already running (from previous worker or manual start)
+    try {
+      const response = await fetch(
+        `http://${this.config.host}:${this.config.port}/api/v2/heartbeat`
+      );
+      if (response.ok) {
+        logger.info('CHROMA_SERVER', 'Existing server detected, reusing', {
+          host: this.config.host,
+          port: this.config.port
+        });
+        this.ready = true;
+        return;
+      }
+    } catch {
+      // No server running, proceed to start one
+    }
+
     this.starting = true;
 
     // Cross-platform: use npx.cmd on Windows
@@ -159,9 +178,29 @@ export class ChromaServerManager {
 
   /**
    * Check if the server is running and ready
+   * Returns true if we manage the process OR if a server is responding
    */
   isRunning(): boolean {
-    return this.ready && this.serverProcess !== null;
+    return this.ready;
+  }
+
+  /**
+   * Async check if server is running by pinging heartbeat
+   * Use this when you need to verify server is actually reachable
+   */
+  async isServerReachable(): Promise<boolean> {
+    try {
+      const response = await fetch(
+        `http://${this.config.host}:${this.config.port}/api/v2/heartbeat`
+      );
+      if (response.ok) {
+        this.ready = true;
+        return true;
+      }
+    } catch {
+      // Server not reachable
+    }
+    return false;
   }
 
   /**

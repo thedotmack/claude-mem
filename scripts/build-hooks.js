@@ -58,7 +58,10 @@ async function buildHooks() {
       private: true,
       description: 'Runtime dependencies for claude-mem bundled hooks',
       type: 'module',
-      dependencies: {},
+      dependencies: {
+        // Chroma embedding function with native ONNX binaries (can't be bundled)
+        '@chroma-core/default-embed': '^0.1.9'
+      },
       engines: {
         node: '>=18.0.0',
         bun: '>=1.0.0'
@@ -94,9 +97,12 @@ async function buildHooks() {
       logLevel: 'error', // Suppress warnings (import.meta warning is benign)
       external: [
         'bun:sqlite',
-        // Optional chromadb embedding providers (not needed for HTTP client mode)
+        // Optional chromadb embedding providers
         'cohere-ai',
-        'ollama'
+        'ollama',
+        // Default embedding function with native binaries
+        '@chroma-core/default-embed',
+        'onnxruntime-node'
       ],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`

@@ -13,6 +13,7 @@
  */
 
 import { ChromaClient, Collection } from 'chromadb';
+import { DefaultEmbeddingFunction } from '@chroma-core/default-embed';
 import { ParsedObservation, ParsedSummary } from '../../sdk/parser.js';
 import { SessionStore } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
@@ -108,11 +109,12 @@ export class ChromaSync {
       const port = parseInt(settings.CLAUDE_MEM_CHROMA_PORT || '8000', 10);
       const ssl = settings.CLAUDE_MEM_CHROMA_SSL === 'true';
 
-      // In local mode, verify server is running
+      // In local mode, verify server is reachable
       if (mode === 'local') {
         const serverManager = ChromaServerManager.getInstance();
-        if (!serverManager.isRunning()) {
-          throw new Error('Chroma server not running. Ensure worker started correctly.');
+        const reachable = await serverManager.isServerReachable();
+        if (!reachable) {
+          throw new Error('Chroma server not reachable. Ensure worker started correctly.');
         }
       }
 
@@ -159,8 +161,11 @@ export class ChromaSync {
 
     try {
       // getOrCreateCollection handles both cases
+      // Use DefaultEmbeddingFunction for local embeddings (all-MiniLM-L6-v2)
+      const embeddingFunction = new DefaultEmbeddingFunction();
       this.collection = await this.chromaClient.getOrCreateCollection({
-        name: this.collectionName
+        name: this.collectionName,
+        embeddingFunction
       });
 
       logger.debug('CHROMA_SYNC', 'Collection ready', { collection: this.collectionName });
