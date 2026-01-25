@@ -21,6 +21,7 @@ const packageVersion = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DE
 
 // Periodic cleanup interval - prevents orphaned process accumulation
 // Configurable via CLAUDE_MEM_CLEANUP_INTERVAL_MS env var (default: 15 minutes)
+// Minimum: 60 seconds to prevent tight loops from misconfiguration
 const DEFAULT_CLEANUP_INTERVAL_MS = 15 * 60 * 1000;
 const MIN_CLEANUP_INTERVAL_MS = 60 * 1000;           // 1 minute minimum - security: prevents CPU exhaustion from tight loops
 const MAX_CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours maximum - prevents effectively disabled cleanup
