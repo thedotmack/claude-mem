@@ -173,8 +173,9 @@ async function isInitLikeProcess(ppid: number): Promise<boolean> {
     }
 
     return false;
-  } catch {
+  } catch (error) {
     // If we can't determine, only consider PID 1 as init (safe default)
+    logger.debug('SYSTEM', 'Could not determine if process is init-like, defaulting to PID 1 check', { ppid }, error as Error);
     return ppid === 1;
   }
 }
