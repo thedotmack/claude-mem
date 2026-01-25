@@ -9,10 +9,11 @@ import { describe, expect, test } from 'bun:test';
  */
 
 /**
- * Normalize path separators to forward slashes and remove trailing slashes
+ * Normalize path separators to forward slashes, collapse consecutive slashes, and remove trailing slashes
+ * Note: Must match implementation in SessionSearch.ts exactly
  */
 function normalizePath(p: string): string {
-  return p.replace(/\\/g, '/').replace(/\/+$/, '');
+  return p.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/+$/, '');
 }
 
 /**
