@@ -237,8 +237,9 @@ export class SDKAgent {
         const staleId = session.memorySessionId;
         session.memorySessionId = null;
         try {
-          // This will update all child tables (observations, summaries, prompts) to null first,
-          // then update the parent. Uses transaction for consistency.
+          // This clears the stale memorySessionId. Child tables (observations, summaries)
+          // that reference the old value become orphaned but are retained for forensics.
+          // Note: user_prompts uses content_session_id (not memory_session_id) - unaffected.
           this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, null);
           logger.info('SDK', 'Cleared stale memorySessionId from database', {
             sessionId: session.sessionDbId,
