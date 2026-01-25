@@ -77,3 +77,14 @@ curl -s "http://127.0.0.1:37777/api/recall?ids=234,567,891"
 ```
 
 Now you have full context to help the user.
+
+## Installation Note
+
+This skill is bundled with the claude-mem plugin. By default, plugin skills are namespaced:
+- **As bundled**: `/claude-mem:recall`
+
+For the shorter `/recall` command, copy this file to your personal skills directory:
+```bash
+mkdir -p ~/.claude/skills/recall
+cp <plugin-path>/skills/recall/SKILL.md ~/.claude/skills/recall/
+```
