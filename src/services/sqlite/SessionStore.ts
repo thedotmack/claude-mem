@@ -688,11 +688,16 @@ export class SessionStore {
       this.db.exec('BEGIN TRANSACTION');
 
       // Update the parent session
-      this.db.prepare(`
+      const updateResult = this.db.prepare(`
         UPDATE sdk_sessions
         SET memory_session_id = ?
         WHERE id = ?
       `).run(memorySessionId, sessionDbId);
+
+      // Verify the update affected exactly one row
+      if (updateResult.changes !== 1) {
+        throw new Error(`Failed to update session ${sessionDbId}: ${updateResult.changes} rows affected`);
+      }
 
       // Update child tables to reference the new value (if changing from old to new)
       if (oldMemorySessionId && memorySessionId && oldMemorySessionId !== memorySessionId) {
