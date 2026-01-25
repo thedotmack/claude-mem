@@ -76,8 +76,8 @@ export function replaceTaggedContent(existingContent: string, newContent: string
 
   if (startIdx !== -1 && endIdx !== -1) {
     return existingContent.substring(0, startIdx) +
-           `${startTag}\n${newContent}\n${endTag}` +
-           existingContent.substring(endIdx + endTag.length);
+      `${startTag}\n${newContent}\n${endTag}` +
+      existingContent.substring(endIdx + endTag.length);
   }
 
   // If no tags exist, append tagged content at end
@@ -320,6 +320,18 @@ export async function updateFolderClaudeMdFiles(
       }
 
       const formatted = formatTimelineForClaudeMd(result.content[0].text);
+
+      // Fix for #758: Don't create new CLAUDE.md files if there's no activity
+      // But update existing ones to show "No recent activity" if they already exist
+      const claudeMdPath = path.join(folderPath, 'CLAUDE.md');
+      const hasNoActivity = formatted.includes('*No recent activity*');
+      const fileExists = existsSync(claudeMdPath);
+
+      if (hasNoActivity && !fileExists) {
+        logger.debug('FOLDER_INDEX', 'Skipping empty CLAUDE.md creation', { folderPath });
+        continue;
+      }
+
       writeClaudeMdToFolder(folderPath, formatted);
 
       logger.debug('FOLDER_INDEX', 'Updated CLAUDE.md', { folderPath });
