@@ -109,7 +109,12 @@ export class SDKAgent {
         ...(hasRealMemorySessionId && session.lastPromptNumber > 1 && { resume: session.memorySessionId }),
         disallowedTools,
         abortController: session.abortController,
-        pathToClaudeCodeExecutable: claudePath
+        pathToClaudeCodeExecutable: claudePath,
+        // Capture stderr for diagnostic purposes (DEBUG level to avoid log noise)
+        // Security: stderr may contain sensitive paths or error details - keep at DEBUG
+        stderr: (data: string) => {
+          logger.debug('SDK', `[STDERR] ${data.trim()}`, { sessionId: session.sessionDbId });
+        }
       }
     });
 
