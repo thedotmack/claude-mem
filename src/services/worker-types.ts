@@ -33,7 +33,10 @@ export interface ActiveSession {
   earliestPendingTimestamp: number | null;  // Original timestamp of earliest pending message (for accurate observation timestamps)
   conversationHistory: ConversationMessage[];  // Shared conversation history for provider switching
   currentProvider: 'claude' | 'gemini' | 'openrouter' | null;  // Track which provider is currently running
-  restartPending: boolean;  // Prevents race condition: true when crash-recovery restart is scheduled
+  /** Prevents race condition: true when crash-recovery restart is scheduled, cleared after restart completes or session is deleted */
+  restartPending: boolean;
+  /** Prevents race condition: true when session cleanup/deletion is in progress, prevents duplicate cleanup operations */
+  cleanupPending: boolean;
 }
 
 export interface PendingMessage {

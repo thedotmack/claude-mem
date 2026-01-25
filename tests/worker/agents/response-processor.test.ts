@@ -88,6 +88,7 @@ describe('ResponseProcessor', () => {
         cleanupProcessed: mock(() => 0),
         resetStuckMessages: mock(() => 0),
       }),
+      deleteSession: mock(() => Promise.resolve()),
     } as unknown as SessionManager;
 
     mockBroadcast = mock(() => {});
@@ -126,6 +127,8 @@ describe('ResponseProcessor', () => {
       earliestPendingTimestamp: Date.now() - 10000,
       conversationHistory: [],
       currentProvider: 'claude',
+      restartPending: false,
+      cleanupPending: false,
       ...overrides,
     };
   }

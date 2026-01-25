@@ -22,10 +22,16 @@ const packageVersion = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DE
 // Periodic cleanup interval - prevents orphaned process accumulation
 // Configurable via CLAUDE_MEM_CLEANUP_INTERVAL_MS env var (default: 15 minutes)
 const DEFAULT_CLEANUP_INTERVAL_MS = 15 * 60 * 1000;
-const ORPHAN_CLEANUP_INTERVAL_MS = parseInt(
-  process.env.CLAUDE_MEM_CLEANUP_INTERVAL_MS || String(DEFAULT_CLEANUP_INTERVAL_MS),
-  10
-) || DEFAULT_CLEANUP_INTERVAL_MS;
+const MIN_CLEANUP_INTERVAL_MS = 60 * 1000;           // 1 minute minimum - security: prevents CPU exhaustion from tight loops
+const MAX_CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours maximum - prevents effectively disabled cleanup
+const ORPHAN_CLEANUP_INTERVAL_MS = (() => {
+  const parsed = parseInt(process.env.CLAUDE_MEM_CLEANUP_INTERVAL_MS || '', 10);
+  // Validate within safe bounds: minimum 1 minute, maximum 24 hours
+  if (parsed >= MIN_CLEANUP_INTERVAL_MS && parsed <= MAX_CLEANUP_INTERVAL_MS) {
+    return parsed;
+  }
+  return DEFAULT_CLEANUP_INTERVAL_MS;
+})();
 
 // Infrastructure imports
 import {
