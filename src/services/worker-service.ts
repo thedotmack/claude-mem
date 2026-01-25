@@ -120,6 +120,7 @@ export class WorkerService {
 
   // Periodic cleanup interval handle
   private cleanupIntervalId: ReturnType<typeof setInterval> | null = null;
+  private cleanupInProgress: boolean = false;
 
   // Service layer
   private dbManager: DatabaseManager;
@@ -268,6 +269,12 @@ export class WorkerService {
 
       // Start periodic cleanup to prevent orphan accumulation over long-running sessions
       this.cleanupIntervalId = setInterval(async () => {
+        // Prevent concurrent cleanup runs if previous takes longer than interval
+        if (this.cleanupInProgress) {
+          logger.debug('SYSTEM', 'Skipping periodic cleanup - previous run still in progress');
+          return;
+        }
+        this.cleanupInProgress = true;
         logger.info('SYSTEM', 'Running periodic orphan cleanup');
         try {
           await cleanupOrphanedProcesses();
@@ -275,6 +282,8 @@ export class WorkerService {
           logger.info('SYSTEM', 'Periodic orphan cleanup completed');
         } catch (error) {
           logger.warn('SYSTEM', 'Periodic orphan cleanup failed', {}, error as Error);
+        } finally {
+          this.cleanupInProgress = false;
         }
       }, ORPHAN_CLEANUP_INTERVAL_MS);
       logger.info('SYSTEM', 'Periodic orphan cleanup scheduled', { intervalMs: ORPHAN_CLEANUP_INTERVAL_MS });
