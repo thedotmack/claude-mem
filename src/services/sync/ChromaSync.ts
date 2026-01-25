@@ -109,6 +109,11 @@ export class ChromaSync {
       const port = parseInt(settings.CLAUDE_MEM_CHROMA_PORT || '8000', 10);
       const ssl = settings.CLAUDE_MEM_CHROMA_SSL === 'true';
 
+      // Multi-tenancy settings (used in remote/pro mode)
+      const tenant = settings.CLAUDE_MEM_CHROMA_TENANT || 'default_tenant';
+      const database = settings.CLAUDE_MEM_CHROMA_DATABASE || 'default_database';
+      const apiKey = settings.CLAUDE_MEM_CHROMA_API_KEY || '';
+
       // In local mode, verify server is reachable
       if (mode === 'local') {
         const serverManager = ChromaServerManager.getInstance();
@@ -122,7 +127,31 @@ export class ChromaSync {
       const protocol = ssl ? 'https' : 'http';
       const chromaPath = `${protocol}://${host}:${port}`;
 
-      this.chromaClient = new ChromaClient({ path: chromaPath });
+      // Build client options
+      const clientOptions: { path: string; tenant?: string; database?: string; headers?: Record<string, string> } = {
+        path: chromaPath
+      };
+
+      // In remote mode, use tenant isolation for pro users
+      if (mode === 'remote') {
+        clientOptions.tenant = tenant;
+        clientOptions.database = database;
+
+        // Add API key header if configured
+        if (apiKey) {
+          clientOptions.headers = {
+            'Authorization': `Bearer ${apiKey}`
+          };
+        }
+
+        logger.info('CHROMA_SYNC', 'Connecting with tenant isolation', {
+          tenant,
+          database,
+          hasApiKey: !!apiKey
+        });
+      }
+
+      this.chromaClient = new ChromaClient(clientOptions);
 
       // Verify connection with heartbeat
       await this.chromaClient.heartbeat();
@@ -132,7 +161,8 @@ export class ChromaSync {
         host,
         port,
         ssl,
-        mode
+        mode,
+        tenant: mode === 'remote' ? tenant : 'default_tenant'
       });
     } catch (error) {
       logger.error('CHROMA_SYNC', 'Failed to connect to Chroma HTTP server', { project: this.project }, error as Error);
