@@ -1,0 +1,17 @@
+{
+  "name": "claude-mem",
+  "version": "9.0.6",
+  "description": "Persistent memory system for Claude Code - seamlessly preserve context across sessions",
+  "author": {
+    "name": "Alex Newman"
+  },
+  "repository": "https://github.com/thedotmack/claude-mem",
+  "license": "AGPL-3.0",
+  "keywords": [
+    "memory",
+    "context",
+    "persistence",
+    "hooks",
+    "mcp"
+  ]
+}
