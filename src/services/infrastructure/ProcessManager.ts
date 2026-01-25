@@ -163,9 +163,19 @@ async function isInitLikeProcess(ppid: number): Promise<boolean> {
   if (ppid === 0) return true;
 
   try {
-    // Get the process name (comm) to check if it's a known init
-    const { stdout } = await execAsync(`cat /proc/${ppid}/comm 2>/dev/null || echo "unknown"`, { timeout: 5000 });
-    const comm = stdout.trim().toLowerCase();
+    let comm: string;
+
+    if (process.platform === 'darwin') {
+      // macOS: Use ps to get process name (no /proc filesystem)
+      const { stdout } = await execAsync(`ps -o comm= -p ${ppid} 2>/dev/null || echo "unknown"`, { timeout: 5000 });
+      comm = stdout.trim().toLowerCase();
+      // macOS ps returns full path, extract basename
+      comm = comm.split('/').pop() || comm;
+    } else {
+      // Linux: Use /proc filesystem for efficiency
+      const { stdout } = await execAsync(`cat /proc/${ppid}/comm 2>/dev/null || echo "unknown"`, { timeout: 5000 });
+      comm = stdout.trim().toLowerCase();
+    }
 
     if (KNOWN_INIT_PROCESS_NAMES.includes(comm)) {
       logger.debug('SYSTEM', 'Parent is init-like process', { ppid, comm });

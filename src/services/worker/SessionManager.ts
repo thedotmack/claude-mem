@@ -140,7 +140,8 @@ export class SessionManager {
       earliestPendingTimestamp: null,
       conversationHistory: [],  // Initialize empty - will be populated by agents
       currentProvider: null,  // Will be set when generator starts
-      restartPending: false  // No restart pending initially
+      restartPending: false,  // No restart pending initially
+      cleanupPending: false   // No cleanup pending initially
     };
 
     logger.debug('SESSION', 'Creating new session object', {

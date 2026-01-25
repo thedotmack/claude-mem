@@ -129,6 +129,16 @@ export async function processAgentResponse(
   // Delete the session to abort the SDK agent and kill the Claude subprocess
   // This prevents orphaned Claude processes from accumulating (fixes OOM issues)
   if (summaryForStore && result.summaryId) {
+    // RACE CONDITION GUARD: Prevent duplicate cleanup operations
+    // This can happen if hooks retry or multiple summaries are processed concurrently
+    if (session.cleanupPending) {
+      logger.debug('SESSION', 'Session cleanup already pending, skipping duplicate', {
+        sessionId: session.sessionDbId
+      });
+      return;
+    }
+    session.cleanupPending = true;
+
     logger.info('SESSION', `Summary processed, cleaning up session`, {
       sessionId: session.sessionDbId,
       memorySessionId: session.memorySessionId
