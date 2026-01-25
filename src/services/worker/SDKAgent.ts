@@ -114,9 +114,10 @@ export class SDKAgent {
         pathToClaudeCodeExecutable: claudePath,
         // Custom spawn function captures PIDs to fix zombie process accumulation
         spawnClaudeCodeProcess: createPidCapturingSpawn(session.sessionDbId),
-        // Capture stderr to diagnose "Claude Code process exited with code 1" errors
+        // Capture stderr for diagnostic purposes (DEBUG level to avoid log noise)
+        // Security: stderr may contain sensitive paths or error details - keep at DEBUG
         stderr: (data: string) => {
-          logger.error('SDK', `[STDERR] ${data.trim()}`, { sessionId: session.sessionDbId });
+          logger.debug('SDK', `[STDERR] ${data.trim()}`, { sessionId: session.sessionDbId });
         }
       }
     });
