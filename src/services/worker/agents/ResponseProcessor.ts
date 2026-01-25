@@ -23,6 +23,9 @@ import type { WorkerRef, StorageResult } from './types.js';
 import { broadcastObservation, broadcastSummary } from './ObservationBroadcaster.js';
 import { cleanupProcessedMessages } from './SessionCleanupHelper.js';
 
+/** Prefix added to session titles to distinguish worker analysis sessions from user work sessions */
+export const SESSION_TITLE_PREFIX = '[Claude-Mem Session] ';
+
 /**
  * Process agent response text (parse XML, save to database, sync to Chroma, broadcast SSE)
  *
@@ -128,6 +131,9 @@ export async function processAgentResponse(
 
 /**
  * Normalize summary for storage (convert null fields to empty strings)
+ *
+ * Prefixes session titles with "[Claude-Mem Session]" to distinguish
+ * worker analysis sessions from user work sessions in search/UI.
  */
 function normalizeSummaryForStorage(summary: ParsedSummary | null): {
   request: string;
@@ -139,8 +145,16 @@ function normalizeSummaryForStorage(summary: ParsedSummary | null): {
 } | null {
   if (!summary) return null;
 
+  // Prefix session title to distinguish worker analysis sessions from user work sessions
+  // - Trim whitespace to avoid prefixing whitespace-only titles
+  // - Check if already prefixed to avoid double-prefixing
+  const trimmedTitle = (summary.request || '').trim();
+  const prefixedRequest = trimmedTitle
+    ? (trimmedTitle.startsWith(SESSION_TITLE_PREFIX) ? trimmedTitle : `${SESSION_TITLE_PREFIX}${trimmedTitle}`)
+    : '';
+
   return {
-    request: summary.request || '',
+    request: prefixedRequest,
     investigated: summary.investigated || '',
     learned: summary.learned || '',
     completed: summary.completed || '',
@@ -276,15 +290,16 @@ async function syncAndBroadcastSummary(
   });
 
   // Broadcast to SSE clients (for web UI)
+  // Use summaryForStore (not raw summary) to ensure prefixed title is broadcast
   broadcastSummary(worker, {
     id: result.summaryId,
     session_id: session.contentSessionId,
-    request: summary!.request,
-    investigated: summary!.investigated,
-    learned: summary!.learned,
-    completed: summary!.completed,
-    next_steps: summary!.next_steps,
-    notes: summary!.notes,
+    request: summaryForStore.request,
+    investigated: summaryForStore.investigated,
+    learned: summaryForStore.learned,
+    completed: summaryForStore.completed,
+    next_steps: summaryForStore.next_steps,
+    notes: summaryForStore.notes,
     project: session.project,
     prompt_number: session.lastPromptNumber,
     created_at_epoch: result.createdAtEpoch

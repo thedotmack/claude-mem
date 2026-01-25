@@ -243,7 +243,8 @@ describe('ResponseProcessor', () => {
 
       const [, , , summary] = mockStoreObservations.mock.calls[0];
       expect(summary).not.toBeNull();
-      expect(summary.request).toBe('Build login form');
+      // Session titles are prefixed with [Claude-Mem Session] to distinguish analysis sessions
+      expect(summary.request).toBe('[Claude-Mem Session] Build login form');
       expect(summary.investigated).toBe('Reviewed existing forms');
       expect(summary.learned).toBe('React Hook Form works well');
     });
@@ -284,6 +285,66 @@ describe('ResponseProcessor', () => {
 
       const [, , , summary] = mockStoreObservations.mock.calls[0];
       expect(summary).toBeNull();
+    });
+
+    it('should not double-prefix already prefixed titles', async () => {
+      const session = createMockSession();
+      const responseText = `
+        <summary>
+          <request>[Claude-Mem Session] Already prefixed title</request>
+          <investigated>Test</investigated>
+          <learned>Test</learned>
+          <completed>Test</completed>
+          <next_steps>Test</next_steps>
+          <notes></notes>
+        </summary>
+      `;
+
+      await processAgentResponse(
+        responseText,
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      const [, , , summary] = mockStoreObservations.mock.calls[0];
+      expect(summary).not.toBeNull();
+      // Should NOT double-prefix - stays as single prefix
+      expect(summary.request).toBe('[Claude-Mem Session] Already prefixed title');
+    });
+
+    it('should treat whitespace-only titles as empty', async () => {
+      const session = createMockSession();
+      const responseText = `
+        <summary>
+          <request>   </request>
+          <investigated>Test</investigated>
+          <learned>Test</learned>
+          <completed>Test</completed>
+          <next_steps>Test</next_steps>
+          <notes></notes>
+        </summary>
+      `;
+
+      await processAgentResponse(
+        responseText,
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      const [, , , summary] = mockStoreObservations.mock.calls[0];
+      expect(summary).not.toBeNull();
+      // Whitespace-only should become empty string, not "[Claude-Mem Session]    "
+      expect(summary.request).toBe('');
     });
   });
 
@@ -429,7 +490,8 @@ describe('ResponseProcessor', () => {
         (call: any[]) => call[0].type === 'new_summary'
       );
       expect(summaryCall).toBeDefined();
-      expect(summaryCall[0].summary.request).toBe('Build feature');
+      // SSE broadcast uses prefixed title from summaryForStore for consistency
+      expect(summaryCall[0].summary.request).toBe('[Claude-Mem Session] Build feature');
     });
   });
 
