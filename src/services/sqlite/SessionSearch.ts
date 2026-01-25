@@ -337,12 +337,54 @@ export class SessionSearch {
   }
 
   /**
+   * Normalize path separators to forward slashes and remove trailing slashes
+   */
+  private normalizePath(p: string): string {
+    return p.replace(/\\/g, '/').replace(/\/+$/, '');
+  }
+
+  /**
    * Check if a file is a direct child of a folder (not in a subfolder)
+   * Handles path format mismatches where folderPath may be absolute but
+   * filePath is stored as relative in the database (fixes #794)
    */
   private isDirectChild(filePath: string, folderPath: string): boolean {
-    if (!filePath.startsWith(folderPath + '/')) return false;
-    const remainder = filePath.slice(folderPath.length + 1);
-    return !remainder.includes('/');
+    const normFile = this.normalizePath(filePath);
+    const normFolder = this.normalizePath(folderPath);
+
+    // Strategy 1: Direct prefix match (both paths in same format)
+    if (normFile.startsWith(normFolder + '/')) {
+      const remainder = normFile.slice(normFolder.length + 1);
+      return !remainder.includes('/');
+    }
+
+    // Strategy 2: Handle absolute folderPath with relative filePath
+    // e.g., folderPath="/Users/x/project/app/api" and filePath="app/api/router.py"
+    // Find where the relative path could match within the absolute path
+    const folderSegments = normFolder.split('/');
+    const fileSegments = normFile.split('/');
+    
+    if (fileSegments.length < 2) return false; // Need at least folder/file
+    
+    const fileDir = fileSegments.slice(0, -1).join('/'); // Directory part of file
+    const fileName = fileSegments[fileSegments.length - 1]; // Actual filename
+    
+    // Check if folder path ends with the file's directory path
+    if (normFolder.endsWith('/' + fileDir) || normFolder === fileDir) {
+      // File is a direct child (no additional subdirectories)
+      return !fileName.includes('/');
+    }
+    
+    // Check if file's directory is contained at the end of folder path
+    // by progressively checking suffixes
+    for (let i = 0; i < folderSegments.length; i++) {
+      const folderSuffix = folderSegments.slice(i).join('/');
+      if (folderSuffix === fileDir) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   /**
