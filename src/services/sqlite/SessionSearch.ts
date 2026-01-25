@@ -337,16 +337,21 @@ export class SessionSearch {
   }
 
   /**
-   * Normalize path separators to forward slashes and remove trailing slashes
+   * Normalize path separators to forward slashes, collapse consecutive slashes,
+   * and remove trailing slashes
    */
   private normalizePath(p: string): string {
-    return p.replace(/\\/g, '/').replace(/\/+$/, '');
+    return p.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/+$/, '');
   }
 
   /**
    * Check if a file is a direct child of a folder (not in a subfolder)
    * Handles path format mismatches where folderPath may be absolute but
    * filePath is stored as relative in the database (fixes #794)
+   *
+   * NOTE: This uses suffix matching which assumes both paths are relative to
+   * the same project root. It may produce false positives if used across
+   * different project roots, but this is mitigated by project-scoped queries.
    */
   private isDirectChild(filePath: string, folderPath: string): boolean {
     const normFile = this.normalizePath(filePath);
