@@ -63,6 +63,26 @@ export class SessionManager {
         lastPromptNumber: session.lastPromptNumber
       });
 
+      // CRITICAL: Reset abortController if it was aborted (e.g., after Generator failure)
+      // Without this, the Generator will immediately exit on signal.aborted check
+      // Only reset if generator has completed (generatorPromise is null) to avoid race conditions
+      if (session.abortController.signal.aborted) {
+        if (session.generatorPromise === null) {
+          logger.info('SESSION', 'Resetting aborted controller for existing session', {
+            sessionId: sessionDbId,
+            lastPromptNumber: session.lastPromptNumber,
+            conversationHistoryLength: session.conversationHistory.length
+          });
+          session.abortController = new AbortController();
+        } else {
+          // Generator still running with aborted signal - this shouldn't happen
+          // but log for diagnostics
+          logger.warn('SESSION', 'Aborted controller found but generator still active', {
+            sessionId: sessionDbId
+          });
+        }
+      }
+
       // Refresh project from database in case it was updated by new-hook
       // This fixes the bug where sessions created with empty project get updated
       // in the database but the in-memory session still has the stale empty value
@@ -183,11 +203,8 @@ export class SessionManager {
    * This ensures observations survive worker crashes.
    */
   queueObservation(sessionDbId: number, data: ObservationData): void {
-    // Auto-initialize from database if needed (handles worker restarts)
-    let session = this.sessions.get(sessionDbId);
-    if (!session) {
-      session = this.initializeSession(sessionDbId);
-    }
+    // Always call initializeSession - handles both new sessions AND AbortController reset for existing ones
+    const session = this.initializeSession(sessionDbId);
 
     // CRITICAL: Persist to database FIRST
     const message: PendingMessage = {
@@ -227,11 +244,8 @@ export class SessionManager {
    * This ensures summarize requests survive worker crashes.
    */
   queueSummarize(sessionDbId: number, lastAssistantMessage?: string): void {
-    // Auto-initialize from database if needed (handles worker restarts)
-    let session = this.sessions.get(sessionDbId);
-    if (!session) {
-      session = this.initializeSession(sessionDbId);
-    }
+    // Always call initializeSession - handles both new sessions AND AbortController reset for existing ones
+    const session = this.initializeSession(sessionDbId);
 
     // CRITICAL: Persist to database FIRST
     const message: PendingMessage = {

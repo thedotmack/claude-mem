@@ -618,24 +618,28 @@ describe('ResponseProcessor', () => {
   });
 
   describe('error handling', () => {
-    it('should throw error if memorySessionId is missing', async () => {
+    it('should skip storage gracefully if memorySessionId is missing', async () => {
       const session = createMockSession({
         memorySessionId: null, // Missing memory session ID
       });
       const responseText = '<observation><type>discovery</type></observation>';
 
-      await expect(
-        processAgentResponse(
-          responseText,
-          session,
-          mockDbManager,
-          mockSessionManager,
-          mockWorker,
-          100,
-          null,
-          'TestAgent'
-        )
-      ).rejects.toThrow('Cannot store observations: memorySessionId not yet captured');
+      // Should NOT throw - gracefully skips storage to allow recovery
+      await processAgentResponse(
+        responseText,
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      // Verify storage was skipped
+      expect(mockStoreObservations).not.toHaveBeenCalled();
+      // Verify timestamp was still cleared (cleanup happened)
+      expect(session.earliestPendingTimestamp).toBeNull();
     });
   });
 });
