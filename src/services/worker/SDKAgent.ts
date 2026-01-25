@@ -48,6 +48,10 @@ export class SDKAgent {
 
     // Get model ID and disallowed tools
     const modelId = this.getModelId();
+
+    // Inject custom provider environment variables if configured
+    // This must happen BEFORE spawning the Claude subprocess via query()
+    this.injectCustomProviderEnvironment();
     // Memory agent is OBSERVER ONLY - no tools allowed
     const disallowedTools = [
       'Bash',           // Prevent infinite loops
@@ -396,4 +400,128 @@ export class SDKAgent {
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
     return settings.CLAUDE_MEM_MODEL;
   }
+
+  /**
+   * Inject provider environment variables for Anthropic-compatible APIs
+   *
+   * Supports two modes:
+   * 1. GLM Preset (provider=glm): Hardcoded endpoint for BigModel/Z.Ai
+   *    - Endpoint: https://open.bigmodel.cn/api/anthropic
+   *    - User only needs to configure API key and model
+   *
+   * 2. Custom Provider (custom base URL set): Flexible for any Anthropic-compatible API
+   *    - User specifies endpoint, token, and model
+   *    - Examples: DeepSeek, local servers, other providers
+   *
+   * These environment variables are inherited by the Claude subprocess spawned
+   * by the Agent SDK, allowing it to connect to alternative providers while
+   * maintaining full SDK compatibility.
+   *
+   * Example GLM configuration in ~/.claude-mem/settings.json:
+   * {
+   *   "CLAUDE_MEM_PROVIDER": "glm",
+   *   "CLAUDE_MEM_GLM_API_KEY": "your_glm_token",
+   *   "CLAUDE_MEM_GLM_MODEL": "glm-4.7"
+   * }
+   *
+   * Example custom provider configuration:
+   * {
+   *   "CLAUDE_MEM_CUSTOM_BASE_URL": "https://api.deepseek.com/v1",
+   *   "CLAUDE_MEM_CUSTOM_AUTH_TOKEN": "your_token",
+   *   "CLAUDE_MEM_CUSTOM_MODEL": "deepseek-chat"
+   * }
+   */
+  private injectCustomProviderEnvironment(): void {
+    const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+    const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+    // Check if GLM preset is selected
+    const isGLMSelected = settings.CLAUDE_MEM_PROVIDER === 'glm';
+    const isCustomProviderConfigured = !!settings.CLAUDE_MEM_CUSTOM_BASE_URL;
+
+    // Only inject if GLM selected OR custom provider configured
+    if (!isGLMSelected && !isCustomProviderConfigured) {
+      return;
+    }
+
+    // GLM Preset: Use hardcoded endpoint
+    if (isGLMSelected) {
+      const glmEndpoint = 'https://open.bigmodel.cn/api/anthropic';
+      process.env.ANTHROPIC_BASE_URL = glmEndpoint;
+      logger.debug('SDK', 'Injected GLM preset base URL', {
+        baseUrl: glmEndpoint
+      });
+
+      // GLM authentication
+      if (settings.CLAUDE_MEM_GLM_API_KEY) {
+        process.env.ANTHROPIC_AUTH_TOKEN = settings.CLAUDE_MEM_GLM_API_KEY;
+        logger.debug('SDK', 'Injected GLM API key');
+      } else {
+        logger.warn('SDK', 'GLM provider selected but no API key configured. Set CLAUDE_MEM_GLM_API_KEY in settings.');
+      }
+
+      // GLM model
+      if (settings.CLAUDE_MEM_GLM_MODEL) {
+        process.env.ANTHROPIC_MODEL = settings.CLAUDE_MEM_GLM_MODEL;
+        logger.debug('SDK', 'Injected GLM model', {
+          model: settings.CLAUDE_MEM_GLM_MODEL
+        });
+      }
+
+      logger.info('SDK', 'GLM provider environment configured', {
+        baseUrl: glmEndpoint,
+        model: settings.CLAUDE_MEM_GLM_MODEL || settings.CLAUDE_MEM_MODEL,
+        hasApiKey: !!settings.CLAUDE_MEM_GLM_API_KEY
+      });
+      return;
+    }
+
+    // Custom Provider: Use user-specified endpoint
+    if (isCustomProviderConfigured) {
+      process.env.ANTHROPIC_BASE_URL = settings.CLAUDE_MEM_CUSTOM_BASE_URL;
+      logger.debug('SDK', 'Injected custom provider base URL', {
+        baseUrl: settings.CLAUDE_MEM_CUSTOM_BASE_URL
+      });
+
+      // Custom authentication
+      if (settings.CLAUDE_MEM_CUSTOM_AUTH_TOKEN) {
+        process.env.ANTHROPIC_AUTH_TOKEN = settings.CLAUDE_MEM_CUSTOM_AUTH_TOKEN;
+        logger.debug('SDK', 'Injected custom provider auth token');
+      } else {
+        logger.warn('SDK', 'Custom base URL configured but no auth token provided. Authentication may fail.');
+      }
+
+      // Custom model
+      if (settings.CLAUDE_MEM_CUSTOM_MODEL) {
+        process.env.ANTHROPIC_MODEL = settings.CLAUDE_MEM_CUSTOM_MODEL;
+        logger.debug('SDK', 'Injected custom provider model', {
+          model: settings.CLAUDE_MEM_CUSTOM_MODEL
+        });
+      }
+
+      logger.info('SDK', 'Custom provider environment configured', {
+        baseUrl: settings.CLAUDE_MEM_CUSTOM_BASE_URL,
+        model: settings.CLAUDE_MEM_CUSTOM_MODEL || settings.CLAUDE_MEM_MODEL,
+        hasAuthToken: !!settings.CLAUDE_MEM_CUSTOM_AUTH_TOKEN
+      });
+    }
+  }
+}
+
+/**
+ * Check if GLM is the selected provider
+ */
+export function isGLMSelected(): boolean {
+  const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+  const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+  return settings.CLAUDE_MEM_PROVIDER === 'glm';
+}
+
+/**
+ * Check if GLM provider is available (API key configured)
+ */
+export function isGLMAvailable(): boolean {
+  const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+  const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+  return !!settings.CLAUDE_MEM_GLM_API_KEY;
 }
