@@ -28,6 +28,15 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
+import { spawnDaemon, getPlatformTimeout } from '../services/infrastructure/ProcessManager.js';
+import { waitForHealth } from '../services/infrastructure/HealthMonitor.js';
+import path from 'path';
+import { existsSync } from 'fs';
+
+/**
+ * Flag to prevent concurrent auto-start attempts
+ */
+let autoStartInProgress = false;
 
 /**
  * Worker HTTP API configuration
@@ -45,6 +54,65 @@ const TOOL_ENDPOINT_MAP: Record<string, string> = {
 };
 
 /**
+ * Check if an error is a connection error (worker offline)
+ * Checks both error messages and error codes for robustness
+ */
+function isConnectionError(error: unknown): boolean {
+  if (error instanceof Error) {
+    const msg = error.message.toLowerCase();
+    // Check error message patterns
+    if (msg.includes('econnrefused') ||
+        msg.includes('fetch failed') ||
+        msg.includes('unable to connect') ||
+        msg.includes('network error') ||
+        msg.includes('enotfound') ||
+        msg.includes('etimedout') ||
+        msg.includes('econnreset') ||
+        msg.includes('ehostunreach')) {
+      return true;
+    }
+    // Check error code if available (Node.js style)
+    const nodeError = error as NodeJS.ErrnoException;
+    if (nodeError.code && ['ECONNREFUSED', 'ENOTFOUND', 'ETIMEDOUT', 'ECONNRESET', 'EHOSTUNREACH'].includes(nodeError.code)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Cooldown tracking to prevent rapid repeated auto-start attempts
+ */
+let lastAutoStartAttempt = 0;
+const AUTO_START_COOLDOWN_MS = 30000; // Don't retry auto-start within 30 seconds
+
+/**
+ * Attempt to recover from worker offline by auto-starting
+ * Returns true if worker is now available
+ */
+async function attemptWorkerRecovery(): Promise<boolean> {
+  // Check cooldown to prevent rapid repeated attempts
+  const now = Date.now();
+  if (now - lastAutoStartAttempt < AUTO_START_COOLDOWN_MS) {
+    logger.debug('SYSTEM', 'Auto-start on cooldown, skipping recovery attempt');
+    return false;
+  }
+  lastAutoStartAttempt = now;
+
+  logger.warn('SYSTEM', 'Worker appears offline, attempting recovery');
+
+  // Quick recheck in case of transient failure (unlikely for localhost, but defensive)
+  const available = await verifyWorkerConnection();
+  if (available) {
+    logger.info('SYSTEM', 'Worker recovered before auto-start (transient failure)');
+    return true;
+  }
+
+  // Try to auto-start
+  return await autoStartWorker();
+}
+
+/**
  * Call Worker HTTP API endpoint
  */
 async function callWorkerAPI(
@@ -53,7 +121,7 @@ async function callWorkerAPI(
 ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
   logger.debug('SYSTEM', '→ Worker API', undefined, { endpoint, params });
 
-  try {
+  const makeRequest = async (): Promise<Response> => {
     const searchParams = new URLSearchParams();
 
     // Convert params to query string
@@ -64,7 +132,28 @@ async function callWorkerAPI(
     }
 
     const url = `${WORKER_BASE_URL}${endpoint}?${searchParams}`;
-    const response = await fetch(url);
+    return await fetch(url);
+  };
+
+  try {
+    let response: Response;
+    
+    try {
+      response = await makeRequest();
+    } catch (error) {
+      // Connection failed - try to recover and retry once
+      if (isConnectionError(error)) {
+        const recovered = await attemptWorkerRecovery();
+        if (recovered) {
+          logger.info('SYSTEM', 'Worker recovered, retrying request', { endpoint });
+          response = await makeRequest();
+        } else {
+          throw error;
+        }
+      } else {
+        throw error;
+      }
+    }
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -98,15 +187,36 @@ async function callWorkerAPIPost(
 ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
   logger.debug('HTTP', 'Worker API request (POST)', undefined, { endpoint });
 
-  try {
+  const makeRequest = async (): Promise<Response> => {
     const url = `${WORKER_BASE_URL}${endpoint}`;
-    const response = await fetch(url, {
+    return await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify(body)
     });
+  };
+
+  try {
+    let response: Response;
+    
+    try {
+      response = await makeRequest();
+    } catch (error) {
+      // Connection failed - try to recover and retry once
+      if (isConnectionError(error)) {
+        const recovered = await attemptWorkerRecovery();
+        if (recovered) {
+          logger.info('SYSTEM', 'Worker recovered, retrying request', { endpoint });
+          response = await makeRequest();
+        } else {
+          throw error;
+        }
+      } else {
+        throw error;
+      }
+    }
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -147,6 +257,74 @@ async function verifyWorkerConnection(): Promise<boolean> {
     // Expected during worker startup or if worker is down
     logger.debug('SYSTEM', 'Worker health check failed', {}, error as Error);
     return false;
+  }
+}
+
+/**
+ * Attempt to start the worker daemon automatically
+ * Returns true if worker started successfully, false otherwise
+ * Uses a lock to prevent concurrent auto-start attempts
+ */
+async function autoStartWorker(): Promise<boolean> {
+  const MAX_WAIT_MS = 60000; // Max time to wait for in-progress attempt
+  const POLL_INTERVAL_MS = 500;
+
+  // Prevent concurrent auto-start attempts (race condition fix)
+  if (autoStartInProgress) {
+    logger.debug('SYSTEM', 'Auto-start already in progress, waiting...');
+    const startWait = Date.now();
+    // Wait for the in-progress attempt to complete with timeout
+    while (autoStartInProgress) {
+      if (Date.now() - startWait > MAX_WAIT_MS) {
+        logger.error('SYSTEM', 'Timeout waiting for in-progress auto-start');
+        return false;
+      }
+      await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
+    }
+    // Check if worker is now available
+    return await verifyWorkerConnection();
+  }
+  
+  autoStartInProgress = true;
+  
+  try {
+    logger.info('SYSTEM', 'Attempting to auto-start worker daemon');
+    
+    // Get the worker service script path
+    // In production, this is the bundled worker-service.cjs next to mcp-server.cjs
+    // Uses __dirname which esbuild provides in CommonJS bundles
+    const workerScriptPath = path.join(__dirname, 'worker-service.cjs');
+    
+    // Validate script exists before attempting to spawn
+    if (!existsSync(workerScriptPath)) {
+      logger.error('SYSTEM', 'Worker script not found', { path: workerScriptPath });
+      return false;
+    }
+    
+    const pid = spawnDaemon(workerScriptPath, WORKER_PORT);
+    if (pid === undefined) {
+      logger.error('SYSTEM', 'Failed to spawn worker daemon during auto-start');
+      return false;
+    }
+
+    // Windows WMIC returns 0 (PID unavailable), Unix returns actual PID
+    if (process.platform === 'win32') {
+      logger.info('SYSTEM', 'Worker daemon spawn initiated (Windows/WMIC)', { note: 'PID unavailable via WMIC' });
+    } else {
+      logger.info('SYSTEM', 'Worker daemon spawned, waiting for health check', { pid });
+    }
+    
+    // Wait for worker to become healthy (30 seconds timeout, platform-adjusted)
+    const healthy = await waitForHealth(WORKER_PORT, getPlatformTimeout(30000));
+    if (!healthy) {
+      logger.error('SYSTEM', 'Worker failed to start (health check timeout)');
+      return false;
+    }
+    
+    logger.info('SYSTEM', 'Worker auto-started successfully');
+    return true;
+  } finally {
+    autoStartInProgress = false;
   }
 }
 
@@ -299,15 +477,26 @@ async function main() {
   await server.connect(transport);
   logger.info('SYSTEM', 'Claude-mem search server started');
 
-  // Check Worker availability in background
+  // Check Worker availability and auto-start if needed
   setTimeout(async () => {
-    const workerAvailable = await verifyWorkerConnection();
+    let workerAvailable = await verifyWorkerConnection();
+    
     if (!workerAvailable) {
-      logger.error('SYSTEM', 'Worker not available', undefined, { workerUrl: WORKER_BASE_URL });
-      logger.error('SYSTEM', 'Tools will fail until Worker is started');
-      logger.error('SYSTEM', 'Start Worker with: npm run worker:restart');
-    } else {
-      logger.info('SYSTEM', 'Worker available', undefined, { workerUrl: WORKER_BASE_URL });
+      logger.warn('SYSTEM', 'Worker not available, attempting auto-start', { workerUrl: WORKER_BASE_URL });
+      
+      // Try to auto-start the worker
+      const started = await autoStartWorker();
+      if (started) {
+        workerAvailable = true;
+      } else {
+        logger.error('SYSTEM', 'Worker auto-start failed');
+        logger.error('SYSTEM', 'Tools will fail until Worker is started');
+        logger.error('SYSTEM', 'Start Worker with: npm run worker:restart');
+      }
+    }
+    
+    if (workerAvailable) {
+      logger.info('SYSTEM', 'Worker available', { workerUrl: WORKER_BASE_URL });
     }
   }, 0);
 }
