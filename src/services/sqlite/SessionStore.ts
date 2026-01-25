@@ -658,8 +658,8 @@ export class SessionStore {
    * We use PRAGMA foreign_keys = OFF within a transaction to safely perform the update.
    * This is safe because:
    * - Bun SQLite is synchronous and single-threaded within a process
-   * - The PRAGMA is scoped to this transaction via the try/finally pattern
-   * - We re-enable FK checks immediately after the transaction completes
+   * - No concurrent operations can occur between OFF and ON
+   * - We re-enable FK checks immediately after via try/finally
    *
    * NOTE: user_prompts uses content_session_id, not memory_session_id
    */
