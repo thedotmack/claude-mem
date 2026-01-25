@@ -50,12 +50,20 @@ export function unregisterProcess(pid: number): void {
 
 /**
  * Get process info by session ID
+ * Warns if multiple processes found (indicates race condition)
  */
 export function getProcessBySession(sessionDbId: number): TrackedProcess | undefined {
+  const matches: TrackedProcess[] = [];
   for (const [, info] of processRegistry) {
-    if (info.sessionDbId === sessionDbId) return info;
+    if (info.sessionDbId === sessionDbId) matches.push(info);
   }
-  return undefined;
+  if (matches.length > 1) {
+    logger.warn('PROCESS', `Multiple processes found for session ${sessionDbId}`, {
+      count: matches.length,
+      pids: matches.map(m => m.pid)
+    });
+  }
+  return matches[0];
 }
 
 /**
@@ -72,18 +80,32 @@ export function getActiveProcesses(): Array<{ pid: number; sessionDbId: number; 
 
 /**
  * Wait for a process to exit with timeout, escalating to SIGKILL if needed
+ * Uses event-based waiting instead of polling to avoid CPU overhead
  */
 export async function ensureProcessExit(tracked: TrackedProcess, timeoutMs: number = 5000): Promise<void> {
   const { pid, process: proc } = tracked;
-  const start = Date.now();
 
-  // Wait for graceful exit
-  while (Date.now() - start < timeoutMs) {
-    if (proc.killed || proc.exitCode !== null) {
-      unregisterProcess(pid);
-      return;
-    }
-    await new Promise(resolve => setTimeout(resolve, 100));
+  // Already exited?
+  if (proc.killed || proc.exitCode !== null) {
+    unregisterProcess(pid);
+    return;
+  }
+
+  // Wait for graceful exit with timeout using event-based approach
+  const exitPromise = new Promise<void>((resolve) => {
+    proc.once('exit', () => resolve());
+  });
+
+  const timeoutPromise = new Promise<void>((resolve) => {
+    setTimeout(resolve, timeoutMs);
+  });
+
+  await Promise.race([exitPromise, timeoutPromise]);
+
+  // Check if exited gracefully
+  if (proc.killed || proc.exitCode !== null) {
+    unregisterProcess(pid);
+    return;
   }
 
   // Timeout: escalate to SIGKILL
@@ -94,6 +116,7 @@ export async function ensureProcessExit(tracked: TrackedProcess, timeoutMs: numb
     // Already dead
   }
 
+  // Brief wait for SIGKILL to take effect
   await new Promise(resolve => setTimeout(resolve, 200));
   unregisterProcess(pid);
 }
