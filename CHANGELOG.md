@@ -2,6 +2,25 @@
 
 All notable changes to claude-mem.
 
+## [v9.0.10] - 2026-01-26
+
+## Bug Fix
+
+**Fixed path format mismatch causing folder CLAUDE.md files to show "No recent activity" (#794)** - Thanks @bigph00t!
+
+The folder-level CLAUDE.md generation was failing to find observations due to a path format mismatch between how API queries used absolute paths and how the database stored relative paths. The `isDirectChild()` function's simple prefix match always returned false in these cases.
+
+**Root cause:** PR #809 (v9.0.9) only masked this bug by skipping file creation when "no activity" was detected. Since ALL folders were affected, this prevented file creation entirely. This PR provides the actual fix.
+
+**Changes:**
+- Added new shared module `src/shared/path-utils.ts` with robust path normalization and matching utilities
+- Updated `SessionSearch.ts`, `regenerate-claude-md.ts`, and `claude-md-utils.ts` to use shared path utilities
+- Added comprehensive test coverage (61 new tests) for path matching edge cases
+
+---
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
 ## [v9.0.9] - 2026-01-26
 
 ## Bug Fixes
@@ -1294,15 +1313,4 @@ This represents a major reliability improvement for Windows users, eliminating c
 ## Bug Fixes
 
 - Enhanced SDKAgent response handling and message processing
-
-## [v7.3.5] - 2025-12-17
-
-## What's Changed
-* fix(windows): solve zombie port problem with wrapper architecture by @ToxMox in https://github.com/thedotmack/claude-mem/pull/372
-* chore: bump version to 7.3.5 by @thedotmack in https://github.com/thedotmack/claude-mem/pull/375
-
-## New Contributors
-* @ToxMox made their first contribution in https://github.com/thedotmack/claude-mem/pull/372
-
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.3.4...v7.3.5
 
