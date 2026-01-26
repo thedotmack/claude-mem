@@ -2,6 +2,20 @@
 
 All notable changes to claude-mem.
 
+## [v9.0.9] - 2026-01-26
+
+## Bug Fixes
+
+### Prevent Creation of Empty CLAUDE.md Files (#809)
+
+Previously, claude-mem would create new `CLAUDE.md` files in project directories even when there was no activity to display, cluttering codebases with empty context files showing only "*No recent activity*".
+
+**What changed:** The `updateFolderClaudeMdFiles` function now checks if the formatted content contains no activity before writing. If a `CLAUDE.md` file doesn't already exist and there's nothing to show, it will be skipped entirely. Existing files will still be updated to reflect "No recent activity" if that's the current state.
+
+**Impact:** Cleaner project directories - only folders with actual activity will have `CLAUDE.md` context files created.
+
+Thanks to @maxmillienjr for this contribution!
+
 ## [v9.0.8] - 2026-01-26
 
 ## Fix: Prevent Zombie Process Accumulation (Issue #737)
@@ -1291,8 +1305,4 @@ This represents a major reliability improvement for Windows users, eliminating c
 * @ToxMox made their first contribution in https://github.com/thedotmack/claude-mem/pull/372
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.3.4...v7.3.5
-
-## [v7.3.4] - 2025-12-17
-
-Patch release for bug fixes and minor improvements
 
