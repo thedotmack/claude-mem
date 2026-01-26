@@ -231,6 +231,7 @@ export class SessionRoutes extends BaseRouteHandler {
     app.post('/api/sessions/init', this.handleSessionInitByClaudeId.bind(this));
     app.post('/api/sessions/observations', this.handleObservationsByClaudeId.bind(this));
     app.post('/api/sessions/summarize', this.handleSummarizeByClaudeId.bind(this));
+    app.post('/api/sessions/cleanup', this.handleSessionCleanupByClaudeId.bind(this));
   }
 
   /**
@@ -615,5 +616,40 @@ export class SessionRoutes extends BaseRouteHandler {
       promptNumber,
       skipped: false
     });
+  });
+
+  /**
+   * Cleanup session by contentSessionId (session-end hook uses this)
+   * POST /api/sessions/cleanup
+   * Body: { contentSessionId }
+   *
+   * Called when Claude Code session closes to cleanup SDK agent subprocess.
+   * Prevents orphan process accumulation (Issue #737).
+   */
+  private handleSessionCleanupByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const { contentSessionId } = req.body;
+
+    if (!contentSessionId) {
+      return this.badRequest(res, 'Missing contentSessionId');
+    }
+
+    const store = this.dbManager.getSessionStore();
+
+    // Look up sessionDbId from contentSessionId (without creating if not exists)
+    const sessionDbId = store.getSessionIdByContentSessionId(contentSessionId);
+
+    if (sessionDbId === null) {
+      // Session never initialized - nothing to clean up
+      logger.debug('HTTP', 'Session cleanup - session not found', { contentSessionId });
+      res.json({ status: 'not_found' });
+      return;
+    }
+
+    logger.info('HTTP', 'Session cleanup triggered', { contentSessionId, sessionDbId });
+
+    // Complete the session (aborts SDK agent and ensures subprocess exit)
+    await this.completionHandler.completeByDbId(sessionDbId);
+
+    res.json({ status: 'cleaned' });
   });
 }

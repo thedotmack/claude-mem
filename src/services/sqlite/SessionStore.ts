@@ -1152,6 +1152,19 @@ export class SessionStore {
   }
 
   /**
+   * Get session ID by content session ID (Claude Code's session_id)
+   * Returns null if session doesn't exist (for cleanup without creating)
+   */
+  getSessionIdByContentSessionId(contentSessionId: string): number | null {
+    const stmt = this.db.prepare(`
+      SELECT id FROM sdk_sessions WHERE content_session_id = ? LIMIT 1
+    `);
+
+    const row = stmt.get(contentSessionId) as { id: number } | undefined;
+    return row?.id ?? null;
+  }
+
+  /**
    * Get SDK sessions by SDK session IDs
    * Used for exporting session metadata
    */

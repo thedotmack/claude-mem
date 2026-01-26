@@ -33,6 +33,26 @@ interface TrackedProcess {
 const processRegistry = new Map<number, TrackedProcess>();
 
 /**
+ * Cleanup stdio streams of a child process to release file descriptors
+ * Each subprocess uses 3 FDs (stdin/stdout/stderr pipes) that leak if not destroyed
+ */
+function cleanupProcessStreams(proc: ChildProcess): void {
+  try {
+    if (proc.stdin && !proc.stdin.destroyed) {
+      proc.stdin.destroy();
+    }
+    if (proc.stdout && !proc.stdout.destroyed) {
+      proc.stdout.destroy();
+    }
+    if (proc.stderr && !proc.stderr.destroyed) {
+      proc.stderr.destroy();
+    }
+  } catch {
+    // Cleanup is best-effort - streams may already be destroyed
+  }
+}
+
+/**
  * Register a spawned process in the registry
  */
 export function registerProcess(pid: number, sessionDbId: number, process: ChildProcess): void {
@@ -88,6 +108,8 @@ export async function ensureProcessExit(tracked: TrackedProcess, timeoutMs: numb
   // Already exited?
   if (proc.killed || proc.exitCode !== null) {
     unregisterProcess(pid);
+    // Ensure streams are cleaned up even if exit handler didn't fire
+    cleanupProcessStreams(proc);
     return;
   }
 
@@ -105,6 +127,7 @@ export async function ensureProcessExit(tracked: TrackedProcess, timeoutMs: numb
   // Check if exited gracefully
   if (proc.killed || proc.exitCode !== null) {
     unregisterProcess(pid);
+    cleanupProcessStreams(proc);
     return;
   }
 
@@ -119,6 +142,7 @@ export async function ensureProcessExit(tracked: TrackedProcess, timeoutMs: numb
   // Brief wait for SIGKILL to take effect
   await new Promise(resolve => setTimeout(resolve, 200));
   unregisterProcess(pid);
+  cleanupProcessStreams(proc);
 }
 
 /**
@@ -208,11 +232,14 @@ export function createPidCapturingSpawn(sessionDbId: number) {
     if (child.pid) {
       registerProcess(child.pid, sessionDbId, child);
 
-      // Auto-unregister on exit
+      // Auto-unregister on exit and cleanup streams to prevent FD leak
+      // Without this, stdin/stdout/stderr pipes leak ~3 FDs per subprocess
+      // See: monitors/logs analysis showing FD growth from 41→96 over 2 hours
       child.on('exit', () => {
         if (child.pid) {
           unregisterProcess(child.pid);
         }
+        cleanupProcessStreams(child);
       });
     }
 

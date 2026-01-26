@@ -11,6 +11,7 @@ import { observationHandler } from './observation.js';
 import { summarizeHandler } from './summarize.js';
 import { userMessageHandler } from './user-message.js';
 import { fileEditHandler } from './file-edit.js';
+import { sessionEndHandler } from './session-end.js';
 
 export type EventType =
   | 'context'        // SessionStart - inject context
@@ -18,7 +19,8 @@ export type EventType =
   | 'observation'    // PostToolUse - save observation
   | 'summarize'      // Stop - generate summary
   | 'user-message'   // SessionStart (parallel) - display to user
-  | 'file-edit';     // Cursor afterFileEdit
+  | 'file-edit'      // Cursor afterFileEdit
+  | 'session-end';   // SessionEnd - cleanup subprocess (Issue #737)
 
 const handlers: Record<EventType, EventHandler> = {
   'context': contextHandler,
@@ -26,7 +28,8 @@ const handlers: Record<EventType, EventHandler> = {
   'observation': observationHandler,
   'summarize': summarizeHandler,
   'user-message': userMessageHandler,
-  'file-edit': fileEditHandler
+  'file-edit': fileEditHandler,
+  'session-end': sessionEndHandler
 };
 
 /**
@@ -51,3 +54,4 @@ export { observationHandler } from './observation.js';
 export { summarizeHandler } from './summarize.js';
 export { userMessageHandler } from './user-message.js';
 export { fileEditHandler } from './file-edit.js';
+export { sessionEndHandler } from './session-end.js';
