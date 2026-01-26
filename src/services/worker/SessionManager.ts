@@ -14,6 +14,7 @@ import { logger } from '../../utils/logger.js';
 import type { ActiveSession, PendingMessage, PendingMessageWithId, ObservationData } from '../worker-types.js';
 import { PendingMessageStore } from '../sqlite/PendingMessageStore.js';
 import { SessionQueueProcessor } from '../queue/SessionQueueProcessor.js';
+import { getProcessBySession, ensureProcessExit } from './ProcessRegistry.js';
 
 export class SessionManager {
   private dbManager: DatabaseManager;
@@ -256,6 +257,7 @@ export class SessionManager {
 
   /**
    * Delete a session (abort SDK agent and cleanup)
+   * Verifies subprocess exit to prevent zombie process accumulation (Issue #737)
    */
   async deleteSession(sessionDbId: number): Promise<void> {
     const session = this.sessions.get(sessionDbId);
@@ -265,17 +267,27 @@ export class SessionManager {
 
     const sessionDuration = Date.now() - session.startTime;
 
-    // Abort the SDK agent
+    // 1. Abort the SDK agent
     session.abortController.abort();
 
-    // Wait for generator to finish
+    // 2. Wait for generator to finish
     if (session.generatorPromise) {
-      await session.generatorPromise.catch(error => {
+      await session.generatorPromise.catch(() => {
         logger.debug('SYSTEM', 'Generator already failed, cleaning up', { sessionId: session.sessionDbId });
       });
     }
 
-    // Cleanup
+    // 3. Verify subprocess exit with 5s timeout (Issue #737 fix)
+    const tracked = getProcessBySession(sessionDbId);
+    if (tracked && !tracked.process.killed && tracked.process.exitCode === null) {
+      logger.debug('SESSION', `Waiting for subprocess PID ${tracked.pid} to exit`, {
+        sessionId: sessionDbId,
+        pid: tracked.pid
+      });
+      await ensureProcessExit(tracked, 5000);
+    }
+
+    // 4. Cleanup
     this.sessions.delete(sessionDbId);
     this.sessionQueues.delete(sessionDbId);
 
