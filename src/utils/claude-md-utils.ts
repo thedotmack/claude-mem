@@ -6,7 +6,7 @@
  * <claude-mem-context> tags.
  */
 
-import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, renameSync } from 'fs';
 import path from 'path';
 import os from 'os';
 import { logger } from './logger.js';
@@ -86,17 +86,22 @@ export function replaceTaggedContent(existingContent: string, newContent: string
 
 /**
  * Write CLAUDE.md file to folder with atomic writes.
- * Creates directory structure if needed.
+ * Only writes to existing folders; skips non-existent paths to prevent
+ * creating spurious directory structures from malformed paths.
  *
- * @param folderPath - Absolute path to the folder
+ * @param folderPath - Absolute path to the folder (must already exist)
  * @param newContent - Content to write inside tags
  */
 export function writeClaudeMdToFolder(folderPath: string, newContent: string): void {
   const claudeMdPath = path.join(folderPath, 'CLAUDE.md');
   const tempFile = `${claudeMdPath}.tmp`;
 
-  // Ensure directory exists
-  mkdirSync(folderPath, { recursive: true });
+  // Only write to folders that already exist - never create new directories
+  // This prevents creating spurious folder structures from malformed paths
+  if (!existsSync(folderPath)) {
+    logger.debug('FOLDER_INDEX', 'Skipping non-existent folder', { folderPath });
+    return;
+  }
 
   // Read existing content if file exists
   let existingContent = '';
@@ -321,7 +326,7 @@ export async function updateFolderClaudeMdFiles(
 
       const formatted = formatTimelineForClaudeMd(result.content[0].text);
 
-      // Fix for #758: Don't create new CLAUDE.md files if there's no activity
+      // Fix for #794: Don't create new CLAUDE.md files if there's no activity
       // But update existing ones to show "No recent activity" if they already exist
       const claudeMdPath = path.join(folderPath, 'CLAUDE.md');
       const hasNoActivity = formatted.includes('*No recent activity*');
