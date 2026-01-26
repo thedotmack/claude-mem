@@ -91,6 +91,14 @@ export class OpenRouterAgent {
         throw new Error('OpenRouter API key not configured. Set CLAUDE_MEM_OPENROUTER_API_KEY in settings or OPENROUTER_API_KEY environment variable.');
       }
 
+      // Generate synthetic memorySessionId (OpenRouter is stateless, doesn't return session ID)
+      if (!session.memorySessionId) {
+        const syntheticId = `openrouter-${session.contentSessionId}-${Date.now()}`;
+        session.memorySessionId = syntheticId;
+        this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, syntheticId);
+        logger.info('SESSION', `MEMORY_ID_GENERATED | sessionDbId=${session.sessionDbId} | provider=OpenRouter`);
+      }
+
       // Load active mode
       const mode = ModeManager.getInstance().getActiveMode();
 
