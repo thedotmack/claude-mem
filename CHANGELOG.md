@@ -2,6 +2,37 @@
 
 All notable changes to claude-mem.
 
+## [v9.0.8] - 2026-01-26
+
+## Fix: Prevent Zombie Process Accumulation (Issue #737)
+
+This release fixes a critical issue where Claude haiku subprocesses spawned by the SDK weren't terminating properly, causing zombie process accumulation. One user reported 155 processes consuming 51GB RAM.
+
+### Root Causes Addressed
+- SDK's SpawnedProcess interface hides subprocess PIDs
+- `deleteSession()` didn't verify subprocess exit
+- `abort()` was fire-and-forget with no confirmation
+- No mechanism to track or clean up orphaned processes
+
+### Solution
+- **ProcessRegistry module**: Tracks spawned Claude subprocesses via PID
+- **Custom spawn**: Uses SDK's `spawnClaudeCodeProcess` option to capture PIDs
+- **Signal propagation**: Passes signal parameter to enable AbortController integration
+- **Graceful shutdown**: Waits for subprocess exit in `deleteSession()` with 5s timeout
+- **SIGKILL escalation**: Force-kills processes that don't exit gracefully
+- **Orphan reaper**: Safety net running every 5 minutes to clean up any missed processes
+- **Race detection**: Warns about multiple processes per session (race condition indicator)
+
+### Files Changed
+- `src/services/worker/ProcessRegistry.ts` (new): PID registry and reaper
+- `src/services/worker/SDKAgent.ts`: Use custom spawn to capture PIDs
+- `src/services/worker/SessionManager.ts`: Verify subprocess exit on delete
+- `src/services/worker-service.ts`: Start/stop orphan reaper
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v9.0.7...v9.0.8
+
+Fixes #737
+
 ## [v9.0.6] - 2026-01-22
 
 ## Windows Console Popup Fix
@@ -1264,12 +1295,4 @@ This represents a major reliability improvement for Windows users, eliminating c
 ## [v7.3.4] - 2025-12-17
 
 Patch release for bug fixes and minor improvements
-
-## [v7.3.3] - 2025-12-16
-
-## What's Changed
-
-- Remove all better-sqlite3 references from codebase (#357)
-
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.3.2...v7.3.3
 
