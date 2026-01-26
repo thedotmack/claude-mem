@@ -147,8 +147,22 @@ describe('formatTimelineForClaudeMd', () => {
 });
 
 describe('writeClaudeMdToFolder', () => {
-  it('should create CLAUDE.md in new folder', () => {
-    const folderPath = join(tempDir, 'new-folder');
+  it('should skip non-existent folders (fix for spurious directory creation)', () => {
+    const folderPath = join(tempDir, 'non-existent-folder');
+    const content = '# Recent Activity\n\nTest content';
+
+    // Should not throw, should silently skip
+    writeClaudeMdToFolder(folderPath, content);
+
+    // Folder and CLAUDE.md should NOT be created
+    expect(existsSync(folderPath)).toBe(false);
+    const claudeMdPath = join(folderPath, 'CLAUDE.md');
+    expect(existsSync(claudeMdPath)).toBe(false);
+  });
+
+  it('should create CLAUDE.md in existing folder', () => {
+    const folderPath = join(tempDir, 'existing-folder');
+    mkdirSync(folderPath, { recursive: true });
     const content = '# Recent Activity\n\nTest content';
 
     writeClaudeMdToFolder(folderPath, content);
@@ -180,20 +194,22 @@ describe('writeClaudeMdToFolder', () => {
     expect(fileContent).not.toContain('Old content');
   });
 
-  it('should create nested directories', () => {
+  it('should not create nested directories (fix for spurious directory creation)', () => {
     const folderPath = join(tempDir, 'deep', 'nested', 'folder');
     const content = 'Nested content';
 
+    // Should not throw, should silently skip
     writeClaudeMdToFolder(folderPath, content);
 
+    // Nested directories should NOT be created
     const claudeMdPath = join(folderPath, 'CLAUDE.md');
-    expect(existsSync(claudeMdPath)).toBe(true);
-    expect(existsSync(join(tempDir, 'deep'))).toBe(true);
-    expect(existsSync(join(tempDir, 'deep', 'nested'))).toBe(true);
+    expect(existsSync(claudeMdPath)).toBe(false);
+    expect(existsSync(join(tempDir, 'deep'))).toBe(false);
   });
 
   it('should not leave .tmp file after write (atomic write)', () => {
     const folderPath = join(tempDir, 'atomic-test');
+    mkdirSync(folderPath, { recursive: true });
     const content = 'Atomic write test';
 
     writeClaudeMdToFolder(folderPath, content);
@@ -218,6 +234,7 @@ describe('updateFolderClaudeMdFiles', () => {
 
   it('should fetch timeline and write CLAUDE.md', async () => {
     const folderPath = join(tempDir, 'api-test');
+    mkdirSync(folderPath, { recursive: true }); // Folder must exist - we no longer create directories
     const filePath = join(folderPath, 'test.ts');
 
     const apiResponse = {
@@ -412,6 +429,7 @@ describe('updateFolderClaudeMdFiles', () => {
 
   it('should write CLAUDE.md to resolved projectRoot path', async () => {
     const subfolderPath = join(tempDir, 'project-root-write-test', 'src', 'utils');
+    mkdirSync(subfolderPath, { recursive: true }); // Folder must exist - we no longer create directories
 
     const apiResponse = {
       content: [{

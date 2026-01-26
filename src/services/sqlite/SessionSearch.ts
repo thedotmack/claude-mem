@@ -2,6 +2,7 @@ import { Database } from 'bun:sqlite';
 import { TableNameRow } from '../../types/database.js';
 import { DATA_DIR, DB_PATH, ensureDir } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
+import { isDirectChild } from '../../shared/path-utils.js';
 import {
   ObservationSearchResult,
   SessionSummarySearchResult,
@@ -337,15 +338,6 @@ export class SessionSearch {
   }
 
   /**
-   * Check if a file is a direct child of a folder (not in a subfolder)
-   */
-  private isDirectChild(filePath: string, folderPath: string): boolean {
-    if (!filePath.startsWith(folderPath + '/')) return false;
-    const remainder = filePath.slice(folderPath.length + 1);
-    return !remainder.includes('/');
-  }
-
-  /**
    * Check if an observation has any files that are direct children of the folder
    */
   private hasDirectChildFile(obs: ObservationSearchResult, folderPath: string): boolean {
@@ -354,7 +346,7 @@ export class SessionSearch {
       try {
         const files = JSON.parse(filesJson);
         if (Array.isArray(files)) {
-          return files.some(f => this.isDirectChild(f, folderPath));
+          return files.some(f => isDirectChild(f, folderPath));
         }
       } catch {}
       return false;
@@ -372,7 +364,7 @@ export class SessionSearch {
       try {
         const files = JSON.parse(filesJson);
         if (Array.isArray(files)) {
-          return files.some(f => this.isDirectChild(f, folderPath));
+          return files.some(f => isDirectChild(f, folderPath));
         }
       } catch {}
       return false;
