@@ -82,6 +82,7 @@ export class ChromaSync {
   private collectionName: string;
   private readonly VECTOR_DB_DIR: string;
   private readonly BATCH_SIZE = 100;
+  private connecting = false;
 
   // Windows: Chroma disabled due to MCP SDK spawning console popups
   // See: https://github.com/anthropics/claude-mem/issues/675
@@ -130,50 +131,83 @@ export class ChromaSync {
       return;
     }
 
-    logger.info('CHROMA_SYNC', 'Connecting to Chroma MCP server...', { project: this.project });
+    if (this.connecting) {
+      logger.debug('CHROMA_SYNC', 'Connection already in progress, waiting...', { project: this.project });
+      // Wait for existing connection attempt
+      for (let i = 0; i < 60; i++) {
+        await new Promise(r => setTimeout(r, 500));
+        if (this.connected || !this.connecting) break;
+      }
+      if (this.connected) return;
+      throw new Error('Concurrent connection attempt failed');
+    }
+    this.connecting = true;
 
     try {
-      // Use Python 3.13 by default to avoid onnxruntime compatibility issues with Python 3.14+
-      // See: https://github.com/thedotmack/claude-mem/issues/170 (Python 3.14 incompatibility)
-      const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-      const pythonVersion = settings.CLAUDE_MEM_PYTHON_VERSION;
-      const isWindows = process.platform === 'win32';
+      logger.info('CHROMA_SYNC', 'Connecting to Chroma MCP server...', { project: this.project });
 
-      const transportOptions: any = {
-        command: 'uvx',
-        args: [
-          '--python', pythonVersion,
-          'chroma-mcp',
-          '--client-type', 'persistent',
-          '--data-dir', this.VECTOR_DB_DIR
-        ],
-        stderr: 'ignore'
-      };
+      try {
+        // Use Python 3.13 by default to avoid onnxruntime compatibility issues with Python 3.14+
+        // See: https://github.com/thedotmack/claude-mem/issues/170 (Python 3.14 incompatibility)
+        const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+        const pythonVersion = settings.CLAUDE_MEM_PYTHON_VERSION;
+        const isWindows = process.platform === 'win32';
 
-      // CRITICAL: On Windows, try to hide console window to prevent PowerShell popups
-      // Note: windowsHide may not be supported by MCP SDK's StdioClientTransport
-      if (isWindows) {
-        transportOptions.windowsHide = true;
-        logger.debug('CHROMA_SYNC', 'Windows detected, attempting to hide console window', { project: this.project });
+        const transportOptions: any = {
+          command: 'uvx',
+          args: [
+            '--python', pythonVersion,
+            'chroma-mcp',
+            '--client-type', 'persistent',
+            '--data-dir', this.VECTOR_DB_DIR
+          ],
+          stderr: 'ignore'
+        };
+
+        // CRITICAL: On Windows, try to hide console window to prevent PowerShell popups
+        // Note: windowsHide may not be supported by MCP SDK's StdioClientTransport
+        if (isWindows) {
+          transportOptions.windowsHide = true;
+          logger.debug('CHROMA_SYNC', 'Windows detected, attempting to hide console window', { project: this.project });
+        }
+
+        this.transport = new StdioClientTransport(transportOptions);
+
+        // Empty capabilities object: this client only calls Chroma tools, doesn't expose any
+        this.client = new Client({
+          name: 'claude-mem-chroma-sync',
+          version: packageVersion
+        }, {
+          capabilities: {}
+        });
+
+        const CONNECT_TIMEOUT_MS = 30_000;
+        const connectPromise = this.client.connect(this.transport);
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Chroma connection timeout after 30s')), CONNECT_TIMEOUT_MS)
+        );
+
+        try {
+          await Promise.race([connectPromise, timeoutPromise]);
+        } catch (error) {
+          // Kill the transport/subprocess on timeout
+          logger.error('CHROMA_SYNC', 'Connection failed or timed out, cleaning up', { project: this.project }, error as Error);
+          try { await this.transport?.close(); } catch {}
+          this.transport = null;
+          this.client = null;
+          this.connected = false;
+          throw error;
+        }
+
+        this.connected = true;
+
+        logger.info('CHROMA_SYNC', 'Connected to Chroma MCP server', { project: this.project });
+      } catch (error) {
+        logger.error('CHROMA_SYNC', 'Failed to connect to Chroma MCP server', { project: this.project }, error as Error);
+        throw new Error(`Chroma connection failed: ${error instanceof Error ? error.message : String(error)}`);
       }
-
-      this.transport = new StdioClientTransport(transportOptions);
-
-      // Empty capabilities object: this client only calls Chroma tools, doesn't expose any
-      this.client = new Client({
-        name: 'claude-mem-chroma-sync',
-        version: packageVersion
-      }, {
-        capabilities: {}
-      });
-
-      await this.client.connect(this.transport);
-      this.connected = true;
-
-      logger.info('CHROMA_SYNC', 'Connected to Chroma MCP server', { project: this.project });
-    } catch (error) {
-      logger.error('CHROMA_SYNC', 'Failed to connect to Chroma MCP server', { project: this.project }, error as Error);
-      throw new Error(`Chroma connection failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      this.connecting = false;
     }
   }
 
