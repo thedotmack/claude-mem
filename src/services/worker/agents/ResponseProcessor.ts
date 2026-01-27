@@ -167,8 +167,8 @@ async function syncAndBroadcastObservations(
     const obs = observations[i];
     const chromaStart = Date.now();
 
-    // Sync to Chroma (fire-and-forget)
-    dbManager.getChromaSync().syncObservation(
+    // Sync to vector store (CloudSync for Pro, ChromaSync for free)
+    dbManager.getActiveSyncProvider().syncObservation(
       obsId,
       session.contentSessionId,
       session.project,
@@ -252,8 +252,8 @@ async function syncAndBroadcastSummary(
 
   const chromaStart = Date.now();
 
-  // Sync to Chroma (fire-and-forget)
-  dbManager.getChromaSync().syncSummary(
+  // Sync to vector store (CloudSync for Pro, ChromaSync for free)
+  dbManager.getActiveSyncProvider().syncSummary(
     result.summaryId,
     session.contentSessionId,
     session.project,

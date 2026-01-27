@@ -15,6 +15,7 @@ import { SessionStore } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { SyncProvider, SyncStats, QueryResult } from './SyncProvider.js';
 import path from 'path';
 import os from 'os';
 
@@ -74,7 +75,7 @@ interface StoredUserPrompt {
   project: string;
 }
 
-export class ChromaSync {
+export class ChromaSync implements SyncProvider {
   private client: Client | null = null;
   private transport: StdioClientTransport | null = null;
   private connected: boolean = false;
@@ -917,6 +918,27 @@ export class ChromaSync {
     const metadatas = parsed.metadatas?.[0] || [];
 
     return { ids, distances, metadatas };
+  }
+
+  /**
+   * Query method to satisfy SyncProvider interface
+   * Delegates to queryChroma
+   */
+  async query(
+    queryText: string,
+    limit: number,
+    whereFilter?: Record<string, any>
+  ): Promise<QueryResult> {
+    return this.queryChroma(queryText, limit, whereFilter);
+  }
+
+  /**
+   * Get stats to satisfy SyncProvider interface
+   */
+  async getStats(): Promise<SyncStats> {
+    // ChromaSync doesn't track detailed stats - return zeros
+    // The actual counts come from SQLite, not Chroma
+    return { observations: 0, summaries: 0, prompts: 0, vectors: 0 };
   }
 
   /**

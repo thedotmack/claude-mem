@@ -259,9 +259,9 @@ export class CloudSync implements SyncProvider {
       const existingSummaryIds = new Set(syncStatus.summaries);
       const existingPromptIds = new Set(syncStatus.prompts);
 
-      // Build exclusion list for observations
+      // Build exclusion list for observations (validate IDs are numeric to prevent SQL injection)
       const obsExclusionClause = existingObsIds.size > 0
-        ? `AND id NOT IN (${Array.from(existingObsIds).join(',')})`
+        ? `AND id NOT IN (${Array.from(existingObsIds).filter(id => Number.isInteger(id)).join(',')})`
         : '';
 
       // Get missing observations
@@ -305,9 +305,9 @@ export class CloudSync implements SyncProvider {
         });
       }
 
-      // Build exclusion list for summaries
+      // Build exclusion list for summaries (validate IDs are numeric to prevent SQL injection)
       const summaryExclusionClause = existingSummaryIds.size > 0
-        ? `AND id NOT IN (${Array.from(existingSummaryIds).join(',')})`
+        ? `AND id NOT IN (${Array.from(existingSummaryIds).filter(id => Number.isInteger(id)).join(',')})`
         : '';
 
       // Get missing summaries
@@ -349,9 +349,9 @@ export class CloudSync implements SyncProvider {
         });
       }
 
-      // Build exclusion list for prompts
+      // Build exclusion list for prompts (validate IDs are numeric to prevent SQL injection)
       const promptExclusionClause = existingPromptIds.size > 0
-        ? `AND up.id NOT IN (${Array.from(existingPromptIds).join(',')})`
+        ? `AND up.id NOT IN (${Array.from(existingPromptIds).filter(id => Number.isInteger(id)).join(',')})`
         : '';
 
       // Get missing prompts
