@@ -160,8 +160,9 @@ export class CloudSync implements SyncProvider {
 
       logger.debug('CLOUD_SYNC', 'Observation synced successfully', { observationId });
     } catch (error) {
-      logger.error('CLOUD_SYNC', 'Failed to sync observation', { observationId }, error as Error);
-      throw error;
+      // Log error but don't throw - data is already saved locally in SQLite
+      // Cloud sync failures shouldn't break the hook flow
+      logger.error('CLOUD_SYNC', 'Failed to sync observation to cloud (data saved locally)', { observationId }, error as Error);
     }
   }
 
@@ -200,8 +201,8 @@ export class CloudSync implements SyncProvider {
 
       logger.debug('CLOUD_SYNC', 'Summary synced successfully', { summaryId });
     } catch (error) {
-      logger.error('CLOUD_SYNC', 'Failed to sync summary', { summaryId }, error as Error);
-      throw error;
+      // Log error but don't throw - data is already saved locally in SQLite
+      logger.error('CLOUD_SYNC', 'Failed to sync summary to cloud (data saved locally)', { summaryId }, error as Error);
     }
   }
 
@@ -233,8 +234,8 @@ export class CloudSync implements SyncProvider {
 
       logger.debug('CLOUD_SYNC', 'User prompt synced successfully', { promptId });
     } catch (error) {
-      logger.error('CLOUD_SYNC', 'Failed to sync user prompt', { promptId }, error as Error);
-      throw error;
+      // Log error but don't throw - data is already saved locally in SQLite
+      logger.error('CLOUD_SYNC', 'Failed to sync user prompt to cloud (data saved locally)', { promptId }, error as Error);
     }
   }
 
@@ -402,8 +403,8 @@ export class CloudSync implements SyncProvider {
       });
 
     } catch (error) {
-      logger.error('CLOUD_SYNC', 'Cloud backfill failed', { project: this.config.project }, error as Error);
-      throw error;
+      // Log error but don't throw - backfill can be retried later
+      logger.error('CLOUD_SYNC', 'Cloud backfill failed (will retry on next sync)', { project: this.config.project }, error as Error);
     } finally {
       db.close();
     }
