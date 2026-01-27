@@ -216,6 +216,27 @@ export class WorkerService {
 
       next(); // Delegate to SearchRoutes handler
     });
+
+    // Early handler for /api/sessions/init to wait for database initialization
+    // Fixes race condition where session-init hook is called before DB is ready
+    // See: https://github.com/thedotmack/claude-mem/issues/XXX
+    this.server.app.post('/api/sessions/init', async (req, res, next) => {
+      const timeoutMs = 30000; // 30 second timeout for session init
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Database initialization timeout')), timeoutMs)
+      );
+
+      try {
+        await Promise.race([this.initializationComplete, timeoutPromise]);
+        next(); // Delegate to SessionRoutes handler
+      } catch (error) {
+        logger.error('HTTP', 'Session init failed waiting for initialization', {}, error as Error);
+        res.status(503).json({
+          error: 'Service initializing',
+          message: 'Database is still initializing, please retry'
+        });
+      }
+    });
   }
 
   /**
