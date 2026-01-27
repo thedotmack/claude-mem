@@ -611,17 +611,23 @@ export class CloudSync implements SyncProvider {
           logger.warn('CLOUD_SYNC', 'Failed to get sync status, assuming empty', { project });
         }
 
-        // Build exclusion list for observations
-        const obsExclusionClause = existingObsIds.size > 0
-          ? `AND id NOT IN (${Array.from(existingObsIds).filter(id => Number.isInteger(id)).join(',')})`
-          : '';
-
-        // Get missing observations for this project
-        const observations = db.db.prepare(`
-          SELECT * FROM observations
-          WHERE project = ? ${obsExclusionClause}
-          ORDER BY id ASC
-        `).all(project) as StoredObservation[];
+        // Get missing observations for this project using parameterized query
+        const safeObsIds = Array.from(existingObsIds).filter(id => Number.isInteger(id));
+        let observations: StoredObservation[];
+        if (safeObsIds.length > 0) {
+          const obsPlaceholders = safeObsIds.map(() => '?').join(',');
+          observations = db.db.prepare(`
+            SELECT * FROM observations
+            WHERE project = ? AND id NOT IN (${obsPlaceholders})
+            ORDER BY id ASC
+          `).all(project, ...safeObsIds) as StoredObservation[];
+        } else {
+          observations = db.db.prepare(`
+            SELECT * FROM observations
+            WHERE project = ?
+            ORDER BY id ASC
+          `).all(project) as StoredObservation[];
+        }
 
         if (observations.length > 0) {
           logger.info('CLOUD_SYNC', 'Backfilling observations', {
@@ -661,17 +667,23 @@ export class CloudSync implements SyncProvider {
           totalObservations += observations.length;
         }
 
-        // Build exclusion list for summaries
-        const summaryExclusionClause = existingSummaryIds.size > 0
-          ? `AND id NOT IN (${Array.from(existingSummaryIds).filter(id => Number.isInteger(id)).join(',')})`
-          : '';
-
-        // Get missing summaries for this project
-        const summaries = db.db.prepare(`
-          SELECT * FROM session_summaries
-          WHERE project = ? ${summaryExclusionClause}
-          ORDER BY id ASC
-        `).all(project) as StoredSummary[];
+        // Get missing summaries for this project using parameterized query
+        const safeSummaryIds = Array.from(existingSummaryIds).filter(id => Number.isInteger(id));
+        let summaries: StoredSummary[];
+        if (safeSummaryIds.length > 0) {
+          const summaryPlaceholders = safeSummaryIds.map(() => '?').join(',');
+          summaries = db.db.prepare(`
+            SELECT * FROM session_summaries
+            WHERE project = ? AND id NOT IN (${summaryPlaceholders})
+            ORDER BY id ASC
+          `).all(project, ...safeSummaryIds) as StoredSummary[];
+        } else {
+          summaries = db.db.prepare(`
+            SELECT * FROM session_summaries
+            WHERE project = ?
+            ORDER BY id ASC
+          `).all(project) as StoredSummary[];
+        }
 
         if (summaries.length > 0) {
           logger.info('CLOUD_SYNC', 'Backfilling summaries', {
@@ -709,22 +721,33 @@ export class CloudSync implements SyncProvider {
           totalSummaries += summaries.length;
         }
 
-        // Build exclusion list for prompts
-        const promptExclusionClause = existingPromptIds.size > 0
-          ? `AND up.id NOT IN (${Array.from(existingPromptIds).filter(id => Number.isInteger(id)).join(',')})`
-          : '';
-
-        // Get missing prompts for this project
-        const prompts = db.db.prepare(`
-          SELECT
-            up.*,
-            s.project,
-            s.memory_session_id
-          FROM user_prompts up
-          JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
-          WHERE s.project = ? ${promptExclusionClause}
-          ORDER BY up.id ASC
-        `).all(project) as StoredUserPrompt[];
+        // Get missing prompts for this project using parameterized query
+        const safePromptIds = Array.from(existingPromptIds).filter(id => Number.isInteger(id));
+        let prompts: StoredUserPrompt[];
+        if (safePromptIds.length > 0) {
+          const promptPlaceholders = safePromptIds.map(() => '?').join(',');
+          prompts = db.db.prepare(`
+            SELECT
+              up.*,
+              s.project,
+              s.memory_session_id
+            FROM user_prompts up
+            JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
+            WHERE s.project = ? AND up.id NOT IN (${promptPlaceholders})
+            ORDER BY up.id ASC
+          `).all(project, ...safePromptIds) as StoredUserPrompt[];
+        } else {
+          prompts = db.db.prepare(`
+            SELECT
+              up.*,
+              s.project,
+              s.memory_session_id
+            FROM user_prompts up
+            JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
+            WHERE s.project = ?
+            ORDER BY up.id ASC
+          `).all(project) as StoredUserPrompt[];
+        }
 
         if (prompts.length > 0) {
           logger.info('CLOUD_SYNC', 'Backfilling prompts', {

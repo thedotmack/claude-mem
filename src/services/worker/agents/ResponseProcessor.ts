@@ -117,11 +117,31 @@ export async function processAgentResponse(
         memorySessionId: session.memorySessionId
       });
     } catch (error) {
-      logger.error('DB', 'Cloud storage failed - Pro user data NOT saved', {
+      logger.error('DB', 'Cloud storage failed - falling back to SQLite', {
         sessionId: session.sessionDbId,
         project: session.project
       }, error as Error);
-      throw error; // Re-throw - cloud storage failure is critical for Pro users
+
+      // FALLBACK: Save to SQLite so data is not lost
+      // Data can be synced to cloud later via backfill
+      const sessionStore = dbManager.getSessionStore();
+      result = sessionStore.storeObservations(
+        session.memorySessionId,
+        session.project,
+        observations,
+        summaryForStore,
+        session.lastPromptNumber,
+        discoveryTokens,
+        originalTimestamp ?? undefined
+      );
+
+      logger.info('DB', `STORED (SQLite fallback) | sessionDbId=${session.sessionDbId} | memorySessionId=${session.memorySessionId} | obsCount=${result.observationIds.length} | obsIds=[${result.observationIds.join(',')}] | summaryId=${result.summaryId || 'none'}`, {
+        sessionId: session.sessionDbId,
+        memorySessionId: session.memorySessionId,
+        fallbackReason: 'cloud_storage_failed'
+      });
+
+      // Note: Data will be picked up by next backfill run when cloud is available
     }
   } else {
     // FREE MODE: Store in SQLite then sync to vector store (Chroma)
