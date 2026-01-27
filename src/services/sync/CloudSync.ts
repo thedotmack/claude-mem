@@ -486,9 +486,12 @@ export class CloudSync implements SyncProvider {
   ): Promise<ObservationSearchResult[]> {
     if (ids.length === 0) return [];
 
+    // Use options.project if provided, otherwise fall back to config.project
+    const project = options?.project || this.config.project;
+
     logger.debug('CLOUD_SYNC', 'Fetching observations by IDs from cloud', {
       count: ids.length,
-      project: this.config.project
+      project
     });
 
     const result = await this.apiRequest<{ observations: ObservationSearchResult[] }>(
@@ -497,7 +500,7 @@ export class CloudSync implements SyncProvider {
       {
         ids,
         options,
-        project: this.config.project
+        project
       }
     );
 
@@ -514,9 +517,12 @@ export class CloudSync implements SyncProvider {
   ): Promise<SessionSummarySearchResult[]> {
     if (ids.length === 0) return [];
 
+    // Use options.project if provided, otherwise fall back to config.project
+    const project = options?.project || this.config.project;
+
     logger.debug('CLOUD_SYNC', 'Fetching summaries by IDs from cloud', {
       count: ids.length,
-      project: this.config.project
+      project
     });
 
     const result = await this.apiRequest<{ summaries: SessionSummarySearchResult[] }>(
@@ -525,7 +531,7 @@ export class CloudSync implements SyncProvider {
       {
         ids,
         options,
-        project: this.config.project
+        project
       }
     );
 
@@ -542,9 +548,12 @@ export class CloudSync implements SyncProvider {
   ): Promise<UserPromptSearchResult[]> {
     if (ids.length === 0) return [];
 
+    // Use options.project if provided, otherwise fall back to config.project
+    const project = options?.project || this.config.project;
+
     logger.debug('CLOUD_SYNC', 'Fetching prompts by IDs from cloud', {
       count: ids.length,
-      project: this.config.project
+      project
     });
 
     const result = await this.apiRequest<{ prompts: UserPromptSearchResult[] }>(
@@ -553,7 +562,7 @@ export class CloudSync implements SyncProvider {
       {
         ids,
         options,
-        project: this.config.project
+        project
       }
     );
 
@@ -803,14 +812,22 @@ export class CloudSync implements SyncProvider {
 
   /**
    * Query cloud vectors for semantic search
+   * @param queryText - The text to search for
+   * @param limit - Maximum number of results
+   * @param whereFilter - Optional metadata filter
+   * @param project - Optional project to search within (defaults to config.project)
    */
   async query(
     queryText: string,
     limit: number,
-    whereFilter?: Record<string, any>
+    whereFilter?: Record<string, any>,
+    project?: string
   ): Promise<QueryResult> {
+    // Use provided project or fall back to config.project
+    const effectiveProject = project || this.config.project;
+
     logger.debug('CLOUD_SYNC', 'Querying cloud vectors', {
-      project: this.config.project,
+      project: effectiveProject,
       queryLength: queryText.length,
       limit
     });
@@ -819,18 +836,18 @@ export class CloudSync implements SyncProvider {
       const result = await this.apiRequest<QueryResult>('/api/pro/sync/query', 'POST', {
         query: queryText,
         limit,
-        project: this.config.project,
+        project: effectiveProject,
         filter: whereFilter
       });
 
       logger.debug('CLOUD_SYNC', 'Query returned results', {
-        project: this.config.project,
+        project: effectiveProject,
         count: result.ids.length
       });
 
       return result;
     } catch (error) {
-      logger.error('CLOUD_SYNC', 'Cloud query failed', { project: this.config.project }, error as Error);
+      logger.error('CLOUD_SYNC', 'Cloud query failed', { project: effectiveProject }, error as Error);
       // Return empty results on error rather than throwing
       return { ids: [], distances: [], metadatas: [] };
     }
@@ -838,15 +855,22 @@ export class CloudSync implements SyncProvider {
 
   /**
    * Get cloud sync stats
+   * @param project - Optional project to get stats for (defaults to config.project, empty = all projects)
    */
-  async getStats(): Promise<SyncStats> {
+  async getStats(project?: string): Promise<SyncStats> {
+    // Use provided project or fall back to config.project
+    const effectiveProject = project || this.config.project;
+
     try {
-      const stats = await this.apiRequest<SyncStats>(
-        `/api/pro/sync/stats?project=${encodeURIComponent(this.config.project)}`
-      );
+      // If no project specified, get stats for all projects
+      const url = effectiveProject
+        ? `/api/pro/sync/stats?project=${encodeURIComponent(effectiveProject)}`
+        : '/api/pro/sync/stats';
+
+      const stats = await this.apiRequest<SyncStats>(url);
       return stats;
     } catch (error) {
-      logger.error('CLOUD_SYNC', 'Failed to get stats', { project: this.config.project }, error as Error);
+      logger.error('CLOUD_SYNC', 'Failed to get stats', { project: effectiveProject }, error as Error);
       return { observations: 0, summaries: 0, prompts: 0, vectors: 0 };
     }
   }

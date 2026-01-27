@@ -195,17 +195,23 @@ export interface SyncProvider {
 
   /**
    * Query for semantic search
+   * @param queryText - The text to search for
+   * @param limit - Maximum number of results
+   * @param whereFilter - Optional metadata filter
+   * @param project - Optional project to search within (for multi-project support)
    */
   query(
     queryText: string,
     limit: number,
-    whereFilter?: Record<string, any>
+    whereFilter?: Record<string, any>,
+    project?: string
   ): Promise<QueryResult>;
 
   /**
    * Get sync stats
+   * @param project - Optional project to get stats for (empty = all projects)
    */
-  getStats(): Promise<SyncStats>;
+  getStats(project?: string): Promise<SyncStats>;
 
   /**
    * Close connection
