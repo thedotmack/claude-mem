@@ -98,16 +98,18 @@ describe('HealthMonitor', () => {
       expect(callCount).toBeGreaterThanOrEqual(3);
     });
 
-    it('should check readiness endpoint not health endpoint', async () => {
+    it('should check health endpoint for liveness', async () => {
       const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
       global.fetch = fetchMock;
 
       await waitForHealth(37777, 1000);
 
-      // waitForHealth uses /api/readiness, not /api/health
+      // waitForHealth uses /api/health (liveness), not /api/readiness
+      // This is because hooks have 15-second timeout but full initialization can take 5+ minutes
+      // See: https://github.com/thedotmack/claude-mem/issues/811
       const calls = fetchMock.mock.calls;
       expect(calls.length).toBeGreaterThan(0);
-      expect(calls[0][0]).toBe('http://127.0.0.1:37777/api/readiness');
+      expect(calls[0][0]).toBe('http://127.0.0.1:37777/api/health');
     });
 
     it('should use default timeout when not specified', async () => {

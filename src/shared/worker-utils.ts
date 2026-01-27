@@ -56,13 +56,17 @@ export function clearPortCache(): void {
 }
 
 /**
- * Check if worker is responsive and fully initialized by trying the readiness endpoint
- * Changed from /health to /api/readiness to ensure MCP initialization is complete
+ * Check if worker HTTP server is responsive
+ * Uses /api/health (liveness) instead of /api/readiness because:
+ * - Hooks have 15-second timeout, but full initialization can take 5+ minutes (MCP connection)
+ * - /api/health returns 200 as soon as HTTP server is up (sufficient for hook communication)
+ * - /api/readiness returns 503 until full initialization completes (too slow for hooks)
+ * See: https://github.com/thedotmack/claude-mem/issues/811
  */
 async function isWorkerHealthy(): Promise<boolean> {
   const port = getWorkerPort();
   // Note: Removed AbortSignal.timeout to avoid Windows Bun cleanup issue (libuv assertion)
-  const response = await fetch(`http://127.0.0.1:${port}/api/readiness`);
+  const response = await fetch(`http://127.0.0.1:${port}/api/health`);
   return response.ok;
 }
 
