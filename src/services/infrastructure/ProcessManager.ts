@@ -257,6 +257,47 @@ export async function cleanupOrphanedProcesses(): Promise<void> {
   }
 
   logger.info('SYSTEM', 'Orphaned processes cleaned up', { count: pids.length });
+
+  // Also cleanup orphaned MCP server processes (ppid=1, older than 5 min)
+  try {
+    if (!isWindows) {
+      const { stdout: mcpResult } = await execAsync(
+        `ps -eo pid,ppid,etimes,command | grep 'mcp-server.cjs' | grep -v grep || true`
+      );
+
+      if (mcpResult.trim()) {
+        const mcpOrphans: number[] = [];
+        for (const line of mcpResult.trim().split('\n')) {
+          const parts = line.trim().split(/\s+/);
+          const pid = parseInt(parts[0], 10);
+          const ppid = parseInt(parts[1], 10);
+          const elapsedSeconds = parseInt(parts[2], 10);
+          // Kill if orphaned (ppid=1) and older than 5 minutes
+          if (ppid === 1 && elapsedSeconds > 300 && !isNaN(pid) && Number.isInteger(pid) && pid > 0) {
+            mcpOrphans.push(pid);
+          }
+        }
+        if (mcpOrphans.length > 0) {
+          logger.info('SYSTEM', 'Found orphaned MCP server processes', {
+            count: mcpOrphans.length,
+            pids: mcpOrphans
+          });
+          for (const pid of mcpOrphans) {
+            try {
+              process.kill(pid, 'SIGKILL');
+            } catch (error) {
+              // [ANTI-PATTERN IGNORED]: Cleanup loop - process may have exited, continue to next PID
+              logger.debug('SYSTEM', 'MCP server process already exited', { pid }, error as Error);
+            }
+          }
+          logger.info('SYSTEM', 'Orphaned MCP server processes cleaned up', { count: mcpOrphans.length });
+        }
+      }
+    }
+  } catch (error) {
+    // Orphan cleanup is non-critical - log and continue
+    logger.debug('SYSTEM', 'Failed to enumerate orphaned MCP server processes', {}, error as Error);
+  }
 }
 
 /**
