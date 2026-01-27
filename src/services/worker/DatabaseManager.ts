@@ -42,11 +42,16 @@ export class DatabaseManager {
         planTier: this.proConfig.planTier
       });
 
+      // CloudSync project handling:
+      // - Storage operations (storeObservationsAndSummary, storePrompt) receive project per-call
+      // - ensureBackfilled() iterates ALL projects from local DB (ignores config.project)
+      // - Fetch/query methods use config.project as default filter, but accept options.project override
+      // - The default project here is a fallback for methods that don't specify one
       this.syncProvider = new CloudSync({
         apiUrl: this.proConfig.apiUrl,
         setupToken: this.proConfig.setupToken,
         userId: this.proConfig.userId,
-        project: 'claude-mem' // Default project, will be updated per-session
+        project: '' // Empty = no default filter; methods should pass project explicitly
       });
 
       // Also keep ChromaSync for local fallback (optional)
