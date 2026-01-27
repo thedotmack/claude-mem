@@ -341,6 +341,28 @@ export class WorkerService {
       });
       logger.info('SYSTEM', 'Started orphan reaper (runs every 5 minutes)');
 
+      // Chroma watchdog: check if chroma-mcp is responsive, restart if dead
+      if (settings.CLAUDE_MEM_CHROMA_DISABLED !== 'true') {
+        const CHROMA_CHECK_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+        const chromaWatchdog = setInterval(async () => {
+          try {
+            const chromaSync = this.dbManager.getChromaSync();
+            if (chromaSync.isDisabled()) return;
+            if (!chromaSync.isConnected()) {
+              logger.warn('SYSTEM', 'Chroma watchdog: connection lost, attempting reconnect');
+              try {
+                await chromaSync.close();
+              } catch { /* ignore close errors */ }
+              // ChromaSync will reconnect on next use via ensureConnection()
+            }
+          } catch (error) {
+            logger.error('SYSTEM', 'Chroma watchdog error', {}, error as Error);
+          }
+        }, CHROMA_CHECK_INTERVAL_MS);
+        chromaWatchdog.unref();
+        logger.info('SYSTEM', 'Started chroma watchdog (runs every 5 minutes)');
+      }
+
       // Auto-recover orphaned queues (fire-and-forget with error logging)
       this.processPendingQueues(50).then(result => {
         if (result.sessionsStarted > 0) {

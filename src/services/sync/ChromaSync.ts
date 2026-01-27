@@ -123,6 +123,13 @@ export class ChromaSync {
   }
 
   /**
+   * Check if Chroma MCP client is currently connected
+   */
+  isConnected(): boolean {
+    return this.connected;
+  }
+
+  /**
    * Ensure MCP client is connected to Chroma server
    * Throws error if connection fails
    */
