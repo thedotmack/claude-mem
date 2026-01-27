@@ -3,10 +3,14 @@
  *
  * Responsibility:
  * - Parse observations and summaries from agent responses
- * - Execute atomic database transactions
- * - Orchestrate Chroma sync (fire-and-forget)
+ * - Execute atomic database transactions (SQLite for Free, Cloud for Pro)
+ * - Orchestrate vector sync (Chroma for Free, Pinecone via CloudSync for Pro)
  * - Broadcast to SSE clients
  * - Clean up processed messages
+ *
+ * Storage modes:
+ * - Free users: SQLite (primary) + ChromaDB (vector sync)
+ * - Pro users: Supabase/Pinecone (cloud-primary, no SQLite)
  *
  * This module extracts 150+ lines of duplicate code from SDKAgent, GeminiAgent, and OpenRouterAgent.
  */
@@ -24,15 +28,16 @@ import { broadcastObservation, broadcastSummary } from './ObservationBroadcaster
 import { cleanupProcessedMessages } from './SessionCleanupHelper.js';
 
 /**
- * Process agent response text (parse XML, save to database, sync to Chroma, broadcast SSE)
+ * Process agent response text (parse XML, save to database, sync to vector store, broadcast SSE)
  *
  * This is the unified response processor that handles:
  * 1. Adding response to conversation history (for provider interop)
  * 2. Parsing observations and summaries from XML
- * 3. Atomic database transaction to store observations + summary
- * 4. Async Chroma sync (fire-and-forget, failures are non-critical)
- * 5. SSE broadcast to web UI clients
- * 6. Session cleanup
+ * 3. Atomic storage:
+ *    - Pro (cloud-primary): Store directly in Supabase/Pinecone via CloudSync
+ *    - Free: Store in SQLite then sync to ChromaDB
+ * 4. SSE broadcast to web UI clients
+ * 5. Session cleanup
  *
  * @param text - Response text from the agent
  * @param session - Active session being processed
@@ -66,9 +71,6 @@ export async function processAgentResponse(
   // Convert nullable fields to empty strings for storeSummary (if summary exists)
   const summaryForStore = normalizeSummaryForStorage(summary);
 
-  // Get session store for atomic transaction
-  const sessionStore = dbManager.getSessionStore();
-
   // CRITICAL: Must use memorySessionId (not contentSessionId) for FK constraint
   if (!session.memorySessionId) {
     throw new Error('Cannot store observations: memorySessionId not yet captured');
@@ -80,47 +82,101 @@ export async function processAgentResponse(
     memorySessionId: session.memorySessionId
   });
 
-  // ATOMIC TRANSACTION: Store observations + summary ONCE
-  // Messages are already deleted from queue on claim, so no completion tracking needed
-  const result = sessionStore.storeObservations(
-    session.memorySessionId,
-    session.project,
-    observations,
-    summaryForStore,
-    session.lastPromptNumber,
-    discoveryTokens,
-    originalTimestamp ?? undefined
-  );
+  // Get sync provider to determine storage mode
+  const syncProvider = dbManager.getActiveSyncProvider();
+  let result: StorageResult;
 
-  // Log storage result with IDs for end-to-end traceability
-  logger.info('DB', `STORED | sessionDbId=${session.sessionDbId} | memorySessionId=${session.memorySessionId} | obsCount=${result.observationIds.length} | obsIds=[${result.observationIds.join(',')}] | summaryId=${result.summaryId || 'none'}`, {
-    sessionId: session.sessionDbId,
-    memorySessionId: session.memorySessionId
-  });
+  // Check if we should use cloud-primary storage (Pro users)
+  if (syncProvider.isCloudPrimary()) {
+    // PRO MODE: Store directly in cloud (Supabase/Pinecone)
+    // Data is NOT stored in SQLite - cloud is the source of truth
+    logger.info('DB', 'Using cloud-primary storage (Pro mode)', {
+      sessionId: session.sessionDbId,
+      project: session.project
+    });
 
-  // AFTER transaction commits - async operations (can fail safely without data loss)
-  await syncAndBroadcastObservations(
-    observations,
-    result,
-    session,
-    dbManager,
-    worker,
-    discoveryTokens,
-    agentName,
-    projectRoot
-  );
+    try {
+      const cloudResult = await syncProvider.storeObservationsAndSummary(
+        session.memorySessionId,
+        session.project,
+        observations,
+        summaryForStore,
+        session.lastPromptNumber,
+        discoveryTokens,
+        originalTimestamp ?? undefined
+      );
 
-  // Sync and broadcast summary if present
-  await syncAndBroadcastSummary(
-    summary,
-    summaryForStore,
-    result,
-    session,
-    dbManager,
-    worker,
-    discoveryTokens,
-    agentName
-  );
+      result = {
+        observationIds: cloudResult.observationIds,
+        summaryId: cloudResult.summaryId,
+        createdAtEpoch: cloudResult.createdAtEpoch
+      };
+
+      logger.info('DB', `STORED (cloud) | sessionDbId=${session.sessionDbId} | memorySessionId=${session.memorySessionId} | obsCount=${result.observationIds.length} | obsIds=[${result.observationIds.join(',')}] | summaryId=${result.summaryId || 'none'}`, {
+        sessionId: session.sessionDbId,
+        memorySessionId: session.memorySessionId
+      });
+    } catch (error) {
+      logger.error('DB', 'Cloud storage failed - Pro user data NOT saved', {
+        sessionId: session.sessionDbId,
+        project: session.project
+      }, error as Error);
+      throw error; // Re-throw - cloud storage failure is critical for Pro users
+    }
+  } else {
+    // FREE MODE: Store in SQLite then sync to vector store (Chroma)
+    const sessionStore = dbManager.getSessionStore();
+
+    // ATOMIC TRANSACTION: Store observations + summary ONCE
+    result = sessionStore.storeObservations(
+      session.memorySessionId,
+      session.project,
+      observations,
+      summaryForStore,
+      session.lastPromptNumber,
+      discoveryTokens,
+      originalTimestamp ?? undefined
+    );
+
+    // Log storage result with IDs for end-to-end traceability
+    logger.info('DB', `STORED (SQLite) | sessionDbId=${session.sessionDbId} | memorySessionId=${session.memorySessionId} | obsCount=${result.observationIds.length} | obsIds=[${result.observationIds.join(',')}] | summaryId=${result.summaryId || 'none'}`, {
+      sessionId: session.sessionDbId,
+      memorySessionId: session.memorySessionId
+    });
+
+    // AFTER transaction commits - sync to vector store (fire-and-forget for Free users)
+    await syncObservationsToVectorStore(
+      observations,
+      result,
+      session,
+      dbManager,
+      discoveryTokens,
+      agentName
+    );
+
+    await syncSummaryToVectorStore(
+      summaryForStore,
+      result,
+      session,
+      dbManager,
+      discoveryTokens,
+      agentName
+    );
+  }
+
+  // Broadcast to SSE clients (same for both Free and Pro)
+  broadcastObservationsToSSE(observations, result, session, worker);
+  broadcastSummaryToSSE(summary, summaryForStore, result, session, worker);
+
+  // Update folder CLAUDE.md files (same for both Free and Pro)
+  updateFolderIndexes(observations, session, projectRoot);
+
+  // Update Cursor context if summary present
+  if (summaryForStore && result.summaryId) {
+    updateCursorContextForProject(session.project, getWorkerPort()).catch(error => {
+      logger.warn('CURSOR', 'Context update failed (non-critical)', { project: session.project }, error as Error);
+    });
+  }
 
   // Clean up session state
   cleanupProcessedMessages(session, worker);
@@ -150,25 +206,25 @@ function normalizeSummaryForStorage(summary: ParsedSummary | null): {
 }
 
 /**
- * Sync observations to Chroma and broadcast to SSE clients
+ * Sync observations to vector store (Free users only - Chroma)
+ * Fire-and-forget: failures are logged but don't break the flow
  */
-async function syncAndBroadcastObservations(
+async function syncObservationsToVectorStore(
   observations: ParsedObservation[],
   result: StorageResult,
   session: ActiveSession,
   dbManager: DatabaseManager,
-  worker: WorkerRef | undefined,
   discoveryTokens: number,
-  agentName: string,
-  projectRoot?: string
+  agentName: string
 ): Promise<void> {
+  const syncProvider = dbManager.getActiveSyncProvider();
+
   for (let i = 0; i < observations.length; i++) {
     const obsId = result.observationIds[i];
     const obs = observations[i];
-    const chromaStart = Date.now();
+    const syncStart = Date.now();
 
-    // Sync to vector store (CloudSync for Pro, ChromaSync for free)
-    dbManager.getActiveSyncProvider().syncObservation(
+    syncProvider.syncObservation(
       obsId,
       session.contentSessionId,
       session.project,
@@ -177,23 +233,78 @@ async function syncAndBroadcastObservations(
       result.createdAtEpoch,
       discoveryTokens
     ).then(() => {
-      const chromaDuration = Date.now() - chromaStart;
-      logger.debug('CHROMA', 'Observation synced', {
+      const syncDuration = Date.now() - syncStart;
+      logger.debug('VECTOR', 'Observation synced to vector store', {
         obsId,
-        duration: `${chromaDuration}ms`,
+        duration: `${syncDuration}ms`,
         type: obs.type,
         title: obs.title || '(untitled)'
       });
     }).catch((error) => {
-      logger.error('CHROMA', `${agentName} chroma sync failed, continuing without vector search`, {
+      logger.error('VECTOR', `${agentName} vector sync failed, continuing without vector search`, {
         obsId,
         type: obs.type,
         title: obs.title || '(untitled)'
       }, error);
     });
+  }
+}
 
-    // Broadcast to SSE clients (for web UI)
-    // BUGFIX: Use obs.files_read and obs.files_modified (not obs.files)
+/**
+ * Sync summary to vector store (Free users only - Chroma)
+ * Fire-and-forget: failures are logged but don't break the flow
+ */
+async function syncSummaryToVectorStore(
+  summaryForStore: { request: string; investigated: string; learned: string; completed: string; next_steps: string; notes: string | null } | null,
+  result: StorageResult,
+  session: ActiveSession,
+  dbManager: DatabaseManager,
+  discoveryTokens: number,
+  agentName: string
+): Promise<void> {
+  if (!summaryForStore || !result.summaryId) {
+    return;
+  }
+
+  const syncProvider = dbManager.getActiveSyncProvider();
+  const syncStart = Date.now();
+
+  syncProvider.syncSummary(
+    result.summaryId,
+    session.contentSessionId,
+    session.project,
+    summaryForStore,
+    session.lastPromptNumber,
+    result.createdAtEpoch,
+    discoveryTokens
+  ).then(() => {
+    const syncDuration = Date.now() - syncStart;
+    logger.debug('VECTOR', 'Summary synced to vector store', {
+      summaryId: result.summaryId,
+      duration: `${syncDuration}ms`,
+      request: summaryForStore.request || '(no request)'
+    });
+  }).catch((error) => {
+    logger.error('VECTOR', `${agentName} vector sync failed, continuing without vector search`, {
+      summaryId: result.summaryId,
+      request: summaryForStore.request || '(no request)'
+    }, error);
+  });
+}
+
+/**
+ * Broadcast observations to SSE clients (web UI)
+ */
+function broadcastObservationsToSSE(
+  observations: ParsedObservation[],
+  result: StorageResult,
+  session: ActiveSession,
+  worker: WorkerRef | undefined
+): void {
+  for (let i = 0; i < observations.length; i++) {
+    const obsId = result.observationIds[i];
+    const obs = observations[i];
+
     broadcastObservation(worker, {
       id: obsId,
       memory_session_id: session.memorySessionId,
@@ -212,9 +323,45 @@ async function syncAndBroadcastObservations(
       created_at_epoch: result.createdAtEpoch
     });
   }
+}
 
-  // Update folder CLAUDE.md files for touched folders (fire-and-forget)
-  // This runs per-observation batch to ensure folders are updated as work happens
+/**
+ * Broadcast summary to SSE clients (web UI)
+ */
+function broadcastSummaryToSSE(
+  summary: ParsedSummary | null,
+  summaryForStore: { request: string; investigated: string; learned: string; completed: string; next_steps: string; notes: string | null } | null,
+  result: StorageResult,
+  session: ActiveSession,
+  worker: WorkerRef | undefined
+): void {
+  if (!summaryForStore || !result.summaryId || !summary) {
+    return;
+  }
+
+  broadcastSummary(worker, {
+    id: result.summaryId,
+    session_id: session.contentSessionId,
+    request: summary.request,
+    investigated: summary.investigated,
+    learned: summary.learned,
+    completed: summary.completed,
+    next_steps: summary.next_steps,
+    notes: summary.notes,
+    project: session.project,
+    prompt_number: session.lastPromptNumber,
+    created_at_epoch: result.createdAtEpoch
+  });
+}
+
+/**
+ * Update folder CLAUDE.md files for touched folders (fire-and-forget)
+ */
+function updateFolderIndexes(
+  observations: ParsedObservation[],
+  session: ActiveSession,
+  projectRoot?: string
+): void {
   const allFilePaths: string[] = [];
   for (const obs of observations) {
     allFilePaths.push(...(obs.files_modified || []));
@@ -231,67 +378,4 @@ async function syncAndBroadcastObservations(
       logger.warn('FOLDER_INDEX', 'CLAUDE.md update failed (non-critical)', { project: session.project }, error as Error);
     });
   }
-}
-
-/**
- * Sync summary to Chroma and broadcast to SSE clients
- */
-async function syncAndBroadcastSummary(
-  summary: ParsedSummary | null,
-  summaryForStore: { request: string; investigated: string; learned: string; completed: string; next_steps: string; notes: string | null } | null,
-  result: StorageResult,
-  session: ActiveSession,
-  dbManager: DatabaseManager,
-  worker: WorkerRef | undefined,
-  discoveryTokens: number,
-  agentName: string
-): Promise<void> {
-  if (!summaryForStore || !result.summaryId) {
-    return;
-  }
-
-  const chromaStart = Date.now();
-
-  // Sync to vector store (CloudSync for Pro, ChromaSync for free)
-  dbManager.getActiveSyncProvider().syncSummary(
-    result.summaryId,
-    session.contentSessionId,
-    session.project,
-    summaryForStore,
-    session.lastPromptNumber,
-    result.createdAtEpoch,
-    discoveryTokens
-  ).then(() => {
-    const chromaDuration = Date.now() - chromaStart;
-    logger.debug('CHROMA', 'Summary synced', {
-      summaryId: result.summaryId,
-      duration: `${chromaDuration}ms`,
-      request: summaryForStore.request || '(no request)'
-    });
-  }).catch((error) => {
-    logger.error('CHROMA', `${agentName} chroma sync failed, continuing without vector search`, {
-      summaryId: result.summaryId,
-      request: summaryForStore.request || '(no request)'
-    }, error);
-  });
-
-  // Broadcast to SSE clients (for web UI)
-  broadcastSummary(worker, {
-    id: result.summaryId,
-    session_id: session.contentSessionId,
-    request: summary!.request,
-    investigated: summary!.investigated,
-    learned: summary!.learned,
-    completed: summary!.completed,
-    next_steps: summary!.next_steps,
-    notes: summary!.notes,
-    project: session.project,
-    prompt_number: session.lastPromptNumber,
-    created_at_epoch: result.createdAtEpoch
-  });
-
-  // Update Cursor context file for registered projects (fire-and-forget)
-  updateCursorContextForProject(session.project, getWorkerPort()).catch(error => {
-    logger.warn('CURSOR', 'Context update failed (non-critical)', { project: session.project }, error as Error);
-  });
 }

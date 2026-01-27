@@ -275,7 +275,7 @@ export class WorkerService {
       const searchManager = new SearchManager(
         this.dbManager.getSessionSearch(),
         this.dbManager.getSessionStore(),
-        this.dbManager.getChromaSync(),
+        this.dbManager.getActiveSyncProvider(),
         formattingService,
         timelineService
       );

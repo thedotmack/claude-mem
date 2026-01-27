@@ -15,7 +15,12 @@ import { SessionStore } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
-import { SyncProvider, SyncStats, QueryResult } from './SyncProvider.js';
+import { SyncProvider, SyncStats, QueryResult, StoreResult, BatchStoreResult } from './SyncProvider.js';
+import type {
+  ObservationSearchResult,
+  SessionSummarySearchResult,
+  UserPromptSearchResult
+} from '../sqlite/types.js';
 import path from 'path';
 import os from 'os';
 
@@ -110,6 +115,112 @@ export class ChromaSync implements SyncProvider {
    */
   isDisabled(): boolean {
     return this.disabled;
+  }
+
+  /**
+   * ChromaSync is NOT cloud-primary - it syncs from SQLite
+   * Free users store data in SQLite and sync to local Chroma
+   */
+  isCloudPrimary(): boolean {
+    return false;
+  }
+
+  // ============================================
+  // CLOUD-PRIMARY STORE METHODS (not supported for ChromaSync)
+  // These throw errors - Free users must use SQLite + syncObservation()
+  // ============================================
+
+  async storeObservation(): Promise<StoreResult> {
+    throw new Error('ChromaSync is not cloud-primary. Use SQLite SessionStore.storeObservations() then syncObservation()');
+  }
+
+  async storeSummary(): Promise<StoreResult> {
+    throw new Error('ChromaSync is not cloud-primary. Use SQLite SessionStore.storeObservations() then syncSummary()');
+  }
+
+  async storeUserPrompt(): Promise<StoreResult> {
+    throw new Error('ChromaSync is not cloud-primary. Use SQLite SessionStore.addUserPrompt() then syncUserPrompt()');
+  }
+
+  async storeObservationsAndSummary(): Promise<BatchStoreResult> {
+    throw new Error('ChromaSync is not cloud-primary. Use SQLite SessionStore.storeObservations() then sync methods');
+  }
+
+  // ============================================
+  // FETCH METHODS (delegate to SQLite for ChromaSync)
+  // These are used for hydrating vector search results
+  // ============================================
+
+  /**
+   * Fetch observations by IDs from SQLite
+   * ChromaSync delegates to SessionStore since data lives in SQLite
+   * Note: SessionStore returns ObservationRecord[] but interface expects ObservationSearchResult[]
+   * The actual SQL SELECT * returns all fields, so cast is safe - search-specific fields are optional
+   */
+  getObservationsByIds(
+    ids: number[],
+    options?: { type?: string | string[]; concepts?: string | string[]; files?: string | string[]; orderBy?: string; limit?: number; project?: string }
+  ): Promise<ObservationSearchResult[]> {
+    const db = new SessionStore();
+    try {
+      // Cast options.orderBy to match SessionStore's expected type
+      const storeOptions = options ? {
+        ...options,
+        orderBy: options.orderBy as 'date_desc' | 'date_asc' | undefined
+      } : undefined;
+      // Cast is safe: SELECT * returns full row data, search fields (rank, score) are optional
+      return Promise.resolve(db.getObservationsByIds(ids, storeOptions) as unknown as ObservationSearchResult[]);
+    } finally {
+      db.close();
+    }
+  }
+
+  /**
+   * Fetch session summaries by IDs from SQLite
+   * ChromaSync delegates to SessionStore since data lives in SQLite
+   * Note: SessionStore returns SessionSummaryRecord[] but interface expects SessionSummarySearchResult[]
+   * The actual SQL SELECT * returns all fields, so cast is safe - search-specific fields are optional
+   */
+  getSessionSummariesByIds(
+    ids: number[],
+    options?: { orderBy?: string; limit?: number; project?: string }
+  ): Promise<SessionSummarySearchResult[]> {
+    const db = new SessionStore();
+    try {
+      // Cast options.orderBy to match SessionStore's expected type
+      const storeOptions = options ? {
+        ...options,
+        orderBy: options.orderBy as 'date_desc' | 'date_asc' | undefined
+      } : undefined;
+      // Cast is safe: SELECT * returns full row data, search fields (rank, score) are optional
+      return Promise.resolve(db.getSessionSummariesByIds(ids, storeOptions) as unknown as SessionSummarySearchResult[]);
+    } finally {
+      db.close();
+    }
+  }
+
+  /**
+   * Fetch user prompts by IDs from SQLite
+   * ChromaSync delegates to SessionStore since data lives in SQLite
+   * Note: SessionStore returns UserPromptRecord[] but interface expects UserPromptSearchResult[]
+   * The actual SQL SELECT * returns all fields, so cast is safe - search-specific fields are optional
+   */
+  getUserPromptsByIds(
+    ids: number[],
+    options?: { orderBy?: string; limit?: number; project?: string }
+  ): Promise<UserPromptSearchResult[]> {
+    const db = new SessionStore();
+    try {
+      // Cast options.orderBy to match SessionStore's expected type
+      const storeOptions = options ? {
+        ...options,
+        orderBy: options.orderBy as 'date_desc' | 'date_asc' | undefined
+      } : undefined;
+      // Cast is safe: SELECT * returns full row data, search fields (rank, score) are optional
+      return Promise.resolve(db.getUserPromptsByIds(ids, storeOptions) as unknown as UserPromptSearchResult[]);
+    } finally {
+      db.close();
+    }
   }
 
   /**

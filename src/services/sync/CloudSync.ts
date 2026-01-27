@@ -12,7 +12,12 @@
 import { ParsedObservation, ParsedSummary } from '../../sdk/parser.js';
 import { SessionStore } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
-import { SyncProvider, SyncStats, QueryResult } from './SyncProvider.js';
+import { SyncProvider, SyncStats, QueryResult, StoreResult, BatchStoreResult } from './SyncProvider.js';
+import type {
+  ObservationSearchResult,
+  SessionSummarySearchResult,
+  UserPromptSearchResult
+} from '../sqlite/types.js';
 
 interface CloudSyncConfig {
   apiUrl: string;
@@ -88,6 +93,14 @@ export class CloudSync implements SyncProvider {
   }
 
   /**
+   * CloudSync IS cloud-primary - data is stored directly in Supabase/Pinecone
+   * Pro users store data directly in cloud, not SQLite
+   */
+  isCloudPrimary(): boolean {
+    return true;
+  }
+
+  /**
    * Make authenticated request to mem-pro API
    */
   private async apiRequest<T>(
@@ -97,7 +110,7 @@ export class CloudSync implements SyncProvider {
   ): Promise<T> {
     const url = `${this.config.apiUrl}${endpoint}`;
 
-    const headers: HeadersInit = {
+    const headers: Record<string, string> = {
       'Authorization': `Bearer ${this.config.setupToken}`,
       'X-User-Id': this.config.userId,
       'Content-Type': 'application/json'
@@ -119,7 +132,7 @@ export class CloudSync implements SyncProvider {
       throw new Error(`API request failed: ${response.status} ${response.statusText} - ${errorText}`);
     }
 
-    return response.json();
+    return response.json() as Promise<T>;
   }
 
   /**
@@ -237,6 +250,299 @@ export class CloudSync implements SyncProvider {
       // Log error but don't throw - data is already saved locally in SQLite
       logger.error('CLOUD_SYNC', 'Failed to sync user prompt to cloud (data saved locally)', { promptId }, error as Error);
     }
+  }
+
+  // ============================================
+  // CLOUD-PRIMARY STORE METHODS (Pro users store directly in cloud)
+  // ============================================
+
+  /**
+   * Store observation directly in cloud (cloud-primary mode)
+   * Returns the cloud-generated ID - data is NOT stored in SQLite
+   */
+  async storeObservation(
+    memorySessionId: string,
+    project: string,
+    obs: ParsedObservation,
+    promptNumber: number,
+    discoveryTokens: number = 0
+  ): Promise<StoreResult> {
+    logger.info('CLOUD_SYNC', 'Storing observation directly in cloud', {
+      project,
+      type: obs.type
+    });
+
+    const createdAtEpoch = Math.floor(Date.now() / 1000);
+
+    const result = await this.apiRequest<{ id: number; createdAtEpoch: number }>(
+      '/api/pro/store/observation',
+      'POST',
+      {
+        memorySessionId,
+        project,
+        type: obs.type,
+        title: obs.title,
+        subtitle: obs.subtitle,
+        facts: obs.facts,
+        narrative: obs.narrative,
+        concepts: obs.concepts,
+        filesRead: obs.files_read,
+        filesModified: obs.files_modified,
+        promptNumber,
+        discoveryTokens
+      }
+    );
+
+    logger.debug('CLOUD_SYNC', 'Observation stored in cloud', {
+      id: result.id,
+      project
+    });
+
+    return {
+      id: result.id,
+      createdAtEpoch: result.createdAtEpoch || createdAtEpoch
+    };
+  }
+
+  /**
+   * Store summary directly in cloud (cloud-primary mode)
+   * Returns the cloud-generated ID - data is NOT stored in SQLite
+   */
+  async storeSummary(
+    memorySessionId: string,
+    project: string,
+    summary: ParsedSummary,
+    promptNumber: number,
+    discoveryTokens: number = 0
+  ): Promise<StoreResult> {
+    logger.info('CLOUD_SYNC', 'Storing summary directly in cloud', {
+      project
+    });
+
+    const createdAtEpoch = Math.floor(Date.now() / 1000);
+
+    const result = await this.apiRequest<{ id: number; createdAtEpoch: number }>(
+      '/api/pro/store/summary',
+      'POST',
+      {
+        memorySessionId,
+        project,
+        request: summary.request,
+        investigated: summary.investigated,
+        learned: summary.learned,
+        completed: summary.completed,
+        nextSteps: summary.next_steps,
+        notes: summary.notes,
+        promptNumber,
+        discoveryTokens
+      }
+    );
+
+    logger.debug('CLOUD_SYNC', 'Summary stored in cloud', {
+      id: result.id,
+      project
+    });
+
+    return {
+      id: result.id,
+      createdAtEpoch: result.createdAtEpoch || createdAtEpoch
+    };
+  }
+
+  /**
+   * Store user prompt directly in cloud (cloud-primary mode)
+   * Returns the cloud-generated ID - data is NOT stored in SQLite
+   */
+  async storeUserPrompt(
+    memorySessionId: string,
+    project: string,
+    promptText: string,
+    promptNumber: number
+  ): Promise<StoreResult> {
+    logger.info('CLOUD_SYNC', 'Storing user prompt directly in cloud', {
+      project,
+      promptNumber
+    });
+
+    const createdAtEpoch = Math.floor(Date.now() / 1000);
+
+    const result = await this.apiRequest<{ id: number; createdAtEpoch: number }>(
+      '/api/pro/store/prompt',
+      'POST',
+      {
+        memorySessionId,
+        project,
+        promptText,
+        promptNumber
+      }
+    );
+
+    logger.debug('CLOUD_SYNC', 'User prompt stored in cloud', {
+      id: result.id,
+      project
+    });
+
+    return {
+      id: result.id,
+      createdAtEpoch: result.createdAtEpoch || createdAtEpoch
+    };
+  }
+
+  /**
+   * Store observations + optional summary atomically (cloud-primary mode)
+   * This is the main entry point for ResponseProcessor in Pro mode
+   * Mirrors SessionStore.storeObservations() for API consistency
+   */
+  async storeObservationsAndSummary(
+    memorySessionId: string,
+    project: string,
+    observations: ParsedObservation[],
+    summary: ParsedSummary | null,
+    promptNumber: number,
+    discoveryTokens: number = 0,
+    originalTimestamp?: number
+  ): Promise<BatchStoreResult> {
+    logger.info('CLOUD_SYNC', 'Storing observations batch directly in cloud', {
+      project,
+      obsCount: observations.length,
+      hasSummary: !!summary
+    });
+
+    const createdAtEpoch = originalTimestamp || Math.floor(Date.now() / 1000);
+
+    const result = await this.apiRequest<{
+      observationIds: number[];
+      summaryId: number | null;
+      createdAtEpoch: number;
+    }>(
+      '/api/pro/store/batch',
+      'POST',
+      {
+        memorySessionId,
+        project,
+        observations: observations.map(obs => ({
+          type: obs.type,
+          title: obs.title,
+          subtitle: obs.subtitle,
+          facts: obs.facts,
+          narrative: obs.narrative,
+          concepts: obs.concepts,
+          filesRead: obs.files_read,
+          filesModified: obs.files_modified
+        })),
+        summary: summary ? {
+          request: summary.request,
+          investigated: summary.investigated,
+          learned: summary.learned,
+          completed: summary.completed,
+          nextSteps: summary.next_steps,
+          notes: summary.notes
+        } : null,
+        promptNumber,
+        discoveryTokens,
+        createdAtEpoch
+      }
+    );
+
+    logger.debug('CLOUD_SYNC', 'Batch stored in cloud', {
+      observationIds: result.observationIds,
+      summaryId: result.summaryId,
+      project
+    });
+
+    return {
+      observationIds: result.observationIds,
+      summaryId: result.summaryId,
+      createdAtEpoch: result.createdAtEpoch || createdAtEpoch
+    };
+  }
+
+  // ============================================
+  // FETCH METHODS (for hydrating vector search results)
+  // ============================================
+
+  /**
+   * Fetch observations by IDs from Supabase
+   * Used for hydrating vector search results in Pro mode
+   */
+  async getObservationsByIds(
+    ids: number[],
+    options?: { type?: string | string[]; concepts?: string | string[]; files?: string | string[]; orderBy?: string; limit?: number; project?: string }
+  ): Promise<ObservationSearchResult[]> {
+    if (ids.length === 0) return [];
+
+    logger.debug('CLOUD_SYNC', 'Fetching observations by IDs from cloud', {
+      count: ids.length,
+      project: this.config.project
+    });
+
+    const result = await this.apiRequest<{ observations: ObservationSearchResult[] }>(
+      '/api/pro/fetch/observations',
+      'POST',
+      {
+        ids,
+        options,
+        project: this.config.project
+      }
+    );
+
+    return result.observations || [];
+  }
+
+  /**
+   * Fetch session summaries by IDs from Supabase
+   * Used for hydrating vector search results in Pro mode
+   */
+  async getSessionSummariesByIds(
+    ids: number[],
+    options?: { orderBy?: string; limit?: number; project?: string }
+  ): Promise<SessionSummarySearchResult[]> {
+    if (ids.length === 0) return [];
+
+    logger.debug('CLOUD_SYNC', 'Fetching summaries by IDs from cloud', {
+      count: ids.length,
+      project: this.config.project
+    });
+
+    const result = await this.apiRequest<{ summaries: SessionSummarySearchResult[] }>(
+      '/api/pro/fetch/summaries',
+      'POST',
+      {
+        ids,
+        options,
+        project: this.config.project
+      }
+    );
+
+    return result.summaries || [];
+  }
+
+  /**
+   * Fetch user prompts by IDs from Supabase
+   * Used for hydrating vector search results in Pro mode
+   */
+  async getUserPromptsByIds(
+    ids: number[],
+    options?: { orderBy?: string; limit?: number; project?: string }
+  ): Promise<UserPromptSearchResult[]> {
+    if (ids.length === 0) return [];
+
+    logger.debug('CLOUD_SYNC', 'Fetching prompts by IDs from cloud', {
+      count: ids.length,
+      project: this.config.project
+    });
+
+    const result = await this.apiRequest<{ prompts: UserPromptSearchResult[] }>(
+      '/api/pro/fetch/prompts',
+      'POST',
+      {
+        ids,
+        options,
+        project: this.config.project
+      }
+    );
+
+    return result.prompts || [];
   }
 
   /**
