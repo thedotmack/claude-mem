@@ -264,6 +264,28 @@ export class WorkerService {
 
       await this.dbManager.initialize();
 
+      // Recover stale sessions from previous crash
+      try {
+        const STALE_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes
+        const db = this.dbManager.getSessionStore().db;
+        const now = Date.now();
+        const cutoff = now - STALE_THRESHOLD_MS;
+
+        const staleResult = db.prepare(`
+          UPDATE sdk_sessions
+          SET status = 'failed', completed_at = ?, completed_at_epoch = ?
+          WHERE status = 'active' AND started_at_epoch < ?
+        `).run(new Date().toISOString(), now, cutoff);
+
+        if (staleResult.changes > 0) {
+          logger.info('SYSTEM', `Recovered ${staleResult.changes} stale sessions from previous crash`, {
+            threshold: '10 minutes'
+          });
+        }
+      } catch (error) {
+        logger.warn('SYSTEM', 'Failed to recover stale sessions', {}, error as Error);
+      }
+
       // Recover stuck messages from previous crashes
       const { PendingMessageStore } = await import('./sqlite/PendingMessageStore.js');
       const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
