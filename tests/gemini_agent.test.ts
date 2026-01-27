@@ -349,27 +349,27 @@ describe('GeminiAgent', () => {
     }
   });
 
-  describe('gemini-3-flash model support', () => {
-    it('should accept gemini-3-flash as a valid model', async () => {
-      // The GeminiModel type includes gemini-3-flash - compile-time check
+  describe('gemini-3-flash-preview model support', () => {
+    it('should accept gemini-3-flash-preview as a valid model', async () => {
+      // The GeminiModel type includes gemini-3-flash-preview - compile-time check
       const validModels = [
         'gemini-2.5-flash-lite',
         'gemini-2.5-flash',
         'gemini-2.5-pro',
         'gemini-2.0-flash',
         'gemini-2.0-flash-lite',
-        'gemini-3-flash'
+        'gemini-3-flash-preview'
       ];
 
       // Verify all models are strings (type guard)
       expect(validModels.every(m => typeof m === 'string')).toBe(true);
-      expect(validModels).toContain('gemini-3-flash');
+      expect(validModels).toContain('gemini-3-flash-preview');
     });
 
-    it('should have rate limit defined for gemini-3-flash', async () => {
-      // GEMINI_RPM_LIMITS['gemini-3-flash'] = 5
+    it('should have rate limit defined for gemini-3-flash-preview', async () => {
+      // GEMINI_RPM_LIMITS['gemini-3-flash-preview'] = 5
       // This is enforced at compile time, but we can test the rate limiting behavior
-      // by checking that the rate limit is applied when using gemini-3-flash
+      // by checking that the rate limit is applied when using gemini-3-flash-preview
       const session = {
         sessionDbId: 1,
         contentSessionId: 'test-session',
@@ -393,8 +393,8 @@ describe('GeminiAgent', () => {
         usageMetadata: { totalTokenCount: 10 }
       }))));
 
-      // This validates that gemini-3-flash is a valid model at runtime
-      // The agent's validation array includes gemini-3-flash
+      // This validates that gemini-3-flash-preview is a valid model at runtime
+      // The agent's validation array includes gemini-3-flash-preview
       await agent.startSession(session);
       expect(global.fetch).toHaveBeenCalled();
     });
