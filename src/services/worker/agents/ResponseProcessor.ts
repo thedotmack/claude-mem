@@ -141,7 +141,17 @@ export async function processAgentResponse(
         fallbackReason: 'cloud_storage_failed'
       });
 
-      // Note: Data will be picked up by next backfill run when cloud is available
+      // IMPORTANT: Data saved to SQLite as fallback for Pro users.
+      // This data is only available on this device until cloud sync succeeds.
+      // The CloudSync.ensureBackfilled() method will sync this data when:
+      // 1. Cloud connectivity is restored
+      // 2. User triggers manual sync via /pro-setup or dashboard
+      // Cross-device access will not see this data until synced.
+      logger.warn('DB', 'Pro user data saved locally - will sync to cloud on next backfill', {
+        sessionId: session.sessionDbId,
+        observationIds: result.observationIds,
+        action: 'Run ensureBackfilled() when cloud is available'
+      });
     }
   } else {
     // FREE MODE: Store in SQLite then sync to vector store (Chroma)

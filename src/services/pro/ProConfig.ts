@@ -10,10 +10,23 @@
  * 3. Enables cloud sync
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { logger } from '../../utils/logger.js';
+
+export interface MigrationStatus {
+  status: 'pending' | 'in_progress' | 'complete' | 'failed';
+  startedAt?: number;
+  completedAt?: number;
+  error?: string;
+  stats?: {
+    observationsMigrated: number;
+    summariesMigrated: number;
+    promptsMigrated: number;
+    vectorsMigrated: number;
+  };
+}
 
 export interface ProUserConfig {
   userId: string;
@@ -23,6 +36,7 @@ export interface ProUserConfig {
   configuredAt: number;
   expiresAt: number;
   planTier: 'pro' | 'enterprise';
+  migration?: MigrationStatus;
 }
 
 const PRO_CONFIG_PATH = join(homedir(), '.claude-mem', 'pro.json');
@@ -89,12 +103,31 @@ export function saveProConfig(config: ProUserConfig): void {
 }
 
 /**
+ * Update migration status in Pro config
+ * This allows tracking migration progress and errors
+ */
+export function updateMigrationStatus(status: MigrationStatus): void {
+  const config = loadProConfig();
+  if (!config) {
+    logger.warn('PRO_CONFIG', 'Cannot update migration status: no Pro config');
+    return;
+  }
+
+  config.migration = status;
+  saveProConfig(config);
+
+  logger.info('PRO_CONFIG', 'Updated migration status', {
+    status: status.status,
+    error: status.error
+  });
+}
+
+/**
  * Remove Pro configuration (for logout/downgrade)
  */
 export function removeProConfig(): void {
   try {
     if (existsSync(PRO_CONFIG_PATH)) {
-      const { unlinkSync } = require('fs');
       unlinkSync(PRO_CONFIG_PATH);
       logger.info('PRO_CONFIG', 'Removed Pro config');
     }

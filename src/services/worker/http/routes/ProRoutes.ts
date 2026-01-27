@@ -14,6 +14,7 @@ import {
   removeProConfig,
   isProUser,
   completeProSetup,
+  updateMigrationStatus,
   ProUserConfig
 } from '../../../pro/ProConfig.js';
 import { CloudSync } from '../../../sync/CloudSync.js';
@@ -52,7 +53,8 @@ export class ProRoutes extends BaseRouteHandler {
       planTier: config.planTier,
       configuredAt: config.configuredAt,
       expiresAt: config.expiresAt,
-      features: this.getProFeatures(config.planTier)
+      features: this.getProFeatures(config.planTier),
+      migration: config.migration || null
     });
   });
 
@@ -185,9 +187,21 @@ export class ProRoutes extends BaseRouteHandler {
     localStats: { observations: number; summaries: number; prompts: number },
     setupToken: string
   ): void {
+    // Mark migration as started
+    updateMigrationStatus({
+      status: 'in_progress',
+      startedAt: Date.now()
+    });
+
     // Don't await - run in background
     this.performMigration(config, localStats, setupToken).catch((error) => {
       logger.error('PRO_ROUTES', 'Background migration failed', {}, error as Error);
+      // Track the error so status endpoint can report it
+      updateMigrationStatus({
+        status: 'failed',
+        startedAt: config.migration?.startedAt,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
     });
   }
 
@@ -219,22 +233,40 @@ export class ProRoutes extends BaseRouteHandler {
       // Get final stats
       const stats = await cloudSync.getStats();
 
-      logger.info('PRO_ROUTES', 'Migration complete', {
-        userId: config.userId.substring(0, 8) + '...',
-        migratedStats: stats
-      });
-
-      // Mark setup as complete
-      await this.completeSetupWithStats(config.apiUrl, setupToken, {
+      const migrationStats = {
         observationsMigrated: stats.observations || localStats.observations,
         summariesMigrated: stats.summaries || localStats.summaries,
         promptsMigrated: stats.prompts || localStats.prompts,
         vectorsMigrated: stats.vectors || 0
+      };
+
+      logger.info('PRO_ROUTES', 'Migration complete', {
+        userId: config.userId.substring(0, 8) + '...',
+        migratedStats: migrationStats
       });
+
+      // Track successful migration
+      updateMigrationStatus({
+        status: 'complete',
+        startedAt: config.migration?.startedAt,
+        completedAt: Date.now(),
+        stats: migrationStats
+      });
+
+      // Mark setup as complete with mem-pro API
+      await this.completeSetupWithStats(config.apiUrl, setupToken, migrationStats);
 
       await cloudSync.close();
     } catch (error) {
       logger.error('PRO_ROUTES', 'Migration failed', {}, error as Error);
+
+      // Track the failure with error details
+      updateMigrationStatus({
+        status: 'failed',
+        startedAt: config.migration?.startedAt,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+
       // Still try to mark as complete even if migration partially failed
       try {
         await this.completeSetupWithStats(config.apiUrl, setupToken, {

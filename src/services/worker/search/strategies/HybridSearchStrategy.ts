@@ -41,6 +41,13 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
   }
 
   canHandle(options: StrategySearchOptions): boolean {
+    // Cannot handle for Pro users in cloud-primary mode - SQLite metadata filtering won't work
+    // Pro users should use VectorSearchStrategy instead
+    if (this.syncProvider.isCloudPrimary()) {
+      logger.debug('SEARCH', 'HybridSearchStrategy: Cannot handle cloud-primary mode, use VectorSearchStrategy');
+      return false;
+    }
+
     // Can handle when we have metadata filters and vector store is available
     return !!this.syncProvider && !this.syncProvider.isDisabled() && (
       !!options.concepts ||
