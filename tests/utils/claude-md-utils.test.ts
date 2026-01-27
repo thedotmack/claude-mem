@@ -1,7 +1,7 @@
 import { describe, it, expect, mock, afterEach, beforeEach } from 'bun:test';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'fs';
 import path, { join } from 'path';
-import { tmpdir } from 'os';
+import { tmpdir, homedir } from 'os';
 
 // Mock logger BEFORE imports (required pattern)
 mock.module('../../src/utils/logger.js', () => ({
@@ -24,9 +24,31 @@ import {
 let tempDir: string;
 const originalFetch = global.fetch;
 
+// Settings file path and backup for test isolation
+const settingsPath = join(homedir(), '.claude-mem', 'settings.json');
+let originalSettings: string | null = null;
+
 beforeEach(() => {
   tempDir = join(tmpdir(), `test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   mkdirSync(tempDir, { recursive: true });
+
+  // Backup original settings if they exist
+  try {
+    if (existsSync(settingsPath)) {
+      originalSettings = readFileSync(settingsPath, 'utf-8');
+    }
+  } catch {
+    originalSettings = null;
+  }
+
+  // Write test settings with folder CLAUDE.md enabled
+  // (the feature is disabled by default, so we enable it for existing tests)
+  const testSettings = {
+    CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
+    CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED: 'true',
+  };
+  mkdirSync(join(homedir(), '.claude-mem'), { recursive: true });
+  writeFileSync(settingsPath, JSON.stringify(testSettings, null, 2), 'utf-8');
 });
 
 afterEach(() => {
@@ -36,6 +58,15 @@ afterEach(() => {
     rmSync(tempDir, { recursive: true, force: true });
   } catch {
     // Ignore cleanup errors
+  }
+
+  // Restore original settings
+  try {
+    if (originalSettings !== null) {
+      writeFileSync(settingsPath, originalSettings, 'utf-8');
+    }
+  } catch {
+    // Ignore restoration errors
   }
 });
 
@@ -230,6 +261,41 @@ describe('updateFolderClaudeMdFiles', () => {
     await updateFolderClaudeMdFiles([], 'test-project', 37777);
 
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('should skip when CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED is false (Issue #760)', async () => {
+    // Override settings to disable folder CLAUDE.md generation
+    const disabledSettings = {
+      CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
+      CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED: 'false',  // Disabled
+    };
+    writeFileSync(settingsPath, JSON.stringify(disabledSettings, null, 2), 'utf-8');
+
+    const folderPath = join(tempDir, 'disabled-test');
+    mkdirSync(folderPath, { recursive: true });
+    const filePath = join(folderPath, 'test.ts');
+
+    const fetchMock = mock(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve({ content: [{ text: '| #123 | 4:30 PM | 🔵 | Test | ~100 |' }] })
+    } as Response));
+    global.fetch = fetchMock;
+
+    await updateFolderClaudeMdFiles([filePath], 'test-project', 37777);
+
+    // Should NOT call API when feature is disabled
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    // Should NOT create CLAUDE.md file
+    const claudeMdPath = join(folderPath, 'CLAUDE.md');
+    expect(existsSync(claudeMdPath)).toBe(false);
+
+    // Restore test settings for other tests
+    const testSettings = {
+      CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
+      CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED: 'true',
+    };
+    writeFileSync(settingsPath, JSON.stringify(testSettings, null, 2), 'utf-8');
   });
 
   it('should fetch timeline and write CLAUDE.md', async () => {
