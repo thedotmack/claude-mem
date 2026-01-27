@@ -20,7 +20,7 @@ import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import type { ActiveSession, SDKUserMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import { processAgentResponse, type WorkerRef } from './agents/index.js';
-import { createPidCapturingSpawn, getProcessBySession, ensureProcessExit } from './ProcessRegistry.js';
+import { createPidCapturingSpawn, getProcessBySession, ensureProcessExit, getActiveCount } from './ProcessRegistry.js';
 
 // Import Agent SDK (assumes it's installed)
 // @ts-ignore - Agent SDK types may not be available
@@ -40,6 +40,24 @@ export class SDKAgent {
    * @param worker WorkerService reference for spinner control (optional)
    */
   async startSession(session: ActiveSession, worker?: WorkerRef): Promise<void> {
+    // Enforce subprocess pool limit to prevent resource exhaustion
+    const MAX_CONCURRENT_AGENTS = 2;
+
+    const activeCount = getActiveCount();
+    if (activeCount >= MAX_CONCURRENT_AGENTS) {
+      logger.warn('AGENT', `Pool limit reached (${activeCount}/${MAX_CONCURRENT_AGENTS}), waiting...`, {
+        sessionDbId: session.sessionDbId
+      });
+      // Wait for a slot to free up (max 60s)
+      for (let i = 0; i < 120; i++) {
+        await new Promise(r => setTimeout(r, 500));
+        if (getActiveCount() < MAX_CONCURRENT_AGENTS) break;
+      }
+      if (getActiveCount() >= MAX_CONCURRENT_AGENTS) {
+        throw new Error('Agent pool timeout: too many concurrent subprocesses');
+      }
+    }
+
     // Track cwd from messages for CLAUDE.md generation (worktree support)
     // Uses mutable object so generator updates are visible in response processing
     const cwdTracker = { lastCwd: undefined as string | undefined };

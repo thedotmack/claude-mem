@@ -67,6 +67,13 @@ export function getProcessBySession(sessionDbId: number): TrackedProcess | undef
 }
 
 /**
+ * Get the count of currently active (tracked) processes
+ */
+export function getActiveCount(): number {
+  return processRegistry.size;
+}
+
+/**
  * Get all active PIDs (for debugging)
  */
 export function getActiveProcesses(): Array<{ pid: number; sessionDbId: number; ageMs: number }> {
