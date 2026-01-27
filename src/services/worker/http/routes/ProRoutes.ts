@@ -220,11 +220,12 @@ export class ProRoutes extends BaseRouteHandler {
 
     try {
       // Create CloudSync instance for migration
+      // Empty project = migrate ALL projects (ensureBackfilled reads projects from SQLite)
       const cloudSync = new CloudSync({
         apiUrl: config.apiUrl,
         setupToken: config.setupToken,
         userId: config.userId,
-        project: 'claude-mem' // Will migrate all projects
+        project: '' // Empty = ensureBackfilled() iterates all projects from local DB
       });
 
       // Run the backfill (this syncs all local data to cloud)

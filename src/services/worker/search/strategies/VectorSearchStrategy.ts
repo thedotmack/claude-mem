@@ -71,11 +71,12 @@ export class VectorSearchStrategy extends BaseSearchStrategy implements SearchSt
       const whereFilter = this.buildWhereFilter(searchType);
 
       // Step 1: Vector semantic search
-      logger.debug('SEARCH', 'VectorSearchStrategy: Querying vector store', { query, searchType });
+      logger.debug('SEARCH', 'VectorSearchStrategy: Querying vector store', { query, searchType, project });
       const vectorResults = await this.syncProvider.query(
         query,
         SEARCH_CONSTANTS.CHROMA_BATCH_SIZE,
-        whereFilter
+        whereFilter,
+        project
       );
 
       logger.debug('SEARCH', 'VectorSearchStrategy: Vector store returned matches', {
