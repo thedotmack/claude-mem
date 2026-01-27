@@ -21,8 +21,9 @@ export const sessionInitHandler: EventHandler = {
 
     const { sessionId, cwd, prompt } = input;
 
-    if (!prompt) {
-      throw new Error('sessionInitHandler requires prompt');
+    // Gracefully handle empty prompts (user submitted blank input)
+    if (!prompt || !prompt.trim()) {
+      return { continue: true, suppressOutput: true };
     }
 
     const project = getProjectName(cwd);
