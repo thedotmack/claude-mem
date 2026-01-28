@@ -240,12 +240,25 @@ export function formatTimelineForClaudeMd(timelineText: string): string {
 }
 
 /**
- * Check if a folder is a project root (contains .git directory).
- * Project root CLAUDE.md files should remain user-managed, not auto-updated.
+ * Check if a folder is inside a git repository by walking up parent directories.
+ * This prevents CLAUDE.md files in all subdirectories of git repos (Issue #793).
+ *
+ * @param folderPath - The folder to check
+ * @returns true if this folder or any ancestor contains .git
  */
-function isProjectRoot(folderPath: string): boolean {
-  const gitPath = path.join(folderPath, '.git');
-  return existsSync(gitPath);
+function isInsideGitRepo(folderPath: string): boolean {
+  let current = path.resolve(folderPath);
+  const root = path.parse(current).root;
+
+  while (current !== root) {
+    if (existsSync(path.join(current, '.git'))) {
+      return true; // Found .git in this folder or ancestor
+    }
+    const parent = path.dirname(current);
+    if (parent === current) break; // Reached filesystem root
+    current = parent;
+  }
+  return false;
 }
 
 /**
@@ -288,9 +301,9 @@ export async function updateFolderClaudeMdFiles(
     }
     const folderPath = path.dirname(absoluteFilePath);
     if (folderPath && folderPath !== '.' && folderPath !== '/') {
-      // Skip project root - root CLAUDE.md should remain user-managed
-      if (isProjectRoot(folderPath)) {
-        logger.debug('FOLDER_INDEX', 'Skipping project root CLAUDE.md', { folderPath });
+      // Skip folders inside git repos - CLAUDE.md should remain user-managed (Issue #793)
+      if (isInsideGitRepo(folderPath)) {
+        logger.debug('FOLDER_INDEX', 'Skipping folder inside git repo', { folderPath });
         continue;
       }
       folderPaths.add(folderPath);
