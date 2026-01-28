@@ -23,6 +23,9 @@ import type { WorkerRef, StorageResult } from './types.js';
 import { broadcastObservation, broadcastSummary } from './ObservationBroadcaster.js';
 import { cleanupProcessedMessages } from './SessionCleanupHelper.js';
 
+/** Prefix added to session titles to distinguish worker analysis sessions from user work sessions */
+export const SESSION_TITLE_PREFIX = '[Claude-Mem Session] ';
+
 /**
  * Process agent response text (parse XML, save to database, sync to Chroma, broadcast SSE)
  *
@@ -70,8 +73,15 @@ export async function processAgentResponse(
   const sessionStore = dbManager.getSessionStore();
 
   // CRITICAL: Must use memorySessionId (not contentSessionId) for FK constraint
+  // Skip storage if memorySessionId is null (e.g., after stale resume clear, before new ID captured)
+  // This prevents FK constraint violations - observations reference sdk_sessions.memory_session_id
   if (!session.memorySessionId) {
-    throw new Error('Cannot store observations: memorySessionId not yet captured');
+    logger.warn('DB', `SKIP_STORAGE | sessionDbId=${session.sessionDbId} | reason=no memorySessionId | obsCount=${observations.length}`, {
+      sessionId: session.sessionDbId
+    });
+    // Clear pending timestamp since we processed (even if skipped storage)
+    session.earliestPendingTimestamp = null;
+    return;
   }
 
   // Log pre-storage with session ID chain for verification
@@ -82,6 +92,7 @@ export async function processAgentResponse(
 
   // ATOMIC TRANSACTION: Store observations + summary ONCE
   // Messages are already deleted from queue on claim, so no completion tracking needed
+
   const result = sessionStore.storeObservations(
     session.memorySessionId,
     session.project,
@@ -124,10 +135,41 @@ export async function processAgentResponse(
 
   // Clean up session state
   cleanupProcessedMessages(session, worker);
+
+  // CRITICAL: If summary was processed, this is the end of the session
+  // Delete the session to abort the SDK agent and kill the Claude subprocess
+  // This prevents orphaned Claude processes from accumulating (fixes OOM issues)
+  if (summaryForStore && result.summaryId) {
+    // RACE CONDITION GUARD: Prevent duplicate cleanup operations
+    // This can happen if hooks retry or multiple summaries are processed concurrently
+    if (session.cleanupPending) {
+      logger.debug('SESSION', 'Session cleanup already pending, skipping duplicate', {
+        sessionId: session.sessionDbId
+      });
+      return;
+    }
+    session.cleanupPending = true;
+
+    logger.info('SESSION', `Summary processed, cleaning up session`, {
+      sessionId: session.sessionDbId,
+      memorySessionId: session.memorySessionId
+    });
+
+    // Delete session asynchronously (don't await - let it clean up in background)
+    // This aborts the AbortController which stops the message iterator and kills the Claude process
+    sessionManager.deleteSession(session.sessionDbId).catch(error => {
+      logger.warn('SESSION', 'Session cleanup failed (non-critical)', {
+        sessionId: session.sessionDbId
+      }, error as Error);
+    });
+  }
 }
 
 /**
  * Normalize summary for storage (convert null fields to empty strings)
+ *
+ * Prefixes session titles with "[Claude-Mem Session]" to distinguish
+ * worker analysis sessions from user work sessions in search/UI.
  */
 function normalizeSummaryForStorage(summary: ParsedSummary | null): {
   request: string;
@@ -139,8 +181,16 @@ function normalizeSummaryForStorage(summary: ParsedSummary | null): {
 } | null {
   if (!summary) return null;
 
+  // Prefix session title to distinguish worker analysis sessions from user work sessions
+  // - Trim whitespace to avoid prefixing whitespace-only titles
+  // - Check if already prefixed to avoid double-prefixing
+  const trimmedTitle = (summary.request || '').trim();
+  const prefixedRequest = trimmedTitle
+    ? (trimmedTitle.startsWith(SESSION_TITLE_PREFIX) ? trimmedTitle : `${SESSION_TITLE_PREFIX}${trimmedTitle}`)
+    : '';
+
   return {
-    request: summary.request || '',
+    request: prefixedRequest,
     investigated: summary.investigated || '',
     learned: summary.learned || '',
     completed: summary.completed || '',
@@ -276,15 +326,16 @@ async function syncAndBroadcastSummary(
   });
 
   // Broadcast to SSE clients (for web UI)
+  // Use summaryForStore (not raw summary) to ensure prefixed title is broadcast
   broadcastSummary(worker, {
     id: result.summaryId,
     session_id: session.contentSessionId,
-    request: summary!.request,
-    investigated: summary!.investigated,
-    learned: summary!.learned,
-    completed: summary!.completed,
-    next_steps: summary!.next_steps,
-    notes: summary!.notes,
+    request: summaryForStore.request,
+    investigated: summaryForStore.investigated,
+    learned: summaryForStore.learned,
+    completed: summaryForStore.completed,
+    next_steps: summaryForStore.next_steps,
+    notes: summaryForStore.notes,
     project: session.project,
     prompt_number: session.lastPromptNumber,
     created_at_epoch: result.createdAtEpoch

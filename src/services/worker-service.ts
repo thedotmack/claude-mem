@@ -19,6 +19,20 @@ import { logger } from '../utils/logger.js';
 declare const __DEFAULT_PACKAGE_VERSION__: string;
 const packageVersion = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DEFAULT_PACKAGE_VERSION__ : '0.0.0-dev';
 
+// Periodic cleanup interval - prevents orphaned process accumulation
+// Configurable via CLAUDE_MEM_CLEANUP_INTERVAL_MS env var (default: 15 minutes)
+const DEFAULT_CLEANUP_INTERVAL_MS = 15 * 60 * 1000;
+const MIN_CLEANUP_INTERVAL_MS = 60 * 1000;           // 1 minute minimum - security: prevents CPU exhaustion from tight loops
+const MAX_CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours maximum - prevents effectively disabled cleanup
+const ORPHAN_CLEANUP_INTERVAL_MS = (() => {
+  const parsed = parseInt(process.env.CLAUDE_MEM_CLEANUP_INTERVAL_MS || '', 10);
+  // Validate within safe bounds: minimum 1 minute, maximum 24 hours
+  if (parsed >= MIN_CLEANUP_INTERVAL_MS && parsed <= MAX_CLEANUP_INTERVAL_MS) {
+    return parsed;
+  }
+  return DEFAULT_CLEANUP_INTERVAL_MS;
+})();
+
 // Infrastructure imports
 import {
   writePidFile,
@@ -26,6 +40,7 @@ import {
   removePidFile,
   getPlatformTimeout,
   cleanupOrphanedProcesses,
+  cleanupOrphanedClaudeProcesses,
   spawnDaemon,
   createSignalHandler
 } from './infrastructure/ProcessManager.js';
@@ -105,6 +120,9 @@ export class WorkerService {
   private mcpReady: boolean = false;
   private initializationCompleteFlag: boolean = false;
   private isShuttingDown: boolean = false;
+
+  // Periodic cleanup interval handle
+  private cleanupIntervalId: ReturnType<typeof setInterval> | null = null;
 
   // Service layer
   private dbManager: DatabaseManager;
@@ -250,7 +268,22 @@ export class WorkerService {
    */
   private async initializeBackground(): Promise<void> {
     try {
+      // Clean up orphaned processes from previous worker sessions
       await cleanupOrphanedProcesses();
+      await cleanupOrphanedClaudeProcesses();
+
+      // Start periodic cleanup to prevent orphan accumulation over long-running sessions
+      this.cleanupIntervalId = setInterval(async () => {
+        logger.info('SYSTEM', 'Running periodic orphan cleanup');
+        try {
+          await cleanupOrphanedProcesses();
+          await cleanupOrphanedClaudeProcesses();
+          logger.info('SYSTEM', 'Periodic orphan cleanup completed');
+        } catch (error) {
+          logger.warn('SYSTEM', 'Periodic orphan cleanup failed', {}, error as Error);
+        }
+      }, ORPHAN_CLEANUP_INTERVAL_MS);
+      logger.info('SYSTEM', 'Periodic orphan cleanup scheduled', { intervalMs: ORPHAN_CLEANUP_INTERVAL_MS });
 
       // Load mode configuration
       const { ModeManager } = await import('./domain/ModeManager.js');

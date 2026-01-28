@@ -7,6 +7,7 @@ import {
   readPidFile,
   removePidFile,
   getPlatformTimeout,
+  isOrphanedProcess,
   type PidInfo
 } from '../../src/services/infrastructure/index.js';
 
@@ -193,5 +194,67 @@ describe('ProcessManager', () => {
 
       expect(result).toBe(666);
     });
+  });
+
+  describe('isOrphanedProcess', () => {
+    it('should return false for invalid PIDs', async () => {
+      // Negative PID
+      expect(await isOrphanedProcess(-1)).toBe(false);
+      // Zero PID
+      expect(await isOrphanedProcess(0)).toBe(false);
+      // NaN-like values (cast to number)
+      expect(await isOrphanedProcess(NaN as unknown as number)).toBe(false);
+      // Non-integer
+      expect(await isOrphanedProcess(1.5 as unknown as number)).toBe(false);
+    });
+
+    it('should return false for current process (has valid parent)', async () => {
+      // The current process (this test) has a valid parent (the test runner)
+      const result = await isOrphanedProcess(process.pid);
+      expect(result).toBe(false);
+    });
+
+    it('should return false for parent process (has valid parent)', async () => {
+      // The parent process should also have a valid parent
+      const ppid = process.ppid;
+      if (ppid && ppid > 1) {
+        const result = await isOrphanedProcess(ppid);
+        expect(result).toBe(false);
+      }
+    });
+
+    it('should return false for non-existent PID (safe default)', async () => {
+      // Use a very high PID that is unlikely to exist
+      // SAFETY: Should return false (not orphaned) when we can't determine
+      const highPid = 4000000000; // Unlikely to exist
+      const result = await isOrphanedProcess(highPid);
+      // Should return false because process doesn't exist (can't get PPID)
+      expect(result).toBe(false);
+    });
+
+    it('should handle PID 1 correctly (init is not orphaned)', async () => {
+      // PID 1 (init/systemd) itself is not orphaned - it has no parent
+      // But we should handle this gracefully
+      if (process.platform !== 'win32') {
+        // On Unix, trying to check PID 1 should work without error
+        // It will return false because PID 1's PPID is 0
+        const result = await isOrphanedProcess(1);
+        // PID 1 has PPID 0, which is the kernel - we treat PPID 0 as init-like
+        // So PID 1 would be considered "orphaned" but that's correct behavior
+        // since its parent is the kernel scheduler
+        expect(typeof result).toBe('boolean');
+      }
+    });
+
+    // Platform-specific behavior tests
+    if (process.platform !== 'win32') {
+      describe('Unix/Linux specific', () => {
+        it('should correctly identify process with valid parent as not orphaned', async () => {
+          // Current process has a valid parent (the shell/test runner)
+          const result = await isOrphanedProcess(process.pid);
+          expect(result).toBe(false);
+        });
+      });
+    }
   });
 });

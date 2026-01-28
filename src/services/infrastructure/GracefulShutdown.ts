@@ -14,7 +14,8 @@ import {
   getChildProcesses,
   forceKillProcess,
   waitForProcessesExit,
-  removePidFile
+  removePidFile,
+  cleanupOrphanedClaudeProcesses
 } from './ProcessManager.js';
 
 export interface ShutdownableService {
@@ -85,6 +86,10 @@ export async function performGracefulShutdown(config: GracefulShutdownConfig): P
     // Wait for children to fully exit
     await waitForProcessesExit(childPids, 5000);
   }
+
+  // STEP 7: Clean up any orphaned Claude SDK processes
+  // These are spawned by @anthropic-ai/claude-agent-sdk and may not be direct children
+  await cleanupOrphanedClaudeProcesses();
 
   logger.info('SYSTEM', 'Worker shutdown complete');
 }

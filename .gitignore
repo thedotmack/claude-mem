@@ -30,4 +30,4 @@ src/ui/viewer.html
 
 # Prevent other malformed path directories
 http*/
-https*/
+https*/monitors/
