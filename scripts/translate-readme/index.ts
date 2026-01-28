@@ -92,6 +92,7 @@ const LANGUAGE_NAMES: Record<string, string> = {
   th: "Thai",
   hi: "Hindi",
   bn: "Bengali",
+  ur: "Urdu",
   ro: "Romanian",
   sv: "Swedish",
   // Tier 4 - Why not
