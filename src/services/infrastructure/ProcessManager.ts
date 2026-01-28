@@ -18,6 +18,54 @@ import { HOOK_TIMEOUTS } from '../../shared/hook-constants.js';
 
 const execAsync = promisify(exec);
 
+/**
+ * Find bun executable in PATH
+ * worker-service.cjs requires bun:sqlite which only works in Bun runtime,
+ * so we must spawn the worker with bun, not node (process.execPath)
+ */
+function findBunExecutable(): string | null {
+  const isWindows = process.platform === 'win32';
+  const bunName = isWindows ? 'bun.exe' : 'bun';
+
+  // Check if current process is already bun
+  if (process.execPath.toLowerCase().includes('bun')) {
+    return process.execPath;
+  }
+
+  // Search in PATH
+  const pathEnv = process.env.PATH || process.env.Path || '';
+  const pathSeparator = isWindows ? ';' : ':';
+  const paths = pathEnv.split(pathSeparator);
+
+  for (const dir of paths) {
+    const fullPath = path.join(dir, bunName);
+    if (existsSync(fullPath)) {
+      return fullPath;
+    }
+  }
+
+  // Common installation locations
+  const commonPaths = isWindows
+    ? [
+        path.join(homedir(), '.bun', 'bin', 'bun.exe'),
+        path.join(homedir(), 'scoop', 'apps', 'bun', 'current', 'bun.exe'),
+        'C:\\Program Files\\bun\\bun.exe',
+      ]
+    : [
+        path.join(homedir(), '.bun', 'bin', 'bun'),
+        '/usr/local/bin/bun',
+        '/opt/homebrew/bin/bun',
+      ];
+
+  for (const p of commonPaths) {
+    if (existsSync(p)) {
+      return p;
+    }
+  }
+
+  return null;
+}
+
 // Standard paths for PID file management
 const DATA_DIR = path.join(homedir(), '.claude-mem');
 const PID_FILE = path.join(DATA_DIR, 'worker.pid');
@@ -263,9 +311,9 @@ export async function cleanupOrphanedProcesses(): Promise<void> {
  * Spawn a detached daemon process
  * Returns the child PID or undefined if spawn failed
  *
- * On Windows, uses WMIC to spawn a truly independent process that
- * survives parent exit without console popups. WMIC creates processes
- * that are not associated with the parent's console.
+ * On Windows, uses PowerShell Start-Process to spawn a truly independent process
+ * that survives parent exit without console popups.
+ * Note: WMIC was removed in Windows 11 25H2+ (Build 26200+).
  *
  * On Unix, uses standard detached spawn.
  *
@@ -284,30 +332,53 @@ export function spawnDaemon(
     ...extraEnv
   };
 
+  // worker-service.cjs requires bun:sqlite which only works in Bun runtime
+  // We must use bun executable, not process.execPath (which may be node.exe)
+  const bunPath = findBunExecutable();
+  if (!bunPath) {
+    logger.error('SYSTEM', 'Bun executable not found. Worker requires Bun runtime for bun:sqlite support.');
+    return undefined;
+  }
+
   if (isWindows) {
-    // Use WMIC to spawn a process that's independent of the parent console
-    // This avoids the console popup that occurs with detached: true
-    // Paths must be individually quoted for WMIC when they contain spaces
-    const execPath = process.execPath;
+    // Use PowerShell Start-Process to spawn a process independent of the parent console
+    // WMIC was removed in Windows 11 25H2+ (Build 26200+), so we use PowerShell instead
+    // -WindowStyle Hidden prevents console popup, similar to WMIC behavior
+    const execPath = bunPath;
     const script = scriptPath;
-    // WMIC command format: wmic process call create "\"path1\" \"path2\" args"
-    const command = `wmic process call create "\\"${execPath}\\" \\"${script}\\" --daemon"`;
+
+    // Build environment variable assignments for PowerShell
+    // Only set the variables we explicitly need (CLAUDE_MEM_WORKER_PORT + extraEnv)
+    // This avoids issues with Windows env vars containing special characters like
+    // ProgramFiles(x86) which break PowerShell's $env:NAME syntax
+    // The child process inherits parent's env vars automatically via Start-Process
+    const customEnvVars: Record<string, string> = {
+      CLAUDE_MEM_WORKER_PORT: String(port),
+      ...extraEnv
+    };
+    const envAssignments = Object.entries(customEnvVars)
+      .map(([k, v]) => `\${env:${k}}='${v.replace(/'/g, "''")}'`)
+      .join('; ');
+
+    // PowerShell command: set env vars, then start detached hidden process
+    // Using -NoNewWindow would attach to current console, so we use -WindowStyle Hidden instead
+    const psScript = `${envAssignments}; Start-Process -FilePath '${execPath.replace(/'/g, "''")}' -ArgumentList @('${script.replace(/'/g, "''")}','--daemon') -WindowStyle Hidden`;
 
     try {
-      execSync(command, {
+      execSync(`powershell -NoProfile -NonInteractive -Command "${psScript.replace(/"/g, '\\"')}"`, {
         stdio: 'ignore',
-        windowsHide: true
+        windowsHide: true,
+        timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND
       });
-      // WMIC returns immediately, we can't get the spawned PID easily
-      // Worker will write its own PID file after listen()
+      // Start-Process returns immediately, worker writes its own PID file after listen()
       return 0;
     } catch {
       return undefined;
     }
   }
 
-  // Unix: standard detached spawn
-  const child = spawn(process.execPath, [scriptPath, '--daemon'], {
+  // Unix: standard detached spawn with bun
+  const child = spawn(bunPath, [scriptPath, '--daemon'], {
     detached: true,
     stdio: 'ignore',
     env
