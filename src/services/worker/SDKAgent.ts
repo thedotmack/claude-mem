@@ -20,7 +20,7 @@ import { USER_SETTINGS_PATH, OBSERVER_SESSIONS_DIR, ensureDir } from '../../shar
 import type { ActiveSession, SDKUserMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import { processAgentResponse, type WorkerRef } from './agents/index.js';
-import { createPidCapturingSpawn, getProcessBySession, ensureProcessExit } from './ProcessRegistry.js';
+import { createPidCapturingSpawn, getProcessBySession, ensureProcessExit, killDuplicatesByResumeId } from './ProcessRegistry.js';
 
 // Import Agent SDK (assumes it's installed)
 // @ts-ignore - Agent SDK types may not be available
@@ -103,6 +103,20 @@ export class SDKAgent {
     // Use custom spawn to capture PIDs for zombie process cleanup (Issue #737)
     // Use dedicated cwd to isolate observer sessions from user's `claude --resume` list
     ensureDir(OBSERVER_SESSIONS_DIR);
+
+    // Kill any duplicate processes for this session before spawning a new one
+    // This prevents accumulation when IDE spawns multiple workers (Issue #XXX)
+    if (hasRealMemorySessionId && session.memorySessionId) {
+      const duplicatesKilled = await killDuplicatesByResumeId(session.memorySessionId);
+      if (duplicatesKilled > 0) {
+        logger.info('SDK', `Killed ${duplicatesKilled} duplicate observer processes before spawn`, {
+          sessionDbId: session.sessionDbId,
+          memorySessionId: session.memorySessionId,
+          duplicatesKilled
+        });
+      }
+    }
+
     const queryResult = query({
       prompt: messageGenerator,
       options: {
