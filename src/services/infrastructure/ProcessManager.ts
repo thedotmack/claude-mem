@@ -292,10 +292,16 @@ export function spawnDaemon(
     const script = scriptPath;
 
     // Build environment variable assignments for PowerShell
-    // These will be set in the PowerShell session before starting the process
-    const envAssignments = Object.entries(env)
-      .filter(([, v]) => v !== undefined)
-      .map(([k, v]) => `$env:${k}='${String(v).replace(/'/g, "''")}'`)
+    // Only set the variables we explicitly need (CLAUDE_MEM_WORKER_PORT + extraEnv)
+    // This avoids issues with Windows env vars containing special characters like
+    // ProgramFiles(x86) which break PowerShell's $env:NAME syntax
+    // The child process inherits parent's env vars automatically via Start-Process
+    const customEnvVars: Record<string, string> = {
+      CLAUDE_MEM_WORKER_PORT: String(port),
+      ...extraEnv
+    };
+    const envAssignments = Object.entries(customEnvVars)
+      .map(([k, v]) => `\${env:${k}}='${v.replace(/'/g, "''")}'`)
       .join('; ');
 
     // PowerShell command: set env vars, then start detached hidden process
