@@ -264,6 +264,28 @@ export class WorkerService {
 
       await this.dbManager.initialize();
 
+      // Recover stale sessions from previous crash
+      try {
+        const STALE_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes
+        const db = this.dbManager.getSessionStore().db;
+        const now = Date.now();
+        const cutoff = now - STALE_THRESHOLD_MS;
+
+        const staleResult = db.prepare(`
+          UPDATE sdk_sessions
+          SET status = 'failed', completed_at = ?, completed_at_epoch = ?
+          WHERE status = 'active' AND started_at_epoch < ?
+        `).run(new Date().toISOString(), now, cutoff);
+
+        if (staleResult.changes > 0) {
+          logger.info('SYSTEM', `Recovered ${staleResult.changes} stale sessions from previous crash`, {
+            threshold: '10 minutes'
+          });
+        }
+      } catch (error) {
+        logger.warn('SYSTEM', 'Failed to recover stale sessions', {}, error as Error);
+      }
+
       // Recover stuck messages from previous crashes
       const { PendingMessageStore } = await import('./sqlite/PendingMessageStore.js');
       const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
@@ -318,6 +340,28 @@ export class WorkerService {
         return activeIds;
       });
       logger.info('SYSTEM', 'Started orphan reaper (runs every 5 minutes)');
+
+      // Chroma watchdog: check if chroma-mcp is responsive, restart if dead
+      if (settings.CLAUDE_MEM_CHROMA_DISABLED !== 'true') {
+        const CHROMA_CHECK_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+        const chromaWatchdog = setInterval(async () => {
+          try {
+            const chromaSync = this.dbManager.getChromaSync();
+            if (chromaSync.isDisabled()) return;
+            if (!chromaSync.isConnected()) {
+              logger.warn('SYSTEM', 'Chroma watchdog: connection lost, attempting reconnect');
+              try {
+                await chromaSync.close();
+              } catch { /* ignore close errors */ }
+              // ChromaSync will reconnect on next use via ensureConnection()
+            }
+          } catch (error) {
+            logger.error('SYSTEM', 'Chroma watchdog error', {}, error as Error);
+          }
+        }, CHROMA_CHECK_INTERVAL_MS);
+        chromaWatchdog.unref();
+        logger.info('SYSTEM', 'Started chroma watchdog (runs every 5 minutes)');
+      }
 
       // Auto-recover orphaned queues (fire-and-forget with error logging)
       this.processPendingQueues(50).then(result => {

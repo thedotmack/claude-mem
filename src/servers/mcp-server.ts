@@ -294,6 +294,21 @@ process.on('SIGINT', cleanup);
 
 // Start the server
 async function main() {
+  // Parent heartbeat: exit if parent process dies (prevents orphaned MCP servers)
+  const HEARTBEAT_INTERVAL_MS = 30_000;
+  const heartbeat = setInterval(() => {
+    // On Unix, ppid becomes 1 (init) when parent dies
+    // On macOS, ppid becomes 1 (launchd) when parent dies
+    if (process.ppid === 1 || process.ppid === 0) {
+      logger.info('SYSTEM', 'Parent process gone (ppid=1), exiting MCP server');
+      clearInterval(heartbeat);
+      cleanup().then(() => process.exit(0));
+    }
+  }, HEARTBEAT_INTERVAL_MS);
+
+  // Ensure heartbeat doesn't prevent process exit
+  heartbeat.unref();
+
   // Start the MCP server
   const transport = new StdioServerTransport();
   await server.connect(transport);
