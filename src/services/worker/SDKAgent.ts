@@ -17,6 +17,7 @@ import { logger } from '../../utils/logger.js';
 import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, OBSERVER_SESSIONS_DIR, ensureDir } from '../../shared/paths.js';
+import { buildIsolatedEnv, getAuthMethodDescription } from '../../shared/EnvManager.js';
 import type { ActiveSession, SDKUserMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import { processAgentResponse, type WorkerRef } from './agents/index.js';
@@ -76,13 +77,19 @@ export class SDKAgent {
     // NEVER use contentSessionId for resume - that would inject messages into the user's transcript!
     const hasRealMemorySessionId = !!session.memorySessionId;
 
+    // Build isolated environment from ~/.claude-mem/.env (Issue #733)
+    // Prevents random ANTHROPIC_API_KEY from project .env files being used
+    const isolatedEnv = buildIsolatedEnv();
+    const authMethod = getAuthMethodDescription();
+
     logger.info('SDK', 'Starting SDK query', {
       sessionDbId: session.sessionDbId,
       contentSessionId: session.contentSessionId,
       memorySessionId: session.memorySessionId,
       hasRealMemorySessionId,
       resume_parameter: hasRealMemorySessionId ? session.memorySessionId : '(none - fresh start)',
-      lastPromptNumber: session.lastPromptNumber
+      lastPromptNumber: session.lastPromptNumber,
+      authMethod
     });
 
     // Debug-level alignment logs for detailed tracing
@@ -101,15 +108,19 @@ export class SDKAgent {
     // Run Agent SDK query loop
     // Only resume if we have a captured memory session ID
     // Use custom spawn to capture PIDs for zombie process cleanup (Issue #737)
-    // Use dedicated cwd to isolate observer sessions from user's `claude --resume` list
+    // Use dedicated cwd to isolate observer sessions from user's `claude --resume` list (Issue #832)
+    // Use isolated env to prevent API key pollution from project .env files (Issue #733)
     ensureDir(OBSERVER_SESSIONS_DIR);
     const queryResult = query({
       prompt: messageGenerator,
       options: {
         model: modelId,
         // Isolate observer sessions - they'll appear under project "observer-sessions"
-        // instead of polluting user's actual project resume lists
+        // instead of polluting user's actual project resume lists (Issue #832)
         cwd: OBSERVER_SESSIONS_DIR,
+        // Use isolated credentials from ~/.claude-mem/.env, not process.env (Issue #733)
+        // If no ANTHROPIC_API_KEY in .env, CLI subscription billing is used via pathToClaudeCodeExecutable
+        env: isolatedEnv,
         // Only resume if BOTH: (1) we have a memorySessionId AND (2) this isn't the first prompt
         // On worker restart, memorySessionId may exist from a previous SDK session but we
         // need to start fresh since the SDK context was lost
