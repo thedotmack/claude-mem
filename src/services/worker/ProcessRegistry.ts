@@ -157,7 +157,135 @@ async function killSystemOrphans(): Promise<number> {
 }
 
 /**
- * Reap orphaned processes - both registry-tracked and system-level
+ * Kill stale observer processes regardless of ppid
+ *
+ * Fixes Issue #XXX: IDE (e.g., Antigravity/VS Code) spawns multiple worker instances,
+ * each spawning observer subagents. These accumulate because:
+ * 1. Each worker only tracks its own processes in processRegistry
+ * 2. killSystemOrphans only kills ppid=1, but IDE children have ppid=IDE
+ * 3. Multiple --resume calls to same session spawn duplicates
+ *
+ * Solution: Find all claude processes with --disallowedTools (observer signature)
+ * that have been idle (0% CPU) for more than maxIdleMs, and kill them.
+ */
+async function killStaleObservers(maxIdleMs: number = 30 * 60 * 1000): Promise<number> {
+  if (process.platform === 'win32') {
+    return 0; // Different approach needed for Windows
+  }
+
+  try {
+    // Get all claude observer processes with their start time and CPU usage
+    // Observers have --disallowedTools flag which distinguishes them from user sessions
+    const { stdout } = await execAsync(
+      'ps -eo pid,pcpu,lstart,args 2>/dev/null | grep "claude.*--disallowedTools" | grep -v grep'
+    );
+
+    let killed = 0;
+    const now = Date.now();
+
+    for (const line of stdout.trim().split('\n')) {
+      if (!line) continue;
+
+      // Parse: PID CPU% "Day Mon DD HH:MM:SS YYYY" command...
+      // Example: 12345  0.0 Tue Jan 28 14:30:00 2025 /path/to/claude ...
+      const match = line.trim().match(/^(\d+)\s+([\d.]+)\s+(\w+\s+\w+\s+\d+\s+[\d:]+\s+\d+)/);
+      if (!match) continue;
+
+      const pid = parseInt(match[1]);
+      const cpuPercent = parseFloat(match[2]);
+      const startTimeStr = match[3];
+
+      // Skip processes still actively using CPU
+      if (cpuPercent > 0.1) continue;
+
+      // Parse start time to epoch
+      try {
+        const startTime = new Date(startTimeStr).getTime();
+        const ageMs = now - startTime;
+
+        // Kill if idle for too long
+        if (ageMs > maxIdleMs) {
+          logger.warn('PROCESS', `Killing stale observer PID ${pid} (idle ${Math.round(ageMs / 60000)}min)`, {
+            pid,
+            ageMs,
+            cpuPercent
+          });
+          try {
+            process.kill(pid, 'SIGKILL');
+            killed++;
+          } catch {
+            // Already dead or permission denied
+          }
+        }
+      } catch {
+        // Date parsing failed, skip
+      }
+    }
+    return killed;
+  } catch {
+    return 0; // No matches or error
+  }
+}
+
+/**
+ * Kill duplicate processes for a specific resume session ID
+ *
+ * When multiple workers resume the same observer session, they each spawn
+ * a subprocess. This function finds and kills all but the newest one.
+ * Call this BEFORE spawning a new process for a session.
+ */
+export async function killDuplicatesByResumeId(resumeSessionId: string): Promise<number> {
+  if (process.platform === 'win32' || !resumeSessionId) {
+    return 0;
+  }
+
+  try {
+    // Find all processes resuming this specific session
+    const { stdout } = await execAsync(
+      `ps -eo pid,lstart,args 2>/dev/null | grep -- "--resume ${resumeSessionId}" | grep -v grep`
+    );
+
+    const processes: Array<{ pid: number; startTime: number }> = [];
+
+    for (const line of stdout.trim().split('\n')) {
+      if (!line) continue;
+      const match = line.trim().match(/^(\d+)\s+(\w+\s+\w+\s+\d+\s+[\d:]+\s+\d+)/);
+      if (!match) continue;
+
+      const pid = parseInt(match[1]);
+      try {
+        const startTime = new Date(match[2]).getTime();
+        processes.push({ pid, startTime });
+      } catch {
+        // Date parsing failed
+      }
+    }
+
+    // Keep only the newest, kill the rest
+    if (processes.length <= 1) return 0;
+
+    processes.sort((a, b) => b.startTime - a.startTime); // Newest first
+    const toKill = processes.slice(1); // All except newest
+
+    let killed = 0;
+    for (const { pid } of toKill) {
+      logger.warn('PROCESS', `Killing duplicate observer PID ${pid} for session ${resumeSessionId}`, { pid, resumeSessionId });
+      try {
+        process.kill(pid, 'SIGKILL');
+        killed++;
+      } catch {
+        // Already dead
+      }
+    }
+
+    return killed;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Reap orphaned processes - registry-tracked, system-level, and stale observers
  */
 export async function reapOrphanedProcesses(activeSessionIds: Set<number>): Promise<number> {
   let killed = 0;
@@ -175,6 +303,10 @@ export async function reapOrphanedProcesses(activeSessionIds: Set<number>): Prom
     }
     unregisterProcess(pid);
   }
+
+  // Kill stale observer processes (idle > 30 min, any ppid)
+  // This catches processes spawned by other worker instances or IDE restarts
+  killed += await killStaleObservers(30 * 60 * 1000);
 
   // System-level: find ppid=1 orphans
   killed += await killSystemOrphans();
