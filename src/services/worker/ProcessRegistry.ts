@@ -19,7 +19,6 @@
 import { spawn, exec, ChildProcess } from 'child_process';
 import { promisify } from 'util';
 import { logger } from '../../utils/logger.js';
-import { OBSERVER_CONFIG_DIR, ensureDir } from '../../shared/paths.js';
 
 const execAsync = promisify(exec);
 
@@ -189,14 +188,10 @@ export async function reapOrphanedProcesses(activeSessionIds: Set<number>): Prom
  * The SDK's spawnClaudeCodeProcess option allows us to intercept subprocess
  * creation and capture the PID before the SDK hides it.
  *
- * IMPORTANT (Issue #832): We set CLAUDE_CONFIG_DIR to isolate observer sessions.
- * This prevents observer sessions from appearing in `claude --resume` list,
- * which was causing 34%+ of resume entries to be internal plugin sessions.
+ * NOTE: Session isolation is handled via the `cwd` option in SDKAgent.ts,
+ * NOT via CLAUDE_CONFIG_DIR (which breaks authentication).
  */
 export function createPidCapturingSpawn(sessionDbId: number) {
-  // Ensure observer config directory exists
-  ensureDir(OBSERVER_CONFIG_DIR);
-
   return (spawnOptions: {
     command: string;
     args: string[];
@@ -204,15 +199,9 @@ export function createPidCapturingSpawn(sessionDbId: number) {
     env?: NodeJS.ProcessEnv;
     signal?: AbortSignal;
   }) => {
-    // Inject CLAUDE_CONFIG_DIR to isolate observer sessions (Issue #832)
-    const isolatedEnv = {
-      ...spawnOptions.env,
-      CLAUDE_CONFIG_DIR: OBSERVER_CONFIG_DIR
-    };
-
     const child = spawn(spawnOptions.command, spawnOptions.args, {
       cwd: spawnOptions.cwd,
-      env: isolatedEnv,
+      env: spawnOptions.env,
       stdio: ['pipe', 'pipe', 'pipe'],
       signal: spawnOptions.signal, // CRITICAL: Pass signal for AbortController integration
       windowsHide: true
