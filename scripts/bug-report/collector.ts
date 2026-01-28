@@ -261,7 +261,8 @@ export async function collectDiagnostics(
     path: sanitizePath(path.join(dataDir, "claude-mem.db")),
     exists: dbInfo.exists,
     size: dbInfo.size,
-    // TODO: Add table counts if we want to query the database
+    // NOTE: Table counts not included to avoid querying potentially large database
+    // Future: Add optional --include-db-stats flag for detailed database metrics
   };
 
   // Configuration
