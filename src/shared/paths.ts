@@ -38,6 +38,10 @@ export const USER_SETTINGS_PATH = join(DATA_DIR, 'settings.json');
 export const DB_PATH = join(DATA_DIR, 'claude-mem.db');
 export const VECTOR_DB_DIR = join(DATA_DIR, 'vector-db');
 
+// Isolated config directory for observer sessions (Issue #832)
+// This prevents observer sessions from appearing in `claude --resume` list
+export const OBSERVER_CONFIG_DIR = join(DATA_DIR, 'observer-config');
+
 // Claude integration paths
 export const CLAUDE_SETTINGS_PATH = join(CLAUDE_CONFIG_DIR, 'settings.json');
 export const CLAUDE_COMMANDS_DIR = join(CLAUDE_CONFIG_DIR, 'commands');
