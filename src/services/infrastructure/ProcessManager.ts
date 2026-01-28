@@ -18,6 +18,54 @@ import { HOOK_TIMEOUTS } from '../../shared/hook-constants.js';
 
 const execAsync = promisify(exec);
 
+/**
+ * Find bun executable in PATH
+ * worker-service.cjs requires bun:sqlite which only works in Bun runtime,
+ * so we must spawn the worker with bun, not node (process.execPath)
+ */
+function findBunExecutable(): string | null {
+  const isWindows = process.platform === 'win32';
+  const bunName = isWindows ? 'bun.exe' : 'bun';
+
+  // Check if current process is already bun
+  if (process.execPath.toLowerCase().includes('bun')) {
+    return process.execPath;
+  }
+
+  // Search in PATH
+  const pathEnv = process.env.PATH || process.env.Path || '';
+  const pathSeparator = isWindows ? ';' : ':';
+  const paths = pathEnv.split(pathSeparator);
+
+  for (const dir of paths) {
+    const fullPath = path.join(dir, bunName);
+    if (existsSync(fullPath)) {
+      return fullPath;
+    }
+  }
+
+  // Common installation locations
+  const commonPaths = isWindows
+    ? [
+        path.join(homedir(), '.bun', 'bin', 'bun.exe'),
+        path.join(homedir(), 'scoop', 'apps', 'bun', 'current', 'bun.exe'),
+        'C:\\Program Files\\bun\\bun.exe',
+      ]
+    : [
+        path.join(homedir(), '.bun', 'bin', 'bun'),
+        '/usr/local/bin/bun',
+        '/opt/homebrew/bin/bun',
+      ];
+
+  for (const p of commonPaths) {
+    if (existsSync(p)) {
+      return p;
+    }
+  }
+
+  return null;
+}
+
 // Standard paths for PID file management
 const DATA_DIR = path.join(homedir(), '.claude-mem');
 const PID_FILE = path.join(DATA_DIR, 'worker.pid');
@@ -284,11 +332,19 @@ export function spawnDaemon(
     ...extraEnv
   };
 
+  // worker-service.cjs requires bun:sqlite which only works in Bun runtime
+  // We must use bun executable, not process.execPath (which may be node.exe)
+  const bunPath = findBunExecutable();
+  if (!bunPath) {
+    logger.error('SYSTEM', 'Bun executable not found. Worker requires Bun runtime for bun:sqlite support.');
+    return undefined;
+  }
+
   if (isWindows) {
     // Use PowerShell Start-Process to spawn a process independent of the parent console
     // WMIC was removed in Windows 11 25H2+ (Build 26200+), so we use PowerShell instead
     // -WindowStyle Hidden prevents console popup, similar to WMIC behavior
-    const execPath = process.execPath;
+    const execPath = bunPath;
     const script = scriptPath;
 
     // Build environment variable assignments for PowerShell
@@ -321,8 +377,8 @@ export function spawnDaemon(
     }
   }
 
-  // Unix: standard detached spawn
-  const child = spawn(process.execPath, [scriptPath, '--daemon'], {
+  // Unix: standard detached spawn with bun
+  const child = spawn(bunPath, [scriptPath, '--daemon'], {
     detached: true,
     stdio: 'ignore',
     env
