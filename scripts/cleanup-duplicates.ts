@@ -80,6 +80,11 @@ function main() {
     ? new Database(DB_PATH, { readonly: true })
     : new Database(DB_PATH);
 
+  // Enable foreign keys for CASCADE DELETE to work (Issue #716)
+  if (!dryRun) {
+    db.run('PRAGMA foreign_keys = ON');
+  }
+
   // Get total observation count
   const totalCount = db.prepare('SELECT COUNT(*) as count FROM observations').get() as { count: number };
   console.log(`Total observations in database: ${totalCount.count}`);
