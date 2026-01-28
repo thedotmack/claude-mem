@@ -263,9 +263,9 @@ export async function cleanupOrphanedProcesses(): Promise<void> {
  * Spawn a detached daemon process
  * Returns the child PID or undefined if spawn failed
  *
- * On Windows, uses WMIC to spawn a truly independent process that
- * survives parent exit without console popups. WMIC creates processes
- * that are not associated with the parent's console.
+ * On Windows, uses PowerShell Start-Process to spawn a truly independent process
+ * that survives parent exit without console popups.
+ * Note: WMIC was removed in Windows 11 25H2+ (Build 26200+).
  *
  * On Unix, uses standard detached spawn.
  *
@@ -285,21 +285,30 @@ export function spawnDaemon(
   };
 
   if (isWindows) {
-    // Use WMIC to spawn a process that's independent of the parent console
-    // This avoids the console popup that occurs with detached: true
-    // Paths must be individually quoted for WMIC when they contain spaces
+    // Use PowerShell Start-Process to spawn a process independent of the parent console
+    // WMIC was removed in Windows 11 25H2+ (Build 26200+), so we use PowerShell instead
+    // -WindowStyle Hidden prevents console popup, similar to WMIC behavior
     const execPath = process.execPath;
     const script = scriptPath;
-    // WMIC command format: wmic process call create "\"path1\" \"path2\" args"
-    const command = `wmic process call create "\\"${execPath}\\" \\"${script}\\" --daemon"`;
+
+    // Build environment variable assignments for PowerShell
+    // These will be set in the PowerShell session before starting the process
+    const envAssignments = Object.entries(env)
+      .filter(([, v]) => v !== undefined)
+      .map(([k, v]) => `$env:${k}='${String(v).replace(/'/g, "''")}'`)
+      .join('; ');
+
+    // PowerShell command: set env vars, then start detached hidden process
+    // Using -NoNewWindow would attach to current console, so we use -WindowStyle Hidden instead
+    const psScript = `${envAssignments}; Start-Process -FilePath '${execPath.replace(/'/g, "''")}' -ArgumentList @('${script.replace(/'/g, "''")}','--daemon') -WindowStyle Hidden`;
 
     try {
-      execSync(command, {
+      execSync(`powershell -NoProfile -NonInteractive -Command "${psScript.replace(/"/g, '\\"')}"`, {
         stdio: 'ignore',
-        windowsHide: true
+        windowsHide: true,
+        timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND
       });
-      // WMIC returns immediately, we can't get the spawned PID easily
-      // Worker will write its own PID file after listen()
+      // Start-Process returns immediately, worker writes its own PID file after listen()
       return 0;
     } catch {
       return undefined;
