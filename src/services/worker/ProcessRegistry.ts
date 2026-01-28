@@ -189,14 +189,18 @@ async function killStaleObservers(maxIdleMs: number = 30 * 60 * 1000): Promise<n
       // Parse: PID CPU% "Day Mon DD HH:MM:SS YYYY" command...
       // Example: 12345  0.0 Tue Jan 28 14:30:00 2025 /path/to/claude ...
       const match = line.trim().match(/^(\d+)\s+([\d.]+)\s+(\w+\s+\w+\s+\d+\s+[\d:]+\s+\d+)/);
-      if (!match) continue;
+      if (!match) {
+        logger.debug('PROCESS', `Skipping malformed ps line: ${line.substring(0, 100)}`);
+        continue;
+      }
 
       const pid = parseInt(match[1]);
       const cpuPercent = parseFloat(match[2]);
       const startTimeStr = match[3];
 
-      // Skip processes still actively using CPU
-      if (cpuPercent > 0.1) continue;
+      // Skip processes still actively using CPU (1% threshold to avoid killing
+      // processes that are briefly active during inference or I/O)
+      if (cpuPercent > 1.0) continue;
 
       // Parse start time to epoch
       try {
@@ -239,8 +243,16 @@ export async function killDuplicatesByResumeId(resumeSessionId: string): Promise
     return 0;
   }
 
+  // Validate session ID format (UUID) to prevent shell injection
+  // Valid format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+  if (!/^[a-f0-9-]{36}$/i.test(resumeSessionId)) {
+    logger.warn('PROCESS', `Invalid session ID format, skipping duplicate cleanup: ${resumeSessionId.substring(0, 50)}`);
+    return 0;
+  }
+
   try {
     // Find all processes resuming this specific session
+    // Session ID is validated above to be a UUID, safe for shell interpolation
     const { stdout } = await execAsync(
       `ps -eo pid,lstart,args 2>/dev/null | grep -- "--resume ${resumeSessionId}" | grep -v grep`
     );
@@ -250,7 +262,10 @@ export async function killDuplicatesByResumeId(resumeSessionId: string): Promise
     for (const line of stdout.trim().split('\n')) {
       if (!line) continue;
       const match = line.trim().match(/^(\d+)\s+(\w+\s+\w+\s+\d+\s+[\d:]+\s+\d+)/);
-      if (!match) continue;
+      if (!match) {
+        logger.debug('PROCESS', `Skipping malformed ps line in duplicate check: ${line.substring(0, 100)}`);
+        continue;
+      }
 
       const pid = parseInt(match[1]);
       try {
@@ -264,7 +279,9 @@ export async function killDuplicatesByResumeId(resumeSessionId: string): Promise
     // Keep only the newest, kill the rest
     if (processes.length <= 1) return 0;
 
-    processes.sort((a, b) => b.startTime - a.startTime); // Newest first
+    // Sort by start time (newest first), use PID as tiebreaker for deterministic behavior
+    // when processes start within the same second (higher PID = spawned later)
+    processes.sort((a, b) => b.startTime - a.startTime || b.pid - a.pid);
     const toKill = processes.slice(1); // All except newest
 
     let killed = 0;
