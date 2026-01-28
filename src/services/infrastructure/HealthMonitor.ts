@@ -29,17 +29,21 @@ export async function isPortInUse(port: number): Promise<boolean> {
 }
 
 /**
- * Wait for the worker to become fully ready (passes readiness check)
+ * Wait for the worker HTTP server to become responsive (liveness check)
+ * Uses /api/health instead of /api/readiness because:
+ * - /api/health returns 200 as soon as HTTP server is listening
+ * - /api/readiness waits for full initialization (MCP connection can take 5+ minutes)
+ * See: https://github.com/thedotmack/claude-mem/issues/811
  * @param port Worker port to check
  * @param timeoutMs Maximum time to wait in milliseconds
- * @returns true if worker became ready, false if timeout
+ * @returns true if worker became responsive, false if timeout
  */
 export async function waitForHealth(port: number, timeoutMs: number = 30000): Promise<boolean> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     try {
       // Note: Removed AbortSignal.timeout to avoid Windows Bun cleanup issue (libuv assertion)
-      const response = await fetch(`http://127.0.0.1:${port}/api/readiness`);
+      const response = await fetch(`http://127.0.0.1:${port}/api/health`);
       if (response.ok) return true;
     } catch (error) {
       // [ANTI-PATTERN IGNORED]: Retry loop - expected failures during startup, will retry
