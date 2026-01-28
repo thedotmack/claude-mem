@@ -2,6 +2,37 @@
 
 All notable changes to claude-mem.
 
+## [v9.0.12] - 2026-01-28
+
+## Fix: Authentication failure from observer session isolation
+
+**Critical bugfix** for users who upgraded to v9.0.11.
+
+### Problem
+
+v9.0.11 introduced observer session isolation using `CLAUDE_CONFIG_DIR` override, which inadvertently broke authentication:
+
+```
+Invalid API key · Please run /login
+```
+
+This happened because Claude Code stores credentials in the config directory, and overriding it prevented access to existing auth tokens.
+
+### Solution
+
+Observer sessions now use the SDK's `cwd` option instead:
+- Sessions stored under `~/.claude-mem/observer-sessions/` project
+- Auth credentials in `~/.claude/` remain accessible
+- Observer sessions still won't pollute `claude --resume` lists
+
+### Affected Users
+
+Anyone running v9.0.11 who saw "Invalid API key" errors should upgrade immediately.
+
+---
+
+🤖 Generated with [Claude Code](https://claude.ai/code)
+
 ## [v9.0.11] - 2026-01-28
 
 ## Bug Fixes
@@ -1301,31 +1332,4 @@ Added localhost-only protection for admin endpoints to prevent DoS attacks when 
 Prevents unauthorized shutdown/restart of worker service when exposed on network.
 
 Fixes security concern raised in #368.
-
-## [v7.3.7] - 2025-12-17
-
-## Windows Platform Stabilization
-
-This patch release includes comprehensive improvements for Windows platform stability and reliability.
-
-### Key Improvements
-
-- **Worker Readiness Tracking**: Added `/api/readiness` endpoint with MCP/SDK initialization flags to prevent premature connection attempts
-- **Process Tree Cleanup**: Implemented recursive process enumeration on Windows to prevent zombie socket processes  
-- **Bun Runtime Migration**: Migrated worker wrapper from Node.js to Bun for consistency and reliability
-- **Centralized Project Name Utility**: Consolidated duplicate project name extraction logic with Windows drive root handling
-- **Enhanced Error Messages**: Added platform-aware logging and detailed Windows troubleshooting guidance
-- **Subprocess Console Hiding**: Standardized `windowsHide: true` across all child process spawns to prevent console window flashing
-
-### Technical Details
-
-- Worker service tracks MCP and SDK readiness states separately
-- ChromaSync service properly tracks subprocess PIDs for Windows cleanup
-- Worker wrapper uses Bun runtime with enhanced socket cleanup via process tree enumeration
-- Increased timeouts on Windows platform (30s worker startup, 10s hook timeouts)
-- Logger utility includes platform and PID information for better debugging
-
-This represents a major reliability improvement for Windows users, eliminating common issues with worker startup failures, orphaned processes, and zombie sockets.
-
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.3.6...v7.3.7
 
