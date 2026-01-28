@@ -2,6 +2,27 @@
 
 All notable changes to claude-mem.
 
+## [v9.0.11] - 2026-01-28
+
+## Bug Fixes
+
+### Observer Session Isolation (#837)
+Observer sessions created by claude-mem were polluting the `claude --resume` list, cluttering it with internal plugin sessions that users never intend to resume. In one user's case, 74 observer sessions out of ~220 total (34% noise).
+
+**Solution**: Observer processes now use a dedicated config directory (`~/.claude-mem/observer-config/`) to isolate their session files from user sessions.
+
+Thanks to @Glucksberg for this fix! Fixes #832.
+
+### Stale memory_session_id Crash Prevention (#839)
+After a worker restart, stale `memory_session_id` values in the database could cause crashes when attempting to resume SDK conversations. The existing guard didn't protect against this because session data was loaded from the database.
+
+**Solution**: Clear `memory_session_id` when loading sessions from the database (not from cache). The key insight: if a session isn't in memory, any database `memory_session_id` is definitely stale.
+
+Thanks to @bigph00t for this fix! Fixes #817.
+
+---
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v9.0.10...v9.0.11
+
 ## [v9.0.10] - 2026-01-26
 
 ## Bug Fix
@@ -1307,10 +1328,4 @@ This patch release includes comprehensive improvements for Windows platform stab
 This represents a major reliability improvement for Windows users, eliminating common issues with worker startup failures, orphaned processes, and zombie sockets.
 
 **Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.3.6...v7.3.7
-
-## [v7.3.6] - 2025-12-17
-
-## Bug Fixes
-
-- Enhanced SDKAgent response handling and message processing
 
