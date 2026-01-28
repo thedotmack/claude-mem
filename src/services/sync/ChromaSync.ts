@@ -12,6 +12,11 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { ParsedObservation, ParsedSummary } from '../../sdk/parser.js';
 import { SessionStore } from '../sqlite/SessionStore.js';
+import type {
+  ObservationSearchResult,
+  SessionSummarySearchResult,
+  UserPromptSearchResult
+} from '../sqlite/types.js';
 import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
@@ -109,6 +114,14 @@ export class ChromaSync {
    */
   isDisabled(): boolean {
     return this.disabled;
+  }
+
+  /**
+   * ChromaSync is NOT cloud-primary - it syncs from SQLite to local vector store
+   * (SyncProvider interface)
+   */
+  isCloudPrimary(): boolean {
+    return false;
   }
 
   /**
@@ -917,6 +930,88 @@ export class ChromaSync {
     const metadatas = parsed.metadatas?.[0] || [];
 
     return { ids, distances, metadatas };
+  }
+
+  /**
+   * Query for semantic search (SyncProvider interface)
+   * Wrapper around queryChroma for interface compatibility
+   * @param queryText - The text to search for
+   * @param limit - Maximum number of results
+   * @param whereFilter - Optional metadata filter
+   * @param project - Optional project filter (ignored for ChromaSync - project set at construction)
+   */
+  async query(
+    queryText: string,
+    limit: number,
+    whereFilter?: Record<string, any>,
+    _project?: string  // Ignored - ChromaSync uses this.project from constructor
+  ): Promise<{ ids: number[]; distances: number[]; metadatas: any[] }> {
+    return this.queryChroma(queryText, limit, whereFilter);
+  }
+
+  /**
+   * Fetch observations by IDs from SQLite (SyncProvider interface)
+   * ChromaSync fetches from local SQLite since it's for free users
+   */
+  async getObservationsByIds(
+    ids: number[],
+    options?: { type?: string | string[]; concepts?: string | string[]; files?: string | string[]; orderBy?: string; limit?: number; project?: string }
+  ): Promise<ObservationSearchResult[]> {
+    if (ids.length === 0) return [];
+
+    const sessionStore = new SessionStore();
+    try {
+      return sessionStore.getObservationsByIds(ids, options);
+    } finally {
+      sessionStore.close();
+    }
+  }
+
+  /**
+   * Fetch session summaries by IDs from SQLite (SyncProvider interface)
+   * ChromaSync fetches from local SQLite since it's for free users
+   */
+  async getSessionSummariesByIds(
+    ids: number[],
+    options?: { orderBy?: string; limit?: number; project?: string }
+  ): Promise<SessionSummarySearchResult[]> {
+    if (ids.length === 0) return [];
+
+    const sessionStore = new SessionStore();
+    try {
+      return sessionStore.getSessionSummariesByIds(ids, options);
+    } finally {
+      sessionStore.close();
+    }
+  }
+
+  /**
+   * Fetch user prompts by IDs from SQLite (SyncProvider interface)
+   * ChromaSync fetches from local SQLite since it's for free users
+   */
+  async getUserPromptsByIds(
+    ids: number[],
+    options?: { orderBy?: string; limit?: number; project?: string }
+  ): Promise<UserPromptSearchResult[]> {
+    if (ids.length === 0) return [];
+
+    const sessionStore = new SessionStore();
+    try {
+      return sessionStore.getUserPromptsByIds(ids, options);
+    } finally {
+      sessionStore.close();
+    }
+  }
+
+  /**
+   * Get sync stats (SyncProvider interface)
+   * Returns count of vectors in the collection
+   * @param _project - Ignored for ChromaSync (single project per instance)
+   */
+  async getStats(_project?: string): Promise<{ observations: number; summaries: number; prompts: number; vectors: number }> {
+    // ChromaSync doesn't track detailed stats - return zeros
+    // The local SQLite database has the actual counts
+    return { observations: 0, summaries: 0, prompts: 0, vectors: 0 };
   }
 
   /**

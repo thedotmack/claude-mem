@@ -84,7 +84,7 @@ export interface ExtendedSearchOptions extends SearchOptions {
 /**
  * Search strategy selection hint
  */
-export type SearchStrategyHint = 'chroma' | 'sqlite' | 'hybrid' | 'auto';
+export type SearchStrategyHint = 'vector' | 'sqlite' | 'hybrid' | 'auto';
 
 /**
  * Options passed to search strategies
@@ -101,8 +101,8 @@ export interface StrategySearchOptions extends ExtendedSearchOptions {
  */
 export interface StrategySearchResult {
   results: SearchResults;
-  /** Whether Chroma was used successfully */
-  usedChroma: boolean;
+  /** Whether vector search was used successfully (Chroma or Pinecone) */
+  usedVector: boolean;
   /** Whether fallback was triggered */
   fellBack: boolean;
   /** Strategy that produced the results */

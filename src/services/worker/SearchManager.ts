@@ -6,7 +6,7 @@
  *
  * The actual search logic is now in:
  * - SearchOrchestrator: Strategy selection and coordination
- * - ChromaSearchStrategy: Vector-based semantic search
+ * - VectorSearchStrategy: Vector-based semantic search via SyncProvider (Chroma or Pinecone)
  * - SQLiteSearchStrategy: Filter-only queries
  * - HybridSearchStrategy: Metadata filtering + semantic ranking
  * - ResultFormatter: Output formatting
@@ -16,7 +16,7 @@
 import { basename } from 'path';
 import { SessionSearch } from '../sqlite/SessionSearch.js';
 import { SessionStore } from '../sqlite/SessionStore.js';
-import { ChromaSync } from '../sync/ChromaSync.js';
+import { SyncProvider } from '../sync/SyncProvider.js';
 import { FormattingService } from './FormattingService.js';
 import { TimelineService } from './TimelineService.js';
 import type { TimelineItem } from './TimelineService.js';
@@ -39,7 +39,7 @@ export class SearchManager {
   constructor(
     private sessionSearch: SessionSearch,
     private sessionStore: SessionStore,
-    private chromaSync: ChromaSync,
+    private syncProvider: SyncProvider,
     private formatter: FormattingService,
     private timelineService: TimelineService
   ) {
@@ -47,21 +47,21 @@ export class SearchManager {
     this.orchestrator = new SearchOrchestrator(
       sessionSearch,
       sessionStore,
-      chromaSync
+      syncProvider
     );
     this.timelineBuilder = new TimelineBuilder();
   }
 
   /**
-   * Query Chroma vector database via ChromaSync
+   * Query vector database via SyncProvider (ChromaSync for free, CloudSync for Pro)
    * @deprecated Use orchestrator.search() instead
    */
-  private async queryChroma(
+  private async queryVectors(
     query: string,
     limit: number,
     whereFilter?: Record<string, any>
   ): Promise<{ ids: number[]; distances: number[]; metadatas: any[] }> {
-    return await this.chromaSync.queryChroma(query, limit, whereFilter);
+    return await this.syncProvider.query(query, limit, whereFilter);
   }
 
   /**
@@ -150,7 +150,7 @@ export class SearchManager {
       }
     }
     // PATH 2: CHROMA SEMANTIC SEARCH (query text + Chroma available)
-    else if (this.chromaSync) {
+    else if (this.syncProvider && !this.syncProvider.isDisabled()) {
       let chromaSucceeded = false;
       logger.debug('SEARCH', 'Using ChromaDB semantic search', { typeFilter: type || 'all' });
 
@@ -165,7 +165,7 @@ export class SearchManager {
       }
 
       // Step 1: Chroma semantic search with optional type filter
-      const chromaResults = await this.queryChroma(query, 100, whereFilter);
+      const chromaResults = await this.queryVectors(query, 100, whereFilter);
       chromaSucceeded = true; // Chroma didn't throw error
       logger.debug('SEARCH', 'ChromaDB returned semantic matches', { matchCount: chromaResults.ids.length });
 
@@ -393,10 +393,10 @@ export class SearchManager {
       // Step 1: Search for observations
       let results: ObservationSearchResult[] = [];
 
-      if (this.chromaSync) {
+      if (this.syncProvider && !this.syncProvider.isDisabled()) {
         try {
           logger.debug('SEARCH', 'Using hybrid semantic search for timeline query', {});
-          const chromaResults = await this.queryChroma(query, 100);
+          const chromaResults = await this.queryVectors(query, 100);
           logger.debug('SEARCH', 'Chroma returned semantic matches for timeline', { matchCount: chromaResults?.ids?.length ?? 0 });
 
           if (chromaResults?.ids && chromaResults.ids.length > 0) {
@@ -643,12 +643,12 @@ export class SearchManager {
     let results: ObservationSearchResult[] = [];
 
     // Search for decision-type observations
-    if (this.chromaSync) {
+    if (this.syncProvider && !this.syncProvider.isDisabled()) {
       try {
         if (query) {
           // Semantic search filtered to decision type
           logger.debug('SEARCH', 'Using Chroma semantic search with type=decision filter', {});
-          const chromaResults = await this.queryChroma(query, Math.min((filters.limit || 20) * 2, 100), { type: 'decision' });
+          const chromaResults = await this.queryVectors(query, Math.min((filters.limit || 20) * 2, 100), { type: 'decision' });
           const obsIds = chromaResults.ids;
 
           if (obsIds.length > 0) {
@@ -663,7 +663,7 @@ export class SearchManager {
 
           if (metadataResults.length > 0) {
             const ids = metadataResults.map(obs => obs.id);
-            const chromaResults = await this.queryChroma('decision', Math.min(ids.length, 100));
+            const chromaResults = await this.queryVectors('decision', Math.min(ids.length, 100));
 
             const rankedIds: number[] = [];
             for (const chromaId of chromaResults.ids) {
@@ -717,7 +717,7 @@ export class SearchManager {
     let results: ObservationSearchResult[] = [];
 
     // Search for change-type observations and change-related concepts
-    if (this.chromaSync) {
+    if (this.syncProvider && !this.syncProvider.isDisabled()) {
       try {
         logger.debug('SEARCH', 'Using hybrid search for change-related observations', {});
 
@@ -732,7 +732,7 @@ export class SearchManager {
 
         if (allIds.size > 0) {
           const idsArray = Array.from(allIds);
-          const chromaResults = await this.queryChroma('what changed', Math.min(idsArray.length, 100));
+          const chromaResults = await this.queryVectors('what changed', Math.min(idsArray.length, 100));
 
           const rankedIds: number[] = [];
           for (const chromaId of chromaResults.ids) {
@@ -800,13 +800,13 @@ export class SearchManager {
     let results: ObservationSearchResult[] = [];
 
     // Search for how-it-works concept observations
-    if (this.chromaSync) {
+    if (this.syncProvider && !this.syncProvider.isDisabled()) {
       logger.debug('SEARCH', 'Using metadata-first + semantic ranking for how-it-works', {});
       const metadataResults = this.sessionSearch.findByConcept('how-it-works', filters);
 
       if (metadataResults.length > 0) {
         const ids = metadataResults.map(obs => obs.id);
-        const chromaResults = await this.queryChroma('how it works architecture', Math.min(ids.length, 100));
+        const chromaResults = await this.queryVectors('how it works architecture', Math.min(ids.length, 100));
 
         const rankedIds: number[] = [];
         for (const chromaId of chromaResults.ids) {
@@ -857,11 +857,11 @@ export class SearchManager {
     let results: ObservationSearchResult[] = [];
 
     // Vector-first search via ChromaDB
-    if (this.chromaSync) {
+    if (this.syncProvider && !this.syncProvider.isDisabled()) {
       logger.debug('SEARCH', 'Using hybrid semantic search (Chroma + SQLite)', {});
 
       // Step 1: Chroma semantic search (top 100)
-      const chromaResults = await this.queryChroma(query, 100);
+      const chromaResults = await this.queryVectors(query, 100);
       logger.debug('SEARCH', 'Chroma returned semantic matches', { matchCount: chromaResults.ids.length });
 
       if (chromaResults.ids.length > 0) {
@@ -914,11 +914,11 @@ export class SearchManager {
     let results: SessionSummarySearchResult[] = [];
 
     // Vector-first search via ChromaDB
-    if (this.chromaSync) {
+    if (this.syncProvider && !this.syncProvider.isDisabled()) {
       logger.debug('SEARCH', 'Using hybrid semantic search for sessions', {});
 
       // Step 1: Chroma semantic search (top 100)
-      const chromaResults = await this.queryChroma(query, 100, { doc_type: 'session_summary' });
+      const chromaResults = await this.queryVectors(query, 100, { doc_type: 'session_summary' });
       logger.debug('SEARCH', 'Chroma returned semantic matches for sessions', { matchCount: chromaResults.ids.length });
 
       if (chromaResults.ids.length > 0) {
@@ -971,11 +971,11 @@ export class SearchManager {
     let results: UserPromptSearchResult[] = [];
 
     // Vector-first search via ChromaDB
-    if (this.chromaSync) {
+    if (this.syncProvider && !this.syncProvider.isDisabled()) {
       logger.debug('SEARCH', 'Using hybrid semantic search for user prompts', {});
 
       // Step 1: Chroma semantic search (top 100)
-      const chromaResults = await this.queryChroma(query, 100, { doc_type: 'user_prompt' });
+      const chromaResults = await this.queryVectors(query, 100, { doc_type: 'user_prompt' });
       logger.debug('SEARCH', 'Chroma returned semantic matches for prompts', { matchCount: chromaResults.ids.length });
 
       if (chromaResults.ids.length > 0) {
@@ -1028,7 +1028,7 @@ export class SearchManager {
     let results: ObservationSearchResult[] = [];
 
     // Metadata-first, semantic-enhanced search
-    if (this.chromaSync) {
+    if (this.syncProvider && !this.syncProvider.isDisabled()) {
       logger.debug('SEARCH', 'Using metadata-first + semantic ranking for concept search', {});
 
       // Step 1: SQLite metadata filter (get all IDs with this concept)
@@ -1038,7 +1038,7 @@ export class SearchManager {
       if (metadataResults.length > 0) {
         // Step 2: Chroma semantic ranking (rank by relevance to concept)
         const ids = metadataResults.map(obs => obs.id);
-        const chromaResults = await this.queryChroma(concept, Math.min(ids.length, 100));
+        const chromaResults = await this.queryVectors(concept, Math.min(ids.length, 100));
 
         // Intersect: Keep only IDs that passed metadata filter, in semantic rank order
         const rankedIds: number[] = [];
@@ -1099,7 +1099,7 @@ export class SearchManager {
     let sessions: SessionSummarySearchResult[] = [];
 
     // Metadata-first, semantic-enhanced search for observations
-    if (this.chromaSync) {
+    if (this.syncProvider && !this.syncProvider.isDisabled()) {
       logger.debug('SEARCH', 'Using metadata-first + semantic ranking for file search', {});
 
       // Step 1: SQLite metadata filter (get all results with this file)
@@ -1113,7 +1113,7 @@ export class SearchManager {
       if (metadataResults.observations.length > 0) {
         // Step 2: Chroma semantic ranking (rank by relevance to file path)
         const ids = metadataResults.observations.map(obs => obs.id);
-        const chromaResults = await this.queryChroma(filePath, Math.min(ids.length, 100));
+        const chromaResults = await this.queryVectors(filePath, Math.min(ids.length, 100));
 
         // Intersect: Keep only IDs that passed metadata filter, in semantic rank order
         const rankedIds: number[] = [];
@@ -1219,7 +1219,7 @@ export class SearchManager {
     let results: ObservationSearchResult[] = [];
 
     // Metadata-first, semantic-enhanced search
-    if (this.chromaSync) {
+    if (this.syncProvider && !this.syncProvider.isDisabled()) {
       logger.debug('SEARCH', 'Using metadata-first + semantic ranking for type search', {});
 
       // Step 1: SQLite metadata filter (get all IDs with this type)
@@ -1229,7 +1229,7 @@ export class SearchManager {
       if (metadataResults.length > 0) {
         // Step 2: Chroma semantic ranking (rank by relevance to type)
         const ids = metadataResults.map(obs => obs.id);
-        const chromaResults = await this.queryChroma(typeStr, Math.min(ids.length, 100));
+        const chromaResults = await this.queryVectors(typeStr, Math.min(ids.length, 100));
 
         // Intersect: Keep only IDs that passed metadata filter, in semantic rank order
         const rankedIds: number[] = [];
@@ -1627,9 +1627,9 @@ export class SearchManager {
     let results: ObservationSearchResult[] = [];
 
     // Use hybrid search if available
-    if (this.chromaSync) {
+    if (this.syncProvider && !this.syncProvider.isDisabled()) {
       logger.debug('SEARCH', 'Using hybrid semantic search for timeline query', {});
-      const chromaResults = await this.queryChroma(query, 100);
+      const chromaResults = await this.queryVectors(query, 100);
       logger.debug('SEARCH', 'Chroma returned semantic matches for timeline', { matchCount: chromaResults.ids.length });
 
       if (chromaResults.ids.length > 0) {
