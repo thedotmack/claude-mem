@@ -19,6 +19,19 @@ import type {
   UserPromptSearchResult
 } from '../sqlite/types.js';
 
+/**
+ * Sentinel value indicating "no project filter" / "all projects"
+ * Used when methods should not filter by project
+ */
+export const ALL_PROJECTS_SENTINEL = '__ALL_PROJECTS__';
+
+/**
+ * Helper to check if a project value represents "all projects"
+ */
+function isAllProjects(project: string | undefined): boolean {
+  return !project || project === ALL_PROJECTS_SENTINEL || project === '';
+}
+
 interface CloudSyncConfig {
   apiUrl: string;
   setupToken: string;
@@ -833,10 +846,11 @@ export class CloudSync implements SyncProvider {
     });
 
     try {
+      // Don't pass project filter if it's the sentinel value (query all projects)
       const result = await this.apiRequest<QueryResult>('/api/pro/sync/query', 'POST', {
         query: queryText,
         limit,
-        project: effectiveProject,
+        project: isAllProjects(effectiveProject) ? undefined : effectiveProject,
         filter: whereFilter
       });
 
@@ -862,10 +876,10 @@ export class CloudSync implements SyncProvider {
     const effectiveProject = project || this.config.project;
 
     try {
-      // If no project specified, get stats for all projects
-      const url = effectiveProject
-        ? `/api/pro/sync/stats?project=${encodeURIComponent(effectiveProject)}`
-        : '/api/pro/sync/stats';
+      // If sentinel value or empty, get stats for all projects
+      const url = isAllProjects(effectiveProject)
+        ? '/api/pro/sync/stats'
+        : `/api/pro/sync/stats?project=${encodeURIComponent(effectiveProject)}`;
 
       const stats = await this.apiRequest<SyncStats>(url);
       return stats;

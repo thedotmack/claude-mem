@@ -11,7 +11,7 @@
 import { SessionStore } from '../sqlite/SessionStore.js';
 import { SessionSearch } from '../sqlite/SessionSearch.js';
 import { ChromaSync } from '../sync/ChromaSync.js';
-import { CloudSync } from '../sync/CloudSync.js';
+import { CloudSync, ALL_PROJECTS_SENTINEL } from '../sync/CloudSync.js';
 import { SyncProvider } from '../sync/SyncProvider.js';
 import { loadProConfig, ProUserConfig } from '../pro/ProConfig.js';
 import { logger } from '../../utils/logger.js';
@@ -51,7 +51,7 @@ export class DatabaseManager {
         apiUrl: this.proConfig.apiUrl,
         setupToken: this.proConfig.setupToken,
         userId: this.proConfig.userId,
-        project: '' // Empty = no default filter; methods should pass project explicitly
+        project: ALL_PROJECTS_SENTINEL // Explicit sentinel value; methods should pass project explicitly
       });
 
       // Also keep ChromaSync for local fallback (optional)
