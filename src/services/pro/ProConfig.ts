@@ -8,9 +8,15 @@
  * 1. Validates the setup token with mem-pro API
  * 2. Stores the configuration locally
  * 3. Enables cloud sync
+ *
+ * SECURITY NOTES:
+ * - Setup token is stored locally with restricted file permissions (0600)
+ * - Token has an expiration date (expiresAt) for automatic invalidation
+ * - Users can regenerate tokens from the dashboard if compromised
+ * - Future improvement: Consider OS keychain integration for token storage
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, chmodSync } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { logger } from '../../utils/logger.js';
@@ -91,6 +97,15 @@ export function saveProConfig(config: ProUserConfig): void {
     }
 
     writeFileSync(PRO_CONFIG_PATH, JSON.stringify(config, null, 2), 'utf-8');
+
+    // Restrict file permissions to owner only (0600 = rw-------)
+    // This protects the setup token from being read by other users on the system
+    try {
+      chmodSync(PRO_CONFIG_PATH, 0o600);
+    } catch {
+      // chmod may fail on some systems (e.g., Windows), continue anyway
+      logger.debug('PRO_CONFIG', 'Could not set restrictive file permissions (may be unsupported on this OS)');
+    }
 
     logger.info('PRO_CONFIG', 'Saved Pro user config', {
       userId: config.userId.substring(0, 8) + '...',
