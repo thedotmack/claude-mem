@@ -201,9 +201,9 @@ export class CloudSync implements SyncProvider {
 
       logger.debug('CLOUD_SYNC', 'Observation synced successfully', { observationId });
     } catch (error) {
-      // Log error but don't throw - data is already saved locally in SQLite
-      // Cloud sync failures shouldn't break the hook flow
-      logger.error('CLOUD_SYNC', 'Failed to sync observation to cloud (data saved locally)', { observationId }, error as Error);
+      // Log error but don't throw - this method is only called for legacy migration/backfill
+      // Pro users in cloud-primary mode use storeObservationsAndSummary() instead
+      logger.error('CLOUD_SYNC', 'Failed to sync observation to cloud', { observationId }, error as Error);
     }
   }
 
@@ -634,7 +634,8 @@ export class CloudSync implements SyncProvider {
         }
 
         // Get missing observations for this project using parameterized query
-        const safeObsIds = Array.from(existingObsIds).filter(id => Number.isInteger(id));
+        // Validate IDs are positive integers (API could return strings or invalid values)
+        const safeObsIds = Array.from(existingObsIds).filter(id => Number.isInteger(id) && id > 0);
         let observations: StoredObservation[];
         if (safeObsIds.length > 0) {
           const obsPlaceholders = safeObsIds.map(() => '?').join(',');
@@ -690,7 +691,7 @@ export class CloudSync implements SyncProvider {
         }
 
         // Get missing summaries for this project using parameterized query
-        const safeSummaryIds = Array.from(existingSummaryIds).filter(id => Number.isInteger(id));
+        const safeSummaryIds = Array.from(existingSummaryIds).filter(id => Number.isInteger(id) && id > 0);
         let summaries: StoredSummary[];
         if (safeSummaryIds.length > 0) {
           const summaryPlaceholders = safeSummaryIds.map(() => '?').join(',');
@@ -744,7 +745,7 @@ export class CloudSync implements SyncProvider {
         }
 
         // Get missing prompts for this project using parameterized query
-        const safePromptIds = Array.from(existingPromptIds).filter(id => Number.isInteger(id));
+        const safePromptIds = Array.from(existingPromptIds).filter(id => Number.isInteger(id) && id > 0);
         let prompts: StoredUserPrompt[];
         if (safePromptIds.length > 0) {
           const promptPlaceholders = safePromptIds.map(() => '?').join(',');
@@ -815,9 +816,10 @@ export class CloudSync implements SyncProvider {
       });
 
     } catch (error) {
-      // Log error but don't throw - backfill can be retried later
-      logger.error('CLOUD_SYNC', 'Cloud backfill failed (will retry on next sync)', {}, error as Error);
-      throw error; // Re-throw so caller knows migration failed
+      // Log error and re-throw so caller can handle migration failure
+      // Caller should update migration status and allow retry later
+      logger.error('CLOUD_SYNC', 'Cloud backfill failed', {}, error as Error);
+      throw error;
     } finally {
       db.close();
     }
