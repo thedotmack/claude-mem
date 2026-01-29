@@ -24,7 +24,7 @@ import type { ActiveSession } from '../../worker-types.js';
 import type { DatabaseManager } from '../DatabaseManager.js';
 import type { SessionManager } from '../SessionManager.js';
 import type { WorkerRef, StorageResult } from './types.js';
-import { broadcastObservation, broadcastSummary } from './ObservationBroadcaster.js';
+import { broadcastObservation, broadcastSummary, broadcastCloudStorageWarning } from './ObservationBroadcaster.js';
 import { cleanupProcessedMessages } from './SessionCleanupHelper.js';
 
 /**
@@ -152,6 +152,18 @@ export async function processAgentResponse(
         observationIds: result.observationIds,
         action: 'Run ensureBackfilled() when cloud is available'
       });
+
+      // Notify user via SSE that cloud storage failed
+      // This helps Pro users understand why data may not appear on other devices
+      broadcastCloudStorageWarning(
+        worker,
+        'Cloud storage temporarily unavailable. Data saved locally and will sync when connection is restored.',
+        {
+          sessionId: session.sessionDbId,
+          observationCount: result.observationIds.length,
+          error: (error as Error).message
+        }
+      );
     }
   } else {
     // FREE MODE: Store in SQLite then sync to vector store (Chroma)
@@ -256,7 +268,7 @@ async function syncObservationsToVectorStore(
 
     syncProvider.syncObservation(
       obsId,
-      session.contentSessionId,
+      session.memorySessionId,
       session.project,
       obs,
       session.lastPromptNumber,
@@ -301,7 +313,7 @@ async function syncSummaryToVectorStore(
 
   syncProvider.syncSummary(
     result.summaryId,
-    session.contentSessionId,
+    session.memorySessionId,
     session.project,
     summaryForStore,
     session.lastPromptNumber,
