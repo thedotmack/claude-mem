@@ -21,13 +21,14 @@ import { CloudSync, ALL_PROJECTS_SENTINEL } from '../../../sync/CloudSync.js';
 import { SessionStore } from '../../../sqlite/SessionStore.js';
 
 // Default Pro API URL (can be overridden)
-const DEFAULT_PRO_API_URL = 'https://claude-mem.com';
+const DEFAULT_PRO_API_URL = process.env.CLAUDE_MEM_PRO_API_URL || 'https://claude-mem-pro.vercel.app';
 
 export class ProRoutes extends BaseRouteHandler {
   setupRoutes(app: express.Application): void {
     app.get('/api/pro/status', this.handleGetStatus.bind(this));
     app.post('/api/pro/setup', this.handleSetup.bind(this));
     app.post('/api/pro/disconnect', this.handleDisconnect.bind(this));
+    app.post('/api/pro/import', this.handleImport.bind(this));
     // Legacy route for /pro/setup without api prefix
     app.post('/pro/setup', this.handleSetup.bind(this));
   }
@@ -303,6 +304,158 @@ export class ProRoutes extends BaseRouteHandler {
       throw error;
     }
   }
+
+  /**
+   * POST /api/pro/import
+   * Import data from cloud to local SQLite
+   * Downloads all observations, summaries, and prompts from cloud
+   */
+  private handleImport = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const config = loadProConfig();
+
+    if (!config) {
+      res.status(401).json({
+        success: false,
+        error: 'Not configured as Pro user. Run /pro-setup first.'
+      });
+      return;
+    }
+
+    logger.info('PRO_ROUTES', 'Starting cloud import');
+
+    try {
+      // Fetch all data from cloud
+      const exportResponse = await fetch(`${config.apiUrl}/api/pro/export`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${config.setupToken}`,
+          'X-User-Id': config.userId,
+        },
+      });
+
+      if (!exportResponse.ok) {
+        const errorText = await exportResponse.text();
+        throw new Error(`Failed to fetch cloud data: ${exportResponse.status} - ${errorText}`);
+      }
+
+      const exportData = await exportResponse.json();
+
+      if (!exportData.success) {
+        throw new Error(exportData.error || 'Export failed');
+      }
+
+      // Import into local SQLite
+      const db = new SessionStore();
+      let importedObs = 0;
+      let importedSum = 0;
+      let importedPrompts = 0;
+
+      // Import observations
+      for (const obs of exportData.data.observations || []) {
+        try {
+          // Check if already exists
+          const existing = db.db.prepare(
+            'SELECT id FROM observations WHERE id = ? OR (memory_session_id = ? AND prompt_number = ?)'
+          ).get(obs.id, obs.memory_session_id, obs.prompt_number);
+
+          if (!existing) {
+            db.db.prepare(`
+              INSERT INTO observations (
+                memory_session_id, project, type, title, subtitle,
+                facts, narrative, concepts, files_read, files_modified,
+                prompt_number, discovery_tokens, created_at, created_at_epoch
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `).run(
+              obs.memory_session_id, obs.project, obs.type, obs.title, obs.subtitle,
+              obs.facts, obs.narrative, obs.concepts, obs.files_read, obs.files_modified,
+              obs.prompt_number, obs.discovery_tokens, obs.created_at, obs.created_at_epoch
+            );
+            importedObs++;
+          }
+        } catch (err) {
+          logger.warn('PRO_ROUTES', 'Failed to import observation', { id: obs.id }, err as Error);
+        }
+      }
+
+      // Import summaries
+      for (const sum of exportData.data.summaries || []) {
+        try {
+          const existing = db.db.prepare(
+            'SELECT id FROM session_summaries WHERE id = ? OR (memory_session_id = ? AND prompt_number = ?)'
+          ).get(sum.id, sum.memory_session_id, sum.prompt_number);
+
+          if (!existing) {
+            db.db.prepare(`
+              INSERT INTO session_summaries (
+                memory_session_id, project, request, investigated, learned,
+                completed, next_steps, notes, prompt_number, discovery_tokens,
+                created_at, created_at_epoch
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `).run(
+              sum.memory_session_id, sum.project, sum.request, sum.investigated, sum.learned,
+              sum.completed, sum.next_steps, sum.notes, sum.prompt_number, sum.discovery_tokens,
+              sum.created_at, sum.created_at_epoch
+            );
+            importedSum++;
+          }
+        } catch (err) {
+          logger.warn('PRO_ROUTES', 'Failed to import summary', { id: sum.id }, err as Error);
+        }
+      }
+
+      // Import prompts
+      for (const prompt of exportData.data.prompts || []) {
+        try {
+          const existing = db.db.prepare(
+            'SELECT id FROM user_prompts WHERE id = ? OR (memory_session_id = ? AND prompt_number = ?)'
+          ).get(prompt.id, prompt.memory_session_id, prompt.prompt_number);
+
+          if (!existing) {
+            db.db.prepare(`
+              INSERT INTO user_prompts (
+                content_session_id, memory_session_id, project,
+                prompt_number, prompt_text, created_at, created_at_epoch
+              ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            `).run(
+              prompt.content_session_id, prompt.memory_session_id, prompt.project,
+              prompt.prompt_number, prompt.prompt_text, prompt.created_at, prompt.created_at_epoch
+            );
+            importedPrompts++;
+          }
+        } catch (err) {
+          logger.warn('PRO_ROUTES', 'Failed to import prompt', { id: prompt.id }, err as Error);
+        }
+      }
+
+      db.close();
+
+      logger.info('PRO_ROUTES', 'Cloud import complete', {
+        imported: { observations: importedObs, summaries: importedSum, prompts: importedPrompts },
+        skipped: {
+          observations: (exportData.data.observations?.length || 0) - importedObs,
+          summaries: (exportData.data.summaries?.length || 0) - importedSum,
+          prompts: (exportData.data.prompts?.length || 0) - importedPrompts,
+        }
+      });
+
+      res.json({
+        success: true,
+        imported: {
+          observations: importedObs,
+          summaries: importedSum,
+          prompts: importedPrompts,
+        },
+        cloudStats: exportData.stats,
+      });
+
+    } catch (error) {
+      logger.error('PRO_ROUTES', 'Cloud import failed', {}, error as Error);
+      res.status(500).json({
+        success: false,
+        error: (error as Error).message || 'Import failed'
+      });
+    }
+  });
 
   /**
    * POST /api/pro/disconnect

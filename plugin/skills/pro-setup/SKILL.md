@@ -11,8 +11,8 @@ You are helping the user configure Claude-Mem Pro cloud sync.
 ## Prerequisites
 
 The user needs:
-1. A Claude-Mem Pro subscription (purchase at https://claude-mem.com/pricing)
-2. A setup token from the Claude-Mem Pro dashboard
+1. A Claude-Mem Pro subscription (purchase at https://claude-mem-pro.vercel.app)
+2. A setup token from the Claude-Mem Pro dashboard (https://claude-mem-pro.vercel.app/dashboard)
 
 ## Setup Process
 
@@ -47,7 +47,7 @@ If the setup succeeds, the API returns:
 Tell the user:
 - Pro setup is complete
 - Their memories will now sync to the cloud
-- They can view their data at https://claude-mem.com/dashboard
+- They can view their data at https://claude-mem-pro.vercel.app/dashboard
 - Cloud sync happens automatically with each observation/summary
 
 ## Troubleshooting
