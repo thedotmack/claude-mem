@@ -1,6 +1,6 @@
 {
   "name": "claude-mem",
-  "version": "9.0.6",
+  "version": "9.0.10",
   "description": "Memory compression system for Claude Code - persist context across sessions",
   "keywords": [
     "claude",
@@ -26,6 +26,21 @@
     "url": "https://github.com/thedotmack/claude-mem/issues"
   },
   "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./sdk": {
+      "types": "./dist/sdk/index.d.ts",
+      "import": "./dist/sdk/index.js"
+    },
+    "./modes/*": "./plugin/modes/*"
+  },
+  "files": [
+    "dist",
+    "plugin"
+  ],
   "engines": {
     "node": ">=18.0.0",
     "bun": ">=1.0.0"

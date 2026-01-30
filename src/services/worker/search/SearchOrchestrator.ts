@@ -11,9 +11,9 @@
 
 import { SessionSearch } from '../../sqlite/SessionSearch.js';
 import { SessionStore } from '../../sqlite/SessionStore.js';
-import { ChromaSync } from '../../sync/ChromaSync.js';
+import { SyncProvider } from '../../sync/SyncProvider.js';
 
-import { ChromaSearchStrategy } from './strategies/ChromaSearchStrategy.js';
+import { VectorSearchStrategy } from './strategies/VectorSearchStrategy.js';
 import { SQLiteSearchStrategy } from './strategies/SQLiteSearchStrategy.js';
 import { HybridSearchStrategy } from './strategies/HybridSearchStrategy.js';
 
@@ -42,7 +42,7 @@ interface NormalizedParams extends StrategySearchOptions {
 }
 
 export class SearchOrchestrator {
-  private chromaStrategy: ChromaSearchStrategy | null = null;
+  private vectorStrategy: VectorSearchStrategy | null = null;
   private sqliteStrategy: SQLiteSearchStrategy;
   private hybridStrategy: HybridSearchStrategy | null = null;
   private resultFormatter: ResultFormatter;
@@ -51,14 +51,14 @@ export class SearchOrchestrator {
   constructor(
     private sessionSearch: SessionSearch,
     private sessionStore: SessionStore,
-    private chromaSync: ChromaSync | null
+    private syncProvider: SyncProvider | null
   ) {
     // Initialize strategies
     this.sqliteStrategy = new SQLiteSearchStrategy(sessionSearch);
 
-    if (chromaSync) {
-      this.chromaStrategy = new ChromaSearchStrategy(chromaSync, sessionStore);
-      this.hybridStrategy = new HybridSearchStrategy(chromaSync, sessionStore, sessionSearch);
+    if (syncProvider && !syncProvider.isDisabled()) {
+      this.vectorStrategy = new VectorSearchStrategy(syncProvider, sessionStore);
+      this.hybridStrategy = new HybridSearchStrategy(syncProvider, sessionStore, sessionSearch);
     }
 
     this.resultFormatter = new ResultFormatter();
@@ -88,12 +88,12 @@ export class SearchOrchestrator {
     }
 
     // PATH 2: CHROMA SEMANTIC SEARCH (query text + Chroma available)
-    if (this.chromaStrategy) {
+    if (this.vectorStrategy) {
       logger.debug('SEARCH', 'Orchestrator: Using Chroma semantic search', {});
-      const result = await this.chromaStrategy.search(options);
+      const result = await this.vectorStrategy.search(options);
 
       // If Chroma succeeded (even with 0 results), return
-      if (result.usedChroma) {
+      if (result.usedVector) {
         return result;
       }
 
@@ -114,7 +114,7 @@ export class SearchOrchestrator {
     logger.debug('SEARCH', 'Orchestrator: Chroma not available', {});
     return {
       results: { observations: [], sessions: [], prompts: [] },
-      usedChroma: false,
+      usedVector: false,
       fellBack: false,
       strategy: 'sqlite'
     };
@@ -134,7 +134,7 @@ export class SearchOrchestrator {
     const results = this.sqliteStrategy.findByConcept(concept, options);
     return {
       results: { observations: results, sessions: [], prompts: [] },
-      usedChroma: false,
+      usedVector: false,
       fellBack: false,
       strategy: 'sqlite'
     };
@@ -154,7 +154,7 @@ export class SearchOrchestrator {
     const results = this.sqliteStrategy.findByType(type, options);
     return {
       results: { observations: results, sessions: [], prompts: [] },
-      usedChroma: false,
+      usedVector: false,
       fellBack: false,
       strategy: 'sqlite'
     };
@@ -166,7 +166,7 @@ export class SearchOrchestrator {
   async findByFile(filePath: string, args: any): Promise<{
     observations: ObservationSearchResult[];
     sessions: any[];
-    usedChroma: boolean;
+    usedVector: boolean;
   }> {
     const options = this.normalizeParams(args);
 
@@ -176,7 +176,7 @@ export class SearchOrchestrator {
 
     // Fallback to SQLite
     const results = this.sqliteStrategy.findByFile(filePath, options);
-    return { ...results, usedChroma: false };
+    return { ...results, usedVector: false };
   }
 
   /**
@@ -282,9 +282,9 @@ export class SearchOrchestrator {
   }
 
   /**
-   * Check if Chroma is available
+   * Check if vector search is available (Chroma or Pinecone)
    */
-  isChromaAvailable(): boolean {
-    return !!this.chromaSync;
+  isVectorAvailable(): boolean {
+    return !!this.syncProvider && !this.syncProvider.isDisabled();
   }
 }

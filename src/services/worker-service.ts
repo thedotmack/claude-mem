@@ -68,6 +68,10 @@ import { DataRoutes } from './worker/http/routes/DataRoutes.js';
 import { SearchRoutes } from './worker/http/routes/SearchRoutes.js';
 import { SettingsRoutes } from './worker/http/routes/SettingsRoutes.js';
 import { LogsRoutes } from './worker/http/routes/LogsRoutes.js';
+import { ProRoutes } from './worker/http/routes/ProRoutes.js';
+
+// Process management for zombie cleanup (Issue #737)
+import { startOrphanReaper, reapOrphanedProcesses } from './worker/ProcessRegistry.js';
 
 /**
  * Build JSON status output for hook framework communication.
@@ -120,6 +124,9 @@ export class WorkerService {
   // Initialization tracking
   private initializationComplete: Promise<void>;
   private resolveInitialization!: () => void;
+
+  // Orphan reaper cleanup function (Issue #737)
+  private stopOrphanReaper: (() => void) | null = null;
 
   constructor() {
     // Initialize the promise that will resolve when background initialization completes
@@ -193,6 +200,7 @@ export class WorkerService {
     this.server.registerRoutes(new DataRoutes(this.paginationHelper, this.dbManager, this.sessionManager, this.sseBroadcaster, this, this.startTime));
     this.server.registerRoutes(new SettingsRoutes(this.settingsManager));
     this.server.registerRoutes(new LogsRoutes());
+    this.server.registerRoutes(new ProRoutes());
 
     // Early handler for /api/context/inject to avoid 404 during startup
     this.server.app.get('/api/context/inject', async (req, res, next) => {
@@ -303,6 +311,16 @@ export class WorkerService {
       this.resolveInitialization();
       logger.info('SYSTEM', 'Background initialization complete');
 
+      // Start orphan reaper to clean up zombie processes (Issue #737)
+      this.stopOrphanReaper = startOrphanReaper(() => {
+        const activeIds = new Set<number>();
+        for (const [id] of this.sessionManager['sessions']) {
+          activeIds.add(id);
+        }
+        return activeIds;
+      });
+      logger.info('SYSTEM', 'Started orphan reaper (runs every 5 minutes)');
+
       // Auto-recover orphaned queues (fire-and-forget with error logging)
       this.processPendingQueues(50).then(result => {
         if (result.sessionsStarted > 0) {
@@ -404,6 +422,12 @@ export class WorkerService {
    * Shutdown the worker service
    */
   async shutdown(): Promise<void> {
+    // Stop orphan reaper before shutdown (Issue #737)
+    if (this.stopOrphanReaper) {
+      this.stopOrphanReaper();
+      this.stopOrphanReaper = null;
+    }
+
     await performGracefulShutdown({
       server: this.server.getHttpServer(),
       sessionManager: this.sessionManager,
