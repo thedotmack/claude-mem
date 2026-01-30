@@ -4,9 +4,11 @@
  * Syncs observations, summaries, and prompts to Claude-Mem Pro cloud infrastructure.
  * Uses Supabase for relational data and Pinecone for vector search via mem-pro API.
  *
- * Requires:
- * - CLAUDE_MEM_PRO_API_URL: Base URL of mem-pro API
- * - CLAUDE_MEM_PRO_SETUP_TOKEN: Setup token from /pro-setup skill
+ * Configuration is loaded from ~/.claude-mem/pro.json via ProConfig, which is
+ * set up by the /pro-setup skill. The config contains:
+ * - apiUrl: Base URL of mem-pro API
+ * - setupToken: Authentication token for API requests
+ * - userId: User's unique identifier
  */
 
 import { ParsedObservation, ParsedSummary } from '../../sdk/parser.js';
@@ -30,6 +32,71 @@ export const ALL_PROJECTS_SENTINEL = '__ALL_PROJECTS__';
  */
 function isAllProjects(project: string | undefined): boolean {
   return !project || project === ALL_PROJECTS_SENTINEL || project === '';
+}
+
+/**
+ * SQLite has a default limit of 999 bound parameters per query.
+ * When excluding large sets of IDs, we need to chunk the query.
+ * Using 900 to leave room for other parameters in the query.
+ */
+const SQLITE_MAX_PARAMS = 900;
+
+/**
+ * Query rows excluding a set of IDs, handling SQLite's parameter limit.
+ * For small exclusion sets, uses a single IN clause.
+ * For large sets (>900 IDs), uses a temp table approach.
+ */
+function queryExcludingIds<T>(
+  db: { prepare: (sql: string) => { all: (...args: unknown[]) => T[]; run: (...args: unknown[]) => void } },
+  baseQuery: string,
+  tableName: string,
+  project: string,
+  excludeIds: number[]
+): T[] {
+  // Validate IDs are positive integers
+  const safeIds = excludeIds.filter(id => Number.isInteger(id) && id > 0);
+
+  if (safeIds.length === 0) {
+    // No exclusions, simple query
+    return db.prepare(`${baseQuery} WHERE project = ? ORDER BY id ASC`).all(project);
+  }
+
+  if (safeIds.length <= SQLITE_MAX_PARAMS) {
+    // Small enough for single IN clause
+    const placeholders = safeIds.map(() => '?').join(',');
+    return db.prepare(
+      `${baseQuery} WHERE project = ? AND id NOT IN (${placeholders}) ORDER BY id ASC`
+    ).all(project, ...safeIds);
+  }
+
+  // Large exclusion set: use temp table approach
+  // Create temp table, insert IDs in chunks, then query with NOT EXISTS
+  const tempTable = `_temp_exclude_${tableName}_${Date.now()}`;
+
+  try {
+    db.prepare(`CREATE TEMP TABLE ${tempTable} (id INTEGER PRIMARY KEY)`).run();
+
+    // Insert IDs in chunks
+    for (let i = 0; i < safeIds.length; i += SQLITE_MAX_PARAMS) {
+      const chunk = safeIds.slice(i, i + SQLITE_MAX_PARAMS);
+      const placeholders = chunk.map(() => '(?)').join(',');
+      db.prepare(`INSERT INTO ${tempTable} (id) VALUES ${placeholders}`).run(...chunk);
+    }
+
+    // Query excluding IDs in temp table
+    const results = db.prepare(
+      `${baseQuery} WHERE project = ? AND id NOT IN (SELECT id FROM ${tempTable}) ORDER BY id ASC`
+    ).all(project);
+
+    return results;
+  } finally {
+    // Clean up temp table
+    try {
+      db.prepare(`DROP TABLE IF EXISTS ${tempTable}`).run();
+    } catch {
+      // Ignore cleanup errors
+    }
+  }
 }
 
 interface CloudSyncConfig {
@@ -633,26 +700,15 @@ export class CloudSync implements SyncProvider {
           logger.warn('CLOUD_SYNC', 'Failed to get sync status, assuming empty', { project });
         }
 
-        // Get missing observations for this project using parameterized query
-        // Validate IDs are positive integers (API could return strings or invalid values)
-        // Performance note: The spread operator and IN clause work well for typical use cases
-        // (hundreds to low thousands of IDs). For extreme scale (10k+ IDs), consider chunking.
-        const safeObsIds = Array.from(existingObsIds).filter(id => Number.isInteger(id) && id > 0);
-        let observations: StoredObservation[];
-        if (safeObsIds.length > 0) {
-          const obsPlaceholders = safeObsIds.map(() => '?').join(',');
-          observations = db.db.prepare(`
-            SELECT * FROM observations
-            WHERE project = ? AND id NOT IN (${obsPlaceholders})
-            ORDER BY id ASC
-          `).all(project, ...safeObsIds) as StoredObservation[];
-        } else {
-          observations = db.db.prepare(`
-            SELECT * FROM observations
-            WHERE project = ?
-            ORDER BY id ASC
-          `).all(project) as StoredObservation[];
-        }
+        // Get missing observations for this project
+        // Uses chunked queries to handle SQLite's 999 parameter limit for large exclusion sets
+        const observations = queryExcludingIds<StoredObservation>(
+          db.db,
+          'SELECT * FROM observations',
+          'observations',
+          project,
+          Array.from(existingObsIds)
+        );
 
         if (observations.length > 0) {
           logger.info('CLOUD_SYNC', 'Backfilling observations', {
@@ -692,23 +748,15 @@ export class CloudSync implements SyncProvider {
           totalObservations += observations.length;
         }
 
-        // Get missing summaries for this project using parameterized query
-        const safeSummaryIds = Array.from(existingSummaryIds).filter(id => Number.isInteger(id) && id > 0);
-        let summaries: StoredSummary[];
-        if (safeSummaryIds.length > 0) {
-          const summaryPlaceholders = safeSummaryIds.map(() => '?').join(',');
-          summaries = db.db.prepare(`
-            SELECT * FROM session_summaries
-            WHERE project = ? AND id NOT IN (${summaryPlaceholders})
-            ORDER BY id ASC
-          `).all(project, ...safeSummaryIds) as StoredSummary[];
-        } else {
-          summaries = db.db.prepare(`
-            SELECT * FROM session_summaries
-            WHERE project = ?
-            ORDER BY id ASC
-          `).all(project) as StoredSummary[];
-        }
+        // Get missing summaries for this project
+        // Uses chunked queries to handle SQLite's 999 parameter limit for large exclusion sets
+        const summaries = queryExcludingIds<StoredSummary>(
+          db.db,
+          'SELECT * FROM session_summaries',
+          'session_summaries',
+          project,
+          Array.from(existingSummaryIds)
+        );
 
         if (summaries.length > 0) {
           logger.info('CLOUD_SYNC', 'Backfilling summaries', {
@@ -746,32 +794,48 @@ export class CloudSync implements SyncProvider {
           totalSummaries += summaries.length;
         }
 
-        // Get missing prompts for this project using parameterized query
+        // Get missing prompts for this project
+        // Prompts query uses JOIN so we handle chunking inline
         const safePromptIds = Array.from(existingPromptIds).filter(id => Number.isInteger(id) && id > 0);
         let prompts: StoredUserPrompt[];
-        if (safePromptIds.length > 0) {
-          const promptPlaceholders = safePromptIds.map(() => '?').join(',');
+
+        if (safePromptIds.length === 0) {
           prompts = db.db.prepare(`
-            SELECT
-              up.*,
-              s.project,
-              s.memory_session_id
-            FROM user_prompts up
-            JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
-            WHERE s.project = ? AND up.id NOT IN (${promptPlaceholders})
-            ORDER BY up.id ASC
-          `).all(project, ...safePromptIds) as StoredUserPrompt[];
-        } else {
-          prompts = db.db.prepare(`
-            SELECT
-              up.*,
-              s.project,
-              s.memory_session_id
+            SELECT up.*, s.project, s.memory_session_id
             FROM user_prompts up
             JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
             WHERE s.project = ?
             ORDER BY up.id ASC
           `).all(project) as StoredUserPrompt[];
+        } else if (safePromptIds.length <= SQLITE_MAX_PARAMS) {
+          const placeholders = safePromptIds.map(() => '?').join(',');
+          prompts = db.db.prepare(`
+            SELECT up.*, s.project, s.memory_session_id
+            FROM user_prompts up
+            JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
+            WHERE s.project = ? AND up.id NOT IN (${placeholders})
+            ORDER BY up.id ASC
+          `).all(project, ...safePromptIds) as StoredUserPrompt[];
+        } else {
+          // Large exclusion set: use temp table
+          const tempTable = `_temp_exclude_prompts_${Date.now()}`;
+          try {
+            db.db.prepare(`CREATE TEMP TABLE ${tempTable} (id INTEGER PRIMARY KEY)`).run();
+            for (let i = 0; i < safePromptIds.length; i += SQLITE_MAX_PARAMS) {
+              const chunk = safePromptIds.slice(i, i + SQLITE_MAX_PARAMS);
+              const placeholders = chunk.map(() => '(?)').join(',');
+              db.db.prepare(`INSERT INTO ${tempTable} (id) VALUES ${placeholders}`).run(...chunk);
+            }
+            prompts = db.db.prepare(`
+              SELECT up.*, s.project, s.memory_session_id
+              FROM user_prompts up
+              JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
+              WHERE s.project = ? AND up.id NOT IN (SELECT id FROM ${tempTable})
+              ORDER BY up.id ASC
+            `).all(project) as StoredUserPrompt[];
+          } finally {
+            try { db.db.prepare(`DROP TABLE IF EXISTS ${tempTable}`).run(); } catch { /* ignore */ }
+          }
         }
 
         if (prompts.length > 0) {
