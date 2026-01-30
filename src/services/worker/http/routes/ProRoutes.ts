@@ -435,8 +435,12 @@ export class ProRoutes extends BaseRouteHandler {
           observations: (exportData.data.observations?.length || 0) - importedObs,
           summaries: (exportData.data.summaries?.length || 0) - importedSum,
           prompts: (exportData.data.prompts?.length || 0) - importedPrompts,
-        }
+        },
+        subscriptionActive: exportData.subscriptionActive
       });
+
+      // Check if user's subscription is inactive (downgraded)
+      const isDowngraded = exportData.subscriptionActive === false;
 
       res.json({
         success: true,
@@ -446,6 +450,11 @@ export class ProRoutes extends BaseRouteHandler {
           prompts: importedPrompts,
         },
         cloudStats: exportData.stats,
+        // Include downgrade info so client can inform user
+        subscriptionActive: exportData.subscriptionActive,
+        downgradeNotice: isDowngraded
+          ? 'Your subscription is no longer active. Your data has been imported locally. To continue using Claude-Mem with local storage, run /pro-disconnect to reset to free mode.'
+          : null,
       });
 
     } catch (error) {
@@ -459,7 +468,8 @@ export class ProRoutes extends BaseRouteHandler {
 
   /**
    * POST /api/pro/disconnect
-   * Remove Pro configuration (logout)
+   * Remove Pro configuration (logout/downgrade to free)
+   * After disconnect, future observations will use local Chroma storage
    */
   private handleDisconnect = this.wrapHandler((req: Request, res: Response): void => {
     const wasPro = isProUser();
@@ -471,8 +481,9 @@ export class ProRoutes extends BaseRouteHandler {
     res.json({
       success: true,
       message: wasPro
-        ? 'Pro disconnected. Your local data is preserved.'
-        : 'No Pro configuration found.'
+        ? 'Pro disconnected. Your local data is preserved. Please restart claude-mem for changes to take effect (run: claude-mem restart).'
+        : 'No Pro configuration found.',
+      restartRequired: wasPro, // Signal that worker needs restart to use Chroma
     });
   });
 
