@@ -221,15 +221,17 @@ export class ProRoutes extends BaseRouteHandler {
 
     try {
       // Create CloudSync instance for migration
-      // ALL_PROJECTS_SENTINEL = migrate ALL projects (ensureBackfilled reads projects from SQLite)
+      // Note: ensureBackfilled() ignores the project config value and instead queries SQLite
+      // for all unique projects, then iterates through each one. The ALL_PROJECTS_SENTINEL
+      // is passed here to signal this multi-project intent to future readers.
       const cloudSync = new CloudSync({
         apiUrl: config.apiUrl,
         setupToken: config.setupToken,
         userId: config.userId,
-        project: ALL_PROJECTS_SENTINEL // Explicit sentinel: ensureBackfilled() iterates all projects from local DB
+        project: ALL_PROJECTS_SENTINEL
       });
 
-      // Run the backfill (this syncs all local data to cloud)
+      // Run the backfill - iterates ALL projects from local SQLite, not just config.project
       await cloudSync.ensureBackfilled();
 
       // Get final stats

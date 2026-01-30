@@ -635,6 +635,8 @@ export class CloudSync implements SyncProvider {
 
         // Get missing observations for this project using parameterized query
         // Validate IDs are positive integers (API could return strings or invalid values)
+        // Performance note: The spread operator and IN clause work well for typical use cases
+        // (hundreds to low thousands of IDs). For extreme scale (10k+ IDs), consider chunking.
         const safeObsIds = Array.from(existingObsIds).filter(id => Number.isInteger(id) && id > 0);
         let observations: StoredObservation[];
         if (safeObsIds.length > 0) {
