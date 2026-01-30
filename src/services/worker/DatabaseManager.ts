@@ -5,7 +5,7 @@
  * - Manage single database connection for worker lifetime
  * - Provide centralized access to SessionStore and SessionSearch
  * - High-level database operations
- * - ChromaSync integration
+ * - Sync provider integration (ChromaSync for free users, CloudSync for Pro)
  */
 
 import { SessionStore } from '../sqlite/SessionStore.js';
@@ -13,6 +13,9 @@ import { SessionSearch } from '../sqlite/SessionSearch.js';
 import { ChromaSync } from '../sync/ChromaSync.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { CloudSync, ALL_PROJECTS_SENTINEL } from '../sync/CloudSync.js';
+import { SyncProvider } from '../sync/SyncProvider.js';
+import { loadProConfig, ProUserConfig } from '../pro/ProConfig.js';
 import { logger } from '../../utils/logger.js';
 import type { DBSession } from '../worker-types.js';
 
@@ -20,6 +23,8 @@ export class DatabaseManager {
   private sessionStore: SessionStore | null = null;
   private sessionSearch: SessionSearch | null = null;
   private chromaSync: ChromaSync | null = null;
+  private syncProvider: SyncProvider | null = null;
+  private proConfig: ProUserConfig | null = null;
 
   /**
    * Initialize database connection (once, stays open)
@@ -29,23 +34,71 @@ export class DatabaseManager {
     this.sessionStore = new SessionStore();
     this.sessionSearch = new SessionSearch();
 
-    // Initialize ChromaSync only if Chroma is enabled (SQLite-only fallback when disabled)
+    // Check Chroma enabled setting
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     const chromaEnabled = settings.CLAUDE_MEM_CHROMA_ENABLED !== 'false';
-    if (chromaEnabled) {
+
+    // Check if user is Pro
+    this.proConfig = loadProConfig();
+
+    if (this.proConfig) {
+      // Pro user: use CloudSync
+      logger.info('DB', 'Pro user detected, initializing CloudSync', {
+        userId: this.proConfig.userId.substring(0, 8) + '...',
+        planTier: this.proConfig.planTier
+      });
+
+      // CloudSync project handling:
+      // - Storage operations (storeObservationsAndSummary, storePrompt) receive project per-call
+      // - ensureBackfilled() iterates ALL projects from local DB (ignores config.project)
+      // - Fetch/query methods use config.project as default filter, but accept options.project override
+      // - The default project here is a fallback for methods that don't specify one
+      this.syncProvider = new CloudSync({
+        apiUrl: this.proConfig.apiUrl,
+        setupToken: this.proConfig.setupToken,
+        userId: this.proConfig.userId,
+        project: ALL_PROJECTS_SENTINEL // Explicit sentinel value; methods should pass project explicitly
+      });
+
+      // Also keep ChromaSync for local fallback (optional)
       this.chromaSync = new ChromaSync('claude-mem');
     } else {
-      logger.info('DB', 'Chroma disabled via CLAUDE_MEM_CHROMA_ENABLED=false, using SQLite-only search');
+      // Free user: use ChromaSync (local only)
+      logger.info('DB', 'Free user, initializing ChromaSync (local)');
+      this.chromaSync = new ChromaSync('claude-mem');
+      this.syncProvider = null;
     }
 
-    logger.info('DB', 'Database initialized');
+    logger.info('DB', 'Database initialized', {
+      mode: this.proConfig ? 'pro' : 'free'
+    });
+  }
+
+  /**
+   * Check if user is Pro
+   */
+  isProUser(): boolean {
+    return this.proConfig !== null;
+  }
+
+  /**
+   * Get Pro config (null if not Pro)
+   */
+  getProConfig(): ProUserConfig | null {
+    return this.proConfig;
   }
 
   /**
    * Close database connection and cleanup all resources
    */
   async close(): Promise<void> {
-    // Close ChromaSync first (MCP connection lifecycle managed by ChromaMcpManager)
+    // Close sync providers first
+    if (this.syncProvider) {
+      await this.syncProvider.close();
+      this.syncProvider = null;
+    }
+
+    // Close ChromaSync (MCP connection lifecycle managed by ChromaMcpManager)
     if (this.chromaSync) {
       await this.chromaSync.close();
       this.chromaSync = null;
@@ -59,6 +112,8 @@ export class DatabaseManager {
       this.sessionSearch.close();
       this.sessionSearch = null;
     }
+
+    this.proConfig = null;
     logger.info('DB', 'Database closed');
   }
 
@@ -87,6 +142,30 @@ export class DatabaseManager {
    */
   getChromaSync(): ChromaSync | null {
     return this.chromaSync;
+  }
+
+  /**
+   * Get SyncProvider instance (CloudSync for Pro, ChromaSync for free)
+   * Returns null if no sync provider is configured
+   */
+  getSyncProvider(): SyncProvider | null {
+    return this.syncProvider;
+  }
+
+  /**
+   * Get the active sync provider or fall back to ChromaSync
+   * Use this for operations that should work in both modes
+   */
+  getActiveSyncProvider(): SyncProvider {
+    if (this.syncProvider) {
+      return this.syncProvider;
+    }
+    if (this.chromaSync) {
+      // ChromaSync implements SyncProvider interface via duck typing
+      // For explicit typing, we wrap it
+      return this.chromaSync as unknown as SyncProvider;
+    }
+    throw new Error('No sync provider available');
   }
 
   // REMOVED: cleanupOrphanedSessions - violates "EVERYTHING SHOULD SAVE ALWAYS"

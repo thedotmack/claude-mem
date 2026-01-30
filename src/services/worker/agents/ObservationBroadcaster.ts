@@ -53,3 +53,35 @@ export function broadcastSummary(
     summary: payload
   });
 }
+
+/**
+ * Broadcast a cloud storage warning to SSE clients
+ * Used when Pro cloud storage fails and data falls back to local SQLite
+ *
+ * @param worker - Worker reference with SSE broadcaster (can be undefined)
+ * @param message - Warning message to display
+ * @param details - Additional details about the failure
+ */
+export function broadcastCloudStorageWarning(
+  worker: WorkerRef | undefined,
+  message: string,
+  details: { sessionId: number; observationCount: number; error?: string }
+): void {
+  if (!worker?.sseBroadcaster) {
+    return;
+  }
+
+  worker.sseBroadcaster.broadcast({
+    type: 'cloud_storage_warning',
+    warning: {
+      message,
+      details,
+      timestamp: Date.now()
+    }
+  });
+
+  logger.warn('SSE', 'Broadcasted cloud storage warning to clients', {
+    message,
+    ...details
+  });
+}

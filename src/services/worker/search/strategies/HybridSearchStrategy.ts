@@ -3,11 +3,17 @@
  *
  * This strategy provides the best of both worlds:
  * 1. SQLite metadata filter (get all IDs matching criteria)
- * 2. Chroma semantic ranking (rank by relevance)
+ * 2. Vector semantic ranking (rank by relevance via SyncProvider)
  * 3. Intersection (keep only IDs from step 1, in rank order from step 2)
- * 4. Hydrate from SQLite in semantic rank order
+ * 4. Hydrate from appropriate source in semantic rank order:
+ *    - Free users: SQLite (via ChromaSync delegation)
+ *    - Pro users: Supabase (via CloudSync API)
  *
- * Used for: findByConcept, findByFile, findByType with Chroma available
+ * NOTE: For Pro users (cloud-primary), the SQLite metadata filtering step will
+ * return empty results since data is stored in cloud. This strategy is primarily
+ * useful for Free users. Pro users should use VectorSearchStrategy.
+ *
+ * Used for: findByConcept, findByFile, findByType with vector store available
  */
 
 import { BaseSearchStrategy, SearchStrategy } from './SearchStrategy.js';
@@ -18,7 +24,7 @@ import {
   ObservationSearchResult,
   SessionSummarySearchResult
 } from '../types.js';
-import { ChromaSync } from '../../../sync/ChromaSync.js';
+import { SyncProvider } from '../../../sync/SyncProvider.js';
 import { SessionStore } from '../../../sqlite/SessionStore.js';
 import { SessionSearch } from '../../../sqlite/SessionSearch.js';
 import { logger } from '../../../../utils/logger.js';
@@ -27,7 +33,7 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
   readonly name = 'hybrid';
 
   constructor(
-    private chromaSync: ChromaSync,
+    private syncProvider: SyncProvider,
     private sessionStore: SessionStore,
     private sessionSearch: SessionSearch
   ) {
@@ -35,8 +41,15 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
   }
 
   canHandle(options: StrategySearchOptions): boolean {
-    // Can handle when we have metadata filters and Chroma is available
-    return !!this.chromaSync && (
+    // Cannot handle for Pro users in cloud-primary mode - SQLite metadata filtering won't work
+    // Pro users should use VectorSearchStrategy instead
+    if (this.syncProvider.isCloudPrimary()) {
+      logger.debug('SEARCH', 'HybridSearchStrategy: Cannot handle cloud-primary mode, use VectorSearchStrategy');
+      return false;
+    }
+
+    // Can handle when we have metadata filters and vector store is available
+    return !!this.syncProvider && !this.syncProvider.isDisabled() && (
       !!options.concepts ||
       !!options.files ||
       (!!options.type && !!options.query) ||
@@ -52,14 +65,14 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
       return this.emptyResult('hybrid');
     }
 
-    // For generic hybrid search, use the standard Chroma path
+    // For generic hybrid search, use the standard vector path
     // More specific operations (findByConcept, etc.) have dedicated methods
     return this.emptyResult('hybrid');
   }
 
   /**
    * Find observations by concept with semantic ranking
-   * Pattern: Metadata filter -> Chroma ranking -> Intersection -> Hydrate
+   * Pattern: Metadata filter -> Vector ranking -> Intersection -> Hydrate
    */
   async findByConcept(
     concept: string,
@@ -81,28 +94,29 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
         return this.emptyResult('hybrid');
       }
 
-      // Step 2: Chroma semantic ranking
+      // Step 2: Vector semantic ranking
       const ids = metadataResults.map(obs => obs.id);
-      const chromaResults = await this.chromaSync.queryChroma(
+      const vectorResults = await this.syncProvider.query(
         concept,
         Math.min(ids.length, SEARCH_CONSTANTS.CHROMA_BATCH_SIZE)
       );
 
-      // Step 3: Intersect - keep only IDs from metadata, in Chroma rank order
-      const rankedIds = this.intersectWithRanking(ids, chromaResults.ids);
+      // Step 3: Intersect - keep only IDs from metadata, in vector rank order
+      const rankedIds = this.intersectWithRanking(ids, vectorResults.ids);
       logger.debug('SEARCH', 'HybridSearchStrategy: Ranked by semantic relevance', {
         count: rankedIds.length
       });
 
       // Step 4: Hydrate in semantic rank order
+      // Use syncProvider which delegates to appropriate source (SQLite or Supabase)
       if (rankedIds.length > 0) {
-        const observations = this.sessionStore.getObservationsByIds(rankedIds, { limit });
+        const observations = await this.syncProvider.getObservationsByIds(rankedIds, { limit });
         // Restore semantic ranking order
         observations.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
 
         return {
           results: { observations, sessions: [], prompts: [] },
-          usedChroma: true,
+          usedVector: true,
           fellBack: false,
           strategy: 'hybrid'
         };
@@ -116,7 +130,7 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
       const results = this.sessionSearch.findByConcept(concept, filterOptions);
       return {
         results: { observations: results, sessions: [], prompts: [] },
-        usedChroma: false,
+        usedVector: false,
         fellBack: true,
         strategy: 'hybrid'
       };
@@ -147,27 +161,28 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
         return this.emptyResult('hybrid');
       }
 
-      // Step 2: Chroma semantic ranking
+      // Step 2: Vector semantic ranking
       const ids = metadataResults.map(obs => obs.id);
-      const chromaResults = await this.chromaSync.queryChroma(
+      const vectorResults = await this.syncProvider.query(
         typeStr,
         Math.min(ids.length, SEARCH_CONSTANTS.CHROMA_BATCH_SIZE)
       );
 
       // Step 3: Intersect with ranking
-      const rankedIds = this.intersectWithRanking(ids, chromaResults.ids);
+      const rankedIds = this.intersectWithRanking(ids, vectorResults.ids);
       logger.debug('SEARCH', 'HybridSearchStrategy: Ranked by semantic relevance', {
         count: rankedIds.length
       });
 
       // Step 4: Hydrate in rank order
+      // Use syncProvider which delegates to appropriate source (SQLite or Supabase)
       if (rankedIds.length > 0) {
-        const observations = this.sessionStore.getObservationsByIds(rankedIds, { limit });
+        const observations = await this.syncProvider.getObservationsByIds(rankedIds, { limit });
         observations.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
 
         return {
           results: { observations, sessions: [], prompts: [] },
-          usedChroma: true,
+          usedVector: true,
           fellBack: false,
           strategy: 'hybrid'
         };
@@ -180,7 +195,7 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
       const results = this.sessionSearch.findByType(type as any, filterOptions);
       return {
         results: { observations: results, sessions: [], prompts: [] },
-        usedChroma: false,
+        usedVector: false,
         fellBack: true,
         strategy: 'hybrid'
       };
@@ -196,7 +211,7 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
   ): Promise<{
     observations: ObservationSearchResult[];
     sessions: SessionSummarySearchResult[];
-    usedChroma: boolean;
+    usedVector: boolean;
   }> {
     const { limit = SEARCH_CONSTANTS.DEFAULT_LIMIT, project, dateRange, orderBy } = options;
     const filterOptions = { limit, project, dateRange, orderBy };
@@ -215,31 +230,32 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
       const sessions = metadataResults.sessions;
 
       if (metadataResults.observations.length === 0) {
-        return { observations: [], sessions, usedChroma: false };
+        return { observations: [], sessions, usedVector: false };
       }
 
-      // Step 2: Chroma semantic ranking for observations
+      // Step 2: Vector semantic ranking for observations
       const ids = metadataResults.observations.map(obs => obs.id);
-      const chromaResults = await this.chromaSync.queryChroma(
+      const vectorResults = await this.syncProvider.query(
         filePath,
         Math.min(ids.length, SEARCH_CONSTANTS.CHROMA_BATCH_SIZE)
       );
 
       // Step 3: Intersect with ranking
-      const rankedIds = this.intersectWithRanking(ids, chromaResults.ids);
+      const rankedIds = this.intersectWithRanking(ids, vectorResults.ids);
       logger.debug('SEARCH', 'HybridSearchStrategy: Ranked observations', {
         count: rankedIds.length
       });
 
       // Step 4: Hydrate in rank order
+      // Use syncProvider which delegates to appropriate source (SQLite or Supabase)
       if (rankedIds.length > 0) {
-        const observations = this.sessionStore.getObservationsByIds(rankedIds, { limit });
+        const observations = await this.syncProvider.getObservationsByIds(rankedIds, { limit });
         observations.sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
 
-        return { observations, sessions, usedChroma: true };
+        return { observations, sessions, usedVector: true };
       }
 
-      return { observations: [], sessions, usedChroma: false };
+      return { observations: [], sessions, usedVector: false };
 
     } catch (error) {
       logger.error('SEARCH', 'HybridSearchStrategy: findByFile failed', {}, error as Error);
@@ -247,24 +263,36 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
       return {
         observations: results.observations,
         sessions: results.sessions,
-        usedChroma: false
+        usedVector: false
       };
     }
   }
 
   /**
-   * Intersect metadata IDs with Chroma IDs, preserving Chroma's rank order
+   * Intersect metadata IDs with vector IDs, preserving vector's rank order
    */
-  private intersectWithRanking(metadataIds: number[], chromaIds: number[]): number[] {
+  private intersectWithRanking(metadataIds: number[], vectorIds: number[]): number[] {
     const metadataSet = new Set(metadataIds);
     const rankedIds: number[] = [];
 
-    for (const chromaId of chromaIds) {
-      if (metadataSet.has(chromaId) && !rankedIds.includes(chromaId)) {
-        rankedIds.push(chromaId);
+    for (const vectorId of vectorIds) {
+      if (metadataSet.has(vectorId) && !rankedIds.includes(vectorId)) {
+        rankedIds.push(vectorId);
       }
     }
 
     return rankedIds;
+  }
+
+  /**
+   * Helper to create empty result with correct strategy name
+   */
+  protected emptyResult(strategy: 'hybrid'): StrategySearchResult {
+    return {
+      results: { observations: [], sessions: [], prompts: [] },
+      usedVector: false,
+      fellBack: false,
+      strategy
+    };
   }
 }
