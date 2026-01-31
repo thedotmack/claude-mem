@@ -58,6 +58,8 @@ export class SessionQueueProcessor {
         if (persistentMessage) {
           // Reset activity time when we successfully yield a message
           lastActivityTime = Date.now();
+          // Check abort before yielding to reduce race window
+          if (signal.aborted) return;
           // Yield the message for processing (it's already deleted from queue)
           yield this.toPendingMessageWithId(persistentMessage);
         } else {
@@ -65,13 +67,17 @@ export class SessionQueueProcessor {
           const receivedMessage = await this.waitForMessage(signal, IDLE_TIMEOUT_MS);
 
           if (!receivedMessage) {
-            if (signal.aborted) continue; // Let loop check signal.aborted and exit
+            if (signal.aborted) return; // Signal already aborted, exit immediately
 
             // Final safety check - has a message arrived in the race window?
-            // This handles the case where a message is enqueued just as the timeout fires
+            // This handles the case where a message is enqueued just as the timeout fires.
+            // Note: If a message arrives after this check but before abort, it will be
+            // processed when the observer restarts - acceptable since we've been idle 3+ min.
             const finalCheck = this.store.claimAndDelete(sessionDbId);
             if (finalCheck) {
               lastActivityTime = Date.now();
+              // Check abort before yielding to reduce race window
+              if (signal.aborted) return;
               yield this.toPendingMessageWithId(finalCheck);
               continue; // Keep processing - don't abort
             }
