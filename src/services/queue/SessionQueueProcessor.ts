@@ -5,6 +5,13 @@ import { logger } from '../../utils/logger.js';
 
 const IDLE_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes
 
+export interface CreateIteratorOptions {
+  sessionDbId: number;
+  signal: AbortSignal;
+  /** Called when idle timeout occurs - should trigger abort to kill subprocess */
+  onIdleTimeout?: () => void;
+}
+
 export class SessionQueueProcessor {
   constructor(
     private store: PendingMessageStore,
@@ -16,9 +23,13 @@ export class SessionQueueProcessor {
    * Uses atomic claim-and-delete to prevent duplicates.
    * The queue is a pure buffer: claim it, delete it, process in memory.
    * Waits for 'message' event when queue is empty.
-   * Exits gracefully after idle timeout to prevent zombie observer processes.
+   *
+   * CRITICAL: Calls onIdleTimeout callback after 3 minutes of inactivity.
+   * The callback should trigger abortController.abort() to kill the SDK subprocess.
+   * Just returning from the iterator is NOT enough - the subprocess stays alive!
    */
-  async *createIterator(sessionDbId: number, signal: AbortSignal): AsyncIterableIterator<PendingMessageWithId> {
+  async *createIterator(options: CreateIteratorOptions): AsyncIterableIterator<PendingMessageWithId> {
+    const { sessionDbId, signal, onIdleTimeout } = options;
     let lastActivityTime = Date.now();
 
     while (!signal.aborted) {
@@ -34,15 +45,19 @@ export class SessionQueueProcessor {
           yield this.toPendingMessageWithId(persistentMessage);
         } else {
           // Queue empty - wait for wake-up event or timeout
-          logger.debug('SESSION', 'Queue empty, waiting for message with idle timeout', { sessionDbId, timeoutMs: IDLE_TIMEOUT_MS });
           const receivedMessage = await this.waitForMessage(signal, IDLE_TIMEOUT_MS);
 
           if (!receivedMessage && !signal.aborted) {
             // Timeout occurred - check if we've been idle too long
             const idleDuration = Date.now() - lastActivityTime;
             if (idleDuration >= IDLE_TIMEOUT_MS) {
-              logger.info('SESSION', 'Exiting queue iterator due to idle timeout', { sessionDbId, idleDurationMs: idleDuration });
-              return; // Exit gracefully
+              logger.info('SESSION', 'Idle timeout reached, triggering abort to kill subprocess', { sessionDbId, idleDurationMs: idleDuration });
+              // CRITICAL: Call the abort callback to actually kill the subprocess
+              // Just returning from the iterator doesn't terminate the Claude process!
+              if (onIdleTimeout) {
+                onIdleTimeout();
+              }
+              return;
             }
           }
         }
