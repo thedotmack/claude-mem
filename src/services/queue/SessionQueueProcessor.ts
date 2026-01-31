@@ -11,7 +11,10 @@ export interface CreateIteratorOptions {
   /**
    * Called when idle timeout occurs - MUST trigger abort to kill subprocess.
    * Without this, the subprocess stays alive as a zombie because just returning
-   * from the iterator only closes stdin, it doesn't send SIGTERM.
+   * from the iterator only closes stdin, it doesn't terminate the process.
+   *
+   * Cross-platform: AbortController.abort() terminates the subprocess via Node.js
+   * spawn's signal option (SIGTERM on Unix, process termination on Windows).
    */
   onIdleTimeout?: () => void;
 }
