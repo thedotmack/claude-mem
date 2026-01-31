@@ -3,6 +3,19 @@ import { PendingMessageStore, PersistentPendingMessage } from '../sqlite/Pending
 import type { PendingMessageWithId } from '../worker-types.js';
 import { logger } from '../../utils/logger.js';
 
+const IDLE_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes
+
+export interface CreateIteratorOptions {
+  sessionDbId: number;
+  signal: AbortSignal;
+  /**
+   * Called when idle timeout occurs - MUST trigger abort to kill subprocess.
+   * Without this, the subprocess stays alive as a zombie because just returning
+   * from the iterator only closes stdin, it doesn't send SIGTERM.
+   */
+  onIdleTimeout?: () => void;
+}
+
 export class SessionQueueProcessor {
   constructor(
     private store: PendingMessageStore,
@@ -14,8 +27,21 @@ export class SessionQueueProcessor {
    * Uses atomic claim-and-delete to prevent duplicates.
    * The queue is a pure buffer: claim it, delete it, process in memory.
    * Waits for 'message' event when queue is empty.
+   *
+   * CRITICAL: Calls onIdleTimeout callback after 3 minutes of inactivity.
+   * The callback MUST trigger abortController.abort() to kill the SDK subprocess.
+   *
+   * Why just returning isn't enough (verified via Codex analysis of SDK internals):
+   * 1. Returning from iterator → generator stops yielding
+   * 2. SDK's Query.streamInput() closes stdin via transport.endInput()
+   * 3. But subprocess may NOT exit on stdin EOF alone
+   * 4. Only abort() sends SIGTERM via ProcessTransport abort handler
+   * 5. Without SIGTERM, subprocess becomes a zombie
    */
-  async *createIterator(sessionDbId: number, signal: AbortSignal): AsyncIterableIterator<PendingMessageWithId> {
+  async *createIterator(options: CreateIteratorOptions): AsyncIterableIterator<PendingMessageWithId> {
+    const { sessionDbId, signal, onIdleTimeout } = options;
+    let lastActivityTime = Date.now();
+
     while (!signal.aborted) {
       try {
         // Atomically claim AND DELETE next message from DB
@@ -23,11 +49,31 @@ export class SessionQueueProcessor {
         const persistentMessage = this.store.claimAndDelete(sessionDbId);
 
         if (persistentMessage) {
+          // Reset activity time when we successfully yield a message
+          lastActivityTime = Date.now();
           // Yield the message for processing (it's already deleted from queue)
           yield this.toPendingMessageWithId(persistentMessage);
         } else {
-          // Queue empty - wait for wake-up event
-          await this.waitForMessage(signal);
+          // Queue empty - wait for wake-up event or timeout
+          const receivedMessage = await this.waitForMessage(signal, IDLE_TIMEOUT_MS);
+
+          if (!receivedMessage && !signal.aborted) {
+            // Timeout occurred - check if we've been idle too long
+            const idleDuration = Date.now() - lastActivityTime;
+            if (idleDuration >= IDLE_TIMEOUT_MS) {
+              logger.info('SESSION', 'Idle timeout reached, triggering abort to kill subprocess', {
+                sessionDbId,
+                idleDurationMs: idleDuration,
+                hasAbortCallback: !!onIdleTimeout
+              });
+              // CRITICAL: Call the abort callback to actually kill the subprocess
+              // Just returning from the iterator doesn't terminate the Claude process!
+              if (onIdleTimeout) {
+                onIdleTimeout();
+              }
+              return;
+            }
+          }
         }
       } catch (error) {
         if (signal.aborted) return;
@@ -47,25 +93,42 @@ export class SessionQueueProcessor {
     };
   }
 
-  private waitForMessage(signal: AbortSignal): Promise<void> {
-    return new Promise<void>((resolve) => {
+  /**
+   * Wait for a message event or timeout.
+   * @param signal - AbortSignal to cancel waiting
+   * @param timeoutMs - Maximum time to wait before returning
+   * @returns true if a message was received, false if timeout occurred
+   */
+  private waitForMessage(signal: AbortSignal, timeoutMs: number): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
+      let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
       const onMessage = () => {
         cleanup();
-        resolve();
+        resolve(true); // Message received
       };
 
       const onAbort = () => {
         cleanup();
-        resolve(); // Resolve to let the loop check signal.aborted and exit
+        resolve(false); // Aborted, let loop check signal.aborted
+      };
+
+      const onTimeout = () => {
+        cleanup();
+        resolve(false); // Timeout occurred
       };
 
       const cleanup = () => {
+        if (timeoutId !== undefined) {
+          clearTimeout(timeoutId);
+        }
         this.events.off('message', onMessage);
         signal.removeEventListener('abort', onAbort);
       };
 
       this.events.once('message', onMessage);
       signal.addEventListener('abort', onAbort, { once: true });
+      timeoutId = setTimeout(onTimeout, timeoutMs);
     });
   }
 }

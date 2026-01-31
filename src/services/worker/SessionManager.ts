@@ -392,7 +392,17 @@ export class SessionManager {
     const processor = new SessionQueueProcessor(this.getPendingStore(), emitter);
 
     // Use the robust iterator - messages are deleted on claim (no tracking needed)
-    for await (const message of processor.createIterator(sessionDbId, session.abortController.signal)) {
+    // CRITICAL: Pass onIdleTimeout callback to trigger abort and kill the subprocess.
+    // Without abort(), the subprocess stays alive as a zombie even after the iterator returns.
+    // Verified via Codex analysis: only abort() sends SIGTERM via SDK's ProcessTransport.
+    for await (const message of processor.createIterator({
+      sessionDbId,
+      signal: session.abortController.signal,
+      onIdleTimeout: () => {
+        logger.info('SESSION', 'Triggering abort due to idle timeout to kill subprocess', { sessionDbId });
+        session.abortController.abort();
+      }
+    })) {
       // Track earliest timestamp for accurate observation timestamps
       // This ensures backlog messages get their original timestamps, not current time
       if (session.earliestPendingTimestamp === null) {
