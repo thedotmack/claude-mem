@@ -15,8 +15,12 @@ export interface CreateIteratorOptions {
    *
    * Cross-platform: AbortController.abort() terminates the subprocess via Node.js
    * spawn's signal option (SIGTERM on Unix, process termination on Windows).
+   *
+   * Required: This callback is mandatory because the whole purpose of this timeout
+   * mechanism is to kill zombie processes. Without it, returning from the iterator
+   * doesn't actually terminate the subprocess - the exact problem this fixes.
    */
-  onIdleTimeout?: () => void;
+  onIdleTimeout: () => void;
 }
 
 export class SessionQueueProcessor {
@@ -69,14 +73,11 @@ export class SessionQueueProcessor {
             const idleDuration = Date.now() - lastActivityTime;
             logger.info('SESSION', 'Idle timeout reached, triggering abort to kill subprocess', {
               sessionDbId,
-              idleDurationMs: idleDuration,
-              hasAbortCallback: !!onIdleTimeout
+              idleDurationMs: idleDuration
             });
             // CRITICAL: Call the abort callback to actually kill the subprocess
             // Just returning from the iterator doesn't terminate the Claude process!
-            if (onIdleTimeout) {
-              onIdleTimeout();
-            }
+            onIdleTimeout();
             return;
           }
         }
