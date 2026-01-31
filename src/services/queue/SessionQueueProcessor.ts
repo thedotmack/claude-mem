@@ -60,22 +60,24 @@ export class SessionQueueProcessor {
           // Queue empty - wait for wake-up event or timeout
           const receivedMessage = await this.waitForMessage(signal, IDLE_TIMEOUT_MS);
 
-          if (!receivedMessage && !signal.aborted) {
-            // Timeout occurred - check if we've been idle too long
+          if (!receivedMessage) {
+            if (signal.aborted) continue; // Let loop check signal.aborted and exit
+
+            // Timeout occurred after 3 minutes of idle time
+            // Note: idleDuration >= IDLE_TIMEOUT_MS is guaranteed since waitForMessage
+            // only returns false after exactly IDLE_TIMEOUT_MS (or abort, handled above)
             const idleDuration = Date.now() - lastActivityTime;
-            if (idleDuration >= IDLE_TIMEOUT_MS) {
-              logger.info('SESSION', 'Idle timeout reached, triggering abort to kill subprocess', {
-                sessionDbId,
-                idleDurationMs: idleDuration,
-                hasAbortCallback: !!onIdleTimeout
-              });
-              // CRITICAL: Call the abort callback to actually kill the subprocess
-              // Just returning from the iterator doesn't terminate the Claude process!
-              if (onIdleTimeout) {
-                onIdleTimeout();
-              }
-              return;
+            logger.info('SESSION', 'Idle timeout reached, triggering abort to kill subprocess', {
+              sessionDbId,
+              idleDurationMs: idleDuration,
+              hasAbortCallback: !!onIdleTimeout
+            });
+            // CRITICAL: Call the abort callback to actually kill the subprocess
+            // Just returning from the iterator doesn't terminate the Claude process!
+            if (onIdleTimeout) {
+              onIdleTimeout();
             }
+            return;
           }
         }
       } catch (error) {
