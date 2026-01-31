@@ -67,7 +67,16 @@ export class SessionQueueProcessor {
           if (!receivedMessage) {
             if (signal.aborted) continue; // Let loop check signal.aborted and exit
 
-            // Timeout occurred after 3 minutes of idle time
+            // Final safety check - has a message arrived in the race window?
+            // This handles the case where a message is enqueued just as the timeout fires
+            const finalCheck = this.store.claimAndDelete(sessionDbId);
+            if (finalCheck) {
+              lastActivityTime = Date.now();
+              yield this.toPendingMessageWithId(finalCheck);
+              continue; // Keep processing - don't abort
+            }
+
+            // Timeout occurred after 3 minutes of idle time with no final messages
             // Note: idleDuration >= IDLE_TIMEOUT_MS is guaranteed since waitForMessage
             // only returns false after exactly IDLE_TIMEOUT_MS (or abort, handled above)
             const idleDuration = Date.now() - lastActivityTime;
