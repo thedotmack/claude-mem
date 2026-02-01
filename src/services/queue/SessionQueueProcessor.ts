@@ -51,14 +51,16 @@ export class SessionQueueProcessor {
             // Timeout occurred - check if we've been idle too long
             const idleDuration = Date.now() - lastActivityTime;
             if (idleDuration >= IDLE_TIMEOUT_MS) {
-              logger.info('SESSION', 'Idle timeout reached, triggering abort to kill subprocess', { sessionDbId, idleDurationMs: idleDuration });
-              // CRITICAL: Call the abort callback to actually kill the subprocess
-              // Just returning from the iterator doesn't terminate the Claude process!
-              if (onIdleTimeout) {
-                onIdleTimeout();
-              }
+              logger.info('SESSION', 'Idle timeout reached, triggering abort to kill subprocess', {
+                sessionDbId,
+                idleDurationMs: idleDuration,
+                thresholdMs: IDLE_TIMEOUT_MS
+              });
+              onIdleTimeout?.();
               return;
             }
+            // Reset timer on spurious wakeup - queue is empty but duration check failed
+            lastActivityTime = Date.now();
           }
         }
       } catch (error) {
