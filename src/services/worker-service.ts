@@ -127,6 +127,9 @@ export class WorkerService {
   // Orphan reaper cleanup function (Issue #737)
   private stopOrphanReaper: (() => void) | null = null;
 
+  // Pending queue drainer interval
+  private pendingQueueDrainer: ReturnType<typeof setInterval> | null = null;
+
   constructor() {
     // Initialize the promise that will resolve when background initialization completes
     this.initializationComplete = new Promise((resolve) => {
@@ -319,18 +322,37 @@ export class WorkerService {
       });
       logger.info('SYSTEM', 'Started orphan reaper (runs every 5 minutes)');
 
-      // Auto-recover orphaned queues (fire-and-forget with error logging)
-      this.processPendingQueues(50).then(result => {
-        if (result.sessionsStarted > 0) {
-          logger.info('SYSTEM', `Auto-recovered ${result.sessionsStarted} sessions with pending work`, {
-            totalPending: result.totalPendingSessions,
-            started: result.sessionsStarted,
-            sessionIds: result.startedSessionIds
-          });
+      // Auto-recover orphaned queues in batches of 3, every 60s until drained
+      const BATCH_SIZE = 3;
+      const BATCH_INTERVAL_MS = 60_000;
+
+      const drainBatch = async () => {
+        try {
+          const result = await this.processPendingQueues(BATCH_SIZE);
+          if (result.sessionsStarted > 0) {
+            logger.info('SYSTEM', `Auto-recovered ${result.sessionsStarted} sessions with pending work`, {
+              totalPending: result.totalPendingSessions,
+              started: result.sessionsStarted,
+              sessionIds: result.startedSessionIds
+            });
+          }
+          // All caught up — stop the interval
+          if (result.totalPendingSessions === 0) {
+            if (this.pendingQueueDrainer) {
+              clearInterval(this.pendingQueueDrainer);
+              this.pendingQueueDrainer = null;
+              logger.info('SYSTEM', 'Pending queue fully drained, stopping recovery interval');
+            }
+          }
+        } catch (error) {
+          logger.error('SYSTEM', 'Auto-recovery of pending queues failed', {}, error as Error);
         }
-      }).catch(error => {
-        logger.error('SYSTEM', 'Auto-recovery of pending queues failed', {}, error as Error);
-      });
+      };
+
+      // First batch immediately
+      drainBatch();
+      // Then continue draining every 60s until empty
+      this.pendingQueueDrainer = setInterval(drainBatch, BATCH_INTERVAL_MS);
     } catch (error) {
       logger.error('SYSTEM', 'Background initialization failed', {}, error as Error);
       throw error;
@@ -420,6 +442,12 @@ export class WorkerService {
    * Shutdown the worker service
    */
   async shutdown(): Promise<void> {
+    // Stop pending queue drainer
+    if (this.pendingQueueDrainer) {
+      clearInterval(this.pendingQueueDrainer);
+      this.pendingQueueDrainer = null;
+    }
+
     // Stop orphan reaper before shutdown (Issue #737)
     if (this.stopOrphanReaper) {
       this.stopOrphanReaper();
