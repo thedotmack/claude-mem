@@ -17,6 +17,8 @@ import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import path from 'path';
 import os from 'os';
+import fs from 'fs';
+import { execSync } from 'child_process';
 
 // Version injected at build time by esbuild define
 declare const __DEFAULT_PACKAGE_VERSION__: string;
@@ -105,6 +107,87 @@ export class ChromaSync {
   }
 
   /**
+   * Get or create combined SSL certificate bundle for Zscaler/corporate proxy environments
+   * Combines standard certifi certificates with enterprise security certificates (e.g., Zscaler)
+   */
+  private getCombinedCertPath(): string | undefined {
+    const combinedCertPath = path.join(os.homedir(), '.claude-mem', 'combined_certs.pem');
+
+    // If combined certs already exist and are recent (less than 24 hours old), use them
+    if (fs.existsSync(combinedCertPath)) {
+      const stats = fs.statSync(combinedCertPath);
+      const ageMs = Date.now() - stats.mtimeMs;
+      if (ageMs < 24 * 60 * 60 * 1000) {
+        return combinedCertPath;
+      }
+    }
+
+    // Only create on macOS (Zscaler certificate extraction uses macOS security command)
+    if (process.platform !== 'darwin') {
+      return undefined;
+    }
+
+    try {
+      // Find certifi cacert.pem in uvx cache
+      const uvCacheDir = path.join(os.homedir(), '.cache', 'uv', 'archive-v0');
+      if (!fs.existsSync(uvCacheDir)) {
+        return undefined;
+      }
+
+      let certifiPath: string | undefined;
+      const cacheEntries = fs.readdirSync(uvCacheDir);
+      for (const entry of cacheEntries) {
+        const candidatePath = path.join(uvCacheDir, entry, 'lib');
+        if (fs.existsSync(candidatePath)) {
+          const libEntries = fs.readdirSync(candidatePath);
+          for (const libEntry of libEntries) {
+            if (libEntry.startsWith('python')) {
+              const cacertPath = path.join(candidatePath, libEntry, 'site-packages', 'certifi', 'cacert.pem');
+              if (fs.existsSync(cacertPath)) {
+                certifiPath = cacertPath;
+                break;
+              }
+            }
+          }
+        }
+        if (certifiPath) break;
+      }
+
+      if (!certifiPath) {
+        return undefined;
+      }
+
+      // Try to extract Zscaler certificate from macOS keychain
+      let zscalerCert = '';
+      try {
+        zscalerCert = execSync(
+          'security find-certificate -a -c "Zscaler" -p /Library/Keychains/System.keychain',
+          { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
+        );
+      } catch {
+        // Zscaler not found, which is fine - not all environments have it
+        return undefined;
+      }
+
+      if (!zscalerCert || !zscalerCert.includes('BEGIN CERTIFICATE')) {
+        return undefined;
+      }
+
+      // Create combined certificate bundle
+      const certifiContent = fs.readFileSync(certifiPath, 'utf8');
+      fs.writeFileSync(combinedCertPath, certifiContent + '\n' + zscalerCert);
+      logger.info('CHROMA_SYNC', 'Created combined SSL certificate bundle for Zscaler', {
+        path: combinedCertPath
+      });
+
+      return combinedCertPath;
+    } catch (error) {
+      logger.debug('CHROMA_SYNC', 'Could not create combined cert bundle', {}, error as Error);
+      return undefined;
+    }
+  }
+
+  /**
    * Check if Chroma is disabled (Windows)
    */
   isDisabled(): boolean {
@@ -129,6 +212,9 @@ export class ChromaSync {
       const pythonVersion = settings.CLAUDE_MEM_PYTHON_VERSION;
       const isWindows = process.platform === 'win32';
 
+      // Get combined SSL certificate bundle for Zscaler/corporate proxy environments
+      const combinedCertPath = this.getCombinedCertPath();
+
       const transportOptions: any = {
         command: 'uvx',
         args: [
@@ -139,6 +225,19 @@ export class ChromaSync {
         ],
         stderr: 'ignore'
       };
+
+      // Add SSL certificate environment variables for corporate proxy/Zscaler environments
+      if (combinedCertPath) {
+        transportOptions.env = {
+          ...process.env,
+          SSL_CERT_FILE: combinedCertPath,
+          REQUESTS_CA_BUNDLE: combinedCertPath,
+          CURL_CA_BUNDLE: combinedCertPath
+        };
+        logger.info('CHROMA_SYNC', 'Using combined SSL certificates for Zscaler compatibility', {
+          certPath: combinedCertPath
+        });
+      }
 
       // CRITICAL: On Windows, try to hide console window to prevent PowerShell popups
       // Note: windowsHide may not be supported by MCP SDK's StdioClientTransport
