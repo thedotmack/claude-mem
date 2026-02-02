@@ -128,32 +128,20 @@ export class ChromaSync {
     }
 
     try {
-      // Find certifi cacert.pem in uvx cache
-      const uvCacheDir = path.join(os.homedir(), '.cache', 'uv', 'archive-v0');
-      if (!fs.existsSync(uvCacheDir)) {
+      // Use uvx to resolve the correct certifi path for the exact Python environment it uses
+      // This is more reliable than scanning the uv cache directory structure
+      let certifiPath: string | undefined;
+      try {
+        certifiPath = execSync(
+          'uvx --with certifi python -c "import certifi; print(certifi.where())"',
+          { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 10000 }
+        ).trim();
+      } catch {
+        // uvx or certifi not available
         return undefined;
       }
 
-      let certifiPath: string | undefined;
-      const cacheEntries = fs.readdirSync(uvCacheDir);
-      for (const entry of cacheEntries) {
-        const candidatePath = path.join(uvCacheDir, entry, 'lib');
-        if (fs.existsSync(candidatePath)) {
-          const libEntries = fs.readdirSync(candidatePath);
-          for (const libEntry of libEntries) {
-            if (libEntry.startsWith('python')) {
-              const cacertPath = path.join(candidatePath, libEntry, 'site-packages', 'certifi', 'cacert.pem');
-              if (fs.existsSync(cacertPath)) {
-                certifiPath = cacertPath;
-                break;
-              }
-            }
-          }
-        }
-        if (certifiPath) break;
-      }
-
-      if (!certifiPath) {
+      if (!certifiPath || !fs.existsSync(certifiPath)) {
         return undefined;
       }
 
@@ -162,20 +150,25 @@ export class ChromaSync {
       try {
         zscalerCert = execSync(
           'security find-certificate -a -c "Zscaler" -p /Library/Keychains/System.keychain',
-          { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
+          { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 5000 }
         );
       } catch {
         // Zscaler not found, which is fine - not all environments have it
         return undefined;
       }
 
-      if (!zscalerCert || !zscalerCert.includes('BEGIN CERTIFICATE')) {
+      // Validate PEM certificate format (must have both BEGIN and END markers)
+      if (!zscalerCert ||
+          !zscalerCert.includes('-----BEGIN CERTIFICATE-----') ||
+          !zscalerCert.includes('-----END CERTIFICATE-----')) {
         return undefined;
       }
 
-      // Create combined certificate bundle
+      // Create combined certificate bundle with atomic write (write to temp, then rename)
       const certifiContent = fs.readFileSync(certifiPath, 'utf8');
-      fs.writeFileSync(combinedCertPath, certifiContent + '\n' + zscalerCert);
+      const tempPath = combinedCertPath + '.tmp';
+      fs.writeFileSync(tempPath, certifiContent + '\n' + zscalerCert);
+      fs.renameSync(tempPath, combinedCertPath);
       logger.info('CHROMA_SYNC', 'Created combined SSL certificate bundle for Zscaler', {
         path: combinedCertPath
       });
