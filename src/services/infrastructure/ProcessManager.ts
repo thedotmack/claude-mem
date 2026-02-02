@@ -262,21 +262,55 @@ export async function cleanupOrphanedProcesses(): Promise<void> {
 /**
  * Spawn a detached daemon process
  * Returns the child PID or undefined if spawn failed
+ *
+ * On Windows, uses WMIC to spawn a truly independent process that
+ * survives parent exit without console popups. WMIC creates processes
+ * that are not associated with the parent's console.
+ *
+ * On Unix, uses standard detached spawn.
+ *
+ * PID file is written by the worker itself after listen() succeeds,
+ * not by the spawner (race-free, works on all platforms).
  */
 export function spawnDaemon(
   scriptPath: string,
   port: number,
   extraEnv: Record<string, string> = {}
 ): number | undefined {
+  const isWindows = process.platform === 'win32';
+  const env = {
+    ...process.env,
+    CLAUDE_MEM_WORKER_PORT: String(port),
+    ...extraEnv
+  };
+
+  if (isWindows) {
+    // Use WMIC to spawn a process that's independent of the parent console
+    // This avoids the console popup that occurs with detached: true
+    // Paths must be individually quoted for WMIC when they contain spaces
+    const execPath = process.execPath;
+    const script = scriptPath;
+    // WMIC command format: wmic process call create "\"path1\" \"path2\" args"
+    const command = `wmic process call create "\\"${execPath}\\" \\"${script}\\" --daemon"`;
+
+    try {
+      execSync(command, {
+        stdio: 'ignore',
+        windowsHide: true
+      });
+      // WMIC returns immediately, we can't get the spawned PID easily
+      // Worker will write its own PID file after listen()
+      return 0;
+    } catch {
+      return undefined;
+    }
+  }
+
+  // Unix: standard detached spawn
   const child = spawn(process.execPath, [scriptPath, '--daemon'], {
     detached: true,
     stdio: 'ignore',
-    windowsHide: true,
-    env: {
-      ...process.env,
-      CLAUDE_MEM_WORKER_PORT: String(port),
-      ...extraEnv
-    }
+    env
   });
 
   if (child.pid === undefined) {
@@ -284,6 +318,7 @@ export function spawnDaemon(
   }
 
   child.unref();
+
   return child.pid;
 }
 

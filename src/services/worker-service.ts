@@ -69,6 +69,9 @@ import { SearchRoutes } from './worker/http/routes/SearchRoutes.js';
 import { SettingsRoutes } from './worker/http/routes/SettingsRoutes.js';
 import { LogsRoutes } from './worker/http/routes/LogsRoutes.js';
 
+// Process management for zombie cleanup (Issue #737)
+import { startOrphanReaper, reapOrphanedProcesses } from './worker/ProcessRegistry.js';
+
 /**
  * Build JSON status output for hook framework communication.
  * This is a pure function extracted for testability.
@@ -120,6 +123,9 @@ export class WorkerService {
   // Initialization tracking
   private initializationComplete: Promise<void>;
   private resolveInitialization!: () => void;
+
+  // Orphan reaper cleanup function (Issue #737)
+  private stopOrphanReaper: (() => void) | null = null;
 
   constructor() {
     // Initialize the promise that will resolve when background initialization completes
@@ -221,6 +227,16 @@ export class WorkerService {
 
     // Start HTTP server FIRST - make port available immediately
     await this.server.listen(port, host);
+
+    // Worker writes its own PID - reliable on all platforms
+    // This happens after listen() succeeds, ensuring the worker is actually ready
+    // On Windows, the spawner's PID is cmd.exe (useless), so worker must write its own
+    writePidFile({
+      pid: process.pid,
+      port,
+      startedAt: new Date().toISOString()
+    });
+
     logger.info('SYSTEM', 'Worker started', { host, port, pid: process.pid });
 
     // Do slow initialization in background (non-blocking)
@@ -292,6 +308,16 @@ export class WorkerService {
       this.initializationCompleteFlag = true;
       this.resolveInitialization();
       logger.info('SYSTEM', 'Background initialization complete');
+
+      // Start orphan reaper to clean up zombie processes (Issue #737)
+      this.stopOrphanReaper = startOrphanReaper(() => {
+        const activeIds = new Set<number>();
+        for (const [id] of this.sessionManager['sessions']) {
+          activeIds.add(id);
+        }
+        return activeIds;
+      });
+      logger.info('SYSTEM', 'Started orphan reaper (runs every 5 minutes)');
 
       // Auto-recover orphaned queues (fire-and-forget with error logging)
       this.processPendingQueues(50).then(result => {
@@ -394,6 +420,12 @@ export class WorkerService {
    * Shutdown the worker service
    */
   async shutdown(): Promise<void> {
+    // Stop orphan reaper before shutdown (Issue #737)
+    if (this.stopOrphanReaper) {
+      this.stopOrphanReaper();
+      this.stopOrphanReaper = null;
+    }
+
     await performGracefulShutdown({
       server: this.server.getHttpServer(),
       sessionManager: this.sessionManager,
@@ -482,7 +514,8 @@ async function main() {
         exitWithStatus('error', 'Failed to spawn worker daemon');
       }
 
-      writePidFile({ pid, port, startedAt: new Date().toISOString() });
+      // PID file is written by the worker itself after listen() succeeds
+      // This is race-free and works correctly on Windows where cmd.exe PID is useless
 
       const healthy = await waitForHealth(port, getPlatformTimeout(30000));
       if (!healthy) {
@@ -526,7 +559,8 @@ async function main() {
         process.exit(0);
       }
 
-      writePidFile({ pid, port, startedAt: new Date().toISOString() });
+      // PID file is written by the worker itself after listen() succeeds
+      // This is race-free and works correctly on Windows where cmd.exe PID is useless
 
       const healthy = await waitForHealth(port, getPlatformTimeout(30000));
       if (!healthy) {

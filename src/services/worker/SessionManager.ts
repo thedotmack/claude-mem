@@ -14,6 +14,7 @@ import { logger } from '../../utils/logger.js';
 import type { ActiveSession, PendingMessage, PendingMessageWithId, ObservationData } from '../worker-types.js';
 import { PendingMessageStore } from '../sqlite/PendingMessageStore.js';
 import { SessionQueueProcessor } from '../queue/SessionQueueProcessor.js';
+import { getProcessBySession, ensureProcessExit } from './ProcessRegistry.js';
 
 export class SessionManager {
   private dbManager: DatabaseManager;
@@ -105,6 +106,15 @@ export class SessionManager {
       memory_session_id: dbSession.memory_session_id
     });
 
+    // Log warning if we're discarding a stale memory_session_id (Issue #817)
+    if (dbSession.memory_session_id) {
+      logger.warn('SESSION', `Discarding stale memory_session_id from previous worker instance (Issue #817)`, {
+        sessionDbId,
+        staleMemorySessionId: dbSession.memory_session_id,
+        reason: 'SDK context lost on worker restart - will capture new ID'
+      });
+    }
+
     // Use currentUserPrompt if provided, otherwise fall back to database (first prompt)
     const userPrompt = currentUserPrompt || dbSession.user_prompt;
 
@@ -123,11 +133,15 @@ export class SessionManager {
     }
 
     // Create active session
-    // Load memorySessionId from database if previously captured (enables resume across restarts)
+    // CRITICAL: Do NOT load memorySessionId from database here (Issue #817)
+    // When creating a new in-memory session, any database memory_session_id is STALE
+    // because the SDK context was lost when the worker restarted. The SDK agent will
+    // capture a new memorySessionId on the first response and persist it.
+    // Loading stale memory_session_id causes "No conversation found" crashes on resume.
     session = {
       sessionDbId,
       contentSessionId: dbSession.content_session_id,
-      memorySessionId: dbSession.memory_session_id || null,
+      memorySessionId: null,  // Always start fresh - SDK will capture new ID
       project: dbSession.project,
       userPrompt,
       pendingMessages: [],
@@ -142,10 +156,11 @@ export class SessionManager {
       currentProvider: null  // Will be set when generator starts
     };
 
-    logger.debug('SESSION', 'Creating new session object', {
+    logger.debug('SESSION', 'Creating new session object (memorySessionId cleared to prevent stale resume)', {
       sessionDbId,
       contentSessionId: dbSession.content_session_id,
-      memorySessionId: dbSession.memory_session_id || '(none - fresh session)',
+      dbMemorySessionId: dbSession.memory_session_id || '(none in DB)',
+      memorySessionId: '(cleared - will capture fresh from SDK)',
       lastPromptNumber: promptNumber || this.dbManager.getSessionStore().getPromptNumberFromUserPrompts(dbSession.content_session_id)
     });
 
@@ -256,6 +271,7 @@ export class SessionManager {
 
   /**
    * Delete a session (abort SDK agent and cleanup)
+   * Verifies subprocess exit to prevent zombie process accumulation (Issue #737)
    */
   async deleteSession(sessionDbId: number): Promise<void> {
     const session = this.sessions.get(sessionDbId);
@@ -265,17 +281,27 @@ export class SessionManager {
 
     const sessionDuration = Date.now() - session.startTime;
 
-    // Abort the SDK agent
+    // 1. Abort the SDK agent
     session.abortController.abort();
 
-    // Wait for generator to finish
+    // 2. Wait for generator to finish
     if (session.generatorPromise) {
-      await session.generatorPromise.catch(error => {
+      await session.generatorPromise.catch(() => {
         logger.debug('SYSTEM', 'Generator already failed, cleaning up', { sessionId: session.sessionDbId });
       });
     }
 
-    // Cleanup
+    // 3. Verify subprocess exit with 5s timeout (Issue #737 fix)
+    const tracked = getProcessBySession(sessionDbId);
+    if (tracked && !tracked.process.killed && tracked.process.exitCode === null) {
+      logger.debug('SESSION', `Waiting for subprocess PID ${tracked.pid} to exit`, {
+        sessionId: sessionDbId,
+        pid: tracked.pid
+      });
+      await ensureProcessExit(tracked, 5000);
+    }
+
+    // 4. Cleanup
     this.sessions.delete(sessionDbId);
     this.sessionQueues.delete(sessionDbId);
 
