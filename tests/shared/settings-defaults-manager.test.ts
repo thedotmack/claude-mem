@@ -329,5 +329,9 @@ describe('SettingsDefaultsManager', () => {
     it('should return false for non-"true" string', () => {
       expect(SettingsDefaultsManager.getBool('CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE')).toBe(false);
     });
+
+    it('should return false for CLAUDE_MEM_DISABLE_SUBDIRECTORY_CLAUDE_MD by default', () => {
+      expect(SettingsDefaultsManager.getBool('CLAUDE_MEM_DISABLE_SUBDIRECTORY_CLAUDE_MD')).toBe(false);
+    });
   });
 });
