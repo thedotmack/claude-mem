@@ -31,3 +31,15 @@ src/ui/viewer.html
 # Prevent other malformed path directories
 http*/
 https*/
+
+# BMAD workflow files (local development only)
+_bmad/
+_bmad-output/
+.claude/commands/bmad-*.md
+
+# Keep folder for work-in-progress documentation
+keep/
+
+# Claude-generated context files (environment-specific, never sync)
+**/CLAUDE.md
+CLAUDE.md
