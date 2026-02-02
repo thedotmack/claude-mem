@@ -312,5 +312,10 @@ See the [LICENSE](LICENSE) file for full details.
 - **Author**: Alex Newman ([@thedotmack](https://github.com/thedotmack))
 
 ---
+## Local Development (Windows)
+
+1. Install Git from https://git-scm.com
+2. Clone the repository
+3. Run the project using the instructions above
 
 **Built with Claude Agent SDK** | **Powered by Claude Code** | **Made with TypeScript**
