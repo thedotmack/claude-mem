@@ -11,6 +11,8 @@
  * - HybridSearchStrategy: Metadata filtering + semantic ranking
  * - ResultFormatter: Output formatting
  * - TimelineBuilder: Timeline construction
+ *
+ * P1 Integration: Working Memory Service is integrated for fast cached searches
  */
 
 import { basename } from 'path';
@@ -24,6 +26,7 @@ import type { ObservationSearchResult, SessionSummarySearchResult, UserPromptSea
 import { logger } from '../../utils/logger.js';
 import { formatDate, formatTime, formatDateTime, extractFirstFile, groupByDate, estimateTokens } from '../../shared/timeline-formatting.js';
 import { ModeManager } from '../domain/ModeManager.js';
+import { WorkingMemoryService } from '../memory/WorkingMemoryService.js';
 
 import {
   SearchOrchestrator,
@@ -35,13 +38,15 @@ import type { TimelineData } from './search/index.js';
 export class SearchManager {
   private orchestrator: SearchOrchestrator;
   private timelineBuilder: TimelineBuilder;
+  private workingMemory?: WorkingMemoryService;
 
   constructor(
     private sessionSearch: SessionSearch,
     private sessionStore: SessionStore,
     private chromaSync: ChromaSync,
     private formatter: FormattingService,
-    private timelineService: TimelineService
+    private timelineService: TimelineService,
+    workingMemoryService?: WorkingMemoryService
   ) {
     // Initialize the new modular search infrastructure
     this.orchestrator = new SearchOrchestrator(
@@ -50,6 +55,11 @@ export class SearchManager {
       chromaSync
     );
     this.timelineBuilder = new TimelineBuilder();
+    this.workingMemory = workingMemoryService;
+
+    if (workingMemoryService) {
+      logger.info('SEARCH_MANAGER', 'Working Memory Service integrated');
+    }
   }
 
   /**
@@ -225,6 +235,14 @@ export class SearchManager {
       observations = [];
       sessions = [];
       prompts = [];
+    }
+
+    // P1 INTEGRATION: Add search results to Working Memory for future queries
+    if (this.workingMemory && query && observations.length > 0) {
+      for (const obs of observations) {
+        this.workingMemory.addToWorkingMemory(obs);
+      }
+      logger.debug('SEARCH', 'Added results to Working Memory', { count: observations.length });
     }
 
     const totalResults = observations.length + sessions.length + prompts.length;

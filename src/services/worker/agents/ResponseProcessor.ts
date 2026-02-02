@@ -7,6 +7,7 @@
  * - Orchestrate Chroma sync (fire-and-forget)
  * - Broadcast to SSE clients
  * - Clean up processed messages
+ * - P2 Integration: Add observations to MemoryCubeService
  *
  * This module extracts 150+ lines of duplicate code from SDKAgent, GeminiAgent, and OpenRouterAgent.
  */
@@ -22,6 +23,7 @@ import type { SessionManager } from '../SessionManager.js';
 import type { WorkerRef, StorageResult } from './types.js';
 import { broadcastObservation, broadcastSummary } from './ObservationBroadcaster.js';
 import { cleanupProcessedMessages } from './SessionCleanupHelper.js';
+import type { ObservationSearchResult } from '../../sqlite/types.js';
 
 /**
  * Process agent response text (parse XML, save to database, sync to Chroma, broadcast SSE)
@@ -211,6 +213,39 @@ async function syncAndBroadcastObservations(
       prompt_number: session.lastPromptNumber,
       created_at_epoch: result.createdAtEpoch
     });
+
+    // P2 INTEGRATION: Add observation to MemoryCubeService (fire-and-forget)
+    try {
+      const cubeService = dbManager.getMemoryCubeService();
+      // Convert ParsedObservation to ObservationSearchResult format for cube
+      const cubeObservation: ObservationSearchResult = {
+        id: obsId,
+        title: obs.title || '',
+        subtitle: obs.subtitle || null,
+        narrative: obs.narrative || '',
+        facts: obs.facts ? JSON.stringify(obs.facts) : '[]',
+        concepts: obs.concepts ? JSON.stringify(obs.concepts) : '[]',
+        type: (obs.type || '') as 'decision' | 'bugfix' | 'feature' | 'refactor' | 'discovery' | 'change' | 'handoff',
+        files_read: obs.files_read ? JSON.stringify(obs.files_read) : '[]',
+        files_modified: obs.files_modified ? JSON.stringify(obs.files_modified) : '[]',
+        project: session.project,
+        created_at: new Date(result.createdAtEpoch).toISOString(),
+        created_at_epoch: result.createdAtEpoch,
+        prompt_number: session.lastPromptNumber
+      };
+      cubeService.addToCube(cubeObservation);
+      logger.debug('MEMORY_CUBE', 'Observation added to cube', {
+        obsId,
+        project: session.project,
+        type: obs.type
+      });
+    } catch (error) {
+      // Non-critical: cube integration failure shouldn't break the main flow
+      logger.warn('MEMORY_CUBE', 'Failed to add observation to cube (non-critical)', {
+        obsId,
+        project: session.project
+      }, error as Error);
+    }
   }
 
   // Update folder CLAUDE.md files for touched folders (fire-and-forget)

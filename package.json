@@ -85,7 +85,8 @@
     "test:search": "bun test tests/worker/search/",
     "test:context": "bun test tests/context/",
     "test:infra": "bun test tests/infrastructure/",
-    "test:server": "bun test tests/server/"
+    "test:server": "bun test tests/server/",
+    "benchmark:memory": "bun run benchmark/memory-services.bench.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.1.76",
