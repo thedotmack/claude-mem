@@ -12,7 +12,7 @@
  */
 
 import { DatabaseManager } from './DatabaseManager.js';
-import { SessionManager } from './SessionManager.js';
+import { SessionManager, STATELESS_PROVIDERS } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
 import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
@@ -89,6 +89,26 @@ export class OpenRouterAgent {
 
       if (!apiKey) {
         throw new Error('OpenRouter API key not configured. Set CLAUDE_MEM_OPENROUTER_API_KEY in settings or OPENROUTER_API_KEY environment variable.');
+      }
+
+      // Generate synthetic memorySessionId (OpenRouter is stateless, doesn't return session ID)
+      if (!session.memorySessionId) {
+        // Validate contentSessionId is a valid UUID before embedding
+        const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        if (!uuidPattern.test(session.contentSessionId)) {
+          throw new Error(`Invalid contentSessionId format: ${session.contentSessionId}`);
+        }
+
+        const syntheticId = `${STATELESS_PROVIDERS.OPENROUTER}-${session.contentSessionId}-${crypto.randomUUID()}`;
+
+        // Persist to database first - if another request already set it, this will fail or be ignored
+        this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, syntheticId);
+
+        // Re-read from database to ensure we have the winning value in case of race
+        const dbSession = this.dbManager.getSessionById(session.sessionDbId);
+        session.memorySessionId = dbSession.memory_session_id || syntheticId;
+
+        logger.info('SESSION', `MEMORY_ID_GENERATED | sessionDbId=${session.sessionDbId} | provider=OpenRouter | memorySessionId=${session.memorySessionId}`);
       }
 
       // Load active mode

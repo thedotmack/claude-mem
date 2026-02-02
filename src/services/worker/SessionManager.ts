@@ -16,6 +16,12 @@ import { PendingMessageStore } from '../sqlite/PendingMessageStore.js';
 import { SessionQueueProcessor } from '../queue/SessionQueueProcessor.js';
 import { getProcessBySession, ensureProcessExit } from './ProcessRegistry.js';
 
+// Stateless provider identifiers for synthetic ID generation
+export const STATELESS_PROVIDERS = {
+  GEMINI: 'gemini',
+  OPENROUTER: 'openrouter'
+} as const;
+
 export class SessionManager {
   private dbManager: DatabaseManager;
   private sessions: Map<number, ActiveSession> = new Map();
@@ -43,6 +49,21 @@ export class SessionManager {
    */
   setOnSessionDeleted(callback: () => void): void {
     this.onSessionDeletedCallback = callback;
+  }
+
+  /**
+   * Check if a memory_session_id is synthetic (from Gemini/OpenRouter) vs SDK UUID
+   * Synthetic ID pattern: provider prefix + dash + contentSessionId (UUID) + dash + randomUUID
+   * Examples: gemini-75919a84-1ce3-478f-b36c-91b637310fce-550e8400-e29b-41d4-a716-446655440000
+   *           openrouter-75919a84-1ce3-478f-b36c-91b637310fce-660e8400-e29b-41d4-a716-446655440000
+   * Both contentSessionId and randomUUID must be valid UUID format
+   */
+  private isSyntheticMemorySessionId(memorySessionId: string): boolean {
+    // Strict pattern: provider-(UUID)-(UUID)
+    const uuidPattern = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+    const providers = Object.values(STATELESS_PROVIDERS).join('|');
+    const syntheticPattern = new RegExp(`^(${providers})-(${uuidPattern})-(${uuidPattern})$`, 'i');
+    return syntheticPattern.test(memorySessionId);
   }
 
   /**
@@ -106,13 +127,28 @@ export class SessionManager {
       memory_session_id: dbSession.memory_session_id
     });
 
-    // Log warning if we're discarding a stale memory_session_id (Issue #817)
-    if (dbSession.memory_session_id) {
-      logger.warn('SESSION', `Discarding stale memory_session_id from previous worker instance (Issue #817)`, {
-        sessionDbId,
-        staleMemorySessionId: dbSession.memory_session_id,
-        reason: 'SDK context lost on worker restart - will capture new ID'
-      });
+    // Handle memory_session_id on restart (Issue #817)
+    // Treat empty string as null for consistency
+    if (dbSession.memory_session_id && dbSession.memory_session_id.trim() !== '') {
+      const isSyntheticId = this.isSyntheticMemorySessionId(dbSession.memory_session_id);
+
+      if (isSyntheticId) {
+        // Preserve synthetic IDs - stateless providers have no server context to lose
+        logger.debug('SESSION', `Preserving synthetic memory_session_id across restart`, {
+          sessionDbId,
+          syntheticMemorySessionId: dbSession.memory_session_id,
+          reason: 'Stateless provider - no server-side state to lose'
+        });
+        // Will be loaded into session.memorySessionId in the session object creation below
+      } else {
+        // Discard SDK UUIDs - SDK context is lost on restart
+        logger.warn('SESSION', `Discarding stale SDK memory_session_id from previous worker instance (Issue #817)`, {
+          sessionDbId,
+          staleMemorySessionId: dbSession.memory_session_id,
+          reason: 'SDK context lost on worker restart - will capture new ID'
+        });
+        dbSession.memory_session_id = null; // Clear for SDK sessions
+      }
     }
 
     // Use currentUserPrompt if provided, otherwise fall back to database (first prompt)
@@ -133,15 +169,16 @@ export class SessionManager {
     }
 
     // Create active session
-    // CRITICAL: Do NOT load memorySessionId from database here (Issue #817)
-    // When creating a new in-memory session, any database memory_session_id is STALE
-    // because the SDK context was lost when the worker restarted. The SDK agent will
-    // capture a new memorySessionId on the first response and persist it.
-    // Loading stale memory_session_id causes "No conversation found" crashes on resume.
+    // CRITICAL: Conditional memorySessionId loading (Issue #817)
+    // - Synthetic IDs (openrouter-*, gemini-*): PRESERVE from database
+    //   Stateless providers have no server context to lose on restart
+    // - SDK UUIDs: DISCARD (set to null)
+    //   SDK conversation context is lost when worker restarts
+    // SDK will capture new ID on first response; stateless providers already generated theirs
     session = {
       sessionDbId,
       contentSessionId: dbSession.content_session_id,
-      memorySessionId: null,  // Always start fresh - SDK will capture new ID
+      memorySessionId: (dbSession.memory_session_id && dbSession.memory_session_id.trim() !== '') ? dbSession.memory_session_id : null,  // Preserve synthetic IDs, null for SDK/empty
       project: dbSession.project,
       userPrompt,
       pendingMessages: [],
@@ -156,11 +193,11 @@ export class SessionManager {
       currentProvider: null  // Will be set when generator starts
     };
 
-    logger.debug('SESSION', 'Creating new session object (memorySessionId cleared to prevent stale resume)', {
+    logger.debug('SESSION', 'Creating new session object (synthetic IDs preserved, SDK UUIDs discarded)', {
       sessionDbId,
       contentSessionId: dbSession.content_session_id,
       dbMemorySessionId: dbSession.memory_session_id || '(none in DB)',
-      memorySessionId: '(cleared - will capture fresh from SDK)',
+      memorySessionId: session.memorySessionId || '(will be generated or captured)',
       lastPromptNumber: promptNumber || this.dbManager.getSessionStore().getPromptNumberFromUserPrompts(dbSession.content_session_id)
     });
 
@@ -170,13 +207,21 @@ export class SessionManager {
     const emitter = new EventEmitter();
     this.sessionQueues.set(sessionDbId, emitter);
 
-    logger.info('SESSION', 'Session initialized', {
+    // Log session initialization with synthetic ID info
+    const logData: any = {
       sessionId: sessionDbId,
       project: session.project,
       contentSessionId: session.contentSessionId,
       queueDepth: 0,
       hasGenerator: false
-    });
+    };
+
+    if (session.memorySessionId) {
+      logData.memorySessionId = session.memorySessionId;
+      logData.isSynthetic = this.isSyntheticMemorySessionId(session.memorySessionId);
+    }
+
+    logger.info('SESSION', 'Session initialized', logData);
 
     return session;
   }

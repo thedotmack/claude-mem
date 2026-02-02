@@ -349,6 +349,113 @@ describe('GeminiAgent', () => {
     }
   });
 
+  it('should generate synthetic memorySessionId on first session start', async () => {
+    const mockUpdateMemorySessionId = mock(() => {});
+    const mockGetSessionById = mock(() => ({
+      id: 42,
+      memory_session_id: null
+    }));
+
+    const mockSessionStore = {
+      updateMemorySessionId: mockUpdateMemorySessionId,
+      storeObservations: mockStoreObservations,
+      storeSummary: mockStoreSummary,
+      markSessionCompleted: mockMarkSessionCompleted
+    };
+
+    const testDbManager = {
+      getSessionStore: () => mockSessionStore,
+      getSessionById: mockGetSessionById,
+      getChromaSync: () => mockDbManager.getChromaSync()
+    } as unknown as DatabaseManager;
+
+    const testAgent = new GeminiAgent(testDbManager, mockSessionManager);
+
+    const session = {
+      sessionDbId: 42,
+      contentSessionId: '75919a84-1ce3-478f-b36c-91b637310fce',
+      memorySessionId: null, // No existing memorySessionId
+      project: 'test-project',
+      userPrompt: 'test prompt',
+      conversationHistory: [],
+      lastPromptNumber: 1,
+      cumulativeInputTokens: 0,
+      cumulativeOutputTokens: 0,
+      pendingMessages: [],
+      abortController: new AbortController(),
+      generatorPromise: null,
+      earliestPendingTimestamp: null,
+      currentProvider: null,
+      startTime: Date.now()
+    } as any;
+
+    global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
+      candidates: [{ content: { parts: [{ text: 'ok' }] } }]
+    }))));
+
+    await testAgent.startSession(session);
+
+    // Verify synthetic ID was generated and persisted
+    expect(mockUpdateMemorySessionId).toHaveBeenCalledTimes(1);
+    expect(session.memorySessionId).toMatch(/^gemini-75919a84-1ce3-478f-b36c-91b637310fce-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+
+    // Verify contentSessionId is correctly embedded in the synthetic ID
+    expect(session.memorySessionId).toContain('75919a84-1ce3-478f-b36c-91b637310fce');
+    expect(session.memorySessionId).toStartWith('gemini-75919a84-1ce3-478f-b36c-91b637310fce-');
+
+    // Verify it was persisted with correct sessionDbId
+    const [sessionDbId, syntheticId] = mockUpdateMemorySessionId.mock.calls[0];
+    expect(sessionDbId).toBe(42);
+    expect(syntheticId).toMatch(/^gemini-75919a84-1ce3-478f-b36c-91b637310fce-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+    expect(syntheticId).toContain(session.contentSessionId);
+  });
+
+  it('should NOT regenerate synthetic memorySessionId if already exists', async () => {
+    const mockUpdateMemorySessionId = mock(() => {});
+    const mockSessionStore = {
+      updateMemorySessionId: mockUpdateMemorySessionId,
+      storeObservations: mockStoreObservations,
+      storeSummary: mockStoreSummary,
+      markSessionCompleted: mockMarkSessionCompleted
+    };
+
+    const testDbManager = {
+      getSessionStore: () => mockSessionStore,
+      getChromaSync: () => mockDbManager.getChromaSync()
+    } as unknown as DatabaseManager;
+
+    const testAgent = new GeminiAgent(testDbManager, mockSessionManager);
+
+    const existingSyntheticId = 'gemini-75919a84-1ce3-478f-b36c-91b637310fce-78bc64d2-8eeb-4c16-94c1-1e2a78e56327';
+    const session = {
+      sessionDbId: 42,
+      contentSessionId: '75919a84-1ce3-478f-b36c-91b637310fce',
+      memorySessionId: existingSyntheticId, // Already has synthetic ID
+      project: 'test-project',
+      userPrompt: 'test prompt',
+      conversationHistory: [],
+      lastPromptNumber: 1,
+      cumulativeInputTokens: 0,
+      cumulativeOutputTokens: 0,
+      pendingMessages: [],
+      abortController: new AbortController(),
+      generatorPromise: null,
+      earliestPendingTimestamp: null,
+      currentProvider: null,
+      startTime: Date.now()
+    } as any;
+
+    global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
+      candidates: [{ content: { parts: [{ text: 'ok' }] } }]
+    }))));
+
+    await testAgent.startSession(session);
+
+    // Verify synthetic ID generation was skipped
+    expect(mockUpdateMemorySessionId).not.toHaveBeenCalled();
+    expect(session.memorySessionId).toBe(existingSyntheticId);
+  });
+
   describe('gemini-3-flash model support', () => {
     it('should accept gemini-3-flash as a valid model', async () => {
       // The GeminiModel type includes gemini-3-flash - compile-time check
