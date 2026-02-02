@@ -122,6 +122,86 @@ export async function ensureProcessExit(tracked: TrackedProcess, timeoutMs: numb
 }
 
 /**
+ * Kill idle daemon children (claude processes spawned by worker-service)
+ *
+ * These are SDK-spawned claude processes that completed their work but
+ * didn't terminate properly. They remain as children of the worker-service
+ * daemon, consuming memory without doing useful work.
+ *
+ * Criteria for cleanup:
+ * - Process name is "claude"
+ * - Parent PID is the worker-service daemon (this process)
+ * - Process has 0% CPU (idle)
+ * - Process has been running for more than 2 minutes
+ */
+async function killIdleDaemonChildren(): Promise<number> {
+  if (process.platform === 'win32') {
+    // Windows: Different process model, skip for now
+    return 0;
+  }
+
+  const daemonPid = process.pid;
+  let killed = 0;
+
+  try {
+    const { stdout } = await execAsync(
+      'ps -eo pid,ppid,%cpu,etime,comm 2>/dev/null | grep "claude$" || true'
+    );
+
+    for (const line of stdout.trim().split('\n')) {
+      if (!line) continue;
+
+      const parts = line.trim().split(/\s+/);
+      if (parts.length < 5) continue;
+
+      const [pidStr, ppidStr, cpuStr, etime] = parts;
+      const pid = parseInt(pidStr, 10);
+      const ppid = parseInt(ppidStr, 10);
+      const cpu = parseFloat(cpuStr);
+
+      // Skip if not a child of this daemon
+      if (ppid !== daemonPid) continue;
+
+      // Skip if actively using CPU
+      if (cpu > 0) continue;
+
+      // Parse elapsed time to minutes
+      // Formats: MM:SS, HH:MM:SS, D-HH:MM:SS
+      let minutes = 0;
+      const dayMatch = etime.match(/^(\d+)-(\d+):(\d+):(\d+)$/);
+      const hourMatch = etime.match(/^(\d+):(\d+):(\d+)$/);
+      const minMatch = etime.match(/^(\d+):(\d+)$/);
+
+      if (dayMatch) {
+        minutes = parseInt(dayMatch[1], 10) * 24 * 60 +
+                  parseInt(dayMatch[2], 10) * 60 +
+                  parseInt(dayMatch[3], 10);
+      } else if (hourMatch) {
+        minutes = parseInt(hourMatch[1], 10) * 60 +
+                  parseInt(hourMatch[2], 10);
+      } else if (minMatch) {
+        minutes = parseInt(minMatch[1], 10);
+      }
+
+      // Kill if idle for more than 2 minutes
+      if (minutes >= 2) {
+        logger.info('PROCESS', `Killing idle daemon child PID ${pid} (idle ${minutes}m)`, { pid, minutes });
+        try {
+          process.kill(pid, 'SIGKILL');
+          killed++;
+        } catch {
+          // Already dead or permission denied
+        }
+      }
+    }
+  } catch {
+    // No matches or command error
+  }
+
+  return killed;
+}
+
+/**
  * Kill system-level orphans (ppid=1 on Unix)
  * These are Claude processes whose parent died unexpectedly
  */
@@ -178,6 +258,9 @@ export async function reapOrphanedProcesses(activeSessionIds: Set<number>): Prom
 
   // System-level: find ppid=1 orphans
   killed += await killSystemOrphans();
+
+  // Daemon children: find idle SDK processes that didn't terminate
+  killed += await killIdleDaemonChildren();
 
   return killed;
 }
