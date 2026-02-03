@@ -243,7 +243,6 @@ If you see an error likes:
 
 ```powershell
 npm : The term 'npm' is not recognized as the name of a cmdlet
-This means Node.js is not installed or not available in your PATH.
 
 ```powershell
 
