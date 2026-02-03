@@ -111,3 +111,31 @@ export function getObservationsForSession(
 
   return stmt.all(memorySessionId) as ObservationSessionRow[];
 }
+
+/**
+ * Get the most recent N observations for a specific session
+ * Used for deduplication - checking if new observation is duplicate of recent ones
+ */
+export function getRecentObservationsForSession(
+  db: Database,
+  memorySessionId: string,
+  limit: number = 5
+): ObservationSessionRow[] {
+  // F27 FIX: Validate limit to prevent unbounded queries
+  // MAX_SAFE_LIMIT chosen based on reasonable deduplication window size
+  // and memory constraints (1000 observations * ~1KB each = ~1MB peak memory)
+  const MAX_SAFE_LIMIT = 1000;
+  if (limit <= 0 || limit > MAX_SAFE_LIMIT) {
+    throw new Error(`Invalid limit: ${limit}. Must be between 1 and ${MAX_SAFE_LIMIT} to prevent memory exhaustion. Using default of 5 is recommended for deduplication.`);
+  }
+
+  const stmt = db.prepare(`
+    SELECT title, subtitle, type, prompt_number
+    FROM observations
+    WHERE memory_session_id = ?
+    ORDER BY created_at_epoch DESC
+    LIMIT ?
+  `);
+
+  return stmt.all(memorySessionId, limit) as ObservationSessionRow[];
+}

@@ -13,6 +13,8 @@ import {
   LatestPromptResult
 } from '../../types/database.js';
 import type { PendingMessageStore } from './PendingMessageStore.js';
+import { getRecentObservationsForSession } from './observations/get.js';
+import type { ObservationSessionRow } from './observations/types.js';
 
 /**
  * Session data store for SDK sessions, observations, and summaries
@@ -906,6 +908,14 @@ export class SessionStore {
     `);
 
     return stmt.all(memorySessionId);
+  }
+
+  /**
+   * Get the most recent N observations for a specific session
+   * Used for deduplication - checking if new observation is duplicate of recent ones
+   */
+  getRecentObservationsForSession(memorySessionId: string, limit: number = 5): ObservationSessionRow[] {
+    return getRecentObservationsForSession(this.db, memorySessionId, limit);
   }
 
   /**

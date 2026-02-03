@@ -48,11 +48,12 @@ export interface SessionFilesResult {
 
 /**
  * Simple observation row for getObservationsForSession
+ * Note: title, subtitle, and type can be NULL in database
  */
 export interface ObservationSessionRow {
-  title: string;
-  subtitle: string;
-  type: string;
+  title: string | null;
+  subtitle: string | null;
+  type: string | null;
   prompt_number: number | null;
 }
 

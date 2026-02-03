@@ -20,6 +20,7 @@ import {
   createSDKSession,
   updateMemorySessionId,
 } from '../../src/services/sqlite/Sessions.js';
+import { getRecentObservationsForSession } from '../../src/services/sqlite/observations/get.js';
 import type { ObservationInput } from '../../src/services/sqlite/observations/types.js';
 import type { Database } from 'bun:sqlite';
 
@@ -226,6 +227,117 @@ describe('Observations Module', () => {
       const recent = getRecentObservations(db, 'nonexistent-project', 10);
 
       expect(recent).toEqual([]);
+    });
+  });
+
+  describe('getRecentObservationsForSession', () => {
+    it('should return recent observations for a specific session', () => {
+      const memorySessionId = createSessionWithMemoryId('content-recent', 'mem-recent');
+      const project = 'test-project';
+
+      // Store 3 observations with explicit timestamps to ensure ordering
+      storeObservation(db, memorySessionId, project, createObservationInput({ title: 'Obs 1' }), 1, 0, 1000);
+      storeObservation(db, memorySessionId, project, createObservationInput({ title: 'Obs 2' }), 2, 0, 2000);
+      storeObservation(db, memorySessionId, project, createObservationInput({ title: 'Obs 3' }), 3, 0, 3000);
+
+      const recent = getRecentObservationsForSession(db, memorySessionId, 5);
+
+      expect(recent.length).toBe(3);
+      // Should be in reverse chronological order (DESC)
+      expect(recent[0].title).toBe('Obs 3');
+      expect(recent[1].title).toBe('Obs 2');
+      expect(recent[2].title).toBe('Obs 1');
+    });
+
+    it('should respect limit parameter', () => {
+      const memorySessionId = createSessionWithMemoryId('content-limit', 'mem-limit');
+      const project = 'test-project';
+
+      // Store 10 observations with explicit timestamps
+      for (let i = 1; i <= 10; i++) {
+        storeObservation(db, memorySessionId, project, createObservationInput({ title: `Obs ${i}` }), i, 0, i * 1000);
+      }
+
+      const recent = getRecentObservationsForSession(db, memorySessionId, 3);
+
+      expect(recent.length).toBe(3);
+      // Should return the most recent 3
+      expect(recent[0].title).toBe('Obs 10');
+      expect(recent[1].title).toBe('Obs 9');
+      expect(recent[2].title).toBe('Obs 8');
+    });
+
+    it('should throw error for limit <= 0', () => {
+      const memorySessionId = createSessionWithMemoryId('content-zero', 'mem-zero');
+
+      expect(() => {
+        getRecentObservationsForSession(db, memorySessionId, 0);
+      }).toThrow('Invalid limit: 0');
+
+      expect(() => {
+        getRecentObservationsForSession(db, memorySessionId, -5);
+      }).toThrow('Invalid limit: -5');
+    });
+
+    it('should throw error for limit > MAX_SAFE_LIMIT', () => {
+      const memorySessionId = createSessionWithMemoryId('content-huge', 'mem-huge');
+
+      expect(() => {
+        getRecentObservationsForSession(db, memorySessionId, 1001);
+      }).toThrow('Invalid limit: 1001');
+
+      expect(() => {
+        getRecentObservationsForSession(db, memorySessionId, 999999);
+      }).toThrow('Invalid limit: 999999');
+    });
+
+    it('should return empty array for session with no observations', () => {
+      const memorySessionId = createSessionWithMemoryId('content-empty', 'mem-empty');
+
+      const recent = getRecentObservationsForSession(db, memorySessionId, 5);
+
+      expect(recent).toEqual([]);
+    });
+
+    it('should only return observations for specified session', () => {
+      const sessionA = createSessionWithMemoryId('content-a', 'mem-session-a');
+      const sessionB = createSessionWithMemoryId('content-b', 'mem-session-b');
+      const project = 'test-project';
+
+      // Store observations for session A with explicit timestamps
+      storeObservation(db, sessionA, project, createObservationInput({ title: 'Session A - 1' }), 1, 0, 1000);
+      storeObservation(db, sessionA, project, createObservationInput({ title: 'Session A - 2' }), 2, 0, 2000);
+
+      // Store observations for session B
+      storeObservation(db, sessionB, project, createObservationInput({ title: 'Session B - 1' }), 1, 0, 3000);
+
+      const recentA = getRecentObservationsForSession(db, sessionA, 10);
+      const recentB = getRecentObservationsForSession(db, sessionB, 10);
+
+      expect(recentA.length).toBe(2);
+      expect(recentA[0].title).toBe('Session A - 2');
+      expect(recentA[1].title).toBe('Session A - 1');
+
+      expect(recentB.length).toBe(1);
+      expect(recentB[0].title).toBe('Session B - 1');
+    });
+
+    it('should return observations with nullable type fields', () => {
+      const memorySessionId = createSessionWithMemoryId('content-nullable', 'mem-nullable');
+      const project = 'test-project';
+
+      storeObservation(db, memorySessionId, project, createObservationInput({
+        title: 'Test',
+        subtitle: null,
+        type: 'discovery'
+      }));
+
+      const recent = getRecentObservationsForSession(db, memorySessionId, 5);
+
+      expect(recent.length).toBe(1);
+      expect(recent[0].title).toBe('Test');
+      expect(recent[0].subtitle).toBeNull();
+      expect(recent[0].type).toBe('discovery');
     });
   });
 });

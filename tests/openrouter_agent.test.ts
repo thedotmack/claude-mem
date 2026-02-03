@@ -77,6 +77,7 @@ describe('OpenRouterAgent', () => {
 
     const mockSessionStore = {
       storeObservations: mockStoreObservations,
+      getRecentObservationsForSession: mock(() => []),
       storeSummary: mockStoreSummary,
       markSessionCompleted: mockMarkSessionCompleted
     };
@@ -125,6 +126,7 @@ describe('OpenRouterAgent', () => {
     const mockSessionStore = {
       updateMemorySessionId: mockUpdateMemorySessionId,
       storeObservations: mockStoreObservations,
+      getRecentObservationsForSession: mock(() => []),
       storeSummary: mockStoreSummary,
       markSessionCompleted: mockMarkSessionCompleted
     };
@@ -182,6 +184,7 @@ describe('OpenRouterAgent', () => {
     const mockSessionStore = {
       updateMemorySessionId: mockUpdateMemorySessionId,
       storeObservations: mockStoreObservations,
+      getRecentObservationsForSession: mock(() => []),
       storeSummary: mockStoreSummary,
       markSessionCompleted: mockMarkSessionCompleted
     };

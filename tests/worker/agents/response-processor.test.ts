@@ -72,6 +72,7 @@ describe('ResponseProcessor', () => {
     mockDbManager = {
       getSessionStore: () => ({
         storeObservations: mockStoreObservations,
+        getRecentObservationsForSession: mock(() => []),
       }),
       getChromaSync: () => ({
         syncObservation: mockChromaSyncObservation,
@@ -269,6 +270,7 @@ describe('ResponseProcessor', () => {
       }));
       (mockDbManager.getSessionStore as any) = () => ({
         storeObservations: mockStoreObservations,
+        getRecentObservationsForSession: mock(() => []),
       });
 
       await processAgentResponse(
@@ -367,6 +369,7 @@ describe('ResponseProcessor', () => {
       }));
       (mockDbManager.getSessionStore as any) = () => ({
         storeObservations: mockStoreObservations,
+        getRecentObservationsForSession: mock(() => []),
       });
 
       await processAgentResponse(
@@ -446,6 +449,7 @@ describe('ResponseProcessor', () => {
       }));
       (mockDbManager.getSessionStore as any) = () => ({
         storeObservations: mockStoreObservations,
+        getRecentObservationsForSession: mock(() => []),
       });
 
       await processAgentResponse(
@@ -477,6 +481,7 @@ describe('ResponseProcessor', () => {
       }));
       (mockDbManager.getSessionStore as any) = () => ({
         storeObservations: mockStoreObservations,
+        getRecentObservationsForSession: mock(() => []),
       });
 
       await processAgentResponse(
@@ -519,6 +524,7 @@ describe('ResponseProcessor', () => {
       }));
       (mockDbManager.getSessionStore as any) = () => ({
         storeObservations: mockStoreObservations,
+        getRecentObservationsForSession: mock(() => []),
       });
 
       await processAgentResponse(
@@ -555,6 +561,7 @@ describe('ResponseProcessor', () => {
       }));
       (mockDbManager.getSessionStore as any) = () => ({
         storeObservations: mockStoreObservations,
+        getRecentObservationsForSession: mock(() => []),
       });
 
       await processAgentResponse(
@@ -595,6 +602,7 @@ describe('ResponseProcessor', () => {
       }));
       (mockDbManager.getSessionStore as any) = () => ({
         storeObservations: mockStoreObservations,
+        getRecentObservationsForSession: mock(() => []),
       });
 
       await processAgentResponse(

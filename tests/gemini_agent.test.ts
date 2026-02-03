@@ -94,6 +94,7 @@ describe('GeminiAgent', () => {
     const mockSessionStore = {
       storeObservation: mockStoreObservation,
       storeObservations: mockStoreObservations, // Required by ResponseProcessor.ts
+      getRecentObservationsForSession: mock(() => []), // Required by deduplication in ResponseProcessor.ts
       storeSummary: mockStoreSummary,
       markSessionCompleted: mockMarkSessionCompleted
     };
@@ -359,6 +360,7 @@ describe('GeminiAgent', () => {
     const mockSessionStore = {
       updateMemorySessionId: mockUpdateMemorySessionId,
       storeObservations: mockStoreObservations,
+      getRecentObservationsForSession: mock(() => []),
       storeSummary: mockStoreSummary,
       markSessionCompleted: mockMarkSessionCompleted
     };
@@ -415,6 +417,7 @@ describe('GeminiAgent', () => {
     const mockSessionStore = {
       updateMemorySessionId: mockUpdateMemorySessionId,
       storeObservations: mockStoreObservations,
+      getRecentObservationsForSession: mock(() => []),
       storeSummary: mockStoreSummary,
       markSessionCompleted: mockMarkSessionCompleted
     };
