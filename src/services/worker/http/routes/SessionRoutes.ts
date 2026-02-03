@@ -122,12 +122,25 @@ export class SessionRoutes extends BaseRouteHandler {
   ): void {
     if (!session) return;
 
+    // CRITICAL: If AbortController is already aborted (from previous generator completion),
+    // create a new one. Otherwise the iterator will immediately exit.
+    if (session.abortController.signal.aborted) {
+      logger.debug('SESSION', 'Replacing aborted AbortController before starting generator', {
+        sessionId: session.sessionDbId
+      });
+      session.abortController = new AbortController();
+    }
+
     const agent = provider === 'openrouter' ? this.openRouterAgent : (provider === 'gemini' ? this.geminiAgent : this.sdkAgent);
     const agentName = provider === 'openrouter' ? 'OpenRouter' : (provider === 'gemini' ? 'Gemini' : 'Claude SDK');
 
+    // Get actual pending count from database (session.pendingMessages is deprecated)
+    const pendingStore = this.sessionManager.getPendingMessageStore();
+    const queueDepth = pendingStore.getPendingCount(session.sessionDbId);
+
     logger.info('SESSION', `Generator auto-starting (${source}) using ${agentName}`, {
       sessionId: session.sessionDbId,
-      queueDepth: session.pendingMessages.length,
+      queueDepth,
       historyLength: session.conversationHistory.length
     });
 

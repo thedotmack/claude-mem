@@ -71,35 +71,45 @@ export class SDKAgent {
     // CRITICAL: Only resume if:
     // 1. memorySessionId exists (was captured from a previous SDK response)
     // 2. lastPromptNumber > 1 (this is a continuation within the same SDK session)
+    // 3. forceInit flag is NOT set (may be set by crash-recovery after stale resume failure)
     // On worker restart or crash recovery, memorySessionId may exist from a previous
     // SDK session but we must NOT resume because the SDK context was lost.
     // NEVER use contentSessionId for resume - that would inject messages into the user's transcript!
     const hasRealMemorySessionId = !!session.memorySessionId;
+    const shouldResume = hasRealMemorySessionId && session.lastPromptNumber > 1 && !session.forceInit;
 
     logger.info('SDK', 'Starting SDK query', {
       sessionDbId: session.sessionDbId,
       contentSessionId: session.contentSessionId,
       memorySessionId: session.memorySessionId,
       hasRealMemorySessionId,
-      resume_parameter: hasRealMemorySessionId ? session.memorySessionId : '(none - fresh start)',
+      forceInit: session.forceInit || false,
+      shouldResume,
+      resume_parameter: shouldResume ? session.memorySessionId : '(none - fresh start)',
       lastPromptNumber: session.lastPromptNumber
     });
 
     // Debug-level alignment logs for detailed tracing
-    if (session.lastPromptNumber > 1) {
+    if (session.lastPromptNumber > 1 && !session.forceInit) {
       const willResume = hasRealMemorySessionId;
       logger.debug('SDK', `[ALIGNMENT] Resume Decision | contentSessionId=${session.contentSessionId} | memorySessionId=${session.memorySessionId} | prompt#=${session.lastPromptNumber} | hasRealMemorySessionId=${hasRealMemorySessionId} | willResume=${willResume} | resumeWith=${willResume ? session.memorySessionId : 'NONE'}`);
     } else {
       // INIT prompt - never resume even if memorySessionId exists (stale from previous session)
       const hasStaleMemoryId = hasRealMemorySessionId;
-      logger.debug('SDK', `[ALIGNMENT] First Prompt (INIT) | contentSessionId=${session.contentSessionId} | prompt#=${session.lastPromptNumber} | hasStaleMemoryId=${hasStaleMemoryId} | action=START_FRESH | Will capture new memorySessionId from SDK response`);
+      const reason = session.forceInit ? 'forceInit flag set (stale resume recovery)' : 'first prompt';
+      logger.debug('SDK', `[ALIGNMENT] First Prompt (INIT) | contentSessionId=${session.contentSessionId} | prompt#=${session.lastPromptNumber} | hasStaleMemoryId=${hasStaleMemoryId} | action=START_FRESH | reason=${reason} | Will capture new memorySessionId from SDK response`);
       if (hasStaleMemoryId) {
-        logger.warn('SDK', `Skipping resume for INIT prompt despite existing memorySessionId=${session.memorySessionId} - SDK context was lost (worker restart or crash recovery)`);
+        logger.warn('SDK', `Skipping resume despite existing memorySessionId=${session.memorySessionId} - ${reason}`);
       }
     }
 
+    // Clear forceInit flag after using it (one-time use)
+    if (session.forceInit) {
+      session.forceInit = false;
+    }
+
     // Run Agent SDK query loop
-    // Only resume if we have a captured memory session ID
+    // Only resume if we have a captured memory session ID and conditions are met
     // Use custom spawn to capture PIDs for zombie process cleanup (Issue #737)
     // Use dedicated cwd to isolate observer sessions from user's `claude --resume` list
     ensureDir(OBSERVER_SESSIONS_DIR);
@@ -110,10 +120,9 @@ export class SDKAgent {
         // Isolate observer sessions - they'll appear under project "observer-sessions"
         // instead of polluting user's actual project resume lists
         cwd: OBSERVER_SESSIONS_DIR,
-        // Only resume if BOTH: (1) we have a memorySessionId AND (2) this isn't the first prompt
-        // On worker restart, memorySessionId may exist from a previous SDK session but we
-        // need to start fresh since the SDK context was lost
-        ...(hasRealMemorySessionId && session.lastPromptNumber > 1 && { resume: session.memorySessionId }),
+        // Only resume if conditions are met (see shouldResume calculation above)
+        // Type assertion is safe here because shouldResume checks hasRealMemorySessionId (memorySessionId !== null)
+        ...(shouldResume && { resume: session.memorySessionId as string }),
         disallowedTools,
         abortController: session.abortController,
         pathToClaudeCodeExecutable: claudePath,
@@ -128,25 +137,41 @@ export class SDKAgent {
       // This enables resume for subsequent generator starts within the same user session
       if (!session.memorySessionId && message.session_id) {
         session.memorySessionId = message.session_id;
-        // Persist to database for cross-restart recovery
-        this.dbManager.getSessionStore().updateMemorySessionId(
-          session.sessionDbId,
-          message.session_id
-        );
-        // Verify the update by reading back from DB
-        const verification = this.dbManager.getSessionStore().getSessionById(session.sessionDbId);
-        const dbVerified = verification?.memory_session_id === message.session_id;
-        logger.info('SESSION', `MEMORY_ID_CAPTURED | sessionDbId=${session.sessionDbId} | memorySessionId=${message.session_id} | dbVerified=${dbVerified}`, {
-          sessionId: session.sessionDbId,
-          memorySessionId: message.session_id
-        });
-        if (!dbVerified) {
-          logger.error('SESSION', `MEMORY_ID_MISMATCH | sessionDbId=${session.sessionDbId} | expected=${message.session_id} | got=${verification?.memory_session_id}`, {
-            sessionId: session.sessionDbId
+
+        // Check if database already has a memory_session_id before updating
+        // If it does, DON'T update - that would cause FK constraint violation
+        // because existing observations reference the old memory_session_id
+        const existingDbSession = this.dbManager.getSessionStore().getSessionById(session.sessionDbId);
+        const dbHasMemorySessionId = !!existingDbSession?.memory_session_id;
+
+        if (dbHasMemorySessionId) {
+          // Database has existing memory_session_id - DON'T update (FK integrity)
+          // In-memory session has the new SDK session_id for resume purposes only
+          logger.info('SESSION', `MEMORY_ID_CAPTURED (in-memory only) | sessionDbId=${session.sessionDbId} | sdkSessionId=${message.session_id} | dbValue=${existingDbSession.memory_session_id} | reason=FK_INTEGRITY`, {
+            sessionId: session.sessionDbId,
+            memorySessionId: message.session_id
           });
+        } else {
+          // Database has NULL - safe to persist the new memory_session_id
+          this.dbManager.getSessionStore().updateMemorySessionId(
+            session.sessionDbId,
+            message.session_id
+          );
+          // Verify the update by reading back from DB
+          const verification = this.dbManager.getSessionStore().getSessionById(session.sessionDbId);
+          const dbVerified = verification?.memory_session_id === message.session_id;
+          logger.info('SESSION', `MEMORY_ID_CAPTURED | sessionDbId=${session.sessionDbId} | memorySessionId=${message.session_id} | dbVerified=${dbVerified}`, {
+            sessionId: session.sessionDbId,
+            memorySessionId: message.session_id
+          });
+          if (!dbVerified) {
+            logger.error('SESSION', `MEMORY_ID_MISMATCH | sessionDbId=${session.sessionDbId} | expected=${message.session_id} | got=${verification?.memory_session_id}`, {
+              sessionId: session.sessionDbId
+            });
+          }
         }
         // Debug-level alignment log for detailed tracing
-        logger.debug('SDK', `[ALIGNMENT] Captured | contentSessionId=${session.contentSessionId} → memorySessionId=${message.session_id} | Future prompts will resume with this ID`);
+        logger.debug('SDK', `[ALIGNMENT] Captured | contentSessionId=${session.contentSessionId} → memorySessionId=${message.session_id} | dbHasExisting=${dbHasMemorySessionId} | Future prompts will resume with this ID`);
       }
 
       // Handle assistant messages

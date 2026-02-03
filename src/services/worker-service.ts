@@ -338,7 +338,11 @@ export class WorkerService {
   }
 
   /**
-   * Start a session processor
+   * Start a session processor with crash-recovery support
+   *
+   * Handles two recovery scenarios:
+   * 1. Stale resume failure ("aborted by user"): Clears memorySessionId, sets forceInit, and retries
+   * 2. General crash with pending work: Retries after delay
    */
   private startSessionProcessor(
     session: ReturnType<typeof this.sessionManager.getSession>,
@@ -346,19 +350,102 @@ export class WorkerService {
   ): void {
     if (!session) return;
 
+    // CRITICAL: If AbortController is already aborted (from previous generator completion),
+    // create a new one. Otherwise the iterator will immediately exit.
+    if (session.abortController.signal.aborted) {
+      logger.debug('SYSTEM', 'Replacing aborted AbortController before starting generator', {
+        sessionId: session.sessionDbId
+      });
+      session.abortController = new AbortController();
+    }
+
     const sid = session.sessionDbId;
     logger.info('SYSTEM', `Starting generator (${source})`, { sessionId: sid });
 
     session.generatorPromise = this.sdkAgent.startSession(session, this)
       .catch(error => {
+        // Only log non-abort errors
+        if (session.abortController.signal.aborted) return;
+
+        const errorMessage = error instanceof Error ? error.message : String(error);
         logger.error('SDK', 'Session generator failed', {
           sessionId: session.sessionDbId,
-          project: session.project
+          project: session.project,
+          error: errorMessage
         }, error as Error);
+
+        // Detect stale resume failure - this happens when trying to resume a session
+        // that no longer exists (e.g., original Claude Code session ended)
+        const isStaleResumeFailure = errorMessage.includes('aborted by user') ||
+                                      errorMessage.includes('No conversation found');
+
+        if (isStaleResumeFailure && session.memorySessionId) {
+          logger.warn('SDK', 'Detected stale resume failure, clearing memorySessionId for fresh start', {
+            sessionId: session.sessionDbId,
+            staleMemorySessionId: session.memorySessionId
+          });
+          // Clear the stale memorySessionId and set forceInit flag
+          session.memorySessionId = null;
+          session.forceInit = true;
+          // Also clear from database to prevent future stale resumes
+          this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, null as any);
+        }
       })
       .finally(() => {
+        const sessionDbId = session.sessionDbId;
+        const wasAborted = session.abortController.signal.aborted;
+
+        if (wasAborted) {
+          logger.info('SESSION', `Generator aborted`, { sessionId: sessionDbId });
+        } else {
+          logger.debug('SESSION', `Generator exited`, { sessionId: sessionDbId });
+        }
+
         session.generatorPromise = null;
         this.broadcastProcessingStatus();
+
+        // Crash recovery: If not aborted and still has work, restart
+        if (!wasAborted) {
+          try {
+            const pendingStore = this.sessionManager.getPendingMessageStore();
+            const pendingCount = pendingStore.getPendingCount(sessionDbId);
+
+            if (pendingCount > 0) {
+              logger.info('SESSION', `Restarting generator after crash/exit with pending work`, {
+                sessionId: sessionDbId,
+                pendingCount,
+                forceInit: session.forceInit || false
+              });
+
+              // Abort OLD controller before replacing to prevent child process leaks
+              const oldController = session.abortController;
+              session.abortController = new AbortController();
+              oldController.abort();
+
+              // Small delay before restart (longer delay for stale resume recovery)
+              const delayMs = session.forceInit ? 2000 : 1000;
+              setTimeout(() => {
+                const stillExists = this.sessionManager.getSession(sessionDbId);
+                if (stillExists && !stillExists.generatorPromise) {
+                  this.startSessionProcessor(stillExists, 'crash-recovery');
+                }
+              }, delayMs);
+            } else {
+              // No pending work - abort to kill the child process
+              session.abortController.abort();
+              logger.debug('SESSION', 'Aborted controller after natural completion', {
+                sessionId: sessionDbId
+              });
+            }
+          } catch (e) {
+            // Ignore errors during recovery check, but still abort to prevent leaks
+            logger.debug('SESSION', 'Error during recovery check, aborting to prevent leaks', {
+              sessionId: sessionDbId,
+              error: e instanceof Error ? e.message : String(e)
+            });
+            session.abortController.abort();
+          }
+        }
       });
   }
 

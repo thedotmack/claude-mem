@@ -69,21 +69,50 @@ export async function processAgentResponse(
   // Get session store for atomic transaction
   const sessionStore = dbManager.getSessionStore();
 
-  // CRITICAL: Must use memorySessionId (not contentSessionId) for FK constraint
-  if (!session.memorySessionId) {
-    throw new Error('Cannot store observations: memorySessionId not yet captured');
+  // Get the database's memory_session_id - this is the authoritative value for FK integrity
+  // The in-memory session.memorySessionId may be a fresh SDK session ID that doesn't
+  // match what's in the database (especially after worker restart per Issue #817)
+  const dbSession = sessionStore.getSessionById(session.sessionDbId);
+
+  // CRITICAL: For FK constraint, we MUST use the database's memory_session_id value
+  // If db has a memory_session_id, use it (observations already reference it)
+  // If db has NULL, use the in-memory captured one (and it will be stored below)
+  let memorySessionIdForStorage: string;
+
+  if (dbSession.memory_session_id) {
+    // Database has existing memory_session_id - use it for FK integrity
+    // This preserves link to existing observations even if SDK generated new session
+    memorySessionIdForStorage = dbSession.memory_session_id;
+
+    if (session.memorySessionId && session.memorySessionId !== dbSession.memory_session_id) {
+      logger.debug('DB', `Using database memory_session_id for FK integrity (in-memory differs)`, {
+        sessionId: session.sessionDbId,
+        dbValue: dbSession.memory_session_id,
+        inMemoryValue: session.memorySessionId
+      });
+    }
+  } else if (session.memorySessionId) {
+    // Database has NULL - use the captured one and update database
+    memorySessionIdForStorage = session.memorySessionId;
+    sessionStore.updateMemorySessionId(session.sessionDbId, session.memorySessionId);
+    logger.debug('DB', `Updated database with new memory_session_id`, {
+      sessionId: session.sessionDbId,
+      memorySessionId: session.memorySessionId
+    });
+  } else {
+    throw new Error('Cannot store observations: no memorySessionId available (neither in database nor captured from SDK)');
   }
 
   // Log pre-storage with session ID chain for verification
-  logger.info('DB', `STORING | sessionDbId=${session.sessionDbId} | memorySessionId=${session.memorySessionId} | obsCount=${observations.length} | hasSummary=${!!summaryForStore}`, {
+  logger.info('DB', `STORING | sessionDbId=${session.sessionDbId} | memorySessionId=${memorySessionIdForStorage} | obsCount=${observations.length} | hasSummary=${!!summaryForStore}`, {
     sessionId: session.sessionDbId,
-    memorySessionId: session.memorySessionId
+    memorySessionId: memorySessionIdForStorage
   });
 
   // ATOMIC TRANSACTION: Store observations + summary ONCE
   // Messages are already deleted from queue on claim, so no completion tracking needed
   const result = sessionStore.storeObservations(
-    session.memorySessionId,
+    memorySessionIdForStorage,
     session.project,
     observations,
     summaryForStore,
@@ -93,9 +122,9 @@ export async function processAgentResponse(
   );
 
   // Log storage result with IDs for end-to-end traceability
-  logger.info('DB', `STORED | sessionDbId=${session.sessionDbId} | memorySessionId=${session.memorySessionId} | obsCount=${result.observationIds.length} | obsIds=[${result.observationIds.join(',')}] | summaryId=${result.summaryId || 'none'}`, {
+  logger.info('DB', `STORED | sessionDbId=${session.sessionDbId} | memorySessionId=${memorySessionIdForStorage} | obsCount=${result.observationIds.length} | obsIds=[${result.observationIds.join(',')}] | summaryId=${result.summaryId || 'none'}`, {
     sessionId: session.sessionDbId,
-    memorySessionId: session.memorySessionId
+    memorySessionId: memorySessionIdForStorage
   });
 
   // AFTER transaction commits - async operations (can fail safely without data loss)
@@ -107,7 +136,8 @@ export async function processAgentResponse(
     worker,
     discoveryTokens,
     agentName,
-    projectRoot
+    projectRoot,
+    memorySessionIdForStorage
   );
 
   // Sync and broadcast summary if present
@@ -160,7 +190,8 @@ async function syncAndBroadcastObservations(
   worker: WorkerRef | undefined,
   discoveryTokens: number,
   agentName: string,
-  projectRoot?: string
+  projectRoot?: string,
+  memorySessionIdForStorage?: string
 ): Promise<void> {
   for (let i = 0; i < observations.length; i++) {
     const obsId = result.observationIds[i];
@@ -196,7 +227,7 @@ async function syncAndBroadcastObservations(
     // BUGFIX: Use obs.files_read and obs.files_modified (not obs.files)
     broadcastObservation(worker, {
       id: obsId,
-      memory_session_id: session.memorySessionId,
+      memory_session_id: memorySessionIdForStorage || session.memorySessionId,
       session_id: session.contentSessionId,
       type: obs.type,
       title: obs.title,
