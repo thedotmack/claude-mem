@@ -126,7 +126,7 @@ Restart Claude Code. Konteks dari sesi sebelumnya akan secara otomatis muncul di
 
 ## Dokumentasi
 
-📚 **[Lihat Dokumentasi Lengkap](docs/)** - Telusuri dokumen markdown di GitHub
+📚 **[Lihat Dokumentasi Lengkap](https://docs.claude-mem.ai/)** - Jelajahi di situs web resmi
 
 ### Memulai
 

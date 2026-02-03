@@ -125,7 +125,7 @@ Uruchom ponownie Claude Code. Kontekst z poprzednich sesji automatycznie pojawi 
 
 ## Dokumentacja
 
-📚 **[Wyświetl Pełną Dokumentację](docs/)** - Przeglądaj dokumentację markdown na GitHub
+📚 **[Wyświetl Pełną Dokumentację](https://docs.claude-mem.ai/)** - Przeglądaj na oficjalnej stronie
 
 ### Pierwsze Kroki
 

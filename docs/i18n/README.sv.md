@@ -126,7 +126,7 @@ Starta om Claude Code. Kontext från tidigare sessioner kommer automatiskt att v
 
 ## Dokumentation
 
-📚 **[Visa fullständig dokumentation](docs/)** - Bläddra bland markdown-dokument på GitHub
+📚 **[Visa fullständig dokumentation](https://docs.claude-mem.ai/)** - Bläddra på den officiella webbplatsen
 
 ### Komma igång
 

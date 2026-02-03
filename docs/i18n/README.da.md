@@ -126,7 +126,7 @@ Genstart Claude Code. Kontekst fra tidligere sessioner vil automatisk vises i ny
 
 ## Dokumentation
 
-📚 **[Se Fuld Dokumentation](docs/)** - Gennemse markdown-dokumenter på GitHub
+📚 **[Se Fuld Dokumentation](https://docs.claude-mem.ai/)** - Gennemse på den officielle hjemmeside
 
 ### Kom Godt I Gang
 

@@ -126,7 +126,7 @@ Start Claude Code på nytt. Kontekst fra tidligere økter vil automatisk vises i
 
 ## Dokumentasjon
 
-📚 **[Se Full Dokumentasjon](docs/)** - Bla gjennom markdown-dokumenter på GitHub
+📚 **[Se Full Dokumentasjon](https://docs.claude-mem.ai/)** - Bla gjennom på det offisielle nettstedet
 
 ### Komme I Gang
 

@@ -126,7 +126,7 @@ Restartujte Claude Code. Kontext z předchozích sezení se automaticky objeví 
 
 ## Dokumentace
 
-📚 **[Zobrazit kompletní dokumentaci](docs/)** - Procházejte dokumentaci v markdown na GitHubu
+📚 **[Zobrazit kompletní dokumentaci](https://docs.claude-mem.ai/)** - Procházet na oficiálních stránkách
 
 ### Začínáme
 

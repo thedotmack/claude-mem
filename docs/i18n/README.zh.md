@@ -126,7 +126,7 @@
 
 ## 文档
 
-📚 **[查看完整文档](docs/)** - 在 GitHub 上浏览 Markdown 文档
+📚 **[查看完整文档](https://docs.claude-mem.ai/)** - 在官方网站浏览
 
 ### 入门指南
 

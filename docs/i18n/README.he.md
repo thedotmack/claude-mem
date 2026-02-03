@@ -125,7 +125,7 @@
 
 ## תיעוד
 
-📚 **[צפה בתיעוד המלא](docs/)** - עיין במסמכי markdown ב-GitHub
+📚 **[צפה בתיעוד המלא](https://docs.claude-mem.ai/)** - דפדף באתר הרשמי
 
 ### תחילת העבודה
 

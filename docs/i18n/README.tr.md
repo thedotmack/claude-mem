@@ -125,7 +125,7 @@ Claude Code'u yeniden başlatın. Önceki oturumlardaki bağlam otomatik olarak 
 
 ## Dokümantasyon
 
-📚 **[Tam Dokümantasyonu Görüntüle](docs/)** - GitHub'da markdown dökümanlarına göz atın
+📚 **[Tam Dokümantasyonu Görüntüle](https://docs.claude-mem.ai/)** - Resmi web sitesinde göz atın
 
 ### Başlarken
 

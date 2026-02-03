@@ -126,7 +126,7 @@ Khởi động lại Claude Code. Ngữ cảnh từ các phiên trước sẽ t�
 
 ## Tài Liệu
 
-📚 **[Xem Tài Liệu Đầy Đủ](docs/)** - Duyệt tài liệu markdown trên GitHub
+📚 **[Xem Tài Liệu Đầy Đủ](https://docs.claude-mem.ai/)** - Duyệt trên trang web chính thức
 
 ### Bắt Đầu
 
