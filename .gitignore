@@ -21,6 +21,9 @@ datasets/
 # Generated UI files (built from viewer-template.html)
 src/ui/viewer.html
 
+# Generated plugin artifacts (built from src/)
+plugin/scripts/*.cjs
+
 # Local MCP server config (for development only)
 .mcp.json
 .cursor/
