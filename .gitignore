@@ -43,3 +43,6 @@ keep/
 # Claude-generated context files (environment-specific, never sync)
 **/CLAUDE.md
 CLAUDE.md
+
+# Local utility scripts (not part of codebase)
+scripts/clear-pending-queue.ts
