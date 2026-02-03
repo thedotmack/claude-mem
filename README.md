@@ -239,7 +239,7 @@ See **[Beta Features Documentation](https://docs.claude-mem.ai/beta-features)** 
 ---
 ### Windows Setup Notes
 
-If you see an error like:
+If you see an error likes:
 
 ```powershell
 npm : The term 'npm' is not recognized as the name of a cmdlet
