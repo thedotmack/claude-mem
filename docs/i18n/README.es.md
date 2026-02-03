@@ -127,7 +127,7 @@ Reinicia Claude Code. El contexto de sesiones anteriores aparecerá automáticam
 
 ## Documentación
 
-📚 **[Ver Documentación Completa](docs/)** - Explora documentos markdown en GitHub
+📚 **[Ver Documentación Completa](https://docs.claude-mem.ai/)** - Navegar en el sitio web oficial
 
 ### Primeros Pasos
 

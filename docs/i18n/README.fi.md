@@ -125,7 +125,7 @@ Käynnistä Claude Code uudelleen. Aiempien istuntojen konteksti ilmestyy automa
 
 ## Dokumentaatio
 
-📚 **[Näytä täydellinen dokumentaatio](docs/)** - Selaa markdown-dokumentteja GitHubissa
+📚 **[Näytä täydellinen dokumentaatio](https://docs.claude-mem.ai/)** - Selaa virallisella verkkosivustolla
 
 ### Aloitus
 

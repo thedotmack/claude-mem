@@ -126,7 +126,7 @@ Reporniți Claude Code. Contextul din sesiunile anterioare va apărea automat î
 
 ## Documentație
 
-📚 **[Vizualizați Documentația Completă](docs/)** - Răsfoiți documentele markdown pe GitHub
+📚 **[Vizualizați Documentația Completă](https://docs.claude-mem.ai/)** - Răsfoiți pe site-ul oficial
 
 ### Introducere
 

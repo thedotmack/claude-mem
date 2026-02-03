@@ -126,7 +126,7 @@ Indítsa újra a Claude Code-ot. A korábbi munkamenetek kontextusa automatikusa
 
 ## Dokumentáció
 
-📚 **[Teljes dokumentáció megtekintése](docs/)** - Markdown dokumentumok böngészése GitHub-on
+📚 **[Teljes dokumentáció megtekintése](https://docs.claude-mem.ai/)** - Böngészés a hivatalos weboldalon
 
 ### Első lépések
 

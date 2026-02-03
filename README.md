@@ -133,7 +133,7 @@ Restart Claude Code. Context from previous sessions will automatically appear in
 
 ## Documentation
 
-📚 **[View Full Documentation](docs/)** - Browse markdown docs on GitHub
+📚 **[View Full Documentation](https://docs.claude-mem.ai/)** - Browse on official website
 
 ### Getting Started
 

@@ -125,7 +125,7 @@ Herstart Claude Code. Context van eerdere sessies verschijnt automatisch in nieu
 
 ## Documentatie
 
-📚 **[Bekijk Volledige Documentatie](docs/)** - Blader door markdown documenten op GitHub
+📚 **[Bekijk Volledige Documentatie](https://docs.claude-mem.ai/)** - Bladeren op de officiële website
 
 ### Aan de Slag
 
