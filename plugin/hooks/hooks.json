@@ -48,7 +48,7 @@
           {
             "type": "command",
             "command": "bun \"${CLAUDE_PLUGIN_ROOT}/scripts/worker-service.cjs\" hook claude-code observation",
-            "timeout": 120
+            "timeout": 30
           }
         ]
       }
