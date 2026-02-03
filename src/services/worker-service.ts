@@ -388,7 +388,7 @@ export class WorkerService {
           session.memorySessionId = null;
           session.forceInit = true;
           // Also clear from database to prevent future stale resumes
-          this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, null as any);
+          this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, null);
         }
       })
       .finally(() => {

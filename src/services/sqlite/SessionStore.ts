@@ -648,8 +648,9 @@ export class SessionStore {
   /**
    * Update the memory session ID for a session
    * Called by SDKAgent when it captures the session ID from the first SDK message
+   * Pass null to clear the memory_session_id (used in stale resume recovery)
    */
-  updateMemorySessionId(sessionDbId: number, memorySessionId: string): void {
+  updateMemorySessionId(sessionDbId: number, memorySessionId: string | null): void {
     this.db.prepare(`
       UPDATE sdk_sessions
       SET memory_session_id = ?

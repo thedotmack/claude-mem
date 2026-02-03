@@ -49,11 +49,12 @@ export function createSDKSession(
 /**
  * Update the memory session ID for a session
  * Called by SDKAgent when it captures the session ID from the first SDK message
+ * Pass null to clear the memory_session_id (used in stale resume recovery)
  */
 export function updateMemorySessionId(
   db: Database,
   sessionDbId: number,
-  memorySessionId: string
+  memorySessionId: string | null
 ): void {
   db.prepare(`
     UPDATE sdk_sessions
