@@ -26,7 +26,13 @@ export function TerminalPreview({ content, isLoading = false, className = '' }: 
       scrollTopRef.current = preRef.current.scrollTop;
     }
     if (!content) return '';
-    return ansiConverter.toHtml(content);
+    const convertedHtml = ansiConverter.toHtml(content);
+    // Sanitize HTML to prevent XSS attacks
+    return DOMPurify.sanitize(convertedHtml, {
+      ALLOWED_TAGS: ['span', 'div', 'br'],
+      ALLOWED_ATTR: ['style', 'class'],
+      ALLOW_DATA_ATTR: false
+    });
   }, [content]);
 
   // Restore scroll position after render
