@@ -237,6 +237,15 @@ See **[Beta Features Documentation](https://docs.claude-mem.ai/beta-features)** 
 - **SQLite 3**: For persistent storage (bundled)
 
 ---
+### Windows Setup Notes
+
+If you see an error like:
+
+```powershell
+npm : The term 'npm' is not recognized as the name of a cmdlet
+This means Node.js is not installed or not available in your PATH.
+
+---
 
 ## Configuration
 
