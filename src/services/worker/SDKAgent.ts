@@ -210,6 +210,11 @@ export class SDKAgent {
           }, truncatedResponse);
         }
 
+        // Detect fatal context overflow and terminate gracefully (issue #870)
+        if (typeof textContent === 'string' && textContent.includes('Prompt is too long')) {
+          throw new Error('Claude session context overflow: prompt is too long');
+        }
+
         // Parse and process response using shared ResponseProcessor
         await processAgentResponse(
           textContent,
