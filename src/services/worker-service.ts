@@ -10,10 +10,50 @@
  */
 
 import path from 'path';
+import { existsSync, writeFileSync, unlinkSync, statSync } from 'fs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
+import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { logger } from '../utils/logger.js';
+
+// Windows: avoid repeated spawn popups when startup fails (issue #921)
+const WINDOWS_START_COOLDOWN_MS = 5 * 60 * 1000;
+
+function getWorkerStartAttemptedPath(): string {
+  return path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), '.worker-start-attempted');
+}
+
+function shouldSkipSpawnOnWindows(): boolean {
+  if (process.platform !== 'win32') return false;
+  const p = getWorkerStartAttemptedPath();
+  if (!existsSync(p)) return false;
+  try {
+    const mtime = statSync(p).mtimeMs;
+    return Date.now() - mtime < WINDOWS_START_COOLDOWN_MS;
+  } catch {
+    return false;
+  }
+}
+
+function markWorkerStartAttempted(): void {
+  if (process.platform !== 'win32') return;
+  try {
+    writeFileSync(getWorkerStartAttemptedPath(), '', 'utf-8');
+  } catch {
+    // ignore
+  }
+}
+
+function clearWorkerStartAttempted(): void {
+  if (process.platform !== 'win32') return;
+  try {
+    const p = getWorkerStartAttemptedPath();
+    if (existsSync(p)) unlinkSync(p);
+  } catch {
+    // ignore
+  }
+}
 
 // Version injected at build time by esbuild define
 declare const __DEFAULT_PACKAGE_VERSION__: string;
@@ -507,7 +547,14 @@ async function main() {
         exitWithStatus('error', 'Port in use but worker not responding');
       }
 
+      // Windows: one-shot spawn guard to prevent repeated bun.exe popups when startup fails (issue #921)
+      if (shouldSkipSpawnOnWindows()) {
+        logger.warn('SYSTEM', 'Worker unavailable on Windows, skipping retries');
+        exitWithStatus('error', 'Worker unavailable (recent start attempt failed). Try again later or start worker manually.');
+      }
+
       logger.info('SYSTEM', 'Starting worker daemon');
+      markWorkerStartAttempted();
       const pid = spawnDaemon(__filename, port);
       if (pid === undefined) {
         logger.error('SYSTEM', 'Failed to spawn worker daemon');
@@ -524,6 +571,7 @@ async function main() {
         exitWithStatus('error', 'Worker failed to start (health check timeout)');
       }
 
+      clearWorkerStartAttempted();
       logger.info('SYSTEM', 'Worker started successfully');
       exitWithStatus('ready');
     }
