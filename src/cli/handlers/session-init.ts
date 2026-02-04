@@ -14,11 +14,10 @@ export const sessionInitHandler: EventHandler = {
     // Ensure worker is running before any other logic
     await ensureWorkerRunning();
 
-    const { sessionId, cwd, prompt } = input;
+    const { sessionId, cwd, prompt: rawPrompt } = input;
 
-    if (!prompt) {
-      throw new Error('sessionInitHandler requires prompt');
-    }
+    // Handle image-only prompts (where text prompt is empty/undefined)
+    const prompt = rawPrompt || '[media prompt]';
 
     const project = getProjectName(cwd);
     const port = getWorkerPort();
