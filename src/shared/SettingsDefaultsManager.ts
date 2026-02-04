@@ -51,6 +51,7 @@ export interface SettingsDefaults {
   // Feature Toggles
   CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: string;
   CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: string;
+  CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED: string;
 }
 
 export class SettingsDefaultsManager {
@@ -96,6 +97,7 @@ export class SettingsDefaultsManager {
     // Feature Toggles
     CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: 'true',
     CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: 'false',
+    CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED: 'false',
   };
 
   /**
