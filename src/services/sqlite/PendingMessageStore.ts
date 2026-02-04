@@ -205,6 +205,23 @@ export class PendingMessageStore {
   }
 
   /**
+   * Mark all pending and processing messages for a session as failed (abandoned).
+   * Used when SDK session is terminated and no fallback agent is available:
+   * prevents the session from appearing in getSessionsWithPendingMessages forever.
+   * @returns Number of messages marked failed
+   */
+  markAllSessionMessagesAbandoned(sessionDbId: number): number {
+    const now = Date.now();
+    const stmt = this.db.prepare(`
+      UPDATE pending_messages
+      SET status = 'failed', failed_at_epoch = ?
+      WHERE session_db_id = ? AND status IN ('pending', 'processing')
+    `);
+    const result = stmt.run(now, sessionDbId);
+    return result.changes;
+  }
+
+  /**
    * Abort a specific message (delete from queue)
    */
   abortMessage(messageId: number): boolean {
