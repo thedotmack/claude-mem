@@ -8,6 +8,9 @@ import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js'
 import { ensureWorkerRunning, getWorkerPort } from '../../shared/worker-utils.js';
 import { getProjectName } from '../../utils/project-name.js';
 import { logger } from '../../utils/logger.js';
+import { isProjectExcluded } from '../../utils/project-filter.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 
 export const sessionInitHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
@@ -18,6 +21,13 @@ export const sessionInitHandler: EventHandler = {
 
     if (!prompt) {
       throw new Error('sessionInitHandler requires prompt');
+    }
+
+    // Check if project is excluded from tracking
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    if (cwd && isProjectExcluded(cwd, settings.CLAUDE_MEM_EXCLUDED_PROJECTS)) {
+      logger.info('HOOK', 'Project excluded from tracking', { cwd });
+      return { continue: true, suppressOutput: true };
     }
 
     const project = getProjectName(cwd);
