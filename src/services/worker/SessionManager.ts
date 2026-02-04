@@ -318,6 +318,28 @@ export class SessionManager {
   }
 
   /**
+   * Remove session from in-memory maps and notify without awaiting generator.
+   * Used when SDK resume fails and we give up (no fallback): avoids deadlock
+   * from deleteSession() awaiting the same generator promise we're inside.
+   */
+  removeSessionImmediate(sessionDbId: number): void {
+    const session = this.sessions.get(sessionDbId);
+    if (!session) return;
+
+    this.sessions.delete(sessionDbId);
+    this.sessionQueues.delete(sessionDbId);
+
+    logger.info('SESSION', 'Session removed (orphaned after SDK termination)', {
+      sessionId: sessionDbId,
+      project: session.project
+    });
+
+    if (this.onSessionDeletedCallback) {
+      this.onSessionDeletedCallback();
+    }
+  }
+
+  /**
    * Shutdown all active sessions
    */
   async shutdownAll(): Promise<void> {
