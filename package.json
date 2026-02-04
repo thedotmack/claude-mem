@@ -48,6 +48,7 @@
   "scripts": {
     "dev": "npm run build-and-sync",
     "build": "node scripts/build-hooks.js",
+    "postinstall": "patch-package",
     "build-and-sync": "npm run build && npm run sync-marketplace && sleep 1 && cd ~/.claude/plugins/marketplaces/thedotmack && npm run worker:restart",
     "sync-marketplace": "node scripts/sync-marketplace.cjs",
     "sync-marketplace:force": "node scripts/sync-marketplace.cjs --force",
@@ -85,7 +86,7 @@
     "test:server": "bun test tests/server/"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.1.76",
+    "@anthropic-ai/claude-agent-sdk": "0.1.77",
     "@modelcontextprotocol/sdk": "^1.25.1",
     "ansi-to-html": "^0.7.2",
     "express": "^4.18.2",
@@ -104,6 +105,7 @@
     "@types/react-dom": "^18.3.0",
     "esbuild": "^0.27.2",
     "tsx": "^4.20.6",
-    "typescript": "^5.3.0"
+    "typescript": "^5.3.0",
+    "patch-package": "^8.0.0"
   }
 }

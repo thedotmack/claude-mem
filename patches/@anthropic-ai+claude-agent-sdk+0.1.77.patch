@@ -1,0 +1,9 @@
+diff --git a/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs b/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs
+index 0000000..1111111 100644
+--- a/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs
++++ b/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs
+@@ -7858,3 +7858,3 @@
+     if (!this.ready || !this.processStdin) {
+-      throw new Error("ProcessTransport is not ready for writing");
++      return;
+     }
