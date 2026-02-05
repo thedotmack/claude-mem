@@ -18,7 +18,7 @@ import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { logger } from '../utils/logger.js';
 
 // Windows: avoid repeated spawn popups when startup fails (issue #921)
-const WINDOWS_START_COOLDOWN_MS = 5 * 60 * 1000;
+const WINDOWS_START_COOLDOWN_MS = 2 * 60 * 1000;
 
 function getWorkerStartAttemptedPath(): string {
   return path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), '.worker-start-attempted');
