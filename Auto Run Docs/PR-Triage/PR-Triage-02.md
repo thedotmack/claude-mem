@@ -4,7 +4,7 @@
 
 - [x] Close PR #546 (title: "main" by @delorenj) — garbage PR with branch name `main`, 17 files changed with no coherent purpose. Run: `gh pr close 546 --comment "Closing — this appears to be an accidental PR from a main branch push with no clear purpose. If this was intentional, please reopen with a description of the changes."` ✅ Closed 2026-02-05
 
-- [ ] Close PR #770 (`chore: install dependencies and build project` by @dylang001) — bot-generated PR that just runs install and build, no meaningful changes. Run: `gh pr close 770 --comment "Closing — this PR appears to be auto-generated (install dependencies and build) with no source code changes. Thank you!"`
+- [x] Close PR #770 (`chore: install dependencies and build project` by @dylang001) — bot-generated PR that just runs install and build, no meaningful changes. Run: `gh pr close 770 --comment "Closing — this PR appears to be auto-generated (install dependencies and build) with no source code changes. Thank you!"` ✅ Closed 2026-02-05
 
 - [ ] Investigate and close PR #904 (`Update package.json` by @Virt10n01) — branch name `Virt10n01-ip-interceptor` is suspicious. Check the diff first: `gh pr diff 904 | head -50`. If it only modifies package.json with suspicious additions, close with: `gh pr close 904 --comment "Closing — the branch name and changes don't align with project goals. If this was a legitimate contribution, please describe the intent and reopen."`
 
