@@ -2,6 +2,18 @@
 
 All notable changes to claude-mem.
 
+## [v9.0.15] - 2026-02-05
+
+## Security Fix
+
+### Isolated Credentials (#745)
+- **Prevents API key hijacking** from random project `.env` files
+- Credentials now sourced exclusively from `~/.claude-mem/.env`
+- Only whitelisted environment variables passed to SDK `query()` calls
+- Authentication method logging shows whether using Claude Code CLI subscription billing or explicit API key
+
+This is a security-focused patch release that hardens credential handling to prevent unintended API key usage from project directories.
+
 ## [v9.0.14] - 2026-02-05
 
 ## In-Process Worker Architecture
@@ -1326,23 +1338,4 @@ Patch release v7.4.2
 - **MCP Server**: Redirect logs to stderr to preserve JSON-RPC protocol (#396)
   - MCP uses stdio transport where stdout is reserved for JSON-RPC messages
   - Console.log was writing startup logs to stdout, causing Claude Desktop to parse log lines as JSON and fail
-
-## [v7.4.0] - 2025-12-18
-
-## What's New
-
-### MCP Tool Token Reduction
-
-Optimized MCP tool definitions for reduced token consumption in Claude Code sessions through progressive parameter disclosure.
-
-**Changes:**
-- Streamlined MCP tool schemas with minimal inline definitions
-- Added `get_schema()` tool for on-demand parameter documentation
-- Enhanced worker API with operation-based instruction loading
-
-This release improves session efficiency by reducing the token overhead of MCP tool definitions while maintaining full functionality through progressive disclosure.
-
----
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
 
