@@ -36,10 +36,12 @@ PR #722 replaces spawn-based worker startup with in-process architecture. Hook p
   - hooks.json: Combined PR #722's chained command (smart-install + stop + hook) with main's dual-hook structure
   - claude-md-utils.ts: Preserved main's #794 fix for empty CLAUDE.md handling
 
-- [ ] Run tests after conflict resolution:
+- [x] Run tests after conflict resolution:
   - `npm test`
   - All tests must pass (761+ expected)
   - Report any failures with details
+
+  **Completed 2026-02-04:** All 797 tests passed (3 skipped, 0 failed). 1490 expect() calls across 46 files in 9.99s.
 
 - [ ] Run build after conflict resolution:
   - `npm run build`
