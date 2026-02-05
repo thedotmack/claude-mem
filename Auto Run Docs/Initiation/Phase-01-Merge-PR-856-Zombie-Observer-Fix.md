@@ -28,13 +28,19 @@ PR #856 adds idle timeout to `SessionQueueProcessor` to prevent zombie observer 
     - context-generator.cjs (61.57 KB)
     - viewer-bundle.js and viewer.html
 
-- [ ] Code review the changes for correctness:
+- [x] Code review the changes for correctness:
   - Read `src/services/queue/SessionQueueProcessor.ts` and verify:
     - `IDLE_TIMEOUT_MS` is set to 3 minutes (180000ms)
     - `waitForMessage()` accepts timeout parameter
     - `lastActivityTime` is reset on spurious wakeup (race condition fix)
     - Graceful exit logs with `thresholdMs` parameter
   - Read `tests/services/queue/SessionQueueProcessor.test.ts` and verify test coverage
+  - ✅ Code review complete - all requirements verified:
+    - Line 6: `IDLE_TIMEOUT_MS = 3 * 60 * 1000` (180000ms)
+    - Line 90: `waitForMessage(signal: AbortSignal, timeoutMs: number = IDLE_TIMEOUT_MS)`
+    - Line 63: `lastActivityTime = Date.now()` on spurious wakeup with comment
+    - Lines 54-58: Logger includes `thresholdMs: IDLE_TIMEOUT_MS` parameter
+    - 11 test cases covering idle timeout, abort signal, message events, cleanup, errors, and conversion
 
 - [ ] Merge PR #856 to main:
   - `git checkout main`
