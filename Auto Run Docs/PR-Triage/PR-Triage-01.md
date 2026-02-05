@@ -14,7 +14,8 @@ These PRs fix issues that have already been resolved in released versions. Close
 - [x] Close PR #861 (`fix: add idle timeout with abort to prevent zombie observer processes` by @bigph00t) — v9.0.13 shipped zombie observer prevention with 3-minute idle timeout. Run: `gh pr close 861 --comment "Already addressed in v9.0.13 — 'Zombie Observer Prevention (#856)' added 3-minute idle timeout with race condition fix and 11 tests. Thank you for the contribution!"`
   - ✅ Closed 2026-02-05 by Claude-Mem PRs agent
 
-- [ ] Close PR #848 (`fix: Kill duplicate observer processes to prevent zombie accumulation` by @influenist) — v9.0.13 addresses zombie observers. Run: `gh pr close 848 --comment "Already addressed in v9.0.13 — zombie observer prevention with idle timeout. Thank you!"`
+- [x] Close PR #848 (`fix: Kill duplicate observer processes to prevent zombie accumulation` by @influenist) — v9.0.13 addresses zombie observers. Run: `gh pr close 848 --comment "Already addressed in v9.0.13 — zombie observer prevention with idle timeout. Thank you!"`
+  - ✅ Closed 2026-02-05 by Claude-Mem PRs agent
 
 - [ ] Close PR #735 (`fix: strip ANTHROPIC_API_KEY for Claude Code subscribers` by @shyal) — v9.0.15 shipped isolated credentials, sourcing exclusively from ~/.claude-mem/.env. Run: `gh pr close 735 --comment "Already addressed in v9.0.15 — 'Isolated Credentials (#745)' now sources credentials exclusively from ~/.claude-mem/.env with whitelisted env vars. Thank you!"`
 
