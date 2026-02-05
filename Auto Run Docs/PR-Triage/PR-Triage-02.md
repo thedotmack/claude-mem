@@ -18,7 +18,7 @@
 
 ### Windows npm docs note — Keep #919 (earlier, by @kamran-khalid-v9), close #908
 
-- [ ] Close PR #908 (`docs: add windows note for npm not recognized error` by @Abhishekguptta) — duplicate of #919. Run: `gh pr close 908 --comment "Closing in favor of PR #919 which addresses the same documentation gap. Thank you!"`
+- [x] Close PR #908 (`docs: add windows note for npm not recognized error` by @Abhishekguptta) — duplicate of #919. Run: `gh pr close 908 --comment "Closing in favor of PR #919 which addresses the same documentation gap. Thank you!"` ✅ Closed 2026-02-05
 
 ### Folder CLAUDE.md enable/disable — Keep #913 (cleanest, fewest files), close #823, #589, #875
 
