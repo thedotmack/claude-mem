@@ -1,0 +1,24 @@
+# Phase 04: Hook Resilience & Non-blocking Startup
+
+All these PRs share the goal of preventing hooks from blocking Claude Code prompts when the worker is unavailable or slow. They should be reviewed together since they touch overlapping files.
+
+## Core Hook Files Affected
+- `src/cli/handlers/session-init.ts` — PRs #973, #828, #829, #928
+- `src/shared/worker-utils.ts` — PRs #964, #530
+- `plugin/hooks/hooks.json` / `src/shared/hook-constants.ts` — PRs #960, #922
+- `src/services/worker-service.ts` — PR #959
+
+## Tasks
+
+- [x] Review and merge PR #960 (`fix: remove user-message hook from SessionStart to prevent startup error` by @rodboev). Files: `plugin/hooks/hooks.json`, `src/shared/hook-constants.ts`. This removes a user-message hook that was incorrectly bundled into SessionStart, causing errors on startup. Steps: (1) `gh pr checkout 960` (2) Verify that the user-message hook is genuinely not needed in SessionStart — check if `hooks.json` has a separate UserPromptSubmit hook that handles user messages (3) Run `npm run build` and verify (4) If clean: `gh pr merge 960 --rebase --delete-branch`
+  - **Merged** on 2026-02-05. Verified: `context` hook handles SessionStart injection, `UserPromptSubmit` handles user messages via `session-init`. Build clean. The `USER_MESSAGE_ONLY: 3` exit code was also documented in `hook-constants.ts`.
+
+- [ ] Review PR #973 (`Fix hooks to fail gracefully instead of blocking prompts` by @farikh). Files: `src/cli/handlers/session-init.ts`, `src/cli/handlers/user-message.ts`. This wraps hook handlers in try-catch so failures don't block Claude Code. Steps: (1) `gh pr checkout 973` (2) Review — hooks should output valid JSON status on failure (exit 0 with error info) rather than crashing (exit 2 which blocks Claude) (3) Verify the approach aligns with the exit code strategy in CLAUDE.md (exit 0 for non-blocking, exit 2 for blocking) (4) Run `npm run build` (5) If appropriate: `gh pr merge 973 --rebase --delete-branch`
+
+- [ ] Review PR #959 (`fix: fail open on /api/context/inject during initialization` by @rodboev). File: `src/services/worker-service.ts`. The context inject endpoint should return empty context (not 503) during worker initialization so hooks don't block. Steps: (1) `gh pr checkout 959` (2) Verify the endpoint returns a valid empty context response during init rather than erroring (3) Run `npm run build` (4) If clean: `gh pr merge 959 --rebase --delete-branch`
+
+- [ ] Review PR #964 (`Add fetch timeouts to Stop hook and health checks` by @rodboev). Files: `src/cli/handlers/summarize.ts`, `src/shared/worker-utils.ts`. Adds AbortController timeouts to prevent hooks from hanging on fetch calls. Steps: (1) `gh pr checkout 964` (2) Verify timeout values are reasonable (should be < hook timeout of 120s) (3) Check that AbortController usage is correct (signal passed to fetch) (4) Run `npm run build` (5) If clean: `gh pr merge 964 --rebase --delete-branch`
+
+- [ ] Review PR #922 (`fix: add async:true to SessionStart hooks` by @kamran-khalid-v9). File: `plugin/hooks/hooks.json`. This adds `async: true` to SessionStart hooks so they don't block terminal on Windows. Steps: (1) `gh pr checkout 922` (2) Verify that making SessionStart async doesn't break context injection (context must be available before Claude starts processing) (3) **IMPORTANT**: If SessionStart is async, context won't be injected in time. This may conflict with the architecture. Verify carefully. (4) If async is inappropriate for SessionStart (which injects context), close with explanation. If only certain sub-hooks should be async, request changes.
+
+- [ ] Evaluate PR #530 (`fix: add retry logic with exponential backoff to hook fetch calls` by @BeamNawapat). Files: 10 files including all hook scripts and worker-utils. This is an older PR (Jan 3) that adds retry logic. Steps: (1) Check if PR is rebased on current main (2) The approach (retry with backoff) may conflict with the "fail fast" philosophy — hooks should fail quickly rather than retry. (3) If the retry approach conflicts with the hook resilience PRs above (#973, #959), close with: `gh pr close 530 --comment "The hook resilience approach has evolved — hooks now fail open rather than retry. See PRs #973 and #959 for the current approach. Thank you for the contribution!"`
