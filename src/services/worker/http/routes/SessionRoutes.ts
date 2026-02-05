@@ -175,40 +175,45 @@ export class SessionRoutes extends BaseRouteHandler {
         session.currentProvider = null;
         this.workerService.broadcastProcessingStatus();
 
-        // Crash recovery: If not aborted and still has work, restart
-        if (!wasAborted) {
-          try {
-            const pendingStore = this.sessionManager.getPendingMessageStore();
-            const pendingCount = pendingStore.getPendingCount(sessionDbId);
+        // Recovery: Always check for pending work regardless of abort status.
+        // When aborted (e.g. by a new session-init replacing the generator),
+        // pending messages still need processing.
+        try {
+          const pendingStore = this.sessionManager.getPendingMessageStore();
+          const pendingCount = pendingStore.getPendingCount(sessionDbId);
 
-            if (pendingCount > 0) {
-              logger.info('SESSION', `Restarting generator after crash/exit with pending work`, {
-                sessionId: sessionDbId,
-                pendingCount
-              });
+          if (pendingCount > 0) {
+            logger.info('SESSION', `Restarting generator after exit with pending work`, {
+              sessionId: sessionDbId,
+              pendingCount,
+              wasAborted
+            });
 
-              // Abort OLD controller before replacing to prevent child process leaks
-              const oldController = session.abortController;
-              session.abortController = new AbortController();
+            // Replace abort controller to get a fresh signal
+            const oldController = session.abortController;
+            session.abortController = new AbortController();
+            if (!oldController.signal.aborted) {
               oldController.abort();
-
-              // Small delay before restart
-              setTimeout(() => {
-                const stillExists = this.sessionManager.getSession(sessionDbId);
-                if (stillExists && !stillExists.generatorPromise) {
-                  this.startGeneratorWithProvider(stillExists, this.getSelectedProvider(), 'crash-recovery');
-                }
-              }, 1000);
-            } else {
-              // No pending work - abort to kill the child process
-              session.abortController.abort();
-              logger.debug('SESSION', 'Aborted controller after natural completion', {
-                sessionId: sessionDbId
-              });
             }
-          } catch (e) {
-            // Ignore errors during recovery check, but still abort to prevent leaks
-            logger.debug('SESSION', 'Error during recovery check, aborting to prevent leaks', { sessionId: sessionDbId, error: e instanceof Error ? e.message : String(e) });
+
+            // Small delay before restart
+            setTimeout(() => {
+              const stillExists = this.sessionManager.getSession(sessionDbId);
+              if (stillExists && !stillExists.generatorPromise) {
+                this.startGeneratorWithProvider(stillExists, this.getSelectedProvider(), 'recovery');
+              }
+            }, 1000);
+          } else if (!wasAborted) {
+            // No pending work and natural exit - abort to kill the child process
+            session.abortController.abort();
+            logger.debug('SESSION', 'Aborted controller after natural completion', {
+              sessionId: sessionDbId
+            });
+          }
+        } catch (e) {
+          // Ignore errors during recovery check, but still abort to prevent leaks
+          logger.debug('SESSION', 'Error during recovery check, aborting to prevent leaks', { sessionId: sessionDbId, error: e instanceof Error ? e.message : String(e) });
+          if (!session.abortController.signal.aborted) {
             session.abortController.abort();
           }
         }
@@ -291,8 +296,8 @@ export class SessionRoutes extends BaseRouteHandler {
       });
     }
 
-    // Start agent in background using the helper method
-    this.startGeneratorWithProvider(session, this.getSelectedProvider(), 'init');
+    // Start agent in background (only if not already running)
+    this.ensureGeneratorRunning(sessionDbId, 'init');
 
     // Broadcast session started event
     this.eventBroadcaster.broadcastSessionStarted(sessionDbId, session.project);
