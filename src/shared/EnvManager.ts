@@ -12,6 +12,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
+import { logger } from '../utils/logger.js';
 
 // Path to claude-mem's centralized .env file
 const DATA_DIR = join(homedir(), '.claude-mem');
@@ -136,7 +137,7 @@ export function loadClaudeMemEnv(): ClaudeMemEnv {
 
     return result;
   } catch (error) {
-    console.warn('[EnvManager] Failed to load .env file:', error);
+    logger.warn('ENV', 'Failed to load .env file', { path: ENV_FILE_PATH }, error as Error);
     return {};
   }
 }
@@ -184,7 +185,7 @@ export function saveClaudeMemEnv(env: ClaudeMemEnv): void {
 
     writeFileSync(ENV_FILE_PATH, serializeEnvFile(updated), 'utf-8');
   } catch (error) {
-    console.error('[EnvManager] Failed to save .env file:', error);
+    logger.error('ENV', 'Failed to save .env file', { path: ENV_FILE_PATH }, error as Error);
     throw error;
   }
 }
