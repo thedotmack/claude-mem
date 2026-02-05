@@ -1,0 +1,14 @@
+# Phase 05: Windows Stability Batch
+
+These PRs fix Windows-specific issues. They should be reviewed in order since some may conflict.
+
+## Tasks
+
+- [x] Review and merge PR #972 (`Fix Windows path handling for usernames with spaces` by @farikh). File: `plugin/scripts/bun-runner.js`. This fixes bun-runner.js (just added in v9.0.17) failing when Windows usernames contain spaces. The `shell: IS_WINDOWS` option in `spawn()` causes cmd.exe to split at spaces. Fix: remove `shell: true` on Windows. Steps: (1) `gh pr checkout 972` (2) Review the spawn change — verify it removes shell option or properly quotes paths (3) Test that the change doesn't break non-space paths (4) Run `npm run build` (5) This is a direct bug in code we just shipped — high priority. If clean: `gh pr merge 972 --rebase --delete-branch`
+  > **Completed 2025-02-05**: Merged via rebase onto main. Fix replaces `shell: IS_WINDOWS` with `windowsHide: true` — removes cmd.exe routing that split paths at spaces, adds windowsHide to prevent console popups. The `shell: IS_WINDOWS` on line 29 (for `where` command lookup) is correctly preserved since `where` needs shell mode. Build passes clean.
+
+- [ ] Review PR #935 (`fix(worker): guard ProcessTransport writes on Windows startup` by @jayvenn21). Files: `package.json`, `patches/@anthropic-ai+claude-agent-sdk+0.1.77.patch`. This patches the Claude Agent SDK to guard stdin/stdout transport writes during startup on Windows. Steps: (1) `gh pr checkout 935` (2) **CAUTION**: This adds a patch file for the SDK. Review whether patching a dependency is the right approach vs. guarding at the application layer. (3) Check if the SDK version matches what we use (4) If the patch is invasive or fragile, request changes to implement the guard in our code instead. (5) Run `npm run build` to verify.
+
+- [ ] Review PR #931 (`Prevent repeated worker spawn popups on Windows when startup fails` by @jayvenn21). File: `src/services/worker-service.ts`. Prevents hooks from repeatedly trying to spawn the worker when startup fails, causing visible terminal popups on Windows. Steps: (1) `gh pr checkout 931` (2) Review the spawn-once logic — should track spawn attempt and not retry within a cooldown period (3) Run `npm run build` (4) If clean: `gh pr merge 931 --rebase --delete-branch`
+
+- [ ] Review PR #930 (`Fix blocking startup by deferring worker initialization` by @jayvenn21). File: `src/cli/handlers/context.ts`. Defers worker init so Claude UI isn't blocked for 1-2 minutes on WSL2/slow systems. Steps: (1) `gh pr checkout 930` (2) Review that deferred init still ensures context is available when needed (3) Verify this doesn't conflict with #959 (fail-open context inject) (4) Run `npm run build` (5) If clean and compatible with Phase 04 changes: `gh pr merge 930 --rebase --delete-branch`
