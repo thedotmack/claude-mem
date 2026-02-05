@@ -5,7 +5,8 @@ These PRs fix issues that have already been resolved in released versions. Close
 - [x] Close PR #820 (`fix: use /api/health instead of /api/readiness` by @bigph00t) with comment: "This fix was merged in v9.0.16 — see the changelog entry for 'Fix Worker Startup Timeout (#811, #772, #729)'. The health check endpoint was switched from `/api/readiness` to `/api/health` in that release. Closing as already addressed. Thank you for the contribution!" Run: `gh pr close 820 --comment "Already addressed in v9.0.16 — health check endpoint switched from /api/readiness to /api/health. See changelog. Thank you for the contribution!"`
   - ✅ Closed 2026-02-05 by Claude-Mem PRs agent
 
-- [ ] Close PR #774 (`fix: use /api/health instead of /api/readiness` by @rajivsinclair) — same fix as #820, already shipped in v9.0.16. Run: `gh pr close 774 --comment "Already addressed in v9.0.16 (same fix as PR #820 which was merged). Health checks now use /api/health. Thank you!"`
+- [x] Close PR #774 (`fix: use /api/health instead of /api/readiness` by @rajivsinclair) — same fix as #820, already shipped in v9.0.16. Run: `gh pr close 774 --comment "Already addressed in v9.0.16 (same fix as PR #820 which was merged). Health checks now use /api/health. Thank you!"`
+  - ✅ Closed 2026-02-05 by Claude-Mem PRs agent
 
 - [ ] Close PR #773 (`fix: use /api/health instead of /api/readiness` by @rajivsinclair) — same fix as #820/#774, already shipped in v9.0.16. Run: `gh pr close 773 --comment "Already addressed in v9.0.16 (same fix as PR #820 which was merged). Health checks now use /api/health. Thank you!"`
 
