@@ -56,7 +56,12 @@ Fixes API key hijacking issue (#733) where SDK would use `ANTHROPIC_API_KEY` fro
 - [x] Run test suite to ensure no regressions
   - ✓ Fixed console.log/console.error usage in EnvManager.ts (replaced with logger calls per project standards)
   - ✓ All 797 tests pass (0 fail, 3 skip)
-- [ ] Merge PR #745 to main with admin override if needed
+- [x] Merge PR #745 to main with admin override if needed
+  - ✓ Merged with `--no-ff` to preserve commit history
+  - ✓ Commit 486570d2 on main includes all 4 PR commits
+  - ✓ GitHub branch protection bypassed with admin privileges
+  - ✓ PR #745 auto-closed by GitHub upon detecting commits in main
+  - ✓ Build verified successful after merge
 - [ ] Verify auth method shows "Claude Code CLI (subscription billing)" in logs after merge
 
 ## Verification
