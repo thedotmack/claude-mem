@@ -43,10 +43,16 @@ PR #722 replaces spawn-based worker startup with in-process architecture. Hook p
 
   **Completed 2026-02-04:** All 797 tests passed (3 skipped, 0 failed). 1490 expect() calls across 46 files in 9.99s.
 
-- [ ] Run build after conflict resolution:
+- [x] Run build after conflict resolution:
   - `npm run build`
   - Verify no TypeScript errors
   - Verify all artifacts are generated
+
+  **Completed 2026-02-04:** Build succeeded with no errors. All artifacts generated:
+  - worker-service.cjs (1786.77 KB)
+  - mcp-server.cjs (332.41 KB)
+  - context-generator.cjs (61.57 KB)
+  - viewer.html and viewer-bundle.js
 
 - [ ] Code review the in-process worker changes:
   - Verify `worker-service.ts` hook case starts WorkerService in-process when port free
