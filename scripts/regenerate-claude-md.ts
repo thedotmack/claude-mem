@@ -43,8 +43,10 @@ interface ObservationRow {
   discovery_tokens: number | null;
 }
 
-// Import shared formatting utilities
+// Import shared utilities
 import { formatTime, groupByDate } from '../src/shared/timeline-formatting.js';
+import { isDirectChild } from '../src/shared/path-utils.js';
+import { replaceTaggedContent } from '../src/utils/claude-md-utils.js';
 
 // Type icon map (matches ModeManager)
 const TYPE_ICONS: Record<string, string> = {
@@ -133,19 +135,6 @@ function walkDirectoriesWithIgnore(dir: string, folders: Set<string>, depth: num
   } catch {
     // Ignore permission errors
   }
-}
-
-/**
- * Check if a file is a direct child of a folder (not in a subfolder)
- * @param filePath - File path like "src/services/foo.ts"
- * @param folderPath - Folder path like "src/services"
- * @returns true if file is directly in folder, false if in a subfolder
- */
-function isDirectChild(filePath: string, folderPath: string): boolean {
-  if (!filePath.startsWith(folderPath + '/')) return false;
-  const remainder = filePath.slice(folderPath.length + 1);
-  // If remainder contains a slash, it's in a subfolder
-  return !remainder.includes('/');
 }
 
 /**
@@ -288,37 +277,27 @@ function formatObservationsForClaudeMd(observations: ObservationRow[], folderPat
 
 /**
  * Write CLAUDE.md file with tagged content preservation
+ * Note: For the CLI regenerate tool, we DO create directories since the user
+ * explicitly requested regeneration. This differs from the runtime behavior
+ * which only writes to existing folders.
  */
-function writeClaudeMdToFolder(folderPath: string, newContent: string): void {
+function writeClaudeMdToFolderForRegenerate(folderPath: string, newContent: string): void {
   const claudeMdPath = path.join(folderPath, 'CLAUDE.md');
   const tempFile = `${claudeMdPath}.tmp`;
 
+  // For regenerate CLI, we create the folder if needed
   mkdirSync(folderPath, { recursive: true });
 
+  // Read existing content if file exists
   let existingContent = '';
   if (existsSync(claudeMdPath)) {
     existingContent = readFileSync(claudeMdPath, 'utf-8');
   }
 
-  const startTag = '<claude-mem-context>';
-  const endTag = '</claude-mem-context>';
+  // Use shared utility to preserve user content outside tags
+  const finalContent = replaceTaggedContent(existingContent, newContent);
 
-  let finalContent: string;
-  if (!existingContent) {
-    finalContent = `${startTag}\n${newContent}\n${endTag}`;
-  } else {
-    const startIdx = existingContent.indexOf(startTag);
-    const endIdx = existingContent.indexOf(endTag);
-
-    if (startIdx !== -1 && endIdx !== -1) {
-      finalContent = existingContent.substring(0, startIdx) +
-        `${startTag}\n${newContent}\n${endTag}` +
-        existingContent.substring(endIdx + endTag.length);
-    } else {
-      finalContent = existingContent + `\n\n${startTag}\n${newContent}\n${endTag}`;
-    }
-  }
-
+  // Atomic write: temp file + rename
   writeFileSync(tempFile, finalContent);
   renameSync(tempFile, claudeMdPath);
 }
@@ -450,7 +429,7 @@ function regenerateFolder(
 
     // Format using relative path for display, write to absolute path
     const formatted = formatObservationsForClaudeMd(observations, relativeFolder);
-    writeClaudeMdToFolder(absoluteFolder, formatted);
+    writeClaudeMdToFolderForRegenerate(absoluteFolder, formatted);
 
     return { success: true, observationCount: observations.length };
   } catch (error) {

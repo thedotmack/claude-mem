@@ -38,6 +38,10 @@ export const USER_SETTINGS_PATH = join(DATA_DIR, 'settings.json');
 export const DB_PATH = join(DATA_DIR, 'claude-mem.db');
 export const VECTOR_DB_DIR = join(DATA_DIR, 'vector-db');
 
+// Observer sessions directory - used as cwd for SDK queries
+// Sessions here won't appear in user's `claude --resume` for their actual projects
+export const OBSERVER_SESSIONS_DIR = join(DATA_DIR, 'observer-sessions');
+
 // Claude integration paths
 export const CLAUDE_SETTINGS_PATH = join(CLAUDE_CONFIG_DIR, 'settings.json');
 export const CLAUDE_COMMANDS_DIR = join(CLAUDE_CONFIG_DIR, 'commands');

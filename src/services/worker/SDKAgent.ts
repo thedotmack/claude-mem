@@ -16,10 +16,11 @@ import { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
 import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
-import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { USER_SETTINGS_PATH, OBSERVER_SESSIONS_DIR, ensureDir } from '../../shared/paths.js';
 import type { ActiveSession, SDKUserMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import { processAgentResponse, type WorkerRef } from './agents/index.js';
+import { createPidCapturingSpawn, getProcessBySession, ensureProcessExit } from './ProcessRegistry.js';
 
 // Import Agent SDK (assumes it's installed)
 // @ts-ignore - Agent SDK types may not be available
@@ -99,17 +100,25 @@ export class SDKAgent {
 
     // Run Agent SDK query loop
     // Only resume if we have a captured memory session ID
+    // Use custom spawn to capture PIDs for zombie process cleanup (Issue #737)
+    // Use dedicated cwd to isolate observer sessions from user's `claude --resume` list
+    ensureDir(OBSERVER_SESSIONS_DIR);
     const queryResult = query({
       prompt: messageGenerator,
       options: {
         model: modelId,
+        // Isolate observer sessions - they'll appear under project "observer-sessions"
+        // instead of polluting user's actual project resume lists
+        cwd: OBSERVER_SESSIONS_DIR,
         // Only resume if BOTH: (1) we have a memorySessionId AND (2) this isn't the first prompt
         // On worker restart, memorySessionId may exist from a previous SDK session but we
         // need to start fresh since the SDK context was lost
         ...(hasRealMemorySessionId && session.lastPromptNumber > 1 && { resume: session.memorySessionId }),
         disallowedTools,
         abortController: session.abortController,
-        pathToClaudeCodeExecutable: claudePath
+        pathToClaudeCodeExecutable: claudePath,
+        // Custom spawn function captures PIDs to fix zombie process accumulation
+        spawnClaudeCodeProcess: createPidCapturingSpawn(session.sessionDbId)
       }
     });
 
