@@ -80,7 +80,12 @@ PR #722 replaces spawn-based worker startup with in-process architecture. Hook p
 
   **Completed 2026-02-04:** PR #722 merged using admin override (claude-review check stuck - same Claude Code GitHub App issue as Phase 01). Merge commit: 4df9f61347407f272fb72eb78b8e500ad1212703. Branch `bugfix/claude-md-index` auto-deleted.
 
-- [ ] Run post-merge verification:
+- [x] Run post-merge verification:
   - `git checkout main && git pull origin main`
   - `npm test` to confirm tests pass on main
   - `npm run build` to confirm build works
+
+  **Completed 2026-02-04:** Post-merge verification successful:
+  - Checked out main and pulled latest (already up to date with origin/main)
+  - Tests: 797 passed, 3 skipped, 0 failed (1490 expect() calls across 46 files in 9.94s)
+  - Build: Succeeded with all artifacts generated (worker-service.cjs 1786.77 KB, mcp-server.cjs 332.41 KB, context-generator.cjs 61.57 KB, viewer.html and viewer-bundle.js)
