@@ -200,17 +200,11 @@ export class WorkerService {
     this.server.registerRoutes(new SettingsRoutes(this.settingsManager));
     this.server.registerRoutes(new LogsRoutes());
 
-    // Early handler for /api/context/inject to avoid 404 during startup
+    // Early handler for /api/context/inject — fail open if not yet initialized
     this.server.app.get('/api/context/inject', async (req, res, next) => {
-      const timeoutMs = 300000; // 5 minute timeout for slow systems
-      const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('Initialization timeout')), timeoutMs)
-      );
-
-      await Promise.race([this.initializationComplete, timeoutPromise]);
-
-      if (!this.searchRoutes) {
-        res.status(503).json({ error: 'Search routes not initialized' });
+      if (!this.initializationCompleteFlag || !this.searchRoutes) {
+        logger.warn('SYSTEM', 'Context requested before initialization complete, returning empty');
+        res.status(200).json({ content: [{ type: 'text', text: '' }] });
         return;
       }
 
