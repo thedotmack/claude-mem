@@ -23,7 +23,8 @@ These PRs fix issues that have already been resolved in released versions. Close
 - [x] Close PR #840 (`fix(windows): replace WMIC with PowerShell Start-Process` by @bivlked) — v9.0.2 already replaced WMIC with PowerShell. Run: `gh pr close 840 --comment "Already addressed in v9.0.2 — replaced deprecated WMIC commands with PowerShell Get-Process and Get-CimInstance. Thank you!"`
   - ✅ Closed 2026-02-05 by Claude-Mem PRs agent
 
-- [ ] Close PR #933 (`fix(windows): replace deprecated wmic worker spawn with child_process spawn` by @jayvenn21) — same WMIC issue, fixed in v9.0.2. Run: `gh pr close 933 --comment "Already addressed in v9.0.2 — WMIC replacement with PowerShell commands. Thank you!"`
+- [x] Close PR #933 (`fix(windows): replace deprecated wmic worker spawn with child_process spawn` by @jayvenn21) — same WMIC issue, fixed in v9.0.2. Run: `gh pr close 933 --comment "Already addressed in v9.0.2 — WMIC replacement with PowerShell commands. Thank you!"`
+  - ✅ Closed 2026-02-05 by Claude-Mem PRs agent
 
 - [ ] Close PR #700 (`fix(#681): eliminate Windows Terminal popup by removing spawn-based daemon` by @thedotmack) — fixed in v9.0.6 (Windows console popup fix). Run: `gh pr close 700 --comment "Already addressed in v9.0.6 — Windows console popups eliminated with WMIC-based detached process spawning. Closing as resolved."`
 
