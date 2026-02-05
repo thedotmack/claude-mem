@@ -87,7 +87,9 @@ export class PendingMessageStore {
       const peekStmt = this.db.prepare(`
         SELECT * FROM pending_messages
         WHERE session_db_id = ? AND status = 'pending'
-        ORDER BY id ASC
+        ORDER BY
+          CASE message_type WHEN 'summarize' THEN 0 ELSE 1 END,
+          id ASC
         LIMIT 1
       `);
       const msg = peekStmt.get(sessionId) as PersistentPendingMessage | null;
