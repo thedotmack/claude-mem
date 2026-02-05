@@ -60,8 +60,24 @@ export async function processAgentResponse(
   }
 
   // Parse observations and summary
-  const observations = parseObservations(text, session.contentSessionId);
+  const rawObservations = parseObservations(text, session.contentSessionId);
   const summary = parseSummary(text, session.sessionDbId);
+
+  // Deduplicate observations within the same batch (smaller models sometimes emit duplicate XML blocks)
+  const seen = new Set<string>();
+  const observations = rawObservations.filter(obs => {
+    const key = `${obs.title}|${obs.narrative}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  if (observations.length < rawObservations.length) {
+    logger.info('PARSER', `Deduplicated ${rawObservations.length - observations.length} observation(s) in batch`, {
+      sessionId: session.sessionDbId,
+      before: rawObservations.length,
+      after: observations.length
+    });
+  }
 
   // Convert nullable fields to empty strings for storeSummary (if summary exists)
   const summaryForStore = normalizeSummaryForStorage(summary);
