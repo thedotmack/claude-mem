@@ -1,316 +1,286 @@
-<p align="center">
-  Official $CMEM Links: 
-  <a href="https://bags.fm/2TsmuYUrsctE57VLckZBYEEzdokUF8j8e1GavekWBAGS">Bags.fm</a> •
-  <a href="https://jup.ag/tokens/2TsmuYUrsctE57VLckZBYEEzdokUF8j8e1GavekWBAGS">Jupiter</a> •
-  <a href="https://photon-sol.tinyastro.io/en/lp/6MzFAkWnac6GSK1EdFX93dZeukGfzrFq4UHWarhGSQyd">Photon</a> •
-  <a href="https://dexscreener.com/solana/6mzfakwnac6gsk1edfx93dzeukgfzrfq4uhwarhgsqyd">DEXScreener</a>
-</p>
-
-<p align="center">Official CA: 2TsmuYUrsctE57VLckZBYEEzdokUF8j8e1GavekWBAGS (on Solana)</p>
-
 <h1 align="center">
   <br>
-  <a href="https://github.com/thedotmack/claude-mem">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/claude-mem-logo-for-dark-mode.webp">
-      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/claude-mem-logo-for-light-mode.webp">
-      <img src="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/claude-mem-logo-for-light-mode.webp" alt="Claude-Mem" width="400">
-    </picture>
-  </a>
+  Claude-Memu
   <br>
 </h1>
 
-<p align="center">
-  <a href="docs/i18n/README.zh.md">🇨🇳 中文</a> •
-  <a href="docs/i18n/README.ja.md">🇯🇵 日本語</a> •
-  <a href="docs/i18n/README.pt-br.md">🇧🇷 Português</a> •
-  <a href="docs/i18n/README.ko.md">🇰🇷 한국어</a> •
-  <a href="docs/i18n/README.es.md">🇪🇸 Español</a> •
-  <a href="docs/i18n/README.de.md">🇩🇪 Deutsch</a> •
-  <a href="docs/i18n/README.fr.md">🇫🇷 Français</a>
-  <a href="docs/i18n/README.he.md">🇮🇱 עברית</a> •
-  <a href="docs/i18n/README.ar.md">🇸🇦 العربية</a> •
-  <a href="docs/i18n/README.ru.md">🇷🇺 Русский</a> •
-  <a href="docs/i18n/README.pl.md">🇵🇱 Polski</a> •
-  <a href="docs/i18n/README.cs.md">🇨🇿 Čeština</a> •
-  <a href="docs/i18n/README.nl.md">🇳🇱 Nederlands</a> •
-  <a href="docs/i18n/README.tr.md">🇹🇷 Türkçe</a> •
-  <a href="docs/i18n/README.uk.md">🇺🇦 Українська</a> •
-  <a href="docs/i18n/README.vi.md">🇻🇳 Tiếng Việt</a> •
-  <a href="docs/i18n/README.id.md">🇮🇩 Indonesia</a> •
-  <a href="docs/i18n/README.th.md">🇹🇭 ไทย</a> •
-  <a href="docs/i18n/README.hi.md">🇮🇳 हिन्दी</a> •
-  <a href="docs/i18n/README.bn.md">🇧🇩 বাংলা</a> •
-  <a href="docs/i18n/README.ro.md">🇷🇴 Română</a> •
-  <a href="docs/i18n/README.sv.md">🇸🇪 Svenska</a> •
-  <a href="docs/i18n/README.it.md">🇮🇹 Italiano</a> •
-  <a href="docs/i18n/README.el.md">🇬🇷 Ελληνικά</a> •
-  <a href="docs/i18n/README.hu.md">🇭🇺 Magyar</a> •
-  <a href="docs/i18n/README.fi.md">🇫🇮 Suomi</a> •
-  <a href="docs/i18n/README.da.md">🇩🇰 Dansk</a> •
-  <a href="docs/i18n/README.no.md">🇳🇴 Norsk</a>
-</p>
-
-<h4 align="center">Persistent memory compression system built for <a href="https://claude.com/claude-code" target="_blank">Claude Code</a>.</h4>
+<h4 align="center">Persistent memory for <a href="https://claude.com/claude-code" target="_blank">Claude Code</a> powered by <a href="https://github.com/NevaMind-AI/memU" target="_blank">memU</a>.</h4>
 
 <p align="center">
   <a href="LICENSE">
     <img src="https://img.shields.io/badge/License-AGPL%203.0-blue.svg" alt="License">
   </a>
   <a href="package.json">
-    <img src="https://img.shields.io/badge/version-6.5.0-green.svg" alt="Version">
+    <img src="https://img.shields.io/badge/version-10.0.0-green.svg" alt="Version">
   </a>
   <a href="package.json">
     <img src="https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg" alt="Node">
-  </a>
-  <a href="https://github.com/thedotmack/awesome-claude-code">
-    <img src="https://awesome.re/mentioned-badge.svg" alt="Mentioned in Awesome Claude Code">
-  </a>
-</p>
-
-<p align="center">
-  <a href="https://trendshift.io/repositories/15496" target="_blank">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/trendshift-badge-dark.svg">
-      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/trendshift-badge.svg">
-      <img src="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/trendshift-badge.svg" alt="thedotmack/claude-mem | Trendshift" width="250" height="55"/>
-    </picture>
-  </a>
-</p>
-
-<br>
-
-<p align="center">
-  <a href="https://github.com/thedotmack/claude-mem">
-    <picture>
-      <img src="https://raw.githubusercontent.com/thedotmack/claude-mem/main/docs/public/cm-preview.gif" alt="Claude-Mem Preview" width="800">
-    </picture>
   </a>
 </p>
 
 <p align="center">
   <a href="#quick-start">Quick Start</a> •
   <a href="#how-it-works">How It Works</a> •
-  <a href="#mcp-search-tools">Search Tools</a> •
-  <a href="#documentation">Documentation</a> •
   <a href="#configuration">Configuration</a> •
-  <a href="#troubleshooting">Troubleshooting</a> •
+  <a href="#api">API</a> •
   <a href="#license">License</a>
 </p>
 
-<p align="center">
-  Claude-Mem seamlessly preserves context across sessions by automatically capturing tool usage observations, generating semantic summaries, and making them available to future sessions. This enables Claude to maintain continuity of knowledge about projects even after sessions end or reconnect.
-</p>
-
 ---
+
+Claude-Memu seamlessly preserves context across Claude Code sessions using [memU](https://github.com/NevaMind-AI/memU) for hierarchical memory storage. It automatically captures observations, generates summaries, and injects relevant context into future sessions.
 
 ## Quick Start
 
-Start a new Claude Code session in the terminal and enter the following commands:
+### 1. Get a memU API Key
 
+Sign up at [api.memu.so](https://api.memu.so) or deploy a self-hosted instance.
+
+### 2. Install the Plugin
+
+```bash
+# In Claude Code
+/plugin marketplace add thedotmack/claude-memu
+/plugin install claude-memu
 ```
-> /plugin marketplace add thedotmack/claude-mem
 
-> /plugin install claude-mem
+### 3. Configure
+
+Set your API key in `~/.claude-memu/settings.json`:
+
+```json
+{
+  "CLAUDE_MEMU_API_KEY": "your-api-key-here"
+}
 ```
 
-Restart Claude Code. Context from previous sessions will automatically appear in new sessions.
+Or via environment variable:
 
-**Key Features:**
+```bash
+export CLAUDE_MEMU_API_KEY="your-api-key-here"
+```
 
-- 🧠 **Persistent Memory** - Context survives across sessions
-- 📊 **Progressive Disclosure** - Layered memory retrieval with token cost visibility
-- 🔍 **Skill-Based Search** - Query your project history with mem-search skill
-- 🖥️ **Web Viewer UI** - Real-time memory stream at http://localhost:37777
-- 💻 **Claude Desktop Skill** - Search memory from Claude Desktop conversations
-- 🔒 **Privacy Control** - Use `<private>` tags to exclude sensitive content from storage
-- ⚙️ **Context Configuration** - Fine-grained control over what context gets injected
-- 🤖 **Automatic Operation** - No manual intervention required
-- 🔗 **Citations** - Reference past observations with IDs (access via http://localhost:37777/api/observation/{id} or view all in the web viewer at http://localhost:37777)
-- 🧪 **Beta Channel** - Try experimental features like Endless Mode via version switching
+### 4. Restart Claude Code
+
+Context from previous sessions will automatically appear in new sessions.
 
 ---
 
-## Documentation
+## Features
 
-📚 **[View Full Documentation](docs/)** - Browse markdown docs on GitHub
-
-### Getting Started
-
-- **[Installation Guide](https://docs.claude-mem.ai/installation)** - Quick start & advanced installation
-- **[Usage Guide](https://docs.claude-mem.ai/usage/getting-started)** - How Claude-Mem works automatically
-- **[Search Tools](https://docs.claude-mem.ai/usage/search-tools)** - Query your project history with natural language
-- **[Beta Features](https://docs.claude-mem.ai/beta-features)** - Try experimental features like Endless Mode
-
-### Best Practices
-
-- **[Context Engineering](https://docs.claude-mem.ai/context-engineering)** - AI agent context optimization principles
-- **[Progressive Disclosure](https://docs.claude-mem.ai/progressive-disclosure)** - Philosophy behind Claude-Mem's context priming strategy
-
-### Architecture
-
-- **[Overview](https://docs.claude-mem.ai/architecture/overview)** - System components & data flow
-- **[Architecture Evolution](https://docs.claude-mem.ai/architecture-evolution)** - The journey from v3 to v5
-- **[Hooks Architecture](https://docs.claude-mem.ai/hooks-architecture)** - How Claude-Mem uses lifecycle hooks
-- **[Hooks Reference](https://docs.claude-mem.ai/architecture/hooks)** - 7 hook scripts explained
-- **[Worker Service](https://docs.claude-mem.ai/architecture/worker-service)** - HTTP API & Bun management
-- **[Database](https://docs.claude-mem.ai/architecture/database)** - SQLite schema & FTS5 search
-- **[Search Architecture](https://docs.claude-mem.ai/architecture/search-architecture)** - Hybrid search with Chroma vector database
-
-### Configuration & Development
-
-- **[Configuration](https://docs.claude-mem.ai/configuration)** - Environment variables & settings
-- **[Development](https://docs.claude-mem.ai/development)** - Building, testing, contributing
-- **[Troubleshooting](https://docs.claude-mem.ai/troubleshooting)** - Common issues & solutions
+- **Persistent Memory** - Context survives across sessions via memU cloud
+- **Proactive Context** - memU's LLM-powered context retrieval
+- **Semantic Search** - RAG-based memory queries
+- **Project Isolation** - Memories organized by project categories
+- **Privacy Control** - Use `<private>` tags to exclude sensitive content
+- **Zero Local Storage** - All data stored in memU (cloud or self-hosted)
 
 ---
 
 ## How It Works
 
-**Core Components:**
-
-1. **5 Lifecycle Hooks** - SessionStart, UserPromptSubmit, PostToolUse, Stop, SessionEnd (6 hook scripts)
-2. **Smart Install** - Cached dependency checker (pre-hook script, not a lifecycle hook)
-3. **Worker Service** - HTTP API on port 37777 with web viewer UI and 10 search endpoints, managed by Bun
-4. **SQLite Database** - Stores sessions, observations, summaries
-5. **mem-search Skill** - Natural language queries with progressive disclosure
-6. **Chroma Vector Database** - Hybrid semantic + keyword search for intelligent context retrieval
-
-See [Architecture Overview](https://docs.claude-mem.ai/architecture/overview) for details.
-
----
-
-## MCP Search Tools
-
-Claude-Mem provides intelligent memory search through **4 MCP tools** following a token-efficient **3-layer workflow pattern**:
-
-**The 3-Layer Workflow:**
-
-1. **`search`** - Get compact index with IDs (~50-100 tokens/result)
-2. **`timeline`** - Get chronological context around interesting results
-3. **`get_observations`** - Fetch full details ONLY for filtered IDs (~500-1,000 tokens/result)
-
-**How It Works:**
-- Claude uses MCP tools to search your memory
-- Start with `search` to get an index of results
-- Use `timeline` to see what was happening around specific observations
-- Use `get_observations` to fetch full details for relevant IDs
-- **~10x token savings** by filtering before fetching details
-
-**Available MCP Tools:**
-
-1. **`search`** - Search memory index with full-text queries, filters by type/date/project
-2. **`timeline`** - Get chronological context around a specific observation or query
-3. **`get_observations`** - Fetch full observation details by IDs (always batch multiple IDs)
-4. **`__IMPORTANT`** - Workflow documentation (always visible to Claude)
-
-**Example Usage:**
-
-```typescript
-// Step 1: Search for index
-search(query="authentication bug", type="bugfix", limit=10)
-
-// Step 2: Review index, identify relevant IDs (e.g., #123, #456)
-
-// Step 3: Fetch full details
-get_observations(ids=[123, 456])
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Claude Code Plugin                        │
+├─────────────────────────────────────────────────────────────┤
+│  Hooks (5 Lifecycle Events)                                 │
+│  SessionStart → UserPromptSubmit → PostToolUse → Summary    │
+├─────────────────────────────────────────────────────────────┤
+│  Worker Service (Express on :37777)                         │
+├─────────────────────────────────────────────────────────────┤
+│  MemuStore (Session, Observation, Summary management)       │
+├─────────────────────────────────────────────────────────────┤
+│  MemuClient (HTTP client for memU API)                      │
+├─────────────────────────────────────────────────────────────┤
+│                    memU API                                 │
+│           (api.memu.so or self-hosted)                      │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-See [Search Tools Guide](https://docs.claude-mem.ai/usage/search-tools) for detailed examples.
+### Core Components
 
----
+1. **Lifecycle Hooks** - Capture tool usage at key moments
+2. **Worker Service** - HTTP API on port 37777
+3. **MemuStore** - Primary storage service for all memory operations
+4. **MemuClient** - HTTP client for memU API
+5. **memU** - Hierarchical memory storage with RAG retrieval
 
-## Beta Features
+### Data Flow
 
-Claude-Mem offers a **beta channel** with experimental features like **Endless Mode** (biomimetic memory architecture for extended sessions). Switch between stable and beta versions from the web viewer UI at http://localhost:37777 → Settings.
-
-See **[Beta Features Documentation](https://docs.claude-mem.ai/beta-features)** for details on Endless Mode and how to try it.
-
----
-
-## System Requirements
-
-- **Node.js**: 18.0.0 or higher
-- **Claude Code**: Latest version with plugin support
-- **Bun**: JavaScript runtime and process manager (auto-installed if missing)
-- **uv**: Python package manager for vector search (auto-installed if missing)
-- **SQLite 3**: For persistent storage (bundled)
+1. **SessionStart** - Retrieve relevant context from memU
+2. **UserPromptSubmit** - Create session record
+3. **PostToolUse** - Store observations as memU items
+4. **Stop** - Generate and store session summary
 
 ---
 
 ## Configuration
 
-Settings are managed in `~/.claude-mem/settings.json` (auto-created with defaults on first run). Configure AI model, worker port, data directory, log level, and context injection settings.
+Settings in `~/.claude-memu/settings.json`:
 
-See the **[Configuration Guide](https://docs.claude-mem.ai/configuration)** for all available settings and examples.
+```json
+{
+  "CLAUDE_MEMU_API_KEY": "your-api-key",
+  "CLAUDE_MEMU_API_URL": "https://api.memu.so",
+  "CLAUDE_MEMU_NAMESPACE": "default",
+  "CLAUDE_MEMU_WORKER_PORT": "37777",
+  "CLAUDE_MEMU_CONTEXT_LIMIT": "20",
+  "CLAUDE_MEMU_PROACTIVE_CONTEXT": "true"
+}
+```
+
+### Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `CLAUDE_MEMU_API_KEY` | memU API key (required) | - |
+| `CLAUDE_MEMU_API_URL` | memU API URL | `https://api.memu.so` |
+| `CLAUDE_MEMU_NAMESPACE` | Namespace for isolation | `default` |
+| `CLAUDE_MEMU_WORKER_PORT` | Worker service port | `37777` |
+| `CLAUDE_MEMU_CONTEXT_LIMIT` | Max items in context | `20` |
+| `CLAUDE_MEMU_PROACTIVE_CONTEXT` | Enable proactive context | `true` |
+
+---
+
+## API
+
+### MemuStore
+
+```typescript
+import { initializeMemuStore } from './services/memu';
+
+const store = await initializeMemuStore();
+
+// Sessions
+const session = await store.createSession(contentSessionId, project, prompt);
+
+// Observations
+await store.storeObservation(memorySessionId, project, {
+  type: 'decision',
+  title: 'Chose React over Vue',
+  facts: ['Better TypeScript support', 'Larger ecosystem'],
+  concepts: ['architecture', 'framework'],
+  filesModified: ['package.json'],
+});
+
+// Summaries
+await store.storeSummary(memorySessionId, project, {
+  request: 'Set up frontend framework',
+  completed: 'Installed React with TypeScript',
+  learned: 'React has better TS integration',
+});
+
+// Search
+const results = await store.search({
+  text: 'authentication',
+  project: 'my-project',
+  method: 'rag',
+  limit: 20,
+});
+
+// Context Injection
+const context = await store.getContextForProject(project, 10);
+```
+
+### MemuClient
+
+```typescript
+import { createMemuClient } from './services/memu';
+
+const client = createMemuClient({
+  apiKey: 'your-key',
+  apiUrl: 'https://api.memu.so',
+  namespace: 'default',
+});
+
+// Retrieve memories
+const response = await client.retrieve({
+  queries: [{ role: 'user', content: 'authentication bugs' }],
+  method: 'rag',
+  limit: 20,
+});
+
+// Create memory item
+await client.createItem({
+  memoryType: 'decision',
+  content: 'Chose JWT for auth',
+  tags: ['security', 'architecture'],
+});
+
+// List categories (projects)
+const categories = await client.listCategories();
+```
+
+---
+
+## memU Concepts
+
+| Claude-Memu | memU |
+|-------------|------|
+| Project | Category |
+| Observation | Item |
+| Summary | Item (tagged as summary) |
+| User Prompt | Item (conversation type) |
+
+### Tags Convention
+
+- `session:{id}` - Links item to session
+- `project:{name}` - Links item to project
+- `type:{type}` - Observation type (decision, bugfix, etc.)
+- `summary` - Marks item as session summary
+
+---
+
+## System Requirements
+
+- **Node.js** 18.0.0+
+- **Bun** (auto-installed)
+- **memU API Key** from [api.memu.so](https://api.memu.so) or self-hosted
+
+---
+
+## Privacy
+
+Use `<private>` tags to exclude content from storage:
+
+```
+<private>
+API_KEY=secret123
+</private>
+```
+
+Content within these tags is stripped at the hook layer before reaching memU.
 
 ---
 
 ## Development
 
-See the **[Development Guide](https://docs.claude-mem.ai/development)** for build instructions, testing, and contribution workflow.
-
----
-
-## Troubleshooting
-
-If experiencing issues, describe the problem to Claude and the troubleshoot skill will automatically diagnose and provide fixes.
-
-See the **[Troubleshooting Guide](https://docs.claude-mem.ai/troubleshooting)** for common issues and solutions.
-
----
-
-## Bug Reports
-
-Create comprehensive bug reports with the automated generator:
-
 ```bash
-cd ~/.claude/plugins/marketplaces/thedotmack
-npm run bug-report
+# Install dependencies
+npm install
+
+# Build
+npm run build
+
+# Build and sync to marketplace
+npm run build-and-sync
 ```
-
-## Contributing
-
-Contributions are welcome! Please:
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes with tests
-4. Update documentation
-5. Submit a Pull Request
-
-See [Development Guide](https://docs.claude-mem.ai/development) for contribution workflow.
 
 ---
 
 ## License
 
-This project is licensed under the **GNU Affero General Public License v3.0** (AGPL-3.0).
+**GNU Affero General Public License v3.0** (AGPL-3.0)
 
-Copyright (C) 2025 Alex Newman (@thedotmack). All rights reserved.
-
-See the [LICENSE](LICENSE) file for full details.
-
-**What This Means:**
-
-- You can use, modify, and distribute this software freely
-- If you modify and deploy on a network server, you must make your source code available
-- Derivative works must also be licensed under AGPL-3.0
-- There is NO WARRANTY for this software
-
-**Note on Ragtime**: The `ragtime/` directory is licensed separately under the **PolyForm Noncommercial License 1.0.0**. See [ragtime/LICENSE](ragtime/LICENSE) for details.
+See [LICENSE](LICENSE) for details.
 
 ---
 
-## Support
+## Links
 
-- **Documentation**: [docs/](docs/)
-- **Issues**: [GitHub Issues](https://github.com/thedotmack/claude-mem/issues)
-- **Repository**: [github.com/thedotmack/claude-mem](https://github.com/thedotmack/claude-mem)
-- **Official X Account**: [@Claude_Memory](https://x.com/Claude_Memory)
-- **Official Discord**: [Join Discord](https://discord.com/invite/J4wttp9vDu)
-- **Author**: Alex Newman ([@thedotmack](https://github.com/thedotmack))
+- **memU**: [github.com/NevaMind-AI/memU](https://github.com/NevaMind-AI/memU)
+- **Issues**: [GitHub Issues](https://github.com/thedotmack/claude-memu/issues)
 
 ---
 
-**Built with Claude Agent SDK** | **Powered by Claude Code** | **Made with TypeScript**
+**Powered by [memU](https://github.com/NevaMind-AI/memU)** | **Built for Claude Code**
