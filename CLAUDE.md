@@ -1,6 +1,8 @@
 # Claude-Memu: AI Development Instructions
 
-Claude-memu is a Claude Code plugin providing persistent memory across sessions using [memU](https://github.com/NevaMind-AI/memU) for hierarchical memory storage.
+Claude-memu is a Claude Code plugin providing persistent memory across sessions. Supports two storage modes:
+- **Local mode**: File-based JSON storage (no API key required)
+- **API mode**: memU cloud/self-hosted API with semantic search
 
 ## Architecture
 
@@ -13,22 +15,33 @@ Claude-memu is a Claude Code plugin providing persistent memory across sessions 
 ├─────────────────────────────────────────────────────────────┤
 │  Worker Service (Express on :37777)                         │
 ├─────────────────────────────────────────────────────────────┤
-│  MemuStore (src/services/memu/MemuStore.ts)                │
-├─────────────────────────────────────────────────────────────┤
-│  MemuClient (src/services/memu/memu-client.ts)             │
-├─────────────────────────────────────────────────────────────┤
-│                    memU API                                 │
-│           (api.memu.so or self-hosted)                      │
+│  UnifiedStore (auto-selects based on API key)               │
+├────────────────────────┬────────────────────────────────────┤
+│  LocalStore            │  MemuStore                         │
+│  (File-based JSON)     │  (memU API client)                 │
+├────────────────────────┴────────────────────────────────────┤
+│  ~/.claude-memu/data/  │  memU API (api.memu.so/self-hosted)│
 └─────────────────────────────────────────────────────────────┘
 ```
 
 ## Core Components
 
+**UnifiedStore** (`src/services/memu/UnifiedStore.ts`)
+- Auto-selects storage backend based on configuration
+- Common interface for both local and API modes
+- Singleton pattern via `getStore()` / `initializeStore()`
+
+**LocalStore** (`src/services/memu/LocalStore.ts`)
+- File-based JSON storage in `~/.claude-memu/data/`
+- Per-project JSON files (one file per project)
+- Full-text search via substring matching
+- No external dependencies
+
 **MemuStore** (`src/services/memu/MemuStore.ts`)
-- Primary storage service for all memory operations
+- Primary storage service for memU API mode
 - Session management (transient, per worker lifecycle)
-- Observation and summary CRUD
-- Search with proactive context
+- RAG-based semantic search
+- Proactive context feature
 - Project category management
 
 **MemuClient** (`src/services/memu/memu-client.ts`)
@@ -48,12 +61,21 @@ Claude-memu is a Claude Code plugin providing persistent memory across sessions 
 **Tags** → `session:`, `project:`, `type:`, concepts
 **Retrieve** → RAG or LLM method with proactive context
 
+## Storage Modes
+
+| Mode | Description |
+|------|-------------|
+| `auto` | Use API if key provided, otherwise local (default) |
+| `api` | Force memU API mode (requires API key) |
+| `local` | Force local file-based storage |
+
 ## Configuration
 
 Settings in `~/.claude-memu/settings.json`:
 
 ```json
 {
+  "CLAUDE_MEMU_MODE": "auto",
   "CLAUDE_MEMU_API_KEY": "your-api-key",
   "CLAUDE_MEMU_API_URL": "https://api.memu.so",
   "CLAUDE_MEMU_NAMESPACE": "default",
@@ -70,6 +92,7 @@ Environment variables override file settings.
 - **Source**: `src/`
 - **Built Plugin**: `plugin/`
 - **Settings**: `~/.claude-memu/settings.json`
+- **Local Data**: `~/.claude-memu/data/` (per-project JSON files)
 - **Logs**: `~/.claude-memu/logs/`
 
 ## Build Commands
@@ -93,15 +116,21 @@ npm run build                 # TypeScript compilation only
 
 - **Bun** (auto-installed)
 - **Node.js** 18+
-- **memU API Key** (from api.memu.so or self-hosted)
+- **memU API Key** (optional - only for API mode)
 
 ## Key APIs
 
-### MemuStore
+### UnifiedStore (recommended)
 
 ```typescript
-// Initialize
-const store = await initializeMemuStore();
+import { initializeStore, getStore } from './services/memu';
+
+// Initialize (auto-selects local or API mode)
+const store = await initializeStore();
+
+// Check mode
+console.log(store.getMode()); // 'local' or 'api'
+console.log(store.isLocalMode()); // true/false
 
 // Sessions
 const session = await store.createSession(contentSessionId, project, prompt);
@@ -116,7 +145,7 @@ await store.storeSummary(memorySessionId, project, summary);
 const summary = await store.getSummary(memorySessionId);
 
 // Search
-const results = await store.search({ text: 'query', project, method: 'rag' });
+const results = await store.search({ text: 'query', project });
 
 // Context Injection
 const context = await store.getContextForProject(project, 10);

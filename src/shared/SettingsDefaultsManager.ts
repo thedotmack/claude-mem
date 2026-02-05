@@ -11,6 +11,11 @@ import { homedir } from 'os';
 import { DEFAULT_OBSERVATION_TYPES_STRING, DEFAULT_OBSERVATION_CONCEPTS_STRING } from '../constants/observation-metadata.js';
 
 export interface SettingsDefaults {
+  // Storage Mode ('auto' | 'api' | 'local')
+  // - 'auto': Use API if key provided, otherwise local (default)
+  // - 'api': Force API mode (requires CLAUDE_MEMU_API_KEY)
+  // - 'local': Force local file-based storage
+  CLAUDE_MEMU_MODE: string;
   // memU Configuration
   CLAUDE_MEMU_API_KEY: string;
   CLAUDE_MEMU_API_URL: string;
@@ -35,6 +40,8 @@ export class SettingsDefaultsManager {
    * Default values for all settings
    */
   private static readonly DEFAULTS: SettingsDefaults = {
+    // Storage Mode
+    CLAUDE_MEMU_MODE: 'auto',
     // memU Configuration
     CLAUDE_MEMU_API_KEY: '',
     CLAUDE_MEMU_API_URL: 'https://api.memu.so',

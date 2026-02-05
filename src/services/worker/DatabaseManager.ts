@@ -1,18 +1,16 @@
 /**
- * DatabaseManager: Single long-lived database connection
+ * DatabaseManager: Unified storage management
  *
  * Responsibility:
- * - Manage single database connection for worker lifetime
+ * - Manage storage connection for worker lifetime
  * - Provide centralized access to SessionStore and SessionSearch
  * - High-level database operations
- * - ChromaSync integration
+ *
+ * Now uses memU/UnifiedStore via StoreManager compatibility layer.
  */
 
-import { SessionStore } from '../sqlite/SessionStore.js';
-import { SessionSearch } from '../sqlite/SessionSearch.js';
-import { ChromaSync } from '../sync/ChromaSync.js';
+import { SessionStore, SessionSearch, ChromaSync, getSessionStore, getSessionSearch } from '../memu/StoreManager.js';
 import { logger } from '../../utils/logger.js';
-import type { DBSession } from '../worker-types.js';
 
 export class DatabaseManager {
   private sessionStore: SessionStore | null = null;
@@ -20,24 +18,27 @@ export class DatabaseManager {
   private chromaSync: ChromaSync | null = null;
 
   /**
-   * Initialize database connection (once, stays open)
+   * Initialize storage connection (once, stays open)
    */
   async initialize(): Promise<void> {
-    // Open database connection (ONCE)
-    this.sessionStore = new SessionStore();
-    this.sessionSearch = new SessionSearch();
+    // Get singleton instances
+    this.sessionStore = getSessionStore();
+    this.sessionSearch = getSessionSearch();
 
-    // Initialize ChromaSync (lazy - connects on first search, not at startup)
-    this.chromaSync = new ChromaSync('claude-mem');
+    // Initialize the store (connects to memU API or local storage)
+    await this.sessionStore.initialize();
 
-    logger.info('DB', 'Database initialized');
+    // ChromaSync is a no-op stub - memU handles vector search
+    this.chromaSync = new ChromaSync('claude-memu');
+
+    logger.info('DB', 'Database initialized (using memU storage)');
   }
 
   /**
-   * Close database connection and cleanup all resources
+   * Close storage connection and cleanup all resources
    */
   async close(): Promise<void> {
-    // Close ChromaSync first (terminates uvx/python processes)
+    // ChromaSync close is no-op
     if (this.chromaSync) {
       await this.chromaSync.close();
       this.chromaSync = null;
@@ -84,10 +85,6 @@ export class DatabaseManager {
     return this.chromaSync;
   }
 
-  // REMOVED: cleanupOrphanedSessions - violates "EVERYTHING SHOULD SAVE ALWAYS"
-  // Worker restarts don't make sessions orphaned. Sessions are managed by hooks
-  // and exist independently of worker state.
-
   /**
    * Get session by ID (throws if not found)
    */
@@ -104,5 +101,4 @@ export class DatabaseManager {
     }
     return session;
   }
-
 }

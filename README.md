@@ -32,11 +32,9 @@ Claude-Memu seamlessly preserves context across Claude Code sessions using [memU
 
 ## Quick Start
 
-### 1. Get a memU API Key
+### Option A: Local Mode (No API Key Required)
 
-Sign up at [api.memu.so](https://api.memu.so) or deploy a self-hosted instance.
-
-### 2. Install the Plugin
+Run fully locally with file-based storage:
 
 ```bash
 # In Claude Code
@@ -44,7 +42,25 @@ Sign up at [api.memu.so](https://api.memu.so) or deploy a self-hosted instance.
 /plugin install claude-memu
 ```
 
-### 3. Configure
+That's it! Without an API key, claude-memu automatically uses local file storage in `~/.claude-memu/data/`.
+
+### Option B: Cloud Mode (memU API)
+
+For advanced features like semantic search and proactive context:
+
+#### 1. Get a memU API Key
+
+Sign up at [api.memu.so](https://api.memu.so) or deploy a self-hosted instance.
+
+#### 2. Install the Plugin
+
+```bash
+# In Claude Code
+/plugin marketplace add thedotmack/claude-memu
+/plugin install claude-memu
+```
+
+#### 3. Configure
 
 Set your API key in `~/.claude-memu/settings.json`:
 
@@ -60,7 +76,7 @@ Or via environment variable:
 export CLAUDE_MEMU_API_KEY="your-api-key-here"
 ```
 
-### 4. Restart Claude Code
+#### 4. Restart Claude Code
 
 Context from previous sessions will automatically appear in new sessions.
 
@@ -68,12 +84,13 @@ Context from previous sessions will automatically appear in new sessions.
 
 ## Features
 
-- **Persistent Memory** - Context survives across sessions via memU cloud
-- **Proactive Context** - memU's LLM-powered context retrieval
-- **Semantic Search** - RAG-based memory queries
-- **Project Isolation** - Memories organized by project categories
+- **Dual Storage Modes** - Run locally (no API) or with memU cloud
+- **Persistent Memory** - Context survives across sessions
+- **Proactive Context** - LLM-powered context retrieval (API mode)
+- **Semantic Search** - RAG-based memory queries (API mode)
+- **Project Isolation** - Memories organized by project
 - **Privacy Control** - Use `<private>` tags to exclude sensitive content
-- **Zero Local Storage** - All data stored in memU (cloud or self-hosted)
+- **Fully Offline** - Local mode works without internet
 
 ---
 
@@ -120,6 +137,7 @@ Settings in `~/.claude-memu/settings.json`:
 
 ```json
 {
+  "CLAUDE_MEMU_MODE": "auto",
   "CLAUDE_MEMU_API_KEY": "your-api-key",
   "CLAUDE_MEMU_API_URL": "https://api.memu.so",
   "CLAUDE_MEMU_NAMESPACE": "default",
@@ -129,16 +147,25 @@ Settings in `~/.claude-memu/settings.json`:
 }
 ```
 
+### Storage Modes
+
+| Mode | Description |
+|------|-------------|
+| `auto` | Use API if key provided, otherwise local (default) |
+| `api` | Force memU API mode (requires API key) |
+| `local` | Force local file-based storage |
+
 ### Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `CLAUDE_MEMU_API_KEY` | memU API key (required) | - |
+| `CLAUDE_MEMU_MODE` | Storage mode | `auto` |
+| `CLAUDE_MEMU_API_KEY` | memU API key (optional for local mode) | - |
 | `CLAUDE_MEMU_API_URL` | memU API URL | `https://api.memu.so` |
 | `CLAUDE_MEMU_NAMESPACE` | Namespace for isolation | `default` |
 | `CLAUDE_MEMU_WORKER_PORT` | Worker service port | `37777` |
 | `CLAUDE_MEMU_CONTEXT_LIMIT` | Max items in context | `20` |
-| `CLAUDE_MEMU_PROACTIVE_CONTEXT` | Enable proactive context | `true` |
+| `CLAUDE_MEMU_PROACTIVE_CONTEXT` | Enable proactive context (API mode) | `true` |
 
 ---
 
