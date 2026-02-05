@@ -2,6 +2,20 @@
 
 All notable changes to claude-mem.
 
+## [v9.0.13] - 2026-02-05
+
+## Bug Fixes
+
+### Zombie Observer Prevention (#856)
+
+Fixed a critical issue where observer processes could become "zombies" - lingering indefinitely without activity. This release adds:
+
+- **3-minute idle timeout**: SessionQueueProcessor now automatically terminates after 3 minutes of inactivity
+- **Race condition fix**: Resolved spurious wakeup issues by resetting `lastActivityTime` on queue activity
+- **Comprehensive test coverage**: Added 11 new tests for the idle timeout mechanism
+
+This fix prevents resource leaks from orphaned observer processes that could accumulate over time.
+
 ## [v9.0.12] - 2026-01-28
 
 ## Fix: Authentication failure from observer session isolation
@@ -1316,20 +1330,4 @@ This release improves session efficiency by reducing the token overhead of MCP t
 - Fix MCP server compatibility and web UI path resolution
 
 This patch release addresses compatibility issues with the MCP server and resolves path resolution problems in the web UI.
-
-## [v7.3.8] - 2025-12-18
-
-## Security Fix
-
-Added localhost-only protection for admin endpoints to prevent DoS attacks when worker service is bound to 0.0.0.0 for remote UI access.
-
-### Changes
-- Created `requireLocalhost` middleware to restrict admin endpoints
-- Applied to `/api/admin/restart` and `/api/admin/shutdown`
-- Returns 403 Forbidden for non-localhost requests
-
-### Security Impact
-Prevents unauthorized shutdown/restart of worker service when exposed on network.
-
-Fixes security concern raised in #368.
 
