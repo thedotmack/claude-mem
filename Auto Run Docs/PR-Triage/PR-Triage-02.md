@@ -28,4 +28,4 @@ These 4 PRs all implement the same CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED setting. P
 
 - [x] Close PR #589 (`fix: implement CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED feature flag` by @bguidolim) — includes build artifacts, superseded by #913. Run: `gh pr close 589 --comment "Closing in favor of PR #913 which implements the same feature flag without build artifacts. Thank you!"` ✅ Closed 2026-02-05
 
-- [ ] Close PR #875 (`feat: add CLAUDE_MEM_DISABLE_SUBDIRECTORY_CLAUDE_MD setting` by @ab-su-rd) — different setting name (negative logic), superseded by #913. Run: `gh pr close 875 --comment "Closing in favor of PR #913 which uses the existing CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED setting (positive logic). Thank you!"`
+- [x] Close PR #875 (`feat: add CLAUDE_MEM_DISABLE_SUBDIRECTORY_CLAUDE_MD setting` by @ab-su-rd) — different setting name (negative logic), superseded by #913. Run: `gh pr close 875 --comment "Closing in favor of PR #913 which uses the existing CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED setting (positive logic). Thank you!"` ✅ Closed 2026-02-05
