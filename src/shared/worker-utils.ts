@@ -17,11 +17,15 @@ const HEALTH_CHECK_TIMEOUT_MS = getTimeout(HOOK_TIMEOUTS.HEALTH_CHECK);
  * The orphaned fetch is harmless since the process exits shortly after.
  */
 export function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs: number): Promise<Response> {
+  let timeoutId: ReturnType<typeof setTimeout>;
   return Promise.race([
-    fetch(url, init),
-    new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(`Request timed out after ${timeoutMs}ms`)), timeoutMs)
-    ),
+    fetch(url, init).then(response => {
+      clearTimeout(timeoutId);
+      return response;
+    }),
+    new Promise<never>((_, reject) => {
+      timeoutId = setTimeout(() => reject(new Error(`Request timed out after ${timeoutMs}ms`)), timeoutMs);
+    }),
   ]);
 }
 
