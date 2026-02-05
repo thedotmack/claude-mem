@@ -266,6 +266,20 @@ const categories = await client.listCategories();
 
 ---
 
+## Memory Browser UI
+
+Access the web-based memory browser at **http://localhost:37777/** when the worker is running.
+
+Features:
+- **View all projects** with stored memories
+- **Real-time updates** via SSE stream
+- **Processing status** indicator
+- **Browse observations and summaries**
+
+The UI works with both local and API modes.
+
+---
+
 ## Privacy
 
 Use `<private>` tags to exclude content from storage:
