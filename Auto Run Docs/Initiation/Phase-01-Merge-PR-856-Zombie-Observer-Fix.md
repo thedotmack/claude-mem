@@ -52,7 +52,14 @@ PR #856 adds idle timeout to `SessionQueueProcessor` to prevent zombie observer 
   - ✅ Branch fix/observer-idle-timeout deleted
   - Note: Used --admin flag to bypass failing claude-review CI check (GitHub App not installed - configuration issue, not code issue)
 
-- [ ] Run post-merge verification:
+- [x] Run post-merge verification:
   - `git pull origin main`
   - `npm test` to confirm tests still pass on main
   - `npm run build` to confirm build still works
+  - ✅ Main branch is up to date with origin
+  - ✅ Full test suite passes: 797 pass, 3 skip, 0 fail, 1491 expect() calls
+  - ✅ Build completed successfully with all artifacts generated:
+    - worker-service.cjs (1786.80 KB)
+    - mcp-server.cjs (332.41 KB)
+    - context-generator.cjs (61.57 KB)
+    - viewer-bundle.js and viewer.html
