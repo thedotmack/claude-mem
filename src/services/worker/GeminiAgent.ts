@@ -10,6 +10,7 @@
  * - Sync to database and Chroma
  */
 
+import { randomUUID } from 'crypto';
 import path from 'path';
 import { homedir } from 'os';
 import { DatabaseManager } from './DatabaseManager.js';
@@ -132,6 +133,18 @@ export class GeminiAgent {
 
       if (!apiKey) {
         throw new Error('Gemini API key not configured. Set CLAUDE_MEM_GEMINI_API_KEY in settings or GEMINI_API_KEY environment variable.');
+      }
+
+      // Generate memorySessionId if not already set (Gemini doesn't have SDK session IDs like Claude)
+      // This must happen before any processAgentResponse() calls which require it for the FK constraint
+      if (!session.memorySessionId) {
+        const generatedId = randomUUID();
+        session.memorySessionId = generatedId;
+        this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, generatedId);
+        logger.info('SESSION', `Generated memorySessionId for Gemini session`, {
+          sessionId: session.sessionDbId,
+          memorySessionId: generatedId
+        });
       }
 
       // Load active mode

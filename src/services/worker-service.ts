@@ -53,7 +53,8 @@ import { SessionManager } from './worker/SessionManager.js';
 import { SSEBroadcaster } from './worker/SSEBroadcaster.js';
 import { SDKAgent } from './worker/SDKAgent.js';
 import { GeminiAgent } from './worker/GeminiAgent.js';
-import { OpenRouterAgent } from './worker/OpenRouterAgent.js';
+import { OpenRouterAgent, isOpenRouterSelected, isOpenRouterAvailable } from './worker/OpenRouterAgent.js';
+import { isGeminiSelected, isGeminiAvailable } from './worker/GeminiAgent.js';
 import { PaginationHelper } from './worker/PaginationHelper.js';
 import { SettingsManager } from './worker/SettingsManager.js';
 import { SearchManager } from './worker/SearchManager.js';
@@ -338,6 +339,20 @@ export class WorkerService {
   }
 
   /**
+   * Get the appropriate agent based on provider settings.
+   * Mirrors SessionRoutes.getActiveAgent() to ensure recovery uses the same provider.
+   */
+  private getActiveAgent(): SDKAgent | GeminiAgent | OpenRouterAgent {
+    if (isOpenRouterSelected() && isOpenRouterAvailable()) {
+      return this.openRouterAgent;
+    }
+    if (isGeminiSelected() && isGeminiAvailable()) {
+      return this.geminiAgent;
+    }
+    return this.sdkAgent;
+  }
+
+  /**
    * Start a session processor
    */
   private startSessionProcessor(
@@ -347,13 +362,17 @@ export class WorkerService {
     if (!session) return;
 
     const sid = session.sessionDbId;
-    logger.info('SYSTEM', `Starting generator (${source})`, { sessionId: sid });
+    const agent = this.getActiveAgent();
+    const providerName = agent instanceof OpenRouterAgent ? 'OpenRouter'
+      : agent instanceof GeminiAgent ? 'Gemini' : 'Claude SDK';
+    logger.info('SYSTEM', `Starting generator (${source}) using ${providerName}`, { sessionId: sid });
 
-    session.generatorPromise = this.sdkAgent.startSession(session, this)
+    session.generatorPromise = agent.startSession(session, this)
       .catch(error => {
         logger.error('SDK', 'Session generator failed', {
           sessionId: session.sessionDbId,
-          project: session.project
+          project: session.project,
+          provider: providerName
         }, error as Error);
       })
       .finally(() => {

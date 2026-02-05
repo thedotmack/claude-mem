@@ -11,6 +11,7 @@
  * - Support dynamic model selection across providers
  */
 
+import { randomUUID } from 'crypto';
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
@@ -90,6 +91,18 @@ export class OpenRouterAgent {
 
       if (!apiKey) {
         throw new Error('OpenRouter API key not configured. Set CLAUDE_MEM_OPENROUTER_API_KEY in settings or OPENROUTER_API_KEY environment variable.');
+      }
+
+      // Generate memorySessionId if not already set (OpenRouter doesn't have SDK session IDs like Claude)
+      // This must happen before any processAgentResponse() calls which require it for the FK constraint
+      if (!session.memorySessionId) {
+        const generatedId = randomUUID();
+        session.memorySessionId = generatedId;
+        this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, generatedId);
+        logger.info('SESSION', `Generated memorySessionId for OpenRouter session`, {
+          sessionId: session.sessionDbId,
+          memorySessionId: generatedId
+        });
       }
 
       // Load active mode
@@ -431,7 +444,7 @@ export class OpenRouterAgent {
     const appName = settings.CLAUDE_MEM_OPENROUTER_APP_NAME || 'claude-mem';
 
     // Base URL: allows using cli-proxy or other OpenAI-compatible endpoints
-    const baseUrl = (settings as Record<string, string>).CLAUDE_MEM_OPENROUTER_BASE_URL || DEFAULT_OPENROUTER_API_URL;
+    const baseUrl = settings.CLAUDE_MEM_OPENROUTER_BASE_URL || DEFAULT_OPENROUTER_API_URL;
 
     return { apiKey, model, siteUrl, appName, baseUrl };
   }
