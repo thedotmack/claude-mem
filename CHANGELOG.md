@@ -2,6 +2,29 @@
 
 All notable changes to claude-mem.
 
+## [v9.0.14] - 2026-02-05
+
+## In-Process Worker Architecture
+
+This release includes the merged in-process worker architecture from PR #722, which fundamentally improves how hooks interact with the worker service.
+
+### Changes
+
+- **In-process worker architecture** - Hook processes now become the worker when port 37777 is available, eliminating Windows spawn issues
+- **Hook command improvements** - Added `skipExit` option to `hook-command.ts` for chained command execution
+- **Worker health checks** - `worker-utils.ts` now returns boolean status for cleaner health monitoring
+- **Massive CLAUDE.md cleanup** - Removed 76 redundant documentation files (4,493 lines removed)
+- **Chained hook configuration** - `hooks.json` now supports chained commands for complex workflows
+
+### Technical Details
+
+The in-process architecture means hooks no longer need to spawn separate worker processes. When port 37777 is available, the hook itself becomes the worker, providing:
+- Faster startup times
+- Better resource utilization
+- Elimination of process spawn failures on Windows
+
+Full PR: https://github.com/thedotmack/claude-mem/pull/722
+
 ## [v9.0.13] - 2026-02-05
 
 ## Bug Fixes
@@ -1322,12 +1345,4 @@ This release improves session efficiency by reducing the token overhead of MCP t
 ---
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-## [v7.3.9] - 2025-12-18
-
-## Fixes
-
-- Fix MCP server compatibility and web UI path resolution
-
-This patch release addresses compatibility issues with the MCP server and resolves path resolution problems in the web UI.
 
