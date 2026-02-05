@@ -31,3 +31,6 @@ src/ui/viewer.html
 # Prevent other malformed path directories
 http*/
 https*/
+
+# Ignore WebStorm project files (for dinosaur IDE users)
+.idea/
