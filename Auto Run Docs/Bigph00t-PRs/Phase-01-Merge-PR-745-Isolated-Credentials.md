@@ -62,7 +62,11 @@ Fixes API key hijacking issue (#733) where SDK would use `ANTHROPIC_API_KEY` fro
   - ✓ GitHub branch protection bypassed with admin privileges
   - ✓ PR #745 auto-closed by GitHub upon detecting commits in main
   - ✓ Build verified successful after merge
-- [ ] Verify auth method shows "Claude Code CLI (subscription billing)" in logs after merge
+- [x] Verify auth method shows "Claude Code CLI (subscription billing)" in logs after merge
+  - ✓ Rebuilt and synced local code (v9.0.14 release predated PR merge, so needed fresh build)
+  - ✓ Restarted worker with PR #745 code
+  - ✓ Confirmed log output: `authMethod=Claude Code CLI (subscription billing)`
+  - ✓ Verified `getAuthMethodDescription()` correctly detects no API key in `~/.claude-mem/.env`
 
 ## Verification
 
