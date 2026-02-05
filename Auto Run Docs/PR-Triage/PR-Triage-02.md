@@ -24,7 +24,7 @@
 
 These 4 PRs all implement the same CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED setting. PR #913 by @superbiche is the cleanest (3 files, focused changes). PR #823 touches 22 files (too broad), #589 includes build artifacts, #875 uses a different setting name.
 
-- [ ] Close PR #823 (`fix: check CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED setting` by @Glucksberg) — too broad (22 files), superseded by #913. Run: `gh pr close 823 --comment "Closing in favor of PR #913 which implements the same CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED setting with a more focused changeset. Thank you for the detailed work!"`
+- [x] Close PR #823 (`fix: check CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED setting` by @Glucksberg) — too broad (22 files), superseded by #913. Run: `gh pr close 823 --comment "Closing in favor of PR #913 which implements the same CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED setting with a more focused changeset. Thank you for the detailed work!"` ✅ Closed 2026-02-05
 
 - [ ] Close PR #589 (`fix: implement CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED feature flag` by @bguidolim) — includes build artifacts, superseded by #913. Run: `gh pr close 589 --comment "Closing in favor of PR #913 which implements the same feature flag without build artifacts. Thank you!"`
 
