@@ -54,11 +54,17 @@ PR #722 replaces spawn-based worker startup with in-process architecture. Hook p
   - context-generator.cjs (61.57 KB)
   - viewer.html and viewer-bundle.js
 
-- [ ] Code review the in-process worker changes:
+- [x] Code review the in-process worker changes:
   - Verify `worker-service.ts` hook case starts WorkerService in-process when port free
   - Verify `hook-command.ts` has `skipExit` option
   - Verify `hooks.json` uses single chained command
   - Verify `worker-utils.ts` `ensureWorkerRunning()` returns boolean
+
+  **Completed 2026-02-04:** All review criteria verified:
+  - `worker-service.ts` (lines 638-665): Hook case checks `!portInUse`, creates `new WorkerService()`, calls `start()`, sets `startedWorkerInProcess = true`, uses `break` (not exit) to keep process alive
+  - `hook-command.ts` (lines 6-9, 24-27): `HookCommandOptions` interface has `skipExit?: boolean`, checked before `process.exit()`, returns exit code when skipped
+  - `hooks.json` (line 22): SessionStart uses chained command `smart-install.js && worker stop && worker hook claude-code context`
+  - `worker-utils.ts` (lines 117-135): `ensureWorkerRunning(): Promise<boolean>` returns true if healthy, false otherwise
 
 - [ ] Commit conflict resolution and push:
   - `git add .`
