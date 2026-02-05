@@ -2,6 +2,30 @@
 
 All notable changes to claude-mem.
 
+## [v9.0.17] - 2026-02-05
+
+## Bug Fixes
+
+### Fix Fresh Install Bun PATH Resolution (#818)
+
+On fresh installations, hooks would fail because Bun wasn't in PATH until terminal restart. The `smart-install.js` script installs Bun to `~/.bun/bin/bun`, but the current shell session doesn't have it in PATH.
+
+**Fix:** Introduced `bun-runner.js` — a Node.js wrapper that searches common Bun installation locations across all platforms:
+- PATH (via `which`/`where`)
+- `~/.bun/bin/bun` (default install location)
+- `/usr/local/bin/bun`
+- `/opt/homebrew/bin/bun` (macOS Homebrew)
+- `/home/linuxbrew/.linuxbrew/bin/bun` (Linuxbrew)
+- Windows: `%LOCALAPPDATA%\bun` or fallback paths
+
+All 9 hook definitions updated to use `node bun-runner.js` instead of direct `bun` calls.
+
+**Files changed:**
+- `plugin/scripts/bun-runner.js` — New 88-line Bun discovery script
+- `plugin/hooks/hooks.json` — All hook commands now route through bun-runner
+
+Fixes #818 | PR #827 by @bigphoot
+
 ## [v9.0.16] - 2026-02-05
 
 ## Bug Fixes
@@ -1340,14 +1364,4 @@ Set `DISCORD_UPDATES_WEBHOOK` in your `.env` file to enable release notification
 ---
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-## [v7.4.2] - 2025-12-20
-
-Patch release v7.4.2
-
-## Changes
-- Refactored worker commands from npm scripts to claude-mem CLI
-- Added path alias script
-- Fixed Windows worker stop/restart reliability (#395)
-- Simplified build commands section in CLAUDE.md
 
