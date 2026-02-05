@@ -66,10 +66,12 @@ PR #722 replaces spawn-based worker startup with in-process architecture. Hook p
   - `hooks.json` (line 22): SessionStart uses chained command `smart-install.js && worker stop && worker hook claude-code context`
   - `worker-utils.ts` (lines 117-135): `ensureWorkerRunning(): Promise<boolean>` returns true if healthy, false otherwise
 
-- [ ] Commit conflict resolution and push:
+- [x] Commit conflict resolution and push:
   - `git add .`
   - `git commit -m "chore: resolve merge conflicts with main"`
   - `git push origin bugfix/claude-md-index`
+
+  **Completed 2026-02-04:** Conflict resolution was committed (34b7e13a) and pushed to origin. Verified commit exists in remote branch history.
 
 - [ ] Merge PR #722 to main:
   - Wait for CI to pass after push
