@@ -109,9 +109,9 @@
 Start a new Claude Code session in the terminal and enter the following commands:
 
 ```
-> /plugin marketplace add thedotmack/claude-mem
+/plugin marketplace add thedotmack/claude-mem
 
-> /plugin install claude-mem
+/plugin install claude-mem
 ```
 
 Restart Claude Code. Context from previous sessions will automatically appear in new sessions.
