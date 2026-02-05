@@ -9,12 +9,10 @@ import type {
   MemuConfig,
   MemorizeRequest,
   MemorizeResponse,
-  MemorizeStatusResponse,
   RetrieveRequest,
   RetrieveResponse,
-  ListCategoriesRequest,
   ListCategoriesResponse,
-  CreateMemoryItemRequest,
+  CreateItemRequest,
   MemoryItem,
   MemoryCategory,
   CreateCategoryRequest,
@@ -34,6 +32,13 @@ export class MemuClient {
   }
 
   /**
+   * Get the current namespace
+   */
+  get namespace(): string {
+    return this.config.namespace;
+  }
+
+  /**
    * Make authenticated HTTP request to memU API
    */
   private async request<T>(
@@ -47,12 +52,10 @@ export class MemuClient {
       'Content-Type': 'application/json',
     };
 
-    // Add auth header if API key provided
     if (this.config.apiKey) {
       headers['Authorization'] = `Bearer ${this.config.apiKey}`;
     }
 
-    // Add namespace header if configured
     if (this.config.namespace) {
       headers['X-Memu-Namespace'] = this.config.namespace;
     }
@@ -80,39 +83,29 @@ export class MemuClient {
   // Memorize API
   // ============================================================================
 
-  /**
-   * Start a memorization task to process and store memories
-   */
   async memorize(request: MemorizeRequest): Promise<MemorizeResponse> {
     logger.info('MEMU', 'Starting memorize task', {
       modality: request.modality,
       hasContent: !!request.content,
-      hasUrl: !!request.resourceUrl,
     });
 
     return this.request<MemorizeResponse>('POST', '/memory/memorize', {
-      resource_url: request.resourceUrl,
       content: request.content,
       modality: request.modality,
-      user_id: request.userId,
       namespace: request.namespace || this.config.namespace,
-      categories: request.categories,
     });
   }
 
-  /**
-   * Check status of a memorization task
-   */
-  async getMemorizeStatus(taskId: string): Promise<MemorizeStatusResponse> {
-    return this.request<MemorizeStatusResponse>(
-      'GET',
-      `/memory/memorize/status/${taskId}`
-    );
+  async getMemorizeStatus(taskId: string): Promise<{
+    taskId: string;
+    status: string;
+    progress?: number;
+    error?: string;
+    result?: MemorizeResponse;
+  }> {
+    return this.request('GET', `/memory/memorize/status/${taskId}`);
   }
 
-  /**
-   * Wait for a memorization task to complete
-   */
   async waitForMemorize(
     taskId: string,
     timeoutMs: number = 60000,
@@ -141,11 +134,8 @@ export class MemuClient {
   // Retrieve API
   // ============================================================================
 
-  /**
-   * Query memories with optional proactive context
-   */
   async retrieve(request: RetrieveRequest): Promise<RetrieveResponse> {
-    logger.info('MEMU', 'Retrieving memories', {
+    logger.debug('MEMU', 'Retrieving memories', {
       queryCount: request.queries.length,
       method: request.method || 'rag',
       limit: request.limit,
@@ -156,7 +146,6 @@ export class MemuClient {
       method: request.method || 'rag',
       limit: request.limit,
       where: request.where ? {
-        user_id: request.where.userId,
         namespace: request.where.namespace || this.config.namespace,
         category_id: request.where.categoryId,
         memory_types: request.where.memoryTypes,
@@ -171,19 +160,12 @@ export class MemuClient {
   // Categories API
   // ============================================================================
 
-  /**
-   * List all memory categories
-   */
-  async listCategories(request?: ListCategoriesRequest): Promise<ListCategoriesResponse> {
+  async listCategories(namespace?: string): Promise<ListCategoriesResponse> {
     return this.request<ListCategoriesResponse>('POST', '/memory/categories', {
-      namespace: request?.namespace || this.config.namespace,
-      user_id: request?.userId,
+      namespace: namespace || this.config.namespace,
     });
   }
 
-  /**
-   * Create a new memory category
-   */
   async createCategory(request: CreateCategoryRequest): Promise<MemoryCategory> {
     return this.request<MemoryCategory>('POST', '/memory/categories/create', {
       name: request.name,
@@ -196,11 +178,8 @@ export class MemuClient {
   // Memory Items API
   // ============================================================================
 
-  /**
-   * Create a memory item directly (without full memorize pipeline)
-   */
-  async createMemoryItem(request: CreateMemoryItemRequest): Promise<MemoryItem> {
-    logger.info('MEMU', 'Creating memory item', {
+  async createItem(request: CreateItemRequest): Promise<MemoryItem> {
+    logger.debug('MEMU', 'Creating memory item', {
       type: request.memoryType,
       hasCategory: !!request.categoryId,
       tagCount: request.tags?.length || 0,
@@ -216,17 +195,11 @@ export class MemuClient {
     });
   }
 
-  /**
-   * Get a memory item by ID
-   */
-  async getMemoryItem(itemId: string): Promise<MemoryItem> {
+  async getItem(itemId: string): Promise<MemoryItem> {
     return this.request<MemoryItem>('GET', `/memory/items/${itemId}`);
   }
 
-  /**
-   * Delete a memory item
-   */
-  async deleteMemoryItem(itemId: string): Promise<void> {
+  async deleteItem(itemId: string): Promise<void> {
     await this.request<void>('DELETE', `/memory/items/${itemId}`);
   }
 
@@ -234,9 +207,6 @@ export class MemuClient {
   // Health Check
   // ============================================================================
 
-  /**
-   * Check if memU API is available
-   */
   async healthCheck(): Promise<boolean> {
     try {
       const response = await fetch(`${this.config.apiUrl || DEFAULT_API_URL}/health`);
@@ -255,10 +225,5 @@ export function createMemuClient(config?: Partial<MemuConfig>): MemuClient {
   const apiUrl = config?.apiUrl || process.env.CLAUDE_MEMU_API_URL || DEFAULT_API_URL;
   const namespace = config?.namespace || process.env.CLAUDE_MEMU_NAMESPACE || 'default';
 
-  return new MemuClient({
-    apiKey,
-    apiUrl,
-    namespace,
-    llmProfile: config?.llmProfile,
-  });
+  return new MemuClient({ apiKey, apiUrl, namespace });
 }

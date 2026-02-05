@@ -1,62 +1,23 @@
 /**
- * memU API Types
+ * memU Types
  *
- * Type definitions for the NevaMind-AI/memU memory system.
- * Based on memU v3 API: https://github.com/NevaMind-AI/memU
+ * Type definitions for claude-memu using NevaMind-AI/memU.
+ * Simplified and optimized for direct memU integration.
  */
 
 // ============================================================================
-// Configuration Types
+// Configuration
 // ============================================================================
 
 export interface MemuConfig {
   apiKey: string;
   apiUrl: string;
   namespace: string;
-  llmProfile?: LLMProfile;
-}
-
-export interface LLMProfile {
-  apiKey: string;
-  chatModel: string;
-  embedModel?: string;
-  baseUrl?: string;
 }
 
 // ============================================================================
-// Memory Category Types
+// Core Memory Types
 // ============================================================================
-
-export interface MemoryCategory {
-  id: string;
-  name: string;
-  description: string;
-  summary?: string;
-  itemCount?: number;
-  createdAt?: string;
-  updatedAt?: string;
-}
-
-export interface CreateCategoryRequest {
-  name: string;
-  description: string;
-}
-
-// ============================================================================
-// Memory Item Types
-// ============================================================================
-
-export interface MemoryItem {
-  id: string;
-  categoryId?: string;
-  memoryType: MemoryType;
-  content: string;
-  summary?: string;
-  tags?: string[];
-  metadata?: Record<string, unknown>;
-  createdAt: string;
-  updatedAt?: string;
-}
 
 export type MemoryType =
   | 'decision'
@@ -68,174 +29,206 @@ export type MemoryType =
   | 'conversation'
   | 'document'
   | 'fact'
-  | 'skill'
-  | 'preference';
+  | 'skill';
 
-export interface CreateMemoryItemRequest {
-  memoryType: MemoryType;
-  content: string;
-  categoryId?: string;
-  tags?: string[];
-  metadata?: Record<string, unknown>;
+export interface MemoryCategory {
+  id: string;
+  name: string;
+  description: string;
+  summary?: string;
+  itemCount?: number;
+  createdAt?: string;
 }
 
-// ============================================================================
-// Resource Types (for memorize)
-// ============================================================================
-
-export interface MemoryResource {
+export interface MemoryItem {
   id: string;
-  url?: string;
-  content?: string;
-  modality: ResourceModality;
-  items?: MemoryItem[];
-  categories?: MemoryCategory[];
+  categoryId?: string;
+  memoryType: MemoryType;
+  content: string;
+  summary?: string;
+  tags?: string[];
+  metadata?: Record<string, unknown>;
   createdAt: string;
 }
 
-export type ResourceModality =
-  | 'conversation'
-  | 'document'
-  | 'image'
-  | 'video'
-  | 'audio'
-  | 'code';
-
 // ============================================================================
-// Memorize API Types
+// Session Types
 // ============================================================================
 
-export interface MemorizeRequest {
-  resourceUrl?: string;
+export interface Session {
+  id: number;
+  contentSessionId: string;
+  memorySessionId: string | null;
+  project: string;
+  userPrompt: string;
+  promptCounter: number;
+  status: 'active' | 'completed' | 'failed';
+  createdAt: string;
+  createdAtEpoch: number;
+}
+
+// ============================================================================
+// Observation Types
+// ============================================================================
+
+export interface Observation {
+  type: MemoryType;
+  title: string | null;
+  subtitle: string | null;
+  facts: string[];
+  narrative: string | null;
+  concepts: string[];
+  filesRead: string[];
+  filesModified: string[];
+  promptNumber?: number;
+}
+
+export interface StoredObservation extends Observation {
+  id: string;
+  memorySessionId: string;
+  project: string;
   content?: string;
-  modality: ResourceModality;
-  userId?: string;
-  namespace?: string;
-  categories?: CreateCategoryRequest[];
-}
-
-export interface MemorizeResponse {
-  taskId: string;
-  status: MemorizeStatus;
-  resource?: MemoryResource;
-  items?: MemoryItem[];
-  categories?: MemoryCategory[];
-}
-
-export type MemorizeStatus =
-  | 'pending'
-  | 'processing'
-  | 'completed'
-  | 'failed';
-
-export interface MemorizeStatusResponse {
-  taskId: string;
-  status: MemorizeStatus;
-  progress?: number;
-  error?: string;
-  result?: MemorizeResponse;
+  createdAt: string;
+  createdAtEpoch: number;
 }
 
 // ============================================================================
-// Retrieve API Types
+// Summary Types
 // ============================================================================
 
-export interface RetrieveRequest {
-  queries: RetrieveQuery[];
-  method?: RetrieveMethod;
+export interface Summary {
+  request: string | null;
+  investigated: string | null;
+  learned: string | null;
+  completed: string | null;
+  nextSteps: string | null;
+  notes?: string | null;
+  promptNumber?: number;
+}
+
+export interface StoredSummary extends Summary {
+  id: string;
+  memorySessionId: string;
+  project: string;
+  createdAt: string;
+  createdAtEpoch: number;
+}
+
+// ============================================================================
+// User Prompt Types
+// ============================================================================
+
+export interface UserPrompt {
+  sessionId: number;
+  project: string;
+  content: string;
+  promptNumber: number;
+}
+
+export interface StoredUserPrompt extends UserPrompt {
+  id: string;
+  createdAt: string;
+  createdAtEpoch: number;
+}
+
+// ============================================================================
+// Search Types
+// ============================================================================
+
+export interface SearchQuery {
+  text?: string;
+  project?: string;
+  types?: MemoryType[];
+  concepts?: string[];
+  files?: string[];
+  dateFrom?: string;
+  dateTo?: string;
   limit?: number;
-  where?: RetrieveFilter;
+  method?: 'rag' | 'llm';
 }
+
+export interface SearchResults {
+  observations: StoredObservation[];
+  summaries: StoredSummary[];
+  prompts: StoredUserPrompt[];
+  proactiveContext?: string;
+}
+
+// ============================================================================
+// Context Injection Types
+// ============================================================================
+
+export interface ContextPayload {
+  recentObservations: StoredObservation[];
+  recentSummaries: StoredSummary[];
+  proactiveContext?: string;
+  project: string;
+  sessionCount: number;
+}
+
+// ============================================================================
+// API Types
+// ============================================================================
 
 export interface RetrieveQuery {
   role: 'user' | 'assistant' | 'system';
   content: string;
 }
 
-export type RetrieveMethod = 'rag' | 'llm';
-
-export interface RetrieveFilter {
-  userId?: string;
-  namespace?: string;
-  categoryId?: string;
-  memoryTypes?: MemoryType[];
-  tags?: string[];
-  dateFrom?: string;
-  dateTo?: string;
+export interface RetrieveRequest {
+  queries: RetrieveQuery[];
+  method?: 'rag' | 'llm';
+  limit?: number;
+  where?: {
+    namespace?: string;
+    categoryId?: string;
+    memoryTypes?: MemoryType[];
+    tags?: string[];
+    dateFrom?: string;
+    dateTo?: string;
+  };
 }
 
 export interface RetrieveResponse {
-  items: RetrievedItem[];
+  items: Array<{
+    id: string;
+    summary: string;
+    content?: string;
+    memoryType: MemoryType;
+    relevanceScore: number;
+    category?: MemoryCategory;
+    metadata?: Record<string, unknown>;
+    createdAt?: string;
+  }>;
   proactiveContext?: string;
-  queryAnalysis?: QueryAnalysis;
 }
 
-export interface RetrievedItem {
-  id: string;
-  summary: string;
-  content?: string;
+export interface MemorizeRequest {
+  content: string;
+  modality: 'conversation' | 'document' | 'code';
+  namespace?: string;
+}
+
+export interface MemorizeResponse {
+  taskId: string;
+  status: 'pending' | 'processing' | 'completed' | 'failed';
+  items?: MemoryItem[];
+  categories?: MemoryCategory[];
+}
+
+export interface CreateItemRequest {
   memoryType: MemoryType;
-  relevanceScore: number;
-  category?: MemoryCategory;
+  content: string;
+  categoryId?: string;
+  tags?: string[];
   metadata?: Record<string, unknown>;
 }
 
-export interface QueryAnalysis {
-  intent: string;
-  entities: string[];
-  suggestedCategories?: string[];
-}
-
-// ============================================================================
-// Categories API Types
-// ============================================================================
-
-export interface ListCategoriesRequest {
-  namespace?: string;
-  userId?: string;
+export interface CreateCategoryRequest {
+  name: string;
+  description: string;
 }
 
 export interface ListCategoriesResponse {
   categories: MemoryCategory[];
-}
-
-// ============================================================================
-// Claude-memu Specific Mappings
-// ============================================================================
-
-/**
- * Mapped from claude-mem observation to memU item
- */
-export interface ObservationToMemuMapping {
-  type: MemoryType;
-  title: string;
-  subtitle?: string;
-  facts: string[];
-  narrative?: string;
-  concepts: string[];
-  filesRead: string[];
-  filesModified: string[];
-}
-
-/**
- * Mapped from claude-mem session summary to memU category
- */
-export interface SummaryToMemuMapping {
-  request: string;
-  investigated: string;
-  learned: string;
-  completed: string;
-  nextSteps: string;
-}
-
-/**
- * Session reference for tracking memU resources
- */
-export interface MemuSessionRef {
-  sessionDbId: number;
-  contentSessionId: string;
-  memuResourceId?: string;
-  memuTaskId?: string;
-  project: string;
-  namespace: string;
 }

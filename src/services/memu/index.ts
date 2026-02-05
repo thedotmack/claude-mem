@@ -1,9 +1,9 @@
 /**
- * memU Module Index
+ * memU Module
  *
- * Exports for the memU memory system integration.
+ * Primary storage layer for claude-memu using NevaMind-AI/memU.
  */
 
 export * from './types.js';
 export * from './memu-client.js';
-export * from './memu-adapter.js';
+export * from './MemuStore.js';
