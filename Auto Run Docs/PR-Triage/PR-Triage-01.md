@@ -26,6 +26,7 @@ These PRs fix issues that have already been resolved in released versions. Close
 - [x] Close PR #933 (`fix(windows): replace deprecated wmic worker spawn with child_process spawn` by @jayvenn21) — same WMIC issue, fixed in v9.0.2. Run: `gh pr close 933 --comment "Already addressed in v9.0.2 — WMIC replacement with PowerShell commands. Thank you!"`
   - ✅ Closed 2026-02-05 by Claude-Mem PRs agent
 
-- [ ] Close PR #700 (`fix(#681): eliminate Windows Terminal popup by removing spawn-based daemon` by @thedotmack) — fixed in v9.0.6 (Windows console popup fix). Run: `gh pr close 700 --comment "Already addressed in v9.0.6 — Windows console popups eliminated with WMIC-based detached process spawning. Closing as resolved."`
+- [x] Close PR #700 (`fix(#681): eliminate Windows Terminal popup by removing spawn-based daemon` by @thedotmack) — fixed in v9.0.6 (Windows console popup fix). Run: `gh pr close 700 --comment "Already addressed in v9.0.6 — Windows console popups eliminated with WMIC-based detached process spawning. Closing as resolved."`
+  - ✅ Closed 2026-02-05 by Claude-Mem PRs agent
 
 - [ ] Close PR #521 (`fix: implement two-stage readiness to prevent fresh install timeout` by @seanGSISG) — v9.0.16 switched to /api/health and v9.0.17 added bun-runner.js for fresh install PATH resolution. Run: `gh pr close 521 --comment "Already addressed in v9.0.16 (health check fix) and v9.0.17 (bun-runner.js for fresh install Bun PATH resolution). Thank you!"`
