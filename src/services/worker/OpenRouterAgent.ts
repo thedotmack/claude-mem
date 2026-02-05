@@ -93,16 +93,28 @@ export class OpenRouterAgent {
         throw new Error('OpenRouter API key not configured. Set CLAUDE_MEM_OPENROUTER_API_KEY in settings or OPENROUTER_API_KEY environment variable.');
       }
 
-      // Generate memorySessionId if not already set (OpenRouter doesn't have SDK session IDs like Claude)
+      // Ensure memorySessionId is set (OpenRouter doesn't get session IDs from SDK responses)
       // This must happen before any processAgentResponse() calls which require it for the FK constraint
+      // IMPORTANT: Reuse existing DB value to avoid FK violations with existing observations/summaries.
+      // Only generate a new UUID for truly new sessions that have no memory_session_id yet.
       if (!session.memorySessionId) {
-        const generatedId = randomUUID();
-        session.memorySessionId = generatedId;
-        this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, generatedId);
-        logger.info('SESSION', `Generated memorySessionId for OpenRouter session`, {
-          sessionId: session.sessionDbId,
-          memorySessionId: generatedId
-        });
+        const dbSession = this.dbManager.getSessionById(session.sessionDbId);
+        const existingId = dbSession?.memory_session_id;
+        if (existingId) {
+          session.memorySessionId = existingId;
+          logger.info('SESSION', `Restored memorySessionId from database for OpenRouter session`, {
+            sessionId: session.sessionDbId,
+            memorySessionId: existingId
+          });
+        } else {
+          const generatedId = randomUUID();
+          session.memorySessionId = generatedId;
+          this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, generatedId);
+          logger.info('SESSION', `Generated memorySessionId for OpenRouter session`, {
+            sessionId: session.sessionDbId,
+            memorySessionId: generatedId
+          });
+        }
       }
 
       // Load active mode
