@@ -67,7 +67,7 @@ export class ViewerRoutes extends BaseRouteHandler {
   /**
    * SSE stream endpoint
    */
-  private handleSSEStream = this.wrapHandler((req: Request, res: Response): void => {
+  private handleSSEStream = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     // Setup SSE headers
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
@@ -77,7 +77,7 @@ export class ViewerRoutes extends BaseRouteHandler {
     this.sseBroadcaster.addClient(res);
 
     // Send initial_load event with projects list
-    const allProjects = this.dbManager.getSessionStore().getAllProjects();
+    const allProjects = await this.dbManager.getSessionStore().getAllProjects();
     this.sseBroadcaster.broadcast({
       type: 'initial_load',
       projects: allProjects,
