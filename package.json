@@ -1,6 +1,6 @@
 {
   "name": "claude-mem",
-  "version": "9.0.12",
+  "version": "9.0.15",
   "description": "Memory compression system for Claude Code - persist context across sessions",
   "keywords": [
     "claude",
@@ -86,7 +86,18 @@
     "test:context": "bun test tests/context/",
     "test:infra": "bun test tests/infrastructure/",
     "test:server": "bun test tests/server/",
-    "benchmark:memory": "bun run benchmark/memory-services.bench.ts"
+    "benchmark:memory": "bun run benchmark/memory-services.bench.ts",
+    "prepublishOnly": "npm run build",
+    "release": "np",
+    "release:patch": "np patch --no-cleanup",
+    "release:minor": "np minor --no-cleanup",
+    "release:major": "np major --no-cleanup"
+  },
+  "np": {
+    "yarn": false,
+    "contents": ".",
+    "testScript": "test",
+    "2fa": false
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.1.76",
@@ -107,6 +118,7 @@
     "@types/react": "^18.3.5",
     "@types/react-dom": "^18.3.0",
     "esbuild": "^0.27.2",
+    "np": "^11.0.2",
     "tsx": "^4.20.6",
     "typescript": "^5.3.0"
   }

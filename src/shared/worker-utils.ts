@@ -5,7 +5,6 @@ import { spawnSync } from "child_process";
 import { logger } from "../utils/logger.js";
 import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
 import { SettingsDefaultsManager } from "./SettingsDefaultsManager.js";
-import { getWorkerRestartInstructions } from "../utils/error-messages.js";
 
 const MARKETPLACE_ROOT = path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
 
@@ -200,11 +199,9 @@ export async function ensureWorkerRunning(): Promise<void> {
         error: e instanceof Error ? e.message : String(e)
       });
     }
-    await new Promise(r => setTimeout(r, pollInterval));
+    await new Promise(resolve => setTimeout(resolve, pollInterval));
   }
 
-  throw new Error(getWorkerRestartInstructions({
-    port: getWorkerPort(),
-    customPrefix: 'Worker did not become ready within 15 seconds.'
-  }));
+  // If we get here, worker failed to start in time
+  logger.warn('SYSTEM', 'Worker failed to start after retries, hook will proceed gracefully');
 }

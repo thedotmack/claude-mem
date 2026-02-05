@@ -520,6 +520,75 @@ export class WorkerService {
 }
 
 // ============================================================================
+// Reusable Worker Startup Logic
+// ============================================================================
+
+/**
+ * Ensures the worker is started and healthy.
+ * This function can be called by both 'start' and 'hook' commands.
+ *
+ * @param port - The port the worker should run on
+ * @returns true if worker is healthy (existing or newly started), false on failure
+ */
+async function ensureWorkerStarted(port: number): Promise<boolean> {
+  // Check if worker is already running and healthy
+  if (await waitForHealth(port, 1000)) {
+    const versionCheck = await checkVersionMatch(port);
+    if (!versionCheck.matches) {
+      logger.info('SYSTEM', 'Worker version mismatch detected - auto-restarting', {
+        pluginVersion: versionCheck.pluginVersion,
+        workerVersion: versionCheck.workerVersion
+      });
+
+      await httpShutdown(port);
+      const freed = await waitForPortFree(port, getPlatformTimeout(15000));
+      if (!freed) {
+        logger.error('SYSTEM', 'Port did not free up after shutdown for version mismatch restart', { port });
+        return false;
+      }
+      removePidFile();
+    } else {
+      logger.info('SYSTEM', 'Worker already running and healthy');
+      return true;
+    }
+  }
+
+  // Check if port is in use by something else
+  const portInUse = await isPortInUse(port);
+  if (portInUse) {
+    logger.info('SYSTEM', 'Port in use, waiting for worker to become healthy');
+    const healthy = await waitForHealth(port, getPlatformTimeout(15000));
+    if (healthy) {
+      logger.info('SYSTEM', 'Worker is now healthy');
+      return true;
+    }
+    logger.error('SYSTEM', 'Port in use but worker not responding to health checks');
+    return false;
+  }
+
+  // Spawn new worker daemon
+  logger.info('SYSTEM', 'Starting worker daemon');
+  const pid = spawnDaemon(__filename, port);
+  if (pid === undefined) {
+    logger.error('SYSTEM', 'Failed to spawn worker daemon');
+    return false;
+  }
+
+  // PID file is written by the worker itself after listen() succeeds
+  // This is race-free and works correctly on Windows where cmd.exe PID is useless
+
+  const healthy = await waitForHealth(port, getPlatformTimeout(30000));
+  if (!healthy) {
+    removePidFile();
+    logger.error('SYSTEM', 'Worker failed to start (health check timeout)');
+    return false;
+  }
+
+  logger.info('SYSTEM', 'Worker started successfully');
+  return true;
+}
+
+// ============================================================================
 // CLI Entry Point
 // ============================================================================
 
@@ -537,58 +606,12 @@ async function main() {
 
   switch (command) {
     case 'start': {
-      if (await waitForHealth(port, 1000)) {
-        const versionCheck = await checkVersionMatch(port);
-        if (!versionCheck.matches) {
-          logger.info('SYSTEM', 'Worker version mismatch detected - auto-restarting', {
-            pluginVersion: versionCheck.pluginVersion,
-            workerVersion: versionCheck.workerVersion
-          });
-
-          await httpShutdown(port);
-          const freed = await waitForPortFree(port, getPlatformTimeout(15000));
-          if (!freed) {
-            logger.error('SYSTEM', 'Port did not free up after shutdown for version mismatch restart', { port });
-            exitWithStatus('error', 'Port did not free after version mismatch restart');
-          }
-          removePidFile();
-        } else {
-          logger.info('SYSTEM', 'Worker already running and healthy');
-          exitWithStatus('ready');
-        }
+      const success = await ensureWorkerStarted(port);
+      if (success) {
+        exitWithStatus('ready');
+      } else {
+        exitWithStatus('error', 'Failed to start worker');
       }
-
-      const portInUse = await isPortInUse(port);
-      if (portInUse) {
-        logger.info('SYSTEM', 'Port in use, waiting for worker to become healthy');
-        const healthy = await waitForHealth(port, getPlatformTimeout(15000));
-        if (healthy) {
-          logger.info('SYSTEM', 'Worker is now healthy');
-          exitWithStatus('ready');
-        }
-        logger.error('SYSTEM', 'Port in use but worker not responding to health checks');
-        exitWithStatus('error', 'Port in use but worker not responding');
-      }
-
-      logger.info('SYSTEM', 'Starting worker daemon');
-      const pid = spawnDaemon(__filename, port);
-      if (pid === undefined) {
-        logger.error('SYSTEM', 'Failed to spawn worker daemon');
-        exitWithStatus('error', 'Failed to spawn worker daemon');
-      }
-
-      // PID file is written by the worker itself after listen() succeeds
-      // This is race-free and works correctly on Windows where cmd.exe PID is useless
-
-      const healthy = await waitForHealth(port, getPlatformTimeout(30000));
-      if (!healthy) {
-        removePidFile();
-        logger.error('SYSTEM', 'Worker failed to start (health check timeout)');
-        exitWithStatus('error', 'Worker failed to start (health check timeout)');
-      }
-
-      logger.info('SYSTEM', 'Worker started successfully');
-      exitWithStatus('ready');
     }
 
     case 'stop': {
@@ -659,16 +682,48 @@ async function main() {
     }
 
     case 'hook': {
+      // Auto-start worker if not running
+      const workerReady = await ensureWorkerStarted(port);
+      if (!workerReady) {
+        logger.warn('SYSTEM', 'Worker failed to start before hook, handler will retry');
+      }
+
+      // Existing logic unchanged
       const platform = process.argv[3];
       const event = process.argv[4];
       if (!platform || !event) {
         console.error('Usage: claude-mem hook <platform> <event>');
         console.error('Platforms: claude-code, cursor, raw');
-        console.error('Events: context, session-init, observation, summarize, user-message');
+        console.error('Events: context, session-init, observation, summarize');
         process.exit(1);
       }
+
+      // Check if worker is already running on port
+      const portInUse = await isPortInUse(port);
+      let startedWorkerInProcess = false;
+
+      if (!portInUse) {
+        // Port free - start worker IN THIS PROCESS (no spawn!)
+        // This process becomes the worker and stays alive
+        try {
+          logger.info('SYSTEM', 'Starting worker in-process for hook', { event });
+          const worker = new WorkerService();
+          await worker.start();
+          startedWorkerInProcess = true;
+          // Worker is now running in this process on the port
+        } catch (error) {
+          logger.failure('SYSTEM', 'Worker failed to start in hook', {}, error as Error);
+          removePidFile();
+          process.exit(0);
+        }
+      }
+      // If port in use, we'll use HTTP to the existing worker
+
       const { hookCommand } = await import('../cli/hook-command.js');
-      await hookCommand(platform, event);
+      // If we started the worker in this process, skip process.exit() so we stay alive as the worker
+      await hookCommand(platform, event, { skipExit: startedWorkerInProcess });
+      // Note: if we started worker in-process, this process stays alive as the worker
+      // The break allows the event loop to continue serving requests
       break;
     }
 

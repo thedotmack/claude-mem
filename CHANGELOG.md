@@ -2,6 +2,55 @@
 
 All notable changes to claude-mem.
 
+## [v9.0.15] - 2026-02-05
+
+## Security Fix
+
+### Isolated Credentials (#745)
+- **Prevents API key hijacking** from random project `.env` files
+- Credentials now sourced exclusively from `~/.claude-mem/.env`
+- Only whitelisted environment variables passed to SDK `query()` calls
+- Authentication method logging shows whether using Claude Code CLI subscription billing or explicit API key
+
+This is a security-focused patch release that hardens credential handling to prevent unintended API key usage from project directories.
+
+## [v9.0.14] - 2026-02-05
+
+## In-Process Worker Architecture
+
+This release includes the merged in-process worker architecture from PR #722, which fundamentally improves how hooks interact with the worker service.
+
+### Changes
+
+- **In-process worker architecture** - Hook processes now become the worker when port 37777 is available, eliminating Windows spawn issues
+- **Hook command improvements** - Added `skipExit` option to `hook-command.ts` for chained command execution
+- **Worker health checks** - `worker-utils.ts` now returns boolean status for cleaner health monitoring
+- **Massive CLAUDE.md cleanup** - Removed 76 redundant documentation files (4,493 lines removed)
+- **Chained hook configuration** - `hooks.json` now supports chained commands for complex workflows
+
+### Technical Details
+
+The in-process architecture means hooks no longer need to spawn separate worker processes. When port 37777 is available, the hook itself becomes the worker, providing:
+- Faster startup times
+- Better resource utilization
+- Elimination of process spawn failures on Windows
+
+Full PR: https://github.com/thedotmack/claude-mem/pull/722
+
+## [v9.0.13] - 2026-02-05
+
+## Bug Fixes
+
+### Zombie Observer Prevention (#856)
+
+Fixed a critical issue where observer processes could become "zombies" - lingering indefinitely without activity. This release adds:
+
+- **3-minute idle timeout**: SessionQueueProcessor now automatically terminates after 3 minutes of inactivity
+- **Race condition fix**: Resolved spurious wakeup issues by resetting `lastActivityTime` on queue activity
+- **Comprehensive test coverage**: Added 11 new tests for the idle timeout mechanism
+
+This fix prevents resource leaks from orphaned observer processes that could accumulate over time.
+
 ## [v9.0.12] - 2026-01-28
 
 ## Fix: Authentication failure from observer session isolation
@@ -1289,47 +1338,4 @@ Patch release v7.4.2
 - **MCP Server**: Redirect logs to stderr to preserve JSON-RPC protocol (#396)
   - MCP uses stdio transport where stdout is reserved for JSON-RPC messages
   - Console.log was writing startup logs to stdout, causing Claude Desktop to parse log lines as JSON and fail
-
-## [v7.4.0] - 2025-12-18
-
-## What's New
-
-### MCP Tool Token Reduction
-
-Optimized MCP tool definitions for reduced token consumption in Claude Code sessions through progressive parameter disclosure.
-
-**Changes:**
-- Streamlined MCP tool schemas with minimal inline definitions
-- Added `get_schema()` tool for on-demand parameter documentation
-- Enhanced worker API with operation-based instruction loading
-
-This release improves session efficiency by reducing the token overhead of MCP tool definitions while maintaining full functionality through progressive disclosure.
-
----
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-## [v7.3.9] - 2025-12-18
-
-## Fixes
-
-- Fix MCP server compatibility and web UI path resolution
-
-This patch release addresses compatibility issues with the MCP server and resolves path resolution problems in the web UI.
-
-## [v7.3.8] - 2025-12-18
-
-## Security Fix
-
-Added localhost-only protection for admin endpoints to prevent DoS attacks when worker service is bound to 0.0.0.0 for remote UI access.
-
-### Changes
-- Created `requireLocalhost` middleware to restrict admin endpoints
-- Applied to `/api/admin/restart` and `/api/admin/shutdown`
-- Returns 403 Forbidden for non-localhost requests
-
-### Security Impact
-Prevents unauthorized shutdown/restart of worker service when exposed on network.
-
-Fixes security concern raised in #368.
 

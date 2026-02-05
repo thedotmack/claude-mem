@@ -8,11 +8,16 @@ import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js'
 import { ensureWorkerRunning, getWorkerPort } from '../../shared/worker-utils.js';
 import { getProjectName } from '../../utils/project-name.js';
 import { logger } from '../../utils/logger.js';
+import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 
 export const sessionInitHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
     // Ensure worker is running before any other logic
-    await ensureWorkerRunning();
+    const workerReady = await ensureWorkerRunning();
+    if (!workerReady) {
+      // Worker not available - skip session init gracefully
+      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+    }
 
     const { sessionId, cwd, prompt } = input;
 
