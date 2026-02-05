@@ -2,6 +2,26 @@
 
 All notable changes to claude-mem.
 
+## [v9.0.16] - 2026-02-05
+
+## Bug Fixes
+
+### Fix Worker Startup Timeout (#811, #772, #729)
+
+Resolves the "Worker did not become ready within 15 seconds" timeout error that could prevent hooks from communicating with the worker service.
+
+**Root cause:** `isWorkerHealthy()` and `waitForHealth()` were checking `/api/readiness`, which returns 503 until full initialization completes — including MCP connection setup that can take 5+ minutes. Hooks only have a 15-second timeout window.
+
+**Fix:** Switched to `/api/health` (liveness check), which returns 200 as soon as the HTTP server is listening. This is sufficient for hook communication since the worker accepts requests while background initialization continues.
+
+**Files changed:**
+- `src/shared/worker-utils.ts` — `isWorkerHealthy()` now checks `/api/health`
+- `src/services/infrastructure/HealthMonitor.ts` — `waitForHealth()` now checks `/api/health`
+- `tests/infrastructure/health-monitor.test.ts` — Updated test expectations
+
+### PR Merge Tasks
+- PR #820 merged with full verification pipeline (rebase, code review, build verification, test, manual verification)
+
 ## [v9.0.15] - 2026-02-05
 
 ## Security Fix
@@ -1330,12 +1350,4 @@ Patch release v7.4.2
 - Added path alias script
 - Fixed Windows worker stop/restart reliability (#395)
 - Simplified build commands section in CLAUDE.md
-
-## [v7.4.1] - 2025-12-19
-
-## Bug Fixes
-
-- **MCP Server**: Redirect logs to stderr to preserve JSON-RPC protocol (#396)
-  - MCP uses stdio transport where stdout is reserved for JSON-RPC messages
-  - Console.log was writing startup logs to stdout, causing Claude Desktop to parse log lines as JSON and fail
 
