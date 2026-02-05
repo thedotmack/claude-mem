@@ -10,10 +10,50 @@
  */
 
 import path from 'path';
+import { existsSync, writeFileSync, unlinkSync, statSync } from 'fs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
+import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { logger } from '../utils/logger.js';
+
+// Windows: avoid repeated spawn popups when startup fails (issue #921)
+const WINDOWS_SPAWN_COOLDOWN_MS = 2 * 60 * 1000;
+
+function getWorkerSpawnLockPath(): string {
+  return path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), '.worker-start-attempted');
+}
+
+function shouldSkipSpawnOnWindows(): boolean {
+  if (process.platform !== 'win32') return false;
+  const lockPath = getWorkerSpawnLockPath();
+  if (!existsSync(lockPath)) return false;
+  try {
+    const modifiedTimeMs = statSync(lockPath).mtimeMs;
+    return Date.now() - modifiedTimeMs < WINDOWS_SPAWN_COOLDOWN_MS;
+  } catch {
+    return false;
+  }
+}
+
+function markWorkerSpawnAttempted(): void {
+  if (process.platform !== 'win32') return;
+  try {
+    writeFileSync(getWorkerSpawnLockPath(), '', 'utf-8');
+  } catch {
+    // Best-effort lock file — failure to write shouldn't block startup
+  }
+}
+
+function clearWorkerSpawnAttempted(): void {
+  if (process.platform !== 'win32') return;
+  try {
+    const lockPath = getWorkerSpawnLockPath();
+    if (existsSync(lockPath)) unlinkSync(lockPath);
+  } catch {
+    // Best-effort cleanup
+  }
+}
 
 // Version injected at build time by esbuild define
 declare const __DEFAULT_PACKAGE_VERSION__: string;
@@ -497,8 +537,15 @@ async function ensureWorkerStarted(port: number): Promise<boolean> {
     return false;
   }
 
+  // Windows: skip spawn if a recent attempt already failed (prevents repeated bun.exe popups, issue #921)
+  if (shouldSkipSpawnOnWindows()) {
+    logger.warn('SYSTEM', 'Worker unavailable on Windows — skipping spawn (recent attempt failed within cooldown)');
+    return false;
+  }
+
   // Spawn new worker daemon
   logger.info('SYSTEM', 'Starting worker daemon');
+  markWorkerSpawnAttempted();
   const pid = spawnDaemon(__filename, port);
   if (pid === undefined) {
     logger.error('SYSTEM', 'Failed to spawn worker daemon');
@@ -515,6 +562,7 @@ async function ensureWorkerStarted(port: number): Promise<boolean> {
     return false;
   }
 
+  clearWorkerSpawnAttempted();
   logger.info('SYSTEM', 'Worker started successfully');
   return true;
 }
