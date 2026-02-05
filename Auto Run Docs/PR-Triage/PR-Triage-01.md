@@ -20,7 +20,8 @@ These PRs fix issues that have already been resolved in released versions. Close
 - [x] Close PR #735 (`fix: strip ANTHROPIC_API_KEY for Claude Code subscribers` by @shyal) — v9.0.15 shipped isolated credentials, sourcing exclusively from ~/.claude-mem/.env. Run: `gh pr close 735 --comment "Already addressed in v9.0.15 — 'Isolated Credentials (#745)' now sources credentials exclusively from ~/.claude-mem/.env with whitelisted env vars. Thank you!"`
   - ✅ Closed 2026-02-05 by Claude-Mem PRs agent
 
-- [ ] Close PR #840 (`fix(windows): replace WMIC with PowerShell Start-Process` by @bivlked) — v9.0.2 already replaced WMIC with PowerShell. Run: `gh pr close 840 --comment "Already addressed in v9.0.2 — replaced deprecated WMIC commands with PowerShell Get-Process and Get-CimInstance. Thank you!"`
+- [x] Close PR #840 (`fix(windows): replace WMIC with PowerShell Start-Process` by @bivlked) — v9.0.2 already replaced WMIC with PowerShell. Run: `gh pr close 840 --comment "Already addressed in v9.0.2 — replaced deprecated WMIC commands with PowerShell Get-Process and Get-CimInstance. Thank you!"`
+  - ✅ Closed 2026-02-05 by Claude-Mem PRs agent
 
 - [ ] Close PR #933 (`fix(windows): replace deprecated wmic worker spawn with child_process spawn` by @jayvenn21) — same WMIC issue, fixed in v9.0.2. Run: `gh pr close 933 --comment "Already addressed in v9.0.2 — WMIC replacement with PowerShell commands. Thank you!"`
 
