@@ -13,6 +13,12 @@ import { DEFAULT_OBSERVATION_TYPES_STRING, DEFAULT_OBSERVATION_CONCEPTS_STRING }
 // logger.ts depends on SettingsDefaultsManager for its initialization
 
 export interface SettingsDefaults {
+  // memU Backend Configuration (NEW)
+  CLAUDE_MEMU_BACKEND: string;  // 'memu' | 'sqlite' - storage backend
+  CLAUDE_MEMU_API_KEY: string;  // memU API key
+  CLAUDE_MEMU_API_URL: string;  // memU API URL (cloud or self-hosted)
+  CLAUDE_MEMU_NAMESPACE: string;  // memU namespace for isolation
+  // Legacy settings (CLAUDE_MEM_* for backwards compatibility)
   CLAUDE_MEM_MODEL: string;
   CLAUDE_MEM_CONTEXT_OBSERVATIONS: string;
   CLAUDE_MEM_WORKER_PORT: string;
@@ -58,6 +64,12 @@ export class SettingsDefaultsManager {
    * Default values for all settings
    */
   private static readonly DEFAULTS: SettingsDefaults = {
+    // memU Backend Configuration (NEW)
+    CLAUDE_MEMU_BACKEND: 'memu',  // Default to memU backend
+    CLAUDE_MEMU_API_KEY: '',  // Empty by default, must be set for cloud API
+    CLAUDE_MEMU_API_URL: 'https://api.memu.so',  // Default to cloud API
+    CLAUDE_MEMU_NAMESPACE: 'default',  // Default namespace
+    // Legacy settings (kept for backwards compatibility)
     CLAUDE_MEM_MODEL: 'claude-sonnet-4-5',
     CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
     CLAUDE_MEM_WORKER_PORT: '37777',
@@ -72,11 +84,11 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_OPENROUTER_API_KEY: '',  // Empty by default, can be set via UI or env
     CLAUDE_MEM_OPENROUTER_MODEL: 'xiaomi/mimo-v2-flash:free',  // Default OpenRouter model (free tier)
     CLAUDE_MEM_OPENROUTER_SITE_URL: '',  // Optional: for OpenRouter analytics
-    CLAUDE_MEM_OPENROUTER_APP_NAME: 'claude-mem',  // App name for OpenRouter analytics
+    CLAUDE_MEM_OPENROUTER_APP_NAME: 'claude-memu',  // App name for OpenRouter analytics
     CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES: '20',  // Max messages in context window
     CLAUDE_MEM_OPENROUTER_MAX_TOKENS: '100000',  // Max estimated tokens (~100k safety limit)
     // System Configuration
-    CLAUDE_MEM_DATA_DIR: join(homedir(), '.claude-mem'),
+    CLAUDE_MEM_DATA_DIR: join(homedir(), '.claude-memu'),
     CLAUDE_MEM_LOG_LEVEL: 'INFO',
     CLAUDE_MEM_PYTHON_VERSION: '3.13',
     CLAUDE_CODE_PATH: '', // Empty means auto-detect via 'which claude'
