@@ -49,6 +49,7 @@ export class SessionStore {
     this.renameSessionIdColumns();
     this.repairSessionIdColumnRename();
     this.addFailedAtEpochColumn();
+    this.addHiddenColumnToSummaries();
   }
 
   /**
@@ -648,6 +649,36 @@ export class SessionStore {
   }
 
   /**
+   * Add hidden column to session_summaries (migration 21)
+   * Enables soft delete functionality for summaries
+   * Includes index on hidden column for efficient filtering
+   */
+  private addHiddenColumnToSummaries(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(21) as SchemaVersion | undefined;
+    if (applied) return;
+
+    const tableInfo = this.db.query('PRAGMA table_info(session_summaries)').all() as TableColumnInfo[];
+    const hasColumn = tableInfo.some(col => col.name === 'hidden');
+
+    if (!hasColumn) {
+      this.db.run('ALTER TABLE session_summaries ADD COLUMN hidden INTEGER DEFAULT 0');
+      logger.debug('DB', 'Added hidden column to session_summaries table');
+    }
+
+    // Create index on hidden column for efficient WHERE hidden = 0 queries
+    // Check if index already exists
+    const indexInfo = this.db.query('PRAGMA index_list(session_summaries)').all() as any[];
+    const hasIndex = indexInfo.some((idx: any) => idx.name === 'idx_session_summaries_hidden');
+
+    if (!hasIndex) {
+      this.db.run('CREATE INDEX idx_session_summaries_hidden ON session_summaries(hidden)');
+      logger.debug('DB', 'Created index on session_summaries.hidden column');
+    }
+
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(21, new Date().toISOString());
+  }
+
+  /**
    * Update the memory session ID for a session
    * Called by SDKAgent when it captures the session ID from the first SDK message
    */
@@ -657,6 +688,20 @@ export class SessionStore {
       SET memory_session_id = ?
       WHERE id = ?
     `).run(memorySessionId, sessionDbId);
+  }
+
+  /**
+   * Update the hidden status of a session summary
+   * Used for soft-delete functionality
+   */
+  updateSummaryHidden(summaryId: number, hidden: boolean): boolean {
+    const result = this.db.prepare(`
+      UPDATE session_summaries
+      SET hidden = ?
+      WHERE id = ?
+    `).run(hidden ? 1 : 0, summaryId);
+
+    return result.changes > 0;
   }
 
   /**
@@ -679,7 +724,7 @@ export class SessionStore {
         request, investigated, learned, completed, next_steps,
         files_read, files_edited, notes, prompt_number, created_at
       FROM session_summaries
-      WHERE project = ?
+      WHERE project = ? AND hidden = 0
       ORDER BY created_at_epoch DESC
       LIMIT ?
     `);
@@ -704,7 +749,7 @@ export class SessionStore {
         memory_session_id, request, learned, completed, next_steps,
         prompt_number, created_at
       FROM session_summaries
-      WHERE project = ?
+      WHERE project = ? AND hidden = 0
       ORDER BY created_at_epoch DESC
       LIMIT ?
     `);
@@ -779,6 +824,7 @@ export class SessionStore {
              files_read, files_edited, notes, project, prompt_number,
              created_at, created_at_epoch
       FROM session_summaries
+      WHERE hidden = 0
       ORDER BY created_at_epoch DESC
       LIMIT ?
     `);

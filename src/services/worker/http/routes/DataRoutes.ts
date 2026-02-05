@@ -43,6 +43,7 @@ export class DataRoutes extends BaseRouteHandler {
     app.get('/api/session/:id', this.handleGetSessionById.bind(this));
     app.post('/api/sdk-sessions/batch', this.handleGetSdkSessionsByIds.bind(this));
     app.get('/api/prompt/:id', this.handleGetPromptById.bind(this));
+    app.patch('/api/summaries/:id/hide', this.handleToggleSummaryHidden.bind(this));
 
     // Metadata endpoints
     app.get('/api/stats', this.handleGetStats.bind(this));
@@ -462,5 +463,54 @@ export class DataRoutes extends BaseRouteHandler {
       success: true,
       clearedCount
     });
+  });
+
+  /**
+   * Toggle session summary hidden status
+   * PATCH /api/summaries/:id/hide
+   * Body: { hidden: boolean }
+   */
+  private handleToggleSummaryHidden = this.wrapHandler((req: Request, res: Response): void => {
+    const id = this.parseIntParam(req, res, 'id');
+    if (id === null) return;
+
+    const { hidden } = req.body;
+
+    if (typeof hidden !== 'boolean') {
+      this.badRequest(res, 'hidden must be a boolean');
+      return;
+    }
+
+    const store = this.dbManager.getSessionStore();
+
+    // Fetch summary for logging context
+    const summary = store.getSessionSummariesByIds([id])[0];
+
+    if (!summary) {
+      this.notFound(res, `Session summary #${id} not found`);
+      return;
+    }
+
+    const updated = store.updateSummaryHidden(id, hidden);
+
+    if (!updated) {
+      this.notFound(res, `Session summary #${id} not found`);
+      return;
+    }
+
+    // Truncate title for logging if it's too long
+    const title = summary.request && summary.request.length > 60
+      ? summary.request.substring(0, 60) + '...'
+      : summary.request;
+
+    logger.debug('HTTP', `Session summary visibility toggled`, {
+      summaryId: id,
+      hidden,
+      memorySessionId: summary.memory_session_id,
+      project: summary.project,
+      title
+    });
+
+    res.json({ success: true, id, hidden });
   });
 }
