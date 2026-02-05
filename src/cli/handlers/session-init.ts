@@ -43,7 +43,9 @@ export const sessionInitHandler: EventHandler = {
     });
 
     if (!initResponse.ok) {
-      throw new Error(`Session initialization failed: ${initResponse.status}`);
+      // Log but don't throw - a worker 500 should not block the user's prompt
+      logger.failure('HOOK', `Session initialization failed: ${initResponse.status}`, { contentSessionId: sessionId, project });
+      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
     const initResult = await initResponse.json() as {
@@ -86,7 +88,8 @@ export const sessionInitHandler: EventHandler = {
       });
 
       if (!response.ok) {
-        throw new Error(`SDK agent start failed: ${response.status}`);
+        // Log but don't throw - SDK agent failure should not block the user's prompt
+        logger.failure('HOOK', `SDK agent start failed: ${response.status}`, { sessionDbId, promptNumber });
       }
     } else if (input.platform === 'cursor') {
       logger.debug('HOOK', 'session-init: Skipping SDK agent init for Cursor platform', { sessionDbId, promptNumber });
