@@ -8,7 +8,8 @@ These PRs fix issues that have already been resolved in released versions. Close
 - [x] Close PR #774 (`fix: use /api/health instead of /api/readiness` by @rajivsinclair) — same fix as #820, already shipped in v9.0.16. Run: `gh pr close 774 --comment "Already addressed in v9.0.16 (same fix as PR #820 which was merged). Health checks now use /api/health. Thank you!"`
   - ✅ Closed 2026-02-05 by Claude-Mem PRs agent
 
-- [ ] Close PR #773 (`fix: use /api/health instead of /api/readiness` by @rajivsinclair) — same fix as #820/#774, already shipped in v9.0.16. Run: `gh pr close 773 --comment "Already addressed in v9.0.16 (same fix as PR #820 which was merged). Health checks now use /api/health. Thank you!"`
+- [x] Close PR #773 (`fix: use /api/health instead of /api/readiness` by @rajivsinclair) — same fix as #820/#774, already shipped in v9.0.16. Run: `gh pr close 773 --comment "Already addressed in v9.0.16 (same fix as PR #820 which was merged). Health checks now use /api/health. Thank you!"`
+  - ✅ Closed 2026-02-05 by Claude-Mem PRs agent
 
 - [ ] Close PR #861 (`fix: add idle timeout with abort to prevent zombie observer processes` by @bigph00t) — v9.0.13 shipped zombie observer prevention with 3-minute idle timeout. Run: `gh pr close 861 --comment "Already addressed in v9.0.13 — 'Zombie Observer Prevention (#856)' added 3-minute idle timeout with race condition fix and 11 tests. Thank you for the contribution!"`
 
