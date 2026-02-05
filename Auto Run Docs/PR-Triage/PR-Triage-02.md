@@ -6,7 +6,7 @@
 
 - [x] Close PR #770 (`chore: install dependencies and build project` by @dylang001) — bot-generated PR that just runs install and build, no meaningful changes. Run: `gh pr close 770 --comment "Closing — this PR appears to be auto-generated (install dependencies and build) with no source code changes. Thank you!"` ✅ Closed 2026-02-05
 
-- [ ] Investigate and close PR #904 (`Update package.json` by @Virt10n01) — branch name `Virt10n01-ip-interceptor` is suspicious. Check the diff first: `gh pr diff 904 | head -50`. If it only modifies package.json with suspicious additions, close with: `gh pr close 904 --comment "Closing — the branch name and changes don't align with project goals. If this was a legitimate contribution, please describe the intent and reopen."`
+- [x] Investigate and close PR #904 (`Update package.json` by @Virt10n01) — branch name `Virt10n01-ip-interceptor` is suspicious. Check the diff first: `gh pr diff 904 | head -50`. If it only modifies package.json with suspicious additions, close with: `gh pr close 904 --comment "Closing — the branch name and changes don't align with project goals. If this was a legitimate contribution, please describe the intent and reopen."` ✅ Closed 2026-02-05 — Confirmed malicious: diff replaces legitimate GitHub repo URL with external Netgate ISO download link (`https://shop.netgate.com/...`), changes type from "git" to "iso.gz". Branch name "ip-interceptor" and PR body "Port Forward" confirm unrelated intent.
 
 - [ ] Close PR #754 (`Document MCP connection lifecycle` by @app/copilot-swe-agent) — bot-generated documentation PR. Run: `gh pr close 754 --comment "Closing — bot-generated PR. MCP documentation is maintained in the official docs. Thank you!"`
 
