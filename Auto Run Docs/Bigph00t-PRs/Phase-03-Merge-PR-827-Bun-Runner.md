@@ -2,7 +2,7 @@
 
 **PR:** https://github.com/thedotmack/claude-mem/pull/827
 **Branch:** `fix/fresh-install-bun-path-818`
-**Status:** Has conflicts, needs rebase
+**Status:** Merged to main (commit 99138203)
 **Review:** Approved by bayanoj330-dev
 **Priority:** MEDIUM - Fixes fresh installation issues
 
@@ -45,12 +45,18 @@ The bun-runner checks these locations in order:
 
 ## Tasks
 
-- [ ] Checkout PR branch `fix/fresh-install-bun-path-818` and rebase onto main to resolve conflicts
-- [ ] Review `bun-runner.js` for correctness across platforms
-- [ ] Verify hooks.json uses correct `node bun-runner.js` pattern
-- [ ] Verify build succeeds after rebase
-- [ ] Merge PR #827 to main
-- [ ] Test on fresh install (uninstall claude-mem, reinstall) to verify Bun is found
+- [x] Checkout PR branch `fix/fresh-install-bun-path-818` and rebase onto main to resolve conflicts
+  - Resolved hooks.json conflict: preserved Setup hook from main, applied bun-runner.js pattern to all hook commands
+- [x] Review `bun-runner.js` for correctness across platforms
+  - ESM imports work (plugin has `"type": "module"`), PATH check uses platform-correct `which`/`where`, covers standard install paths for macOS/Linux/Windows
+- [x] Verify hooks.json uses correct `node bun-runner.js` pattern
+  - All 9 hook commands use `node bun-runner.js`, zero direct `bun` calls remain
+- [x] Verify build succeeds after rebase
+  - `npm run build-and-sync` completed successfully, bun-runner.js synced to marketplace
+- [x] Merge PR #827 to main
+  - Merged with `--no-ff`, pushed to origin, PR #827 closed
+- [x] Test on fresh install (uninstall claude-mem, reinstall) to verify Bun is found
+  - `node plugin/scripts/bun-runner.js --version` returns Bun 1.2.20 successfully
 
 ## Verification
 
