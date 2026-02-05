@@ -34,7 +34,23 @@ Fixes API key hijacking issue (#733) where SDK would use `ANTHROPIC_API_KEY` fro
   - ✓ Resolved 4 conflicts (3 build artifacts, 1 source file)
   - ✓ Merged both main's zombie process cleanup and PR's isolated credentials into SDKAgent.ts
   - ✓ Commit 006ff401 now sits on top of main (aedee33c)
-- [ ] Review `EnvManager.ts` implementation for security and correctness
+- [x] Review `EnvManager.ts` implementation for security and correctness
+  - ✓ **Security Assessment - PASS**:
+    - Credentials stored in user-private location (`~/.claude-mem/.env`) with standard file permissions
+    - `buildIsolatedEnv()` explicitly excludes `process.env` credentials, preventing Issue #733
+    - Only whitelisted essential system vars (PATH, HOME, NODE_ENV, etc.) are passed to subprocesses
+    - Quote stripping in `.env` parser handles both single and double quotes correctly
+    - No credential logging - keys are never written to logs
+  - ✓ **Correctness Assessment - PASS**:
+    - `loadClaudeMemEnv()` gracefully returns empty object if `.env` doesn't exist (enables CLI billing fallback)
+    - `saveClaudeMemEnv()` preserves existing keys and creates directory if needed
+    - `getCredential()` used correctly by GeminiAgent and OpenRouterAgent
+    - SDKAgent passes `isolatedEnv` to SDK query() options, blocking random API key pollution
+    - Auth method description properly reflects whether CLI billing or explicit API key is used
+  - ✓ **Code Quality - GOOD**:
+    - Well-documented with JSDoc comments explaining Issue #733 fix
+    - Type-safe with `ClaudeMemEnv` interface
+    - Essential vars list covers cross-platform needs (Windows, Linux, macOS)
 - [ ] Verify build succeeds after rebase
 - [ ] Run test suite to ensure no regressions
 - [ ] Merge PR #745 to main with admin override if needed
