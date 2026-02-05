@@ -14,7 +14,7 @@
 
 ### user-message hook removal — Keep #960 (more complete, modifies both hooks.json and hook-constants.ts), close #905
 
-- [ ] Close PR #905 (`fix: remove user-message hook from SessionStart` by @creatornader) — duplicate of #960 which is more complete. Run: `gh pr close 905 --comment "Closing in favor of PR #960 which addresses the same issue with a more complete fix (includes hook-constants.ts update). Thank you for the contribution!"`
+- [x] Close PR #905 (`fix: remove user-message hook from SessionStart` by @creatornader) — duplicate of #960 which is more complete. Run: `gh pr close 905 --comment "Closing in favor of PR #960 which addresses the same issue with a more complete fix (includes hook-constants.ts update). Thank you for the contribution!"` ✅ Closed 2026-02-05
 
 ### Windows npm docs note — Keep #919 (earlier, by @kamran-khalid-v9), close #908
 
