@@ -16,7 +16,7 @@ Multiple community members want to add provider support. Evaluate whether the pr
 
 - [x] Evaluate PR #746 (`feat: add OpenCode platform support` by @MattMagg, 12 files). **CLOSED — resubmit requested.** Platform-agnostic support IS a goal (the adapter architecture was designed for it), and the core adapter code (26 lines) is clean and follows the Cursor adapter pattern. However, the PR includes build artifacts (worker-service.cjs, mcp-server.cjs), planning scratch docs committed to root, a settings.json whitespace change, and an `.opencode/` plugin directory with maintenance implications. Requested a focused re-submission with just the adapter source, router change, README update, and docs.
 
-- [ ] Evaluate PR #860 (`feat: add Clawdbot/moltbot environment detection and compatibility mode` by @janitooor, 3 files). Small change for Clawdbot compatibility. If non-invasive (3 files), likely safe to merge.
+- [x] Evaluate PR #860 (`feat: add Clawdbot/moltbot environment detection and compatibility mode` by @janitooor, 3 files). **CLOSED.** Three issues: (1) YAGNI — no evidence of user demand for Clawdbot compatibility, and the PR was a bot-generated "autonomous contribution by Legba." (2) Dead code — the detection utilities are standalone and never integrated into any hook, service, or handler. (3) Documentation references non-existent API endpoints and settings. If real conflicts surface from user reports, a focused, integrated fix would be welcome.
 
 ## Memory Features
 
