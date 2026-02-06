@@ -30,6 +30,27 @@ export function storeSummary(
   const timestampEpoch = overrideTimestampEpoch ?? Date.now();
   const timestampIso = new Date(timestampEpoch).toISOString();
 
+  // UPSERT: Later summaries subsume earlier ones, so update if exists
+  const existing = db.prepare(
+    'SELECT id FROM session_summaries WHERE memory_session_id = ? LIMIT 1'
+  ).get(memorySessionId) as { id: number } | undefined;
+
+  if (existing) {
+    db.prepare(`
+      UPDATE session_summaries
+      SET project=?, request=?, investigated=?, learned=?, completed=?,
+          next_steps=?, notes=?, prompt_number=?, discovery_tokens=?,
+          created_at=?, created_at_epoch=?
+      WHERE id = ?
+    `).run(
+      project, summary.request, summary.investigated, summary.learned,
+      summary.completed, summary.next_steps, summary.notes,
+      promptNumber || null, discoveryTokens, timestampIso, timestampEpoch,
+      existing.id
+    );
+    return { id: existing.id, createdAtEpoch: timestampEpoch };
+  }
+
   const stmt = db.prepare(`
     INSERT INTO session_summaries
     (memory_session_id, project, request, investigated, learned, completed,
