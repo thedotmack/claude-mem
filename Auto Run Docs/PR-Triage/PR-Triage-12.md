@@ -34,6 +34,6 @@ Multiple community members want to add provider support. Evaluate whether the pr
 
 ## Owner's PRs
 
-- [ ] Review PR #863 (`feat: implement ragtime email investigation with self-iteration and cleanup` by @thedotmack, 2 files). Owner's PR — review and merge if ready.
+- [x] Review PR #863 (`feat: implement ragtime email investigation with self-iteration and cleanup` by @thedotmack, 2 files). **MERGED.** Owner's PR. Transforms ragtime from a placeholder stub into a functional email investigation batch processor. Key improvements: replaces hardcoded absolute paths with configurable environment variables (CONFIG object with 7 settings), adds `cleanupOldTranscripts()` to prevent transcript buildup, proper `main()` function with error handling, `getFilesToProcess()` with directory validation and file limit, structured `processFile()` with message parsing, removes debugging cruft. README updated from "not yet implemented" to comprehensive usage documentation with configuration table. Greptile review: 4/5 confidence, safe to merge. Both automated reviews passed.
 
 - [ ] Review PR #657 (`feat: add generate/clean CLI commands with cross-platform support` by @thedotmack, 100 files). Owner's PR, large changeset. Review and merge if ready. May need rebase on current main.
