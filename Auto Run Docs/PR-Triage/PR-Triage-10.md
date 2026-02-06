@@ -21,7 +21,8 @@ Quick wins — docs PRs are low-risk and can be merged rapidly after basic revie
 
 ## Larger Docs PRs
 
-- [ ] Review PR #894 (`docs: update documentation links to official website` by @fengluodb). 29 files — updates links across all READMEs. Steps: (1) `gh pr checkout 894` (2) Verify all links point to correct docs.claude-mem.ai pages (3) Spot-check a few files (4) If links are correct: `gh pr merge 894 --rebase --delete-branch`
+- [x] Review PR #894 (`docs: update documentation links to official website` by @fengluodb). 29 files — updates links across all READMEs. Steps: (1) `gh pr checkout 894` (2) Verify all links point to correct docs.claude-mem.ai pages (3) Spot-check a few files (4) If links are correct: `gh pr merge 894 --rebase --delete-branch`
+  - **Merged 2026-02-06.** Updated documentation links in README.md and all 28 i18n README files from relative `docs/` path to `https://docs.claude-mem.ai/`. Also localized description text from "Browse markdown docs on GitHub" to "Browse on official website" in each language. 29 files, 1 line changed per file. CI passed (Greptile Review).
 
 - [ ] Review PR #907 (`i18n: add Traditional Chinese (zh-TW) README translation` by @PeterDaveHello). 31 files. Steps: (1) `gh pr checkout 907` (2) Verify translation file structure matches existing i18n pattern (3) Check that only translation files are added, no source changes (4) If clean: `gh pr merge 907 --rebase --delete-branch`
 
