@@ -1,0 +1,18 @@
+# Phase 09: Chroma/Vector Search Fixes
+
+These PRs address Chroma vector database stability, zombie processes, and enterprise compatibility.
+
+## Bug Fixes
+
+- [x] Review PR #887 (`fix: align IDs with metadatas in ChromaSearchStrategy` by @abkrim). Files: `src/services/worker/search/strategies/ChromaSearchStrategy.ts`, tests. IDs and metadata arrays are misaligned causing incorrect search results. Steps: (1) `gh pr checkout 887` (2) Review — array alignment between document IDs and their metadata is critical for correct results (3) Check test coverage (4) Run `npm run build` (5) If clean: `gh pr merge 887 --rebase --delete-branch`
+  - **Merged** (2026-02-06): Confirmed the bug — `queryChroma()` deduplicates IDs but returns raw metadatas array, causing index misalignment in `filterByRecency()`. Fix builds a Map from sqlite_id→metadata then iterates deduplicated IDs. 20 tests pass (including 2 new). Build clean.
+
+- [ ] Review PR #769 (`fix: close transport on connection error to prevent chroma-mcp zombie processes` by @jenyapoyarkov). Files: `src/services/sync/ChromaSync.ts`, tests. Transport left open on connection failure creates zombies. Steps: (1) `gh pr checkout 769` (2) Review — should close/dispose transport in the error path (3) Run `npm run build` (4) If clean: `gh pr merge 769 --rebase --delete-branch`
+
+- [ ] Review PR #884 (`fix: add Zscaler SSL certificate support for ChromaDB vector search` by @RClark4958). Files: `src/services/sync/ChromaSync.ts` + build artifacts. Enterprise environments use Zscaler SSL inspection which breaks Chroma HTTPS connections. Steps: (1) `gh pr checkout 884` (2) Review — should respect NODE_EXTRA_CA_CERTS or custom CA cert configuration (3) Verify this doesn't weaken SSL for non-Zscaler users (4) Run `npm run build` (5) If appropriate for enterprise support: `gh pr merge 884 --rebase --delete-branch`
+
+- [ ] Review PR #830 (`fix: Chroma stability + additional process management layers` by @michelhelsdingen). Files: 7 files including ChromaSync.ts, ProcessManager.ts, worker-service.ts. Steps: (1) `gh pr checkout 830` (2) This is a broader stability PR — review scope carefully (3) Check for overlap with ProcessRegistry (v9.0.8) (4) If too broad, request scope reduction to just the Chroma stability portions (5) Run `npm run build`
+
+## Feature
+
+- [ ] Evaluate PR #792 (`feat: Replace MCP subprocess with persistent Chroma HTTP server` by @bigph00t). Files: 12 files. Major architectural change — replaces the MCP subprocess model for Chroma with a persistent HTTP server. Steps: (1) `gh pr checkout 792` (2) This is a significant architecture change. Review the approach: persistent HTTP server vs. MCP subprocess (3) Check resource implications (always-running server vs. on-demand subprocess) (4) Verify graceful shutdown and cross-platform support (5) Run `npm run build` (6) If the architecture is sound and well-tested: `gh pr merge 792 --rebase --delete-branch`. If concerns exist, leave detailed review comments.
