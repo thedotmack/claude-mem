@@ -96,8 +96,17 @@ export class OpenRouterAgent {
       if (!session.memorySessionId) {
         const syntheticMemorySessionId = `openrouter-${session.contentSessionId}-${Date.now()}`;
         session.memorySessionId = syntheticMemorySessionId;
-        this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, syntheticMemorySessionId);
-        logger.info('SESSION', `MEMORY_ID_GENERATED | sessionDbId=${session.sessionDbId} | provider=OpenRouter`);
+
+        // FK_INTEGRITY: Only update database if it doesn't already have a memory_session_id.
+        // After worker restart, existing observations reference the old value. Updating the
+        // parent sdk_sessions.memory_session_id would violate FK constraint (no ON UPDATE CASCADE).
+        const existingDbSession = this.dbManager.getSessionStore().getSessionById(session.sessionDbId);
+        if (!existingDbSession?.memory_session_id) {
+          this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, syntheticMemorySessionId);
+          logger.info('SESSION', `MEMORY_ID_GENERATED | sessionDbId=${session.sessionDbId} | provider=OpenRouter | persisted=true`);
+        } else {
+          logger.info('SESSION', `MEMORY_ID_GENERATED (in-memory only) | sessionDbId=${session.sessionDbId} | provider=OpenRouter | dbValue=${existingDbSession.memory_session_id} | reason=FK_INTEGRITY`);
+        }
       }
 
       // Load active mode

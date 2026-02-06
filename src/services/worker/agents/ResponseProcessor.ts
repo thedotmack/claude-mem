@@ -71,21 +71,45 @@ export async function processAgentResponse(
   // Get session store for atomic transaction
   const sessionStore = dbManager.getSessionStore();
 
-  // CRITICAL: Must use memorySessionId (not contentSessionId) for FK constraint
-  if (!session.memorySessionId) {
-    throw new Error('Cannot store observations: memorySessionId not yet captured');
+  // CRITICAL FK INTEGRITY: Determine the authoritative memory_session_id for storage.
+  // After worker restart, the in-memory session.memorySessionId may be a fresh synthetic ID
+  // that doesn't match the database value. Existing observations reference the DB value via FK.
+  // We MUST use the DB value when it exists to prevent FK constraint violations.
+  const dbSession = sessionStore.getSessionById(session.sessionDbId);
+  let memorySessionIdForStorage: string;
+
+  if (dbSession?.memory_session_id) {
+    // Database has existing memory_session_id - use it for FK integrity
+    memorySessionIdForStorage = dbSession.memory_session_id;
+    if (session.memorySessionId && session.memorySessionId !== dbSession.memory_session_id) {
+      logger.debug('DB', `Using database memory_session_id for FK integrity (in-memory differs)`, {
+        sessionId: session.sessionDbId,
+        dbValue: dbSession.memory_session_id,
+        inMemoryValue: session.memorySessionId
+      });
+    }
+  } else if (session.memorySessionId) {
+    // Database has NULL - use captured value and persist it
+    memorySessionIdForStorage = session.memorySessionId;
+    sessionStore.updateMemorySessionId(session.sessionDbId, session.memorySessionId);
+    logger.debug('DB', `Persisted new memory_session_id to database`, {
+      sessionId: session.sessionDbId,
+      memorySessionId: session.memorySessionId
+    });
+  } else {
+    throw new Error('Cannot store observations: no memorySessionId available (neither in database nor captured from agent)');
   }
 
   // Log pre-storage with session ID chain for verification
-  logger.info('DB', `STORING | sessionDbId=${session.sessionDbId} | memorySessionId=${session.memorySessionId} | obsCount=${observations.length} | hasSummary=${!!summaryForStore}`, {
+  logger.info('DB', `STORING | sessionDbId=${session.sessionDbId} | memorySessionId=${memorySessionIdForStorage} | obsCount=${observations.length} | hasSummary=${!!summaryForStore}`, {
     sessionId: session.sessionDbId,
-    memorySessionId: session.memorySessionId
+    memorySessionId: memorySessionIdForStorage
   });
 
   // ATOMIC TRANSACTION: Store observations + summary ONCE
   // Messages are already deleted from queue on claim, so no completion tracking needed
   const result = sessionStore.storeObservations(
-    session.memorySessionId,
+    memorySessionIdForStorage,
     session.project,
     observations,
     summaryForStore,
@@ -95,9 +119,9 @@ export async function processAgentResponse(
   );
 
   // Log storage result with IDs for end-to-end traceability
-  logger.info('DB', `STORED | sessionDbId=${session.sessionDbId} | memorySessionId=${session.memorySessionId} | obsCount=${result.observationIds.length} | obsIds=[${result.observationIds.join(',')}] | summaryId=${result.summaryId || 'none'}`, {
+  logger.info('DB', `STORED | sessionDbId=${session.sessionDbId} | memorySessionId=${memorySessionIdForStorage} | obsCount=${result.observationIds.length} | obsIds=[${result.observationIds.join(',')}] | summaryId=${result.summaryId || 'none'}`, {
     sessionId: session.sessionDbId,
-    memorySessionId: session.memorySessionId
+    memorySessionId: memorySessionIdForStorage
   });
 
   // AFTER transaction commits - async operations (can fail safely without data loss)
