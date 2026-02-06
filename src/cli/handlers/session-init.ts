@@ -9,6 +9,9 @@ import { ensureWorkerRunning, getWorkerPort } from '../../shared/worker-utils.js
 import { getProjectName } from '../../utils/project-name.js';
 import { logger } from '../../utils/logger.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
+import { isProjectExcluded } from '../../utils/project-filter.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 
 export const sessionInitHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
@@ -20,6 +23,13 @@ export const sessionInitHandler: EventHandler = {
     }
 
     const { sessionId, cwd, prompt: rawPrompt } = input;
+
+    // Check if project is excluded from tracking
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    if (cwd && isProjectExcluded(cwd, settings.CLAUDE_MEM_EXCLUDED_PROJECTS)) {
+      logger.info('HOOK', 'Project excluded from tracking', { cwd });
+      return { continue: true, suppressOutput: true };
+    }
 
     // Handle image-only prompts (where text prompt is empty/undefined)
     // Use placeholder so sessions still get created and tracked for memory

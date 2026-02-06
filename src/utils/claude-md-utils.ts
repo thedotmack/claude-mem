@@ -288,6 +288,26 @@ function isProjectRoot(folderPath: string): boolean {
 }
 
 /**
+ * Check if a folder path is excluded from CLAUDE.md generation.
+ * A folder is excluded if it matches or is within any path in the exclude list.
+ *
+ * @param folderPath - Absolute path to check
+ * @param excludePaths - Array of paths to exclude
+ * @returns true if folder should be excluded
+ */
+function isExcludedFolder(folderPath: string, excludePaths: string[]): boolean {
+  const normalizedFolder = path.resolve(folderPath);
+  for (const excludePath of excludePaths) {
+    const normalizedExclude = path.resolve(excludePath);
+    if (normalizedFolder === normalizedExclude ||
+        normalizedFolder.startsWith(normalizedExclude + path.sep)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Update CLAUDE.md files for folders containing the given files.
  * Fetches timeline from worker API and writes formatted content.
  *
@@ -304,9 +324,20 @@ export async function updateFolderClaudeMdFiles(
   port: number,
   projectRoot?: string
 ): Promise<void> {
-  // Load settings to get configurable observation limit
+  // Load settings to get configurable observation limit and exclude list
   const settings = SettingsDefaultsManager.loadFromFile(SETTINGS_PATH);
   const limit = parseInt(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10) || 50;
+
+  // Parse exclude paths from settings
+  let folderMdExcludePaths: string[] = [];
+  try {
+    const parsed = JSON.parse(settings.CLAUDE_MEM_FOLDER_MD_EXCLUDE || '[]');
+    if (Array.isArray(parsed)) {
+      folderMdExcludePaths = parsed.filter((p): p is string => typeof p === 'string');
+    }
+  } catch {
+    logger.warn('FOLDER_INDEX', 'Failed to parse CLAUDE_MEM_FOLDER_MD_EXCLUDE setting');
+  }
 
   // Track folders containing CLAUDE.md files that were read/modified in this observation.
   // We must NOT update these - it would cause "file modified since read" errors in Claude Code.
@@ -360,6 +391,11 @@ export async function updateFolderClaudeMdFiles(
       // Skip folders where CLAUDE.md was read/modified in this observation (issue #859)
       if (foldersWithActiveClaudeMd.has(folderPath)) {
         logger.debug('FOLDER_INDEX', 'Skipping folder with active CLAUDE.md to avoid race condition', { folderPath });
+        continue;
+      }
+      // Skip folders in user-configured exclude list
+      if (folderMdExcludePaths.length > 0 && isExcludedFolder(folderPath, folderMdExcludePaths)) {
+        logger.debug('FOLDER_INDEX', 'Skipping excluded folder', { folderPath });
         continue;
       }
       folderPaths.add(folderPath);
