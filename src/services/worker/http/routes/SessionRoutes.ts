@@ -290,6 +290,7 @@ export class SessionRoutes extends BaseRouteHandler {
     app.post('/api/sessions/init', this.handleSessionInitByClaudeId.bind(this));
     app.post('/api/sessions/observations', this.handleObservationsByClaudeId.bind(this));
     app.post('/api/sessions/summarize', this.handleSummarizeByClaudeId.bind(this));
+    app.post('/api/sessions/complete', this.handleCompleteByClaudeId.bind(this));
   }
 
   /**
@@ -592,6 +593,54 @@ export class SessionRoutes extends BaseRouteHandler {
     this.eventBroadcaster.broadcastSummarizeQueued();
 
     res.json({ status: 'queued' });
+  });
+
+  /**
+   * Complete session by contentSessionId (session-complete hook uses this)
+   * POST /api/sessions/complete
+   * Body: { contentSessionId }
+   *
+   * Removes session from active sessions map, allowing orphan reaper to
+   * clean up any remaining subprocesses.
+   *
+   * Fixes Issue #842: Sessions stay in map forever, reaper thinks all active.
+   */
+  private handleCompleteByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const { contentSessionId } = req.body;
+
+    logger.info('HTTP', '→ POST /api/sessions/complete', { contentSessionId });
+
+    if (!contentSessionId) {
+      return this.badRequest(res, 'Missing contentSessionId');
+    }
+
+    const store = this.dbManager.getSessionStore();
+
+    // Look up sessionDbId from contentSessionId (createSDKSession is idempotent)
+    // Pass empty strings - we only need the ID lookup, not to create a new session
+    const sessionDbId = store.createSDKSession(contentSessionId, '', '');
+
+    // Check if session is in the active sessions map
+    const activeSession = this.sessionManager.getSession(sessionDbId);
+    if (!activeSession) {
+      // Session may not be in memory (already completed or never initialized)
+      logger.debug('SESSION', 'session-complete: Session not in active map', {
+        contentSessionId,
+        sessionDbId
+      });
+      res.json({ status: 'skipped', reason: 'not_active' });
+      return;
+    }
+
+    // Complete the session (removes from active sessions map)
+    await this.completionHandler.completeByDbId(sessionDbId);
+
+    logger.info('SESSION', 'Session completed via API', {
+      contentSessionId,
+      sessionDbId
+    });
+
+    res.json({ status: 'completed', sessionDbId });
   });
 
   /**
