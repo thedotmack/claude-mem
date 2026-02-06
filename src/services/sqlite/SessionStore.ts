@@ -1787,10 +1787,41 @@ export class SessionStore {
 
 
 
-  // REMOVED: cleanupOrphanedSessions - violates "EVERYTHING SHOULD SAVE ALWAYS"
-  // There's no such thing as an "orphaned" session. Sessions are created by hooks
-  // and managed by Claude Code's lifecycle. Worker restarts don't invalidate them.
-  // Marking all active sessions as 'failed' on startup destroys the user's current work.
+  // NOTE: cleanupOrphanedSessions was removed - "EVERYTHING SHOULD SAVE ALWAYS".
+  // However, sessions stuck in 'active' for >N minutes after a worker restart
+  // indicate a crash, not ongoing work. recoverStaleSessions() handles this case.
+
+  /**
+   * Recover sessions that have been 'active' for longer than the given threshold.
+   * This handles crash recovery: if the worker restarted and sessions are still
+   * marked 'active' from the previous run, they should be marked 'failed'.
+   *
+   * @param staleThresholdMinutes - Mark sessions active longer than this as failed (default: 10)
+   * @returns Number of sessions recovered
+   */
+  recoverStaleSessions(staleThresholdMinutes: number = 10): number {
+    const cutoffEpoch = Date.now() - (staleThresholdMinutes * 60 * 1000);
+
+    const result = this.db.run(`
+      UPDATE sdk_sessions
+      SET status = 'failed',
+          completed_at = datetime('now'),
+          completed_at_epoch = ?
+      WHERE status = 'active'
+        AND started_at_epoch < ?
+    `, Date.now(), cutoffEpoch);
+
+    const count = result.changes;
+    if (count > 0) {
+      logger.info('DB', `Recovered ${count} stale sessions (active > ${staleThresholdMinutes} min)`, {
+        staleThresholdMinutes,
+        cutoffEpoch,
+        recoveredCount: count
+      });
+    }
+
+    return count;
+  }
 
   /**
    * Get session summaries by IDs (for hybrid Chroma search)
