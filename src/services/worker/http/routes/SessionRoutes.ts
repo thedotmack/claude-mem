@@ -24,6 +24,8 @@ import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 
 export class SessionRoutes extends BaseRouteHandler {
   private completionHandler: SessionCompletionHandler;
+  private spawnInProgress = new Map<number, boolean>();
+  private crashRecoveryScheduled = new Set<number>();
 
   constructor(
     private sessionManager: SessionManager,
@@ -91,10 +93,17 @@ export class SessionRoutes extends BaseRouteHandler {
     const session = this.sessionManager.getSession(sessionDbId);
     if (!session) return;
 
+    // GUARD: Prevent duplicate spawns
+    if (this.spawnInProgress.get(sessionDbId)) {
+      logger.debug('SESSION', 'Spawn already in progress, skipping', { sessionDbId, source });
+      return;
+    }
+
     const selectedProvider = this.getSelectedProvider();
 
     // Start generator if not running
     if (!session.generatorPromise) {
+      this.spawnInProgress.set(sessionDbId, true);
       this.startGeneratorWithProvider(session, selectedProvider, source);
       return;
     }
@@ -135,9 +144,13 @@ export class SessionRoutes extends BaseRouteHandler {
     const agent = provider === 'openrouter' ? this.openRouterAgent : (provider === 'gemini' ? this.geminiAgent : this.sdkAgent);
     const agentName = provider === 'openrouter' ? 'OpenRouter' : (provider === 'gemini' ? 'Gemini' : 'Claude SDK');
 
+    // Use database count for accurate telemetry (in-memory array is always empty due to FK constraint fix)
+    const pendingStore = this.sessionManager.getPendingMessageStore();
+    const actualQueueDepth = pendingStore.getPendingCount(session.sessionDbId);
+
     logger.info('SESSION', `Generator auto-starting (${source}) using ${agentName}`, {
       sessionId: session.sessionDbId,
-      queueDepth: session.pendingMessages.length,
+      queueDepth: actualQueueDepth,
       historyLength: session.conversationHistory.length
     });
 
@@ -173,6 +186,7 @@ export class SessionRoutes extends BaseRouteHandler {
       })
       .finally(() => {
         const sessionDbId = session.sessionDbId;
+        this.spawnInProgress.delete(sessionDbId);
         const wasAborted = session.abortController.signal.aborted;
 
         if (wasAborted) {
@@ -196,6 +210,12 @@ export class SessionRoutes extends BaseRouteHandler {
             const MAX_CONSECUTIVE_RESTARTS = 3;
 
             if (pendingCount > 0) {
+              // GUARD: Prevent duplicate crash recovery spawns
+              if (this.crashRecoveryScheduled.has(sessionDbId)) {
+                logger.debug('SESSION', 'Crash recovery already scheduled', { sessionDbId });
+                return;
+              }
+
               session.consecutiveRestarts = (session.consecutiveRestarts || 0) + 1;
 
               if (session.consecutiveRestarts > MAX_CONSECUTIVE_RESTARTS) {
@@ -223,11 +243,14 @@ export class SessionRoutes extends BaseRouteHandler {
               session.abortController = new AbortController();
               oldController.abort();
 
+              this.crashRecoveryScheduled.add(sessionDbId);
+
               // Exponential backoff: 1s, 2s, 4s for subsequent restarts
               const backoffMs = Math.min(1000 * Math.pow(2, session.consecutiveRestarts - 1), 8000);
 
               // Delay before restart with exponential backoff
               setTimeout(() => {
+                this.crashRecoveryScheduled.delete(sessionDbId);
                 const stillExists = this.sessionManager.getSession(sessionDbId);
                 if (stillExists && !stillExists.generatorPromise) {
                   this.startGeneratorWithProvider(stillExists, this.getSelectedProvider(), 'crash-recovery');
@@ -398,11 +421,15 @@ export class SessionRoutes extends BaseRouteHandler {
       return;
     }
 
+    // Use database count for accurate queue length (in-memory array is always empty due to FK constraint fix)
+    const pendingStore = this.sessionManager.getPendingMessageStore();
+    const queueLength = pendingStore.getPendingCount(sessionDbId);
+
     res.json({
       status: 'active',
       sessionDbId,
       project: session.project,
-      queueLength: session.pendingMessages.length,
+      queueLength,
       uptime: Date.now() - session.startTime
     });
   });

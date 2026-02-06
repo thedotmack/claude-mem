@@ -10,9 +10,9 @@
  */
 
 import path from 'path';
-import { homedir } from 'os';
 import { readFileSync } from 'fs';
 import { logger } from '../../utils/logger.js';
+import { getPackageRoot } from '../../shared/paths.js';
 
 /**
  * Check if a port is in use by querying the health endpoint
@@ -96,12 +96,11 @@ export async function httpShutdown(port: number): Promise<boolean> {
 }
 
 /**
- * Get the plugin version from the installed marketplace package.json
- * This is the "expected" version that should be running
+ * Get the plugin version from package.json
+ * Uses getPackageRoot() to find the plugin directory (works for both marketplace and cache installs)
  */
 export function getInstalledPluginVersion(): string {
-  const marketplaceRoot = path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
-  const packageJsonPath = path.join(marketplaceRoot, 'package.json');
+  const packageJsonPath = path.join(getPackageRoot(), 'package.json');
   const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
   return packageJson.version;
 }

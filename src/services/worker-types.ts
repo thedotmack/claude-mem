@@ -34,6 +34,10 @@ export interface ActiveSession {
   conversationHistory: ConversationMessage[];  // Shared conversation history for provider switching
   currentProvider: 'claude' | 'gemini' | 'openrouter' | null;  // Track which provider is currently running
   consecutiveRestarts: number;  // Track consecutive restart attempts to prevent infinite loops
+  forceInit?: boolean;  // Force fresh SDK session (skip resume)
+  // CLAIM-CONFIRM FIX: Track IDs of messages currently being processed
+  // These IDs will be confirmed (deleted) after successful storage
+  processingMessageIds: number[];
 }
 
 export interface PendingMessage {
