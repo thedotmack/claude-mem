@@ -84,6 +84,9 @@ export class ChromaSync {
   private collectionName: string;
   private readonly VECTOR_DB_DIR: string;
   private readonly BATCH_SIZE = 100;
+  private connecting = false;
+  private connectionPromise: Promise<void> | null = null;
+  private static readonly CONNECTION_TIMEOUT_MS = 30_000;
 
   // Windows: Chroma disabled due to MCP SDK spawning console popups
   // See: https://github.com/anthropics/claude-mem/issues/675
@@ -189,74 +192,119 @@ export class ChromaSync {
 
   /**
    * Ensure MCP client is connected to Chroma server
-   * Throws error if connection fails
+   * Uses async mutex to prevent concurrent connection attempts
+   * Throws error if connection fails or times out
    */
   private async ensureConnection(): Promise<void> {
     if (this.connected && this.client) {
       return;
     }
 
-    logger.info('CHROMA_SYNC', 'Connecting to Chroma MCP server...', { project: this.project });
+    // Async mutex: if another connection attempt is in progress, wait for it
+    if (this.connecting && this.connectionPromise) {
+      logger.debug('CHROMA_SYNC', 'Connection already in progress, waiting...', { project: this.project });
+      await this.connectionPromise;
+      if (this.connected) return;
+      throw new Error('Concurrent connection attempt failed');
+    }
+
+    this.connecting = true;
+    this.connectionPromise = this.performConnection();
 
     try {
-      // Use Python 3.13 by default to avoid onnxruntime compatibility issues with Python 3.14+
-      // See: https://github.com/thedotmack/claude-mem/issues/170 (Python 3.14 incompatibility)
-      const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-      const pythonVersion = settings.CLAUDE_MEM_PYTHON_VERSION;
-      const isWindows = process.platform === 'win32';
+      await this.connectionPromise;
+    } finally {
+      this.connecting = false;
+      this.connectionPromise = null;
+    }
+  }
 
-      // Get combined SSL certificate bundle for Zscaler/corporate proxy environments
-      const combinedCertPath = this.getCombinedCertPath();
+  /**
+   * Perform the actual connection with timeout protection
+   */
+  private async performConnection(): Promise<void> {
+    logger.info('CHROMA_SYNC', 'Connecting to Chroma MCP server...', { project: this.project });
 
-      const transportOptions: any = {
-        command: 'uvx',
-        args: [
-          '--python', pythonVersion,
-          'chroma-mcp',
-          '--client-type', 'persistent',
-          '--data-dir', this.VECTOR_DB_DIR
-        ],
-        stderr: 'ignore'
-      };
+    // Race connection against timeout
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error(
+        `Chroma connection timed out after ${ChromaSync.CONNECTION_TIMEOUT_MS / 1000}s`
+      )), ChromaSync.CONNECTION_TIMEOUT_MS);
+    });
 
-      // Add SSL certificate environment variables for corporate proxy/Zscaler environments
-      if (combinedCertPath) {
-        transportOptions.env = {
-          ...process.env,
-          SSL_CERT_FILE: combinedCertPath,
-          REQUESTS_CA_BUNDLE: combinedCertPath,
-          CURL_CA_BUNDLE: combinedCertPath
-        };
-        logger.info('CHROMA_SYNC', 'Using combined SSL certificates for Zscaler compatibility', {
-          certPath: combinedCertPath
-        });
-      }
-
-      // CRITICAL: On Windows, try to hide console window to prevent PowerShell popups
-      // Note: windowsHide may not be supported by MCP SDK's StdioClientTransport
-      if (isWindows) {
-        transportOptions.windowsHide = true;
-        logger.debug('CHROMA_SYNC', 'Windows detected, attempting to hide console window', { project: this.project });
-      }
-
-      this.transport = new StdioClientTransport(transportOptions);
-
-      // Empty capabilities object: this client only calls Chroma tools, doesn't expose any
-      this.client = new Client({
-        name: 'claude-mem-chroma-sync',
-        version: packageVersion
-      }, {
-        capabilities: {}
-      });
-
-      await this.client.connect(this.transport);
-      this.connected = true;
-
-      logger.info('CHROMA_SYNC', 'Connected to Chroma MCP server', { project: this.project });
+    try {
+      await Promise.race([this.connectToChroma(), timeoutPromise]);
     } catch (error) {
+      // Clean up transport on failure to prevent zombie processes
+      if (this.transport) {
+        try { await this.transport.close(); } catch { /* best effort */ }
+      }
+      this.transport = null;
+      this.client = null;
+      this.connected = false;
       logger.error('CHROMA_SYNC', 'Failed to connect to Chroma MCP server', { project: this.project }, error as Error);
       throw new Error(`Chroma connection failed: ${error instanceof Error ? error.message : String(error)}`);
     }
+  }
+
+  /**
+   * Internal: establish Chroma MCP connection
+   */
+  private async connectToChroma(): Promise<void> {
+    // Use Python 3.13 by default to avoid onnxruntime compatibility issues with Python 3.14+
+    // See: https://github.com/thedotmack/claude-mem/issues/170 (Python 3.14 incompatibility)
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const pythonVersion = settings.CLAUDE_MEM_PYTHON_VERSION;
+    const isWindows = process.platform === 'win32';
+
+    // Get combined SSL certificate bundle for Zscaler/corporate proxy environments
+    const combinedCertPath = this.getCombinedCertPath();
+
+    const transportOptions: any = {
+      command: 'uvx',
+      args: [
+        '--python', pythonVersion,
+        'chroma-mcp',
+        '--client-type', 'persistent',
+        '--data-dir', this.VECTOR_DB_DIR
+      ],
+      stderr: 'ignore'
+    };
+
+    // Add SSL certificate environment variables for corporate proxy/Zscaler environments
+    if (combinedCertPath) {
+      transportOptions.env = {
+        ...process.env,
+        SSL_CERT_FILE: combinedCertPath,
+        REQUESTS_CA_BUNDLE: combinedCertPath,
+        CURL_CA_BUNDLE: combinedCertPath
+      };
+      logger.info('CHROMA_SYNC', 'Using combined SSL certificates for Zscaler compatibility', {
+        certPath: combinedCertPath
+      });
+    }
+
+    // CRITICAL: On Windows, try to hide console window to prevent PowerShell popups
+    // Note: windowsHide may not be supported by MCP SDK's StdioClientTransport
+    if (isWindows) {
+      transportOptions.windowsHide = true;
+      logger.debug('CHROMA_SYNC', 'Windows detected, attempting to hide console window', { project: this.project });
+    }
+
+    this.transport = new StdioClientTransport(transportOptions);
+
+    // Empty capabilities object: this client only calls Chroma tools, doesn't expose any
+    this.client = new Client({
+      name: 'claude-mem-chroma-sync',
+      version: packageVersion
+    }, {
+      capabilities: {}
+    });
+
+    await this.client.connect(this.transport);
+    this.connected = true;
+
+    logger.info('CHROMA_SYNC', 'Connected to Chroma MCP server', { project: this.project });
   }
 
   /**
