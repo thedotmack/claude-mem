@@ -14,7 +14,7 @@ Multiple community members want to add provider support. Evaluate whether the pr
 
 - [x] Evaluate PR #680 (`feat(openrouter): multi-model configuration with automatic fallback` by @RyderFreeman4Logos, 28 files). **CLOSED.** Three issues: (1) Bundles 5+ distinct features (multi-model fallback, provider fallback chain, configurable base URL, settings hot-reload, Gemini 3 default) into one PR — each should be separate. (2) Deletes content from 12+ CLAUDE.md documentation files (~1,200 lines of project docs removed), which is destructive and unrelated to the feature. (3) Multi-model fallback is YAGNI — most users configure a single model. Invited contributor to re-submit a focused configurable-base-URL-only PR.
 
-- [ ] Evaluate PR #746 (`feat: add OpenCode platform support` by @MattMagg, 12 files). OpenCode is another AI coding tool. Decision: Is platform-agnostic support a goal?
+- [x] Evaluate PR #746 (`feat: add OpenCode platform support` by @MattMagg, 12 files). **CLOSED — resubmit requested.** Platform-agnostic support IS a goal (the adapter architecture was designed for it), and the core adapter code (26 lines) is clean and follows the Cursor adapter pattern. However, the PR includes build artifacts (worker-service.cjs, mcp-server.cjs), planning scratch docs committed to root, a settings.json whitespace change, and an `.opencode/` plugin directory with maintenance implications. Requested a focused re-submission with just the adapter source, router change, README update, and docs.
 
 - [ ] Evaluate PR #860 (`feat: add Clawdbot/moltbot environment detection and compatibility mode` by @janitooor, 3 files). Small change for Clawdbot compatibility. If non-invasive (3 files), likely safe to merge.
 
