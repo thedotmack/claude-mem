@@ -16,7 +16,8 @@ Quick wins — docs PRs are low-risk and can be merged rapidly after basic revie
 - [x] Review and merge PR #637 (`docs: fix ja readme of md render error` by @WuMingDao). Single file render fix. Steps: (1) `gh pr checkout 637` (2) Quick review (3) `gh pr merge 637 --rebase --delete-branch`
   - **Merged 2026-02-06.** 5 of 6 original changes were already applied by PR #864. Git's rebase merge cleanly resolved the overlap, applying only the remaining fix: added spaces around bold markdown in the Ragtime license note (`は **PolyForm...** の下で`) to fix rendering. 1 line changed in `docs/i18n/README.ja.md`.
 
-- [ ] Review and merge PR #636 (`docs: fix zh readme of md render error` by @WuMingDao). Single file render fix. Steps: (1) `gh pr checkout 636` (2) Quick review (3) `gh pr merge 636 --rebase --delete-branch`
+- [x] Review and merge PR #636 (`docs: fix zh readme of md render error` by @WuMingDao). Single file render fix. Steps: (1) `gh pr checkout 636` (2) Quick review (3) `gh pr merge 636 --rebase --delete-branch`
+  - **Merged 2026-02-06.** Added spaces around bold markdown links (`**[text](url)**` → `**[text](url)** `) in 4 locations to fix Chinese markdown rendering where characters were absorbed into URLs. Also added missing newline at end of file. 5 lines changed in `docs/i18n/README.zh.md`.
 
 ## Larger Docs PRs
 
