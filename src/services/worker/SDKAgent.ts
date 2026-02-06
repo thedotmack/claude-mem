@@ -21,7 +21,7 @@ import { buildIsolatedEnv, getAuthMethodDescription } from '../../shared/EnvMana
 import type { ActiveSession, SDKUserMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import { processAgentResponse, type WorkerRef } from './agents/index.js';
-import { createPidCapturingSpawn, getProcessBySession, ensureProcessExit } from './ProcessRegistry.js';
+import { createPidCapturingSpawn, getProcessBySession, ensureProcessExit, waitForSlot, getActiveCount } from './ProcessRegistry.js';
 
 // Import Agent SDK (assumes it's installed)
 // @ts-ignore - Agent SDK types may not be available
@@ -87,6 +87,11 @@ export class SDKAgent {
       });
       session.forceInit = false;
     }
+
+    // Wait for agent pool slot (configurable via CLAUDE_MEM_MAX_CONCURRENT_AGENTS)
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const maxConcurrent = parseInt(settings.CLAUDE_MEM_MAX_CONCURRENT_AGENTS, 10) || 2;
+    await waitForSlot(maxConcurrent);
 
     // Build isolated environment from ~/.claude-mem/.env
     // This prevents Issue #733: random ANTHROPIC_API_KEY from project .env files
