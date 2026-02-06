@@ -77,12 +77,13 @@ export class PendingMessageStore {
   }
 
   /**
-   * Atomically claim and DELETE the next pending message.
-   * Finds oldest pending -> returns it -> deletes from queue.
-   * The queue is a pure buffer: claim it, delete it, process in memory.
+   * Atomically claim the next pending message by marking it as 'processing'.
+   * CRITICAL FIX: Does NOT delete - message stays in DB until confirmProcessed() is called.
+   * This prevents message loss if the generator crashes mid-processing.
    * Uses a transaction to prevent race conditions.
    */
   claimAndDelete(sessionDbId: number): PersistentPendingMessage | null {
+    const now = Date.now();
     const claimTx = this.db.transaction((sessionId: number) => {
       const peekStmt = this.db.prepare(`
         SELECT * FROM pending_messages
@@ -93,9 +94,14 @@ export class PendingMessageStore {
       const msg = peekStmt.get(sessionId) as PersistentPendingMessage | null;
 
       if (msg) {
-        // Delete immediately - no "processing" state needed
-        const deleteStmt = this.db.prepare('DELETE FROM pending_messages WHERE id = ?');
-        deleteStmt.run(msg.id);
+        // CRITICAL FIX: Mark as 'processing' instead of deleting
+        // Message will be deleted by confirmProcessed() after successful store
+        const updateStmt = this.db.prepare(`
+          UPDATE pending_messages
+          SET status = 'processing', started_processing_at_epoch = ?
+          WHERE id = ?
+        `);
+        updateStmt.run(now, msg.id);
 
         // Log claim with minimal info (avoid logging full payload)
         logger.info('QUEUE', `CLAIMED | sessionDbId=${sessionId} | messageId=${msg.id} | type=${msg.message_type}`, {
@@ -106,6 +112,39 @@ export class PendingMessageStore {
     });
 
     return claimTx(sessionDbId) as PersistentPendingMessage | null;
+  }
+
+  /**
+   * Confirm a message was successfully processed - DELETE it from the queue.
+   * CRITICAL: Only call this AFTER the observation/summary has been stored to DB.
+   * This prevents message loss on generator crash.
+   */
+  confirmProcessed(messageId: number): void {
+    const stmt = this.db.prepare('DELETE FROM pending_messages WHERE id = ?');
+    const result = stmt.run(messageId);
+    if (result.changes > 0) {
+      logger.debug('QUEUE', `CONFIRMED | messageId=${messageId} | deleted from queue`);
+    }
+  }
+
+  /**
+   * Reset stale 'processing' messages back to 'pending' for retry.
+   * Called on worker startup and periodically to recover from crashes.
+   * @param thresholdMs Messages processing longer than this are considered stale (default: 5 minutes)
+   * @returns Number of messages reset
+   */
+  resetStaleProcessingMessages(thresholdMs: number = 5 * 60 * 1000): number {
+    const cutoff = Date.now() - thresholdMs;
+    const stmt = this.db.prepare(`
+      UPDATE pending_messages
+      SET status = 'pending', started_processing_at_epoch = NULL
+      WHERE status = 'processing' AND started_processing_at_epoch < ?
+    `);
+    const result = stmt.run(cutoff);
+    if (result.changes > 0) {
+      logger.info('QUEUE', `RESET_STALE | count=${result.changes} | thresholdMs=${thresholdMs}`);
+    }
+    return result.changes;
   }
 
   /**

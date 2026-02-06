@@ -76,6 +76,14 @@ export async function processAgentResponse(
     throw new Error('Cannot store observations: memorySessionId not yet captured');
   }
 
+  // SAFETY NET (Issue #846 / Multi-terminal FK fix):
+  // The PRIMARY fix is in SDKAgent.ts where ensureMemorySessionIdRegistered() is called
+  // immediately when the SDK returns a memory_session_id. This call is a defensive safety net
+  // in case the DB was somehow not updated (race condition, crash, etc.).
+  // In multi-terminal scenarios, createSDKSession() now resets memory_session_id to NULL
+  // for each new generator, ensuring clean isolation.
+  sessionStore.ensureMemorySessionIdRegistered(session.sessionDbId, session.memorySessionId);
+
   // Log pre-storage with session ID chain for verification
   logger.info('DB', `STORING | sessionDbId=${session.sessionDbId} | memorySessionId=${session.memorySessionId} | obsCount=${observations.length} | hasSummary=${!!summaryForStore}`, {
     sessionId: session.sessionDbId,
@@ -99,6 +107,18 @@ export async function processAgentResponse(
     sessionId: session.sessionDbId,
     memorySessionId: session.memorySessionId
   });
+
+  // CLAIM-CONFIRM: Now that storage succeeded, confirm all processing messages (delete from queue)
+  // This is the critical step that prevents message loss on generator crash
+  const pendingStore = sessionManager.getPendingMessageStore();
+  for (const messageId of session.processingMessageIds) {
+    pendingStore.confirmProcessed(messageId);
+  }
+  if (session.processingMessageIds.length > 0) {
+    logger.debug('QUEUE', `CONFIRMED_BATCH | sessionDbId=${session.sessionDbId} | count=${session.processingMessageIds.length} | ids=[${session.processingMessageIds.join(',')}]`);
+  }
+  // Clear the tracking array after confirmation
+  session.processingMessageIds = [];
 
   // AFTER transaction commits - async operations (can fail safely without data loss)
   await syncAndBroadcastObservations(

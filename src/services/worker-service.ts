@@ -190,6 +190,7 @@ export class WorkerService {
       this.broadcastProcessingStatus();
     });
 
+
     // Initialize MCP client
     // Empty capabilities object: this client only calls tools, doesn't expose any
     this.mcpClient = new Client({
@@ -319,13 +320,12 @@ export class WorkerService {
 
       await this.dbManager.initialize();
 
-      // Recover stuck messages from previous crashes
+      // Reset any messages that were processing when worker died
       const { PendingMessageStore } = await import('./sqlite/PendingMessageStore.js');
       const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
-      const STUCK_THRESHOLD_MS = 5 * 60 * 1000;
-      const resetCount = pendingStore.resetStuckMessages(STUCK_THRESHOLD_MS);
+      const resetCount = pendingStore.resetStaleProcessingMessages(0); // 0 = reset ALL processing
       if (resetCount > 0) {
-        logger.info('SYSTEM', `Recovered ${resetCount} stuck messages from previous session`, { thresholdMinutes: 5 });
+        logger.info('SYSTEM', `Reset ${resetCount} stale processing messages to pending`);
       }
 
       // Initialize search services
@@ -421,10 +421,43 @@ export class WorkerService {
     const agent = this.getActiveAgent();
     const providerName = agent.constructor.name;
 
+    // Before starting generator, check if AbortController is already aborted
+    // This can happen after a previous generator was aborted but the session still has pending work
+    if (session.abortController.signal.aborted) {
+      logger.debug('SYSTEM', 'Replacing aborted AbortController before starting generator', {
+        sessionId: session.sessionDbId
+      });
+      session.abortController = new AbortController();
+    }
+
+    // Track whether generator failed with an unrecoverable error to prevent infinite restart loops
+    let hadUnrecoverableError = false;
+
     logger.info('SYSTEM', `Starting generator (${source}) using ${providerName}`, { sessionId: sid });
 
     session.generatorPromise = agent.startSession(session, this)
       .catch(async (error: unknown) => {
+        const errorMessage = (error as Error)?.message || '';
+
+        // Detect unrecoverable errors that should NOT trigger restart
+        // These errors will fail immediately on retry, causing infinite loops
+        const unrecoverablePatterns = [
+          'Claude executable not found',
+          'CLAUDE_CODE_PATH',
+          'ENOENT',
+          'spawn',
+        ];
+        if (unrecoverablePatterns.some(pattern => errorMessage.includes(pattern))) {
+          hadUnrecoverableError = true;
+          logger.error('SDK', 'Unrecoverable generator error - will NOT restart', {
+            sessionId: session.sessionDbId,
+            project: session.project,
+            errorMessage
+          });
+          return;
+        }
+
+        // Fallback for terminated SDK sessions (provider abstraction)
         if (this.isSessionTerminatedError(error)) {
           logger.warn('SDK', 'SDK resume failed, falling back to standalone processing', {
             sessionId: session.sessionDbId,
@@ -432,6 +465,20 @@ export class WorkerService {
             reason: error instanceof Error ? error.message : String(error)
           });
           return this.runFallbackForTerminatedSession(session, error);
+        }
+
+        // Detect stale resume failures - SDK session context was lost
+        if ((errorMessage.includes('aborted by user') || errorMessage.includes('No conversation found'))
+            && session.memorySessionId) {
+          logger.warn('SDK', 'Detected stale resume failure, clearing memorySessionId for fresh start', {
+            sessionId: session.sessionDbId,
+            memorySessionId: session.memorySessionId,
+            errorMessage
+          });
+          // Clear stale memorySessionId and force fresh init on next attempt
+          this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, null);
+          session.memorySessionId = null;
+          session.forceInit = true;
         }
         logger.error('SDK', 'Session generator failed', {
           sessionId: session.sessionDbId,
@@ -442,6 +489,32 @@ export class WorkerService {
       })
       .finally(() => {
         session.generatorPromise = null;
+
+        // Do NOT restart after unrecoverable errors - prevents infinite loops
+        if (hadUnrecoverableError) {
+          logger.warn('SYSTEM', 'Skipping restart due to unrecoverable error', {
+            sessionId: session.sessionDbId
+          });
+          this.broadcastProcessingStatus();
+          return;
+        }
+
+        // Check if there's pending work that needs processing with a fresh AbortController
+        const { PendingMessageStore } = require('./sqlite/PendingMessageStore.js');
+        const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
+        const pendingCount = pendingStore.getPendingCount(session.sessionDbId);
+
+        if (pendingCount > 0) {
+          logger.info('SYSTEM', 'Pending work remains after generator exit, restarting with fresh AbortController', {
+            sessionId: session.sessionDbId,
+            pendingCount
+          });
+          // Reset AbortController for restart
+          session.abortController = new AbortController();
+          // Restart processor
+          this.startSessionProcessor(session, 'pending-work-restart');
+        }
+
         this.broadcastProcessingStatus();
       });
   }

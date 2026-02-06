@@ -95,7 +95,9 @@ describe('GeminiAgent', () => {
       storeObservation: mockStoreObservation,
       storeObservations: mockStoreObservations, // Required by ResponseProcessor.ts
       storeSummary: mockStoreSummary,
-      markSessionCompleted: mockMarkSessionCompleted
+      markSessionCompleted: mockMarkSessionCompleted,
+      getSessionById: mock(() => ({ memory_session_id: 'mem-session-123' })), // Required by ResponseProcessor.ts for FK fix
+      ensureMemorySessionIdRegistered: mock(() => {}) // Required by ResponseProcessor.ts for FK constraint fix (Issue #846)
     };
 
     const mockChromaSync = {
@@ -110,6 +112,7 @@ describe('GeminiAgent', () => {
 
     const mockPendingMessageStore = {
       markProcessed: mockMarkProcessed,
+      confirmProcessed: mock(() => {}),  // CLAIM-CONFIRM pattern: confirm after successful storage
       cleanupProcessed: mockCleanupProcessed,
       resetStuckMessages: mockResetStuckMessages
     };
@@ -148,7 +151,8 @@ describe('GeminiAgent', () => {
       generatorPromise: null,
       earliestPendingTimestamp: null,
       currentProvider: null,
-      startTime: Date.now()
+      startTime: Date.now(),
+      processingMessageIds: []  // CLAIM-CONFIRM pattern: track message IDs being processed
     } as any;
 
     global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
@@ -184,7 +188,8 @@ describe('GeminiAgent', () => {
       generatorPromise: null,
       earliestPendingTimestamp: null,
       currentProvider: null,
-      startTime: Date.now()
+      startTime: Date.now(),
+      processingMessageIds: []  // CLAIM-CONFIRM pattern: track message IDs being processed
     } as any;
 
     global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
@@ -216,7 +221,8 @@ describe('GeminiAgent', () => {
       generatorPromise: null,
       earliestPendingTimestamp: null,
       currentProvider: null,
-      startTime: Date.now()
+      startTime: Date.now(),
+      processingMessageIds: []  // CLAIM-CONFIRM pattern: track message IDs being processed
     } as any;
 
     const observationXml = `
@@ -261,7 +267,8 @@ describe('GeminiAgent', () => {
       generatorPromise: null,
       earliestPendingTimestamp: null,
       currentProvider: null,
-      startTime: Date.now()
+      startTime: Date.now(),
+      processingMessageIds: []  // CLAIM-CONFIRM pattern: track message IDs being processed
     } as any;
 
     global.fetch = mock(() => Promise.resolve(new Response('Resource has been exhausted (e.g. check quota).', { status: 429 })));
@@ -294,7 +301,8 @@ describe('GeminiAgent', () => {
       generatorPromise: null,
       earliestPendingTimestamp: null,
       currentProvider: null,
-      startTime: Date.now()
+      startTime: Date.now(),
+      processingMessageIds: []  // CLAIM-CONFIRM pattern: track message IDs being processed
     } as any;
 
     global.fetch = mock(() => Promise.resolve(new Response('Invalid argument', { status: 400 })));
@@ -333,7 +341,8 @@ describe('GeminiAgent', () => {
         generatorPromise: null,
         earliestPendingTimestamp: null,
         currentProvider: null,
-        startTime: Date.now()
+        startTime: Date.now(),
+        processingMessageIds: []  // CLAIM-CONFIRM pattern: track message IDs being processed
       } as any;
 
       global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
@@ -385,7 +394,8 @@ describe('GeminiAgent', () => {
         generatorPromise: null,
         earliestPendingTimestamp: null,
         currentProvider: null,
-        startTime: Date.now()
+        startTime: Date.now(),
+        processingMessageIds: []  // CLAIM-CONFIRM pattern: track message IDs being processed
       } as any;
 
       global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({

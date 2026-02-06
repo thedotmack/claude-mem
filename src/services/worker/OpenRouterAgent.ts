@@ -145,6 +145,10 @@ export class OpenRouterAgent {
 
       // Process pending messages
       for await (const message of this.sessionManager.getMessageIterator(session.sessionDbId)) {
+        // CLAIM-CONFIRM: Track message ID for confirmProcessed() after successful storage
+        // The message is now in 'processing' status in DB until ResponseProcessor calls confirmProcessed()
+        session.processingMessageIds.push(message._persistentId);
+
         // Capture cwd from messages for proper worktree support
         if (message.cwd) {
           lastCwd = message.cwd;
