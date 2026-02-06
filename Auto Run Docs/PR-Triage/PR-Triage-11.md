@@ -31,7 +31,8 @@ Standalone bug fixes that don't group neatly into other phases.
 
 ## Cursor Integration
 
-- [ ] Review PR #721 (`fix(cursor): use bun runtime and fix hooks directory detection` by @polux0). Files: 5 cursor-related files. Steps: (1) `gh pr checkout 721` (2) Review Cursor hook changes — should use bun-runner.js pattern (consistent with v9.0.17) (3) Run `npm run build` (4) If compatible with current architecture: `gh pr merge 721 --rebase --delete-branch`
+- [x] Review PR #721 (`fix(cursor): use bun runtime and fix hooks directory detection` by @polux0). Files: 5 cursor-related files. Steps: (1) `gh pr checkout 721` (2) Review Cursor hook changes — should use bun-runner.js pattern (consistent with v9.0.17) (3) Run `npm run build` (4) If compatible with current architecture: `gh pr merge 721 --rebase --delete-branch`
+  - **Cherry-picked onto main.** Source changes from `CursorHooksInstaller.ts` applied cleanly (commit 8030c44a). Fixes two Cursor standalone setup bugs: (1) `findCursorHooksDir()` now checks for `hooks.json` in unified CLI mode, not just legacy shell scripts — prevents "Could not find cursor-hooks directory" error for standalone Cursor users. (2) Hook commands now use bun instead of node, fixing `bun:sqlite` dependency crash. Added `findBunPath()` for cross-platform bun detection with PATH fallback. Build artifacts skipped (pre-existing dompurify dep issue). Dev log docs (`CURSOR-SETUP-BUGS-AND-FIXES.md`, `CURSOR-STANDALONE-SETUP-LOG.md`) not merged.
 
 ## Database
 
