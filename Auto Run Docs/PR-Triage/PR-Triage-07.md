@@ -22,7 +22,8 @@ These PRs all touch `src/cli/handlers/session-init.ts` — review together to av
 
 These all modify `src/utils/claude-md-utils.ts` — review together.
 
-- [ ] Review PR #974 (`fix: prevent race condition when editing CLAUDE.md (#859)` by @cheapsteak). Files: `src/utils/claude-md-utils.ts`, tests. Race condition where concurrent edits corrupt CLAUDE.md. Steps: (1) `gh pr checkout 974` (2) Review locking/atomic write approach (3) Check test coverage (4) Run `npm run build` (5) If clean: `gh pr merge 974 --rebase --delete-branch`
+- [x] Review PR #974 (`fix: prevent race condition when editing CLAUDE.md (#859)` by @cheapsteak). Files: `src/utils/claude-md-utils.ts`, tests. Race condition where concurrent edits corrupt CLAUDE.md. Steps: (1) `gh pr checkout 974` (2) Review locking/atomic write approach (3) Check test coverage (4) Run `npm run build` (5) If clean: `gh pr merge 974 --rebase --delete-branch`
+  - **CLOSED — FIX APPLIED ON MAIN** (2026-02-05): PR had merge conflicts on built files (plugin/scripts/*.cjs) but source changes were clean and well-designed. Applied the exact approach to main: two-pass detection where first pass identifies folders containing CLAUDE.md files that appear in the observation's file paths, second pass skips those folders during CLAUDE.md updates. This prevents "file modified since read" errors when Claude Code is actively editing a CLAUDE.md file. All 6 new tests pass (43 total), build passes. Credit to @cheapsteak for the fix and comprehensive test coverage.
 
 - [ ] Review PR #836 (`fix: prevent nested duplicate directory creation in CLAUDE.md paths` by @Glucksberg). File: `src/utils/claude-md-utils.ts`. Steps: (1) `gh pr checkout 836` (2) Review path deduplication logic (3) Run `npm run build` (4) If clean: `gh pr merge 836 --rebase --delete-branch`
 

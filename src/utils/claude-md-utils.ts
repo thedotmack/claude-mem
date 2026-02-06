@@ -266,6 +266,26 @@ export async function updateFolderClaudeMdFiles(
   const settings = SettingsDefaultsManager.loadFromFile(SETTINGS_PATH);
   const limit = parseInt(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10) || 50;
 
+  // Track folders containing CLAUDE.md files that were read/modified in this observation.
+  // We must NOT update these - it would cause "file modified since read" errors in Claude Code.
+  // See: https://github.com/thedotmack/claude-mem/issues/859
+  const foldersWithActiveClaudeMd = new Set<string>();
+
+  // First pass: identify folders with actively-used CLAUDE.md files
+  for (const filePath of filePaths) {
+    if (!filePath) continue;
+    const basename = path.basename(filePath);
+    if (basename === 'CLAUDE.md') {
+      let absoluteFilePath = filePath;
+      if (projectRoot && !path.isAbsolute(filePath)) {
+        absoluteFilePath = path.join(projectRoot, filePath);
+      }
+      const folderPath = path.dirname(absoluteFilePath);
+      foldersWithActiveClaudeMd.add(folderPath);
+      logger.debug('FOLDER_INDEX', 'Detected active CLAUDE.md, will skip folder', { folderPath });
+    }
+  }
+
   // Extract unique folder paths from file paths
   const folderPaths = new Set<string>();
   for (const filePath of filePaths) {
@@ -288,6 +308,11 @@ export async function updateFolderClaudeMdFiles(
       // Skip project root - root CLAUDE.md should remain user-managed
       if (isProjectRoot(folderPath)) {
         logger.debug('FOLDER_INDEX', 'Skipping project root CLAUDE.md', { folderPath });
+        continue;
+      }
+      // Skip folders where CLAUDE.md was read/modified in this observation (issue #859)
+      if (foldersWithActiveClaudeMd.has(folderPath)) {
+        logger.debug('FOLDER_INDEX', 'Skipping folder with active CLAUDE.md to avoid race condition', { folderPath });
         continue;
       }
       folderPaths.add(folderPath);

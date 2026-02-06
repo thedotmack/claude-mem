@@ -651,3 +651,130 @@ describe('path validation in updateFolderClaudeMdFiles', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('issue #859 - skip folders with active CLAUDE.md', () => {
+  it('should skip folder when CLAUDE.md was read in observation', async () => {
+    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
+    global.fetch = fetchMock;
+
+    // Simulate reading CLAUDE.md - should skip that folder
+    await updateFolderClaudeMdFiles(
+      ['/project/src/utils/CLAUDE.md'],
+      'test-project',
+      37777,
+      '/project'
+    );
+
+    // Should NOT make API call since the CLAUDE.md file was read
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('should skip folder when CLAUDE.md was modified in observation', async () => {
+    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
+    global.fetch = fetchMock;
+
+    // Simulate modifying CLAUDE.md - should skip that folder
+    await updateFolderClaudeMdFiles(
+      ['/project/src/CLAUDE.md'],
+      'test-project',
+      37777,
+      '/project'
+    );
+
+    // Should NOT make API call since the CLAUDE.md file was modified
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('should process other folders even when one has active CLAUDE.md', async () => {
+    const apiResponse = {
+      content: [{ text: '| #123 | 4:30 PM | 🔵 | Test | ~100 |' }]
+    };
+    const fetchMock = mock(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve(apiResponse)
+    } as Response));
+    global.fetch = fetchMock;
+
+    // Mix of CLAUDE.md read and other files
+    await updateFolderClaudeMdFiles(
+      [
+        '/project/src/utils/CLAUDE.md',  // Should skip /project/src/utils
+        '/project/src/services/api.ts'   // Should process /project/src/services
+      ],
+      'test-project',
+      37777,
+      '/project'
+    );
+
+    // Should make ONE API call for /project/src/services, NOT for /project/src/utils
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const callUrl = (fetchMock.mock.calls[0] as unknown[])[0] as string;
+    expect(callUrl).toContain(encodeURIComponent('/project/src/services'));
+    expect(callUrl).not.toContain(encodeURIComponent('/project/src/utils'));
+  });
+
+  it('should handle relative CLAUDE.md paths with projectRoot', async () => {
+    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
+    global.fetch = fetchMock;
+
+    // Relative path to CLAUDE.md
+    await updateFolderClaudeMdFiles(
+      ['src/components/CLAUDE.md'],
+      'test-project',
+      37777,
+      '/project'
+    );
+
+    // Should NOT make API call since CLAUDE.md was accessed
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('should skip only the specific folder containing active CLAUDE.md', async () => {
+    const apiResponse = {
+      content: [{ text: '| #123 | 4:30 PM | 🔵 | Test | ~100 |' }]
+    };
+    const fetchMock = mock(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve(apiResponse)
+    } as Response));
+    global.fetch = fetchMock;
+
+    // Two CLAUDE.md files in different folders, plus a regular file
+    await updateFolderClaudeMdFiles(
+      [
+        '/project/src/a/CLAUDE.md',
+        '/project/src/b/CLAUDE.md',
+        '/project/src/c/file.ts'
+      ],
+      'test-project',
+      37777,
+      '/project'
+    );
+
+    // Should only process folder c, not a or b
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const callUrl = (fetchMock.mock.calls[0] as unknown[])[0] as string;
+    expect(callUrl).toContain(encodeURIComponent('/project/src/c'));
+  });
+
+  it('should still exclude project root even when CLAUDE.md filter would allow it', async () => {
+    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
+    global.fetch = fetchMock;
+
+    // Create a temp dir with .git to simulate project root
+    const projectRoot = join(tempDir, 'git-project');
+    const gitDir = join(projectRoot, '.git');
+    mkdirSync(gitDir, { recursive: true });
+
+    // File at project root
+    await updateFolderClaudeMdFiles(
+      [join(projectRoot, 'file.ts')],
+      'test-project',
+      37777,
+      projectRoot
+    );
+
+    // Should NOT make API call because it's the project root
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
