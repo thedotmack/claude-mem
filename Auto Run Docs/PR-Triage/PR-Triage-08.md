@@ -1,0 +1,30 @@
+# Phase 08: Session Management & Message Processing
+
+These PRs fix various session lifecycle issues — orphaned messages, provider recovery, infinite loops, and stateless provider support.
+
+## High Priority (Data Loss / Cost Risk)
+
+- [x] Review PR #934 (`fix: terminate session on prompt-too-long instead of retrying indefinitely` by @jayvenn21). File: `src/services/worker/SDKAgent.ts`. Currently, prompt-too-long errors cause infinite retry loops. Steps: (1) `gh pr checkout 934` (2) Review — should detect the specific error and terminate the session cleanly (3) Verify no data loss on termination (pending observations should still be saved) (4) Run `npm run build` (5) If clean: `gh pr merge 934 --rebase --delete-branch`
+  - **MERGED** (2026-02-06): Clean +5 line fix. Detects "Prompt is too long" in SDK response text and throws a fatal error, which propagates up to `startSessionProcessor` catch handler for clean session termination. No data loss — previously processed observations are already saved before this point. Build passes.
+
+- [ ] Review PR #693 (`fix: prevent infinite restart loop that causes runaway API costs` by @ajbmachon). Files: `src/services/worker-types.ts`, `GeminiAgent.ts`, `OpenRouterAgent.ts`, `SessionManager.ts`, `SessionRoutes.ts`. Steps: (1) `gh pr checkout 693` (2) Review restart limiting logic — should have max restart count or cooldown (3) Verify it applies to all providers (Claude, Gemini, OpenRouter) (4) Run `npm run build` (5) If clean: `gh pr merge 693 --rebase --delete-branch`
+
+## Session Processing
+
+- [ ] Review PR #940 (`fix: Backfill project field on SDK session creation` by @miclip). Files: `src/services/sqlite/SessionStore.ts`, `src/services/sqlite/sessions/create.ts`. Steps: (1) `gh pr checkout 940` (2) Review — should populate the project field when creating a session so observations are properly scoped (3) Small, focused change (4) Run `npm run build` (5) If clean: `gh pr merge 940 --rebase --delete-branch`
+
+- [ ] Review PR #937 (`fix(worker): gracefully process orphaned pending messages after session termination` by @jayvenn21). Files: `src/services/sqlite/PendingMessageStore.ts`, `src/services/worker-service.ts`, `src/services/worker/SessionManager.ts`. Steps: (1) `gh pr checkout 937` (2) Review — orphaned messages should be processed or discarded cleanly, not stuck forever (3) Run `npm run build` (4) If clean: `gh pr merge 937 --rebase --delete-branch`
+
+- [ ] Review PR #899 (`fix: resolve message processing failures in multi-session scenarios` by @hahaschool). Files: 7 files including SessionStore, SDKAgent, ResponseProcessor, SessionRoutes. Steps: (1) `gh pr checkout 899` (2) This is a broader fix — review carefully for scope creep (3) Check that multi-session message routing is correct (messages go to the right session) (4) Run `npm run build` (5) If focused and correct: `gh pr merge 899 --rebase --delete-branch`. If too broad, request scope reduction.
+
+- [ ] Review PR #627 (`fix: Reset AbortController before starting generator` by @TranslateMe). File: `src/services/worker/http/routes/SessionRoutes.ts`. Steps: (1) `gh pr checkout 627` (2) Old PR (Dec 27) — check if still applicable after v8.5.2 memory leak fix (3) If the abort controller reset is still needed: rebase and merge. If already handled: close.
+
+- [ ] Review PR #741 (`fix: Provider-aware recovery and stale session cleanup` by @licutis). File: `src/services/worker-service.ts`. Steps: (1) `gh pr checkout 741` (2) Review provider-aware recovery logic — should handle Gemini/OpenRouter differently from Claude SDK (3) Run `npm run build` (4) If clean: `gh pr merge 741 --rebase --delete-branch`
+
+## Stateless Provider Support
+
+These fix Gemini/OpenRouter providers that don't have SDK sessions.
+
+- [ ] Review PR #910 (`fix: complete stateless provider support with enhanced validation` by @Scheevel). WARNING: This PR modifies ~90 files, most of which are CLAUDE.md files that should NOT have been included. Steps: (1) `gh pr checkout 910` (2) Identify the actual source changes (look at `.ts` files only, ignore CLAUDE.md files) (3) Key files: `src/services/sqlite/SessionStore.ts`, `src/services/worker/GeminiAgent.ts`, `src/services/worker/OpenRouterAgent.ts`, `src/services/worker/agents/ResponseProcessor.ts` (4) If the core logic is good but CLAUDE.md pollution is unacceptable, request changes to remove all CLAUDE.md files from the PR. Or cherry-pick just the source changes.
+
+- [ ] Evaluate PR #615 (`fix: generate memorySessionId for stateless providers` by @JiehoonKwak). Files: 6 files. Steps: (1) `gh pr checkout 615` (2) Check if #910 supersedes this (both fix stateless provider session IDs) (3) If #910 is more complete, close #615: `gh pr close 615 --comment "Superseded by PR #910 which provides more complete stateless provider support. Thank you!"` (4) If #615 has unique value, rebase and merge first.
