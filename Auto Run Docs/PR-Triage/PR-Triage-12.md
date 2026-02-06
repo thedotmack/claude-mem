@@ -12,7 +12,7 @@ Multiple community members want to add provider support. Evaluate whether the pr
 
 - [x] Evaluate PR #644 (`feat: Add OpenAI provider support` by @niteeshm, 10 files). **CLOSED.** OpenAI models are already accessible via the OpenRouter provider, which uses the same OpenAI-compatible chat/completions API format. Adding a dedicated OpenAI agent (491 lines) would create significant code duplication with OpenRouterAgent. A community commenter (@kiwina) independently flagged the same overlap. Suggested contributor could instead PR a configurable base URL for OpenRouter to support Azure/custom endpoints.
 
-- [ ] Evaluate PR #680 (`feat(openrouter): multi-model configuration with automatic fallback` by @RyderFreeman4Logos, 28 files). Large PR adding multi-model fallback to OpenRouter. Decision: Is multi-model fallback needed now? 28 files is a large surface area. If too complex: request scope reduction.
+- [x] Evaluate PR #680 (`feat(openrouter): multi-model configuration with automatic fallback` by @RyderFreeman4Logos, 28 files). **CLOSED.** Three issues: (1) Bundles 5+ distinct features (multi-model fallback, provider fallback chain, configurable base URL, settings hot-reload, Gemini 3 default) into one PR — each should be separate. (2) Deletes content from 12+ CLAUDE.md documentation files (~1,200 lines of project docs removed), which is destructive and unrelated to the feature. (3) Multi-model fallback is YAGNI — most users configure a single model. Invited contributor to re-submit a focused configurable-base-URL-only PR.
 
 - [ ] Evaluate PR #746 (`feat: add OpenCode platform support` by @MattMagg, 12 files). OpenCode is another AI coding tool. Decision: Is platform-agnostic support a goal?
 
