@@ -12,7 +12,8 @@ Standalone bug fixes that don't group neatly into other phases.
 
 ## Gemini Model Name
 
-- [ ] Review PR #831 (`fix: correct Gemini model name from gemini-3-flash to gemini-3-flash-preview` by @Glucksberg). Files: 12 files including GeminiAgent.ts, docs, UI. Steps: (1) `gh pr checkout 831` (2) Verify the correct model name from Gemini docs (is it `gemini-3-flash-preview` or something else as of today?) (3) If model name is correct and changes are sound: `gh pr merge 831 --rebase --delete-branch`
+- [x] Review PR #831 (`fix: correct Gemini model name from gemini-3-flash to gemini-3-flash-preview` by @Glucksberg). Files: 12 files including GeminiAgent.ts, docs, UI. Steps: (1) `gh pr checkout 831` (2) Verify the correct model name from Gemini docs (is it `gemini-3-flash-preview` or something else as of today?) (3) If model name is correct and changes are sound: `gh pr merge 831 --rebase --delete-branch`
+  - **Merged.** Verified `gemini-3-flash-preview` is the correct model ID per Google's official [Gemini API docs](https://ai.google.dev/gemini-api/docs/models) — `gemini-3-flash` does not exist. Cherry-picked onto main (build artifact conflicts only, source merged cleanly). 9 files updated: type definition, RPM limits, model validation, settings, UI dropdown, docs, and tests. Greptile review noted a pre-existing unrelated naming mismatch in docs (`CLAUDE_MEM_GEMINI_BILLING_ENABLED` vs actual `CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED`).
 
 ## Config/Environment
 
