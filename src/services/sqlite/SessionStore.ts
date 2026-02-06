@@ -1165,7 +1165,7 @@ export class SessionStore {
     const now = new Date();
     const nowEpoch = now.getTime();
 
-    // Pure INSERT OR IGNORE - no updates, no complexity
+    // INSERT OR IGNORE - first hook to create the session wins
     // NOTE: memory_session_id starts as NULL. It is captured by SDKAgent from the first SDK
     // response and stored via updateMemorySessionId(). CRITICAL: memory_session_id must NEVER
     // equal contentSessionId - that would inject memory messages into the user's transcript!
@@ -1174,6 +1174,21 @@ export class SessionStore {
       (content_session_id, memory_session_id, project, user_prompt, started_at, started_at_epoch, status)
       VALUES (?, NULL, ?, ?, ?, ?, 'active')
     `).run(contentSessionId, project, userPrompt, now.toISOString(), nowEpoch);
+
+    // Backfill project/prompt if session was created by another hook with empty values
+    // (PostToolUse and Stop hooks create sessions with project='', UserPromptSubmit has the real values)
+    if (project) {
+      this.db.prepare(`
+        UPDATE sdk_sessions SET project = ?
+        WHERE content_session_id = ? AND (project IS NULL OR project = '')
+      `).run(project, contentSessionId);
+    }
+    if (userPrompt) {
+      this.db.prepare(`
+        UPDATE sdk_sessions SET user_prompt = ?
+        WHERE content_session_id = ? AND (user_prompt IS NULL OR user_prompt = '')
+      `).run(userPrompt, contentSessionId);
+    }
 
     // Return existing or new ID
     const row = this.db.prepare('SELECT id FROM sdk_sessions WHERE content_session_id = ?')
