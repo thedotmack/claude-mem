@@ -258,6 +258,27 @@ export function formatTimelineForClaudeMd(timelineText: string): string {
 }
 
 /**
+ * Built-in directory names where CLAUDE.md generation is unsafe or undesirable.
+ * e.g. Android res/ is compiler-strict (non-XML breaks build); .git, build, node_modules are tooling-owned.
+ */
+const EXCLUDED_UNSAFE_DIRECTORIES = new Set([
+  'res',
+  '.git',
+  'build',
+  'node_modules',
+  '__pycache__'
+]);
+
+/**
+ * Returns true if folder path contains any excluded segment (e.g. .../res/..., .../node_modules/...).
+ */
+function isExcludedUnsafeDirectory(folderPath: string): boolean {
+  const normalized = path.normalize(folderPath);
+  const segments = normalized.split(path.sep);
+  return segments.some(segment => EXCLUDED_UNSAFE_DIRECTORIES.has(segment));
+}
+
+/**
  * Check if a folder is a project root (contains .git directory).
  * Project root CLAUDE.md files should remain user-managed, not auto-updated.
  */
@@ -329,6 +350,11 @@ export async function updateFolderClaudeMdFiles(
       // Skip project root - root CLAUDE.md should remain user-managed
       if (isProjectRoot(folderPath)) {
         logger.debug('FOLDER_INDEX', 'Skipping project root CLAUDE.md', { folderPath });
+        continue;
+      }
+      // Skip known-unsafe directories (e.g. Android res/, .git, build, node_modules)
+      if (isExcludedUnsafeDirectory(folderPath)) {
+        logger.debug('FOLDER_INDEX', 'Skipping unsafe directory for CLAUDE.md', { folderPath });
         continue;
       }
       // Skip folders where CLAUDE.md was read/modified in this observation (issue #859)

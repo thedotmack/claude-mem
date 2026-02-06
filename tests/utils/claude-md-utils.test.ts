@@ -834,3 +834,110 @@ describe('issue #859 - skip folders with active CLAUDE.md', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
+
+describe('issue #912 - skip unsafe directories for CLAUDE.md generation', () => {
+  it('should skip node_modules directories', async () => {
+    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
+    global.fetch = fetchMock;
+
+    await updateFolderClaudeMdFiles(
+      ['node_modules/lodash/index.js'],
+      'test-project',
+      37777,
+      tempDir
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('should skip .git directories', async () => {
+    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
+    global.fetch = fetchMock;
+
+    await updateFolderClaudeMdFiles(
+      ['.git/refs/heads/main'],
+      'test-project',
+      37777,
+      tempDir
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('should skip Android res/ directories', async () => {
+    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
+    global.fetch = fetchMock;
+
+    await updateFolderClaudeMdFiles(
+      ['app/src/main/res/layout/activity_main.xml'],
+      'test-project',
+      37777,
+      tempDir
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('should skip build/ directories', async () => {
+    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
+    global.fetch = fetchMock;
+
+    await updateFolderClaudeMdFiles(
+      ['build/outputs/apk/debug/app-debug.apk'],
+      'test-project',
+      37777,
+      tempDir
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('should skip __pycache__/ directories', async () => {
+    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
+    global.fetch = fetchMock;
+
+    await updateFolderClaudeMdFiles(
+      ['src/__pycache__/module.cpython-311.pyc'],
+      'test-project',
+      37777,
+      tempDir
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('should allow safe directories like src/', async () => {
+    const apiResponse = {
+      content: [{ text: '| #123 | 4:30 PM | 🔵 | Test | ~100 |' }]
+    };
+    const fetchMock = mock(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve(apiResponse)
+    } as Response));
+    global.fetch = fetchMock;
+
+    await updateFolderClaudeMdFiles(
+      ['src/utils/file.ts'],
+      'test-project',
+      37777,
+      tempDir
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('should skip deeply nested unsafe directories', async () => {
+    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
+    global.fetch = fetchMock;
+
+    // node_modules nested deep inside project
+    await updateFolderClaudeMdFiles(
+      ['packages/frontend/node_modules/react/index.js'],
+      'test-project',
+      37777,
+      tempDir
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
