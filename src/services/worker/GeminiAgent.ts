@@ -38,7 +38,7 @@ export type GeminiModel =
   | 'gemini-2.5-pro'
   | 'gemini-2.0-flash'
   | 'gemini-2.0-flash-lite'
-  | 'gemini-3-flash';
+  | 'gemini-3-flash-preview';
 
 // Free tier RPM limits by model (requests per minute)
 const GEMINI_RPM_LIMITS: Record<GeminiModel, number> = {
@@ -47,7 +47,7 @@ const GEMINI_RPM_LIMITS: Record<GeminiModel, number> = {
   'gemini-2.5-pro': 5,
   'gemini-2.0-flash': 15,
   'gemini-2.0-flash-lite': 30,
-  'gemini-3-flash': 5,
+  'gemini-3-flash-preview': 5,
 };
 
 // Track last request time for rate limiting
@@ -406,7 +406,7 @@ export class GeminiAgent {
       'gemini-2.5-pro',
       'gemini-2.0-flash',
       'gemini-2.0-flash-lite',
-      'gemini-3-flash',
+      'gemini-3-flash-preview',
     ];
 
     let model: GeminiModel;
