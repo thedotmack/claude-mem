@@ -7,7 +7,8 @@ Quick wins — docs PRs are low-risk and can be merged rapidly after basic revie
 - [x] Review and merge PR #953 (`Fix formatting in README for plugin commands` by @Leonard013). Single file, formatting fix. Steps: (1) `gh pr checkout 953` (2) Quick review for correctness (3) `gh pr merge 953 --rebase --delete-branch`
   - **Merged 2026-02-06.** Removed `>` blockquote characters from inside code blocks in README.md that prevented copy-paste of plugin install commands.
 
-- [ ] Review and merge PR #898 (`docs: update README.ko.md` by @youngsu5582). Single file, Korean README. Steps: (1) `gh pr checkout 898` (2) Quick review (3) `gh pr merge 898 --rebase --delete-branch`
+- [x] Review and merge PR #898 (`docs: update README.ko.md` by @youngsu5582). Single file, Korean README. Steps: (1) `gh pr checkout 898` (2) Quick review (3) `gh pr merge 898 --rebase --delete-branch`
+  - **Merged 2026-02-06.** Fixed Korean markdown hyperlinks by adding spaces between URLs and Korean postpositions (에서, 의, 를) to prevent markdown from including Korean characters in the URL. 2 lines changed in `docs/i18n/README.ko.md`.
 
 - [ ] Review and merge PR #864 (`docs: update README.ja.md` by @eltociear). Single file, Japanese README. Steps: (1) `gh pr checkout 864` (2) Quick review (3) `gh pr merge 864 --rebase --delete-branch`
 
