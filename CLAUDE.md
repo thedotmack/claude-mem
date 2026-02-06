@@ -1,90 +1,103 @@
-# Claude-Mem: AI Development Instructions
+# CLAUDE.md
 
-Claude-mem is a Claude Code plugin providing persistent memory across sessions. It captures tool usage, compresses observations using the Claude Agent SDK, and injects relevant context into future sessions.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## What This Is
+
+Claude-mem is a Claude Code plugin providing persistent memory across sessions. It captures tool usage via lifecycle hooks, compresses observations using the Claude Agent SDK, stores them in SQLite, and injects relevant context into future sessions.
+
+## Build & Test Commands
+
+```bash
+npm run build-and-sync        # Full build → sync to marketplace → restart worker
+npm run build                 # Build hooks/worker/MCP server only (esbuild → plugin/scripts/)
+npm run worker:restart        # Restart worker without rebuilding
+npm run worker:logs           # View today's worker logs
+npm run worker:tail           # Tail today's worker logs
+
+bun test                      # Run all tests
+bun test tests/sqlite/        # Run SQLite tests only
+bun test tests/worker/agents/ # Run agent tests only
+bun test tests/path/to/file.test.ts  # Run single test file
+```
 
 ## Architecture
 
-**5 Lifecycle Hooks**: SessionStart → UserPromptSubmit → PostToolUse → Summary → SessionEnd
+### Data Flow
 
-**Hooks** (`src/hooks/*.ts`) - TypeScript → ESM, built to `plugin/scripts/*-hook.js`
-
-**Worker Service** (`src/services/worker-service.ts`) - Express API on port 37777, Bun-managed, handles AI processing asynchronously
-
-**Database** (`src/services/sqlite/`) - SQLite3 at `~/.claude-mem/claude-mem.db`
-
-**Search Skill** (`plugin/skills/mem-search/SKILL.md`) - HTTP API for searching past work, auto-invoked when users ask about history
-
-**Chroma** (`src/services/sync/ChromaSync.ts`) - Vector embeddings for semantic search
-
-**Viewer UI** (`src/ui/viewer/`) - React interface at http://localhost:37777, built to `plugin/ui/viewer.html`
-
-## Privacy Tags
-- `<private>content</private>` - User-level privacy control (manual, prevents storage)
-
-**Implementation**: Tag stripping happens at hook layer (edge processing) before data reaches worker/database. See `src/utils/tag-stripping.ts` for shared utilities.
-
-## Build Commands
-
-```bash
-npm run build-and-sync        # Build, sync to marketplace, restart worker
+```
+Claude Code hooks → Worker HTTP API (port 37777) → SQLite + Chroma
+                                                  ↓
+                    SDK Agent (Claude subprocess) → observations/summaries
+                                                  ↓
+                    Context Generator → injected into next session
 ```
 
-## Configuration
+### Hook Lifecycle
 
-Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created with defaults on first run.
+5 events, configured in `plugin/hooks/hooks.json`:
+1. **SessionStart** - Smart-install deps, start worker, generate context
+2. **UserPromptSubmit** - Ensure worker running, init session
+3. **PostToolUse** - Record observation (every tool call)
+4. **Stop** (Summary) - Summarize session, mark complete
+5. **Setup** - One-time plugin setup
 
-## File Locations
+Hooks run as CLI commands: `worker-service.cjs hook claude-code <event>`. Input arrives via stdin JSON, output goes to stdout JSON. The CLI adapter layer (`src/cli/adapters/`) normalizes input per platform (claude-code, cursor, raw).
 
-- **Source**: `<project-root>/src/`
-- **Built Plugin**: `<project-root>/plugin/`
-- **Installed Plugin**: `~/.claude/plugins/marketplaces/thedotmack/`
-- **Database**: `~/.claude-mem/claude-mem.db`
-- **Chroma**: `~/.claude-mem/chroma/`
+### Key Components
+
+**Worker Service** (`src/services/worker-service.ts`) - Express HTTP server on port 37777. Orchestrator that delegates to specialized services. Background initialization pattern: starts accepting requests immediately, finishes DB/search setup async.
+
+**Route Handlers** (`src/services/worker/http/routes/`) - REST API endpoints: sessions, search, data, settings, viewer, logs, memory.
+
+**SDK Agent** (`src/services/worker/SDKAgent.ts`) - Spawns Claude subprocess via `@anthropic-ai/claude-agent-sdk` to compress observations into structured memories. Supports Gemini and OpenRouter as alternative backends.
+
+**Context System** (`src/services/context/`) - Generates the context block injected into sessions. Pipeline: `ContextConfigLoader` → `ObservationCompiler` → section renderers (Header, Timeline, Summary, Footer) → `MarkdownFormatter`.
+
+**SQLite** (`src/services/sqlite/`) - Uses `bun:sqlite` (not better-sqlite3). Database at `~/.claude-mem/claude-mem.db`. Schema managed by `MigrationRunner` in `migrations/runner.ts`.
+
+**MCP Server** (`src/servers/mcp-server.ts`) - Thin MCP wrapper around Worker HTTP API. Provides `search` and `timeline` tools. Critical: stdout is reserved for JSON-RPC, all logging must go to stderr.
+
+**Viewer UI** (`src/ui/viewer/`) - React SPA built to `plugin/ui/viewer.html`, served at http://localhost:37777.
+
+### Build Pipeline
+
+`scripts/build-hooks.js` uses esbuild to bundle TypeScript into standalone CJS files in `plugin/scripts/`:
+- `worker-service.cjs` (runs under Bun)
+- `mcp-server.cjs` (runs under Node)
+- `context-generator.cjs`
+- `viewer-bundle.js` (React app)
+
+Version is injected at build time via `__DEFAULT_PACKAGE_VERSION__` esbuild define.
+
+### File Locations
+
+| What | Where |
+|------|-------|
+| Source | `src/` |
+| Built plugin | `plugin/` |
+| Installed plugin | `~/.claude/plugins/marketplaces/thedotmack/` |
+| Database | `~/.claude-mem/claude-mem.db` |
+| Settings | `~/.claude-mem/settings.json` |
+| Chroma vectors | `~/.claude-mem/chroma/` |
+| Worker logs | `~/.claude-mem/logs/` |
 
 ## Exit Code Strategy
 
-Claude-mem hooks use specific exit codes per Claude Code's hook contract:
-
-- **Exit 0**: Success or graceful shutdown (Windows Terminal closes tabs)
-- **Exit 1**: Non-blocking error (stderr shown to user, continues)
+Per Claude Code's hook contract:
+- **Exit 0**: Success (or graceful shutdown on Windows to avoid tab accumulation)
+- **Exit 1**: Non-blocking error (stderr shown only in verbose mode)
 - **Exit 2**: Blocking error (stderr fed to Claude for processing)
 
-**Philosophy**: Worker/hook errors exit with code 0 to prevent Windows Terminal tab accumulation. The wrapper/plugin layer handles restart logic. ERROR-level logging is maintained for diagnostics.
+Worker/hook errors intentionally exit 0 on Windows. ERROR-level logging maintained for diagnostics.
 
-See `private/context/claude-code/exit-codes.md` for full hook behavior matrix.
+## Privacy
 
-## Requirements
-
-- **Bun** (all platforms - auto-installed if missing)
-- **uv** (all platforms - auto-installed if missing, provides Python for Chroma)
-- Node.js
-
-## Documentation
-
-**Public Docs**: https://docs.claude-mem.ai (Mintlify)
-**Source**: `docs/public/` - MDX files, edit `docs.json` for navigation
-**Deploy**: Auto-deploys from GitHub on push to main
-
-## Pro Features Architecture
-
-Claude-mem is designed with a clean separation between open-source core functionality and optional Pro features.
-
-**Open-Source Core** (this repository):
-
-- All worker API endpoints on localhost:37777 remain fully open and accessible
-- Pro features are headless - no proprietary UI elements in this codebase
-- Pro integration points are minimal: settings for license keys, tunnel provisioning logic
-- The architecture ensures Pro features extend rather than replace core functionality
-
-**Pro Features** (coming soon, external):
-
-- Enhanced UI (Memory Stream) connects to the same localhost:37777 endpoints as the open viewer
-- Additional features like advanced filtering, timeline scrubbing, and search tools
-- Access gated by license validation, not by modifying core endpoints
-- Users without Pro licenses continue using the full open-source viewer UI without limitation
-
-This architecture preserves the open-source nature of the project while enabling sustainable development through optional paid features.
+`<private>content</private>` tags strip content at hook layer before reaching worker/database. See `src/utils/tag-stripping.ts`.
 
 ## Important
 
-No need to edit the changelog ever, it's generated automatically.
+- Changelog is auto-generated, never edit it manually.
+- `bun:sqlite` is a Bun built-in - no npm package needed for SQLite.
+- The `plugin/` directory contains built artifacts checked into git. Always rebuild before committing changes.
+- Settings auto-created with defaults on first run via `SettingsDefaultsManager`.
