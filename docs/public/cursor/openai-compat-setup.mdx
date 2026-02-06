@@ -1,17 +1,19 @@
 ---
-title: "Cursor + OpenRouter Setup"
-description: "Use Claude-Mem in Cursor with OpenRouter's 100+ AI models"
+title: "Cursor + OpenAI-Compatible Setup"
+description: "Use Claude-Mem in Cursor with any OpenAI-compatible API (OpenRouter, CLIProxyAPI, local models)"
 ---
 
-# Cursor + OpenRouter Setup
+# Cursor + OpenAI-Compatible Setup
 
-This guide walks you through setting up Claude-Mem in Cursor using OpenRouter. OpenRouter provides access to 100+ AI models from various providers, including several free options.
+This guide walks you through setting up Claude-Mem in Cursor using an OpenAI-compatible provider. This includes OpenRouter (100+ AI models), [CLIProxyAPI](https://gist.github.com/chandika/c4b64c5b8f5e29f6112021d46c159fdd), local model servers, and any other OpenAI-compatible endpoint.
 
 <Info>
-**Model variety:** Access Claude, GPT-4, Gemini, Llama, Mistral, and many more through a single API key.
+**Model variety:** Via OpenRouter, access Claude, GPT-4, Gemini, Llama, Mistral, and many more through a single API key. Or point to your own endpoint.
 </Info>
 
-## Step 1: Get an OpenRouter API Key
+## Step 1: Get an API Key
+
+### For OpenRouter
 
 1. Go to [OpenRouter](https://openrouter.ai)
 2. Sign up or sign in
@@ -22,6 +24,10 @@ This guide walks you through setting up Claude-Mem in Cursor using OpenRouter. O
 <Tip>
 **Free models available:** OpenRouter offers free versions of several models including Gemini Flash and others. Check the [model list](https://openrouter.ai/models?show_free=true) for current free options.
 </Tip>
+
+### For Other Endpoints
+
+Get an API key from your endpoint provider (CLIProxyAPI, local model server, etc.).
 
 ## Step 2: Clone and Build Claude-Mem
 
@@ -37,7 +43,7 @@ bun install
 bun run build
 ```
 
-## Step 3: Configure OpenRouter Provider
+## Step 3: Configure OpenAI-Compatible Provider
 
 ### Option A: Interactive Setup (Recommended)
 
@@ -47,7 +53,7 @@ Run the setup wizard which guides you through everything:
 bun run cursor:setup
 ```
 
-When prompted for provider, select **OpenRouter**.
+When prompted for provider, select **OpenAI-Compatible**.
 
 ### Option B: Manual Configuration
 
@@ -57,16 +63,29 @@ Create the settings file manually:
 # Create settings directory
 mkdir -p ~/.claude-mem
 
-# Create settings file with OpenRouter configuration
+# Create settings file with OpenAI-compatible configuration
 cat > ~/.claude-mem/settings.json << 'EOF'
 {
-  "CLAUDE_MEM_PROVIDER": "openrouter",
-  "CLAUDE_MEM_OPENROUTER_API_KEY": "YOUR_OPENROUTER_API_KEY"
+  "CLAUDE_MEM_PROVIDER": "openai-compat",
+  "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "YOUR_API_KEY"
 }
 EOF
 ```
 
-Replace `YOUR_OPENROUTER_API_KEY` with your actual API key.
+Replace `YOUR_API_KEY` with your actual API key.
+
+For a custom endpoint (e.g., CLIProxyAPI):
+
+```bash
+cat > ~/.claude-mem/settings.json << 'EOF'
+{
+  "CLAUDE_MEM_PROVIDER": "openai-compat",
+  "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "YOUR_API_KEY",
+  "CLAUDE_MEM_OPENAI_COMPAT_BASE_URL": "http://localhost:8317/v1/chat/completions",
+  "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "claude-sonnet-4-5-20250514"
+}
+EOF
+```
 
 Then install hooks and start the worker:
 
@@ -93,14 +112,14 @@ Open http://localhost:37777 to see the memory viewer.
 
 ## Recommended Models
 
-### Free Models
+### Free Models (via OpenRouter)
 
 | Model | Provider | Notes |
 |-------|----------|-------|
 | `google/gemini-2.0-flash-exp:free` | Google | Fast, capable |
 | `xiaomi/mimo-v2-flash:free` | Xiaomi | Good general purpose |
 
-### Paid Models (Low Cost)
+### Paid Models (Low Cost, via OpenRouter)
 
 | Model | Approx. Cost | Notes |
 |-------|--------------|-------|
@@ -112,27 +131,27 @@ To specify a model, add to your settings:
 
 ```json
 {
-  "CLAUDE_MEM_PROVIDER": "openrouter",
-  "CLAUDE_MEM_OPENROUTER_API_KEY": "your-key",
-  "CLAUDE_MEM_OPENROUTER_MODEL": "google/gemini-2.0-flash-exp:free"
+  "CLAUDE_MEM_PROVIDER": "openai-compat",
+  "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "your-key",
+  "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "google/gemini-2.0-flash-exp:free"
 }
 ```
 
 ## Cost Management
 
-OpenRouter charges per token. To manage costs:
+Cost depends on your endpoint. For OpenRouter:
 
 1. **Use free models:** Several high-quality free models are available
 2. **Monitor usage:** Check your [OpenRouter dashboard](https://openrouter.ai/activity)
 3. **Set spending limits:** Configure limits in OpenRouter settings
 
 <Warning>
-**Cost awareness:** Unlike Gemini's free tier, OpenRouter paid models charge per request. Monitor your usage if using paid models.
+**Cost awareness:** Paid models charge per request. Monitor your usage if using paid models.
 </Warning>
 
 ## Troubleshooting
 
-### "OpenRouter API key not configured"
+### "OpenAI-compatible API key not configured"
 
 Ensure your settings file exists with the correct format:
 
@@ -143,8 +162,8 @@ cat ~/.claude-mem/settings.json
 Should output something like:
 ```json
 {
-  "CLAUDE_MEM_PROVIDER": "openrouter",
-  "CLAUDE_MEM_OPENROUTER_API_KEY": "sk-or-..."
+  "CLAUDE_MEM_PROVIDER": "openai-compat",
+  "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "sk-or-..."
 }
 ```
 
@@ -156,9 +175,9 @@ Should output something like:
 
 ### Rate limits
 
-OpenRouter rate limits vary by model and your account tier. If you hit limits:
+Rate limits vary by model and your account tier. If you hit limits:
 1. Wait briefly and retry
-2. Consider upgrading your OpenRouter account tier
+2. Consider upgrading your account tier
 3. Switch to a less popular model
 
 ### API errors
@@ -170,13 +189,13 @@ bun run worker:logs
 ```
 
 Common issues:
-- Invalid API key (regenerate at OpenRouter)
+- Invalid API key (regenerate at your provider)
 - Insufficient credits for paid models
 - Model temporarily unavailable
 
 ## Switching Providers Later
 
-You can switch between OpenRouter, Gemini, and Claude SDK at any time by updating your settings. No restart required - changes take effect on the next observation.
+You can switch between OpenAI-compatible, Gemini, and Claude SDK at any time by updating your settings. No restart required - changes take effect on the next observation.
 
 ```json
 {

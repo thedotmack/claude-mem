@@ -94,13 +94,13 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_GEMINI_API_KEY',
       'CLAUDE_MEM_GEMINI_MODEL',
       'CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED',
-      // OpenRouter Configuration
-      'CLAUDE_MEM_OPENROUTER_API_KEY',
-      'CLAUDE_MEM_OPENROUTER_MODEL',
-      'CLAUDE_MEM_OPENROUTER_SITE_URL',
-      'CLAUDE_MEM_OPENROUTER_APP_NAME',
-      'CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES',
-      'CLAUDE_MEM_OPENROUTER_MAX_TOKENS',
+      // OpenAI-Compatible Configuration
+      'CLAUDE_MEM_OPENAI_COMPAT_API_KEY',
+      'CLAUDE_MEM_OPENAI_COMPAT_MODEL',
+      'CLAUDE_MEM_OPENAI_COMPAT_SITE_URL',
+      'CLAUDE_MEM_OPENAI_COMPAT_APP_NAME',
+      'CLAUDE_MEM_OPENAI_COMPAT_MAX_CONTEXT_MESSAGES',
+      'CLAUDE_MEM_OPENAI_COMPAT_MAX_TOKENS',
       // System Configuration
       'CLAUDE_MEM_DATA_DIR',
       'CLAUDE_MEM_LOG_LEVEL',
@@ -234,9 +234,9 @@ export class SettingsRoutes extends BaseRouteHandler {
   private validateSettings(settings: any): { valid: boolean; error?: string } {
     // Validate CLAUDE_MEM_PROVIDER
     if (settings.CLAUDE_MEM_PROVIDER) {
-    const validProviders = ['claude', 'gemini', 'openrouter'];
+    const validProviders = ['claude', 'gemini', 'openai-compat'];
     if (!validProviders.includes(settings.CLAUDE_MEM_PROVIDER)) {
-      return { valid: false, error: 'CLAUDE_MEM_PROVIDER must be "claude", "gemini", or "openrouter"' };
+      return { valid: false, error: 'CLAUDE_MEM_PROVIDER must be "claude", "gemini", or "openai-compat"' };
       }
     }
 
@@ -329,30 +329,30 @@ export class SettingsRoutes extends BaseRouteHandler {
       }
     }
 
-    // Validate CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES
-    if (settings.CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES) {
-      const count = parseInt(settings.CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES, 10);
+    // Validate CLAUDE_MEM_OPENAI_COMPAT_MAX_CONTEXT_MESSAGES
+    if (settings.CLAUDE_MEM_OPENAI_COMPAT_MAX_CONTEXT_MESSAGES) {
+      const count = parseInt(settings.CLAUDE_MEM_OPENAI_COMPAT_MAX_CONTEXT_MESSAGES, 10);
       if (isNaN(count) || count < 1 || count > 100) {
-        return { valid: false, error: 'CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES must be between 1 and 100' };
+        return { valid: false, error: 'CLAUDE_MEM_OPENAI_COMPAT_MAX_CONTEXT_MESSAGES must be between 1 and 100' };
       }
     }
 
-    // Validate CLAUDE_MEM_OPENROUTER_MAX_TOKENS
-    if (settings.CLAUDE_MEM_OPENROUTER_MAX_TOKENS) {
-      const tokens = parseInt(settings.CLAUDE_MEM_OPENROUTER_MAX_TOKENS, 10);
+    // Validate CLAUDE_MEM_OPENAI_COMPAT_MAX_TOKENS
+    if (settings.CLAUDE_MEM_OPENAI_COMPAT_MAX_TOKENS) {
+      const tokens = parseInt(settings.CLAUDE_MEM_OPENAI_COMPAT_MAX_TOKENS, 10);
       if (isNaN(tokens) || tokens < 1000 || tokens > 1000000) {
-        return { valid: false, error: 'CLAUDE_MEM_OPENROUTER_MAX_TOKENS must be between 1000 and 1000000' };
+        return { valid: false, error: 'CLAUDE_MEM_OPENAI_COMPAT_MAX_TOKENS must be between 1000 and 1000000' };
       }
     }
 
-    // Validate CLAUDE_MEM_OPENROUTER_SITE_URL if provided
-    if (settings.CLAUDE_MEM_OPENROUTER_SITE_URL) {
+    // Validate CLAUDE_MEM_OPENAI_COMPAT_SITE_URL if provided
+    if (settings.CLAUDE_MEM_OPENAI_COMPAT_SITE_URL) {
       try {
-        new URL(settings.CLAUDE_MEM_OPENROUTER_SITE_URL);
+        new URL(settings.CLAUDE_MEM_OPENAI_COMPAT_SITE_URL);
       } catch (error) {
         // Invalid URL format
-        logger.debug('SETTINGS', 'Invalid URL format', { url: settings.CLAUDE_MEM_OPENROUTER_SITE_URL, error: error instanceof Error ? error.message : String(error) });
-        return { valid: false, error: 'CLAUDE_MEM_OPENROUTER_SITE_URL must be a valid URL' };
+        logger.debug('SETTINGS', 'Invalid URL format', { url: settings.CLAUDE_MEM_OPENAI_COMPAT_SITE_URL, error: error instanceof Error ? error.message : String(error) });
+        return { valid: false, error: 'CLAUDE_MEM_OPENAI_COMPAT_SITE_URL must be a valid URL' };
       }
     }
 

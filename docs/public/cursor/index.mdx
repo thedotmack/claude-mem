@@ -25,7 +25,7 @@ Every Cursor session starts fresh - your AI doesn't remember what it worked on y
 </CardGroup>
 
 <Info>
-**No Claude Code subscription required.** Use Gemini (free tier) or OpenRouter as your AI provider.
+**No Claude Code subscription required.** Use Gemini (free tier) or an OpenAI-compatible endpoint as your AI provider.
 </Info>
 
 ## How It Works
@@ -62,7 +62,7 @@ The setup wizard will:
 
 **Detailed guides:**
 - [Gemini Setup](/cursor/gemini-setup) - Recommended free option (1500 req/day)
-- [OpenRouter Setup](/cursor/openrouter-setup) - 100+ models including free options
+- [OpenAI-Compatible Setup](/cursor/openai-compat-setup) - 100+ models including free options
 
 ### Path B: Claude Code Users
 
@@ -77,7 +77,7 @@ If you have Claude Code installed:
 claude-mem cursor install
 ```
 
-The plugin uses Claude's SDK by default but you can switch to Gemini or OpenRouter anytime.
+The plugin uses Claude's SDK by default but you can switch to Gemini or an OpenAI-compatible endpoint anytime.
 
 ## Prerequisites
 
@@ -138,11 +138,11 @@ After setup, verify everything is working:
 | Provider | Cost | Rate Limit | Best For |
 |----------|------|------------|----------|
 | Gemini | Free tier | 1500 req/day | Individual use, getting started |
-| OpenRouter | Pay-per-use + free models | Varies by model | Model variety, high volume |
+| OpenAI-Compatible | Pay-per-use + free models | Varies by model | Model variety, custom endpoints |
 | Claude SDK | Included with Claude Code | Unlimited | Claude Code subscribers |
 
 <Tip>
-**Recommendation:** Start with Gemini's free tier. It handles typical individual usage well. Switch to OpenRouter or Claude SDK if you need higher limits.
+**Recommendation:** Start with Gemini's free tier. It handles typical individual usage well. Switch to an OpenAI-compatible endpoint or Claude SDK if you need higher limits.
 </Tip>
 
 ## Troubleshooting
@@ -175,6 +175,6 @@ bun run worker:logs
 ## Next Steps
 
 - [Gemini Setup Guide](/cursor/gemini-setup) - Detailed free tier setup
-- [OpenRouter Setup Guide](/cursor/openrouter-setup) - Configure OpenRouter
+- [OpenAI-Compatible Setup Guide](/cursor/openai-compat-setup) - Configure OpenAI-compatible endpoint
 - [Configuration Reference](../configuration) - All settings options
 - [Troubleshooting](../troubleshooting) - Common issues and solutions

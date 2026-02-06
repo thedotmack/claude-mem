@@ -240,6 +240,84 @@ describe('SettingsDefaultsManager', () => {
       });
     });
 
+    describe('OpenRouter to OpenAI-compat migration', () => {
+      it('should migrate CLAUDE_MEM_OPENROUTER_* keys to CLAUDE_MEM_OPENAI_COMPAT_*', () => {
+        const oldSettings = {
+          CLAUDE_MEM_PROVIDER: 'openrouter',
+          CLAUDE_MEM_OPENROUTER_API_KEY: 'sk-or-test-key',
+          CLAUDE_MEM_OPENROUTER_MODEL: 'xiaomi/mimo-v2-flash:free',
+          CLAUDE_MEM_OPENROUTER_SITE_URL: 'https://example.com',
+          CLAUDE_MEM_OPENROUTER_APP_NAME: 'test-app',
+          CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES: '30',
+          CLAUDE_MEM_OPENROUTER_MAX_TOKENS: '200000',
+        };
+        writeFileSync(settingsPath, JSON.stringify(oldSettings));
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        // Verify in-memory result has new keys
+        expect(result.CLAUDE_MEM_PROVIDER).toBe('openai-compat');
+        expect(result.CLAUDE_MEM_OPENAI_COMPAT_API_KEY).toBe('sk-or-test-key');
+        expect(result.CLAUDE_MEM_OPENAI_COMPAT_MODEL).toBe('xiaomi/mimo-v2-flash:free');
+        expect(result.CLAUDE_MEM_OPENAI_COMPAT_SITE_URL).toBe('https://example.com');
+        expect(result.CLAUDE_MEM_OPENAI_COMPAT_APP_NAME).toBe('test-app');
+        expect(result.CLAUDE_MEM_OPENAI_COMPAT_MAX_CONTEXT_MESSAGES).toBe('30');
+        expect(result.CLAUDE_MEM_OPENAI_COMPAT_MAX_TOKENS).toBe('200000');
+      });
+
+      it('should auto-migrate file on disk from OpenRouter to OpenAI-compat keys', () => {
+        const oldSettings = {
+          CLAUDE_MEM_PROVIDER: 'openrouter',
+          CLAUDE_MEM_OPENROUTER_API_KEY: 'sk-or-migrate-key',
+          CLAUDE_MEM_OPENROUTER_MODEL: 'test-model',
+        };
+        writeFileSync(settingsPath, JSON.stringify(oldSettings));
+
+        SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        // Verify file was rewritten with new keys
+        const content = readFileSync(settingsPath, 'utf-8');
+        const parsed = JSON.parse(content);
+        expect(parsed.CLAUDE_MEM_PROVIDER).toBe('openai-compat');
+        expect(parsed.CLAUDE_MEM_OPENAI_COMPAT_API_KEY).toBe('sk-or-migrate-key');
+        expect(parsed.CLAUDE_MEM_OPENAI_COMPAT_MODEL).toBe('test-model');
+        // Old keys should be removed
+        expect(parsed.CLAUDE_MEM_OPENROUTER_API_KEY).toBeUndefined();
+        expect(parsed.CLAUDE_MEM_OPENROUTER_MODEL).toBeUndefined();
+      });
+
+      it('should not migrate if new keys already exist', () => {
+        const settings = {
+          CLAUDE_MEM_PROVIDER: 'openai-compat',
+          CLAUDE_MEM_OPENAI_COMPAT_API_KEY: 'new-key',
+          CLAUDE_MEM_OPENROUTER_API_KEY: 'old-key',  // Should be ignored
+        };
+        writeFileSync(settingsPath, JSON.stringify(settings));
+        const originalContent = readFileSync(settingsPath, 'utf-8');
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        expect(result.CLAUDE_MEM_OPENAI_COMPAT_API_KEY).toBe('new-key');
+        // File should not be rewritten since provider is already openai-compat
+        // and new key already exists
+        const afterContent = readFileSync(settingsPath, 'utf-8');
+        expect(afterContent).toBe(originalContent);
+      });
+
+      it('should migrate CLAUDE_MEM_OPENROUTER_BASE_URL to CLAUDE_MEM_OPENAI_COMPAT_BASE_URL', () => {
+        const oldSettings = {
+          CLAUDE_MEM_PROVIDER: 'openrouter',
+          CLAUDE_MEM_OPENROUTER_API_KEY: 'key',
+          CLAUDE_MEM_OPENROUTER_BASE_URL: 'http://localhost:8317/v1/chat/completions',
+        };
+        writeFileSync(settingsPath, JSON.stringify(oldSettings));
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        expect(result.CLAUDE_MEM_OPENAI_COMPAT_BASE_URL).toBe('http://localhost:8317/v1/chat/completions');
+      });
+    });
+
     describe('edge cases', () => {
       it('should handle empty object in file', () => {
         writeFileSync(settingsPath, '{}');
@@ -299,7 +377,7 @@ describe('SettingsDefaultsManager', () => {
       // Provider settings
       expect(defaults.CLAUDE_MEM_PROVIDER).toBeDefined();
       expect(defaults.CLAUDE_MEM_GEMINI_API_KEY).toBeDefined();
-      expect(defaults.CLAUDE_MEM_OPENROUTER_API_KEY).toBeDefined();
+      expect(defaults.CLAUDE_MEM_OPENAI_COMPAT_API_KEY).toBeDefined();
 
       // System settings
       expect(defaults.CLAUDE_MEM_DATA_DIR).toBeDefined();

@@ -53,7 +53,7 @@ import { SessionManager } from './worker/SessionManager.js';
 import { SSEBroadcaster } from './worker/SSEBroadcaster.js';
 import { SDKAgent } from './worker/SDKAgent.js';
 import { GeminiAgent } from './worker/GeminiAgent.js';
-import { OpenRouterAgent, isOpenRouterSelected, isOpenRouterAvailable } from './worker/OpenRouterAgent.js';
+import { OpenAICompatAgent, isOpenAICompatSelected, isOpenAICompatAvailable } from './worker/OpenAICompatAgent.js';
 import { isGeminiSelected, isGeminiAvailable } from './worker/GeminiAgent.js';
 import { PaginationHelper } from './worker/PaginationHelper.js';
 import { SettingsManager } from './worker/SettingsManager.js';
@@ -113,7 +113,7 @@ export class WorkerService {
   private sseBroadcaster: SSEBroadcaster;
   private sdkAgent: SDKAgent;
   private geminiAgent: GeminiAgent;
-  private openRouterAgent: OpenRouterAgent;
+  private openaiCompatAgent: OpenAICompatAgent;
   private paginationHelper: PaginationHelper;
   private settingsManager: SettingsManager;
   private sessionEventBroadcaster: SessionEventBroadcaster;
@@ -140,7 +140,7 @@ export class WorkerService {
     this.sseBroadcaster = new SSEBroadcaster();
     this.sdkAgent = new SDKAgent(this.dbManager, this.sessionManager);
     this.geminiAgent = new GeminiAgent(this.dbManager, this.sessionManager);
-    this.openRouterAgent = new OpenRouterAgent(this.dbManager, this.sessionManager);
+    this.openaiCompatAgent = new OpenAICompatAgent(this.dbManager, this.sessionManager);
 
     this.paginationHelper = new PaginationHelper(this.dbManager);
     this.settingsManager = new SettingsManager(this.dbManager);
@@ -196,7 +196,7 @@ export class WorkerService {
   private registerRoutes(): void {
     // Standard routes
     this.server.registerRoutes(new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager));
-    this.server.registerRoutes(new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.sessionEventBroadcaster, this));
+    this.server.registerRoutes(new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openaiCompatAgent, this.sessionEventBroadcaster, this));
     this.server.registerRoutes(new DataRoutes(this.paginationHelper, this.dbManager, this.sessionManager, this.sseBroadcaster, this, this.startTime));
     this.server.registerRoutes(new SettingsRoutes(this.settingsManager));
     this.server.registerRoutes(new LogsRoutes());
@@ -342,9 +342,9 @@ export class WorkerService {
    * Get the appropriate agent based on provider settings.
    * Mirrors SessionRoutes.getActiveAgent() to ensure recovery uses the same provider.
    */
-  private getActiveAgent(): SDKAgent | GeminiAgent | OpenRouterAgent {
-    if (isOpenRouterSelected() && isOpenRouterAvailable()) {
-      return this.openRouterAgent;
+  private getActiveAgent(): SDKAgent | GeminiAgent | OpenAICompatAgent {
+    if (isOpenAICompatSelected() && isOpenAICompatAvailable()) {
+      return this.openaiCompatAgent;
     }
     if (isGeminiSelected() && isGeminiAvailable()) {
       return this.geminiAgent;
@@ -363,7 +363,7 @@ export class WorkerService {
 
     const sid = session.sessionDbId;
     const agent = this.getActiveAgent();
-    const providerName = agent instanceof OpenRouterAgent ? 'OpenRouter'
+    const providerName = agent instanceof OpenAICompatAgent ? 'OpenAI-Compat'
       : agent instanceof GeminiAgent ? 'Gemini' : 'Claude SDK';
     logger.info('SYSTEM', `Starting generator (${source}) using ${providerName}`, { sessionId: sid });
 

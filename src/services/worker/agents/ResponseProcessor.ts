@@ -8,7 +8,7 @@
  * - Broadcast to SSE clients
  * - Clean up processed messages
  *
- * This module extracts 150+ lines of duplicate code from SDKAgent, GeminiAgent, and OpenRouterAgent.
+ * This module extracts 150+ lines of duplicate code from SDKAgent, GeminiAgent, and OpenAICompatAgent.
  */
 
 import { logger } from '../../../utils/logger.js';

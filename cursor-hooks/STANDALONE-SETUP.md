@@ -4,7 +4,7 @@
 
 ## Overview
 
-Use claude-mem's persistent memory in Cursor without a Claude Code subscription. Choose between free-tier providers (Gemini, OpenRouter) or paid options.
+Use claude-mem's persistent memory in Cursor without a Claude Code subscription. Choose between free-tier providers (Gemini, OpenAI-compatible) or paid options.
 
 **What You Get**:
 - **Persistent memory** that survives across sessions - your AI remembers what it worked on
@@ -69,21 +69,21 @@ EOF
 
 **Get your free API key**: https://aistudio.google.com/apikey
 
-### Option B: OpenRouter (100+ Models)
+### Option B: OpenAI-Compatible (100+ Models)
 
-OpenRouter provides access to many models, including free options.
+Use any OpenAI-compatible endpoint, including OpenRouter which provides access to many models with free options.
 
 ```bash
 mkdir -p ~/.claude-mem
 cat > ~/.claude-mem/settings.json << 'EOF'
 {
-  "CLAUDE_MEM_PROVIDER": "openrouter",
-  "CLAUDE_MEM_OPENROUTER_API_KEY": "YOUR_OPENROUTER_API_KEY"
+  "CLAUDE_MEM_PROVIDER": "openai-compat",
+  "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "YOUR_API_KEY"
 }
 EOF
 ```
 
-**Get your API key**: https://openrouter.ai/keys
+**Get an OpenRouter API key**: https://openrouter.ai/keys
 
 **Free models available**:
 - `google/gemini-2.0-flash-exp:free`
@@ -184,7 +184,7 @@ tail -f ~/.claude-mem/logs/worker-$(date +%Y-%m-%d).log
 If you hit the 1500 requests/day limit:
 - Wait until the next day
 - Upgrade to a paid plan
-- Switch to OpenRouter with a paid model
+- Switch to an OpenAI-compatible endpoint with a paid model
 
 ## Next Steps
 
