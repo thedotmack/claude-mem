@@ -86,9 +86,6 @@ function notifySlotAvailable(): void {
   if (waiter) waiter();
 }
 
-// Hook into unregisterProcess to notify waiters
-const originalUnregister = unregisterProcess;
-
 /**
  * Wait for a pool slot to become available (promise-based, not polling)
  * @param maxConcurrent Max number of concurrent agents
