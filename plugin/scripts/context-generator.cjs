@@ -320,7 +320,10 @@ ${o.stack}`:` ${o.message}`:this.getLevel()===0&&typeof o=="object"?u=`
       INSERT OR IGNORE INTO sdk_sessions
       (content_session_id, memory_session_id, project, user_prompt, started_at, started_at_epoch, status)
       VALUES (?, NULL, ?, ?, ?, ?, 'active')
-    `).run(e,t,s,n.toISOString(),o),this.db.prepare("SELECT id FROM sdk_sessions WHERE content_session_id = ?").get(e).id}saveUserPrompt(e,t,s){let n=new Date,o=n.getTime();return this.db.prepare(`
+    `).run(e,t,s,n.toISOString(),o),t&&this.db.prepare(`
+        UPDATE sdk_sessions SET project = ?
+        WHERE content_session_id = ? AND (project IS NULL OR project = '')
+      `).run(t,e),this.db.prepare("SELECT id FROM sdk_sessions WHERE content_session_id = ?").get(e).id}saveUserPrompt(e,t,s){let n=new Date,o=n.getTime();return this.db.prepare(`
       INSERT INTO user_prompts
       (content_session_id, prompt_number, prompt_text, created_at, created_at_epoch)
       VALUES (?, ?, ?, ?, ?)
