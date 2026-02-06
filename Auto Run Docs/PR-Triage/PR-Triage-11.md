@@ -7,7 +7,8 @@ Standalone bug fixes that don't group neatly into other phases.
 - [x] Review PR #835 (`fix: handle nested XML tags in parser extractField and extractArrayElements` by @Glucksberg). File: `src/sdk/parser.ts`. Nested XML tags break field extraction. Steps: (1) `gh pr checkout 835` (2) Review regex/parser changes — should handle `<field><inner>content</inner></field>` patterns (3) Run `npm run build` (4) If correct: `gh pr merge 835 --rebase --delete-branch`
   - **Merged.** Clean regex fix: `[^<]*` → `[\s\S]*?` (non-greedy) in `extractField()` and `extractArrayElements()`. Also adds empty element filtering. Greptile 5/5 confidence. Build failure is pre-existing (dompurify dep), not introduced by this PR. TypeScript compilation passes for parser.ts.
 
-- [ ] Review PR #862 (`fix: handle missing assistant messages gracefully in transcript parser` by @DennisHartrampf). File: `src/shared/transcript-parser.ts`. Missing assistant messages cause parser crash. Steps: (1) `gh pr checkout 862` (2) Review — should skip or handle gracefully, not crash (3) Run `npm run build` (4) If clean: `gh pr merge 862 --rebase --delete-branch`
+- [x] Review PR #862 (`fix: handle missing assistant messages gracefully in transcript parser` by @DennisHartrampf). File: `src/shared/transcript-parser.ts`. Missing assistant messages cause parser crash. Steps: (1) `gh pr checkout 862` (2) Review — should skip or handle gracefully, not crash (3) Run `npm run build` (4) If clean: `gh pr merge 862 --rebase --delete-branch`
+  - **Merged.** One-line fix: `throw new Error(...)` → `return ''` in `extractLastMessage()` when no message of requested role is found. Consistent with the function's existing behavior (already returns `''` at line 64 for found-but-empty cases). Fixes crash in summarize hook when user exits before assistant responds.
 
 ## Gemini Model Name
 
