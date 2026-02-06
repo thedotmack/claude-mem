@@ -16,6 +16,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { logger } from '../../utils/logger.js';
 import { getWorkerPort } from '../../shared/worker-utils.js';
+import { DATA_DIR, MARKETPLACE_ROOT, CLAUDE_CONFIG_DIR } from '../../shared/paths.js';
 import {
   readCursorRegistry as readCursorRegistryFromFile,
   writeCursorRegistry as writeCursorRegistryToFile,
@@ -27,7 +28,6 @@ import type { CursorInstallTarget, CursorHooksJson, CursorMcpConfig, Platform } 
 const execAsync = promisify(exec);
 
 // Standard paths
-const DATA_DIR = path.join(homedir(), '.claude-mem');
 const CURSOR_REGISTRY_FILE = path.join(DATA_DIR, 'cursor-projects.json');
 
 // ============================================================================
@@ -133,7 +133,7 @@ export async function updateCursorContextForProject(projectName: string, port: n
 export function findCursorHooksDir(): string | null {
   const possiblePaths = [
     // Marketplace install location
-    path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack', 'cursor-hooks'),
+    path.join(MARKETPLACE_ROOT, 'cursor-hooks'),
     // Development/source location (relative to built worker-service.cjs in plugin/scripts/)
     path.join(path.dirname(__filename), '..', '..', 'cursor-hooks'),
     // Alternative dev location
@@ -156,7 +156,7 @@ export function findCursorHooksDir(): string | null {
 export function findMcpServerPath(): string | null {
   const possiblePaths = [
     // Marketplace install location
-    path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack', 'plugin', 'scripts', 'mcp-server.cjs'),
+    path.join(MARKETPLACE_ROOT, 'plugin', 'scripts', 'mcp-server.cjs'),
     // Development/source location (relative to built worker-service.cjs in plugin/scripts/)
     path.join(path.dirname(__filename), 'mcp-server.cjs'),
     // Alternative dev location
@@ -178,7 +178,7 @@ export function findMcpServerPath(): string | null {
 export function findWorkerServicePath(): string | null {
   const possiblePaths = [
     // Marketplace install location
-    path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack', 'plugin', 'scripts', 'worker-service.cjs'),
+    path.join(MARKETPLACE_ROOT, 'plugin', 'scripts', 'worker-service.cjs'),
     // Development/source location (relative to built worker-service.cjs in plugin/scripts/)
     path.join(path.dirname(__filename), 'worker-service.cjs'),
     // Alternative dev location
@@ -596,8 +596,8 @@ export async function detectClaudeCode(): Promise<boolean> {
     logger.debug('SYSTEM', 'Claude CLI not in PATH', {}, error as Error);
   }
 
-  // Check for Claude Code plugin directory
-  const pluginDir = path.join(homedir(), '.claude', 'plugins');
+  // Check for Claude Code plugin directory (respects CLAUDE_CONFIG_DIR)
+  const pluginDir = path.join(CLAUDE_CONFIG_DIR, 'plugins');
   if (existsSync(pluginDir)) {
     return true;
   }
