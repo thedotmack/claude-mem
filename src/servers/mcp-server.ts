@@ -331,8 +331,9 @@ function startParentHeartbeat() {
   if (heartbeatTimer.unref) heartbeatTimer.unref();
 }
 
-// Cleanup function
-async function cleanup() {
+// Cleanup function — synchronous to ensure consistent behavior whether called
+// from signal handlers, heartbeat interval, or awaited in async context
+function cleanup() {
   if (heartbeatTimer) clearInterval(heartbeatTimer);
   logger.info('SYSTEM', 'MCP server shutting down');
   process.exit(0);
