@@ -225,15 +225,17 @@ export class ChromaSync {
   private async performConnection(): Promise<void> {
     logger.info('CHROMA_SYNC', 'Connecting to Chroma MCP server...', { project: this.project });
 
-    // Race connection against timeout
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error(
-        `Chroma connection timed out after ${ChromaSync.CONNECTION_TIMEOUT_MS / 1000}s`
-      )), ChromaSync.CONNECTION_TIMEOUT_MS);
-    });
+    // AbortController prevents the background connection from modifying state
+    // after timeout fires (fixes race condition where connectToChroma() continues
+    // running and sets this.connected = true after we've already reset state)
+    const controller = new AbortController();
+
+    const timeoutId = setTimeout(() => {
+      controller.abort();
+    }, ChromaSync.CONNECTION_TIMEOUT_MS);
 
     try {
-      await Promise.race([this.connectToChroma(), timeoutPromise]);
+      await this.connectToChroma(controller.signal);
     } catch (error) {
       // Clean up transport on failure to prevent zombie processes
       if (this.transport) {
@@ -242,15 +244,24 @@ export class ChromaSync {
       this.transport = null;
       this.client = null;
       this.connected = false;
+
+      if (controller.signal.aborted) {
+        logger.error('CHROMA_SYNC', `Chroma connection timed out after ${ChromaSync.CONNECTION_TIMEOUT_MS / 1000}s`, { project: this.project });
+        throw new Error(`Chroma connection timed out after ${ChromaSync.CONNECTION_TIMEOUT_MS / 1000}s`);
+      }
+
       logger.error('CHROMA_SYNC', 'Failed to connect to Chroma MCP server', { project: this.project }, error as Error);
       throw new Error(`Chroma connection failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      clearTimeout(timeoutId);
     }
   }
 
   /**
    * Internal: establish Chroma MCP connection
+   * @param signal - AbortSignal to cancel on timeout
    */
-  private async connectToChroma(): Promise<void> {
+  private async connectToChroma(signal: AbortSignal): Promise<void> {
     // Use Python 3.13 by default to avoid onnxruntime compatibility issues with Python 3.14+
     // See: https://github.com/thedotmack/claude-mem/issues/170 (Python 3.14 incompatibility)
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
@@ -302,8 +313,14 @@ export class ChromaSync {
     });
 
     await this.client.connect(this.transport);
-    this.connected = true;
 
+    // Check abort AFTER connect returns — if timeout fired while awaiting,
+    // don't set connected state (performConnection will clean up)
+    if (signal.aborted) {
+      throw new Error('Connection aborted by timeout');
+    }
+
+    this.connected = true;
     logger.info('CHROMA_SYNC', 'Connected to Chroma MCP server', { project: this.project });
   }
 
