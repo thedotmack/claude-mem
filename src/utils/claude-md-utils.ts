@@ -17,6 +17,21 @@ import { getWorkerHost } from '../shared/worker-utils.js';
 const SETTINGS_PATH = path.join(os.homedir(), '.claude-mem', 'settings.json');
 
 /**
+ * Check for consecutive duplicate path segments like frontend/frontend/ or src/src/.
+ * This catches paths created when cwd already includes the directory name (Issue #814).
+ *
+ * @param resolvedPath - The resolved absolute path to check
+ * @returns true if consecutive duplicate segments are found
+ */
+function hasConsecutiveDuplicateSegments(resolvedPath: string): boolean {
+  const segments = resolvedPath.split(path.sep).filter(s => s && s !== '.' && s !== '..');
+  for (let i = 1; i < segments.length; i++) {
+    if (segments[i] === segments[i - 1]) return true;
+  }
+  return false;
+}
+
+/**
  * Validate that a file path is safe for CLAUDE.md generation.
  * Rejects tilde paths, URLs, command-like strings, and paths with invalid chars.
  *
@@ -46,6 +61,12 @@ function isValidPathForClaudeMd(filePath: string, projectRoot?: string): boolean
     const resolved = path.isAbsolute(filePath) ? filePath : path.resolve(projectRoot, filePath);
     const normalizedRoot = path.resolve(projectRoot);
     if (!resolved.startsWith(normalizedRoot + path.sep) && resolved !== normalizedRoot) {
+      return false;
+    }
+
+    // Reject paths with consecutive duplicate segments (Issue #814)
+    // e.g., frontend/frontend/, backend/backend/, src/src/
+    if (hasConsecutiveDuplicateSegments(resolved)) {
       return false;
     }
   }

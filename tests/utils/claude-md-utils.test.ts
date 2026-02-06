@@ -652,6 +652,62 @@ describe('path validation in updateFolderClaudeMdFiles', () => {
   });
 });
 
+describe('issue #814 - reject consecutive duplicate path segments', () => {
+  it('should reject paths with consecutive duplicate segments like frontend/frontend/', async () => {
+    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
+    global.fetch = fetchMock;
+
+    // Simulate cwd=/project/frontend/ receiving relative path frontend/src/file.ts
+    // resolves to /project/frontend/frontend/src/file.ts
+    await updateFolderClaudeMdFiles(
+      ['frontend/src/file.ts'],
+      'test-project',
+      37777,
+      path.join(tempDir, 'frontend')  // cwd is already inside frontend/
+    );
+
+    // Should NOT make API call because resolved path has frontend/frontend/
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('should reject paths with consecutive duplicate segments like src/src/', async () => {
+    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
+    global.fetch = fetchMock;
+
+    await updateFolderClaudeMdFiles(
+      ['src/components/file.ts'],
+      'test-project',
+      37777,
+      path.join(tempDir, 'src')  // cwd is already inside src/
+    );
+
+    // resolved path = tempDir/src/src/components/file.ts → has src/src/
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('should allow paths with non-consecutive duplicate segments', async () => {
+    const apiResponse = {
+      content: [{ text: '| #123 | 4:30 PM | 🔵 | Test | ~100 |' }]
+    };
+    const fetchMock = mock(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve(apiResponse)
+    } as Response));
+    global.fetch = fetchMock;
+
+    // Non-consecutive: src/components/src/utils → allowed
+    await updateFolderClaudeMdFiles(
+      ['src/components/src/utils/file.ts'],
+      'test-project',
+      37777,
+      tempDir
+    );
+
+    // Should process because segments are non-consecutive
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('issue #859 - skip folders with active CLAUDE.md', () => {
   it('should skip folder when CLAUDE.md was read in observation', async () => {
     const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
