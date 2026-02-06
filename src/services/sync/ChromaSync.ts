@@ -95,14 +95,24 @@ export class ChromaSync {
     this.collectionName = `cm__${project}`;
     this.VECTOR_DB_DIR = path.join(os.homedir(), '.claude-mem', 'vector-db');
 
+    // Check settings for explicit disable
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const chromaDisabled = settings.CLAUDE_MEM_CHROMA_DISABLED === 'true';
+
     // Disable on Windows to prevent console popups from MCP subprocess spawning
     // The MCP SDK's StdioClientTransport spawns Python processes that create visible windows
-    this.disabled = process.platform === 'win32';
-    if (this.disabled) {
-      logger.warn('CHROMA_SYNC', 'Vector search disabled on Windows (prevents console popups)', {
-        project: this.project,
-        reason: 'MCP SDK subprocess spawning causes visible console windows'
-      });
+    if (process.platform === 'win32' || chromaDisabled) {
+      this.disabled = true;
+      if (chromaDisabled) {
+        logger.info('CHROMA_SYNC', 'Chroma disabled via CLAUDE_MEM_CHROMA_DISABLED setting', { project: this.project });
+      } else {
+        logger.warn('CHROMA_SYNC', 'Vector search disabled on Windows (prevents console popups)', {
+          project: this.project,
+          reason: 'MCP SDK subprocess spawning causes visible console windows'
+        });
+      }
+    } else {
+      this.disabled = false;
     }
   }
 
