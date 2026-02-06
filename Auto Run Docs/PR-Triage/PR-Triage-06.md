@@ -1,0 +1,22 @@
+# Phase 06: Process/Zombie Management
+
+These PRs address orphaned/zombie processes. This is a recurring theme — v9.0.8 and v9.0.13 already shipped major process management fixes. Review each to determine if they address gaps that remain.
+
+## Context
+- v9.0.8: ProcessRegistry, custom spawn, signal propagation, orphan reaper (5-min interval)
+- v9.0.13: SessionQueueProcessor 3-minute idle timeout, race condition fix
+
+## Tasks
+
+- [x] Review PR #867 (`fix: prevent process bomb and zombie observers on startup` by @influenist). Files: `src/services/queue/SessionQueueProcessor.ts`, `src/services/worker-service.ts`, `src/services/worker/SessionManager.ts`, tests. Steps: (1) `gh pr checkout 867` (2) Check if the "process bomb" scenario (mass observer spawning on startup) is still possible after v9.0.13's idle timeout (3) Review whether the startup guard adds meaningful protection beyond what exists (4) Run `npm run build` and tests (5) If it addresses a real remaining gap: `gh pr merge 867 --rebase --delete-branch`. If the gap is already covered, close with explanation.
+  > **Result: CLOSED** — Both fixes are already in main. The 3-minute idle timeout with `onIdleTimeout` → `abort()` callback is fully implemented in `SessionQueueProcessor.ts` and `SessionManager.ts`. The startup "process bomb" is mitigated by the existing 100ms stagger and the idle timeout self-termination. Closed with detailed explanation.
+
+- [ ] Review PR #879 (`fix: add daemon children cleanup to orphan reaper` by @boaz-robopet). File: `src/services/worker/ProcessRegistry.ts`. The existing orphan reaper (v9.0.8) may not catch daemon child processes. Steps: (1) `gh pr checkout 879` (2) Review — does the reaper currently miss child processes of daemon-spawned workers? (3) Single file change, low risk. If the logic is sound: `gh pr merge 879 --rebase --delete-branch`
+
+- [ ] Review PR #847 (`fix: comprehensive observer session isolation without breaking auth` by @bigph00t). Files: ProcessRegistry.ts, SDKAgent.ts, EnvManager.ts, paths.ts, etc. (7 files). Steps: (1) `gh pr checkout 847` (2) v9.0.12 already fixed observer isolation (using SDK `cwd` option instead of CLAUDE_CONFIG_DIR). Check if this PR provides additional isolation beyond v9.0.12. (3) If it's substantially the same as what shipped in v9.0.12, close with: `gh pr close 847 --comment "Observer session isolation was addressed in v9.0.12 using SDK cwd option. If there are remaining isolation gaps, please describe the specific scenario and reopen."` (4) If it addresses real remaining gaps, review and merge.
+
+- [ ] Review PR #738 (`fix(worker): add subprocess lifecycle cleanup for zombie haiku agents` by @fedosov). Files: 8 source files + tests. Adds QueryWrapper/QueryWrapperManager for subprocess lifecycle management. Steps: (1) `gh pr checkout 738` (2) Check overlap with ProcessRegistry (v9.0.8) — does this add a parallel tracking system? That would be redundant. (3) If it extends ProcessRegistry, good. If it introduces a separate system, close and suggest integrating with ProcessRegistry. (4) Run `npm run build` and tests.
+
+- [ ] Review PR #713 (`fix: prevent SDK subprocess accumulation` by @cjpeterein). Files: 17 files (very large PR). Steps: (1) `gh pr checkout 713` (2) This is a large PR touching many files — check how much overlaps with v9.0.8 ProcessRegistry work (3) Large PRs on process management are risky. If substantial overlap exists with shipped code, close with explanation. (4) If unique value remains, request the author to rebase and reduce scope.
+
+- [ ] Review PR #687 (`fix: expand orphaned process cleanup to include mcp-server and worker-service` by @MrSaneApps). File: `src/services/infrastructure/ProcessManager.ts`. Steps: (1) `gh pr checkout 687` (2) Single-file change expanding what processes the reaper targets — low risk (3) Verify it correctly identifies mcp-server and worker-service processes (4) Run `npm run build` (5) If clean: `gh pr merge 687 --rebase --delete-branch`
