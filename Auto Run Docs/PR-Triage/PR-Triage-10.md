@@ -40,4 +40,5 @@ Quick wins — docs PRs are low-risk and can be merged rapidly after basic revie
 
 ## Issue Templates
 
-- [ ] Review and merge PR #970 (`fix: update bug and feature request templates to include duplicate check` by @bmccann36). 3 files (issue templates). Steps: (1) `gh pr checkout 970` (2) Review templates — adding a duplicate check reminder is good practice (3) `gh pr merge 970 --rebase --delete-branch`
+- [x] Review and merge PR #970 (`fix: update bug and feature request templates to include duplicate check` by @bmccann36). 3 files (issue templates). Steps: (1) `gh pr checkout 970` (2) Review templates — adding a duplicate check reminder is good practice (3) `gh pr merge 970 --rebase --delete-branch`
+  - **Merged 2026-02-06.** Added "Before submitting" section with duplicate check checkbox (`I searched existing issues and confirmed this is not a duplicate`) to top of both `bug_report.md` and `feature_request.md` issue templates. Also added `.idea/` to `.gitignore` and fixed missing newline at EOF. 3 files changed, 16 additions. CI passed (Greptile Review). Hard-coded upstream issues link is intentional per author — fork users should search upstream, not their empty fork tracker.
