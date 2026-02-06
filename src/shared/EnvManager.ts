@@ -51,14 +51,14 @@ const ESSENTIAL_SYSTEM_VARS = [
 export const MANAGED_CREDENTIAL_KEYS = [
   'ANTHROPIC_API_KEY',
   'GEMINI_API_KEY',
-  'OPENROUTER_API_KEY',
+  'OPENAI_COMPAT_API_KEY',
 ];
 
 export interface ClaudeMemEnv {
   // Credentials (optional - empty means use CLI billing for Claude)
   ANTHROPIC_API_KEY?: string;
   GEMINI_API_KEY?: string;
-  OPENROUTER_API_KEY?: string;
+  OPENAI_COMPAT_API_KEY?: string;
 }
 
 /**
@@ -133,7 +133,7 @@ export function loadClaudeMemEnv(): ClaudeMemEnv {
     const result: ClaudeMemEnv = {};
     if (parsed.ANTHROPIC_API_KEY) result.ANTHROPIC_API_KEY = parsed.ANTHROPIC_API_KEY;
     if (parsed.GEMINI_API_KEY) result.GEMINI_API_KEY = parsed.GEMINI_API_KEY;
-    if (parsed.OPENROUTER_API_KEY) result.OPENROUTER_API_KEY = parsed.OPENROUTER_API_KEY;
+    if (parsed.OPENAI_COMPAT_API_KEY) result.OPENAI_COMPAT_API_KEY = parsed.OPENAI_COMPAT_API_KEY;
 
     return result;
   } catch (error) {
@@ -175,11 +175,11 @@ export function saveClaudeMemEnv(env: ClaudeMemEnv): void {
         delete updated.GEMINI_API_KEY;
       }
     }
-    if (env.OPENROUTER_API_KEY !== undefined) {
-      if (env.OPENROUTER_API_KEY) {
-        updated.OPENROUTER_API_KEY = env.OPENROUTER_API_KEY;
+    if (env.OPENAI_COMPAT_API_KEY !== undefined) {
+      if (env.OPENAI_COMPAT_API_KEY) {
+        updated.OPENAI_COMPAT_API_KEY = env.OPENAI_COMPAT_API_KEY;
       } else {
-        delete updated.OPENROUTER_API_KEY;
+        delete updated.OPENAI_COMPAT_API_KEY;
       }
     }
 
@@ -223,12 +223,12 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
     if (credentials.ANTHROPIC_API_KEY) {
       isolatedEnv.ANTHROPIC_API_KEY = credentials.ANTHROPIC_API_KEY;
     }
-    // Note: GEMINI_API_KEY and OPENROUTER_API_KEY are handled by their respective agents
+    // Note: GEMINI_API_KEY and OPENAI_COMPAT_API_KEY are handled by their respective agents
     if (credentials.GEMINI_API_KEY) {
       isolatedEnv.GEMINI_API_KEY = credentials.GEMINI_API_KEY;
     }
-    if (credentials.OPENROUTER_API_KEY) {
-      isolatedEnv.OPENROUTER_API_KEY = credentials.OPENROUTER_API_KEY;
+    if (credentials.OPENAI_COMPAT_API_KEY) {
+      isolatedEnv.OPENAI_COMPAT_API_KEY = credentials.OPENAI_COMPAT_API_KEY;
     }
   }
 

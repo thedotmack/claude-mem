@@ -156,7 +156,7 @@ Should output something like:
 You're exceeding the free tier limits. Options:
 1. Wait a few minutes for the rate limit to reset
 2. Enable billing on Google Cloud to unlock higher limits
-3. Switch to OpenRouter for higher volume needs
+3. Switch to an OpenAI-compatible endpoint for higher volume needs
 
 ### API key invalid
 
@@ -176,16 +176,16 @@ Look for error messages related to Gemini API calls.
 
 ## Switching Providers Later
 
-You can switch between Gemini, OpenRouter, and Claude SDK at any time by updating your settings. No restart required - changes take effect on the next observation.
+You can switch between Gemini, OpenAI-compatible, and Claude SDK at any time by updating your settings. No restart required - changes take effect on the next observation.
 
 ```json
 {
-  "CLAUDE_MEM_PROVIDER": "openrouter"
+  "CLAUDE_MEM_PROVIDER": "openai-compat"
 }
 ```
 
 ## Next Steps
 
 - [Cursor Integration Overview](/cursor/index) - All Cursor features
-- [OpenRouter Setup](/cursor/openrouter-setup) - Alternative provider with 100+ models
+- [OpenAI-Compatible Setup](/cursor/openai-compat-setup) - Alternative provider with 100+ models
 - [Configuration Reference](../configuration) - All settings options

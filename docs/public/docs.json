@@ -36,7 +36,7 @@
           "introduction",
           "installation",
           "usage/getting-started",
-          "usage/openrouter-provider",
+          "usage/openai-compat-provider",
           "usage/gemini-provider",
           "usage/search-tools",
           "usage/claude-desktop",
@@ -54,7 +54,7 @@
         "pages": [
           "cursor/index",
           "cursor/gemini-setup",
-          "cursor/openrouter-setup"
+          "cursor/openai-compat-setup"
         ]
       },
       {

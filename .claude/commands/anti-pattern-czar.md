@@ -66,7 +66,7 @@ Only approve overrides when ALL of these are true:
 
 ## Critical Path Rules
 
-For files in the CRITICAL_PATHS list (SDKAgent.ts, GeminiAgent.ts, OpenRouterAgent.ts, SessionStore.ts, worker-service.ts):
+For files in the CRITICAL_PATHS list (SDKAgent.ts, GeminiAgent.ts, OpenAICompatAgent.ts, SessionStore.ts, worker-service.ts):
 
 - **NEVER** approve overrides on critical paths without exceptional justification
 - Errors on critical paths MUST be visible (logged) or fatal (thrown)

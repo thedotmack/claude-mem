@@ -32,7 +32,7 @@ export interface ActiveSession {
   cumulativeOutputTokens: number;  // Track output tokens for discovery cost
   earliestPendingTimestamp: number | null;  // Original timestamp of earliest pending message (for accurate observation timestamps)
   conversationHistory: ConversationMessage[];  // Shared conversation history for provider switching
-  currentProvider: 'claude' | 'gemini' | 'openrouter' | null;  // Track which provider is currently running
+  currentProvider: 'claude' | 'gemini' | 'openai-compat' | null;  // Track which provider is currently running
 }
 
 export interface PendingMessage {

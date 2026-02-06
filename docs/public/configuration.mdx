@@ -14,7 +14,7 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 | Setting                       | Default                         | Description                           |
 |-------------------------------|---------------------------------|---------------------------------------|
 | `CLAUDE_MEM_MODEL`            | `sonnet`                        | AI model for processing observations (when using Claude) |
-| `CLAUDE_MEM_PROVIDER`         | `claude`                        | AI provider: `claude`, `gemini`, or `openrouter` |
+| `CLAUDE_MEM_PROVIDER`         | `claude`                        | AI provider: `claude`, `gemini`, or `openai-compat` |
 | `CLAUDE_MEM_MODE`             | `code`                          | Active mode profile (e.g., `code--es`, `email-investigation`) |
 | `CLAUDE_MEM_CONTEXT_OBSERVATIONS` | `50`                        | Number of observations to inject      |
 | `CLAUDE_MEM_WORKER_PORT`      | `37777`                         | Worker service port                   |
@@ -30,18 +30,19 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 
 See [Gemini Provider](usage/gemini-provider) for detailed configuration and free tier information.
 
-### OpenRouter Provider Settings
+### OpenAI-Compatible Provider Settings
 
-| Setting                                      | Default                     | Description                           |
-|----------------------------------------------|-----------------------------|---------------------------------------|
-| `CLAUDE_MEM_OPENROUTER_API_KEY`              | —                           | OpenRouter API key ([get key](https://openrouter.ai/keys)) |
-| `CLAUDE_MEM_OPENROUTER_MODEL`                | `xiaomi/mimo-v2-flash:free` | Model identifier (supports 100+ models) |
-| `CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES` | `20`                        | Max messages in conversation history  |
-| `CLAUDE_MEM_OPENROUTER_MAX_TOKENS`           | `100000`                    | Token budget safety limit             |
-| `CLAUDE_MEM_OPENROUTER_SITE_URL`             | —                           | Optional: URL for analytics           |
-| `CLAUDE_MEM_OPENROUTER_APP_NAME`             | `claude-mem`                | Optional: App name for analytics      |
+| Setting                                        | Default                     | Description                           |
+|------------------------------------------------|-----------------------------|---------------------------------------|
+| `CLAUDE_MEM_OPENAI_COMPAT_API_KEY`             | —                           | API key (Bearer token). For local servers that don't validate keys, use any non-empty string |
+| `CLAUDE_MEM_OPENAI_COMPAT_MODEL`               | `xiaomi/mimo-v2-flash:free` | Model identifier (format varies by endpoint) |
+| `CLAUDE_MEM_OPENAI_COMPAT_BASE_URL`            | OpenRouter URL              | Full URL to `/v1/chat/completions` endpoint. Set for Ollama, LM Studio, CLIProxyAPI, etc. |
+| `CLAUDE_MEM_OPENAI_COMPAT_MAX_CONTEXT_MESSAGES`| `20`                        | Max messages in conversation history (1--100) |
+| `CLAUDE_MEM_OPENAI_COMPAT_MAX_TOKENS`          | `100000`                    | Estimated token budget for context (1,000--1,000,000). Lower for small context models |
+| `CLAUDE_MEM_OPENAI_COMPAT_SITE_URL`            | —                           | `HTTP-Referer` header for OpenRouter analytics (ignored by other endpoints) |
+| `CLAUDE_MEM_OPENAI_COMPAT_APP_NAME`            | `claude-mem`                | `X-Title` header for OpenRouter analytics (ignored by other endpoints) |
 
-See [OpenRouter Provider](usage/openrouter-provider) for detailed configuration, free model list, and usage guide.
+See [OpenAI-Compatible Provider](usage/openai-compat-provider) for detailed settings reference, local model setup (Ollama, LM Studio, CLIProxyAPI), and usage guide.
 
 ### System Configuration
 
