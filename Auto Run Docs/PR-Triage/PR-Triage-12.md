@@ -20,7 +20,7 @@ Multiple community members want to add provider support. Evaluate whether the pr
 
 ## Memory Features
 
-- [ ] Evaluate PR #662 (`feat(mcp): add save_memory tool for manual memory storage` by @darconada, 8 files). Allows users to manually save memories via MCP tool. This is a commonly requested feature. Decision: Does manual memory storage align with the project's automatic capture philosophy? If yes: review and merge. If the project prefers automatic-only: close with explanation.
+- [x] Evaluate PR #662 (`feat(mcp): add save_memory tool for manual memory storage` by @darconada, 8 files). **MERGED (cherry-picked to main).** Manual memory storage aligns with the project philosophy — automatic capture handles 80% of cases, manual save handles the 20% where users want explicit control (Issue #645). Source changes applied directly (PR had merge conflicts in compiled .cjs build artifacts only). Implementation is clean: MCP tool definition, POST /api/memory/save endpoint via MemoryRoutes.ts, getOrCreateManualSession() in SessionStore, README updates. Minor fix: changed logger component from unregistered 'MEMORY' to 'HTTP'/'CHROMA'. Closes #645.
 
 - [ ] Evaluate PR #920 (`feat: add project exclusion setting` by @Spunky84, 7 files) and PR #699 (`feat: add folder exclude setting for CLAUDE.md generation` by @leepokai, 2 files). Both add exclusion settings but at different levels (project vs. folder). Decision: (1) Is exclusion needed? Users do complain about CLAUDE.md pollution. (2) PR #699 is smaller (2 files) and more focused. Prefer #699 if only one is needed. If both levels are useful, merge both.
 
