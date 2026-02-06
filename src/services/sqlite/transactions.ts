@@ -91,31 +91,51 @@ export function storeObservationsAndMarkComplete(
       observationIds.push(Number(result.lastInsertRowid));
     }
 
-    // 2. Store summary if provided
+    // 2. Store summary if provided (UPSERT: later summaries subsume earlier ones)
     let summaryId: number | null = null;
     if (summary) {
-      const summaryStmt = db.prepare(`
-        INSERT INTO session_summaries
-        (memory_session_id, project, request, investigated, learned, completed,
-         next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
+      const existingSummary = db.prepare(
+        'SELECT id FROM session_summaries WHERE memory_session_id = ? LIMIT 1'
+      ).get(memorySessionId) as { id: number } | undefined;
 
-      const result = summaryStmt.run(
-        memorySessionId,
-        project,
-        summary.request,
-        summary.investigated,
-        summary.learned,
-        summary.completed,
-        summary.next_steps,
-        summary.notes,
-        promptNumber || null,
-        discoveryTokens,
-        timestampIso,
-        timestampEpoch
-      );
-      summaryId = Number(result.lastInsertRowid);
+      if (existingSummary) {
+        db.prepare(`
+          UPDATE session_summaries
+          SET project=?, request=?, investigated=?, learned=?, completed=?,
+              next_steps=?, notes=?, prompt_number=?, discovery_tokens=?,
+              created_at=?, created_at_epoch=?
+          WHERE id = ?
+        `).run(
+          project, summary.request, summary.investigated, summary.learned,
+          summary.completed, summary.next_steps, summary.notes,
+          promptNumber || null, discoveryTokens, timestampIso, timestampEpoch,
+          existingSummary.id
+        );
+        summaryId = existingSummary.id;
+      } else {
+        const summaryStmt = db.prepare(`
+          INSERT INTO session_summaries
+          (memory_session_id, project, request, investigated, learned, completed,
+           next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+
+        const result = summaryStmt.run(
+          memorySessionId,
+          project,
+          summary.request,
+          summary.investigated,
+          summary.learned,
+          summary.completed,
+          summary.next_steps,
+          summary.notes,
+          promptNumber || null,
+          discoveryTokens,
+          timestampIso,
+          timestampEpoch
+        );
+        summaryId = Number(result.lastInsertRowid);
+      }
     }
 
     // 3. Mark pending message as processed
@@ -202,31 +222,51 @@ export function storeObservations(
       observationIds.push(Number(result.lastInsertRowid));
     }
 
-    // 2. Store summary if provided
+    // 2. Store summary if provided (UPSERT: later summaries subsume earlier ones)
     let summaryId: number | null = null;
     if (summary) {
-      const summaryStmt = db.prepare(`
-        INSERT INTO session_summaries
-        (memory_session_id, project, request, investigated, learned, completed,
-         next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
+      const existingSummary = db.prepare(
+        'SELECT id FROM session_summaries WHERE memory_session_id = ? LIMIT 1'
+      ).get(memorySessionId) as { id: number } | undefined;
 
-      const result = summaryStmt.run(
-        memorySessionId,
-        project,
-        summary.request,
-        summary.investigated,
-        summary.learned,
-        summary.completed,
-        summary.next_steps,
-        summary.notes,
-        promptNumber || null,
-        discoveryTokens,
-        timestampIso,
-        timestampEpoch
-      );
-      summaryId = Number(result.lastInsertRowid);
+      if (existingSummary) {
+        db.prepare(`
+          UPDATE session_summaries
+          SET project=?, request=?, investigated=?, learned=?, completed=?,
+              next_steps=?, notes=?, prompt_number=?, discovery_tokens=?,
+              created_at=?, created_at_epoch=?
+          WHERE id = ?
+        `).run(
+          project, summary.request, summary.investigated, summary.learned,
+          summary.completed, summary.next_steps, summary.notes,
+          promptNumber || null, discoveryTokens, timestampIso, timestampEpoch,
+          existingSummary.id
+        );
+        summaryId = existingSummary.id;
+      } else {
+        const summaryStmt = db.prepare(`
+          INSERT INTO session_summaries
+          (memory_session_id, project, request, investigated, learned, completed,
+           next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+
+        const result = summaryStmt.run(
+          memorySessionId,
+          project,
+          summary.request,
+          summary.investigated,
+          summary.learned,
+          summary.completed,
+          summary.next_steps,
+          summary.notes,
+          promptNumber || null,
+          discoveryTokens,
+          timestampIso,
+          timestampEpoch
+        );
+        summaryId = Number(result.lastInsertRowid);
+      }
     }
 
     return { observationIds, summaryId, createdAtEpoch: timestampEpoch };

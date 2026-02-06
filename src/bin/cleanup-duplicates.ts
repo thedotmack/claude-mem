@@ -38,7 +38,7 @@ function main() {
     const keepId = Math.min(...ids);
     const deleteIds = ids.filter(id => id !== keepId);
 
-    console.log(`Observation "${dup.title.substring(0, 60)}..."`);
+    console.log(`Observation "${(dup.title || '(no title)').substring(0, 60)}..."`);
     console.log(`  Found ${dup.count} copies, keeping ID ${keepId}, deleting ${deleteIds.length} duplicates`);
 
     const deleteStmt = db['db'].prepare(`DELETE FROM observations WHERE id IN (${deleteIds.join(',')})`);
@@ -73,13 +73,49 @@ function main() {
     const keepId = Math.min(...ids);
     const deleteIds = ids.filter(id => id !== keepId);
 
-    console.log(`Summary "${dup.request.substring(0, 60)}..."`);
+    console.log(`Summary "${(dup.request || '(no request)').substring(0, 60)}..."`);
     console.log(`  Found ${dup.count} copies, keeping ID ${keepId}, deleting ${deleteIds.length} duplicates`);
 
     const deleteStmt = db['db'].prepare(`DELETE FROM session_summaries WHERE id IN (${deleteIds.join(',')})`);
     deleteStmt.run();
     deletedSum += deleteIds.length;
   }
+
+  // Deduplicate summaries per memory_session_id: keep the latest (MAX id), delete the rest
+  console.log('\n\nFinding per-session duplicate summaries (progressive overwrites)...');
+
+  const perSessionDupQuery = db['db'].prepare(`
+    SELECT memory_session_id, COUNT(*) as count, MAX(id) as keep_id, GROUP_CONCAT(id) as ids
+    FROM session_summaries
+    GROUP BY memory_session_id
+    HAVING count > 1
+  `);
+
+  const perSessionDups = perSessionDupQuery.all() as Array<{
+    memory_session_id: string;
+    count: number;
+    keep_id: number;
+    ids: string;
+  }>;
+
+  console.log(`Found ${perSessionDups.length} sessions with multiple summaries\n`);
+
+  let deletedPerSession = 0;
+  for (const dup of perSessionDups) {
+    const ids = dup.ids.split(',').map(id => parseInt(id, 10));
+    const deleteIds = ids.filter(id => id !== dup.keep_id);
+
+    console.log(`Session ${dup.memory_session_id.substring(0, 20)}...`);
+    console.log(`  Found ${dup.count} summaries, keeping ID ${dup.keep_id} (latest), deleting ${deleteIds.length}`);
+
+    if (deleteIds.length > 0) {
+      const deleteStmt = db['db'].prepare(`DELETE FROM session_summaries WHERE id IN (${deleteIds.join(',')})`);
+      deleteStmt.run();
+      deletedPerSession += deleteIds.length;
+    }
+  }
+
+  deletedSum += deletedPerSession;
 
   db.close();
 
