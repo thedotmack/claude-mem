@@ -27,7 +27,8 @@ Quick wins — docs PRs are low-risk and can be merged rapidly after basic revie
 - [x] Review PR #907 (`i18n: add Traditional Chinese (zh-TW) README translation` by @PeterDaveHello). 31 files. Steps: (1) `gh pr checkout 907` (2) Verify translation file structure matches existing i18n pattern (3) Check that only translation files are added, no source changes (4) If clean: `gh pr merge 907 --rebase --delete-branch`
   - **Merged 2026-02-06.** Added full Traditional Chinese (zh-TW) README translation (311 lines) at `docs/i18n/README.zh-tw.md`. Added `🇹🇼 繁體中文` language nav link to all 29 existing READMEs plus main README.md. Updated `package.json` to include `zh-tw` in tier1 translation script. 31 files changed, 341 additions. CI passed (Greptile Review).
 
-- [ ] Review PR #691 (`feat: Add Urdu language support` by @yasirali646). 34 files. Steps: (1) `gh pr checkout 691` (2) Verify translation quality (spot-check a few sections) (3) Check file structure matches other language READMEs (4) If clean: `gh pr merge 691 --rebase --delete-branch`
+- [x] Review PR #691 (`feat: Add Urdu language support` by @yasirali646). 34 files. Steps: (1) `gh pr checkout 691` (2) Verify translation quality (spot-check a few sections) (3) Check file structure matches other language READMEs (4) If clean: `gh pr merge 691 --rebase --delete-branch`
+  - **Merged 2026-02-06.** Added full Urdu (ur) README translation (311 lines) at `docs/i18n/README.ur.md` with RTL `<section dir="rtl">` wrapper and LTR language nav. Added `🇵🇰 اردو` language nav link to all 29 existing READMEs plus main README.md. Added Urdu mode file `plugin/modes/code--ur.json` matching existing mode structure. Updated translate-readme scripts (`cli.ts`, `index.ts`) with Urdu entry. Added Urdu to `docs/public/modes.mdx` table. 34 files changed, 368 additions. No CI checks configured.
 
 ## Windows-Specific Docs
 
