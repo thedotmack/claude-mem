@@ -10,7 +10,8 @@ Quick wins — docs PRs are low-risk and can be merged rapidly after basic revie
 - [x] Review and merge PR #898 (`docs: update README.ko.md` by @youngsu5582). Single file, Korean README. Steps: (1) `gh pr checkout 898` (2) Quick review (3) `gh pr merge 898 --rebase --delete-branch`
   - **Merged 2026-02-06.** Fixed Korean markdown hyperlinks by adding spaces between URLs and Korean postpositions (에서, 의, 를) to prevent markdown from including Korean characters in the URL. 2 lines changed in `docs/i18n/README.ko.md`.
 
-- [ ] Review and merge PR #864 (`docs: update README.ja.md` by @eltociear). Single file, Japanese README. Steps: (1) `gh pr checkout 864` (2) Quick review (3) `gh pr merge 864 --rebase --delete-branch`
+- [x] Review and merge PR #864 (`docs: update README.ja.md` by @eltociear). Single file, Japanese README. Steps: (1) `gh pr checkout 864` (2) Quick review (3) `gh pr merge 864 --rebase --delete-branch`
+  - **Merged 2026-02-06.** Added spaces between markdown link closings and Japanese postposition `を参照` in 4 locations to prevent markdown from including Japanese characters in URLs. Also added missing newline at end of file. 5 lines changed in `docs/i18n/README.ja.md`.
 
 - [ ] Review and merge PR #637 (`docs: fix ja readme of md render error` by @WuMingDao). Single file render fix. Steps: (1) `gh pr checkout 637` (2) Quick review (3) `gh pr merge 637 --rebase --delete-branch`
 
