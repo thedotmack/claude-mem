@@ -32,7 +32,8 @@ Quick wins — docs PRs are low-risk and can be merged rapidly after basic revie
 
 ## Windows-Specific Docs
 
-- [ ] Review and merge PR #919 (`docs: add Windows setup note for npm not recognized error` by @kamran-khalid-v9). Steps: (1) `gh pr checkout 919` (2) Review the note — should explain PATH configuration for npm on Windows (3) If helpful: `gh pr merge 919 --rebase --delete-branch`
+- [x] Review and merge PR #919 (`docs: add Windows setup note for npm not recognized error` by @kamran-khalid-v9). Steps: (1) `gh pr checkout 919` (2) Review the note — should explain PATH configuration for npm on Windows (3) If helpful: `gh pr merge 919 --rebase --delete-branch`
+  - **Merged 2026-02-06.** Added 11-line Windows setup note to README.md explaining how to resolve "npm is not recognized as the name of a cmdlet" error by installing Node.js and ensuring npm is on PATH. CI passed (Greptile Review). Fixes #908.
 
 - [ ] Review and merge PR #882 (`Add Windows local development notes to README` by @namratab18). Single file. Steps: (1) `gh pr checkout 882` (2) Quick review (3) `gh pr merge 882 --rebase --delete-branch`
 
