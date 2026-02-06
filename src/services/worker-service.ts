@@ -943,6 +943,20 @@ async function main() {
       break;
     }
 
+    case 'generate': {
+      const dryRun = process.argv.includes('--dry-run');
+      const { generateClaudeMd } = await import('../cli/claude-md-commands.js');
+      const result = await generateClaudeMd(dryRun);
+      process.exit(result);
+    }
+
+    case 'clean': {
+      const dryRun = process.argv.includes('--dry-run');
+      const { cleanClaudeMd } = await import('../cli/claude-md-commands.js');
+      const result = await cleanClaudeMd(dryRun);
+      process.exit(result);
+    }
+
     case '--daemon':
     default: {
       const worker = new WorkerService();
