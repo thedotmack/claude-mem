@@ -4,12 +4,27 @@ import path, { join } from 'path';
 import { tmpdir } from 'os';
 
 // Mock logger BEFORE imports (required pattern)
+// NOTE: mock.module replaces the module globally in Bun's test runner,
+// so all methods used by other test files must be stubbed here too.
 mock.module('../../src/utils/logger.js', () => ({
   logger: {
     info: () => {},
     debug: () => {},
     warn: () => {},
     error: () => {},
+    success: () => {},
+    failure: () => {},
+    log: () => {},
+    timing: () => {},
+    dataIn: () => {},
+    dataOut: () => {},
+    happyPathError: () => {},
+    formatTool: (name: string, input?: any) => name,
+    formatData: (data: any) => String(data),
+    formatTimestamp: () => '',
+    getLevel: () => 3,
+    correlationId: () => '',
+    sessionId: () => '',
   },
 }));
 
