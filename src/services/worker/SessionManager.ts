@@ -153,7 +153,8 @@ export class SessionManager {
       cumulativeOutputTokens: 0,
       earliestPendingTimestamp: null,
       conversationHistory: [],  // Initialize empty - will be populated by agents
-      currentProvider: null  // Will be set when generator starts
+      currentProvider: null,  // Will be set when generator starts
+      consecutiveRestarts: 0  // Track consecutive restart attempts to prevent infinite loops
     };
 
     logger.debug('SESSION', 'Creating new session object (memorySessionId cleared to prevent stale resume)', {
