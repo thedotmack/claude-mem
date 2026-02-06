@@ -17,6 +17,7 @@ import { logger } from '../../utils/logger.js';
 import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, OBSERVER_SESSIONS_DIR, ensureDir } from '../../shared/paths.js';
+import { buildIsolatedEnv, getAuthMethodDescription } from '../../shared/EnvManager.js';
 import type { ActiveSession, SDKUserMessage } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import { processAgentResponse, type WorkerRef } from './agents/index.js';
@@ -71,24 +72,42 @@ export class SDKAgent {
     // CRITICAL: Only resume if:
     // 1. memorySessionId exists (was captured from a previous SDK response)
     // 2. lastPromptNumber > 1 (this is a continuation within the same SDK session)
+    // 3. forceInit is NOT set (stale session recovery clears this)
     // On worker restart or crash recovery, memorySessionId may exist from a previous
     // SDK session but we must NOT resume because the SDK context was lost.
     // NEVER use contentSessionId for resume - that would inject messages into the user's transcript!
     const hasRealMemorySessionId = !!session.memorySessionId;
+    const shouldResume = hasRealMemorySessionId && session.lastPromptNumber > 1 && !session.forceInit;
+
+    // Clear forceInit after using it
+    if (session.forceInit) {
+      logger.info('SDK', 'forceInit flag set, starting fresh SDK session', {
+        sessionDbId: session.sessionDbId,
+        previousMemorySessionId: session.memorySessionId
+      });
+      session.forceInit = false;
+    }
+
+    // Build isolated environment from ~/.claude-mem/.env
+    // This prevents Issue #733: random ANTHROPIC_API_KEY from project .env files
+    // being used instead of the configured auth method (CLI subscription or explicit API key)
+    const isolatedEnv = buildIsolatedEnv();
+    const authMethod = getAuthMethodDescription();
 
     logger.info('SDK', 'Starting SDK query', {
       sessionDbId: session.sessionDbId,
       contentSessionId: session.contentSessionId,
       memorySessionId: session.memorySessionId,
       hasRealMemorySessionId,
-      resume_parameter: hasRealMemorySessionId ? session.memorySessionId : '(none - fresh start)',
-      lastPromptNumber: session.lastPromptNumber
+      shouldResume,
+      resume_parameter: shouldResume ? session.memorySessionId : '(none - fresh start)',
+      lastPromptNumber: session.lastPromptNumber,
+      authMethod
     });
 
     // Debug-level alignment logs for detailed tracing
     if (session.lastPromptNumber > 1) {
-      const willResume = hasRealMemorySessionId;
-      logger.debug('SDK', `[ALIGNMENT] Resume Decision | contentSessionId=${session.contentSessionId} | memorySessionId=${session.memorySessionId} | prompt#=${session.lastPromptNumber} | hasRealMemorySessionId=${hasRealMemorySessionId} | willResume=${willResume} | resumeWith=${willResume ? session.memorySessionId : 'NONE'}`);
+      logger.debug('SDK', `[ALIGNMENT] Resume Decision | contentSessionId=${session.contentSessionId} | memorySessionId=${session.memorySessionId} | prompt#=${session.lastPromptNumber} | hasRealMemorySessionId=${hasRealMemorySessionId} | shouldResume=${shouldResume} | resumeWith=${shouldResume ? session.memorySessionId : 'NONE'}`);
     } else {
       // INIT prompt - never resume even if memorySessionId exists (stale from previous session)
       const hasStaleMemoryId = hasRealMemorySessionId;
@@ -103,6 +122,7 @@ export class SDKAgent {
     // Use custom spawn to capture PIDs for zombie process cleanup (Issue #737)
     // Use dedicated cwd to isolate observer sessions from user's `claude --resume` list
     ensureDir(OBSERVER_SESSIONS_DIR);
+    // CRITICAL: Pass isolated env to prevent Issue #733 (API key pollution from project .env files)
     const queryResult = query({
       prompt: messageGenerator,
       options: {
@@ -110,35 +130,48 @@ export class SDKAgent {
         // Isolate observer sessions - they'll appear under project "observer-sessions"
         // instead of polluting user's actual project resume lists
         cwd: OBSERVER_SESSIONS_DIR,
-        // Only resume if BOTH: (1) we have a memorySessionId AND (2) this isn't the first prompt
-        // On worker restart, memorySessionId may exist from a previous SDK session but we
-        // need to start fresh since the SDK context was lost
-        ...(hasRealMemorySessionId && session.lastPromptNumber > 1 && { resume: session.memorySessionId }),
+        // Only resume if shouldResume is true (memorySessionId exists, not first prompt, not forceInit)
+        ...(shouldResume && { resume: session.memorySessionId }),
         disallowedTools,
         abortController: session.abortController,
         pathToClaudeCodeExecutable: claudePath,
         // Custom spawn function captures PIDs to fix zombie process accumulation
-        spawnClaudeCodeProcess: createPidCapturingSpawn(session.sessionDbId)
+        spawnClaudeCodeProcess: createPidCapturingSpawn(session.sessionDbId),
+        env: isolatedEnv  // Use isolated credentials from ~/.claude-mem/.env, not process.env
       }
     });
 
     // Process SDK messages
     for await (const message of queryResult) {
-      // Capture memory session ID from first SDK message (any type has session_id)
-      // This enables resume for subsequent generator starts within the same user session
-      if (!session.memorySessionId && message.session_id) {
+      // Capture or update memory session ID from SDK message
+      // IMPORTANT: The SDK may return a DIFFERENT session_id on resume than what we sent!
+      // We must always sync the DB to match what the SDK actually uses.
+      //
+      // MULTI-TERMINAL COLLISION FIX (FK constraint bug):
+      // Use ensureMemorySessionIdRegistered() instead of updateMemorySessionId() because:
+      // 1. It's idempotent - safe to call multiple times
+      // 2. It verifies the update happened (SELECT before UPDATE)
+      // 3. Consistent with ResponseProcessor's usage pattern
+      // This ensures FK constraint compliance BEFORE any observations are stored.
+      if (message.session_id && message.session_id !== session.memorySessionId) {
+        const previousId = session.memorySessionId;
         session.memorySessionId = message.session_id;
-        // Persist to database for cross-restart recovery
-        this.dbManager.getSessionStore().updateMemorySessionId(
+        // Persist to database IMMEDIATELY for FK constraint compliance
+        // This must happen BEFORE any observations referencing this ID are stored
+        this.dbManager.getSessionStore().ensureMemorySessionIdRegistered(
           session.sessionDbId,
           message.session_id
         );
         // Verify the update by reading back from DB
         const verification = this.dbManager.getSessionStore().getSessionById(session.sessionDbId);
         const dbVerified = verification?.memory_session_id === message.session_id;
-        logger.info('SESSION', `MEMORY_ID_CAPTURED | sessionDbId=${session.sessionDbId} | memorySessionId=${message.session_id} | dbVerified=${dbVerified}`, {
+        const logMessage = previousId
+          ? `MEMORY_ID_CHANGED | sessionDbId=${session.sessionDbId} | from=${previousId} | to=${message.session_id} | dbVerified=${dbVerified}`
+          : `MEMORY_ID_CAPTURED | sessionDbId=${session.sessionDbId} | memorySessionId=${message.session_id} | dbVerified=${dbVerified}`;
+        logger.info('SESSION', logMessage, {
           sessionId: session.sessionDbId,
-          memorySessionId: message.session_id
+          memorySessionId: message.session_id,
+          previousId
         });
         if (!dbVerified) {
           logger.error('SESSION', `MEMORY_ID_MISMATCH | sessionDbId=${session.sessionDbId} | expected=${message.session_id} | got=${verification?.memory_session_id}`, {
@@ -146,7 +179,7 @@ export class SDKAgent {
           });
         }
         // Debug-level alignment log for detailed tracing
-        logger.debug('SDK', `[ALIGNMENT] Captured | contentSessionId=${session.contentSessionId} → memorySessionId=${message.session_id} | Future prompts will resume with this ID`);
+        logger.debug('SDK', `[ALIGNMENT] ${previousId ? 'Updated' : 'Captured'} | contentSessionId=${session.contentSessionId} → memorySessionId=${message.session_id} | Future prompts will resume with this ID`);
       }
 
       // Handle assistant messages
@@ -155,6 +188,14 @@ export class SDKAgent {
         const textContent = Array.isArray(content)
           ? content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n')
           : typeof content === 'string' ? content : '';
+
+        // Check for context overflow - prevents infinite retry loops
+        if (textContent.includes('prompt is too long') ||
+            textContent.includes('context window')) {
+          logger.error('SDK', 'Context overflow detected - terminating session');
+          session.abortController.abort();
+          return;
+        }
 
         const responseSize = textContent.length;
 
@@ -198,6 +239,11 @@ export class SDKAgent {
             sessionId: session.sessionDbId,
             promptNumber: session.lastPromptNumber
           }, truncatedResponse);
+        }
+
+        // Detect fatal context overflow and terminate gracefully (issue #870)
+        if (typeof textContent === 'string' && textContent.includes('Prompt is too long')) {
+          throw new Error('Claude session context overflow: prompt is too long');
         }
 
         // Parse and process response using shared ResponseProcessor
@@ -302,6 +348,10 @@ export class SDKAgent {
 
     // Consume pending messages from SessionManager (event-driven, no polling)
     for await (const message of this.sessionManager.getMessageIterator(session.sessionDbId)) {
+      // CLAIM-CONFIRM: Track message ID for confirmProcessed() after successful storage
+      // The message is now in 'processing' status in DB until ResponseProcessor calls confirmProcessed()
+      session.processingMessageIds.push(message._persistentId);
+
       // Capture cwd from each message for worktree support
       if (message.cwd) {
         cwdTracker.lastCwd = message.cwd;

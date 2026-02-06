@@ -15,6 +15,7 @@
 
 <p align="center">
   <a href="README.zh.md">🇨🇳 中文</a> •
+  <a href="README.zh-tw.md">🇹🇼 繁體中文</a> •
   <a href="README.ja.md">🇯🇵 日本語</a> •
   <a href="README.pt-br.md">🇧🇷 Português</a> •
   <a href="README.ko.md">🇰🇷 한국어</a> •
@@ -34,6 +35,7 @@
   <a href="README.th.md">🇹🇭 ไทย</a> •
   <a href="README.hi.md">🇮🇳 हिन्दी</a> •
   <a href="README.bn.md">🇧🇩 বাংলা</a> •
+  <a href="README.ur.md">🇵🇰 اردو</a> •
   <a href="README.ro.md">🇷🇴 Română</a> •
   <a href="README.sv.md">🇸🇪 Svenska</a> •
   <a href="README.it.md">🇮🇹 Italiano</a> •
@@ -114,19 +116,19 @@ Claude Code를 재시작하세요. 이전 세션의 컨텍스트가 자동으로
 - 🧠 **지속적인 메모리** - 세션 간 컨텍스트 유지
 - 📊 **점진적 공개** - 토큰 비용 가시성을 갖춘 계층화된 메모리 검색
 - 🔍 **스킬 기반 검색** - mem-search 스킬로 프로젝트 기록 쿼리
-- 🖥️ **웹 뷰어 UI** - http://localhost:37777에서 실시간 메모리 스트림 확인
+- 🖥️ **웹 뷰어 UI** - http://localhost:37777 에서 실시간 메모리 스트림 확인
 - 💻 **Claude Desktop 스킬** - Claude Desktop 대화에서 메모리 검색
 - 🔒 **개인정보 제어** - `<private>` 태그를 사용하여 민감한 콘텐츠를 저장소에서 제외
 - ⚙️ **컨텍스트 설정** - 주입되는 컨텍스트에 대한 세밀한 제어
 - 🤖 **자동 작동** - 수동 개입 불필요
-- 🔗 **인용** - ID로 과거 관찰 참조 (http://localhost:37777/api/observation/{id}를 통해 액세스하거나 http://localhost:37777의 웹 뷰어에서 모두 보기)
+- 🔗 **인용** - ID로 과거 관찰 참조 (http://localhost:37777/api/observation/{id} 를 통해 액세스하거나 http://localhost:37777 의 웹 뷰어에서 모두 보기)
 - 🧪 **베타 채널** - 버전 전환을 통해 Endless Mode와 같은 실험적 기능 사용
 
 ---
 
 ## 문서
 
-📚 **[전체 문서 보기](docs/)** - GitHub에서 마크다운 문서 탐색
+📚 **[전체 문서 보기](https://docs.claude-mem.ai/)** - 공식 웹사이트에서 찾아보기
 
 ### 시작하기
 

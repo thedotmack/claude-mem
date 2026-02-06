@@ -162,9 +162,13 @@ export function parseSummary(text: string, sessionId?: number): ParsedSummary | 
 /**
  * Extract a simple field value from XML content
  * Returns null for missing or empty/whitespace-only fields
+ *
+ * Uses non-greedy match to handle nested tags and code snippets (Issue #798)
  */
 function extractField(content: string, fieldName: string): string | null {
-  const regex = new RegExp(`<${fieldName}>([^<]*)</${fieldName}>`);
+  // Use [\s\S]*? to match any character including newlines, non-greedily
+  // This handles nested XML tags like <item>...</item> inside the field
+  const regex = new RegExp(`<${fieldName}>([\\s\\S]*?)</${fieldName}>`);
   const match = regex.exec(content);
   if (!match) return null;
 
@@ -174,12 +178,13 @@ function extractField(content: string, fieldName: string): string | null {
 
 /**
  * Extract array of elements from XML content
+ * Handles nested tags and code snippets (Issue #798)
  */
 function extractArrayElements(content: string, arrayName: string, elementName: string): string[] {
   const elements: string[] = [];
 
-  // Match the array block
-  const arrayRegex = new RegExp(`<${arrayName}>(.*?)</${arrayName}>`, 's');
+  // Match the array block using [\s\S]*? for nested content
+  const arrayRegex = new RegExp(`<${arrayName}>([\\s\\S]*?)</${arrayName}>`);
   const arrayMatch = arrayRegex.exec(content);
 
   if (!arrayMatch) {
@@ -188,11 +193,14 @@ function extractArrayElements(content: string, arrayName: string, elementName: s
 
   const arrayContent = arrayMatch[1];
 
-  // Extract individual elements
-  const elementRegex = new RegExp(`<${elementName}>([^<]+)</${elementName}>`, 'g');
+  // Extract individual elements using [\s\S]*? for nested content
+  const elementRegex = new RegExp(`<${elementName}>([\\s\\S]*?)</${elementName}>`, 'g');
   let elementMatch;
   while ((elementMatch = elementRegex.exec(arrayContent)) !== null) {
-    elements.push(elementMatch[1].trim());
+    const trimmed = elementMatch[1].trim();
+    if (trimmed) {
+      elements.push(trimmed);
+    }
   }
 
   return elements;

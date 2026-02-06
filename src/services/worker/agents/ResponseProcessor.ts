@@ -16,6 +16,8 @@ import { parseObservations, parseSummary, type ParsedObservation, type ParsedSum
 import { updateCursorContextForProject } from '../../integrations/CursorHooksInstaller.js';
 import { updateFolderClaudeMdFiles } from '../../../utils/claude-md-utils.js';
 import { getWorkerPort } from '../../../shared/worker-utils.js';
+import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
+import { USER_SETTINGS_PATH } from '../../../shared/paths.js';
 import type { ActiveSession } from '../../worker-types.js';
 import type { DatabaseManager } from '../DatabaseManager.js';
 import type { SessionManager } from '../SessionManager.js';
@@ -74,6 +76,14 @@ export async function processAgentResponse(
     throw new Error('Cannot store observations: memorySessionId not yet captured');
   }
 
+  // SAFETY NET (Issue #846 / Multi-terminal FK fix):
+  // The PRIMARY fix is in SDKAgent.ts where ensureMemorySessionIdRegistered() is called
+  // immediately when the SDK returns a memory_session_id. This call is a defensive safety net
+  // in case the DB was somehow not updated (race condition, crash, etc.).
+  // In multi-terminal scenarios, createSDKSession() now resets memory_session_id to NULL
+  // for each new generator, ensuring clean isolation.
+  sessionStore.ensureMemorySessionIdRegistered(session.sessionDbId, session.memorySessionId);
+
   // Log pre-storage with session ID chain for verification
   logger.info('DB', `STORING | sessionDbId=${session.sessionDbId} | memorySessionId=${session.memorySessionId} | obsCount=${observations.length} | hasSummary=${!!summaryForStore}`, {
     sessionId: session.sessionDbId,
@@ -97,6 +107,18 @@ export async function processAgentResponse(
     sessionId: session.sessionDbId,
     memorySessionId: session.memorySessionId
   });
+
+  // CLAIM-CONFIRM: Now that storage succeeded, confirm all processing messages (delete from queue)
+  // This is the critical step that prevents message loss on generator crash
+  const pendingStore = sessionManager.getPendingMessageStore();
+  for (const messageId of session.processingMessageIds) {
+    pendingStore.confirmProcessed(messageId);
+  }
+  if (session.processingMessageIds.length > 0) {
+    logger.debug('QUEUE', `CONFIRMED_BATCH | sessionDbId=${session.sessionDbId} | count=${session.processingMessageIds.length} | ids=[${session.processingMessageIds.join(',')}]`);
+  }
+  // Clear the tracking array after confirmation
+  session.processingMessageIds = [];
 
   // AFTER transaction commits - async operations (can fail safely without data loss)
   await syncAndBroadcastObservations(
@@ -215,21 +237,29 @@ async function syncAndBroadcastObservations(
 
   // Update folder CLAUDE.md files for touched folders (fire-and-forget)
   // This runs per-observation batch to ensure folders are updated as work happens
-  const allFilePaths: string[] = [];
-  for (const obs of observations) {
-    allFilePaths.push(...(obs.files_modified || []));
-    allFilePaths.push(...(obs.files_read || []));
-  }
+  // Only runs if CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED is true (default: false)
+  const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+  // Handle both string 'true' and boolean true from JSON settings
+  const settingValue = settings.CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED;
+  const folderClaudeMdEnabled = settingValue === 'true' || settingValue === true;
 
-  if (allFilePaths.length > 0) {
-    updateFolderClaudeMdFiles(
-      allFilePaths,
-      session.project,
-      getWorkerPort(),
-      projectRoot
-    ).catch(error => {
-      logger.warn('FOLDER_INDEX', 'CLAUDE.md update failed (non-critical)', { project: session.project }, error as Error);
-    });
+  if (folderClaudeMdEnabled) {
+    const allFilePaths: string[] = [];
+    for (const obs of observations) {
+      allFilePaths.push(...(obs.files_modified || []));
+      allFilePaths.push(...(obs.files_read || []));
+    }
+
+    if (allFilePaths.length > 0) {
+      updateFolderClaudeMdFiles(
+        allFilePaths,
+        session.project,
+        getWorkerPort(),
+        projectRoot
+      ).catch(error => {
+        logger.warn('FOLDER_INDEX', 'CLAUDE.md update failed (non-critical)', { project: session.project }, error as Error);
+      });
+    }
   }
 }
 

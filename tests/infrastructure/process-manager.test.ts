@@ -7,6 +7,7 @@ import {
   readPidFile,
   removePidFile,
   getPlatformTimeout,
+  parseElapsedTime,
   type PidInfo
 } from '../../src/services/infrastructure/index.js';
 
@@ -131,6 +132,32 @@ describe('ProcessManager', () => {
 
       // Should not throw
       expect(() => removePidFile()).not.toThrow();
+    });
+  });
+
+  describe('parseElapsedTime', () => {
+    it('should parse MM:SS format', () => {
+      expect(parseElapsedTime('05:30')).toBe(5);
+      expect(parseElapsedTime('00:45')).toBe(0);
+      expect(parseElapsedTime('59:59')).toBe(59);
+    });
+
+    it('should parse HH:MM:SS format', () => {
+      expect(parseElapsedTime('01:30:00')).toBe(90);
+      expect(parseElapsedTime('02:15:30')).toBe(135);
+      expect(parseElapsedTime('00:05:00')).toBe(5);
+    });
+
+    it('should parse DD-HH:MM:SS format', () => {
+      expect(parseElapsedTime('1-00:00:00')).toBe(1440);  // 1 day
+      expect(parseElapsedTime('2-12:30:00')).toBe(3630);  // 2 days + 12.5 hours
+      expect(parseElapsedTime('0-01:00:00')).toBe(60);    // 1 hour
+    });
+
+    it('should return -1 for empty or invalid input', () => {
+      expect(parseElapsedTime('')).toBe(-1);
+      expect(parseElapsedTime('   ')).toBe(-1);
+      expect(parseElapsedTime('invalid')).toBe(-1);
     });
   });
 
