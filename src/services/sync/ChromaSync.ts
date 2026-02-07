@@ -485,7 +485,6 @@ export class ChromaSync {
   /**
    * Sync a single observation to Chroma
    * Blocks until sync completes, throws on error
-   * No-op on Windows (Chroma disabled to prevent console popups)
    */
   async syncObservation(
     observationId: number,
@@ -530,7 +529,6 @@ export class ChromaSync {
   /**
    * Sync a single summary to Chroma
    * Blocks until sync completes, throws on error
-   * No-op on Windows (Chroma disabled to prevent console popups)
    */
   async syncSummary(
     summaryId: number,
@@ -591,7 +589,6 @@ export class ChromaSync {
   /**
    * Sync a single user prompt to Chroma
    * Blocks until sync completes, throws on error
-   * No-op on Windows (Chroma disabled to prevent console popups)
    */
   async syncUserPrompt(
     promptId: number,
@@ -883,7 +880,6 @@ export class ChromaSync {
   /**
    * Query Chroma collection for semantic search
    * Used by SearchManager for vector-based search
-   * Returns empty results on Windows (Chroma disabled to prevent console popups)
    */
   async queryChroma(
     query: string,

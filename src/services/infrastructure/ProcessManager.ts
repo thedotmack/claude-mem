@@ -11,7 +11,7 @@
 import path from 'path';
 import { homedir } from 'os';
 import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync } from 'fs';
-import { exec, execSync, spawn } from 'child_process';
+import { exec, execSync, spawn, spawnSync } from 'child_process';
 import { promisify } from 'util';
 import { logger } from '../../utils/logger.js';
 import { HOOK_TIMEOUTS } from '../../shared/hook-constants.js';
@@ -100,8 +100,8 @@ export async function getChildProcesses(parentPid: number): Promise<number[]> {
   }
 
   try {
-    // PowerShell Get-Process instead of WMIC (deprecated in Windows 11)
-    const cmd = `powershell -NoProfile -NonInteractive -Command "Get-Process | Where-Object { $_.ParentProcessId -eq ${parentPid} } | Select-Object -ExpandProperty Id"`;
+    // Get-CimInstance Win32_Process has ParentProcessId (Get-Process does not in PS 5.1)
+    const cmd = `powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process | Where-Object { $_.ParentProcessId -eq ${parentPid} } | Select-Object -ExpandProperty ProcessId"`;
     const { stdout } = await execAsync(cmd, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND });
     // PowerShell outputs just numbers (one per line), simpler than WMIC's "ProcessId=1234" format
     return stdout
@@ -362,19 +362,18 @@ export function spawnDaemon(
 
   if (isWindows) {
     // Use PowerShell Start-Process to spawn a hidden, independent process
-    // Unlike WMIC, PowerShell inherits environment variables from parent
     // -WindowStyle Hidden prevents console popup
-    const execPath = process.execPath;
-    const script = scriptPath;
-    const psCommand = `Start-Process -FilePath '${execPath}' -ArgumentList '${script}','--daemon' -WindowStyle Hidden`;
+    // Paths passed via env vars to avoid shell escaping/injection issues
+    // Script path wrapped in quotes to handle spaces in Windows usernames/paths
+    const psCommand = 'Start-Process -FilePath $env:_DAEMON_EXEC -ArgumentList "`"$env:_DAEMON_SCRIPT`" --daemon" -WindowStyle Hidden -ErrorAction Stop';
 
     try {
-      execSync(`powershell -NoProfile -Command "${psCommand}"`, {
+      const result = spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', psCommand], {
         stdio: 'ignore',
         windowsHide: true,
-        env
+        env: { ...env, _DAEMON_EXEC: process.execPath, _DAEMON_SCRIPT: scriptPath }
       });
-      return 0;
+      return result.error || result.status !== 0 ? undefined : 0;
     } catch {
       return undefined;
     }
