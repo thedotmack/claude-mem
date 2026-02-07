@@ -1,0 +1,48 @@
+{
+  "id": "claude-mem",
+  "name": "Claude-Mem (Persistent Memory)",
+  "description": "Official OpenClaw plugin for Claude-Mem. Persistent memory across sessions with live observation feed.",
+  "kind": "memory",
+  "version": "1.0.0",
+  "author": "thedotmack",
+  "homepage": "https://claude-mem.com",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "syncMemoryFile": {
+        "type": "boolean",
+        "default": true,
+        "description": "Automatically sync MEMORY.md on session start"
+      },
+      "workerPort": {
+        "type": "number",
+        "default": 37777,
+        "description": "Port for Claude-Mem worker service"
+      },
+      "workerPath": {
+        "type": "string",
+        "description": "Custom path to worker-service.cjs (auto-detected if not set)"
+      },
+      "observationFeed": {
+        "type": "object",
+        "description": "Live observation feed — streams observations to any OpenClaw channel in real-time",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Enable live observation feed to messaging channels"
+          },
+          "channel": {
+            "type": "string",
+            "description": "Channel type: telegram, discord, signal, slack, whatsapp, line"
+          },
+          "to": {
+            "type": "string",
+            "description": "Target chat/user ID to send observations to"
+          }
+        }
+      }
+    }
+  }
+}
