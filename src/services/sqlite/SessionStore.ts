@@ -99,7 +99,7 @@ export class SessionStore {
           memory_session_id TEXT NOT NULL,
           project TEXT NOT NULL,
           text TEXT NOT NULL,
-          type TEXT NOT NULL CHECK(type IN ('decision', 'bugfix', 'feature', 'refactor', 'discovery')),
+          type TEXT NOT NULL,
           created_at TEXT NOT NULL,
           created_at_epoch INTEGER NOT NULL,
           FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE CASCADE
@@ -342,7 +342,7 @@ export class SessionStore {
         memory_session_id TEXT NOT NULL,
         project TEXT NOT NULL,
         text TEXT,
-        type TEXT NOT NULL CHECK(type IN ('decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change')),
+        type TEXT NOT NULL,
         title TEXT,
         subtitle TEXT,
         facts TEXT,
@@ -661,6 +661,8 @@ export class SessionStore {
 
     logger.debug('DB', 'Adding ON UPDATE CASCADE to FK constraints on observations and session_summaries');
 
+    // PRAGMA foreign_keys must be set outside a transaction
+    this.db.run('PRAGMA foreign_keys = OFF');
     this.db.run('BEGIN TRANSACTION');
 
     try {
@@ -679,7 +681,7 @@ export class SessionStore {
           memory_session_id TEXT NOT NULL,
           project TEXT NOT NULL,
           text TEXT,
-          type TEXT NOT NULL CHECK(type IN ('decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change')),
+          type TEXT NOT NULL,
           title TEXT,
           subtitle TEXT,
           facts TEXT,
@@ -813,10 +815,12 @@ export class SessionStore {
       this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(21, new Date().toISOString());
 
       this.db.run('COMMIT');
+      this.db.run('PRAGMA foreign_keys = ON');
 
       logger.debug('DB', 'Successfully added ON UPDATE CASCADE to FK constraints');
     } catch (error) {
       this.db.run('ROLLBACK');
+      this.db.run('PRAGMA foreign_keys = ON');
       throw error;
     }
   }

@@ -235,13 +235,7 @@ export class WorkerService {
    * Register all route handlers with the server
    */
   private registerRoutes(): void {
-    // Standard routes
-    this.server.registerRoutes(new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager));
-    this.server.registerRoutes(new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.sessionEventBroadcaster, this));
-    this.server.registerRoutes(new DataRoutes(this.paginationHelper, this.dbManager, this.sessionManager, this.sseBroadcaster, this, this.startTime));
-    this.server.registerRoutes(new SettingsRoutes(this.settingsManager));
-    this.server.registerRoutes(new LogsRoutes());
-    this.server.registerRoutes(new MemoryRoutes(this.dbManager, 'claude-mem'));
+    // IMPORTANT: Middleware must be registered BEFORE routes (Express processes in order)
 
     // Early handler for /api/context/inject — fail open if not yet initialized
     this.server.app.get('/api/context/inject', async (req, res, next) => {
@@ -255,7 +249,7 @@ export class WorkerService {
     });
 
     // Guard ALL /api/* routes during initialization — wait for DB with timeout
-    // Exceptions: /api/health, /api/readiness, /api/version (handled by Server.ts core routes before this middleware)
+    // Exceptions: /api/health, /api/readiness, /api/version (handled by Server.ts core routes)
     // and /api/context/inject (handled above with fail-open)
     this.server.app.use('/api', async (req, res, next) => {
       if (this.initializationCompleteFlag) {
@@ -279,6 +273,14 @@ export class WorkerService {
         });
       }
     });
+
+    // Standard routes (registered AFTER guard middleware)
+    this.server.registerRoutes(new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager));
+    this.server.registerRoutes(new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.sessionEventBroadcaster, this));
+    this.server.registerRoutes(new DataRoutes(this.paginationHelper, this.dbManager, this.sessionManager, this.sseBroadcaster, this, this.startTime));
+    this.server.registerRoutes(new SettingsRoutes(this.settingsManager));
+    this.server.registerRoutes(new LogsRoutes());
+    this.server.registerRoutes(new MemoryRoutes(this.dbManager, 'claude-mem'));
   }
 
   /**
