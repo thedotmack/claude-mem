@@ -5,9 +5,11 @@
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc"
+    "build": "tsc",
+    "test": "tsc && node --test dist/index.test.js"
   },
   "devDependencies": {
+    "@types/node": "^25.2.1",
     "typescript": "^5.3.0"
   }
 }
