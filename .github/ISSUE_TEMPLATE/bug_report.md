@@ -7,6 +7,12 @@ assignees: ''
 
 ---
 
+## Before submitting
+
+- [ ] I searched [existing issues](https://github.com/thedotmack/claude-mem/issues) and confirmed this is not a duplicate
+
+---
+
 ## ⚡ Quick Bug Report (Recommended)
 
 **Use the automated bug report generator** for comprehensive diagnostics:

@@ -34,12 +34,12 @@ Fixes the "Worker did not become ready within 15 seconds" timeout issue by chang
 
 ## Tasks
 
-- [ ] Checkout PR branch `fix/health-check-endpoint-811` and rebase onto main to resolve conflicts
-- [ ] Review the endpoint change logic in `worker-utils.ts` and `HealthMonitor.ts`
-- [ ] Verify build succeeds after rebase
-- [ ] Run health monitor tests: `npm test -- tests/infrastructure/health-monitor.test.ts`
-- [ ] Merge PR #820 to main
-- [ ] Manual verification: Kill worker and start fresh session - should not see 15-second timeout
+- [x] Checkout PR branch `fix/health-check-endpoint-811` and rebase onto main to resolve conflicts *(Completed: Rebased successfully - build artifact conflicts resolved by accepting main and will rebuild)*
+- [x] Review the endpoint change logic in `worker-utils.ts` and `HealthMonitor.ts` *(Completed: Logic is sound - both files use `/api/health` with proper JSDoc explaining the liveness vs readiness distinction)*
+- [x] Verify build succeeds after rebase *(Completed: Build succeeded - all hooks, worker service, MCP server, context generator, and React viewer built successfully)*
+- [x] Run health monitor tests: `npm test -- tests/infrastructure/health-monitor.test.ts` *(Completed: All 14 tests pass with 24 expect() calls)*
+- [x] Merge PR #820 to main *(Completed: Fast-forward merge from fix/health-check-endpoint-811 to main, pushed to origin)*
+- [x] Manual verification: Kill worker and start fresh session - should not see 15-second timeout *(Completed: Worker health endpoint responds in ~12ms, no timeout errors in logs, both worker-utils.ts and HealthMonitor.ts correctly use /api/health)*
 
 ## Verification
 

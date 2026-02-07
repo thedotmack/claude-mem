@@ -774,7 +774,7 @@ export class SessionStore {
           memory_tier_updated_at INTEGER,
           reference_count INTEGER DEFAULT 0,
           last_accessed_at INTEGER,
-          FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE,
+          FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE ON UPDATE CASCADE,
           FOREIGN KEY(superseded_by) REFERENCES observations(id) ON DELETE SET NULL
         )
       `);

@@ -10,6 +10,7 @@ mock.module('../../src/utils/logger.js', () => ({
     debug: () => {},
     warn: () => {},
     error: () => {},
+    formatTool: (toolName: string, toolInput?: any) => toolInput ? `${toolName}(...)` : toolName,
   },
 }));
 
@@ -649,5 +650,295 @@ describe('path validation in updateFolderClaudeMdFiles', () => {
     );
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('issue #814 - reject consecutive duplicate path segments', () => {
+  it('should reject paths with consecutive duplicate segments like frontend/frontend/', async () => {
+    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
+    global.fetch = fetchMock;
+
+    // Simulate cwd=/project/frontend/ receiving relative path frontend/src/file.ts
+    // resolves to /project/frontend/frontend/src/file.ts
+    await updateFolderClaudeMdFiles(
+      ['frontend/src/file.ts'],
+      'test-project',
+      37777,
+      path.join(tempDir, 'frontend')  // cwd is already inside frontend/
+    );
+
+    // Should NOT make API call because resolved path has frontend/frontend/
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('should reject paths with consecutive duplicate segments like src/src/', async () => {
+    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
+    global.fetch = fetchMock;
+
+    await updateFolderClaudeMdFiles(
+      ['src/components/file.ts'],
+      'test-project',
+      37777,
+      path.join(tempDir, 'src')  // cwd is already inside src/
+    );
+
+    // resolved path = tempDir/src/src/components/file.ts → has src/src/
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('should allow paths with non-consecutive duplicate segments', async () => {
+    const apiResponse = {
+      content: [{ text: '| #123 | 4:30 PM | 🔵 | Test | ~100 |' }]
+    };
+    const fetchMock = mock(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve(apiResponse)
+    } as Response));
+    global.fetch = fetchMock;
+
+    // Non-consecutive: src/components/src/utils → allowed
+    await updateFolderClaudeMdFiles(
+      ['src/components/src/utils/file.ts'],
+      'test-project',
+      37777,
+      tempDir
+    );
+
+    // Should process because segments are non-consecutive
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('issue #859 - skip folders with active CLAUDE.md', () => {
+  it('should skip folder when CLAUDE.md was read in observation', async () => {
+    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
+    global.fetch = fetchMock;
+
+    // Simulate reading CLAUDE.md - should skip that folder
+    await updateFolderClaudeMdFiles(
+      ['/project/src/utils/CLAUDE.md'],
+      'test-project',
+      37777,
+      '/project'
+    );
+
+    // Should NOT make API call since the CLAUDE.md file was read
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('should skip folder when CLAUDE.md was modified in observation', async () => {
+    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
+    global.fetch = fetchMock;
+
+    // Simulate modifying CLAUDE.md - should skip that folder
+    await updateFolderClaudeMdFiles(
+      ['/project/src/CLAUDE.md'],
+      'test-project',
+      37777,
+      '/project'
+    );
+
+    // Should NOT make API call since the CLAUDE.md file was modified
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('should process other folders even when one has active CLAUDE.md', async () => {
+    const apiResponse = {
+      content: [{ text: '| #123 | 4:30 PM | 🔵 | Test | ~100 |' }]
+    };
+    const fetchMock = mock(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve(apiResponse)
+    } as Response));
+    global.fetch = fetchMock;
+
+    // Mix of CLAUDE.md read and other files
+    await updateFolderClaudeMdFiles(
+      [
+        '/project/src/utils/CLAUDE.md',  // Should skip /project/src/utils
+        '/project/src/services/api.ts'   // Should process /project/src/services
+      ],
+      'test-project',
+      37777,
+      '/project'
+    );
+
+    // Should make ONE API call for /project/src/services, NOT for /project/src/utils
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const callUrl = (fetchMock.mock.calls[0] as unknown[])[0] as string;
+    expect(callUrl).toContain(encodeURIComponent('/project/src/services'));
+    expect(callUrl).not.toContain(encodeURIComponent('/project/src/utils'));
+  });
+
+  it('should handle relative CLAUDE.md paths with projectRoot', async () => {
+    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
+    global.fetch = fetchMock;
+
+    // Relative path to CLAUDE.md
+    await updateFolderClaudeMdFiles(
+      ['src/components/CLAUDE.md'],
+      'test-project',
+      37777,
+      '/project'
+    );
+
+    // Should NOT make API call since CLAUDE.md was accessed
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('should skip only the specific folder containing active CLAUDE.md', async () => {
+    const apiResponse = {
+      content: [{ text: '| #123 | 4:30 PM | 🔵 | Test | ~100 |' }]
+    };
+    const fetchMock = mock(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve(apiResponse)
+    } as Response));
+    global.fetch = fetchMock;
+
+    // Two CLAUDE.md files in different folders, plus a regular file
+    await updateFolderClaudeMdFiles(
+      [
+        '/project/src/a/CLAUDE.md',
+        '/project/src/b/CLAUDE.md',
+        '/project/src/c/file.ts'
+      ],
+      'test-project',
+      37777,
+      '/project'
+    );
+
+    // Should only process folder c, not a or b
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const callUrl = (fetchMock.mock.calls[0] as unknown[])[0] as string;
+    expect(callUrl).toContain(encodeURIComponent('/project/src/c'));
+  });
+
+  it('should still exclude project root even when CLAUDE.md filter would allow it', async () => {
+    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
+    global.fetch = fetchMock;
+
+    // Create a temp dir with .git to simulate project root
+    const projectRoot = join(tempDir, 'git-project');
+    const gitDir = join(projectRoot, '.git');
+    mkdirSync(gitDir, { recursive: true });
+
+    // File at project root
+    await updateFolderClaudeMdFiles(
+      [join(projectRoot, 'file.ts')],
+      'test-project',
+      37777,
+      projectRoot
+    );
+
+    // Should NOT make API call because it's the project root
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('issue #912 - skip unsafe directories for CLAUDE.md generation', () => {
+  it('should skip node_modules directories', async () => {
+    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
+    global.fetch = fetchMock;
+
+    await updateFolderClaudeMdFiles(
+      ['node_modules/lodash/index.js'],
+      'test-project',
+      37777,
+      tempDir
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('should skip .git directories', async () => {
+    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
+    global.fetch = fetchMock;
+
+    await updateFolderClaudeMdFiles(
+      ['.git/refs/heads/main'],
+      'test-project',
+      37777,
+      tempDir
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('should skip Android res/ directories', async () => {
+    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
+    global.fetch = fetchMock;
+
+    await updateFolderClaudeMdFiles(
+      ['app/src/main/res/layout/activity_main.xml'],
+      'test-project',
+      37777,
+      tempDir
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('should skip build/ directories', async () => {
+    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
+    global.fetch = fetchMock;
+
+    await updateFolderClaudeMdFiles(
+      ['build/outputs/apk/debug/app-debug.apk'],
+      'test-project',
+      37777,
+      tempDir
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('should skip __pycache__/ directories', async () => {
+    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
+    global.fetch = fetchMock;
+
+    await updateFolderClaudeMdFiles(
+      ['src/__pycache__/module.cpython-311.pyc'],
+      'test-project',
+      37777,
+      tempDir
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('should allow safe directories like src/', async () => {
+    const apiResponse = {
+      content: [{ text: '| #123 | 4:30 PM | 🔵 | Test | ~100 |' }]
+    };
+    const fetchMock = mock(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve(apiResponse)
+    } as Response));
+    global.fetch = fetchMock;
+
+    await updateFolderClaudeMdFiles(
+      ['src/utils/file.ts'],
+      'test-project',
+      37777,
+      tempDir
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('should skip deeply nested unsafe directories', async () => {
+    const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
+    global.fetch = fetchMock;
+
+    // node_modules nested deep inside project
+    await updateFolderClaudeMdFiles(
+      ['packages/frontend/node_modules/react/index.js'],
+      'test-project',
+      37777,
+      tempDir
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

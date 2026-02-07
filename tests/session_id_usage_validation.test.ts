@@ -116,23 +116,44 @@ describe('Session ID Critical Invariants', () => {
       expect(session?.memory_session_id).not.toBe(contentSessionId);
     });
 
-    it('should maintain consistent memorySessionId across multiple prompts in same conversation', () => {
+    it('should preserve memorySessionId across createSDKSession calls (pure get-or-create)', () => {
+      // createSDKSession is a pure get-or-create: it never modifies memory_session_id.
+      // Multi-terminal isolation is handled by ON UPDATE CASCADE at the schema level,
+      // and ensureMemorySessionIdRegistered updates the ID when a new generator captures one.
       const contentSessionId = 'multi-prompt-session';
-      const realMemoryId = 'consistent-memory-id';
+      const firstMemoryId = 'first-generator-memory-id';
 
-      // Prompt 1: Create session
+      // First generator creates session and captures memory ID
       let sessionDbId = store.createSDKSession(contentSessionId, 'test-project', 'Prompt 1');
-      store.updateMemorySessionId(sessionDbId, realMemoryId);
-
-      // Prompt 2: Look up session (createSDKSession uses INSERT OR IGNORE + SELECT)
-      sessionDbId = store.createSDKSession(contentSessionId, 'test-project', 'Prompt 2');
+      store.updateMemorySessionId(sessionDbId, firstMemoryId);
       let session = store.getSessionById(sessionDbId);
-      expect(session?.memory_session_id).toBe(realMemoryId);
+      expect(session?.memory_session_id).toBe(firstMemoryId);
 
-      // Prompt 3: Still same memory ID
-      sessionDbId = store.createSDKSession(contentSessionId, 'test-project', 'Prompt 3');
+      // Second createSDKSession call preserves memory_session_id (no reset)
+      sessionDbId = store.createSDKSession(contentSessionId, 'test-project', 'Prompt 2');
       session = store.getSessionById(sessionDbId);
-      expect(session?.memory_session_id).toBe(realMemoryId);
+      expect(session?.memory_session_id).toBe(firstMemoryId); // Preserved, not reset
+
+      // ensureMemorySessionIdRegistered can update to a new ID (ON UPDATE CASCADE handles FK)
+      store.ensureMemorySessionIdRegistered(sessionDbId, 'second-generator-memory-id');
+      session = store.getSessionById(sessionDbId);
+      expect(session?.memory_session_id).toBe('second-generator-memory-id');
+    });
+
+    it('should NOT reset memorySessionId when it is still NULL (first prompt scenario)', () => {
+      // When memory_session_id is NULL, createSDKSession should NOT reset it
+      // This is the normal first-prompt scenario where SDKAgent hasn't captured the ID yet
+      const contentSessionId = 'new-session';
+
+      // First createSDKSession - creates row with NULL memory_session_id
+      const sessionDbId = store.createSDKSession(contentSessionId, 'test-project', 'Prompt 1');
+      let session = store.getSessionById(sessionDbId);
+      expect(session?.memory_session_id).toBeNull();
+
+      // Second createSDKSession (before SDK has returned) - should still be NULL, no reset needed
+      store.createSDKSession(contentSessionId, 'test-project', 'Prompt 2');
+      session = store.getSessionById(sessionDbId);
+      expect(session?.memory_session_id).toBeNull();
     });
   });
 

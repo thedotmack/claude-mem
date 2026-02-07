@@ -10,10 +10,50 @@
  */
 
 import path from 'path';
+import { existsSync, writeFileSync, unlinkSync, statSync } from 'fs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
+import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { logger } from '../utils/logger.js';
+
+// Windows: avoid repeated spawn popups when startup fails (issue #921)
+const WINDOWS_SPAWN_COOLDOWN_MS = 2 * 60 * 1000;
+
+function getWorkerSpawnLockPath(): string {
+  return path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), '.worker-start-attempted');
+}
+
+function shouldSkipSpawnOnWindows(): boolean {
+  if (process.platform !== 'win32') return false;
+  const lockPath = getWorkerSpawnLockPath();
+  if (!existsSync(lockPath)) return false;
+  try {
+    const modifiedTimeMs = statSync(lockPath).mtimeMs;
+    return Date.now() - modifiedTimeMs < WINDOWS_SPAWN_COOLDOWN_MS;
+  } catch {
+    return false;
+  }
+}
+
+function markWorkerSpawnAttempted(): void {
+  if (process.platform !== 'win32') return;
+  try {
+    writeFileSync(getWorkerSpawnLockPath(), '', 'utf-8');
+  } catch {
+    // Best-effort lock file — failure to write shouldn't block startup
+  }
+}
+
+function clearWorkerSpawnAttempted(): void {
+  if (process.platform !== 'win32') return;
+  try {
+    const lockPath = getWorkerSpawnLockPath();
+    if (existsSync(lockPath)) unlinkSync(lockPath);
+  } catch {
+    // Best-effort cleanup
+  }
+}
 
 // Version injected at build time by esbuild define
 declare const __DEFAULT_PACKAGE_VERSION__: string;
@@ -52,8 +92,8 @@ import { DatabaseManager } from './worker/DatabaseManager.js';
 import { SessionManager } from './worker/SessionManager.js';
 import { SSEBroadcaster } from './worker/SSEBroadcaster.js';
 import { SDKAgent } from './worker/SDKAgent.js';
-import { GeminiAgent } from './worker/GeminiAgent.js';
-import { OpenRouterAgent } from './worker/OpenRouterAgent.js';
+import { GeminiAgent, isGeminiSelected, isGeminiAvailable } from './worker/GeminiAgent.js';
+import { OpenRouterAgent, isOpenRouterSelected, isOpenRouterAvailable } from './worker/OpenRouterAgent.js';
 import { PaginationHelper } from './worker/PaginationHelper.js';
 import { SettingsManager } from './worker/SettingsManager.js';
 import { SearchManager } from './worker/SearchManager.js';
@@ -169,6 +209,7 @@ export class WorkerService {
       this.broadcastProcessingStatus();
     });
 
+
     // Initialize MCP client
     // Empty capabilities object: this client only calls tools, doesn't expose any
     this.mcpClient = new Client({
@@ -212,32 +253,52 @@ export class WorkerService {
    * Register all route handlers with the server
    */
   private registerRoutes(): void {
-    // Standard routes
-    this.server.registerRoutes(new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager));
-    this.server.registerRoutes(new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.sessionEventBroadcaster, this));
-    this.server.registerRoutes(new DataRoutes(this.paginationHelper, this.dbManager, this.sessionManager, this.sseBroadcaster, this, this.startTime));
-    this.server.registerRoutes(new SettingsRoutes(this.settingsManager));
-    this.server.registerRoutes(new LogsRoutes());
+    // IMPORTANT: Middleware must be registered BEFORE routes (Express processes in order)
 
-    // Memory services routes (P0-P2) - registered in background initialization
-    // after SearchManager is available
-
-    // Early handler for /api/context/inject to avoid 404 during startup
+    // Early handler for /api/context/inject — fail open if not yet initialized
     this.server.app.get('/api/context/inject', async (req, res, next) => {
-      const timeoutMs = 300000; // 5 minute timeout for slow systems
-      const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('Initialization timeout')), timeoutMs)
-      );
-
-      await Promise.race([this.initializationComplete, timeoutPromise]);
-
-      if (!this.searchRoutes) {
-        res.status(503).json({ error: 'Search routes not initialized' });
+      if (!this.initializationCompleteFlag || !this.searchRoutes) {
+        logger.warn('SYSTEM', 'Context requested before initialization complete, returning empty');
+        res.status(200).json({ content: [{ type: 'text', text: '' }] });
         return;
       }
 
       next(); // Delegate to SearchRoutes handler
     });
+
+    // Guard ALL /api/* routes during initialization — wait for DB with timeout
+    // Exceptions: /api/health, /api/readiness, /api/version (handled by Server.ts core routes)
+    // and /api/context/inject (handled above with fail-open)
+    this.server.app.use('/api', async (req, res, next) => {
+      if (this.initializationCompleteFlag) {
+        next();
+        return;
+      }
+
+      const timeoutMs = 30000;
+      const timeoutPromise = new Promise<void>((_, reject) =>
+        setTimeout(() => reject(new Error('Database initialization timeout')), timeoutMs)
+      );
+
+      try {
+        await Promise.race([this.initializationComplete, timeoutPromise]);
+        next();
+      } catch (error) {
+        logger.error('HTTP', `Request to ${req.method} ${req.path} rejected — DB not initialized`, {}, error as Error);
+        res.status(503).json({
+          error: 'Service initializing',
+          message: 'Database is still initializing, please retry'
+        });
+      }
+    });
+
+    // Standard routes (registered AFTER guard middleware)
+    this.server.registerRoutes(new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager));
+    this.server.registerRoutes(new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.sessionEventBroadcaster, this));
+    this.server.registerRoutes(new DataRoutes(this.paginationHelper, this.dbManager, this.sessionManager, this.sseBroadcaster, this, this.startTime));
+    this.server.registerRoutes(new SettingsRoutes(this.settingsManager));
+    this.server.registerRoutes(new LogsRoutes());
+    this.server.registerRoutes(new MemoryRoutes(this.dbManager, 'claude-mem'));
   }
 
   /**
@@ -286,13 +347,12 @@ export class WorkerService {
 
       await this.dbManager.initialize();
 
-      // Recover stuck messages from previous crashes
+      // Reset any messages that were processing when worker died
       const { PendingMessageStore } = await import('./sqlite/PendingMessageStore.js');
       const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
-      const STUCK_THRESHOLD_MS = 5 * 60 * 1000;
-      const resetCount = pendingStore.resetStuckMessages(STUCK_THRESHOLD_MS);
+      const resetCount = pendingStore.resetStaleProcessingMessages(0); // 0 = reset ALL processing
       if (resetCount > 0) {
-        logger.info('SYSTEM', `Recovered ${resetCount} stuck messages from previous session`, { thresholdMinutes: 5 });
+        logger.info('SYSTEM', `Reset ${resetCount} stale processing messages to pending`);
       }
 
       // Initialize search services
@@ -380,7 +440,23 @@ export class WorkerService {
   }
 
   /**
+   * Get the appropriate agent based on provider settings.
+   * Same logic as SessionRoutes.getActiveAgent() for consistency.
+   */
+  private getActiveAgent(): SDKAgent | GeminiAgent | OpenRouterAgent {
+    if (isOpenRouterSelected() && isOpenRouterAvailable()) {
+      return this.openRouterAgent;
+    }
+    if (isGeminiSelected() && isGeminiAvailable()) {
+      return this.geminiAgent;
+    }
+    return this.sdkAgent;
+  }
+
+  /**
    * Start a session processor
+   * On SDK resume failure (terminated session), falls back to Gemini/OpenRouter if available,
+   * otherwise marks messages abandoned and removes session so queue does not grow unbounded.
    */
   private startSessionProcessor(
     session: ReturnType<typeof this.sessionManager.getSession>,
@@ -389,19 +465,177 @@ export class WorkerService {
     if (!session) return;
 
     const sid = session.sessionDbId;
-    logger.info('SYSTEM', `Starting generator (${source})`, { sessionId: sid });
+    const agent = this.getActiveAgent();
+    const providerName = agent.constructor.name;
 
-    session.generatorPromise = this.sdkAgent.startSession(session, this)
-      .catch(error => {
+    // Before starting generator, check if AbortController is already aborted
+    // This can happen after a previous generator was aborted but the session still has pending work
+    if (session.abortController.signal.aborted) {
+      logger.debug('SYSTEM', 'Replacing aborted AbortController before starting generator', {
+        sessionId: session.sessionDbId
+      });
+      session.abortController = new AbortController();
+    }
+
+    // Track whether generator failed with an unrecoverable error to prevent infinite restart loops
+    let hadUnrecoverableError = false;
+
+    logger.info('SYSTEM', `Starting generator (${source}) using ${providerName}`, { sessionId: sid });
+
+    session.generatorPromise = agent.startSession(session, this)
+      .catch(async (error: unknown) => {
+        const errorMessage = (error as Error)?.message || '';
+
+        // Detect unrecoverable errors that should NOT trigger restart
+        // These errors will fail immediately on retry, causing infinite loops
+        const unrecoverablePatterns = [
+          'Claude executable not found',
+          'CLAUDE_CODE_PATH',
+          'ENOENT',
+          'spawn',
+        ];
+        if (unrecoverablePatterns.some(pattern => errorMessage.includes(pattern))) {
+          hadUnrecoverableError = true;
+          logger.error('SDK', 'Unrecoverable generator error - will NOT restart', {
+            sessionId: session.sessionDbId,
+            project: session.project,
+            errorMessage
+          });
+          return;
+        }
+
+        // Fallback for terminated SDK sessions (provider abstraction)
+        if (this.isSessionTerminatedError(error)) {
+          logger.warn('SDK', 'SDK resume failed, falling back to standalone processing', {
+            sessionId: session.sessionDbId,
+            project: session.project,
+            reason: error instanceof Error ? error.message : String(error)
+          });
+          return this.runFallbackForTerminatedSession(session, error);
+        }
+
+        // Detect stale resume failures - SDK session context was lost
+        if ((errorMessage.includes('aborted by user') || errorMessage.includes('No conversation found'))
+            && session.memorySessionId) {
+          logger.warn('SDK', 'Detected stale resume failure, clearing memorySessionId for fresh start', {
+            sessionId: session.sessionDbId,
+            memorySessionId: session.memorySessionId,
+            errorMessage
+          });
+          // Clear stale memorySessionId and force fresh init on next attempt
+          this.dbManager.getSessionStore().updateMemorySessionId(session.sessionDbId, null);
+          session.memorySessionId = null;
+          session.forceInit = true;
+        }
         logger.error('SDK', 'Session generator failed', {
           sessionId: session.sessionDbId,
-          project: session.project
+          project: session.project,
+          provider: providerName
         }, error as Error);
+        throw error;
       })
       .finally(() => {
         session.generatorPromise = null;
+
+        // Do NOT restart after unrecoverable errors - prevents infinite loops
+        if (hadUnrecoverableError) {
+          logger.warn('SYSTEM', 'Skipping restart due to unrecoverable error', {
+            sessionId: session.sessionDbId
+          });
+          this.broadcastProcessingStatus();
+          return;
+        }
+
+        // Check if there's pending work that needs processing with a fresh AbortController
+        const { PendingMessageStore } = require('./sqlite/PendingMessageStore.js');
+        const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
+        const pendingCount = pendingStore.getPendingCount(session.sessionDbId);
+
+        if (pendingCount > 0) {
+          logger.info('SYSTEM', 'Pending work remains after generator exit, restarting with fresh AbortController', {
+            sessionId: session.sessionDbId,
+            pendingCount
+          });
+          // Reset AbortController for restart
+          session.abortController = new AbortController();
+          // Restart processor
+          this.startSessionProcessor(session, 'pending-work-restart');
+        }
+
         this.broadcastProcessingStatus();
       });
+  }
+
+  /**
+   * Match errors that indicate the Claude Code process/session is gone (resume impossible).
+   * Used to trigger graceful fallback instead of leaving pending messages stuck forever.
+   */
+  private isSessionTerminatedError(error: unknown): boolean {
+    const msg = error instanceof Error ? error.message : String(error);
+    const normalized = msg.toLowerCase();
+    return (
+      normalized.includes('process aborted by user') ||
+      normalized.includes('processtransport') ||
+      normalized.includes('not ready for writing') ||
+      normalized.includes('session generator failed') ||
+      normalized.includes('claude code process')
+    );
+  }
+
+  /**
+   * When SDK resume fails due to terminated session: try Gemini then OpenRouter to drain
+   * pending messages; if no fallback available, mark messages abandoned and remove session.
+   */
+  private async runFallbackForTerminatedSession(
+    session: ReturnType<typeof this.sessionManager.getSession>,
+    _originalError: unknown
+  ): Promise<void> {
+    if (!session) return;
+
+    const sessionDbId = session.sessionDbId;
+
+    // Fallback agents need memorySessionId for storeObservations
+    if (!session.memorySessionId) {
+      const syntheticId = `fallback-${sessionDbId}-${Date.now()}`;
+      session.memorySessionId = syntheticId;
+      this.dbManager.getSessionStore().updateMemorySessionId(sessionDbId, syntheticId);
+    }
+
+    if (isGeminiAvailable()) {
+      try {
+        await this.geminiAgent.startSession(session, this);
+        return;
+      } catch (e) {
+        logger.warn('SDK', 'Fallback Gemini failed, trying OpenRouter', {
+          sessionId: sessionDbId,
+          error: e instanceof Error ? e.message : String(e)
+        });
+      }
+    }
+
+    if (isOpenRouterAvailable()) {
+      try {
+        await this.openRouterAgent.startSession(session, this);
+        return;
+      } catch (e) {
+        logger.warn('SDK', 'Fallback OpenRouter failed', {
+          sessionId: sessionDbId,
+          error: e instanceof Error ? e.message : String(e)
+        });
+      }
+    }
+
+    // No fallback or both failed: mark messages abandoned and remove session so queue doesn't grow
+    const pendingStore = this.sessionManager.getPendingMessageStore();
+    const abandoned = pendingStore.markAllSessionMessagesAbandoned(sessionDbId);
+    if (abandoned > 0) {
+      logger.warn('SDK', 'No fallback available; marked pending messages abandoned', {
+        sessionId: sessionDbId,
+        abandoned
+      });
+    }
+    this.sessionManager.removeSessionImmediate(sessionDbId);
+    this.sessionEventBroadcaster.broadcastSessionCompleted(sessionDbId);
   }
 
   /**
@@ -415,6 +649,46 @@ export class WorkerService {
   }> {
     const { PendingMessageStore } = await import('./sqlite/PendingMessageStore.js');
     const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
+    const sessionStore = this.dbManager.getSessionStore();
+
+    // Clean up stale 'active' sessions before processing
+    // Sessions older than 6 hours without activity are likely orphaned
+    const STALE_SESSION_THRESHOLD_MS = 6 * 60 * 60 * 1000;
+    const staleThreshold = Date.now() - STALE_SESSION_THRESHOLD_MS;
+
+    try {
+      const staleSessionIds = sessionStore.db.prepare(`
+        SELECT id FROM sdk_sessions
+        WHERE status = 'active' AND started_at_epoch < ?
+      `).all(staleThreshold) as { id: number }[];
+
+      if (staleSessionIds.length > 0) {
+        const ids = staleSessionIds.map(r => r.id);
+        const placeholders = ids.map(() => '?').join(',');
+
+        sessionStore.db.prepare(`
+          UPDATE sdk_sessions
+          SET status = 'failed', completed_at_epoch = ?
+          WHERE id IN (${placeholders})
+        `).run(Date.now(), ...ids);
+
+        logger.info('SYSTEM', `Marked ${ids.length} stale sessions as failed`);
+
+        const msgResult = sessionStore.db.prepare(`
+          UPDATE pending_messages
+          SET status = 'failed', failed_at_epoch = ?
+          WHERE status = 'pending'
+          AND session_db_id IN (${placeholders})
+        `).run(Date.now(), ...ids);
+
+        if (msgResult.changes > 0) {
+          logger.info('SYSTEM', `Marked ${msgResult.changes} pending messages from stale sessions as failed`);
+        }
+      }
+    } catch (error) {
+      logger.error('SYSTEM', 'Failed to clean up stale sessions', {}, error as Error);
+    }
+
     const orphanedSessionIds = pendingStore.getSessionsWithPendingMessages();
 
     const result = {
@@ -566,8 +840,15 @@ async function ensureWorkerStarted(port: number): Promise<boolean> {
     return false;
   }
 
+  // Windows: skip spawn if a recent attempt already failed (prevents repeated bun.exe popups, issue #921)
+  if (shouldSkipSpawnOnWindows()) {
+    logger.warn('SYSTEM', 'Worker unavailable on Windows — skipping spawn (recent attempt failed within cooldown)');
+    return false;
+  }
+
   // Spawn new worker daemon
   logger.info('SYSTEM', 'Starting worker daemon');
+  markWorkerSpawnAttempted();
   const pid = spawnDaemon(__filename, port);
   if (pid === undefined) {
     logger.error('SYSTEM', 'Failed to spawn worker daemon');
@@ -584,6 +865,7 @@ async function ensureWorkerStarted(port: number): Promise<boolean> {
     return false;
   }
 
+  clearWorkerSpawnAttempted();
   logger.info('SYSTEM', 'Worker started successfully');
   return true;
 }
@@ -694,7 +976,7 @@ async function main() {
       if (!platform || !event) {
         console.error('Usage: claude-mem hook <platform> <event>');
         console.error('Platforms: claude-code, cursor, raw');
-        console.error('Events: context, session-init, observation, summarize');
+        console.error('Events: context, session-init, observation, summarize, session-complete');
         process.exit(1);
       }
 
@@ -725,6 +1007,20 @@ async function main() {
       // Note: if we started worker in-process, this process stays alive as the worker
       // The break allows the event loop to continue serving requests
       break;
+    }
+
+    case 'generate': {
+      const dryRun = process.argv.includes('--dry-run');
+      const { generateClaudeMd } = await import('../cli/claude-md-commands.js');
+      const result = await generateClaudeMd(dryRun);
+      process.exit(result);
+    }
+
+    case 'clean': {
+      const dryRun = process.argv.includes('--dry-run');
+      const { cleanClaudeMd } = await import('../cli/claude-md-commands.js');
+      const result = await cleanClaudeMd(dryRun);
+      process.exit(result);
     }
 
     case '--daemon':

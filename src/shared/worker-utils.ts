@@ -5,11 +5,29 @@ import { spawnSync } from "child_process";
 import { logger } from "../utils/logger.js";
 import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
 import { SettingsDefaultsManager } from "./SettingsDefaultsManager.js";
-
-const MARKETPLACE_ROOT = path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
+import { MARKETPLACE_ROOT } from "./paths.js";
 
 // Named constants for health checks
 const HEALTH_CHECK_TIMEOUT_MS = getTimeout(HOOK_TIMEOUTS.HEALTH_CHECK);
+
+/**
+ * Fetch with a timeout using Promise.race instead of AbortSignal.
+ * AbortSignal.timeout() causes a libuv assertion crash in Bun on Windows,
+ * so we use a racing setTimeout pattern that avoids signal cleanup entirely.
+ * The orphaned fetch is harmless since the process exits shortly after.
+ */
+export function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs: number): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    const timeoutId = setTimeout(
+      () => reject(new Error(`Request timed out after ${timeoutMs}ms`)),
+      timeoutMs
+    );
+    fetch(url, init).then(
+      response => { clearTimeout(timeoutId); resolve(response); },
+      err => { clearTimeout(timeoutId); reject(err); }
+    );
+  });
+}
 
 // Cache to avoid repeated settings file reads
 let cachedPort: number | null = null;
@@ -57,13 +75,18 @@ export function clearPortCache(): void {
 }
 
 /**
- * Check if worker is responsive and fully initialized by trying the readiness endpoint
- * Changed from /health to /api/readiness to ensure MCP initialization is complete
+ * Check if worker HTTP server is responsive
+ * Uses /api/health (liveness) instead of /api/readiness because:
+ * - Hooks have 15-second timeout, but full initialization can take 5+ minutes (MCP connection)
+ * - /api/health returns 200 as soon as HTTP server is up (sufficient for hook communication)
+ * - /api/readiness returns 503 until full initialization completes (too slow for hooks)
+ * See: https://github.com/thedotmack/claude-mem/issues/811
  */
 async function isWorkerHealthy(): Promise<boolean> {
   const port = getWorkerPort();
-  // Note: Removed AbortSignal.timeout to avoid Windows Bun cleanup issue (libuv assertion)
-  const response = await fetch(`http://127.0.0.1:${port}/api/readiness`);
+  const response = await fetchWithTimeout(
+    `http://127.0.0.1:${port}/api/health`, {}, HEALTH_CHECK_TIMEOUT_MS
+  );
   return response.ok;
 }
 
@@ -81,8 +104,9 @@ function getPluginVersion(): string {
  */
 async function getWorkerVersion(): Promise<string> {
   const port = getWorkerPort();
-  // Note: Removed AbortSignal.timeout to avoid Windows Bun cleanup issue (libuv assertion)
-  const response = await fetch(`http://127.0.0.1:${port}/api/version`);
+  const response = await fetchWithTimeout(
+    `http://127.0.0.1:${port}/api/version`, {}, HEALTH_CHECK_TIMEOUT_MS
+  );
   if (!response.ok) {
     throw new Error(`Failed to get worker version: ${response.status}`);
   }

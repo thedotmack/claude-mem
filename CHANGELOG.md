@@ -2,6 +2,172 @@
 
 All notable changes to claude-mem.
 
+## [v9.1.1] - 2026-02-07
+
+## Critical Bug Fix: Worker Initialization Failure
+
+**v9.1.0 was unable to initialize its database on existing installations.** This patch fixes the root cause and several related issues.
+
+### Bug Fixes
+
+- **Fix FOREIGN KEY constraint failure during migration** — The `addOnUpdateCascadeToForeignKeys` migration (schema v21) crashed when orphaned observations existed (observations whose `memory_session_id` has no matching row in `sdk_sessions`). Fixed by disabling FK checks (`PRAGMA foreign_keys = OFF`) during table recreation, following SQLite's recommended migration pattern.
+
+- **Remove hardcoded CHECK constraints on observation type column** — Multiple locations enforced `CHECK(type IN ('decision', 'bugfix', ...))` but the mode system (v8.0.0+) allows custom observation types, causing constraint violations. Removed all 5 occurrences across `SessionStore.ts`, `migrations.ts`, and `migrations/runner.ts`.
+
+- **Fix Express middleware ordering for initialization guard** — The `/api/*` guard middleware that waits for DB initialization was registered AFTER routes, so Express matched routes before the guard. Moved guard middleware registration BEFORE route registrations. Added dedicated early handler for `/api/context/inject` to fail-open during init.
+
+### New
+
+- **Restored mem-search skill** — Recreated `plugin/skills/mem-search/SKILL.md` with the 3-layer workflow (search → timeline → batch fetch) updated for the current MCP tool set.
+
+## [v9.1.0] - 2026-02-07
+
+## v9.1.0 — The Great PR Triage
+
+100 open PRs reviewed, triaged, and resolved. 157 commits, 123 files changed, +6,104/-721 lines. This release focuses on stability, security, and community contributions.
+
+### Highlights
+
+- **100 PR triage**: Reviewed every open PR — merged 48, cherry-picked 13, closed 39 (stale/duplicate/YAGNI)
+- **Fail-open hook architecture**: Hooks no longer block Claude Code prompts when the worker is starting up
+- **DB initialization guard**: All API endpoints now wait for database initialization instead of crashing with "Database not initialized"
+- **Security hardening**: CORS restricted to localhost, XSS defense-in-depth via DOMPurify
+- **3 new features**: Manual memory save, project exclusion, folder exclude setting
+
+---
+
+### Security
+
+- **CORS restricted to localhost** — Worker API no longer accepts cross-origin requests from arbitrary websites. Only localhost/127.0.0.1 origins allowed. (PR #917 by @Spunky84)
+- **XSS defense-in-depth** — Added DOMPurify sanitization to TerminalPreview.tsx viewer component (concept from PR #896)
+
+### New Features
+
+- **Manual memory storage** — New \`save_memory\` MCP tool and \`POST /api/memory/save\` endpoint for explicit memory capture (PR #662 by @darconada, closes #645)
+- **Project exclusion setting** — \`CLAUDE_MEM_EXCLUDED_PROJECTS\` glob patterns to exclude entire projects from tracking (PR #920 by @Spunky84)
+- **Folder exclude setting** — \`CLAUDE_MEM_FOLDER_MD_EXCLUDE\` JSON array to exclude paths from CLAUDE.md generation, fixing Xcode/drizzle build conflicts (PR #699 by @leepokai, closes #620)
+- **Folder CLAUDE.md opt-in** — \`CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED\` now defaults to \`false\` (opt-in) instead of always-on (PR #913 by @superbiche)
+- **Generate/clean CLI commands** — \`generate\` and \`clean\` commands for CLAUDE.md management with \`--dry-run\` support (PR #657 by @thedotmack)
+- **Ragtime email investigation** — Batch processor for email investigation workflows (PR #863 by @thedotmack)
+
+### Hook Resilience (Fail-Open Architecture)
+
+Hooks no longer block Claude Code when the worker is unavailable or slow:
+
+- **Graceful hook failures** — Hooks exit 0 with empty responses instead of crashing with exit 2 (PR #973 by @farikh)
+- **Fail-open context injection** — Returns empty context during initialization instead of 503 (PR #959 by @rodboev)
+- **Fetch timeouts** — All hook fetch calls have timeouts via \`fetchWithTimeout()\` helper (PR #964 by @rodboev)
+- **Removed stale user-message hook** — Eliminated startup error from incorrectly bundled hook (PR #960 by @rodboev)
+- **DB initialization middleware** — All \`/api/*\` routes now wait for DB init with 30s timeout instead of crashing
+
+### Windows Stability
+
+- **Path spaces fix** — bun-runner.js no longer fails for Windows usernames with spaces (PR #972 by @farikh)
+- **Spawn guard** — 2-minute cooldown prevents repeated worker popup windows on startup failure
+
+### Process & Zombie Management
+
+- **Daemon children cleanup** — Orphan reaper now catches idle daemon child processes (PR #879 by @boaz-robopet)
+- **Expanded orphan cleanup** — Startup cleanup now targets mcp-server.cjs and worker-service.cjs processes
+- **Session-complete hook** — New Stop phase 2 hook removes sessions from active map, enabling effective orphan reaper cleanup (PR #844 by @thusdigital, fixes #842)
+
+### Session Management
+
+- **Prompt-too-long termination** — Sessions terminate cleanly instead of infinite retry loops (PR #934 by @jayvenn21)
+- **Infinite restart prevention** — Max 3 restart attempts with exponential backoff, prevents runaway API costs (PR #693 by @ajbmachon)
+- **Orphaned message fallback** — Messages from terminated sessions drain via Gemini/OpenRouter fallback (PR #937 by @jayvenn21, fixes #936)
+- **Project field backfill** — Sessions correctly scoped when PostToolUse creates session before UserPromptSubmit (PR #940 by @miclip)
+- **Provider-aware recovery** — Startup recovery uses correct provider instead of hardcoding SDKAgent (PR #741 by @licutis)
+- **AbortController reset** — Prevents infinite "Generator aborted" loops after session abort (PR #627 by @TranslateMe)
+- **Stateless provider IDs** — Synthetic memorySessionId generation for Gemini/OpenRouter (concept from PR #615 by @JiehoonKwak)
+- **Duplicate generator prevention** — Legacy init endpoint uses idempotent \`ensureGeneratorRunning()\` (PR #932 by @jayvenn21)
+- **DB readiness wait** — Session-init endpoint waits for database initialization (PR #828 by @rajivsinclair)
+- **Image-only prompt support** — Empty/media prompts use \`[media prompt]\` placeholder (concept from PR #928 by @iammike)
+
+### CLAUDE.md Path & Generation
+
+- **Race condition fix** — Two-pass detection prevents corruption when Claude Code edits CLAUDE.md (concept from PR #974 by @cheapsteak)
+- **Duplicate path prevention** — Detects \`frontend/frontend/\` style nested duplicates (concept from PR #836 by @Glucksberg)
+- **Unsafe directory exclusion** — Blocks generation in \`res/\`, \`.git/\`, \`build/\`, \`node_modules/\`, \`__pycache__/\` (concept from PR #929 by @jayvenn21)
+
+### Chroma/Vector Search
+
+- **ID/metadata alignment fix** — Search results no longer misaligned after deduplication (PR #887 by @abkrim)
+- **Transport zombie prevention** — Connection error handlers now close transport (PR #769 by @jenyapoyarkov)
+- **Zscaler SSL support** — Enterprise environments with SSL inspection now work via combined cert path (PR #884 by @RClark4958)
+
+### Parser & Config
+
+- **Nested XML tag handling** — Parser correctly extracts fields with nested XML content (PR #835 by @Glucksberg)
+- **Graceful empty transcripts** — Transcript parser returns empty string instead of crashing (PR #862 by @DennisHartrampf)
+- **Gemini model name fix** — Corrected \`gemini-3-flash\` → \`gemini-3-flash-preview\` (PR #831 by @Glucksberg)
+- **CLAUDE_CONFIG_DIR support** — Plugin paths respect custom config directory (PR #634 by @Kuroakira, fixes #626)
+- **Env var priority** — \`env > file > defaults\` ordering via \`applyEnvOverrides()\` (PR #712 by @cjpeterein)
+- **Minimum Bun version check** — smart-install.js enforces Bun 1.1.14+ (PR #524 by @quicktime, fixes #519)
+- **Stdin timeout** — JSON self-delimiting detection with 30s safety timeout prevents hook hangs (PR #771 by @rajivsinclair, fixes #727)
+- **FK constraint prevention** — \`ensureMemorySessionIdRegistered()\` guard + \`ON UPDATE CASCADE\` schema migration (PR #889 by @Et9797, fixes #846)
+- **Cursor bun runtime** — Cursor hooks use bun instead of node, fixing bun:sqlite crashes (PR #721 by @polux0)
+
+### Documentation
+
+- **9 README PRs merged**: formatting fixes, Korean/Japanese/Chinese render fixes, documentation link updates, Traditional Chinese + Urdu translations (PRs #953, #898, #864, #637, #636, #894, #907, #691 by @Leonard013, @youngsu5582, @eltociear, @WuMingDao, @fengluodb, @PeterDaveHello, @yasirali646)
+- **Windows setup note** — npm PATH instructions (PR #919 by @kamran-khalid-v9)
+- **Issue templates** — Duplicate check checkbox added (PR #970 by @bmccann36)
+
+### Community Contributors
+
+Thank you to the 35+ contributors whose PRs were reviewed in this release:
+
+@Spunky84, @farikh, @rodboev, @boaz-robopet, @jayvenn21, @ajbmachon, @miclip, @licutis, @TranslateMe, @JiehoonKwak, @rajivsinclair, @iammike, @cheapsteak, @Glucksberg, @abkrim, @jenyapoyarkov, @RClark4958, @DennisHartrampf, @Kuroakira, @cjpeterein, @quicktime, @polux0, @Et9797, @thusdigital, @superbiche, @darconada, @leepokai, @Leonard013, @youngsu5582, @eltociear, @WuMingDao, @fengluodb, @PeterDaveHello, @yasirali646, @kamran-khalid-v9, @bmccann36
+
+---
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v9.0.17...v9.1.0
+
+## [v9.0.17] - 2026-02-05
+
+## Bug Fixes
+
+### Fix Fresh Install Bun PATH Resolution (#818)
+
+On fresh installations, hooks would fail because Bun wasn't in PATH until terminal restart. The `smart-install.js` script installs Bun to `~/.bun/bin/bun`, but the current shell session doesn't have it in PATH.
+
+**Fix:** Introduced `bun-runner.js` — a Node.js wrapper that searches common Bun installation locations across all platforms:
+- PATH (via `which`/`where`)
+- `~/.bun/bin/bun` (default install location)
+- `/usr/local/bin/bun`
+- `/opt/homebrew/bin/bun` (macOS Homebrew)
+- `/home/linuxbrew/.linuxbrew/bin/bun` (Linuxbrew)
+- Windows: `%LOCALAPPDATA%\bun` or fallback paths
+
+All 9 hook definitions updated to use `node bun-runner.js` instead of direct `bun` calls.
+
+**Files changed:**
+- `plugin/scripts/bun-runner.js` — New 88-line Bun discovery script
+- `plugin/hooks/hooks.json` — All hook commands now route through bun-runner
+
+Fixes #818 | PR #827 by @bigphoot
+
+## [v9.0.16] - 2026-02-05
+
+## Bug Fixes
+
+### Fix Worker Startup Timeout (#811, #772, #729)
+
+Resolves the "Worker did not become ready within 15 seconds" timeout error that could prevent hooks from communicating with the worker service.
+
+**Root cause:** `isWorkerHealthy()` and `waitForHealth()` were checking `/api/readiness`, which returns 503 until full initialization completes — including MCP connection setup that can take 5+ minutes. Hooks only have a 15-second timeout window.
+
+**Fix:** Switched to `/api/health` (liveness check), which returns 200 as soon as the HTTP server is listening. This is sufficient for hook communication since the worker accepts requests while background initialization continues.
+
+**Files changed:**
+- `src/shared/worker-utils.ts` — `isWorkerHealthy()` now checks `/api/health`
+- `src/services/infrastructure/HealthMonitor.ts` — `waitForHealth()` now checks `/api/health`
+- `tests/infrastructure/health-monitor.test.ts` — Updated test expectations
+
+### PR Merge Tasks
+- PR #820 merged with full verification pipeline (rebase, code review, build verification, test, manual verification)
+
 ## [v9.0.15] - 2026-02-05
 
 ## Security Fix
@@ -1296,46 +1462,4 @@ Set in ~/.claude-mem/settings.json:
 - Fix missing `formatDateTime` import in SearchManager that broke `get_context_timeline` mem-search function
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-## [v7.4.4] - 2025-12-21
-
-## What's Changed
-
-* Code quality: comprehensive nonsense audit cleanup (20 issues) by @thedotmack in #400
-
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.4.3...v7.4.4
-
-## [v7.4.3] - 2025-12-20
-
-Added Discord notification script for release announcements.
-
-### Added
-- `scripts/discord-release-notify.js` - Posts formatted release notifications to Discord using webhook URL from `.env`
-- `npm run discord:notify <version>` - New npm script to trigger Discord notifications
-- Updated version-bump skill workflow to include Discord notification step
-
-### Configuration
-Set `DISCORD_UPDATES_WEBHOOK` in your `.env` file to enable release notifications.
-
----
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-## [v7.4.2] - 2025-12-20
-
-Patch release v7.4.2
-
-## Changes
-- Refactored worker commands from npm scripts to claude-mem CLI
-- Added path alias script
-- Fixed Windows worker stop/restart reliability (#395)
-- Simplified build commands section in CLAUDE.md
-
-## [v7.4.1] - 2025-12-19
-
-## Bug Fixes
-
-- **MCP Server**: Redirect logs to stderr to preserve JSON-RPC protocol (#396)
-  - MCP uses stdio transport where stdout is reserved for JSON-RPC messages
-  - Console.log was writing startup logs to stdout, causing Claude Desktop to parse log lines as JSON and fail
 

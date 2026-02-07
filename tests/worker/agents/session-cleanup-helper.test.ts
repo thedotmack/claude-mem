@@ -37,6 +37,7 @@ describe('SessionCleanupHelper', () => {
       earliestPendingTimestamp: Date.now() - 10000, // 10 seconds ago
       conversationHistory: [],
       currentProvider: 'claude',
+      processingMessageIds: [],  // CLAIM-CONFIRM pattern: track message IDs being processed
       ...overrides,
     };
   }

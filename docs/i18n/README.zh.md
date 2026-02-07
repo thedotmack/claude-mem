@@ -15,6 +15,7 @@
 
 <p align="center">
   <a href="README.zh.md">🇨🇳 中文</a> •
+  <a href="README.zh-tw.md">🇹🇼 繁體中文</a> •
   <a href="README.ja.md">🇯🇵 日本語</a> •
   <a href="README.pt-br.md">🇧🇷 Português</a> •
   <a href="README.ko.md">🇰🇷 한국어</a> •
@@ -34,6 +35,7 @@
   <a href="README.th.md">🇹🇭 ไทย</a> •
   <a href="README.hi.md">🇮🇳 हिन्दी</a> •
   <a href="README.bn.md">🇧🇩 বাংলা</a> •
+  <a href="README.ur.md">🇵🇰 اردو</a> •
   <a href="README.ro.md">🇷🇴 Română</a> •
   <a href="README.sv.md">🇸🇪 Svenska</a> •
   <a href="README.it.md">🇮🇹 Italiano</a> •
@@ -126,7 +128,7 @@
 
 ## 文档
 
-📚 **[查看完整文档](docs/)** - 在 GitHub 上浏览 Markdown 文档
+📚 **[查看完整文档](https://docs.claude-mem.ai/)** - 在官方网站浏览
 
 ### 入门指南
 
@@ -212,7 +214,7 @@ Claude-Mem 通过 mem-search 技能提供智能搜索,当您询问过去的工�
 
 Claude-Mem 提供**测试版渠道**,包含实验性功能,如**无尽模式**(用于扩展会话的仿生记忆架构)。从 Web 查看器界面 http://localhost:37777 → 设置 切换稳定版和测试版。
 
-详见**[测试版功能文档](https://docs.claude-mem.ai/beta-features)**了解无尽模式的详细信息和试用方法。
+详见 **[测试版功能文档](https://docs.claude-mem.ai/beta-features)** 了解无尽模式的详细信息和试用方法。
 
 ---
 
@@ -230,13 +232,13 @@ Claude-Mem 提供**测试版渠道**,包含实验性功能,如**无尽模式**(�
 
 设置在 `~/.claude-mem/settings.json` 中管理(首次运行时自动创建默认设置)。可配置 AI 模型、worker 端口、数据目录、日志级别和上下文注入设置。
 
-详见**[配置指南](https://docs.claude-mem.ai/configuration)**了解所有可用设置和示例。
+详见 **[配置指南](https://docs.claude-mem.ai/configuration)** 了解所有可用设置和示例。
 
 ---
 
 ## 开发
 
-详见**[开发指南](https://docs.claude-mem.ai/development)**了解构建说明、测试和贡献工作流程。
+详见 **[开发指南](https://docs.claude-mem.ai/development)** 了解构建说明、测试和贡献工作流程。
 
 ---
 
@@ -244,7 +246,7 @@ Claude-Mem 提供**测试版渠道**,包含实验性功能,如**无尽模式**(�
 
 如果遇到问题,向 Claude 描述问题,troubleshoot 技能将自动诊断并提供修复方案。
 
-详见**[故障排除指南](https://docs.claude-mem.ai/troubleshooting)**了解常见问题和解决方案。
+详见 **[故障排除指南](https://docs.claude-mem.ai/troubleshooting)** 了解常见问题和解决方案。
 
 ---
 
