@@ -309,6 +309,16 @@ export class WorkerService {
       this.resolveInitialization();
       logger.info('SYSTEM', 'Background initialization complete');
 
+      // Defensive cleanup: reap stale Claude subprocesses from previous daemon run (Issue #1007)
+      try {
+        const startupReaped = await reapOrphanedProcesses(new Set());
+        if (startupReaped > 0) {
+          logger.info('SYSTEM', `Reaped ${startupReaped} orphaned process(es) from previous run`, { reaped: startupReaped });
+        }
+      } catch (err) {
+        logger.warn('SYSTEM', 'Startup reap of orphaned processes failed (non-fatal)', {}, err as Error);
+      }
+
       // Start orphan reaper to clean up zombie processes (Issue #737)
       this.stopOrphanReaper = startOrphanReaper(() => {
         const activeIds = new Set<number>();
