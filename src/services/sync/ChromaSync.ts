@@ -85,11 +85,6 @@ export class ChromaSync {
   private readonly VECTOR_DB_DIR: string;
   private readonly BATCH_SIZE = 100;
 
-  // Windows popup concern resolved: the worker daemon starts with -WindowStyle Hidden,
-  // so child processes (uvx/chroma-mcp) inherit the hidden console and don't create new windows.
-  // MCP SDK's StdioClientTransport uses shell:false and no detached flag, so console is inherited.
-  private readonly disabled: boolean = false;
-
   constructor(project: string) {
     this.project = project;
     this.collectionName = `cm__${project}`;
@@ -168,13 +163,6 @@ export class ChromaSync {
       logger.debug('CHROMA_SYNC', 'Could not create combined cert bundle', {}, error as Error);
       return undefined;
     }
-  }
-
-  /**
-   * Check if Chroma is disabled (Windows)
-   */
-  isDisabled(): boolean {
-    return this.disabled;
   }
 
   /**
@@ -508,8 +496,6 @@ export class ChromaSync {
     createdAtEpoch: number,
     discoveryTokens: number = 0
   ): Promise<void> {
-    if (this.disabled) return;
-
     // Convert ParsedObservation to StoredObservation format
     const stored: StoredObservation = {
       id: observationId,
@@ -555,8 +541,6 @@ export class ChromaSync {
     createdAtEpoch: number,
     discoveryTokens: number = 0
   ): Promise<void> {
-    if (this.disabled) return;
-
     // Convert ParsedSummary to StoredSummary format
     const stored: StoredSummary = {
       id: summaryId,
@@ -617,8 +601,6 @@ export class ChromaSync {
     promptNumber: number,
     createdAtEpoch: number
   ): Promise<void> {
-    if (this.disabled) return;
-
     // Create StoredUserPrompt format
     const stored: StoredUserPrompt = {
       id: promptId,
@@ -733,11 +715,8 @@ export class ChromaSync {
    * Backfill: Sync all observations missing from Chroma
    * Reads from SQLite and syncs in batches
    * Throws error if backfill fails
-   * No-op on Windows (Chroma disabled to prevent console popups)
    */
   async ensureBackfilled(): Promise<void> {
-    if (this.disabled) return;
-
     logger.info('CHROMA_SYNC', 'Starting smart backfill', { project: this.project });
 
     await this.ensureCollection();
@@ -911,10 +890,6 @@ export class ChromaSync {
     limit: number,
     whereFilter?: Record<string, any>
   ): Promise<{ ids: number[]; distances: number[]; metadatas: any[] }> {
-    if (this.disabled) {
-      return { ids: [], distances: [], metadatas: [] };
-    }
-
     await this.ensureConnection();
 
     if (!this.client) {
