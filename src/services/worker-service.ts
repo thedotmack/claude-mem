@@ -70,7 +70,7 @@ import { SettingsRoutes } from './worker/http/routes/SettingsRoutes.js';
 import { LogsRoutes } from './worker/http/routes/LogsRoutes.js';
 
 // Process management for zombie cleanup (Issue #737)
-import { startOrphanReaper, reapOrphanedProcesses } from './worker/ProcessRegistry.js';
+import { startOrphanReaper, reapSystemOrphansOnly } from './worker/ProcessRegistry.js';
 
 /**
  * Build JSON status output for hook framework communication.
@@ -309,14 +309,14 @@ export class WorkerService {
       this.resolveInitialization();
       logger.info('SYSTEM', 'Background initialization complete');
 
-      // Defensive cleanup: reap stale Claude subprocesses from previous daemon run (Issue #1007)
+      // Defensive cleanup: reap only OS-level orphans (ppid=1) from previous daemon run (Issue #1007)
       try {
-        const startupReaped = await reapOrphanedProcesses(new Set());
+        const startupReaped = await reapSystemOrphansOnly();
         if (startupReaped > 0) {
-          logger.info('SYSTEM', `Reaped ${startupReaped} orphaned process(es) from previous run`, { reaped: startupReaped });
+          logger.info('SYSTEM', `Reaped ${startupReaped} system orphan(s) from previous run`, { reaped: startupReaped });
         }
       } catch (err) {
-        logger.warn('SYSTEM', 'Startup reap of orphaned processes failed (non-fatal)', {}, err as Error);
+        logger.warn('SYSTEM', 'Startup reap of system orphans failed (non-fatal)', {}, err as Error);
       }
 
       // Start orphan reaper to clean up zombie processes (Issue #737)

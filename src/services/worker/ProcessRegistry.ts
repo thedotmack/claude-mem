@@ -13,7 +13,7 @@
  * - Enforce MAX_CONCURRENT_CLAUDE_SUBPROCESSES; fail fast when at cap
  * - Verify exit on session deletion with timeout + SIGKILL escalation
  * - Safety net orphan reaper runs every 5 minutes
- * - Defensive reap of system orphans on daemon startup
+ * - Defensive reap of system orphans only at startup (ppid=1), never registry
  */
 
 import { spawn, exec, ChildProcess } from 'child_process';
@@ -167,6 +167,30 @@ async function killSystemOrphans(): Promise<number> {
 }
 
 /**
+ * Reap only OS-level orphans (ppid=1). Safe to call at daemon startup:
+ * does not touch the registry, so in-flight subprocesses are never killed.
+ */
+export async function reapSystemOrphansOnly(): Promise<number> {
+  return killSystemOrphans();
+}
+
+/**
+ * Remove from registry any tracked process that has already exited.
+ * Prevents cap enforcement from being stuck when exit events were missed.
+ */
+export function pruneExitedProcesses(): void {
+  const toRemove: number[] = [];
+  for (const [pid, info] of processRegistry) {
+    if (info.process.killed || info.process.exitCode !== null) {
+      toRemove.push(pid);
+    }
+  }
+  for (const pid of toRemove) {
+    unregisterProcess(pid);
+  }
+}
+
+/**
  * Reap orphaned processes - both registry-tracked and system-level
  */
 export async function reapOrphanedProcesses(activeSessionIds: Set<number>): Promise<number> {
@@ -209,6 +233,7 @@ export function createPidCapturingSpawn(sessionDbId: number) {
     env?: NodeJS.ProcessEnv;
     signal?: AbortSignal;
   }) => {
+    pruneExitedProcesses();
     if (processRegistry.size >= MAX_CONCURRENT_CLAUDE_SUBPROCESSES) {
       logger.warn('PROCESS', `Refusing to spawn: at safety limit (${MAX_CONCURRENT_CLAUDE_SUBPROCESSES} concurrent Claude subprocesses)`, {
         sessionDbId,
