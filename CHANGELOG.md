@@ -2,6 +2,24 @@
 
 All notable changes to claude-mem.
 
+## [v9.1.1] - 2026-02-07
+
+## Critical Bug Fix: Worker Initialization Failure
+
+**v9.1.0 was unable to initialize its database on existing installations.** This patch fixes the root cause and several related issues.
+
+### Bug Fixes
+
+- **Fix FOREIGN KEY constraint failure during migration** — The `addOnUpdateCascadeToForeignKeys` migration (schema v21) crashed when orphaned observations existed (observations whose `memory_session_id` has no matching row in `sdk_sessions`). Fixed by disabling FK checks (`PRAGMA foreign_keys = OFF`) during table recreation, following SQLite's recommended migration pattern.
+
+- **Remove hardcoded CHECK constraints on observation type column** — Multiple locations enforced `CHECK(type IN ('decision', 'bugfix', ...))` but the mode system (v8.0.0+) allows custom observation types, causing constraint violations. Removed all 5 occurrences across `SessionStore.ts`, `migrations.ts`, and `migrations/runner.ts`.
+
+- **Fix Express middleware ordering for initialization guard** — The `/api/*` guard middleware that waits for DB initialization was registered AFTER routes, so Express matched routes before the guard. Moved guard middleware registration BEFORE route registrations. Added dedicated early handler for `/api/context/inject` to fail-open during init.
+
+### New
+
+- **Restored mem-search skill** — Recreated `plugin/skills/mem-search/SKILL.md` with the 3-layer workflow (search → timeline → batch fetch) updated for the current MCP tool set.
+
 ## [v9.1.0] - 2026-02-07
 
 ## v9.1.0 — The Great PR Triage
@@ -1444,12 +1462,4 @@ Set in ~/.claude-mem/settings.json:
 - Fix missing `formatDateTime` import in SearchManager that broke `get_context_timeline` mem-search function
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-## [v7.4.4] - 2025-12-21
-
-## What's Changed
-
-* Code quality: comprehensive nonsense audit cleanup (20 issues) by @thedotmack in #400
-
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v7.4.3...v7.4.4
 
