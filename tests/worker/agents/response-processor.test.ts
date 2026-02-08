@@ -618,6 +618,133 @@ describe('ResponseProcessor', () => {
     });
   });
 
+  describe('skipSummaryStorage parameter', () => {
+    it('should store observations but NOT summary when skipSummaryStorage=true', async () => {
+      const session = createMockSession();
+      const responseText = `
+        <observation>
+          <type>discovery</type>
+          <title>Test observation</title>
+          <narrative>Observation should still be stored</narrative>
+          <facts></facts>
+          <concepts></concepts>
+          <files_read></files_read>
+          <files_modified></files_modified>
+        </observation>
+        <summary>
+          <request>Build feature</request>
+          <investigated>Reviewed code</investigated>
+          <learned>Found patterns</learned>
+          <completed>Feature built</completed>
+          <next_steps>Add tests</next_steps>
+        </summary>
+      `;
+
+      await processAgentResponse(
+        responseText,
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent',
+        undefined,
+        true  // skipSummaryStorage
+      );
+
+      expect(mockStoreObservations).toHaveBeenCalledTimes(1);
+      const [memorySessionId, project, observations, summary] =
+        mockStoreObservations.mock.calls[0];
+      expect(memorySessionId).toBe('memory-session-456');
+      expect(observations).toHaveLength(1);
+      expect(observations[0].title).toBe('Test observation');
+      // Summary should be null even though XML contained one
+      expect(summary).toBeNull();
+    });
+
+    it('should store both observations and summary when skipSummaryStorage=false', async () => {
+      const session = createMockSession();
+      const responseText = `
+        <observation>
+          <type>discovery</type>
+          <title>Test observation</title>
+          <narrative>Observation should be stored</narrative>
+          <facts></facts>
+          <concepts></concepts>
+          <files_read></files_read>
+          <files_modified></files_modified>
+        </observation>
+        <summary>
+          <request>Build feature</request>
+          <investigated>Reviewed code</investigated>
+          <learned>Found patterns</learned>
+          <completed>Feature built</completed>
+          <next_steps>Add tests</next_steps>
+        </summary>
+      `;
+
+      await processAgentResponse(
+        responseText,
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent',
+        undefined,
+        false  // skipSummaryStorage explicitly false
+      );
+
+      expect(mockStoreObservations).toHaveBeenCalledTimes(1);
+      const [, , observations, summary] = mockStoreObservations.mock.calls[0];
+      expect(observations).toHaveLength(1);
+      expect(summary).not.toBeNull();
+      expect(summary.request).toBe('Build feature');
+    });
+
+    it('should store both observations and summary when skipSummaryStorage is omitted', async () => {
+      const session = createMockSession();
+      const responseText = `
+        <observation>
+          <type>discovery</type>
+          <title>Test observation</title>
+          <narrative>Observation should be stored</narrative>
+          <facts></facts>
+          <concepts></concepts>
+          <files_read></files_read>
+          <files_modified></files_modified>
+        </observation>
+        <summary>
+          <request>Build feature</request>
+          <investigated>Reviewed code</investigated>
+          <learned>Found patterns</learned>
+          <completed>Feature built</completed>
+          <next_steps>Add tests</next_steps>
+        </summary>
+      `;
+
+      // Call without the skipSummaryStorage parameter (default behavior)
+      await processAgentResponse(
+        responseText,
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      expect(mockStoreObservations).toHaveBeenCalledTimes(1);
+      const [, , observations, summary] = mockStoreObservations.mock.calls[0];
+      expect(observations).toHaveLength(1);
+      expect(summary).not.toBeNull();
+      expect(summary.request).toBe('Build feature');
+    });
+  });
+
   describe('error handling', () => {
     it('should throw error if memorySessionId is missing', async () => {
       const session = createMockSession({

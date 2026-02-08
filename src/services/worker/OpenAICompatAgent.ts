@@ -201,7 +201,8 @@ export class OpenAICompatAgent {
           tokensUsed,
           null,
           'OpenAI-Compat',
-          undefined  // No lastCwd yet - before message processing
+          undefined,  // No lastCwd yet - before message processing
+          true  // skipSummaryStorage: prevent feedback loop in compactHistory
         );
       } else {
         logger.error('SDK', 'Empty OpenAI-compat init response - session may lack context', {
@@ -263,7 +264,8 @@ export class OpenAICompatAgent {
             tokensUsed,
             originalTimestamp,
             'OpenAI-Compat',
-            lastCwd
+            lastCwd,
+            true  // skipSummaryStorage: prevent feedback loop in compactHistory
           );
 
         } else if (message.type === 'summarize') {

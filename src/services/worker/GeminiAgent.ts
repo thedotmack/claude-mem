@@ -189,7 +189,9 @@ export class GeminiAgent {
           worker,
           tokensUsed,
           null,
-          'Gemini'
+          'Gemini',
+          undefined,  // projectRoot
+          true  // skipSummaryStorage: prevent feedback loop in compactHistory
         );
       } else {
         logger.error('SDK', 'Empty Gemini init response - session may lack context', {
@@ -251,7 +253,8 @@ export class GeminiAgent {
             tokensUsed,
             originalTimestamp,
             'Gemini',
-            lastCwd
+            lastCwd,
+            true  // skipSummaryStorage: prevent feedback loop in compactHistory
           );
 
         } else if (message.type === 'summarize') {

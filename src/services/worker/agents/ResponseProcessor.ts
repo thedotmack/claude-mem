@@ -51,7 +51,8 @@ export async function processAgentResponse(
   discoveryTokens: number,
   originalTimestamp: number | null,
   agentName: string,
-  projectRoot?: string
+  projectRoot?: string,
+  skipSummaryStorage?: boolean
 ): Promise<void> {
   // Add assistant response to shared conversation history for provider interop
   if (text) {
@@ -89,8 +90,10 @@ export async function processAgentResponse(
     });
   }
 
-  // Convert nullable fields to empty strings for storeSummary (if summary exists)
-  const summaryForStore = normalizeSummaryForStorage(summary);
+  // Skip summary storage during observation processing to prevent feedback loop
+  // (compactHistory reads the current session's summary from DB; storing it during
+  // observation responses causes the agent to echo its own summary on next compaction)
+  const summaryForStore = skipSummaryStorage ? null : normalizeSummaryForStorage(summary);
 
   // Get session store for atomic transaction
   const sessionStore = dbManager.getSessionStore();

@@ -30,35 +30,14 @@ export function storeSummary(
   const timestampEpoch = overrideTimestampEpoch ?? Date.now();
   const timestampIso = new Date(timestampEpoch).toISOString();
 
-  // UPSERT: Later summaries subsume earlier ones, so update if exists
-  const existing = db.prepare(
-    'SELECT id FROM session_summaries WHERE memory_session_id = ? LIMIT 1'
-  ).get(memorySessionId) as { id: number } | undefined;
-
-  if (existing) {
-    // Guard: Don't overwrite populated summary with empty one (context truncation protection)
-    if (isSummaryContentEmpty(summary)) {
-      logger.warn('DB', 'Skipping summary update: new summary has all empty fields, preserving existing', {
-        memorySessionId, existingId: existing.id
-      });
-      return { id: existing.id, createdAtEpoch: timestampEpoch };
-    }
-
-    db.prepare(`
-      UPDATE session_summaries
-      SET project=?, request=?, investigated=?, learned=?, completed=?,
-          next_steps=?, notes=?, prompt_number=?, discovery_tokens=?,
-          created_at=?, created_at_epoch=?
-      WHERE id = ?
-    `).run(
-      project, summary.request, summary.investigated, summary.learned,
-      summary.completed, summary.next_steps, summary.notes,
-      promptNumber || null, discoveryTokens, timestampIso, timestampEpoch,
-      existing.id
-    );
-    return { id: existing.id, createdAtEpoch: timestampEpoch };
+  // Guard: Don't store empty summaries (context truncation protection)
+  if (isSummaryContentEmpty(summary)) {
+    logger.warn('DB', 'Skipping empty summary insert', { memorySessionId });
+    // Return a placeholder result — no row was inserted
+    return { id: 0, createdAtEpoch: timestampEpoch };
   }
 
+  // INSERT: Each prompt gets its own summary row (no overwrite)
   const stmt = db.prepare(`
     INSERT INTO session_summaries
     (memory_session_id, project, request, investigated, learned, completed,
