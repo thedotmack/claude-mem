@@ -364,16 +364,15 @@ export function spawnDaemon(
     // Use PowerShell Start-Process to spawn a hidden, independent process
     // -WindowStyle Hidden prevents console popup
     // Paths passed via env vars to avoid shell escaping/injection issues
-    // Script path wrapped in quotes to handle spaces in Windows usernames/paths
-    const psCommand = 'Start-Process -FilePath $env:_DAEMON_EXEC -ArgumentList "`"$env:_DAEMON_SCRIPT`" --daemon" -WindowStyle Hidden -ErrorAction Stop';
+    const psCommand = 'Start-Process -FilePath $env:_DAEMON_EXEC -ArgumentList "`"$env:_DAEMON_SCRIPT`" --daemon" -WindowStyle Hidden';
 
     try {
-      const result = spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', psCommand], {
+      spawnSync('powershell', ['-NoProfile', '-Command', psCommand], {
         stdio: 'ignore',
         windowsHide: true,
         env: { ...env, _DAEMON_EXEC: process.execPath, _DAEMON_SCRIPT: scriptPath }
       });
-      return result.error || result.status !== 0 ? undefined : 0;
+      return 0
     } catch {
       return undefined;
     }
