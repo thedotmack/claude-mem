@@ -85,25 +85,10 @@ export class ChromaSync {
   private readonly VECTOR_DB_DIR: string;
   private readonly BATCH_SIZE = 100;
 
-  // Windows: Chroma disabled due to MCP SDK spawning console popups
-  // See: https://github.com/anthropics/claude-mem/issues/675
-  // Will be re-enabled when we migrate to persistent HTTP server
-  private readonly disabled: boolean;
-
   constructor(project: string) {
     this.project = project;
     this.collectionName = `cm__${project}`;
     this.VECTOR_DB_DIR = path.join(os.homedir(), '.claude-mem', 'vector-db');
-
-    // Disable on Windows to prevent console popups from MCP subprocess spawning
-    // The MCP SDK's StdioClientTransport spawns Python processes that create visible windows
-    this.disabled = process.platform === 'win32';
-    if (this.disabled) {
-      logger.warn('CHROMA_SYNC', 'Vector search disabled on Windows (prevents console popups)', {
-        project: this.project,
-        reason: 'MCP SDK subprocess spawning causes visible console windows'
-      });
-    }
   }
 
   /**
@@ -181,13 +166,6 @@ export class ChromaSync {
   }
 
   /**
-   * Check if Chroma is disabled (Windows)
-   */
-  isDisabled(): boolean {
-    return this.disabled;
-  }
-
-  /**
    * Ensure MCP client is connected to Chroma server
    * Throws error if connection fails
    */
@@ -203,7 +181,6 @@ export class ChromaSync {
       // See: https://github.com/thedotmack/claude-mem/issues/170 (Python 3.14 incompatibility)
       const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
       const pythonVersion = settings.CLAUDE_MEM_PYTHON_VERSION;
-      const isWindows = process.platform === 'win32';
 
       // Get combined SSL certificate bundle for Zscaler/corporate proxy environments
       const combinedCertPath = this.getCombinedCertPath();
@@ -232,12 +209,9 @@ export class ChromaSync {
         });
       }
 
-      // CRITICAL: On Windows, try to hide console window to prevent PowerShell popups
-      // Note: windowsHide may not be supported by MCP SDK's StdioClientTransport
-      if (isWindows) {
-        transportOptions.windowsHide = true;
-        logger.debug('CHROMA_SYNC', 'Windows detected, attempting to hide console window', { project: this.project });
-      }
+      // Note: windowsHide is not needed here because the worker daemon starts with
+      // -WindowStyle Hidden, so child processes inherit the hidden console.
+      // The MCP SDK ignores custom windowsHide anyway (overridden internally).
 
       this.transport = new StdioClientTransport(transportOptions);
 
@@ -511,7 +485,6 @@ export class ChromaSync {
   /**
    * Sync a single observation to Chroma
    * Blocks until sync completes, throws on error
-   * No-op on Windows (Chroma disabled to prevent console popups)
    */
   async syncObservation(
     observationId: number,
@@ -522,8 +495,6 @@ export class ChromaSync {
     createdAtEpoch: number,
     discoveryTokens: number = 0
   ): Promise<void> {
-    if (this.disabled) return;
-
     // Convert ParsedObservation to StoredObservation format
     const stored: StoredObservation = {
       id: observationId,
@@ -558,7 +529,6 @@ export class ChromaSync {
   /**
    * Sync a single summary to Chroma
    * Blocks until sync completes, throws on error
-   * No-op on Windows (Chroma disabled to prevent console popups)
    */
   async syncSummary(
     summaryId: number,
@@ -569,8 +539,6 @@ export class ChromaSync {
     createdAtEpoch: number,
     discoveryTokens: number = 0
   ): Promise<void> {
-    if (this.disabled) return;
-
     // Convert ParsedSummary to StoredSummary format
     const stored: StoredSummary = {
       id: summaryId,
@@ -621,7 +589,6 @@ export class ChromaSync {
   /**
    * Sync a single user prompt to Chroma
    * Blocks until sync completes, throws on error
-   * No-op on Windows (Chroma disabled to prevent console popups)
    */
   async syncUserPrompt(
     promptId: number,
@@ -631,8 +598,6 @@ export class ChromaSync {
     promptNumber: number,
     createdAtEpoch: number
   ): Promise<void> {
-    if (this.disabled) return;
-
     // Create StoredUserPrompt format
     const stored: StoredUserPrompt = {
       id: promptId,
@@ -747,11 +712,8 @@ export class ChromaSync {
    * Backfill: Sync all observations missing from Chroma
    * Reads from SQLite and syncs in batches
    * Throws error if backfill fails
-   * No-op on Windows (Chroma disabled to prevent console popups)
    */
   async ensureBackfilled(): Promise<void> {
-    if (this.disabled) return;
-
     logger.info('CHROMA_SYNC', 'Starting smart backfill', { project: this.project });
 
     await this.ensureCollection();
@@ -918,17 +880,12 @@ export class ChromaSync {
   /**
    * Query Chroma collection for semantic search
    * Used by SearchManager for vector-based search
-   * Returns empty results on Windows (Chroma disabled to prevent console popups)
    */
   async queryChroma(
     query: string,
     limit: number,
     whereFilter?: Record<string, any>
   ): Promise<{ ids: number[]; distances: number[]; metadatas: any[] }> {
-    if (this.disabled) {
-      return { ids: [], distances: [], metadatas: [] };
-    }
-
     await this.ensureConnection();
 
     if (!this.client) {

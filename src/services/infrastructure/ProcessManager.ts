@@ -11,7 +11,7 @@
 import path from 'path';
 import { homedir } from 'os';
 import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync } from 'fs';
-import { exec, execSync, spawn } from 'child_process';
+import { exec, execSync, spawn, spawnSync } from 'child_process';
 import { promisify } from 'util';
 import { logger } from '../../utils/logger.js';
 import { HOOK_TIMEOUTS } from '../../shared/hook-constants.js';
@@ -100,8 +100,8 @@ export async function getChildProcesses(parentPid: number): Promise<number[]> {
   }
 
   try {
-    // PowerShell Get-Process instead of WMIC (deprecated in Windows 11)
-    const cmd = `powershell -NoProfile -NonInteractive -Command "Get-Process | Where-Object { \\$_.ParentProcessId -eq ${parentPid} } | Select-Object -ExpandProperty Id"`;
+    // Get-CimInstance Win32_Process has ParentProcessId (Get-Process does not in PS 5.1)
+    const cmd = `powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process | Where-Object { $_.ParentProcessId -eq ${parentPid} } | Select-Object -ExpandProperty ProcessId"`;
     const { stdout } = await execAsync(cmd, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND });
     // PowerShell outputs just numbers (one per line), simpler than WMIC's "ProcessId=1234" format
     return stdout
@@ -226,10 +226,10 @@ export async function cleanupOrphanedProcesses(): Promise<void> {
     if (isWindows) {
       // Windows: Use PowerShell Get-CimInstance with JSON output for age filtering
       const patternConditions = ORPHAN_PROCESS_PATTERNS
-        .map(p => `\\$_.CommandLine -like '*${p}*'`)
+        .map(p => `$_.CommandLine -like '*${p}*'`)
         .join(' -or ');
 
-      const cmd = `powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process | Where-Object { (${patternConditions}) -and \\$_.ProcessId -ne ${currentPid} } | Select-Object ProcessId, CreationDate | ConvertTo-Json"`;
+      const cmd = `powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process | Where-Object { (${patternConditions}) -and $_.ProcessId -ne ${currentPid} } | Select-Object ProcessId, CreationDate | ConvertTo-Json"`;
       const { stdout } = await execAsync(cmd, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND });
 
       if (!stdout.trim() || stdout.trim() === 'null') {
@@ -339,9 +339,9 @@ export async function cleanupOrphanedProcesses(): Promise<void> {
  * Spawn a detached daemon process
  * Returns the child PID or undefined if spawn failed
  *
- * On Windows, uses WMIC to spawn a truly independent process that
- * survives parent exit without console popups. WMIC creates processes
- * that are not associated with the parent's console.
+ * On Windows, uses PowerShell Start-Process with -WindowStyle Hidden to spawn
+ * a truly independent process without console popups. Unlike WMIC, PowerShell
+ * inherits environment variables from the parent process.
  *
  * On Unix, uses standard detached spawn.
  *
@@ -361,22 +361,19 @@ export function spawnDaemon(
   };
 
   if (isWindows) {
-    // Use WMIC to spawn a process that's independent of the parent console
-    // This avoids the console popup that occurs with detached: true
-    // Paths must be individually quoted for WMIC when they contain spaces
-    const execPath = process.execPath;
-    const script = scriptPath;
-    // WMIC command format: wmic process call create "\"path1\" \"path2\" args"
-    const command = `wmic process call create "\\"${execPath}\\" \\"${script}\\" --daemon"`;
+    // Use PowerShell Start-Process to spawn a hidden, independent process
+    // -WindowStyle Hidden prevents console popup
+    // Paths passed via env vars to avoid shell escaping/injection issues
+    // Script path wrapped in quotes to handle spaces in Windows usernames/paths
+    const psCommand = 'Start-Process -FilePath $env:_DAEMON_EXEC -ArgumentList "`"$env:_DAEMON_SCRIPT`" --daemon" -WindowStyle Hidden -ErrorAction Stop';
 
     try {
-      execSync(command, {
+      const result = spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', psCommand], {
         stdio: 'ignore',
-        windowsHide: true
+        windowsHide: true,
+        env: { ...env, _DAEMON_EXEC: process.execPath, _DAEMON_SCRIPT: scriptPath }
       });
-      // WMIC returns immediately, we can't get the spawned PID easily
-      // Worker will write its own PID file after listen()
-      return 0;
+      return result.error || result.status !== 0 ? undefined : 0;
     } catch {
       return undefined;
     }
