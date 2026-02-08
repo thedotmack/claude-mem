@@ -50,6 +50,7 @@ const ESSENTIAL_SYSTEM_VARS = [
 // Credential keys that claude-mem manages
 export const MANAGED_CREDENTIAL_KEYS = [
   'ANTHROPIC_API_KEY',
+  'ANTHROPIC_BASE_URL',
   'GEMINI_API_KEY',
   'OPENROUTER_API_KEY',
 ];
@@ -57,6 +58,7 @@ export const MANAGED_CREDENTIAL_KEYS = [
 export interface ClaudeMemEnv {
   // Credentials (optional - empty means use CLI billing for Claude)
   ANTHROPIC_API_KEY?: string;
+  ANTHROPIC_BASE_URL?: string;  // For custom API endpoints (e.g., Zhipu AI)
   GEMINI_API_KEY?: string;
   OPENROUTER_API_KEY?: string;
 }
@@ -118,7 +120,7 @@ function serializeEnvFile(env: Record<string, string>): string {
 
 /**
  * Load credentials from ~/.claude-mem/.env
- * Returns empty object if file doesn't exist (means use CLI billing)
+ * Returns empty object if file doesn't exist (means use CLI billing or system env vars)
  */
 export function loadClaudeMemEnv(): ClaudeMemEnv {
   if (!existsSync(ENV_FILE_PATH)) {
@@ -132,6 +134,7 @@ export function loadClaudeMemEnv(): ClaudeMemEnv {
     // Only return managed credential keys
     const result: ClaudeMemEnv = {};
     if (parsed.ANTHROPIC_API_KEY) result.ANTHROPIC_API_KEY = parsed.ANTHROPIC_API_KEY;
+    if (parsed.ANTHROPIC_BASE_URL) result.ANTHROPIC_BASE_URL = parsed.ANTHROPIC_BASE_URL;
     if (parsed.GEMINI_API_KEY) result.GEMINI_API_KEY = parsed.GEMINI_API_KEY;
     if (parsed.OPENROUTER_API_KEY) result.OPENROUTER_API_KEY = parsed.OPENROUTER_API_KEY;
 
@@ -168,6 +171,13 @@ export function saveClaudeMemEnv(env: ClaudeMemEnv): void {
         delete updated.ANTHROPIC_API_KEY;
       }
     }
+    if (env.ANTHROPIC_BASE_URL !== undefined) {
+      if (env.ANTHROPIC_BASE_URL) {
+        updated.ANTHROPIC_BASE_URL = env.ANTHROPIC_BASE_URL;
+      } else {
+        delete updated.ANTHROPIC_BASE_URL;
+      }
+    }
     if (env.GEMINI_API_KEY !== undefined) {
       if (env.GEMINI_API_KEY) {
         updated.GEMINI_API_KEY = env.GEMINI_API_KEY;
@@ -193,10 +203,14 @@ export function saveClaudeMemEnv(env: ClaudeMemEnv): void {
 /**
  * Build a clean, isolated environment for spawning SDK subprocesses
  *
- * This is the key function that prevents Issue #733:
- * - Includes only essential system variables (PATH, HOME, etc.)
- * - Adds credentials ONLY from claude-mem's .env file
- * - Does NOT inherit random ANTHROPIC_API_KEY from user's shell
+ * This function provides layered credential resolution:
+ * 1. Essential system variables (PATH, HOME, etc.) - always copied
+ * 2. Credentials from ~/.claude-mem/.env file (highest priority)
+ * 3. Fallback to process.env if not in .env file (for system-level config)
+ *
+ * This allows users to configure credentials at system level (e.g., ANTHROPIC_BASE_URL)
+ * without requiring a ~/.claude-mem/.env file, while still preventing Issue #733
+ * (random project .env files interfering).
  *
  * @param includeCredentials - Whether to include API keys (default: true)
  */
@@ -214,21 +228,36 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
   // 2. Add SDK entrypoint marker
   isolatedEnv.CLAUDE_CODE_ENTRYPOINT = 'sdk-ts';
 
-  // 3. Add credentials from claude-mem's .env file (NOT from process.env)
+  // 3. Add credentials with layered resolution:
+  //    - First check ~/.claude-mem/.env (explicit claude-mem config)
+  //    - Then fallback to process.env (system-level config)
   if (includeCredentials) {
-    const credentials = loadClaudeMemEnv();
+    const fileCredentials = loadClaudeMemEnv();
 
-    // Only add ANTHROPIC_API_KEY if explicitly configured in claude-mem
-    // If not configured, CLI billing will be used (via pathToClaudeCodeExecutable)
-    if (credentials.ANTHROPIC_API_KEY) {
-      isolatedEnv.ANTHROPIC_API_KEY = credentials.ANTHROPIC_API_KEY;
+    // ANTHROPIC_API_KEY: file first, then system env (also check ANTHROPIC_AUTH_TOKEN alias)
+    const apiKey = fileCredentials.ANTHROPIC_API_KEY
+      || process.env.ANTHROPIC_API_KEY
+      || process.env.ANTHROPIC_AUTH_TOKEN;  // Support Zhipu AI's naming
+    if (apiKey) {
+      isolatedEnv.ANTHROPIC_API_KEY = apiKey;
     }
-    // Note: GEMINI_API_KEY and OPENROUTER_API_KEY are handled by their respective agents
-    if (credentials.GEMINI_API_KEY) {
-      isolatedEnv.GEMINI_API_KEY = credentials.GEMINI_API_KEY;
+
+    // ANTHROPIC_BASE_URL: file first, then system env (for custom endpoints)
+    const baseUrl = fileCredentials.ANTHROPIC_BASE_URL || process.env.ANTHROPIC_BASE_URL;
+    if (baseUrl) {
+      isolatedEnv.ANTHROPIC_BASE_URL = baseUrl;
     }
-    if (credentials.OPENROUTER_API_KEY) {
-      isolatedEnv.OPENROUTER_API_KEY = credentials.OPENROUTER_API_KEY;
+
+    // GEMINI_API_KEY: file first, then system env
+    const geminiKey = fileCredentials.GEMINI_API_KEY || process.env.GEMINI_API_KEY;
+    if (geminiKey) {
+      isolatedEnv.GEMINI_API_KEY = geminiKey;
+    }
+
+    // OPENROUTER_API_KEY: file first, then system env
+    const openRouterKey = fileCredentials.OPENROUTER_API_KEY || process.env.OPENROUTER_API_KEY;
+    if (openRouterKey) {
+      isolatedEnv.OPENROUTER_API_KEY = openRouterKey;
     }
   }
 
@@ -256,19 +285,30 @@ export function setCredential(key: keyof ClaudeMemEnv, value: string): void {
 
 /**
  * Check if claude-mem has an Anthropic API key configured
- * If false, it means CLI billing should be used
+ * Checks ~/.claude-mem/.env first, then system environment variables
  */
 export function hasAnthropicApiKey(): boolean {
-  const env = loadClaudeMemEnv();
-  return !!env.ANTHROPIC_API_KEY;
+  const fileEnv = loadClaudeMemEnv();
+  return !!(fileEnv.ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN);
 }
 
 /**
  * Get auth method description for logging
  */
 export function getAuthMethodDescription(): string {
-  if (hasAnthropicApiKey()) {
+  const fileEnv = loadClaudeMemEnv();
+
+  if (fileEnv.ANTHROPIC_API_KEY) {
     return 'API key (from ~/.claude-mem/.env)';
+  }
+  if (process.env.ANTHROPIC_API_KEY) {
+    return 'API key (from system env ANTHROPIC_API_KEY)';
+  }
+  if (process.env.ANTHROPIC_AUTH_TOKEN) {
+    return 'API key (from system env ANTHROPIC_AUTH_TOKEN)';
+  }
+  if (process.env.ANTHROPIC_BASE_URL) {
+    return `Custom endpoint (${process.env.ANTHROPIC_BASE_URL})`;
   }
   return 'Claude Code CLI (subscription billing)';
 }
