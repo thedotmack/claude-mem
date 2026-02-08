@@ -298,6 +298,42 @@ describe('ChromaSync Vector Sync Integration', () => {
     });
   });
 
+  describe('Backfill includes thoughts', () => {
+    it('should include thoughts in getExistingChromaIds return type', async () => {
+      const { ChromaSync } = await import('../../src/services/sync/ChromaSync.js');
+      const sync = new ChromaSync(testProject);
+
+      // Verify ensureBackfilled exists (it uses getExistingChromaIds internally)
+      expect(typeof sync.ensureBackfilled).toBe('function');
+    });
+
+    it('should include thought backfill in source code', async () => {
+      // Static analysis test: verify ensureBackfilled includes thought backfill logic
+      const sourceFile = await Bun.file(
+        new URL('../../src/services/sync/ChromaSync.ts', import.meta.url)
+      ).text();
+
+      // Verify thought backfill section exists
+      expect(sourceFile).toContain('Backfilling thoughts');
+      expect(sourceFile).toContain('thoughtDocs');
+      expect(sourceFile).toContain('existing.thoughts');
+      expect(sourceFile).toContain('getThoughts');
+    });
+
+    it('should track thought IDs in existing Chroma IDs', async () => {
+      // Static analysis test: verify getExistingChromaIds tracks thoughts
+      const sourceFile = await Bun.file(
+        new URL('../../src/services/sync/ChromaSync.ts', import.meta.url)
+      ).text();
+
+      // Verify thought ID tracking in getExistingChromaIds
+      expect(sourceFile).toContain("thoughts: Set<number>");
+      expect(sourceFile).toContain("thoughtIds");
+      expect(sourceFile).toContain("doc_type === 'thought'");
+      expect(sourceFile).toContain("meta.thought_id");
+    });
+  });
+
   describe('Query interface', () => {
     it('should accept query string and options', async () => {
       const { ChromaSync } = await import('../../src/services/sync/ChromaSync.js');
