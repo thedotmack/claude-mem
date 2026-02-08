@@ -31,6 +31,7 @@ export class MigrationRunner {
     this.renameSessionIdColumns();
     this.repairSessionIdColumnRename();
     this.addFailedAtEpochColumn();
+    this.createThoughtsTable();
   }
 
   /**
@@ -627,5 +628,78 @@ export class MigrationRunner {
     }
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(20, new Date().toISOString());
+  }
+
+  /**
+   * Create thoughts table with FTS5 search (migration 21)
+   * Stores extracted thinking blocks from Claude Code session transcripts
+   */
+  private createThoughtsTable(): void {
+    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(21) as SchemaVersion | undefined;
+    if (applied) return;
+
+    // Check if table already exists
+    const tables = this.db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='thoughts'").all() as TableNameRow[];
+    if (tables.length > 0) {
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(21, new Date().toISOString());
+      return;
+    }
+
+    logger.debug('DB', 'Creating thoughts table with FTS5 support');
+
+    // Create thoughts table
+    this.db.run(`
+      CREATE TABLE thoughts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        memory_session_id TEXT NOT NULL,
+        content_session_id TEXT,
+        project TEXT NOT NULL,
+        thinking_text TEXT NOT NULL,
+        thinking_summary TEXT,
+        message_index INTEGER,
+        prompt_number INTEGER,
+        created_at TEXT NOT NULL,
+        created_at_epoch INTEGER NOT NULL
+      );
+
+      CREATE INDEX idx_thoughts_session ON thoughts(memory_session_id);
+      CREATE INDEX idx_thoughts_project ON thoughts(project);
+      CREATE INDEX idx_thoughts_epoch ON thoughts(created_at_epoch);
+    `);
+
+    // Create FTS5 virtual table
+    this.db.run(`
+      CREATE VIRTUAL TABLE thoughts_fts USING fts5(
+        thinking_text,
+        thinking_summary,
+        content='thoughts',
+        content_rowid='id'
+      );
+    `);
+
+    // Create triggers to sync FTS5
+    this.db.run(`
+      CREATE TRIGGER thoughts_ai AFTER INSERT ON thoughts BEGIN
+        INSERT INTO thoughts_fts(rowid, thinking_text, thinking_summary)
+        VALUES (new.id, new.thinking_text, new.thinking_summary);
+      END;
+
+      CREATE TRIGGER thoughts_ad AFTER DELETE ON thoughts BEGIN
+        INSERT INTO thoughts_fts(thoughts_fts, rowid, thinking_text, thinking_summary)
+        VALUES('delete', old.id, old.thinking_text, old.thinking_summary);
+      END;
+
+      CREATE TRIGGER thoughts_au AFTER UPDATE ON thoughts BEGIN
+        INSERT INTO thoughts_fts(thoughts_fts, rowid, thinking_text, thinking_summary)
+        VALUES('delete', old.id, old.thinking_text, old.thinking_summary);
+        INSERT INTO thoughts_fts(rowid, thinking_text, thinking_summary)
+        VALUES (new.id, new.thinking_text, new.thinking_summary);
+      END;
+    `);
+
+    // Record migration
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(21, new Date().toISOString());
+
+    logger.debug('DB', 'Successfully created thoughts table with FTS5 support');
   }
 }
