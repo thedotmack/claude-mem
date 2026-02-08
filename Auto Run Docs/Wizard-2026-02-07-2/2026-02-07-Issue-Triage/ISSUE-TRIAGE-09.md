@@ -45,7 +45,7 @@ This phase triages the remaining worker crashes, database errors, session manage
     gh issue comment 740 --repo thedotmack/claude-mem --body "Triage: Stuck 'active' sessions blocking the queue, and recovery doesn't respect provider settings. Two separate issues: 1) session state cleanup needs a timeout/staleness check, 2) recovery should use the configured provider."
     ```
 
-- [ ] Triage session and search issues:
+- [x] Triage session and search issues:
   - **#895** "Project field becomes empty when switching git branches" by @GigiTiti-Kai — Label:
     ```bash
     gh issue edit 895 --repo thedotmack/claude-mem --add-label "bug,priority:medium"
