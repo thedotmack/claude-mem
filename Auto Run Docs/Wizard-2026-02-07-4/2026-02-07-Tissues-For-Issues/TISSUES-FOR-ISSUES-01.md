@@ -19,7 +19,8 @@ This phase produces the complete categorized report of all open issues and PRs i
   - Use structured markdown with YAML front matter: `type: report`, `title: Critical & High-Priority Issues`, `tags: [triage, critical, high-priority, security]`
   - Apply these recommendation criteria: KEEP items that affect security, data integrity, or block normal usage; DISCARD items that are already fixed, duplicated, or obsolete; DEFER items that affect edge cases or have workarounds
 
-- [ ] Read `Working/raw-issues.json` and categorize ALL remaining open issues into Medium-Priority, Windows, Features, Integration, and Low-Priority tiers. Write the output to `Working/issues-medium-low.md`:
+- [x] Read `Working/raw-issues.json` and categorize ALL remaining open issues into Medium-Priority, Windows, Features, Integration, and Low-Priority tiers. Write the output to `Working/issues-medium-low.md`:
+  - **Completed**: 48 issues categorized across Tiers 3–7 (5 Windows + 4 cross-refs in Tier 3, 18 Medium-Priority in Tier 4, 7 Features in Tier 5, 5 Integration in Tier 6, 13 Low-Priority in Tier 7). 33 recommended KEEP, 15 recommended DEFER, 0 DISCARD. Also included 2 newly filed unlabeled issues (#1015, #1014). Report written to `Working/issues-medium-low.md` with YAML front matter and wiki-link cross-references.
   - **Tier 3: Windows Platform Bugs** — Issues tagged `platform:windows`. Expected: #997, #843, #807, #785, #918, #723, #791, #675. Note some may overlap with Tier 2 (that's fine, list them in both with a cross-reference)
   - **Tier 4: Medium-Priority Bugs** — Issues labeled `priority:medium` that affect specific scenarios or have workarounds. Expected: #984, #978, #975, #957, #927, #923, #918, #916, #897, #895, #838, #784, #781, #744, #740, #728, #714, #696, #692, #658, #598, #683, #659, #936, #943, #600, #927
   - **Tier 5: High-Impact Features** — Enhancement requests with significant user value. Expected: #707 (SQLite-only mode), #659 (delete memories), #683 (project-scoped storage), #936 (orphan message processing), #943 (custom API endpoint), #668 (generalize anti-pattern-czar)
@@ -28,7 +29,8 @@ This phase produces the complete categorized report of all open issues and PRs i
   - For each issue, write: issue number, title, one-line summary, current labels, and Recommendation (KEEP/DISCARD/DEFER)
   - Use structured markdown with YAML front matter: `type: report`, `title: Medium & Low-Priority Issues`, `tags: [triage, medium-priority, low-priority, features, windows]`
 
-- [ ] Read `Working/raw-prs.json` and `Working/raw-issues.json`, then categorize ALL open PRs into a structured PR triage report. Write the output to `Working/pr-triage.md`:
+- [x] Read `Working/raw-prs.json` and `Working/raw-issues.json`, then categorize ALL open PRs into a structured PR triage report. Write the output to `Working/pr-triage.md`:
+  - **Completed**: 27 PRs categorized across 9 groups. 19 recommended REVIEW, 5 CLOSE, 5 DEFER, 0 immediate MERGE. Mapped PRs to linked issues with cross-references. Identified key coordination clusters: security (#1002 vs #986), subprocess management (#1008/#995/#992), session IDs (#996/#989/#518/#516). Report written to `Working/pr-triage.md` with YAML front matter and wiki-link cross-references. Note: Task listed #1021 but actual PR number is #1022 (username spaces fix); #834 was not in the open PR set.
   - Map each PR to the issue(s) it addresses (check PR body for "Fixes #", "Closes #", or issue references)
   - Categorize each PR as one of:
     - **MERGE** — PR addresses a critical/high issue, code looks reasonable, author is active
