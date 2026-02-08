@@ -1,18 +1,54 @@
+// Minimal type declarations for the OpenClaw Plugin SDK.
+// These match the real OpenClawPluginApi provided by the gateway at runtime.
+// See: https://docs.openclaw.ai/plugin
+
+interface PluginLogger {
+  debug?: (message: string) => void;
+  info: (message: string) => void;
+  warn: (message: string) => void;
+  error: (message: string) => void;
+}
+
+interface PluginServiceContext {
+  config: Record<string, unknown>;
+  workspaceDir?: string;
+  stateDir: string;
+  logger: PluginLogger;
+}
+
+interface PluginCommandContext {
+  senderId?: string;
+  channel: string;
+  isAuthorizedSender: boolean;
+  args?: string;
+  commandBody: string;
+  config: Record<string, unknown>;
+}
+
+type PluginCommandResult = string | { text: string } | { text: string; format?: string };
+
 interface OpenClawPluginApi {
-  getConfig: () => Record<string, any>;
-  log: (message: string) => void;
+  id: string;
+  name: string;
+  version?: string;
+  source: string;
+  config: Record<string, unknown>;
+  pluginConfig?: Record<string, unknown>;
+  logger: PluginLogger;
   registerService: (service: {
     id: string;
-    start: (ctx: any) => Promise<void>;
-    stop: (ctx: any) => Promise<void>;
+    start: (ctx: PluginServiceContext) => void | Promise<void>;
+    stop?: (ctx: PluginServiceContext) => void | Promise<void>;
   }) => void;
   registerCommand: (command: {
     name: string;
     description: string;
-    handler: (args: string[], ctx: any) => Promise<string>;
+    acceptsArgs?: boolean;
+    requireAuth?: boolean;
+    handler: (ctx: PluginCommandContext) => PluginCommandResult | Promise<PluginCommandResult>;
   }) => void;
   runtime: {
-    channel: Record<string, Record<string, (to: string, text: string) => Promise<any>>>;
+    channel: Record<string, Record<string, (...args: any[]) => Promise<any>>>;
   };
 }
 
@@ -61,20 +97,20 @@ function sendToChannel(
 ): Promise<void> {
   const channelApi = api.runtime.channel[channel];
   if (!channelApi) {
-    api.log(`[claude-mem] Unknown channel type: ${channel}`);
+    api.logger.warn(`[claude-mem] Unknown channel type: ${channel}`);
     return Promise.resolve();
   }
 
   const sendFunctionName = `sendMessage${channel.charAt(0).toUpperCase()}${channel.slice(1)}`;
   const senderFunction = channelApi[sendFunctionName];
   if (!senderFunction) {
-    api.log(`[claude-mem] Channel "${channel}" has no ${sendFunctionName} function`);
+    api.logger.warn(`[claude-mem] Channel "${channel}" has no ${sendFunctionName} function`);
     return Promise.resolve();
   }
 
   return senderFunction(to, text).catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
-    api.log(`[claude-mem] Failed to send to ${channel}: ${message}`);
+    api.logger.error(`[claude-mem] Failed to send to ${channel}: ${message}`);
   });
 }
 
@@ -92,7 +128,7 @@ async function connectToSSEStream(
   while (!abortController.signal.aborted) {
     try {
       setConnectionState("reconnecting");
-      api.log(`[claude-mem] Connecting to SSE stream at http://localhost:${port}/stream`);
+      api.logger.info(`[claude-mem] Connecting to SSE stream at http://localhost:${port}/stream`);
 
       const response = await fetch(`http://localhost:${port}/stream`, {
         signal: abortController.signal,
@@ -109,7 +145,7 @@ async function connectToSSEStream(
 
       setConnectionState("connected");
       backoffMs = 1000;
-      api.log("[claude-mem] Connected to SSE stream");
+      api.logger.info("[claude-mem] Connected to SSE stream");
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
@@ -122,7 +158,7 @@ async function connectToSSEStream(
         buffer += decoder.decode(value, { stream: true });
 
         if (buffer.length > MAX_SSE_BUFFER_SIZE) {
-          api.log("[claude-mem] SSE buffer overflow, clearing buffer");
+          api.logger.warn("[claude-mem] SSE buffer overflow, clearing buffer");
           buffer = "";
         }
 
@@ -147,7 +183,7 @@ async function connectToSSEStream(
             }
           } catch (parseError: unknown) {
             const errorMessage = parseError instanceof Error ? parseError.message : String(parseError);
-            api.log(`[claude-mem] Failed to parse SSE frame: ${errorMessage}`);
+            api.logger.warn(`[claude-mem] Failed to parse SSE frame: ${errorMessage}`);
           }
         }
       }
@@ -157,7 +193,7 @@ async function connectToSSEStream(
       }
       setConnectionState("reconnecting");
       const errorMessage = error instanceof Error ? error.message : String(error);
-      api.log(`[claude-mem] SSE stream error: ${errorMessage}. Reconnecting in ${backoffMs / 1000}s`);
+      api.logger.warn(`[claude-mem] SSE stream error: ${errorMessage}. Reconnecting in ${backoffMs / 1000}s`);
     }
 
     if (abortController.signal.aborted) break;
@@ -186,23 +222,23 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
         }
       }
 
-      const config = api.getConfig();
+      const config = api.pluginConfig || {};
       const workerPort = (config.workerPort as number) || 37777;
       const feedConfig = config.observationFeed as
         | { enabled?: boolean; channel?: string; to?: string }
         | undefined;
 
       if (!feedConfig?.enabled) {
-        api.log("[claude-mem] Observation feed disabled");
+        api.logger.info("[claude-mem] Observation feed disabled");
         return;
       }
 
       if (!feedConfig.channel || !feedConfig.to) {
-        api.log("[claude-mem] Observation feed misconfigured — channel or target missing");
+        api.logger.warn("[claude-mem] Observation feed misconfigured — channel or target missing");
         return;
       }
 
-      api.log(`[claude-mem] Observation feed starting — channel: ${feedConfig.channel}, target: ${feedConfig.to}`);
+      api.logger.info(`[claude-mem] Observation feed starting — channel: ${feedConfig.channel}, target: ${feedConfig.to}`);
 
       sseAbortController = new AbortController();
       connectionPromise = connectToSSEStream(
@@ -224,15 +260,16 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
         connectionPromise = null;
       }
       connectionState = "disconnected";
-      api.log("[claude-mem] Observation feed stopped — SSE connection closed");
+      api.logger.info("[claude-mem] Observation feed stopped — SSE connection closed");
     },
   });
 
   api.registerCommand({
     name: "claude-mem-feed",
     description: "Show or toggle Claude-Mem observation feed status",
-    handler: async (args, _ctx) => {
-      const config = api.getConfig();
+    acceptsArgs: true,
+    handler: async (ctx) => {
+      const config = api.pluginConfig || {};
       const feedConfig = config.observationFeed as
         | { enabled?: boolean; channel?: string; to?: string }
         | undefined;
@@ -241,13 +278,15 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
         return "Observation feed not configured. Add observationFeed to your plugin config.";
       }
 
-      if (args[0] === "on") {
-        api.log("[claude-mem] Feed enable requested via command");
+      const arg = ctx.args?.trim();
+
+      if (arg === "on") {
+        api.logger.info("[claude-mem] Feed enable requested via command");
         return "Feed enable requested. Update observationFeed.enabled in your plugin config to persist.";
       }
 
-      if (args[0] === "off") {
-        api.log("[claude-mem] Feed disable requested via command");
+      if (arg === "off") {
+        api.logger.info("[claude-mem] Feed disable requested via command");
         return "Feed disable requested. Update observationFeed.enabled in your plugin config to persist.";
       }
 
@@ -261,5 +300,5 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     },
   });
 
-  api.log("[claude-mem] OpenClaw plugin loaded — v1.0.0");
+  api.logger.info("[claude-mem] OpenClaw plugin loaded — v1.0.0");
 }

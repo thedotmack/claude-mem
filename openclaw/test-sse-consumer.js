@@ -12,9 +12,17 @@ let registeredCommand = null;
 const logs = [];
 
 const mockApi = {
-  getConfig: () => ({}),
-  log: (message) => {
-    logs.push(message);
+  id: "claude-mem",
+  name: "Claude-Mem (Persistent Memory)",
+  version: "1.0.0",
+  source: "/test/extensions/claude-mem/dist/index.js",
+  config: {},
+  pluginConfig: {},
+  logger: {
+    info: (message) => { logs.push(message); },
+    warn: (message) => { logs.push(message); },
+    error: (message) => { logs.push(message); },
+    debug: (message) => { logs.push(message); },
   },
   registerService: (service) => {
     registeredService = service;

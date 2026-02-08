@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http";
 import claudeMemPlugin from "./index.js";
 
-function createMockApi(configOverride: Record<string, any> = {}) {
+function createMockApi(pluginConfigOverride: Record<string, any> = {}) {
   const logs: string[] = [];
   const sentMessages: Array<{ to: string; text: string; channel: string }> = [];
 
@@ -11,9 +11,17 @@ function createMockApi(configOverride: Record<string, any> = {}) {
   let registeredCommand: any = null;
 
   const api = {
-    getConfig: () => configOverride,
-    log: (message: string) => {
-      logs.push(message);
+    id: "claude-mem",
+    name: "Claude-Mem (Persistent Memory)",
+    version: "1.0.0",
+    source: "/test/extensions/claude-mem/dist/index.js",
+    config: {},
+    pluginConfig: pluginConfigOverride,
+    logger: {
+      info: (message: string) => { logs.push(message); },
+      warn: (message: string) => { logs.push(message); },
+      error: (message: string) => { logs.push(message); },
+      debug: (message: string) => { logs.push(message); },
     },
     registerService: (service: any) => {
       registeredService = service;
@@ -133,7 +141,7 @@ describe("claudeMemPlugin", () => {
       const { api, getCommand } = createMockApi({});
       claudeMemPlugin(api);
 
-      const result = await getCommand().handler([], {});
+      const result = await getCommand().handler({ args: "", channel: "telegram", isAuthorizedSender: true, commandBody: "/claude-mem-feed", config: {} });
       assert.ok(result.includes("not configured"));
     });
 
@@ -143,7 +151,7 @@ describe("claudeMemPlugin", () => {
       });
       claudeMemPlugin(api);
 
-      const result = await getCommand().handler([], {});
+      const result = await getCommand().handler({ args: "", channel: "telegram", isAuthorizedSender: true, commandBody: "/claude-mem-feed", config: {} });
       assert.ok(result.includes("Enabled: yes"));
       assert.ok(result.includes("Channel: telegram"));
       assert.ok(result.includes("Target: 123"));
@@ -156,7 +164,7 @@ describe("claudeMemPlugin", () => {
       });
       claudeMemPlugin(api);
 
-      const result = await getCommand().handler(["on"], {});
+      const result = await getCommand().handler({ args: "on", channel: "telegram", isAuthorizedSender: true, commandBody: "/claude-mem-feed on", config: {} });
       assert.ok(result.includes("enable requested"));
       assert.ok(logs.some((l) => l.includes("enable requested")));
     });
@@ -167,7 +175,7 @@ describe("claudeMemPlugin", () => {
       });
       claudeMemPlugin(api);
 
-      const result = await getCommand().handler(["off"], {});
+      const result = await getCommand().handler({ args: "off", channel: "telegram", isAuthorizedSender: true, commandBody: "/claude-mem-feed off", config: {} });
       assert.ok(result.includes("disable requested"));
       assert.ok(logs.some((l) => l.includes("disable requested")));
     });
@@ -178,7 +186,7 @@ describe("claudeMemPlugin", () => {
       });
       claudeMemPlugin(api);
 
-      const result = await getCommand().handler([], {});
+      const result = await getCommand().handler({ args: "", channel: "slack", isAuthorizedSender: true, commandBody: "/claude-mem-feed", config: {} });
       assert.ok(result.includes("Connection: disconnected"));
     });
   });
