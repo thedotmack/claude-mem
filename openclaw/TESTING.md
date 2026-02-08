@@ -28,7 +28,7 @@ curl -s -N http://localhost:37777/stream --max-time 3 2>/dev/null || true
 **If the worker is not running:**
 
 ```bash
-cd /Users/alexnewman/Scripts/claude-mem
+cd /path/to/claude-mem
 npm run build-and-sync
 ```
 
@@ -50,7 +50,7 @@ cat ~/.openclaw/openclaw.json
 {
   "claude-mem": {
     "enabled": true,
-    "source": "/Users/alexnewman/Scripts/claude-mem/openclaw",
+    "source": "/path/to/claude-mem/openclaw",
     "config": {
       "syncMemoryFile": true,
       "workerPort": 37777,
@@ -135,7 +135,7 @@ node test-sse-consumer.js
 
 ### Worker not running
 - **Symptom:** Gateway logs show `SSE stream error: fetch failed. Reconnecting in 1s`
-- **Fix:** Start the worker with `cd /Users/alexnewman/Scripts/claude-mem && npm run build-and-sync`
+- **Fix:** Start the worker with `cd /path/to/claude-mem && npm run build-and-sync`
 
 ### Port mismatch
 - **Symptom:** SSE connection fails even though worker health check passes
