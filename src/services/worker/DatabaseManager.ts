@@ -6,11 +6,13 @@
  * - Provide centralized access to SessionStore and SessionSearch
  * - High-level database operations
  * - ChromaSync integration
+ * - P2 Integration: MemoryCubeService for multi-project memory isolation
  */
 
 import { SessionStore } from '../sqlite/SessionStore.js';
 import { SessionSearch } from '../sqlite/SessionSearch.js';
 import { ChromaSync } from '../sync/ChromaSync.js';
+import { MemoryCubeService } from '../memory/MemoryCubeService.js';
 import { logger } from '../../utils/logger.js';
 import type { DBSession } from '../worker-types.js';
 
@@ -18,6 +20,7 @@ export class DatabaseManager {
   private sessionStore: SessionStore | null = null;
   private sessionSearch: SessionSearch | null = null;
   private chromaSync: ChromaSync | null = null;
+  private memoryCubeService: MemoryCubeService | null = null;
 
   /**
    * Initialize database connection (once, stays open)
@@ -29,6 +32,9 @@ export class DatabaseManager {
 
     // Initialize ChromaSync (lazy - connects on first search, not at startup)
     this.chromaSync = new ChromaSync('claude-mem');
+
+    // Initialize MemoryCubeService (P2)
+    this.memoryCubeService = new MemoryCubeService();
 
     logger.info('DB', 'Database initialized');
   }
@@ -82,6 +88,17 @@ export class DatabaseManager {
       throw new Error('ChromaSync not initialized');
     }
     return this.chromaSync;
+  }
+
+  /**
+   * Get MemoryCubeService instance (throws if not initialized)
+   * P2 Integration: Provides access to memory cubes for project isolation
+   */
+  getMemoryCubeService(): MemoryCubeService {
+    if (!this.memoryCubeService) {
+      throw new Error('MemoryCubeService not initialized');
+    }
+    return this.memoryCubeService;
   }
 
   // REMOVED: cleanupOrphanedSessions - violates "EVERYTHING SHOULD SAVE ALWAYS"

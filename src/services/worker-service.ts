@@ -101,6 +101,11 @@ import { FormattingService } from './worker/FormattingService.js';
 import { TimelineService } from './worker/TimelineService.js';
 import { SessionEventBroadcaster } from './worker/events/SessionEventBroadcaster.js';
 
+// Memory services (P0-P2 features from MemOS integration)
+import { MemoryFeedbackService } from './memory/MemoryFeedbackService.js';
+import { WorkingMemoryService } from './memory/WorkingMemoryService.js';
+import { MemoryCubeService } from './memory/MemoryCubeService.js';
+
 // HTTP route handlers
 import { ViewerRoutes } from './worker/http/routes/ViewerRoutes.js';
 import { SessionRoutes } from './worker/http/routes/SessionRoutes.js';
@@ -158,6 +163,11 @@ export class WorkerService {
   private settingsManager: SettingsManager;
   private sessionEventBroadcaster: SessionEventBroadcaster;
 
+  // Memory services (P0-P2)
+  private memoryFeedbackService: MemoryFeedbackService;
+  private workingMemoryService: WorkingMemoryService;
+  private memoryCubeService: MemoryCubeService;
+
   // Route handlers
   private searchRoutes: SearchRoutes | null = null;
 
@@ -185,6 +195,14 @@ export class WorkerService {
     this.paginationHelper = new PaginationHelper(this.dbManager);
     this.settingsManager = new SettingsManager(this.dbManager);
     this.sessionEventBroadcaster = new SessionEventBroadcaster(this.sseBroadcaster, this);
+
+    // Initialize memory services (P0-P2) - will be fully initialized in background
+    this.workingMemoryService = new WorkingMemoryService({
+      maxSize: 20,
+      compressionThreshold: 15,
+      compressionInterval: 5 * 60 * 1000
+    });
+    this.memoryCubeService = new MemoryCubeService();
 
     // Set callback for when sessions are deleted
     this.sessionManager.setOnSessionDeleted(() => {
@@ -345,11 +363,31 @@ export class WorkerService {
         this.dbManager.getSessionStore(),
         this.dbManager.getChromaSync(),
         formattingService,
-        timelineService
+        timelineService,
+        this.workingMemoryService
       );
       this.searchRoutes = new SearchRoutes(searchManager);
       this.server.registerRoutes(this.searchRoutes);
       logger.info('WORKER', 'SearchManager initialized and search routes registered');
+
+      // Register Memory routes (P0-P2) after SearchManager is available
+      const memoryRoutes = new MemoryRoutes(this);
+      memoryRoutes.setupRoutes(this.server.app);
+      logger.info('WORKER', 'Memory routes registered (P0-P2)');
+
+      // Initialize MemoryFeedbackService (requires SearchManager and storeObservation)
+      this.memoryFeedbackService = new MemoryFeedbackService(
+        searchManager,
+        (memorySessionId: string, project: string, observation: any, promptNumber?: number) => {
+          return this.dbManager.getSessionStore().storeObservation(
+            memorySessionId,
+            project,
+            observation,
+            promptNumber
+          );
+        }
+      );
+      logger.info('WORKER', 'Memory services initialized (P0-P2)');
 
       // Connect to MCP server
       const mcpServerPath = path.join(__dirname, 'mcp-server.cjs');
@@ -731,6 +769,27 @@ export class WorkerService {
       isProcessing,
       queueDepth
     });
+  }
+
+  /**
+   * Get memory feedback service (P0)
+   */
+  getMemoryFeedbackService(): MemoryFeedbackService {
+    return this.memoryFeedbackService;
+  }
+
+  /**
+   * Get working memory service (P1)
+   */
+  getWorkingMemoryService(): WorkingMemoryService {
+    return this.workingMemoryService;
+  }
+
+  /**
+   * Get memory cube service (P2)
+   */
+  getMemoryCubeService(): MemoryCubeService {
+    return this.memoryCubeService;
   }
 }
 

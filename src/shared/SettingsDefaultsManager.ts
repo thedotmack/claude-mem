@@ -55,6 +55,12 @@ export interface SettingsDefaults {
   // Exclusion Settings
   CLAUDE_MEM_EXCLUDED_PROJECTS: string;  // Comma-separated glob patterns for excluded project paths
   CLAUDE_MEM_FOLDER_MD_EXCLUDE: string;  // JSON array of folder paths to exclude from CLAUDE.md generation
+  // Phase 2: Surprise & Momentum (Titans concepts)
+  CLAUDE_MEM_SURPRISE_ENABLED: string;
+  CLAUDE_MEM_SURPRISE_THRESHOLD: string;
+  CLAUDE_MEM_SURPRISE_LOOKBACK_DAYS: string;
+  CLAUDE_MEM_MOMENTUM_ENABLED: string;
+  CLAUDE_MEM_MOMENTUM_DURATION_MINUTES: string;
 }
 
 export class SettingsDefaultsManager {
@@ -104,6 +110,12 @@ export class SettingsDefaultsManager {
     // Exclusion Settings
     CLAUDE_MEM_EXCLUDED_PROJECTS: '',  // Comma-separated glob patterns for excluded project paths
     CLAUDE_MEM_FOLDER_MD_EXCLUDE: '[]',  // JSON array of folder paths to exclude from CLAUDE.md generation
+    // Phase 2: Surprise & Momentum (Titans concepts)
+    CLAUDE_MEM_SURPRISE_ENABLED: 'true',
+    CLAUDE_MEM_SURPRISE_THRESHOLD: '0.3',
+    CLAUDE_MEM_SURPRISE_LOOKBACK_DAYS: '30',
+    CLAUDE_MEM_MOMENTUM_ENABLED: 'true',
+    CLAUDE_MEM_MOMENTUM_DURATION_MINUTES: '5',
   };
 
   /**

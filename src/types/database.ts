@@ -74,6 +74,10 @@ export interface ObservationRecord {
   source_files?: string;
   prompt_number?: number;
   discovery_tokens?: number;
+  // Sleep Agent fields
+  importance_score?: number;
+  surprise_score?: number;
+  memory_tier?: 'core' | 'working' | 'archive' | 'ephemeral';
 }
 
 /**
