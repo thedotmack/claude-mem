@@ -16,7 +16,7 @@ import { homedir } from 'os';
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
-import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
+import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt, buildSummaryContextPrompt } from '../../sdk/prompts.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { getCredential } from '../../shared/EnvManager.js';
 import type { ActiveSession, ConversationMessage } from '../worker-types.js';
@@ -50,6 +50,10 @@ const GEMINI_RPM_LIMITS: Record<GeminiModel, number> = {
   'gemini-2.0-flash-lite': 30,
   'gemini-3-flash': 5,
 };
+
+// History compaction constants
+const COMPACT_THRESHOLD = 14;  // Compact when history exceeds 14 messages (7 turns)
+const KEEP_RECENT = 6;         // Keep last 6 messages (3 recent turns) after compaction
 
 // Track last request time for rate limiting
 let lastRequestTime = 0;
@@ -123,6 +127,53 @@ export class GeminiAgent {
   }
 
   /**
+   * Compact conversation history to preserve instructions and session context.
+   * Replaces blind truncation by keeping: [initPrompt, summaryContext, ...recentMessages]
+   * Only triggers when history exceeds COMPACT_THRESHOLD.
+   */
+  private compactHistory(session: ActiveSession): void {
+    const history = session.conversationHistory;
+    if (history.length <= COMPACT_THRESHOLD) {
+      return;
+    }
+
+    const originalLength = history.length;
+
+    // Read current summary from DB
+    let summaryContext: string;
+    try {
+      const memorySessionId = session.memorySessionId;
+      const summary = memorySessionId
+        ? this.dbManager.getSessionStore().getSummaryForSession(memorySessionId)
+        : null;
+      summaryContext = buildSummaryContextPrompt(summary);
+    } catch (error) {
+      logger.warn('SDK', 'Failed to read summary for compaction, using empty context', {
+        sessionId: session.sessionDbId,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      summaryContext = buildSummaryContextPrompt(null);
+    }
+
+    // Rebuild: [initPrompt, summaryContext, ...recentMessages]
+    const initPrompt = history[0];
+    const recentMessages = history.slice(-KEEP_RECENT);
+
+    session.conversationHistory = [
+      initPrompt,
+      { role: 'user', content: summaryContext },
+      ...recentMessages
+    ];
+
+    logger.info('SDK', 'Compacted history', {
+      sessionId: session.sessionDbId,
+      before: originalLength,
+      after: session.conversationHistory.length,
+      keptRecent: KEEP_RECENT
+    });
+  }
+
+  /**
    * Start Gemini agent for a session
    * Uses multi-turn conversation to maintain context across messages
    */
@@ -167,8 +218,9 @@ export class GeminiAgent {
         ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode)
         : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode);
 
-      // Add to conversation history and query Gemini with full context
+      // Add to conversation history, compact if needed, and query with full context
       session.conversationHistory.push({ role: 'user', content: initPrompt });
+      this.compactHistory(session);
       const initResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, rateLimitingEnabled);
 
       if (initResponse.content) {
@@ -229,8 +281,9 @@ export class GeminiAgent {
             cwd: message.cwd
           });
 
-          // Add to conversation history and query Gemini with full context
+          // Add to conversation history, compact if needed, and query with full context
           session.conversationHistory.push({ role: 'user', content: obsPrompt });
+          this.compactHistory(session);
           const obsResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, rateLimitingEnabled);
 
           let tokensUsed = 0;
@@ -267,8 +320,9 @@ export class GeminiAgent {
             last_assistant_message: message.last_assistant_message || ''
           }, mode);
 
-          // Add to conversation history and query Gemini with full context
+          // Add to conversation history, compact if needed, and query with full context
           session.conversationHistory.push({ role: 'user', content: summaryPrompt });
+          this.compactHistory(session);
           const summaryResponse = await this.queryGeminiMultiTurn(session.conversationHistory, apiKey, model, rateLimitingEnabled);
 
           let tokensUsed = 0;
