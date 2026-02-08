@@ -109,6 +109,7 @@ import { SearchRoutes } from './worker/http/routes/SearchRoutes.js';
 import { SettingsRoutes } from './worker/http/routes/SettingsRoutes.js';
 import { LogsRoutes } from './worker/http/routes/LogsRoutes.js';
 import { MemoryRoutes } from './worker/http/routes/MemoryRoutes.js';
+import { ThoughtsRoutes } from './worker/http/routes/ThoughtsRoutes.js';
 
 // Process management for zombie cleanup (Issue #737)
 import { startOrphanReaper, reapOrphanedProcesses } from './worker/ProcessRegistry.js';
@@ -336,6 +337,10 @@ export class WorkerService {
       if (resetCount > 0) {
         logger.info('SYSTEM', `Reset ${resetCount} stale processing messages to pending`);
       }
+
+      // Register thoughts routes (needs SessionStore from initialized DB)
+      this.server.registerRoutes(new ThoughtsRoutes(this.dbManager.getSessionStore()));
+      logger.info('WORKER', 'ThoughtsRoutes registered');
 
       // Initialize search services
       const formattingService = new FormattingService();
