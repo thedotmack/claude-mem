@@ -13,6 +13,7 @@ import {
   LatestPromptResult
 } from '../../types/database.js';
 import type { PendingMessageStore } from './PendingMessageStore.js';
+import { isSummaryContentEmpty } from './summaries/types.js';
 
 /**
  * Session data store for SDK sessions, observations, and summaries
@@ -1316,6 +1317,14 @@ export class SessionStore {
     ).get(memorySessionId) as { id: number } | undefined;
 
     if (existing) {
+      // Guard: Don't overwrite populated summary with empty one (context truncation protection)
+      if (isSummaryContentEmpty(summary)) {
+        logger.warn('DB', 'Skipping summary update: new summary has all empty fields, preserving existing', {
+          memorySessionId, existingId: existing.id
+        });
+        return { id: existing.id, createdAtEpoch: timestampEpoch };
+      }
+
       this.db.prepare(`
         UPDATE session_summaries
         SET project=?, request=?, investigated=?, learned=?, completed=?,
@@ -1444,19 +1453,27 @@ export class SessionStore {
         ).get(memorySessionId) as { id: number } | undefined;
 
         if (existingSummary) {
-          this.db.prepare(`
-            UPDATE session_summaries
-            SET project=?, request=?, investigated=?, learned=?, completed=?,
-                next_steps=?, notes=?, prompt_number=?, discovery_tokens=?,
-                created_at=?, created_at_epoch=?
-            WHERE id = ?
-          `).run(
-            project, summary.request, summary.investigated, summary.learned,
-            summary.completed, summary.next_steps, summary.notes,
-            promptNumber || null, discoveryTokens, timestampIso, timestampEpoch,
-            existingSummary.id
-          );
-          summaryId = existingSummary.id;
+          // Guard: Don't overwrite populated summary with empty one (context truncation protection)
+          if (isSummaryContentEmpty(summary)) {
+            logger.warn('DB', 'Skipping summary update: new summary has all empty fields, preserving existing', {
+              memorySessionId, existingId: existingSummary.id
+            });
+            summaryId = existingSummary.id;
+          } else {
+            this.db.prepare(`
+              UPDATE session_summaries
+              SET project=?, request=?, investigated=?, learned=?, completed=?,
+                  next_steps=?, notes=?, prompt_number=?, discovery_tokens=?,
+                  created_at=?, created_at_epoch=?
+              WHERE id = ?
+            `).run(
+              project, summary.request, summary.investigated, summary.learned,
+              summary.completed, summary.next_steps, summary.notes,
+              promptNumber || null, discoveryTokens, timestampIso, timestampEpoch,
+              existingSummary.id
+            );
+            summaryId = existingSummary.id;
+          }
         } else {
           const summaryStmt = this.db.prepare(`
             INSERT INTO session_summaries
@@ -1584,19 +1601,27 @@ export class SessionStore {
         ).get(memorySessionId) as { id: number } | undefined;
 
         if (existingSummary) {
-          this.db.prepare(`
-            UPDATE session_summaries
-            SET project=?, request=?, investigated=?, learned=?, completed=?,
-                next_steps=?, notes=?, prompt_number=?, discovery_tokens=?,
-                created_at=?, created_at_epoch=?
-            WHERE id = ?
-          `).run(
-            project, summary.request, summary.investigated, summary.learned,
-            summary.completed, summary.next_steps, summary.notes,
-            promptNumber || null, discoveryTokens, timestampIso, timestampEpoch,
-            existingSummary.id
-          );
-          summaryId = existingSummary.id;
+          // Guard: Don't overwrite populated summary with empty one (context truncation protection)
+          if (isSummaryContentEmpty(summary)) {
+            logger.warn('DB', 'Skipping summary update: new summary has all empty fields, preserving existing', {
+              memorySessionId, existingId: existingSummary.id
+            });
+            summaryId = existingSummary.id;
+          } else {
+            this.db.prepare(`
+              UPDATE session_summaries
+              SET project=?, request=?, investigated=?, learned=?, completed=?,
+                  next_steps=?, notes=?, prompt_number=?, discovery_tokens=?,
+                  created_at=?, created_at_epoch=?
+              WHERE id = ?
+            `).run(
+              project, summary.request, summary.investigated, summary.learned,
+              summary.completed, summary.next_steps, summary.notes,
+              promptNumber || null, discoveryTokens, timestampIso, timestampEpoch,
+              existingSummary.id
+            );
+            summaryId = existingSummary.id;
+          }
         } else {
           const summaryStmt = this.db.prepare(`
             INSERT INTO session_summaries

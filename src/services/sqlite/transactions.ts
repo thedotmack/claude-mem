@@ -9,7 +9,7 @@
 import { Database } from 'bun:sqlite';
 import { logger } from '../../utils/logger.js';
 import type { ObservationInput } from './observations/types.js';
-import type { SummaryInput } from './summaries/types.js';
+import { isSummaryContentEmpty, type SummaryInput } from './summaries/types.js';
 
 /**
  * Result from storeObservations / storeObservationsAndMarkComplete transaction
@@ -99,19 +99,27 @@ export function storeObservationsAndMarkComplete(
       ).get(memorySessionId) as { id: number } | undefined;
 
       if (existingSummary) {
-        db.prepare(`
-          UPDATE session_summaries
-          SET project=?, request=?, investigated=?, learned=?, completed=?,
-              next_steps=?, notes=?, prompt_number=?, discovery_tokens=?,
-              created_at=?, created_at_epoch=?
-          WHERE id = ?
-        `).run(
-          project, summary.request, summary.investigated, summary.learned,
-          summary.completed, summary.next_steps, summary.notes,
-          promptNumber || null, discoveryTokens, timestampIso, timestampEpoch,
-          existingSummary.id
-        );
-        summaryId = existingSummary.id;
+        // Guard: Don't overwrite populated summary with empty one (context truncation protection)
+        if (isSummaryContentEmpty(summary)) {
+          logger.warn('DB', 'Skipping summary update: new summary has all empty fields, preserving existing', {
+            memorySessionId, existingId: existingSummary.id
+          });
+          summaryId = existingSummary.id;
+        } else {
+          db.prepare(`
+            UPDATE session_summaries
+            SET project=?, request=?, investigated=?, learned=?, completed=?,
+                next_steps=?, notes=?, prompt_number=?, discovery_tokens=?,
+                created_at=?, created_at_epoch=?
+            WHERE id = ?
+          `).run(
+            project, summary.request, summary.investigated, summary.learned,
+            summary.completed, summary.next_steps, summary.notes,
+            promptNumber || null, discoveryTokens, timestampIso, timestampEpoch,
+            existingSummary.id
+          );
+          summaryId = existingSummary.id;
+        }
       } else {
         const summaryStmt = db.prepare(`
           INSERT INTO session_summaries
@@ -230,19 +238,27 @@ export function storeObservations(
       ).get(memorySessionId) as { id: number } | undefined;
 
       if (existingSummary) {
-        db.prepare(`
-          UPDATE session_summaries
-          SET project=?, request=?, investigated=?, learned=?, completed=?,
-              next_steps=?, notes=?, prompt_number=?, discovery_tokens=?,
-              created_at=?, created_at_epoch=?
-          WHERE id = ?
-        `).run(
-          project, summary.request, summary.investigated, summary.learned,
-          summary.completed, summary.next_steps, summary.notes,
-          promptNumber || null, discoveryTokens, timestampIso, timestampEpoch,
-          existingSummary.id
-        );
-        summaryId = existingSummary.id;
+        // Guard: Don't overwrite populated summary with empty one (context truncation protection)
+        if (isSummaryContentEmpty(summary)) {
+          logger.warn('DB', 'Skipping summary update: new summary has all empty fields, preserving existing', {
+            memorySessionId, existingId: existingSummary.id
+          });
+          summaryId = existingSummary.id;
+        } else {
+          db.prepare(`
+            UPDATE session_summaries
+            SET project=?, request=?, investigated=?, learned=?, completed=?,
+                next_steps=?, notes=?, prompt_number=?, discovery_tokens=?,
+                created_at=?, created_at_epoch=?
+            WHERE id = ?
+          `).run(
+            project, summary.request, summary.investigated, summary.learned,
+            summary.completed, summary.next_steps, summary.notes,
+            promptNumber || null, discoveryTokens, timestampIso, timestampEpoch,
+            existingSummary.id
+          );
+          summaryId = existingSummary.id;
+        }
       } else {
         const summaryStmt = db.prepare(`
           INSERT INTO session_summaries

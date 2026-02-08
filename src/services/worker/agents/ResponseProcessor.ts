@@ -67,16 +67,27 @@ export async function processAgentResponse(
 
   // Deduplicate observations within the same batch (smaller models sometimes emit duplicate XML blocks)
   const seen = new Set<string>();
-  const observations = rawObservations.filter(obs => {
+  const deduplicated = rawObservations.filter(obs => {
     const key = `${obs.title}|${obs.narrative}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
   });
-  if (observations.length < rawObservations.length) {
-    logger.info('PARSER', `Deduplicated ${rawObservations.length - observations.length} observation(s) in batch`, {
+  if (deduplicated.length < rawObservations.length) {
+    logger.info('PARSER', `Deduplicated ${rawObservations.length - deduplicated.length} observation(s) in batch`, {
       sessionId: session.sessionDbId,
       before: rawObservations.length,
+      after: deduplicated.length
+    });
+  }
+
+  // Filter out low-quality observations (context truncation produces XML with empty/partial tags)
+  // Require at minimum a narrative — title-only or facts-only observations have no useful context
+  const observations = deduplicated.filter(obs => !!obs.narrative?.trim());
+  if (observations.length < deduplicated.length) {
+    logger.warn('PARSER', `Dropped ${deduplicated.length - observations.length} observation(s) missing narrative (context truncation)`, {
+      sessionId: session.sessionDbId,
+      before: deduplicated.length,
       after: observations.length
     });
   }

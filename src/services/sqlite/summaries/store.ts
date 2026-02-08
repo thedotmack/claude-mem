@@ -3,7 +3,7 @@
  */
 import type { Database } from 'bun:sqlite';
 import { logger } from '../../../utils/logger.js';
-import type { SummaryInput, StoreSummaryResult } from './types.js';
+import { isSummaryContentEmpty, type SummaryInput, type StoreSummaryResult } from './types.js';
 
 /**
  * Store a session summary (from SDK parsing)
@@ -36,6 +36,14 @@ export function storeSummary(
   ).get(memorySessionId) as { id: number } | undefined;
 
   if (existing) {
+    // Guard: Don't overwrite populated summary with empty one (context truncation protection)
+    if (isSummaryContentEmpty(summary)) {
+      logger.warn('DB', 'Skipping summary update: new summary has all empty fields, preserving existing', {
+        memorySessionId, existingId: existing.id
+      });
+      return { id: existing.id, createdAtEpoch: timestampEpoch };
+    }
+
     db.prepare(`
       UPDATE session_summaries
       SET project=?, request=?, investigated=?, learned=?, completed=?,
