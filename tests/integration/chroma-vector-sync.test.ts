@@ -247,6 +247,57 @@ describe('ChromaSync Vector Sync Integration', () => {
     });
   });
 
+  describe('Batch thought sync interface', () => {
+    it('should have syncThoughts method', async () => {
+      const { ChromaSync } = await import('../../src/services/sync/ChromaSync.js');
+      const sync = new ChromaSync(testProject);
+      expect(typeof sync.syncThoughts).toBe('function');
+    });
+
+    it('should return early for empty thoughts array', async () => {
+      const { ChromaSync } = await import('../../src/services/sync/ChromaSync.js');
+      const sync = new ChromaSync(testProject);
+
+      // Empty array should not throw or attempt connection
+      await expect(sync.syncThoughts([])).resolves.toBeUndefined();
+    });
+
+    it('should be a no-op when disabled (Windows)', async () => {
+      const { ChromaSync } = await import('../../src/services/sync/ChromaSync.js');
+      const sync = new ChromaSync(testProject);
+
+      if (sync.isDisabled()) {
+        const thoughts = [
+          {
+            id: 1,
+            memory_session_id: 'session-123',
+            content_session_id: 'content-456',
+            project: 'test-project',
+            thinking_text: 'First thought...',
+            thinking_summary: 'Summary 1',
+            message_index: 0,
+            prompt_number: 1,
+            created_at: new Date().toISOString(),
+            created_at_epoch: Math.floor(Date.now() / 1000)
+          },
+          {
+            id: 2,
+            memory_session_id: 'session-123',
+            content_session_id: 'content-456',
+            project: 'test-project',
+            thinking_text: 'Second thought...',
+            thinking_summary: 'Summary 2',
+            message_index: 1,
+            prompt_number: 1,
+            created_at: new Date().toISOString(),
+            created_at_epoch: Math.floor(Date.now() / 1000)
+          }
+        ];
+        await expect(sync.syncThoughts(thoughts)).resolves.toBeUndefined();
+      }
+    });
+  });
+
   describe('Query interface', () => {
     it('should accept query string and options', async () => {
       const { ChromaSync } = await import('../../src/services/sync/ChromaSync.js');

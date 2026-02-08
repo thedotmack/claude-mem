@@ -686,6 +686,35 @@ export class ChromaSync {
   }
 
   /**
+   * Sync multiple thoughts to Chroma in a single batch
+   * No-op on Windows (Chroma disabled to prevent console popups)
+   */
+  async syncThoughts(thoughts: Thought[]): Promise<void> {
+    if (this.disabled) return;
+    if (thoughts.length === 0) return;
+
+    const documents: ChromaDocument[] = thoughts.map(thought => ({
+      id: `thought_${thought.id}`,
+      document: thought.thinking_text,
+      metadata: {
+        doc_type: 'thought',
+        thought_id: thought.id,
+        memory_session_id: thought.memory_session_id,
+        project: thought.project,
+        message_index: thought.message_index ?? 0,
+        created_at_epoch: thought.created_at_epoch
+      }
+    }));
+
+    logger.info('CHROMA_SYNC', 'Syncing thoughts batch', {
+      count: thoughts.length,
+      project: thoughts[0].project
+    });
+
+    await this.addDocuments(documents);
+  }
+
+  /**
    * Fetch all existing document IDs from Chroma collection
    * Returns Sets of SQLite IDs for observations, summaries, and prompts
    */
