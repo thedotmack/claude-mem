@@ -431,7 +431,17 @@ export class SDKAgent {
       return settings.CLAUDE_CODE_PATH;
     }
 
-    // 2. Try auto-detection
+    // 2. On Windows, prefer "claude.cmd" via PATH to avoid spawn issues with spaces in paths
+    if (process.platform === 'win32') {
+      try {
+        execSync('where claude.cmd', { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+        return 'claude.cmd'; // Let Windows resolve via PATHEXT
+      } catch {
+        // Fall through to generic error
+      }
+    }
+
+    // 3. Try auto-detection for non-Windows platforms
     try {
       const claudePath = execSync(
         process.platform === 'win32' ? 'where claude' : 'which claude',
