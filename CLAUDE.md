@@ -1,4 +1,6 @@
-# Claude-Mem: AI Development Instructions
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 Claude-mem is a Claude Code plugin providing persistent memory across sessions. It captures tool usage, compresses observations using the Claude Agent SDK, and injects relevant context into future sessions.
 
@@ -23,10 +25,34 @@ Claude-mem is a Claude Code plugin providing persistent memory across sessions. 
 
 **Implementation**: Tag stripping happens at hook layer (edge processing) before data reaches worker/database. See `src/utils/tag-stripping.ts` for shared utilities.
 
-## Build Commands
+## Build & Dev Commands
 
 ```bash
-npm run build-and-sync        # Build, sync to marketplace, restart worker
+npm run build-and-sync        # Build, sync to marketplace, restart worker (primary dev command)
+npm run build                 # Build hooks only (esbuild: TS → CJS bundles in plugin/scripts/)
+```
+
+## Testing
+
+Tests use **Bun** as the test runner:
+
+```bash
+bun test                      # Run all tests
+bun test tests/sqlite/        # Run a test suite (sqlite, worker/agents, worker/search, context, infrastructure, server)
+bun test tests/path/to/file.test.ts  # Run a single test file
+```
+
+## Worker Management
+
+```bash
+npm run worker:start          # Start worker service (Bun-managed, port 37777)
+npm run worker:stop           # Stop worker
+npm run worker:restart        # Restart worker
+npm run worker:status         # Check worker status
+npm run worker:logs           # View today's worker logs
+npm run queue                 # Check pending message queue
+npm run queue:process         # Process pending queue items
+npm run queue:clear           # Clear all failed queue items
 ```
 
 ## Configuration
