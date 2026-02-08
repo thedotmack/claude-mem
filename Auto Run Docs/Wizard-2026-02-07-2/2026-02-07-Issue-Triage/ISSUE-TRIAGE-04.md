@@ -155,7 +155,8 @@ This phase is the highest-impact triage action. Many issues report the same unde
     gh issue close 976 --repo thedotmack/claude-mem --reason "not planned" --comment "Duplicate of #975. The Zod cyclical schema resolution error in the stop hook is tracked in #975."
     ```
 
-- [ ] **Cluster F: SessionStart Exit Code 3** — Keep **#658** as canonical (earliest, most detailed), close duplicates:
+- [x] **Cluster F: SessionStart Exit Code 3** — Keep **#658** as canonical (earliest, most detailed), close duplicates:
+  > **Completed**: All 4 duplicate issues (#985, #686, #747, #775) closed with comments pointing to canonical #658.
   - **#985** "user-message-hook.js exits code 3 and writes to stderr" by @30robert85-ctrl
     ```bash
     gh issue close 985 --repo thedotmack/claude-mem --reason "not planned" --comment "Duplicate of #658. The exit code 3 (USER_MESSAGE_ONLY) behavior in hooks is tracked in #658."
@@ -173,7 +174,7 @@ This phase is the highest-impact triage action. Many issues report the same unde
     gh issue close 775 --repo thedotmack/claude-mem --reason "not planned" --comment "Duplicate of #658. SessionStart hook error display is tracked in #658."
     ```
 
-- [ ] Verify all duplicate closures succeeded. Run this check to count remaining open issues from this phase:
+- [x] Verify all duplicate closures succeeded. Run this check to count remaining open issues from this phase:
   ```bash
   DUPES="952 941 912 778 758 734 697 641 635 609 955 788 787 767 760 671 632 1007 1003 980 906 902 857 852 803 789 701 981 871 810 681 676 688 976 985 686 747 775"
   OPEN_COUNT=0
@@ -187,3 +188,4 @@ This phase is the highest-impact triage action. Many issues report the same unde
   echo "Total still open: $OPEN_COUNT (expected: 0)"
   ```
   If any remain open, re-run the failed close commands.
+  > **Verified**: All 37 duplicate issues across 6 clusters (A-F) confirmed closed. 0 issues remain open. Verification completed 2026-02-07.
