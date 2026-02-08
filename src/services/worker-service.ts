@@ -917,7 +917,7 @@ async function main() {
       if (!platform || !event) {
         console.error('Usage: claude-mem hook <platform> <event>');
         console.error('Platforms: claude-code, cursor, raw');
-        console.error('Events: context, session-init, observation, summarize, session-complete');
+        console.error('Events: context, session-init, observation, summarize, thoughts-extract, session-complete');
         process.exit(1);
       }
 

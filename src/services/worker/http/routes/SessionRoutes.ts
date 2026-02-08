@@ -21,6 +21,7 @@ import { SessionCompletionHandler } from '../../session/SessionCompletionHandler
 import { PrivacyCheckValidator } from '../../validation/PrivacyCheckValidator.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
+import type { ThoughtInput } from '../../../sqlite/thoughts/types.js';
 
 export class SessionRoutes extends BaseRouteHandler {
   private completionHandler: SessionCompletionHandler;
@@ -291,6 +292,7 @@ export class SessionRoutes extends BaseRouteHandler {
     app.post('/api/sessions/observations', this.handleObservationsByClaudeId.bind(this));
     app.post('/api/sessions/summarize', this.handleSummarizeByClaudeId.bind(this));
     app.post('/api/sessions/complete', this.handleCompleteByClaudeId.bind(this));
+    app.post('/api/sessions/thoughts', this.handleStoreThoughts.bind(this));
   }
 
   /**
@@ -727,5 +729,56 @@ export class SessionRoutes extends BaseRouteHandler {
       promptNumber,
       skipped: false
     });
+  });
+
+  /**
+   * Store thoughts (thinking blocks) by contentSessionId
+   * POST /api/sessions/thoughts
+   * Body: { contentSessionId, thoughts } — resolves memorySessionId and project from DB
+   *   OR  { memorySessionId, contentSessionId, project, thoughts } — uses provided values
+   */
+  private handleStoreThoughts = this.wrapHandler((req: Request, res: Response): void => {
+    const { contentSessionId, memorySessionId: providedMemorySessionId, project: providedProject, thoughts } = req.body;
+
+    if (!contentSessionId) {
+      return this.badRequest(res, 'Missing contentSessionId');
+    }
+    if (!thoughts || !Array.isArray(thoughts) || thoughts.length === 0) {
+      return this.badRequest(res, 'Missing or empty thoughts array');
+    }
+
+    const store = this.dbManager.getSessionStore();
+    const sessionDbId = store.createSDKSession(contentSessionId, '', '');
+    const dbSession = store.getSessionById(sessionDbId);
+
+    const memorySessionId = providedMemorySessionId || dbSession?.memory_session_id;
+    const project = providedProject || dbSession?.project || '';
+
+    if (!memorySessionId) {
+      logger.warn('SESSION', 'Cannot store thoughts: no memorySessionId for session', {
+        contentSessionId,
+        sessionDbId
+      });
+      res.json({ ids: [], reason: 'no_memory_session' });
+      return;
+    }
+
+    const promptNumber = store.getPromptNumberFromUserPrompts(contentSessionId);
+
+    const ids = store.storeThoughts(
+      memorySessionId,
+      contentSessionId,
+      project,
+      thoughts as ThoughtInput[],
+      promptNumber || null
+    );
+
+    logger.info('SESSION', `Stored ${ids.length} thoughts`, {
+      contentSessionId,
+      memorySessionId,
+      project
+    });
+
+    res.json({ ids });
   });
 }
