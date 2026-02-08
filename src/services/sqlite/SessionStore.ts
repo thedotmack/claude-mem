@@ -13,6 +13,7 @@ import {
   LatestPromptResult
 } from '../../types/database.js';
 import type { PendingMessageStore } from './PendingMessageStore.js';
+import type { ThoughtInput, Thought } from './thoughts/types.js';
 
 /**
  * Session data store for SDK sessions, observations, and summaries
@@ -2369,5 +2370,100 @@ export class SessionStore {
     );
 
     return { imported: true, id: result.lastInsertRowid as number };
+  }
+
+  // ── Thoughts (thinking block storage) ──────────────────────────
+
+  /**
+   * Store multiple thoughts (thinking blocks) from a transcript
+   */
+  storeThoughts(
+    memorySessionId: string,
+    contentSessionId: string | null,
+    project: string,
+    thoughts: ThoughtInput[],
+    promptNumber: number | null
+  ): number[] {
+    const stmt = this.db.prepare(`
+      INSERT INTO thoughts
+      (memory_session_id, content_session_id, project, thinking_text, thinking_summary,
+       message_index, prompt_number, created_at, created_at_epoch)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const ids: number[] = [];
+    for (const thought of thoughts) {
+      const result = stmt.run(
+        memorySessionId,
+        contentSessionId,
+        project,
+        thought.thinking_text,
+        thought.thinking_summary,
+        thought.message_index,
+        promptNumber,
+        new Date().toISOString(),
+        Date.now()
+      );
+      ids.push(Number(result.lastInsertRowid));
+    }
+    return ids;
+  }
+
+  /**
+   * Get thoughts for a project with optional time range and limit
+   */
+  getThoughts(
+    project: string,
+    options?: { limit?: number; startEpoch?: number; endEpoch?: number }
+  ): Thought[] {
+    const params: (string | number)[] = [project];
+    let query = 'SELECT * FROM thoughts WHERE project = ?';
+
+    if (options?.startEpoch != null) {
+      query += ' AND created_at_epoch >= ?';
+      params.push(options.startEpoch);
+    }
+    if (options?.endEpoch != null) {
+      query += ' AND created_at_epoch <= ?';
+      params.push(options.endEpoch);
+    }
+
+    query += ' ORDER BY created_at_epoch DESC';
+
+    if (options?.limit != null) {
+      query += ' LIMIT ?';
+      params.push(options.limit);
+    }
+
+    return this.db.prepare(query).all(...params) as Thought[];
+  }
+
+  /**
+   * Get thoughts by their IDs
+   */
+  getThoughtsByIds(ids: number[]): Thought[] {
+    if (ids.length === 0) return [];
+    const placeholders = ids.map(() => '?').join(',');
+    return this.db.prepare(
+      `SELECT * FROM thoughts WHERE id IN (${placeholders})`
+    ).all(...ids) as Thought[];
+  }
+
+  /**
+   * Full-text search over thinking content using FTS5
+   */
+  searchThoughts(query: string, project?: string, limit: number = 50): Thought[] {
+    const params: (string | number)[] = [query];
+    let sql = `SELECT t.* FROM thoughts t JOIN thoughts_fts f ON t.id = f.rowid WHERE thoughts_fts MATCH ?`;
+
+    if (project != null) {
+      sql += ' AND t.project = ?';
+      params.push(project);
+    }
+
+    sql += ' ORDER BY rank LIMIT ?';
+    params.push(limit);
+
+    return this.db.prepare(sql).all(...params) as Thought[];
   }
 }
