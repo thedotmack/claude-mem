@@ -631,17 +631,14 @@ export class MigrationRunner {
   }
 
   /**
-   * Create thoughts table with FTS5 search (migration 21)
+   * Create thoughts table with FTS5 search (migration 22)
    * Stores extracted thinking blocks from Claude Code session transcripts
    */
   private createThoughtsTable(): void {
-    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(21) as SchemaVersion | undefined;
-    if (applied) return;
-
-    // Check if table already exists
+    // Check if table already exists (handles case where schema_versions is marked but table is missing)
     const tables = this.db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='thoughts'").all() as TableNameRow[];
     if (tables.length > 0) {
-      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(21, new Date().toISOString());
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(22, new Date().toISOString());
       return;
     }
 
@@ -698,7 +695,7 @@ export class MigrationRunner {
     `);
 
     // Record migration
-    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(21, new Date().toISOString());
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(22, new Date().toISOString());
 
     logger.debug('DB', 'Successfully created thoughts table with FTS5 support');
   }
