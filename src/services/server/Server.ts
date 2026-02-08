@@ -186,6 +186,10 @@ export class Server {
         let content: string;
 
         if (operation) {
+          if (!/^[a-zA-Z0-9_-]+$/.test(operation)) {
+            res.status(400).json({ error: 'Invalid operation name' });
+            return;
+          }
           const operationPath = path.join(__dirname, '../skills/mem-search/operations', `${operation}.md`);
           content = await fs.promises.readFile(operationPath, 'utf-8');
         } else {
