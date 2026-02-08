@@ -10,9 +10,39 @@ import { execSync, spawnSync } from 'child_process';
 import { join } from 'path';
 import { homedir } from 'os';
 
-const ROOT = join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
-const MARKER = join(ROOT, '.install-version');
 const IS_WINDOWS = process.platform === 'win32';
+
+/**
+ * Resolve the marketplace root directory.
+ *
+ * Claude Code may store plugins under either `~/.claude/plugins/` (legacy) or
+ * `~/.config/claude/plugins/` (XDG-compliant, e.g. Nix-managed installs).
+ * When `CLAUDE_PLUGIN_ROOT` is set we derive the base from it; otherwise we
+ * probe both candidate paths and fall back to the legacy location.
+ */
+function resolveRoot() {
+  const marketplaceRel = join('plugins', 'marketplaces', 'thedotmack');
+
+  // Derive from CLAUDE_PLUGIN_ROOT (e.g. .../plugins/cache/thedotmack/claude-mem/<ver>)
+  if (process.env.CLAUDE_PLUGIN_ROOT) {
+    let dir = process.env.CLAUDE_PLUGIN_ROOT;
+    const cacheIndex = dir.indexOf(join('plugins', 'cache'));
+    if (cacheIndex !== -1) {
+      const base = dir.substring(0, cacheIndex);
+      const candidate = join(base, marketplaceRel);
+      if (existsSync(join(candidate, 'package.json'))) return candidate;
+    }
+  }
+
+  // Probe XDG path first, then legacy
+  const xdg = join(homedir(), '.config', 'claude', marketplaceRel);
+  if (existsSync(join(xdg, 'package.json'))) return xdg;
+
+  return join(homedir(), '.claude', marketplaceRel);
+}
+
+const ROOT = resolveRoot();
+const MARKER = join(ROOT, '.install-version');
 
 // Common installation paths (handles fresh installs before PATH reload)
 const BUN_COMMON_PATHS = IS_WINDOWS
