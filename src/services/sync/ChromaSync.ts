@@ -12,6 +12,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { ParsedObservation, ParsedSummary } from '../../sdk/parser.js';
 import { SessionStore } from '../sqlite/SessionStore.js';
+import { Thought } from '../sqlite/thoughts/types.js';
 import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
@@ -650,6 +651,35 @@ export class ChromaSync {
     logger.info('CHROMA_SYNC', 'Syncing user prompt', {
       promptId,
       project
+    });
+
+    await this.addDocuments([document]);
+  }
+
+  /**
+   * Sync a single thought to Chroma
+   * Creates one document per thought with the thinking text as content
+   * No-op on Windows (Chroma disabled to prevent console popups)
+   */
+  async syncThought(thought: Thought): Promise<void> {
+    if (this.disabled) return;
+
+    const document: ChromaDocument = {
+      id: `thought_${thought.id}`,
+      document: thought.thinking_text,
+      metadata: {
+        doc_type: 'thought',
+        thought_id: thought.id,
+        memory_session_id: thought.memory_session_id,
+        project: thought.project,
+        message_index: thought.message_index ?? 0,
+        created_at_epoch: thought.created_at_epoch
+      }
+    };
+
+    logger.info('CHROMA_SYNC', 'Syncing thought', {
+      thoughtId: thought.id,
+      project: thought.project
     });
 
     await this.addDocuments([document]);
