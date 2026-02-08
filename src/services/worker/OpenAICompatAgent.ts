@@ -16,7 +16,7 @@ import { randomUUID } from 'crypto';
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
-import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
+import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt, buildSummaryContextPrompt } from '../../sdk/prompts.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { getCredential } from '../../shared/EnvManager.js';
@@ -37,6 +37,10 @@ const DEFAULT_OPENAI_COMPAT_API_URL = 'https://openrouter.ai/api/v1/chat/complet
 const DEFAULT_MAX_CONTEXT_MESSAGES = 20;  // Maximum messages to keep in conversation history
 const DEFAULT_MAX_ESTIMATED_TOKENS = 100000;  // ~100k tokens max context (safety limit)
 const CHARS_PER_TOKEN_ESTIMATE = 4;  // Conservative estimate: 1 token = 4 chars
+
+// History compaction constants
+const COMPACT_THRESHOLD = 14;  // Compact when history exceeds 14 messages (7 turns)
+const KEEP_RECENT = 6;         // Keep last 6 messages (3 recent turns) after compaction
 
 // OpenAI-compatible message format
 interface OpenAIMessage {
@@ -79,6 +83,53 @@ export class OpenAICompatAgent {
    */
   setFallbackAgent(agent: FallbackAgent): void {
     this.fallbackAgent = agent;
+  }
+
+  /**
+   * Compact conversation history to preserve instructions and session context.
+   * Replaces blind truncation by keeping: [initPrompt, summaryContext, ...recentMessages]
+   * Only triggers when history exceeds COMPACT_THRESHOLD.
+   */
+  private compactHistory(session: ActiveSession): void {
+    const history = session.conversationHistory;
+    if (history.length <= COMPACT_THRESHOLD) {
+      return;
+    }
+
+    const originalLength = history.length;
+
+    // Read current summary from DB
+    let summaryContext: string;
+    try {
+      const memorySessionId = session.memorySessionId;
+      const summary = memorySessionId
+        ? this.dbManager.getSessionStore().getSummaryForSession(memorySessionId)
+        : null;
+      summaryContext = buildSummaryContextPrompt(summary);
+    } catch (error) {
+      logger.warn('SDK', 'Failed to read summary for compaction, using empty context', {
+        sessionId: session.sessionDbId,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      summaryContext = buildSummaryContextPrompt(null);
+    }
+
+    // Rebuild: [initPrompt, summaryContext, ...recentMessages]
+    const initPrompt = history[0];
+    const recentMessages = history.slice(-KEEP_RECENT);
+
+    session.conversationHistory = [
+      initPrompt,
+      { role: 'user', content: summaryContext },
+      ...recentMessages
+    ];
+
+    logger.info('SDK', 'Compacted history', {
+      sessionId: session.sessionDbId,
+      before: originalLength,
+      after: session.conversationHistory.length,
+      keptRecent: KEEP_RECENT
+    });
   }
 
   /**
@@ -126,8 +177,9 @@ export class OpenAICompatAgent {
         ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode)
         : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode);
 
-      // Add to conversation history and query with full context
+      // Add to conversation history, compact if needed, and query with full context
       session.conversationHistory.push({ role: 'user', content: initPrompt });
+      this.compactHistory(session);
       const initResponse = await this.queryOpenAICompatMultiTurn(session.conversationHistory, apiKey, model, siteUrl, appName, baseUrl);
 
       if (initResponse.content) {
@@ -186,8 +238,9 @@ export class OpenAICompatAgent {
             cwd: message.cwd
           });
 
-          // Add to conversation history and query with full context
+          // Add to conversation history, compact if needed, and query with full context
           session.conversationHistory.push({ role: 'user', content: obsPrompt });
+          this.compactHistory(session);
           const obsResponse = await this.queryOpenAICompatMultiTurn(session.conversationHistory, apiKey, model, siteUrl, appName, baseUrl);
 
           let tokensUsed = 0;
@@ -223,8 +276,9 @@ export class OpenAICompatAgent {
             last_assistant_message: message.last_assistant_message || ''
           }, mode);
 
-          // Add to conversation history and query with full context
+          // Add to conversation history, compact if needed, and query with full context
           session.conversationHistory.push({ role: 'user', content: summaryPrompt });
+          this.compactHistory(session);
           const summaryResponse = await this.queryOpenAICompatMultiTurn(session.conversationHistory, apiKey, model, siteUrl, appName, baseUrl);
 
           let tokensUsed = 0;

@@ -215,6 +215,7 @@ describe('ResponseProcessor', () => {
         <observation>
           <type>discovery</type>
           <title>Test</title>
+          <narrative>Test narrative for summary parsing</narrative>
           <facts></facts>
           <concepts></concepts>
           <files_read></files_read>
@@ -254,6 +255,7 @@ describe('ResponseProcessor', () => {
         <observation>
           <type>discovery</type>
           <title>Test</title>
+          <narrative>Test narrative without summary</narrative>
           <facts></facts>
           <concepts></concepts>
           <files_read></files_read>
@@ -294,6 +296,7 @@ describe('ResponseProcessor', () => {
         <observation>
           <type>discovery</type>
           <title>Test</title>
+          <narrative>Test narrative for atomic transaction</narrative>
           <facts></facts>
           <concepts></concepts>
           <files_read></files_read>
@@ -399,6 +402,7 @@ describe('ResponseProcessor', () => {
         <observation>
           <type>discovery</type>
           <title>Test</title>
+          <narrative>Test narrative for summary broadcast</narrative>
           <facts></facts>
           <concepts></concepts>
           <files_read></files_read>
