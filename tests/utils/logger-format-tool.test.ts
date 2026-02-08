@@ -2,7 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import { Logger } from '../../src/utils/logger.js';
 
 // Create a fresh Logger instance to avoid mock.module poisoning
-// from other test files (timeline-formatting, claude-md-utils) that
+// from other test files (timeline-formatting) that
 // globally replace the logger module's singleton export.
 const logger = new Logger();
 
