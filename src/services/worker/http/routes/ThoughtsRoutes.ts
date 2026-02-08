@@ -57,6 +57,18 @@ export class ThoughtsRoutes extends BaseRouteHandler {
       project
     });
 
+    // Sync to ChromaDB for semantic search (fire-and-forget, non-blocking)
+    if (this.chromaSync && ids.length > 0) {
+      try {
+        const storedThoughts = this.sessionStore.getThoughtsByIds(ids);
+        this.chromaSync.syncThoughts(storedThoughts).catch(err => {
+          logger.warn('HTTP', 'Chroma thought sync failed (async)', { error: String(err) });
+        });
+      } catch (err) {
+        logger.warn('HTTP', 'Chroma thought sync failed', { error: String(err) });
+      }
+    }
+
     res.json({ stored: ids.length, ids });
   });
 

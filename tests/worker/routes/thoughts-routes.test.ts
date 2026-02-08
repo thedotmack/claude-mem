@@ -303,4 +303,109 @@ describe('ThoughtsRoutes', () => {
       expect(body.count).toBe(0);
     });
   });
+
+  describe('POST /api/thoughts with ChromaSync', () => {
+    let chromaServer: Server;
+    let chromaPort: number;
+    let mockSyncThoughts: ReturnType<typeof mock>;
+
+    beforeEach(async () => {
+      mockSyncThoughts = mock(() => Promise.resolve());
+      const mockChromaSync = {
+        syncThoughts: mockSyncThoughts,
+      } as any;
+
+      const chromaOptions: ServerOptions = {
+        getInitializationComplete: () => true,
+        getMcpReady: () => true,
+        onShutdown: mock(() => Promise.resolve()),
+        onRestart: mock(() => Promise.resolve()),
+      };
+
+      chromaPort = 40000 + Math.floor(Math.random() * 10000);
+      chromaServer = new Server(chromaOptions);
+      chromaServer.registerRoutes(new ThoughtsRoutes(store, mockChromaSync));
+      await chromaServer.listen(chromaPort, '127.0.0.1');
+    });
+
+    afterEach(async () => {
+      if (chromaServer?.getHttpServer()) {
+        try { await chromaServer.close(); } catch { /* ignore */ }
+      }
+    });
+
+    function chromaUrl(path: string): string {
+      return `http://127.0.0.1:${chromaPort}${path}`;
+    }
+
+    it('should call syncThoughts after storing', async () => {
+      const response = await fetch(chromaUrl('/api/thoughts'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          memorySessionId: 'mem-chroma-1',
+          contentSessionId: 'cs-1',
+          project: 'test-project',
+          thoughts: [
+            { thinking_text: 'Chroma sync test thought', thinking_summary: 'sync test', message_index: 0 },
+          ],
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.stored).toBe(1);
+
+      // Give async sync a moment to fire
+      await new Promise(resolve => setTimeout(resolve, 50));
+      expect(mockSyncThoughts).toHaveBeenCalledTimes(1);
+      const calledThoughts = mockSyncThoughts.mock.calls[0][0];
+      expect(calledThoughts).toHaveLength(1);
+      expect(calledThoughts[0].thinking_text).toBe('Chroma sync test thought');
+    });
+
+    it('should still store thoughts when chromaSync.syncThoughts rejects', async () => {
+      mockSyncThoughts.mockImplementation(() => Promise.reject(new Error('Chroma unavailable')));
+
+      const response = await fetch(chromaUrl('/api/thoughts'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          memorySessionId: 'mem-chroma-2',
+          contentSessionId: 'cs-1',
+          project: 'test-project',
+          thoughts: [
+            { thinking_text: 'Should still be stored', thinking_summary: null, message_index: 0 },
+          ],
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.stored).toBe(1);
+      expect(body.ids).toHaveLength(1);
+    });
+
+    it('should not call syncThoughts when no chromaSync is provided', async () => {
+      // The main server (from parent beforeEach) has no chromaSync
+      const response = await fetch(baseUrl('/api/thoughts'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          memorySessionId: 'mem-no-chroma',
+          contentSessionId: 'cs-1',
+          project: 'test-project',
+          thoughts: [
+            { thinking_text: 'No chroma test', thinking_summary: null, message_index: 0 },
+          ],
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.stored).toBe(1);
+      // mockSyncThoughts should not have been called since main server has no chromaSync
+      expect(mockSyncThoughts).not.toHaveBeenCalled();
+    });
+  });
 });
