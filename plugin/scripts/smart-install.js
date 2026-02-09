@@ -66,6 +66,36 @@ function getBunPath() {
 }
 
 /**
+ * Minimum required bun version
+ * v1.1.14+ required for .changes property and multi-statement SQL support
+ */
+const MIN_BUN_VERSION = '1.1.14';
+
+/**
+ * Compare semver versions
+ */
+function compareVersions(v1, v2) {
+  const parts1 = v1.split('.').map(Number);
+  const parts2 = v2.split('.').map(Number);
+  for (let i = 0; i < 3; i++) {
+    const p1 = parts1[i] || 0;
+    const p2 = parts2[i] || 0;
+    if (p1 > p2) return 1;
+    if (p1 < p2) return -1;
+  }
+  return 0;
+}
+
+/**
+ * Check if bun version meets minimum requirements
+ */
+function isBunVersionSufficient() {
+  const version = getBunVersion();
+  if (!version) return false;
+  return compareVersions(version, MIN_BUN_VERSION) >= 0;
+}
+
+/**
  * Get Bun version if installed
  */
 function getBunVersion() {
@@ -377,7 +407,7 @@ function installDeps() {
 
 // Main execution
 try {
-  // Step 1: Ensure Bun is installed (REQUIRED)
+  // Step 1: Ensure Bun is installed and meets minimum version (REQUIRED)
   if (!isBunInstalled()) {
     installBun();
 
@@ -385,6 +415,25 @@ try {
     if (!isBunInstalled()) {
       console.error('❌ Bun is required but not available in PATH');
       console.error('   Please restart your terminal after installation');
+      process.exit(1);
+    }
+  }
+
+  // Step 1.5: Ensure Bun version is sufficient
+  if (!isBunVersionSufficient()) {
+    const currentVersion = getBunVersion();
+    console.error(`⚠️  Bun ${currentVersion} is outdated. Minimum required: ${MIN_BUN_VERSION}`);
+    console.error('   Upgrading bun...');
+    try {
+      execSync('bun upgrade', { stdio: 'inherit', shell: IS_WINDOWS });
+      if (!isBunVersionSufficient()) {
+        console.error(`❌ Bun upgrade failed. Please manually upgrade: bun upgrade`);
+        process.exit(1);
+      }
+      console.error(`✅ Bun upgraded to ${getBunVersion()}`);
+    } catch (error) {
+      console.error(`❌ Failed to upgrade bun: ${error.message}`);
+      console.error('   Please manually upgrade: bun upgrade');
       process.exit(1);
     }
   }

@@ -82,7 +82,7 @@ export class MigrationRunner {
           memory_session_id TEXT NOT NULL,
           project TEXT NOT NULL,
           text TEXT NOT NULL,
-          type TEXT NOT NULL CHECK(type IN ('decision', 'bugfix', 'feature', 'refactor', 'discovery')),
+          type TEXT NOT NULL,
           created_at TEXT NOT NULL,
           created_at_epoch INTEGER NOT NULL,
           FOREIGN KEY(memory_session_id) REFERENCES sdk_sessions(memory_session_id) ON DELETE CASCADE
@@ -325,7 +325,7 @@ export class MigrationRunner {
         memory_session_id TEXT NOT NULL,
         project TEXT NOT NULL,
         text TEXT,
-        type TEXT NOT NULL CHECK(type IN ('decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change')),
+        type TEXT NOT NULL,
         title TEXT,
         subtitle TEXT,
         facts TEXT,

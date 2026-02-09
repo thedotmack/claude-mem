@@ -95,7 +95,9 @@ describe('GeminiAgent', () => {
       storeObservation: mockStoreObservation,
       storeObservations: mockStoreObservations, // Required by ResponseProcessor.ts
       storeSummary: mockStoreSummary,
-      markSessionCompleted: mockMarkSessionCompleted
+      markSessionCompleted: mockMarkSessionCompleted,
+      getSessionById: mock(() => ({ memory_session_id: 'mem-session-123' })), // Required by ResponseProcessor.ts for FK fix
+      ensureMemorySessionIdRegistered: mock(() => {}) // Required by ResponseProcessor.ts for FK constraint fix (Issue #846)
     };
 
     const mockChromaSync = {
@@ -110,6 +112,7 @@ describe('GeminiAgent', () => {
 
     const mockPendingMessageStore = {
       markProcessed: mockMarkProcessed,
+      confirmProcessed: mock(() => {}),  // CLAIM-CONFIRM pattern: confirm after successful storage
       cleanupProcessed: mockCleanupProcessed,
       resetStuckMessages: mockResetStuckMessages
     };
@@ -148,7 +151,8 @@ describe('GeminiAgent', () => {
       generatorPromise: null,
       earliestPendingTimestamp: null,
       currentProvider: null,
-      startTime: Date.now()
+      startTime: Date.now(),
+      processingMessageIds: []  // CLAIM-CONFIRM pattern: track message IDs being processed
     } as any;
 
     global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
@@ -184,7 +188,8 @@ describe('GeminiAgent', () => {
       generatorPromise: null,
       earliestPendingTimestamp: null,
       currentProvider: null,
-      startTime: Date.now()
+      startTime: Date.now(),
+      processingMessageIds: []  // CLAIM-CONFIRM pattern: track message IDs being processed
     } as any;
 
     global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
@@ -216,7 +221,8 @@ describe('GeminiAgent', () => {
       generatorPromise: null,
       earliestPendingTimestamp: null,
       currentProvider: null,
-      startTime: Date.now()
+      startTime: Date.now(),
+      processingMessageIds: []  // CLAIM-CONFIRM pattern: track message IDs being processed
     } as any;
 
     const observationXml = `
@@ -261,7 +267,8 @@ describe('GeminiAgent', () => {
       generatorPromise: null,
       earliestPendingTimestamp: null,
       currentProvider: null,
-      startTime: Date.now()
+      startTime: Date.now(),
+      processingMessageIds: []  // CLAIM-CONFIRM pattern: track message IDs being processed
     } as any;
 
     global.fetch = mock(() => Promise.resolve(new Response('Resource has been exhausted (e.g. check quota).', { status: 429 })));
@@ -294,7 +301,8 @@ describe('GeminiAgent', () => {
       generatorPromise: null,
       earliestPendingTimestamp: null,
       currentProvider: null,
-      startTime: Date.now()
+      startTime: Date.now(),
+      processingMessageIds: []  // CLAIM-CONFIRM pattern: track message IDs being processed
     } as any;
 
     global.fetch = mock(() => Promise.resolve(new Response('Invalid argument', { status: 400 })));
@@ -333,7 +341,8 @@ describe('GeminiAgent', () => {
         generatorPromise: null,
         earliestPendingTimestamp: null,
         currentProvider: null,
-        startTime: Date.now()
+        startTime: Date.now(),
+        processingMessageIds: []  // CLAIM-CONFIRM pattern: track message IDs being processed
       } as any;
 
       global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
@@ -349,27 +358,27 @@ describe('GeminiAgent', () => {
     }
   });
 
-  describe('gemini-3-flash model support', () => {
-    it('should accept gemini-3-flash as a valid model', async () => {
-      // The GeminiModel type includes gemini-3-flash - compile-time check
+  describe('gemini-3-flash-preview model support', () => {
+    it('should accept gemini-3-flash-preview as a valid model', async () => {
+      // The GeminiModel type includes gemini-3-flash-preview - compile-time check
       const validModels = [
         'gemini-2.5-flash-lite',
         'gemini-2.5-flash',
         'gemini-2.5-pro',
         'gemini-2.0-flash',
         'gemini-2.0-flash-lite',
-        'gemini-3-flash'
+        'gemini-3-flash-preview'
       ];
 
       // Verify all models are strings (type guard)
       expect(validModels.every(m => typeof m === 'string')).toBe(true);
-      expect(validModels).toContain('gemini-3-flash');
+      expect(validModels).toContain('gemini-3-flash-preview');
     });
 
-    it('should have rate limit defined for gemini-3-flash', async () => {
-      // GEMINI_RPM_LIMITS['gemini-3-flash'] = 5
+    it('should have rate limit defined for gemini-3-flash-preview', async () => {
+      // GEMINI_RPM_LIMITS['gemini-3-flash-preview'] = 5
       // This is enforced at compile time, but we can test the rate limiting behavior
-      // by checking that the rate limit is applied when using gemini-3-flash
+      // by checking that the rate limit is applied when using gemini-3-flash-preview
       const session = {
         sessionDbId: 1,
         contentSessionId: 'test-session',
@@ -385,7 +394,8 @@ describe('GeminiAgent', () => {
         generatorPromise: null,
         earliestPendingTimestamp: null,
         currentProvider: null,
-        startTime: Date.now()
+        startTime: Date.now(),
+        processingMessageIds: []  // CLAIM-CONFIRM pattern: track message IDs being processed
       } as any;
 
       global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
@@ -393,8 +403,8 @@ describe('GeminiAgent', () => {
         usageMetadata: { totalTokenCount: 10 }
       }))));
 
-      // This validates that gemini-3-flash is a valid model at runtime
-      // The agent's validation array includes gemini-3-flash
+      // This validates that gemini-3-flash-preview is a valid model at runtime
+      // The agent's validation array includes gemini-3-flash-preview
       await agent.startSession(session);
       expect(global.fetch).toHaveBeenCalled();
     });

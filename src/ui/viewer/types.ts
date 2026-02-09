@@ -63,7 +63,7 @@ export interface Settings {
   // AI Provider Configuration
   CLAUDE_MEM_PROVIDER?: string;  // 'claude' | 'gemini' | 'gemini-cli' | 'openrouter'
   CLAUDE_MEM_GEMINI_API_KEY?: string;
-  CLAUDE_MEM_GEMINI_MODEL?: string;  // 'gemini-2.5-flash-lite' | 'gemini-2.5-flash' | 'gemini-3-flash'
+  CLAUDE_MEM_GEMINI_MODEL?: string;  // 'gemini-2.5-flash-lite' | 'gemini-2.5-flash' | 'gemini-3-flash-preview'
   CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED?: string;  // 'true' | 'false'
   CLAUDE_MEM_GEMINI_CLI_PATH?: string;  // Path to gemini CLI executable
   CLAUDE_MEM_GEMINI_CLI_MODEL?: string;  // Gemini CLI model selection

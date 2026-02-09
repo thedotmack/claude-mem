@@ -15,6 +15,7 @@
 
 <p align="center">
   <a href="README.zh.md">🇨🇳 中文</a> •
+  <a href="README.zh-tw.md">🇹🇼 繁體中文</a> •
   <a href="README.ja.md">🇯🇵 日本語</a> •
   <a href="README.pt-br.md">🇧🇷 Português</a> •
   <a href="README.ko.md">🇰🇷 한국어</a> •
@@ -34,6 +35,7 @@
   <a href="README.th.md">🇹🇭 ไทย</a> •
   <a href="README.hi.md">🇮🇳 हिन्दी</a> •
   <a href="README.bn.md">🇧🇩 বাংলা</a> •
+  <a href="README.ur.md">🇵🇰 اردو</a> •
   <a href="README.ro.md">🇷🇴 Română</a> •
   <a href="README.sv.md">🇸🇪 Svenska</a> •
   <a href="README.it.md">🇮🇹 Italiano</a> •
@@ -126,7 +128,7 @@ Claude Codeを再起動します。以前のセッションからのコンテキ
 
 ## ドキュメント
 
-📚 **[完全なドキュメントを見る](docs/)** - GitHubでマークダウンドキュメントを閲覧
+📚 **[完全なドキュメントを見る](https://docs.claude-mem.ai/)** - 公式ウェブサイトで閲覧
 
 ### はじめに
 
@@ -212,7 +214,7 @@ Claude-Memは、過去の作業について尋ねると自動的に呼び出さ�
 
 Claude-Memは、**Endless Mode**(拡張セッション用の生体模倣メモリアーキテクチャ)などの実験的機能を備えた**ベータチャネル**を提供します。http://localhost:37777 → SettingsのWebビューアUIから安定版とベータ版を切り替えます。
 
-Endless Modeと試用方法の詳細については、**[ベータ機能ドキュメント](https://docs.claude-mem.ai/beta-features)**を参照してください。
+Endless Modeと試用方法の詳細については、**[ベータ機能ドキュメント](https://docs.claude-mem.ai/beta-features)** を参照してください。
 
 ---
 
@@ -230,13 +232,13 @@ Endless Modeと試用方法の詳細については、**[ベータ機能ドキ�
 
 設定は`~/.claude-mem/settings.json`で管理されます(初回実行時にデフォルト値で自動作成)。AIモデル、ワーカーポート、データディレクトリ、ログレベル、コンテキスト注入設定を構成します。
 
-利用可能なすべての設定と例については、**[設定ガイド](https://docs.claude-mem.ai/configuration)**を参照してください。
+利用可能なすべての設定と例については、**[設定ガイド](https://docs.claude-mem.ai/configuration)** を参照してください。
 
 ---
 
 ## 開発
 
-ビルド手順、テスト、コントリビューションワークフローについては、**[開発ガイド](https://docs.claude-mem.ai/development)**を参照してください。
+ビルド手順、テスト、コントリビューションワークフローについては、**[開発ガイド](https://docs.claude-mem.ai/development)** を参照してください。
 
 ---
 
@@ -244,7 +246,7 @@ Endless Modeと試用方法の詳細については、**[ベータ機能ドキ�
 
 問題が発生した場合は、Claudeに問題を説明すると、troubleshootスキルが自動的に診断して修正を提供します。
 
-よくある問題と解決策については、**[トラブルシューティングガイド](https://docs.claude-mem.ai/troubleshooting)**を参照してください。
+よくある問題と解決策については、**[トラブルシューティングガイド](https://docs.claude-mem.ai/troubleshooting)** を参照してください。
 
 ---
 
@@ -286,7 +288,7 @@ Copyright (C) 2025 Alex Newman (@thedotmack). All rights reserved.
 - 派生作品もAGPL-3.0の下でライセンスする必要があります
 - このソフトウェアには保証がありません
 
-**Ragtimeに関する注意**: `ragtime/`ディレクトリは**PolyForm Noncommercial License 1.0.0**の下で個別にライセンスされています。詳細は[ragtime/LICENSE](ragtime/LICENSE)を参照してください。
+**Ragtimeに関する注意**: `ragtime/`ディレクトリは **PolyForm Noncommercial License 1.0.0** の下で個別にライセンスされています。詳細は[ragtime/LICENSE](ragtime/LICENSE)を参照してください。
 
 ---
 

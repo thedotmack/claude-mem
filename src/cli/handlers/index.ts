@@ -11,20 +11,23 @@ import { observationHandler } from './observation.js';
 import { summarizeHandler } from './summarize.js';
 import { userMessageHandler } from './user-message.js';
 import { fileEditHandler } from './file-edit.js';
+import { sessionCompleteHandler } from './session-complete.js';
 
 export type EventType =
-  | 'context'        // SessionStart - inject context
-  | 'session-init'   // UserPromptSubmit - initialize session
-  | 'observation'    // PostToolUse - save observation
-  | 'summarize'      // Stop - generate summary
-  | 'user-message'   // SessionStart (parallel) - display to user
-  | 'file-edit';     // Cursor afterFileEdit
+  | 'context'           // SessionStart - inject context
+  | 'session-init'      // UserPromptSubmit - initialize session
+  | 'observation'       // PostToolUse - save observation
+  | 'summarize'         // Stop - generate summary (phase 1)
+  | 'session-complete'  // Stop - complete session (phase 2) - fixes #842
+  | 'user-message'      // SessionStart (parallel) - display to user
+  | 'file-edit';        // Cursor afterFileEdit
 
 const handlers: Record<EventType, EventHandler> = {
   'context': contextHandler,
   'session-init': sessionInitHandler,
   'observation': observationHandler,
   'summarize': summarizeHandler,
+  'session-complete': sessionCompleteHandler,
   'user-message': userMessageHandler,
   'file-edit': fileEditHandler
 };
@@ -51,3 +54,4 @@ export { observationHandler } from './observation.js';
 export { summarizeHandler } from './summarize.js';
 export { userMessageHandler } from './user-message.js';
 export { fileEditHandler } from './file-edit.js';
+export { sessionCompleteHandler } from './session-complete.js';

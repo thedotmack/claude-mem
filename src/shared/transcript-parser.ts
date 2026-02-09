@@ -58,7 +58,7 @@ export function extractLastMessage(
 
   // If we searched the whole transcript and didn't find any message of this role
   if (!foundMatchingRole) {
-    throw new Error(`No message found for role '${role}' in transcript: ${transcriptPath}`);
+    return '';
   }
 
   return '';

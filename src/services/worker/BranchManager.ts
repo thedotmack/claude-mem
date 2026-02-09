@@ -7,11 +7,12 @@
 
 import { execSync, spawnSync } from 'child_process';
 import { existsSync, unlinkSync } from 'fs';
-import { homedir } from 'os';
 import { join } from 'path';
 import { logger } from '../../utils/logger.js';
+import { MARKETPLACE_ROOT } from '../../shared/paths.js';
 
-const INSTALLED_PLUGIN_PATH = join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
+// Alias for code clarity - this is the installed plugin path
+const INSTALLED_PLUGIN_PATH = MARKETPLACE_ROOT;
 
 /**
  * Validate branch name to prevent command injection

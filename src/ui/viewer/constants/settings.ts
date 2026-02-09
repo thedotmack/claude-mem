@@ -36,4 +36,8 @@ export const DEFAULT_SETTINGS = {
   // Feature Toggles
   CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: 'true',
   CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: 'false',
+
+  // Exclusion Settings
+  CLAUDE_MEM_EXCLUDED_PROJECTS: '',
+  CLAUDE_MEM_FOLDER_MD_EXCLUDE: '[]',
 } as const;

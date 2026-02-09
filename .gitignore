@@ -28,10 +28,13 @@ src/ui/viewer.html
 # Prevent literal tilde directories (path validation bug artifacts)
 ~*/
 
-# Prevent other malformed path directories
-http*/
-https*/
+# Prevent other malformed path directories (only at root level)
+/http*/
+/https*/
 
 # Claude-mem generated context files
 CLAUDE.md
 **/CLAUDE.md
+
+# Ignore WebStorm project files (for dinosaur IDE users)
+.idea/

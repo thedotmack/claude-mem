@@ -72,9 +72,11 @@ if (!bunPath) {
 
 // Spawn Bun with the provided script and args
 // Use spawn (not spawnSync) to properly handle stdio
+// Note: Don't use shell mode on Windows - it breaks paths with spaces in usernames
+// Use windowsHide to prevent a visible console window from spawning on Windows
 const child = spawn(bunPath, args, {
   stdio: 'inherit',
-  shell: IS_WINDOWS,
+  windowsHide: true,
   env: process.env
 });
 

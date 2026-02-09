@@ -15,6 +15,7 @@
 
 <p align="center">
   <a href="README.zh.md">🇨🇳 中文</a> •
+  <a href="README.zh-tw.md">🇹🇼 繁體中文</a> •
   <a href="README.ja.md">🇯🇵 日本語</a> •
   <a href="README.pt-br.md">🇧🇷 Português</a> •
   <a href="README.ko.md">🇰🇷 한국어</a> •
@@ -34,6 +35,7 @@
   <a href="README.th.md">🇹🇭 ไทย</a> •
   <a href="README.hi.md">🇮🇳 हिन्दी</a> •
   <a href="README.bn.md">🇧🇩 বাংলা</a> •
+  <a href="README.ur.md">🇵🇰 اردو</a> •
   <a href="README.ro.md">🇷🇴 Română</a> •
   <a href="README.sv.md">🇸🇪 Svenska</a> •
   <a href="README.it.md">🇮🇹 Italiano</a> •
@@ -126,7 +128,7 @@ Khởi động lại Claude Code. Ngữ cảnh từ các phiên trước sẽ t�
 
 ## Tài Liệu
 
-📚 **[Xem Tài Liệu Đầy Đủ](docs/)** - Duyệt tài liệu markdown trên GitHub
+📚 **[Xem Tài Liệu Đầy Đủ](https://docs.claude-mem.ai/)** - Duyệt trên trang web chính thức
 
 ### Bắt Đầu
 
