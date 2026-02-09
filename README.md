@@ -38,6 +38,7 @@
   <a href="docs/i18n/README.tr.md">🇹🇷 Türkçe</a> •
   <a href="docs/i18n/README.uk.md">🇺🇦 Українська</a> •
   <a href="docs/i18n/README.vi.md">🇻🇳 Tiếng Việt</a> •
+  <a href="docs/i18n/README.tl.md">🇵🇭 Tagalog</a> •
   <a href="docs/i18n/README.id.md">🇮🇩 Indonesia</a> •
   <a href="docs/i18n/README.th.md">🇹🇭 ไทย</a> •
   <a href="docs/i18n/README.hi.md">🇮🇳 हिन्दी</a> •
