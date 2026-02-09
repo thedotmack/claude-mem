@@ -168,6 +168,10 @@ export class WorkerService {
   // Orphan reaper cleanup function (Issue #737)
   private stopOrphanReaper: (() => void) | null = null;
 
+  // Chroma watchdog timer
+  private chromaWatchdogTimer: ReturnType<typeof setInterval> | null = null;
+  private static readonly CHROMA_WATCHDOG_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+
   constructor() {
     // Initialize the promise that will resolve when background initialization completes
     this.initializationComplete = new Promise((resolve) => {
@@ -375,6 +379,9 @@ export class WorkerService {
         return activeIds;
       });
       logger.info('SYSTEM', 'Started orphan reaper (runs every 5 minutes)');
+
+      // Start Chroma watchdog to detect dead connections
+      this.startChromaWatchdog();
 
       // Auto-recover orphaned queues (fire-and-forget with error logging)
       this.processPendingQueues(50).then(result => {
@@ -688,6 +695,31 @@ export class WorkerService {
   }
 
   /**
+   * Start Chroma watchdog to detect and clean up dead connections
+   * Runs every 5 minutes - if connection is lost, closes transport so
+   * it will reconnect on next use
+   */
+  private startChromaWatchdog(): void {
+    const chromaSync = this.dbManager.getChromaSync();
+    if (!chromaSync || chromaSync.isDisabled()) return;
+
+    this.chromaWatchdogTimer = setInterval(() => {
+      if (chromaSync.isConnected()) {
+        logger.debug('SYSTEM', 'Chroma watchdog: connection healthy');
+      } else {
+        logger.warn('SYSTEM', 'Chroma watchdog: connection lost, will reconnect on next use');
+        chromaSync.close().catch((err: Error) => {
+          logger.debug('SYSTEM', 'Chroma watchdog: close error (expected)', {}, err);
+        });
+      }
+    }, WorkerService.CHROMA_WATCHDOG_INTERVAL_MS);
+
+    // Don't let the watchdog keep the process alive
+    if (this.chromaWatchdogTimer.unref) this.chromaWatchdogTimer.unref();
+    logger.info('SYSTEM', 'Started Chroma watchdog (runs every 5 minutes)');
+  }
+
+  /**
    * Shutdown the worker service
    */
   async shutdown(): Promise<void> {
@@ -695,6 +727,12 @@ export class WorkerService {
     if (this.stopOrphanReaper) {
       this.stopOrphanReaper();
       this.stopOrphanReaper = null;
+    }
+
+    // Stop Chroma watchdog
+    if (this.chromaWatchdogTimer) {
+      clearInterval(this.chromaWatchdogTimer);
+      this.chromaWatchdogTimer = null;
     }
 
     await performGracefulShutdown({
