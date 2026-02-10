@@ -10,12 +10,14 @@ import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { logger } from '../../../../utils/logger.js';
 import type { SessionStore } from '../../../sqlite/SessionStore.js';
 import type { ChromaSync } from '../../../sync/ChromaSync.js';
+import type { SessionEventBroadcaster } from '../../events/SessionEventBroadcaster.js';
 import type { ThoughtInput } from '../../../sqlite/thoughts/types.js';
 
 export class ThoughtsRoutes extends BaseRouteHandler {
   constructor(
     private sessionStore: SessionStore,
-    private chromaSync?: ChromaSync
+    private chromaSync?: ChromaSync,
+    private sessionEventBroadcaster?: SessionEventBroadcaster
   ) {
     super();
   }
@@ -66,6 +68,14 @@ export class ThoughtsRoutes extends BaseRouteHandler {
         });
       } catch (err) {
         logger.warn('HTTP', 'Chroma thought sync failed', { error: String(err) });
+      }
+    }
+
+    // Broadcast SSE events for each stored thought
+    if (this.sessionEventBroadcaster && ids.length > 0) {
+      const storedThoughts = this.sessionStore.getThoughtsByIds(ids);
+      for (const thought of storedThoughts) {
+        this.sessionEventBroadcaster.broadcastThoughtStored(thought);
       }
     }
 

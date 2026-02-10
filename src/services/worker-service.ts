@@ -338,10 +338,11 @@ export class WorkerService {
         logger.info('SYSTEM', `Reset ${resetCount} stale processing messages to pending`);
       }
 
-      // Register thoughts routes (needs SessionStore and ChromaSync from initialized DB)
+      // Register thoughts routes (needs SessionStore, ChromaSync, and SSE broadcaster)
       this.server.registerRoutes(new ThoughtsRoutes(
         this.dbManager.getSessionStore(),
-        this.dbManager.getChromaSync()
+        this.dbManager.getChromaSync(),
+        this.sessionEventBroadcaster
       ));
       logger.info('WORKER', 'ThoughtsRoutes registered');
 

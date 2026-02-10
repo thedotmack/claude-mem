@@ -304,6 +304,87 @@ describe('ThoughtsRoutes', () => {
     });
   });
 
+  describe('POST /api/thoughts with SSE broadcasting', () => {
+    let sseServer: Server;
+    let ssePort: number;
+    let mockBroadcastThoughtStored: ReturnType<typeof mock>;
+
+    beforeEach(async () => {
+      mockBroadcastThoughtStored = mock(() => {});
+      const mockBroadcaster = {
+        broadcastThoughtStored: mockBroadcastThoughtStored,
+      } as any;
+
+      const sseOptions: ServerOptions = {
+        getInitializationComplete: () => true,
+        getMcpReady: () => true,
+        onShutdown: mock(() => Promise.resolve()),
+        onRestart: mock(() => Promise.resolve()),
+      };
+
+      ssePort = 40000 + Math.floor(Math.random() * 10000);
+      sseServer = new Server(sseOptions);
+      sseServer.registerRoutes(new ThoughtsRoutes(store, undefined, mockBroadcaster));
+      await sseServer.listen(ssePort, '127.0.0.1');
+    });
+
+    afterEach(async () => {
+      if (sseServer?.getHttpServer()) {
+        try { await sseServer.close(); } catch { /* ignore */ }
+      }
+    });
+
+    function sseUrl(path: string): string {
+      return `http://127.0.0.1:${ssePort}${path}`;
+    }
+
+    it('should call broadcastThoughtStored for each stored thought', async () => {
+      const response = await fetch(sseUrl('/api/thoughts'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          memorySessionId: 'mem-sse-1',
+          contentSessionId: 'cs-1',
+          project: 'test-project',
+          thoughts: [
+            { thinking_text: 'First SSE thought', thinking_summary: 'summary-1', message_index: 0 },
+            { thinking_text: 'Second SSE thought', thinking_summary: 'summary-2', message_index: 1 },
+          ],
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.stored).toBe(2);
+
+      expect(mockBroadcastThoughtStored).toHaveBeenCalledTimes(2);
+
+      const firstCall = mockBroadcastThoughtStored.mock.calls[0][0];
+      expect(firstCall.id).toBeGreaterThan(0);
+      expect(firstCall.project).toBe('test-project');
+      expect(firstCall.thinking_text).toBe('First SSE thought');
+      expect(firstCall.created_at_epoch).toBeGreaterThan(0);
+
+      const secondCall = mockBroadcastThoughtStored.mock.calls[1][0];
+      expect(secondCall.thinking_text).toBe('Second SSE thought');
+    });
+
+    it('should not broadcast when no thoughts are stored (validation error)', async () => {
+      const response = await fetch(sseUrl('/api/thoughts'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          memorySessionId: 'mem-sse-2',
+          project: 'test-project',
+          thoughts: [],
+        }),
+      });
+
+      expect(response.status).toBe(400);
+      expect(mockBroadcastThoughtStored).not.toHaveBeenCalled();
+    });
+  });
+
   describe('POST /api/thoughts with ChromaSync', () => {
     let chromaServer: Server;
     let chromaPort: number;
