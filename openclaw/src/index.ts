@@ -301,9 +301,9 @@ async function connectToSSEStream(
   while (!abortController.signal.aborted) {
     try {
       setConnectionState("reconnecting");
-      api.logger.info(`[claude-mem] Connecting to SSE stream at http://localhost:${port}/stream`);
+      api.logger.info(`[claude-mem] Connecting to SSE stream at ${workerBaseUrl(port)}/stream`);
 
-      const response = await fetch(`http://localhost:${port}/stream`, {
+      const response = await fetch(`${workerBaseUrl(port)}/stream`, {
         signal: abortController.signal,
         headers: { Accept: "text/event-stream" },
       });
@@ -339,12 +339,14 @@ async function connectToSSEStream(
         buffer = frames.pop() || "";
 
         for (const frame of frames) {
-          const dataLine = frame
+          // SSE spec: concatenate all data: lines with \n
+          const dataLines = frame
             .split("\n")
-            .find((line) => line.startsWith("data:"));
-          if (!dataLine) continue;
+            .filter((line) => line.startsWith("data:"))
+            .map((line) => line.slice(5).trim());
+          if (dataLines.length === 0) continue;
 
-          const jsonStr = dataLine.slice(5).trim();
+          const jsonStr = dataLines.join("\n");
           if (!jsonStr) continue;
 
           try {

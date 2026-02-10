@@ -8,7 +8,7 @@ import claudeMemPlugin from "./index.js";
 
 function createMockApi(pluginConfigOverride: Record<string, any> = {}) {
   const logs: string[] = [];
-  const sentMessages: Array<{ to: string; text: string; channel: string }> = [];
+  const sentMessages: Array<{ to: string; text: string; channel: string; opts?: any }> = [];
 
   let registeredService: any = null;
   const registeredCommands: Map<string, any> = new Map();
@@ -62,8 +62,8 @@ function createMockApi(pluginConfigOverride: Record<string, any> = {}) {
           },
         },
         whatsapp: {
-          sendMessageWhatsApp: async (to: string, text: string) => {
-            sentMessages.push({ to, text, channel: "whatsapp" });
+          sendMessageWhatsApp: async (to: string, text: string, opts?: { verbose: boolean }) => {
+            sentMessages.push({ to, text, channel: "whatsapp", opts });
           },
         },
         line: {
@@ -761,6 +761,11 @@ describe("SSE stream integration", () => {
   function startSSEServer(): Promise<number> {
     return new Promise((resolve) => {
       server = createServer((req: IncomingMessage, res: ServerResponse) => {
+        if (req.url !== "/stream") {
+          res.writeHead(404);
+          res.end();
+          return;
+        }
         res.writeHead(200, {
           "Content-Type": "text/event-stream",
           "Cache-Control": "no-cache",
@@ -923,7 +928,7 @@ describe("SSE stream integration", () => {
     await getService().start({});
     await new Promise((resolve) => setTimeout(resolve, 200));
 
-    assert.ok(logs.some((l) => l.includes(`localhost:${serverPort}`)));
+    assert.ok(logs.some((l) => l.includes(`127.0.0.1:${serverPort}`)));
 
     await getService().stop({});
   });
