@@ -13,10 +13,28 @@
  */
 import { spawnSync, spawn } from 'child_process';
 import { existsSync } from 'fs';
-import { join } from 'path';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 import { homedir } from 'os';
 
 const IS_WINDOWS = process.platform === 'win32';
+
+/**
+ * Resolve CLAUDE_PLUGIN_ROOT from environment or derive from script location.
+ * bun-runner.js lives at <plugin-root>/scripts/bun-runner.js, so the plugin
+ * root is one directory up from __dirname.
+ * Fixes #1044: Hooks fail when Claude Code doesn't provide CLAUDE_PLUGIN_ROOT.
+ */
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+if (process.env.CLAUDE_PLUGIN_ROOT) {
+  console.error(`[bun-runner] CLAUDE_PLUGIN_ROOT from env: ${process.env.CLAUDE_PLUGIN_ROOT}`);
+} else {
+  const derivedPluginRoot = dirname(__dirname); // scripts/ -> plugin root
+  process.env.CLAUDE_PLUGIN_ROOT = derivedPluginRoot;
+  console.error(`[bun-runner] CLAUDE_PLUGIN_ROOT derived from script location: ${derivedPluginRoot}`);
+}
 
 /**
  * Find Bun executable - checks PATH first, then common install locations
@@ -26,7 +44,8 @@ function findBun() {
   const pathCheck = spawnSync(IS_WINDOWS ? 'where' : 'which', ['bun'], {
     encoding: 'utf-8',
     stdio: ['pipe', 'pipe', 'pipe'],
-    shell: IS_WINDOWS
+    shell: IS_WINDOWS,
+    windowsHide: true
   });
 
   if (pathCheck.status === 0 && pathCheck.stdout.trim()) {
