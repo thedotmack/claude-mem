@@ -2,20 +2,84 @@
 
 This guide walks through setting up the claude-mem plugin on an OpenClaw gateway from scratch. Follow every step in order. By the end, your agents will have persistent memory across sessions, a live-updating MEMORY.md in their workspace, and optionally a real-time observation feed streaming to a messaging channel.
 
-## Prerequisites
+## Step 1: Clone the Claude-Mem Repo
 
-Before you start, make sure you have:
+First, clone the claude-mem repository to a location accessible by your OpenClaw gateway. This gives you the worker service source and the plugin code.
 
-1. **An OpenClaw gateway** running with plugin support
-2. **Claude-mem installed** — the worker service must be running on the same machine as the gateway. Verify with:
-   ```
-   curl http://localhost:37777/api/health
-   ```
-   You should get `{"status":"ok"}`. If not, install claude-mem first: https://github.com/thedotmack/claude-mem
+```bash
+cd /opt  # or wherever you want to keep it
+git clone https://github.com/thedotmack/claude-mem.git
+cd claude-mem
+npm install
+npm run build
+```
 
-## Step 1: Add the Plugin to Your Gateway
+You'll need **bun** installed for the worker service. If you don't have it:
 
-Add the `claude-mem` plugin to your OpenClaw gateway configuration. The exact location depends on your gateway setup, but you need to add this to your plugins config:
+```bash
+curl -fsSL https://bun.sh/install | bash
+```
+
+## Step 2: Get the Worker Running
+
+The claude-mem worker is an HTTP service on port 37777. It stores observations, generates summaries, and serves the context timeline. The plugin talks to it over HTTP — it doesn't matter where the worker is running, just that it's reachable on localhost:37777.
+
+### Check if it's already running
+
+If this machine also runs Claude Code with claude-mem installed, the worker may already be running:
+
+```bash
+curl http://localhost:37777/api/health
+```
+
+**Got `{"status":"ok"}`?** The worker is already running. Skip to Step 3.
+
+**Got connection refused or no response?** The worker isn't running. Continue below.
+
+### If Claude Code has claude-mem installed
+
+If claude-mem is installed as a Claude Code plugin (at `~/.claude/plugins/marketplaces/thedotmack/`), start the worker from that installation:
+
+```bash
+cd ~/.claude/plugins/marketplaces/thedotmack
+npm run worker:restart
+```
+
+Verify:
+```bash
+curl http://localhost:37777/api/health
+```
+
+**Got `{"status":"ok"}`?** You're set. Skip to Step 3.
+
+**Still not working?** Check `npm run worker:status` for error details, or check that bun is installed and on your PATH.
+
+### If there's no Claude Code installation
+
+Run the worker from the cloned repo:
+
+```bash
+cd /opt/claude-mem  # wherever you cloned it
+npm run worker:start
+```
+
+Verify:
+```bash
+curl http://localhost:37777/api/health
+```
+
+**Got `{"status":"ok"}`?** You're set. Move to Step 3.
+
+**Still not working?** Debug steps:
+- Check that bun is installed: `bun --version`
+- Check the worker status: `npm run worker:status`
+- Check if something else is using port 37777: `lsof -i :37777`
+- Check logs: `npm run worker:logs` (if available)
+- Try running it directly to see errors: `bun plugin/scripts/worker-service.cjs start`
+
+## Step 3: Add the Plugin to Your Gateway
+
+Add the `claude-mem` plugin to your OpenClaw gateway configuration:
 
 ```json
 {
@@ -40,7 +104,7 @@ Add the `claude-mem` plugin to your OpenClaw gateway configuration. The exact lo
 
 - **`workerPort`** (number, default: `37777`) — The port where the claude-mem worker service is listening. Only change this if you configured the worker to use a different port.
 
-## Step 2: Restart the Gateway
+## Step 4: Restart the Gateway and Verify
 
 Restart your OpenClaw gateway so it picks up the new plugin configuration. After restart, check the gateway logs for:
 
@@ -48,7 +112,7 @@ Restart your OpenClaw gateway so it picks up the new plugin configuration. After
 [claude-mem] OpenClaw plugin loaded — v1.0.0 (worker: 127.0.0.1:37777)
 ```
 
-If you see this, the plugin is loaded and connected. You can also verify by running `/claude-mem-status` in any OpenClaw chat. It should report:
+If you see this, the plugin is loaded. You can also verify by running `/claude-mem-status` in any OpenClaw chat:
 
 ```
 Claude-Mem Worker Status
@@ -60,7 +124,7 @@ Observation feed: disconnected
 
 The observation feed shows `disconnected` because we haven't configured it yet. That's next.
 
-## Step 3: Verify Observations Are Being Recorded
+## Step 5: Verify Observations Are Being Recorded
 
 Have an agent do some work. The plugin automatically records observations through these OpenClaw events:
 
@@ -74,9 +138,9 @@ To verify it's working, check the agent's workspace directory for a `MEMORY.md` 
 
 You can also check the worker's viewer UI at http://localhost:37777 to see observations appearing in real time.
 
-## Step 4: Set Up the Observation Feed (Streaming to a Channel)
+## Step 6: Set Up the Observation Feed (Streaming to a Channel)
 
-This is where it gets fun. The observation feed connects to the claude-mem worker's SSE (Server-Sent Events) stream and forwards every new observation to a messaging channel in real time. Your agents learn things, and you see them learning in your Telegram/Discord/Slack/etc.
+The observation feed connects to the claude-mem worker's SSE (Server-Sent Events) stream and forwards every new observation to a messaging channel in real time. Your agents learn things, and you see them learning in your Telegram/Discord/Slack/etc.
 
 ### What you'll see
 
@@ -310,9 +374,11 @@ A background service connects to the worker's SSE stream and forwards `new_obser
 
 | Problem | What to check |
 |---------|---------------|
-| Worker unreachable | Run `curl http://localhost:37777/api/health`. If it fails, the worker isn't running. Start it with `npm run worker:restart` in the claude-mem directory. |
+| Worker health check fails | Is bun installed? (`bun --version`). Is something else on port 37777? (`lsof -i :37777`). Try running directly: `bun plugin/scripts/worker-service.cjs start` |
+| Worker started from Claude Code install but not responding | Check `cd ~/.claude/plugins/marketplaces/thedotmack && npm run worker:status`. May need `npm run worker:restart`. |
+| Worker started from cloned repo but not responding | Check `cd /path/to/claude-mem && npm run worker:status`. Make sure you ran `npm install && npm run build` first. |
 | No MEMORY.md appearing | Check that `syncMemoryFile` is not set to `false`. Verify the agent's event context includes `workspaceDir`. |
-| Observations not being recorded | Check gateway logs for `[claude-mem]` messages. The worker must be running and reachable. |
+| Observations not being recorded | Check gateway logs for `[claude-mem]` messages. The worker must be running and reachable on localhost:37777. |
 | Feed shows `disconnected` | Worker's `/stream` endpoint not reachable. Check `workerPort` matches the actual worker port. |
 | Feed shows `reconnecting` | Connection dropped. The plugin auto-reconnects — wait up to 30 seconds. |
 | `Unknown channel type` in logs | The channel plugin (e.g., telegram) isn't loaded on your gateway. Make sure the channel is configured and running. |
