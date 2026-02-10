@@ -220,26 +220,48 @@ function formatObservationMessage(observation: ObservationSSEPayload): string {
   return message;
 }
 
+// Explicit mapping from channel name to [runtime namespace key, send function name].
+// These match the PluginRuntime.channel structure in the OpenClaw SDK.
+const CHANNEL_SEND_MAP: Record<string, { namespace: string; functionName: string }> = {
+  telegram: { namespace: "telegram", functionName: "sendMessageTelegram" },
+  whatsapp: { namespace: "whatsapp", functionName: "sendMessageWhatsApp" },
+  discord: { namespace: "discord", functionName: "sendMessageDiscord" },
+  slack: { namespace: "slack", functionName: "sendMessageSlack" },
+  signal: { namespace: "signal", functionName: "sendMessageSignal" },
+  imessage: { namespace: "imessage", functionName: "sendMessageIMessage" },
+  line: { namespace: "line", functionName: "sendMessageLine" },
+};
+
 function sendToChannel(
   api: OpenClawPluginApi,
   channel: string,
   to: string,
   text: string
 ): Promise<void> {
-  const channelApi = api.runtime.channel[channel];
+  const mapping = CHANNEL_SEND_MAP[channel];
+  if (!mapping) {
+    api.logger.warn(`[claude-mem] Unsupported channel type: ${channel}`);
+    return Promise.resolve();
+  }
+
+  const channelApi = api.runtime.channel[mapping.namespace];
   if (!channelApi) {
-    api.logger.warn(`[claude-mem] Unknown channel type: ${channel}`);
+    api.logger.warn(`[claude-mem] Channel "${channel}" not available in runtime`);
     return Promise.resolve();
   }
 
-  const sendFunctionName = `sendMessage${channel.charAt(0).toUpperCase()}${channel.slice(1)}`;
-  const senderFunction = channelApi[sendFunctionName];
+  const senderFunction = channelApi[mapping.functionName];
   if (!senderFunction) {
-    api.logger.warn(`[claude-mem] Channel "${channel}" has no ${sendFunctionName} function`);
+    api.logger.warn(`[claude-mem] Channel "${channel}" has no ${mapping.functionName} function`);
     return Promise.resolve();
   }
 
-  return senderFunction(to, text).catch((error: unknown) => {
+  // WhatsApp requires a third options argument with { verbose: boolean }
+  const args: unknown[] = channel === "whatsapp"
+    ? [to, text, { verbose: false }]
+    : [to, text];
+
+  return senderFunction(...args).catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     api.logger.error(`[claude-mem] Failed to send to ${channel}: ${message}`);
   });
@@ -307,7 +329,7 @@ async function connectToSSEStream(
 
           try {
             const parsed = JSON.parse(jsonStr);
-            if (parsed.type === "new_observation") {
+            if (parsed.type === "new_observation" && parsed.observation) {
               const event = parsed as SSENewObservationEvent;
               const message = formatObservationMessage(event.observation);
               await sendToChannel(api, channel, to, message);

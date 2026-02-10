@@ -943,7 +943,7 @@ describe("SSE stream integration", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 200));
     assert.equal(sentMessages.length, 0);
-    assert.ok(logs.some((l) => l.includes("Unknown channel type: matrix")));
+    assert.ok(logs.some((l) => l.includes("Unsupported channel type: matrix")));
 
     await getService().stop({});
   });
