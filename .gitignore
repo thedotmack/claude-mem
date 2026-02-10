@@ -17,6 +17,7 @@ package-lock.json
 bun.lock
 private/
 datasets/
+Auto Run Docs/
 
 # Generated UI files (built from viewer-template.html)
 src/ui/viewer.html
