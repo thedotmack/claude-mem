@@ -779,6 +779,27 @@ export class SessionRoutes extends BaseRouteHandler {
       project
     });
 
+    // Sync to ChromaDB for semantic search (fire-and-forget, non-blocking)
+    if (ids.length > 0) {
+      try {
+        const chromaSync = this.dbManager.getChromaSync();
+        const storedThoughtsForChroma = store.getThoughtsByIds(ids);
+        chromaSync.syncThoughts(storedThoughtsForChroma).catch(err => {
+          logger.warn('SESSION', 'Chroma thought sync failed (async)', { error: String(err) });
+        });
+      } catch (err) {
+        logger.warn('SESSION', 'Chroma thought sync failed', { error: String(err) });
+      }
+    }
+
+    // Broadcast SSE events for each stored thought
+    if (ids.length > 0) {
+      const storedThoughtsForBroadcast = store.getThoughtsByIds(ids);
+      for (const thought of storedThoughtsForBroadcast) {
+        this.eventBroadcaster.broadcastThoughtStored(thought);
+      }
+    }
+
     res.json({ ids });
   });
 }
