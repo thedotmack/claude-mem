@@ -12,6 +12,27 @@ import type { ObservationInput } from './observations/types.js';
 import type { SummaryInput } from './summaries/types.js';
 
 /**
+ * Safely serialize an array to JSON, falling back to empty array on failure.
+ * Prevents database corruption from malformed LLM responses (Issue #855).
+ */
+function safeJsonStringifyArray(value: unknown, fieldName: string): string {
+  try {
+    if (!Array.isArray(value)) {
+      logger.warn('DB', `Expected array for ${fieldName}, got ${typeof value}. Using empty array.`);
+      return '[]';
+    }
+    // Ensure all elements are strings (defensive against malformed parser output)
+    const sanitized = value.map(item =>
+      typeof item === 'string' ? item : String(item)
+    );
+    return JSON.stringify(sanitized);
+  } catch (error) {
+    logger.warn('DB', `Failed to serialize ${fieldName}, using empty array`, {}, error as Error);
+    return '[]';
+  }
+}
+
+/**
  * Result from storeObservations / storeObservationsAndMarkComplete transaction
  */
 export interface StoreObservationsResult {
@@ -78,11 +99,11 @@ export function storeObservationsAndMarkComplete(
         observation.type,
         observation.title,
         observation.subtitle,
-        JSON.stringify(observation.facts),
+        safeJsonStringifyArray(observation.facts, 'facts'),
         observation.narrative,
-        JSON.stringify(observation.concepts),
-        JSON.stringify(observation.files_read),
-        JSON.stringify(observation.files_modified),
+        safeJsonStringifyArray(observation.concepts, 'concepts'),
+        safeJsonStringifyArray(observation.files_read, 'files_read'),
+        safeJsonStringifyArray(observation.files_modified, 'files_modified'),
         promptNumber || null,
         discoveryTokens,
         timestampIso,
@@ -104,11 +125,11 @@ export function storeObservationsAndMarkComplete(
       const result = summaryStmt.run(
         memorySessionId,
         project,
-        summary.request,
-        summary.investigated,
-        summary.learned,
-        summary.completed,
-        summary.next_steps,
+        summary.request || '',
+        summary.investigated || '',
+        summary.learned || '',
+        summary.completed || '',
+        summary.next_steps || '',
         summary.notes,
         promptNumber || null,
         discoveryTokens,
@@ -189,11 +210,11 @@ export function storeObservations(
         observation.type,
         observation.title,
         observation.subtitle,
-        JSON.stringify(observation.facts),
+        safeJsonStringifyArray(observation.facts, 'facts'),
         observation.narrative,
-        JSON.stringify(observation.concepts),
-        JSON.stringify(observation.files_read),
-        JSON.stringify(observation.files_modified),
+        safeJsonStringifyArray(observation.concepts, 'concepts'),
+        safeJsonStringifyArray(observation.files_read, 'files_read'),
+        safeJsonStringifyArray(observation.files_modified, 'files_modified'),
         promptNumber || null,
         discoveryTokens,
         timestampIso,
@@ -215,11 +236,11 @@ export function storeObservations(
       const result = summaryStmt.run(
         memorySessionId,
         project,
-        summary.request,
-        summary.investigated,
-        summary.learned,
-        summary.completed,
-        summary.next_steps,
+        summary.request || '',
+        summary.investigated || '',
+        summary.learned || '',
+        summary.completed || '',
+        summary.next_steps || '',
         summary.notes,
         promptNumber || null,
         discoveryTokens,

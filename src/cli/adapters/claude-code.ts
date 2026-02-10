@@ -19,6 +19,17 @@ export const claudeCodeAdapter: PlatformAdapter = {
     if (result.hookSpecificOutput) {
       return { hookSpecificOutput: result.hookSpecificOutput };
     }
-    return { continue: result.continue ?? true, suppressOutput: result.suppressOutput ?? true };
+
+    // Issue #987: Only include `continue` field when explicitly set by the handler.
+    // Stop hooks (summarize, session-complete) intentionally omit `continue` to
+    // prevent Claude Code from interpreting the response as "continue the conversation,"
+    // which causes infinite session loops.
+    const output: Record<string, unknown> = {
+      suppressOutput: result.suppressOutput ?? true
+    };
+    if (result.continue !== undefined) {
+      output.continue = result.continue;
+    }
+    return output;
   }
 };

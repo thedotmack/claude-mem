@@ -24,7 +24,8 @@ export function getBunPath(): string | null {
     const result = spawnSync('bun', ['--version'], {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
-      shell: false  // SECURITY: No need for shell, bun is the executable
+      shell: false,  // SECURITY: No need for shell, bun is the executable
+      windowsHide: true
     });
     if (result.status === 0) {
       return 'bun'; // Available in PATH

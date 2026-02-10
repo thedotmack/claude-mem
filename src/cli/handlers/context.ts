@@ -36,21 +36,39 @@ export const contextHandler: EventHandler = {
 
     // Note: Removed AbortSignal.timeout due to Windows Bun cleanup issue (libuv assertion)
     // Worker service has its own timeouts, so client-side timeout is redundant
-    const response = await fetch(url);
+    try {
+      const response = await fetch(url);
 
-    if (!response.ok) {
-      throw new Error(`Context generation failed: ${response.status}`);
-    }
-
-    const result = await response.text();
-    // Strip any internal agent markers that might leak into context (#784)
-    const additionalContext = stripInternalAgentMarkers(result);
-
-    return {
-      hookSpecificOutput: {
-        hookEventName: 'SessionStart',
-        additionalContext
+      if (!response.ok) {
+        // Return empty context on failure - don't block the user's session (Issue #897)
+        return {
+          hookSpecificOutput: {
+            hookEventName: 'SessionStart',
+            additionalContext: ''
+          },
+          exitCode: HOOK_EXIT_CODES.SUCCESS
+        };
       }
-    };
+
+      const result = await response.text();
+      // Strip any internal agent markers that might leak into context (#784)
+      const additionalContext = stripInternalAgentMarkers(result);
+
+      return {
+        hookSpecificOutput: {
+          hookEventName: 'SessionStart',
+          additionalContext
+        }
+      };
+    } catch {
+      // Network error (worker crashed, port unavailable, etc.) - return empty context gracefully
+      return {
+        hookSpecificOutput: {
+          hookEventName: 'SessionStart',
+          additionalContext: ''
+        },
+        exitCode: HOOK_EXIT_CODES.SUCCESS
+      };
+    }
   }
 };

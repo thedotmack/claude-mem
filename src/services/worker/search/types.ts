@@ -107,6 +107,8 @@ export interface StrategySearchResult {
   fellBack: boolean;
   /** Strategy that produced the results */
   strategy: SearchStrategyHint;
+  /** Search method used when falling back (e.g., 'fts5-fallback') */
+  searchMethod?: 'chroma' | 'fts5' | 'fts5-fallback' | 'filter-only';
 }
 
 /**

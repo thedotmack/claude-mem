@@ -94,29 +94,28 @@ export class SearchOrchestrator {
 
       // If Chroma succeeded (even with 0 results), return
       if (result.usedChroma) {
-        return result;
+        return { ...result, searchMethod: 'chroma' };
       }
 
-      // Chroma failed - fall back to SQLite for filter-only
-      logger.debug('SEARCH', 'Orchestrator: Chroma failed, falling back to SQLite', {});
-      const fallbackResult = await this.sqliteStrategy.search({
-        ...options,
-        query: undefined // Remove query for SQLite fallback
-      });
+      // Chroma failed - fall back to FTS5 text search (keeps query text)
+      logger.warn('SEARCH', 'Orchestrator: Chroma failed, falling back to FTS5', {});
+      const fallbackResult = await this.sqliteStrategy.search(options);
 
       return {
         ...fallbackResult,
-        fellBack: true
+        fellBack: true,
+        searchMethod: 'fts5-fallback'
       };
     }
 
-    // PATH 3: No Chroma available
-    logger.debug('SEARCH', 'Orchestrator: Chroma not available', {});
+    // PATH 3: No Chroma available - use FTS5 text search as fallback
+    logger.warn('SEARCH', 'Orchestrator: Chroma not available, using FTS5 fallback', {});
+    const fts5Result = await this.sqliteStrategy.search(options);
+
     return {
-      results: { observations: [], sessions: [], prompts: [] },
-      usedChroma: false,
-      fellBack: false,
-      strategy: 'sqlite'
+      ...fts5Result,
+      fellBack: true,
+      searchMethod: 'fts5-fallback'
     };
   }
 

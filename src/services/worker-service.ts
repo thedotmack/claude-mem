@@ -67,7 +67,9 @@ import {
   getPlatformTimeout,
   cleanupOrphanedProcesses,
   spawnDaemon,
-  createSignalHandler
+  createSignalHandler,
+  startPeriodicReaper,
+  stopPeriodicReaper
 } from './infrastructure/ProcessManager.js';
 import {
   isPortInUse,
@@ -316,6 +318,9 @@ export class WorkerService {
   private async initializeBackground(): Promise<void> {
     try {
       await cleanupOrphanedProcesses();
+
+      // Start periodic reaper to catch leaked SDK subagent processes (#1010)
+      startPeriodicReaper();
 
       // Load mode configuration
       const { ModeManager } = await import('./domain/ModeManager.js');
@@ -703,6 +708,9 @@ export class WorkerService {
       this.stopOrphanReaper();
       this.stopOrphanReaper = null;
     }
+
+    // Stop periodic process reaper (#1010)
+    stopPeriodicReaper();
 
     await performGracefulShutdown({
       server: this.server.getHttpServer(),

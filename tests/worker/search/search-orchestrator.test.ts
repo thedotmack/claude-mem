@@ -313,14 +313,20 @@ describe('SearchOrchestrator', () => {
     });
 
     describe('search', () => {
-      it('should return empty results for query search without Chroma', async () => {
+      it('should fall back to FTS5 for query search without Chroma', async () => {
         const result = await orchestrator.search({
           query: 'semantic query'
         });
 
-        // No Chroma available, can't do semantic search
-        expect(result.results.observations).toHaveLength(0);
+        // No Chroma available - falls back to FTS5 text search
         expect(result.usedChroma).toBe(false);
+        expect(result.fellBack).toBe(true);
+        expect(result.searchMethod).toBe('fts5-fallback');
+        // FTS5 fallback should return results (SessionSearch called with query text)
+        expect(mockSessionSearch.searchObservations).toHaveBeenCalledWith(
+          'semantic query',
+          expect.any(Object)
+        );
       });
 
       it('should still work for filter-only queries', async () => {

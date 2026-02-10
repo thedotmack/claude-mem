@@ -45,6 +45,19 @@ const ESSENTIAL_SYSTEM_VARS = [
   // Claude Code specific (not credentials)
   'CLAUDE_CONFIG_DIR',
   'CLAUDE_CODE_DEBUG_LOGS_DIR',
+  // LLM gateway / proxy support (Issue #690)
+  // These allow users with LiteLLM or similar proxies to route API calls correctly.
+  // They are infrastructure config (endpoints), safe to pass through.
+  'ANTHROPIC_BASE_URL',
+  'ANTHROPIC_AUTH_TOKEN',
+  'ANTHROPIC_BEDROCK_BASE_URL',
+  'ANTHROPIC_VERTEX_BASE_URL',
+  'ANTHROPIC_VERTEX_PROJECT_ID',
+  'CLAUDE_CODE_SKIP_BEDROCK_AUTH',
+  'CLAUDE_CODE_SKIP_VERTEX_AUTH',
+  'CLAUDE_CODE_USE_BEDROCK',
+  'CLAUDE_CODE_USE_VERTEX',
+  'CLOUD_ML_REGION',
 ];
 
 // Credential keys that claude-mem manages

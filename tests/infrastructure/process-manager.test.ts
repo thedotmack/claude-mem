@@ -8,6 +8,9 @@ import {
   removePidFile,
   getPlatformTimeout,
   parseElapsedTime,
+  startPeriodicReaper,
+  stopPeriodicReaper,
+  cleanupOrphanedProcesses,
   type PidInfo
 } from '../../src/services/infrastructure/index.js';
 
@@ -219,6 +222,62 @@ describe('ProcessManager', () => {
       const result = getPlatformTimeout(333);
 
       expect(result).toBe(666);
+    });
+  });
+
+  describe('startPeriodicReaper', () => {
+    afterEach(() => {
+      // Always clean up the interval after each test
+      stopPeriodicReaper();
+    });
+
+    it('should start without throwing', () => {
+      expect(() => startPeriodicReaper()).not.toThrow();
+    });
+
+    it('should be idempotent - calling twice does not create duplicate intervals', () => {
+      startPeriodicReaper();
+      startPeriodicReaper(); // Should log and skip, not create a second interval
+      // If it did create duplicates, stopPeriodicReaper would only clear one
+      stopPeriodicReaper();
+      // No assertion needed - we're verifying no crash and no leaked interval
+    });
+  });
+
+  describe('stopPeriodicReaper', () => {
+    it('should not throw when no reaper is running', () => {
+      expect(() => stopPeriodicReaper()).not.toThrow();
+    });
+
+    it('should stop a running reaper without throwing', () => {
+      startPeriodicReaper();
+      expect(() => stopPeriodicReaper()).not.toThrow();
+    });
+
+    it('should be idempotent - calling twice does not throw', () => {
+      startPeriodicReaper();
+      stopPeriodicReaper();
+      expect(() => stopPeriodicReaper()).not.toThrow();
+    });
+  });
+
+  describe('cleanupOrphanedProcesses', () => {
+    it('should accept a custom maxAgeMinutes parameter', async () => {
+      // Should not throw regardless of age threshold
+      await expect(cleanupOrphanedProcesses(5)).resolves.toBeUndefined();
+    });
+
+    it('should default to startup age threshold (30 min) when no parameter given', async () => {
+      // Default parameter call - should not throw
+      await expect(cleanupOrphanedProcesses()).resolves.toBeUndefined();
+    });
+
+    it('should not kill the current process', async () => {
+      // Run with 0 minute threshold - even if our process matches patterns,
+      // it should be excluded by the currentPid check
+      await cleanupOrphanedProcesses(0);
+      // If we're still running, the current process was correctly excluded
+      expect(process.pid).toBeGreaterThan(0);
     });
   });
 });

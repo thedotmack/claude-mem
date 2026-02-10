@@ -7,6 +7,9 @@
  *
  * Fixes Issue #842: Orphan reaper starts but never reaps because
  * sessions stay in the active sessions map forever.
+ *
+ * Issue #987: Omit `continue` field from Stop hook responses to prevent
+ * Claude Code from interpreting it as "continue the conversation."
  */
 
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
@@ -23,7 +26,7 @@ export const sessionCompleteHandler: EventHandler = {
 
     if (!sessionId) {
       logger.warn('HOOK', 'session-complete: Missing sessionId, skipping');
-      return { continue: true, suppressOutput: true };
+      return { suppressOutput: true };
     }
 
     logger.info('HOOK', '→ session-complete: Removing session from active map', {
@@ -57,6 +60,6 @@ export const sessionCompleteHandler: EventHandler = {
       });
     }
 
-    return { continue: true, suppressOutput: true };
+    return { suppressOutput: true };
   }
 };

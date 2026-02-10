@@ -25,13 +25,22 @@ const PID_FILE = path.join(DATA_DIR, 'worker.pid');
 // Orphaned process cleanup patterns and thresholds
 // These are claude-mem processes that can accumulate if not properly terminated
 const ORPHAN_PROCESS_PATTERNS = [
-  'mcp-server.cjs',    // Main MCP server process
-  'worker-service.cjs', // Background worker daemon
-  'chroma-mcp'          // ChromaDB MCP subprocess
+  'mcp-server.cjs',                  // Main MCP server process
+  'worker-service.cjs',              // Background worker daemon
+  'chroma-mcp',                      // ChromaDB MCP subprocess
+  'claude --output-format stream-json', // SDK subagent processes (#1010)
+  'claude-mem'                       // Any claude-mem spawned subprocess
 ];
 
-// Only kill processes older than this to avoid killing the current session
-const ORPHAN_MAX_AGE_MINUTES = 30;
+// Startup reaper: conservative age to avoid false positives on slow boots
+const ORPHAN_MAX_AGE_MINUTES_STARTUP = 30;
+// Periodic reaper: more aggressive since we know the worker is healthy
+const ORPHAN_MAX_AGE_MINUTES_PERIODIC = 10;
+// Run periodic reaper every 5 minutes during worker lifetime
+const PERIODIC_REAPER_INTERVAL_MS = 5 * 60 * 1000;
+
+// Module-level interval handle for the periodic reaper
+let periodicReaperInterval: ReturnType<typeof setInterval> | null = null;
 
 export interface PidInfo {
   pid: number;
@@ -102,7 +111,7 @@ export async function getChildProcesses(parentPid: number): Promise<number[]> {
   try {
     // PowerShell Get-Process instead of WMIC (deprecated in Windows 11)
     const cmd = `powershell -NoProfile -NonInteractive -Command "Get-Process | Where-Object { \\$_.ParentProcessId -eq ${parentPid} } | Select-Object -ExpandProperty Id"`;
-    const { stdout } = await execAsync(cmd, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND });
+    const { stdout } = await execAsync(cmd, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND, windowsHide: true });
     // PowerShell outputs just numbers (one per line), simpler than WMIC's "ProcessId=1234" format
     return stdout
       .split('\n')
@@ -132,7 +141,7 @@ export async function forceKillProcess(pid: number): Promise<void> {
   try {
     if (process.platform === 'win32') {
       // /T kills entire process tree, /F forces termination
-      await execAsync(`taskkill /PID ${pid} /T /F`, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND });
+      await execAsync(`taskkill /PID ${pid} /T /F`, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND, windowsHide: true });
     } else {
       process.kill(pid, 'SIGKILL');
     }
@@ -210,14 +219,17 @@ export function parseElapsedTime(etime: string): number {
 /**
  * Clean up orphaned claude-mem processes from previous worker sessions
  *
- * Targets mcp-server.cjs, worker-service.cjs, and chroma-mcp processes
- * that survived a previous daemon crash. Only kills processes older than
- * ORPHAN_MAX_AGE_MINUTES to avoid killing the current session.
+ * Targets claude-mem processes (MCP server, worker daemon, ChromaDB, SDK subagents)
+ * that survived a previous daemon crash or were never properly terminated.
+ * Only kills processes older than maxAgeMinutes to avoid killing the current session.
  *
- * The periodic ProcessRegistry reaper handles in-session orphans;
- * this function handles cross-session orphans at startup.
+ * Called at startup with conservative age threshold (30 min) and periodically
+ * during worker lifetime with aggressive threshold (10 min) to catch leaked
+ * SDK subagent processes (#1010, #1039, #1040).
  */
-export async function cleanupOrphanedProcesses(): Promise<void> {
+export async function cleanupOrphanedProcesses(
+  maxAgeMinutes: number = ORPHAN_MAX_AGE_MINUTES_STARTUP
+): Promise<void> {
   const isWindows = process.platform === 'win32';
   const currentPid = process.pid;
   const pidsToKill: number[] = [];
@@ -229,19 +241,25 @@ export async function cleanupOrphanedProcesses(): Promise<void> {
         .map(p => `\\$_.CommandLine -like '*${p}*'`)
         .join(' -or ');
 
-      const cmd = `powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process | Where-Object { (${patternConditions}) -and \\$_.ProcessId -ne ${currentPid} } | Select-Object ProcessId, CreationDate | ConvertTo-Json"`;
-      const { stdout } = await execAsync(cmd, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND });
+      const cmd = `powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process | Where-Object { (${patternConditions}) -and \\$_.ProcessId -ne ${currentPid} } | Select-Object ProcessId, CreationDate, CommandLine | ConvertTo-Json"`;
+      const { stdout } = await execAsync(cmd, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND, windowsHide: true });
 
       if (!stdout.trim() || stdout.trim() === 'null') {
         logger.debug('SYSTEM', 'No orphaned claude-mem processes found (Windows)');
         return;
       }
 
-      const processes = JSON.parse(stdout);
+      let processes: unknown;
+      try {
+        processes = JSON.parse(stdout);
+      } catch (parseError) {
+        logger.warn('SYSTEM', 'Failed to parse PowerShell process output', { stdoutLength: stdout.length }, parseError as Error);
+        return;
+      }
       const processList = Array.isArray(processes) ? processes : [processes];
       const now = Date.now();
 
-      for (const proc of processList) {
+      for (const proc of processList as Array<{ ProcessId: number; CreationDate?: string; CommandLine?: string }>) {
         const pid = proc.ProcessId;
         // SECURITY: Validate PID is positive integer and not current process
         if (!Number.isInteger(pid) || pid <= 0 || pid === currentPid) continue;
@@ -252,9 +270,13 @@ export async function cleanupOrphanedProcesses(): Promise<void> {
           const creationTime = parseInt(creationMatch[1], 10);
           const ageMinutes = (now - creationTime) / (1000 * 60);
 
-          if (ageMinutes >= ORPHAN_MAX_AGE_MINUTES) {
+          if (ageMinutes >= maxAgeMinutes) {
             pidsToKill.push(pid);
-            logger.debug('SYSTEM', 'Found orphaned process', { pid, ageMinutes: Math.round(ageMinutes) });
+            logger.debug('SYSTEM', 'Found orphaned process', {
+              pid,
+              ageMinutes: Math.round(ageMinutes),
+              command: proc.CommandLine?.substring(0, 80)
+            });
           }
         }
       }
@@ -283,7 +305,7 @@ export async function cleanupOrphanedProcesses(): Promise<void> {
         if (!Number.isInteger(pid) || pid <= 0 || pid === currentPid) continue;
 
         const ageMinutes = parseElapsedTime(etime);
-        if (ageMinutes >= ORPHAN_MAX_AGE_MINUTES) {
+        if (ageMinutes >= maxAgeMinutes) {
           pidsToKill.push(pid);
           logger.debug('SYSTEM', 'Found orphaned process', { pid, ageMinutes, command: match[3].substring(0, 80) });
         }
@@ -303,7 +325,7 @@ export async function cleanupOrphanedProcesses(): Promise<void> {
     platform: isWindows ? 'Windows' : 'Unix',
     count: pidsToKill.length,
     pids: pidsToKill,
-    maxAgeMinutes: ORPHAN_MAX_AGE_MINUTES
+    maxAgeMinutes
   });
 
   // Kill all found processes
@@ -315,7 +337,7 @@ export async function cleanupOrphanedProcesses(): Promise<void> {
         continue;
       }
       try {
-        execSync(`taskkill /PID ${pid} /T /F`, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND, stdio: 'ignore' });
+        execSync(`taskkill /PID ${pid} /T /F`, { timeout: HOOK_TIMEOUTS.POWERSHELL_COMMAND, stdio: 'ignore', windowsHide: true });
       } catch (error) {
         // [ANTI-PATTERN IGNORED]: Cleanup loop - process may have exited, continue to next PID
         logger.debug('SYSTEM', 'Failed to kill process, may have already exited', { pid }, error as Error);
@@ -333,6 +355,48 @@ export async function cleanupOrphanedProcesses(): Promise<void> {
   }
 
   logger.info('SYSTEM', 'Orphaned processes cleaned up', { count: pidsToKill.length });
+}
+
+/**
+ * Start the periodic orphan reaper that runs every 5 minutes during worker lifetime.
+ * Uses a more aggressive age threshold (10 min) than startup (30 min) since we know
+ * the worker is healthy and can confidently identify leaked SDK subagent processes.
+ */
+export function startPeriodicReaper(): void {
+  if (periodicReaperInterval !== null) {
+    logger.debug('SYSTEM', 'Periodic reaper already running, skipping start');
+    return;
+  }
+
+  periodicReaperInterval = setInterval(async () => {
+    try {
+      await cleanupOrphanedProcesses(ORPHAN_MAX_AGE_MINUTES_PERIODIC);
+    } catch (error) {
+      // Periodic reaper errors are non-critical - log and continue
+      logger.error('SYSTEM', 'Periodic orphan reaper failed', {}, error as Error);
+    }
+  }, PERIODIC_REAPER_INTERVAL_MS);
+
+  // Don't prevent Node from exiting when the interval is the only thing keeping it alive
+  if (periodicReaperInterval.unref) {
+    periodicReaperInterval.unref();
+  }
+
+  logger.info('SYSTEM', 'Periodic orphan reaper started', {
+    intervalMinutes: PERIODIC_REAPER_INTERVAL_MS / (60 * 1000),
+    maxAgeMinutes: ORPHAN_MAX_AGE_MINUTES_PERIODIC
+  });
+}
+
+/**
+ * Stop the periodic orphan reaper. Called during graceful shutdown.
+ */
+export function stopPeriodicReaper(): void {
+  if (periodicReaperInterval !== null) {
+    clearInterval(periodicReaperInterval);
+    periodicReaperInterval = null;
+    logger.info('SYSTEM', 'Periodic orphan reaper stopped');
+  }
 }
 
 /**

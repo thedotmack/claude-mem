@@ -58,10 +58,14 @@ export class SQLiteSearchStrategy extends BaseSearchStrategy implements SearchSt
 
     const baseOptions = { limit, offset, orderBy, project, dateRange };
 
-    logger.debug('SEARCH', 'SQLiteSearchStrategy: Filter-only query', {
+    const { query } = options;
+    const usingFTS5 = !!query;
+
+    logger.debug('SEARCH', `SQLiteSearchStrategy: ${usingFTS5 ? 'FTS5 text' : 'Filter-only'} query`, {
       searchType,
       hasDateRange: !!dateRange,
-      hasProject: !!project
+      hasProject: !!project,
+      hasQuery: usingFTS5
     });
 
     try {
@@ -72,15 +76,15 @@ export class SQLiteSearchStrategy extends BaseSearchStrategy implements SearchSt
           concepts,
           files
         };
-        observations = this.sessionSearch.searchObservations(undefined, obsOptions);
+        observations = this.sessionSearch.searchObservations(query, obsOptions);
       }
 
       if (searchSessions) {
-        sessions = this.sessionSearch.searchSessions(undefined, baseOptions);
+        sessions = this.sessionSearch.searchSessions(query, baseOptions);
       }
 
       if (searchPrompts) {
-        prompts = this.sessionSearch.searchUserPrompts(undefined, baseOptions);
+        prompts = this.sessionSearch.searchUserPrompts(query, baseOptions);
       }
 
       logger.debug('SEARCH', 'SQLiteSearchStrategy: Results', {
@@ -93,7 +97,8 @@ export class SQLiteSearchStrategy extends BaseSearchStrategy implements SearchSt
         results: { observations, sessions, prompts },
         usedChroma: false,
         fellBack: false,
-        strategy: 'sqlite'
+        strategy: 'sqlite',
+        searchMethod: usingFTS5 ? 'fts5' : 'filter-only'
       };
 
     } catch (error) {

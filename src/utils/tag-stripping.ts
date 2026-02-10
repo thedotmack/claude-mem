@@ -71,3 +71,38 @@ export function stripMemoryTagsFromJson(content: string): string {
 export function stripMemoryTagsFromPrompt(content: string): string {
   return stripTagsInternal(content);
 }
+
+/**
+ * Internal agent output markers that should never appear in user-facing output.
+ * These are headers and prompts used by the memory agent's internal processing.
+ * If they leak into context injection or hook output, they confuse users (#784).
+ */
+const INTERNAL_AGENT_MARKERS = [
+  /MEMORY PROCESSING START\n?=+/g,
+  /MEMORY PROCESSING CONTINUED\n?=+/g,
+  /PROGRESS SUMMARY CHECKPOINT\n?=+/g,
+  /Hello memory agent, you are continuing to observe the primary Claude session\./g,
+  /IMPORTANT: Continue generating observations from tool use messages using the XML structure below\./g,
+  /You are a Claude-Mem, a specialized observer tool[\s\S]*?(?=\n\n|\n[A-Z]|$)/g,
+  /No observation to record at this time\.?/g,
+  /<observation>[\s\S]*?<\/observation>/g,
+  /<summary>[\s\S]*?<\/summary>/g,
+];
+
+/**
+ * Strip internal memory agent markers from output text.
+ * Prevents agent system prompts, processing headers, and raw XML responses
+ * from leaking into user-visible hook output (fixes #784).
+ *
+ * @param content - Text that may contain internal agent output
+ * @returns Cleaned text with internal markers removed
+ */
+export function stripInternalAgentMarkers(content: string): string {
+  let cleaned = content;
+  for (const pattern of INTERNAL_AGENT_MARKERS) {
+    cleaned = cleaned.replace(pattern, '');
+  }
+  // Collapse multiple blank lines left by removals
+  cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
+  return cleaned.trim();
+}

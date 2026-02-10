@@ -92,15 +92,34 @@ export async function processAgentResponse(
 
   // ATOMIC TRANSACTION: Store observations + summary ONCE
   // Messages are already deleted from queue on claim, so no completion tracking needed
-  const result = sessionStore.storeObservations(
-    session.memorySessionId,
-    session.project,
-    observations,
-    summaryForStore,
-    session.lastPromptNumber,
-    discoveryTokens,
-    originalTimestamp ?? undefined
-  );
+  // Wrap in try/catch to prevent malformed LLM responses (especially Gemini) from
+  // corrupting the database or crashing the worker (Issue #855)
+  let result;
+  try {
+    result = sessionStore.storeObservations(
+      session.memorySessionId,
+      session.project,
+      observations,
+      summaryForStore,
+      session.lastPromptNumber,
+      discoveryTokens,
+      originalTimestamp ?? undefined
+    );
+  } catch (error) {
+    logger.error('DB', `${agentName} storage transaction failed - skipping this response to protect database integrity`, {
+      sessionId: session.sessionDbId,
+      memorySessionId: session.memorySessionId,
+      obsCount: observations.length,
+      hasSummary: !!summaryForStore
+    }, error as Error);
+    // Confirm processing messages so the queue doesn't retry endlessly
+    const pendingStore = sessionManager.getPendingMessageStore();
+    for (const messageId of session.processingMessageIds) {
+      pendingStore.confirmProcessed(messageId);
+    }
+    session.processingMessageIds = [];
+    return;
+  }
 
   // Log storage result with IDs for end-to-end traceability
   logger.info('DB', `STORED | sessionDbId=${session.sessionDbId} | memorySessionId=${session.memorySessionId} | obsCount=${result.observationIds.length} | obsIds=[${result.observationIds.join(',')}] | summaryId=${result.summaryId || 'none'}`, {

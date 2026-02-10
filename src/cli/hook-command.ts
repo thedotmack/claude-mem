@@ -26,12 +26,14 @@ export async function hookCommand(platform: string, event: string, options: Hook
     }
     return exitCode;
   } catch (error) {
-    console.error(`Hook error: ${error}`);
-    // Use exit code 2 (blocking error) so users see the error message
-    // Exit code 1 only shows in verbose mode per Claude Code docs
+    // Exit code 0 to prevent Windows Terminal tab accumulation and avoid
+    // showing confusing "hook error" messages to users (Issue #897).
+    // Hook/worker errors are non-fatal - claude-mem failing should never
+    // block the user's Claude Code session.
+    console.error(`Hook error (non-blocking): ${error}`);
     if (!options.skipExit) {
-      process.exit(HOOK_EXIT_CODES.BLOCKING_ERROR);  // = 2
+      process.exit(HOOK_EXIT_CODES.SUCCESS);
     }
-    return HOOK_EXIT_CODES.BLOCKING_ERROR;
+    return HOOK_EXIT_CODES.SUCCESS;
   }
 }

@@ -80,7 +80,8 @@ function getTrackedFolders(workingDir: string): Set<string> {
     const output = execSync('git ls-files', {
       cwd: workingDir,
       encoding: 'utf-8',
-      maxBuffer: 50 * 1024 * 1024
+      maxBuffer: 50 * 1024 * 1024,
+      windowsHide: true
     });
 
     const files = output.trim().split('\n').filter(f => f);

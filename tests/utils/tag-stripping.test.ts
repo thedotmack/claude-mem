@@ -10,7 +10,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
-import { stripMemoryTagsFromPrompt, stripMemoryTagsFromJson } from '../../src/utils/tag-stripping.js';
+import { stripMemoryTagsFromPrompt, stripMemoryTagsFromJson, stripInternalAgentMarkers } from '../../src/utils/tag-stripping.js';
 import { logger } from '../../src/utils/logger.js';
 
 // Suppress logger output during tests
@@ -253,6 +253,132 @@ finish`;
         const result = stripMemoryTagsFromJson(input);
         const parsed = JSON.parse(result);
         expect(parsed.outer.inner).toBe(' visible');
+      });
+    });
+  });
+
+  describe('stripInternalAgentMarkers', () => {
+    describe('agent prompt header removal', () => {
+      it('should strip MEMORY PROCESSING START header', () => {
+        const input = 'before\nMEMORY PROCESSING START\n=======================\nafter';
+        const result = stripInternalAgentMarkers(input);
+        expect(result).toBe('before\n\nafter');
+      });
+
+      it('should strip MEMORY PROCESSING CONTINUED header', () => {
+        const input = 'before\nMEMORY PROCESSING CONTINUED\n===========================\nafter';
+        const result = stripInternalAgentMarkers(input);
+        expect(result).toBe('before\n\nafter');
+      });
+
+      it('should strip PROGRESS SUMMARY CHECKPOINT header', () => {
+        const input = 'before\nPROGRESS SUMMARY CHECKPOINT\n===========================\nafter';
+        const result = stripInternalAgentMarkers(input);
+        expect(result).toBe('before\n\nafter');
+      });
+    });
+
+    describe('agent system prompt removal', () => {
+      it('should strip memory agent greeting', () => {
+        const input = 'context\nHello memory agent, you are continuing to observe the primary Claude session.\nmore context';
+        const result = stripInternalAgentMarkers(input);
+        expect(result).toBe('context\n\nmore context');
+      });
+
+      it('should strip continuation instruction', () => {
+        const input = 'IMPORTANT: Continue generating observations from tool use messages using the XML structure below.\nreal content';
+        const result = stripInternalAgentMarkers(input);
+        expect(result).toBe('real content');
+      });
+
+      it('should strip agent self-description', () => {
+        const input = 'You are a Claude-Mem, a specialized observer tool that records observations.\n\nActual context data';
+        const result = stripInternalAgentMarkers(input);
+        expect(result).toBe('Actual context data');
+      });
+    });
+
+    describe('agent response removal', () => {
+      it('should strip "No observation to record" responses', () => {
+        const input = 'context data\nNo observation to record at this time.\nmore data';
+        const result = stripInternalAgentMarkers(input);
+        expect(result).toBe('context data\n\nmore data');
+      });
+
+      it('should strip "No observation to record" without period', () => {
+        const input = 'No observation to record at this time';
+        const result = stripInternalAgentMarkers(input);
+        expect(result).toBe('');
+      });
+    });
+
+    describe('raw XML tag removal', () => {
+      it('should strip raw <observation> XML blocks', () => {
+        const input = 'context\n<observation>\n<type>change</type>\n<title>Test</title>\n</observation>\nmore';
+        const result = stripInternalAgentMarkers(input);
+        expect(result).toBe('context\n\nmore');
+      });
+
+      it('should strip raw <summary> XML blocks', () => {
+        const input = 'context\n<summary>\n<request>test</request>\n</summary>\nmore';
+        const result = stripInternalAgentMarkers(input);
+        expect(result).toBe('context\n\nmore');
+      });
+
+      it('should strip multiple XML blocks', () => {
+        const input = '<observation><type>a</type></observation>\n<observation><type>b</type></observation>';
+        const result = stripInternalAgentMarkers(input);
+        expect(result).toBe('');
+      });
+    });
+
+    describe('clean content passthrough', () => {
+      it('should pass through normal context without modification', () => {
+        const input = '# [project] recent context\n\n**#S123** Fix bug in auth module\n\n| ID | Time | Type |\n|--|--|--|\n| #100 | 10:00 PM | bugfix |';
+        const result = stripInternalAgentMarkers(input);
+        expect(result).toBe(input);
+      });
+
+      it('should handle empty string', () => {
+        expect(stripInternalAgentMarkers('')).toBe('');
+      });
+
+      it('should handle whitespace-only string', () => {
+        expect(stripInternalAgentMarkers('   \n\n  ')).toBe('');
+      });
+    });
+
+    describe('multiple marker combinations', () => {
+      it('should strip all markers from mixed content', () => {
+        const input = [
+          'MEMORY PROCESSING START',
+          '=======================',
+          'Hello memory agent, you are continuing to observe the primary Claude session.',
+          'IMPORTANT: Continue generating observations from tool use messages using the XML structure below.',
+          '<observation><type>change</type><title>Test</title></observation>',
+          'No observation to record at this time.',
+          'PROGRESS SUMMARY CHECKPOINT',
+          '===========================',
+          '<summary><request>test</request></summary>',
+        ].join('\n');
+        const result = stripInternalAgentMarkers(input);
+        expect(result).toBe('');
+      });
+
+      it('should preserve non-marker content among markers', () => {
+        const input = 'MEMORY PROCESSING START\n=======================\nReal observation: Fixed auth bug\nNo observation to record at this time.';
+        const result = stripInternalAgentMarkers(input);
+        expect(result).toBe('Real observation: Fixed auth bug');
+      });
+    });
+
+    describe('blank line collapse', () => {
+      it('should collapse excessive blank lines after removal', () => {
+        const input = 'before\n\n\nMEMORY PROCESSING START\n=======================\n\n\n\nafter';
+        const result = stripInternalAgentMarkers(input);
+        expect(result).not.toMatch(/\n{3,}/);
+        expect(result).toContain('before');
+        expect(result).toContain('after');
       });
     });
   });
