@@ -55,7 +55,6 @@ export function isWorkerUnavailableError(error: unknown): boolean {
   if (/failed:\s*4\d{2}/.test(message) || /status[:\s]+4\d{2}/.test(message)) return false;
 
   // Programming errors — code bugs, not worker unavailability
-  // Programming errors — code bugs, not worker unavailability
   // Note: TypeError('fetch failed') already handled by transport patterns above
   if (error instanceof TypeError || error instanceof ReferenceError || error instanceof SyntaxError) {
 
