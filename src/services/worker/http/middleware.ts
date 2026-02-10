@@ -105,6 +105,34 @@ export function requireLocalhost(req: Request, res: Response, next: NextFunction
 }
 
 /**
+ * Create an activity tracker for idle auto-shutdown.
+ * Returns middleware that updates a timestamp on substantive requests,
+ * plus getter/reset functions for the idle timer to query.
+ */
+export function createActivityTracker() {
+  let lastActivityAt = Date.now();
+
+  const middleware = (req: Request, _res: Response, next: NextFunction) => {
+    // Skip probes and static assets — these don't indicate real user/hook activity
+    if (req.path === '/api/health' || req.path === '/api/readiness') {
+      return next();
+    }
+    const staticExtensions = ['.html', '.js', '.css', '.svg', '.png', '.jpg', '.jpeg', '.webp', '.woff', '.woff2', '.ttf', '.eot'];
+    if (staticExtensions.some(ext => req.path.endsWith(ext)) || req.path === '/') {
+      return next();
+    }
+    lastActivityAt = Date.now();
+    next();
+  };
+
+  return {
+    middleware: middleware as RequestHandler,
+    getLastActivityAt: () => lastActivityAt,
+    resetActivity: () => { lastActivityAt = Date.now(); },
+  };
+}
+
+/**
  * Summarize request body for logging
  * Used to avoid logging sensitive data or large payloads
  */

@@ -80,6 +80,7 @@ import { performGracefulShutdown } from './infrastructure/GracefulShutdown.js';
 
 // Server imports
 import { Server } from './server/Server.js';
+import { createActivityTracker } from './worker/http/middleware.js';
 
 // Integration imports
 import {
@@ -168,6 +169,10 @@ export class WorkerService {
   // Orphan reaper cleanup function (Issue #737)
   private stopOrphanReaper: (() => void) | null = null;
 
+  // Idle auto-shutdown
+  private idleCheckInterval: ReturnType<typeof setInterval> | null = null;
+  private activityTracker = createActivityTracker();
+
   constructor() {
     // Initialize the promise that will resolve when background initialization completes
     this.initializationComplete = new Promise((resolve) => {
@@ -206,6 +211,9 @@ export class WorkerService {
       onShutdown: () => this.shutdown(),
       onRestart: () => this.shutdown()
     });
+
+    // Register activity tracking middleware (before routes, for idle auto-shutdown)
+    this.server.app.use(this.activityTracker.middleware);
 
     // Register route handlers
     this.registerRoutes();
@@ -382,6 +390,10 @@ export class WorkerService {
         return activeIds;
       });
       logger.info('SYSTEM', 'Started orphan reaper (runs every 5 minutes)');
+
+      // Start idle auto-shutdown timer
+      const idleTimeout = parseInt(settings.CLAUDE_MEM_WORKER_IDLE_TIMEOUT, 10);
+      this.startIdleTimer(idleTimeout);
 
       // Auto-recover orphaned queues (fire-and-forget with error logging)
       this.processPendingQueues(50).then(result => {
@@ -698,6 +710,12 @@ export class WorkerService {
    * Shutdown the worker service
    */
   async shutdown(): Promise<void> {
+    // Stop idle check timer
+    if (this.idleCheckInterval) {
+      clearInterval(this.idleCheckInterval);
+      this.idleCheckInterval = null;
+    }
+
     // Stop orphan reaper before shutdown (Issue #737)
     if (this.stopOrphanReaper) {
       this.stopOrphanReaper();
@@ -710,6 +728,45 @@ export class WorkerService {
       mcpClient: this.mcpClient,
       dbManager: this.dbManager
     });
+  }
+
+  /**
+   * Start the idle auto-shutdown timer.
+   * Checks every minute whether the worker has been idle longer than the configured timeout.
+   * If idle and safety checks pass (no processing, no SSE clients), shuts down gracefully.
+   */
+  private startIdleTimer(timeoutMinutes: number): void {
+    if (isNaN(timeoutMinutes) || timeoutMinutes <= 0) {
+      logger.info('SYSTEM', 'Idle auto-shutdown disabled (timeout=0)');
+      return;
+    }
+
+    const timeoutMs = timeoutMinutes * 60 * 1000;
+    const checkIntervalMs = 60_000; // Check every 1 minute
+
+    this.idleCheckInterval = setInterval(() => {
+      const idleMs = Date.now() - this.activityTracker.getLastActivityAt();
+      if (idleMs < timeoutMs) return;
+
+      // Safety checks — if any fail, reset the timer and try again later
+      if (this.isShuttingDown) return;
+      if (!this.initializationCompleteFlag) return;
+      if (this.sessionManager.isAnySessionProcessing()) {
+        this.activityTracker.resetActivity();
+        return;
+      }
+      if (this.sseBroadcaster.getClientCount() > 0) {
+        this.activityTracker.resetActivity();
+        return;
+      }
+
+      logger.info('SYSTEM', `Idle auto-shutdown triggered (idle for ${timeoutMinutes}m)`);
+      this.shutdown().then(() => {
+        process.exit(0);
+      });
+    }, checkIntervalMs);
+
+    logger.info('SYSTEM', `Idle auto-shutdown enabled (timeout=${timeoutMinutes}m)`);
   }
 
   /**
