@@ -85,6 +85,182 @@ The plugin runs a background service that connects to the worker's SSE stream (`
 
 The SSE connection uses exponential backoff (1s → 30s) for automatic reconnection.
 
+## Setting Up the Observation Feed
+
+The observation feed sends a formatted message to your OpenClaw channel every time claude-mem creates a new observation. Each message includes the observation title and subtitle so you can follow along as your agents work.
+
+Messages look like this in your channel:
+
+```
+🧠 Claude-Mem Observation
+**Implemented retry logic for API client**
+Added exponential backoff with configurable max retries to handle transient failures
+```
+
+### Step 1: Choose your channel
+
+The observation feed works with any channel that your OpenClaw gateway has configured. You need two pieces of information:
+
+- **Channel type** — The name of the channel plugin registered with OpenClaw (e.g., `telegram`, `discord`, `slack`, `signal`, `whatsapp`, `line`)
+- **Target ID** — The chat ID, channel ID, or user ID where messages should be sent
+
+<AccordionGroup>
+  <Accordion title="Telegram" icon="telegram">
+    **Channel type:** `telegram`
+
+    **Target ID:** Your Telegram chat ID (numeric). To find it:
+    1. Message [@userinfobot](https://t.me/userinfobot) on Telegram
+    2. It will reply with your chat ID (e.g., `123456789`)
+    3. For group chats, the ID is negative (e.g., `-1001234567890`)
+
+    ```json
+    "observationFeed": {
+      "enabled": true,
+      "channel": "telegram",
+      "to": "123456789"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="Discord" icon="discord">
+    **Channel type:** `discord`
+
+    **Target ID:** The Discord channel ID. To find it:
+    1. Enable Developer Mode in Discord (Settings → Advanced → Developer Mode)
+    2. Right-click the channel → Copy Channel ID
+
+    ```json
+    "observationFeed": {
+      "enabled": true,
+      "channel": "discord",
+      "to": "1234567890123456789"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="Slack" icon="slack">
+    **Channel type:** `slack`
+
+    **Target ID:** The Slack channel ID (not the channel name). To find it:
+    1. Open the channel in Slack
+    2. Click the channel name at the top
+    3. Scroll to the bottom of the channel details — the ID looks like `C01ABC2DEFG`
+
+    ```json
+    "observationFeed": {
+      "enabled": true,
+      "channel": "slack",
+      "to": "C01ABC2DEFG"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="Signal" icon="signal-messenger">
+    **Channel type:** `signal`
+
+    **Target ID:** The Signal phone number or group ID configured in your OpenClaw gateway.
+
+    ```json
+    "observationFeed": {
+      "enabled": true,
+      "channel": "signal",
+      "to": "+1234567890"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="WhatsApp" icon="whatsapp">
+    **Channel type:** `whatsapp`
+
+    **Target ID:** The WhatsApp phone number or group JID configured in your OpenClaw gateway.
+
+    ```json
+    "observationFeed": {
+      "enabled": true,
+      "channel": "whatsapp",
+      "to": "+1234567890"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="LINE" icon="line">
+    **Channel type:** `line`
+
+    **Target ID:** The LINE user ID or group ID from the LINE Developer Console.
+
+    ```json
+    "observationFeed": {
+      "enabled": true,
+      "channel": "line",
+      "to": "U1234567890abcdef"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+### Step 2: Add the config to your gateway
+
+Add the `observationFeed` block to your claude-mem plugin config in your OpenClaw gateway configuration:
+
+```json
+{
+  "plugins": {
+    "claude-mem": {
+      "enabled": true,
+      "config": {
+        "project": "my-project",
+        "observationFeed": {
+          "enabled": true,
+          "channel": "telegram",
+          "to": "123456789"
+        }
+      }
+    }
+  }
+}
+```
+
+<Warning>
+The `channel` value must match a channel plugin that is already configured and running on your OpenClaw gateway. If the channel isn't registered, you'll see `Unknown channel type: <channel>` in the logs.
+</Warning>
+
+### Step 3: Verify the connection
+
+After starting the gateway, check that the feed is connected:
+
+1. **Check the logs** — You should see:
+   ```
+   [claude-mem] Observation feed starting — channel: telegram, target: 123456789
+   [claude-mem] Connecting to SSE stream at http://localhost:37777/stream
+   [claude-mem] Connected to SSE stream
+   ```
+
+2. **Use the status command** — Run `/claude-mem-feed` in any OpenClaw chat to see:
+   ```
+   Claude-Mem Observation Feed
+   Enabled: yes
+   Channel: telegram
+   Target: 123456789
+   Connection: connected
+   ```
+
+3. **Trigger a test** — Have an agent do some work. When the worker processes the tool usage into an observation, you'll receive a message in your configured channel.
+
+<Info>
+The feed only sends `new_observation` events — not raw tool usage. Observations are generated asynchronously by the worker's AI agent, so there's a 1-2 second delay between tool use and the observation message appearing in your channel.
+</Info>
+
+### Troubleshooting the Feed
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `Connection: disconnected` | Worker not running or wrong port | Check `workerPort` config, run `npm run worker:status` |
+| `Connection: reconnecting` | Worker was running but connection dropped | The plugin auto-reconnects with backoff — wait up to 30s |
+| `Unknown channel type` in logs | Channel plugin not loaded on gateway | Verify your OpenClaw gateway has the channel plugin configured |
+| No messages appearing | Feed connected but no observations being created | Check that agents are running and the worker is processing observations |
+| `Observation feed disabled` in logs | `enabled` is `false` or missing | Set `observationFeed.enabled` to `true` |
+| `Observation feed misconfigured` in logs | Missing `channel` or `to` | Both `channel` and `to` are required |
+
 ## Installation
 
 Add `claude-mem` to your OpenClaw gateway's plugin configuration:
