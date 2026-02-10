@@ -1,3 +1,6 @@
+import { writeFile } from "fs/promises";
+import { join } from "path";
+
 // Minimal type declarations for the OpenClaw Plugin SDK.
 // These match the real OpenClawPluginApi provided by the gateway at runtime.
 // See: https://docs.openclaw.ai/plugin
@@ -27,6 +30,34 @@ interface PluginCommandContext {
 
 type PluginCommandResult = string | { text: string } | { text: string; format?: string };
 
+// OpenClaw event types for agent lifecycle
+interface BeforeAgentStartEvent {
+  prompt?: string;
+}
+
+interface ToolResultPersistEvent {
+  toolName?: string;
+  params?: Record<string, unknown>;
+  message?: {
+    content?: Array<{ type: string; text?: string }>;
+  };
+}
+
+interface AgentEndEvent {
+  messages?: Array<{
+    role: string;
+    content: string | Array<{ type: string; text?: string }>;
+  }>;
+}
+
+interface EventContext {
+  sessionKey?: string;
+  workspaceDir?: string;
+  agentId?: string;
+}
+
+type EventCallback<T> = (event: T, ctx: EventContext) => void | Promise<void>;
+
 interface OpenClawPluginApi {
   id: string;
   name: string;
@@ -47,10 +78,18 @@ interface OpenClawPluginApi {
     requireAuth?: boolean;
     handler: (ctx: PluginCommandContext) => PluginCommandResult | Promise<PluginCommandResult>;
   }) => void;
+  on: ((event: "before_agent_start", callback: EventCallback<BeforeAgentStartEvent>) => void) &
+      ((event: "tool_result_persist", callback: EventCallback<ToolResultPersistEvent>) => void) &
+      ((event: "agent_end", callback: EventCallback<AgentEndEvent>) => void) &
+      ((event: "gateway_start", callback: EventCallback<Record<string, never>>) => void);
   runtime: {
     channel: Record<string, Record<string, (...args: any[]) => Promise<any>>>;
   };
 }
+
+// ============================================================================
+// SSE Observation Feed Types
+// ============================================================================
 
 interface ObservationSSEPayload {
   id: number;
@@ -78,7 +117,99 @@ interface SSENewObservationEvent {
 
 type ConnectionState = "disconnected" | "connected" | "reconnecting";
 
+// ============================================================================
+// Plugin Configuration
+// ============================================================================
+
+interface ClaudeMemPluginConfig {
+  syncMemoryFile?: boolean;
+  project?: string;
+  workerPort?: number;
+  observationFeed?: {
+    enabled?: boolean;
+    channel?: string;
+    to?: string;
+  };
+}
+
+// ============================================================================
+// Constants
+// ============================================================================
+
 const MAX_SSE_BUFFER_SIZE = 1024 * 1024; // 1MB
+const DEFAULT_WORKER_PORT = 37777;
+const TOOL_RESULT_MAX_LENGTH = 1000;
+
+// ============================================================================
+// Worker HTTP Client
+// ============================================================================
+
+function workerBaseUrl(port: number): string {
+  return `http://127.0.0.1:${port}`;
+}
+
+async function workerPost(
+  port: number,
+  path: string,
+  body: Record<string, unknown>,
+  logger: PluginLogger
+): Promise<Record<string, unknown> | null> {
+  try {
+    const response = await fetch(`${workerBaseUrl(port)}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      logger.warn(`[claude-mem] Worker POST ${path} returned ${response.status}`);
+      return null;
+    }
+    return (await response.json()) as Record<string, unknown>;
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.warn(`[claude-mem] Worker POST ${path} failed: ${message}`);
+    return null;
+  }
+}
+
+function workerPostFireAndForget(
+  port: number,
+  path: string,
+  body: Record<string, unknown>,
+  logger: PluginLogger
+): void {
+  fetch(`${workerBaseUrl(port)}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.warn(`[claude-mem] Worker POST ${path} failed: ${message}`);
+  });
+}
+
+async function workerGetText(
+  port: number,
+  path: string,
+  logger: PluginLogger
+): Promise<string | null> {
+  try {
+    const response = await fetch(`${workerBaseUrl(port)}${path}`);
+    if (!response.ok) {
+      logger.warn(`[claude-mem] Worker GET ${path} returned ${response.status}`);
+      return null;
+    }
+    return await response.text();
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.warn(`[claude-mem] Worker GET ${path} failed: ${message}`);
+    return null;
+  }
+}
+
+// ============================================================================
+// SSE Observation Feed
+// ============================================================================
 
 function formatObservationMessage(observation: ObservationSSEPayload): string {
   const title = observation.title || "Untitled";
@@ -205,7 +336,158 @@ async function connectToSSEStream(
   setConnectionState("disconnected");
 }
 
+// ============================================================================
+// Plugin Entry Point
+// ============================================================================
+
 export default function claudeMemPlugin(api: OpenClawPluginApi): void {
+  const userConfig = (api.pluginConfig || {}) as ClaudeMemPluginConfig;
+  const workerPort = userConfig.workerPort || DEFAULT_WORKER_PORT;
+  const projectName = userConfig.project || "openclaw";
+
+  // ------------------------------------------------------------------
+  // Session tracking for observation I/O
+  // ------------------------------------------------------------------
+  const sessionIds = new Map<string, string>();
+  const workspaceDirsBySessionKey = new Map<string, string>();
+  const syncMemoryFile = userConfig.syncMemoryFile !== false; // default true
+
+  function getContentSessionId(sessionKey?: string): string {
+    const key = sessionKey || "default";
+    if (!sessionIds.has(key)) {
+      sessionIds.set(key, `openclaw-${key}-${Date.now()}`);
+    }
+    return sessionIds.get(key)!;
+  }
+
+  async function syncMemoryToWorkspace(workspaceDir: string): Promise<void> {
+    const contextText = await workerGetText(
+      workerPort,
+      `/api/context/inject?projects=${encodeURIComponent(projectName)}`,
+      api.logger
+    );
+    if (contextText && contextText.trim().length > 0) {
+      try {
+        await writeFile(join(workspaceDir, "MEMORY.md"), contextText, "utf-8");
+        api.logger.info(`[claude-mem] MEMORY.md synced to ${workspaceDir}`);
+      } catch (writeError: unknown) {
+        const msg = writeError instanceof Error ? writeError.message : String(writeError);
+        api.logger.warn(`[claude-mem] Failed to write MEMORY.md: ${msg}`);
+      }
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Event: before_agent_start — init session + sync MEMORY.md
+  // ------------------------------------------------------------------
+  api.on("before_agent_start", async (event, ctx) => {
+    const contentSessionId = getContentSessionId(ctx.sessionKey);
+    const prompt = event.prompt || "";
+
+    // Track workspace dir so tool_result_persist can sync MEMORY.md later
+    if (ctx.workspaceDir) {
+      workspaceDirsBySessionKey.set(ctx.sessionKey || "default", ctx.workspaceDir);
+    }
+
+    // Sync MEMORY.md before session init (provides context to agent)
+    if (syncMemoryFile && ctx.workspaceDir) {
+      await syncMemoryToWorkspace(ctx.workspaceDir);
+    }
+
+    if (prompt.length < 10) return;
+
+    await workerPost(workerPort, "/api/sessions/init", {
+      contentSessionId,
+      project: projectName,
+      prompt,
+    }, api.logger);
+
+    api.logger.info(`[claude-mem] Session initialized: ${contentSessionId}`);
+  });
+
+  // ------------------------------------------------------------------
+  // Event: tool_result_persist — record tool observations + sync MEMORY.md
+  // ------------------------------------------------------------------
+  api.on("tool_result_persist", (event, ctx) => {
+    const toolName = event.toolName;
+    if (!toolName || toolName.startsWith("memory_")) return;
+
+    const contentSessionId = getContentSessionId(ctx.sessionKey);
+
+    // Extract result text from message content
+    let toolResponseText = "";
+    const content = event.message?.content;
+    if (Array.isArray(content)) {
+      const textBlock = content.find(
+        (block) => block.type === "tool_result" || block.type === "text"
+      );
+      if (textBlock && "text" in textBlock) {
+        toolResponseText = String(textBlock.text).slice(0, TOOL_RESULT_MAX_LENGTH);
+      }
+    }
+
+    // Fire-and-forget: send observation + sync MEMORY.md in parallel
+    workerPostFireAndForget(workerPort, "/api/sessions/observations", {
+      contentSessionId,
+      tool_name: toolName,
+      tool_input: event.params || {},
+      tool_response: toolResponseText,
+      cwd: "",
+    }, api.logger);
+
+    const workspaceDir = ctx.workspaceDir || workspaceDirsBySessionKey.get(ctx.sessionKey || "default");
+    if (syncMemoryFile && workspaceDir) {
+      syncMemoryToWorkspace(workspaceDir);
+    }
+  });
+
+  // ------------------------------------------------------------------
+  // Event: agent_end — summarize and complete session
+  // ------------------------------------------------------------------
+  api.on("agent_end", async (event, ctx) => {
+    const contentSessionId = getContentSessionId(ctx.sessionKey);
+
+    // Extract last assistant message for summarization
+    let lastAssistantMessage = "";
+    if (Array.isArray(event.messages)) {
+      for (let i = event.messages.length - 1; i >= 0; i--) {
+        const message = event.messages[i];
+        if (message?.role === "assistant") {
+          if (typeof message.content === "string") {
+            lastAssistantMessage = message.content;
+          } else if (Array.isArray(message.content)) {
+            lastAssistantMessage = message.content
+              .filter((block) => block.type === "text")
+              .map((block) => block.text || "")
+              .join("\n");
+          }
+          break;
+        }
+      }
+    }
+
+    workerPostFireAndForget(workerPort, "/api/sessions/summarize", {
+      contentSessionId,
+      last_assistant_message: lastAssistantMessage,
+    }, api.logger);
+
+    workerPostFireAndForget(workerPort, "/api/sessions/complete", {
+      contentSessionId,
+    }, api.logger);
+  });
+
+  // ------------------------------------------------------------------
+  // Event: gateway_start — clear session tracking for fresh start
+  // ------------------------------------------------------------------
+  api.on("gateway_start", async () => {
+    workspaceDirsBySessionKey.clear();
+    sessionIds.clear();
+    api.logger.info("[claude-mem] Gateway started — session tracking reset");
+  });
+
+  // ------------------------------------------------------------------
+  // Service: SSE observation feed → messaging channels
+  // ------------------------------------------------------------------
   let sseAbortController: AbortController | null = null;
   let connectionState: ConnectionState = "disconnected";
   let connectionPromise: Promise<void> | null = null;
@@ -213,7 +495,6 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   api.registerService({
     id: "claude-mem-observation-feed",
     start: async (_ctx) => {
-      // Abort any existing connection before starting a new one
       if (sseAbortController) {
         sseAbortController.abort();
         if (connectionPromise) {
@@ -222,11 +503,7 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
         }
       }
 
-      const config = api.pluginConfig || {};
-      const workerPort = (config.workerPort as number) || 37777;
-      const feedConfig = config.observationFeed as
-        | { enabled?: boolean; channel?: string; to?: string }
-        | undefined;
+      const feedConfig = userConfig.observationFeed;
 
       if (!feedConfig?.enabled) {
         api.logger.info("[claude-mem] Observation feed disabled");
@@ -264,15 +541,15 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     },
   });
 
+  // ------------------------------------------------------------------
+  // Command: /claude-mem-feed — status & toggle
+  // ------------------------------------------------------------------
   api.registerCommand({
     name: "claude-mem-feed",
     description: "Show or toggle Claude-Mem observation feed status",
     acceptsArgs: true,
     handler: async (ctx) => {
-      const config = api.pluginConfig || {};
-      const feedConfig = config.observationFeed as
-        | { enabled?: boolean; channel?: string; to?: string }
-        | undefined;
+      const feedConfig = userConfig.observationFeed;
 
       if (!feedConfig) {
         return "Observation feed not configured. Add observationFeed to your plugin config.";
@@ -300,5 +577,32 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     },
   });
 
-  api.logger.info("[claude-mem] OpenClaw plugin loaded — v1.0.0");
+  // ------------------------------------------------------------------
+  // Command: /claude-mem-status — worker health check
+  // ------------------------------------------------------------------
+  api.registerCommand({
+    name: "claude-mem-status",
+    description: "Check Claude-Mem worker health and session status",
+    handler: async () => {
+      const healthText = await workerGetText(workerPort, "/api/health", api.logger);
+      if (!healthText) {
+        return `Claude-Mem worker unreachable at port ${workerPort}`;
+      }
+
+      try {
+        const health = JSON.parse(healthText);
+        return [
+          "Claude-Mem Worker Status",
+          `Status: ${health.status || "unknown"}`,
+          `Port: ${workerPort}`,
+          `Active sessions: ${sessionIds.size}`,
+          `Observation feed: ${connectionState}`,
+        ].join("\n");
+      } catch {
+        return `Claude-Mem worker responded but returned unexpected data`;
+      }
+    },
+  });
+
+  api.logger.info(`[claude-mem] OpenClaw plugin loaded — v1.0.0 (worker: 127.0.0.1:${workerPort})`);
 }

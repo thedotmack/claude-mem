@@ -8,7 +8,8 @@
 import claudeMemPlugin from "./dist/index.js";
 
 let registeredService = null;
-let registeredCommand = null;
+const registeredCommands = new Map();
+const eventHandlers = new Map();
 const logs = [];
 
 const mockApi = {
@@ -28,7 +29,13 @@ const mockApi = {
     registeredService = service;
   },
   registerCommand: (command) => {
-    registeredCommand = command;
+    registeredCommands.set(command.name, command);
+  },
+  on: (event, callback) => {
+    if (!eventHandlers.has(event)) {
+      eventHandlers.set(event, []);
+    }
+    eventHandlers.get(event).push(callback);
   },
   runtime: {
     channel: {
@@ -45,7 +52,7 @@ const mockApi = {
 // Call the default export with mock API
 claudeMemPlugin(mockApi);
 
-// Verify service registration
+// Verify registration
 let failures = 0;
 
 if (!registeredService) {
@@ -60,16 +67,28 @@ if (!registeredService) {
   console.log("OK: Service registered with id 'claude-mem-observation-feed'");
 }
 
-if (!registeredCommand) {
-  console.error("FAIL: No command was registered");
-  failures++;
-} else if (registeredCommand.name !== "claude-mem-feed") {
-  console.error(
-    `FAIL: Command name is "${registeredCommand.name}", expected "claude-mem-feed"`
-  );
+if (!registeredCommands.has("claude-mem-feed")) {
+  console.error("FAIL: No 'claude-mem-feed' command registered");
   failures++;
 } else {
   console.log("OK: Command registered with name 'claude-mem-feed'");
+}
+
+if (!registeredCommands.has("claude-mem-status")) {
+  console.error("FAIL: No 'claude-mem-status' command registered");
+  failures++;
+} else {
+  console.log("OK: Command registered with name 'claude-mem-status'");
+}
+
+const expectedEvents = ["before_agent_start", "tool_result_persist", "agent_end", "gateway_start"];
+for (const event of expectedEvents) {
+  if (!eventHandlers.has(event) || eventHandlers.get(event).length === 0) {
+    console.error(`FAIL: No handler registered for '${event}'`);
+    failures++;
+  } else {
+    console.log(`OK: Event handler registered for '${event}'`);
+  }
 }
 
 if (!logs.some((l) => l.includes("plugin loaded"))) {
@@ -83,5 +102,5 @@ if (failures > 0) {
   console.error(`\nFAIL: ${failures} check(s) failed`);
   process.exit(1);
 } else {
-  console.log("\nPASS: Plugin registers service and command correctly");
+  console.log("\nPASS: Plugin registers service, commands, and event handlers correctly");
 }
