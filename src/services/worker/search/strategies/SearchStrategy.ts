@@ -51,7 +51,8 @@ export abstract class BaseSearchStrategy implements SearchStrategy {
       results: {
         observations: [],
         sessions: [],
-        prompts: []
+        prompts: [],
+        thoughts: []
       },
       usedChroma: strategy === 'chroma' || strategy === 'hybrid',
       fellBack: false,

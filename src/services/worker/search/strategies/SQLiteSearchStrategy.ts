@@ -90,7 +90,7 @@ export class SQLiteSearchStrategy extends BaseSearchStrategy implements SearchSt
       });
 
       return {
-        results: { observations, sessions, prompts },
+        results: { observations, sessions, prompts, thoughts: [] },
         usedChroma: false,
         fellBack: false,
         strategy: 'sqlite'
