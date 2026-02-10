@@ -1,4 +1,8 @@
-# Claude-Mem: AI Development Instructions
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Overview
 
 Claude-mem is a Claude Code plugin providing persistent memory across sessions. It captures tool usage, compresses observations using the Claude Agent SDK, and injects relevant context into future sessions.
 
@@ -6,17 +10,24 @@ Claude-mem is a Claude Code plugin providing persistent memory across sessions. 
 
 **5 Lifecycle Hooks**: SessionStart → UserPromptSubmit → PostToolUse → Summary → SessionEnd
 
-**Hooks** (`src/hooks/*.ts`) - TypeScript → ESM, built to `plugin/scripts/*-hook.js`
+**Worker Service** (`src/services/worker-service.ts`) - Express API on port 37777, Bun-managed slim orchestrator (~300 lines) delegating to specialized modules:
+- `src/services/server/` - HTTP server, middleware, error handling
+- `src/services/infrastructure/` - Process management, health monitoring, shutdown
+- `src/services/worker/` - Business logic (agents, routes, search, sessions)
 
-**Worker Service** (`src/services/worker-service.ts`) - Express API on port 37777, Bun-managed, handles AI processing asynchronously
+**Database** (`src/services/sqlite/`) - SQLite3 at `~/.claude-mem/claude-mem.db`, with FTS5 full-text search. Key stores: SessionStore, Observations, Summaries, PendingMessageStore
 
-**Database** (`src/services/sqlite/`) - SQLite3 at `~/.claude-mem/claude-mem.db`
-
-**Search Skill** (`plugin/skills/mem-search/SKILL.md`) - HTTP API for searching past work, auto-invoked when users ask about history
+**MCP Server** (`src/servers/mcp-server.ts`) - Search tools exposed via Model Context Protocol
 
 **Chroma** (`src/services/sync/ChromaSync.ts`) - Vector embeddings for semantic search
 
 **Viewer UI** (`src/ui/viewer/`) - React interface at http://localhost:37777, built to `plugin/ui/viewer.html`
+
+**Memory Services** (`src/services/memory/`) - P0-P2 features: MemoryFeedback, WorkingMemory, MemoryCube
+
+**Context Generator** (`src/services/context-generator.ts`) - Generates context for injection into sessions
+
+**Build Pipeline**: TypeScript sources in `src/` → esbuild bundles to `plugin/scripts/*.cjs` (CommonJS for Node/Bun compatibility)
 
 ## Privacy Tags
 - `<private>content</private>` - User-level privacy control (manual, prevents storage)
@@ -27,7 +38,41 @@ Claude-mem is a Claude Code plugin providing persistent memory across sessions. 
 
 ```bash
 npm run build-and-sync        # Build, sync to marketplace, restart worker
+npm run build                 # Build hooks/worker/MCP server only (no sync)
+npm run worker:restart        # Restart worker without rebuild
+npm run worker:logs           # View today's worker logs
+npm run worker:status         # Check worker process status
 ```
+
+## Testing
+
+```bash
+bun test                      # Run all tests
+bun test tests/sqlite/        # Run SQLite tests only
+bun test tests/worker/        # Run worker tests only
+bun test <path>               # Run specific test file
+```
+
+## Version Management
+
+Switch between stable and development versions to avoid instability during active development.
+
+```bash
+npm run version:status        # Show current branch, installed version, cached versions
+npm run version:stable        # Switch to main branch (stable)
+npm run version:dev           # Switch to dev branch (auto-stashes changes)
+```
+
+**Workflow**:
+- When your local version is stable, stay on that branch
+- Use `version:stable` to quickly rollback if updates cause issues
+- The script handles worker restart and git stash automatically
+
+**Local Settings Preservation**: `sync-marketplace` preserves these files during sync:
+- `/.mcp.json` - MCP server configuration
+- `/local/` - User customizations directory
+- `*.local.*` - Any file with .local. in name
+- `/.env.local` - Local environment variables
 
 ## Configuration
 
@@ -35,11 +80,13 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 
 ## File Locations
 
-- **Source**: `<project-root>/src/`
-- **Built Plugin**: `<project-root>/plugin/`
+- **Source**: `src/`
+- **Built Plugin**: `plugin/` (esbuild bundles TypeScript → CommonJS)
 - **Installed Plugin**: `~/.claude/plugins/marketplaces/thedotmack/`
 - **Database**: `~/.claude-mem/claude-mem.db`
 - **Chroma**: `~/.claude-mem/chroma/`
+- **Logs**: `~/.claude-mem/logs/worker-YYYY-MM-DD.log`
+- **Settings**: `~/.claude-mem/settings.json`
 
 ## Exit Code Strategy
 
@@ -55,9 +102,9 @@ See `private/context/claude-code/exit-codes.md` for full hook behavior matrix.
 
 ## Requirements
 
-- **Bun** (all platforms - auto-installed if missing)
-- **uv** (all platforms - auto-installed if missing, provides Python for Chroma)
-- Node.js
+- **Node.js** ≥18.0.0
+- **Bun** ≥1.0.0 (auto-installed if missing, runs worker service)
+- **uv** (auto-installed if missing, provides Python for Chroma vector search)
 
 ## Documentation
 
@@ -88,3 +135,37 @@ This architecture preserves the open-source nature of the project while enabling
 ## Important
 
 No need to edit the changelog ever, it's generated automatically.
+
+## AI Auto-Fix Boundaries (YOLO Push)
+
+Define the scope of what AI can autonomously fix in CI pipelines.
+
+### ✅ Allow List (Auto-fix permitted)
+
+These mechanical issues can be fixed automatically without human review:
+
+- **Linting**: ESLint errors and warnings
+- **Formatting**: Prettier formatting issues
+- **Types**: TypeScript type errors (missing types, type mismatches)
+- **Imports**: Unused imports, import ordering, missing imports for used symbols
+- **Spelling**: Variable/function name typos caught by cspell
+- **Dependencies**: Missing peer dependencies in package.json
+
+### ❌ Deny List (Human review required)
+
+These areas require human judgment and must NOT be auto-fixed:
+
+- **Security**: Any code in authentication, authorization, or credential handling
+- **Database**: `src/services/sqlite/` - Schema changes, migrations, query logic
+- **Hooks Core**: `src/hooks/*.ts` - Hook execution flow and lifecycle
+- **API Design**: New endpoints, breaking changes to existing APIs
+- **Architecture**: New abstractions, pattern changes, dependency additions
+- **Privacy**: `src/utils/tag-stripping.ts` - Privacy tag handling logic
+- **Business Logic**: Observation compression, scoring algorithms
+- **Configuration**: `settings.json` schema changes, default values
+
+### 🔄 Retry Policy
+
+- Maximum 2 auto-fix attempts per CI failure
+- Escalate to human review after max retries
+- Never auto-fix the same file more than once per PR

@@ -35,3 +35,8 @@ https*/
 
 # Ignore WebStorm project files (for dinosaur IDE users)
 .idea/
+
+# Additional test directories
+https*/Hex/
+Tok/
+integration_test/
