@@ -61,6 +61,12 @@ interface AfterCompactionEvent {
   compactedCount: number;
 }
 
+interface SessionEndEvent {
+  sessionId: string;
+  messageCount: number;
+  durationMs?: number;
+}
+
 interface EventContext {
   sessionKey?: string;
   workspaceDir?: string;
@@ -93,6 +99,7 @@ interface OpenClawPluginApi {
       ((event: "tool_result_persist", callback: EventCallback<ToolResultPersistEvent>) => void) &
       ((event: "agent_end", callback: EventCallback<AgentEndEvent>) => void) &
       ((event: "session_start", callback: EventCallback<SessionStartEvent>) => void) &
+      ((event: "session_end", callback: EventCallback<SessionEndEvent>) => void) &
       ((event: "after_compaction", callback: EventCallback<AfterCompactionEvent>) => void) &
       ((event: "gateway_start", callback: EventCallback<Record<string, never>>) => void);
   runtime: {
@@ -526,6 +533,15 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     workerPostFireAndForget(workerPort, "/api/sessions/complete", {
       contentSessionId,
     }, api.logger);
+  });
+
+  // ------------------------------------------------------------------
+  // Event: session_end — clean up session tracking to prevent unbounded growth
+  // ------------------------------------------------------------------
+  api.on("session_end", async (_event, ctx) => {
+    const key = ctx.sessionKey || "default";
+    sessionIds.delete(key);
+    workspaceDirsBySessionKey.delete(key);
   });
 
   // ------------------------------------------------------------------
