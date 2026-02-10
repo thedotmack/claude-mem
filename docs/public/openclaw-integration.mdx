@@ -1,0 +1,186 @@
+---
+title: OpenClaw Integration
+description: Persistent memory for OpenClaw agents — observation recording, MEMORY.md live sync, and real-time observation feeds
+icon: dragon
+---
+
+## Overview
+
+The OpenClaw plugin gives claude-mem persistent memory to agents running on the [OpenClaw](https://openclaw.ai) gateway. It handles three things:
+
+1. **Observation recording** — Captures tool usage from OpenClaw's embedded runner and sends it to the claude-mem worker for AI processing
+2. **MEMORY.md live sync** — Writes a continuously-updated timeline to each agent's workspace so agents always have context from previous sessions
+3. **Observation feed** — Streams new observations to messaging channels (Telegram, Discord, Slack, etc.) in real-time via SSE
+
+<Info>
+OpenClaw's embedded runner (`pi-embedded`) calls the Anthropic API directly without spawning a `claude` process, so claude-mem's standard hooks never fire. This plugin bridges that gap by using OpenClaw's event system to capture the same data.
+</Info>
+
+## How It Works
+
+```plaintext
+OpenClaw Gateway
+  │
+  ├── before_agent_start ──→ Sync MEMORY.md + Init session
+  ├── tool_result_persist ──→ Record observation + Re-sync MEMORY.md
+  ├── agent_end ────────────→ Summarize + Complete session
+  └── gateway_start ────────→ Reset session tracking
+                    │
+                    ▼
+         Claude-Mem Worker (localhost:37777)
+           ├── POST /api/sessions/init
+           ├── POST /api/sessions/observations
+           ├── POST /api/sessions/summarize
+           ├── POST /api/sessions/complete
+           ├── GET  /api/context/inject ──→ MEMORY.md content
+           └── GET  /stream ─────────────→ SSE → Messaging channels
+```
+
+### Event Lifecycle
+
+<Steps>
+  <Step title="Agent starts (before_agent_start)">
+    When an OpenClaw agent starts, the plugin does two things:
+
+    1. **Syncs MEMORY.md** — Fetches the latest timeline from the worker's `/api/context/inject` endpoint and writes it to `MEMORY.md` in the agent's workspace directory. This gives the agent context from all previous sessions before it starts working.
+
+    2. **Initializes a session** — Sends the user prompt to `POST /api/sessions/init` so the worker can create a new session and start processing.
+
+    Short prompts (under 10 characters) skip session init but still sync MEMORY.md.
+  </Step>
+  <Step title="Tool use recorded (tool_result_persist)">
+    Every time the agent uses a tool (Read, Write, Bash, etc.), the plugin:
+
+    1. **Sends the observation** to `POST /api/sessions/observations` with the tool name, input, and truncated response (max 1000 chars)
+    2. **Re-syncs MEMORY.md** with the latest timeline from the worker
+
+    Both operations are fire-and-forget — they don't block the agent from continuing work. The MEMORY.md file gets progressively richer as the session continues.
+
+    Tools prefixed with `memory_` are skipped to avoid recursive recording.
+  </Step>
+  <Step title="Agent finishes (agent_end)">
+    When the agent completes, the plugin extracts the last assistant message and sends it to `POST /api/sessions/summarize`, then calls `POST /api/sessions/complete` to close the session. Both are fire-and-forget.
+  </Step>
+  <Step title="Gateway restarts (gateway_start)">
+    Clears all session tracking (session IDs, workspace directory mappings) so agents get fresh state after a gateway restart.
+  </Step>
+</Steps>
+
+### MEMORY.md Live Sync
+
+The plugin writes a `MEMORY.md` file to each agent's workspace directory containing the full timeline of observations and summaries from previous sessions. This file is updated:
+
+- On every `before_agent_start` event (agent gets fresh context before starting)
+- On every `tool_result_persist` event (context stays current during the session)
+
+The content comes from the worker's `GET /api/context/inject?projects=<project>` endpoint, which generates a formatted markdown timeline from the SQLite database.
+
+<Info>
+MEMORY.md updates are fire-and-forget. They run in the background without blocking the agent. The file reflects whatever the worker has processed so far — it doesn't wait for the current observation to be fully processed before writing.
+</Info>
+
+### Observation Feed (SSE → Messaging)
+
+The plugin runs a background service that connects to the worker's SSE stream (`GET /stream`) and forwards `new_observation` events to a configured messaging channel. This lets you monitor what your agents are learning in real-time from Telegram, Discord, Slack, or any supported OpenClaw channel.
+
+The SSE connection uses exponential backoff (1s → 30s) for automatic reconnection.
+
+## Installation
+
+Add `claude-mem` to your OpenClaw gateway's plugin configuration:
+
+```json
+{
+  "plugins": {
+    "claude-mem": {
+      "enabled": true,
+      "config": {
+        "project": "my-project",
+        "syncMemoryFile": true,
+        "workerPort": 37777,
+        "observationFeed": {
+          "enabled": true,
+          "channel": "telegram",
+          "to": "your-chat-id"
+        }
+      }
+    }
+  }
+}
+```
+
+<Note>
+The claude-mem worker service must be running on the same machine as the OpenClaw gateway. The plugin communicates with it via HTTP on `localhost:37777`.
+</Note>
+
+## Configuration
+
+<ParamField body="project" type="string" default="openclaw">
+  Project name for scoping observations in the memory database. All observations from this gateway will be stored under this project name.
+</ParamField>
+
+<ParamField body="syncMemoryFile" type="boolean" default={true}>
+  Enable automatic MEMORY.md sync to agent workspaces. Set to `false` if you don't want the plugin writing files to workspace directories.
+</ParamField>
+
+<ParamField body="workerPort" type="number" default={37777}>
+  Port for the claude-mem worker service. Override if your worker runs on a non-default port.
+</ParamField>
+
+<ParamField body="observationFeed.enabled" type="boolean" default={false}>
+  Enable live observation streaming to messaging channels.
+</ParamField>
+
+<ParamField body="observationFeed.channel" type="string">
+  Channel type: `telegram`, `discord`, `signal`, `slack`, `whatsapp`, `line`
+</ParamField>
+
+<ParamField body="observationFeed.to" type="string">
+  Target chat/user/channel ID to send observations to.
+</ParamField>
+
+## Commands
+
+### /claude-mem-feed
+
+Show or toggle the observation feed status.
+
+```
+/claude-mem-feed        # Show current status
+/claude-mem-feed on     # Request enable
+/claude-mem-feed off    # Request disable
+```
+
+### /claude-mem-status
+
+Check worker health and session status.
+
+```
+/claude-mem-status
+```
+
+Returns worker status, port, active session count, and observation feed connection state.
+
+## Architecture
+
+The plugin uses HTTP calls to the already-running claude-mem worker service rather than spawning subprocesses. This means:
+
+- No `bun` dependency required on the gateway
+- No process spawn overhead per event
+- Uses the same worker API that Claude Code hooks use
+- All operations are non-blocking (fire-and-forget where possible)
+
+### Session Tracking
+
+Each OpenClaw agent session gets a unique `contentSessionId` (format: `openclaw-<sessionKey>-<timestamp>`) that maps to a claude-mem session in the worker. The plugin tracks:
+
+- `sessionIds` — Maps OpenClaw session keys to content session IDs
+- `workspaceDirsBySessionKey` — Maps session keys to workspace directories so `tool_result_persist` events can sync MEMORY.md even when the event context doesn't include `workspaceDir`
+
+Both maps are cleared on `gateway_start`.
+
+## Requirements
+
+- Claude-mem worker service running on `localhost:37777` (or configured port)
+- OpenClaw gateway with plugin support
+- Network access between gateway and worker (localhost only)
