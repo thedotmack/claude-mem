@@ -5,6 +5,7 @@
  */
 
 import type { EventHandler } from '../types.js';
+import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { contextHandler } from './context.js';
 import { sessionInitHandler } from './session-init.js';
 import { observationHandler } from './observation.js';
@@ -35,14 +36,22 @@ const handlers: Record<EventType, EventHandler> = {
 /**
  * Get the event handler for a given event type.
  *
+ * Returns a no-op handler for unknown event types instead of throwing (fix #984).
+ * Claude Code may send new event types that the plugin doesn't handle yet —
+ * throwing would surface as a BLOCKING_ERROR to the user.
+ *
  * @param eventType The type of event to handle
- * @returns The appropriate EventHandler
- * @throws Error if event type is not recognized
+ * @returns The appropriate EventHandler, or a no-op handler for unknown types
  */
-export function getEventHandler(eventType: EventType): EventHandler {
-  const handler = handlers[eventType];
+export function getEventHandler(eventType: string): EventHandler {
+  const handler = handlers[eventType as EventType];
   if (!handler) {
-    throw new Error(`Unknown event type: ${eventType}`);
+    console.error(`[claude-mem] Unknown event type: ${eventType}, returning no-op`);
+    return {
+      async execute() {
+        return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+      }
+    };
   }
   return handler;
 }

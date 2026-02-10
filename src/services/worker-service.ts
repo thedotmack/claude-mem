@@ -14,6 +14,7 @@ import { existsSync, writeFileSync, unlinkSync, statSync } from 'fs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
+import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { logger } from '../utils/logger.js';
 
@@ -66,6 +67,7 @@ import {
   removePidFile,
   getPlatformTimeout,
   cleanupOrphanedProcesses,
+  cleanStalePidFile,
   spawnDaemon,
   createSignalHandler
 } from './infrastructure/ProcessManager.js';
@@ -746,6 +748,9 @@ export class WorkerService {
  * @returns true if worker is healthy (existing or newly started), false on failure
  */
 async function ensureWorkerStarted(port: number): Promise<boolean> {
+  // Clean stale PID file first (cheap: 1 fs read + 1 signal-0 check)
+  cleanStalePidFile();
+
   // Check if worker is already running and healthy
   if (await waitForHealth(port, 1000)) {
     const versionCheck = await checkVersionMatch(port);
@@ -756,7 +761,7 @@ async function ensureWorkerStarted(port: number): Promise<boolean> {
       });
 
       await httpShutdown(port);
-      const freed = await waitForPortFree(port, getPlatformTimeout(15000));
+      const freed = await waitForPortFree(port, getPlatformTimeout(HOOK_TIMEOUTS.PORT_IN_USE_WAIT));
       if (!freed) {
         logger.error('SYSTEM', 'Port did not free up after shutdown for version mismatch restart', { port });
         return false;
@@ -772,7 +777,7 @@ async function ensureWorkerStarted(port: number): Promise<boolean> {
   const portInUse = await isPortInUse(port);
   if (portInUse) {
     logger.info('SYSTEM', 'Port in use, waiting for worker to become healthy');
-    const healthy = await waitForHealth(port, getPlatformTimeout(15000));
+    const healthy = await waitForHealth(port, getPlatformTimeout(HOOK_TIMEOUTS.PORT_IN_USE_WAIT));
     if (healthy) {
       logger.info('SYSTEM', 'Worker is now healthy');
       return true;
@@ -799,7 +804,7 @@ async function ensureWorkerStarted(port: number): Promise<boolean> {
   // PID file is written by the worker itself after listen() succeeds
   // This is race-free and works correctly on Windows where cmd.exe PID is useless
 
-  const healthy = await waitForHealth(port, getPlatformTimeout(30000));
+  const healthy = await waitForHealth(port, getPlatformTimeout(HOOK_TIMEOUTS.POST_SPAWN_WAIT));
   if (!healthy) {
     removePidFile();
     logger.error('SYSTEM', 'Worker failed to start (health check timeout)');
@@ -871,7 +876,7 @@ async function main() {
       // PID file is written by the worker itself after listen() succeeds
       // This is race-free and works correctly on Windows where cmd.exe PID is useless
 
-      const healthy = await waitForHealth(port, getPlatformTimeout(30000));
+      const healthy = await waitForHealth(port, getPlatformTimeout(HOOK_TIMEOUTS.POST_SPAWN_WAIT));
       if (!healthy) {
         removePidFile();
         logger.error('SYSTEM', 'Worker failed to restart');

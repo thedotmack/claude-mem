@@ -8,6 +8,8 @@ import {
   removePidFile,
   getPlatformTimeout,
   parseElapsedTime,
+  isProcessAlive,
+  cleanStalePidFile,
   type PidInfo
 } from '../../src/services/infrastructure/index.js';
 
@@ -219,6 +221,71 @@ describe('ProcessManager', () => {
       const result = getPlatformTimeout(333);
 
       expect(result).toBe(666);
+    });
+  });
+
+  describe('isProcessAlive', () => {
+    it('should return true for the current process', () => {
+      expect(isProcessAlive(process.pid)).toBe(true);
+    });
+
+    it('should return false for a non-existent PID', () => {
+      // Use a very high PID that's extremely unlikely to exist
+      expect(isProcessAlive(2147483647)).toBe(false);
+    });
+
+    it('should return true for PID 0 (Windows WMIC sentinel)', () => {
+      expect(isProcessAlive(0)).toBe(true);
+    });
+
+    it('should return false for negative PIDs', () => {
+      expect(isProcessAlive(-1)).toBe(false);
+      expect(isProcessAlive(-999)).toBe(false);
+    });
+
+    it('should return false for non-integer PIDs', () => {
+      expect(isProcessAlive(1.5)).toBe(false);
+      expect(isProcessAlive(NaN)).toBe(false);
+    });
+  });
+
+  describe('cleanStalePidFile', () => {
+    it('should remove PID file when process is dead', () => {
+      // Write a PID file with a non-existent PID
+      const staleInfo: PidInfo = {
+        pid: 2147483647,
+        port: 37777,
+        startedAt: '2024-01-01T00:00:00.000Z'
+      };
+      writePidFile(staleInfo);
+      expect(existsSync(PID_FILE)).toBe(true);
+
+      cleanStalePidFile();
+
+      expect(existsSync(PID_FILE)).toBe(false);
+    });
+
+    it('should keep PID file when process is alive', () => {
+      // Write a PID file with the current process PID (definitely alive)
+      const liveInfo: PidInfo = {
+        pid: process.pid,
+        port: 37777,
+        startedAt: new Date().toISOString()
+      };
+      writePidFile(liveInfo);
+
+      cleanStalePidFile();
+
+      // PID file should still exist since process.pid is alive
+      expect(existsSync(PID_FILE)).toBe(true);
+    });
+
+    it('should do nothing when PID file does not exist', () => {
+      removePidFile();
+      expect(existsSync(PID_FILE)).toBe(false);
+
+      // Should not throw
+      expect(() => cleanStalePidFile()).not.toThrow();
     });
   });
 });
