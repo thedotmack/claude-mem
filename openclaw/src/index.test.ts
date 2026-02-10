@@ -103,6 +103,8 @@ describe("claudeMemPlugin", () => {
     assert.equal(getService().id, "claude-mem-observation-feed");
     assert.ok(getCommand("claude-mem-feed"), "feed command should be registered");
     assert.ok(getCommand("claude-mem-status"), "status command should be registered");
+    assert.ok(getEventHandlers("session_start").length > 0, "session_start handler registered");
+    assert.ok(getEventHandlers("after_compaction").length > 0, "after_compaction handler registered");
     assert.ok(getEventHandlers("before_agent_start").length > 0, "before_agent_start handler registered");
     assert.ok(getEventHandlers("tool_result_persist").length > 0, "tool_result_persist handler registered");
     assert.ok(getEventHandlers("agent_end").length > 0, "agent_end handler registered");
@@ -304,12 +306,12 @@ describe("Observation I/O event handlers", () => {
     workerServer?.close();
   });
 
-  it("before_agent_start sends session init to worker", async () => {
+  it("session_start sends session init to worker", async () => {
     const { api, logs, fireEvent } = createMockApi({ workerPort });
     claudeMemPlugin(api);
 
-    await fireEvent("before_agent_start", {
-      prompt: "Help me write a function that parses JSON",
+    await fireEvent("session_start", {
+      sessionId: "test-session-1",
     }, { sessionKey: "agent-1" });
 
     // Wait for HTTP request
@@ -319,31 +321,48 @@ describe("Observation I/O event handlers", () => {
     assert.ok(initRequest, "should send init request to worker");
     assert.equal(initRequest!.body.project, "openclaw");
     assert.ok(initRequest!.body.contentSessionId.startsWith("openclaw-agent-1-"));
-    assert.equal(initRequest!.body.prompt, "Help me write a function that parses JSON");
     assert.ok(logs.some((l) => l.includes("Session initialized")));
   });
 
-  it("before_agent_start skips short prompts", async () => {
+  it("session_start calls init on worker", async () => {
     const { api, fireEvent } = createMockApi({ workerPort });
     claudeMemPlugin(api);
 
-    await fireEvent("before_agent_start", { prompt: "hi" }, {});
-
+    await fireEvent("session_start", { sessionId: "test-session-1" }, {});
     await new Promise((resolve) => setTimeout(resolve, 100));
 
-    const initRequest = receivedRequests.find((r) => r.url === "/api/sessions/init");
-    assert.ok(!initRequest, "should not send init for short prompts");
+    const initRequests = receivedRequests.filter((r) => r.url === "/api/sessions/init");
+    assert.equal(initRequests.length, 1, "should init on session_start");
+  });
+
+  it("after_compaction re-inits session on worker", async () => {
+    const { api, fireEvent } = createMockApi({ workerPort });
+    claudeMemPlugin(api);
+
+    await fireEvent("after_compaction", { messageCount: 5, compactedCount: 3 }, {});
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const initRequests = receivedRequests.filter((r) => r.url === "/api/sessions/init");
+    assert.equal(initRequests.length, 1, "should re-init after compaction");
+  });
+
+  it("before_agent_start does not call init", async () => {
+    const { api, fireEvent } = createMockApi({ workerPort });
+    claudeMemPlugin(api);
+
+    await fireEvent("before_agent_start", { prompt: "hello" }, {});
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const initRequests = receivedRequests.filter((r) => r.url === "/api/sessions/init");
+    assert.equal(initRequests.length, 0, "before_agent_start should not init");
   });
 
   it("tool_result_persist sends observation to worker", async () => {
     const { api, fireEvent } = createMockApi({ workerPort });
     claudeMemPlugin(api);
 
-    // Init session first to establish contentSessionId
-    await fireEvent("before_agent_start", {
-      prompt: "Help me write a function that parses JSON",
-    }, { sessionKey: "test-agent" });
-
+    // Establish contentSessionId via session_start
+    await fireEvent("session_start", { sessionId: "s1" }, { sessionKey: "test-agent" });
     await new Promise((resolve) => setTimeout(resolve, 100));
 
     // Fire tool result event
@@ -404,11 +423,8 @@ describe("Observation I/O event handlers", () => {
     const { api, fireEvent } = createMockApi({ workerPort });
     claudeMemPlugin(api);
 
-    // Init session
-    await fireEvent("before_agent_start", {
-      prompt: "Help me write a function that parses JSON",
-    }, { sessionKey: "summarize-test" });
-
+    // Establish session
+    await fireEvent("session_start", { sessionId: "s1" }, { sessionKey: "summarize-test" });
     await new Promise((resolve) => setTimeout(resolve, 100));
 
     // Fire agent end
@@ -435,10 +451,7 @@ describe("Observation I/O event handlers", () => {
     const { api, fireEvent } = createMockApi({ workerPort });
     claudeMemPlugin(api);
 
-    await fireEvent("before_agent_start", {
-      prompt: "Help me write a function that parses JSON",
-    }, { sessionKey: "array-content" });
-
+    await fireEvent("session_start", { sessionId: "s1" }, { sessionKey: "array-content" });
     await new Promise((resolve) => setTimeout(resolve, 100));
 
     await fireEvent("agent_end", {
@@ -464,10 +477,7 @@ describe("Observation I/O event handlers", () => {
     const { api, fireEvent } = createMockApi({ workerPort, project: "my-project" });
     claudeMemPlugin(api);
 
-    await fireEvent("before_agent_start", {
-      prompt: "Help me write a function that parses JSON",
-    }, {});
-
+    await fireEvent("session_start", { sessionId: "s1" }, {});
     await new Promise((resolve) => setTimeout(resolve, 100));
 
     const initRequest = receivedRequests.find((r) => r.url === "/api/sessions/init");
@@ -503,10 +513,7 @@ describe("Observation I/O event handlers", () => {
     const { api, fireEvent } = createMockApi({ workerPort });
     claudeMemPlugin(api);
 
-    await fireEvent("before_agent_start", {
-      prompt: "Help me write a function that parses JSON",
-    }, { sessionKey: "reuse-test" });
-
+    await fireEvent("session_start", { sessionId: "s1" }, { sessionKey: "reuse-test" });
     await new Promise((resolve) => setTimeout(resolve, 100));
 
     await fireEvent("tool_result_persist", {

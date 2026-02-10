@@ -50,6 +50,17 @@ interface AgentEndEvent {
   }>;
 }
 
+interface SessionStartEvent {
+  sessionId: string;
+  resumedFrom?: string;
+}
+
+interface AfterCompactionEvent {
+  messageCount: number;
+  tokenCount?: number;
+  compactedCount: number;
+}
+
 interface EventContext {
   sessionKey?: string;
   workspaceDir?: string;
@@ -81,6 +92,8 @@ interface OpenClawPluginApi {
   on: ((event: "before_agent_start", callback: EventCallback<BeforeAgentStartEvent>) => void) &
       ((event: "tool_result_persist", callback: EventCallback<ToolResultPersistEvent>) => void) &
       ((event: "agent_end", callback: EventCallback<AgentEndEvent>) => void) &
+      ((event: "session_start", callback: EventCallback<SessionStartEvent>) => void) &
+      ((event: "after_compaction", callback: EventCallback<AfterCompactionEvent>) => void) &
       ((event: "gateway_start", callback: EventCallback<Record<string, never>>) => void);
   runtime: {
     channel: Record<string, Record<string, (...args: any[]) => Promise<any>>>;
@@ -400,31 +413,48 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
   }
 
   // ------------------------------------------------------------------
-  // Event: before_agent_start — init session + sync MEMORY.md
+  // Event: session_start — init claude-mem session (fires on /new, /reset)
   // ------------------------------------------------------------------
-  api.on("before_agent_start", async (event, ctx) => {
+  api.on("session_start", async (_event, ctx) => {
     const contentSessionId = getContentSessionId(ctx.sessionKey);
-    const prompt = event.prompt || "";
 
+    await workerPost(workerPort, "/api/sessions/init", {
+      contentSessionId,
+      project: projectName,
+      prompt: "",
+    }, api.logger);
+
+    api.logger.info(`[claude-mem] Session initialized: ${contentSessionId}`);
+  });
+
+  // ------------------------------------------------------------------
+  // Event: after_compaction — re-init session after context compaction
+  // ------------------------------------------------------------------
+  api.on("after_compaction", async (_event, ctx) => {
+    const contentSessionId = getContentSessionId(ctx.sessionKey);
+
+    await workerPost(workerPort, "/api/sessions/init", {
+      contentSessionId,
+      project: projectName,
+      prompt: "",
+    }, api.logger);
+
+    api.logger.info(`[claude-mem] Session re-initialized after compaction: ${contentSessionId}`);
+  });
+
+  // ------------------------------------------------------------------
+  // Event: before_agent_start — sync MEMORY.md + track workspace
+  // ------------------------------------------------------------------
+  api.on("before_agent_start", async (_event, ctx) => {
     // Track workspace dir so tool_result_persist can sync MEMORY.md later
     if (ctx.workspaceDir) {
       workspaceDirsBySessionKey.set(ctx.sessionKey || "default", ctx.workspaceDir);
     }
 
-    // Sync MEMORY.md before session init (provides context to agent)
+    // Sync MEMORY.md before agent runs (provides context to agent)
     if (syncMemoryFile && ctx.workspaceDir) {
       await syncMemoryToWorkspace(ctx.workspaceDir);
     }
-
-    if (prompt.length < 10) return;
-
-    await workerPost(workerPort, "/api/sessions/init", {
-      contentSessionId,
-      project: projectName,
-      prompt,
-    }, api.logger);
-
-    api.logger.info(`[claude-mem] Session initialized: ${contentSessionId}`);
   });
 
   // ------------------------------------------------------------------
