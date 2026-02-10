@@ -186,7 +186,21 @@ export class Server {
         let content: string;
 
         if (operation) {
-          const operationPath = path.join(__dirname, '../skills/mem-search/operations', `${operation}.md`);
+          // Validate operation name: only alphanumeric characters and hyphens allowed
+          if (!/^[a-zA-Z0-9-]+$/.test(operation)) {
+            res.status(400).json({ error: 'Invalid operation name. Only alphanumeric characters and hyphens are allowed.' });
+            return;
+          }
+
+          const operationsDirectory = path.resolve(__dirname, '../skills/mem-search/operations');
+          const operationPath = path.resolve(operationsDirectory, `${operation}.md`);
+
+          // Verify resolved path stays within the operations directory
+          if (!operationPath.startsWith(operationsDirectory + path.sep) && operationPath !== operationsDirectory) {
+            res.status(400).json({ error: 'Invalid operation name.' });
+            return;
+          }
+
           content = await fs.promises.readFile(operationPath, 'utf-8');
         } else {
           const skillPath = path.join(__dirname, '../skills/mem-search/SKILL.md');

@@ -376,4 +376,87 @@ describe('Server', () => {
       expect(body.error).toBe('NotFound');
     });
   });
+
+  describe('instructions endpoint path traversal protection', () => {
+    it('should reject operation names with directory traversal sequences', async () => {
+      server = new Server(mockOptions);
+      const testPort = 40000 + Math.floor(Math.random() * 10000);
+      await server.listen(testPort, '127.0.0.1');
+
+      const response = await fetch(`http://127.0.0.1:${testPort}/api/instructions?operation=../../etc/passwd`);
+      expect(response.status).toBe(400);
+
+      const body = await response.json();
+      expect(body.error).toContain('Invalid operation name');
+    });
+
+    it('should reject operation names with backslash traversal sequences', async () => {
+      server = new Server(mockOptions);
+      const testPort = 40000 + Math.floor(Math.random() * 10000);
+      await server.listen(testPort, '127.0.0.1');
+
+      const response = await fetch(`http://127.0.0.1:${testPort}/api/instructions?operation=..\\..\\windows\\system32`);
+      expect(response.status).toBe(400);
+
+      const body = await response.json();
+      expect(body.error).toContain('Invalid operation name');
+    });
+
+    it('should reject operation names with forward slashes', async () => {
+      server = new Server(mockOptions);
+      const testPort = 40000 + Math.floor(Math.random() * 10000);
+      await server.listen(testPort, '127.0.0.1');
+
+      const response = await fetch(`http://127.0.0.1:${testPort}/api/instructions?operation=foo/bar`);
+      expect(response.status).toBe(400);
+
+      const body = await response.json();
+      expect(body.error).toContain('Invalid operation name');
+    });
+
+    it('should reject operation names with special characters', async () => {
+      server = new Server(mockOptions);
+      const testPort = 40000 + Math.floor(Math.random() * 10000);
+      await server.listen(testPort, '127.0.0.1');
+
+      // Test with spaces
+      const response1 = await fetch(`http://127.0.0.1:${testPort}/api/instructions?operation=foo%20bar`);
+      expect(response1.status).toBe(400);
+
+      // Test with dots (could be used for traversal)
+      const response2 = await fetch(`http://127.0.0.1:${testPort}/api/instructions?operation=..`);
+      expect(response2.status).toBe(400);
+    });
+
+    it('should allow valid alphanumeric operation names with hyphens', async () => {
+      server = new Server(mockOptions);
+      const testPort = 40000 + Math.floor(Math.random() * 10000);
+      await server.listen(testPort, '127.0.0.1');
+
+      // Valid name should pass validation (returns 404 because file doesn't exist, not 400)
+      const response = await fetch(`http://127.0.0.1:${testPort}/api/instructions?operation=valid-operation-name`);
+      expect(response.status).toBe(404);
+    });
+
+    it('should return 404 for valid operation names that do not exist', async () => {
+      server = new Server(mockOptions);
+      const testPort = 40000 + Math.floor(Math.random() * 10000);
+      await server.listen(testPort, '127.0.0.1');
+
+      const response = await fetch(`http://127.0.0.1:${testPort}/api/instructions?operation=nonexistent-operation`);
+      expect(response.status).toBe(404);
+
+      const body = await response.json();
+      expect(body.error).toBe('Instruction not found');
+    });
+
+    it('should reject null byte injection attempts', async () => {
+      server = new Server(mockOptions);
+      const testPort = 40000 + Math.floor(Math.random() * 10000);
+      await server.listen(testPort, '127.0.0.1');
+
+      const response = await fetch(`http://127.0.0.1:${testPort}/api/instructions?operation=valid%00.md`);
+      expect(response.status).toBe(400);
+    });
+  });
 });
