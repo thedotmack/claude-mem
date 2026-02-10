@@ -138,7 +138,7 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
       };
 
     } catch (error) {
-      logger.error('SEARCH', 'ChromaSearchStrategy: Search failed', {}, error as Error);
+      logger.warn('SEARCH', 'ChromaSearchStrategy: Search failed, falling back to FTS5', {}, error as Error);
       // Return empty result - caller may try fallback strategy
       return {
         results: { observations: [], sessions: [], prompts: [] },

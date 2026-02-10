@@ -128,6 +128,7 @@ export class SearchManager {
     let sessions: SessionSummarySearchResult[] = [];
     let prompts: UserPromptSearchResult[] = [];
     let chromaFailed = false;
+    let searchMethod: 'chroma' | 'fts5' | 'fts5-fallback' | 'filter-only' = 'filter-only';
 
     // Determine which types to query based on type filter
     const searchObservations = !type || type === 'observations';
@@ -138,6 +139,7 @@ export class SearchManager {
     // This path enables date filtering which Chroma cannot do (requires direct SQLite access)
     if (!query) {
       logger.debug('SEARCH', 'Filter-only query (no query text), using direct SQLite filtering', { enablesDateFilters: true });
+      searchMethod = 'filter-only';
       const obsOptions = { ...options, type: obs_type, concepts, files };
       if (searchObservations) {
         observations = this.sessionSearch.searchObservations(undefined, obsOptions);
@@ -152,6 +154,7 @@ export class SearchManager {
     // PATH 2: CHROMA SEMANTIC SEARCH (query text + Chroma available)
     else if (this.chromaSync) {
       logger.debug('SEARCH', 'Using ChromaDB semantic search', { typeFilter: type || 'all' });
+      searchMethod = 'chroma';
 
       try {
         // Build Chroma where filter for doc_type
@@ -219,6 +222,7 @@ export class SearchManager {
         // Chroma failed - fall back to FTS5 text search
         logger.warn('SEARCH', 'Chroma search failed, falling back to FTS5', {}, chromaError as Error);
         chromaFailed = true;
+        searchMethod = 'fts5-fallback';
         const obsOptions = { ...options, type: obs_type, concepts, files };
         if (searchObservations) {
           observations = this.sessionSearch.searchObservations(query, obsOptions);
@@ -235,6 +239,7 @@ export class SearchManager {
     else if (query) {
       logger.warn('SEARCH', 'ChromaDB not initialized, falling back to FTS5 text search', {});
       chromaFailed = true;
+      searchMethod = 'fts5-fallback';
       const obsOptions = { ...options, type: obs_type, concepts, files };
       if (searchObservations) {
         observations = this.sessionSearch.searchObservations(query, obsOptions);
@@ -256,7 +261,8 @@ export class SearchManager {
         sessions,
         prompts,
         totalResults,
-        query: query || ''
+        query: query || '',
+        searchMethod
       };
     }
 
@@ -431,7 +437,7 @@ export class SearchManager {
             }
           }
         } catch (chromaError) {
-          logger.error('SEARCH', 'Chroma search failed for timeline, continuing without semantic results', {}, chromaError as Error);
+          logger.warn('SEARCH', 'Chroma search failed for timeline, continuing without semantic results', {}, chromaError as Error);
         }
       }
 
@@ -699,7 +705,7 @@ export class SearchManager {
           }
         }
       } catch (chromaError) {
-        logger.error('SEARCH', 'Chroma search failed for decisions, falling back to metadata search', {}, chromaError as Error);
+        logger.warn('SEARCH', 'Chroma search failed for decisions, falling back to metadata search', {}, chromaError as Error);
       }
     }
 
@@ -767,7 +773,7 @@ export class SearchManager {
           }
         }
       } catch (chromaError) {
-        logger.error('SEARCH', 'Chroma search failed for changes, falling back to metadata search', {}, chromaError as Error);
+        logger.warn('SEARCH', 'Chroma search failed for changes, falling back to metadata search', {}, chromaError as Error);
       }
     }
 

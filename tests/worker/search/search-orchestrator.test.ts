@@ -162,6 +162,51 @@ describe('SearchOrchestrator', () => {
         expect(result.usedChroma).toBe(false);
       });
 
+      it('should return searchMethod: fts5-fallback when Chroma fails', async () => {
+        mockChromaSync.queryChroma = mock(() => Promise.reject(new Error('Connection closed')));
+
+        const result = await orchestrator.search({
+          query: 'test query'
+        });
+
+        expect(result.searchMethod).toBe('fts5-fallback');
+        expect(result.fellBack).toBe(true);
+      });
+
+      it('should return searchMethod: chroma when Chroma succeeds', async () => {
+        const result = await orchestrator.search({
+          query: 'test query'
+        });
+
+        expect(result.searchMethod).toBe('chroma');
+        expect(result.usedChroma).toBe(true);
+        expect(result.fellBack).toBe(false);
+      });
+
+      it('should maintain same response shape on FTS5 fallback as Chroma success', async () => {
+        // Get Chroma success response
+        const chromaResult = await orchestrator.search({
+          query: 'test query'
+        });
+
+        // Force Chroma failure
+        mockChromaSync.queryChroma = mock(() => Promise.reject(new Error('Chroma unavailable')));
+
+        const fallbackResult = await orchestrator.search({
+          query: 'test query'
+        });
+
+        // Both should have the same top-level fields
+        expect(fallbackResult.results).toBeDefined();
+        expect(fallbackResult.results.observations).toBeDefined();
+        expect(fallbackResult.results.sessions).toBeDefined();
+        expect(fallbackResult.results.prompts).toBeDefined();
+        expect(typeof fallbackResult.usedChroma).toBe('boolean');
+        expect(typeof fallbackResult.fellBack).toBe('boolean');
+        expect(fallbackResult.strategy).toBeDefined();
+        expect(fallbackResult.searchMethod).toBeDefined();
+      });
+
       it('should normalize comma-separated concepts', async () => {
         await orchestrator.search({
           concepts: 'concept1, concept2, concept3',
@@ -327,6 +372,22 @@ describe('SearchOrchestrator', () => {
           'semantic query',
           expect.any(Object)
         );
+      });
+
+      it('should return FTS5 results with same response shape as Chroma path', async () => {
+        const result = await orchestrator.search({
+          query: 'semantic query'
+        });
+
+        // Verify full response shape
+        expect(result.results).toBeDefined();
+        expect(result.results.observations).toBeDefined();
+        expect(result.results.sessions).toBeDefined();
+        expect(result.results.prompts).toBeDefined();
+        expect(typeof result.usedChroma).toBe('boolean');
+        expect(typeof result.fellBack).toBe('boolean');
+        expect(result.strategy).toBeDefined();
+        expect(result.searchMethod).toBe('fts5-fallback');
       });
 
       it('should still work for filter-only queries', async () => {
