@@ -140,14 +140,11 @@ export class Server {
    * Setup core system routes (health, readiness, version, admin)
    */
   private setupCoreRoutes(): void {
-    // Test build ID for debugging which build is running
-    const TEST_BUILD_ID = 'TEST-008-wrapper-ipc';
-
     // Health check endpoint - always responds, even during initialization
     this.app.get('/api/health', (_req: Request, res: Response) => {
       res.status(200).json({
         status: 'ok',
-        build: TEST_BUILD_ID,
+        build: BUILT_IN_VERSION,
         managed: process.env.CLAUDE_MEM_MANAGED === 'true',
         hasIpc: typeof process.send === 'function',
         platform: process.platform,

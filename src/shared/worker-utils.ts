@@ -73,6 +73,17 @@ export function clearPortCache(): void {
 }
 
 /**
+ * Build a properly formatted worker URL.
+ * Wraps IPv6 addresses in brackets per RFC 2732.
+ */
+export function buildWorkerUrl(path: string): string {
+  const host = getWorkerHost();
+  const port = getWorkerPort();
+  const formattedHost = host.includes(':') ? `[${host}]` : host;
+  return `http://${formattedHost}:${port}${path}`;
+}
+
+/**
  * Check if worker HTTP server is responsive
  * Uses /api/health (liveness) instead of /api/readiness because:
  * - Hooks have 15-second timeout, but full initialization can take 5+ minutes (MCP connection)
@@ -81,9 +92,8 @@ export function clearPortCache(): void {
  * See: https://github.com/thedotmack/claude-mem/issues/811
  */
 async function isWorkerHealthy(): Promise<boolean> {
-  const port = getWorkerPort();
   const response = await fetchWithTimeout(
-    `http://127.0.0.1:${port}/api/health`, {}, HEALTH_CHECK_TIMEOUT_MS
+    buildWorkerUrl('/api/health'), {}, HEALTH_CHECK_TIMEOUT_MS
   );
   return response.ok;
 }
@@ -101,9 +111,8 @@ function getPluginVersion(): string {
  * Get the running worker's version from the API
  */
 async function getWorkerVersion(): Promise<string> {
-  const port = getWorkerPort();
   const response = await fetchWithTimeout(
-    `http://127.0.0.1:${port}/api/version`, {}, HEALTH_CHECK_TIMEOUT_MS
+    buildWorkerUrl('/api/version'), {}, HEALTH_CHECK_TIMEOUT_MS
   );
   if (!response.ok) {
     throw new Error(`Failed to get worker version: ${response.status}`);

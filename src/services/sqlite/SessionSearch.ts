@@ -147,6 +147,23 @@ export class SessionSearch {
 
 
   /**
+   * Sanitize a query string for FTS5 MATCH syntax.
+   * Wraps each word in double quotes to prevent FTS5 syntax errors from special characters.
+   * Returns null if the query is empty after sanitization.
+   */
+  private sanitizeFTS5Query(query: string): string | null {
+    // Strip characters that are problematic in FTS5 even inside quotes
+    const cleaned = query.replace(/["\\\x00]/g, ' ').trim();
+    if (!cleaned) return null;
+
+    // Split into tokens and wrap each in quotes for safe MATCH
+    const tokens = cleaned.split(/\s+/).filter(Boolean);
+    if (tokens.length === 0) return null;
+
+    return tokens.map(t => `"${t}"`).join(' ');
+  }
+
+  /**
    * Build WHERE clause for structured filters
    */
   private buildFilterClause(
@@ -238,8 +255,8 @@ export class SessionSearch {
   }
 
   /**
-   * Search observations using filter-only direct SQLite query.
-   * Vector search is handled by ChromaDB - this only supports filtering without query text.
+   * Search observations using filter-only or FTS5 fallback.
+   * Vector search is handled by ChromaDB - FTS5 is used as a fallback when Chroma is unavailable.
    */
   searchObservations(query: string | undefined, options: SearchOptions = {}): ObservationSearchResult[] {
     const params: any[] = [];
@@ -267,15 +284,39 @@ export class SessionSearch {
       return this.db.prepare(sql).all(...params) as ObservationSearchResult[];
     }
 
-    // Vector search with query text should be handled by ChromaDB
-    // This method only supports filter-only queries (query=undefined)
-    logger.warn('DB', 'Text search not supported - use ChromaDB for vector search');
-    return [];
+    // FTS5 FALLBACK: Use full-text search when Chroma is unavailable
+    const ftsQuery = this.sanitizeFTS5Query(query);
+    if (!ftsQuery) {
+      return [];
+    }
+
+    const filterClause = this.buildFilterClause(filters, params, 'o');
+    const filterCondition = filterClause ? ` AND ${filterClause}` : '';
+    const orderClause = this.buildOrderClause(orderBy, true, 'observations_fts');
+
+    const sql = `
+      SELECT o.*, o.discovery_tokens, observations_fts.rank
+      FROM observations_fts
+      JOIN observations o ON o.id = observations_fts.rowid
+      WHERE observations_fts MATCH ?${filterCondition}
+      ${orderClause}
+      LIMIT ? OFFSET ?
+    `;
+
+    params.unshift(ftsQuery);
+    params.push(limit, offset);
+
+    try {
+      return this.db.prepare(sql).all(...params) as ObservationSearchResult[];
+    } catch (error) {
+      logger.warn('DB', 'FTS5 search failed, returning empty results', { error: (error as Error).message });
+      return [];
+    }
   }
 
   /**
-   * Search session summaries using filter-only direct SQLite query.
-   * Vector search is handled by ChromaDB - this only supports filtering without query text.
+   * Search session summaries using filter-only or FTS5 fallback.
+   * Vector search is handled by ChromaDB - FTS5 is used as a fallback when Chroma is unavailable.
    */
   searchSessions(query: string | undefined, options: SearchOptions = {}): SessionSummarySearchResult[] {
     const params: any[] = [];
@@ -306,10 +347,41 @@ export class SessionSearch {
       return this.db.prepare(sql).all(...params) as SessionSummarySearchResult[];
     }
 
-    // Vector search with query text should be handled by ChromaDB
-    // This method only supports filter-only queries (query=undefined)
-    logger.warn('DB', 'Text search not supported - use ChromaDB for vector search');
-    return [];
+    // FTS5 FALLBACK: Use full-text search when Chroma is unavailable
+    const ftsQuery = this.sanitizeFTS5Query(query);
+    if (!ftsQuery) {
+      return [];
+    }
+
+    const filterOptions = { ...filters };
+    delete filterOptions.type;
+    const filterClause = this.buildFilterClause(filterOptions, params, 's');
+    const filterCondition = filterClause ? ` AND ${filterClause}` : '';
+
+    const orderClause = orderBy === 'relevance'
+      ? 'ORDER BY session_summaries_fts.rank ASC'
+      : orderBy === 'date_asc'
+        ? 'ORDER BY s.created_at_epoch ASC'
+        : 'ORDER BY s.created_at_epoch DESC';
+
+    const sql = `
+      SELECT s.*, s.discovery_tokens, session_summaries_fts.rank
+      FROM session_summaries_fts
+      JOIN session_summaries s ON s.id = session_summaries_fts.rowid
+      WHERE session_summaries_fts MATCH ?${filterCondition}
+      ${orderClause}
+      LIMIT ? OFFSET ?
+    `;
+
+    params.unshift(ftsQuery);
+    params.push(limit, offset);
+
+    try {
+      return this.db.prepare(sql).all(...params) as SessionSummarySearchResult[];
+    } catch (error) {
+      logger.warn('DB', 'FTS5 session search failed, returning empty results', { error: (error as Error).message });
+      return [];
+    }
   }
 
   /**
@@ -348,7 +420,9 @@ export class SessionSearch {
         if (Array.isArray(files)) {
           return files.some(f => isDirectChild(f, folderPath));
         }
-      } catch {}
+      } catch (error) {
+        logger.warn('SEARCH', 'Failed to parse files JSON', { error: (error as Error).message });
+      }
       return false;
     };
 
@@ -366,7 +440,9 @@ export class SessionSearch {
         if (Array.isArray(files)) {
           return files.some(f => isDirectChild(f, folderPath));
         }
-      } catch {}
+      } catch (error) {
+        logger.warn('SEARCH', 'Failed to parse files JSON', { error: (error as Error).message });
+      }
       return false;
     };
 
@@ -490,8 +566,8 @@ export class SessionSearch {
   }
 
   /**
-   * Search user prompts using filter-only direct SQLite query.
-   * Vector search is handled by ChromaDB - this only supports filtering without query text.
+   * Search user prompts using filter-only or FTS5 fallback.
+   * Vector search is handled by ChromaDB - FTS5 is used as a fallback when Chroma is unavailable.
    */
   searchUserPrompts(query: string | undefined, options: SearchOptions = {}): UserPromptSearchResult[] {
     const params: any[] = [];
@@ -542,10 +618,41 @@ export class SessionSearch {
       return this.db.prepare(sql).all(...params) as UserPromptSearchResult[];
     }
 
-    // Vector search with query text should be handled by ChromaDB
-    // This method only supports filter-only queries (query=undefined)
-    logger.warn('DB', 'Text search not supported - use ChromaDB for vector search');
-    return [];
+    // FTS5 FALLBACK: Use full-text search when Chroma is unavailable
+    const ftsQuery = this.sanitizeFTS5Query(query);
+    if (!ftsQuery) {
+      return [];
+    }
+
+    const filterCondition = baseConditions.length > 0
+      ? ` AND ${baseConditions.join(' AND ')}`
+      : '';
+
+    const orderClause = orderBy === 'relevance'
+      ? 'ORDER BY user_prompts_fts.rank ASC'
+      : orderBy === 'date_asc'
+        ? 'ORDER BY up.created_at_epoch ASC'
+        : 'ORDER BY up.created_at_epoch DESC';
+
+    const sql = `
+      SELECT up.*, user_prompts_fts.rank
+      FROM user_prompts_fts
+      JOIN user_prompts up ON up.id = user_prompts_fts.rowid
+      JOIN sdk_sessions s ON up.content_session_id = s.content_session_id
+      WHERE user_prompts_fts MATCH ?${filterCondition}
+      ${orderClause}
+      LIMIT ? OFFSET ?
+    `;
+
+    params.unshift(ftsQuery);
+    params.push(limit, offset);
+
+    try {
+      return this.db.prepare(sql).all(...params) as UserPromptSearchResult[];
+    } catch (error) {
+      logger.warn('DB', 'FTS5 prompt search failed, returning empty results', { error: (error as Error).message });
+      return [];
+    }
   }
 
   /**

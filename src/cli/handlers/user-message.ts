@@ -7,8 +7,9 @@
 
 import { basename } from 'path';
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
-import { ensureWorkerRunning, getWorkerPort } from '../../shared/worker-utils.js';
+import { ensureWorkerRunning, getWorkerPort, buildWorkerUrl } from '../../shared/worker-utils.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
+import { stripInternalAgentMarkers } from '../../utils/tag-stripping.js';
 
 export const userMessageHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
@@ -21,7 +22,7 @@ export const userMessageHandler: EventHandler = {
     // Fetch formatted context directly from worker API
     // Note: Removed AbortSignal.timeout to avoid Windows Bun cleanup issue (libuv assertion)
     const response = await fetch(
-      `http://127.0.0.1:${port}/api/context/inject?project=${encodeURIComponent(project)}&colors=true`,
+      buildWorkerUrl(`/api/context/inject?project=${encodeURIComponent(project)}&colors=true`),
       { method: 'GET' }
     );
 
@@ -30,7 +31,8 @@ export const userMessageHandler: EventHandler = {
       return { exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
-    const output = await response.text();
+    // Strip any internal agent markers that might leak into user-visible output (#784)
+    const output = stripInternalAgentMarkers(await response.text());
 
     // Write to stderr for user visibility
     // Note: Using process.stderr.write instead of console.error to avoid

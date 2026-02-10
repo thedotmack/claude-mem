@@ -13,8 +13,6 @@ dist/
 .claude/skills/
 plugin/data/
 plugin/data.backup/
-package-lock.json
-bun.lock
 private/
 datasets/
 Auto Run Docs/

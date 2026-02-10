@@ -6,9 +6,10 @@
  */
 
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
-import { ensureWorkerRunning, getWorkerPort } from '../../shared/worker-utils.js';
+import { ensureWorkerRunning, getWorkerPort, buildWorkerUrl } from '../../shared/worker-utils.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
+import { stripInternalAgentMarkers } from '../../utils/tag-stripping.js';
 
 export const contextHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
@@ -31,7 +32,7 @@ export const contextHandler: EventHandler = {
 
     // Pass all projects (parent + worktree if applicable) for unified timeline
     const projectsParam = context.allProjects.join(',');
-    const url = `http://127.0.0.1:${port}/api/context/inject?projects=${encodeURIComponent(projectsParam)}`;
+    const url = buildWorkerUrl(`/api/context/inject?projects=${encodeURIComponent(projectsParam)}`);
 
     // Note: Removed AbortSignal.timeout due to Windows Bun cleanup issue (libuv assertion)
     // Worker service has its own timeouts, so client-side timeout is redundant
@@ -42,7 +43,8 @@ export const contextHandler: EventHandler = {
     }
 
     const result = await response.text();
-    const additionalContext = result.trim();
+    // Strip any internal agent markers that might leak into context (#784)
+    const additionalContext = stripInternalAgentMarkers(result);
 
     return {
       hookSpecificOutput: {
