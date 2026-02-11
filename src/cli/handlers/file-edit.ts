@@ -39,24 +39,32 @@ export const fileEditHandler: EventHandler = {
 
     // Send to worker as an observation with file edit metadata
     // The observation handler on the worker will process this appropriately
-    const response = await fetch(`http://127.0.0.1:${port}/api/sessions/observations`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contentSessionId: sessionId,
-        tool_name: 'write_file',
-        tool_input: { filePath, edits },
-        tool_response: { success: true },
-        cwd
-      })
-      // Note: Removed signal to avoid Windows Bun cleanup issue (libuv assertion)
-    });
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/api/sessions/observations`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contentSessionId: sessionId,
+          tool_name: 'write_file',
+          tool_input: { filePath, edits },
+          tool_response: { success: true },
+          cwd
+        })
+        // Note: Removed signal to avoid Windows Bun cleanup issue (libuv assertion)
+      });
 
-    if (!response.ok) {
-      throw new Error(`File edit observation storage failed: ${response.status}`);
+      if (!response.ok) {
+        // Log but don't throw — file edit observation failure should not block editing
+        logger.warn('HOOK', 'File edit observation storage failed, skipping', { status: response.status, filePath });
+        return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+      }
+
+      logger.debug('HOOK', 'File edit observation sent successfully', { filePath });
+    } catch (error) {
+      // Worker unreachable — skip file edit observation gracefully
+      logger.warn('HOOK', 'File edit observation fetch error, skipping', { error: error instanceof Error ? error.message : String(error) });
+      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
-
-    logger.debug('HOOK', 'File edit observation sent successfully', { filePath });
 
     return { continue: true, suppressOutput: true };
   }

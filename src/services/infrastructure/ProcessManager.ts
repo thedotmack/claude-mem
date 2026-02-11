@@ -77,7 +77,11 @@ export function removePidFile(): void {
 }
 
 /**
- * Get platform-adjusted timeout (Windows socket cleanup is slower)
+ * Get platform-adjusted timeout for worker-side socket operations (2.0x on Windows).
+ *
+ * Note: Two platform multiplier functions exist intentionally:
+ * - getTimeout() in hook-constants.ts uses 1.5x for hook-side operations (fast path)
+ * - getPlatformTimeout() here uses 2.0x for worker-side socket operations (slower path)
  */
 export function getPlatformTimeout(baseMs: number): number {
   const WINDOWS_MULTIPLIER = 2.0;
@@ -380,7 +384,27 @@ export function spawnDaemon(
     }
   }
 
-  // Unix: standard detached spawn
+  // Unix: Use setsid to create a new session, fully detaching from the
+  // controlling terminal. This prevents SIGHUP from reaching the daemon
+  // even if the in-process SIGHUP handler somehow fails (belt-and-suspenders).
+  // Fall back to standard detached spawn if setsid is not available.
+  const setsidPath = '/usr/bin/setsid';
+  if (existsSync(setsidPath)) {
+    const child = spawn(setsidPath, [process.execPath, scriptPath, '--daemon'], {
+      detached: true,
+      stdio: 'ignore',
+      env
+    });
+
+    if (child.pid === undefined) {
+      return undefined;
+    }
+
+    child.unref();
+    return child.pid;
+  }
+
+  // Fallback: standard detached spawn (macOS, systems without setsid)
   const child = spawn(process.execPath, [scriptPath, '--daemon'], {
     detached: true,
     stdio: 'ignore',
@@ -394,6 +418,56 @@ export function spawnDaemon(
   child.unref();
 
   return child.pid;
+}
+
+/**
+ * Check if a process with the given PID is alive.
+ *
+ * Uses the process.kill(pid, 0) idiom: signal 0 doesn't send a signal,
+ * it just checks if the process exists and is reachable.
+ *
+ * EPERM is treated as "alive" because it means the process exists but
+ * belongs to a different user/session (common in multi-user setups).
+ * PID 0 (Windows WMIC sentinel for unknown PID) is treated as alive.
+ */
+export function isProcessAlive(pid: number): boolean {
+  // PID 0 is the Windows WMIC sentinel value — process was spawned but PID unknown
+  if (pid === 0) return true;
+
+  // Invalid PIDs are not alive
+  if (!Number.isInteger(pid) || pid < 0) return false;
+
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error: unknown) {
+    const code = (error as NodeJS.ErrnoException).code;
+    // EPERM = process exists but different user/session — treat as alive
+    if (code === 'EPERM') return true;
+    // ESRCH = no such process — it's dead
+    return false;
+  }
+}
+
+/**
+ * Read the PID file and remove it if the recorded process is dead (stale).
+ *
+ * This is a cheap operation: one filesystem read + one signal-0 check.
+ * Called at the top of ensureWorkerStarted() to clean up after WSL2
+ * hibernate, OOM kills, or other ungraceful worker deaths.
+ */
+export function cleanStalePidFile(): void {
+  const pidInfo = readPidFile();
+  if (!pidInfo) return;
+
+  if (!isProcessAlive(pidInfo.pid)) {
+    logger.info('SYSTEM', 'Removing stale PID file (worker process is dead)', {
+      pid: pidInfo.pid,
+      port: pidInfo.port,
+      startedAt: pidInfo.startedAt
+    });
+    removePidFile();
+  }
 }
 
 /**

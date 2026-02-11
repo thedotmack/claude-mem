@@ -16,7 +16,11 @@ import { logger } from '../../utils/logger.js';
 export const sessionCompleteHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
     // Ensure worker is running
-    await ensureWorkerRunning();
+    const workerReady = await ensureWorkerRunning();
+    if (!workerReady) {
+      // Worker not available — skip session completion gracefully
+      return { continue: true, suppressOutput: true };
+    }
 
     const { sessionId } = input;
     const port = getWorkerPort();
