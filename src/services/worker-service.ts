@@ -231,6 +231,22 @@ export class WorkerService {
       this.isShuttingDown = shutdownRef.value;
       handler('SIGINT');
     });
+
+    // SIGHUP: sent by kernel when controlling terminal closes.
+    // Daemon mode: ignore it (survive parent shell exit).
+    // Interactive mode: treat like SIGTERM (graceful shutdown).
+    if (process.platform !== 'win32') {
+      if (process.argv.includes('--daemon')) {
+        process.on('SIGHUP', () => {
+          logger.debug('SYSTEM', 'Ignoring SIGHUP in daemon mode');
+        });
+      } else {
+        process.on('SIGHUP', () => {
+          this.isShuttingDown = shutdownRef.value;
+          handler('SIGHUP');
+        });
+      }
+    }
   }
 
   /**
@@ -971,6 +987,18 @@ async function main() {
 
     case '--daemon':
     default: {
+      // Prevent daemon from dying silently on unhandled errors.
+      // The HTTP server can continue serving even if a background task throws.
+      process.on('unhandledRejection', (reason) => {
+        logger.error('SYSTEM', 'Unhandled rejection in daemon', {
+          reason: reason instanceof Error ? reason.message : String(reason)
+        });
+      });
+      process.on('uncaughtException', (error) => {
+        logger.error('SYSTEM', 'Uncaught exception in daemon', {}, error as Error);
+        // Don't exit — keep the HTTP server running
+      });
+
       const worker = new WorkerService();
       worker.start().catch((error) => {
         logger.failure('SYSTEM', 'Worker failed to start', {}, error as Error);

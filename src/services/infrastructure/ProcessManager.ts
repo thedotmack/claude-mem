@@ -384,7 +384,27 @@ export function spawnDaemon(
     }
   }
 
-  // Unix: standard detached spawn
+  // Unix: Use setsid to create a new session, fully detaching from the
+  // controlling terminal. This prevents SIGHUP from reaching the daemon
+  // even if the in-process SIGHUP handler somehow fails (belt-and-suspenders).
+  // Fall back to standard detached spawn if setsid is not available.
+  const setsidPath = '/usr/bin/setsid';
+  if (existsSync(setsidPath)) {
+    const child = spawn(setsidPath, [process.execPath, scriptPath, '--daemon'], {
+      detached: true,
+      stdio: 'ignore',
+      env
+    });
+
+    if (child.pid === undefined) {
+      return undefined;
+    }
+
+    child.unref();
+    return child.pid;
+  }
+
+  // Fallback: standard detached spawn (macOS, systems without setsid)
   const child = spawn(process.execPath, [scriptPath, '--daemon'], {
     detached: true,
     stdio: 'ignore',
