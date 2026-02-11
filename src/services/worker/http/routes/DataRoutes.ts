@@ -17,6 +17,7 @@ import { DatabaseManager } from '../../DatabaseManager.js';
 import { SessionManager } from '../../SessionManager.js';
 import { SSEBroadcaster } from '../../SSEBroadcaster.js';
 import type { WorkerService } from '../../../worker-service.js';
+import type { ParsedObservation } from '../../../../sdk/parser.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 
 export class DataRoutes extends BaseRouteHandler {
@@ -60,6 +61,9 @@ export class DataRoutes extends BaseRouteHandler {
 
     // Import endpoint
     app.post('/api/import', this.handleImport.bind(this));
+
+    // Backfill endpoint (sync SQLite observations to Chroma vector DB)
+    app.post('/api/backfill', this.handleBackfill.bind(this));
   }
 
   /**
@@ -301,8 +305,11 @@ export class DataRoutes extends BaseRouteHandler {
    * Import memories from export file
    * POST /api/import
    * Body: { sessions: [], summaries: [], observations: [], prompts: [] }
+   *
+   * After importing, automatically triggers Chroma backfill for affected projects
+   * so imported observations are discoverable via vector search.
    */
-  private handleImport = this.wrapHandler((req: Request, res: Response): void => {
+  private handleImport = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const { sessions, summaries, observations, prompts } = req.body;
 
     const stats = {
@@ -313,10 +320,12 @@ export class DataRoutes extends BaseRouteHandler {
       observationsImported: 0,
       observationsSkipped: 0,
       promptsImported: 0,
-      promptsSkipped: 0
+      promptsSkipped: 0,
+      chromaBackfill: { synced: 0, failed: 0 }
     };
 
     const store = this.dbManager.getSessionStore();
+    const importedObservations: Array<{ id: number; obs: typeof observations[0] }> = [];
 
     // Import sessions first (dependency for everything else)
     if (Array.isArray(sessions)) {
@@ -348,6 +357,7 @@ export class DataRoutes extends BaseRouteHandler {
         const result = store.importObservation(obs);
         if (result.imported) {
           stats.observationsImported++;
+          importedObservations.push({ id: result.id, obs });
         } else {
           stats.observationsSkipped++;
         }
@@ -366,10 +376,113 @@ export class DataRoutes extends BaseRouteHandler {
       }
     }
 
+    // Sync imported observations to Chroma (makes them searchable via vector search)
+    // Uses the shared ChromaSync instance (same collection as production: cm__claude-mem)
+    if (importedObservations.length > 0) {
+      const chromaSync = this.dbManager.getChromaSync();
+      let synced = 0;
+      let failed = 0;
+      for (const imported of importedObservations) {
+        try {
+          const parsed: ParsedObservation = {
+            type: imported.obs.type,
+            title: imported.obs.title || null,
+            subtitle: imported.obs.subtitle || null,
+            facts: imported.obs.facts ? JSON.parse(imported.obs.facts) : [],
+            narrative: imported.obs.narrative || null,
+            concepts: imported.obs.concepts ? JSON.parse(imported.obs.concepts) : [],
+            files_read: imported.obs.files_read ? JSON.parse(imported.obs.files_read) : [],
+            files_modified: imported.obs.files_modified ? JSON.parse(imported.obs.files_modified) : [],
+          };
+          await chromaSync.syncObservation(
+            imported.id,
+            imported.obs.memory_session_id,
+            imported.obs.project,
+            parsed,
+            imported.obs.prompt_number || 0,
+            imported.obs.created_at_epoch,
+            imported.obs.discovery_tokens || 0
+          );
+          synced++;
+        } catch (error) {
+          failed++;
+          logger.warn('DB', 'Chroma sync failed for imported observation', {
+            observationId: imported.id,
+            error: error instanceof Error ? error.message : String(error)
+          });
+        }
+      }
+      stats.chromaBackfill = { synced, failed };
+    }
+
     res.json({
       success: true,
       stats
     });
+  });
+
+  /**
+   * Trigger Chroma vector DB backfill for a project
+   * POST /api/backfill
+   * Body: { project: string }
+   *
+   * Reads all observations for the project from SQLite and syncs each to Chroma.
+   * Uses the shared ChromaSync instance (cm__claude-mem collection).
+   * Useful after importing data via /api/import or when vector search results are stale.
+   */
+  private handleBackfill = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const { project } = req.body;
+
+    if (!project || typeof project !== 'string') {
+      this.badRequest(res, 'project is required (string)');
+      return;
+    }
+
+    logger.info('CHROMA', 'Manual backfill triggered', { project });
+
+    const db = this.dbManager.getSessionStore().db;
+    const chromaSync = this.dbManager.getChromaSync();
+
+    const observations = db.prepare(
+      'SELECT * FROM observations WHERE project = ? ORDER BY id ASC'
+    ).all(project) as Array<{
+      id: number; memory_session_id: string; project: string; type: string;
+      title: string | null; subtitle: string | null; facts: string | null;
+      narrative: string | null; concepts: string | null;
+      files_read: string | null; files_modified: string | null;
+      prompt_number: number; discovery_tokens: number; created_at_epoch: number;
+    }>;
+
+    let synced = 0;
+    let failed = 0;
+    for (const obs of observations) {
+      try {
+        const parsed: ParsedObservation = {
+          type: obs.type,
+          title: obs.title || null,
+          subtitle: obs.subtitle || null,
+          facts: obs.facts ? JSON.parse(obs.facts) : [],
+          narrative: obs.narrative || null,
+          concepts: obs.concepts ? JSON.parse(obs.concepts) : [],
+          files_read: obs.files_read ? JSON.parse(obs.files_read) : [],
+          files_modified: obs.files_modified ? JSON.parse(obs.files_modified) : [],
+        };
+        await chromaSync.syncObservation(
+          obs.id, obs.memory_session_id, obs.project,
+          parsed, obs.prompt_number, obs.created_at_epoch,
+          obs.discovery_tokens || 0
+        );
+        synced++;
+      } catch (error) {
+        failed++;
+        logger.warn('CHROMA', 'Backfill sync failed for observation', {
+          observationId: obs.id,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
+
+    res.json({ success: true, project, total: observations.length, synced, failed });
   });
 
   /**
