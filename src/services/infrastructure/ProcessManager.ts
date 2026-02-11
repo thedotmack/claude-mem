@@ -336,6 +336,75 @@ export async function cleanupOrphanedProcesses(): Promise<void> {
 }
 
 /**
+ * Clean up excess chroma-mcp processes by count (not age).
+ *
+ * Unlike cleanupOrphanedProcesses() which uses ORPHAN_MAX_AGE_MINUTES = 30,
+ * this function kills by count — essential for catching spawn storms where
+ * all processes are young. Keeps the newest processes (by elapsed time)
+ * and kills the rest.
+ *
+ * Returns the number of processes killed.
+ */
+export async function cleanupExcessChromaProcesses(maxAllowed: number = 2): Promise<number> {
+  // Windows: Chroma is disabled entirely, no cleanup needed
+  if (process.platform === 'win32') return 0;
+
+  try {
+    const { stdout } = await execAsync(
+      'ps -eo pid,etime,command | grep -E "chroma-mcp" | grep -v grep || true'
+    );
+
+    if (!stdout.trim()) return 0;
+
+    const processes: Array<{ pid: number; ageMinutes: number }> = [];
+
+    for (const line of stdout.trim().split('\n')) {
+      if (!line.trim()) continue;
+      const match = line.trim().match(/^(\d+)\s+(\S+)\s+(.*)$/);
+      if (!match) continue;
+
+      const pid = parseInt(match[1], 10);
+      const etime = match[2];
+
+      if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) continue;
+
+      const ageMinutes = parseElapsedTime(etime);
+      processes.push({ pid, ageMinutes });
+    }
+
+    if (processes.length <= maxAllowed) return 0;
+
+    // Sort: newest first (lowest age), keep maxAllowed, kill rest
+    processes.sort((a, b) => a.ageMinutes - b.ageMinutes);
+    const toKill = processes.slice(maxAllowed);
+
+    let killed = 0;
+    for (const { pid } of toKill) {
+      try {
+        process.kill(pid, 'SIGTERM');
+        killed++;
+        logger.info('SYSTEM', 'Killed excess chroma-mcp process', { pid });
+      } catch {
+        // Process may already be dead
+      }
+    }
+
+    if (killed > 0) {
+      logger.warn('SYSTEM', 'Cleaned up excess chroma-mcp processes by count', {
+        found: processes.length,
+        killed,
+        maxAllowed
+      });
+    }
+
+    return killed;
+  } catch (error) {
+    logger.debug('SYSTEM', 'Failed to enumerate chroma-mcp processes', {}, error as Error);
+    return 0;
+  }
+}
+
+/**
  * Spawn a detached daemon process
  * Returns the child PID or undefined if spawn failed
  *

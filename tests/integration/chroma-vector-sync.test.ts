@@ -392,4 +392,209 @@ describe('ChromaSync Vector Sync Integration', () => {
       expect(sourceFile).toContain('this.transport = null');
     });
   });
+
+  describe('Spawn storm prevention (Issue #1063)', () => {
+    /**
+     * Regression tests for chroma-mcp spawn storm:
+     * 641 processes spawned in ~5 minutes from 6 concurrent sessions.
+     *
+     * Root cause: ensureConnection() had no mutex. Concurrent callers
+     * each spawned a chroma-mcp subprocess via StdioClientTransport.
+     *
+     * Fix: 5 defense layers — connection mutex, pre-spawn count guard,
+     * hardened close(), count-based orphan reaper, circuit breaker.
+     */
+
+    describe('Layer 0: Connection mutex', () => {
+      it('should have connectionPromise field for mutex', async () => {
+        const { ChromaSync } = await import('../../src/services/sync/ChromaSync.js');
+        const sync = new ChromaSync(testProject);
+        const syncAny = sync as any;
+
+        // connectionPromise should be null initially
+        expect(syncAny.connectionPromise).toBeNull();
+      });
+
+      it('should coalesce concurrent ensureConnection calls via source code', async () => {
+        // Static analysis: verify mutex pattern exists in source
+        const sourceFile = await Bun.file(
+          new URL('../../src/services/sync/ChromaSync.ts', import.meta.url)
+        ).text();
+
+        // Verify mutex pattern: check for connectionPromise, return it
+        expect(sourceFile).toContain('if (this.connectionPromise)');
+        expect(sourceFile).toContain('return this.connectionPromise');
+        expect(sourceFile).toContain('this.connectionPromise = this._doConnect()');
+      });
+
+      it('should clear connectionPromise in finally block', async () => {
+        const sourceFile = await Bun.file(
+          new URL('../../src/services/sync/ChromaSync.ts', import.meta.url)
+        ).text();
+
+        // The finally block ensures connectionPromise is cleared even on error
+        expect(sourceFile).toContain('finally {');
+        expect(sourceFile).toContain('this.connectionPromise = null');
+      });
+
+      it('should clear connectionPromise in error recovery paths', async () => {
+        const sourceFile = await Bun.file(
+          new URL('../../src/services/sync/ChromaSync.ts', import.meta.url)
+        ).text();
+
+        // Count occurrences of connectionPromise = null (should be in multiple places:
+        // finally block, ensureCollection error, queryChroma error, close())
+        const matches = sourceFile.match(/this\.connectionPromise = null/g) || [];
+        expect(matches.length).toBeGreaterThanOrEqual(4);
+      });
+    });
+
+    describe('Layer 1: Pre-spawn process count guard', () => {
+      it('should have killExcessChromaProcesses method', async () => {
+        const { ChromaSync } = await import('../../src/services/sync/ChromaSync.js');
+        const sync = new ChromaSync(testProject);
+        const syncAny = sync as any;
+
+        expect(typeof syncAny.killExcessChromaProcesses).toBe('function');
+      });
+
+      it('should use execFileSync not execSync for safety', async () => {
+        const sourceFile = await Bun.file(
+          new URL('../../src/services/sync/ChromaSync.ts', import.meta.url)
+        ).text();
+
+        // killExcessChromaProcesses should use execFileSync (no shell injection)
+        // Extract just the method body
+        const methodStart = sourceFile.indexOf('killExcessChromaProcesses');
+        const methodBody = sourceFile.slice(methodStart, methodStart + 500);
+        expect(methodBody).toContain('execFileSync');
+      });
+
+      it('should define MAX_CHROMA_PROCESSES constant', async () => {
+        const sourceFile = await Bun.file(
+          new URL('../../src/services/sync/ChromaSync.ts', import.meta.url)
+        ).text();
+
+        expect(sourceFile).toContain('MAX_CHROMA_PROCESSES');
+      });
+    });
+
+    describe('Layer 2: Hardened close()', () => {
+      it('should use try-finally to guarantee state reset', async () => {
+        const sourceFile = await Bun.file(
+          new URL('../../src/services/sync/ChromaSync.ts', import.meta.url)
+        ).text();
+
+        // Find the close() method body (needs larger slice to capture finally block)
+        const closeStart = sourceFile.indexOf('async close():');
+        const closeBody = sourceFile.slice(closeStart, closeStart + 1000);
+
+        // Verify try-finally pattern
+        expect(closeBody).toContain('try {');
+        expect(closeBody).toContain('} finally {');
+      });
+
+      it('should catch individual close errors with .catch()', async () => {
+        const sourceFile = await Bun.file(
+          new URL('../../src/services/sync/ChromaSync.ts', import.meta.url)
+        ).text();
+
+        const closeStart = sourceFile.indexOf('async close():');
+        const closeBody = sourceFile.slice(closeStart, closeStart + 600);
+
+        // Both client and transport close should have .catch()
+        expect(closeBody).toContain('this.client.close().catch(');
+        expect(closeBody).toContain('this.transport.close().catch(');
+      });
+
+      it('should reset connectionPromise in close()', async () => {
+        const { ChromaSync } = await import('../../src/services/sync/ChromaSync.js');
+        const sync = new ChromaSync(testProject);
+        const syncAny = sync as any;
+
+        // Simulate partially initialized state — must set connected=true
+        // so close() doesn't early-return before reaching the finally block
+        syncAny.connectionPromise = Promise.resolve();
+        syncAny.connected = true;
+
+        await sync.close();
+
+        // connectionPromise must be reset
+        expect(syncAny.connectionPromise).toBeNull();
+      });
+    });
+
+    describe('Layer 4: Circuit breaker', () => {
+      it('should have circuit breaker fields', async () => {
+        const { ChromaSync } = await import('../../src/services/sync/ChromaSync.js');
+        const sync = new ChromaSync(testProject);
+        const syncAny = sync as any;
+
+        expect(syncAny.consecutiveFailures).toBe(0);
+        expect(syncAny.lastFailureTime).toBe(0);
+      });
+
+      it('should have circuit breaker constants', async () => {
+        const { ChromaSync } = await import('../../src/services/sync/ChromaSync.js');
+        const syncClass = ChromaSync as any;
+
+        expect(syncClass.MAX_FAILURES).toBe(3);
+        expect(syncClass.CIRCUIT_OPEN_MS).toBe(60000);
+      });
+
+      it('should throw when circuit breaker is open', async () => {
+        const { ChromaSync } = await import('../../src/services/sync/ChromaSync.js');
+        const sync = new ChromaSync(testProject);
+        const syncAny = sync as any;
+
+        // Simulate 3 consecutive failures just now
+        syncAny.consecutiveFailures = 3;
+        syncAny.lastFailureTime = Date.now();
+
+        // checkCircuitBreaker should throw
+        expect(() => syncAny.checkCircuitBreaker()).toThrow('circuit breaker open');
+      });
+
+      it('should allow retry after cooldown expires', async () => {
+        const { ChromaSync } = await import('../../src/services/sync/ChromaSync.js');
+        const sync = new ChromaSync(testProject);
+        const syncAny = sync as any;
+
+        // Simulate 3 failures that happened 2 minutes ago (past cooldown)
+        syncAny.consecutiveFailures = 3;
+        syncAny.lastFailureTime = Date.now() - 120000;
+
+        // checkCircuitBreaker should NOT throw — cooldown expired
+        expect(() => syncAny.checkCircuitBreaker()).not.toThrow();
+      });
+
+      it('should not throw when under failure threshold', async () => {
+        const { ChromaSync } = await import('../../src/services/sync/ChromaSync.js');
+        const sync = new ChromaSync(testProject);
+        const syncAny = sync as any;
+
+        // 2 failures (under MAX_FAILURES = 3)
+        syncAny.consecutiveFailures = 2;
+        syncAny.lastFailureTime = Date.now();
+
+        expect(() => syncAny.checkCircuitBreaker()).not.toThrow();
+      });
+
+      it('should track failures in _doConnect error path via source code', async () => {
+        const sourceFile = await Bun.file(
+          new URL('../../src/services/sync/ChromaSync.ts', import.meta.url)
+        ).text();
+
+        // Verify _doConnect increments consecutiveFailures on error
+        const doConnectStart = sourceFile.indexOf('private async _doConnect');
+        const doConnectBody = sourceFile.slice(doConnectStart, doConnectStart + 3000);
+
+        expect(doConnectBody).toContain('this.consecutiveFailures++');
+        expect(doConnectBody).toContain('this.lastFailureTime = Date.now()');
+
+        // And resets on success
+        expect(doConnectBody).toContain('this.consecutiveFailures = 0');
+      });
+    });
+  });
 });
