@@ -2,6 +2,27 @@
 
 All notable changes to claude-mem.
 
+## [v10.0.2] - 2026-02-11
+
+## Bug Fixes
+
+- **Prevent daemon silent death from SIGHUP + unhandled errors** — Worker process could silently die when receiving SIGHUP signals or encountering unhandled errors, leaving hooks without a backend. Now properly handles these signals and prevents silent crashes.
+- **Hook resilience and worker lifecycle improvements** — Comprehensive fixes for hook command error classification, addressing issues #957, #923, #984, #987, and #1042. Hooks now correctly distinguish between worker unavailability errors and other failures.
+- **Clarify TypeError order dependency in error classifier** — Fixed error classification logic to properly handle TypeError ordering edge cases.
+
+## New Features
+
+- **Project-scoped statusline counter utility** — Added `statusline-counts.js` for tracking observation counts per project in the Claude Code status line.
+
+## Internal
+
+- Added test coverage for hook command error classification and process manager
+- Worker service and MCP server lifecycle improvements
+- Process manager enhancements for better cross-platform stability
+
+### Contributors
+- @rodboev — Hook resilience and worker lifecycle fixes (PR #1056)
+
 ## [v10.0.1] - 2026-02-11
 
 ## What's Changed
@@ -1493,16 +1514,4 @@ Set in ~/.claude-mem/settings.json:
   "CLAUDE_MEM_MODE": "code--chill"
 }
 ```
-
-## [v8.0.1] - 2025-12-23
-
-## 🎨 UI Improvements
-
-- **Header Redesign**: Moved documentation and X (Twitter) links from settings modal to main header for better accessibility
-- **Removed Product Hunt Badge**: Cleaned up header layout by removing the Product Hunt badge
-- **Icon Reorganization**: Reordered header icons for improved UX flow (Docs → X → Discord → GitHub)
-
----
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
 
