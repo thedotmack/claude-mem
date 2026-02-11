@@ -124,7 +124,7 @@ interface ObservationSSEPayload {
   concepts: string | null;
   files_read: string | null;
   files_modified: string | null;
-  project: string;
+  project: string | null;
   prompt_number: number;
   created_at_epoch: number;
 }
@@ -181,7 +181,7 @@ const AGENT_EMOJI_MAP: Record<string, string> = {
 const CLAUDE_CODE_EMOJI = "⌨️";
 const OPENCLAW_DEFAULT_EMOJI = "🦀";
 
-function getSourceLabel(project: string): string {
+function getSourceLabel(project: string | null | undefined): string {
   if (!project) return OPENCLAW_DEFAULT_EMOJI;
   // OpenClaw agent projects are formatted as "openclaw-<agentId>"
   if (project.startsWith("openclaw-")) {
