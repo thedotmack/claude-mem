@@ -2,6 +2,39 @@
 
 All notable changes to claude-mem.
 
+## [v10.0.3] - 2026-02-11
+
+## Fix: Prevent chroma-mcp spawn storm (PR #1065)
+
+Fixes a critical bug where killing the worker daemon during active sessions caused **641 chroma-mcp Python processes** to spawn in ~5 minutes, consuming 75%+ CPU and ~64GB virtual memory.
+
+### Root Cause
+
+`ChromaSync.ensureConnection()` had no connection mutex. Concurrent fire-and-forget `syncObservation()` calls from multiple sessions raced through the check-then-act guard, each spawning a chroma-mcp subprocess via `StdioClientTransport`. Error-driven reconnection created a positive feedback loop.
+
+### 5-Layer Defense
+
+| Layer | Mechanism | Purpose |
+|-------|-----------|---------|
+| **0** | Connection mutex via promise memoization | Coalesces concurrent callers onto a single spawn attempt |
+| **1** | Pre-spawn process count guard (`execFileSync('ps')`) | Kills excess chroma-mcp processes before spawning new ones |
+| **2** | Hardened `close()` with try-finally + Unix `pkill -P` fallback | Guarantees state reset even on error, kills orphaned children |
+| **3** | Count-based orphan reaper in `ProcessManager` | Kills by count (not age), catches spawn storms where all processes are young |
+| **4** | Circuit breaker (3 failures → 60s cooldown) | Stops error-driven reconnection positive feedback loop |
+
+### Additional Fix
+
+- Process guards now use `etime`-based sorting instead of PID ordering for reliable age determination (PIDs wrap and don't guarantee ordering)
+
+### Testing
+
+- 16 new tests for mutex, circuit breaker, close() hardening, and count guard
+- All tests pass (947 pass, 3 skip)
+
+Closes #1063, closes #695. Relates to #1010, #707.
+
+**Contributors:** @rodboev
+
 ## [v10.0.2] - 2026-02-11
 
 ## Bug Fixes
@@ -1489,29 +1522,4 @@ Refactored context loading logic to differentiate between code and non-code mode
 ## [v8.0.3] - 2025-12-23
 
 Fix critical worker crashes on startup (v8.0.2 regression)
-
-## [v8.0.2] - 2025-12-23
-
-New "chill" remix of code mode for users who want fewer, more selective observations.
-
-## Features
-
-- **code--chill mode**: A behavioral variant that produces fewer observations
-  - Only records things "painful to rediscover" - shipped features, architectural decisions, non-obvious gotchas
-  - Skips routine work, straightforward implementations, and obvious changes
-  - Philosophy: "When in doubt, skip it"
-
-## Documentation
-
-- Updated modes.mdx with all 28 language modes (was 10)
-- Added Code Mode Variants section documenting chill mode
-
-## Usage
-
-Set in ~/.claude-mem/settings.json:
-```json
-{
-  "CLAUDE_MEM_MODE": "code--chill"
-}
-```
 
