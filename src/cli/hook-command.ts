@@ -57,6 +57,8 @@ export function isWorkerUnavailableError(error: unknown): boolean {
   // Programming errors — code bugs, not worker unavailability
   // Note: TypeError('fetch failed') already handled by transport patterns above
   if (error instanceof TypeError || error instanceof ReferenceError || error instanceof SyntaxError) {
+    return false;
+  }
 
   // Default: treat unknown errors as blocking (conservative — surface bugs)
   return false;
