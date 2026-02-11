@@ -1,0 +1,94 @@
+{
+  "version": 1,
+  "schemas": {
+    "codex": {
+      "name": "codex",
+      "version": "0.2",
+      "description": "Schema for Codex session JSONL files under ~/.codex/sessions.",
+      "events": [
+        {
+          "name": "session-meta",
+          "match": { "path": "type", "equals": "session_meta" },
+          "action": "session_context",
+          "fields": {
+            "sessionId": "payload.id",
+            "cwd": "payload.cwd"
+          }
+        },
+        {
+          "name": "turn-context",
+          "match": { "path": "type", "equals": "turn_context" },
+          "action": "session_context",
+          "fields": {
+            "cwd": "payload.cwd"
+          }
+        },
+        {
+          "name": "user-message",
+          "match": { "path": "payload.type", "equals": "user_message" },
+          "action": "session_init",
+          "fields": {
+            "prompt": "payload.message"
+          }
+        },
+        {
+          "name": "assistant-message",
+          "match": { "path": "payload.type", "equals": "agent_message" },
+          "action": "assistant_message",
+          "fields": {
+            "message": "payload.message"
+          }
+        },
+        {
+          "name": "tool-use",
+          "match": { "path": "payload.type", "in": ["function_call", "custom_tool_call", "web_search_call"] },
+          "action": "tool_use",
+          "fields": {
+            "toolId": "payload.call_id",
+            "toolName": {
+              "coalesce": [
+                "payload.name",
+                { "value": "web_search" }
+              ]
+            },
+            "toolInput": {
+              "coalesce": [
+                "payload.arguments",
+                "payload.input",
+                "payload.action"
+              ]
+            }
+          }
+        },
+        {
+          "name": "tool-result",
+          "match": { "path": "payload.type", "in": ["function_call_output", "custom_tool_call_output"] },
+          "action": "tool_result",
+          "fields": {
+            "toolId": "payload.call_id",
+            "toolResponse": "payload.output"
+          }
+        },
+        {
+          "name": "session-end",
+          "match": { "path": "payload.type", "equals": "turn_aborted" },
+          "action": "session_end"
+        }
+      ]
+    }
+  },
+  "watches": [
+    {
+      "name": "codex",
+      "path": "~/.codex/sessions/**/*.jsonl",
+      "schema": "codex",
+      "startAtEnd": true,
+      "context": {
+        "mode": "agents",
+        "path": "~/.codex/AGENTS.md",
+        "updateOn": ["session_start", "session_end"]
+      }
+    }
+  ],
+  "stateFile": "~/.claude-mem/transcript-watch-state.json"
+}
