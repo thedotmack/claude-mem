@@ -19,6 +19,7 @@ import path from 'path';
 import os from 'os';
 import fs from 'fs';
 import { execSync, execFileSync } from 'child_process';
+import { parseElapsedTime } from '../infrastructure/ProcessManager.js';
 
 // Version injected at build time by esbuild define
 declare const __DEFAULT_PACKAGE_VERSION__: string;
@@ -242,25 +243,32 @@ export class ChromaSync {
     if (process.platform === 'win32') return; // Windows has Chroma disabled entirely
 
     try {
-      // Use execFileSync to avoid shell injection — filter in JavaScript
-      const output = execFileSync('ps', ['-eo', 'pid,command'], {
+      // Use execFileSync to avoid shell injection — filter and sort in JavaScript
+      // Include etime column for reliable age-based sorting (PID order is unreliable)
+      const output = execFileSync('ps', ['-eo', 'pid,etime,command'], {
         encoding: 'utf8',
         timeout: 5000,
         stdio: ['pipe', 'pipe', 'pipe']
       });
 
-      // Filter for chroma-mcp processes in JavaScript (no shell grep needed)
-      const pids = output.split('\n')
+      // Filter for chroma-mcp, parse elapsed time, sort by actual age
+      const processes = output.split('\n')
         .filter(l => l.includes('chroma-mcp'))
-        .map(l => parseInt(l.trim().split(/\s+/)[0], 10))
-        .filter(pid => pid > 0 && pid !== process.pid)
-        .sort((a, b) => b - a); // Descending: newest (highest PID) first
+        .map(l => {
+          const parts = l.trim().split(/\s+/);
+          const pid = parseInt(parts[0], 10);
+          const etime = parts[1] || '';
+          const ageMinutes = parseElapsedTime(etime);
+          return { pid, ageMinutes };
+        })
+        .filter(p => p.pid > 0 && p.pid !== process.pid && p.ageMinutes >= 0)
+        .sort((a, b) => a.ageMinutes - b.ageMinutes); // Ascending: newest (lowest age) first
 
-      if (pids.length < MAX_CHROMA_PROCESSES) return;
+      if (processes.length < MAX_CHROMA_PROCESSES) return;
 
       // Keep newest MAX_CHROMA_PROCESSES - 1 (making room for the one we're about to spawn)
-      const toKill = pids.slice(MAX_CHROMA_PROCESSES - 1);
-      for (const pid of toKill) {
+      const toKill = processes.slice(MAX_CHROMA_PROCESSES - 1);
+      for (const { pid } of toKill) {
         try {
           process.kill(pid, 'SIGTERM');
         } catch {
@@ -270,7 +278,7 @@ export class ChromaSync {
 
       if (toKill.length > 0) {
         logger.warn('CHROMA_SYNC', 'Killed excess chroma-mcp processes before spawning', {
-          found: pids.length,
+          found: processes.length,
           killed: toKill.length,
           maxAllowed: MAX_CHROMA_PROCESSES
         });

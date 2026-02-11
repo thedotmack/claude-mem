@@ -369,6 +369,8 @@ export async function cleanupExcessChromaProcesses(maxAllowed: number = 2): Prom
       if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) continue;
 
       const ageMinutes = parseElapsedTime(etime);
+      // Skip entries with unparseable etime (-1) to avoid sort corruption
+      if (ageMinutes < 0) continue;
       processes.push({ pid, ageMinutes });
     }
 
