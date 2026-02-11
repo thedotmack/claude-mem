@@ -1,104 +1,98 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useMemo, useRef } from 'react';
 import { Observation, Summary, UserPrompt } from '../types';
 import { UI } from '../constants/ui';
 import { API_ENDPOINTS } from '../constants/api';
 
-interface PaginationState {
-  isLoading: boolean;
-  hasMore: boolean;
-}
-
-type DataType = 'observations' | 'summaries' | 'prompts';
 type DataItem = Observation | Summary | UserPrompt;
 
+interface PaginationState {
+  offset: number;
+  isLoading: boolean;
+  hasMore: boolean;
+  error?: string;
+}
+
+const INITIAL_STATE: PaginationState = {
+  offset: 0,
+  isLoading: false,
+  hasMore: true,
+  error: undefined
+};
+
 /**
- * Generic pagination hook for observations, summaries, and prompts
+ * Generic pagination hook with automatic filter reset
  */
-function usePaginationFor(endpoint: string, dataType: DataType, currentFilter: string) {
-  const [state, setState] = useState<PaginationState>({
-    isLoading: false,
-    hasMore: true
-  });
+function usePaginationFor(endpoint: string, filter: string) {
+  const [state, setState] = useState<PaginationState>(INITIAL_STATE);
 
-  // Track offset and filter in refs to handle synchronous resets
-  const offsetRef = useRef(0);
-  const lastFilterRef = useRef(currentFilter);
-  const stateRef = useRef(state);
-
-  /**
-   * Load more items from the API
-   * Automatically resets offset to 0 if filter has changed
-   */
-  const loadMore = useCallback(async (): Promise<DataItem[]> => {
-    // Check if filter changed - if so, reset pagination synchronously
-    const filterChanged = lastFilterRef.current !== currentFilter;
-
-    if (filterChanged) {
-      offsetRef.current = 0;
-      lastFilterRef.current = currentFilter;
-
-      // Reset state both in React state and ref synchronously
-      const newState = { isLoading: false, hasMore: true };
-      setState(newState);
-      stateRef.current = newState;  // Update ref immediately to avoid stale checks
+  // Reset pagination when filter changes
+  const prevFilterRef = useRef(filter);
+  
+  const currentState = useMemo(() => {
+    if (prevFilterRef.current !== filter) {
+      prevFilterRef.current = filter;
+      setState(INITIAL_STATE);
+      return INITIAL_STATE;
     }
+    return state;
+  }, [state, filter]);
 
-    // Prevent concurrent requests using ref (always current)
-    // Skip this check if we just reset the filter - we want to load the first page
-    if (!filterChanged && (stateRef.current.isLoading || !stateRef.current.hasMore)) {
+  const loadMore = useCallback(async (): Promise<DataItem[]> => {
+    if (currentState.isLoading || !currentState.hasMore) {
       return [];
     }
 
-    setState(prev => ({ ...prev, isLoading: true }));
+    setState(prev => ({ ...prev, isLoading: true, error: undefined }));
 
-    // Build query params using current offset from ref
-    const params = new URLSearchParams({
-      offset: offsetRef.current.toString(),
-      limit: UI.PAGINATION_PAGE_SIZE.toString()
-    });
+    try {
+      const params = new URLSearchParams({
+        offset: currentState.offset.toString(),
+        limit: UI.PAGINATION_PAGE_SIZE.toString(),
+        ...(filter && { project: filter })
+      });
 
-    // Add project filter if present
-    if (currentFilter) {
-      params.append('project', currentFilter);
+      const response = await fetch(`${endpoint}?${params}`);
+      
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      const data = await response.json() as { items: DataItem[], hasMore: boolean };
+
+      setState(prev => ({
+        ...prev,
+        offset: prev.offset + UI.PAGINATION_PAGE_SIZE,
+        isLoading: false,
+        hasMore: data.hasMore
+      }));
+
+      return data.items;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      setState(prev => ({ 
+        ...prev, 
+        isLoading: false, 
+        error: errorMessage 
+      }));
+      return [];
     }
+  }, [endpoint, filter, currentState.offset, currentState.isLoading, currentState.hasMore]);
 
-    const response = await fetch(`${endpoint}?${params}`);
-
-    if (!response.ok) {
-      throw new Error(`Failed to load ${dataType}: ${response.statusText}`);
-    }
-
-    const data = await response.json() as { items: DataItem[], hasMore: boolean };
-
-    setState(prev => ({
-      ...prev,
-      isLoading: false,
-      hasMore: data.hasMore
-    }));
-
-    // Increment offset after successful load
-    offsetRef.current += UI.PAGINATION_PAGE_SIZE;
-
-    return data.items;
-  }, [currentFilter, endpoint, dataType]);
+  const reset = useCallback(() => {
+    setState(INITIAL_STATE);
+  }, []);
 
   return {
-    ...state,
-    loadMore
+    ...currentState,
+    loadMore,
+    reset
   };
 }
 
-/**
- * Hook for paginating observations
- */
-export function usePagination(currentFilter: string) {
-  const observations = usePaginationFor(API_ENDPOINTS.OBSERVATIONS, 'observations', currentFilter);
-  const summaries = usePaginationFor(API_ENDPOINTS.SUMMARIES, 'summaries', currentFilter);
-  const prompts = usePaginationFor(API_ENDPOINTS.PROMPTS, 'prompts', currentFilter);
-
+export function usePagination(filter: string) {
   return {
-    observations,
-    summaries,
-    prompts
+    observations: usePaginationFor(API_ENDPOINTS.OBSERVATIONS, filter),
+    summaries: usePaginationFor(API_ENDPOINTS.SUMMARIES, filter),
+    prompts: usePaginationFor(API_ENDPOINTS.PROMPTS, filter)
   };
 }

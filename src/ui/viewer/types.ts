@@ -1,47 +1,47 @@
-export interface Observation {
+// Base interfaces
+interface BaseEntity {
   id: number;
-  memory_session_id: string;
   project: string;
-  type: string;
-  title: string | null;
-  subtitle: string | null;
-  narrative: string | null;
-  text: string | null;
-  facts: string | null;
-  concepts: string | null;
-  files_read: string | null;
-  files_modified: string | null;
-  prompt_number: number | null;
-  created_at: string;
   created_at_epoch: number;
 }
 
-export interface Summary {
-  id: number;
+export interface Observation extends BaseEntity {
+  memory_session_id: string;
+  type: string;
+  title?: string;
+  subtitle?: string;
+  narrative?: string;
+  text?: string;
+  facts?: string;
+  concepts?: string;
+  files_read?: string;
+  files_modified?: string;
+  prompt_number?: number;
+  created_at: string;
+}
+
+export interface Summary extends BaseEntity {
   session_id: string;
-  project: string;
   request?: string;
   investigated?: string;
   learned?: string;
   completed?: string;
   next_steps?: string;
-  created_at_epoch: number;
 }
 
-export interface UserPrompt {
-  id: number;
+export interface UserPrompt extends BaseEntity {
   content_session_id: string;
-  project: string;
   prompt_number: number;
   prompt_text: string;
-  created_at_epoch: number;
 }
 
-export type FeedItem =
+// Union type for feed items
+export type FeedItem = 
   | (Observation & { itemType: 'observation' })
   | (Summary & { itemType: 'summary' })
   | (UserPrompt & { itemType: 'prompt' });
 
+// Stream events interface (keeping original structure for compatibility)
 export interface StreamEvent {
   type: 'initial_load' | 'new_observation' | 'new_summary' | 'new_prompt' | 'processing_status';
   observations?: Observation[];
@@ -52,44 +52,43 @@ export interface StreamEvent {
   summary?: Summary;
   prompt?: UserPrompt;
   isProcessing?: boolean;
+  queueDepth?: number;
 }
 
-export interface Settings {
-  CLAUDE_MEM_MODEL: string;
-  CLAUDE_MEM_CONTEXT_OBSERVATIONS: string;
-  CLAUDE_MEM_WORKER_PORT: string;
-  CLAUDE_MEM_WORKER_HOST: string;
-
-  // AI Provider Configuration
-  CLAUDE_MEM_PROVIDER?: string;  // 'claude' | 'gemini' | 'openrouter'
+// Configuration types
+export interface ProviderConfig {
+  CLAUDE_MEM_PROVIDER?: 'claude' | 'gemini' | 'openrouter';
   CLAUDE_MEM_GEMINI_API_KEY?: string;
-  CLAUDE_MEM_GEMINI_MODEL?: string;  // 'gemini-2.5-flash-lite' | 'gemini-2.5-flash' | 'gemini-3-flash'
-  CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED?: string;  // 'true' | 'false'
+  CLAUDE_MEM_GEMINI_MODEL?: 'gemini-2.5-flash-lite' | 'gemini-2.5-flash' | 'gemini-3-flash';
+  CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED?: 'true' | 'false';
   CLAUDE_MEM_OPENROUTER_API_KEY?: string;
   CLAUDE_MEM_OPENROUTER_MODEL?: string;
   CLAUDE_MEM_OPENROUTER_SITE_URL?: string;
   CLAUDE_MEM_OPENROUTER_APP_NAME?: string;
+}
 
-  // Token Economics Display
+export interface DisplayConfig {
   CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS?: string;
   CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS?: string;
   CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT?: string;
   CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT?: string;
-
-  // Observation Filtering
   CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES?: string;
   CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS?: string;
-
-  // Display Configuration
   CLAUDE_MEM_CONTEXT_FULL_COUNT?: string;
   CLAUDE_MEM_CONTEXT_FULL_FIELD?: string;
   CLAUDE_MEM_CONTEXT_SESSION_COUNT?: string;
-
-  // Feature Toggles
   CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY?: string;
   CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE?: string;
 }
 
+export interface Settings extends ProviderConfig, DisplayConfig {
+  CLAUDE_MEM_MODEL: string;
+  CLAUDE_MEM_CONTEXT_OBSERVATIONS: string;
+  CLAUDE_MEM_WORKER_PORT: string;
+  CLAUDE_MEM_WORKER_HOST: string;
+}
+
+// Stats interfaces
 export interface WorkerStats {
   version?: string;
   uptime?: number;

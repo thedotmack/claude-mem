@@ -1,109 +1,120 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, Dispatch, SetStateAction } from 'react';
 import { Observation, Summary, UserPrompt, StreamEvent } from '../types';
 import { API_ENDPOINTS } from '../constants/api';
 import { TIMING } from '../constants/timing';
 
-export function useSSE() {
-  const [observations, setObservations] = useState<Observation[]>([]);
-  const [summaries, setSummaries] = useState<Summary[]>([]);
-  const [prompts, setPrompts] = useState<UserPrompt[]>([]);
-  const [projects, setProjects] = useState<string[]>([]);
-  const [isConnected, setIsConnected] = useState(false);
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [queueDepth, setQueueDepth] = useState(0);
-  const eventSourceRef = useRef<EventSource | null>(null);
+interface SSEData {
+  observations: Observation[];
+  summaries: Summary[];
+  prompts: UserPrompt[];
+  projects: string[];
+  isProcessing: boolean;
+  queueDepth: number;
+  isConnected: boolean;
+}
+
+// Event handlers map for cleaner switch statement alternative
+const EVENT_HANDLERS = {
+  initial_load: (data: StreamEvent, setState: Dispatch<SetStateAction<SSEData>>) => {
+    setState(prev => ({ ...prev, projects: data.projects || [] }));
+  },
+  
+  new_observation: (data: StreamEvent, setState: Dispatch<SetStateAction<SSEData>>) => {
+    if (data.observation) {
+      setState(prev => ({ 
+        ...prev, 
+        observations: [data.observation!, ...prev.observations] 
+      }));
+    }
+  },
+  
+  new_summary: (data: StreamEvent, setState: Dispatch<SetStateAction<SSEData>>) => {
+    if (data.summary) {
+      setState(prev => ({ 
+        ...prev, 
+        summaries: [data.summary!, ...prev.summaries] 
+      }));
+    }
+  },
+  
+  new_prompt: (data: StreamEvent, setState: Dispatch<SetStateAction<SSEData>>) => {
+    if (data.prompt) {
+      setState(prev => ({ 
+        ...prev, 
+        prompts: [data.prompt!, ...prev.prompts] 
+      }));
+    }
+  },
+  
+  processing_status: (data: StreamEvent, setState: Dispatch<SetStateAction<SSEData>>) => {
+    if (typeof data.isProcessing === 'boolean') {
+      setState(prev => ({
+        ...prev,
+        isProcessing: data.isProcessing!,
+        queueDepth: data.queueDepth || 0
+      }));
+    }
+  }
+} as const;
+
+export function useSSE(): SSEData {
+  const [data, setData] = useState<SSEData>({
+    observations: [],
+    summaries: [],
+    prompts: [],
+    projects: [],
+    isProcessing: false,
+    queueDepth: 0,
+    isConnected: false
+  });
+
+  const eventSourceRef = useRef<EventSource>();
   const reconnectTimeoutRef = useRef<NodeJS.Timeout>();
 
   useEffect(() => {
-    const connect = () => {
-      // Clean up existing connection
-      if (eventSourceRef.current) {
-        eventSourceRef.current.close();
-      }
+    let isMounted = true;
 
+    const connect = () => {
+      eventSourceRef.current?.close();
+      
       const eventSource = new EventSource(API_ENDPOINTS.STREAM);
       eventSourceRef.current = eventSource;
 
       eventSource.onopen = () => {
-        console.log('[SSE] Connected');
-        setIsConnected(true);
-        // Clear any pending reconnect
-        if (reconnectTimeoutRef.current) {
-          clearTimeout(reconnectTimeoutRef.current);
-        }
+        if (!isMounted) return;
+        setData(prev => ({ ...prev, isConnected: true }));
+        clearTimeout(reconnectTimeoutRef.current);
       };
 
-      eventSource.onerror = (error) => {
-        console.error('[SSE] Connection error:', error);
-        setIsConnected(false);
+      eventSource.onerror = () => {
+        if (!isMounted) return;
+        setData(prev => ({ ...prev, isConnected: false }));
         eventSource.close();
-
-        // Reconnect after delay
-        reconnectTimeoutRef.current = setTimeout(() => {
-          reconnectTimeoutRef.current = undefined; // Clear before reconnecting
-          console.log('[SSE] Attempting to reconnect...');
-          connect();
-        }, TIMING.SSE_RECONNECT_DELAY_MS);
+        
+        reconnectTimeoutRef.current = setTimeout(connect, TIMING.SSE_RECONNECT_DELAY_MS);
       };
 
       eventSource.onmessage = (event) => {
-        const data: StreamEvent = JSON.parse(event.data);
-
-        switch (data.type) {
-          case 'initial_load':
-            console.log('[SSE] Initial load:', {
-              projects: data.projects?.length || 0
-            });
-            // Only load projects list - data will come via pagination
-            setProjects(data.projects || []);
-            break;
-
-          case 'new_observation':
-            if (data.observation) {
-              console.log('[SSE] New observation:', data.observation.id);
-              setObservations(prev => [data.observation, ...prev]);
-            }
-            break;
-
-          case 'new_summary':
-            if (data.summary) {
-              const summary = data.summary;
-              console.log('[SSE] New summary:', summary.id);
-              setSummaries(prev => [summary, ...prev]);
-            }
-            break;
-
-          case 'new_prompt':
-            if (data.prompt) {
-              const prompt = data.prompt;
-              console.log('[SSE] New prompt:', prompt.id);
-              setPrompts(prev => [prompt, ...prev]);
-            }
-            break;
-
-          case 'processing_status':
-            if (typeof data.isProcessing === 'boolean') {
-              console.log('[SSE] Processing status:', data.isProcessing, 'Queue depth:', data.queueDepth);
-              setIsProcessing(data.isProcessing);
-              setQueueDepth(data.queueDepth || 0);
-            }
-            break;
+        if (!isMounted) return;
+        
+        try {
+          const streamEvent: StreamEvent = JSON.parse(event.data);
+          const handler = EVENT_HANDLERS[streamEvent.type];
+          handler?.(streamEvent, setData);
+        } catch (error) {
+          console.error('[SSE] Failed to parse message:', error);
         }
       };
     };
 
     connect();
 
-    // Cleanup on unmount
     return () => {
-      if (eventSourceRef.current) {
-        eventSourceRef.current.close();
-      }
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-      }
+      isMounted = false;
+      eventSourceRef.current?.close();
+      clearTimeout(reconnectTimeoutRef.current);
     };
   }, []);
 
-  return { observations, summaries, prompts, projects, isProcessing, queueDepth, isConnected };
+  return data;
 }

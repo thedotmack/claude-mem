@@ -1,37 +1,82 @@
 /**
- * Formatting utility functions
- * Used across UI components for consistent display
+ * Formatting utility functions with comprehensive edge case handling
  */
 
+const FALLBACK = '-';
+
 /**
- * Format epoch timestamp to locale string
- * @param epoch - Timestamp in milliseconds since epoch
- * @returns Formatted date string
+ * Format epoch timestamp to locale string with error handling
  */
-export function formatDate(epoch: number): string {
-  return new Date(epoch).toLocaleString();
+export function formatDate(epoch?: number | null): string {
+  if (!epoch || epoch <= 0) return FALLBACK;
+  
+  try {
+    return new Date(epoch).toLocaleString(undefined, {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+  } catch {
+    return FALLBACK;
+  }
 }
 
 /**
- * Format seconds into hours and minutes
- * @param seconds - Uptime in seconds
- * @returns Formatted string like "12h 34m" or "-" if no value
+ * Format seconds into human-readable duration
  */
-export function formatUptime(seconds?: number): string {
-  if (!seconds) return '-';
+export function formatUptime(seconds?: number | null): string {
+  if (!seconds || seconds <= 0) return FALLBACK;
+  
   const hours = Math.floor(seconds / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
+  
+  if (hours === 0) return `${minutes}m`;
+  if (minutes === 0) return `${hours}h`;
   return `${hours}h ${minutes}m`;
 }
 
 /**
- * Format bytes into human-readable size
- * @param bytes - Size in bytes
- * @returns Formatted string like "1.5 MB" or "-" if no value
+ * Format bytes with adaptive precision
  */
-export function formatBytes(bytes?: number): string {
-  if (!bytes) return '-';
-  if (bytes < 1024) return bytes + ' B';
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+export function formatBytes(bytes?: number | null): string {
+  if (!bytes || bytes <= 0) return FALLBACK;
+  
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'] as const;
+  let size = bytes;
+  let unitIndex = 0;
+  
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex++;
+  }
+  
+  const precision = unitIndex === 0 ? 0 : size < 10 ? 1 : 0;
+  return `${size.toFixed(precision)} ${units[unitIndex]}`;
+}
+
+/**
+ * Format count with thousand separators
+ */
+export function formatCount(count?: number | null): string {
+  if (count == null || count < 0) return FALLBACK;
+  return count.toLocaleString();
+}
+
+/**
+ * Truncate text with smart word boundary detection
+ */
+export function truncateText(text: string, maxLength: number): string {
+  if (!text || text.length <= maxLength) return text;
+  
+  const truncated = text.slice(0, maxLength);
+  const lastSpace = truncated.lastIndexOf(' ');
+  
+  // If we can break at a word boundary within the last 20% of the limit
+  if (lastSpace > maxLength * 0.8) {
+    return truncated.slice(0, lastSpace) + '…';
+  }
+  
+  return truncated + '…';
 }
