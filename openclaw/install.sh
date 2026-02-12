@@ -626,11 +626,16 @@ install_plugin() {
       const configPath = process.env.INSTALLER_CONFIG_FILE;
       const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
       const entry = config?.plugins?.entries?.['claude-mem'];
-      if (entry) {
+      if (entry || config?.plugins?.slots?.memory === 'claude-mem') {
         // Save the config block so we can restore it after install
-        process.stdout.write(JSON.stringify(entry.config || {}));
+        process.stdout.write(JSON.stringify(entry?.config || {}));
         // Remove the stale entry so OpenClaw CLI can run
-        delete config.plugins.entries['claude-mem'];
+        if (entry) delete config.plugins.entries['claude-mem'];
+        // Also remove the slot reference — if the slot points to a plugin
+        // that isn't in entries, OpenClaw's config validator rejects ALL commands
+        if (config?.plugins?.slots?.memory === 'claude-mem') {
+          delete config.plugins.slots.memory;
+        }
         fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
       }
     " 2>/dev/null) || true
