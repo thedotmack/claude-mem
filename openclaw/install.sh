@@ -617,7 +617,8 @@ configure_memory_slot() {
   if [[ ! -f "$config_file" ]]; then
     # No config file exists — create one with the memory slot
     info "Creating OpenClaw configuration with claude-mem memory slot..."
-    node -e "
+    info "Creating OpenClaw configuration with claude-mem memory slot..."
+    INSTALLER_CONFIG_FILE="$config_file" node -e "
       const config = {
         plugins: {
           slots: { memory: 'claude-mem' },
@@ -632,7 +633,7 @@ configure_memory_slot() {
           }
         }
       };
-      require('fs').writeFileSync('${config_file}', JSON.stringify(config, null, 2));
+      require('fs').writeFileSync(process.env.INSTALLER_CONFIG_FILE, JSON.stringify(config, null, 2));
     "
     success "Created ${config_file} with memory slot set to claude-mem"
     return 0
