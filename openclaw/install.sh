@@ -806,6 +806,197 @@ verify_health() {
 }
 
 ###############################################################################
+# Observation feed setup — optional interactive channel configuration
+###############################################################################
+
+FEED_CHANNEL=""
+FEED_TARGET_ID=""
+FEED_CONFIGURED=false
+
+setup_observation_feed() {
+  echo ""
+  echo -e "  ${COLOR_BOLD}Real-Time Observation Feed${COLOR_RESET}"
+  echo ""
+  echo "  claude-mem can stream AI-compressed observations to a messaging"
+  echo "  channel in real time. Every time an agent learns something,"
+  echo "  you'll see it in your chat."
+  echo ""
+
+  if [[ "$NON_INTERACTIVE" == "--non-interactive" ]] || [[ ! -t 0 ]]; then
+    info "Non-interactive mode: skipping observation feed setup"
+    info "Configure later in ~/.openclaw/openclaw.json under"
+    info "  plugins.entries.claude-mem.config.observationFeed"
+    return 0
+  fi
+
+  prompt_user "Would you like to set up real-time observation streaming to a messaging channel? (y/n)"
+  local answer
+  read -r answer
+  answer="${answer:-n}"
+
+  if [[ "${answer,,}" != "y" && "${answer,,}" != "yes" ]]; then
+    echo ""
+    info "Skipped observation feed setup."
+    info "You can configure it later by re-running this installer or"
+    info "editing ~/.openclaw/openclaw.json under"
+    info "  plugins.entries.claude-mem.config.observationFeed"
+    return 0
+  fi
+
+  echo ""
+  echo -e "  ${COLOR_BOLD}Select your messaging channel:${COLOR_RESET}"
+  echo ""
+  echo -e "  ${COLOR_BOLD}1)${COLOR_RESET} Telegram"
+  echo -e "  ${COLOR_BOLD}2)${COLOR_RESET} Discord"
+  echo -e "  ${COLOR_BOLD}3)${COLOR_RESET} Slack"
+  echo -e "  ${COLOR_BOLD}4)${COLOR_RESET} Signal"
+  echo -e "  ${COLOR_BOLD}5)${COLOR_RESET} WhatsApp"
+  echo -e "  ${COLOR_BOLD}6)${COLOR_RESET} LINE"
+  echo ""
+
+  local channel_choice
+  while true; do
+    prompt_user "Enter choice [1-6]:"
+    read -r channel_choice
+
+    case "$channel_choice" in
+      1)
+        FEED_CHANNEL="telegram"
+        echo ""
+        echo -e "  ${COLOR_CYAN}How to find your Telegram chat ID:${COLOR_RESET}"
+        echo "  Message @userinfobot on Telegram (https://t.me/userinfobot)"
+        echo "  — it replies with your numeric chat ID."
+        echo "  For groups, the ID is negative (e.g., -1001234567890)."
+        break
+        ;;
+      2)
+        FEED_CHANNEL="discord"
+        echo ""
+        echo -e "  ${COLOR_CYAN}How to find your Discord channel ID:${COLOR_RESET}"
+        echo "  Enable Developer Mode (Settings → Advanced → Developer Mode),"
+        echo "  right-click the target channel → Copy Channel ID"
+        break
+        ;;
+      3)
+        FEED_CHANNEL="slack"
+        echo ""
+        echo -e "  ${COLOR_CYAN}How to find your Slack channel ID:${COLOR_RESET}"
+        echo "  Open the channel, click the channel name at top,"
+        echo "  scroll to bottom — ID looks like C01ABC2DEFG"
+        break
+        ;;
+      4)
+        FEED_CHANNEL="signal"
+        echo ""
+        echo -e "  ${COLOR_CYAN}How to find your Signal target ID:${COLOR_RESET}"
+        echo "  Use the phone number or group ID from your"
+        echo "  OpenClaw Signal plugin config"
+        break
+        ;;
+      5)
+        FEED_CHANNEL="whatsapp"
+        echo ""
+        echo -e "  ${COLOR_CYAN}How to find your WhatsApp target ID:${COLOR_RESET}"
+        echo "  Use the phone number or group JID from your"
+        echo "  OpenClaw WhatsApp plugin config"
+        break
+        ;;
+      6)
+        FEED_CHANNEL="line"
+        echo ""
+        echo -e "  ${COLOR_CYAN}How to find your LINE target ID:${COLOR_RESET}"
+        echo "  Use the user ID or group ID from the"
+        echo "  LINE Developer Console"
+        break
+        ;;
+      *)
+        warn "Invalid choice. Please enter a number between 1 and 6."
+        ;;
+    esac
+  done
+
+  echo ""
+  prompt_user "Enter your ${FEED_CHANNEL} target ID:"
+  read -r FEED_TARGET_ID
+
+  if [[ -z "$FEED_TARGET_ID" ]]; then
+    warn "No target ID provided — skipping observation feed setup."
+    warn "You can configure it later in ~/.openclaw/openclaw.json"
+    FEED_CHANNEL=""
+    return 0
+  fi
+
+  success "Observation feed: ${FEED_CHANNEL} → ${FEED_TARGET_ID}"
+  FEED_CONFIGURED=true
+}
+
+###############################################################################
+# Write observation feed config into ~/.openclaw/openclaw.json
+###############################################################################
+
+write_observation_feed_config() {
+  if [[ "$FEED_CONFIGURED" != "true" ]]; then
+    return 0
+  fi
+
+  local config_file="${HOME}/.openclaw/openclaw.json"
+
+  if [[ ! -f "$config_file" ]]; then
+    warn "OpenClaw config file not found at ${config_file}"
+    warn "Cannot write observation feed config."
+    return 1
+  fi
+
+  info "Writing observation feed configuration..."
+
+  # Pass values via environment variables to avoid injection
+  INSTALLER_FEED_CHANNEL="$FEED_CHANNEL" \
+  INSTALLER_FEED_TARGET_ID="$FEED_TARGET_ID" \
+  INSTALLER_CONFIG_FILE="$config_file" \
+  node -e "
+    const fs = require('fs');
+    const configPath = process.env.INSTALLER_CONFIG_FILE;
+    const channel = process.env.INSTALLER_FEED_CHANNEL;
+    const targetId = process.env.INSTALLER_FEED_TARGET_ID;
+
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+
+    // Ensure nested structure exists
+    if (!config.plugins) config.plugins = {};
+    if (!config.plugins.entries) config.plugins.entries = {};
+    if (!config.plugins.entries['claude-mem']) {
+      config.plugins.entries['claude-mem'] = { enabled: true, config: {} };
+    }
+    if (!config.plugins.entries['claude-mem'].config) {
+      config.plugins.entries['claude-mem'].config = {};
+    }
+
+    // Set observation feed config
+    config.plugins.entries['claude-mem'].config.observationFeed = {
+      enabled: true,
+      channel: channel,
+      to: targetId
+    };
+
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+  "
+
+  success "Observation feed config written to ${config_file}"
+  echo ""
+  echo -e "  ${COLOR_BOLD}Observation feed summary:${COLOR_RESET}"
+  echo -e "  Channel: ${COLOR_CYAN}${FEED_CHANNEL}${COLOR_RESET}"
+  echo -e "  Target:  ${COLOR_CYAN}${FEED_TARGET_ID}${COLOR_RESET}"
+  echo -e "  Enabled: ${COLOR_GREEN}yes${COLOR_RESET}"
+  echo ""
+  info "Restart your OpenClaw gateway to activate the observation feed."
+  info "You should see these log lines:"
+  echo "  [claude-mem] Observation feed starting — channel: ${FEED_CHANNEL}, target: ${FEED_TARGET_ID}"
+  echo ""
+  info "After restarting, run /claude-mem-feed in any OpenClaw chat to verify"
+  info "the feed is connected."
+}
+
+###############################################################################
 # Completion summary
 ###############################################################################
 
@@ -838,17 +1029,23 @@ print_completion_summary() {
     echo -e "  ${COLOR_YELLOW}⚠${COLOR_RESET}  Worker may not be running — check logs at ~/.claude-mem/logs/"
   fi
 
+  if [[ "$FEED_CONFIGURED" == "true" ]]; then
+    echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  Observation feed: ${COLOR_BOLD}${FEED_CHANNEL}${COLOR_RESET} → ${FEED_TARGET_ID}"
+  else
+    echo -e "  ${COLOR_YELLOW}─${COLOR_RESET}  Observation feed: not configured (optional)"
+    echo -e "     Configure later in ~/.openclaw/openclaw.json under"
+    echo -e "     plugins.entries.claude-mem.config.observationFeed"
+  fi
+
   echo ""
-  echo -e "  ${COLOR_BOLD}Next step: Set up your observation feed${COLOR_RESET}"
+  echo -e "  ${COLOR_BOLD}What's next?${COLOR_RESET}"
   echo ""
-  echo "  claude-mem can send AI-compressed observations to your preferred"
-  echo "  messaging channel. Supported channels:"
-  echo ""
-  echo -e "    ${COLOR_CYAN}•${COLOR_RESET} Telegram     ${COLOR_CYAN}•${COLOR_RESET} Discord      ${COLOR_CYAN}•${COLOR_RESET} Slack"
-  echo -e "    ${COLOR_CYAN}•${COLOR_RESET} Signal       ${COLOR_CYAN}•${COLOR_RESET} WhatsApp     ${COLOR_CYAN}•${COLOR_RESET} LINE"
-  echo ""
-  echo "  Configure in ~/.openclaw/openclaw.json under"
-  echo "  plugins.entries.claude-mem.config.observationFeed"
+  echo -e "  ${COLOR_CYAN}1.${COLOR_RESET} Restart your OpenClaw gateway to load the plugin"
+  echo -e "  ${COLOR_CYAN}2.${COLOR_RESET} Verify with ${COLOR_BOLD}/claude-mem-status${COLOR_RESET} in any OpenClaw chat"
+  echo -e "  ${COLOR_CYAN}3.${COLOR_RESET} Check the viewer UI at ${COLOR_BOLD}http://localhost:37777${COLOR_RESET}"
+  if [[ "$FEED_CONFIGURED" == "true" ]]; then
+    echo -e "  ${COLOR_CYAN}4.${COLOR_RESET} Run ${COLOR_BOLD}/claude-mem-feed${COLOR_RESET} to check feed status"
+  fi
   echo ""
   echo -e "  ${COLOR_BOLD}To re-run this installer:${COLOR_RESET}"
   echo "  bash <(curl -fsSL https://raw.githubusercontent.com/thedotmack/claude-mem/main/openclaw/install.sh)"
@@ -865,7 +1062,7 @@ main() {
 
   # --- Step 1: Dependencies ---
   echo ""
-  info "${COLOR_BOLD}[1/7]${COLOR_RESET} Checking dependencies..."
+  info "${COLOR_BOLD}[1/8]${COLOR_RESET} Checking dependencies..."
   echo ""
 
   if ! check_bun; then
@@ -881,38 +1078,44 @@ main() {
 
   # --- Step 2: OpenClaw gateway ---
   echo ""
-  info "${COLOR_BOLD}[2/7]${COLOR_RESET} Locating OpenClaw gateway..."
+  info "${COLOR_BOLD}[2/8]${COLOR_RESET} Locating OpenClaw gateway..."
   check_openclaw
 
   # --- Step 3: Plugin installation ---
   echo ""
-  info "${COLOR_BOLD}[3/7]${COLOR_RESET} Installing claude-mem plugin..."
+  info "${COLOR_BOLD}[3/8]${COLOR_RESET} Installing claude-mem plugin..."
   install_plugin
 
   # --- Step 4: Memory slot configuration ---
   echo ""
-  info "${COLOR_BOLD}[4/7]${COLOR_RESET} Configuring memory slot..."
+  info "${COLOR_BOLD}[4/8]${COLOR_RESET} Configuring memory slot..."
   configure_memory_slot
 
   # --- Step 5: AI provider setup ---
   echo ""
-  info "${COLOR_BOLD}[5/7]${COLOR_RESET} AI provider setup..."
+  info "${COLOR_BOLD}[5/8]${COLOR_RESET} AI provider setup..."
   setup_ai_provider
 
   # --- Step 6: Write settings ---
   echo ""
-  info "${COLOR_BOLD}[6/7]${COLOR_RESET} Writing settings..."
+  info "${COLOR_BOLD}[6/8]${COLOR_RESET} Writing settings..."
   write_settings
 
   # --- Step 7: Start worker and verify ---
   echo ""
-  info "${COLOR_BOLD}[7/7]${COLOR_RESET} Starting worker service..."
+  info "${COLOR_BOLD}[7/8]${COLOR_RESET} Starting worker service..."
   if start_worker; then
     verify_health || true
   else
     warn "Worker startup failed — you can start it manually later"
     warn "  cd ~/.claude/plugins/marketplaces/thedotmack && bun plugin/scripts/worker-service.cjs"
   fi
+
+  # --- Step 8: Observation feed setup (optional) ---
+  echo ""
+  info "${COLOR_BOLD}[8/8]${COLOR_RESET} Observation feed setup..."
+  setup_observation_feed
+  write_observation_feed_config
 
   # --- Completion ---
   print_completion_summary

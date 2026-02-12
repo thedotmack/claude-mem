@@ -700,18 +700,19 @@ echo "=== print_completion_summary() ==="
 test_print_completion_summary() {
   AI_PROVIDER="claude"
   WORKER_PID=""
+  FEED_CONFIGURED=false
+  FEED_CHANNEL=""
+  FEED_TARGET_ID=""
 
   local output
   output="$(print_completion_summary 2>&1)"
 
   assert_contains "$output" "Installation Complete" "Completion summary shows 'Installation Complete'"
   assert_contains "$output" "Claude Max Plan" "Completion summary shows correct provider"
-  assert_contains "$output" "Telegram" "Completion summary mentions Telegram channel"
-  assert_contains "$output" "Discord" "Completion summary mentions Discord channel"
-  assert_contains "$output" "Slack" "Completion summary mentions Slack channel"
-  assert_contains "$output" "Signal" "Completion summary mentions Signal channel"
-  assert_contains "$output" "WhatsApp" "Completion summary mentions WhatsApp channel"
-  assert_contains "$output" "LINE" "Completion summary mentions LINE channel"
+  assert_contains "$output" "not configured" "Completion summary shows feed 'not configured' when skipped"
+  assert_contains "$output" "What's next" "Completion summary shows What's next section"
+  assert_contains "$output" "/claude-mem-status" "Completion summary mentions status command"
+  assert_contains "$output" "localhost:37777" "Completion summary mentions viewer URL"
   assert_contains "$output" "re-run this installer" "Completion summary shows re-run instructions"
 }
 
@@ -720,6 +721,7 @@ test_print_completion_summary
 test_print_completion_summary_gemini() {
   AI_PROVIDER="gemini"
   WORKER_PID=""
+  FEED_CONFIGURED=false
 
   local output
   output="$(print_completion_summary 2>&1)"
@@ -732,6 +734,7 @@ test_print_completion_summary_gemini
 test_print_completion_summary_openrouter() {
   AI_PROVIDER="openrouter"
   WORKER_PID=""
+  FEED_CONFIGURED=false
 
   local output
   output="$(print_completion_summary 2>&1)"
@@ -795,14 +798,270 @@ test_main_calls_completion_summary() {
 test_main_calls_completion_summary
 
 test_main_has_progress_indicators() {
-  if grep -q '\[1/7\]' "$INSTALL_SCRIPT" && grep -q '\[7/7\]' "$INSTALL_SCRIPT"; then
-    test_pass "main() has progress indicators [1/7] through [7/7]"
+  if grep -q '\[1/8\]' "$INSTALL_SCRIPT" && grep -q '\[8/8\]' "$INSTALL_SCRIPT"; then
+    test_pass "main() has progress indicators [1/8] through [8/8]"
   else
-    test_fail "main() should have progress indicators [1/7] through [7/7]"
+    test_fail "main() should have progress indicators [1/8] through [8/8]"
   fi
 }
 
 test_main_has_progress_indicators
+
+test_main_calls_setup_observation_feed() {
+  if grep -q 'setup_observation_feed' "$INSTALL_SCRIPT"; then
+    test_pass "main() calls setup_observation_feed"
+  else
+    test_fail "main() should call setup_observation_feed"
+  fi
+}
+
+test_main_calls_setup_observation_feed
+
+test_main_calls_write_observation_feed_config() {
+  if grep -q 'write_observation_feed_config' "$INSTALL_SCRIPT"; then
+    test_pass "main() calls write_observation_feed_config"
+  else
+    test_fail "main() should call write_observation_feed_config"
+  fi
+}
+
+test_main_calls_write_observation_feed_config
+
+###############################################################################
+# Test: setup_observation_feed() — function exists and non-interactive skips
+###############################################################################
+
+echo ""
+echo "=== setup_observation_feed() ==="
+
+for fn in setup_observation_feed write_observation_feed_config; do
+  if declare -f "$fn" &>/dev/null; then
+    test_pass "Function ${fn}() is defined"
+  else
+    test_fail "Function ${fn}() should be defined"
+  fi
+done
+
+test_setup_observation_feed_non_interactive() {
+  # Non-interactive mode should skip feed setup without error
+  local feed_result
+  feed_result="$(bash -c '
+    set -euo pipefail
+    TERM=dumb
+    tmp=$(mktemp)
+    sed "$ d" "'"${INSTALL_SCRIPT}"'" > "$tmp"
+    echo "main() { :; }" >> "$tmp"
+    set -- "--non-interactive"
+    source "$tmp"
+    rm -f "$tmp"
+    setup_observation_feed 2>/dev/null
+    echo "CHANNEL=$FEED_CHANNEL"
+    echo "CONFIGURED=$FEED_CONFIGURED"
+  ' 2>/dev/null)" || true
+
+  assert_contains "$feed_result" "CHANNEL=" "Non-interactive mode: FEED_CHANNEL is empty"
+  assert_contains "$feed_result" "CONFIGURED=false" "Non-interactive mode: FEED_CONFIGURED is false"
+}
+
+test_setup_observation_feed_non_interactive
+
+###############################################################################
+# Test: write_observation_feed_config() — writes correct JSON structure
+###############################################################################
+
+echo ""
+echo "=== write_observation_feed_config() ==="
+
+test_write_observation_feed_config_writes_json() {
+  local fake_home
+  fake_home="$(mktemp -d)"
+  HOME="$fake_home"
+
+  # Create an existing openclaw.json with claude-mem entry
+  mkdir -p "${fake_home}/.openclaw"
+  local config_file="${fake_home}/.openclaw/openclaw.json"
+  node -e "
+    const config = {
+      plugins: {
+        slots: { memory: 'claude-mem' },
+        entries: {
+          'claude-mem': {
+            enabled: true,
+            config: { workerPort: 37777, syncMemoryFile: true }
+          }
+        }
+      }
+    };
+    require('fs').writeFileSync('${config_file}', JSON.stringify(config, null, 2));
+  "
+
+  FEED_CHANNEL="telegram"
+  FEED_TARGET_ID="123456789"
+  FEED_CONFIGURED="true"
+
+  write_observation_feed_config >/dev/null 2>&1
+
+  # Verify observationFeed was written
+  local feed_enabled
+  feed_enabled="$(node -e "const c = JSON.parse(require('fs').readFileSync('${config_file}','utf8')); console.log(c.plugins.entries['claude-mem'].config.observationFeed.enabled);")"
+  assert_eq "true" "$feed_enabled" "observationFeed.enabled is true"
+
+  local feed_channel
+  feed_channel="$(node -e "const c = JSON.parse(require('fs').readFileSync('${config_file}','utf8')); console.log(c.plugins.entries['claude-mem'].config.observationFeed.channel);")"
+  assert_eq "telegram" "$feed_channel" "observationFeed.channel is telegram"
+
+  local feed_to
+  feed_to="$(node -e "const c = JSON.parse(require('fs').readFileSync('${config_file}','utf8')); console.log(c.plugins.entries['claude-mem'].config.observationFeed.to);")"
+  assert_eq "123456789" "$feed_to" "observationFeed.to is 123456789"
+
+  # Verify existing config preserved
+  local worker_port
+  worker_port="$(node -e "const c = JSON.parse(require('fs').readFileSync('${config_file}','utf8')); console.log(c.plugins.entries['claude-mem'].config.workerPort);")"
+  assert_eq "37777" "$worker_port" "Existing workerPort preserved after feed config write"
+
+  HOME="$ORIGINAL_HOME"
+  FEED_CHANNEL=""
+  FEED_TARGET_ID=""
+  FEED_CONFIGURED=false
+  rm -rf "$fake_home"
+}
+
+test_write_observation_feed_config_writes_json
+
+test_write_observation_feed_config_skips_when_not_configured() {
+  local fake_home
+  fake_home="$(mktemp -d)"
+  HOME="$fake_home"
+
+  # Create minimal config
+  mkdir -p "${fake_home}/.openclaw"
+  local config_file="${fake_home}/.openclaw/openclaw.json"
+  node -e "
+    require('fs').writeFileSync('${config_file}', JSON.stringify({ plugins: {} }, null, 2));
+  "
+
+  FEED_CONFIGURED="false"
+
+  write_observation_feed_config >/dev/null 2>&1
+
+  # Config should be unchanged — no observationFeed key
+  local has_feed
+  has_feed="$(node -e "const c = JSON.parse(require('fs').readFileSync('${config_file}','utf8')); console.log(c.plugins.entries !== undefined);")"
+  assert_eq "false" "$has_feed" "Config unchanged when FEED_CONFIGURED is false"
+
+  HOME="$ORIGINAL_HOME"
+  rm -rf "$fake_home"
+}
+
+test_write_observation_feed_config_skips_when_not_configured
+
+test_write_observation_feed_config_discord() {
+  local fake_home
+  fake_home="$(mktemp -d)"
+  HOME="$fake_home"
+
+  mkdir -p "${fake_home}/.openclaw"
+  local config_file="${fake_home}/.openclaw/openclaw.json"
+  node -e "
+    const config = {
+      plugins: {
+        entries: {
+          'claude-mem': { enabled: true, config: {} }
+        }
+      }
+    };
+    require('fs').writeFileSync('${config_file}', JSON.stringify(config, null, 2));
+  "
+
+  FEED_CHANNEL="discord"
+  FEED_TARGET_ID="1234567890123456789"
+  FEED_CONFIGURED="true"
+
+  write_observation_feed_config >/dev/null 2>&1
+
+  local feed_channel
+  feed_channel="$(node -e "const c = JSON.parse(require('fs').readFileSync('${config_file}','utf8')); console.log(c.plugins.entries['claude-mem'].config.observationFeed.channel);")"
+  assert_eq "discord" "$feed_channel" "Discord channel type written correctly"
+
+  local feed_to
+  feed_to="$(node -e "const c = JSON.parse(require('fs').readFileSync('${config_file}','utf8')); console.log(c.plugins.entries['claude-mem'].config.observationFeed.to);")"
+  assert_eq "1234567890123456789" "$feed_to" "Discord channel ID written correctly"
+
+  HOME="$ORIGINAL_HOME"
+  FEED_CHANNEL=""
+  FEED_TARGET_ID=""
+  FEED_CONFIGURED=false
+  rm -rf "$fake_home"
+}
+
+test_write_observation_feed_config_discord
+
+###############################################################################
+# Test: print_completion_summary() — shows observation feed status
+###############################################################################
+
+echo ""
+echo "=== print_completion_summary() — observation feed ==="
+
+test_completion_summary_with_feed() {
+  AI_PROVIDER="claude"
+  WORKER_PID=""
+  FEED_CONFIGURED="true"
+  FEED_CHANNEL="telegram"
+  FEED_TARGET_ID="123456789"
+
+  local output
+  output="$(print_completion_summary 2>&1)"
+
+  assert_contains "$output" "telegram" "Summary shows feed channel when configured"
+  assert_contains "$output" "123456789" "Summary shows feed target when configured"
+  assert_contains "$output" "What's next" "Summary includes What's next section"
+  assert_contains "$output" "/claude-mem-feed" "Summary includes feed check command when configured"
+
+  FEED_CONFIGURED=false
+  FEED_CHANNEL=""
+  FEED_TARGET_ID=""
+}
+
+test_completion_summary_with_feed
+
+test_completion_summary_without_feed() {
+  AI_PROVIDER="claude"
+  WORKER_PID=""
+  FEED_CONFIGURED=false
+  FEED_CHANNEL=""
+  FEED_TARGET_ID=""
+
+  local output
+  output="$(print_completion_summary 2>&1)"
+
+  assert_contains "$output" "not configured" "Summary shows 'not configured' when feed skipped"
+  assert_contains "$output" "What's next" "Summary includes What's next section without feed"
+  assert_contains "$output" "/claude-mem-status" "Summary includes status check command"
+  assert_contains "$output" "localhost:37777" "Summary includes viewer URL"
+}
+
+test_completion_summary_without_feed
+
+###############################################################################
+# Test: Channel type instructions exist in install.sh
+###############################################################################
+
+echo ""
+echo "=== Channel instructions ==="
+
+for channel in telegram discord slack signal whatsapp line; do
+  if grep -qi "$channel" "$INSTALL_SCRIPT"; then
+    test_pass "Channel '${channel}' instructions exist in install.sh"
+  else
+    test_fail "Channel '${channel}' instructions should exist in install.sh"
+  fi
+done
+
+# Verify specific instruction content
+assert_contains "$(grep -A2 'userinfobot' "$INSTALL_SCRIPT" 2>/dev/null || echo '')" "userinfobot" "Telegram instructions include @userinfobot"
+assert_contains "$(grep -A2 'Developer Mode' "$INSTALL_SCRIPT" 2>/dev/null || echo '')" "Developer Mode" "Discord instructions include Developer Mode"
+assert_contains "$(grep -A2 'C01ABC2DEFG' "$INSTALL_SCRIPT" 2>/dev/null || echo '')" "C01ABC2DEFG" "Slack instructions include sample channel ID"
 
 ###############################################################################
 # Summary
