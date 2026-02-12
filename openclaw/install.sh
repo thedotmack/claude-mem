@@ -484,18 +484,22 @@ install_uv() {
 OPENCLAW_PATH=""
 
 find_openclaw() {
-  # Try PATH first
-  if command -v openclaw.mjs &>/dev/null; then
-    OPENCLAW_PATH="$(command -v openclaw.mjs)"
-    return 0
-  fi
+  # Try PATH first — check both "openclaw" and "openclaw.mjs" binary names
+  for bin_name in openclaw openclaw.mjs; do
+    if command -v "$bin_name" &>/dev/null; then
+      OPENCLAW_PATH="$(command -v "$bin_name")"
+      return 0
+    fi
+  done
 
   # Check common installation paths
   local -a openclaw_paths=(
     "${HOME}/.openclaw/openclaw.mjs"
     "/usr/local/bin/openclaw.mjs"
+    "/usr/local/bin/openclaw"
     "/usr/local/lib/node_modules/openclaw/openclaw.mjs"
     "${HOME}/.npm-global/lib/node_modules/openclaw/openclaw.mjs"
+    "${HOME}/.npm-global/bin/openclaw"
   )
 
   # Also check for node_modules in common project locations
@@ -529,6 +533,15 @@ check_openclaw() {
   fi
 
   success "OpenClaw gateway found at ${OPENCLAW_PATH}"
+}
+
+# Run openclaw command — uses node for .mjs files, direct execution otherwise
+run_openclaw() {
+  if [[ "$OPENCLAW_PATH" == *.mjs ]]; then
+    node "$OPENCLAW_PATH" "$@"
+  else
+    "$OPENCLAW_PATH" "$@"
+  fi
 }
 
 ###############################################################################
@@ -585,17 +598,17 @@ install_plugin() {
 
   # Install the plugin using OpenClaw's CLI
   info "Installing claude-mem plugin into OpenClaw..."
-  if ! node "$OPENCLAW_PATH" plugins install "$installable_dir" 2>&1; then
+  if ! run_openclaw plugins install "$installable_dir" 2>&1; then
     error "Failed to install claude-mem plugin"
-    error "Try manually: node ${OPENCLAW_PATH} plugins install <path>"
+    error "Try manually: ${OPENCLAW_PATH} plugins install <path>"
     exit 1
   fi
 
   # Enable the plugin
   info "Enabling claude-mem plugin..."
-  if ! node "$OPENCLAW_PATH" plugins enable claude-mem 2>&1; then
+  if ! run_openclaw plugins enable claude-mem 2>&1; then
     error "Failed to enable claude-mem plugin"
-    error "Try manually: node ${OPENCLAW_PATH} plugins enable claude-mem"
+    error "Try manually: ${OPENCLAW_PATH} plugins enable claude-mem"
     exit 1
   fi
 
