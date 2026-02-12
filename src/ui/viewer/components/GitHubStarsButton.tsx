@@ -1,6 +1,6 @@
 import React from 'react';
 import { useGitHubStars } from '../hooks/useGitHubStars';
-import { formatStarCount } from '../utils/formatNumber';
+import { formatStarCount } from '../utils/formatters';
 
 interface GitHubStarsButtonProps {
   username: string;

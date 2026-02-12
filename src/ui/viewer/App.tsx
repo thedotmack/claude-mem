@@ -11,113 +11,124 @@ import { useTheme } from './hooks/useTheme';
 import { Observation, Summary, UserPrompt } from './types';
 import { mergeAndDeduplicateByProject } from './utils/data';
 
+interface UIState {
+  currentFilter: string;
+  contextPreviewOpen: boolean;
+  logsModalOpen: boolean;
+}
+
+interface PaginatedData {
+  observations: Observation[];
+  summaries: Summary[];
+  prompts: UserPrompt[];
+}
+
 export function App() {
-  const [currentFilter, setCurrentFilter] = useState('');
-  const [contextPreviewOpen, setContextPreviewOpen] = useState(false);
-  const [logsModalOpen, setLogsModalOpen] = useState(false);
-  const [paginatedObservations, setPaginatedObservations] = useState<Observation[]>([]);
-  const [paginatedSummaries, setPaginatedSummaries] = useState<Summary[]>([]);
-  const [paginatedPrompts, setPaginatedPrompts] = useState<UserPrompt[]>([]);
+  const [uiState, setUIState] = useState<UIState>({
+    currentFilter: '',
+    contextPreviewOpen: false,
+    logsModalOpen: false,
+  });
+
+  const [paginatedData, setPaginatedData] = useState<PaginatedData>({
+    observations: [],
+    summaries: [],
+    prompts: [],
+  });
 
   const { observations, summaries, prompts, projects, isProcessing, queueDepth, isConnected } = useSSE();
   const { settings, saveSettings, isSaving, saveStatus } = useSettings();
   const { stats, refreshStats } = useStats();
-  const { preference, resolvedTheme, setThemePreference } = useTheme();
-  const pagination = usePagination(currentFilter);
+  const { preference, setThemePreference } = useTheme();
+  const pagination = usePagination(uiState.currentFilter);
 
-  // When filtering by project: ONLY use paginated data (API-filtered)
-  // When showing all projects: merge SSE live data with paginated data
-  const allObservations = useMemo(() => {
-    if (currentFilter) {
-      // Project filter active: API handles filtering, ignore SSE items
-      return paginatedObservations;
-    }
-    // No filter: merge SSE + paginated, deduplicate by ID
-    return mergeAndDeduplicateByProject(observations, paginatedObservations);
-  }, [observations, paginatedObservations, currentFilter]);
+  // Merge live SSE data with paginated data based on filter state
+  const mergedData = useMemo(() => {
+    const hasFilter = Boolean(uiState.currentFilter);
+    const mergeFn = (live: any[], paginated: any[]) => 
+      hasFilter ? paginated : mergeAndDeduplicateByProject(live, paginated);
+    
+    return {
+      observations: mergeFn(observations, paginatedData.observations),
+      summaries: mergeFn(summaries, paginatedData.summaries),
+      prompts: mergeFn(prompts, paginatedData.prompts),
+    };
+  }, [observations, summaries, prompts, paginatedData, uiState.currentFilter]);
 
-  const allSummaries = useMemo(() => {
-    if (currentFilter) {
-      return paginatedSummaries;
-    }
-    return mergeAndDeduplicateByProject(summaries, paginatedSummaries);
-  }, [summaries, paginatedSummaries, currentFilter]);
-
-  const allPrompts = useMemo(() => {
-    if (currentFilter) {
-      return paginatedPrompts;
-    }
-    return mergeAndDeduplicateByProject(prompts, paginatedPrompts);
-  }, [prompts, paginatedPrompts, currentFilter]);
-
-  // Toggle context preview modal
-  const toggleContextPreview = useCallback(() => {
-    setContextPreviewOpen(prev => !prev);
+  // Unified modal toggle handler
+  const toggleModal = useCallback((modalKey: keyof Pick<UIState, 'contextPreviewOpen' | 'logsModalOpen'>) => {
+    setUIState(prev => ({ ...prev, [modalKey]: !prev[modalKey] }));
   }, []);
 
-  // Toggle logs modal
-  const toggleLogsModal = useCallback(() => {
-    setLogsModalOpen(prev => !prev);
+  // Handle filter changes
+  const handleFilterChange = useCallback((filter: string) => {
+    setUIState(prev => ({ ...prev, currentFilter: filter }));
   }, []);
 
-  // Handle loading more data
+  // Load more data with intelligent batching
   const handleLoadMore = useCallback(async () => {
     try {
-      const [newObservations, newSummaries, newPrompts] = await Promise.all([
+      const loadPromises = [
         pagination.observations.loadMore(),
         pagination.summaries.loadMore(),
-        pagination.prompts.loadMore()
-      ]);
+        pagination.prompts.loadMore(),
+      ] as const;
 
-      if (newObservations.length > 0) {
-        setPaginatedObservations(prev => [...prev, ...newObservations]);
-      }
-      if (newSummaries.length > 0) {
-        setPaginatedSummaries(prev => [...prev, ...newSummaries]);
-      }
-      if (newPrompts.length > 0) {
-        setPaginatedPrompts(prev => [...prev, ...newPrompts]);
+      const [newObservations, newSummaries, newPrompts] = await Promise.all(loadPromises);
+      
+      // Batch update to reduce re-renders
+      const updates: Partial<PaginatedData> = {};
+      if (newObservations.length > 0) updates.observations = [...paginatedData.observations, ...newObservations];
+      if (newSummaries.length > 0) updates.summaries = [...paginatedData.summaries, ...newSummaries];
+      if (newPrompts.length > 0) updates.prompts = [...paginatedData.prompts, ...newPrompts];
+
+      if (Object.keys(updates).length > 0) {
+        setPaginatedData(prev => ({ ...prev, ...updates }));
       }
     } catch (error) {
       console.error('Failed to load more data:', error);
     }
-  }, [currentFilter, pagination.observations, pagination.summaries, pagination.prompts]);
+  }, [pagination, paginatedData]);
 
-  // Reset paginated data and load first page when filter changes
+  // Reset and reload data when filter changes
   useEffect(() => {
-    setPaginatedObservations([]);
-    setPaginatedSummaries([]);
-    setPaginatedPrompts([]);
+    const resetData = { observations: [], summaries: [], prompts: [] };
+    setPaginatedData(resetData);
     handleLoadMore();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentFilter]);
+  }, [uiState.currentFilter, handleLoadMore]);
+
+  // Computed loading and availability states
+  const loadingState = {
+    isLoading: pagination.observations.isLoading || pagination.summaries.isLoading || pagination.prompts.isLoading,
+    hasMore: pagination.observations.hasMore || pagination.summaries.hasMore || pagination.prompts.hasMore,
+  };
 
   return (
     <>
       <Header
         isConnected={isConnected}
         projects={projects}
-        currentFilter={currentFilter}
-        onFilterChange={setCurrentFilter}
+        currentFilter={uiState.currentFilter}
+        onFilterChange={handleFilterChange}
         isProcessing={isProcessing}
         queueDepth={queueDepth}
         themePreference={preference}
         onThemeChange={setThemePreference}
-        onContextPreviewToggle={toggleContextPreview}
+        onContextPreviewToggle={() => toggleModal('contextPreviewOpen')}
       />
 
       <Feed
-        observations={allObservations}
-        summaries={allSummaries}
-        prompts={allPrompts}
+        observations={mergedData.observations}
+        summaries={mergedData.summaries}
+        prompts={mergedData.prompts}
         onLoadMore={handleLoadMore}
-        isLoading={pagination.observations.isLoading || pagination.summaries.isLoading || pagination.prompts.isLoading}
-        hasMore={pagination.observations.hasMore || pagination.summaries.hasMore || pagination.prompts.hasMore}
+        isLoading={loadingState.isLoading}
+        hasMore={loadingState.hasMore}
       />
 
       <ContextSettingsModal
-        isOpen={contextPreviewOpen}
-        onClose={toggleContextPreview}
+        isOpen={uiState.contextPreviewOpen}
+        onClose={() => toggleModal('contextPreviewOpen')}
         settings={settings}
         onSave={saveSettings}
         isSaving={isSaving}
@@ -126,8 +137,9 @@ export function App() {
 
       <button
         className="console-toggle-btn"
-        onClick={toggleLogsModal}
+        onClick={() => toggleModal('logsModalOpen')}
         title="Toggle Console"
+        aria-label="Toggle Console"
       >
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <polyline points="4 17 10 11 4 5"></polyline>
@@ -136,8 +148,8 @@ export function App() {
       </button>
 
       <LogsDrawer
-        isOpen={logsModalOpen}
-        onClose={toggleLogsModal}
+        isOpen={uiState.logsModalOpen}
+        onClose={() => toggleModal('logsModalOpen')}
       />
     </>
   );

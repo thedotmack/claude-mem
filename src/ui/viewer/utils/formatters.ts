@@ -57,12 +57,39 @@ export function formatBytes(bytes?: number | null): string {
 }
 
 /**
- * Format count with thousand separators
+ * Format count with optional compact notation (k/M suffixes)
  */
-export function formatCount(count?: number | null): string {
+export function formatCount(count?: number | null, compact = false): string {
   if (count == null || count < 0) return FALLBACK;
-  return count.toLocaleString();
+  
+  if (!compact) {
+    return count.toLocaleString();
+  }
+  
+  // Compact notation for large numbers
+  if (count < 1000) return count.toString();
+  
+  const units = [
+    { value: 1e9, suffix: 'B' },
+    { value: 1e6, suffix: 'M' },
+    { value: 1e3, suffix: 'k' }
+  ];
+  
+  for (const unit of units) {
+    if (count >= unit.value) {
+      const formatted = count / unit.value;
+      const precision = formatted < 10 ? 1 : 0;
+      return `${formatted.toFixed(precision)}${unit.suffix}`;
+    }
+  }
+  
+  return count.toString();
 }
+
+/**
+ * Legacy alias for GitHub stars formatting (backwards compatibility)
+ */
+export const formatStarCount = (count: number): string => formatCount(count, true);
 
 /**
  * Truncate text with smart word boundary detection

@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useEffect } from 'react';
+import React, { useMemo, useRef, useEffect, useCallback } from 'react';
 import { Observation, Summary, UserPrompt, FeedItem } from '../types';
 import { ObservationCard } from './ObservationCard';
 import { SummaryCard } from './SummaryCard';
@@ -15,83 +15,109 @@ interface FeedProps {
   hasMore: boolean;
 }
 
+// Component renderer mapping for clean switch logic
+const ITEM_RENDERERS = {
+  observation: (item: FeedItem, key: string) => <ObservationCard key={key} observation={item} />,
+  summary: (item: FeedItem, key: string) => <SummaryCard key={key} summary={item} />,
+  prompt: (item: FeedItem, key: string) => <PromptCard key={key} prompt={item} />,
+} as const;
+
+// Status message components for consistent styling
+const StatusMessage = ({ children, className = '' }: { children: React.ReactNode; className?: string }) => (
+  <div className={`feed-status ${className}`} style={{ textAlign: 'center', padding: '20px', color: '#8b949e' }}>
+    {children}
+  </div>
+);
+
 export function Feed({ observations, summaries, prompts, onLoadMore, isLoading, hasMore }: FeedProps) {
   const loadMoreRef = useRef<HTMLDivElement>(null);
   const feedRef = useRef<HTMLDivElement>(null);
+  const observerRef = useRef<IntersectionObserver>();
   const onLoadMoreRef = useRef(onLoadMore);
 
-  // Keep the callback ref up to date
+  // Keep callback ref current
   useEffect(() => {
     onLoadMoreRef.current = onLoadMore;
   }, [onLoadMore]);
 
-  // Set up intersection observer for infinite scroll
-  useEffect(() => {
+  // Optimized intersection observer with proper cleanup
+  const setupIntersectionObserver = useCallback(() => {
     const element = loadMoreRef.current;
-    if (!element) return;
+    if (!element || !hasMore) return;
 
-    const observer = new IntersectionObserver(
-      (entries) => {
-        const first = entries[0];
-        if (first.isIntersecting && hasMore && !isLoading) {
+    // Clean up existing observer
+    if (observerRef.current) {
+      observerRef.current.disconnect();
+    }
+
+    observerRef.current = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting && hasMore && !isLoading) {
           onLoadMoreRef.current?.();
         }
       },
       { threshold: UI.LOAD_MORE_THRESHOLD }
     );
 
-    observer.observe(element);
-
-    return () => {
-      if (element) {
-        observer.unobserve(element);
-      }
-      observer.disconnect();
-    };
+    observerRef.current.observe(element);
   }, [hasMore, isLoading]);
 
-  const items = useMemo<FeedItem[]>(() => {
-    const combined = [
-      ...observations.map(o => ({ ...o, itemType: 'observation' as const })),
-      ...summaries.map(s => ({ ...s, itemType: 'summary' as const })),
-      ...prompts.map(p => ({ ...p, itemType: 'prompt' as const }))
+  useEffect(() => {
+    setupIntersectionObserver();
+    return () => observerRef.current?.disconnect();
+  }, [setupIntersectionObserver]);
+
+  // Efficiently combine and sort feed items
+  const feedItems = useMemo<FeedItem[]>(() => {
+    const itemMappers = [
+      { items: observations, type: 'observation' as const },
+      { items: summaries, type: 'summary' as const },
+      { items: prompts, type: 'prompt' as const },
     ];
 
-    return combined.sort((a, b) => b.created_at_epoch - a.created_at_epoch);
+    return itemMappers
+      .flatMap(({ items, type }) => items.map(item => ({ ...item, itemType: type })))
+      .sort((a, b) => b.created_at_epoch - a.created_at_epoch);
   }, [observations, summaries, prompts]);
+
+  // Render feed item with optimized component lookup
+  const renderFeedItem = useCallback((item: FeedItem) => {
+    const key = `${item.itemType}-${item.id}`;
+    const renderer = ITEM_RENDERERS[item.itemType];
+    return renderer(item, key);
+  }, []);
 
   return (
     <div className="feed" ref={feedRef}>
       <ScrollToTop targetRef={feedRef} />
       <div className="feed-content">
-        {items.map(item => {
-          const key = `${item.itemType}-${item.id}`;
-          if (item.itemType === 'observation') {
-            return <ObservationCard key={key} observation={item} />;
-          } else if (item.itemType === 'summary') {
-            return <SummaryCard key={key} summary={item} />;
-          } else {
-            return <PromptCard key={key} prompt={item} />;
-          }
-        })}
-        {items.length === 0 && !isLoading && (
-          <div style={{ textAlign: 'center', padding: '40px', color: '#8b949e' }}>
+        {feedItems.map(renderFeedItem)}
+        
+        {/* Empty state */}
+        {feedItems.length === 0 && !isLoading && (
+          <StatusMessage className="empty-state" style={{ padding: '40px' }}>
             No items to display
-          </div>
+          </StatusMessage>
         )}
+
+        {/* Loading indicator */}
         {isLoading && (
-          <div style={{ textAlign: 'center', padding: '20px', color: '#8b949e' }}>
-            <div className="spinner" style={{ display: 'inline-block', marginRight: '10px' }}></div>
+          <StatusMessage className="loading-state">
+            <div className="spinner" style={{ display: 'inline-block', marginRight: '10px' }} />
             Loading more...
-          </div>
+          </StatusMessage>
         )}
-        {hasMore && !isLoading && items.length > 0 && (
-          <div ref={loadMoreRef} style={{ height: '20px', margin: '10px 0' }} />
+
+        {/* Load more trigger */}
+        {hasMore && !isLoading && feedItems.length > 0 && (
+          <div ref={loadMoreRef} className="load-more-trigger" style={{ height: '20px', margin: '10px 0' }} />
         )}
-        {!hasMore && items.length > 0 && (
-          <div style={{ textAlign: 'center', padding: '20px', color: '#8b949e', fontSize: '14px' }}>
+
+        {/* End of feed indicator */}
+        {!hasMore && feedItems.length > 0 && (
+          <StatusMessage className="end-of-feed" style={{ fontSize: '14px' }}>
             No more items to load
-          </div>
+          </StatusMessage>
         )}
       </div>
     </div>
