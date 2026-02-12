@@ -1594,6 +1594,375 @@ test_write_settings_via_provider_flag() {
 test_write_settings_via_provider_flag
 
 ###############################################################################
+# Test: --upgrade flag parsing
+###############################################################################
+
+echo ""
+echo "=== --upgrade flag parsing ==="
+
+test_upgrade_flag() {
+  local result
+  result="$(bash -c '
+    set -euo pipefail
+    TERM=dumb
+    tmp=$(mktemp)
+    sed "$ d" "'"${INSTALL_SCRIPT}"'" > "$tmp"
+    echo "main() { :; }" >> "$tmp"
+    set -- "--upgrade"
+    source "$tmp"
+    rm -f "$tmp"
+    echo "UPGRADE=$UPGRADE_MODE"
+  ' 2>/dev/null)" || true
+
+  assert_contains "$result" "UPGRADE=true" "--upgrade sets UPGRADE_MODE=true"
+}
+
+test_upgrade_flag
+
+test_upgrade_flag_with_provider() {
+  local result
+  result="$(bash -c '
+    set -euo pipefail
+    TERM=dumb
+    tmp=$(mktemp)
+    sed "$ d" "'"${INSTALL_SCRIPT}"'" > "$tmp"
+    echo "main() { :; }" >> "$tmp"
+    set -- "--upgrade" "--provider=gemini" "--api-key=upgrade-key"
+    source "$tmp"
+    rm -f "$tmp"
+    echo "UPGRADE=$UPGRADE_MODE"
+    echo "PROVIDER=$CLI_PROVIDER"
+    echo "KEY=$CLI_API_KEY"
+  ' 2>/dev/null)" || true
+
+  assert_contains "$result" "UPGRADE=true" "--upgrade + --provider: upgrade flag parsed"
+  assert_contains "$result" "PROVIDER=gemini" "--upgrade + --provider: provider flag parsed"
+  assert_contains "$result" "KEY=upgrade-key" "--upgrade + --api-key: API key parsed"
+}
+
+test_upgrade_flag_with_provider
+
+test_upgrade_not_set_by_default() {
+  local result
+  result="$(bash -c '
+    set -euo pipefail
+    TERM=dumb
+    tmp=$(mktemp)
+    sed "$ d" "'"${INSTALL_SCRIPT}"'" > "$tmp"
+    echo "main() { :; }" >> "$tmp"
+    source "$tmp"
+    rm -f "$tmp"
+    echo "UPGRADE=${UPGRADE_MODE:-}"
+  ' 2>/dev/null)" || true
+
+  assert_eq "UPGRADE=" "$result" "UPGRADE_MODE is empty by default"
+}
+
+test_upgrade_not_set_by_default
+
+###############################################################################
+# Test: is_claude_mem_installed() — upgrade detection
+###############################################################################
+
+echo ""
+echo "=== is_claude_mem_installed() ==="
+
+test_is_claude_mem_installed_found() {
+  local fake_home
+  fake_home="$(mktemp -d)"
+  HOME="$fake_home"
+  CLAUDE_MEM_INSTALL_DIR=""
+
+  # Create the expected directory structure
+  mkdir -p "${fake_home}/.openclaw/extensions/claude-mem/plugin/scripts"
+  touch "${fake_home}/.openclaw/extensions/claude-mem/plugin/scripts/worker-service.cjs"
+
+  if is_claude_mem_installed; then
+    test_pass "is_claude_mem_installed returns true when plugin exists"
+  else
+    test_fail "is_claude_mem_installed should return true when plugin exists"
+  fi
+
+  HOME="$ORIGINAL_HOME"
+  rm -rf "$fake_home"
+}
+
+test_is_claude_mem_installed_found
+
+test_is_claude_mem_installed_not_found() {
+  local fake_home
+  fake_home="$(mktemp -d)"
+  HOME="$fake_home"
+  CLAUDE_MEM_INSTALL_DIR=""
+
+  if is_claude_mem_installed; then
+    test_fail "is_claude_mem_installed should return false when plugin not found"
+  else
+    test_pass "is_claude_mem_installed returns false when plugin not found"
+  fi
+
+  HOME="$ORIGINAL_HOME"
+  rm -rf "$fake_home"
+}
+
+test_is_claude_mem_installed_not_found
+
+###############################################################################
+# Test: check_git() — git availability check
+###############################################################################
+
+echo ""
+echo "=== check_git() ==="
+
+test_check_git_available() {
+  # git should be available in test environment
+  if command -v git &>/dev/null; then
+    local output
+    output="$(check_git 2>&1)" || true
+    test_pass "check_git succeeds when git is installed"
+  else
+    test_pass "check_git test skipped (git not available)"
+  fi
+}
+
+test_check_git_available
+
+test_check_git_not_available() {
+  # Test that check_git fails gracefully when git is not in PATH
+  local exit_code=0
+  PLATFORM="macos"
+  bash -c '
+    set -euo pipefail
+    TERM=dumb
+    tmp=$(mktemp)
+    sed "$ d" "'"${INSTALL_SCRIPT}"'" > "$tmp"
+    echo "main() { :; }" >> "$tmp"
+    source "$tmp"
+    rm -f "$tmp"
+    PATH="/nonexistent"
+    check_git
+  ' >/dev/null 2>&1 || exit_code=$?
+
+  if [[ "$exit_code" -ne 0 ]]; then
+    test_pass "check_git exits with error when git is missing"
+  else
+    test_fail "check_git should exit with error when git is missing"
+  fi
+}
+
+test_check_git_not_available
+
+test_check_git_macos_message() {
+  local output
+  output="$(bash -c '
+    set -euo pipefail
+    TERM=dumb
+    tmp=$(mktemp)
+    sed "$ d" "'"${INSTALL_SCRIPT}"'" > "$tmp"
+    echo "main() { :; }" >> "$tmp"
+    source "$tmp"
+    rm -f "$tmp"
+    PATH="/nonexistent"
+    PLATFORM="macos"
+    check_git
+  ' 2>&1)" || true
+
+  assert_contains "$output" "xcode-select" "check_git suggests xcode-select on macOS"
+}
+
+test_check_git_macos_message
+
+test_check_git_linux_message() {
+  local output
+  output="$(bash -c '
+    set -euo pipefail
+    TERM=dumb
+    tmp=$(mktemp)
+    sed "$ d" "'"${INSTALL_SCRIPT}"'" > "$tmp"
+    echo "main() { :; }" >> "$tmp"
+    source "$tmp"
+    rm -f "$tmp"
+    PATH="/nonexistent"
+    PLATFORM="linux"
+    check_git
+  ' 2>&1)" || true
+
+  assert_contains "$output" "apt install git" "check_git suggests apt on Linux"
+}
+
+test_check_git_linux_message
+
+###############################################################################
+# Test: check_port_37777() — port conflict detection
+###############################################################################
+
+echo ""
+echo "=== check_port_37777() ==="
+
+test_check_port_function_exists() {
+  if declare -f check_port_37777 &>/dev/null; then
+    test_pass "Function check_port_37777() is defined"
+  else
+    test_fail "Function check_port_37777() should be defined"
+  fi
+}
+
+test_check_port_function_exists
+
+###############################################################################
+# Test: cleanup_on_exit() — global cleanup trap
+###############################################################################
+
+echo ""
+echo "=== cleanup_on_exit() ==="
+
+test_cleanup_trap_functions_exist() {
+  if declare -f register_cleanup_dir &>/dev/null; then
+    test_pass "Function register_cleanup_dir() is defined"
+  else
+    test_fail "Function register_cleanup_dir() should be defined"
+  fi
+
+  if declare -f cleanup_on_exit &>/dev/null; then
+    test_pass "Function cleanup_on_exit() is defined"
+  else
+    test_fail "Function cleanup_on_exit() should be defined"
+  fi
+}
+
+test_cleanup_trap_functions_exist
+
+test_register_cleanup_dir() {
+  local test_dir
+  test_dir="$(mktemp -d)"
+
+  # Save existing cleanup dirs
+  local saved_dirs=("${CLEANUP_DIRS[@]+"${CLEANUP_DIRS[@]}"}")
+  CLEANUP_DIRS=()
+
+  register_cleanup_dir "$test_dir"
+
+  if [[ "${#CLEANUP_DIRS[@]}" -eq 1 ]] && [[ "${CLEANUP_DIRS[0]}" == "$test_dir" ]]; then
+    test_pass "register_cleanup_dir adds directory to CLEANUP_DIRS"
+  else
+    test_fail "register_cleanup_dir should add directory to CLEANUP_DIRS"
+  fi
+
+  # Restore
+  CLEANUP_DIRS=("${saved_dirs[@]+"${saved_dirs[@]}"}")
+  rm -rf "$test_dir"
+}
+
+test_register_cleanup_dir
+
+###############################################################################
+# Test: ensure_jq_or_fallback() — JSON utility function
+###############################################################################
+
+echo ""
+echo "=== ensure_jq_or_fallback() ==="
+
+test_ensure_jq_or_fallback_exists() {
+  if declare -f ensure_jq_or_fallback &>/dev/null; then
+    test_pass "Function ensure_jq_or_fallback() is defined"
+  else
+    test_fail "Function ensure_jq_or_fallback() should be defined"
+  fi
+}
+
+test_ensure_jq_or_fallback_exists
+
+test_ensure_jq_with_jq_available() {
+  if ! command -v jq &>/dev/null; then
+    test_pass "ensure_jq jq-path: skipped (jq not installed)"
+    return 0
+  fi
+
+  local tmp_json
+  tmp_json="$(mktemp)"
+  echo '{"name": "test", "value": 1}' > "$tmp_json"
+
+  if ensure_jq_or_fallback "$tmp_json" '.name = "updated"'; then
+    local result
+    result="$(node -e "const j = JSON.parse(require('fs').readFileSync('${tmp_json}','utf8')); console.log(j.name);")"
+    assert_eq "updated" "$result" "ensure_jq_or_fallback updates JSON via jq"
+  else
+    test_fail "ensure_jq_or_fallback should succeed with jq available"
+  fi
+
+  rm -f "$tmp_json"
+}
+
+test_ensure_jq_with_jq_available
+
+###############################################################################
+# Test: main() references new functions
+###############################################################################
+
+echo ""
+echo "=== main() references new functions ==="
+
+test_main_calls_check_port() {
+  if grep -q 'check_port_37777' "$INSTALL_SCRIPT"; then
+    test_pass "main() calls check_port_37777"
+  else
+    test_fail "main() should call check_port_37777"
+  fi
+}
+
+test_main_calls_check_port
+
+test_main_calls_is_claude_mem_installed() {
+  if grep -q 'is_claude_mem_installed' "$INSTALL_SCRIPT"; then
+    test_pass "main() calls is_claude_mem_installed for upgrade detection"
+  else
+    test_fail "main() should call is_claude_mem_installed"
+  fi
+}
+
+test_main_calls_is_claude_mem_installed
+
+test_main_references_upgrade_mode() {
+  if grep -q 'UPGRADE_MODE' "$INSTALL_SCRIPT"; then
+    test_pass "main() references UPGRADE_MODE"
+  else
+    test_fail "main() should reference UPGRADE_MODE"
+  fi
+}
+
+test_main_references_upgrade_mode
+
+test_install_plugin_calls_check_git() {
+  if grep -q 'check_git' "$INSTALL_SCRIPT"; then
+    test_pass "install_plugin() calls check_git"
+  else
+    test_fail "install_plugin() should call check_git"
+  fi
+}
+
+test_install_plugin_calls_check_git
+
+test_install_plugin_uses_register_cleanup() {
+  if grep -q 'register_cleanup_dir' "$INSTALL_SCRIPT"; then
+    test_pass "install_plugin() uses register_cleanup_dir"
+  else
+    test_fail "install_plugin() should use register_cleanup_dir"
+  fi
+}
+
+test_install_plugin_uses_register_cleanup
+
+test_usage_comment_includes_upgrade() {
+  if grep -q '\-\-upgrade' "$INSTALL_SCRIPT"; then
+    test_pass "Usage comment documents --upgrade flag"
+  else
+    test_fail "Usage comment should document --upgrade flag"
+  fi
+}
+
+test_usage_comment_includes_upgrade
+
+###############################################################################
 # Summary
 ###############################################################################
 

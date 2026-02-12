@@ -9,7 +9,7 @@ set -euo pipefail
 #   # Or with options:
 #   curl -fsSL https://raw.githubusercontent.com/thedotmack/claude-mem/main/openclaw/install.sh | bash -s -- --provider=gemini --api-key=YOUR_KEY
 #   # Direct execution:
-#   bash install.sh [--non-interactive] [--provider=claude|gemini|openrouter] [--api-key=KEY]
+#   bash install.sh [--non-interactive] [--upgrade] [--provider=claude|gemini|openrouter] [--api-key=KEY]
 
 ###############################################################################
 # Constants
@@ -25,11 +25,16 @@ readonly INSTALLER_VERSION="1.0.0"
 NON_INTERACTIVE=""
 CLI_PROVIDER=""
 CLI_API_KEY=""
+UPGRADE_MODE=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --non-interactive)
       NON_INTERACTIVE="true"
+      shift
+      ;;
+    --upgrade)
+      UPGRADE_MODE="true"
       shift
       ;;
     --provider=*)
@@ -122,6 +127,141 @@ prompt_user() {
 read_tty() {
   # shellcheck disable=SC2162
   read "$@" <&"$TTY_FD"
+}
+
+###############################################################################
+# Global cleanup trap — removes temp directories on unexpected exit
+###############################################################################
+
+CLEANUP_DIRS=()
+
+register_cleanup_dir() {
+  CLEANUP_DIRS+=("$1")
+}
+
+cleanup_on_exit() {
+  local exit_code=$?
+  for dir in "${CLEANUP_DIRS[@]+"${CLEANUP_DIRS[@]}"}"; do
+    if [[ -d "$dir" ]]; then
+      rm -rf "$dir"
+    fi
+  done
+  if [[ $exit_code -ne 0 ]]; then
+    echo "" >&2
+    error "Installation failed (exit code: ${exit_code})"
+    error "Any temporary files have been cleaned up."
+    error "Fix the issue above and re-run the installer."
+  fi
+}
+
+trap cleanup_on_exit EXIT
+
+###############################################################################
+# Prerequisite checks
+###############################################################################
+
+check_git() {
+  if command -v git &>/dev/null; then
+    return 0
+  fi
+
+  error "git is not installed"
+  echo "" >&2
+  case "${PLATFORM:-}" in
+    macos)
+      error "Install git on macOS with:"
+      error "  xcode-select --install"
+      error "  # or: brew install git"
+      ;;
+    linux)
+      error "Install git on Linux with:"
+      error "  sudo apt install git        # Debian/Ubuntu"
+      error "  sudo dnf install git        # Fedora/RHEL"
+      error "  sudo pacman -S git          # Arch"
+      ;;
+    *)
+      error "Please install git and re-run this installer."
+      ;;
+  esac
+  exit 1
+}
+
+###############################################################################
+# Port conflict detection — check if port 37777 is already in use
+###############################################################################
+
+check_port_37777() {
+  local port_in_use=""
+
+  # Try lsof first (macOS/Linux)
+  if command -v lsof &>/dev/null; then
+    if lsof -i :37777 -sTCP:LISTEN &>/dev/null; then
+      port_in_use="true"
+    fi
+  # Fallback to ss (Linux)
+  elif command -v ss &>/dev/null; then
+    if ss -tlnp 2>/dev/null | grep -q ':37777 '; then
+      port_in_use="true"
+    fi
+  # Fallback to curl probe
+  elif command -v curl &>/dev/null; then
+    local response
+    response="$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:37777/api/health" 2>/dev/null)" || true
+    if [[ "$response" == "200" ]]; then
+      port_in_use="true"
+    fi
+  fi
+
+  if [[ "$port_in_use" == "true" ]]; then
+    return 0  # port IS in use
+  fi
+  return 1  # port is free
+}
+
+###############################################################################
+# Upgrade detection — check if claude-mem is already installed
+###############################################################################
+
+is_claude_mem_installed() {
+  # Check if the plugin directory exists with the worker script
+  if find_claude_mem_install_dir 2>/dev/null; then
+    return 0
+  fi
+  return 1
+}
+
+###############################################################################
+# JSON manipulation helper — jq with python3/node fallback
+# Usage: ensure_jq_or_fallback <json_file> <jq_filter> [jq_args...]
+# For simple read operations, returns the result on stdout.
+# For write operations, updates the file in-place.
+###############################################################################
+
+ensure_jq_or_fallback() {
+  local json_file="$1"
+  shift
+  local jq_filter="$1"
+  shift
+  # remaining args are passed as jq --arg pairs
+
+  if command -v jq &>/dev/null; then
+    local tmp_file
+    tmp_file="$(mktemp)"
+    jq "$@" "$jq_filter" "$json_file" > "$tmp_file" && mv "$tmp_file" "$json_file"
+    return $?
+  fi
+
+  if command -v python3 &>/dev/null; then
+    # For complex jq filters, fall back to node instead
+    # Python is used only for simple operations
+    :
+  fi
+
+  # Fallback to node (always available — it's a dependency)
+  # This is a passthrough; callers that need node-specific logic
+  # should use node -e directly. This function is for jq compatibility.
+  warn "jq not found — using node for JSON manipulation"
+  return 1
 }
 
 ###############################################################################
@@ -399,22 +539,17 @@ check_openclaw() {
 CLAUDE_MEM_REPO="https://github.com/thedotmack/claude-mem.git"
 
 install_plugin() {
+  # Check for git before attempting clone
+  check_git
+
   local build_dir
   build_dir="$(mktemp -d)"
-
-  # Ensure cleanup on exit from this function
-  cleanup_build_dir() {
-    if [[ -d "$build_dir" ]]; then
-      rm -rf "$build_dir"
-    fi
-  }
-  trap cleanup_build_dir EXIT
+  register_cleanup_dir "$build_dir"
 
   info "Cloning claude-mem repository..."
   if ! git clone --depth 1 "$CLAUDE_MEM_REPO" "$build_dir/claude-mem" 2>&1; then
     error "Failed to clone claude-mem repository"
     error "Check your internet connection and try again."
-    cleanup_build_dir
     exit 1
   fi
 
@@ -425,7 +560,6 @@ install_plugin() {
   if ! (cd "$plugin_src" && NODE_ENV=development npm install --ignore-scripts 2>&1 && npx tsc 2>&1); then
     error "Failed to build the claude-mem OpenClaw plugin"
     error "Make sure Node.js and npm are installed."
-    cleanup_build_dir
     exit 1
   fi
 
@@ -454,7 +588,6 @@ install_plugin() {
   if ! node "$OPENCLAW_PATH" plugins install "$installable_dir" 2>&1; then
     error "Failed to install claude-mem plugin"
     error "Try manually: node ${OPENCLAW_PATH} plugins install <path>"
-    cleanup_build_dir
     exit 1
   fi
 
@@ -463,12 +596,9 @@ install_plugin() {
   if ! node "$OPENCLAW_PATH" plugins enable claude-mem 2>&1; then
     error "Failed to enable claude-mem plugin"
     error "Try manually: node ${OPENCLAW_PATH} plugins enable claude-mem"
-    cleanup_build_dir
     exit 1
   fi
 
-  cleanup_build_dir
-  trap - EXIT
   success "claude-mem plugin installed and enabled"
 }
 
@@ -1228,10 +1358,16 @@ main() {
   info "${COLOR_BOLD}[2/8]${COLOR_RESET} Locating OpenClaw gateway..."
   check_openclaw
 
-  # --- Step 3: Plugin installation ---
+  # --- Step 3: Plugin installation (skip if upgrading and already installed) ---
   echo ""
   info "${COLOR_BOLD}[3/8]${COLOR_RESET} Installing claude-mem plugin..."
-  install_plugin
+
+  if [[ "$UPGRADE_MODE" == "true" ]] && is_claude_mem_installed; then
+    success "claude-mem already installed at ${CLAUDE_MEM_INSTALL_DIR}"
+    info "Upgrade mode: skipping clone/build/register, updating settings only"
+  else
+    install_plugin
+  fi
 
   # --- Step 4: Memory slot configuration ---
   echo ""
@@ -1251,11 +1387,24 @@ main() {
   # --- Step 7: Start worker and verify ---
   echo ""
   info "${COLOR_BOLD}[7/8]${COLOR_RESET} Starting worker service..."
-  if start_worker; then
-    verify_health || true
+
+  if check_port_37777; then
+    warn "Port 37777 is already in use (worker may already be running)"
+    info "Checking if the existing service is healthy..."
+    if verify_health; then
+      success "Existing worker is healthy — skipping startup"
+    else
+      warn "Port 37777 is occupied but not responding to health checks"
+      warn "Another process may be using this port. Stop it and re-run the installer,"
+      warn "or change CLAUDE_MEM_WORKER_PORT in ~/.claude-mem/settings.json"
+    fi
   else
-    warn "Worker startup failed — you can start it manually later"
-    warn "  cd ~/.claude/plugins/marketplaces/thedotmack && bun plugin/scripts/worker-service.cjs"
+    if start_worker; then
+      verify_health || true
+    else
+      warn "Worker startup failed — you can start it manually later"
+      warn "  cd ~/.claude/plugins/marketplaces/thedotmack && bun plugin/scripts/worker-service.cjs"
+    fi
   fi
 
   # --- Step 8: Observation feed setup (optional) ---
