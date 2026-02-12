@@ -473,6 +473,199 @@ configure_memory_slot() {
 }
 
 ###############################################################################
+# AI Provider setup — interactive provider selection
+# Reads defaults from SettingsDefaultsManager.ts (single source of truth)
+###############################################################################
+
+AI_PROVIDER=""
+AI_PROVIDER_API_KEY=""
+
+mask_api_key() {
+  local key="$1"
+  local len=${#key}
+  if (( len <= 4 )); then
+    echo "****"
+  else
+    local masked_len=$((len - 4))
+    local mask=""
+    for (( i=0; i<masked_len; i++ )); do
+      mask+="*"
+    done
+    echo "${mask}${key: -4}"
+  fi
+}
+
+setup_ai_provider() {
+  echo ""
+  info "AI Provider Configuration"
+  echo ""
+
+  if [[ "$NON_INTERACTIVE" == "--non-interactive" ]] || [[ ! -t 0 ]]; then
+    info "Non-interactive mode: defaulting to Claude Max Plan (no API key needed)"
+    AI_PROVIDER="claude"
+    return 0
+  fi
+
+  echo -e "  Choose your AI provider for claude-mem:"
+  echo ""
+  echo -e "  ${COLOR_BOLD}1)${COLOR_RESET} Claude Max Plan ${COLOR_GREEN}(recommended)${COLOR_RESET}"
+  echo -e "     Uses your existing subscription, no API key needed"
+  echo ""
+  echo -e "  ${COLOR_BOLD}2)${COLOR_RESET} Gemini"
+  echo -e "     Free tier available — requires API key from ai.google.dev"
+  echo ""
+  echo -e "  ${COLOR_BOLD}3)${COLOR_RESET} OpenRouter"
+  echo -e "     Pay-per-use — requires API key from openrouter.ai"
+  echo ""
+
+  local choice
+  while true; do
+    prompt_user "Enter choice [1/2/3] (default: 1):"
+    read -r choice
+    choice="${choice:-1}"
+
+    case "$choice" in
+      1)
+        AI_PROVIDER="claude"
+        success "Selected: Claude Max Plan (CLI authentication)"
+        break
+        ;;
+      2)
+        AI_PROVIDER="gemini"
+        echo ""
+        prompt_user "Enter your Gemini API key (from https://ai.google.dev):"
+        read -rs AI_PROVIDER_API_KEY
+        echo ""
+        if [[ -z "$AI_PROVIDER_API_KEY" ]]; then
+          warn "No API key provided — you can add it later in ~/.claude-mem/settings.json"
+        else
+          success "Gemini API key set ($(mask_api_key "$AI_PROVIDER_API_KEY"))"
+        fi
+        break
+        ;;
+      3)
+        AI_PROVIDER="openrouter"
+        echo ""
+        prompt_user "Enter your OpenRouter API key (from https://openrouter.ai):"
+        read -rs AI_PROVIDER_API_KEY
+        echo ""
+        if [[ -z "$AI_PROVIDER_API_KEY" ]]; then
+          warn "No API key provided — you can add it later in ~/.claude-mem/settings.json"
+        else
+          success "OpenRouter API key set ($(mask_api_key "$AI_PROVIDER_API_KEY"))"
+        fi
+        break
+        ;;
+      *)
+        warn "Invalid choice. Please enter 1, 2, or 3."
+        ;;
+    esac
+  done
+}
+
+###############################################################################
+# Write settings.json — creates ~/.claude-mem/settings.json with all defaults
+# Schema: flat key-value (not nested { env: {...} })
+# Defaults sourced from SettingsDefaultsManager.ts
+###############################################################################
+
+write_settings() {
+  local settings_dir="${HOME}/.claude-mem"
+  local settings_file="${settings_dir}/settings.json"
+
+  mkdir -p "$settings_dir"
+
+  # Build the provider-specific settings
+  local provider_json=""
+  case "$AI_PROVIDER" in
+    claude)
+      provider_json="\"CLAUDE_MEM_PROVIDER\": \"claude\", \"CLAUDE_MEM_CLAUDE_AUTH_METHOD\": \"cli\""
+      ;;
+    gemini)
+      provider_json="\"CLAUDE_MEM_PROVIDER\": \"gemini\", \"CLAUDE_MEM_GEMINI_API_KEY\": \"${AI_PROVIDER_API_KEY}\", \"CLAUDE_MEM_GEMINI_MODEL\": \"gemini-2.5-flash-lite\""
+      ;;
+    openrouter)
+      provider_json="\"CLAUDE_MEM_PROVIDER\": \"openrouter\", \"CLAUDE_MEM_OPENROUTER_API_KEY\": \"${AI_PROVIDER_API_KEY}\", \"CLAUDE_MEM_OPENROUTER_MODEL\": \"xiaomi/mimo-v2-flash:free\""
+      ;;
+  esac
+
+  # Use node to generate settings JSON with all defaults + provider overrides
+  # This ensures the JSON is valid and matches SettingsDefaultsManager.ts defaults
+  node -e "
+    const fs = require('fs');
+    const path = require('path');
+    const homedir = require('os').homedir();
+
+    // All defaults from SettingsDefaultsManager.ts
+    const defaults = {
+      CLAUDE_MEM_MODEL: 'claude-sonnet-4-5',
+      CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
+      CLAUDE_MEM_WORKER_PORT: '37777',
+      CLAUDE_MEM_WORKER_HOST: '127.0.0.1',
+      CLAUDE_MEM_SKIP_TOOLS: 'ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion',
+      CLAUDE_MEM_PROVIDER: 'claude',
+      CLAUDE_MEM_CLAUDE_AUTH_METHOD: 'cli',
+      CLAUDE_MEM_GEMINI_API_KEY: '',
+      CLAUDE_MEM_GEMINI_MODEL: 'gemini-2.5-flash-lite',
+      CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: 'true',
+      CLAUDE_MEM_OPENROUTER_API_KEY: '',
+      CLAUDE_MEM_OPENROUTER_MODEL: 'xiaomi/mimo-v2-flash:free',
+      CLAUDE_MEM_OPENROUTER_SITE_URL: '',
+      CLAUDE_MEM_OPENROUTER_APP_NAME: 'claude-mem',
+      CLAUDE_MEM_OPENROUTER_MAX_CONTEXT_MESSAGES: '20',
+      CLAUDE_MEM_OPENROUTER_MAX_TOKENS: '100000',
+      CLAUDE_MEM_DATA_DIR: path.join(homedir, '.claude-mem'),
+      CLAUDE_MEM_LOG_LEVEL: 'INFO',
+      CLAUDE_MEM_PYTHON_VERSION: '3.13',
+      CLAUDE_CODE_PATH: '',
+      CLAUDE_MEM_MODE: 'code',
+      CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: 'true',
+      CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS: 'true',
+      CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT: 'true',
+      CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT: 'true',
+      CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES: 'bugfix,feature,refactor,discovery,decision,change',
+      CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS: 'how-it-works,why-it-exists,what-changed,problem-solution,gotcha,pattern,trade-off',
+      CLAUDE_MEM_CONTEXT_FULL_COUNT: '5',
+      CLAUDE_MEM_CONTEXT_FULL_FIELD: 'narrative',
+      CLAUDE_MEM_CONTEXT_SESSION_COUNT: '10',
+      CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY: 'true',
+      CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: 'false',
+      CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED: 'false',
+      CLAUDE_MEM_EXCLUDED_PROJECTS: '',
+      CLAUDE_MEM_FOLDER_MD_EXCLUDE: '[]'
+    };
+
+    // Apply provider-specific overrides
+    const overrides = {${provider_json}};
+    const settings = Object.assign(defaults, overrides);
+
+    // If settings file already exists, merge (preserve user customizations)
+    const settingsPath = '${settings_file}';
+    if (fs.existsSync(settingsPath)) {
+      try {
+        let existing = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+        // Handle old nested schema
+        if (existing.env && typeof existing.env === 'object') {
+          existing = existing.env;
+        }
+        // Existing settings take priority, except for provider settings we just set
+        for (const key of Object.keys(existing)) {
+          if (!(key in overrides) && key in defaults) {
+            settings[key] = existing[key];
+          }
+        }
+      } catch (e) {
+        // Corrupted file — overwrite with fresh defaults
+      }
+    }
+
+    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+  "
+
+  success "Settings written to ${settings_file}"
+}
+
+###############################################################################
 # Main
 ###############################################################################
 
@@ -511,8 +704,16 @@ main() {
   info "Configuring memory slot..."
   configure_memory_slot
 
+  # --- Step 5: AI provider setup ---
+  setup_ai_provider
+
+  # --- Step 6: Write settings ---
   echo ""
-  success "OpenClaw gateway detection and plugin installation complete"
+  info "Writing settings..."
+  write_settings
+
+  echo ""
+  success "OpenClaw gateway detection, plugin installation, and AI provider setup complete"
 }
 
 main "$@"

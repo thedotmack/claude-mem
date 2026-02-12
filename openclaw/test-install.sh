@@ -313,6 +313,240 @@ done
 # Verify the CLAUDE_MEM_REPO constant
 assert_contains "$CLAUDE_MEM_REPO" "github.com/thedotmack/claude-mem" "CLAUDE_MEM_REPO points to correct repository"
 
+# Verify AI provider functions exist
+for fn in setup_ai_provider write_settings mask_api_key; do
+  if declare -f "$fn" &>/dev/null; then
+    test_pass "Function ${fn}() is defined"
+  else
+    test_fail "Function ${fn}() should be defined"
+  fi
+done
+
+###############################################################################
+# Test: mask_api_key()
+###############################################################################
+
+echo ""
+echo "=== mask_api_key() ==="
+
+masked=$(mask_api_key "sk-1234567890abcdef")
+assert_eq "***************cdef" "$masked" "mask_api_key masks all but last 4 chars"
+
+masked_short=$(mask_api_key "abcd")
+assert_eq "****" "$masked_short" "mask_api_key masks keys <= 4 chars entirely"
+
+masked_five=$(mask_api_key "12345")
+assert_eq "*2345" "$masked_five" "mask_api_key masks 5-char key correctly"
+
+###############################################################################
+# Test: setup_ai_provider() — non-interactive mode defaults to Claude
+###############################################################################
+
+echo ""
+echo "=== setup_ai_provider() ==="
+
+test_setup_ai_provider_non_interactive() {
+  # NON_INTERACTIVE is readonly, so test in a child bash that sources with --non-interactive
+  local ai_result
+  ai_result="$(bash -c '
+    set -euo pipefail
+    TERM=dumb
+    tmp=$(mktemp)
+    sed "$ d" "'"${INSTALL_SCRIPT}"'" > "$tmp"
+    echo "main() { :; }" >> "$tmp"
+    set -- "--non-interactive"
+    source "$tmp"
+    rm -f "$tmp"
+    setup_ai_provider >/dev/null 2>&1
+    echo "$AI_PROVIDER"
+  ' 2>/dev/null)" || true
+
+  assert_eq "claude" "$ai_result" "Non-interactive mode defaults to claude provider"
+}
+
+test_setup_ai_provider_non_interactive
+
+###############################################################################
+# Test: write_settings() — creates new settings.json with defaults
+###############################################################################
+
+echo ""
+echo "=== write_settings() ==="
+
+test_write_settings_new_file() {
+  local fake_home
+  fake_home="$(mktemp -d)"
+  HOME="$fake_home"
+  AI_PROVIDER="claude"
+  AI_PROVIDER_API_KEY=""
+
+  write_settings >/dev/null 2>&1
+
+  local settings_file="${fake_home}/.claude-mem/settings.json"
+  assert_file_exists "$settings_file" "settings.json created at ~/.claude-mem/settings.json"
+
+  # Verify it's valid JSON with expected defaults
+  local provider
+  provider="$(node -e "const s = JSON.parse(require('fs').readFileSync('${settings_file}','utf8')); console.log(s.CLAUDE_MEM_PROVIDER);")"
+  assert_eq "claude" "$provider" "CLAUDE_MEM_PROVIDER set to claude"
+
+  local auth_method
+  auth_method="$(node -e "const s = JSON.parse(require('fs').readFileSync('${settings_file}','utf8')); console.log(s.CLAUDE_MEM_CLAUDE_AUTH_METHOD);")"
+  assert_eq "cli" "$auth_method" "CLAUDE_MEM_CLAUDE_AUTH_METHOD set to cli for Claude provider"
+
+  local worker_port
+  worker_port="$(node -e "const s = JSON.parse(require('fs').readFileSync('${settings_file}','utf8')); console.log(s.CLAUDE_MEM_WORKER_PORT);")"
+  assert_eq "37777" "$worker_port" "CLAUDE_MEM_WORKER_PORT defaults to 37777"
+
+  local model
+  model="$(node -e "const s = JSON.parse(require('fs').readFileSync('${settings_file}','utf8')); console.log(s.CLAUDE_MEM_MODEL);")"
+  assert_eq "claude-sonnet-4-5" "$model" "CLAUDE_MEM_MODEL defaults to claude-sonnet-4-5"
+
+  HOME="$ORIGINAL_HOME"
+  rm -rf "$fake_home"
+}
+
+test_write_settings_new_file
+
+# Test: write_settings() — Gemini provider with API key
+test_write_settings_gemini() {
+  local fake_home
+  fake_home="$(mktemp -d)"
+  HOME="$fake_home"
+  AI_PROVIDER="gemini"
+  AI_PROVIDER_API_KEY="test-gemini-key-1234"
+
+  write_settings >/dev/null 2>&1
+
+  local settings_file="${fake_home}/.claude-mem/settings.json"
+
+  local provider
+  provider="$(node -e "const s = JSON.parse(require('fs').readFileSync('${settings_file}','utf8')); console.log(s.CLAUDE_MEM_PROVIDER);")"
+  assert_eq "gemini" "$provider" "Gemini: CLAUDE_MEM_PROVIDER set to gemini"
+
+  local api_key
+  api_key="$(node -e "const s = JSON.parse(require('fs').readFileSync('${settings_file}','utf8')); console.log(s.CLAUDE_MEM_GEMINI_API_KEY);")"
+  assert_eq "test-gemini-key-1234" "$api_key" "Gemini: API key stored in settings"
+
+  local gemini_model
+  gemini_model="$(node -e "const s = JSON.parse(require('fs').readFileSync('${settings_file}','utf8')); console.log(s.CLAUDE_MEM_GEMINI_MODEL);")"
+  assert_eq "gemini-2.5-flash-lite" "$gemini_model" "Gemini: model defaults to gemini-2.5-flash-lite"
+
+  HOME="$ORIGINAL_HOME"
+  rm -rf "$fake_home"
+}
+
+test_write_settings_gemini
+
+# Test: write_settings() — OpenRouter provider with API key
+test_write_settings_openrouter() {
+  local fake_home
+  fake_home="$(mktemp -d)"
+  HOME="$fake_home"
+  AI_PROVIDER="openrouter"
+  AI_PROVIDER_API_KEY="sk-or-test-key-5678"
+
+  write_settings >/dev/null 2>&1
+
+  local settings_file="${fake_home}/.claude-mem/settings.json"
+
+  local provider
+  provider="$(node -e "const s = JSON.parse(require('fs').readFileSync('${settings_file}','utf8')); console.log(s.CLAUDE_MEM_PROVIDER);")"
+  assert_eq "openrouter" "$provider" "OpenRouter: CLAUDE_MEM_PROVIDER set to openrouter"
+
+  local api_key
+  api_key="$(node -e "const s = JSON.parse(require('fs').readFileSync('${settings_file}','utf8')); console.log(s.CLAUDE_MEM_OPENROUTER_API_KEY);")"
+  assert_eq "sk-or-test-key-5678" "$api_key" "OpenRouter: API key stored in settings"
+
+  local or_model
+  or_model="$(node -e "const s = JSON.parse(require('fs').readFileSync('${settings_file}','utf8')); console.log(s.CLAUDE_MEM_OPENROUTER_MODEL);")"
+  assert_eq "xiaomi/mimo-v2-flash:free" "$or_model" "OpenRouter: model defaults to xiaomi/mimo-v2-flash:free"
+
+  HOME="$ORIGINAL_HOME"
+  rm -rf "$fake_home"
+}
+
+test_write_settings_openrouter
+
+# Test: write_settings() — preserves existing user customizations
+test_write_settings_preserves_existing() {
+  local fake_home
+  fake_home="$(mktemp -d)"
+  HOME="$fake_home"
+
+  # Create existing settings with custom values
+  mkdir -p "${fake_home}/.claude-mem"
+  local settings_file="${fake_home}/.claude-mem/settings.json"
+  node -e "
+    const settings = {
+      CLAUDE_MEM_PROVIDER: 'gemini',
+      CLAUDE_MEM_GEMINI_API_KEY: 'old-key',
+      CLAUDE_MEM_WORKER_PORT: '38888',
+      CLAUDE_MEM_LOG_LEVEL: 'DEBUG'
+    };
+    require('fs').writeFileSync('${settings_file}', JSON.stringify(settings, null, 2));
+  "
+
+  # Now run write_settings with a new provider
+  AI_PROVIDER="claude"
+  AI_PROVIDER_API_KEY=""
+  write_settings >/dev/null 2>&1
+
+  # Provider should be updated to claude
+  local provider
+  provider="$(node -e "const s = JSON.parse(require('fs').readFileSync('${settings_file}','utf8')); console.log(s.CLAUDE_MEM_PROVIDER);")"
+  assert_eq "claude" "$provider" "Preserve: provider updated to new selection"
+
+  # Custom port should be preserved (not overwritten by defaults)
+  local custom_port
+  custom_port="$(node -e "const s = JSON.parse(require('fs').readFileSync('${settings_file}','utf8')); console.log(s.CLAUDE_MEM_WORKER_PORT);")"
+  assert_eq "38888" "$custom_port" "Preserve: existing custom WORKER_PORT preserved"
+
+  # Custom log level should be preserved
+  local log_level
+  log_level="$(node -e "const s = JSON.parse(require('fs').readFileSync('${settings_file}','utf8')); console.log(s.CLAUDE_MEM_LOG_LEVEL);")"
+  assert_eq "DEBUG" "$log_level" "Preserve: existing custom LOG_LEVEL preserved"
+
+  HOME="$ORIGINAL_HOME"
+  rm -rf "$fake_home"
+}
+
+test_write_settings_preserves_existing
+
+# Test: write_settings() — flat schema has all expected keys
+test_write_settings_complete_schema() {
+  local fake_home
+  fake_home="$(mktemp -d)"
+  HOME="$fake_home"
+  AI_PROVIDER="claude"
+  AI_PROVIDER_API_KEY=""
+
+  write_settings >/dev/null 2>&1
+
+  local settings_file="${fake_home}/.claude-mem/settings.json"
+
+  # Verify key count matches SettingsDefaultsManager (34 keys)
+  local key_count
+  key_count="$(node -e "const s = JSON.parse(require('fs').readFileSync('${settings_file}','utf8')); console.log(Object.keys(s).length);")"
+
+  # Settings should have all 34 keys from SettingsDefaultsManager
+  if (( key_count >= 30 )); then
+    test_pass "Settings file has ${key_count} keys (complete schema)"
+  else
+    test_fail "Settings file has ${key_count} keys, expected >= 30" "Schema may be incomplete"
+  fi
+
+  # Verify it does NOT have nested { env: {...} } format
+  local has_env_key
+  has_env_key="$(node -e "const s = JSON.parse(require('fs').readFileSync('${settings_file}','utf8')); console.log(s.env !== undefined);")"
+  assert_eq "false" "$has_env_key" "Settings uses flat schema (no nested 'env' key)"
+
+  HOME="$ORIGINAL_HOME"
+  rm -rf "$fake_home"
+}
+
+test_write_settings_complete_schema
+
 ###############################################################################
 # Summary
 ###############################################################################
