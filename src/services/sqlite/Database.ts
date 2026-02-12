@@ -64,7 +64,7 @@ export class ClaudeMemDatabase {
  * @deprecated Use ClaudeMemDatabase instead for new code
  */
 export class DatabaseManager {
-  private static instance: DatabaseManager;
+  private static instance: DatabaseManager | undefined;
   private db: Database | null = null;
   private migrations: Migration[] = [];
 

@@ -123,7 +123,7 @@ export function renderDayTimeline(
           output.push(...Color.renderColorFullObservation(obs, time, showTime, detailField, config));
         } else {
           // Close table for full observation in markdown mode
-          if (tableOpen && !useColors) {
+          if (tableOpen) {
             output.push('');
             tableOpen = false;
           }

@@ -70,7 +70,7 @@ describe('GeminiAgent', () => {
       if (key === 'CLAUDE_MEM_GEMINI_MODEL') return 'gemini-2.5-flash-lite';
       if (key === 'CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED') return rateLimitingEnabled;
       if (key === 'CLAUDE_MEM_DATA_DIR') return '/tmp/claude-mem-test';
-      return SettingsDefaultsManager.getAllDefaults()[key as keyof ReturnType<typeof SettingsDefaultsManager.getAllDefaults>] ?? '';
+      return SettingsDefaultsManager.getAllDefaults()[key as keyof ReturnType<typeof SettingsDefaultsManager.getAllDefaults>];
     });
 
     // Initialize mocks

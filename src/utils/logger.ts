@@ -37,6 +37,7 @@ export class Logger {
 
   constructor() {
     // Disable colors when output is not a TTY (e.g., PM2 logs)
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- isTTY is undefined at runtime when piped
     this.useColor = process.stdout.isTTY ?? false;
     // Don't initialize log file in constructor - do it lazily to avoid circular dependency
   }
@@ -81,6 +82,7 @@ export class Logger {
           const settingsData = readFileSync(settingsPath, 'utf-8');
           const settings = JSON.parse(settingsData);
           const envLevel = (settings.CLAUDE_MEM_LOG_LEVEL || 'INFO').toUpperCase();
+          // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- envLevel may not be a valid LogLevel key at runtime
           this.level = LogLevel[envLevel as keyof typeof LogLevel] ?? LogLevel.INFO;
         } else {
           this.level = LogLevel.INFO;

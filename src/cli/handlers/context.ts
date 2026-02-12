@@ -25,7 +25,7 @@ export const contextHandler: EventHandler = {
       };
     }
 
-    const cwd = input.cwd ?? process.cwd();
+    const cwd = input.cwd;
     const context = getProjectContext(cwd);
     const port = getWorkerPort();
 

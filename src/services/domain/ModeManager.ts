@@ -176,13 +176,6 @@ export class ModeManager {
       return parentMode;
     }
 
-    // Validate override file loaded successfully
-    if (!overrideConfig) {
-      logger.warn('SYSTEM', `Invalid override file: ${overrideId}, using parent mode '${parentId}' only`);
-      this.activeMode = parentMode;
-      return parentMode;
-    }
-
     // Deep merge override onto parent
     const mergedMode = this.deepMerge(parentMode, overrideConfig);
     this.activeMode = mergedMode;

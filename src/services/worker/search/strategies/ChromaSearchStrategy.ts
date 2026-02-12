@@ -187,7 +187,7 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
         id: chromaResults.ids[idx],
         meta
       }))
-      .filter(item => item.meta && item.meta.created_at_epoch > cutoff);
+      .filter(item => item.meta.created_at_epoch > cutoff);
   }
 
   /**
@@ -206,7 +206,7 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
     const promptIds: number[] = [];
 
     for (const item of items) {
-      const docType = item.meta?.doc_type;
+      const docType = item.meta.doc_type;
       if (docType === 'observation' && options.searchObservations) {
         obsIds.push(item.id);
       } else if (docType === 'session_summary' && options.searchSessions) {

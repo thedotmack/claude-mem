@@ -102,9 +102,9 @@ export interface GetByIdsOptions {
  * summary XML with empty tags).
  */
 export function isSummaryContentEmpty(summary: SummaryInput): boolean {
-  return !(summary.request?.trim()) &&
-         !(summary.investigated?.trim()) &&
-         !(summary.learned?.trim()) &&
-         !(summary.completed?.trim()) &&
-         !(summary.next_steps?.trim());
+  return !(summary.request.trim()) &&
+         !(summary.investigated.trim()) &&
+         !(summary.learned.trim()) &&
+         !(summary.completed.trim()) &&
+         !(summary.next_steps.trim());
 }

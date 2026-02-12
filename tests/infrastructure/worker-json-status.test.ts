@@ -47,7 +47,7 @@ function runWorkerStart(): { stdout: string; exitCode: number } {
     encoding: 'utf-8',
     timeout: 60000
   });
-  return { stdout: result.stdout?.trim() || '', exitCode: result.status || 0 };
+  return { stdout: result.stdout.trim() || '', exitCode: result.status || 0 };
 }
 
 const workerRunnable = isWorkerRunnable();
@@ -338,8 +338,8 @@ describe('worker-json-status', () => {
         timeout: 60000
       });
 
-      const stdout = result.stdout?.trim() || '';
-      const stderr = result.stderr?.trim() || '';
+      const stdout = result.stdout.trim() || '';
+      const stderr = result.stderr.trim() || '';
 
       // stdout should contain valid JSON
       expect(() => JSON.parse(stdout)).not.toThrow();

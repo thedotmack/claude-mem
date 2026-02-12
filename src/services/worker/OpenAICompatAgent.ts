@@ -151,7 +151,7 @@ export class OpenAICompatAgent {
       // Only generate a new UUID for truly new sessions that have no memory_session_id yet.
       if (!session.memorySessionId) {
         const dbSession = this.dbManager.getSessionById(session.sessionDbId);
-        const existingId = dbSession?.memory_session_id;
+        const existingId = dbSession.memory_session_id;
         if (existingId) {
           session.memorySessionId = existingId;
           logger.info('SESSION', `Restored memorySessionId from database for OpenAI-compat session`, {
@@ -262,7 +262,7 @@ export class OpenAICompatAgent {
             true  // skipSummaryStorage: prevent feedback loop in compactHistory
           );
 
-        } else if (message.type === 'summarize') {
+        } else {
           // Build summary prompt
           const summaryPrompt = buildSummaryPrompt({
             id: session.sessionDbId,

@@ -18,7 +18,7 @@ export function parseJsonArray(json: string | null): string[] {
     return Array.isArray(parsed) ? parsed : [];
   } catch (err) {
     logger.debug('PARSER', 'Failed to parse JSON array, using empty fallback', {
-      preview: json?.substring(0, 50)
+      preview: json.substring(0, 50)
     }, err as Error);
     return [];
   }

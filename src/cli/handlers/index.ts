@@ -37,11 +37,7 @@ const handlers: Record<EventType, EventHandler> = {
  * @throws Error if event type is not recognized
  */
 export function getEventHandler(eventType: EventType): EventHandler {
-  const handler = handlers[eventType];
-  if (!handler) {
-    throw new Error(`Unknown event type: ${eventType}`);
-  }
-  return handler;
+  return handlers[eventType];
 }
 
 // Re-export individual handlers for direct access if needed

@@ -30,7 +30,7 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
   readonly name = 'hybrid';
 
   constructor(
-    private chromaSync: ChromaSync,
+    private chromaSync: ChromaSync | null,
     private sessionStore: SessionStore,
     private sessionSearch: SessionSearch
   ) {
@@ -69,6 +69,7 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
     concept: string,
     options: StrategySearchOptions
   ): Promise<StrategySearchResult> {
+    if (!this.chromaSync) return this.emptyResult('hybrid');
     const { limit = SEARCH_CONSTANTS.DEFAULT_LIMIT, project, dateRange, orderBy } = options;
     const filterOptions = { limit, project, dateRange, orderBy };
 
@@ -134,6 +135,7 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
     type: string | string[],
     options: StrategySearchOptions
   ): Promise<StrategySearchResult> {
+    if (!this.chromaSync) return this.emptyResult('hybrid');
     const { limit = SEARCH_CONSTANTS.DEFAULT_LIMIT, project, dateRange, orderBy } = options;
     const filterOptions = { limit, project, dateRange, orderBy };
     const typeStr = Array.isArray(type) ? type.join(', ') : type;
@@ -202,6 +204,7 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
     sessions: SessionSummarySearchResult[];
     usedChroma: boolean;
   }> {
+    if (!this.chromaSync) return { observations: [], sessions: [], usedChroma: false };
     const { limit = SEARCH_CONSTANTS.DEFAULT_LIMIT, project, dateRange, orderBy } = options;
     const filterOptions = { limit, project, dateRange, orderBy };
 

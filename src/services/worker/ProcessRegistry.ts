@@ -104,6 +104,7 @@ export async function ensureProcessExit(tracked: TrackedProcess, timeoutMs: numb
   await Promise.race([exitPromise, timeoutPromise]);
 
   // Check if exited gracefully
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- exitCode may change after await
   if (proc.killed || proc.exitCode !== null) {
     unregisterProcess(pid);
     return;

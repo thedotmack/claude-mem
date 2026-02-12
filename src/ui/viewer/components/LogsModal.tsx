@@ -60,8 +60,8 @@ function parseLogLine(line: string): ParsedLogLine {
   return {
     raw: line,
     timestamp,
-    level: level?.trim() as LogLevel,
-    component: component?.trim() as LogComponent,
+    level: level.trim() as LogLevel,
+    component: component.trim() as LogComponent,
     correlationId: correlationId || undefined,
     message,
     isSpecial,

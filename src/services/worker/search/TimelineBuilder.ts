@@ -211,7 +211,7 @@ export class TimelineBuilder {
           lines.push(`> ${truncated}`);
           lines.push('');
 
-        } else if (item.type === 'observation') {
+        } else {
           const obs = item.data as ObservationSearchResult;
           const file = extractFirstFile(obs.files_modified, cwd, obs.files_read);
 

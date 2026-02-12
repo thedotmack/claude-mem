@@ -167,7 +167,7 @@ export class TimelineService {
           lines.push(`**💬 User Prompt #${String(prompt.prompt_number)}** (${this.formatDateTime(item.epoch)})`);
           lines.push(`> ${truncated}`);
           lines.push('');
-        } else if (item.type === 'observation') {
+        } else {
           const obs = item.data as ObservationSearchResult;
           const file = 'General';
 

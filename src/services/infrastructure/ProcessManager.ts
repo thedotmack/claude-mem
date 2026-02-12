@@ -294,6 +294,7 @@ export function spawnDaemon(
     // Build environment variable assignments for PowerShell
     // This fixes a bug where WMIC silently dropped env vars
     const envPairs = Object.entries(env)
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- process.env values can be undefined at runtime
       .filter(([_k, v]) => v !== undefined)
       .map(([k, v]) => `$env:${k}='${String(v).replace(/'/g, "''")}'`)
       .join('; ');

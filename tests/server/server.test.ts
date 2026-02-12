@@ -38,6 +38,7 @@ describe('Server', () => {
   afterEach(async () => {
     loggerSpies.forEach(spy => spy.mockRestore());
     // Clean up server if created and still has an active http server
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive: server may not be assigned in every test
     if (server && server.getHttpServer()) {
       try {
         await server.close();

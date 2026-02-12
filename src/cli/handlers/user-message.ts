@@ -16,7 +16,7 @@ export const userMessageHandler: EventHandler = {
     await ensureWorkerRunning();
 
     const port = getWorkerPort();
-    const project = basename(input.cwd ?? process.cwd());
+    const project = basename(input.cwd);
 
     // Fetch formatted context directly from worker API
     // Note: Removed AbortSignal.timeout to avoid Windows Bun cleanup issue (libuv assertion)

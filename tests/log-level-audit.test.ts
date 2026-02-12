@@ -152,6 +152,7 @@ function generateReport(calls: LoggerCall[]): string {
   };
 
   for (const call of calls) {
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive: call.level may not match a known key
     if (byLevel[call.level]) {
       byLevel[call.level].push(call);
     }
@@ -290,6 +291,7 @@ describe('Log Level Audit', () => {
     };
 
     for (const call of allCalls) {
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive: call.level may not match a known key
       if (byLevel[call.level] !== undefined) {
         byLevel[call.level]++;
       }

@@ -72,6 +72,7 @@ function buildTimestampMap(): TimestampMapping {
           const key = roundedTimestamp.toISOString();
 
           // Only store first occurrence for each second (they're all the same session anyway)
+          // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive check for runtime Record indexing
           if (!map[key]) {
             map[key] = { sessionId, project };
           }
@@ -285,6 +286,7 @@ function main() {
 
     // Look up session metadata
     const sessionMeta = timestampMap[timestampIso];
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive check for runtime Record indexing
     if (!sessionMeta) {
       noSession++;
       if (noSession <= 5) {

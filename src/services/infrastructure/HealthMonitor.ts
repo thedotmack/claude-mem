@@ -85,7 +85,7 @@ export async function httpShutdown(port: number): Promise<boolean> {
     return true;
   } catch (error) {
     // Connection refused is expected if worker already stopped
-    if (error instanceof Error && error.message?.includes('ECONNREFUSED')) {
+    if (error instanceof Error && error.message.includes('ECONNREFUSED')) {
       logger.debug('SYSTEM', 'Worker already stopped', { port }, error);
       return false;
     }

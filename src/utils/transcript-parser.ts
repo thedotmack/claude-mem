@@ -138,6 +138,7 @@ export class TranscriptParser {
     // Iterate backward to find the last user message with text content
     for (let i = userEntries.length - 1; i >= 0; i--) {
       const entry = userEntries[i];
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive check for runtime JSON data
       if (!entry?.message?.content) continue;
 
       const text = this.extractTextFromContent(entry.message.content);
@@ -156,6 +157,7 @@ export class TranscriptParser {
     // Iterate backward to find the last assistant message with text content
     for (let i = assistantEntries.length - 1; i >= 0; i--) {
       const entry = assistantEntries[i];
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive check for runtime JSON data
       if (!entry?.message?.content) continue;
 
       let text = this.extractTextFromContent(entry.message.content);

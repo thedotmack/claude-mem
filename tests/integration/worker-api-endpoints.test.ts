@@ -53,6 +53,7 @@ describe('Worker API Endpoints Integration', () => {
   afterEach(async () => {
     loggerSpies.forEach(spy => spy.mockRestore());
 
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive: server may not be assigned in every test
     if (server && server.getHttpServer()) {
       try {
         await server.close();

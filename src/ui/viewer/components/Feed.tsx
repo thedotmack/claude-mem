@@ -34,7 +34,7 @@ export function Feed({ observations, summaries, prompts, onLoadMore, isLoading, 
       (entries) => {
         const first = entries[0];
         if (first.isIntersecting && hasMore && !isLoading) {
-          onLoadMoreRef.current?.();
+          onLoadMoreRef.current();
         }
       },
       { threshold: UI.LOAD_MORE_THRESHOLD }
@@ -43,9 +43,7 @@ export function Feed({ observations, summaries, prompts, onLoadMore, isLoading, 
     observer.observe(element);
 
     return () => {
-      if (element) {
-        observer.unobserve(element);
-      }
+      observer.unobserve(element);
       observer.disconnect();
     };
   }, [hasMore, isLoading]);

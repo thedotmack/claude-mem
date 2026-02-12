@@ -80,6 +80,7 @@ export function registerCursorProject(
  */
 export function unregisterCursorProject(registryFile: string, projectName: string): void {
   const registry = readCursorRegistry(registryFile);
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive check for runtime JSON data
   if (registry[projectName]) {
     delete registry[projectName];
     writeCursorRegistry(registryFile, registry);
@@ -147,6 +148,7 @@ export function configureCursorMcp(mcpJsonPath: string, mcpServerScriptPath: str
   if (existsSync(mcpJsonPath)) {
     try {
       config = JSON.parse(readFileSync(mcpJsonPath, 'utf-8'));
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive check for runtime JSON data
       if (!config.mcpServers) {
         config.mcpServers = {};
       }
@@ -177,6 +179,7 @@ export function removeMcpConfig(mcpJsonPath: string): void {
 
   try {
     const config: CursorMcpConfig = JSON.parse(readFileSync(mcpJsonPath, 'utf-8'));
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive check for runtime JSON data
     if (config.mcpServers && config.mcpServers['claude-mem']) {
       delete config.mcpServers['claude-mem'];
       writeFileSync(mcpJsonPath, JSON.stringify(config, null, 2));

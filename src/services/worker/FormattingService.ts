@@ -73,7 +73,7 @@ Tips:
     const id = `#S${String(session.id)}`;
     const time = this.formatTime(session.created_at_epoch);
     const icon = '🎯';
-    const title = session.request || `Session ${session.memory_session_id?.substring(0, 8) || 'unknown'}`;
+    const title = session.request || `Session ${session.memory_session_id.substring(0, 8) || 'unknown'}`;
 
     return `| ${id} | ${time} | ${icon} | ${title} | - | - |`;
   }
@@ -136,7 +136,7 @@ Tips:
     const id = `#S${String(session.id)}`;
     const time = this.formatTime(session.created_at_epoch);
     const icon = '🎯';
-    const title = session.request || `Session ${session.memory_session_id?.substring(0, 8) || 'unknown'}`;
+    const title = session.request || `Session ${session.memory_session_id.substring(0, 8) || 'unknown'}`;
 
     // Use ditto mark if same time as previous row
     const timeDisplay = time === lastTime ? '″' : time;

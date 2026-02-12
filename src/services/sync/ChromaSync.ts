@@ -580,6 +580,7 @@ export class ChromaSync {
 
     logger.info('CHROMA_SYNC', 'Fetching existing Chroma document IDs...', { project: this.project });
 
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- intentional infinite loop with break
     while (true) {
       try {
         const result = await this.client.callTool({

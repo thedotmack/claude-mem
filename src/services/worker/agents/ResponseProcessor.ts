@@ -232,10 +232,10 @@ function syncAndBroadcastObservations(
       subtitle: obs.subtitle,
       text: null,  // text field is not in ParsedObservation
       narrative: obs.narrative || null,
-      facts: JSON.stringify(obs.facts || []),
-      concepts: JSON.stringify(obs.concepts || []),
-      files_read: JSON.stringify(obs.files_read || []),
-      files_modified: JSON.stringify(obs.files_modified || []),
+      facts: JSON.stringify(obs.facts),
+      concepts: JSON.stringify(obs.concepts),
+      files_read: JSON.stringify(obs.files_read),
+      files_modified: JSON.stringify(obs.files_modified),
       project: session.project,
       prompt_number: session.lastPromptNumber,
       created_at_epoch: result.createdAtEpoch

@@ -181,7 +181,7 @@ export class ResultFormatter {
     const time = formatTime(session.created_at_epoch);
     const icon = '\uD83C\uDFAF'; // Target emoji
     const title = session.request ||
-      `Session ${session.memory_session_id?.substring(0, 8) || 'unknown'}`;
+      `Session ${session.memory_session_id.substring(0, 8) || 'unknown'}`;
 
     const timeDisplay = time === lastTime ? '"' : time;
 
@@ -237,7 +237,7 @@ export class ResultFormatter {
     const time = formatTime(session.created_at_epoch);
     const icon = '\uD83C\uDFAF';
     const title = session.request ||
-      `Session ${session.memory_session_id?.substring(0, 8) || 'unknown'}`;
+      `Session ${session.memory_session_id.substring(0, 8) || 'unknown'}`;
 
     return `| ${id} | ${time} | ${icon} | ${title} | - | - |`;
   }

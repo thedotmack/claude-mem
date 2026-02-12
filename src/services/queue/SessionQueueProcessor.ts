@@ -47,6 +47,7 @@ export class SessionQueueProcessor {
           // Queue empty - wait for wake-up event or timeout
           const receivedMessage = await this.waitForMessage(signal, IDLE_TIMEOUT_MS);
 
+          // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- signal.aborted can change during await
           if (!receivedMessage && !signal.aborted) {
             // Timeout occurred - check if we've been idle too long
             const idleDuration = Date.now() - lastActivityTime;
@@ -64,6 +65,7 @@ export class SessionQueueProcessor {
           }
         }
       } catch (error) {
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- signal.aborted can change during await
         if (signal.aborted) return;
         logger.error('SESSION', 'Error in queue processor loop', { sessionDbId }, error as Error);
         // Small backoff to prevent tight loop on DB error

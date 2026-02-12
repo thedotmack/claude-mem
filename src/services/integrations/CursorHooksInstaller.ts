@@ -84,6 +84,7 @@ export function registerCursorProject(projectName: string, workspacePath: string
  */
 export function unregisterCursorProject(projectName: string): void {
   const registry = readCursorRegistry();
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive check for runtime JSON data
   if (registry[projectName]) {
     delete registry[projectName];
     writeCursorRegistry(registry);
@@ -99,6 +100,7 @@ export async function updateCursorContextForProject(projectName: string, port: n
   const registry = readCursorRegistry();
   const entry = registry[projectName];
 
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive check for runtime JSON data
   if (!entry) return; // Project doesn't have Cursor hooks installed
 
   try {
@@ -251,6 +253,7 @@ export function configureCursorMcp(target: CursorInstallTarget): number {
     if (existsSync(mcpJsonPath)) {
       try {
         config = JSON.parse(readFileSync(mcpJsonPath, 'utf-8'));
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive check for runtime JSON data
         if (!config.mcpServers) {
           config.mcpServers = {};
         }

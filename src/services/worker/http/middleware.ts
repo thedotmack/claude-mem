@@ -97,7 +97,7 @@ export function requireLocalhost(req: Request, res: Response, next: NextFunction
  * Used to avoid logging sensitive data or large payloads
  */
 export function summarizeRequestBody(method: string, path: string, body: Record<string, unknown>): string {
-  if (!body || Object.keys(body).length === 0) return '';
+  if (Object.keys(body).length === 0) return '';
 
   // Session init
   if (path.includes('/init')) {
