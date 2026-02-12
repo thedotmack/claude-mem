@@ -666,6 +666,196 @@ write_settings() {
 }
 
 ###############################################################################
+# Locate the installed claude-mem plugin directory
+# Checks common OpenClaw and Claude Code plugin install paths
+###############################################################################
+
+CLAUDE_MEM_INSTALL_DIR=""
+
+find_claude_mem_install_dir() {
+  local -a search_paths=(
+    "${HOME}/.openclaw/extensions/claude-mem"
+    "${HOME}/.claude/plugins/marketplaces/thedotmack"
+    "${HOME}/.openclaw/plugins/claude-mem"
+  )
+
+  for candidate in "${search_paths[@]}"; do
+    if [[ -f "${candidate}/plugin/scripts/worker-service.cjs" ]]; then
+      CLAUDE_MEM_INSTALL_DIR="$candidate"
+      return 0
+    fi
+  done
+
+  # Fallback: search for the worker script under common plugin roots
+  local -a roots=(
+    "${HOME}/.openclaw"
+    "${HOME}/.claude/plugins"
+  )
+  for root in "${roots[@]}"; do
+    if [[ -d "$root" ]]; then
+      local found
+      found="$(find "$root" -name "worker-service.cjs" -path "*/plugin/scripts/*" 2>/dev/null | head -n 1)" || true
+      if [[ -n "$found" ]]; then
+        # Strip /plugin/scripts/worker-service.cjs to get the install dir
+        CLAUDE_MEM_INSTALL_DIR="${found%/plugin/scripts/worker-service.cjs}"
+        return 0
+      fi
+    fi
+  done
+
+  CLAUDE_MEM_INSTALL_DIR=""
+  return 1
+}
+
+###############################################################################
+# Worker service startup
+# Starts the claude-mem worker using bun in the background
+###############################################################################
+
+WORKER_PID=""
+
+start_worker() {
+  info "Starting claude-mem worker service..."
+
+  if ! find_claude_mem_install_dir; then
+    error "Cannot find claude-mem plugin installation directory"
+    error "Expected worker-service.cjs in one of:"
+    error "  ~/.openclaw/extensions/claude-mem/plugin/scripts/"
+    error "  ~/.claude/plugins/marketplaces/thedotmack/plugin/scripts/"
+    error ""
+    error "Try reinstalling the plugin and re-running this installer."
+    return 1
+  fi
+
+  local worker_script="${CLAUDE_MEM_INSTALL_DIR}/plugin/scripts/worker-service.cjs"
+  local log_dir="${HOME}/.claude-mem/logs"
+  local log_date
+  log_date="$(date +%Y-%m-%d)"
+  local log_file="${log_dir}/worker-${log_date}.log"
+
+  mkdir -p "$log_dir"
+
+  # Ensure bun path is available
+  if [[ -z "$BUN_PATH" ]]; then
+    if ! find_bun_path; then
+      error "Bun not found — cannot start worker service"
+      return 1
+    fi
+  fi
+
+  # Start worker in background with nohup
+  CLAUDE_MEM_WORKER_PORT=37777 nohup "$BUN_PATH" "$worker_script" \
+    >> "$log_file" 2>&1 &
+  WORKER_PID=$!
+
+  # Write PID file for future management
+  local pid_file="${HOME}/.claude-mem/worker.pid"
+  mkdir -p "${HOME}/.claude-mem"
+  node -e "
+    const info = {
+      pid: ${WORKER_PID},
+      port: 37777,
+      startedAt: new Date().toISOString(),
+      version: 'installer'
+    };
+    require('fs').writeFileSync('${pid_file}', JSON.stringify(info, null, 2));
+  "
+
+  success "Worker process started (PID: ${WORKER_PID})"
+  info "Logs: ${log_file}"
+}
+
+###############################################################################
+# Health verification
+# Polls http://localhost:37777/api/health up to 10 times with 1-second intervals
+###############################################################################
+
+verify_health() {
+  local max_attempts=10
+  local attempt=1
+  local health_url="http://127.0.0.1:37777/api/health"
+
+  info "Verifying worker health..."
+
+  while (( attempt <= max_attempts )); do
+    local response
+    response="$(curl -s -o /dev/null -w "%{http_code}" "$health_url" 2>/dev/null)" || true
+
+    if [[ "$response" == "200" ]]; then
+      # Verify the response body contains status:ok
+      local body
+      body="$(curl -s "$health_url" 2>/dev/null)" || true
+      if echo "$body" | grep -q '"status"[[:space:]]*:[[:space:]]*"ok"'; then
+        success "Worker is healthy (port 37777)"
+        return 0
+      fi
+    fi
+
+    if (( attempt < max_attempts )); then
+      info "Waiting for worker to start... (attempt ${attempt}/${max_attempts})"
+    fi
+    sleep 1
+    attempt=$((attempt + 1))
+  done
+
+  warn "Worker health check timed out after ${max_attempts} attempts"
+  warn "The worker may still be starting up. Check status with:"
+  warn "  curl http://127.0.0.1:37777/api/health"
+  warn "  Or check logs: ~/.claude-mem/logs/"
+  return 1
+}
+
+###############################################################################
+# Completion summary
+###############################################################################
+
+print_completion_summary() {
+  local provider_display=""
+  case "$AI_PROVIDER" in
+    claude)    provider_display="Claude Max Plan (CLI authentication)" ;;
+    gemini)    provider_display="Gemini (gemini-2.5-flash-lite)" ;;
+    openrouter) provider_display="OpenRouter (xiaomi/mimo-v2-flash:free)" ;;
+    *)         provider_display="$AI_PROVIDER" ;;
+  esac
+
+  echo ""
+  echo -e "${COLOR_MAGENTA}${COLOR_BOLD}"
+  echo "  ┌──────────────────────────────────────────┐"
+  echo "  │       Installation Complete!              │"
+  echo "  └──────────────────────────────────────────┘"
+  echo -e "${COLOR_RESET}"
+
+  echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  Dependencies installed (Bun, uv)"
+  echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  OpenClaw gateway detected"
+  echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  claude-mem plugin installed and enabled"
+  echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  Memory slot configured"
+  echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  AI provider: ${COLOR_BOLD}${provider_display}${COLOR_RESET}"
+  echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  Settings written to ~/.claude-mem/settings.json"
+
+  if [[ -n "$WORKER_PID" ]] && kill -0 "$WORKER_PID" 2>/dev/null; then
+    echo -e "  ${COLOR_GREEN}✓${COLOR_RESET}  Worker running on port ${COLOR_BOLD}37777${COLOR_RESET} (PID: ${WORKER_PID})"
+  else
+    echo -e "  ${COLOR_YELLOW}⚠${COLOR_RESET}  Worker may not be running — check logs at ~/.claude-mem/logs/"
+  fi
+
+  echo ""
+  echo -e "  ${COLOR_BOLD}Next step: Set up your observation feed${COLOR_RESET}"
+  echo ""
+  echo "  claude-mem can send AI-compressed observations to your preferred"
+  echo "  messaging channel. Supported channels:"
+  echo ""
+  echo -e "    ${COLOR_CYAN}•${COLOR_RESET} Telegram     ${COLOR_CYAN}•${COLOR_RESET} Discord      ${COLOR_CYAN}•${COLOR_RESET} Slack"
+  echo -e "    ${COLOR_CYAN}•${COLOR_RESET} Signal       ${COLOR_CYAN}•${COLOR_RESET} WhatsApp     ${COLOR_CYAN}•${COLOR_RESET} LINE"
+  echo ""
+  echo "  Configure in ~/.openclaw/openclaw.json under"
+  echo "  plugins.entries.claude-mem.config.observationFeed"
+  echo ""
+  echo -e "  ${COLOR_BOLD}To re-run this installer:${COLOR_RESET}"
+  echo "  bash <(curl -fsSL https://raw.githubusercontent.com/thedotmack/claude-mem/main/openclaw/install.sh)"
+  echo ""
+}
+
+###############################################################################
 # Main
 ###############################################################################
 
@@ -675,7 +865,7 @@ main() {
 
   # --- Step 1: Dependencies ---
   echo ""
-  info "Checking dependencies..."
+  info "${COLOR_BOLD}[1/7]${COLOR_RESET} Checking dependencies..."
   echo ""
 
   if ! check_bun; then
@@ -691,29 +881,41 @@ main() {
 
   # --- Step 2: OpenClaw gateway ---
   echo ""
-  info "Locating OpenClaw gateway..."
+  info "${COLOR_BOLD}[2/7]${COLOR_RESET} Locating OpenClaw gateway..."
   check_openclaw
 
   # --- Step 3: Plugin installation ---
   echo ""
-  info "Installing claude-mem plugin..."
+  info "${COLOR_BOLD}[3/7]${COLOR_RESET} Installing claude-mem plugin..."
   install_plugin
 
   # --- Step 4: Memory slot configuration ---
   echo ""
-  info "Configuring memory slot..."
+  info "${COLOR_BOLD}[4/7]${COLOR_RESET} Configuring memory slot..."
   configure_memory_slot
 
   # --- Step 5: AI provider setup ---
+  echo ""
+  info "${COLOR_BOLD}[5/7]${COLOR_RESET} AI provider setup..."
   setup_ai_provider
 
   # --- Step 6: Write settings ---
   echo ""
-  info "Writing settings..."
+  info "${COLOR_BOLD}[6/7]${COLOR_RESET} Writing settings..."
   write_settings
 
+  # --- Step 7: Start worker and verify ---
   echo ""
-  success "OpenClaw gateway detection, plugin installation, and AI provider setup complete"
+  info "${COLOR_BOLD}[7/7]${COLOR_RESET} Starting worker service..."
+  if start_worker; then
+    verify_health || true
+  else
+    warn "Worker startup failed — you can start it manually later"
+    warn "  cd ~/.claude/plugins/marketplaces/thedotmack && bun plugin/scripts/worker-service.cjs"
+  fi
+
+  # --- Completion ---
+  print_completion_summary
 }
 
 main "$@"

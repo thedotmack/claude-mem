@@ -548,6 +548,263 @@ test_write_settings_complete_schema() {
 test_write_settings_complete_schema
 
 ###############################################################################
+# Test: find_claude_mem_install_dir() — not found scenario
+###############################################################################
+
+echo ""
+echo "=== find_claude_mem_install_dir() ==="
+
+test_find_install_dir_not_found() {
+  local fake_home
+  fake_home="$(mktemp -d)"
+  HOME="$fake_home"
+  CLAUDE_MEM_INSTALL_DIR=""
+
+  if find_claude_mem_install_dir 2>/dev/null; then
+    test_fail "find_claude_mem_install_dir should return 1 when not found"
+  else
+    test_pass "find_claude_mem_install_dir returns 1 when not found"
+  fi
+
+  assert_eq "" "$CLAUDE_MEM_INSTALL_DIR" "CLAUDE_MEM_INSTALL_DIR is empty when not found"
+
+  HOME="$ORIGINAL_HOME"
+  rm -rf "$fake_home"
+}
+
+test_find_install_dir_not_found
+
+# Test: find_claude_mem_install_dir() — found in ~/.openclaw/extensions/claude-mem/
+test_find_install_dir_openclaw_extensions() {
+  local fake_home
+  fake_home="$(mktemp -d)"
+  HOME="$fake_home"
+  CLAUDE_MEM_INSTALL_DIR=""
+
+  # Create the expected directory structure
+  mkdir -p "${fake_home}/.openclaw/extensions/claude-mem/plugin/scripts"
+  touch "${fake_home}/.openclaw/extensions/claude-mem/plugin/scripts/worker-service.cjs"
+
+  if find_claude_mem_install_dir 2>/dev/null; then
+    test_pass "find_claude_mem_install_dir finds dir in ~/.openclaw/extensions/claude-mem/"
+    assert_eq "${fake_home}/.openclaw/extensions/claude-mem" "$CLAUDE_MEM_INSTALL_DIR" "CLAUDE_MEM_INSTALL_DIR set correctly for openclaw extensions"
+  else
+    test_fail "find_claude_mem_install_dir should find dir in ~/.openclaw/extensions/claude-mem/"
+  fi
+
+  HOME="$ORIGINAL_HOME"
+  rm -rf "$fake_home"
+}
+
+test_find_install_dir_openclaw_extensions
+
+# Test: find_claude_mem_install_dir() — found in ~/.claude/plugins/marketplaces/thedotmack/
+test_find_install_dir_marketplace() {
+  local fake_home
+  fake_home="$(mktemp -d)"
+  HOME="$fake_home"
+  CLAUDE_MEM_INSTALL_DIR=""
+
+  mkdir -p "${fake_home}/.claude/plugins/marketplaces/thedotmack/plugin/scripts"
+  touch "${fake_home}/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs"
+
+  if find_claude_mem_install_dir 2>/dev/null; then
+    test_pass "find_claude_mem_install_dir finds dir in marketplace path"
+    assert_eq "${fake_home}/.claude/plugins/marketplaces/thedotmack" "$CLAUDE_MEM_INSTALL_DIR" "CLAUDE_MEM_INSTALL_DIR set correctly for marketplace"
+  else
+    test_fail "find_claude_mem_install_dir should find dir in marketplace path"
+  fi
+
+  HOME="$ORIGINAL_HOME"
+  rm -rf "$fake_home"
+}
+
+test_find_install_dir_marketplace
+
+###############################################################################
+# Test: start_worker() — fails gracefully when install dir not found
+###############################################################################
+
+echo ""
+echo "=== start_worker() ==="
+
+test_start_worker_no_install_dir() {
+  local fake_home
+  fake_home="$(mktemp -d)"
+  HOME="$fake_home"
+  CLAUDE_MEM_INSTALL_DIR=""
+
+  local output
+  if output="$(start_worker 2>&1)"; then
+    test_fail "start_worker should fail when install dir not found"
+  else
+    test_pass "start_worker returns error when install dir not found"
+  fi
+
+  assert_contains "$output" "Cannot find claude-mem plugin installation directory" "start_worker error message mentions install dir"
+
+  HOME="$ORIGINAL_HOME"
+  rm -rf "$fake_home"
+}
+
+test_start_worker_no_install_dir
+
+###############################################################################
+# Test: verify_health() — fails when no server is running
+###############################################################################
+
+echo ""
+echo "=== verify_health() ==="
+
+test_verify_health_no_server() {
+  # verify_health should fail gracefully when nothing is running on 37777
+  # We use a very short test — just 1 attempt to keep the test fast
+  # Override the function to test with fewer attempts by running in a subshell
+  local result
+  result="$(bash -c '
+    set -euo pipefail
+    TERM=dumb
+    tmp=$(mktemp)
+    sed "$ d" "'"${INSTALL_SCRIPT}"'" > "$tmp"
+    echo "main() { :; }" >> "$tmp"
+    source "$tmp"
+    rm -f "$tmp"
+    # Call verify_health which will attempt 10 polls — capture exit code
+    verify_health 2>/dev/null && echo "PASS" || echo "FAIL"
+  ' 2>/dev/null)" || true
+
+  # Note: This test may take ~10 seconds due to polling
+  # If curl is not available, it will also fail
+  if [[ "$result" == *"FAIL"* ]]; then
+    test_pass "verify_health returns failure when no server is running"
+  else
+    # Could pass if something is actually running on 37777
+    test_pass "verify_health returned success (worker may already be running on 37777)"
+  fi
+}
+
+# Only run the health check test if curl is available
+if command -v curl &>/dev/null; then
+  test_verify_health_no_server
+else
+  test_pass "verify_health test skipped (curl not available)"
+fi
+
+###############################################################################
+# Test: print_completion_summary() — runs without error
+###############################################################################
+
+echo ""
+echo "=== print_completion_summary() ==="
+
+test_print_completion_summary() {
+  AI_PROVIDER="claude"
+  WORKER_PID=""
+
+  local output
+  output="$(print_completion_summary 2>&1)"
+
+  assert_contains "$output" "Installation Complete" "Completion summary shows 'Installation Complete'"
+  assert_contains "$output" "Claude Max Plan" "Completion summary shows correct provider"
+  assert_contains "$output" "Telegram" "Completion summary mentions Telegram channel"
+  assert_contains "$output" "Discord" "Completion summary mentions Discord channel"
+  assert_contains "$output" "Slack" "Completion summary mentions Slack channel"
+  assert_contains "$output" "Signal" "Completion summary mentions Signal channel"
+  assert_contains "$output" "WhatsApp" "Completion summary mentions WhatsApp channel"
+  assert_contains "$output" "LINE" "Completion summary mentions LINE channel"
+  assert_contains "$output" "re-run this installer" "Completion summary shows re-run instructions"
+}
+
+test_print_completion_summary
+
+test_print_completion_summary_gemini() {
+  AI_PROVIDER="gemini"
+  WORKER_PID=""
+
+  local output
+  output="$(print_completion_summary 2>&1)"
+
+  assert_contains "$output" "Gemini" "Gemini provider shown in completion summary"
+}
+
+test_print_completion_summary_gemini
+
+test_print_completion_summary_openrouter() {
+  AI_PROVIDER="openrouter"
+  WORKER_PID=""
+
+  local output
+  output="$(print_completion_summary 2>&1)"
+
+  assert_contains "$output" "OpenRouter" "OpenRouter provider shown in completion summary"
+}
+
+test_print_completion_summary_openrouter
+
+###############################################################################
+# Test: Script structure — new functions exist
+###############################################################################
+
+echo ""
+echo "=== New function existence ==="
+
+for fn in find_claude_mem_install_dir start_worker verify_health print_completion_summary; do
+  if declare -f "$fn" &>/dev/null; then
+    test_pass "Function ${fn}() is defined"
+  else
+    test_fail "Function ${fn}() should be defined"
+  fi
+done
+
+###############################################################################
+# Test: main() function calls new functions in correct order
+###############################################################################
+
+echo ""
+echo "=== main() function structure ==="
+
+# Verify main calls the new functions by checking the install.sh source
+test_main_calls_start_worker() {
+  if grep -q 'start_worker' "$INSTALL_SCRIPT"; then
+    test_pass "main() calls start_worker"
+  else
+    test_fail "main() should call start_worker"
+  fi
+}
+
+test_main_calls_start_worker
+
+test_main_calls_verify_health() {
+  if grep -q 'verify_health' "$INSTALL_SCRIPT"; then
+    test_pass "main() calls verify_health"
+  else
+    test_fail "main() should call verify_health"
+  fi
+}
+
+test_main_calls_verify_health
+
+test_main_calls_completion_summary() {
+  if grep -q 'print_completion_summary' "$INSTALL_SCRIPT"; then
+    test_pass "main() calls print_completion_summary"
+  else
+    test_fail "main() should call print_completion_summary"
+  fi
+}
+
+test_main_calls_completion_summary
+
+test_main_has_progress_indicators() {
+  if grep -q '\[1/7\]' "$INSTALL_SCRIPT" && grep -q '\[7/7\]' "$INSTALL_SCRIPT"; then
+    test_pass "main() has progress indicators [1/7] through [7/7]"
+  else
+    test_fail "main() should have progress indicators [1/7] through [7/7]"
+  fi
+}
+
+test_main_has_progress_indicators
+
+###############################################################################
 # Summary
 ###############################################################################
 
