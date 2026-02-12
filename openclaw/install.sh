@@ -26,6 +26,7 @@ NON_INTERACTIVE=""
 CLI_PROVIDER=""
 CLI_API_KEY=""
 UPGRADE_MODE=""
+CLI_BRANCH=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -36,6 +37,14 @@ while [[ $# -gt 0 ]]; do
     --upgrade)
       UPGRADE_MODE="true"
       shift
+      ;;
+    --branch=*)
+      CLI_BRANCH="${1#--branch=}"
+      shift
+      ;;
+    --branch)
+      CLI_BRANCH="${2:-}"
+      shift 2
       ;;
     --provider=*)
       CLI_PROVIDER="${1#--provider=}"
@@ -550,17 +559,25 @@ run_openclaw() {
 ###############################################################################
 
 CLAUDE_MEM_REPO="https://github.com/thedotmack/claude-mem.git"
+CLAUDE_MEM_BRANCH="${CLI_BRANCH:-main}"
 
 install_plugin() {
   # Check for git before attempting clone
   check_git
 
+  # Remove existing plugin installation to allow clean re-install
+  local existing_plugin_dir="${HOME}/.openclaw/extensions/claude-mem"
+  if [[ -d "$existing_plugin_dir" ]]; then
+    info "Removing existing claude-mem plugin at ${existing_plugin_dir}..."
+    rm -rf "$existing_plugin_dir"
+  fi
+
   local build_dir
   build_dir="$(mktemp -d)"
   register_cleanup_dir "$build_dir"
 
-  info "Cloning claude-mem repository..."
-  if ! git clone --depth 1 "$CLAUDE_MEM_REPO" "$build_dir/claude-mem" 2>&1; then
+  info "Cloning claude-mem repository (branch: ${CLAUDE_MEM_BRANCH})..."
+  if ! git clone --depth 1 --branch "$CLAUDE_MEM_BRANCH" "$CLAUDE_MEM_REPO" "$build_dir/claude-mem" 2>&1; then
     error "Failed to clone claude-mem repository"
     error "Check your internet connection and try again."
     exit 1
