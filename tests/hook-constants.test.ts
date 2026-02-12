@@ -8,7 +8,7 @@
  * Value: Prevents regressions in timeout values that could cause
  * hook failures on slow systems or Windows
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { HOOK_TIMEOUTS, HOOK_EXIT_CODES, getTimeout } from '../src/shared/hook-constants.js';
 
 describe('hook-constants', () => {

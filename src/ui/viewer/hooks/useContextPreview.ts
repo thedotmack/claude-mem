@@ -32,7 +32,7 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
         console.error('Failed to fetch projects:', err);
       }
     }
-    fetchProjects();
+    void fetchProjects();
   }, []);
 
   const refresh = useCallback(async () => {
@@ -63,7 +63,7 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
   // Debounced refresh when settings or selectedProject change
   useEffect(() => {
     const timeout = setTimeout(() => {
-      refresh();
+      void refresh();
     }, 300);
     return () => { clearTimeout(timeout); };
   }, [settings, refresh]);

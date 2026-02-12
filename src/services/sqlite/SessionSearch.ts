@@ -12,9 +12,6 @@ import type {
   ObservationRow,
   UserPromptRow
 } from './types.js';
-import {
-  DateRange
-} from './types.js';
 
 /**
  * Search interface for session-based memory

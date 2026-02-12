@@ -1,4 +1,4 @@
-import type { PlatformAdapter, NormalizedHookInput, HookResult } from '../types.js';
+import type { PlatformAdapter } from '../types.js';
 
 // Raw adapter passes through with minimal transformation - useful for testing
 export const rawAdapter: PlatformAdapter = {

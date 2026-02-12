@@ -210,7 +210,7 @@ describe('SearchOrchestrator', () => {
 
     describe('findByConcept', () => {
       it('should use hybrid strategy when Chroma available', async () => {
-        const result = await orchestrator.findByConcept('test-concept', {
+        await orchestrator.findByConcept('test-concept', {
           limit: 10
         });
 
@@ -228,7 +228,7 @@ describe('SearchOrchestrator', () => {
 
     describe('findByType', () => {
       it('should use hybrid strategy', async () => {
-        const result = await orchestrator.findByType('decision', {});
+        await orchestrator.findByType('decision', {});
 
         expect(mockSessionSearch.findByType).toHaveBeenCalled();
       });

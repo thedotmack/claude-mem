@@ -6,8 +6,8 @@
  * - Provide consistent error classification across Gemini and OpenRouter
  */
 
+import { logger } from '../../../utils/logger.js'; // eslint-disable-line @typescript-eslint/no-unused-vars -- required by logger-usage-standards
 import { FALLBACK_ERROR_PATTERNS } from './types.js';
-import { logger } from '../../../utils/logger.js';
 
 /**
  * Check if an error should trigger fallback to Claude SDK

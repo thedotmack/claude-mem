@@ -1,8 +1,6 @@
 /**
  * Type definitions for summary-related database operations
  */
-import { logger } from '../../../utils/logger.js';
-
 /**
  * Summary input for storage (from SDK parsing)
  */

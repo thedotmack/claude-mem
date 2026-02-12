@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 
 // Mock the ModeManager before importing the formatter
 vi.mock('../../../src/services/domain/ModeManager.js', () => ({

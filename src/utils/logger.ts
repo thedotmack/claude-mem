@@ -85,7 +85,7 @@ export class Logger {
         } else {
           this.level = LogLevel.INFO;
         }
-      } catch (error) {
+      } catch {
         // Fallback to INFO if settings can't be loaded
         this.level = LogLevel.INFO;
       }
@@ -277,7 +277,7 @@ export class Logger {
     // Build additional context
     let contextStr = '';
     if (context) {
-      const { sessionId, memorySessionId, correlationId, ...rest } = context;
+      const { sessionId: _sessionId, memorySessionId: _memorySessionId, correlationId: _correlationId, ...rest } = context;
       if (Object.keys(rest).length > 0) {
         const pairs = Object.entries(rest).map(([k, v]) => `${k}=${v}`);
         contextStr = ` {${pairs.join(', ')}}`;

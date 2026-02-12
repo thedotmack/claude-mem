@@ -6,13 +6,11 @@ import http from 'http';
 import {
   performGracefulShutdown,
   writePidFile,
-  readPidFile,
   removePidFile,
   type GracefulShutdownConfig,
   type ShutdownableService,
   type CloseableClient,
   type CloseableDatabase,
-  type PidInfo
 } from '../../src/services/infrastructure/index.js';
 
 const DATA_DIR = path.join(homedir(), '.claude-mem');
@@ -70,19 +68,19 @@ describe('GracefulShutdown', () => {
       } as unknown as http.Server;
 
       const mockSessionManager: ShutdownableService = {
-        shutdownAll: vi.fn(async () => {
+        shutdownAll: vi.fn(() => {
           callOrder.push('sessionManager.shutdownAll');
         })
       };
 
       const mockMcpClient: CloseableClient = {
-        close: vi.fn(async () => {
+        close: vi.fn(() => {
           callOrder.push('mcpClient.close');
         })
       };
 
       const mockDbManager: CloseableDatabase = {
-        close: vi.fn(async () => {
+        close: vi.fn(() => {
           callOrder.push('dbManager.close');
         })
       };
@@ -188,19 +186,19 @@ describe('GracefulShutdown', () => {
       const callOrder: string[] = [];
 
       const mockSessionManager: ShutdownableService = {
-        shutdownAll: vi.fn(async () => {
+        shutdownAll: vi.fn(() => {
           callOrder.push('sessionManager');
         })
       };
 
       const mockMcpClient: CloseableClient = {
-        close: vi.fn(async () => {
+        close: vi.fn(() => {
           callOrder.push('mcpClient');
         })
       };
 
       const mockDbManager: CloseableDatabase = {
-        close: vi.fn(async () => {
+        close: vi.fn(() => {
           callOrder.push('dbManager');
         })
       };

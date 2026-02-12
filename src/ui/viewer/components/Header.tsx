@@ -17,7 +17,7 @@ interface HeaderProps {
 }
 
 export function Header({
-  isConnected,
+  isConnected: _isConnected,
   projects,
   currentFilter,
   onFilterChange,

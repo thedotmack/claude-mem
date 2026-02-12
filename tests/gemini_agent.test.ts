@@ -1,7 +1,4 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { writeFileSync, mkdirSync, rmSync, existsSync } from 'fs';
-import { join } from 'path';
-import { tmpdir } from 'os';
 import { GeminiAgent } from '../src/services/worker/GeminiAgent';
 import { DatabaseManager } from '../src/services/worker/DatabaseManager';
 import { SessionManager } from '../src/services/worker/SessionManager';
@@ -115,6 +112,7 @@ describe('GeminiAgent', () => {
     };
 
     mockSessionManager = {
+      // eslint-disable-next-line @typescript-eslint/require-await
       getMessageIterator: async function* () { yield* []; },
       getPendingMessageStore: () => mockPendingMessageStore
     } as unknown as SessionManager;
@@ -350,7 +348,7 @@ describe('GeminiAgent', () => {
   });
 
   describe('gemini-3-flash model support', () => {
-    it('should accept gemini-3-flash as a valid model', async () => {
+    it('should accept gemini-3-flash as a valid model', () => {
       // The GeminiModel type includes gemini-3-flash - compile-time check
       const validModels = [
         'gemini-2.5-flash-lite',

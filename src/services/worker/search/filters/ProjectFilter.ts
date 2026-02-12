@@ -5,7 +5,6 @@
  */
 
 import { basename } from 'path';
-import { logger } from '../../../../utils/logger.js';
 
 /**
  * Get the current project name from cwd

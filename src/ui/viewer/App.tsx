@@ -21,8 +21,8 @@ export function App() {
 
   const { observations, summaries, prompts, projects, isProcessing, queueDepth, isConnected } = useSSE();
   const { settings, saveSettings, isSaving, saveStatus } = useSettings();
-  const { stats, refreshStats } = useStats();
-  const { preference, resolvedTheme, setThemePreference } = useTheme();
+  const { stats: _stats, refreshStats: _refreshStats } = useStats();
+  const { preference, resolvedTheme: _resolvedTheme, setThemePreference } = useTheme();
   const pagination = usePagination(currentFilter);
 
   // When filtering by project: ONLY use paginated data (API-filtered)
@@ -88,7 +88,7 @@ export function App() {
     setPaginatedObservations([]);
     setPaginatedSummaries([]);
     setPaginatedPrompts([]);
-    handleLoadMore();
+    void handleLoadMore();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentFilter]);
 

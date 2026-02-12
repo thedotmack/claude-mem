@@ -143,7 +143,7 @@ export class ModeManager {
           concepts: mode.observation_concepts.map(c => c.id)
         });
         return mode;
-      } catch (error) {
+      } catch {
         logger.warn('SYSTEM', `Mode file not found: ${modeId}, falling back to 'code'`);
         // If we're already trying to load 'code', throw to prevent infinite recursion
         if (modeId === 'code') {
@@ -160,7 +160,7 @@ export class ModeManager {
     let parentMode: ModeConfig;
     try {
       parentMode = this.loadMode(parentId);
-    } catch (error) {
+    } catch {
       logger.warn('SYSTEM', `Parent mode '${parentId}' not found for ${modeId}, falling back to 'code'`);
       parentMode = this.loadMode('code');
     }
@@ -170,7 +170,7 @@ export class ModeManager {
     try {
       overrideConfig = this.loadModeFile(overrideId);
       logger.debug('SYSTEM', `Loaded override file: ${overrideId} for parent ${parentId}`);
-    } catch (error) {
+    } catch {
       logger.warn('SYSTEM', `Override file '${overrideId}' not found, using parent mode '${parentId}' only`);
       this.activeMode = parentMode;
       return parentMode;

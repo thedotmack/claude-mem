@@ -4,7 +4,6 @@
  */
 
 import type { Database } from '../sqlite-compat.js';
-import { logger } from '../../../utils/logger.js';
 import type { ObservationRecord } from '../../../types/database.js';
 import type { GetObservationsByIdsOptions, ObservationSessionRow } from './types.js';
 

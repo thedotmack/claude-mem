@@ -43,7 +43,6 @@ import { Server } from './server/Server.js';
 
 // Integration imports
 import {
-  updateCursorContextForProject,
   handleCursorCommand
 } from './integrations/CursorHooksInstaller.js';
 
@@ -71,7 +70,7 @@ import { SettingsRoutes } from './worker/http/routes/SettingsRoutes.js';
 import { LogsRoutes } from './worker/http/routes/LogsRoutes.js';
 
 // Process management for zombie cleanup (Issue #737)
-import { startOrphanReaper, reapOrphanedProcesses } from './worker/ProcessRegistry.js';
+import { startOrphanReaper } from './worker/ProcessRegistry.js';
 
 /**
  * Build JSON status output for hook framework communication.
@@ -182,11 +181,11 @@ export class WorkerService {
 
     process.on('SIGTERM', () => {
       this.isShuttingDown = shutdownRef.value;
-      handler('SIGTERM');
+      void handler('SIGTERM');
     });
     process.on('SIGINT', () => {
       this.isShuttingDown = shutdownRef.value;
-      handler('SIGINT');
+      void handler('SIGINT');
     });
   }
 
@@ -263,7 +262,7 @@ export class WorkerService {
       ModeManager.getInstance().loadMode(modeId);
       logger.info('SYSTEM', `Mode loaded: ${modeId}`);
 
-      await this.dbManager.initialize();
+      this.dbManager.initialize();
 
       // Recover stuck messages from previous crashes
       const { PendingMessageStore } = await import('./sqlite/PendingMessageStore.js');
@@ -703,5 +702,5 @@ const isMainModule = typeof require !== 'undefined' && typeof module !== 'undefi
   : import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith('worker-service');
 
 if (isMainModule) {
-  main();
+  void main();
 }

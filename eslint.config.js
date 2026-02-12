@@ -63,6 +63,13 @@ export default tseslint.config(
         },
       ],
 
+      // Unused variables — allow underscore-prefixed args and destructured vars
+      '@typescript-eslint/no-unused-vars': ['error', {
+        argsIgnorePattern: '^_',
+        varsIgnorePattern: '^_',
+        caughtErrorsIgnorePattern: '^_',
+      }],
+
       // Import style
       '@typescript-eslint/consistent-type-imports': 'warn',
 
@@ -110,6 +117,13 @@ export default tseslint.config(
           minimumDescriptionLength: 10,
         },
       ],
+
+      // Unused variables — allow underscore-prefixed args and destructured vars
+      '@typescript-eslint/no-unused-vars': ['warn', {
+        argsIgnorePattern: '^_',
+        varsIgnorePattern: '^_',
+        caughtErrorsIgnorePattern: '^_',
+      }],
 
       // No console restriction in tests
       'no-console': 'off',

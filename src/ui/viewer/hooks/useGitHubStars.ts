@@ -39,7 +39,7 @@ export function useGitHubStars(username: string, repo: string): UseGitHubStarsRe
   }, [username, repo]);
 
   useEffect(() => {
-    fetchStars();
+    void fetchStars();
   }, [fetchStars]);
 
   return { stars, isLoading, error };

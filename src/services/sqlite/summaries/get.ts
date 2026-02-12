@@ -2,7 +2,6 @@
  * Get session summaries from the database
  */
 import type { Database } from '../sqlite-compat.js';
-import { logger } from '../../../utils/logger.js';
 import type { SessionSummaryRecord } from '../../../types/database.js';
 import type { SessionSummary, GetByIdsOptions } from './types.js';
 

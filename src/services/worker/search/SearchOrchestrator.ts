@@ -21,9 +21,6 @@ import { ResultFormatter } from './ResultFormatter.js';
 import { TimelineBuilder } from './TimelineBuilder.js';
 import type { TimelineItem, TimelineData } from './TimelineBuilder.js';
 
-import {
-  SEARCH_CONSTANTS,
-} from './types.js';
 import type {
   StrategySearchOptions,
   StrategySearchResult,

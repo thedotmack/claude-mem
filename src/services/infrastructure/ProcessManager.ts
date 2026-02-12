@@ -143,7 +143,7 @@ export async function waitForProcessesExit(pids: number[], timeoutMs: number): P
       try {
         process.kill(pid, 0);
         return true;
-      } catch (error) {
+      } catch {
         // [ANTI-PATTERN IGNORED]: Tight loop checking 100s of PIDs every 100ms during cleanup
         return false;
       }
@@ -294,7 +294,7 @@ export function spawnDaemon(
     // Build environment variable assignments for PowerShell
     // This fixes a bug where WMIC silently dropped env vars
     const envPairs = Object.entries(env)
-      .filter(([k, v]) => v !== undefined)
+      .filter(([_k, v]) => v !== undefined)
       .map(([k, v]) => `$env:${k}='${String(v).replace(/'/g, "''")}'`)
       .join('; ');
 

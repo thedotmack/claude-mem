@@ -1,4 +1,4 @@
-import type { PlatformAdapter, NormalizedHookInput, HookResult } from '../types.js';
+import type { PlatformAdapter } from '../types.js';
 
 // Maps Claude Code stdin format (session_id, cwd, tool_name, etc.)
 // SessionStart hooks receive no stdin, so we must handle undefined input gracefully

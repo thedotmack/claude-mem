@@ -490,7 +490,7 @@ export const migration007: Migration = {
     console.log('✅ Added discovery_tokens columns for ROI tracking');
   },
 
-  down: (db: Database) => {
+  down: (_db: Database) => {
     // Note: SQLite doesn't support DROP COLUMN in all versions
     // In production, would need to recreate tables without these columns
     console.log('⚠️  Warning: SQLite ALTER TABLE DROP COLUMN not fully supported');

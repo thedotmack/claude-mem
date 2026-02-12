@@ -78,7 +78,7 @@ describe('Summaries Module', () => {
         notes: 'May need caching',
       });
 
-      const result = storeSummary(db, memorySessionId, project, summary, 1, 500);
+      storeSummary(db, memorySessionId, project, summary, 1, 500);
 
       const stored = getSummaryForSession(db, memorySessionId);
       expect(stored).not.toBeNull();
@@ -132,7 +132,7 @@ describe('Summaries Module', () => {
       const memorySessionId = createSessionWithMemoryId('content-sum-null', 'session-sum-null');
       const summary = createSummaryInput({ notes: null });
 
-      const result = storeSummary(db, memorySessionId, 'project', summary);
+      storeSummary(db, memorySessionId, 'project', summary);
       const stored = getSummaryForSession(db, memorySessionId);
 
       expect(stored).not.toBeNull();

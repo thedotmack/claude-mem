@@ -8,8 +8,8 @@
 import type { Request, Response } from 'express';
 import express from 'express';
 import path from 'path';
+import { logger } from '../../../../utils/logger.js'; // eslint-disable-line @typescript-eslint/no-unused-vars -- required by logger-usage-standards
 import { readFileSync, existsSync } from 'fs';
-import { logger } from '../../../../utils/logger.js';
 import { getPackageRoot } from '../../../../shared/paths.js';
 import type { SSEBroadcaster } from '../../SSEBroadcaster.js';
 import type { DatabaseManager } from '../../DatabaseManager.js';

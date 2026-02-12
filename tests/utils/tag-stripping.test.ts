@@ -157,7 +157,7 @@ finish`;
     });
 
     describe('ReDoS protection', () => {
-      it('should handle content with many tags without hanging (< 1 second)', async () => {
+      it('should handle content with many tags without hanging (< 1 second)', () => {
         // Generate content with many tags
         let content = '';
         for (let i = 0; i < 150; i++) {

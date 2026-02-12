@@ -59,7 +59,7 @@ export function getWorkEmoji(obsType: string): string {
  */
 export function formatObservationTokenDisplay(
   obs: Observation,
-  config: ContextConfig
+  _config: ContextConfig
 ): { readTokens: number; discoveryTokens: number; discoveryDisplay: string; workEmoji: string } {
   const readTokens = calculateObservationTokens(obs);
   const discoveryTokens = obs.discovery_tokens || 0;

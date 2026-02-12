@@ -1,4 +1,4 @@
-import type { PlatformAdapter, NormalizedHookInput, HookResult } from '../types.js';
+import type { PlatformAdapter } from '../types.js';
 
 // Maps Cursor stdin format - field names differ from Claude Code
 // Cursor uses: conversation_id, workspace_roots[], result_json, command/output

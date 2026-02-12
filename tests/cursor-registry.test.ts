@@ -4,7 +4,6 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import {
   readCursorRegistry,
-  writeCursorRegistry,
   registerCursorProject,
   unregisterCursorProject
 } from '../src/utils/cursor-utils';

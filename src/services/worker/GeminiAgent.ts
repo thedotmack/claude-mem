@@ -298,7 +298,7 @@ export class GeminiAgent {
         session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
 
         // Process response using shared ResponseProcessor (no original timestamp for init - not from queue)
-        await processAgentResponse(
+        processAgentResponse(
           initResponse.content,
           session,
           this.dbManager,
@@ -359,7 +359,7 @@ export class GeminiAgent {
           }
 
           // Process response using shared ResponseProcessor
-          await processAgentResponse(
+          processAgentResponse(
             obsResponse.content || '',
             session,
             this.dbManager,
@@ -395,7 +395,7 @@ export class GeminiAgent {
           }
 
           // Process response using shared ResponseProcessor
-          await processAgentResponse(
+          processAgentResponse(
             summaryResponse.content || '',
             session,
             this.dbManager,

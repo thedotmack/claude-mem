@@ -69,9 +69,6 @@ describe('SessionQueueProcessor', () => {
   describe('createIterator', () => {
     describe('idle timeout behavior', () => {
       it('should exit after idle timeout when no messages arrive', async () => {
-        // Use a very short timeout for testing (50ms)
-        const SHORT_TIMEOUT_MS = 50;
-
         // Mock the private waitForMessage to use short timeout
         // We'll test with real timing but short durations
         const onIdleTimeout = vi.fn(() => {});
@@ -87,7 +84,6 @@ describe('SessionQueueProcessor', () => {
         // Store returns null (empty queue), so iterator waits for message event
         // With no messages arriving, it should eventually timeout
 
-        const startTime = Date.now();
         const results: any[] = [];
 
         // We need to trigger the timeout scenario
@@ -329,8 +325,9 @@ describe('SessionQueueProcessor', () => {
         // Now abort and complete iteration
         abortController.abort();
 
-        // Drain remaining
-        for await (const _ of iterator) {
+        // Drain remaining - loop variable required by for-await syntax
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        for await (const _item of iterator) {
           // Should not get here since we aborted
         }
 

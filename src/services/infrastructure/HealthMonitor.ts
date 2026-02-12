@@ -22,7 +22,7 @@ export async function isPortInUse(port: number): Promise<boolean> {
     // Note: Removed AbortSignal.timeout to avoid Windows Bun cleanup issue (libuv assertion)
     const response = await fetch(`http://127.0.0.1:${port}/api/health`);
     return response.ok;
-  } catch (error) {
+  } catch {
     // [ANTI-PATTERN IGNORED]: Health check polls every 500ms, logging would flood
     return false;
   }

@@ -47,9 +47,10 @@ export class HybridSearchStrategy extends BaseSearchStrategy implements SearchSt
     );
   }
 
+  // eslint-disable-next-line @typescript-eslint/require-await
   async search(options: StrategySearchOptions): Promise<StrategySearchResult> {
     // This is the generic hybrid search - specific operations use dedicated methods
-    const { query, limit = SEARCH_CONSTANTS.DEFAULT_LIMIT, project } = options;
+    const { query } = options;
 
     if (!query) {
       return this.emptyResult('hybrid');

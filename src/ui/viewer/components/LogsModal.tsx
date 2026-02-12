@@ -204,7 +204,7 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
   useEffect(() => {
     if (isOpen) {
       wasAtBottomRef.current = true; // Start at bottom on open
-      fetchLogs();
+      void fetchLogs();
     }
   }, [isOpen, fetchLogs]);
 
@@ -269,7 +269,7 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
   // Get style for a parsed log line
   const getLineStyle = (line: ParsedLogLine): React.CSSProperties => {
     const levelConfig = LOG_LEVELS.find(l => l.key === line.level);
-    const componentConfig = LOG_COMPONENTS.find(c => c.key === line.component);
+    const _componentConfig = LOG_COMPONENTS.find(c => c.key === line.component);
 
     let color = 'var(--color-text-primary)';
     const fontWeight = 'normal';

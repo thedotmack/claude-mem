@@ -3,7 +3,6 @@
  */
 
 import type { Database } from '../sqlite-compat.js';
-import { logger } from '../../../utils/logger.js';
 
 export interface ImportResult {
   imported: boolean;

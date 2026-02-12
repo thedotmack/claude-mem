@@ -19,7 +19,7 @@ import BetterSqlite3 from 'better-sqlite3';
 export class Database {
   private _db: BetterSqlite3.Database;
 
-  constructor(path: string, options?: { create?: boolean; readwrite?: boolean }) {
+  constructor(path: string, _options?: { create?: boolean; readwrite?: boolean }) {
     // better-sqlite3 creates read-write databases by default.
     // The `create` and `readwrite` options from bun:sqlite map to defaults.
     this._db = new BetterSqlite3(path);

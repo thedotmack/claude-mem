@@ -56,7 +56,6 @@ async function findTypeScriptFiles(dir: string): Promise<string[]> {
  */
 function extractLoggerCalls(content: string, filePath: string): LoggerCall[] {
   const calls: LoggerCall[] = [];
-  const lines = content.split('\n');
   const seenCalls = new Set<string>();
 
   // Build line number index for position-to-line lookup

@@ -4,8 +4,6 @@
  * Consolidates formatting logic from FormattingService and SearchManager.
  * Provides consistent table and text formatting for all search result types.
  */
-import { logger } from '../../../utils/logger.js';
-
 import type {
   ObservationSearchResult,
   SessionSummarySearchResult,
@@ -14,7 +12,7 @@ import type {
   SearchResults
 } from './types.js';
 import { ModeManager } from '../../domain/ModeManager.js';
-import { formatTime, extractFirstFile, groupByDate, estimateTokens } from '../../../shared/timeline-formatting.js';
+import { formatTime, extractFirstFile, groupByDate } from '../../../shared/timeline-formatting.js';
 
 const CHARS_PER_TOKEN_ESTIMATE = 4;
 

@@ -123,10 +123,10 @@ function buildContextOutput(
  * Main entry point for context generation. Orchestrates loading config,
  * querying data, and rendering the final context string.
  */
-export async function generateContext(
+export function generateContext(
   input?: ContextInput,
   useColors: boolean = false
-): Promise<string> {
+): string {
   const config = loadContextConfig();
   const cwd = input?.cwd ?? process.cwd();
   const project = getProjectName(cwd);

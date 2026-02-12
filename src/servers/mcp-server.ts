@@ -16,7 +16,6 @@ import { logger } from '../utils/logger.js';
 // CRITICAL: Redirect console to stderr BEFORE other imports
 // MCP uses stdio transport where stdout is reserved for JSON-RPC protocol messages.
 // Any logs to stdout break the protocol (Claude Desktop parses "[2025..." as JSON array).
-const _originalLog = console['log'];
 console['log'] = (...args: any[]) => {
   logger.error('CONSOLE', 'Intercepted console output (MCP protocol protection)', undefined, { args });
 };
@@ -166,7 +165,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       type: 'object',
       properties: {}
     },
-    handler: async () => ({
+    handler: () => ({
       content: [{
         type: 'text' as const,
         text: `# Memory Search Workflow
@@ -250,7 +249,7 @@ const server = new Server(
 );
 
 // Register tools/list handler
-server.setRequestHandler(ListToolsRequestSchema, async () => {
+server.setRequestHandler(ListToolsRequestSchema, () => {
   return {
     tools: tools.map(tool => ({
       name: tool.name,
@@ -283,7 +282,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 });
 
 // Cleanup function
-async function cleanup() {
+function cleanup() {
   logger.info('SYSTEM', 'MCP server shutting down');
   process.exit(0);
 }

@@ -258,7 +258,7 @@ describe('ChromaSearchStrategy', () => {
         query: 'old data query'
       };
 
-      const result = await strategy.search(options);
+      await strategy.search(options);
 
       // Old results should be filtered out
       expect(mockSessionStore.getObservationsByIds).not.toHaveBeenCalled();

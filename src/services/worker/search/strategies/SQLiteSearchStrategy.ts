@@ -38,6 +38,7 @@ export class SQLiteSearchStrategy extends BaseSearchStrategy implements SearchSt
     return !options.query || options.strategyHint === 'sqlite';
   }
 
+  // eslint-disable-next-line @typescript-eslint/require-await
   async search(options: StrategySearchOptions): Promise<StrategySearchResult> {
     const {
       searchType = 'all',

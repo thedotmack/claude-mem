@@ -11,9 +11,6 @@ import type {
   UserPromptRecord,
   LatestPromptResult
 } from '../../types/database.js';
-import {
-  SdkSessionRecord
-} from '../../types/database.js';
 import type { PendingMessageStore } from './PendingMessageStore.js';
 import { isSummaryContentEmpty } from './summaries/types.js';
 

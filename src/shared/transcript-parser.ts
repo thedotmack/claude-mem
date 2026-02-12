@@ -1,5 +1,4 @@
 import { readFileSync, existsSync } from 'fs';
-import { logger } from '../utils/logger.js';
 
 /**
  * Extract last message of specified role from transcript JSONL file

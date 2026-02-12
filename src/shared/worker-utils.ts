@@ -2,13 +2,9 @@ import path from "path";
 import { homedir } from "os";
 import { readFileSync } from "fs";
 import { logger } from "../utils/logger.js";
-import { HOOK_TIMEOUTS, getTimeout } from "./hook-constants.js";
 import { SettingsDefaultsManager } from "./SettingsDefaultsManager.js";
 
 const MARKETPLACE_ROOT = path.join(homedir(), '.claude', 'plugins', 'marketplaces', 'thedotmack');
-
-// Named constants for health checks
-const HEALTH_CHECK_TIMEOUT_MS = getTimeout(HOOK_TIMEOUTS.HEALTH_CHECK);
 
 // Cache to avoid repeated settings file reads
 let cachedPort: number | null = null;

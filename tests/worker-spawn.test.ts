@@ -42,18 +42,6 @@ async function isPortInUse(port: number): Promise<boolean> {
 }
 
 /**
- * Helper to wait for port to be healthy
- */
-async function waitForHealth(port: number, timeoutMs: number = 30000): Promise<boolean> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    if (await isPortInUse(port)) return true;
-    await new Promise(r => setTimeout(r, 500));
-  }
-  return false;
-}
-
-/**
  * Run worker CLI command and return stdout
  */
 function runWorkerCommand(command: string, env: Record<string, string> = {}): string {
@@ -66,26 +54,26 @@ function runWorkerCommand(command: string, env: Record<string, string> = {}): st
 }
 
 describe('Worker Self-Spawn CLI', () => {
-  beforeAll(async () => {
+  beforeAll(() => {
     if (existsSync(TEST_DATA_DIR)) {
       rmSync(TEST_DATA_DIR, { recursive: true });
     }
   });
 
-  afterAll(async () => {
+  afterAll(() => {
     if (existsSync(TEST_DATA_DIR)) {
       rmSync(TEST_DATA_DIR, { recursive: true });
     }
   });
 
   describe('status command', () => {
-    it('should report worker status in expected format', async () => {
+    it('should report worker status in expected format', () => {
       const output = runWorkerCommand('status');
       // Should contain either "running" or "not running"
       expect(output.includes('running')).toBe(true);
     });
 
-    it('should include PID and port when running', async () => {
+    it('should include PID and port when running', () => {
       const output = runWorkerCommand('status');
       if (output.includes('Worker running')) {
         expect(output).toMatch(/PID: \d+/);
@@ -140,7 +128,7 @@ describe('Worker Self-Spawn CLI', () => {
 describe('Worker Health Endpoints', () => {
   let workerProcess: ChildProcess | null = null;
 
-  beforeAll(async () => {
+  beforeAll(() => {
     // Skip if worker script doesn't exist (not built)
     if (!existsSync(WORKER_SCRIPT)) {
       console.log('Skipping worker health tests - worker script not built');
@@ -148,7 +136,7 @@ describe('Worker Health Endpoints', () => {
     }
   });
 
-  afterAll(async () => {
+  afterAll(() => {
     if (workerProcess) {
       workerProcess.kill('SIGTERM');
       workerProcess = null;
@@ -156,7 +144,7 @@ describe('Worker Health Endpoints', () => {
   });
 
   describe('health endpoint contract', () => {
-    it('should expect /api/health to return status ok with expected fields', async () => {
+    it('should expect /api/health to return status ok with expected fields', () => {
       // Contract validation: verify expected response structure
       const mockResponse = {
         status: 'ok',
@@ -176,7 +164,7 @@ describe('Worker Health Endpoints', () => {
       expect(typeof mockResponse.initialized).toBe('boolean');
     });
 
-    it('should expect /api/readiness to distinguish ready vs initializing states', async () => {
+    it('should expect /api/readiness to distinguish ready vs initializing states', () => {
       const readyResponse = { status: 'ready', mcpReady: true };
       const initializingResponse = { status: 'initializing', message: 'Worker is still initializing, please retry' };
 

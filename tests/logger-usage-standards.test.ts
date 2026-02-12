@@ -20,6 +20,7 @@ const SRC_DIR = join(PROJECT_ROOT, "src");
 // Files/directories that don't require logging
 const EXCLUDED_PATTERNS = [
   /types\//,             // Type definition files
+  /types\.ts$/,          // Type definition files (nested, e.g. observations/types.ts)
   /constants\//,         // Pure constants
   /\.d\.ts$/,            // Type declaration files
   /^ui\//,               // UI components (separate logging context)
@@ -36,6 +37,20 @@ const EXCLUDED_PATTERNS = [
   /user-message-hook\.ts$/,  // Deprecated - kept for reference only, not registered in hooks.json
   /cli\/hook-command\.ts$/,  // CLI hook command uses console.log/error for hook protocol output
   /cli\/handlers\/user-message\.ts$/,  // User message handler uses console.error for user-visible context
+  /sqlite\/Import\.ts$/,       // Thin facade re-exporting sqlite sub-modules
+  /sqlite\/Observations\.ts$/, // Thin facade re-exporting sqlite sub-modules
+  /sqlite\/Prompts\.ts$/,      // Thin facade re-exporting sqlite sub-modules
+  /sqlite\/Sessions\.ts$/,     // Thin facade re-exporting sqlite sub-modules
+  /sqlite\/Summaries\.ts$/,    // Thin facade re-exporting sqlite sub-modules
+  /sqlite\/Timeline\.ts$/,     // Thin facade re-exporting sqlite sub-modules
+  /sqlite\/\w+\/\w+\.ts$/,    // SQLite leaf modules (get.ts, store.ts, etc.) — pure DB queries
+  /search\/filters\//,         // Pure filter functions with no error paths
+  /search\/strategies\/SearchStrategy\.ts$/, // Interface/base class definition
+  /FormattingService\.ts$/,    // Pure formatting with no error paths
+  /TimelineService\.ts$/,      // Pure data transformation with no error paths
+  /ResultFormatter\.ts$/,      // Pure data transformation with no error paths
+  /TimelineBuilder\.ts$/,      // Pure data transformation with no error paths
+  /context-generator\.ts$/,    // Pure data assembly with no error paths
 ];
 
 // Files that should always use logger (core business logic)

@@ -7,9 +7,9 @@
 
 import type { Request, Response } from 'express';
 import type express from 'express';
+import { logger } from '../../../../utils/logger.js'; // eslint-disable-line @typescript-eslint/no-unused-vars -- required by logger-usage-standards
 import type { SearchManager } from '../../SearchManager.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
-import { logger } from '../../../../utils/logger.js';
 
 export class SearchRoutes extends BaseRouteHandler {
   constructor(
@@ -148,8 +148,8 @@ export class SearchRoutes extends BaseRouteHandler {
    * Get recent context (summaries and observations for a project)
    * GET /api/context/recent?project=...&limit=3
    */
-  private handleGetRecentContext = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const result = await this.searchManager.getRecentContext(req.query);
+  private handleGetRecentContext = this.wrapHandler((req: Request, res: Response): void => {
+    const result = this.searchManager.getRecentContext(req.query);
     res.json(result);
   });
 
@@ -157,8 +157,8 @@ export class SearchRoutes extends BaseRouteHandler {
    * Get context timeline around an anchor point
    * GET /api/context/timeline?anchor=123&depth_before=10&depth_after=10&project=...
    */
-  private handleGetContextTimeline = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const result = await this.searchManager.getContextTimeline(req.query);
+  private handleGetContextTimeline = this.wrapHandler((req: Request, res: Response): void => {
+    const result = this.searchManager.getContextTimeline(req.query);
     res.json(result);
   });
 

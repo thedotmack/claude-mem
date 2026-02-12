@@ -80,6 +80,7 @@ describe('ResponseProcessor', () => {
     } as unknown as DatabaseManager;
 
     mockSessionManager = {
+      // eslint-disable-next-line @typescript-eslint/require-await
       getMessageIterator: async function* () {
         yield* [];
       },
@@ -158,7 +159,7 @@ describe('ResponseProcessor', () => {
       );
 
       expect(mockStoreObservations).toHaveBeenCalledTimes(1);
-      const [memorySessionId, project, observations, summary] =
+      const [memorySessionId, project, observations] =
         mockStoreObservations.mock.calls[0];
       expect(memorySessionId).toBe('memory-session-456');
       expect(project).toBe('test-project');
@@ -654,7 +655,7 @@ describe('ResponseProcessor', () => {
       );
 
       expect(mockStoreObservations).toHaveBeenCalledTimes(1);
-      const [memorySessionId, project, observations, summary] =
+      const [memorySessionId, , observations, summary] =
         mockStoreObservations.mock.calls[0];
       expect(memorySessionId).toBe('memory-session-456');
       expect(observations).toHaveLength(1);
@@ -746,13 +747,13 @@ describe('ResponseProcessor', () => {
   });
 
   describe('error handling', () => {
-    it('should throw error if memorySessionId is missing', async () => {
+    it('should throw error if memorySessionId is missing', () => {
       const session = createMockSession({
         memorySessionId: null, // Missing memory session ID
       });
       const responseText = '<observation><type>discovery</type></observation>';
 
-      await expect(
+      expect(() =>
         processAgentResponse(
           responseText,
           session,
@@ -763,7 +764,7 @@ describe('ResponseProcessor', () => {
           null,
           'TestAgent'
         )
-      ).rejects.toThrow('Cannot store observations: memorySessionId not yet captured');
+      ).toThrow('Cannot store observations: memorySessionId not yet captured');
     });
   });
 });

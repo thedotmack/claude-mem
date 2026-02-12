@@ -8,7 +8,6 @@ import type {
   ContextConfig,
   Observation,
   TimelineItem,
-  SummaryTimelineItem,
 } from '../types.js';
 import { formatTime, formatDate, formatDateTime, extractFirstFile, parseJsonArray } from '../../../shared/timeline-formatting.js';
 import * as Markdown from '../formatters/MarkdownFormatter.js';

@@ -198,13 +198,13 @@ export class Server {
         res.json({
           content: [{ type: 'text', text: content }]
         });
-      } catch (error) {
+      } catch {
         res.status(404).json({ error: 'Instruction not found' });
       }
     });
 
     // Admin endpoints for process management (localhost-only)
-    this.app.post('/api/admin/restart', requireLocalhost, async (_req: Request, res: Response) => {
+    this.app.post('/api/admin/restart', requireLocalhost, (_req: Request, res: Response) => {
       res.json({ status: 'restarting' });
 
       // Handle Windows managed mode via IPC
@@ -223,7 +223,7 @@ export class Server {
       }
     });
 
-    this.app.post('/api/admin/shutdown', requireLocalhost, async (_req: Request, res: Response) => {
+    this.app.post('/api/admin/shutdown', requireLocalhost, (_req: Request, res: Response) => {
       res.json({ status: 'shutting_down' });
 
       // Handle Windows managed mode via IPC

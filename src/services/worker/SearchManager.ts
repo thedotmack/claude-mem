@@ -30,7 +30,6 @@ import {
   TimelineBuilder,
   SEARCH_CONSTANTS
 } from './search/index.js';
-import type { TimelineData } from './search/index.js';
 
 export class SearchManager {
   private orchestrator: SearchOrchestrator;
@@ -151,7 +150,7 @@ export class SearchManager {
     }
     // PATH 2: CHROMA SEMANTIC SEARCH (query text + Chroma available)
     else if (this.chromaSync) {
-      let chromaSucceeded = false;
+      // chromaSucceeded tracking removed - no fallback path currently uses it
       logger.debug('SEARCH', 'Using ChromaDB semantic search', { typeFilter: type || 'all' });
 
       // Build Chroma where filter for doc_type
@@ -166,7 +165,6 @@ export class SearchManager {
 
       // Step 1: Chroma semantic search with optional type filter
       const chromaResults = await this.queryChroma(query, 100, whereFilter);
-      chromaSucceeded = true; // Chroma didn't throw error
       logger.debug('SEARCH', 'ChromaDB returned semantic matches', { matchCount: chromaResults.ids.length });
 
       if (chromaResults.ids.length > 0) {
@@ -1281,7 +1279,7 @@ export class SearchManager {
   /**
    * Tool handler: get_recent_context
    */
-  async getRecentContext(args: any): Promise<any> {
+  getRecentContext(args: any): any {
     const project = args.project || basename(process.cwd());
     const limit = args.limit || 3;
 
@@ -1407,7 +1405,7 @@ export class SearchManager {
   /**
    * Tool handler: get_context_timeline
    */
-  async getContextTimeline(args: any): Promise<any> {
+  getContextTimeline(args: any): any {
     const { anchor, depth_before = 10, depth_after = 10, project } = args;
     const cwd = process.cwd();
     let anchorEpoch: number;

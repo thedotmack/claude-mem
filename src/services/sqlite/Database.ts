@@ -87,7 +87,7 @@ export class DatabaseManager {
   /**
    * Initialize database connection with optimized settings
    */
-  async initialize(): Promise<Database> {
+  initialize(): Database {
     if (this.db) {
       return this.db;
     }
@@ -109,7 +109,7 @@ export class DatabaseManager {
     this.initializeSchemaVersions();
 
     // Run migrations
-    await this.runMigrations();
+    this.runMigrations();
 
     dbInstance = this.db;
     return this.db;
@@ -163,7 +163,7 @@ export class DatabaseManager {
   /**
    * Run all pending migrations
    */
-  private async runMigrations(): Promise<void> {
+  private runMigrations(): void {
     if (!this.db) return;
 
     const query = this.db.query('SELECT version FROM schema_versions ORDER BY version');
@@ -214,9 +214,9 @@ export function getDatabase(): Database {
 /**
  * Initialize and get database manager
  */
-export async function initializeDatabase(): Promise<Database> {
+export function initializeDatabase(): Database {
   const manager = DatabaseManager.getInstance();
-  return await manager.initialize();
+  return manager.initialize();
 }
 
 // Re-export Database type for downstream consumers

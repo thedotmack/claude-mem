@@ -4,7 +4,6 @@
  */
 
 import type { Database } from '../sqlite-compat.js';
-import { logger } from '../../../utils/logger.js';
 
 /**
  * Create a new SDK session (idempotent - returns existing session ID if already exists)

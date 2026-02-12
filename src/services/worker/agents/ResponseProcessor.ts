@@ -42,7 +42,7 @@ import { cleanupProcessedMessages } from './SessionCleanupHelper.js';
  * @param originalTimestamp - Original epoch when message was queued (for accurate timestamps)
  * @param agentName - Name of the agent for logging (e.g., 'SDK', 'Gemini', 'OpenRouter')
  */
-export async function processAgentResponse(
+export function processAgentResponse(
   text: string,
   session: ActiveSession,
   dbManager: DatabaseManager,
@@ -53,7 +53,7 @@ export async function processAgentResponse(
   agentName: string,
   projectRoot?: string,
   skipSummaryStorage?: boolean
-): Promise<void> {
+): void {
   // Add assistant response to shared conversation history for provider interop
   if (text) {
     session.conversationHistory.push({ role: 'assistant', content: text });
@@ -128,7 +128,7 @@ export async function processAgentResponse(
   });
 
   // AFTER transaction commits - async operations (can fail safely without data loss)
-  await syncAndBroadcastObservations(
+  syncAndBroadcastObservations(
     observations,
     result,
     session,
@@ -140,7 +140,7 @@ export async function processAgentResponse(
   );
 
   // Sync and broadcast summary if present
-  await syncAndBroadcastSummary(
+  syncAndBroadcastSummary(
     summary,
     summaryForStore,
     result,
@@ -181,7 +181,7 @@ function normalizeSummaryForStorage(summary: ParsedSummary | null): {
 /**
  * Sync observations to Chroma and broadcast to SSE clients
  */
-async function syncAndBroadcastObservations(
+function syncAndBroadcastObservations(
   observations: ParsedObservation[],
   result: StorageResult,
   session: ActiveSession,
@@ -189,8 +189,8 @@ async function syncAndBroadcastObservations(
   worker: WorkerRef | undefined,
   discoveryTokens: number,
   agentName: string,
-  projectRoot?: string
-): Promise<void> {
+  _projectRoot?: string
+): void {
   for (let i = 0; i < observations.length; i++) {
     const obsId = result.observationIds[i];
     const obs = observations[i];
@@ -247,7 +247,7 @@ async function syncAndBroadcastObservations(
 /**
  * Sync summary to Chroma and broadcast to SSE clients
  */
-async function syncAndBroadcastSummary(
+function syncAndBroadcastSummary(
   summary: ParsedSummary | null,
   summaryForStore: { request: string; investigated: string; learned: string; completed: string; next_steps: string; notes: string | null } | null,
   result: StorageResult,
@@ -256,7 +256,7 @@ async function syncAndBroadcastSummary(
   worker: WorkerRef | undefined,
   discoveryTokens: number,
   agentName: string
-): Promise<void> {
+): void {
   if (!summaryForStore || !result.summaryId) {
     return;
   }
