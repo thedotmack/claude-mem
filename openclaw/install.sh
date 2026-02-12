@@ -992,14 +992,17 @@ start_worker() {
   # Write PID file for future management
   local pid_file="${HOME}/.claude-mem/worker.pid"
   mkdir -p "${HOME}/.claude-mem"
-  node -e "
+  # Write PID file for future management
+  local pid_file="${HOME}/.claude-mem/worker.pid"
+  mkdir -p "${HOME}/.claude-mem"
+  INSTALLER_PID_FILE="$pid_file" INSTALLER_WORKER_PID="$WORKER_PID" node -e "
     const info = {
-      pid: ${WORKER_PID},
+      pid: parseInt(process.env.INSTALLER_WORKER_PID, 10),
       port: 37777,
       startedAt: new Date().toISOString(),
       version: 'installer'
     };
-    require('fs').writeFileSync('${pid_file}', JSON.stringify(info, null, 2));
+    require('fs').writeFileSync(process.env.INSTALLER_PID_FILE, JSON.stringify(info, null, 2));
   "
 
   success "Worker process started (PID: ${WORKER_PID})"
