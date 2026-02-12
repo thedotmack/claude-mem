@@ -3,7 +3,13 @@ set -euo pipefail
 
 # claude-mem OpenClaw Plugin Installer
 # Installs the claude-mem persistent memory plugin for OpenClaw gateways.
-# Usage: bash install.sh [--non-interactive]
+#
+# Usage:
+#   curl -fsSL https://raw.githubusercontent.com/thedotmack/claude-mem/main/openclaw/install.sh | bash
+#   # Or with options:
+#   curl -fsSL https://raw.githubusercontent.com/thedotmack/claude-mem/main/openclaw/install.sh | bash -s -- --provider=gemini --api-key=YOUR_KEY
+#   # Direct execution:
+#   bash install.sh [--non-interactive] [--provider=claude|gemini|openrouter] [--api-key=KEY]
 
 ###############################################################################
 # Constants
@@ -11,7 +17,68 @@ set -euo pipefail
 
 readonly MIN_BUN_VERSION="1.1.14"
 readonly INSTALLER_VERSION="1.0.0"
-readonly NON_INTERACTIVE="${1:-}"
+
+###############################################################################
+# Argument parsing
+###############################################################################
+
+NON_INTERACTIVE=""
+CLI_PROVIDER=""
+CLI_API_KEY=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --non-interactive)
+      NON_INTERACTIVE="true"
+      shift
+      ;;
+    --provider=*)
+      CLI_PROVIDER="${1#--provider=}"
+      shift
+      ;;
+    --provider)
+      CLI_PROVIDER="${2:-}"
+      shift 2
+      ;;
+    --api-key=*)
+      CLI_API_KEY="${1#--api-key=}"
+      shift
+      ;;
+    --api-key)
+      CLI_API_KEY="${2:-}"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+
+###############################################################################
+# TTY detection — ensure interactive prompts work under curl | bash
+# When piped, stdin reads from curl's output, not the terminal.
+# We open /dev/tty on fd 3 and read interactive input from there.
+###############################################################################
+
+TTY_FD=0
+
+setup_tty() {
+  if [[ -t 0 ]]; then
+    # stdin IS a terminal — use it directly
+    TTY_FD=0
+  elif [[ -e /dev/tty ]]; then
+    # stdin is piped (curl | bash) but /dev/tty is available
+    exec 3</dev/tty
+    TTY_FD=3
+  else
+    # No terminal available at all
+    if [[ "$NON_INTERACTIVE" != "true" ]]; then
+      echo "Error: No terminal available for interactive prompts." >&2
+      echo "Use --non-interactive or run directly: bash install.sh" >&2
+      exit 1
+    fi
+  fi
+}
 
 ###############################################################################
 # Color utilities — auto-detect terminal color support
@@ -43,15 +110,18 @@ warn()    { echo -e "${COLOR_YELLOW}⚠${COLOR_RESET}  $*"; }
 error()   { echo -e "${COLOR_RED}✗${COLOR_RESET}  $*" >&2; }
 
 prompt_user() {
-  if [[ "$NON_INTERACTIVE" == "--non-interactive" ]]; then
+  if [[ "$NON_INTERACTIVE" == "true" ]]; then
     error "Cannot prompt in non-interactive mode: $*"
     return 1
   fi
-  if [[ ! -t 0 ]]; then
-    error "Cannot prompt when stdin is not a terminal: $*"
-    return 1
-  fi
   echo -en "${COLOR_CYAN}?${COLOR_RESET}  $* "
+}
+
+# Read a line from the terminal (works even when stdin is piped from curl)
+# Callers always pass -r via $@; shellcheck can't see through the delegation
+read_tty() {
+  # shellcheck disable=SC2162
+  read "$@" <&"$TTY_FD"
 }
 
 ###############################################################################
@@ -500,7 +570,42 @@ setup_ai_provider() {
   info "AI Provider Configuration"
   echo ""
 
-  if [[ "$NON_INTERACTIVE" == "--non-interactive" ]] || [[ ! -t 0 ]]; then
+  # Handle --provider flag (pre-selected via CLI)
+  if [[ -n "$CLI_PROVIDER" ]]; then
+    case "$CLI_PROVIDER" in
+      claude)
+        AI_PROVIDER="claude"
+        success "Selected via --provider: Claude Max Plan (CLI authentication)"
+        ;;
+      gemini)
+        AI_PROVIDER="gemini"
+        AI_PROVIDER_API_KEY="${CLI_API_KEY}"
+        if [[ -n "$AI_PROVIDER_API_KEY" ]]; then
+          success "Selected via --provider: Gemini (API key set via --api-key)"
+        else
+          warn "Selected via --provider: Gemini (no API key — add later in ~/.claude-mem/settings.json)"
+        fi
+        ;;
+      openrouter)
+        AI_PROVIDER="openrouter"
+        AI_PROVIDER_API_KEY="${CLI_API_KEY}"
+        if [[ -n "$AI_PROVIDER_API_KEY" ]]; then
+          success "Selected via --provider: OpenRouter (API key set via --api-key)"
+        else
+          warn "Selected via --provider: OpenRouter (no API key — add later in ~/.claude-mem/settings.json)"
+        fi
+        ;;
+      *)
+        error "Unknown provider: ${CLI_PROVIDER}"
+        error "Valid providers: claude, gemini, openrouter"
+        exit 1
+        ;;
+    esac
+    return 0
+  fi
+
+  # Handle non-interactive mode (no --provider flag)
+  if [[ "$NON_INTERACTIVE" == "true" ]]; then
     info "Non-interactive mode: defaulting to Claude Max Plan (no API key needed)"
     AI_PROVIDER="claude"
     return 0
@@ -521,7 +626,7 @@ setup_ai_provider() {
   local choice
   while true; do
     prompt_user "Enter choice [1/2/3] (default: 1):"
-    read -r choice
+    read_tty -r choice
     choice="${choice:-1}"
 
     case "$choice" in
@@ -534,7 +639,7 @@ setup_ai_provider() {
         AI_PROVIDER="gemini"
         echo ""
         prompt_user "Enter your Gemini API key (from https://ai.google.dev):"
-        read -rs AI_PROVIDER_API_KEY
+        read_tty -rs AI_PROVIDER_API_KEY
         echo ""
         if [[ -z "$AI_PROVIDER_API_KEY" ]]; then
           warn "No API key provided — you can add it later in ~/.claude-mem/settings.json"
@@ -547,7 +652,7 @@ setup_ai_provider() {
         AI_PROVIDER="openrouter"
         echo ""
         prompt_user "Enter your OpenRouter API key (from https://openrouter.ai):"
-        read -rs AI_PROVIDER_API_KEY
+        read_tty -rs AI_PROVIDER_API_KEY
         echo ""
         if [[ -z "$AI_PROVIDER_API_KEY" ]]; then
           warn "No API key provided — you can add it later in ~/.claude-mem/settings.json"
@@ -822,7 +927,7 @@ setup_observation_feed() {
   echo "  you'll see it in your chat."
   echo ""
 
-  if [[ "$NON_INTERACTIVE" == "--non-interactive" ]] || [[ ! -t 0 ]]; then
+  if [[ "$NON_INTERACTIVE" == "true" ]]; then
     info "Non-interactive mode: skipping observation feed setup"
     info "Configure later in ~/.openclaw/openclaw.json under"
     info "  plugins.entries.claude-mem.config.observationFeed"
@@ -831,7 +936,7 @@ setup_observation_feed() {
 
   prompt_user "Would you like to set up real-time observation streaming to a messaging channel? (y/n)"
   local answer
-  read -r answer
+  read_tty -r answer
   answer="${answer:-n}"
 
   if [[ "${answer,,}" != "y" && "${answer,,}" != "yes" ]]; then
@@ -857,7 +962,7 @@ setup_observation_feed() {
   local channel_choice
   while true; do
     prompt_user "Enter choice [1-6]:"
-    read -r channel_choice
+    read_tty -r channel_choice
 
     case "$channel_choice" in
       1)
@@ -917,7 +1022,7 @@ setup_observation_feed() {
 
   echo ""
   prompt_user "Enter your ${FEED_CHANNEL} target ID:"
-  read -r FEED_TARGET_ID
+  read_tty -r FEED_TARGET_ID
 
   if [[ -z "$FEED_TARGET_ID" ]]; then
     warn "No target ID provided — skipping observation feed setup."
@@ -1098,6 +1203,7 @@ print_completion_summary() {
 ###############################################################################
 
 main() {
+  setup_tty
   print_banner
   detect_platform
 

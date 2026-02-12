@@ -1325,6 +1325,275 @@ assert_contains "$(grep -A2 'Developer Mode' "$INSTALL_SCRIPT" 2>/dev/null || ec
 assert_contains "$(grep -A2 'C01ABC2DEFG' "$INSTALL_SCRIPT" 2>/dev/null || echo '')" "C01ABC2DEFG" "Slack instructions include sample channel ID"
 
 ###############################################################################
+# Test: TTY detection — setup_tty() and read_tty() exist
+###############################################################################
+
+echo ""
+echo "=== TTY detection ==="
+
+for fn in setup_tty read_tty; do
+  if declare -f "$fn" &>/dev/null; then
+    test_pass "Function ${fn}() is defined"
+  else
+    test_fail "Function ${fn}() should be defined"
+  fi
+done
+
+# Verify TTY_FD is initialized (defaults to 0)
+if declare -p TTY_FD &>/dev/null; then
+  test_pass "TTY_FD variable is defined"
+else
+  test_fail "TTY_FD variable should be defined"
+fi
+
+# Verify setup_tty is called from main()
+if grep -q 'setup_tty' "$INSTALL_SCRIPT"; then
+  test_pass "main() calls setup_tty"
+else
+  test_fail "main() should call setup_tty"
+fi
+
+###############################################################################
+# Test: Argument parsing — --provider flag
+###############################################################################
+
+echo ""
+echo "=== Argument parsing — --provider flag ==="
+
+test_provider_flag_claude() {
+  local result
+  result="$(bash -c '
+    set -euo pipefail
+    TERM=dumb
+    tmp=$(mktemp)
+    sed "$ d" "'"${INSTALL_SCRIPT}"'" > "$tmp"
+    echo "main() { :; }" >> "$tmp"
+    set -- "--provider=claude"
+    source "$tmp"
+    rm -f "$tmp"
+    setup_ai_provider >/dev/null 2>&1
+    echo "$AI_PROVIDER"
+  ' 2>/dev/null)" || true
+
+  assert_eq "claude" "$result" "--provider=claude sets AI_PROVIDER to claude"
+}
+
+test_provider_flag_claude
+
+test_provider_flag_gemini_with_api_key() {
+  local result
+  result="$(bash -c '
+    set -euo pipefail
+    TERM=dumb
+    tmp=$(mktemp)
+    sed "$ d" "'"${INSTALL_SCRIPT}"'" > "$tmp"
+    echo "main() { :; }" >> "$tmp"
+    set -- "--provider=gemini" "--api-key=test-key-123"
+    source "$tmp"
+    rm -f "$tmp"
+    setup_ai_provider >/dev/null 2>&1
+    echo "PROVIDER=$AI_PROVIDER"
+    echo "KEY=$AI_PROVIDER_API_KEY"
+  ' 2>/dev/null)" || true
+
+  assert_contains "$result" "PROVIDER=gemini" "--provider=gemini sets AI_PROVIDER to gemini"
+  assert_contains "$result" "KEY=test-key-123" "--api-key=test-key-123 sets API key"
+}
+
+test_provider_flag_gemini_with_api_key
+
+test_provider_flag_openrouter() {
+  local result
+  result="$(bash -c '
+    set -euo pipefail
+    TERM=dumb
+    tmp=$(mktemp)
+    sed "$ d" "'"${INSTALL_SCRIPT}"'" > "$tmp"
+    echo "main() { :; }" >> "$tmp"
+    set -- "--provider=openrouter" "--api-key=sk-or-test"
+    source "$tmp"
+    rm -f "$tmp"
+    setup_ai_provider >/dev/null 2>&1
+    echo "PROVIDER=$AI_PROVIDER"
+    echo "KEY=$AI_PROVIDER_API_KEY"
+  ' 2>/dev/null)" || true
+
+  assert_contains "$result" "PROVIDER=openrouter" "--provider=openrouter sets AI_PROVIDER"
+  assert_contains "$result" "KEY=sk-or-test" "--api-key sets API key for openrouter"
+}
+
+test_provider_flag_openrouter
+
+test_provider_flag_invalid() {
+  local exit_code=0
+  bash -c '
+    set -euo pipefail
+    TERM=dumb
+    tmp=$(mktemp)
+    sed "$ d" "'"${INSTALL_SCRIPT}"'" > "$tmp"
+    echo "main() { :; }" >> "$tmp"
+    set -- "--provider=invalid"
+    source "$tmp"
+    rm -f "$tmp"
+    setup_ai_provider
+  ' >/dev/null 2>&1 || exit_code=$?
+
+  if [[ "$exit_code" -ne 0 ]]; then
+    test_pass "--provider=invalid exits with error"
+  else
+    test_fail "--provider=invalid should exit with error"
+  fi
+}
+
+test_provider_flag_invalid
+
+###############################################################################
+# Test: Argument parsing — --non-interactive flag (new format)
+###############################################################################
+
+echo ""
+echo "=== Argument parsing — --non-interactive ==="
+
+test_non_interactive_flag() {
+  local result
+  result="$(bash -c '
+    set -euo pipefail
+    TERM=dumb
+    tmp=$(mktemp)
+    sed "$ d" "'"${INSTALL_SCRIPT}"'" > "$tmp"
+    echo "main() { :; }" >> "$tmp"
+    set -- "--non-interactive"
+    source "$tmp"
+    rm -f "$tmp"
+    echo "NON_INTERACTIVE=$NON_INTERACTIVE"
+  ' 2>/dev/null)" || true
+
+  assert_contains "$result" "NON_INTERACTIVE=true" "--non-interactive sets NON_INTERACTIVE=true"
+}
+
+test_non_interactive_flag
+
+test_non_interactive_with_provider() {
+  local result
+  result="$(bash -c '
+    set -euo pipefail
+    TERM=dumb
+    tmp=$(mktemp)
+    sed "$ d" "'"${INSTALL_SCRIPT}"'" > "$tmp"
+    echo "main() { :; }" >> "$tmp"
+    set -- "--non-interactive" "--provider=gemini" "--api-key=my-key"
+    source "$tmp"
+    rm -f "$tmp"
+    setup_ai_provider >/dev/null 2>&1
+    echo "PROVIDER=$AI_PROVIDER"
+    echo "KEY=$AI_PROVIDER_API_KEY"
+    echo "NON_INTERACTIVE=$NON_INTERACTIVE"
+  ' 2>/dev/null)" || true
+
+  assert_contains "$result" "PROVIDER=gemini" "--non-interactive + --provider: provider set correctly"
+  assert_contains "$result" "KEY=my-key" "--non-interactive + --api-key: key set correctly"
+  assert_contains "$result" "NON_INTERACTIVE=true" "--non-interactive flag parsed alongside --provider"
+}
+
+test_non_interactive_with_provider
+
+###############################################################################
+# Test: --non-interactive mode completes without hanging
+###############################################################################
+
+echo ""
+echo "=== --non-interactive full flow ==="
+
+test_non_interactive_completes() {
+  # Run the full setup_ai_provider + setup_observation_feed in non-interactive mode
+  # This should complete without any prompts or hangs
+  local result
+  result="$(bash -c '
+    set -euo pipefail
+    TERM=dumb
+    tmp=$(mktemp)
+    sed "$ d" "'"${INSTALL_SCRIPT}"'" > "$tmp"
+    echo "main() { :; }" >> "$tmp"
+    set -- "--non-interactive"
+    source "$tmp"
+    rm -f "$tmp"
+    setup_ai_provider 2>/dev/null
+    setup_observation_feed 2>/dev/null
+    echo "AI=$AI_PROVIDER"
+    echo "FEED=$FEED_CONFIGURED"
+  ' 2>/dev/null)" || true
+
+  assert_contains "$result" "AI=claude" "--non-interactive: AI provider defaults to claude"
+  assert_contains "$result" "FEED=false" "--non-interactive: observation feed skipped"
+}
+
+test_non_interactive_completes
+
+###############################################################################
+# Test: Script structure — curl | bash usage comment
+###############################################################################
+
+echo ""
+echo "=== curl | bash usage comment ==="
+
+if grep -q 'curl -fsSL.*raw.githubusercontent.com.*install.sh | bash' "$INSTALL_SCRIPT"; then
+  test_pass "install.sh contains curl | bash usage comment"
+else
+  test_fail "install.sh should contain curl | bash usage comment"
+fi
+
+if grep -q 'bash -s -- --provider=' "$INSTALL_SCRIPT"; then
+  test_pass "install.sh documents --provider flag in usage comment"
+else
+  test_fail "install.sh should document --provider flag in usage comment"
+fi
+
+###############################################################################
+# Test: write_settings with --provider flag end-to-end
+###############################################################################
+
+echo ""
+echo "=== write_settings with --provider flag ==="
+
+test_write_settings_via_provider_flag() {
+  local fake_home
+  fake_home="$(mktemp -d)"
+
+  local result
+  result="$(bash -c '
+    set -euo pipefail
+    TERM=dumb
+    export HOME="'"$fake_home"'"
+    tmp=$(mktemp)
+    sed "$ d" "'"${INSTALL_SCRIPT}"'" > "$tmp"
+    echo "main() { :; }" >> "$tmp"
+    set -- "--provider=gemini" "--api-key=test-end-to-end-key"
+    source "$tmp"
+    rm -f "$tmp"
+    setup_ai_provider >/dev/null 2>&1
+    write_settings >/dev/null 2>&1
+    echo "DONE"
+  ' 2>/dev/null)" || true
+
+  if [[ "$result" == *"DONE"* ]]; then
+    local settings_file="${fake_home}/.claude-mem/settings.json"
+    local provider
+    provider="$(node -e "const s = JSON.parse(require('fs').readFileSync('${settings_file}','utf8')); console.log(s.CLAUDE_MEM_PROVIDER);")"
+    assert_eq "gemini" "$provider" "--provider flag: settings.json has provider=gemini"
+
+    local api_key
+    api_key="$(node -e "const s = JSON.parse(require('fs').readFileSync('${settings_file}','utf8')); console.log(s.CLAUDE_MEM_GEMINI_API_KEY);")"
+    assert_eq "test-end-to-end-key" "$api_key" "--provider flag: settings.json has correct API key"
+  else
+    test_fail "--provider flag: write_settings failed"
+  fi
+
+  rm -rf "$fake_home"
+}
+
+test_write_settings_via_provider_flag
+
+###############################################################################
 # Summary
 ###############################################################################
 
