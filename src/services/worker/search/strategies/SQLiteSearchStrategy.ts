@@ -68,7 +68,7 @@ export class SQLiteSearchStrategy extends BaseSearchStrategy implements SearchSt
       if (searchObservations) {
         const obsOptions = {
           ...baseOptions,
-          type: obsType,
+          type: obsType as import('../../../sqlite/types.js').SearchOptions['type'],
           concepts,
           files
         };

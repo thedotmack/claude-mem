@@ -110,7 +110,7 @@ export class WorkerService {
   // Service layer
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
-  private sseBroadcaster: SSEBroadcaster;
+  sseBroadcaster: SSEBroadcaster;
   private sdkAgent: SDKAgent;
   private geminiAgent: GeminiAgent;
   private openaiCompatAgent: OpenAICompatAgent;
@@ -293,7 +293,7 @@ export class WorkerService {
       const transport = new StdioClientTransport({
         command: 'node',
         args: [mcpServerPath],
-        env: process.env
+        env: process.env as Record<string, string>
       });
 
       const MCP_INIT_TIMEOUT_MS = 300000;

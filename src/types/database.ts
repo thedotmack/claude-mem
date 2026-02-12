@@ -1,6 +1,6 @@
 /**
  * TypeScript types for database query results
- * Provides type safety for bun:sqlite query results
+ * Provides type safety for SQLite query results
  */
 
 /**
@@ -69,11 +69,15 @@ export interface ObservationRecord {
   type: 'decision' | 'bugfix' | 'feature' | 'refactor' | 'discovery' | 'change';
   created_at: string;
   created_at_epoch: number;
-  title?: string;
-  concept?: string;
-  source_files?: string;
-  prompt_number?: number;
-  discovery_tokens?: number;
+  title: string | null;
+  subtitle: string | null;
+  facts: string | null;
+  narrative: string | null;
+  concepts: string | null;
+  files_read: string | null;
+  files_modified: string | null;
+  prompt_number: number | null;
+  discovery_tokens: number;
 }
 
 /**
@@ -90,8 +94,11 @@ export interface SessionSummaryRecord {
   next_steps: string | null;
   created_at: string;
   created_at_epoch: number;
-  prompt_number?: number;
-  discovery_tokens?: number;
+  files_read: string | null;
+  files_edited: string | null;
+  notes: string | null;
+  prompt_number: number | null;
+  discovery_tokens: number;
 }
 
 /**
@@ -118,22 +125,4 @@ export interface LatestPromptResult {
   prompt_number: number;
   prompt_text: string;
   created_at_epoch: number;
-}
-
-/**
- * Observation with context (for time-based queries)
- */
-export interface ObservationWithContext {
-  id: number;
-  memory_session_id: string;
-  project: string;
-  text: string | null;
-  type: string;
-  created_at: string;
-  created_at_epoch: number;
-  title?: string;
-  concept?: string;
-  source_files?: string;
-  prompt_number?: number;
-  discovery_tokens?: number;
 }

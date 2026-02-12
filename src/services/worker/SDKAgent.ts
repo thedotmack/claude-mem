@@ -86,7 +86,7 @@ export class SDKAgent {
     logger.info('SDK', 'Starting SDK query', {
       sessionDbId: session.sessionDbId,
       contentSessionId: session.contentSessionId,
-      memorySessionId: session.memorySessionId,
+      memorySessionId: session.memorySessionId ?? undefined,
       hasRealMemorySessionId,
       resume_parameter: hasRealMemorySessionId ? session.memorySessionId : '(none - fresh start)',
       lastPromptNumber: session.lastPromptNumber,
@@ -122,7 +122,7 @@ export class SDKAgent {
         // Only resume if BOTH: (1) we have a memorySessionId AND (2) this isn't the first prompt
         // On worker restart, memorySessionId may exist from a previous SDK session but we
         // need to start fresh since the SDK context was lost
-        ...(hasRealMemorySessionId && session.lastPromptNumber > 1 && { resume: session.memorySessionId }),
+        ...(hasRealMemorySessionId && session.lastPromptNumber > 1 && { resume: session.memorySessionId ?? undefined }),
         disallowedTools,
         abortController: session.abortController,
         pathToClaudeCodeExecutable: claudePath,

@@ -11,7 +11,7 @@ export interface HookCommandOptions {
 export async function hookCommand(platform: string, event: string, options: HookCommandOptions = {}): Promise<number> {
   try {
     const adapter = getPlatformAdapter(platform);
-    const handler = getEventHandler(event);
+    const handler = getEventHandler(event as import('./handlers/index.js').EventType);
 
     const rawInput = await readJsonFromStdin();
     const input = adapter.normalizeInput(rawInput);

@@ -70,13 +70,13 @@ export function App() {
       ]);
 
       if (newObservations.length > 0) {
-        setPaginatedObservations(prev => [...prev, ...newObservations]);
+        setPaginatedObservations(prev => [...prev, ...newObservations as Observation[]]);
       }
       if (newSummaries.length > 0) {
-        setPaginatedSummaries(prev => [...prev, ...newSummaries]);
+        setPaginatedSummaries(prev => [...prev, ...newSummaries as Summary[]]);
       }
       if (newPrompts.length > 0) {
-        setPaginatedPrompts(prev => [...prev, ...newPrompts]);
+        setPaginatedPrompts(prev => [...prev, ...newPrompts as UserPrompt[]]);
       }
     } catch (error) {
       console.error('Failed to load more data:', error);

@@ -103,14 +103,16 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
       });
 
       // Step 4: Hydrate from SQLite with additional filters
+      // Chroma handles relevance sorting internally; for SQLite hydration, fall back to date_desc
+      const sqlOrderBy = orderBy === 'relevance' ? 'date_desc' as const : orderBy;
       if (categorized.obsIds.length > 0) {
-        const obsOptions = { type: obsType, concepts, files, orderBy, limit, project };
+        const obsOptions = { type: obsType, concepts, files, orderBy: sqlOrderBy, limit, project };
         observations = this.sessionStore.getObservationsByIds(categorized.obsIds, obsOptions);
       }
 
       if (categorized.sessionIds.length > 0) {
         sessions = this.sessionStore.getSessionSummariesByIds(categorized.sessionIds, {
-          orderBy,
+          orderBy: sqlOrderBy,
           limit,
           project
         });
@@ -118,7 +120,7 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
 
       if (categorized.promptIds.length > 0) {
         prompts = this.sessionStore.getUserPromptsByIds(categorized.promptIds, {
-          orderBy,
+          orderBy: sqlOrderBy,
           limit,
           project
         });

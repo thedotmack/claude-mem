@@ -1,4 +1,4 @@
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect } from 'vitest';
 import { readdir } from "fs/promises";
 import { join, relative } from "path";
 import { readFileSync } from "fs";
@@ -14,7 +14,7 @@ import { readFileSync } from "fs";
  * Note: This is a legitimate coding standard enforcement test, not a coverage metric.
  */
 
-const PROJECT_ROOT = join(import.meta.dir, "..");
+const PROJECT_ROOT = join(import.meta.dirname, "..");
 const SRC_DIR = join(PROJECT_ROOT, "src");
 
 // Files/directories that don't require logging
@@ -26,10 +26,9 @@ const EXCLUDED_PATTERNS = [
   /^bin\//,              // CLI utilities (may use console.log for output)
   /index\.ts$/,          // Re-export files
   /logger\.ts$/,         // Logger itself
-  /hook-response\.ts$/,  // Pure data structure
   /hook-constants\.ts$/, // Pure constants
   /paths\.ts$/,          // Path utilities
-  /bun-path\.ts$/,       // Path utilities
+  /sqlite-compat\.ts$/,  // Thin SQLite compatibility wrapper (no logging needed)
   /migrations\.ts$/,     // Database migrations (console.log for migration output)
   /worker-service\.ts$/, // CLI entry point with interactive setup wizard (console.log for user prompts)
   /integrations\/.*Installer\.ts$/, // CLI installer commands (console.log for interactive installation output)
@@ -46,7 +45,7 @@ const HIGH_PRIORITY_PATTERNS = [
   /^services\/sqlite\/(?!types\.ts$|index\.ts$)/,  // SQLite services
   /^services\/sync\//,
   /^services\/context-generator\.ts$/,
-  /^hooks\/(?!hook-response\.ts$)/,  // All src/hooks/* except hook-response.ts (NOT ui/hooks)
+  /^hooks\//,  // All src/hooks/* (NOT ui/hooks)
   /^sdk\/(?!.*types?\.ts$)/,  // SDK files (not type files)
   /^servers\/(?!.*types?\.ts$)/,  // Server files (not type files)
 ];

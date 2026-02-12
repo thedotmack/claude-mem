@@ -593,7 +593,7 @@ export class ChromaSync {
           }
         });
 
-        const data = result.content[0];
+        const data = (result.content as Array<{ type: string; text: string }>)[0];
         if (data.type !== 'text') {
           throw new Error('Unexpected response type from chroma_get_documents');
         }
@@ -870,7 +870,7 @@ export class ChromaSync {
       throw error;
     }
 
-    const resultText = result.content[0]?.text || (() => {
+    const resultText = (result.content as Array<{ type: string; text: string }>)[0]?.text || (() => {
       logger.error('CHROMA', 'Missing text in MCP chroma_query_documents result', {
         project: this.project,
         query_text: query
