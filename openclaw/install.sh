@@ -613,6 +613,29 @@ install_plugin() {
     require('fs').writeFileSync(process.env.INSTALLER_PACKAGE_DIR + '/package.json', JSON.stringify(pkg, null, 2));
   "
 
+  # Clean up stale claude-mem plugin entry before installing.
+  # If the config references claude-mem but the plugin isn't installed,
+  # OpenClaw's config validator blocks ALL CLI commands (including plugins install).
+  # We temporarily remove the entry and save the config so `plugins install` can run,
+  # then `plugins install` + `plugins enable` will re-create it properly.
+  local oc_config="${HOME}/.openclaw/openclaw.json"
+  local saved_plugin_config=""
+  if [[ -f "$oc_config" ]]; then
+    saved_plugin_config=$(INSTALLER_CONFIG_FILE="$oc_config" node -e "
+      const fs = require('fs');
+      const configPath = process.env.INSTALLER_CONFIG_FILE;
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      const entry = config?.plugins?.entries?.['claude-mem'];
+      if (entry) {
+        // Save the config block so we can restore it after install
+        process.stdout.write(JSON.stringify(entry.config || {}));
+        // Remove the stale entry so OpenClaw CLI can run
+        delete config.plugins.entries['claude-mem'];
+        fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+      }
+    " 2>/dev/null) || true
+  fi
+
   # Install the plugin using OpenClaw's CLI
   info "Installing claude-mem plugin into OpenClaw..."
   if ! run_openclaw plugins install "$installable_dir" 2>&1; then
@@ -627,6 +650,22 @@ install_plugin() {
     error "Failed to enable claude-mem plugin"
     error "Try manually: ${OPENCLAW_PATH} plugins enable claude-mem"
     exit 1
+  fi
+
+  # Restore saved plugin config (workerPort, syncMemoryFile, observationFeed, etc.)
+  # from any pre-existing installation that was temporarily removed above.
+  if [[ -n "$saved_plugin_config" && "$saved_plugin_config" != "{}" ]]; then
+    info "Restoring previous plugin configuration..."
+    INSTALLER_CONFIG_FILE="$oc_config" INSTALLER_SAVED_CONFIG="$saved_plugin_config" node -e "
+      const fs = require('fs');
+      const configPath = process.env.INSTALLER_CONFIG_FILE;
+      const savedConfig = JSON.parse(process.env.INSTALLER_SAVED_CONFIG);
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      if (config?.plugins?.entries?.['claude-mem']) {
+        config.plugins.entries['claude-mem'].config = savedConfig;
+        fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+      }
+    " 2>/dev/null || warn "Could not restore previous plugin config — configure manually"
   fi
 
   success "claude-mem plugin installed and enabled"
@@ -695,6 +734,13 @@ configure_memory_slot() {
       };
     } else {
       config.plugins.entries['claude-mem'].enabled = true;
+      // Remove unrecognized keys that cause OpenClaw config validation errors
+      const allowedKeys = new Set(['enabled', 'config']);
+      for (const key of Object.keys(config.plugins.entries['claude-mem'])) {
+        if (!allowedKeys.has(key)) {
+          delete config.plugins.entries['claude-mem'][key];
+        }
+      }
     }
 
     fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
