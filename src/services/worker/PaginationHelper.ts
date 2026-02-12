@@ -7,7 +7,7 @@
  * - Efficient LIMIT+1 trick to avoid COUNT(*) query
  */
 
-import { DatabaseManager } from './DatabaseManager.js';
+import type { DatabaseManager } from './DatabaseManager.js';
 import { logger } from '../../utils/logger.js';
 import type { PaginatedResult, Observation, Summary, UserPrompt } from '../worker-types.js';
 

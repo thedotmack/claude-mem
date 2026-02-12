@@ -81,7 +81,7 @@ export function TerminalPreview({ content, isLoading = false, className = '' }: 
         <div style={{ width: '12px', height: '12px', borderRadius: '50%', backgroundColor: '#28c840' }} />
 
         <button
-          onClick={() => setWordWrap(!wordWrap)}
+          onClick={() => { setWordWrap(!wordWrap); }}
           style={{
             marginLeft: 'auto',
             padding: '4px 8px',

@@ -65,7 +65,7 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
     const timeout = setTimeout(() => {
       refresh();
     }, 300);
-    return () => clearTimeout(timeout);
+    return () => { clearTimeout(timeout); };
   }, [settings, refresh]);
 
   return { preview, isLoading, error, refresh, projects, selectedProject, setSelectedProject };

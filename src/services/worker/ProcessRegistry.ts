@@ -16,7 +16,8 @@
  * - Safety net orphan reaper runs every 5 minutes
  */
 
-import { spawn, exec, ChildProcess } from 'child_process';
+import type { ChildProcess } from 'child_process';
+import { spawn, exec } from 'child_process';
 import { promisify } from 'util';
 import { logger } from '../../utils/logger.js';
 
@@ -93,7 +94,7 @@ export async function ensureProcessExit(tracked: TrackedProcess, timeoutMs: numb
 
   // Wait for graceful exit with timeout using event-based approach
   const exitPromise = new Promise<void>((resolve) => {
-    proc.once('exit', () => resolve());
+    proc.once('exit', () => { resolve(); });
   });
 
   const timeoutPromise = new Promise<void>((resolve) => {
@@ -251,5 +252,5 @@ export function startOrphanReaper(getActiveSessionIds: () => Set<number>, interv
   }, intervalMs);
 
   // Return cleanup function
-  return () => clearInterval(interval);
+  return () => { clearInterval(interval); };
 }

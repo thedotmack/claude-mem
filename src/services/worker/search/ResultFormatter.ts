@@ -6,7 +6,7 @@
  */
 import { logger } from '../../../utils/logger.js';
 
-import {
+import type {
   ObservationSearchResult,
   SessionSummarySearchResult,
   UserPromptSearchResult,

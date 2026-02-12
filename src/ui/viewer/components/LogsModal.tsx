@@ -215,7 +215,7 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
     }
 
     const interval = setInterval(fetchLogs, 2000);
-    return () => clearInterval(interval);
+    return () => { clearInterval(interval); };
   }, [isOpen, autoRefresh, fetchLogs]);
 
   // Toggle level filter
@@ -272,7 +272,7 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
     const componentConfig = LOG_COMPONENTS.find(c => c.key === line.component);
 
     let color = 'var(--color-text-primary)';
-    let fontWeight = 'normal';
+    const fontWeight = 'normal';
     let backgroundColor = 'transparent';
 
     if (line.level === 'ERROR') {
@@ -349,7 +349,7 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
             <input
               type="checkbox"
               checked={autoRefresh}
-              onChange={(e) => setAutoRefresh(e.target.checked)}
+              onChange={(e) => { setAutoRefresh(e.target.checked); }}
             />
             Auto-refresh
           </label>
@@ -396,7 +396,7 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
           <div className="console-filter-chips">
             <button
               className={`console-filter-chip ${alignmentOnly ? 'active' : ''}`}
-              onClick={() => setAlignmentOnly(!alignmentOnly)}
+              onClick={() => { setAlignmentOnly(!alignmentOnly); }}
               style={{
                 '--chip-color': '#f0883e',
               } as React.CSSProperties}
@@ -413,7 +413,7 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
               <button
                 key={level.key}
                 className={`console-filter-chip ${activeLevels.has(level.key) ? 'active' : ''}`}
-                onClick={() => toggleLevel(level.key)}
+                onClick={() => { toggleLevel(level.key); }}
                 style={{
                   '--chip-color': level.color,
                 } as React.CSSProperties}
@@ -424,7 +424,7 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
             ))}
             <button
               className="console-filter-action"
-              onClick={() => setAllLevels(activeLevels.size === 0)}
+              onClick={() => { setAllLevels(activeLevels.size === 0); }}
               title={activeLevels.size === LOG_LEVELS.length ? 'Select none' : 'Select all'}
             >
               {activeLevels.size === LOG_LEVELS.length ? '○' : '●'}
@@ -438,7 +438,7 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
               <button
                 key={comp.key}
                 className={`console-filter-chip ${activeComponents.has(comp.key) ? 'active' : ''}`}
-                onClick={() => toggleComponent(comp.key)}
+                onClick={() => { toggleComponent(comp.key); }}
                 style={{
                   '--chip-color': comp.color,
                 } as React.CSSProperties}
@@ -449,7 +449,7 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
             ))}
             <button
               className="console-filter-action"
-              onClick={() => setAllComponents(activeComponents.size === 0)}
+              onClick={() => { setAllComponents(activeComponents.size === 0); }}
               title={activeComponents.size === LOG_COMPONENTS.length ? 'Select none' : 'Select all'}
             >
               {activeComponents.size === LOG_COMPONENTS.length ? '○' : '●'}

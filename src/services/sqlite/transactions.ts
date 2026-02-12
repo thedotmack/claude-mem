@@ -6,7 +6,7 @@
  * data consistency across domain boundaries.
  */
 
-import { Database } from './sqlite-compat.js';
+import type { Database } from './sqlite-compat.js';
 import { logger } from '../../utils/logger.js';
 import type { ObservationInput } from './observations/types.js';
 import { isSummaryContentEmpty, type SummaryInput } from './summaries/types.js';

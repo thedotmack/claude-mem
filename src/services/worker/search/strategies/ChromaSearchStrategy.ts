@@ -10,18 +10,21 @@
  * Used when: Query text is provided and Chroma is available
  */
 
-import { BaseSearchStrategy, SearchStrategy } from './SearchStrategy.js';
-import {
+import type { SearchStrategy } from './SearchStrategy.js';
+import { BaseSearchStrategy } from './SearchStrategy.js';
+import type {
   StrategySearchOptions,
   StrategySearchResult,
-  SEARCH_CONSTANTS,
   ChromaMetadata,
   ObservationSearchResult,
   SessionSummarySearchResult,
   UserPromptSearchResult
 } from '../types.js';
-import { ChromaSync } from '../../../sync/ChromaSync.js';
-import { SessionStore } from '../../../sqlite/SessionStore.js';
+import {
+  SEARCH_CONSTANTS
+} from '../types.js';
+import type { ChromaSync } from '../../../sync/ChromaSync.js';
+import type { SessionStore } from '../../../sqlite/SessionStore.js';
 import { logger } from '../../../../utils/logger.js';
 
 export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchStrategy {

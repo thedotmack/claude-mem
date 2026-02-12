@@ -1,5 +1,5 @@
 import React from 'react';
-import { UserPrompt } from '../types';
+import type { UserPrompt } from '../types';
 import { formatDate } from '../utils/formatters';
 
 interface PromptCardProps {

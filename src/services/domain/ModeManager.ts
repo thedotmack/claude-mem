@@ -89,7 +89,7 @@ export class ModeManager {
    * - Override primitives
    */
   private deepMerge<T>(base: T, override: Partial<T>): T {
-    const result = { ...base } as T;
+    const result = { ...base };
 
     for (const key in override) {
       const overrideValue = override[key];

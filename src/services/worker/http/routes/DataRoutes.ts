@@ -5,17 +5,18 @@
  * All endpoints use direct database access via service layer.
  */
 
-import express, { Request, Response } from 'express';
+import type { Request, Response } from 'express';
+import type express from 'express';
 import path from 'path';
 import { readFileSync, statSync, existsSync } from 'fs';
 import { logger } from '../../../../utils/logger.js';
 import { homedir } from 'os';
 import { getPackageRoot } from '../../../../shared/paths.js';
 import { getWorkerPort } from '../../../../shared/worker-utils.js';
-import { PaginationHelper } from '../../PaginationHelper.js';
-import { DatabaseManager } from '../../DatabaseManager.js';
-import { SessionManager } from '../../SessionManager.js';
-import { SSEBroadcaster } from '../../SSEBroadcaster.js';
+import type { PaginationHelper } from '../../PaginationHelper.js';
+import type { DatabaseManager } from '../../DatabaseManager.js';
+import type { SessionManager } from '../../SessionManager.js';
+import type { SSEBroadcaster } from '../../SSEBroadcaster.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 

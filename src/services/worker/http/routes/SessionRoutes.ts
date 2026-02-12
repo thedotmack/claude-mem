@@ -5,18 +5,21 @@
  * These routes manage the flow of work through the Claude Agent SDK.
  */
 
-import express, { Request, Response } from 'express';
+import type { Request, Response } from 'express';
+import type express from 'express';
 import { getWorkerPort } from '../../../../shared/worker-utils.js';
 import { logger } from '../../../../utils/logger.js';
 import { stripMemoryTagsFromJson, stripMemoryTagsFromPrompt } from '../../../../utils/tag-stripping.js';
-import { SessionManager } from '../../SessionManager.js';
-import { DatabaseManager } from '../../DatabaseManager.js';
-import { SDKAgent } from '../../SDKAgent.js';
-import { GeminiAgent, isGeminiSelected, isGeminiAvailable } from '../../GeminiAgent.js';
-import { OpenAICompatAgent, isOpenAICompatSelected, isOpenAICompatAvailable } from '../../OpenAICompatAgent.js';
+import type { SessionManager } from '../../SessionManager.js';
+import type { DatabaseManager } from '../../DatabaseManager.js';
+import type { SDKAgent } from '../../SDKAgent.js';
+import type { GeminiAgent} from '../../GeminiAgent.js';
+import { isGeminiSelected, isGeminiAvailable } from '../../GeminiAgent.js';
+import type { OpenAICompatAgent} from '../../OpenAICompatAgent.js';
+import { isOpenAICompatSelected, isOpenAICompatAvailable } from '../../OpenAICompatAgent.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
-import { SessionEventBroadcaster } from '../../events/SessionEventBroadcaster.js';
+import type { SessionEventBroadcaster } from '../../events/SessionEventBroadcaster.js';
 import { SessionCompletionHandler } from '../../session/SessionCompletionHandler.js';
 import { PrivacyCheckValidator } from '../../validation/PrivacyCheckValidator.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
@@ -410,7 +413,7 @@ export class SessionRoutes extends BaseRouteHandler {
     const { contentSessionId, tool_name, tool_input, tool_response, cwd } = req.body;
 
     if (!contentSessionId) {
-      return this.badRequest(res, 'Missing contentSessionId');
+      this.badRequest(res, 'Missing contentSessionId'); return;
     }
 
     // Load skip tools from settings
@@ -502,7 +505,7 @@ export class SessionRoutes extends BaseRouteHandler {
     const { contentSessionId, last_assistant_message } = req.body;
 
     if (!contentSessionId) {
-      return this.badRequest(res, 'Missing contentSessionId');
+      this.badRequest(res, 'Missing contentSessionId'); return;
     }
 
     const store = this.dbManager.getSessionStore();

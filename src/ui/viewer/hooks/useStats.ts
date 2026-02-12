@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Stats } from '../types';
+import type { Stats } from '../types';
 import { API_ENDPOINTS } from '../constants/api';
 
 export function useStats() {

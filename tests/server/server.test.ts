@@ -230,7 +230,7 @@ describe('Server', () => {
     it('should not throw when called', () => {
       server = new Server(mockOptions);
 
-      expect(() => server.finalizeRoutes()).not.toThrow();
+      expect(() => { server.finalizeRoutes(); }).not.toThrow();
     });
   });
 

@@ -1,4 +1,4 @@
-import { SessionStore } from '../../sqlite/SessionStore.js';
+import type { SessionStore } from '../../sqlite/SessionStore.js';
 import { logger } from '../../../utils/logger.js';
 
 /**

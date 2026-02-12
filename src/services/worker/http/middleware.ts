@@ -5,7 +5,8 @@
  * Handles request/response logging, CORS, JSON parsing, and static file serving.
  */
 
-import express, { Request, Response, NextFunction, RequestHandler } from 'express';
+import type { Request, Response, NextFunction, RequestHandler } from 'express';
+import express from 'express';
 import cors from 'cors';
 import path from 'path';
 import { getPackageRoot } from '../../../shared/paths.js';
@@ -34,7 +35,7 @@ export function createMiddleware(
     const isStaticAsset = staticExtensions.some(ext => req.path.endsWith(ext));
     const isPollingEndpoint = req.path === '/api/logs'; // Skip logs endpoint to avoid noise from auto-refresh
     if (req.path.startsWith('/health') || req.path === '/' || isStaticAsset || isPollingEndpoint) {
-      return next();
+      next(); return;
     }
 
     const start = Date.now();

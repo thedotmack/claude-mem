@@ -13,8 +13,8 @@
 import { randomUUID } from 'crypto';
 import path from 'path';
 import { homedir } from 'os';
-import { DatabaseManager } from './DatabaseManager.js';
-import { SessionManager } from './SessionManager.js';
+import type { DatabaseManager } from './DatabaseManager.js';
+import type { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
 import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt, buildSummaryContextPrompt } from '../../sdk/prompts.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
@@ -207,7 +207,7 @@ export class GeminiAgent {
     const head = history.slice(0, HEAD_SIZE);
     const tail = history.slice(HEAD_SIZE);
 
-    let headTokens = head.reduce((sum, m) => sum + this.estimateTokens(m.content), 0);
+    const headTokens = head.reduce((sum, m) => sum + this.estimateTokens(m.content), 0);
     const remainingTokenBudget = MAX_ESTIMATED_TOKENS - headTokens;
     const remainingMessageBudget = MAX_CONTEXT_MESSAGES - HEAD_SIZE;
 

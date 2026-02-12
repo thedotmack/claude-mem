@@ -130,7 +130,7 @@ describe('ProcessManager', () => {
       expect(existsSync(PID_FILE)).toBe(false);
 
       // Should not throw
-      expect(() => removePidFile()).not.toThrow();
+      expect(() => { removePidFile(); }).not.toThrow();
     });
   });
 

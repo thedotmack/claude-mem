@@ -1,5 +1,5 @@
-import { Database } from './sqlite-compat.js';
-import { Migration } from './Database.js';
+import type { Database } from './sqlite-compat.js';
+import type { Migration } from './Database.js';
 
 // Re-export MigrationRunner for SessionStore migration extraction
 export { MigrationRunner } from './migrations/runner.js';

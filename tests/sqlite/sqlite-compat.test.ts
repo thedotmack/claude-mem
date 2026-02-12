@@ -162,7 +162,7 @@ describe('sqlite-compat', () => {
         db.prepare('INSERT INTO items (name) VALUES (?)').run(null);
       });
 
-      expect(() => insertBad()).toThrow();
+      expect(() => { insertBad(); }).toThrow();
 
       const rows = db.prepare('SELECT * FROM items').all() as any[];
       expect(rows).toHaveLength(0);
@@ -175,7 +175,7 @@ describe('sqlite-compat', () => {
         return item;
       });
 
-      const result = claimAndDelete(42) as any;
+      const result = claimAndDelete(42);
       expect(result.name).toBe('session-42');
     });
   });

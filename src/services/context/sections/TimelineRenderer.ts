@@ -83,7 +83,7 @@ export function renderDayTimeline(
         lastTime = '';
       }
 
-      const summary = item.data as SummaryTimelineItem;
+      const summary = item.data;
       const formattedTime = formatDateTime(summary.displayTime);
 
       if (useColors) {
@@ -92,7 +92,7 @@ export function renderDayTimeline(
         output.push(...Markdown.renderMarkdownSummaryItem(summary, formattedTime));
       }
     } else {
-      const obs = item.data as Observation;
+      const obs = item.data;
       const file = extractFirstFile(obs.files_modified, cwd, obs.files_read);
       const time = formatTime(obs.created_at);
       const showTime = time !== lastTime;

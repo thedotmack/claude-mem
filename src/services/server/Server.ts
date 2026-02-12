@@ -9,8 +9,9 @@
  * - Core system endpoints (health, readiness, version, admin)
  */
 
-import express, { Request, Response, Application } from 'express';
-import http from 'http';
+import type { Request, Response, Application } from 'express';
+import express from 'express';
+import type http from 'http';
 import * as fs from 'fs';
 import path from 'path';
 import { logger } from '../../utils/logger.js';
@@ -97,7 +98,7 @@ export class Server {
 
     // Close the server
     await new Promise<void>((resolve, reject) => {
-      this.server!.close(err => err ? reject(err) : resolve());
+      this.server!.close(err => { err ? reject(err) : resolve(); });
     });
 
     // Extra delay on Windows to ensure port is fully released

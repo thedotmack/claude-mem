@@ -14,11 +14,11 @@
  */
 
 import { basename } from 'path';
-import { SessionSearch } from '../sqlite/SessionSearch.js';
-import { SessionStore } from '../sqlite/SessionStore.js';
-import { ChromaSync } from '../sync/ChromaSync.js';
-import { FormattingService } from './FormattingService.js';
-import { TimelineService } from './TimelineService.js';
+import type { SessionSearch } from '../sqlite/SessionSearch.js';
+import type { SessionStore } from '../sqlite/SessionStore.js';
+import type { ChromaSync } from '../sync/ChromaSync.js';
+import type { FormattingService } from './FormattingService.js';
+import type { TimelineService } from './TimelineService.js';
 import type { TimelineItem } from './TimelineService.js';
 import type { ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../sqlite/types.js';
 import { logger } from '../../utils/logger.js';

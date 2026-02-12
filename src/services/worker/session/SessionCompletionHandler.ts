@@ -9,8 +9,8 @@
  * 2. Broadcast session completed event (updates UI spinner)
  */
 
-import { SessionManager } from '../SessionManager.js';
-import { SessionEventBroadcaster } from '../events/SessionEventBroadcaster.js';
+import type { SessionManager } from '../SessionManager.js';
+import type { SessionEventBroadcaster } from '../events/SessionEventBroadcaster.js';
 import { logger } from '../../../utils/logger.js';
 
 export class SessionCompletionHandler {

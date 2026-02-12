@@ -1,16 +1,18 @@
 import { Database } from './sqlite-compat.js';
 import { DATA_DIR, DB_PATH, ensureDir } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
-import {
+import type {
   TableColumnInfo,
   IndexInfo,
   TableNameRow,
   SchemaVersion,
-  SdkSessionRecord,
   ObservationRecord,
   SessionSummaryRecord,
   UserPromptRecord,
   LatestPromptResult
+} from '../../types/database.js';
+import {
+  SdkSessionRecord
 } from '../../types/database.js';
 import type { PendingMessageStore } from './PendingMessageStore.js';
 import { isSummaryContentEmpty } from './summaries/types.js';

@@ -259,7 +259,7 @@ function formatMessage(message: string): string {
 }
 
 describe('Log Level Audit', () => {
-  let allCalls: LoggerCall[] = [];
+  const allCalls: LoggerCall[] = [];
 
   it('should scan all TypeScript files and extract logger calls', async () => {
     const files = await findTypeScriptFiles(SRC_DIR);

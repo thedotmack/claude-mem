@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Observation, Summary, UserPrompt, StreamEvent } from '../types';
+import type { Observation, Summary, UserPrompt, StreamEvent } from '../types';
 import { API_ENDPOINTS } from '../constants/api';
 import { TIMING } from '../constants/timing';
 

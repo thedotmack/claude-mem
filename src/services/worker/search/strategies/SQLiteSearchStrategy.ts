@@ -10,16 +10,19 @@
  * Used when: No query text is provided, or as a fallback when Chroma fails
  */
 
-import { BaseSearchStrategy, SearchStrategy } from './SearchStrategy.js';
-import {
+import type { SearchStrategy } from './SearchStrategy.js';
+import { BaseSearchStrategy } from './SearchStrategy.js';
+import type {
   StrategySearchOptions,
   StrategySearchResult,
-  SEARCH_CONSTANTS,
   ObservationSearchResult,
   SessionSummarySearchResult,
   UserPromptSearchResult
 } from '../types.js';
-import { SessionSearch } from '../../../sqlite/SessionSearch.js';
+import {
+  SEARCH_CONSTANTS
+} from '../types.js';
+import type { SessionSearch } from '../../../sqlite/SessionSearch.js';
 import { logger } from '../../../../utils/logger.js';
 
 export class SQLiteSearchStrategy extends BaseSearchStrategy implements SearchStrategy {

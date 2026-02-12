@@ -5,8 +5,9 @@
  * All endpoints call SearchManager methods directly.
  */
 
-import express, { Request, Response } from 'express';
-import { SearchManager } from '../../SearchManager.js';
+import type { Request, Response } from 'express';
+import type express from 'express';
+import type { SearchManager } from '../../SearchManager.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { logger } from '../../../../utils/logger.js';
 

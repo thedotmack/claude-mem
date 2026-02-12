@@ -5,7 +5,7 @@
  * Consolidates SSE broadcasting and processing status updates.
  */
 
-import { SSEBroadcaster } from '../SSEBroadcaster.js';
+import type { SSEBroadcaster } from '../SSEBroadcaster.js';
 import type { WorkerService } from '../../worker-service.js';
 import { logger } from '../../../utils/logger.js';
 

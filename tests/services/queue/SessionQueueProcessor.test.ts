@@ -95,7 +95,7 @@ describe('SessionQueueProcessor', () => {
         // Instead, we'll test the abort path and verify callback behavior
 
         // Abort after a short delay to simulate timeout-like behavior
-        setTimeout(() => abortController.abort(), 100);
+        setTimeout(() => { abortController.abort(); }, 100);
 
         for await (const message of iterator) {
           results.push(message);
@@ -125,7 +125,7 @@ describe('SessionQueueProcessor', () => {
         const iterator = processor.createIterator(options);
 
         // Simulate external abort (which is what onIdleTimeout should do)
-        setTimeout(() => abortController.abort(), 50);
+        setTimeout(() => { abortController.abort(); }, 50);
 
         const results: any[] = [];
         for await (const message of iterator) {
@@ -136,7 +136,7 @@ describe('SessionQueueProcessor', () => {
       });
 
       it('should reset idle timer when message arrives', async () => {
-        const onIdleTimeout = vi.fn(() => abortController.abort());
+        const onIdleTimeout = vi.fn(() => { abortController.abort(); });
         let callCount = 0;
 
         // Return a message on first call, then null
@@ -160,7 +160,7 @@ describe('SessionQueueProcessor', () => {
         // First message should be yielded
         // Then queue is empty, wait for more
         // Abort after receiving first message
-        setTimeout(() => abortController.abort(), 100);
+        setTimeout(() => { abortController.abort(); }, 100);
 
         for await (const message of iterator) {
           results.push(message);
@@ -217,7 +217,7 @@ describe('SessionQueueProcessor', () => {
         const iterator = processor.createIterator(options);
 
         // Abort very quickly - before any timeout could fire
-        setTimeout(() => abortController.abort(), 10);
+        setTimeout(() => { abortController.abort(); }, 10);
 
         const results: any[] = [];
         for await (const message of iterator) {
@@ -269,7 +269,7 @@ describe('SessionQueueProcessor', () => {
         setTimeout(() => events.emit('message'), 50);
 
         // Abort after collecting results
-        setTimeout(() => abortController.abort(), 150);
+        setTimeout(() => { abortController.abort(); }, 150);
 
         for await (const message of iterator) {
           results.push(message);
@@ -364,7 +364,7 @@ describe('SessionQueueProcessor', () => {
         const results: any[] = [];
 
         // Abort after giving time for retry
-        setTimeout(() => abortController.abort(), 1500);
+        setTimeout(() => { abortController.abort(); }, 1500);
 
         for await (const message of iterator) {
           results.push(message);
@@ -389,7 +389,7 @@ describe('SessionQueueProcessor', () => {
         const iterator = processor.createIterator(options);
 
         // Abort during the backoff period
-        setTimeout(() => abortController.abort(), 100);
+        setTimeout(() => { abortController.abort(); }, 100);
 
         const results: any[] = [];
         for await (const message of iterator) {

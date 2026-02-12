@@ -75,6 +75,8 @@
     "cursor:uninstall": "node plugin/scripts/worker-service.cjs cursor uninstall",
     "cursor:status": "node plugin/scripts/worker-service.cjs cursor status",
     "cursor:setup": "node plugin/scripts/worker-service.cjs cursor setup",
+    "lint": "eslint src/ tests/",
+    "lint:fix": "eslint src/ tests/ --fix",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:sqlite": "vitest run tests/sqlite/",
@@ -109,6 +111,7 @@
     "zod-to-json-schema": "^3.24.6"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.2",
     "@types/better-sqlite3": "^7.6.13",
     "@types/cors": "^2.8.19",
     "@types/express": "^4.17.21",
@@ -116,9 +119,13 @@
     "@types/react": "^18.3.5",
     "@types/react-dom": "^18.3.0",
     "esbuild": "^0.27.2",
+    "eslint": "^9.39.2",
+    "eslint-plugin-vitest": "^0.5.4",
+    "globals": "^15.15.0",
     "np": "^11.0.2",
     "tsx": "^4.20.6",
     "typescript": "^5.3.0",
+    "typescript-eslint": "^8.55.0",
     "vitest": "^4.0.18"
   }
 }

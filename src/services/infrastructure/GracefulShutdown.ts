@@ -8,7 +8,7 @@
  * - Child process cleanup (Windows zombie port fix)
  */
 
-import http from 'http';
+import type http from 'http';
 import { logger } from '../../utils/logger.js';
 import {
   getChildProcesses,
@@ -104,7 +104,7 @@ async function closeHttpServer(server: http.Server): Promise<void> {
 
   // Close the server
   await new Promise<void>((resolve, reject) => {
-    server.close(err => err ? reject(err) : resolve());
+    server.close(err => { err ? reject(err) : resolve(); });
   });
 
   // Extra delay on Windows to ensure port is fully released

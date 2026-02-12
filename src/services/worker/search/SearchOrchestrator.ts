@@ -9,9 +9,9 @@
  * 5. Delegates to formatters for output
  */
 
-import { SessionSearch } from '../../sqlite/SessionSearch.js';
-import { SessionStore } from '../../sqlite/SessionStore.js';
-import { ChromaSync } from '../../sync/ChromaSync.js';
+import type { SessionSearch } from '../../sqlite/SessionSearch.js';
+import type { SessionStore } from '../../sqlite/SessionStore.js';
+import type { ChromaSync } from '../../sync/ChromaSync.js';
 
 import { ChromaSearchStrategy } from './strategies/ChromaSearchStrategy.js';
 import { SQLiteSearchStrategy } from './strategies/SQLiteSearchStrategy.js';

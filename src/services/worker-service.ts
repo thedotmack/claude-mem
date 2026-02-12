@@ -205,7 +205,7 @@ export class WorkerService {
     this.server.app.get('/api/context/inject', async (req, res, next) => {
       const timeoutMs = 300000; // 5 minute timeout for slow systems
       const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('Initialization timeout')), timeoutMs)
+        setTimeout(() => { reject(new Error('Initialization timeout')); }, timeoutMs)
       );
 
       await Promise.race([this.initializationComplete, timeoutPromise]);
@@ -299,7 +299,7 @@ export class WorkerService {
       const MCP_INIT_TIMEOUT_MS = 300000;
       const mcpConnectionPromise = this.mcpClient.connect(transport);
       const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('MCP connection timeout after 5 minutes')), MCP_INIT_TIMEOUT_MS)
+        setTimeout(() => { reject(new Error('MCP connection timeout after 5 minutes')); }, MCP_INIT_TIMEOUT_MS)
       );
 
       await Promise.race([mcpConnectionPromise, timeoutPromise]);

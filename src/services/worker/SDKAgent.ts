@@ -11,8 +11,8 @@
 import { execSync } from 'child_process';
 import { homedir } from 'os';
 import path from 'path';
-import { DatabaseManager } from './DatabaseManager.js';
-import { SessionManager } from './SessionManager.js';
+import type { DatabaseManager } from './DatabaseManager.js';
+import type { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
 import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';

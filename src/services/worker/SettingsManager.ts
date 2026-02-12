@@ -7,7 +7,7 @@
  * - Type-safe settings management
  */
 
-import { DatabaseManager } from './DatabaseManager.js';
+import type { DatabaseManager } from './DatabaseManager.js';
 import { logger } from '../../utils/logger.js';
 import type { ViewerSettings } from '../worker-types.js';
 

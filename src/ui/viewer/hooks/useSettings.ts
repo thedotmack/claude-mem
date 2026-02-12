@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Settings } from '../types';
+import type { Settings } from '../types';
 import { DEFAULT_SETTINGS } from '../constants/settings';
 import { API_ENDPOINTS } from '../constants/api';
 import { TIMING } from '../constants/timing';
@@ -72,7 +72,7 @@ export function useSettings() {
     if (result.success) {
       setSettings(newSettings);
       setSaveStatus('✓ Saved');
-      setTimeout(() => setSaveStatus(''), TIMING.SAVE_STATUS_DISPLAY_DURATION_MS);
+      setTimeout(() => { setSaveStatus(''); }, TIMING.SAVE_STATUS_DISPLAY_DURATION_MS);
     } else {
       setSaveStatus(`✗ Error: ${result.error}`);
     }

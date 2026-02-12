@@ -1,6 +1,6 @@
-import { Database } from '../sqlite-compat.js';
+import type { Database } from '../sqlite-compat.js';
 import { logger } from '../../../utils/logger.js';
-import {
+import type {
   TableColumnInfo,
   IndexInfo,
   TableNameRow,

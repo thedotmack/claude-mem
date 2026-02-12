@@ -4,7 +4,7 @@
  * Provides error handling middleware and utilities for the server.
  */
 
-import { Request, Response, NextFunction, ErrorRequestHandler } from 'express';
+import type { Request, Response, NextFunction, ErrorRequestHandler } from 'express';
 import { logger } from '../../utils/logger.js';
 
 /**

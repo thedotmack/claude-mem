@@ -9,7 +9,7 @@
  */
 
 import { EventEmitter } from 'events';
-import { DatabaseManager } from './DatabaseManager.js';
+import type { DatabaseManager } from './DatabaseManager.js';
 import { logger } from '../../utils/logger.js';
 import type { ActiveSession, PendingMessage, PendingMessageWithId, ObservationData } from '../worker-types.js';
 import { PendingMessageStore } from '../sqlite/PendingMessageStore.js';

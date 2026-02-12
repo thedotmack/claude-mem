@@ -5,13 +5,14 @@
  * Settings are stored in ~/.claude-mem/settings.json
  */
 
-import express, { Request, Response } from 'express';
+import type { Request, Response } from 'express';
+import type express from 'express';
 import path from 'path';
 import { readFileSync, writeFileSync, existsSync, renameSync, mkdirSync } from 'fs';
 import { homedir } from 'os';
 import { getPackageRoot } from '../../../../shared/paths.js';
 import { logger } from '../../../../utils/logger.js';
-import { SettingsManager } from '../../SettingsManager.js';
+import type { SettingsManager } from '../../SettingsManager.js';
 import { getBranchInfo, switchBranch, pullUpdates } from '../../BranchManager.js';
 import { ModeManager } from '../../../domain/ModeManager.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';

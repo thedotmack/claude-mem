@@ -160,7 +160,7 @@ describe('Cursor MCP Configuration', () => {
         const args = (server as { args?: string[] }).args;
         if (args !== undefined) {
           expect(Array.isArray(args)).toBe(true);
-          args.forEach((arg: string) => expect(typeof arg).toBe('string'));
+          args.forEach((arg: string) => { expect(typeof arg).toBe('string'); });
         }
       }
     });
@@ -195,7 +195,7 @@ describe('Cursor MCP Configuration', () => {
 
     it('does nothing if mcp.json does not exist', () => {
       // Should not throw
-      expect(() => removeMcpConfig(mcpJsonPath)).not.toThrow();
+      expect(() => { removeMcpConfig(mcpJsonPath); }).not.toThrow();
       expect(existsSync(mcpJsonPath)).toBe(false);
     });
 

@@ -10,17 +10,20 @@
  * Used for: findByConcept, findByFile, findByType with Chroma available
  */
 
-import { BaseSearchStrategy, SearchStrategy } from './SearchStrategy.js';
-import {
+import type { SearchStrategy } from './SearchStrategy.js';
+import { BaseSearchStrategy } from './SearchStrategy.js';
+import type {
   StrategySearchOptions,
   StrategySearchResult,
-  SEARCH_CONSTANTS,
   ObservationSearchResult,
   SessionSummarySearchResult
 } from '../types.js';
-import { ChromaSync } from '../../../sync/ChromaSync.js';
-import { SessionStore } from '../../../sqlite/SessionStore.js';
-import { SessionSearch } from '../../../sqlite/SessionSearch.js';
+import {
+  SEARCH_CONSTANTS
+} from '../types.js';
+import type { ChromaSync } from '../../../sync/ChromaSync.js';
+import type { SessionStore } from '../../../sqlite/SessionStore.js';
+import type { SessionSearch } from '../../../sqlite/SessionSearch.js';
 import { logger } from '../../../../utils/logger.js';
 
 export class HybridSearchStrategy extends BaseSearchStrategy implements SearchStrategy {

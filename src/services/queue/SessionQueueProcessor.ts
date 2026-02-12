@@ -1,5 +1,5 @@
-import { EventEmitter } from 'events';
-import { PendingMessageStore, PersistentPendingMessage } from '../sqlite/PendingMessageStore.js';
+import type { EventEmitter } from 'events';
+import type { PendingMessageStore, PersistentPendingMessage } from '../sqlite/PendingMessageStore.js';
 import type { PendingMessageWithId } from '../worker-types.js';
 import { logger } from '../../utils/logger.js';
 

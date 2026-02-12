@@ -1,120 +1,99 @@
-# Update Documentation: Bun → Node.js Migration
+# Install ESLint with TypeScript Support
 
 ## Context
 
-The codebase was migrated from Bun runtime to Node.js + better-sqlite3 (commit `6005f1ac`). All user-facing and technical documentation still references Bun as the runtime, `bun:sqlite` as the database driver, and `bun run`/`bun install` as commands. This plan updates ~45 documentation files to reflect the new Node.js-based architecture.
+The claude-mem project (173 source files, 48 test files) has `strict: true` in tsconfig but no linter. The user wants to enforce stricter typing, particularly around `unknown`, `never`, and `any`. There are currently 5 `catch (error: any)` instances, 10 `as any` casts, and 11 `@ts-ignore`/`@ts-nocheck` comments in the codebase. ESLint with `@typescript-eslint` will provide rules to prevent new type safety violations and flag existing ones.
 
-## Replacement Rules
+## What Gets Installed
 
-| Old | New |
-|-----|-----|
-| `bun install` | `npm install` |
-| `bun run <script>` | `npm run <script>` |
-| `bun scripts/<file>.ts` | `npx tsx scripts/<file>.ts` |
-| `bun:sqlite` | `better-sqlite3` |
-| `Bun` (as runtime/process manager) | `Node.js` |
-| Bun installation links (`bun.sh`) | Remove (Node.js already required) |
-| `bun test` | `npm test` (uses vitest) |
+```
+eslint                          ^9.x   (flat config format)
+@eslint/js                      ^9.x   (recommended JS rules)
+typescript-eslint               ^8.x   (parser + plugin + type-aware rules)
+eslint-plugin-vitest            ^0.5.x (test file rules)
+globals                         ^15.x  (environment globals)
+```
 
-## Phase 1: High-Priority User-Facing Docs (7 files)
+## Configuration: `eslint.config.js`
 
-### 1. `README.md`
-- Line 156: `Bun management` → `Node.js management`
-- Line 174: `managed by Bun` → `managed by Node.js`
-- Line 235: Replace Bun system requirement with note that Node.js >= 18 is the only JS runtime needed (Bun line removed)
+Flat config (ESM, since project uses `"type": "module"`). Three rule layers:
 
-### 2. `docs/public/introduction.mdx`
-- Line 64: `managed by Bun` → `managed by Node.js`
-- Line 75: Remove Bun requirement line
-- Lines 88-90: Update v7.1.0 section to note the subsequent Node.js migration, or rewrite as historical
+### Layer 1: All TypeScript files (`src/**/*.ts`, `src/**/*.tsx`)
+- Extends: `@eslint/js` recommended + `typescript-eslint` strict-type-checked
+- Parser: `@typescript-eslint/parser` with `project: './tsconfig.json'`
+- Key rules:
+  - `@typescript-eslint/no-explicit-any`: `error` — bans `any` type annotations
+  - `@typescript-eslint/no-unsafe-assignment`: `error` — bans assigning `any` to typed vars
+  - `@typescript-eslint/no-unsafe-call`: `error` — bans calling `any`-typed values
+  - `@typescript-eslint/no-unsafe-member-access`: `error` — bans accessing members of `any`
+  - `@typescript-eslint/no-unsafe-return`: `error` — bans returning `any` from typed functions
+  - `@typescript-eslint/no-unsafe-argument`: `error` — bans passing `any` to typed params
+  - `@typescript-eslint/restrict-template-expressions`: `warn` — flags `any` in template literals
+  - `@typescript-eslint/no-floating-promises`: `error` — requires awaiting promises
+  - `@typescript-eslint/ban-ts-comment`: `error` — bans `@ts-ignore`, allows `@ts-expect-error` with description
+  - `@typescript-eslint/consistent-type-imports`: `warn` — enforces `import type` for type-only imports
+  - `no-console`: `warn` — encourages logger usage over console.*
 
-### 3. `docs/public/installation.mdx`
-- Line 29: Remove Bun requirement
-- Line 100: Update v7.1.0 note to reflect Node.js is now used
+### Layer 2: Test files (`tests/**/*.ts`)
+- Extends: Layer 1 rules + vitest plugin
+- Relaxations:
+  - `@typescript-eslint/no-explicit-any`: `warn` (test mocks sometimes need any)
+  - `@typescript-eslint/no-unsafe-*`: `warn` (relaxed for test flexibility)
+  - `no-console`: `off`
 
-### 4. `docs/public/cursor/index.mdx` (~18 edits)
-- Line 51: `bun install && bun run build` → `npm install && npm run build`
-- Line 54: `bun run cursor:setup` → `npm run cursor:setup`
-- Lines 86,91,96: Remove Bun installation prerequisites (3 platform-specific Bun install lines)
-- Lines 109-115: All `bun run` → `npm run` in command table
-- Lines 123,128: `bun run` → `npm run`
-- Line 157: `bun run worker:stop && bun run worker:start` → `npm run worker:stop && npm run worker:start`
-- Line 160: `bun run worker:logs` → `npm run worker:logs`
-- Lines 166,171: `bun run` → `npm run`
+### Layer 3: Ignores
+- `node_modules/`, `dist/`, `plugin/`, `docs/`, `*.js`, `*.cjs`, `*.mjs` (build scripts)
 
-### 5. `docs/public/cursor/gemini-setup.mdx` (~8 edits)
-- Lines 35,38: `bun install`/`bun run build` → `npm install`/`npm run build`
-- Line 48: `bun run cursor:setup` → `npm run cursor:setup`
-- Lines 80,81: `bun run` → `npm run`
-- Lines 92,95: `bun run` → `npm run`
-- Line 172: `bun run worker:logs` → `npm run worker:logs`
+## Files Modified
 
-### 6. `docs/public/cursor/openai-compat-setup.mdx` (~8 edits)
-- Same pattern as gemini-setup.mdx
+| File | Action |
+|------|--------|
+| `eslint.config.js` | Create — flat config |
+| `package.json` | Add devDependencies + `lint` and `lint:fix` scripts |
+| `.gitignore` | Add `.eslintcache` |
+| `tsconfig.eslint.json` | Create — extends tsconfig.json, includes both `src/` and `tests/` |
 
-### 7. `docs/public/usage/manual-recovery.mdx` (~11 edits)
-- All `bun scripts/check-pending-queue.ts` → `npx tsx scripts/check-pending-queue.ts`
-- All `bun scripts/clear-failed-queue.ts` → `npx tsx scripts/clear-failed-queue.ts`
+### `tsconfig.eslint.json`
 
-## Phase 2: Architecture & Technical Docs (7 files)
+Needed because the main `tsconfig.json` excludes `tests/`. ESLint's type-aware rules need a tsconfig that covers all linted files.
 
-### 8. `docs/public/architecture/worker-service.mdx`
-- Line 3: `managed natively by Bun` → `managed by Node.js`
-- Line 13: `Native Bun process management` → `Native Node.js process management`
-- Line 670: `bun:sqlite` → `better-sqlite3`
+```json
+{
+  "extends": "./tsconfig.json",
+  "include": ["src/**/*", "tests/**/*"],
+  "exclude": ["node_modules", "dist"]
+}
+```
 
-### 9. `docs/public/architecture/database.mdx`
-- Line 8: `bun:sqlite native module` → `better-sqlite3`
-- Line 18: `bun:sqlite` → `better-sqlite3`
-- Line 21: Update legacy note
-- Line 304: `bun:sqlite reuses connections` → `better-sqlite3 reuses connections`
+### package.json scripts
 
-### 10. `docs/public/architecture/overview.mdx`
-- Line 25: Process Manager `Bun` → `Node.js`
-- Line 208: `Auto-managed by Bun` → `Auto-managed by Node.js`
+```json
+{
+  "lint": "eslint src/ tests/",
+  "lint:fix": "eslint src/ tests/ --fix"
+}
+```
 
-### 11. `docs/public/hooks-architecture.mdx`
-- Lines 93-94: `Starts Bun worker service` → `Starts Node.js worker service`
-- Line 172: Same replacement
-- Lines 473-500: Rewrite "Bun Process Management" section → "Node.js Process Management"
-- Line 577: Update cleanup reference
+## Execution Steps
 
-### 12. `docs/public/configuration.mdx`
-- Line 229: `managed by Bun` → `managed by Node.js`
-- Line 424: `managed by Bun` → `managed by Node.js`
-
-### 13. `docs/public/architecture-evolution.mdx`
-- Lines 56,62: Update "Current Approach" to reference Node.js
-- Line 159: `bun:sqlite which requires no installation` → `better-sqlite3 (auto-installed)`
-
-### 14. `docs/public/usage/search-tools.mdx`
-- Line 443: `managed by Bun` → `managed by Node.js`
-
-## Phase 3: Historical Migration Doc (1 file)
-
-### 15. `docs/public/architecture/pm2-to-bun-migration.mdx`
-- Update the `<Note>` at the top to indicate Bun has since been replaced by Node.js
-- Add a clear notice: "As of v8.x, the project has migrated from Bun to Node.js + better-sqlite3. This document is preserved for historical reference only."
-- No need to rewrite the entire 560-line doc - just frame it as historical
-
-## Phase 4: Translated READMEs (28 files)
-
-All 28 files in `docs/i18n/README.*.md` have the same 3 Bun references matching the English README pattern:
-- Worker Service line: `managed by Bun` → `managed by Node.js` (or translated equivalent)
-- System requirement: Remove Bun requirement line
-- Architecture link: `Bun management` → `Node.js management`
-
-**Approach:** Use `replace_all` with exact English strings since these appear verbatim even in translations (code/technical terms aren't translated). For truly translated strings, handle per-file.
-
-## Execution Strategy
-
-1. Use parallel subagents to update files in batches
-2. Group by similarity (cursor guides share same patterns)
-3. Translated READMEs can be batch-processed with grep/sed patterns
-4. Run `npm run build` at end to verify no broken MDX
+1. Install packages: `npm install -D eslint @eslint/js typescript-eslint eslint-plugin-vitest globals`
+2. Create `eslint.config.js` with the three layers described above
+3. Create `tsconfig.eslint.json` extending main tsconfig to include tests
+4. Add `lint` / `lint:fix` scripts to `package.json`
+5. Add `.eslintcache` to `.gitignore`
+6. Run `npm run lint` to see current violations (expect errors from the ~21 existing `any`/`@ts-ignore` instances)
+7. Do NOT auto-fix existing violations in this step — report count only
 
 ## Verification
 
-1. `grep -r "bun" docs/ README.md --include="*.md" --include="*.mdx" -l` — should return only CHANGELOG.md and pm2-to-bun-migration.mdx
-2. Review key files manually for coherent reading
-3. No build/test impact (docs only)
+1. `npm run lint` runs without crashing (exits with error code due to existing violations, but no config errors)
+2. `npm run lint -- --max-warnings 0 2>&1 | tail -5` shows summary of violations
+3. `npm test` still passes (linter doesn't affect runtime)
+4. `npm run build-and-sync` still works
+
+## Out of Scope
+
+- Fixing existing lint violations (separate task)
+- Adding Prettier (separate concern)
+- Pre-commit hooks (can add later with lint-staged + husky)
+- CI integration (can add after violations are fixed)

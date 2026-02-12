@@ -79,7 +79,7 @@ export class TimelineBuilder {
   ): TimelineItem[] {
     if (items.length === 0) return items;
 
-    let anchorIndex = this.findAnchorIndex(items, anchorId, anchorEpoch);
+    const anchorIndex = this.findAnchorIndex(items, anchorId, anchorEpoch);
 
     if (anchorIndex === -1) return items;
 

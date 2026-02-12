@@ -9,7 +9,7 @@
  * - Centralized error handling
  */
 
-import { Request, Response } from 'express';
+import type { Request, Response } from 'express';
 import { logger } from '../../../utils/logger.js';
 
 export abstract class BaseRouteHandler {
@@ -23,7 +23,7 @@ export abstract class BaseRouteHandler {
       try {
         const result = handler(req, res);
         if (result instanceof Promise) {
-          result.catch(error => this.handleError(res, error as Error));
+          result.catch(error => { this.handleError(res, error as Error); });
         }
       } catch (error) {
         logger.error('HTTP', 'Route handler error', { path: req.path }, error as Error);
